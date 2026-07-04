@@ -309,6 +309,79 @@ def test_templates_list_over_api(client, session_factory):
     assert any(t["name"] == "welcome" and t["variableCount"] == 1 for t in data)
 
 
+# ── Cross-workspace isolation (AC-01-37) ─────────────────────────────────────
+def _seed_second_workspace(session_factory):
+    from modules.omnichannel.models import Channel, Contact, Workspace, WhatsappTemplate
+    from modules.omnichannel.security import encrypt_credentials
+    from modules.omnichannel.services import statuses
+
+    db = session_factory()
+    ws = Workspace(tenant_id=DEFAULT_TENANT_ID, name="Second", is_default=False)
+    db.add(ws)
+    db.flush()
+    ch = Channel(
+        tenant_id=DEFAULT_TENANT_ID,
+        workspace_id=ws.id,
+        channel_type="WHATSAPP",
+        name="WS2 WA",
+        credentials_json=encrypt_credentials({"dev": True}),
+        phone_number_id="pn-ws2",
+        is_active=True,
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "CHANNEL", "ACTIVE"),
+    )
+    db.add(ch)
+    db.flush()
+    db.add(
+        WhatsappTemplate(
+            tenant_id=DEFAULT_TENANT_ID,
+            channel_id=ch.id,
+            name="ws2_secret_template",
+            language="en",
+            status="APPROVED",
+            components_json=[{"type": "BODY", "text": "WS2 only"}],
+        )
+    )
+    db.commit()
+    wid = ws.id
+    db.close()
+    return wid
+
+
+def test_key_cannot_reach_another_workspace(client, session_factory):
+    ws_a = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws_a)
+    ws_b = _seed_second_workspace(session_factory)
+
+    # A template only workspace B has.
+    from modules.omnichannel.models import WhatsappTemplate
+
+    key_a = _mint(client, ws_a).json()["fullKey"]
+
+    # A's key lists ONLY A's templates — never B's.
+    r = client.get(
+        "/api/v1/omnichannel/templates", headers={"Authorization": f"Bearer {key_a}"}
+    )
+    assert r.status_code == 200
+    names = [t["name"] for t in r.json()["data"]]
+    assert "ws2_secret_template" not in names
+
+    # A contact created via A's key lands in workspace A, not B. (A text send to
+    # a brand-new number creates the contact, then hits the closed-window 409 —
+    # the contact is already persisted in workspace A by then.)
+    client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": "+60321321321", "type": "text", "text": {"body": "hi"}},
+        headers={"Authorization": f"Bearer {key_a}"},
+    )
+    from modules.omnichannel.models import Contact
+
+    db = session_factory()
+    made = db.query(Contact).filter(Contact.phone == "60321321321").all()
+    assert len(made) == 1
+    assert made[0].workspace_id == ws_a and made[0].workspace_id != ws_b
+    db.close()
+
+
 # ── phone_number_id uniqueness guard (AC-01-20) ──────────────────────────────
 def test_phone_number_in_use_guard(session_factory):
     from modules.omnichannel.services.onboarding_service import (
@@ -321,4 +394,32 @@ def test_phone_number_in_use_guard(session_factory):
     db = session_factory()
     with pytest.raises(PhoneNumberInUse):
         OnboardingService(db)._assert_phone_available("pn-dup")
+    db.close()
+
+
+def test_trashed_channel_does_not_block_reconnect(session_factory):
+    """A disconnected (is_trashed) channel keeps its phone_number_id but must NOT
+    block reconnecting the same number — the guard is scoped to live rows, matching
+    the partial-unique index predicate."""
+    from modules.omnichannel.models import Channel
+    from modules.omnichannel.services.onboarding_service import OnboardingService
+    from modules.omnichannel.services import statuses
+
+    ws = _default_workspace_id(session_factory)
+    db = session_factory()
+    db.add(
+        Channel(
+            tenant_id=DEFAULT_TENANT_ID,
+            workspace_id=ws,
+            channel_type="WHATSAPP",
+            name="old",
+            phone_number_id="pn-recon",
+            is_active=False,
+            is_trashed=True,  # disconnected — keeps its phone_number_id
+            status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "CHANNEL", "ACTIVE"),
+        )
+    )
+    db.commit()
+    # Must NOT raise — only a trashed row holds the number.
+    OnboardingService(db)._assert_phone_available("pn-recon")
     db.close()

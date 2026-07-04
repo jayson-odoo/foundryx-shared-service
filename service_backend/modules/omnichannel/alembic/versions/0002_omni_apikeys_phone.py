@@ -49,20 +49,23 @@ def upgrade() -> None:
             schema=SCHEMA,
         )
 
-    # Reconcile existing duplicate phone_number_id: keep the earliest by
-    # (created_at, id), NULL the losers, then add the partial unique index.
+    # Reconcile duplicate phone_number_id among LIVE (non-trashed) channels:
+    # keep the earliest by (created_at, id), NULL the losers, then add a partial
+    # unique index scoped to live rows. The scope matches both the connect guard
+    # and "route inbound to the ACTIVE channel" — a disconnected (is_trashed)
+    # channel keeps its phone_number_id so the same number can be reconnected.
     op.execute(
         f'UPDATE "{SCHEMA}".channels c SET phone_number_id = NULL '
-        "WHERE c.phone_number_id IS NOT NULL AND EXISTS ("
+        "WHERE c.phone_number_id IS NOT NULL AND c.is_trashed = false AND EXISTS ("
         f'  SELECT 1 FROM "{SCHEMA}".channels c2 '
-        "  WHERE c2.phone_number_id = c.phone_number_id "
+        "  WHERE c2.phone_number_id = c.phone_number_id AND c2.is_trashed = false "
         "    AND (c2.created_at < c.created_at "
         "         OR (c2.created_at = c.created_at AND c2.id < c.id)))"
     )
     op.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_channels_phone_number_id "
         f'ON "{SCHEMA}".channels (phone_number_id) '
-        "WHERE phone_number_id IS NOT NULL"
+        "WHERE phone_number_id IS NOT NULL AND is_trashed = false"
     )
 
 

@@ -22,6 +22,14 @@ import {
 } from '@/components/ui/navigation-menu';
 import { MegaMenuSubDefault } from '@/app/components/partials/mega-menu/components';
 
+// MegaMenuSubDefault calls hooks (usePathname/useMenu) internally, so it MUST be
+// rendered as its own component/fiber — calling it positionally inside .map()
+// would run its hooks in MegaMenu's fiber a variable number of times (the count
+// shifts as filterMenu resolves), tripping Rules-of-Hooks and white-screening.
+function MegaMenuSection({ items }: { items: MenuItem[] }) {
+  return <>{MegaMenuSubDefault(items)}</>;
+}
+
 export function MegaMenu() {
   const pathname = usePathname();
   const { isActive, hasActiveChild } = useMenu(pathname);
@@ -79,7 +87,7 @@ export function MegaMenu() {
                 </NavigationMenuTrigger>
                 <NavigationMenuContent className="p-0">
                   <div className="w-full space-y-0.5 p-4 lg:w-[320px] lg:p-5">
-                    {MegaMenuSubDefault(children)}
+                    <MegaMenuSection items={children} />
                   </div>
                 </NavigationMenuContent>
               </NavigationMenuItem>

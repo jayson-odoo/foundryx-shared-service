@@ -32,10 +32,7 @@ export function ApiKeysTab({
       <Card>
         <CardContent className="flex flex-col items-center justify-center gap-2 py-16 text-center">
           <Info className="size-8 text-muted-foreground" />
-          <p className="text-sm font-medium">Mint API keys after creating the workspace</p>
-          <p className="text-sm text-muted-foreground">
-            Save this workspace first — you can then mint public-gateway keys from this tab.
-          </p>
+          <p className="text-sm font-medium">API keys unavailable</p>
         </CardContent>
       </Card>
     );

@@ -6,8 +6,12 @@ with a stable, machine-readable ``code`` (plan sprint-1/01 AC-01-36). Internal
 """
 from typing import Any, Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+
+PUBLIC_API_PREFIX = "/api/v1/"
 
 
 class ApiError(Exception):
@@ -37,3 +41,24 @@ def install_api_error_handler(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
     async def _handle_api_error(_: Request, exc: ApiError) -> JSONResponse:  # noqa: ANN202
         return JSONResponse(status_code=exc.status_code, content=exc.to_body())
+
+    @app.exception_handler(RequestValidationError)
+    async def _handle_validation(  # noqa: ANN202
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # Public gateway paths get the structured envelope (AC-01-36); internal
+        # endpoints keep FastAPI's default {detail:[...]} shape.
+        if request.url.path.startswith(PUBLIC_API_PREFIX):
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                content=ApiError(
+                    422,
+                    "invalid_request",
+                    "Request validation failed.",
+                    jsonable_encoder(exc.errors()),
+                ).to_body(),
+            )
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"detail": jsonable_encoder(exc.errors())},
+        )

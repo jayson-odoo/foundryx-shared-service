@@ -116,18 +116,22 @@ def create_schema_and_tables(engine: Engine) -> None:
             conn.execute(
                 text(
                     f'UPDATE "{OMNI_SCHEMA}".channels c SET phone_number_id = NULL '
-                    "WHERE c.phone_number_id IS NOT NULL AND EXISTS ("
+                    "WHERE c.phone_number_id IS NOT NULL AND c.is_trashed = false AND EXISTS ("
                     f'  SELECT 1 FROM "{OMNI_SCHEMA}".channels c2 '
-                    "  WHERE c2.phone_number_id = c.phone_number_id "
+                    "  WHERE c2.phone_number_id = c.phone_number_id AND c2.is_trashed = false "
                     "    AND (c2.created_at < c.created_at "
                     "         OR (c2.created_at = c.created_at AND c2.id < c.id)))"
                 )
             )
+            # Drop any pre-existing all-rows index (earlier build) so the scoped
+            # (live-only) predicate takes effect — a disconnected channel keeps
+            # its phone_number_id and must not block reconnecting the same number.
+            conn.execute(text("DROP INDEX IF EXISTS uq_channels_phone_number_id"))
             conn.execute(
                 text(
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_channels_phone_number_id "
                     f'ON "{OMNI_SCHEMA}".channels (phone_number_id) '
-                    "WHERE phone_number_id IS NOT NULL"
+                    "WHERE phone_number_id IS NOT NULL AND is_trashed = false"
                 )
             )
 

@@ -10,6 +10,9 @@ from typing import Dict, Optional
 from app.config import settings
 
 _TTL_SECONDS = 24 * 60 * 60
+# Sentinel stored while a send is in-flight — a second request seeing it knows a
+# concurrent identical send is running (returns 409 rather than double-sending).
+PENDING = "__pending__"
 
 
 def _key(workspace_id: str, idem_key: str) -> str:
@@ -17,7 +20,13 @@ def _key(workspace_id: str, idem_key: str) -> str:
 
 
 class IdempotencyStore:
-    """Redis-first with a per-process in-memory fallback."""
+    """Redis-first with a per-process in-memory fallback.
+
+    Reserve-before-send: ``reserve`` atomically claims the (workspace, key) slot
+    (SET NX a PENDING sentinel) so two concurrent identical requests can't both
+    send; the winner ``finalize``s with the real message id, or ``release``s the
+    slot on failure so a legitimate retry can proceed.
+    """
 
     def __init__(self) -> None:
         self._memory: Dict[str, str] = {}
@@ -40,16 +49,52 @@ class IdempotencyStore:
                 pass
         return self._memory.get(k)
 
-    def remember(self, workspace_id: str, idem_key: str, message_id: str) -> None:
+    def reserve(self, workspace_id: str, idem_key: str) -> Optional[str]:
+        """Atomically claim the slot. Returns None if WE claimed it (caller
+        proceeds to send); otherwise the current stored value — a real message id
+        (completed) or PENDING (a concurrent send is in-flight)."""
         k = _key(workspace_id, idem_key)
         client = self._client()
         if client is not None:
             try:
-                client.set(k, message_id, ex=_TTL_SECONDS, nx=True)
+                if client.set(k, PENDING, ex=_TTL_SECONDS, nx=True):
+                    return None
+                return client.get(k)
+            except Exception:  # noqa: BLE001 — fall through to memory
+                pass
+        if k in self._memory:
+            return self._memory[k]
+        self._memory[k] = PENDING
+        return None
+
+    def finalize(self, workspace_id: str, idem_key: str, message_id: str) -> None:
+        """Overwrite the PENDING sentinel with the real message id (keeps TTL)."""
+        k = _key(workspace_id, idem_key)
+        client = self._client()
+        if client is not None:
+            try:
+                client.set(k, message_id, ex=_TTL_SECONDS)
                 return
             except Exception:  # noqa: BLE001
                 pass
-        self._memory.setdefault(k, message_id)
+        self._memory[k] = message_id
+
+    def release(self, workspace_id: str, idem_key: str) -> None:
+        """Drop the reservation (send failed) so a later retry can re-claim it —
+        but only if it's still PENDING (never clobber a finalized id)."""
+        k = _key(workspace_id, idem_key)
+        client = self._client()
+        if client is not None:
+            try:
+                # Best-effort compare-and-delete; a plain DEL is acceptable since
+                # only the in-flight owner calls release before finalize.
+                if client.get(k) == PENDING:
+                    client.delete(k)
+                return
+            except Exception:  # noqa: BLE001
+                pass
+        if self._memory.get(k) == PENDING:
+            self._memory.pop(k, None)
 
 
 class MemoryIdempotencyStore(IdempotencyStore):

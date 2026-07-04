@@ -47,6 +47,18 @@ The coder flagged (and I confirmed) that **every protected page crashed** before
 ### White-label cleanup (AC-01-38)
 - Browser tab title `FoundryX EMS` → `FoundryX` (`app/layout.tsx`); `alt="FoundryX EMS"` → `FoundryX`; auth-panel default tagline `Bringing Events to Life.` → `One platform, every conversation.` (events-domain slogan removed) + branding E2E assertions updated.
 
+## Code review (round 1) + resolutions
+Reviewer verdict: **REQUEST CHANGES** (1 blocker, 1 real-500, hardening). All addressed:
+1. **BLOCKER — MegaMenu Rules-of-Hooks crash (regression in my own fix):** `MegaMenuSubDefault(children)` was called positionally inside `.map()`, so its internal `usePathname`/`useMenu` hooks ran in MegaMenu's fiber a *variable* number of times (count shifts as `filterMenu` resolves) → "rendered more/fewer hooks" white-screen. **Fixed:** wrapped it in a `MegaMenuSection` component rendered as JSX, so each gets its own fiber. (My earlier browser verify missed it because the demo tenant's menu count was already stable by first paint.)
+2. **Disconnect→reconnect 500 (test-invisible):** the partial-unique phone index covered *all* non-null rows, but `disconnect()` keeps `phone_number_id` + sets `is_trashed=true` → reconnecting the same number hit the index → 500. **Fixed:** scoped the index (+ reconcile + `_assert_phone_available`) to `WHERE phone_number_id IS NOT NULL AND is_trashed = false` in migration 0002 **and** bootstrap (with a DROP of any stale all-rows index); added an `IntegrityError`→409 backstop in `_persist_channel`. Verified on live Postgres: trashed+new-live coexist, two-live rejected.
+3. **Idempotency double-send race:** lookup→send→remember wasn't atomic. **Fixed:** reserve-before-send — `reserve()` SET-NX a PENDING sentinel; winner `finalize()`s with the real id, `release()`s on failure; a concurrent in-flight duplicate gets `409 idempotency_in_progress`.
+4. **Isolation test added:** a workspace-A key can't list workspace-B's templates nor create a contact in B (`test_key_cannot_reach_another_workspace`).
+5. **Validation envelope:** `RequestValidationError` on `/api/v1/*` now returns the `{error:{code:"invalid_request",…}}` envelope (AC-01-36 consistency).
+6. **Reuse:** `_resolve_or_create_contact` now uses `ContactRepository.find_by_phone_in_workspace` (the inbound stitch) instead of a duplicate load-all loop; created contacts get `status_id` = OPEN.
+7. Softened the API-keys empty-state copy (removed procedural hint, foolproof-UI).
+
+Gateway suite now **16 passed** (added isolation + trashed-reconnect tests). Full backend suite re-run + frontend rebuild after the fixes (green).
+
 ### Environment notes (for re-verification)
 - Frontend needs `.env.local` (created): `NEXT_PUBLIC_BACKEND_API_URL`/`BACKEND_API_URL=http://localhost:8001`, `NEXTAUTH_URL=http://localhost:3001`, `NEXTAUTH_SECRET`.
 - `next.config` sets `output: standalone` → `next start` does not serve; use `next dev` (verification) or `node .next/standalone/server.js`.

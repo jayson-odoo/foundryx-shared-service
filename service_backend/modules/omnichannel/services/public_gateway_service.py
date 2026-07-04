@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.api_errors import ApiError
 
 from ..models import Channel, Contact, WhatsappTemplate
+from ..repositories.contact_repository import ContactRepository
 from ..schemas import PublicSendRequest, PublicTemplateItem, SendMessageRequest
 from .message_service import (
     CSW_CLOSED_MESSAGE,
@@ -22,7 +23,7 @@ from .message_service import (
     template_body_text,
     template_variable_count,
 )
-from . import idempotency
+from . import idempotency, statuses
 
 
 def _digits(value: str) -> str:
@@ -33,6 +34,7 @@ class PublicGatewayService:
     def __init__(self, db: Session):
         self.db = db
         self.messages = MessageService(db)
+        self.contacts = ContactRepository(db)
 
     # ── Channel + contact resolution ─────────────────────────────────────────
     def _workspace_channel(self, tenant_id: str, workspace_id: str) -> Channel:
@@ -59,20 +61,16 @@ class PublicGatewayService:
         digits = _digits(phone)
         if not digits:
             raise ApiError(422, "invalid_recipient", "A valid recipient phone number is required.")
-        # Match on digits-only equality against stored phones (tenant+workspace).
-        existing = (
-            self.db.query(Contact)
-            .filter(Contact.tenant_id == tenant_id, Contact.workspace_id == workspace_id)
-            .all()
-        )
-        for c in existing:
-            if _digits(c.phone or "") == digits:
-                return c
+        # Reuse the same within-workspace phone stitch as the inbound path.
+        existing = self.contacts.find_by_phone_in_workspace(digits, workspace_id, tenant_id)
+        if existing is not None:
+            return existing
         contact = Contact(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             phone=digits,
             priority="MEDIUM",
+            status_id=statuses.status_id_for(self.db, tenant_id, "THREAD", "OPEN"),
             created_at=datetime.now(timezone.utc),
         )
         self.db.add(contact)
@@ -109,11 +107,36 @@ class PublicGatewayService:
         idempotency_key: Optional[str],
     ) -> Tuple[str, bool]:
         """Returns (our_message_id, was_idempotency_replay)."""
+        store = idempotency.get_store()
+        reserved = False
         if idempotency_key:
-            existing = idempotency.get_store().lookup(workspace_id, idempotency_key)
-            if existing:
-                return existing, True
+            # Reserve-before-send: atomically claim the slot so two concurrent
+            # identical requests can't both send.
+            claimed = store.reserve(workspace_id, idempotency_key)
+            if claimed is not None:
+                if claimed == idempotency.PENDING:
+                    raise ApiError(
+                        409,
+                        "idempotency_in_progress",
+                        "A request with this Idempotency-Key is still being processed.",
+                    )
+                return claimed, True  # completed → replay the stored id
+            reserved = True
 
+        try:
+            message_id = self._do_send(tenant_id, workspace_id, key_id, req)
+        except Exception:
+            if reserved:
+                store.release(workspace_id, idempotency_key)  # let a retry re-claim
+            raise
+
+        if reserved:
+            store.finalize(workspace_id, idempotency_key, message_id)
+        return message_id, False
+
+    def _do_send(
+        self, tenant_id: str, workspace_id: str, key_id: str, req: PublicSendRequest
+    ) -> str:
         msg_type = (req.type or "text").lower()
         channel = self._workspace_channel(tenant_id, workspace_id)
 
@@ -145,10 +168,7 @@ class PublicGatewayService:
             if exc.message == CSW_CLOSED_MESSAGE:
                 raise ApiError(409, "csw_window_closed", exc.message) from exc
             raise ApiError(422, "send_rejected", exc.message) from exc
-
-        if idempotency_key:
-            idempotency.get_store().remember(workspace_id, idempotency_key, item.id)
-        return item.id, False
+        return item.id
 
     # ── Templates (read-only mirror) ─────────────────────────────────────────
     def list_templates(self, tenant_id: str, workspace_id: str) -> list[PublicTemplateItem]:

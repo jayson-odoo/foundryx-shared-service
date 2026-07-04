@@ -8,6 +8,7 @@ adapter), encrypts it, creates the channel, and subscribes the webhook
 from datetime import datetime, timezone
 from typing import Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.tenant import DEFAULT_TENANT_ID
@@ -58,6 +59,20 @@ class OnboardingService:
                 "This WhatsApp number is already connected to another workspace."
             )
 
+    def _persist_channel(self, channel: Channel) -> None:
+        """Commit a new channel; the partial-unique phone index is the race-proof
+        backstop behind ``_assert_phone_available`` — translate its violation to a
+        clean 409 instead of a 500."""
+        self.db.add(channel)
+        try:
+            self.db.commit()
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise PhoneNumberInUse(
+                "This WhatsApp number is already connected to another workspace."
+            ) from exc
+        self.db.refresh(channel)
+
     def complete(
         self, payload: OnboardingCallbackRequest, tenant_id: str = DEFAULT_TENANT_ID
     ) -> ChannelItem:
@@ -90,9 +105,7 @@ class OnboardingService:
             status_id=statuses.status_id_for(self.db, tenant_id, "CHANNEL", "ACTIVE"),
             last_verified_at=datetime.now(timezone.utc),
         )
-        self.db.add(channel)
-        self.db.commit()
-        self.db.refresh(channel)
+        self._persist_channel(channel)
 
         # Best-effort webhook subscription (no-op in dev / when unconfigured).
         callback_url = f"/omnichannel/webhooks/{channel.id}"
@@ -151,9 +164,7 @@ class OnboardingService:
             status_id=statuses.status_id_for(self.db, tenant_id, "CHANNEL", "ACTIVE"),
             last_verified_at=datetime.now(timezone.utc),
         )
-        self.db.add(channel)
-        self.db.commit()
-        self.db.refresh(channel)
+        self._persist_channel(channel)
 
         # Best-effort WABA webhook subscription (same as the ES path) — without
         # it Meta never delivers inbound messages for this number.
