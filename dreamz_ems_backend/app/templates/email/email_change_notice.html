@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 style="margin:0 0 12px;color:#1a1a1a;font-size:20px;">Account email changed</h1>
+<p style="margin:0 0 20px;color:#444444;font-size:14px;line-height:22px;">
+  The sign-in email on your account was changed from
+  <strong>{{ old_email }}</strong> to <strong>{{ new_email }}</strong>.
+</p>
+<p style="margin:0;color:#999999;font-size:12px;line-height:18px;">
+  If you did not expect this, contact your administrator immediately.
+</p>
+{% endblock %}

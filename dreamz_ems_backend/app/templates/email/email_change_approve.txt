@@ -1,0 +1,8 @@
+Approve email change
+
+Someone requested changing the email on your account to {{ new_email_masked }}.
+If this was you, approve it here (a confirmation link will then be sent to the new address):
+
+{{ link }}
+
+Wasn't you? Ignore this email — the request expires on its own and your email stays unchanged.

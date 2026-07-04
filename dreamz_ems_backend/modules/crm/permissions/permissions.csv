@@ -1,0 +1,9 @@
+resource,resource_label,action,action_label,description
+crm_clients,Clients,read,View clients,Can view B2B client accounts
+crm_clients,Clients,manage,Manage clients,Can create / edit / import / transition clients
+crm_leads,Leads,read,View leads,Can view sales leads / opportunities
+crm_leads,Leads,manage,Manage leads,Can create / edit / import / transition leads + create events
+crm_quotations,Quotations,read,View quotations,Can view quotations
+crm_quotations,Quotations,manage,Manage quotations,Can create / edit / revise / transition quotations
+crm_sales_orders,Sales orders,read,View sales orders,Can view sales orders
+crm_sales_orders,Sales orders,manage,Manage sales orders,Can create / confirm / transition sales orders + create invoices from them

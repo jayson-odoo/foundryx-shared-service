@@ -1,0 +1,146 @@
+import type { ColumnDef, RowData } from '@tanstack/react-table';
+import type { LucideIcon } from 'lucide-react';
+import type {
+  FilterFieldDef,
+  ListQuery,
+  ListResult,
+  SortState,
+} from '@/types/resource';
+
+// Row-surface context the shell threads to cell-rendered action menus.
+declare module '@tanstack/react-table' {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  interface TableMeta<TData extends RowData> {
+    /** Encoded list query for preserving record-nav on row navigation. */
+    resourceCtx?: string;
+    /** Global index of the first row on the current page. */
+    pageStartIndex?: number;
+    /** Refresh the list after a row action. */
+    reload?: () => void;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  interface ColumnMeta<TData extends RowData, TValue> {
+    /** When false, the column can't be drag-reordered (e.g. select, actions). */
+    reorderable?: boolean;
+  }
+}
+
+/** Runtime passed to an action's `run` — lets row actions preserve nav ctx + refresh. */
+export interface ResourceActionRuntime {
+  /** Encoded list query (row surface only) — for preserving record-nav on navigation. */
+  ctx?: string;
+  /** Global index of the row within the current query (row surface only). */
+  index?: number;
+  /** Refresh the list after a mutating action. */
+  reload: () => void;
+}
+
+/**
+ * One entry in an entity's action registry. The SAME action can surface in the
+ * row `...` menu, the bulk toolbar, and the form `...` menu (plan 02 §3c).
+ */
+export interface ResourceAction<T> {
+  id: string;
+  label: string;
+  icon?: LucideIcon;
+  tone?: 'default' | 'destructive';
+  surfaces: { row?: boolean; bulk?: boolean; form?: boolean };
+  /** Permission key required to see/run this action (UX gate; backend enforces). */
+  permission?: string;
+  /** Hide entirely for these rows (e.g. "Restore" only in trashed view). */
+  isVisible?: (rows: T[]) => boolean;
+  /** Show but disable (e.g. "Send invitation" only for INVITED users). */
+  isDisabled?: (rows: T[]) => boolean;
+  /** When set, a confirm dialog gates the action. */
+  confirm?: {
+    title: string;
+    description?: string;
+    confirmLabel?: string;
+    /**
+     * Typed confirmation (sprint-2/02 — module-uninstall UX): the confirm
+     * button stays disabled until the user types `expected(rows)` exactly.
+     * For irreversible actions (hard delete).
+     */
+    input?: { expected: (rows: T[]) => string; hint?: (rows: T[]) => string };
+  };
+  run: (rows: T[], runtime: ResourceActionRuntime) => void | Promise<void>;
+}
+
+export interface ExportColumn {
+  id: string;
+  label: string;
+}
+
+/** The per-entity config that drives `ResourceList`. New entity = write one of these. */
+export interface ResourceListConfig<T extends object> {
+  /** Stable key for per-user column prefs (e.g. 'users.list'). */
+  viewKey: string;
+  columns: ColumnDef<T>[];
+  /**
+   * Optional card renderer. When set, the list offers a card/list view toggle
+   * (persisted per `viewKey`); this returns the card BODY — the shell wraps it
+   * with the selection checkbox + row action menu chrome. The card grid reuses
+   * the same data/search/filter/segment/pagination as the table.
+   */
+  cardRender?: (row: T) => import('react').ReactNode;
+  /** Initial view when `cardRender` is set (default 'list'). */
+  defaultView?: 'card' | 'list';
+  getRowId: (row: T) => string;
+  /** Base form path for a row; the shell appends ctx + index for record-nav. */
+  rowHref: (row: T) => string;
+  /**
+   * Inline master-detail: when set, a row click calls this instead of navigating
+   * (rowHref is ignored). Receives the row, its index on the page, and the page
+   * rows — used by `<MasterDetail>` to open a detail panel with record-nav.
+   */
+  onRowSelect?: (row: T, index: number, rows: T[]) => void;
+  fetcher: (query: ListQuery) => Promise<ListResult<T>>;
+  exporter: (
+    query: ListQuery,
+    columns: string[],
+    ids?: string[],
+  ) => Promise<string>;
+  filterFields: FilterFieldDef[];
+  exportColumns: ExportColumn[];
+  actions: ResourceAction<T>[];
+  searchPlaceholder?: string;
+  /**
+   * Human labels for the fields the general search matches (e.g. ['Name',
+   * 'Email']). Shown in a friendly "what can I search?" hint beside the box.
+   */
+  searchHints?: string[];
+  defaultSort?: SortState;
+  /** Show the Active | Trashed segmented control (default true). */
+  enableStatusViews?: boolean;
+  /**
+   * Per-entity labels for the status-view toggle (default Active | Trashed).
+   * The underlying StatusView semantics stay 'active' | 'trashed' — e.g.
+   * tenants relabel 'trashed' as "Archived" (soft archive, plan 07 §4).
+   */
+  statusViewLabels?: { active: string; trashed: string };
+  /**
+   * N-way segmented control for entities with more views than Active|Trashed
+   * (e.g. email log All|Pending|Sent|Failed|Cancelled). When set it REPLACES
+   * the binary status views; the selected id rides ListQuery.segment. Row
+   * selection clears on switch (same invariant as status views).
+   */
+  segments?: { id: string; label: string }[];
+  /** Initial segment id (default = first entry). */
+  defaultSegment?: string;
+  /** Filename stem for CSV export (default 'export'). */
+  exportFilename?: string;
+  createLabel?: string;
+  onCreate?: () => void;
+  /** Permission key required to show the create button (UX gate). */
+  createPermission?: string;
+  /**
+   * Opt-in bulk import (plan sprint-3/09, F8). When set AND the user holds
+   * `writePermission`, the toolbar renders an Import button → the import wizard.
+   * `context` (optional) scopes an embedded-list import to a parent record (D17).
+   */
+  importer?: {
+    entityType: string;
+    writePermission: string;
+    context?: Record<string, unknown>;
+  };
+}

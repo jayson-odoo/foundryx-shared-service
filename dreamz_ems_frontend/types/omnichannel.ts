@@ -1,0 +1,278 @@
+/**
+ * Omnichannel BSP domain types (sprint-1 plan 04 — foundation).
+ *
+ * Mirrors the backend `app_omnichannel` schema the module will expose. Kept
+ * framework-agnostic so the services + UI share one source. Phase A is mock-
+ * backed; Phase B swaps the service implementations to the real api-client with
+ * no change to these types. See documentation/plans/sprint-1/04-omnichannel-foundation.md.
+ */
+
+import type { UserStatus } from '@/types/user';
+
+/** Channels the platform can connect. MVP builds WHATSAPP; others are later adapters. */
+export type ChannelType = 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM' | 'DOUYIN' | 'XIAOHONGSHU';
+
+/** Connection lifecycle of a channel (maps to the static `statuses` table, CHANNEL scope). */
+export type ChannelStatus = 'ACTIVE' | 'PENDING' | 'INACTIVE' | 'ERROR';
+
+/** Lifecycle of a workspace (statuses table, WORKSPACE scope). */
+export type WorkspaceStatus = 'ACTIVE' | 'INACTIVE';
+
+/** A messaging workspace — a tenant-owned division channels/contacts/members hang off. */
+export interface Workspace {
+  id: string;
+  tenantId: string;
+  name: string;
+  status: WorkspaceStatus;
+  /** Denormalised counts surfaced in the list (server-computed in Phase B). */
+  channelCount: number;
+  memberCount: number;
+  isDefault: boolean;
+  isTrashed: boolean;
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
+}
+
+/** A core user that is a member of a workspace (RBAC capability is separate). */
+export interface WorkspaceMember {
+  id: string; // membership row id
+  userId: string;
+  name: string | null;
+  email: string;
+  status: UserStatus;
+  assignedAt: string; // ISO
+}
+
+/** A user eligible to be added as a workspace member (core users picker). */
+export interface MemberCandidate {
+  userId: string;
+  name: string | null;
+  email: string;
+  status: UserStatus;
+}
+
+/** A connected channel (WhatsApp number, etc). Credentials never leave the backend. */
+export interface Channel {
+  id: string;
+  tenantId: string;
+  workspaceId: string;
+  workspaceName: string;
+  channelType: ChannelType;
+  name: string;
+  status: ChannelStatus;
+  isActive: boolean;
+  /** WhatsApp Business Account id (display only — read from Meta on connect). */
+  wabaId: string | null;
+  phoneNumberId: string | null;
+  displayPhoneNumber: string | null;
+  /** Meta business account name (synced read-only, plan 06). */
+  businessAccountName: string | null;
+  /** Meta verified display name (synced read-only, plan 06). */
+  verifiedName: string | null;
+  /** Last "Test Connection" / Sync outcome timestamp. */
+  lastVerifiedAt: string | null;
+  /** Last WhatsApp Business Profile sync timestamp. */
+  profileSyncedAt: string | null;
+  isTrashed: boolean;
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
+}
+
+/** Mirrored WhatsApp Business Profile (plan 06 — Meta system-of-record). */
+export interface ChannelProfile {
+  about: string | null;
+  address: string | null;
+  description: string | null;
+  email: string | null;
+  vertical: string | null;
+  website1: string | null;
+  website2: string | null;
+  /** Display-only current profile photo (upload deferred, BL-108). */
+  profilePictureUrl: string | null;
+  profileSyncedAt: string | null;
+}
+
+/** Editable + write-through profile fields (only changed fields POST to Meta). */
+export interface UpdateChannelProfileInput {
+  about?: string | null;
+  address?: string | null;
+  description?: string | null;
+  email?: string | null;
+  vertical?: string | null;
+  website1?: string | null;
+  website2?: string | null;
+}
+
+/** Editable fields on the channel detail form (most channel data is Meta-owned). */
+export interface UpdateChannelInput {
+  name?: string;
+  isActive?: boolean;
+}
+
+/** Create/update a workspace. Members are managed separately (assign/remove). */
+export interface CreateWorkspaceInput {
+  name: string;
+  status: WorkspaceStatus;
+}
+export interface UpdateWorkspaceInput {
+  name?: string;
+  status?: WorkspaceStatus;
+}
+
+/**
+ * Result of the Meta Embedded Signup popup (the data the SDK hands back before
+ * our backend exchanges the code). In Phase A the mock popup produces this; in
+ * Phase B the real Meta JS SDK does. The backend turns `code` into a permanent
+ * token + provisions the channel.
+ */
+export interface EmbeddedSignupResult {
+  code: string;
+  wabaId: string;
+  phoneNumberId: string;
+  /** Resolved server-side from phone_number_id when the real SDK omits them. */
+  displayPhoneNumber?: string;
+  businessName?: string;
+}
+
+/** Manual channel connect — paste a System User token + phone ids (validation
+ *  escape hatch before Business Verification). */
+export interface ManualConnectInput {
+  workspaceId: string;
+  accessToken: string;
+  phoneNumberId?: string;
+  wabaId?: string;
+  phoneNumber?: string;
+}
+
+/** A selectable WhatsApp number inside the (mock) Embedded Signup popup. */
+export interface MockWabaOption {
+  wabaId: string;
+  businessName: string;
+  phoneNumberId: string;
+  displayPhoneNumber: string;
+}
+
+// ---------------------------------------------------------------------------
+// Plan 05 — message processing (conversations, inbox, templates, quick replies)
+// ---------------------------------------------------------------------------
+
+/** Who authored a message bubble. SYSTEM = internal note (never sent to the contact). */
+export type SenderType = 'AGENT' | 'CONTACT' | 'SYSTEM';
+
+/** Message payload kinds (inbound INTERACTIVE renders; compose is backlog). */
+export type MessageType = 'TEXT' | 'IMAGE' | 'VIDEO' | 'AUDIO' | 'DOCUMENT' | 'TEMPLATE' | 'INTERACTIVE';
+
+/** Outbound delivery lifecycle (Meta status webhooks drive transitions). */
+export type DeliveryStatus = 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
+
+/** Thread lifecycle (statuses table, CONTACT scope). Inbound re-opens a thread. */
+export type ThreadStatus = 'OPEN' | 'SNOOZED' | 'CLOSED';
+
+/** Triage priority on a thread. */
+export type ThreadPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+
+/**
+ * A conversation thread = a contact + its thread metadata (mirrors backend
+ * `contacts` — the contact IS the thread; messages hang off it).
+ */
+export interface ConversationThread {
+  id: string; // contact id
+  tenantId: string;
+  workspaceId: string;
+  /** Display name resolved from first/last name, else the raw profile name. */
+  name: string;
+  phone: string | null;
+  avatarUrl: string | null;
+  assignedUserId: string | null;
+  assignedUserName: string | null;
+  status: ThreadStatus;
+  priority: ThreadPriority;
+  /** Channel the latest message arrived on (drives the thread-list icon). */
+  channelId: string | null;
+  channelType: ChannelType;
+  /** 24h customer-service-window close time; null = never messaged in. */
+  cswExpiresAt: string | null; // ISO
+  lastIncomingMessageAt: string | null; // ISO
+  lastMessageAt: string | null; // ISO
+  /** Last visible message body (thread-list preview; server-computed). */
+  lastMessagePreview: string | null;
+  /** Inbound messages since the agent last opened the thread. */
+  unreadCount: number;
+  createdAt: string; // ISO
+}
+
+/** The quoted message a reply points at (WhatsApp `context.message_id`). */
+export interface ReplyRef {
+  id: string;
+  body: string | null;
+  senderType: SenderType;
+  senderName: string | null;
+}
+
+/** One message bubble in a thread (mirrors backend `conversation_messages`). */
+export interface ConversationMessage {
+  id: string;
+  contactId: string;
+  channelId: string | null;
+  senderType: SenderType;
+  senderId: string | null;
+  /** Resolved display name for AGENT/SYSTEM authors (server-joined). */
+  senderName: string | null;
+  messageType: MessageType;
+  body: string | null;
+  mediaUrl: string | null;
+  externalMessageId: string | null;
+  deliveryStatus: DeliveryStatus | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  /** Set when this message replies to another (stored in metadata_json). */
+  replyTo: ReplyRef | null;
+  createdAt: string; // ISO
+}
+
+/** A synced (read-only) WhatsApp template — authoring lives in Meta (backlog). */
+export interface WhatsAppTemplate {
+  id: string;
+  channelId: string;
+  name: string;
+  language: string | null;
+  category: string | null;
+  /** Approved body text with {{n}} placeholders (from components_json). */
+  bodyText: string;
+  /** Number of {{n}} variables the body expects. */
+  variableCount: number;
+  status: string | null; // APPROVED | PENDING | REJECTED (Meta-owned)
+}
+
+/** A canned response insertable from the composer (★ Quick Replies). */
+export interface QuickReply {
+  id: string;
+  workspaceId: string;
+  shortcut: string | null;
+  body: string;
+}
+
+/** Compose payload. TEMPLATE requires templateId (+ variables); rest free-form. */
+export interface SendMessageInput {
+  messageType: 'TEXT' | 'TEMPLATE';
+  body?: string;
+  templateId?: string;
+  templateVariables?: string[];
+  /** Reply target (WhatsApp Cloud `context.message_id` in Phase B). */
+  replyToMessageId?: string;
+}
+
+/** Inbox thread-list filters (left panel — not the Resource shell). */
+export interface ThreadListQuery {
+  workspaceId?: string;
+  assignee?: 'all' | 'me' | 'unassigned';
+  status?: ThreadStatus | 'ALL';
+  priority?: ThreadPriority | 'ALL';
+  search?: string;
+}
+
+/** Realtime events fanned out per workspace (WS in Phase B; mock emitter in A). */
+export type ConversationSocketEvent =
+  | { type: 'message.created'; message: ConversationMessage; thread: ConversationThread }
+  | { type: 'message.status'; messageId: string; contactId: string; deliveryStatus: DeliveryStatus; errorMessage?: string }
+  | { type: 'contact.updated'; thread: ConversationThread };

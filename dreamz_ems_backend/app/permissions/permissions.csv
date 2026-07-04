@@ -1,0 +1,80 @@
+resource,resource_label,action,action_label,description
+dashboard,Dashboard,read,Read,View dashboards
+users,User Management,read,Read,View users
+users,User Management,create,Create,Create users
+users,User Management,update,Update,Edit users
+users,User Management,delete,Delete,Delete users
+users,User Management,impersonate,Impersonate,Impersonate this user to test their access
+roles,Roles & Permissions,read,Read,View roles
+roles,Roles & Permissions,create,Create,Create roles
+roles,Roles & Permissions,update,Update,Edit roles
+roles,Roles & Permissions,delete,Delete,Delete roles
+events,Events,read,Read,View events
+events,Events,create,Create,Create events
+events,Events,update,Update,Edit events
+events,Events,delete,Delete,Delete events
+orders,Orders & Delivery,read,Read,View orders
+orders,Orders & Delivery,create,Create,Create orders
+orders,Orders & Delivery,update,Update,Edit orders
+orders,Orders & Delivery,delete,Delete,Delete orders
+orders,Orders & Delivery,approve,Approve,Approve submitted orders
+products,Products,read,Read,View products
+products,Products,create,Create,Create products
+products,Products,update,Update,Edit products
+products,Products,delete,Delete,Delete products
+product_categories,Product Categories,read,Read,View the product category tree
+product_categories,Product Categories,manage,Manage,Create / rename / reparent / delete categories
+inventory,Inventory,read,Read,View inventory
+inventory,Inventory,create,Create,Create inventory
+inventory,Inventory,update,Update,Edit inventory
+inventory,Inventory,delete,Delete,Delete inventory
+procurement,Procurement,read,Read,View procurement
+procurement,Procurement,create,Create,Create procurement
+procurement,Procurement,update,Update,Edit procurement
+procurement,Procurement,delete,Delete,Delete procurement
+vendors,Vendors,read,Read,View vendors
+vendors,Vendors,create,Create,Create vendors
+vendors,Vendors,update,Update,Edit vendors
+vendors,Vendors,delete,Delete,Delete vendors
+reports,Reports & Analytics,read,Read,View reports
+reports,Reports & Analytics,export,Export,Export reports
+finance,Finance & Billing,read,Read,View finance
+finance,Finance & Billing,create,Create,Create finance records
+finance,Finance & Billing,update,Update,Edit finance records
+finance,Finance & Billing,delete,Delete,Delete finance records
+settings,System Settings,read,Read,View settings
+settings,System Settings,update,Update,Change settings
+app_store,App Store,read,View app store,Can view the tenant app store
+app_store,App Store,install,Install modules,Can install and update modules
+app_store,App Store,deactivate,Deactivate modules,Can deactivate/reactivate modules
+app_store,App Store,uninstall,Uninstall modules,Can uninstall modules and wipe their data
+integrations,Integrations,read,View integrations,Can view configured integrations
+integrations,Integrations,manage,Manage integrations,Can connect / edit / test / remove integrations
+statuses,Status Engine,read,View statuses,Can view status sets and transition graphs
+statuses,Status Engine,manage,Manage statuses,Can configure statuses and transitions / roles / notifications
+rules,Rule Engine,read,View rules,Can view the rules configured across consuming features
+branding,Branding,read,View branding,Can view tenant branding (logo / slogan / theme)
+branding,Branding,manage,Manage branding,Can edit tenant branding assets and theme tokens
+templates,Templates,read,View templates,Can view email templates and their designs
+templates,Templates,manage,Manage templates,Can create / edit / duplicate / reset / delete email templates and send tests
+emails,Email Log,read,View email log,Can view queued and sent emails including bodies
+emails,Email Log,manage,Manage email log,Can retry failed and cancel pending emails
+workflows,Workflows,read,View workflows,Can view workflows and their run logs
+workflows,Workflows,manage,Manage workflows,Can create / edit / publish / activate / delete workflows
+workflows,Workflows,run,Run workflows,Can manually run and test workflows
+forms,Forms,read,View forms,Can view forms and their definitions
+forms,Forms,manage,Manage forms,Can create / edit / publish / archive / delete forms
+submissions,Form Submissions,read,View submissions,Can view a form's submissions and answers
+submissions,Form Submissions,manage,Manage submissions,Can transition and manage form submissions
+documents,Documents,read,View documents,Can browse / preview / download the document Drive
+documents,Documents,manage,Manage documents,Can upload / rename / move / delete / restore files and folders
+documents,Documents,share,Share documents,Can create and revoke share links for files and folders
+documents,Documents,configure,Configure documents,Can manage document types and the document settings policy
+terminology,Terminology,manage,Manage terminology,Can rename entity labels for the tenant
+imports,Imports,read_all,View all imports,Can view import jobs from all users (else own jobs only)
+reviews,Review Processes,read,View review processes,Can view review/approval configurations and their roles
+reviews,Review Processes,manage,Manage review processes,Can create / edit / delete review/approval configurations
+reviews,Review Processes,grade,Grade reviews,Can complete assigned reviews on the staff surface
+reviews,Review Processes,decide,Decide reviews,Can make the terminal accept/reject/revisions decision on the staff surface
+numbering,Numbering,read,View document numbering,Can view the document-numbering catalog (prefixes / formats / next values)
+numbering,Numbering,manage,Manage document numbering,Can edit document-numbering prefixes / formats / reset cadence / next values

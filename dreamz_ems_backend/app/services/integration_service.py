@@ -1,0 +1,310 @@
+"""Integration service (plan 09 §4, §6) — business rules over the connection
+registry: one-per-type (plan 06 D7), credential encryption (write-only),
+inline test with status upkeep, Resource-list reads (plan 06 D6).
+"""
+import csv
+import io
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple
+
+from cryptography.fernet import InvalidToken
+from fastapi import HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.integrations import all_providers, get_provider
+from app.integrations.base import IntegrationProvider, TestResult
+from app.models.connection import (
+    CONNECTION_STATUS_ACTIVE,
+    CONNECTION_STATUS_ERROR,
+    CONNECTION_STATUS_UNVERIFIED,
+    Connection,
+)
+from app.repositories.connection_repository import ConnectionRepository
+from app.schemas.integration import (
+    ConnectionCreateRequest,
+    ConnectionOut,
+    ConnectionUpdateRequest,
+    ProviderOut,
+    TestResultOut,
+)
+from app.schemas.user import FilterGroup
+from app.secrets import decrypt_secret, encrypt_secret
+from app.services.filter_translator import translate_filter
+from app.workflow_engine.entity_events import emit_entity_event
+
+# Whitelisted filterable columns (never arbitrary attributes — the translator
+# contract). Wire names are camelCase like every Resource entity.
+_CONNECTION_FILTER_COLUMNS = {
+    "name": Connection.name,
+    "provider": Connection.provider,
+    "type": Connection.type,
+    "status": Connection.status,
+    "lastTestedAt": Connection.last_tested_at,
+    "created": Connection.created_at,
+}
+
+
+def _now() -> datetime:
+    # House convention since plan sprint-2/05: AWARE UTC everywhere (columns are timestamptz).
+    return datetime.now(timezone.utc)
+
+
+_STALE_CIPHERTEXT_MSG = (
+    "Stored credentials can no longer be decrypted (the encryption key changed — "
+    "e.g. FERNET_KEY was unset, so a restart rotated the ephemeral key). "
+    "Re-enter the credentials and save to fix this connection."
+)
+
+
+def _decrypt_or_none(ciphertext: str) -> Optional[Dict[str, str]]:
+    """Decrypt stored credentials; None when the key no longer matches."""
+    if not ciphertext:
+        return {}
+    try:
+        return decrypt_secret(ciphertext)
+    except InvalidToken:
+        return None
+
+
+def _provider_out(p: IntegrationProvider) -> ProviderOut:
+    return ProviderOut(
+        provider=p.provider,
+        type=p.type,
+        title=p.title,
+        description=p.description,
+        icon=p.icon,
+        fields=p.fields(),
+        testLabel=p.test_label,
+        testTarget=p.test_target,
+    )
+
+
+def _connection_out(c: Connection) -> ConnectionOut:
+    return ConnectionOut(
+        id=c.id,
+        tenantId=c.tenant_id,
+        provider=c.provider,
+        type=c.type,
+        name=c.name,
+        config={k: str(v) for k, v in (c.config_json or {}).items()},
+        status=c.status,
+        lastTestedAt=c.last_tested_at,
+        lastError=c.last_error,
+        rateLimitPerMinute=c.rate_limit_per_minute,
+        createdAt=c.created_at,
+        updatedAt=c.updated_at,
+    )
+
+
+class IntegrationService:
+    def __init__(self, db: Session):
+        self.db = db
+        self.repo = ConnectionRepository(db)
+
+    # ── catalog ──────────────────────────────────────────────────────────
+    def providers(self) -> List[ProviderOut]:
+        return [_provider_out(p) for p in all_providers()]
+
+    # ── connections (Resource-list contract, plan 06 D6) ─────────────────
+    def list(
+        self,
+        tenant_id: str,
+        *,
+        page: int = 0,
+        page_size: int = 25,
+        search: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        sort_dir: str = "asc",
+        filter_group: Optional[FilterGroup] = None,
+    ) -> Tuple[List[ConnectionOut], int]:
+        clause = translate_filter(filter_group, _CONNECTION_FILTER_COLUMNS)
+        rows, total = self.repo.list(
+            tenant_id,
+            page=page,
+            page_size=page_size,
+            search=search,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            filter_clause=clause,
+        )
+        return [_connection_out(c) for c in rows], total
+
+    def get(self, tenant_id: str, connection_id: str) -> ConnectionOut:
+        return _connection_out(self._get_or_404(tenant_id, connection_id))
+
+    def get_at(
+        self,
+        tenant_id: str,
+        index: int,
+        *,
+        search: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        sort_dir: str = "asc",
+        filter_group: Optional[FilterGroup] = None,
+    ) -> Tuple[Optional[ConnectionOut], int]:
+        rows, total = self.list(
+            tenant_id,
+            page=max(index, 0),
+            page_size=1,
+            search=search,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            filter_group=filter_group,
+        )
+        return (rows[0] if rows else None), total
+
+    def export_csv(
+        self,
+        tenant_id: str,
+        columns: List[str],
+        *,
+        ids: Optional[List[str]] = None,
+        search: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        sort_dir: str = "asc",
+        filter_group: Optional[FilterGroup] = None,
+    ) -> str:
+        rows, _ = self.list(
+            tenant_id,
+            page=0,
+            page_size=100_000,
+            search=search,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            filter_group=filter_group,
+        )
+        if ids:
+            id_set = set(ids)
+            rows = [c for c in rows if c.id in id_set]
+        titles = {p.provider: p.title for p in all_providers()}
+        labels = {
+            "name": "Name",
+            "provider": "Provider",
+            "type": "Type",
+            "status": "Status",
+            "lastTestedAt": "Last tested",
+            "lastError": "Last error",
+            "created": "Created",
+        }
+
+        def cell(c: ConnectionOut, col: str) -> str:
+            if col == "provider":
+                return titles.get(c.provider, c.provider)
+            value = {
+                "name": c.name,
+                "type": c.type,
+                "status": c.status,
+                "lastTestedAt": c.lastTestedAt,
+                "lastError": c.lastError,
+                "created": c.createdAt,
+            }.get(col)
+            return "" if value is None else str(value)
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow([labels.get(c, c) for c in columns])
+        for row in rows:
+            writer.writerow([cell(row, c) for c in columns])
+        return buffer.getvalue()
+
+    def create(self, tenant_id: str, req: ConnectionCreateRequest) -> ConnectionOut:
+        provider = get_provider(req.provider)
+        if provider is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f'Unknown provider "{req.provider}".')
+        # ONE connection per TYPE per tenant (plan 06 D7) — resolution must
+        # stay deterministic (which bucket does StorageService write to?).
+        # Subsumes the old per-provider rule; multiple-per-provider = BL-043.
+        # RELAXED for ``payment`` (AC-07-24): a tenant may hold several payment
+        # connections (Stripe + Billplz) for per-project resolution; only a
+        # SAME-PROVIDER duplicate is rejected (the (tenant, provider) unique).
+        if provider.type == "payment":
+            dup = self.repo.get_by_provider(tenant_id, provider.provider)
+            if dup is not None:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    f'A {dup.provider} connection ("{dup.name}") already exists '
+                    "for this workspace — disconnect it first.",
+                )
+        else:
+            existing = self.repo.get_by_type(tenant_id, provider.type)
+            if existing is not None:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    f'A {existing.type} connection ("{existing.name}") already exists '
+                    "for this workspace — disconnect it first.",
+                )
+        connection = Connection(
+            tenant_id=tenant_id,
+            provider=provider.provider,
+            type=provider.type,
+            name=req.name,
+            config_json=dict(req.config),
+            credentials_json=encrypt_secret(dict(req.credentials)),
+            status=CONNECTION_STATUS_UNVERIFIED,
+            rate_limit_per_minute=req.rateLimitPerMinute,
+        )
+        self.repo.create(connection)
+        self.db.flush()
+        emit_entity_event(self.db, "connection", "created", connection, tenant_id=tenant_id)
+        self.db.commit()
+        self.db.refresh(connection)
+        return _connection_out(connection)
+
+    def update(self, tenant_id: str, connection_id: str, req: ConnectionUpdateRequest) -> ConnectionOut:
+        connection = self._get_or_404(tenant_id, connection_id)
+        changes: dict = {}
+        if req.name is not None and connection.name != req.name:
+            changes["name"] = {"from": connection.name, "to": req.name}
+            connection.name = req.name
+        if req.config is not None:
+            # MERGE, don't replace — config is a partial PATCH field (its
+            # sibling `credentials` merges too); wholesale replace would let a
+            # partial body silently wipe omitted keys.
+            connection.config_json = {**(connection.config_json or {}), **req.config}
+        if req.rateLimitPerMinute is not None:
+            connection.rate_limit_per_minute = req.rateLimitPerMinute
+        # Write-only secrets: omitted/empty keys keep the stored values.
+        if req.credentials:
+            # Undecryptable stored blob (key rotated) → start fresh from the
+            # incoming values rather than 500ing.
+            stored = _decrypt_or_none(connection.credentials_json) or {}
+            stored.update({k: v for k, v in req.credentials.items() if v})
+            connection.credentials_json = encrypt_secret(stored)
+        # Config changes invalidate the last verification.
+        connection.status = CONNECTION_STATUS_UNVERIFIED
+        connection.last_error = None
+        emit_entity_event(self.db, "connection", "updated", connection, tenant_id=tenant_id, changes=changes or None)
+        self.db.commit()
+        self.db.refresh(connection)
+        return _connection_out(connection)
+
+    def delete(self, tenant_id: str, connection_id: str) -> None:
+        connection = self._get_or_404(tenant_id, connection_id)
+        emit_entity_event(self.db, "connection", "deleted", connection, tenant_id=tenant_id)
+        self.repo.delete(connection)
+        self.db.commit()
+
+    def test(self, tenant_id: str, connection_id: str, target: Optional[str] = None) -> TestResultOut:
+        connection = self._get_or_404(tenant_id, connection_id)
+        provider = get_provider(connection.provider)
+        if provider is None:  # provider unregistered (module uninstalled)
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Provider is not available.")
+        credentials = _decrypt_or_none(connection.credentials_json)
+        if credentials is None:
+            # Key rotation made the stored secret unreadable — surface a clean,
+            # actionable failure instead of a 500.
+            result = TestResult(ok=False, message=_STALE_CIPHERTEXT_MSG)
+        else:
+            result = provider.test(connection.config_json or {}, credentials, target)
+        checked_at = _now()
+        connection.status = CONNECTION_STATUS_ACTIVE if result.ok else CONNECTION_STATUS_ERROR
+        connection.last_tested_at = checked_at
+        connection.last_error = None if result.ok else result.message
+        self.db.commit()
+        return TestResultOut(ok=result.ok, message=result.message, checkedAt=checked_at)
+
+    def _get_or_404(self, tenant_id: str, connection_id: str) -> Connection:
+        connection = self.repo.get(connection_id, tenant_id)
+        if connection is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Connection not found.")
+        return connection

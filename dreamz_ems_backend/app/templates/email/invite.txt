@@ -1,0 +1,7 @@
+You're invited
+
+An account has been created for you on Dreamz EMS. Set your password to get started:
+
+{{ link }}
+
+If this wasn't you, you can safely ignore this email.

@@ -1,0 +1,1820 @@
+import {
+  AlertCircle,
+  Award,
+  Badge,
+  Bell,
+  Bitcoin,
+  Blocks,
+  Bolt,
+  Book,
+  Briefcase,
+  Building,
+  Building2,
+  Package,
+  Receipt,
+  CalendarCheck,
+  Captions,
+  CheckCircle,
+  Code,
+  Codepen,
+  Coffee,
+  File as DocumentIcon,
+  Euro,
+  Eye,
+  File,
+  FileQuestion,
+  FileText,
+  Flag,
+  Ghost,
+  Gift,
+  Grid,
+  Heart,
+  HelpCircle,
+  Kanban,
+  Key,
+  Layout,
+  LayoutGrid,
+  LifeBuoy,
+  MessageSquare,
+  Monitor,
+  Network,
+  Users as PeopleIcon,
+  Plug,
+  ScrollText,
+  Settings,
+  Share2,
+  Shield,
+  ShieldUser,
+  ShoppingCart,
+  SquareMousePointer,
+  Star,
+  Theater,
+  TrendingUp,
+  UserCheck,
+  UserCircle,
+  Users,
+  Briefcase as WorkIcon,
+  ClipboardList,
+  FolderClosed,
+  Workflow,
+  Zap,
+} from 'lucide-react';
+import { type MenuConfig } from './types';
+
+export const MENU_SIDEBAR: MenuConfig = [
+  {
+    title: 'Dashboards',
+    icon: LayoutGrid,
+    children: [
+      { title: 'Light Sidebar', path: '/' },
+      { title: 'Dark Sidebar', path: '/dark-sidebar' },
+    ],
+  },
+  { heading: 'User' },
+  {
+    title: 'Public Profile',
+    icon: UserCircle,
+    children: [
+      {
+        title: 'Profiles',
+        children: [
+          { title: 'Default', path: '/public-profile/profiles/default' },
+          { title: 'Creator', path: '/public-profile/profiles/creator' },
+          { title: 'Company', path: '/public-profile/profiles/company' },
+          { title: 'NFT', path: '/public-profile/profiles/nft' },
+          { title: 'Blogger', path: '/public-profile/profiles/blogger' },
+          { title: 'CRM', path: '/public-profile/profiles/crm' },
+          {
+            title: 'More',
+            collapse: true,
+            collapseTitle: 'Show less',
+            expandTitle: 'Show 4 more',
+            children: [
+              { title: 'Gamer', path: '/public-profile/profiles/gamer' },
+              { title: 'Feeds', path: '/public-profile/profiles/feeds' },
+              { title: 'Plain', path: '/public-profile/profiles/plain' },
+              { title: 'Modal', path: '/public-profile/profiles/modal' },
+            ],
+          },
+        ],
+      },
+      {
+        title: 'Projects',
+        children: [
+          { title: '3 Columns', path: '/public-profile/projects/3-columns' },
+          { title: '2 Columns', path: '/public-profile/projects/2-columns' },
+        ],
+      },
+      { title: 'Works', path: '/public-profile/works' },
+      { title: 'Teams', path: '/public-profile/teams' },
+      { title: 'Network', path: '/public-profile/network' },
+      { title: 'Activity', path: '/public-profile/activity' },
+      {
+        title: 'More',
+        collapse: true,
+        collapseTitle: 'Show less',
+        expandTitle: 'Show 3 more',
+        children: [
+          { title: 'Campaigns - Card', path: '/public-profile/campaigns/card' },
+          { title: 'Campaigns - List', path: '/public-profile/campaigns/list' },
+          { title: 'Empty', path: '/public-profile/empty' },
+        ],
+      },
+    ],
+  },
+  {
+    title: 'My Account',
+    icon: Settings,
+    children: [
+      {
+        title: 'Account',
+        children: [
+          { title: 'Get Started', path: '/account/home/get-started' },
+          { title: 'User Profile', path: '/account/home/user-profile' },
+          { title: 'Company Profile', path: '/account/home/company-profile' },
+          {
+            title: 'Settings - With Sidebar',
+            path: '/account/home/settings-sidebar',
+          },
+          {
+            title: 'Settings - Enterprise',
+            path: '/account/home/settings-enterprise',
+          },
+          { title: 'Settings - Plain', path: '/account/home/settings-plain' },
+          { title: 'Settings - Modal', path: '/account/home/settings-modal' },
+        ],
+      },
+      {
+        title: 'Billing',
+        children: [
+          { title: 'Billing - Basic', path: '/account/billing/basic' },
+          {
+            title: 'Billing - Enterprise',
+            path: '/account/billing/enterprise',
+          },
+          { title: 'Plans', path: '/account/billing/plans' },
+          { title: 'Billing History', path: '/account/billing/history' },
+        ],
+      },
+      {
+        title: 'Security',
+        children: [
+          { title: 'Get Started', path: '/account/security/get-started' },
+          { title: 'Security Overview', path: '/account/security/overview' },
+          {
+            title: 'Allowed IP Addresses',
+            path: '/account/security/allowed-ip-addresses',
+          },
+          {
+            title: 'Privacy Settings',
+            path: '/account/security/privacy-settings',
+          },
+          {
+            title: 'Device Management',
+            path: '/account/security/device-management',
+          },
+          {
+            title: 'Backup & Recovery',
+            path: '/account/security/backup-and-recovery',
+          },
+          {
+            title: 'Current Sessions',
+            path: '/account/security/current-sessions',
+          },
+          { title: 'Security Log', path: '/account/security/security-log' },
+        ],
+      },
+      {
+        title: 'Members & Roles',
+        children: [
+          { title: 'Teams Starter', path: '/account/members/team-starter' },
+          { title: 'Teams', path: '/account/members/teams' },
+          { title: 'Team Info', path: '/account/members/team-info' },
+          {
+            title: 'Members Starter',
+            path: '/account/members/members-starter',
+          },
+          { title: 'Team Members', path: '/account/members/team-members' },
+          { title: 'Import Members', path: '/account/members/import-members' },
+          { title: 'Roles', path: '/account/members/roles' },
+          {
+            title: 'Permissions - Toggler',
+            path: '/account/members/permissions-toggle',
+          },
+          {
+            title: 'Permissions - Check',
+            path: '/account/members/permissions-check',
+          },
+        ],
+      },
+      { title: 'Integrations', path: '/account/integrations' },
+      { title: 'Notifications', path: '/account/notifications' },
+      { title: 'API Keys', path: '/account/api-keys' },
+      {
+        title: 'More',
+        collapse: true,
+        collapseTitle: 'Show less',
+        expandTitle: 'Show 3 more',
+        children: [
+          { title: 'Appearance', path: '/account/appearance' },
+          { title: 'Invite a Friend', path: '/account/invite-a-friend' },
+          { title: 'Activity', path: '/account/activity' },
+        ],
+      },
+    ],
+  },
+  {
+    title: 'Network',
+    icon: Users,
+    children: [
+      { title: 'Get Started', path: '/network/get-started' },
+      {
+        title: 'User Cards',
+        children: [
+          { title: 'Mini Cards', path: '/network/user-cards/mini-cards' },
+          { title: 'Team Crew', path: '/network/user-cards/team-crew' },
+          { title: 'Author', path: '/network/user-cards/author' },
+          { title: 'NFT', path: '/network/user-cards/nft' },
+          { title: 'Social', path: '/network/user-cards/social' },
+        ],
+      },
+      {
+        title: 'User Table',
+        children: [
+          { title: 'Team Crew', path: '/network/user-table/team-crew' },
+          { title: 'App Roster', path: '/network/user-table/app-roster' },
+          {
+            title: 'Market Authors',
+            path: '/network/user-table/market-authors',
+          },
+          { title: 'SaaS Users', path: '/network/user-table/saas-users' },
+          { title: 'Store Clients', path: '/network/user-table/store-clients' },
+          { title: 'Visitors', path: '/network/user-table/visitors' },
+        ],
+      },
+      { title: 'Cooperations', path: '/network/cooperations', disabled: true },
+      { title: 'Leads', path: '/network/leads', disabled: true },
+      { title: 'Donators', path: '/network/donators', disabled: true },
+    ],
+  },
+  {
+    title: 'Authentication',
+    icon: Shield,
+    children: [
+      {
+        title: 'Sign In',
+        path: '/signin',
+      },
+      {
+        title: 'Check Email',
+        path: '/signup',
+      },
+      {
+        title: 'Reset Password',
+        path: '/reset-password',
+      },
+      {
+        title: '2FA',
+        path: '/2fa',
+      },
+      { title: 'Welcome Message', path: '/auth/welcome-message' },
+      { title: 'Account Deactivated', path: '/auth/account-deactivated' },
+      { title: 'Error 404', path: '/error/404' },
+      { title: 'Error 500', path: '/error/500' },
+    ],
+  },
+  // Platform Console (plan 07) — operator-only: hidden unless the session user
+  // is in the platform tenant AND can('tenants.read') (SidebarMenu filters).
+  { heading: 'Platform', platformOnly: true },
+  {
+    title: 'Tenant Management',
+    icon: Building2,
+    platformOnly: true,
+    children: [
+      {
+        title: 'Tenants',
+        path: '/platform/tenants',
+        permission: 'tenants.read',
+      },
+    ],
+  },
+  // Platform engines (sprint-2) — Status now; Workflow/Rule/Template later.
+  // Menu rule: parents only group — every navigable path is a CHILD entry.
+  {
+    title: 'Platform Engines',
+    icon: Network,
+    platformOnly: true,
+    children: [
+      {
+        title: 'Status Engine',
+        path: '/platform/status-engine',
+        permission: 'statuses.read',
+      },
+      // Rule engine observability (sprint-2/02 D12) — rules are edited where
+      // they live; this list shows what exists + deep-links there.
+      {
+        title: 'Rules',
+        path: '/platform/rules',
+        permission: 'rules.read',
+      },
+    ],
+  },
+  { heading: 'Apps' },
+  {
+    title: 'App Store',
+    icon: Blocks,
+    children: [
+      {
+        title: 'Browse Modules',
+        path: '/app-store',
+        permission: 'app_store.read',
+      },
+    ],
+  },
+  // Workflow engine (sprint-2/08) — tenant automation (trigger → action).
+  {
+    title: 'Workflows',
+    icon: Workflow,
+    termKey: 'workflow',
+    children: [
+      {
+        title: 'All workflows',
+        path: '/workflows',
+        permission: 'workflows.read',
+        termKey: 'workflow',
+      },
+    ],
+  },
+  // Form engine (sprint-3/01) — tenant-designed forms + submissions.
+  {
+    title: 'Forms',
+    icon: ClipboardList,
+    termKey: 'form',
+    children: [
+      {
+        title: 'All forms',
+        path: '/forms',
+        permission: 'forms.read',
+        termKey: 'form',
+      },
+      // Generic Review/Approval engine (sprint-4/06) — CORE; operates on any
+      // form_submission, so no module tag.
+      {
+        title: 'Review processes',
+        path: '/reviews',
+        permission: 'reviews.read',
+      },
+      // Staff review SURFACES (slice 2) — user-kind actors grade/decide here.
+      {
+        title: 'My reviews',
+        path: '/reviews/my-reviews',
+        permission: 'reviews.grade',
+        termKey: 'review',
+      },
+      {
+        title: 'Decisions',
+        path: '/reviews/decisions',
+        permission: 'reviews.decide',
+      },
+    ],
+  },
+  // EMS module (sprint-3/11, F4) — Events vertical. Visible only while the
+  // `ems` module is ACTIVE for the tenant; labels follow Terminology.
+  {
+    title: 'Events',
+    icon: CalendarCheck,
+    module: 'ems',
+    termKey: 'project',
+    children: [
+      { title: 'Events', path: '/ems/events', permission: 'projects.read', module: 'ems', termKey: 'project' },
+      { title: 'Event Types', path: '/ems/event-types', permission: 'project_types.read', module: 'ems', termKey: 'project_type' },
+      { title: 'Event Templates', path: '/ems/event-templates', permission: 'project_templates.read', module: 'ems', termKey: 'project_template' },
+      { title: 'Profiles', path: '/ems/profiles', permission: 'profiles.read', module: 'ems', termKey: 'profile' },
+      { title: 'Personas', path: '/ems/personas', permission: 'personas.read', module: 'ems' },
+      { title: 'Venues', path: '/ems/venues', permission: 'venues.read', module: 'ems', termKey: 'venue' },
+    ],
+  },
+  // CRM module (sprint-4/08) — clients / leads / quotations. Visible only while
+  // the `crm` module is ACTIVE for the tenant.
+  {
+    title: 'CRM',
+    icon: Building2,
+    module: 'crm',
+    children: [
+      { title: 'Clients', path: '/ems/clients', permission: 'crm_clients.read', module: 'crm', termKey: 'client' },
+      { title: 'Leads', path: '/ems/leads', permission: 'crm_leads.read', module: 'crm', termKey: 'lead' },
+      { title: 'Quotations', path: '/ems/quotations', permission: 'crm_quotations.read', module: 'crm', termKey: 'quotation' },
+      { title: 'Sales orders', path: '/ems/sales-orders', permission: 'crm_sales_orders.read', module: 'crm', termKey: 'sales_order' },
+    ],
+  },
+  // Catalog (sprint-4/08) — CORE/horizontal (products + categories). Always
+  // visible, perm-gated; consumed by CRM quotations, EMS ticketing, future commerce.
+  {
+    title: 'Catalog',
+    icon: Package,
+    children: [
+      { title: 'Products', path: '/ems/products', permission: 'products.read', termKey: 'product' },
+      { title: 'Categories', path: '/ems/categories', permission: 'product_categories.read', termKey: 'product_category' },
+    ],
+  },
+  // Finance module (sprint-4/05) — invoices (payments/settlement extend in F).
+  {
+    title: 'Finance',
+    icon: Receipt,
+    module: 'finance',
+    children: [
+      { title: 'Invoices', path: '/finance/invoices', permission: 'invoices.read', module: 'finance', termKey: 'invoice' },
+      { title: 'Settlements', path: '/finance/settlements', permission: 'settlements.read', module: 'finance', termKey: 'settlement' },
+    ],
+  },
+  // Import engine history (sprint-3/09, F8) — bulk-import jobs across entities.
+  {
+    title: 'Imports',
+    icon: FolderClosed,
+    path: '/imports',
+    termKey: 'import',
+  },
+  // Document management / the Drive (sprint-3/04) — files, folders, sharing.
+  {
+    title: 'Documents',
+    icon: FolderClosed,
+    termKey: 'document',
+    children: [
+      {
+        title: 'All documents',
+        path: '/documents',
+        permission: 'documents.read',
+        termKey: 'document',
+      },
+      {
+        title: 'Shared links',
+        path: '/documents/shares',
+        permission: 'documents.share',
+      },
+      {
+        title: 'Document types',
+        path: '/documents/types',
+        permission: 'documents.configure',
+      },
+      {
+        title: 'Settings',
+        path: '/documents/settings',
+        permission: 'documents.configure',
+      },
+    ],
+  },
+  // Tenant-scoped settings (renamed from "Workspace Settings" in sprint-2/06
+  // D9 — "workspace" collided with omnichannel's messaging workspaces, and
+  // "tenant" is platform vocabulary that shouldn't leak into white-label UI).
+  // Pages gate themselves by permission (per-permission menu pruning = BL-014).
+  {
+    title: 'Settings',
+    icon: Plug,
+    children: [
+      // General workspace settings (sprint-4/08) — tenant default currency, etc.
+      {
+        title: 'General',
+        path: '/settings/general',
+        permission: 'settings.read',
+      },
+      {
+        title: 'Integrations',
+        path: '/settings/integrations',
+        permission: 'integrations.read',
+        termKey: 'connection',
+      },
+      // Per-tenant entity relabeling (sprint-3/08, F10). Read-for-all,
+      // edit gated terminology.manage.
+      {
+        title: 'Terminology',
+        path: '/settings/terminology',
+        permission: 'terminology.manage',
+      },
+      // Document numbering engine (sprint-4/07, Cluster F) — per-tenant prefixes /
+      // formats / reset cadence / next values. Gated numbering.manage.
+      {
+        title: 'Numbering',
+        path: '/settings/numbering',
+        permission: 'numbering.manage',
+      },
+      // Tenant surface of the status engine (sprint-2/01) — fork-on-edit.
+      {
+        title: 'Statuses',
+        path: '/settings/statuses',
+        permission: 'statuses.read',
+      },
+      // Tenant surface of the rule engine (sprint-2/02) — read-only registry.
+      {
+        title: 'Rules',
+        path: '/settings/rules',
+        permission: 'rules.read',
+      },
+      // Tenant white-label branding (sprint-2/03) — gated by branding.read.
+      {
+        title: 'Branding',
+        path: '/settings/branding',
+        permission: 'branding.read',
+      },
+      // Template engine (sprint-2/07) — email templates + outbox surfacing.
+      {
+        title: 'Templates',
+        path: '/settings/templates',
+        permission: 'templates.read',
+        termKey: 'template',
+      },
+      {
+        title: 'Email log',
+        path: '/settings/email-log',
+        permission: 'emails.read',
+      },
+      // Workflow engine tenant settings (plan sprint-2/10) — run retention.
+      {
+        title: 'Workflows',
+        path: '/settings/workflows',
+        permission: 'workflows.manage',
+      },
+      // Import engine tenant settings (plan sprint-3/09 D11) — per-tenant caps.
+      {
+        title: 'Import settings',
+        path: '/settings/imports',
+        permission: 'imports.read_all',
+      },
+    ],
+  },
+  {
+    title: 'User Management',
+    icon: ShieldUser,
+    children: [
+      {
+        title: 'Users',
+        path: '/user-management/users',
+        permission: 'users.read',
+      },
+      {
+        title: 'Roles',
+        path: '/user-management/roles',
+        permission: 'roles.read',
+      },
+      // Permissions/Account/Logs/Settings entries removed in sprint-2/06 —
+      // Metronic demo residue, the routes never existed (404 on click).
+    ],
+  },
+  // Module menu block — visible only while the module is ACTIVE for the
+  // tenant (plan 08 §8, lands BL-014 for module items).
+  {
+    title: 'Omnichannel',
+    icon: MessageSquare,
+    module: 'omnichannel',
+    children: [
+      {
+        title: 'Inbox',
+        path: '/omnichannel/inbox',
+        permission: 'conversations.read',
+      },
+      {
+        title: 'Channels',
+        path: '/omnichannel/settings/channels',
+        permission: 'channels.read',
+      },
+      {
+        title: 'Workspaces',
+        path: '/omnichannel/settings/workspaces',
+        permission: 'workspaces.read',
+      },
+    ],
+  },
+  {
+    title: 'Store - Client',
+    icon: Users,
+    children: [
+      { title: 'Home', path: '/store-client/home' },
+      {
+        title: 'Search Results - Grid',
+        path: '/store-client/search-results-grid',
+      },
+      {
+        title: 'Search Results - List',
+        path: '/store-client/search-results-list',
+      },
+      { title: 'Product Details', path: '/store-client/product-details' },
+      { title: 'Wishlist', path: '/store-client/wishlist' },
+      {
+        title: 'Checkout',
+        children: [
+          {
+            title: 'Order Summary',
+            path: '/store-client/checkout/order-summary',
+          },
+          {
+            title: 'Shipping Info',
+            path: '/store-client/checkout/shipping-info',
+          },
+          {
+            title: 'Payment Method',
+            path: '/store-client/checkout/payment-method',
+          },
+          {
+            title: 'Order Placed',
+            path: '/store-client/checkout/order-placed',
+          },
+        ],
+      },
+      { title: 'My Orders', path: '/store-client/my-orders' },
+      { title: 'Order Receipt', path: '/store-client/order-receipt' },
+    ],
+  },
+  {
+    title: 'Store - Admin',
+    icon: Bolt,
+    disabled: true,
+    children: [
+      { title: 'Dashboard', path: '/store-admin/dashboard' },
+      {
+        title: 'Inventory',
+        children: [
+          {
+            title: 'All Products',
+            path: '/store-admin/inventory/all-products',
+          },
+          {
+            title: 'Current Stock',
+            path: '/store-admin/inventory/current-stock',
+          },
+          {
+            title: 'Inbound Stock',
+            path: '/store-admin/inventory/inbound-stock',
+          },
+          {
+            title: 'Outbound Stock',
+            path: '/store-admin/inventory/outbound-stock',
+          },
+          {
+            title: 'Stock Planner',
+            path: '/store-admin/inventory/stock-planner',
+          },
+          { title: 'Track Shipping', path: '/' },
+          { title: 'Create Shipping Label', path: '/' },
+        ],
+      },
+    ],
+  },
+  { title: 'Store - Services', icon: Codepen, disabled: true },
+  { title: 'AI Promt', icon: Theater, disabled: true },
+  { title: 'Invoice Generator', icon: ScrollText, disabled: true },
+];
+
+export const MENU_SIDEBAR_CUSTOM: MenuConfig = [
+  {
+    title: 'Store - Client',
+    icon: Users,
+    children: [
+      { title: 'Home', path: '/store-client/home' },
+      {
+        title: 'Search Results',
+        children: [
+          {
+            title: 'Search Results - Grid',
+            path: '/store-client/search-results-grid',
+          },
+          {
+            title: 'Search Results - List',
+            path: '/store-client/search-results-list',
+          },
+        ],
+      },
+      {
+        title: 'Overlays',
+        children: [
+          { title: 'Product Details', path: '/store-client/product-details' },
+          { title: 'Wishlist', path: '/store-client/wishlist' },
+        ],
+      },
+      {
+        title: 'Checkout',
+        children: [
+          {
+            title: 'Order Summary',
+            path: '/store-client/checkout/order-summary',
+          },
+          {
+            title: 'Shipping Info',
+            path: '/store-client/checkout/shipping-info',
+          },
+          {
+            title: 'Payment Method',
+            path: '/store-client/checkout/payment-method',
+          },
+          {
+            title: 'Order Placed',
+            path: '/store-client/checkout/order-placed',
+          },
+        ],
+      },
+      { title: 'My Orders', path: '/store-client/my-orders' },
+      { title: 'Order Receipt', path: '/store-client/order-receipt' },
+    ],
+  },
+];
+
+export const MENU_SIDEBAR_COMPACT: MenuConfig = [
+  {
+    title: 'Dashboards',
+    icon: LayoutGrid,
+    path: '/',
+  },
+  {
+    title: 'Public Profile',
+    icon: UserCircle,
+    children: [
+      {
+        title: 'Profiles',
+        children: [
+          { title: 'Default', path: '/public-profile/profiles/default' },
+          { title: 'Creator', path: '/public-profile/profiles/creator' },
+          { title: 'Company', path: '/public-profile/profiles/company' },
+          { title: 'NFT', path: '/public-profile/profiles/nft' },
+          { title: 'Blogger', path: '/public-profile/profiles/blogger' },
+          { title: 'CRM', path: '/public-profile/profiles/crm' },
+          {
+            title: 'More',
+            collapse: true,
+            collapseTitle: 'Show less',
+            expandTitle: 'Show 4 more',
+            children: [
+              { title: 'Gamer', path: '/public-profile/profiles/gamer' },
+              { title: 'Feeds', path: '/public-profile/profiles/feeds' },
+              { title: 'Plain', path: '/public-profile/profiles/plain' },
+              { title: 'Modal', path: '/public-profile/profiles/modal' },
+            ],
+          },
+        ],
+      },
+      {
+        title: 'Projects',
+        children: [
+          { title: '3 Columns', path: '/public-profile/projects/3-columns' },
+          { title: '2 Columns', path: '/public-profile/projects/2-columns' },
+        ],
+      },
+      { title: 'Works', path: '/public-profile/works' },
+      { title: 'Teams', path: '/public-profile/teams' },
+      { title: 'Network', path: '/public-profile/network' },
+      { title: 'Activity', path: '/public-profile/activity' },
+      {
+        title: 'More',
+        collapse: true,
+        collapseTitle: 'Show less',
+        expandTitle: 'Show 3 more',
+        children: [
+          { title: 'Campaigns - Card', path: '/public-profile/campaigns/card' },
+          { title: 'Campaigns - List', path: '/public-profile/campaigns/list' },
+          { title: 'Empty', path: '/public-profile/empty' },
+        ],
+      },
+    ],
+  },
+  {
+    title: 'My Account',
+    icon: Settings,
+    children: [
+      {
+        title: 'Account',
+        children: [
+          { title: 'Get Started', path: '/account/home/get-started' },
+          { title: 'User Profile', path: '/account/home/user-profile' },
+          { title: 'Company Profile', path: '/account/home/company-profile' },
+          {
+            title: 'Settings - With Sidebar',
+            path: '/account/home/settings-sidebar',
+          },
+          {
+            title: 'Settings - Enterprise',
+            path: '/account/home/settings-enterprise',
+          },
+          { title: 'Settings - Plain', path: '/account/home/settings-plain' },
+          { title: 'Settings - Modal', path: '/account/home/settings-modal' },
+        ],
+      },
+      {
+        title: 'Billing',
+        children: [
+          { title: 'Billing - Basic', path: '/account/billing/basic' },
+          {
+            title: 'Billing - Enterprise',
+            path: '/account/billing/enterprise',
+          },
+          { title: 'Plans', path: '/account/billing/plans' },
+          { title: 'Billing History', path: '/account/billing/history' },
+        ],
+      },
+      {
+        title: 'Security',
+        children: [
+          { title: 'Get Started', path: '/account/security/get-started' },
+          { title: 'Security Overview', path: '/account/security/overview' },
+          {
+            title: 'Allowed IP Addresses',
+            path: '/account/security/allowed-ip-addresses',
+          },
+          {
+            title: 'Privacy Settings',
+            path: '/account/security/privacy-settings',
+          },
+          {
+            title: 'Device Management',
+            path: '/account/security/device-management',
+          },
+          {
+            title: 'Backup & Recovery',
+            path: '/account/security/backup-and-recovery',
+          },
+          {
+            title: 'Current Sessions',
+            path: '/account/security/current-sessions',
+          },
+          { title: 'Security Log', path: '/account/security/security-log' },
+        ],
+      },
+      {
+        title: 'Members & Roles',
+        children: [
+          { title: 'Teams Starter', path: '/account/members/team-starter' },
+          { title: 'Teams', path: '/account/members/teams' },
+          { title: 'Team Info', path: '/account/members/team-info' },
+          {
+            title: 'Members Starter',
+            path: '/account/members/members-starter',
+          },
+          { title: 'Team Members', path: '/account/members/team-members' },
+          { title: 'Import Members', path: '/account/members/import-members' },
+          { title: 'Roles', path: '/account/members/roles' },
+          {
+            title: 'Permissions - Toggler',
+            path: '/account/members/permissions-toggle',
+          },
+          {
+            title: 'Permissions - Check',
+            path: '/account/members/permissions-check',
+          },
+        ],
+      },
+      { title: 'Integrations', path: '/account/integrations' },
+      { title: 'Notifications', path: '/account/notifications' },
+      { title: 'API Keys', path: '/account/api-keys' },
+      {
+        title: 'More',
+        collapse: true,
+        collapseTitle: 'Show less',
+        expandTitle: 'Show 3 more',
+        children: [
+          { title: 'Appearance', path: '/account/appearance' },
+          { title: 'Invite a Friend', path: '/account/invite-a-friend' },
+          { title: 'Activity', path: '/account/activity' },
+        ],
+      },
+    ],
+  },
+  {
+    title: 'Network',
+    icon: Users,
+    children: [
+      { title: 'Get Started', path: '/network/get-started' },
+      {
+        title: 'User Cards',
+        children: [
+          { title: 'Mini Cards', path: '/network/user-cards/mini-cards' },
+          { title: 'Team Crew', path: '/network/user-cards/team-crew' },
+          { title: 'Author', path: '/network/user-cards/author' },
+          { title: 'NFT', path: '/network/user-cards/nft' },
+          { title: 'Social', path: '/network/user-cards/social' },
+        ],
+      },
+      {
+        title: 'User Table',
+        children: [
+          { title: 'Team Crew', path: '/network/user-table/team-crew' },
+          { title: 'App Roster', path: '/network/user-table/app-roster' },
+          {
+            title: 'Market Authors',
+            path: '/network/user-table/market-authors',
+          },
+          { title: 'SaaS Users', path: '/network/user-table/saas-users' },
+          { title: 'Store Clients', path: '/network/user-table/store-clients' },
+          { title: 'Visitors', path: '/network/user-table/visitors' },
+        ],
+      },
+      { title: 'Cooperations', path: '/network/cooperations', disabled: true },
+      { title: 'Leads', path: '/network/leads', disabled: true },
+      { title: 'Donators', path: '/network/donators', disabled: true },
+    ],
+  },
+  {
+    title: 'Store - Client',
+    icon: ShoppingCart,
+    children: [
+      { title: 'Home', path: '/store-client/home' },
+      {
+        title: 'Search Results - Grid',
+        path: '/store-client/search-results-grid',
+      },
+      {
+        title: 'Search Results - List',
+        path: '/store-client/search-results-list',
+      },
+      { title: 'Product Details', path: '/store-client/product-details' },
+      { title: 'Wishlist', path: '/store-client/wishlist' },
+      {
+        title: 'Checkout',
+        children: [
+          {
+            title: 'Order Summary',
+            path: '/store-client/checkout/order-summary',
+          },
+          {
+            title: 'Shipping Info',
+            path: '/store-client/checkout/shipping-info',
+          },
+          {
+            title: 'Payment Method',
+            path: '/store-client/checkout/payment-method',
+          },
+          {
+            title: 'Order Placed',
+            path: '/store-client/checkout/order-placed',
+          },
+        ],
+      },
+      { title: 'My Orders', path: '/store-client/my-orders' },
+      { title: 'Order Receipt', path: '/store-client/order-receipt' },
+    ],
+  },
+  {
+    title: 'User Management',
+    icon: ShieldUser,
+    children: [
+      {
+        title: 'Users',
+        path: '/user-management/users',
+      },
+      {
+        title: 'Roles',
+        path: '/user-management/roles',
+      },
+      // Permissions/Account/Logs/Settings entries removed in sprint-2/06 —
+      // Metronic demo residue, the routes never existed (404 on click).
+    ],
+  },
+  {
+    title: 'Omnichannel',
+    icon: MessageSquare,
+    children: [
+      {
+        title: 'Inbox',
+        path: '/omnichannel/inbox',
+      },
+      {
+        title: 'Channels',
+        path: '/omnichannel/settings/channels',
+      },
+      {
+        title: 'Workspaces',
+        path: '/omnichannel/settings/workspaces',
+      },
+    ],
+  },
+  {
+    title: 'Authentication',
+    icon: Shield,
+    children: [
+      {
+        title: 'Sign In',
+        path: '/signin',
+      },
+      {
+        title: 'Check Email',
+        path: '/signup',
+      },
+      {
+        title: 'Reset Password',
+        path: '/reset-password',
+      },
+      {
+        title: '2FA',
+        path: '/2fa',
+      },
+      { title: 'Welcome Message', path: '/auth/welcome-message' },
+      { title: 'Account Deactivated', path: '/auth/account-deactivated' },
+      { title: 'Error 404', path: '/error/404' },
+      { title: 'Error 500', path: '/error/500' },
+    ],
+  },
+];
+
+export const MENU_MEGA: MenuConfig = [
+  { title: 'Home', path: '/' },
+  {
+    title: 'Profiles',
+    children: [
+      {
+        title: 'Profiles',
+        children: [
+          {
+            children: [
+              {
+                title: 'Default',
+                icon: Badge,
+                path: '/public-profile/profiles/default',
+              },
+              {
+                title: 'Creator',
+                icon: Coffee,
+                path: '/public-profile/profiles/creator',
+              },
+              {
+                title: 'Company',
+                icon: Building,
+                path: '/public-profile/profiles/company',
+              },
+              {
+                title: 'NFT',
+                icon: Bitcoin,
+                path: '/public-profile/profiles/nft',
+              },
+              {
+                title: 'Blogger',
+                icon: MessageSquare,
+                path: '/public-profile/profiles/blogger',
+              },
+              {
+                title: 'CRM',
+                icon: Monitor,
+                path: '/public-profile/profiles/crm',
+              },
+              {
+                title: 'Gamer',
+                icon: Ghost,
+                path: '/public-profile/profiles/gamer',
+              },
+            ],
+          },
+          {
+            children: [
+              {
+                title: 'Feeds',
+                icon: Book,
+                path: '/public-profile/profiles/feeds',
+              },
+              {
+                title: 'Plain',
+                icon: File,
+                path: '/public-profile/profiles/plain',
+              },
+              {
+                title: 'Modal',
+                icon: SquareMousePointer,
+                path: '/public-profile/profiles/modal',
+              },
+              {
+                title: 'Freelancer',
+                icon: Briefcase,
+                path: '#',
+                disabled: true,
+              },
+              { title: 'Developer', icon: Code, path: '#', disabled: true },
+              { title: 'Team', icon: Users, path: '#', disabled: true },
+              {
+                title: 'Events',
+                icon: CalendarCheck,
+                path: '#',
+                disabled: true,
+              },
+            ],
+          },
+        ],
+      },
+      {
+        title: 'Other Pages',
+        children: [
+          {
+            children: [
+              {
+                title: 'Projects - 3 Cols',
+                icon: Layout,
+                path: '/public-profile/projects/3-columns',
+              },
+              {
+                title: 'Projects - 2 Cols',
+                icon: Grid,
+                path: '/public-profile/projects/2-columns',
+              },
+              { title: 'Works', icon: WorkIcon, path: '/public-profile/works' },
+              {
+                title: 'Teams',
+                icon: PeopleIcon,
+                path: '/public-profile/teams',
+              },
+              {
+                title: 'Network',
+                icon: Network,
+                path: '/public-profile/network',
+              },
+              {
+                title: 'Activity',
+                icon: TrendingUp,
+                path: '/public-profile/activity',
+              },
+              {
+                title: 'Campaigns - Card',
+                icon: LayoutGrid,
+                path: '/public-profile/campaigns/card',
+              },
+            ],
+          },
+          {
+            children: [
+              {
+                title: 'Campaigns - List',
+                icon: Kanban,
+                path: '/public-profile/campaigns/list',
+              },
+              { title: 'Empty', icon: FileText, path: '/public-profile/empty' },
+              {
+                title: 'Documents',
+                icon: DocumentIcon,
+                path: '#',
+                disabled: true,
+              },
+              { title: 'Badges', icon: Award, path: '#', disabled: true },
+              { title: 'Awards', icon: Gift, path: '#', disabled: true },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    title: 'My Account',
+    children: [
+      {
+        title: 'General Pages',
+        children: [
+          { title: 'Integrations', icon: Plug, path: '/account/integrations' },
+          {
+            title: 'Notifications',
+            icon: Bell,
+            path: '/account/notifications',
+          },
+          { title: 'API Keys', icon: Key, path: '/account/api-keys' },
+          { title: 'Appearance', icon: Eye, path: '/account/appearance' },
+          {
+            title: 'Invite a Friend',
+            icon: UserCheck,
+            path: '/account/invite-a-friend',
+          },
+          { title: 'Activity', icon: LifeBuoy, path: '/account/activity' },
+          { title: 'Brand', icon: CheckCircle, disabled: true },
+          { title: 'Get Paid', icon: Euro, disabled: true },
+        ],
+      },
+      {
+        title: 'Other pages',
+        children: [
+          {
+            title: 'Account Home',
+            children: [
+              { title: 'Get Started', path: '/account/home/get-started' },
+              { title: 'User Profile', path: '/account/home/user-profile' },
+              {
+                title: 'Company Profile',
+                path: '/account/home/company-profile',
+              },
+              { title: 'With Sidebar', path: '/account/home/settings-sidebar' },
+              {
+                title: 'Enterprise',
+                path: '/account/home/settings-enterprise',
+              },
+              { title: 'Plain', path: '/account/home/settings-plain' },
+              { title: 'Modal', path: '/account/home/settings-modal' },
+            ],
+          },
+          {
+            title: 'Billing',
+            children: [
+              { title: 'Basic Billing', path: '/account/billing/basic' },
+              { title: 'Enterprise', path: '/account/billing/enterprise' },
+              { title: 'Plans', path: '/account/billing/plans' },
+              { title: 'Billing History', path: '/account/billing/history' },
+              { title: 'Tax Info', disabled: true },
+              { title: 'Invoices', disabled: true },
+              { title: 'Gateaways', disabled: true },
+            ],
+          },
+          {
+            title: 'Security',
+            children: [
+              { title: 'Get Started', path: '/account/security/get-started' },
+              {
+                title: 'Security Overview',
+                path: '/account/security/overview',
+              },
+              {
+                title: 'IP Addresses',
+                path: '/account/security/allowed-ip-addresses',
+              },
+              {
+                title: 'Privacy Settings',
+                path: '/account/security/privacy-settings',
+              },
+              {
+                title: 'Device Management',
+                path: '/account/security/device-management',
+              },
+              {
+                title: 'Backup & Recovery',
+                path: '/account/security/backup-and-recovery',
+              },
+              {
+                title: 'Current Sessions',
+                path: '/account/security/current-sessions',
+              },
+              { title: 'Security Log', path: '/account/security/security-log' },
+            ],
+          },
+          {
+            title: 'Members & Roles',
+            children: [
+              { title: 'Teams Starter', path: '/account/members/team-starter' },
+              { title: 'Teams', path: '/account/members/teams' },
+              { title: 'Team Info', path: '/account/members/team-info' },
+              {
+                title: 'Members Starter',
+                path: '/account/members/members-starter',
+              },
+              { title: 'Team Members', path: '/account/members/team-members' },
+              {
+                title: 'Import Members',
+                path: '/account/members/import-members',
+              },
+              { title: 'Roles', path: '/account/members/roles' },
+              {
+                title: 'Permissions - Toggler',
+                path: '/account/members/permissions-toggle',
+              },
+              {
+                title: 'Permissions - Check',
+                path: '/account/members/permissions-check',
+              },
+            ],
+          },
+          {
+            title: 'Other Pages',
+            children: [
+              { title: 'Integrations', path: '/account/integrations' },
+              { title: 'Notifications', path: '/account/notifications' },
+              { title: 'API Keys', path: '/account/api-keys' },
+              { title: 'Appearance', path: '/account/appearance' },
+              { title: 'Invite a Friend', path: '/account/invite-a-friend' },
+              { title: 'Activity', path: '/account/activity' },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    title: 'Network',
+    children: [
+      {
+        title: 'General Pages',
+        children: [
+          { title: 'Get Started', icon: Flag, path: '/network/get-started' },
+          { title: 'Colleagues', icon: Users, path: '#', disabled: true },
+          { title: 'Donators', icon: Heart, path: '#', disabled: true },
+          { title: 'Leads', icon: Zap, path: '#', disabled: true },
+        ],
+      },
+      {
+        title: 'Other pages',
+        children: [
+          {
+            title: 'User Cards',
+            children: [
+              { title: 'Mini Cards', path: '/network/user-cards/mini-cards' },
+              { title: 'Team Members', path: '/network/user-cards/team-crew' },
+              { title: 'Authors', path: '/network/user-cards/author' },
+              { title: 'NFT Users', path: '/network/user-cards/nft' },
+              { title: 'Social Users', path: '/network/user-cards/social' },
+              { title: 'Gamers', path: '#', disabled: true },
+            ],
+          },
+          {
+            title: 'User Base',
+            badge: 'Datatables',
+            children: [
+              { title: 'Team Crew', path: '/network/user-table/team-crew' },
+              { title: 'App Roster', path: '/network/user-table/app-roster' },
+              {
+                title: 'Market Authors',
+                path: '/network/user-table/market-authors',
+              },
+              { title: 'SaaS Users', path: '/network/user-table/saas-users' },
+              {
+                title: 'Store Clients',
+                path: '/network/user-table/store-clients',
+              },
+              { title: 'Visitors', path: '/network/user-table/visitors' },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    title: 'Apps',
+    children: [
+      {
+        title: 'Store - Client',
+        children: [
+          {
+            children: [
+              { title: 'Home', path: '/store-client/home' },
+              {
+                title: 'Search Results - Grid',
+                path: '/store-client/search-results-grid',
+              },
+              {
+                title: 'Search Results - List',
+                path: '/store-client/search-results-list',
+              },
+              {
+                title: 'Product Details',
+                path: '/store-client/product-details',
+              },
+              { title: 'Wishlist', path: '/store-client/wishlist' },
+              { title: 'My Orders', path: '/store-client/my-orders' },
+            ],
+          },
+          {
+            children: [
+              {
+                title: 'Checkout - Order Summary',
+                path: '/store-client/checkout/order-summary',
+              },
+              {
+                title: 'Checkout - Shipping Info',
+                path: '/store-client/checkout/shipping-info',
+              },
+              {
+                title: 'Checkout - Payment Method',
+                path: '/store-client/checkout/payment-method',
+              },
+              {
+                title: 'Checkout - Order Placed',
+                path: '/store-client/checkout/order-placed',
+              },
+              { title: 'Order Receipt', path: '/store-client/order-receipt' },
+            ],
+          },
+        ],
+      },
+      {
+        title: 'User Management',
+        children: [
+          {
+            children: [
+              {
+                title: 'Users',
+                path: '/user-management/users',
+                permission: 'users.read',
+              },
+              {
+                title: 'Roles',
+                path: '/user-management/roles',
+                permission: 'roles.read',
+              },
+              // Permissions/Account/Logs/Settings entries removed in
+              // sprint-2/06 — Metronic demo residue, routes never existed.
+            ],
+          },
+        ],
+      },
+    ],
+  },
+];
+
+export const MENU_MEGA_MOBILE: MenuConfig = [
+  { title: 'Home', path: '/' },
+  {
+    title: 'Profiles',
+    children: [
+      {
+        title: 'Profiles',
+        children: [
+          {
+            title: 'Default',
+            icon: Badge,
+            path: '/public-profile/profiles/default',
+          },
+          {
+            title: 'Creator',
+            icon: Coffee,
+            path: '/public-profile/profiles/creator',
+          },
+          {
+            title: 'Company',
+            icon: Building,
+            path: '/public-profile/profiles/company',
+          },
+          { title: 'NFT', icon: Bitcoin, path: '/public-profile/profiles/nft' },
+          {
+            title: 'Blogger',
+            icon: MessageSquare,
+            path: '/public-profile/profiles/blogger',
+          },
+          { title: 'CRM', icon: Monitor, path: '/public-profile/profiles/crm' },
+          {
+            title: 'Gamer',
+            icon: Ghost,
+            path: '/public-profile/profiles/gamer',
+          },
+          {
+            title: 'Feeds',
+            icon: Book,
+            path: '/public-profile/profiles/feeds',
+          },
+          {
+            title: 'Plain',
+            icon: File,
+            path: '/public-profile/profiles/plain',
+          },
+          {
+            title: 'Modal',
+            icon: SquareMousePointer,
+            path: '/public-profile/profiles/modal',
+          },
+          { title: 'Freelancer', icon: Briefcase, path: '#', disabled: true },
+          { title: 'Developer', icon: Code, path: '#', disabled: true },
+          { title: 'Team', icon: Users, path: '#', disabled: true },
+          { title: 'Events', icon: CalendarCheck, path: '#', disabled: true },
+        ],
+      },
+      {
+        title: 'Other Pages',
+        children: [
+          {
+            title: 'Projects - 3 Cols',
+            icon: Layout,
+            path: '/public-profile/projects/3-columns',
+          },
+          {
+            title: 'Projects - 2 Cols',
+            icon: Grid,
+            path: '/public-profile/projects/2-columns',
+          },
+          { title: 'Works', icon: WorkIcon, path: '/public-profile/works' },
+          { title: 'Teams', icon: PeopleIcon, path: '/public-profile/teams' },
+          { title: 'Network', icon: Network, path: '/public-profile/network' },
+          {
+            title: 'Activity',
+            icon: TrendingUp,
+            path: '/public-profile/activity',
+          },
+          {
+            title: 'Campaigns - Card',
+            icon: LayoutGrid,
+            path: '/public-profile/campaigns/card',
+          },
+          {
+            title: 'Campaigns - List',
+            icon: Kanban,
+            path: '/public-profile/campaigns/list',
+          },
+          { title: 'Empty', icon: FileText, path: '/public-profile/empty' },
+          { title: 'Documents', icon: DocumentIcon, path: '#', disabled: true },
+          { title: 'Badges', icon: Award, path: '#', disabled: true },
+          { title: 'Awards', icon: Gift, path: '#', disabled: true },
+        ],
+      },
+    ],
+  },
+  {
+    title: 'My Account',
+    children: [
+      {
+        title: 'General Pages',
+        children: [
+          { title: 'Integrations', icon: Plug, path: '/account/integrations' },
+          {
+            title: 'Notifications',
+            icon: Bell,
+            path: '/account/notifications',
+          },
+          { title: 'API Keys', icon: Key, path: '/account/api-keys' },
+          { title: 'Appearance', icon: Eye, path: '/account/appearance' },
+          {
+            title: 'Invite a Friend',
+            icon: UserCheck,
+            path: '/account/invite-a-friend',
+          },
+          { title: 'Activity', icon: LifeBuoy, path: '/account/activity' },
+          { title: 'Brand', icon: CheckCircle, disabled: true },
+          { title: 'Get Paid', icon: Euro, disabled: true },
+        ],
+      },
+      {
+        title: 'Other pages',
+        children: [
+          {
+            title: 'Account Home',
+            children: [
+              { title: 'Get Started', path: '/account/home/get-started' },
+              { title: 'User Profile', path: '/account/home/user-profile' },
+              {
+                title: 'Company Profile',
+                path: '/account/home/company-profile',
+              },
+              { title: 'With Sidebar', path: '/account/home/settings-sidebar' },
+              {
+                title: 'Enterprise',
+                path: '/account/home/settings-enterprise',
+              },
+              { title: 'Plain', path: '/account/home/settings-plain' },
+              { title: 'Modal', path: '/account/home/settings-modal' },
+            ],
+          },
+          {
+            title: 'Billing',
+            children: [
+              { title: 'Basic Billing', path: '/account/billing/basic' },
+              { title: 'Enterprise', path: '/account/billing/enterprise' },
+              { title: 'Plans', path: '/account/billing/plans' },
+              { title: 'Billing History', path: '/account/billing/history' },
+              { title: 'Tax Info', disabled: true },
+              { title: 'Invoices', disabled: true },
+              { title: 'Gateaways', disabled: true },
+            ],
+          },
+          {
+            title: 'Security',
+            children: [
+              { title: 'Get Started', path: '/account/security/get-started' },
+              {
+                title: 'Security Overview',
+                path: '/account/security/overview',
+              },
+              {
+                title: 'IP Addresses',
+                path: '/account/security/allowed-ip-addresses',
+              },
+              {
+                title: 'Privacy Settings',
+                path: '/account/security/privacy-settings',
+              },
+              {
+                title: 'Device Management',
+                path: '/account/security/device-management',
+              },
+              {
+                title: 'Backup & Recovery',
+                path: '/account/security/backup-and-recovery',
+              },
+              {
+                title: 'Current Sessions',
+                path: '/account/security/current-sessions',
+              },
+              { title: 'Security Log', path: '/account/security/security-log' },
+            ],
+          },
+          {
+            title: 'Members & Roles',
+            children: [
+              { title: 'Teams Starter', path: '/account/members/team-starter' },
+              { title: 'Teams', path: '/account/members/teams' },
+              { title: 'Team Info', path: '/account/members/team-info' },
+              {
+                title: 'Members Starter',
+                path: '/account/members/members-starter',
+              },
+              { title: 'Team Members', path: '/account/members/team-members' },
+              {
+                title: 'Import Members',
+                path: '/account/members/import-members',
+              },
+              { title: 'Roles', path: '/account/members/roles' },
+              {
+                title: 'Permissions - Toggler',
+                path: '/account/members/permissions-toggle',
+              },
+              {
+                title: 'Permissions - Check',
+                path: '/account/members/permissions-check',
+              },
+            ],
+          },
+          {
+            title: 'Other Pages',
+            children: [
+              { title: 'Integrations', path: '/account/integrations' },
+              { title: 'Notifications', path: '/account/notifications' },
+              { title: 'API Keys', path: '/account/api-keys' },
+              { title: 'Appearance', path: '/account/appearance' },
+              { title: 'Invite a Friend', path: '/account/invite-a-friend' },
+              { title: 'Activity', path: '/account/activity' },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    title: 'Network',
+    children: [
+      {
+        title: 'General Pages',
+        children: [
+          { title: 'Get Started', icon: Flag, path: '/network/get-started' },
+          { title: 'Colleagues', icon: Users, path: '#', disabled: true },
+          { title: 'Donators', icon: Heart, path: '#', disabled: true },
+          { title: 'Leads', icon: Zap, path: '#', disabled: true },
+        ],
+      },
+      {
+        title: 'Other pages',
+        children: [
+          {
+            title: 'User Cards',
+            children: [
+              { title: 'Mini Cards', path: '/network/user-cards/mini-cards' },
+              { title: 'Team Members', path: '/network/user-cards/team-crew' },
+              { title: 'Authors', path: '/network/user-cards/author' },
+              { title: 'NFT Users', path: '/network/user-cards/nft' },
+              { title: 'Social Users', path: '/network/user-cards/social' },
+              { title: 'Gamers', path: '#', disabled: true },
+            ],
+          },
+          {
+            title: 'User Base',
+            badge: 'Datatables',
+            children: [
+              { title: 'Team Crew', path: '/network/user-table/team-crew' },
+              { title: 'App Roster', path: '/network/user-table/app-roster' },
+              {
+                title: 'Market Authors',
+                path: '/network/user-table/market-authors',
+              },
+              { title: 'SaaS Users', path: '/network/user-table/saas-users' },
+              {
+                title: 'Store Clients',
+                path: '/network/user-table/store-clients',
+              },
+              { title: 'Visitors', path: '/network/user-table/visitors' },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    title: 'User Management',
+    icon: Users,
+    children: [
+      {
+        title: 'Users',
+        path: '/user-management/users',
+        permission: 'users.read',
+      },
+      {
+        title: 'Roles',
+        path: '/user-management/roles',
+        permission: 'roles.read',
+      },
+      // Permissions/Account/Logs/Settings entries removed in sprint-2/06 —
+      // Metronic demo residue, the routes never existed (404 on click).
+    ],
+  },
+  {
+    title: 'Store - Client',
+    children: [
+      { title: 'Home', path: '/store-client/home' },
+      {
+        title: 'Search Results - Grid',
+        path: '/store-client/search-results-grid',
+      },
+      {
+        title: 'Search Results - List',
+        path: '/store-client/search-results-list',
+      },
+      { title: 'Product Details', path: '/store-client/product-details' },
+      { title: 'Wishlist', path: '/store-client/wishlist' },
+      {
+        title: 'Checkout',
+        children: [
+          {
+            title: 'Order Summary',
+            path: '/store-client/checkout/order-summary',
+          },
+          {
+            title: 'Shipping Info',
+            path: '/store-client/checkout/shipping-info',
+          },
+          {
+            title: 'Payment Method',
+            path: '/store-client/checkout/payment-method',
+          },
+          {
+            title: 'Order Placed',
+            path: '/store-client/checkout/order-placed',
+          },
+        ],
+      },
+      { title: 'My Orders', path: '/store-client/my-orders' },
+      { title: 'Order Receipt', path: '/store-client/order-receipt' },
+    ],
+  },
+];
+
+export const MENU_HELP: MenuConfig = [
+  {
+    title: 'Getting Started',
+    icon: Coffee,
+    path: 'https://keenthemes.com/metronic/tailwind/docs/getting-started/installation',
+  },
+  {
+    title: 'Support Forum',
+    icon: AlertCircle,
+    children: [
+      {
+        title: 'All Questions',
+        icon: FileQuestion,
+        path: 'https://devs.keenthemes.com',
+      },
+      {
+        title: 'Popular Questions',
+        icon: Star,
+        path: 'https://devs.keenthemes.com/popular',
+      },
+      {
+        title: 'Ask Question',
+        icon: HelpCircle,
+        path: 'https://devs.keenthemes.com/question/create',
+      },
+    ],
+  },
+  {
+    title: 'Licenses & FAQ',
+    icon: Captions,
+    path: 'https://keenthemes.com/metronic/tailwind/docs/getting-started/license',
+  },
+  {
+    title: 'Documentation',
+    icon: FileQuestion,
+    path: 'https://keenthemes.com/metronic/tailwind/docs',
+  },
+  { separator: true },
+  { title: 'Contact Us', icon: Share2, path: 'https://keenthemes.com/contact' },
+];
+
+export const MENU_ROOT: MenuConfig = [
+  {
+    title: 'Public Profile',
+    icon: UserCircle,
+    rootPath: '/public-profile/',
+    path: '/public-profile/profiles/default',
+    childrenIndex: 2,
+  },
+  {
+    title: 'Account',
+    icon: Settings,
+    rootPath: '/account/',
+    path: '/',
+    childrenIndex: 3,
+  },
+  {
+    title: 'Network',
+    icon: Users,
+    rootPath: '/network/',
+    path: '/network/get-started',
+    childrenIndex: 4,
+  },
+  {
+    title: 'Authentication',
+    icon: Shield,
+    rootPath: '/authentication/',
+    path: '/authentication/get-started',
+    childrenIndex: 5,
+  },
+  {
+    title: 'Store - Client',
+    icon: ShoppingCart,
+    rootPath: '/store-client/',
+    path: '/store-client/home',
+    childrenIndex: 6,
+  },
+  {
+    title: 'User Management',
+    icon: ShieldUser,
+    rootPath: '/user-management/',
+    path: '/user-management/users',
+    childrenIndex: 7,
+  },
+];

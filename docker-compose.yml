@@ -1,0 +1,234 @@
+# Dreamz EMS — blue/green production compose.
+#
+# Active color tracked in .active_color (managed by scripts/blue_green_deploy.sh).
+# IMAGE_TAG = git SHA pushed by CI; the deploy script exports it before pull/up.
+# Public ports are owned by the HOST nginx; every container binds 127.0.0.1 only.
+#
+# Infra (db/redis/pgbackups) + the Celery workers/beat are NOT blue/green —
+# they are recreated in place each deploy. Only the API + frontend swap colors.
+#
+# Secrets (JWT_SECRET, FERNET_KEY, OMNICHANNEL_FERNET_KEY, POSTGRES_PASSWORD,
+# NEXTAUTH_SECRET, META_*, SMTP_*) come from a server-side .env file at the repo
+# root — see .env.example. No secret carries an inline default here.
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql://${POSTGRES_USER:-dreamz}:${POSTGRES_PASSWORD:?set in .env}@db:5432/${POSTGRES_DB:-dreamz_ems}
+  POSTGRES_ADMIN_URL: postgresql://${POSTGRES_USER:-dreamz}:${POSTGRES_PASSWORD:?set in .env}@db:5432/postgres
+  REDIS_URL: redis://redis:6379/0
+  CELERY_TASK_ALWAYS_EAGER: "false"          # prod runs the real workers below
+  JWT_SECRET: ${JWT_SECRET:?set in .env}
+  JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+  ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
+  FERNET_KEY: ${FERNET_KEY:?set in .env}
+  OMNICHANNEL_FERNET_KEY: ${OMNICHANNEL_FERNET_KEY:?set in .env}
+  API_HOST: 0.0.0.0
+  API_PORT: 8001
+  WORKERS: ${BACKEND_WORKERS:-4}
+  ENVIRONMENT: production
+  DEBUG: "false"
+  # Behind Caddy (sets X-Forwarded-*). Real client IP for the auth throttle +
+  # correct scheme/host for generated links & secure cookies.
+  TRUST_PROXY_HEADERS: "true"
+  FORWARDED_ALLOW_IPS: "*"
+  FRONTEND_URL: ${FRONTEND_URL:?set in .env}
+  CORS_ORIGINS: ${CORS_ORIGINS:?set in .env}
+  # External backend base INCLUDING the /be path prefix — backend self-built
+  # absolute URLs (avatars, branding assets/theme, media, share links) use it.
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set in .env}
+  # Meta WhatsApp (omnichannel) — empty = simulated/dev-safe
+  META_APP_ID: ${META_APP_ID:-}
+  META_APP_SECRET: ${META_APP_SECRET:-}
+  META_ES_CONFIG_ID: ${META_ES_CONFIG_ID:-}
+  META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v19.0}
+  META_WEBHOOK_VERIFY_TOKEN: ${META_WEBHOOK_VERIFY_TOKEN:-}
+  # Platform-default SMTP (seeded into the platform tenant connection)
+  PLATFORM_SMTP_HOST: ${PLATFORM_SMTP_HOST:-}
+  PLATFORM_SMTP_PORT: ${PLATFORM_SMTP_PORT:-587}
+  PLATFORM_SMTP_SECURITY: ${PLATFORM_SMTP_SECURITY:-starttls}
+  PLATFORM_SMTP_USERNAME: ${PLATFORM_SMTP_USERNAME:-}
+  PLATFORM_SMTP_PASSWORD: ${PLATFORM_SMTP_PASSWORD:-}
+  PLATFORM_SMTP_FROM_EMAIL: ${PLATFORM_SMTP_FROM_EMAIL:-}
+  PLATFORM_SMTP_FROM_NAME: ${PLATFORM_SMTP_FROM_NAME:-Dreamz EMS}
+
+x-backend-base: &backend-base
+  image: ${IMAGE_REPO:-jayson1004/dreamz-ems}:backend-${IMAGE_TAG:-latest}
+  build:
+    context: ./dreamz_ems_backend
+    dockerfile: Dockerfile
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_started
+  restart: unless-stopped
+  # NOTE: the `backend` network alias is added ONLY on the API colors below, not
+  # here — otherwise the workers/beat would also answer to `backend:8001` and the
+  # frontend's BACKEND_API_URL could resolve to a process with no HTTP server.
+  networks:
+    - dreamz_network
+
+services:
+  # ---------------- Infra (NOT blue/green) ----------------
+  db:
+    image: postgres:16
+    container_name: dreamz_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dreamz}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-dreamz_ems}
+    command: >
+      postgres
+      -c max_connections=200
+      -c shared_buffers=512MB
+      -c log_min_duration_statement=500
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - dreamz_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dreamz}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - dreamz_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: dreamz_redis
+    command: redis-server --appendonly yes
+    volumes:
+      - dreamz_redis:/data
+    restart: unless-stopped
+    networks:
+      - dreamz_network
+
+  pgbackups:
+    image: prodrigestivill/postgres-backup-local
+    container_name: dreamz_pgbackups
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: ${POSTGRES_DB:-dreamz_ems}
+      POSTGRES_USER: ${POSTGRES_USER:-dreamz}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      SCHEDULE: "@daily"
+      BACKUP_KEEP_DAYS: 7
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - dreamz_network
+
+  # ---------------- Celery (NOT blue/green; recreated in place) ----------------
+  # Two distinct Celery apps share the backend image:
+  #   workflow_engine.worker → workflow tasks + beat schedule (run_due / prune)
+  #   omnichannel.worker     → inbound WhatsApp message processing
+  # ONE beat instance owns the workflow cron ticks.
+  worker_workflow:
+    <<: *backend-base
+    container_name: dreamz_worker_workflow
+    environment: *backend-env
+    command: ["celery", "-A", "app.workflow_engine.worker", "worker", "--loglevel", "info"]
+    healthcheck:
+      disable: true
+
+  worker_omni:
+    <<: *backend-base
+    container_name: dreamz_worker_omni
+    environment: *backend-env
+    command: ["celery", "-A", "modules.omnichannel.worker", "worker", "--loglevel", "info"]
+    healthcheck:
+      disable: true
+
+  beat:
+    <<: *backend-base
+    container_name: dreamz_beat
+    environment: *backend-env
+    command: ["celery", "-A", "app.workflow_engine.worker", "beat", "--loglevel", "info"]
+    healthcheck:
+      disable: true
+
+  # ---------------- Backend API blue/green ----------------
+  backend_blue:
+    <<: *backend-base
+    container_name: dreamz_backend_blue
+    profiles: ["blue"]
+    environment: *backend-env
+    networks:
+      dreamz_network:
+        aliases:
+          - backend
+    ports:
+      - "127.0.0.1:8000:8001"
+
+  backend_green:
+    <<: *backend-base
+    container_name: dreamz_backend_green
+    profiles: ["green"]
+    environment: *backend-env
+    networks:
+      dreamz_network:
+        aliases:
+          - backend
+    ports:
+      - "127.0.0.1:8010:8001"
+
+  # ---------------- Frontend blue/green ----------------
+  frontend_blue:
+    image: ${IMAGE_REPO:-jayson1004/dreamz-ems}:frontend-${IMAGE_TAG:-latest}
+    build:
+      context: ./dreamz_ems_frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_BACKEND_API_URL: ${NEXT_PUBLIC_BACKEND_API_URL:?set in .env}
+        NEXT_PUBLIC_META_APP_ID: ${NEXT_PUBLIC_META_APP_ID:-}
+        NEXT_PUBLIC_META_ES_CONFIG_ID: ${NEXT_PUBLIC_META_ES_CONFIG_ID:-}
+        NEXT_PUBLIC_META_GRAPH_VERSION: ${NEXT_PUBLIC_META_GRAPH_VERSION:-v19.0}
+    container_name: dreamz_frontend_blue
+    profiles: ["blue"]
+    environment: &frontend-env
+      NODE_ENV: production
+      PORT: 3001
+      HOSTNAME: 0.0.0.0
+      # Server-side (NextAuth authorize() + branding SSR) — internal cluster URL.
+      BACKEND_API_URL: http://backend:8001
+      NEXTAUTH_URL: ${NEXTAUTH_URL:?set in .env}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set in .env}
+    restart: unless-stopped
+    networks:
+      - dreamz_network
+    ports:
+      - "127.0.0.1:3001:3001"
+
+  frontend_green:
+    image: ${IMAGE_REPO:-jayson1004/dreamz-ems}:frontend-${IMAGE_TAG:-latest}
+    build:
+      context: ./dreamz_ems_frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_BACKEND_API_URL: ${NEXT_PUBLIC_BACKEND_API_URL:?set in .env}
+        NEXT_PUBLIC_META_APP_ID: ${NEXT_PUBLIC_META_APP_ID:-}
+        NEXT_PUBLIC_META_ES_CONFIG_ID: ${NEXT_PUBLIC_META_ES_CONFIG_ID:-}
+        NEXT_PUBLIC_META_GRAPH_VERSION: ${NEXT_PUBLIC_META_GRAPH_VERSION:-v19.0}
+    container_name: dreamz_frontend_green
+    profiles: ["green"]
+    environment: *frontend-env
+    restart: unless-stopped
+    networks:
+      - dreamz_network
+    ports:
+      - "127.0.0.1:3011:3001"
+
+volumes:
+  dreamz_pg:
+    driver: local
+  dreamz_redis:
+    driver: local
+
+networks:
+  dreamz_network:
+    driver: bridge

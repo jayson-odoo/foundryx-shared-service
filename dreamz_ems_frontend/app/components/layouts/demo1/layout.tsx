@@ -1,0 +1,72 @@
+'use client';
+
+import { ReactNode, useEffect } from 'react';
+import { useIsMobile } from '@/hooks/use-mobile';
+import { useSettings } from '@/providers/settings-provider';
+import { Footer } from './components/footer';
+import { Header } from './components/header';
+import { Sidebar } from './components/sidebar';
+
+export function Demo1Layout({ children }: { children: ReactNode }) {
+  const isMobile = useIsMobile();
+  const { settings, setOption } = useSettings();
+
+  useEffect(() => {
+    const bodyClass = document.body.classList;
+
+    if (settings.layouts.demo1.sidebarCollapse) {
+      bodyClass.add('sidebar-collapse');
+    } else {
+      bodyClass.remove('sidebar-collapse');
+    }
+  }, [settings]); // Runs only on settings update
+
+  useEffect(() => {
+    // Set current layout
+    setOption('layout', 'demo1');
+  }, [setOption]);
+
+  useEffect(() => {
+    const bodyClass = document.body.classList;
+
+    // Add a class to the body element
+    bodyClass.add('demo1');
+    bodyClass.add('sidebar-fixed');
+    bodyClass.add('header-fixed');
+
+    const timer = setTimeout(() => {
+      bodyClass.add('layout-initialized');
+    }, 1000); // 1000 milliseconds
+
+    // Remove the class when the component is unmounted
+    return () => {
+      bodyClass.remove('demo1');
+      bodyClass.remove('sidebar-fixed');
+      bodyClass.remove('sidebar-collapse');
+      bodyClass.remove('header-fixed');
+      bodyClass.remove('layout-initialized');
+      clearTimeout(timer);
+    };
+  }, []); // Runs only once on mount
+
+  return (
+    <>
+      {!isMobile && <Sidebar />}
+
+      {/* min-w-0: the wrapper is a flex item of the horizontal body flex —
+          without it, any page content with a wide min-content (tab strips,
+          toolbars) blows the whole layout past the viewport on mobile
+          instead of shrinking/scrolling within its own box (sprint-3/01
+          responsive sweep). */}
+      <div className="wrapper flex min-w-0 grow flex-col">
+        <Header />
+
+        <main className="grow pt-5" role="content">
+          {children}
+        </main>
+
+        <Footer />
+      </div>
+    </>
+  );
+}

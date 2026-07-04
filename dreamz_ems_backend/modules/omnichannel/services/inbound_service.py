@@ -1,0 +1,251 @@
+"""Inbound webhook processing (plan 05 §4): parse → idempotency → contact
+resolution/stitching → persist → CSW re-open → broadcast.
+
+Runs inside the Celery worker (the webhook endpoint only fast-ACKs + enqueues).
+All logic takes an explicit db session so tests drive it directly.
+"""
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional
+
+from sqlalchemy.orm import Session
+
+from ..adapters.whatsapp_cloud import get_adapter
+from ..models import Channel, Contact, ContactChannelIdentity, ConversationMessage
+from ..repositories.contact_repository import ContactRepository
+from .conversation_service import ConversationService
+from . import realtime, statuses
+
+logger = logging.getLogger(__name__)
+
+CSW_WINDOW = timedelta(hours=24)
+
+# Delivery receipts only ever move forward (a late DELIVERED after READ is
+# dropped); FAILED always applies.
+_STATUS_RANK = {"SENT": 0, "DELIVERED": 1, "READ": 2}
+
+
+class InboundService:
+    def __init__(self, db: Session):
+        self.db = db
+        self.repo = ContactRepository(db)
+        self.conversations = ConversationService(db)
+
+    def process_payload(self, channel_id: str, payload: Dict[str, Any]) -> Dict[str, int]:
+        """Process one raw webhook payload for a channel. Returns counters."""
+        channel = self.db.query(Channel).filter(Channel.id == channel_id).first()
+        if channel is None:
+            logger.warning("webhook for unknown channel %s dropped", channel_id)
+            return {"messages": 0, "statuses": 0, "skipped": 0}
+
+        # The webhook router is mounted public (no require_module gate) — re-apply
+        # the module-active check here so a tenant that uninstalled/deactivated
+        # omnichannel doesn't get resurrected inbox rows from late webhooks.
+        from app.repositories.module_repository import ModuleRepository
+
+        if not ModuleRepository(self.db).is_active(channel.tenant_id, "omnichannel"):
+            logger.info("webhook for inactive-module tenant %s dropped", channel.tenant_id)
+            return {"messages": 0, "statuses": 0, "skipped": 0}
+
+        adapter = get_adapter(channel.channel_type)
+        counters = {"messages": 0, "statuses": 0, "skipped": 0}
+        for event in adapter.parse_inbound(payload):
+            if event["kind"] == "message":
+                if self._handle_message(channel, event):
+                    counters["messages"] += 1
+                else:
+                    counters["skipped"] += 1
+            elif event["kind"] == "status":
+                if self._handle_status(channel, event):
+                    counters["statuses"] += 1
+                else:
+                    counters["skipped"] += 1
+            elif event["kind"] in ("template_status", "template_quality", "template_category"):
+                # Template review/quality/category webhooks (plan 07 T6). Safe +
+                # idempotent; never crashes the pipeline.
+                from .template_management_service import TemplateManagementService
+
+                if TemplateManagementService(self.db).apply_webhook_event(channel, event):
+                    counters["templates"] = counters.get("templates", 0) + 1
+                else:
+                    counters["skipped"] += 1
+        return counters
+
+    # ── Inbound messages ─────────────────────────────────────────────────────
+    def _handle_message(self, channel: Channel, event: Dict[str, Any]) -> bool:
+        external_id = event.get("external_message_id")
+        if not external_id or not event.get("from"):
+            return False
+        # Idempotency (§4.2.2): Meta retries webhooks — same wamid = skip.
+        if self.repo.get_message_by_external_id(external_id, channel.tenant_id):
+            return False
+
+        contact = self._resolve_contact(channel, event)
+
+        # Reply context → quoted metadata (mirrors the outbound shape).
+        metadata: Optional[Dict[str, Any]] = None
+        reply_ext = event.get("reply_to_external_id")
+        if reply_ext:
+            quoted = self.repo.get_message_by_external_id(reply_ext, channel.tenant_id)
+            if quoted is not None:
+                sender_name = None
+                if quoted.sender_id:
+                    names = self.conversations._user_names([quoted.sender_id])
+                    sender_name = names.get(quoted.sender_id)
+                metadata = {
+                    "reply_to": {
+                        "id": quoted.id,
+                        "body": quoted.body,
+                        "senderType": quoted.sender_type,
+                        "senderName": sender_name,
+                    }
+                }
+
+        # Media (§4.2.4): fetch via Graph + store. Dev/unconfigured → no URL,
+        # the body/caption still lands. (StorageService — B-6.)
+        media_url = None
+        if event.get("media_id"):
+            media_url = self._store_media(channel, event["media_id"])
+
+        now = datetime.now(timezone.utc)
+        row = ConversationMessage(
+            tenant_id=channel.tenant_id,
+            contact_id=contact.id,
+            channel_id=channel.id,
+            sender_type="CONTACT",
+            message_type=event.get("message_type") or "TEXT",
+            body=event.get("body"),
+            media_url=media_url,
+            external_message_id=external_id,
+            metadata_json=metadata,
+            # Explicit (µs precision) — the DB server_default is second-granular
+            # on SQLite, which scrambles ordering for rapid messages.
+            created_at=now,
+        )
+        self.db.add(row)
+
+        # Re-open + CSW reset (§4.2.6): any inbound restarts the 24h window.
+        contact.status_id = statuses.status_id_for(
+            self.db, channel.tenant_id, "THREAD", "OPEN"
+        )
+        contact.csw_expires_at = now + CSW_WINDOW
+        contact.last_incoming_message_at = now
+        contact.last_message_at = now
+        self.db.commit()
+        self.db.refresh(row)
+
+        item = self.conversations.message_items([row])[0]
+        thread = self.conversations.thread_item(contact)
+        realtime.publish(
+            contact.workspace_id,
+            {
+                "type": "message.created",
+                "message": item.model_dump(mode="json"),
+                "thread": thread.model_dump(mode="json"),
+            },
+        )
+        return True
+
+    def _resolve_contact(self, channel: Channel, event: Dict[str, Any]) -> Contact:
+        """Contact resolution & stitching (§4): identity → phone stitch → create."""
+        wa_id = event["from"]
+        identity = self.repo.find_identity(channel.id, wa_id)
+        if identity is not None:
+            contact = self.repo.get_by_id(identity.contact_id, channel.tenant_id)
+            if contact is not None:
+                # Profile names drift — keep the identity fresh.
+                if event.get("profile_name") and identity.profile_name != event["profile_name"]:
+                    identity.profile_name = event["profile_name"]
+                return contact
+
+        digits = "".join(ch for ch in wa_id if ch.isdigit())
+        contact = self.repo.find_by_phone_in_workspace(
+            digits, channel.workspace_id, channel.tenant_id
+        )
+        if contact is None:
+            profile_name = event.get("profile_name") or ""
+            first, _, last = profile_name.partition(" ")
+            contact = Contact(
+                tenant_id=channel.tenant_id,
+                workspace_id=channel.workspace_id,
+                first_name=first or None,
+                last_name=last or None,
+                phone=f"+{digits}",
+                status_id=statuses.status_id_for(self.db, channel.tenant_id, "THREAD", "OPEN"),
+                priority="MEDIUM",
+            )
+            self.db.add(contact)
+            self.db.flush()
+
+        self.db.add(
+            ContactChannelIdentity(
+                tenant_id=channel.tenant_id,
+                contact_id=contact.id,
+                channel_id=channel.id,
+                external_user_id=wa_id,
+                profile_name=event.get("profile_name"),
+            )
+        )
+        self.db.flush()
+        return contact
+
+    def _store_media(self, channel: Channel, media_id: str) -> Optional[str]:
+        from app.services.storage import storage_for_tenant
+
+        from ..security import decrypt_credentials
+
+        adapter = get_adapter(channel.channel_type)
+        try:
+            credentials = decrypt_credentials(channel.credentials_json)
+        except Exception:  # noqa: BLE001 — bad/dev credentials: skip media, keep the message
+            return None
+        blob = adapter.fetch_media(credentials, media_id)
+        if not blob:
+            return None
+        # Connection-driven storage (plan 06 D1): the tenant's CDN-backed
+        # bucket when connected, the local media route otherwise. Best-effort:
+        # a storage hiccup (bad bucket creds, network) must not fail the
+        # Celery task and drop the MESSAGE — media-less beats lost (review
+        # finding; the old local-disk path could effectively never raise).
+        try:
+            return storage_for_tenant(self.db, channel.tenant_id).put(
+                f"omnichannel/{channel.tenant_id}/{media_id}", blob["content"], blob["mime_type"]
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("media store failed for channel %s media %s", channel.id, media_id)
+            return None
+
+    # ── Delivery receipts ────────────────────────────────────────────────────
+    def _handle_status(self, channel: Channel, event: Dict[str, Any]) -> bool:
+        external_id = event.get("external_message_id")
+        new_status = event.get("status")
+        if not external_id or new_status not in ("SENT", "DELIVERED", "READ", "FAILED"):
+            return False
+        msg = self.repo.get_message_by_external_id(external_id, channel.tenant_id)
+        if msg is None:
+            return False
+
+        if new_status == "FAILED":
+            msg.delivery_status = "FAILED"
+            msg.error_code = event.get("error_code")
+            msg.error_message = event.get("error_message")
+        else:
+            current = _STATUS_RANK.get(msg.delivery_status or "SENT", 0)
+            if _STATUS_RANK[new_status] <= current and msg.delivery_status:
+                return False  # receipts only move forward
+            msg.delivery_status = new_status
+        self.db.commit()
+
+        contact = self.repo.get_by_id(msg.contact_id, channel.tenant_id)
+        if contact is not None:
+            realtime.publish(
+                contact.workspace_id,
+                {
+                    "type": "message.status",
+                    "messageId": msg.id,
+                    "contactId": msg.contact_id,
+                    "deliveryStatus": msg.delivery_status,
+                    "errorMessage": msg.error_message,
+                },
+            )
+        return True

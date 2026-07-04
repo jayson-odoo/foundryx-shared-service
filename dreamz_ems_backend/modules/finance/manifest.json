@@ -1,0 +1,26 @@
+{
+  "module_name": "finance",
+  "version": "1.1.0",
+  "author": "Dreamz",
+  "title": "Finance",
+  "description": "Invoicing + billing. Unified invoices (bill-to Client or Profile) born with event registration; payments / sales orders / settlement extend it in the finance cluster.",
+  "icon": "receipt",
+  "required_core_version": ">=1.0.0",
+  "schema": "app_finance",
+  "alembic_version_table": "alembic_version_finance",
+  "requires": [],
+  "optional": [
+    { "name": "crm", "version": ">=1.0.0" },
+    { "name": "ems", "version": ">=2.0.0" }
+  ],
+  "provides": [
+    { "capability": "finance.create_invoice", "version": 1 },
+    { "capability": "invoice.resolve", "version": 1 },
+    { "capability": "finance.apply_payment_event", "version": 1 }
+  ],
+  "routers": [
+    { "name": "invoices", "prefix": "/finance/invoices" },
+    { "name": "settlements", "prefix": "/finance/settlements" }
+  ],
+  "permissions_csv": "permissions/permissions.csv"
+}

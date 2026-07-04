@@ -1,0 +1,8 @@
+Confirm your new email
+
+The change was approved from your current address. One step left: confirm that
+this mailbox is yours — this is the step that switches your account to it.
+
+{{ link }}
+
+This link expires soon and can be used once.

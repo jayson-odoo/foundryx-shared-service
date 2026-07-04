@@ -1,0 +1,9 @@
+resource,resource_label,action,action_label,description
+tenants,Tenant Management,read,View tenants,Can view tenant records
+tenants,Tenant Management,create,Create tenants,Can provision new tenants
+tenants,Tenant Management,update,Edit tenants,Can edit tenant details
+tenants,Tenant Management,suspend,Suspend tenants,Can suspend and reactivate tenants
+tenants,Tenant Management,archive,Archive tenants,Can archive tenants
+tenants,Tenant Management,manage_modules,Manage tenant modules,Can operate a tenant's app store
+tenants,Tenant Management,delete,Delete tenants,Can permanently delete archived tenants (irreversible)
+tenants,Tenant Management,manage_branding,Manage tenant branding,Can edit any tenant's branding from the console

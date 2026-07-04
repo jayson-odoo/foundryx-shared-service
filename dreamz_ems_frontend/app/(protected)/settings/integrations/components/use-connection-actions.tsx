@@ -1,0 +1,82 @@
+'use client';
+
+import { useMemo } from 'react';
+import { useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
+import { Pencil, PlugZap, Unplug } from 'lucide-react';
+import { toast } from 'sonner';
+import type { ResourceAction } from '@/components/platform/resource-list';
+import { integrationService } from '@/services/integration-service';
+import type { Connection } from '@/types/integration';
+import { connectionFormHref, integrationsListPath } from './paths';
+
+/**
+ * The Connection action registry — surfaced in the row "…" menu, the bulk
+ * toolbar, and the form "…" menu (plan 02 §3c). The wizard's ceremony lives
+ * on as Test here + the UNVERIFIED badge (plan 06 D6).
+ */
+export function useConnectionActions(): ResourceAction<Connection>[] {
+  const router = useRouter();
+  const pathname = usePathname();
+
+  return useMemo<ResourceAction<Connection>[]>(
+    () => [
+      {
+        id: 'edit',
+        label: 'Edit',
+        icon: Pencil,
+        permission: 'integrations.manage',
+        surfaces: { row: true },
+        run: ([connection], rt) => {
+          if (!connection) return;
+          router.push(
+            connectionFormHref(connection.id, { ctx: rt.ctx, index: rt.index, edit: true }),
+          );
+        },
+      },
+      {
+        id: 'test',
+        label: 'Test connection',
+        icon: PlugZap,
+        permission: 'integrations.manage',
+        surfaces: { row: true, form: true },
+        isVisible: (rows) => rows.length === 1,
+        run: async ([connection], rt) => {
+          if (!connection) return;
+          const result = await integrationService.test(connection.id);
+          if (result.ok) toast.success(result.message);
+          else toast.error(result.message);
+          rt.reload();
+        },
+      },
+      {
+        id: 'disconnect',
+        label: 'Disconnect',
+        icon: Unplug,
+        tone: 'destructive',
+        permission: 'integrations.manage',
+        surfaces: { row: true, bulk: true, form: true },
+        confirm: {
+          title: 'Disconnect this integration?',
+          description:
+            'The connection and its stored credentials will be removed. Features using it fall back to the platform default until you reconnect.',
+          confirmLabel: 'Disconnect',
+        },
+        run: async (rows, rt) => {
+          for (const row of rows) {
+            await integrationService.remove(row.id);
+          }
+          toast.success(
+            rows.length === 1
+              ? `${rows[0].name} disconnected.`
+              : `${rows.length} connections disconnected.`,
+          );
+          // From the form surface the record is gone — return to the list.
+          if (pathname !== integrationsListPath) router.push(integrationsListPath);
+          else rt.reload();
+        },
+      },
+    ],
+    [router, pathname],
+  );
+}

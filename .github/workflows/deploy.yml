@@ -1,0 +1,255 @@
+name: Build and Deploy Dreamz EMS
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  # Override IMAGE_REPO / RELEASE_TAG via repo Variables if your Docker Hub
+  # namespace differs. NEXT_PUBLIC_BACKEND_API_URL is a repo Variable (baked
+  # into the frontend image at build time — must be the PUBLIC api origin).
+  IMAGE_REPO: ${{ vars.IMAGE_REPO || 'jayson1004/dreamz-ems' }}
+  RELEASE_TAG: ${{ vars.RELEASE_TAG || '1.0.0' }}
+  # Valid throwaway Fernet keys so app.main imports cleanly in CI (NOT secrets).
+  CI_FERNET_KEY: MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=
+
+jobs:
+  validate-backend:
+    name: Validate backend (import + pytest collect)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build backend image (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./dreamz_ems_backend
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: dreamz-backend:ci
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+      - name: Smoke import app.main (loads core + all modules)
+        run: |
+          docker run --rm --entrypoint python \
+            -e DATABASE_URL=postgresql://x:x@localhost/x \
+            -e REDIS_URL=redis://localhost:6379/0 \
+            -e JWT_SECRET=ci-dummy-secret \
+            -e FERNET_KEY=$CI_FERNET_KEY \
+            -e OMNICHANNEL_FERNET_KEY=$CI_FERNET_KEY \
+            dreamz-backend:ci \
+            -c "from app.main import app; print('import ok')"
+      - name: Pytest collect-only (catches import errors in tests)
+        run: |
+          docker run --rm --entrypoint python \
+            -e DATABASE_URL=postgresql://x:x@localhost/x \
+            -e REDIS_URL=redis://localhost:6379/0 \
+            -e JWT_SECRET=ci-dummy-secret \
+            -e FERNET_KEY=$CI_FERNET_KEY \
+            -e OMNICHANNEL_FERNET_KEY=$CI_FERNET_KEY \
+            dreamz-backend:ci \
+            -m pytest --collect-only -q
+
+  validate-frontend:
+    name: Validate frontend (next build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build frontend image (no push) — runs `next build`
+        uses: docker/build-push-action@v5
+        with:
+          context: ./dreamz_ems_frontend
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: dreamz-frontend:ci
+          build-args: |
+            NEXT_PUBLIC_BACKEND_API_URL=${{ vars.NEXT_PUBLIC_BACKEND_API_URL || 'http://localhost:8001' }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+  build-and-deploy:
+    name: Build, push, deploy (blue/green)
+    needs: [validate-backend, validate-frontend]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./dreamz_ems_backend
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE_REPO }}:backend-${{ env.RELEASE_TAG }}
+            ${{ env.IMAGE_REPO }}:backend-${{ github.sha }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./dreamz_ems_frontend
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            NEXT_PUBLIC_BACKEND_API_URL=${{ vars.NEXT_PUBLIC_BACKEND_API_URL }}
+            NEXT_PUBLIC_META_APP_ID=${{ secrets.NEXT_PUBLIC_META_APP_ID }}
+            NEXT_PUBLIC_META_ES_CONFIG_ID=${{ secrets.NEXT_PUBLIC_META_ES_CONFIG_ID }}
+            NEXT_PUBLIC_META_GRAPH_VERSION=${{ vars.NEXT_PUBLIC_META_GRAPH_VERSION || 'v19.0' }}
+          tags: |
+            ${{ env.IMAGE_REPO }}:frontend-${{ env.RELEASE_TAG }}
+            ${{ env.IMAGE_REPO }}:frontend-${{ github.sha }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      # Native ssh/scp wrapped in retries — the server's SSH dial is
+      # intermittently flaky (i/o timeout), so each remote step auto-retries
+      # instead of failing the whole deploy. SSH opts skip host-key prompts
+      # (StrictHostKeyChecking=no) since runner IPs rotate.
+      - name: Configure SSH key
+        env:
+          DEPLOY_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Sync compose + deploy script, render .env (retry)
+        uses: nick-fields/retry@v3
+        env:
+          ENV_CONTENT: |
+            IMAGE_REPO=${{ env.IMAGE_REPO }}
+            POSTGRES_USER=${{ vars.POSTGRES_USER || 'dreamz' }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            POSTGRES_DB=${{ vars.POSTGRES_DB || 'dreamz_ems' }}
+            JWT_SECRET=${{ secrets.JWT_SECRET }}
+            JWT_ALGORITHM=${{ vars.JWT_ALGORITHM || 'HS256' }}
+            ACCESS_TOKEN_EXPIRE_MINUTES=${{ vars.ACCESS_TOKEN_EXPIRE_MINUTES || '1440' }}
+            FERNET_KEY=${{ secrets.FERNET_KEY }}
+            OMNICHANNEL_FERNET_KEY=${{ secrets.OMNICHANNEL_FERNET_KEY }}
+            BACKEND_WORKERS=${{ vars.BACKEND_WORKERS || '4' }}
+            TRUST_PROXY_HEADERS=true
+            FRONTEND_URL=${{ vars.FRONTEND_URL }}
+            CORS_ORIGINS=${{ vars.CORS_ORIGINS }}
+            NEXT_PUBLIC_BACKEND_API_URL=${{ vars.NEXT_PUBLIC_BACKEND_API_URL }}
+            PUBLIC_BASE_URL=${{ vars.NEXT_PUBLIC_BACKEND_API_URL }}
+            NEXTAUTH_URL=${{ vars.NEXTAUTH_URL }}
+            NEXTAUTH_SECRET=${{ secrets.NEXTAUTH_SECRET }}
+            META_APP_ID=${{ secrets.META_APP_ID }}
+            META_APP_SECRET=${{ secrets.META_APP_SECRET }}
+            META_ES_CONFIG_ID=${{ secrets.META_ES_CONFIG_ID }}
+            META_GRAPH_VERSION=${{ vars.META_GRAPH_VERSION || 'v19.0' }}
+            META_WEBHOOK_VERIFY_TOKEN=${{ secrets.META_WEBHOOK_VERIFY_TOKEN }}
+            NEXT_PUBLIC_META_APP_ID=${{ secrets.NEXT_PUBLIC_META_APP_ID }}
+            NEXT_PUBLIC_META_ES_CONFIG_ID=${{ secrets.NEXT_PUBLIC_META_ES_CONFIG_ID }}
+            NEXT_PUBLIC_META_GRAPH_VERSION=${{ vars.NEXT_PUBLIC_META_GRAPH_VERSION || 'v19.0' }}
+            PLATFORM_SMTP_HOST=${{ vars.PLATFORM_SMTP_HOST }}
+            PLATFORM_SMTP_PORT=${{ vars.PLATFORM_SMTP_PORT || '587' }}
+            PLATFORM_SMTP_SECURITY=${{ vars.PLATFORM_SMTP_SECURITY || 'starttls' }}
+            PLATFORM_SMTP_USERNAME=${{ secrets.PLATFORM_SMTP_USERNAME }}
+            PLATFORM_SMTP_PASSWORD=${{ secrets.PLATFORM_SMTP_PASSWORD }}
+            PLATFORM_SMTP_FROM_EMAIL=${{ vars.PLATFORM_SMTP_FROM_EMAIL }}
+            PLATFORM_SMTP_FROM_NAME=${{ vars.PLATFORM_SMTP_FROM_NAME || 'Dreamz EMS' }}
+        with:
+          timeout_minutes: 5
+          max_attempts: 6
+          retry_wait_seconds: 15
+          command: |
+            P="${{ vars.SSH_PORT || 22 }}"; H="${{ secrets.SSH_HOST }}"; U="${{ secrets.SSH_USER }}"; D="${{ secrets.DEPLOY_PATH }}"
+            O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20"
+            ssh $O -p "$P" "$U@$H" "mkdir -p $D/scripts"
+            scp $O -P "$P" scripts/blue_green_deploy.sh "$U@$H:$D/scripts/"
+            scp $O -P "$P" docker-compose.yml "$U@$H:$D/docker-compose.yml"
+            printf '%s' "$ENV_CONTENT" | ssh $O -p "$P" "$U@$H" "umask 077; cat > $D/.env"
+            echo ".env + files synced"
+
+      - name: Deploy blue/green via Caddy (retry)
+        uses: nick-fields/retry@v3
+        env:
+          APP_DOMAIN: ${{ vars.APP_DOMAIN }}
+          BACKEND_PATH: ${{ vars.BACKEND_PATH || '/be' }}
+          TLS_EMAIL: ${{ vars.TLS_EMAIL }}
+          CADDY_SITE_FILE: ${{ vars.CADDY_SITE_FILE || '/etc/caddy/dreamz.caddy' }}
+          CADDY_CONFIG: ${{ vars.CADDY_CONFIG || '/etc/caddy/Caddyfile' }}
+        with:
+          timeout_minutes: 20
+          max_attempts: 6
+          retry_wait_seconds: 20
+          command: |
+            P="${{ vars.SSH_PORT || 22 }}"; H="${{ secrets.SSH_HOST }}"; U="${{ secrets.SSH_USER }}"; D="${{ secrets.DEPLOY_PATH }}"
+            O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ServerAliveInterval=30"
+            ssh $O -p "$P" "$U@$H" "cd $D && chmod +x scripts/blue_green_deploy.sh && IMAGE_TAG='${{ github.sha }}' APP_DOMAIN='$APP_DOMAIN' BACKEND_PATH='$BACKEND_PATH' TLS_EMAIL='$TLS_EMAIL' CADDY_SITE_FILE='$CADDY_SITE_FILE' CADDY_CONFIG='$CADDY_CONFIG' ./scripts/blue_green_deploy.sh"
+
+      - name: Verify public endpoints (retry)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 3
+          max_attempts: 6
+          retry_wait_seconds: 15
+          command: |
+            P="${{ vars.SSH_PORT || 22 }}"; H="${{ secrets.SSH_HOST }}"; U="${{ secrets.SSH_USER }}"; D="${{ secrets.DEPLOY_PATH }}"
+            O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20"
+            ssh $O -p "$P" "$U@$H" "ACTIVE=\$(cat $D/.active_color 2>/dev/null || echo blue); if [ \"\$ACTIVE\" = blue ]; then BE=8000; FE=3001; else BE=8010; FE=3011; fi; echo \"active=\$ACTIVE be=\$BE fe=\$FE\"; curl -fsS -o /dev/null http://127.0.0.1:\$BE/health && curl -fsS -o /dev/null http://127.0.0.1:\$FE/ && echo endpoints OK"
+
+  notify-owner:
+    name: Notify owner by email
+    runs-on: ubuntu-latest
+    needs: [build-and-deploy]
+    if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    steps:
+      - name: Check SMTP configuration
+        id: smtp
+        env:
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+        run: |
+          if [ -n "$SMTP_SERVER" ] && [ -n "$SMTP_PORT" ] && [ -n "$SMTP_USERNAME" ] && [ -n "$SMTP_PASSWORD" ] && [ -n "$OWNER_EMAIL" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Compute notification content
+        id: notify
+        run: |
+          if [ "${{ needs.build-and-deploy.result }}" = "success" ]; then
+            echo "subject=✅ Dreamz EMS deploy succeeded (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
+          else
+            echo "subject=❌ Dreamz EMS deploy failed (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Send deployment email
+        if: steps.smtp.outputs.configured == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: ${{ steps.notify.outputs.subject }}
+          to: ${{ secrets.OWNER_EMAIL }}
+          from: Dreamz Deploy Bot <${{ secrets.SMTP_USERNAME }}>
+          body: |
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      - name: Warn when email secrets are missing
+        if: steps.smtp.outputs.configured != 'true'
+        run: |
+          echo "Email notify skipped: set SMTP_SERVER/PORT/USERNAME/PASSWORD + OWNER_EMAIL secrets."

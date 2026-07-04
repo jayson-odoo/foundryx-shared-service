@@ -1,0 +1,260 @@
+"""Integration core tests (plan 09) — provider catalog, connection CRUD,
+write-only credentials (encryption at rest), inline test + status upkeep,
+tenant scoping."""
+from app.integrations import get_provider
+from app.integrations.base import TestResult
+from app.models.connection import Connection
+from app.secrets import decrypt_secret
+from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD, PLATFORM_EMAIL, PLATFORM_PASSWORD
+
+
+def _login(client, email, password, tenant_slug=None):
+    payload = {"email": email, "password": password}
+    if tenant_slug is not None:
+        payload["tenantSlug"] = tenant_slug
+    return client.post("/auth/login", json=payload)
+
+
+def _headers(res) -> dict:
+    assert res.status_code == 200, res.text
+    return {"Authorization": f"Bearer {res.json()['access_token']}"}
+
+
+def _demo_headers(client):
+    return _headers(_login(client, ACTIVE_EMAIL, ACTIVE_PASSWORD))
+
+
+def _platform_headers(client):
+    return _headers(_login(client, PLATFORM_EMAIL, PLATFORM_PASSWORD, "platform"))
+
+
+SMTP_PAYLOAD = {
+    "provider": "smtp",
+    "name": "Acme Mail",
+    "config": {
+        "host": "smtp.acme.com",
+        "port": "587",
+        "security": "starttls",
+        "username": "mailer@acme.com",
+        "fromEmail": "no-reply@acme.com",
+        "fromName": "Acme",
+    },
+    "credentials": {"password": "s3cret"},
+    "rateLimitPerMinute": 30,
+}
+
+
+def _create(client, headers, payload=None):
+    res = client.post("/integrations/connections", json=payload or SMTP_PAYLOAD, headers=headers)
+    assert res.status_code == 201, res.text
+    return res.json()
+
+
+# ---- catalog ----
+
+def test_providers_lists_smtp_with_config_schema(client):
+    res = client.get("/integrations/providers", headers=_demo_headers(client))
+    assert res.status_code == 200, res.text
+    smtp = next(p for p in res.json() if p["provider"] == "smtp")
+    assert smtp["type"] == "email"
+    keys = [f["key"] for f in smtp["fields"]]
+    assert {"host", "port", "security", "username", "password", "fromEmail"} <= set(keys)
+    password_field = next(f for f in smtp["fields"] if f["key"] == "password")
+    assert password_field["secret"] is True
+    assert smtp["testTarget"] is not None  # optional targeted test offered
+
+
+def test_endpoints_require_auth(client):
+    assert client.get("/integrations/providers").status_code == 401
+    assert client.get("/integrations/connections").status_code == 401
+
+
+# ---- CRUD + write-only credentials ----
+
+def test_create_connection_encrypts_credentials_and_never_echoes(client, session_factory):
+    h = _demo_headers(client)
+    created = _create(client, h)
+    assert created["status"] == "UNVERIFIED"
+    assert created["config"]["host"] == "smtp.acme.com"
+    assert "credentials" not in created
+    assert "password" not in str(created)
+
+    db = session_factory()
+    try:
+        row = db.get(Connection, created["id"])
+        assert row.credentials_json != ""
+        assert "s3cret" not in row.credentials_json  # encrypted at rest
+        assert decrypt_secret(row.credentials_json) == {"password": "s3cret"}
+    finally:
+        db.close()
+
+
+def test_duplicate_provider_conflicts(client):
+    h = _demo_headers(client)
+    _create(client, h)
+    res = client.post("/integrations/connections", json=SMTP_PAYLOAD, headers=h)
+    assert res.status_code == 409
+
+
+def test_unknown_provider_rejected(client):
+    h = _demo_headers(client)
+    res = client.post(
+        "/integrations/connections",
+        json={**SMTP_PAYLOAD, "provider": "carrier-pigeon"},
+        headers=h,
+    )
+    assert res.status_code == 422
+
+
+def test_update_blank_credentials_keep_stored_secret(client, session_factory):
+    h = _demo_headers(client)
+    created = _create(client, h)
+    res = client.patch(
+        f"/integrations/connections/{created['id']}",
+        json={"name": "Acme Mail v2", "config": {**SMTP_PAYLOAD["config"], "host": "smtp2.acme.com"},
+              "credentials": {}},
+        headers=h,
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["name"] == "Acme Mail v2"
+    assert body["config"]["host"] == "smtp2.acme.com"
+    assert body["status"] == "UNVERIFIED"  # config change invalidates verification
+
+    db = session_factory()
+    try:
+        row = db.get(Connection, created["id"])
+        assert decrypt_secret(row.credentials_json) == {"password": "s3cret"}  # kept
+    finally:
+        db.close()
+
+
+def test_update_partial_config_merges_not_wipes(client, session_factory):
+    """A partial config PATCH must merge with stored keys (sibling credentials
+    merge too) — never silently wipe omitted keys."""
+    h = _demo_headers(client)
+    created = _create(client, h)
+    res = client.patch(
+        f"/integrations/connections/{created['id']}",
+        json={"config": {"host": "smtp2.acme.com"}},
+        headers=h,
+    )
+    assert res.status_code == 200, res.text
+    cfg = res.json()["config"]
+    assert cfg["host"] == "smtp2.acme.com"
+    assert cfg["port"] == "587"            # kept
+    assert cfg["fromEmail"] == "no-reply@acme.com"  # kept
+
+
+def test_undecryptable_credentials_fail_cleanly_not_500(client, session_factory):
+    """Stored ciphertext from a rotated/lost key → clean test failure + update
+    recovery path, never an unhandled 500."""
+    h = _demo_headers(client)
+    created = _create(client, h)
+    db = session_factory()
+    try:
+        row = db.get(Connection, created["id"])
+        row.credentials_json = "gAAAAAB-not-decryptable-garbage"
+        db.commit()
+    finally:
+        db.close()
+
+    res = client.post(f"/integrations/connections/{created['id']}/test", json={}, headers=h)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["ok"] is False
+    assert "decrypt" in body["message"].lower() or "key" in body["message"].lower()
+
+    # Recovery: writing a fresh password replaces the dead blob.
+    res = client.patch(
+        f"/integrations/connections/{created['id']}",
+        json={"credentials": {"password": "fresh"}},
+        headers=h,
+    )
+    assert res.status_code == 200, res.text
+    db = session_factory()
+    try:
+        assert decrypt_secret(db.get(Connection, created["id"]).credentials_json) == {"password": "fresh"}
+    finally:
+        db.close()
+
+
+def test_update_with_new_password_rotates_secret(client, session_factory):
+    h = _demo_headers(client)
+    created = _create(client, h)
+    res = client.patch(
+        f"/integrations/connections/{created['id']}",
+        json={"credentials": {"password": "n3w-secret"}},
+        headers=h,
+    )
+    assert res.status_code == 200, res.text
+    db = session_factory()
+    try:
+        row = db.get(Connection, created["id"])
+        assert decrypt_secret(row.credentials_json) == {"password": "n3w-secret"}
+    finally:
+        db.close()
+
+
+def test_delete_connection(client):
+    h = _demo_headers(client)
+    created = _create(client, h)
+    assert client.delete(f"/integrations/connections/{created['id']}", headers=h).status_code == 204
+    assert client.get("/integrations/connections", headers=h).json()["data"] == []
+
+
+# ---- tenant scoping ----
+
+def test_connections_are_tenant_scoped(client):
+    dh = _demo_headers(client)
+    ph = _platform_headers(client)
+    _create(client, dh)
+    # Platform tenant sees ITS OWN (empty) list, not the default tenant's.
+    assert client.get("/integrations/connections", headers=ph).json()["data"] == []
+    # Cross-tenant access by id → 404.
+    created = client.get("/integrations/connections", headers=dh).json()["data"][0]
+    res = client.post(
+        f"/integrations/connections/{created['id']}/test", json={}, headers=ph
+    )
+    assert res.status_code == 404
+
+
+# ---- inline test + status upkeep ----
+
+def test_test_endpoint_marks_active_on_success(client, monkeypatch):
+    h = _demo_headers(client)
+    created = _create(client, h)
+    provider = get_provider("smtp")
+    monkeypatch.setattr(
+        provider, "test", lambda config, credentials, target=None: TestResult(True, "Connection verified.")
+    )
+    res = client.post(f"/integrations/connections/{created['id']}/test", json={}, headers=h)
+    assert res.status_code == 200, res.text
+    assert res.json()["ok"] is True
+
+    listed = client.get("/integrations/connections", headers=h).json()["data"][0]
+    assert listed["status"] == "ACTIVE"
+    assert listed["lastTestedAt"] is not None
+    assert listed["lastError"] is None
+
+
+def test_test_endpoint_marks_error_on_failure(client, monkeypatch):
+    h = _demo_headers(client)
+    created = _create(client, h)
+    provider = get_provider("smtp")
+    monkeypatch.setattr(
+        provider,
+        "test",
+        lambda config, credentials, target=None: TestResult(False, "SMTP authentication failed (535)."),
+    )
+    res = client.post(
+        f"/integrations/connections/{created['id']}/test",
+        json={"target": "owner@acme.com"},
+        headers=h,
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["ok"] is False
+
+    listed = client.get("/integrations/connections", headers=h).json()["data"][0]
+    assert listed["status"] == "ERROR"
+    assert "535" in listed["lastError"]

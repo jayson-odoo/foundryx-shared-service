@@ -1,0 +1,27 @@
+{
+  "module_name": "crm",
+  "version": "1.0.0",
+  "author": "Dreamz",
+  "title": "CRM",
+  "description": "Commercial CRM — clients, leads / opportunity pipeline, and quotations. Leads convert to events when the Events module is installed.",
+  "icon": "handshake",
+  "required_core_version": ">=1.0.0",
+  "schema": "app_crm",
+  "alembic_version_table": "alembic_version_crm",
+  "requires": [],
+  "optional": [
+    { "name": "ems", "version": ">=2.0.0" }
+  ],
+  "provides": [
+    { "capability": "client.resolve", "version": 1 },
+    { "capability": "lead.resolve", "version": 1 },
+    { "capability": "crm.so_line_invoiced", "version": 1 }
+  ],
+  "routers": [
+    { "name": "clients", "prefix": "/crm/clients" },
+    { "name": "leads", "prefix": "/crm/leads" },
+    { "name": "quotations", "prefix": "/crm/quotations" },
+    { "name": "sales_orders", "prefix": "/crm/sales-orders" }
+  ],
+  "permissions_csv": "permissions/permissions.csv"
+}

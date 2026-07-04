@@ -1,0 +1,5 @@
+Account email changed
+
+The sign-in email on your account was changed from {{ old_email }} to {{ new_email }}.
+
+If you did not expect this, contact your administrator immediately.

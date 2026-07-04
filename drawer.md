@@ -1,0 +1,324 @@
+- generic:
+  - alert
+  - generic:
+    - generic:
+      - link:
+        - /url: /
+        - generic:
+          - img
+      - button:
+        - img
+    - generic:
+      - generic:
+        - generic:
+          - menu:
+            - generic:
+              - heading [level=3]:
+                - button:
+                  - img
+                  - generic: Dashboards
+                  - img
+            - text: User
+            - generic:
+              - heading [level=3]:
+                - button:
+                  - img
+                  - generic: Public Profile
+                  - img
+            - generic:
+              - heading [level=3]:
+                - button:
+                  - img
+                  - generic: My Account
+                  - img
+            - generic:
+              - heading [level=3]:
+                - button:
+                  - img
+                  - generic: Network
+                  - img
+            - generic:
+              - heading [level=3]:
+                - button:
+                  - img
+                  - generic: Authentication
+                  - img
+            - text: Platform
+            - generic:
+              - heading [level=3]:
+                - button:
+                  - img
+                  - generic: Tenant Management
+                  - img
+            - generic:
+              - heading [level=3]:
+                - button [expanded]:
+                  - img
+                  - generic: Platform Engines
+                  - img
+              - region:
+                - menu:
+                  - group:
+                    - generic:
+                      - heading [level=3]:
+                        - button:
+                          - link:
+                            - /url: /platform/status-engine
+                            - text: Status Engine
+                    - generic:
+                      - heading [level=3]:
+                        - button:
+                          - link:
+                            - /url: /platform/rules
+                            - text: Rules
+            - text: Apps
+            - generic:
+              - heading [level=3]:
+                - button:
+                  - img
+                  - generic: App Store
+                  - img
+            - generic:
+              - heading [level=3]:
+                - button:
+                  - img
+                  - generic: Settings
+                  - img
+            - generic:
+              - heading [level=3]:
+                - button:
+                  - img
+                  - generic: User Management
+                  - img
+            - generic:
+              - heading [level=3]:
+                - button:
+                  - img
+                  - generic: Store - Client
+                  - img
+            - generic:
+              - heading [level=3]:
+                - button:
+                  - img
+                  - generic: Store - Admin
+                  - generic: Soon
+            - generic:
+              - heading [level=3]:
+                - button:
+                  - img
+                  - generic: Store - Services
+                  - generic: Soon
+            - generic:
+              - heading [level=3]:
+                - button:
+                  - img
+                  - generic: AI Promt
+                  - generic: Soon
+            - generic:
+              - heading [level=3]:
+                - button:
+                  - img
+                  - generic: Invoice Generator
+                  - generic: Soon
+  - generic:
+    - banner:
+      - generic:
+        - navigation:
+          - generic:
+            - list:
+              - listitem:
+                - link:
+                  - /url: /
+                  - text: Home
+              - listitem:
+                - button:
+                  - text: Profiles
+                  - img
+              - listitem:
+                - button:
+                  - text: My Account
+                  - img
+              - listitem:
+                - button:
+                  - text: Network
+                  - img
+              - listitem:
+                - button:
+                  - text: Apps
+                  - img
+        - generic:
+          - button:
+            - img
+          - button:
+            - img
+          - button:
+            - img
+          - button:
+            - img
+          - button:
+            - generic: PO
+    - main:
+      - generic:
+        - generic:
+          - generic:
+            - navigation:
+              - list:
+                - listitem:
+                  - link:
+                    - /url: /platform/status-engine
+                    - text: Status Engine
+                - listitem:
+                  - img
+                - listitem:
+                  - link [disabled]: Tenant
+            - generic:
+              - button: Cancel
+              - button: Save
+              - link:
+                - /url: /platform/status-engine
+                - img
+                - text: Status Engine
+          - generic:
+            - generic:
+              - heading [level=1]: Tenant
+              - generic: Platform defaults — tenants inherit until they customize
+          - generic:
+            - tablist:
+              - tab [selected]:
+                - img
+                - text: Flow
+              - tab:
+                - img
+                - text: Statuses
+            - tabpanel "Flow":
+              - generic:
+                - generic:
+                  - generic: Platform defaults
+                  - generic:
+                    - button [disabled]:
+                      - img
+                    - button [disabled]:
+                      - img
+                    - button:
+                      - img
+                      - text: Tidy
+                    - button:
+                      - img
+                      - text: Add status
+                - generic:
+                  - generic:
+                    - application:
+                      - generic:
+                        - generic:
+                          - generic:
+                            - img
+                            - img:
+                              - group [ref=e265] [cursor=pointer]
+                            - img:
+                              - group [ref=e266] [cursor=pointer]
+                            - img:
+                              - group [ref=e267] [cursor=pointer]
+                            - img:
+                              - group [ref=e268] [cursor=pointer]
+                            - img:
+                              - group [ref=e269] [cursor=pointer]
+                            - generic:
+                              - generic [ref=e199] [cursor=pointer]: Suspend
+                              - generic [ref=e200] [cursor=pointer]: Reactivate
+                              - generic [ref=e201] [cursor=pointer]: Archive
+                              - generic [ref=e202] [cursor=pointer]: Archive
+                              - generic [ref=e203] [cursor=pointer]: Reactivate
+                            - generic:
+                              - group [ref=e204]:
+                                - generic [ref=e205]:
+                                  - generic [ref=e209]: Active
+                                  - generic [ref=e210]:
+                                    - generic [ref=e211]: Initial
+                                    - generic [ref=e212]: Default
+                              - group [ref=e214]:
+                                - generic [ref=e215]:
+                                  - generic [ref=e219]: Suspended
+                                  - generic [ref=e221]: Blocks access
+                              - group [ref=e223]:
+                                - generic [ref=e224]:
+                                  - generic [ref=e228]: Archived
+                                  - generic [ref=e230]: Archived
+                      - img
+                      - generic:
+                        - button:
+                          - img
+                        - button:
+                          - img
+                        - button:
+                          - img
+                  - generic:
+                    - generic: Reactivate
+                    - button:
+                      - img
+                      - text: Edit
+                    - button:
+                      - img
+                      - text: Delete
+    - contentinfo:
+      - generic:
+        - generic:
+          - generic:
+            - generic: 2026 ©
+            - link:
+              - /url: https://keenthemes.com
+              - text: Keenthemes Inc.
+          - navigation:
+            - link:
+              - /url: ""
+              - text: Docs
+            - link:
+              - /url: https://1.envato.market/Vm7VRE
+              - text: Purchase
+            - link:
+              - /url: https://keenthemes.com/metronic
+              - text: FAQ
+            - link:
+              - /url: https://devs.keenthemes.com
+              - text: Support
+            - link:
+              - /url: ""
+              - text: License
+  - region "Notifications alt+T"
+  - dialog "Transition — Suspended → Active" [ref=e271]:
+    - heading "Transition — Suspended → Active" [level=2] [ref=e273]
+    - generic [ref=e274]:
+      - generic [ref=e275]:
+        - generic [ref=e276]: Action label *
+        - textbox "Action label *" [active] [ref=e277]:
+          - /placeholder: Button text — e.g. "Approve"
+          - text: Reactivate
+      - generic [ref=e278]:
+        - generic [ref=e279]: Who can perform it
+        - combobox [ref=e280] [cursor=pointer]:
+          - generic [ref=e282]: Any role (unrestricted)
+          - img [ref=e283]
+        - paragraph [ref=e285]: Empty = anyone allowed to act on the record. Otherwise the actor must hold at least one of these roles.
+      - generic [ref=e286]:
+        - generic [ref=e287]: Conditions
+        - generic [ref=e289]:
+          - paragraph [ref=e290]: No conditions — always allowed (add one below).
+          - generic [ref=e291]:
+            - button "Add condition" [ref=e292] [cursor=pointer]:
+              - img [ref=e293]
+              - text: Add condition
+            - button "Add group" [ref=e294] [cursor=pointer]:
+              - img [ref=e295]
+              - text: Add group
+        - paragraph [ref=e296]: The transition is offered only while every condition passes. Empty = always allowed.
+      - generic [ref=e297]:
+        - generic [ref=e298]: Notifications
+        - button "Add notification" [ref=e299] [cursor=pointer]:
+          - img [ref=e300]
+          - text: Add notification
+      - paragraph [ref=e301]: No notifications — add one to email people when this transition fires.
+    - generic [ref=e302]:
+      - button "Delete transition" [ref=e304] [cursor=pointer]
+      - button "Save" [ref=e305] [cursor=pointer]
+    - button "Close" [ref=e306] [cursor=pointer]:
+      - img [ref=e307]
+      - generic [ref=e310]: Close

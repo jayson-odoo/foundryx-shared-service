@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 style="margin:0 0 12px;color:#1a1a1a;font-size:20px;">Confirm your new email</h1>
+<p style="margin:0 0 20px;color:#444444;font-size:14px;line-height:22px;">
+  The change was approved from your current address. One step left: confirm that
+  this mailbox is yours — this is the step that switches your account to it.
+</p>
+<p style="margin:0 0 24px;">
+  <a href="{{ link }}" style="display:inline-block;background-color:#FF5A00;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 24px;border-radius:8px;">Confirm new email</a>
+</p>
+<p style="margin:0;color:#999999;font-size:12px;line-height:18px;">
+  This link expires soon and can be used once. Or paste it into your browser:<br />
+  <a href="{{ link }}" style="color:#FF5A00;word-break:break-all;">{{ link }}</a>
+</p>
+{% endblock %}

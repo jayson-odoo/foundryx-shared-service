@@ -1,0 +1,60 @@
+# ---- Secrets / env ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---- Python (dreamz_ems_backend) ----
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Local databases ----
+*.db
+*.sqlite
+*.sqlite3
+
+# ---- Node / Next.js (dreamz_ems_frontend) ----
+node_modules/
+.next/
+out/
+build/
+dist/
+dist-ssr/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+
+# ---- Logs ----
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- Test / E2E artifacts ----
+test-results/
+playwright-report/
+playwright/.cache/
+
+# ---- OS / Editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ---- Playwright MCP scratch ----
+.playwright-mcp/
+.claude/

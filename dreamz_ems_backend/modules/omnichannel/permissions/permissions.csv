@@ -1,0 +1,10 @@
+resource,resource_label,action,action_label,description
+workspaces,Omnichannel Workspaces,read,Read,View omnichannel workspaces
+workspaces,Omnichannel Workspaces,manage,Manage,Create/edit workspaces & members
+channels,Omnichannel Channels,read,Read,View connected channels
+channels,Omnichannel Channels,manage,Manage,Connect/disconnect & configure channels
+conversations,Conversations,read,Read,View threads & messages
+conversations,Conversations,reply,Reply,Send messages
+conversations,Conversations,assign,Assign,Assign/reassign threads
+wa_templates,WhatsApp Templates,read,Read,View WhatsApp message templates
+wa_templates,WhatsApp Templates,manage,Manage,Create/submit/edit/delete WhatsApp templates

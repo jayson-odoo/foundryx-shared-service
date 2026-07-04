@@ -1,0 +1,3 @@
+Test email
+
+Your SMTP connection on {{ product }} works — this message was delivered through it.
