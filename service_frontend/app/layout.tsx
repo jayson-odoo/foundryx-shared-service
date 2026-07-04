@@ -42,8 +42,8 @@ export async function generateMetadata(): Promise<Metadata> {
   }
   return {
     title: {
-      template: '%s | FoundryX EMS',
-      default: 'FoundryX EMS', // a default is required when creating a template
+      template: '%s | FoundryX',
+      default: 'FoundryX', // a default is required when creating a template
     },
   };
 }

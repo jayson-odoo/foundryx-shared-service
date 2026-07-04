@@ -4,13 +4,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { MessageCircle, Settings as SettingsIcon, Users as UsersIcon } from 'lucide-react';
+import { KeyRound, MessageCircle, Settings as SettingsIcon, Users as UsersIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import { workspaceService } from '@/services/workspace-service';
 import type { Workspace } from '@/types/omnichannel';
 import { SettingsTab, ChannelsTab, MembersTab } from './workspace-form-fields';
+import { ApiKeysTab } from './workspace-api-keys-tab';
 import { useWorkspaceActions } from './use-workspace-actions';
+import { useCan } from '@/hooks/use-can';
 import { workspaceFormHref, workspaceFormPath, workspacesListPath } from './paths';
 import { workspaceFormSchema, type WorkspaceFormValues } from './workspace-schema';
 
@@ -32,6 +34,7 @@ export function useWorkspaceForm(
 ): UseWorkspaceFormResult {
   const router = useRouter();
   const actions = useWorkspaceActions();
+  const { can } = useCan();
   const creating = !workspaceId;
 
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -121,6 +124,16 @@ export function useWorkspaceForm(
         icon: UsersIcon,
         render: () => <MembersTab workspaceId={workspace?.id ?? null} creating={creating} />,
       },
+      ...(can('api_keys.read')
+        ? [
+            {
+              id: 'api-keys',
+              label: 'API Keys',
+              icon: KeyRound,
+              render: () => <ApiKeysTab workspaceId={workspace?.id ?? null} creating={creating} />,
+            },
+          ]
+        : []),
     ];
 
     return {
@@ -155,7 +168,7 @@ export function useWorkspaceForm(
             buildHref: (recordId, ctx, index) => workspaceFormHref(recordId, { ctx, index }),
           },
     };
-  }, [isLoading, notFound, creating, workspace, actions, form, initialEditing, workspaceId, router]);
+  }, [isLoading, notFound, creating, workspace, actions, form, initialEditing, workspaceId, router, can]);
 
   return { config, form, isLoading, notFound };
 }

@@ -29,7 +29,7 @@ const resolveSrc = (src: string): string =>
  * Hidden below `lg` (the form takes the full width on small screens).
  */
 export function AuthBrandPanel({
-  tagline = 'Bringing Events to Life.',
+  tagline = 'One platform, every conversation.',
   logoSrc = '/media/foundryx/foundryx-logo.png',
   brandName,
   illustrationSrc = '/media/foundryx/auth-illustration.svg',

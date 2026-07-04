@@ -174,7 +174,7 @@ test.describe('Tenant Branding (live stack)', () => {
       `/public/branding/${tenant.slug}/asset/logo`,
     );
     await expect(page.getByText('Events, perfected.')).toBeVisible();
-    await expect(page.getByText('Bringing Events to Life.')).toHaveCount(0);
+    await expect(page.getByText('One platform, every conversation.')).toHaveCount(0);
     const signInButton = page.getByRole('button', { name: /sign in/i });
     await expect
       .poll(() =>
@@ -192,7 +192,7 @@ test.describe('Tenant Branding (live stack)', () => {
     // branded it, and this suite must stay residue-proof.)
     const tenant = await provisionTenant(request, 'stock');
     await page.goto(`${tenantHost(tenant.slug)}/signin`);
-    await expect(page.getByText('Bringing Events to Life.')).toBeVisible();
+    await expect(page.getByText('One platform, every conversation.')).toBeVisible();
     await expect(page).toHaveTitle(/FoundryX EMS/);
   });
 

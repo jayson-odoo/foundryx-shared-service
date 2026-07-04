@@ -2,9 +2,6 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { MegaMenuSubAccount } from '@/partials/mega-menu/mega-menu-sub-account';
-import { MegaMenuSubNetwork } from '@/partials/mega-menu/mega-menu-sub-network';
-import { MegaMenuSubProfiles } from '@/partials/mega-menu/mega-menu-sub-profiles';
 import { useMemo } from 'react';
 import { useSession } from 'next-auth/react';
 import { MENU_MEGA } from '@/config/menu.config';
@@ -23,7 +20,7 @@ import {
   NavigationMenuList,
   NavigationMenuTrigger,
 } from '@/components/ui/navigation-menu';
-import { MegaMenuSubApps } from '@/app/components/partials/mega-menu/mega-menu-sub-apps';
+import { MegaMenuSubDefault } from '@/app/components/partials/mega-menu/components';
 
 export function MegaMenu() {
   const pathname = usePathname();
@@ -50,91 +47,60 @@ export function MegaMenu() {
       }),
     [can, installed.isActive, installed.ready, showPlatform],
   );
-  const homeItem = visibleMenu[0];
-  const publicProfilesItem = visibleMenu[1];
-  const myAccountItem = visibleMenu[2];
-  const networkItem = visibleMenu[3];
-  const appsStore = visibleMenu[4];
 
   const linkClass = `
-    text-sm text-secondary-foreground font-medium 
-    hover:text-primary hover:bg-transparent 
-    focus:text-primary focus:bg-transparent 
-    data-[active=true]:text-primary data-[active=true]:bg-transparent 
+    text-sm text-secondary-foreground font-medium
+    hover:text-primary hover:bg-transparent
+    focus:text-primary focus:bg-transparent
+    data-[active=true]:text-primary data-[active=true]:bg-transparent
     data-[state=open]:text-primary data-[state=open]:bg-transparent
   `;
 
+  // Render GENERICALLY from the (permission/module-filtered) menu — resolve
+  // sections by existence, never by fixed index. The EMS/portal sections this
+  // header used to hardcode (Public Profiles, Network) were stripped in the
+  // shared-service fork, so any fixed-index dereference would crash the page.
   return (
     <NavigationMenu>
       <NavigationMenuList className="gap-0">
-        {/* Home Item */}
-        <NavigationMenuItem>
-          <NavigationMenuLink asChild>
-            <Link
-              href={homeItem.path || '/'}
-              className={cn(linkClass)}
-              data-active={isActive(homeItem.path) || undefined}
-            >
-              {menuLabel(homeItem)}
-            </Link>
-          </NavigationMenuLink>
-        </NavigationMenuItem>
+        {visibleMenu.map((item, index) => {
+          if (item.heading) return null;
+          const label = menuLabel(item);
+          const children = item.children;
 
-        {/* Public Profiles Item */}
-        <NavigationMenuItem>
-          <NavigationMenuTrigger
-            className={cn(linkClass)}
-            data-active={
-              hasActiveChild(publicProfilesItem.children) || undefined
-            }
-          >
-            {menuLabel(publicProfilesItem)}
-          </NavigationMenuTrigger>
-          <NavigationMenuContent className="p-0">
-            <MegaMenuSubProfiles items={visibleMenu} />
-          </NavigationMenuContent>
-        </NavigationMenuItem>
+          if (children && children.length > 0) {
+            return (
+              <NavigationMenuItem key={item.path || `mega-${index}`}>
+                <NavigationMenuTrigger
+                  className={cn(linkClass)}
+                  data-active={hasActiveChild(children) || undefined}
+                >
+                  {label}
+                </NavigationMenuTrigger>
+                <NavigationMenuContent className="p-0">
+                  <div className="w-full space-y-0.5 p-4 lg:w-[320px] lg:p-5">
+                    {MegaMenuSubDefault(children)}
+                  </div>
+                </NavigationMenuContent>
+              </NavigationMenuItem>
+            );
+          }
 
-        {/* My Account Item */}
-        <NavigationMenuItem>
-          <NavigationMenuTrigger
-            className={cn(linkClass)}
-            data-active={hasActiveChild(myAccountItem.children) || undefined}
-          >
-            {menuLabel(myAccountItem)}
-          </NavigationMenuTrigger>
-          <NavigationMenuContent className="p-0">
-            <MegaMenuSubAccount items={visibleMenu} />
-          </NavigationMenuContent>
-        </NavigationMenuItem>
-
-        {/* Network Item */}
-        <NavigationMenuItem>
-          <NavigationMenuTrigger
-            className={cn(linkClass)}
-            data-active={
-              hasActiveChild(networkItem.children || []) || undefined
-            }
-          >
-            {menuLabel(networkItem)}
-          </NavigationMenuTrigger>
-          <NavigationMenuContent className="p-0">
-            <MegaMenuSubNetwork items={visibleMenu} />
-          </NavigationMenuContent>
-        </NavigationMenuItem>
-
-        {/* Apps Item */}
-        <NavigationMenuItem>
-          <NavigationMenuTrigger
-            className={cn(linkClass)}
-            data-active={hasActiveChild(appsStore.children || []) || undefined}
-          >
-            {menuLabel(appsStore)}
-          </NavigationMenuTrigger>
-          <NavigationMenuContent className="p-0">
-            <MegaMenuSubApps items={visibleMenu} />
-          </NavigationMenuContent>
-        </NavigationMenuItem>
+          if (!item.path) return null;
+          return (
+            <NavigationMenuItem key={item.path || `mega-${index}`}>
+              <NavigationMenuLink asChild>
+                <Link
+                  href={item.path}
+                  className={cn(linkClass)}
+                  data-active={isActive(item.path) || undefined}
+                >
+                  {label}
+                </Link>
+              </NavigationMenuLink>
+            </NavigationMenuItem>
+          );
+        })}
       </NavigationMenuList>
     </NavigationMenu>
   );

@@ -66,7 +66,7 @@ function BrandMark({ branding }: { branding: PublicBranding }) {
   return (
     <Image
       src="/media/foundryx/foundryx-logo.png"
-      alt="FoundryX EMS"
+      alt="FoundryX"
       width={120}
       height={32}
       className="h-7 w-auto object-contain"
