@@ -199,6 +199,29 @@ class WhatsappTemplate(OmniBase):
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
 
+class WorkspaceApiKey(OmniBase):
+    """Public-gateway API key, issued per workspace (plan sprint-1/01 Slice 3).
+
+    The plaintext key (``fxw_live_…``) is shown ONCE at mint and never stored —
+    only its SHA-256 ``key_hash`` (for constant-time verification) and an 8-char
+    ``key_prefix`` (indexed O(1) lookup). A key resolves to (tenant, workspace,
+    service=omnichannel); multiple active keys per workspace support rotation.
+    """
+
+    __tablename__ = "workspace_api_keys"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    key_prefix = Column(String, nullable=False, index=True)  # 8 chars after "fxw_live_"
+    key_hash = Column(String, nullable=False)  # sha256 hex (64 chars)
+    last_used_at = Column(UTCDateTime(), nullable=True)
+    revoked_at = Column(UTCDateTime(), nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
 class QuickReply(OmniBase):
     __tablename__ = "quick_replies"
 

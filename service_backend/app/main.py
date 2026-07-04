@@ -55,7 +55,12 @@ async def lifespan(_: FastAPI):
         stop_dispatcher()
 
 
-app = FastAPI(title="FoundryX EMS API", debug=settings.debug, lifespan=lifespan)
+app = FastAPI(title="FoundryX Shared Service API", debug=settings.debug, lifespan=lifespan)
+
+# Structured error envelope for the public gateway API (`/api/v1/*`, AC-01-36).
+from app.api_errors import install_api_error_handler  # noqa: E402
+
+install_api_error_handler(app)
 
 app.add_middleware(
     CORSMiddleware,

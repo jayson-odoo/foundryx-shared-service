@@ -65,21 +65,7 @@ def test_module_migration_revision_ids_fit_alembic_column():
     )
 
 
-def test_slice3_ems_migration_id_specifically_fits():
-    """Pinpoint the slice-3 migration so the guard is explicit: its revision id
-    (read FROM DISK, not hard-coded) must fit Alembic's VARCHAR(32) column.
-
-    FIXED: renamed `0005_cluster_d_ticket_status_checkpoints` (40) →
-    `0005_ticket_status_checkpoints` (30)."""
-    slice3 = [
-        (mod, fname, rid)
-        for (mod, fname, rid) in _revision_ids()
-        if mod == "ems" and fname.startswith("0005_")
-    ]
-    assert slice3, "slice-3 EMS migration (0005_*) not found on disk"
-    for mod, fname, rid in slice3:
-        assert len(rid) <= ALEMBIC_MAX_REVISION_LENGTH, (
-            f"slice-3 EMS migration id {rid!r} ({fname}) is {len(rid)} chars "
-            f"(> {ALEMBIC_MAX_REVISION_LENGTH}); Postgres stamp UPDATE fails with "
-            "StringDataRightTruncation — the slice-3 columns/tables never apply."
-        )
+# NOTE: the former `test_slice3_ems_migration_id_specifically_fits` was removed —
+# it pinned an EMS-specific migration (`modules/ems/.../0005_*`), and the EMS
+# domain module is stripped from this shared-service fork. The generic guard
+# above still covers every remaining module migration (e.g. omnichannel).

@@ -267,6 +267,76 @@ class QuickReplyItem(ApiModel):
     body: str
 
 
+# ── Public gateway API keys (plan sprint-1/01 Slice 3) ───────────────────────
+class ApiKeyItem(ApiModel):
+    id: str
+    workspaceId: str
+    name: str
+    keyPrefix: str
+    maskedKey: str  # fxw_live_{prefix}••••
+    status: str  # ACTIVE | REVOKED
+    lastUsedAt: Optional[datetime] = None
+    revokedAt: Optional[datetime] = None
+    createdAt: datetime
+
+
+class ApiKeyListResponse(ApiModel):
+    data: List[ApiKeyItem]
+
+
+class ApiKeyCreateRequest(ApiModel):
+    name: str
+
+
+class ApiKeyMintResponse(ApiModel):
+    key: ApiKeyItem
+    fullKey: str  # shown ONCE at mint, never again
+
+
+# ── Public send API (respond.io-style; text/template in v1) ──────────────────
+class PublicTextBody(ApiModel):
+    body: str
+
+
+class PublicTemplateBody(ApiModel):
+    id: Optional[str] = None  # our template id (from GET /templates)
+    name: Optional[str] = None  # OR the Meta template name
+    variables: Optional[List[str]] = None
+
+
+class PublicMediaBody(ApiModel):
+    url: Optional[str] = None
+    caption: Optional[str] = None
+    type: Optional[str] = None
+
+
+class PublicSendRequest(ApiModel):
+    to: str
+    type: str = "text"  # text | template | (media/interactive deferred)
+    text: Optional[PublicTextBody] = None
+    template: Optional[PublicTemplateBody] = None
+    media: Optional[PublicMediaBody] = None
+
+
+class PublicSendResponse(ApiModel):
+    id: str  # OUR durable message id (not Meta's wamid)
+    status: str  # queued
+    idempotencyReplay: bool = False
+
+
+class PublicTemplateItem(ApiModel):
+    id: str
+    name: str
+    language: Optional[str] = None
+    category: Optional[str] = None
+    bodyText: str
+    variableCount: int
+
+
+class PublicTemplateListResponse(ApiModel):
+    data: List[PublicTemplateItem]
+
+
 # ── Template management (plan 07) ─────────────────────────────────────────────
 class TemplateManageItem(ApiModel):
     id: str

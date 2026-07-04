@@ -38,6 +38,15 @@
       "prefix": "/omnichannel/contacts"
     },
     {
+      "name": "api_keys",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
+      "name": "api_v1",
+      "prefix": "/api/v1/omnichannel",
+      "public": true
+    },
+    {
       "name": "webhooks",
       "prefix": "/omnichannel/webhooks",
       "public": true

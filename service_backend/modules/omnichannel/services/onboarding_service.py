@@ -28,6 +28,10 @@ class ManualConnectError(Exception):
     """Manual connect failed (bad token, unresolved number, or failed validation)."""
 
 
+class PhoneNumberInUse(Exception):
+    """The phone_number_id is already bound to another (live) channel service-wide."""
+
+
 def _digits(value: str) -> str:
     return "".join(c for c in (value or "") if c.isdigit())
 
@@ -35,6 +39,24 @@ def _digits(value: str) -> str:
 class OnboardingService:
     def __init__(self, db: Session):
         self.db = db
+
+    def _assert_phone_available(self, phone_number_id: Optional[str]) -> None:
+        """A phone_number_id must be unique service-wide (AC-01-20) so inbound
+        routing is O(1). This guard is deliberately NOT tenant-scoped."""
+        if not phone_number_id:
+            return
+        clash = (
+            self.db.query(Channel)
+            .filter(
+                Channel.phone_number_id == phone_number_id,
+                Channel.is_trashed.is_(False),
+            )
+            .first()
+        )
+        if clash is not None:
+            raise PhoneNumberInUse(
+                "This WhatsApp number is already connected to another workspace."
+            )
 
     def complete(
         self, payload: OnboardingCallbackRequest, tenant_id: str = DEFAULT_TENANT_ID
@@ -52,6 +74,8 @@ class OnboardingService:
         details = adapter.fetch_phone_details(credentials, payload.phoneNumberId)
         display = payload.displayPhoneNumber or details.get("display_phone_number") or payload.phoneNumberId
         name = (payload.businessName or details.get("verified_name") or display or "WhatsApp").strip()
+
+        self._assert_phone_available(payload.phoneNumberId)
 
         channel = Channel(
             tenant_id=tenant_id,
@@ -107,6 +131,8 @@ class OnboardingService:
         status = adapter.test_connection(credentials, phone_number_id)
         if not status.ok:
             raise ManualConnectError(status.message)
+
+        self._assert_phone_available(phone_number_id)
 
         details = adapter.fetch_phone_details(credentials, phone_number_id)
         display = details.get("display_phone_number") or payload.phoneNumber or phone_number_id

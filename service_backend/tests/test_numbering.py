@@ -206,8 +206,7 @@ def test_catalog_filters_inactive_modules(session_factory):
     keys = {i.docType for i in items}
     db.close()
     assert "document_no" in keys  # core always visible
-    assert "invoice" in keys  # finance installed in conftest
-    assert "quotation" in keys  # crm installed in conftest
+    # (finance "invoice" / crm "quotation" doc_types are stripped from this fork)
     assert "t_ghost" not in keys  # inactive module → hidden
 
 
@@ -279,22 +278,23 @@ def test_numbering_api_catalog_and_edit(client, session_factory):
     res = client.get("/numbering", headers=h)
     assert res.status_code == 200, res.text
     cat = {i["docType"]: i for i in res.json()}
-    assert "invoice" in cat
-    assert cat["invoice"]["nextVal"] == 1
-    assert cat["invoice"]["sample"]  # live sample present
+    # core "document_no" (the finance "invoice" doc_type is stripped from this fork)
+    assert "document_no" in cat
+    assert cat["document_no"]["nextVal"] == 1
+    assert cat["document_no"]["sample"]  # live sample present
 
     # Edit the prefix + next-val → the next generated number reflects both.
     assert client.put(
-        "/numbering/invoice",
+        "/numbering/document_no",
         json={"prefix": "BILL-", "formatPattern": "{prefix}{NNNN}", "reset": "never"},
         headers=h,
     ).status_code == 204
     assert client.put(
-        "/numbering/invoice/next-val", json={"nextVal": 42}, headers=h
+        "/numbering/document_no/next-val", json={"nextVal": 42}, headers=h
     ).status_code == 204
 
     db = session_factory()
-    n = NumberingService(db).next_number(DEFAULT_TENANT_ID, "invoice", date(2026, 1, 1))
+    n = NumberingService(db).next_number(DEFAULT_TENANT_ID, "document_no", date(2026, 1, 1))
     db.commit()
     db.close()
     assert n == "BILL-0042"
@@ -311,7 +311,7 @@ def test_numbering_unknown_doctype_422(client):
 def test_numbering_format_must_have_running_token_422(client):
     h = _admin(client)
     assert client.put(
-        "/numbering/invoice", json={"prefix": "X-", "formatPattern": "{prefix}{YYYY}", "reset": "never"},
+        "/numbering/document_no", json={"prefix": "X-", "formatPattern": "{prefix}{YYYY}", "reset": "never"},
         headers=h,
     ).status_code == 422
 
@@ -319,14 +319,14 @@ def test_numbering_format_must_have_running_token_422(client):
 def test_numbering_reset_drops_override(client, session_factory):
     h = _admin(client)
     client.put(
-        "/numbering/invoice",
+        "/numbering/document_no",
         json={"prefix": "BILL-", "formatPattern": "{prefix}{NNNN}", "reset": "never"},
         headers=h,
     )
-    assert client.delete("/numbering/invoice", headers=h).status_code == 204
+    assert client.delete("/numbering/document_no", headers=h).status_code == 204
     cat = {i["docType"]: i for i in client.get("/numbering", headers=h).json()}
-    assert cat["invoice"]["overridePrefix"] is None
-    assert cat["invoice"]["prefix"] == "INV-"  # back to the registered default
+    assert cat["document_no"]["overridePrefix"] is None
+    assert cat["document_no"]["prefix"] == "DOC-"  # back to the registered default
 
 
 def test_numbering_requires_auth(client):

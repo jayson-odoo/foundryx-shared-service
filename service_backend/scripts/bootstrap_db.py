@@ -80,6 +80,32 @@ def main() -> None:
 
     bootstrap_modules()
 
+    # Install the first Service (omnichannel) for the built-in default tenant so
+    # the platform is usable out of the box (inbox + demo). Idempotent — skips if
+    # already installed. Other tenants install via the App Store. (Slice 2 §2.1)
+    from app.models.tenant import DEFAULT_TENANT_ID
+    from app.services.app_store_service import AlreadyInstalled, AppStoreService
+
+    db = SessionLocal()
+    try:
+        AppStoreService(db).install(DEFAULT_TENANT_ID, "omnichannel")
+    except AlreadyInstalled:
+        pass
+    finally:
+        db.close()
+
+    # Grant sweep AFTER module perms are synced (DoD gate #4): the seed_all
+    # sweep above runs BEFORE the module CSVs load, so every tenant's Admin
+    # would miss freshly-synced installed-module keys (e.g. api_keys.*). Re-run
+    # tenant_admin_grant now that the catalog is complete. Idempotent.
+    from app.seed import sweep_tenant_admin_grants
+
+    db = SessionLocal()
+    try:
+        sweep_tenant_admin_grants(db)
+    finally:
+        db.close()
+
     # DEV-only demo inbox (plan 05) — never seeds in prod.
     if settings.environment == "development":
         from app.models.tenant import DEFAULT_TENANT_ID

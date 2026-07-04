@@ -109,6 +109,27 @@ def create_schema_and_tables(engine: Engine) -> None:
                         f"ADD COLUMN IF NOT EXISTS {col} {coltype}"
                     )
                 )
+            # phone_number_id → service-wide UNIQUE (plan Slice 3, AC-01-20) for
+            # O(1) inbound routing. Reconcile any existing duplicates FIRST (keep
+            # the earliest by created_at,id; NULL the losers) then add a partial
+            # unique index (nullable rows stay allowed). Idempotent.
+            conn.execute(
+                text(
+                    f'UPDATE "{OMNI_SCHEMA}".channels c SET phone_number_id = NULL '
+                    "WHERE c.phone_number_id IS NOT NULL AND EXISTS ("
+                    f'  SELECT 1 FROM "{OMNI_SCHEMA}".channels c2 '
+                    "  WHERE c2.phone_number_id = c.phone_number_id "
+                    "    AND (c2.created_at < c.created_at "
+                    "         OR (c2.created_at = c.created_at AND c2.id < c.id)))"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_channels_phone_number_id "
+                    f'ON "{OMNI_SCHEMA}".channels (phone_number_id) '
+                    "WHERE phone_number_id IS NOT NULL"
+                )
+            )
 
 
 def install(engine: Engine, db: Session) -> None:

@@ -16,14 +16,14 @@ def _admin(client):
 
 def test_product_crud_and_currency_override(client):
     h = _admin(client)
-    # kinds: core good/service + ems admission/add_on/merchandise (ems installed in conftest)
+    # kinds: core good/service (EMS-registered kinds are stripped from this fork)
     kinds = {k["key"] for k in client.get("/products/kinds", headers=h).json()}
-    assert {"good", "service", "admission", "add_on", "merchandise"} <= kinds
+    assert {"good", "service"} <= kinds
 
-    r = client.post("/products", headers=h, json={"name": "VIP Pass", "kind": "admission", "defaultPrice": 199.5, "currency": "usd"})
+    r = client.post("/products", headers=h, json={"name": "VIP Pass", "kind": "service", "defaultPrice": 199.5, "currency": "usd"})
     assert r.status_code == 201, r.text
     p = r.json()
-    assert p["kind"] == "admission" and p["kindLabel"] == "Admission"
+    assert p["kind"] == "service" and p["kindLabel"] == "Service"
     assert p["defaultPrice"] == 199.5 and p["currency"] == "USD"
 
     # unknown kind rejected
@@ -41,16 +41,12 @@ def test_tenant_default_currency(client):
     assert client.put("/settings/general", headers=h, json={"defaultCurrency": "US"}).status_code == 422
 
 
-def test_product_soft_delete_only_and_reference_guard(client, session_factory):
+def test_product_soft_delete_only(client, session_factory):
+    # NOTE: the CRM quotation reference-guard leg was dropped — the CRM module
+    # (which registered products-in-quotations into the reference-count registry)
+    # is stripped from this shared-service fork. Core coverage kept: a product
+    # soft-deletes (never hard delete) when nothing references it.
     h = _admin(client)
-    prod = client.post("/products", headers=h, json={"name": "Booth", "kind": "service", "defaultPrice": 50}).json()
-    cli = client.post("/crm/clients", headers=h, json={"name": "Acme"}).json()
-    # quote referencing the product → product can't be deleted
-    q = client.post("/crm/quotations", headers=h, json={"clientId": cli["id"], "lines": [{"productId": prod["id"], "qty": 2, "unitPrice": 50}]})
-    assert q.status_code == 201, q.text
-    blocked = client.delete(f"/products/{prod['id']}", headers=h)
-    assert blocked.status_code == 409 and "quotations" in blocked.json()["detail"]
-
     # an unreferenced product soft-deletes (never hard delete)
     free = client.post("/products", headers=h, json={"name": "Free", "kind": "good"}).json()
     assert client.delete(f"/products/{free['id']}", headers=h).status_code == 204

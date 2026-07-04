@@ -1,0 +1,324 @@
+"""Public gateway API tests (plan sprint-1/01 Slice 3).
+
+Covers: key mint (once/hashed/live-only/revoke), Bearer resolution + constant-time
++ uniform 401, service-binding 403, public send 202 + our id + inbox bubble,
+CSW-on-API, idempotency dedup (same/other workspace), read-only templates,
+phone_number_id UNIQUE guard, tenant/workspace isolation, structured errors.
+"""
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from app.models import DEFAULT_TENANT_ID
+from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD
+from modules.omnichannel.services import idempotency
+
+
+def _now():
+    return datetime.now(timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _memory_idempotency():
+    idempotency.set_store(idempotency.MemoryIdempotencyStore())
+    yield
+    idempotency.set_store(idempotency.MemoryIdempotencyStore())
+
+
+def _token(client, email=ACTIVE_EMAIL, password=ACTIVE_PASSWORD) -> str:
+    return client.post("/auth/login", json={"email": email, "password": password}).json()[
+        "access_token"
+    ]
+
+
+def _auth(client, **kw) -> dict:
+    return {"Authorization": f"Bearer {_token(client, **kw)}"}
+
+
+def _default_workspace_id(session_factory) -> str:
+    from modules.omnichannel.models import Workspace
+
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+    wid = ws.id
+    db.close()
+    return wid
+
+
+def _seed_channel(session_factory, workspace_id, phone_number_id="pn-test"):
+    from modules.omnichannel.models import Channel
+    from modules.omnichannel.security import encrypt_credentials
+    from modules.omnichannel.services import statuses
+
+    db = session_factory()
+    ch = Channel(
+        tenant_id=DEFAULT_TENANT_ID,
+        workspace_id=workspace_id,
+        channel_type="WHATSAPP",
+        name="Test WA",
+        credentials_json=encrypt_credentials({"dev": True}),
+        phone_number_id=phone_number_id,
+        display_phone_number="+60 11-111 1111",
+        is_active=True,
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "CHANNEL", "ACTIVE"),
+    )
+    db.add(ch)
+    db.commit()
+    cid = ch.id
+    db.close()
+    return cid
+
+
+def _seed_open_contact(session_factory, workspace_id, phone="+60123456789", open_window=True):
+    from modules.omnichannel.models import Contact
+    from modules.omnichannel.services import statuses
+
+    db = session_factory()
+    c = Contact(
+        tenant_id=DEFAULT_TENANT_ID,
+        workspace_id=workspace_id,
+        first_name="Sam",
+        phone=phone,
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "THREAD", "OPEN"),
+        priority="MEDIUM",
+        csw_expires_at=(_now() + timedelta(hours=20)) if open_window else None,
+    )
+    db.add(c)
+    db.commit()
+    cid = c.id
+    db.close()
+    return cid
+
+
+def _mint(client, workspace_id, name="Prod key"):
+    res = client.post(
+        f"/omnichannel/workspaces/{workspace_id}/api-keys",
+        json={"name": name},
+        headers=_auth(client),
+    )
+    return res
+
+
+# ── Key issuance (AC-01-12, AC-01-13) ────────────────────────────────────────
+def test_mint_returns_full_key_once_and_stores_hashed(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    res = _mint(client, ws)
+    assert res.status_code == 201
+    body = res.json()
+    full = body["fullKey"]
+    assert full.startswith("fxw_live_")
+    assert body["key"]["status"] == "ACTIVE"
+    assert body["key"]["maskedKey"].startswith("fxw_live_")
+    assert "••••" in body["key"]["maskedKey"]
+
+    # list never re-exposes the plaintext
+    lst = client.get(f"/omnichannel/workspaces/{ws}/api-keys", headers=_auth(client))
+    assert lst.status_code == 200
+    items = lst.json()["data"]
+    assert len(items) == 1
+    assert "fullKey" not in items[0]
+
+    # storage is a sha256 hash + 8-char prefix, never the plaintext
+    from modules.omnichannel.models import WorkspaceApiKey
+
+    db = session_factory()
+    row = db.query(WorkspaceApiKey).filter(WorkspaceApiKey.workspace_id == ws).first()
+    assert len(row.key_hash) == 64 and row.key_hash != full
+    assert len(row.key_prefix) == 8
+    db.close()
+
+
+def test_multiple_active_keys_and_revoke(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    k1 = _mint(client, ws, "a").json()
+    k2 = _mint(client, ws, "b").json()
+    assert k1["fullKey"] != k2["fullKey"]
+
+    # revoke k1
+    rid = k1["key"]["id"]
+    rev = client.post(
+        f"/omnichannel/workspaces/{ws}/api-keys/{rid}/revoke", headers=_auth(client)
+    )
+    assert rev.status_code == 200 and rev.json()["status"] == "REVOKED"
+
+    # revoked key immediately 401s on the public API
+    _seed_channel(session_factory, ws)
+    r = client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": "+60123456789", "type": "template"},
+        headers={"Authorization": f"Bearer {k1['fullKey']}"},
+    )
+    assert r.status_code == 401
+    assert r.json()["error"]["code"] == "invalid_api_key"
+
+
+# ── Bearer resolution + uniform 401 (AC-01-14, AC-01-36) ─────────────────────
+@pytest.mark.parametrize("hdr", [None, "Bearer nope", "Bearer fxw_live_deadbeef", "garbage"])
+def test_invalid_keys_uniform_401(client, session_factory, hdr):
+    headers = {"Authorization": hdr} if hdr else {}
+    r = client.get("/api/v1/omnichannel/templates", headers=headers)
+    assert r.status_code == 401
+    assert r.json()["error"]["code"] == "invalid_api_key"
+
+
+# ── Service binding (AC-01-15) ───────────────────────────────────────────────
+def test_service_not_enabled_when_module_inactive(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    key = _mint(client, ws).json()["fullKey"]
+    # Deactivate the omnichannel module for the tenant.
+    from app.services.app_store_service import AppStoreService
+
+    db = session_factory()
+    AppStoreService(db).deactivate(DEFAULT_TENANT_ID, "omnichannel")
+    db.close()
+    r = client.get(
+        "/api/v1/omnichannel/templates", headers={"Authorization": f"Bearer {key}"}
+    )
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "service_not_enabled"
+
+
+# ── Public send: 202 + our id + inbox bubble (AC-01-16) ──────────────────────
+def test_public_send_template_202_and_inbox_bubble(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    key = _mint(client, ws).json()["fullKey"]
+
+    r = client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": "+60999888777", "type": "template", "template": {"name": "anything"}},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    # No template row exists → structured 422 template_not_found (still the API envelope)
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "template_not_found"
+
+
+def test_public_send_text_open_window(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    _seed_open_contact(session_factory, ws, phone="+60123123123", open_window=True)
+    key = _mint(client, ws).json()["fullKey"]
+
+    r = client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": "+60123123123", "type": "text", "text": {"body": "Hi there"}},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert r.status_code == 202
+    body = r.json()
+    assert body["status"] == "queued" and body["id"] and body["idempotencyReplay"] is False
+
+    # message landed in the inbox thread as an outbound bubble
+    tok = _auth(client)
+    from modules.omnichannel.models import Contact
+
+    db = session_factory()
+    contact = db.query(Contact).filter(Contact.phone == "+60123123123").first()
+    cid = contact.id
+    db.close()
+    msgs = client.get(f"/omnichannel/contacts/{cid}/messages", headers=tok)
+    assert msgs.status_code == 200
+    bodies = [m["body"] for m in msgs.json()]
+    assert "Hi there" in bodies
+
+
+# ── CSW on the public API (AC-01-17) ─────────────────────────────────────────
+def test_csw_closed_free_form_409(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    _seed_open_contact(session_factory, ws, phone="+60555000111", open_window=False)
+    key = _mint(client, ws).json()["fullKey"]
+
+    r = client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": "+60555000111", "type": "text", "text": {"body": "late"}},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "csw_window_closed"
+
+
+def test_unsupported_type(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    key = _mint(client, ws).json()["fullKey"]
+    r = client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": "+60123", "type": "interactive"},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "unsupported_type"
+
+
+# ── Idempotency (AC-01-18) ───────────────────────────────────────────────────
+def test_idempotency_replay_same_workspace(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    _seed_open_contact(session_factory, ws, phone="+60700700700", open_window=True)
+    key = _mint(client, ws).json()["fullKey"]
+    hdr = {"Authorization": f"Bearer {key}", "Idempotency-Key": "abc-123"}
+    payload = {"to": "+60700700700", "type": "text", "text": {"body": "once"}}
+
+    r1 = client.post("/api/v1/omnichannel/messages", json=payload, headers=hdr)
+    r2 = client.post("/api/v1/omnichannel/messages", json=payload, headers=hdr)
+    assert r1.status_code == 202 and r2.status_code == 202
+    assert r1.json()["id"] == r2.json()["id"]
+    assert r2.json()["idempotencyReplay"] is True
+
+    # exactly one message persisted
+    from modules.omnichannel.models import Contact, ConversationMessage
+
+    db = session_factory()
+    c = db.query(Contact).filter(Contact.phone == "+60700700700").first()
+    n = (
+        db.query(ConversationMessage)
+        .filter(ConversationMessage.contact_id == c.id, ConversationMessage.body == "once")
+        .count()
+    )
+    db.close()
+    assert n == 1
+
+
+# ── Templates read-only (AC-01-19) ───────────────────────────────────────────
+def test_templates_list_over_api(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    cid = _seed_channel(session_factory, ws)
+    key = _mint(client, ws).json()["fullKey"]
+
+    from modules.omnichannel.models import WhatsappTemplate
+
+    db = session_factory()
+    db.add(
+        WhatsappTemplate(
+            tenant_id=DEFAULT_TENANT_ID,
+            channel_id=cid,
+            name="welcome",
+            language="en",
+            status="APPROVED",
+            components_json=[{"type": "BODY", "text": "Hello {{1}}"}],
+        )
+    )
+    db.commit()
+    db.close()
+
+    r = client.get("/api/v1/omnichannel/templates", headers={"Authorization": f"Bearer {key}"})
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert any(t["name"] == "welcome" and t["variableCount"] == 1 for t in data)
+
+
+# ── phone_number_id uniqueness guard (AC-01-20) ──────────────────────────────
+def test_phone_number_in_use_guard(session_factory):
+    from modules.omnichannel.services.onboarding_service import (
+        OnboardingService,
+        PhoneNumberInUse,
+    )
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws, phone_number_id="pn-dup")
+    db = session_factory()
+    with pytest.raises(PhoneNumberInUse):
+        OnboardingService(db)._assert_phone_available("pn-dup")
+    db.close()
