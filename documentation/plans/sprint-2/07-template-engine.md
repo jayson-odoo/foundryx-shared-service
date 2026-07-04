@@ -9,7 +9,7 @@
 
 ## Context
 
-The project plan (§1.2.4) calls for a multi-format template engine (email/web/PDF) with a drag-and-drop design tool. Research verdict: **one visual builder cannot serve email + webpage + badge** — output models are irreconcilable (MJML tables vs flow DOM vs mm-precise print canvas), and every successful EMS product (Eventbrite, Cvent, Webex Events…) runs separate purpose-built editors. What they DO share is the merge-field vocabulary and the brand asset library — both of which Dreamz already has as first-class engines (rule-engine fact registry, `tenant_branding`).
+The project plan (§1.2.4) calls for a multi-format template engine (email/web/PDF) with a drag-and-drop design tool. Research verdict: **one visual builder cannot serve email + webpage + badge** — output models are irreconcilable (MJML tables vs flow DOM vs mm-precise print canvas), and every successful EMS product (Eventbrite, Cvent, Webex Events…) runs separate purpose-built editors. What they DO share is the merge-field vocabulary and the brand asset library — both of which FoundryX already has as first-class engines (rule-engine fact registry, `tenant_branding`).
 
 So the Template Engine = **one engine, several editors**: shared template store, shared merge fields, shared brand assets, shared render dispatch — per-surface editor UIs and compilers added surface-by-surface. This plan ships the engine core + the **email surface** (the workflow-engine dependency); badge canvas and website builder follow as separate efforts on the same foundation.
 
@@ -83,9 +83,9 @@ One Alembic migration:
 - `tenant_branding` — add social URL columns + footer text fields (D4); `version` bump semantics unchanged.
 - `notification_specs.template_id` — nullable FK (D10).
 
-Seed: platform-default system templates for every existing transactional mail (block-doc ports of the Jinja2 templates, Dreamz-branded via brand blocks).
+Seed: platform-default system templates for every existing transactional mail (block-doc ports of the Jinja2 templates, FoundryX-branded via brand blocks).
 
-## Backend (`dreamz_ems_backend/`)
+## Backend (`service_backend/`)
 
 - **`app/template_engine/`** (mirrors `app/status_engine/`, `app/rule_engine/`):
   - `schemas.py` — Pydantic block-document models (camelCase), `validate_doc(doc, context)` → named 422s (unknown block type, bad layout, depth, missing required facts, invalid conditions via `rule_engine.validate_tree`, un-sanitizable custom HTML).
@@ -101,7 +101,7 @@ Seed: platform-default system templates for every existing transactional mail (b
 - **Permissions CSV** — `templates.read`, `templates.manage`, `emails.read`, `emails.manage`; Admin re-grant at seed.
 - **Deps** — `mrml`, `nh3` (requirements.txt).
 
-## Frontend (`dreamz_ems_frontend/`)
+## Frontend (`service_frontend/`)
 
 - **`components/platform/email-editor/`** — the block editor: `<EmailEditor doc onChange>` (palette, canvas, dnd-kit drag/reorder, inline text editing via merge-field-editor, block/section settings drawer with RuleBuilder visibility section, preview pane 600/375). Editor-agnostic doc in/out — the JSON schema is the only contract.
 - **`types/templates.ts`** — block-document TS types, `schemaVersion` const.

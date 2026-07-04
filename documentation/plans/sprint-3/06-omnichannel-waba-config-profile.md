@@ -1,10 +1,10 @@
 # Sprint 3 · Plan 06 — Omnichannel WABA Management: Configuration + Profile (Slice A)
 
-> **Feature:** Surface Meta `whatsapp_business_management` capabilities as tabs on the omnichannel **channel form**, so a tenant can manage their WABA/phone-number from inside Dreamz instead of the Meta dashboard. Inspiration: respond.io's channel settings (Configuration / Templates / WABA Balance / Profile / Calls). Design follows the Dreamz Resource-shell language, **not** respond.io's.
+> **Feature:** Surface Meta `whatsapp_business_management` capabilities as tabs on the omnichannel **channel form**, so a tenant can manage their WABA/phone-number from inside FoundryX instead of the Meta dashboard. Inspiration: respond.io's channel settings (Configuration / Templates / WABA Balance / Profile / Calls). Design follows the FoundryX Resource-shell language, **not** respond.io's.
 >
 > **This plan = Slice A only** (Configuration + Profile). Templates = Slice B1 (plan 07), Authentication templates = Slice B2 (plan 08). Balance + Calls = backlog (feasibility-blocked / product-gap, see §9).
 >
-> Module: `dreamz_ems_backend/modules/omnichannel/` + `dreamz_ems_frontend/app/(protected)/omnichannel/`. **First App Store module** — all changes stay inside the module (schema `app_omnichannel`, module permissions CSV, `create_all`/idempotent-ALTER, no core pollution).
+> Module: `service_backend/modules/omnichannel/` + `service_frontend/app/(protected)/omnichannel/`. **First App Store module** — all changes stay inside the module (schema `app_omnichannel`, module permissions CSV, `create_all`/idempotent-ALTER, no core pollution).
 
 ---
 
@@ -16,7 +16,7 @@ The full feature was grilled (`/grill-me`). Decisions that govern **all three sl
 |---|----------|------------|
 | D1 | **Scope** | 5 respond.io surfaces ranked by feasibility. Ship **Configuration + Profile + Templates**. Drop **Balance** (no API) + **Calls** (no call-handling) to backlog. |
 | D2 | **Slicing** | 3 slices: **A** = Config + Profile (this plan); **B1** = Template CRUD core; **B2** = Authentication templates. One numbered plan + one branch per slice. |
-| D3 | **Source of truth** | **Meta is system-of-record** for all Meta-owned data (verified name, business name, profile, templates). Dreamz **mirrors locally + explicit Sync button** (matches existing `WhatsappTemplate` mirror; dev-safe; instant render). **Write-through**: editable fields POST to Meta → on success refresh local. |
+| D3 | **Source of truth** | **Meta is system-of-record** for all Meta-owned data (verified name, business name, profile, templates). FoundryX **mirrors locally + explicit Sync button** (matches existing `WhatsappTemplate` mirror; dev-safe; instant render). **Write-through**: editable fields POST to Meta → on success refresh local. |
 | D4 | **Balance** | **Backlog (BL-106).** Meta exposes **no spendable wallet / top-up** for a Tech Provider. respond.io's balance is *their* reseller wallet ledger, not a Meta API. Real Meta data available later: `GET /{business_id}/extendedcredits` (credit-line status) + `pricing_analytics`/`conversation_analytics` (spend). A future read-only "Billing & Usage" tab, never a wallet. |
 | D5 | **Calls** | **Backlog (BL-107).** Meta calling-settings API is real (`POST /{phone_number_id}/settings`), but the product has **no call-handling** (no dialer/answer surface). Enabling "allow contacts to call you" = rings into the void = foolproof-UI violation. Ships with the actual call feature. |
 

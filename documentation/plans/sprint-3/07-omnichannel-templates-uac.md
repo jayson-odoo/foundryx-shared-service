@@ -11,7 +11,7 @@
 
 ## 1. Business-requirement criteria
 
-The business need: *a tenant builds, submits, tracks, edits, and deletes WhatsApp message templates inside Dreamz — with Meta as system-of-record and an explicit Sync — instead of using the Meta WhatsApp Manager.*
+The business need: *a tenant builds, submits, tracks, edits, and deletes WhatsApp message templates inside FoundryX — with Meta as system-of-record and an explicit Sync — instead of using the Meta WhatsApp Manager.*
 
 ### BR-1 — Templates tab lists all templates across statuses
 - **Given** a tenant Admin with `templates.read` on a connected channel
@@ -138,7 +138,7 @@ The process must **lead** the user — gated actions, live validation, no dead-e
 
 ## 3. UX & design-language criteria
 
-Must tally with the Dreamz Resource-shell + builder design language.
+Must tally with the FoundryX Resource-shell + builder design language.
 
 ### UX-1 — List built on the Resource shell
 - **Then** the Templates tab is a config-driven embedded `ResourceList` (server sort/filter/search/paginate, action registry ⋮) — no hand-rolled table
@@ -160,7 +160,7 @@ Must tally with the Dreamz Resource-shell + builder design language.
 - **Then** the right-pane WhatsApp-bubble preview reflects header/body/footer/buttons + sample values exactly as typed, updating live — giving WYSIWYG confidence before submit
 
 ### UX-7 — Brand, white-label, no raw CSS
-- **Then** Metronic utility classes only (no `<style>`/raw CSS), Dreamz tokens, no tenant-facing "Dreamz" copy
+- **Then** Metronic utility classes only (no `<style>`/raw CSS), FoundryX tokens, no tenant-facing "FoundryX" copy
 
 ### UX-8 — House datetime formatter
 - **Then** "last synced"/created timestamps render via `useDatetime`/`lib/datetime.ts` in the session timezone — no `new Date(iso)` direct formatting

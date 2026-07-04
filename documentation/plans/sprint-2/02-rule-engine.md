@@ -69,7 +69,7 @@ No other tables. (No `rules` table — D1.)
 
 ---
 
-## Backend (`dreamz_ems_backend/`)
+## Backend (`service_backend/`)
 
 - **`app/rule_engine/registry.py`** — `FactDef(key, label, type, options?, resolver)`, fact sources (`register_fact_source`, `facts(Model, keys, overrides?)` inference helper), `get_facts(sources) -> list[FactDef]`, `resolve_facts(sources, objects, db) -> dict`. Core registers `actor` (User) + `record:tenant` next to `STATUS_ENTITIES`.
 - **`app/rule_engine/evaluator.py`** — `evaluate(tree, facts) -> bool`, pure, no I/O. Fail-closed on missing/null (D5), depth guard, cross-fact resolution (D4). Also `failed_conditions(tree, facts)` for the error message.
@@ -83,7 +83,7 @@ No other tables. (No `rules` table — D1.)
 - **Routers** — `api/v1/rules.py`: `GET /rule-facts?sources=` (authenticated), `GET /rules` (gated `rules.read`, paginated). Transition CRUD already lives in `api/v1/statuses.py` — schema gains `conditionsJson`.
 - **Permissions** — add `rules.read` row to `app/permissions/permissions.csv`; re-grant Admin at seed.
 
-## Frontend (`dreamz_ems_frontend/`)
+## Frontend (`service_frontend/`)
 
 - **`components/platform/rule-builder/`** — `<RuleBuilder sources facts value onChange>`: fact dropdown grouped by source, operator menu per fact type (D3), value widget per type (text/number/date/bool/enum-select/multi), literal⇄field toggle on scalar compares (RHS = type-compatible facts only, D4), AND/OR group nesting, stale-fact amber chip + warning banner (D11). Interaction pattern cloned from `filter-builder.tsx` (draft tree, stable keys); own types in `types/rules.ts`.
 - **Edge drawer** (status-engine canvas) — "Conditions" section beneath roles: `<RuleBuilder sources={['actor', 'record:<entity>']}>`. Empty = unconditional.

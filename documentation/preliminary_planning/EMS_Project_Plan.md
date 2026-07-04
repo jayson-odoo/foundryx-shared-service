@@ -103,8 +103,8 @@
   - **AI Generation:** Scaffolds a preliminary JSON page layout based on the "Project Brief" before the user begins manual customization.
   - **Subdomain Publishing Methodology:**
     - *Data Persistence:* The CMS serializes the final page design into a JSON tree (and compiled HTML/CSS) and stores it in the FastAPI database, linked to the `Project`.
-    - *Infrastructure Routing:* A wildcard DNS record (`*.dreamz.com.my`) routes all subdomain traffic to a central reverse proxy (e.g., Nginx, Traefik, or an edge network like Cloudflare).
-    - *Resolution & Rendering:* When a visitor hits `eventname.dreamz.com.my`, the frontend middleware reads the `Host` header (`eventname`), queries the FastAPI backend for the matching Project's CMS data, and dynamically renders the Metronic-styled components on the fly without needing a static build step.
+    - *Infrastructure Routing:* A wildcard DNS record (`*.foundryx.com.my`) routes all subdomain traffic to a central reverse proxy (e.g., Nginx, Traefik, or an edge network like Cloudflare).
+    - *Resolution & Rendering:* When a visitor hits `eventname.foundryx.com.my`, the frontend middleware reads the `Host` header (`eventname`), queries the FastAPI backend for the matching Project's CMS data, and dynamically renders the Metronic-styled components on the fly without needing a static build step.
 - **2.5 Internal App Store (Module Manager)**
   - **Operator Dashboard:** A frontend UI listing all natively available and custom modules in the EMS ecosystem.
   - **Lifecycle Controls:** Operators can easily Import, Export, Install, Uninstall, Upgrade, Activate, or Deactivate modules.
@@ -184,8 +184,8 @@
 ## 2. User Stories
 
 ### Core & CRM
-- **US-01:** As a Dreamz admin, I want to create a new Event/Project from a template so I can quickly set up checklists and tasks.
-- **US-02:** As a Dreamz admin, I want to use a web content builder to drag-and-drop elements and publish a registration website to a subdomain.
+- **US-01:** As a FoundryX admin, I want to create a new Event/Project from a template so I can quickly set up checklists and tasks.
+- **US-02:** As a FoundryX admin, I want to use a web content builder to drag-and-drop elements and publish a registration website to a subdomain.
 - **US-03:** As an admin, I want to check domain availability via a DNS checker within the system.
 - **US-04:** As an admin, I want to generate a quotation and share it with the customer to finalize the event requirements.
 - **US-21:** As an admin operator, I want an App Store interface to install, upgrade, activate, or deactivate modular features (like the CMS or Finance modules) dynamically.

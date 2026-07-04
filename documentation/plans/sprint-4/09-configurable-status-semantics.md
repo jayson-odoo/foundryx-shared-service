@@ -145,7 +145,7 @@ Build **frontend-first against the mock** status-engine service, then swap the b
 
 ## TDD plan
 
-### Backend — `dreamz_ems_backend/tests/test_status_traits.py` (NEW)
+### Backend — `service_backend/tests/test_status_traits.py` (NEW)
 - `test_traits_json_column_nullable_none_as_null` (AC-09-01).
 - `test_register_status_trait_idempotent` + `test_register_conflicting_cardinality_raises` (AC-09-02).
 - `test_traits_for_is_per_entity` (AC-09-02).
@@ -158,7 +158,7 @@ Build **frontend-first against the mock** status-engine service, then swap the b
 - `test_fork_sets_is_system_false_and_copies_traits` + `test_copy_scope_is_system_false` (AC-09-07).
 - `test_status_traits_endpoint_lists_catalog_active_module_filtered` (AC-09-09).
 
-### Backend — `dreamz_ems_backend/tests/test_crm_so_traits.py` (NEW, or extend the CRM SO test)
+### Backend — `service_backend/tests/test_crm_so_traits.py` (NEW, or extend the CRM SO test)
 - `test_so_lines_editable_gate_not_key` (AC-09-15) — rename `draft`→`Drafting`, lines still editable.
 - `test_so_assigns_doc_number_milestone_by_trait` + idempotency (AC-09-16).
 - `test_so_invoiceable_gate_not_key` (AC-09-17).
@@ -199,7 +199,7 @@ A slice is NOT done until this gate passes (reviewer checks it; embed it in ever
 2. **Backfill existing rows/tenants.** `traits_json` is stamped on EVERY matching sales_order status across the platform tier AND every tenant fork (a per-module idempotent backfill in `bootstrap_modules` + `update_tenant`, seed-with-traits for new tenants) — NOT seed-if-absent only. Diverged-key rows are **warned, never auto-reset** (no tenant data loss).
 3. **No hardcoded tenant-editable keys.** Zero `key == "<literal>"` semantic branches remain in the gate-swapped SO paths (grep-verified — `test_so_no_key_literal_branches_remain`). The whole point: a tenant rename must not break the feature.
 4. **Perm-grant sweep — N/A (state it).** No new permission: trait edits ride existing `statuses.manage`; the `GET /status-traits` catalog rides `get_current_user`. No `tenant_admin_grant` sweep needed. (Recorded explicitly so the reviewer doesn't flag a missing sweep.)
-5. **Real-data user-perspective verify.** AC-09-30 (rename Confirmed→Approved → invoice-from-SO succeeds — the exact bug) verified end-to-end with real data at **375px AND 1280px** on a freshly REBUILT frontend (`rm -rf .next && npm run build`, kill stale `next-server`) against correctly-owned ports (3001 FE / 8001 Dreamz BE — kill any sorento squatting 8001).
+5. **Real-data user-perspective verify.** AC-09-30 (rename Confirmed→Approved → invoice-from-SO succeeds — the exact bug) verified end-to-end with real data at **375px AND 1280px** on a freshly REBUILT frontend (`rm -rf .next && npm run build`, kill stale `next-server`) against correctly-owned ports (3001 FE / 8001 FoundryX BE — kill any sorento squatting 8001).
 
 **Code-review hard-fail rules** (reviewer rejects): DB query/raw SQL in a router; a React component calling fetch/axios instead of a hook; `any` types; raw CSS/`<style>`; a module altering core `public` tables (this plan's `traits_json` migration is a **core** Alembic change to the core `statuses` table — correct, since the column is core infra; the per-module trait *catalog* and *backfill map* live in `modules/crm`, never in core). Also reject: a mock not swapped to real; a new column on an existing entity with no backfill for existing rows/tenants; code that hardcode-looks-up a tenant-editable key.
 

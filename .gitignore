@@ -5,7 +5,7 @@
 *.pem
 *.key
 
-# ---- Python (dreamz_ems_backend) ----
+# ---- Python (service_backend) ----
 __pycache__/
 *.py[cod]
 *$py.class
@@ -24,7 +24,7 @@ htmlcov/
 *.sqlite
 *.sqlite3
 
-# ---- Node / Next.js (dreamz_ems_frontend) ----
+# ---- Node / Next.js (service_frontend) ----
 node_modules/
 .next/
 out/

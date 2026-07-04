@@ -6,7 +6,7 @@
 > **How to read:** Each criterion is `Given / When / Then`, acceptance-testable by a real user clicking through the live stack (no URL shortcuts). Grouped into:
 > 1. **Business-requirement criteria** — does the system do the job the tenant needs?
 > 2. **Guided-process criteria** — is the user led, never stranded?
-> 3. **UX & design-language criteria** — does it look/feel like the rest of Dreamz?
+> 3. **UX & design-language criteria** — does it look/feel like the rest of FoundryX?
 > 4. **Security & isolation criteria** — RBAC, tenant scope, dev-safety.
 > 5. **Sign-off matrix** — the pass/fail checklist for UAT.
 >
@@ -16,7 +16,7 @@
 
 ## 1. Business-requirement criteria
 
-The business need: *a tenant manages their WABA identity + WhatsApp Business Profile from inside Dreamz, without logging into the Meta dashboard, with Meta as the system-of-record.*
+The business need: *a tenant manages their WABA identity + WhatsApp Business Profile from inside FoundryX, without logging into the Meta dashboard, with Meta as the system-of-record.*
 
 ### BR-1 — Channel form surfaces three tabs
 - **Given** I am a tenant Admin with `channels.read` on a connected WhatsApp channel
@@ -44,7 +44,7 @@ The business need: *a tenant manages their WABA identity + WhatsApp Business Pro
 - **When** the tab renders
 - **Then** I see the mirrored profile: about, address, description, email, vertical, website 1, website 2, and a read-only current profile photo
 - **And** values render from the **local mirror** (no Meta call on tab open — instant render)
-- **And** if never synced, fields show empty / neutral placeholders (never "Dreamz", never a raw null)
+- **And** if never synced, fields show empty / neutral placeholders (never "FoundryX", never a raw null)
 
 ### BR-5 — Sync Profile pulls latest profile from Meta
 - **Given** I have `channels.manage` on the Profile tab
@@ -131,7 +131,7 @@ The process must **lead** the user — no dead-ends, no silent failures, no gues
 
 ## 3. UX & design-language criteria
 
-Must tally with the Dreamz Resource-shell design language and brand.
+Must tally with the FoundryX Resource-shell design language and brand.
 
 ### UX-1 — Built on the Resource shell, not hand-rolled
 - **Then** the channel form is the config-driven `ResourceForm` (icon tabs, global Edit toggle, record-nav, `FormRow` with `*` on required) — no bespoke table/form markup
@@ -144,7 +144,7 @@ Must tally with the Dreamz Resource-shell design language and brand.
 - **Then** the 3-tab strip scrolls horizontally (never clips), the profile form **stacks single-column** on mobile and uses available width on desktop, and no control overlaps or causes horizontal page scroll
 
 ### UX-4 — Brand + white-label compliance
-- **Then** the surface uses Metronic utility classes only (no `<style>`, no raw CSS), Dreamz tokens, and no tenant-facing copy says "Dreamz"; empty profile states use neutral placeholders
+- **Then** the surface uses Metronic utility classes only (no `<style>`, no raw CSS), FoundryX tokens, and no tenant-facing copy says "FoundryX"; empty profile states use neutral placeholders
 
 ### UX-5 — Datetime rendering follows the house formatter
 - **Then** every timestamp ("last synced", "last verified") renders through `useDatetime`/`lib/datetime.ts` in the session timezone with no `new Date(iso)` direct formatting

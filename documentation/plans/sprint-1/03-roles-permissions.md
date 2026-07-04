@@ -3,7 +3,7 @@
 **Sprint:** 1
 **Branch:** `sprint-1/roles-permissions`
 **Closes:** BL-009 (RBAC / permissions per role)
-**Source of truth for UI:** Dreamz design system + the Resource shell (`components/platform/`). The provided
+**Source of truth for UI:** FoundryX design system + the Resource shell (`components/platform/`). The provided
 screenshots are *reference only* — design system governs.
 
 ---
@@ -40,7 +40,7 @@ Standard actions are `read / create / update / delete`; **custom actions** (e.g.
 
 ### 2.3 Declaration format — long-form CSV  *(Q3/Q4)*
 Location: **`<module>/backend/permissions/permissions.csv`**. Core declares the same way at
-**`dreamz_ems_backend/app/permissions/permissions.csv`** (core = "module zero", synced by `bootstrap_db`/`seed.py`).
+**`service_backend/app/permissions/permissions.csv`** (core = "module zero", synced by `bootstrap_db`/`seed.py`).
 
 One row per permission, **explicit labels** (no fragile auto-derivation):
 
@@ -290,7 +290,7 @@ real admin — records never get attributed to the impersonated user.** (Pattern
    stored client-side; `useCan()` uses target keys while a session is active (so the UI gates
    exactly as the target sees it). Backend enforces target perms via the header.
 4. **Actor attribution** — `get_actor_user_id(request, current_user)` returns the real admin.
-   dreamz has no `created_by` columns yet, so today writes are tenant-scoped only; the helper is
+   foundryx has no `created_by` columns yet, so today writes are tenant-scoped only; the helper is
    baked in so any future owned/audit column uses the real admin, never the target.
 5. **Banner** — collapsible amber top bar (expand → "Exit impersonation"; collapse → small pill so
    it never blocks controls), Metronic utilities, mounted in the protected layout. One active

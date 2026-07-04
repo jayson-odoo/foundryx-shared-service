@@ -1,5 +1,9 @@
 # PRINCIPLES.md — the non-negotiable contract (read FIRST)
 
+## What this is (shared-service fork)
+
+> **This repository is the FoundryX Shared Service Platform** — a central multi-tenant **service host** forked from FoundryX EMS. Each installable module is a **Service**; the platform is the shared spine (auth, RBAC, tenants, users, the module/App-Store platform, and all core engines). **The first Service is `omnichannel`** (WhatsApp-as-a-service, respond.io-style: per-workspace API key, public `/api/v1/omnichannel/*` gateway, consumer webhooks, Redis Streams event bus — built out in later slices). **The EMS domain (events / CRM / finance / profile portal / reviews) has been stripped**; any EMS-specific guidance is historical/reference-only. All engineering rules below (layering, datetime, RBAC, tenant scoping, reuse, foolproof-UI, module governance) apply unchanged to every Service. "App Store" is user-labelled **"Services"** (routes/components unchanged).
+
 The slim, always-true rules. `CLAUDE.md` is the detailed per-engine reference; **this file governs — on conflict, this wins.** Keep it short; deep detail belongs in `CLAUDE.md` / `documentation/`.
 
 ## Methodology (mandatory order, every feature)
@@ -17,17 +21,17 @@ The slim, always-true rules. `CLAUDE.md` is the detailed per-engine reference; *
 2. **Backfill existing rows/tenants** — a new column/engine on an entity that already has rows/tenants needs a backfill migration, not just seed-if-absent.
 3. **No hardcoded lookup of a tenant-editable key** — keys code depends on must be locked from tenant editing (system rows).
 4. **New permission → grant sweep** for already-provisioned tenants (grants compute at provision/seed; else the feature silently 403s / hides).
-5. **Verify from the USER's perspective** — real clicks, real data, fresh `rm -rf .next && npm run build`, **375px AND 1280px**, ports **3001** (FE) / **8001** (Dreamz backend; kill any sorento squatting 8001). Tests green ≠ user-verifiable (conftest `create_all` hides broken Alembic migrations — keep revision ids ≤ 32 chars).
+5. **Verify from the USER's perspective** — real clicks, real data, fresh `rm -rf .next && npm run build`, **375px AND 1280px**, ports **3001** (FE) / **8001** (FoundryX backend; kill any sorento squatting 8001). Tests green ≠ user-verifiable (conftest `create_all` hides broken Alembic migrations — keep revision ids ≤ 32 chars).
 
 ## Design mandates (user-issued; non-negotiable)
 - **Reuse, don't rebuild** — extend an existing component for a new variant.
 - **Foolproof-UI** — the UI is self-evident; NO instructional/how-to copy on screen. Only offer valid options; warn on missing prerequisites; never auto-derive an ambiguous action.
 - **Responsive** — every surface usable + non-clipped at 375px AND 1280px; verify both.
-- **White-label** — tenant-facing copy never says "Dreamz"; a branded tenant without a logo shows its NAME.
+- **White-label** — tenant-facing copy never says "FoundryX"; a branded tenant without a logo shows its NAME.
 - **Truncated text is always recoverable** — use `ClampedText`/`OverflowPills`, never a bare `truncate`/`line-clamp`.
 - **Every dropdown is searchable** — `SearchSelect` (single) / `MultiSelect` (many); no bare shadcn `<Select>`.
 - **Resource shell for every list/form** — config-driven `components/platform/{resource-list,resource-form}`; clone Users. No hand-rolled tables. No clickable parent menus (children only). The global Edit toggle gates canvases (read-only by default).
-- **No `<style>` tags / no raw CSS** — Metronic/Tailwind utility classes only. Brand source of truth = `css/dreamz-tokens.css` + the TokensStudio JSON.
+- **No `<style>` tags / no raw CSS** — Metronic/Tailwind utility classes only. Brand source of truth = `css/foundryx-tokens.css` + the TokensStudio JSON.
 - **Datetimes** stored UTC-0 (`UTCDateTime` columns, aware-UTC `datetime.now(timezone.utc)`), wire Z-suffixed (`ApiModel`), rendered in the user's tz via `lib/datetime.ts`.
 
 ## Layering (enforced)

@@ -1,4 +1,4 @@
-# Dreamz EMS — blue/green production compose.
+# FoundryX EMS — blue/green production compose.
 #
 # Active color tracked in .active_color (managed by scripts/blue_green_deploy.sh).
 # IMAGE_TAG = git SHA pushed by CI; the deploy script exports it before pull/up.
@@ -12,8 +12,8 @@
 # root — see .env.example. No secret carries an inline default here.
 
 x-backend-env: &backend-env
-  DATABASE_URL: postgresql://${POSTGRES_USER:-dreamz}:${POSTGRES_PASSWORD:?set in .env}@db:5432/${POSTGRES_DB:-dreamz_ems}
-  POSTGRES_ADMIN_URL: postgresql://${POSTGRES_USER:-dreamz}:${POSTGRES_PASSWORD:?set in .env}@db:5432/postgres
+  DATABASE_URL: postgresql://${POSTGRES_USER:-foundryx}:${POSTGRES_PASSWORD:?set in .env}@db:5432/${POSTGRES_DB:-foundryx_service}
+  POSTGRES_ADMIN_URL: postgresql://${POSTGRES_USER:-foundryx}:${POSTGRES_PASSWORD:?set in .env}@db:5432/postgres
   REDIS_URL: redis://redis:6379/0
   CELERY_TASK_ALWAYS_EAGER: "false"          # prod runs the real workers below
   JWT_SECRET: ${JWT_SECRET:?set in .env}
@@ -48,12 +48,12 @@ x-backend-env: &backend-env
   PLATFORM_SMTP_USERNAME: ${PLATFORM_SMTP_USERNAME:-}
   PLATFORM_SMTP_PASSWORD: ${PLATFORM_SMTP_PASSWORD:-}
   PLATFORM_SMTP_FROM_EMAIL: ${PLATFORM_SMTP_FROM_EMAIL:-}
-  PLATFORM_SMTP_FROM_NAME: ${PLATFORM_SMTP_FROM_NAME:-Dreamz EMS}
+  PLATFORM_SMTP_FROM_NAME: ${PLATFORM_SMTP_FROM_NAME:-FoundryX EMS}
 
 x-backend-base: &backend-base
-  image: ${IMAGE_REPO:-jayson1004/dreamz-ems}:backend-${IMAGE_TAG:-latest}
+  image: ${IMAGE_REPO:-jayson1004/foundryx-ems}:backend-${IMAGE_TAG:-latest}
   build:
-    context: ./dreamz_ems_backend
+    context: ./service_backend
     dockerfile: Dockerfile
   depends_on:
     db:
@@ -65,17 +65,17 @@ x-backend-base: &backend-base
   # here — otherwise the workers/beat would also answer to `backend:8001` and the
   # frontend's BACKEND_API_URL could resolve to a process with no HTTP server.
   networks:
-    - dreamz_network
+    - foundryx_network
 
 services:
   # ---------------- Infra (NOT blue/green) ----------------
   db:
     image: postgres:16
-    container_name: dreamz_db
+    container_name: foundryx_db
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-dreamz}
+      POSTGRES_USER: ${POSTGRES_USER:-foundryx}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-dreamz_ems}
+      POSTGRES_DB: ${POSTGRES_DB:-foundryx_service}
     command: >
       postgres
       -c max_connections=200
@@ -84,33 +84,33 @@ services:
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - dreamz_pg:/var/lib/postgresql/data
+      - foundryx_pg:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dreamz}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-foundryx}"]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
     networks:
-      - dreamz_network
+      - foundryx_network
 
   redis:
     image: redis:7-alpine
-    container_name: dreamz_redis
+    container_name: foundryx_redis
     command: redis-server --appendonly yes
     volumes:
-      - dreamz_redis:/data
+      - foundryx_redis:/data
     restart: unless-stopped
     networks:
-      - dreamz_network
+      - foundryx_network
 
   pgbackups:
     image: prodrigestivill/postgres-backup-local
-    container_name: dreamz_pgbackups
+    container_name: foundryx_pgbackups
     environment:
       POSTGRES_HOST: db
-      POSTGRES_DB: ${POSTGRES_DB:-dreamz_ems}
-      POSTGRES_USER: ${POSTGRES_USER:-dreamz}
+      POSTGRES_DB: ${POSTGRES_DB:-foundryx_service}
+      POSTGRES_USER: ${POSTGRES_USER:-foundryx}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
       SCHEDULE: "@daily"
       BACKUP_KEEP_DAYS: 7
@@ -121,7 +121,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - dreamz_network
+      - foundryx_network
 
   # ---------------- Celery (NOT blue/green; recreated in place) ----------------
   # Two distinct Celery apps share the backend image:
@@ -130,7 +130,7 @@ services:
   # ONE beat instance owns the workflow cron ticks.
   worker_workflow:
     <<: *backend-base
-    container_name: dreamz_worker_workflow
+    container_name: foundryx_worker_workflow
     environment: *backend-env
     command: ["celery", "-A", "app.workflow_engine.worker", "worker", "--loglevel", "info"]
     healthcheck:
@@ -138,7 +138,7 @@ services:
 
   worker_omni:
     <<: *backend-base
-    container_name: dreamz_worker_omni
+    container_name: foundryx_worker_omni
     environment: *backend-env
     command: ["celery", "-A", "modules.omnichannel.worker", "worker", "--loglevel", "info"]
     healthcheck:
@@ -146,7 +146,7 @@ services:
 
   beat:
     <<: *backend-base
-    container_name: dreamz_beat
+    container_name: foundryx_beat
     environment: *backend-env
     command: ["celery", "-A", "app.workflow_engine.worker", "beat", "--loglevel", "info"]
     healthcheck:
@@ -155,11 +155,11 @@ services:
   # ---------------- Backend API blue/green ----------------
   backend_blue:
     <<: *backend-base
-    container_name: dreamz_backend_blue
+    container_name: foundryx_backend_blue
     profiles: ["blue"]
     environment: *backend-env
     networks:
-      dreamz_network:
+      foundryx_network:
         aliases:
           - backend
     ports:
@@ -167,11 +167,11 @@ services:
 
   backend_green:
     <<: *backend-base
-    container_name: dreamz_backend_green
+    container_name: foundryx_backend_green
     profiles: ["green"]
     environment: *backend-env
     networks:
-      dreamz_network:
+      foundryx_network:
         aliases:
           - backend
     ports:
@@ -179,16 +179,16 @@ services:
 
   # ---------------- Frontend blue/green ----------------
   frontend_blue:
-    image: ${IMAGE_REPO:-jayson1004/dreamz-ems}:frontend-${IMAGE_TAG:-latest}
+    image: ${IMAGE_REPO:-jayson1004/foundryx-ems}:frontend-${IMAGE_TAG:-latest}
     build:
-      context: ./dreamz_ems_frontend
+      context: ./service_frontend
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_BACKEND_API_URL: ${NEXT_PUBLIC_BACKEND_API_URL:?set in .env}
         NEXT_PUBLIC_META_APP_ID: ${NEXT_PUBLIC_META_APP_ID:-}
         NEXT_PUBLIC_META_ES_CONFIG_ID: ${NEXT_PUBLIC_META_ES_CONFIG_ID:-}
         NEXT_PUBLIC_META_GRAPH_VERSION: ${NEXT_PUBLIC_META_GRAPH_VERSION:-v19.0}
-    container_name: dreamz_frontend_blue
+    container_name: foundryx_frontend_blue
     profiles: ["blue"]
     environment: &frontend-env
       NODE_ENV: production
@@ -200,35 +200,35 @@ services:
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set in .env}
     restart: unless-stopped
     networks:
-      - dreamz_network
+      - foundryx_network
     ports:
       - "127.0.0.1:3001:3001"
 
   frontend_green:
-    image: ${IMAGE_REPO:-jayson1004/dreamz-ems}:frontend-${IMAGE_TAG:-latest}
+    image: ${IMAGE_REPO:-jayson1004/foundryx-ems}:frontend-${IMAGE_TAG:-latest}
     build:
-      context: ./dreamz_ems_frontend
+      context: ./service_frontend
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_BACKEND_API_URL: ${NEXT_PUBLIC_BACKEND_API_URL:?set in .env}
         NEXT_PUBLIC_META_APP_ID: ${NEXT_PUBLIC_META_APP_ID:-}
         NEXT_PUBLIC_META_ES_CONFIG_ID: ${NEXT_PUBLIC_META_ES_CONFIG_ID:-}
         NEXT_PUBLIC_META_GRAPH_VERSION: ${NEXT_PUBLIC_META_GRAPH_VERSION:-v19.0}
-    container_name: dreamz_frontend_green
+    container_name: foundryx_frontend_green
     profiles: ["green"]
     environment: *frontend-env
     restart: unless-stopped
     networks:
-      - dreamz_network
+      - foundryx_network
     ports:
       - "127.0.0.1:3011:3001"
 
 volumes:
-  dreamz_pg:
+  foundryx_pg:
     driver: local
-  dreamz_redis:
+  foundryx_redis:
     driver: local
 
 networks:
-  dreamz_network:
+  foundryx_network:
     driver: bridge

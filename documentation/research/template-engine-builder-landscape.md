@@ -12,8 +12,8 @@
 
 **What IS shared — the real reuse seam:**
 
-- **The merge-field / data-tag system.** Cvent is the clearest example: 40+ data tags work identically in the Site Designer AND the email designer — different editors, one tag vocabulary. For Dreamz this maps directly onto the rule-engine **fact registry** (`actor.*`, `record:*` facts) — we already have the cross-surface data vocabulary built.
-- **The brand asset library.** Splash's best-loved feature: upload colors/fonts/logos once, every surface auto-brands. For Dreamz this is `tenant_branding` (sprint-2/03) — also already built.
+- **The merge-field / data-tag system.** Cvent is the clearest example: 40+ data tags work identically in the Site Designer AND the email designer — different editors, one tag vocabulary. For FoundryX this maps directly onto the rule-engine **fact registry** (`actor.*`, `record:*` facts) — we already have the cross-surface data vocabulary built.
+- **The brand asset library.** Splash's best-loved feature: upload colors/fonts/logos once, every surface auto-brands. For FoundryX this is `tenant_branding` (sprint-2/03) — also already built.
 - **The render pipeline + JSON schema philosophy.** Store a portable JSON tree per surface; each surface has its own compiler (JSON→MJML→HTML for email, JSON→React for web, JSON→SVG→PDF for badges).
 
 So the "Template Engine" is **one engine, several editors**: shared template store, shared merge fields, shared brand assets, shared render-dispatch — per-surface editor UIs and compilers.
@@ -35,13 +35,13 @@ Strong market signal on how much design freedom event organizers actually use:
 - Editor model = **two-level structure**: **Section** (layout row: columns/widths/background) → **Block** (content: text, image, button, divider, spacer, social). This is Brevo's model — the cleanest documented block grammar in the industry.
 - The escape hatch for the ~10% power users = a **custom-HTML block** (sanitized), NOT pixel freedom. Every structured platform ships one (Swoogo, Bizzabo, Brevo).
 - Industry UX trend: moving from side-panel editing → **inline on-canvas editing** (Mailchimp's new builder). Prefer click-text-edit-in-place over click-then-edit-in-sidebar where feasible.
-- **Conditional logic is the single most-demanded "advanced" feature** across email AND badges (show section/element by attendee type, registration field, payment status). Cvent's rebuilt badge designer leads with it; Webex badges have per-element visibility rules. For Dreamz: **the rule engine plugs in as block/section visibility conditions** — a `conditions_json` on a block, evaluated against the same facts that drive transitions. Design the block schema for this from day one.
+- **Conditional logic is the single most-demanded "advanced" feature** across email AND badges (show section/element by attendee type, registration field, payment status). Cvent's rebuilt badge designer leads with it; Webex badges have per-element visibility rules. For FoundryX: **the rule engine plugs in as block/section visibility conditions** — a `conditions_json` on a block, evaluated against the same facts that drive transitions. Design the block schema for this from day one.
 
 ## 3. The block schema is a forever-contract
 
 Mailchimp's cautionary tale: their classic builder and new builder have **non-portable content** — templates built in one cannot open in the other. A hard migration wall stranding years of customer content.
 
-Rules for Dreamz:
+Rules for FoundryX:
 
 - The JSON block schema gets a **`schemaVersion`** from day one and a written upgrade policy (migrate-on-read or migrate-on-write).
 - Keep the schema **editor-agnostic**: it describes content + layout intent, not editor internals. If we swap editor libraries later, content survives.
@@ -106,9 +106,9 @@ Path: canvas JSON → SVG/PNG → fixed-size HTML → WeasyPrint.
 | Mailchimp | `*\|FNAME\|*` merge tags + dynamic content |
 | Plan §1.2.4 | Handlebars/Mustache `{{user.name}}`, partials `{{> event_header}}` |
 
-`{{ dotted.path }}` double-curly is the modern norm and matches both the plan and Jinja2 (already our email templating). Dreamz already has the **merge-field-editor** component (status-engine notifications, chips + in-place preview — CLAUDE.md says "the standard template-builder input, BL-024 adopts") and the **fact registry** as the field vocabulary. One canonical token grammar across all surfaces.
+`{{ dotted.path }}` double-curly is the modern norm and matches both the plan and Jinja2 (already our email templating). FoundryX already has the **merge-field-editor** component (status-engine notifications, chips + in-place preview — CLAUDE.md says "the standard template-builder input, BL-024 adopts") and the **fact registry** as the field vocabulary. One canonical token grammar across all surfaces.
 
-## 6. What this means for Dreamz product quality
+## 6. What this means for FoundryX product quality
 
 1. **We're building the Cvent architecture with better seams.** Their data-tag system is bolted across products; ours is a first-class engine (rule-engine facts) that emails, badges, web pages, AND workflow conditions all share. That's a genuine differentiator, not just parity.
 2. **Don't chase Splash.** Free-form looks impressive in demos and bleeds usability complaints in production. Structured blocks + great themes + brand-asset auto-styling = the loved experience (Luma proof).

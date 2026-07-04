@@ -46,7 +46,7 @@
 
 ## Live E2E (slice 1)
 
-Spec: `dreamz_ems_frontend/e2e/document-templates.spec.ts` (chromium, real user clicks
+Spec: `service_frontend/e2e/document-templates.spec.ts` (chromium, real user clicks
 against the live stack — backend :8001, served prod build :3001). Run:
 `npx playwright test e2e/document-templates.spec.ts --reporter=line` → **3 passed**.
 

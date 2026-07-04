@@ -39,7 +39,7 @@ API-native mail adapters (Resend/SES REST), multi-connection-per-provider, Redis
 | D6 | Fallback chain | tenant connection fails (after retries) → **platform connection** → mark failed. Resolution order per email: recipient-tenant connection → platform connection → dev-log (dev). |
 | D7 | Secrets storage | **Split**: `config_json` plain (host/port/from — displayable/queryable) + `credentials_json` Fernet-encrypted (password). New core `FERNET_KEY` + `app/secrets.py` helper; omnichannel migrates onto it later (BL-042). |
 | D8 | Uniqueness | **One connection per (tenant, provider)** for MVP. Multi-connection (marketing vs transactional) = BL-043. |
-| D9 | Templates | **Jinja2 branded HTML + plain-text fallback** — one Dreamz base layout + invite/reset/verify children. Per-tenant branding + user-editable templates = BL-038 (ties BL-024 template engine). |
+| D9 | Templates | **Jinja2 branded HTML + plain-text fallback** — one FoundryX base layout + invite/reset/verify children. Per-tenant branding + user-editable templates = BL-038 (ties BL-024 template engine). |
 | D10 | Tenant UI | **New `/settings/integrations`** card grid + guided wizard (`integration-connect-wizard` shell in `components/platform/`), gated by new `integrations.read/manage` permission keys. Retrofitting omnichannel's channel wizard onto the shell = BL-045. |
 | D11 | Counter/queue store | **Postgres, not Redis** — auth/email volume is low-QPS; on-prem stays one-service; outbox *wants* durability. Redis enters the stack when a feature genuinely needs it (BL-022 pub/sub) — BL-040. |
 
@@ -131,7 +131,7 @@ Admin seed re-grant picks these up (existing bootstrap behavior).
 - **Resolution** (at dispatch): recipient-tenant `smtp` connection → platform-tenant
   connection → if neither (or `FERNET_KEY`-less dev) **DevLog adapter** prints the link —
   local dev behavior unchanged, zero config.
-- **Templates** `app/templates/email/`: `base.html` (Dreamz logo, orange `#FF5A00`,
+- **Templates** `app/templates/email/`: `base.html` (FoundryX logo, orange `#FF5A00`,
   footer) + `invite.html` / `password_reset.html` / `verification.html` + `.txt` siblings.
   Jinja2 added to requirements (FastAPI already ships it transitively; pin explicitly).
 - **Test-send** (wizard step): renders a `test` template and sends **inline**

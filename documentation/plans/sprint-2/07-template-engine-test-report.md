@@ -20,7 +20,7 @@ Backend `test_template_engine.py` (40 cases) covers: merge security (substitutio
 ## E2E Test Execution Report (orchestration guide §6)
 
 Rig: backend :8001 (migrated + seeded), frontend :3001 (built), maildir smtpd
-(`aiosmtpd … Mailbox /tmp/dreamz-e2e-mailbox`). Dedicated tenant provisioned via
+(`aiosmtpd … Mailbox /tmp/foundryx-e2e-mailbox`). Dedicated tenant provisioned via
 the operator API per run (isolation §7); timestamped names.
 
 ### Scenario 1 — Create, design, preview, test-send

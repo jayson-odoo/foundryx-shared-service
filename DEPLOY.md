@@ -1,4 +1,7 @@
-# Dreamz EMS — Deployment (CI/CD, blue/green)
+# FoundryX Shared Service Platform — Deployment (CI/CD, blue/green)
+
+> Shared-service fork (see `PRINCIPLES.md` → "What this is"). Forked from FoundryX EMS; the EMS domain is stripped, each module is a **Service** (first = `omnichannel`). Image/service/host names below may still read "foundryx" — they are the deployment identifiers carried over from the fork; rename per environment as the platform is renamed.
+
 
 Every push to `main` triggers `.github/workflows/deploy.yml`: validate → build &
 push images to Docker Hub → SSH into the server → `scripts/blue_green_deploy.sh`
@@ -44,18 +47,18 @@ Variable in GitHub and re-run the workflow — never SSH in to hand-edit `.env`.
 ## One-time server setup
 
 1. Install Docker + compose plugin. Create the deploy dir (matches `DEPLOY_PATH`
-   secret), e.g. `/opt/dreamz-ems`. CI delivers compose + `.env` + the deploy
+   secret), e.g. `/opt/foundryx-ems`. CI delivers compose + `.env` + the deploy
    script on first push.
 2. DNS: already done — you reuse the existing `icp-demo.foundryx.my` record. No
    new subdomain needed. Caddy issues TLS for it automatically.
 3. Caddy: the deploy script **owns** a site fragment (`CADDY_SITE_FILE`, default
-   `/etc/caddy/dreamz.caddy`) — it rewrites the single site block to the active
+   `/etc/caddy/foundryx.caddy`) — it rewrites the single site block to the active
    color's ports each swap and runs `caddy reload`. Your main Caddyfile
    (`CADDY_CONFIG`, default `/etc/caddy/Caddyfile`) must import it:
    ```caddyfile
-   import /etc/caddy/dreamz.caddy
+   import /etc/caddy/foundryx.caddy
    ```
-   (If dreamz is the only site, set both `CADDY_SITE_FILE` and `CADDY_CONFIG` to
+   (If foundryx is the only site, set both `CADDY_SITE_FILE` and `CADDY_CONFIG` to
    `/etc/caddy/Caddyfile`.) The deploy user needs passwordless `sudo caddy
    validate` / `caddy reload` / `install`. Each swap the script writes:
    ```caddyfile
@@ -79,7 +82,7 @@ Settings → Secrets and variables → Actions.
 
 **Secrets** (sensitive — masked in logs, used to render the server `.env`):
 - Pipeline: `DOCKER_USERNAME`, `DOCKER_PASSWORD`, `SSH_HOST`, `SSH_USER`,
-  `SSH_PRIVATE_KEY`, `DEPLOY_PATH` (e.g. `/opt/dreamz-ems`).
+  `SSH_PRIVATE_KEY`, `DEPLOY_PATH` (e.g. `/opt/foundryx-ems`).
 - App: `POSTGRES_PASSWORD`, `JWT_SECRET`, `FERNET_KEY`, `OMNICHANNEL_FERNET_KEY`,
   `NEXTAUTH_SECRET`, `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`,
   `PLATFORM_SMTP_USERNAME`, `PLATFORM_SMTP_PASSWORD`.

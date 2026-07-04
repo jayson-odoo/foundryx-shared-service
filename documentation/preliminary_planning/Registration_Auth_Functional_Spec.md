@@ -62,7 +62,7 @@ For corporate sponsors or admins registering groups at once.
 ## 4. Authentication Workflows
 
 ### 4.1 Activation Flow (New Users)
-1. User clicks the secure link in their email: `https://[event].dreamz.com.my/activate?token=ABC123XYZ`.
+1. User clicks the secure link in their email: `https://[event].foundryx.com.my/activate?token=ABC123XYZ`.
 2. The UI validates the token with the FastAPI backend.
 3. If valid, the UI displays a "Set Your Password" screen.
 4. User submits the password. Backend hashes it (bcrypt), updates the `Users` table password field, sets `status_id` to `Active`, and invalidates the token.
@@ -72,6 +72,6 @@ For corporate sponsors or admins registering groups at once.
 2. Backend checks if the email exists. (For security, if it doesn't exist, it still returns "If an account exists, a link has been sent" to prevent email scraping).
 3. Backend generates a 1-hour expiration token and saves it to a new `Password_Resets` table (`id`, `user_id`, `token`, `expires_at`).
 4. System sends the "Password Reset" email.
-5. User clicks link: `https://[event].dreamz.com.my/reset-password?token=DEF456`.
+5. User clicks link: `https://[event].foundryx.com.my/reset-password?token=DEF456`.
 6. UI displays the "New Password" form.
 7. Backend hashes the new password, updates the user, and deletes the token from `Password_Resets`.

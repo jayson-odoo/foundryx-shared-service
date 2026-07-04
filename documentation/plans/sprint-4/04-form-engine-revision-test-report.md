@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-18
 **Branch:** `sprint-4/04-form-revisions`
-**Stack under test:** FastAPI backend (dedicated `dreamz_ems_rev` Postgres DB, port 8012) + Next.js prod build (port 3002). Ports shifted to avoid two concurrent developers on the defaults.
+**Stack under test:** FastAPI backend (dedicated `foundryx_service_rev` Postgres DB, port 8012) + Next.js prod build (port 3002). Ports shifted to avoid two concurrent developers on the defaults.
 **Method:** Phase 1 frontend-first UX verification (mock-bound) → Phase 2 backend + pytest → Phase 3 real-stack E2E (Playwright, real clicks) → Phase 4 code review.
 
 ---

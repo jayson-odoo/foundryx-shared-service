@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dreamz EMS blue/green orchestration. Run on the server from the repo root
+# FoundryX EMS blue/green orchestration. Run on the server from the repo root
 # (the dir holding docker-compose.yml + .env + .active_color).
 #
 # Single public domain (no extra DNS): Caddy fronts everything, auto-TLS.
@@ -29,9 +29,9 @@ export IMAGE_TAG
 
 # Caddy: the script rewrites CADDY_SITE_FILE (a self-contained fragment with both
 # site blocks pointing at the active color) then reloads CADDY_CONFIG. The main
-# Caddyfile must `import` the fragment (see DEPLOY.md). If dreamz is the ONLY site,
+# Caddyfile must `import` the fragment (see DEPLOY.md). If foundryx is the ONLY site,
 # set CADDY_SITE_FILE=CADDY_CONFIG=/etc/caddy/Caddyfile.
-CADDY_SITE_FILE="${CADDY_SITE_FILE:-/etc/caddy/dreamz.caddy}"
+CADDY_SITE_FILE="${CADDY_SITE_FILE:-/etc/caddy/foundryx.caddy}"
 CADDY_CONFIG="${CADDY_CONFIG:-/etc/caddy/Caddyfile}"
 DRAIN_SECONDS="${DRAIN_SECONDS:-30}"
 HEALTH_WAIT_TICKS="${HEALTH_WAIT_TICKS:-150}"   # 150 * 2s = 5 min max (bootstrap_db runs on API start)

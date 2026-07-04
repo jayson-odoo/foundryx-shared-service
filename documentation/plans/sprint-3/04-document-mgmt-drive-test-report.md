@@ -93,7 +93,7 @@ Ran the branch's backend (`uvicorn … :8001`, shared Postgres migrated to `d4e5
 - **Desktop (1280px):** two-pane Drive renders — folder-tree sidebar + storage bar | breadcrumb + toolbar + grid; the **Documents** sidebar group shows All documents / Document types / Settings (menu wiring + per-key pruning OK).
 - **Create folder** → "Quotations" appears in **both** the tree and the grid (real Postgres write). The New-folder dialog's Create button stays disabled until named (foolproof, FOLDER-E3).
 - **Upload** a PDF via the picker → the file card appears (35 B) and the **storage usage bar updates to 35 B** (StorageService local-disk round-trip + AC-USAGE-01).
-- **Mobile (375px):** sidebar+storage stack above the grid, toolbar wraps to two rows, 2-column card grid; **zero horizontal overflow**. Screenshots: `dreamz_ems_frontend/.playwright-mcp/drive-{desktop-1280,mobile-375}.png`.
+- **Mobile (375px):** sidebar+storage stack above the grid, toolbar wraps to two rows, 2-column card grid; **zero horizontal overflow**. Screenshots: `service_frontend/.playwright-mcp/drive-{desktop-1280,mobile-375}.png`.
 
 **Responsive fix applied during verify:** the toolbar action-button group (5 buttons) overflowed 375px by 6px; added `flex-wrap justify-end` so it wraps (AC-RESP-02 / RESP-E1). One real bug, fixed and re-verified.
 

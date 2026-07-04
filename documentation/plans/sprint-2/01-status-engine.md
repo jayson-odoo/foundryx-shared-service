@@ -58,7 +58,7 @@ Add columns; keep `category` **nullable + cosmetic only** (no code branches on i
 
 ---
 
-## Backend (`dreamz_ems_backend/`)
+## Backend (`service_backend/`)
 
 - **Entity registry** — `app/status_engine/registry.py`: `STATUS_ENTITIES` list (`entity_type`, `label`, owning module, default-status seed, required-semantic hints). Core registers `tenant`. Module-extensible (modules append at install, mirroring permissions.csv pattern). Backs `GET /status-entities`.
 - **Models** — extend `app/models/status.py`; add `status_transition.py`, `notification_spec.py`, etc. to `app/models/`.
@@ -73,7 +73,7 @@ Add columns; keep `category` **nullable + cosmetic only** (no code branches on i
 - **Permissions** — add to `app/permissions/permissions.csv`: `statuses.read`, `statuses.manage`. Re-grant Admin at seed.
 - **Tenant lifecycle rewrite** — replace every `category`-based branch (login gating, suspend/archive checks) with flag reads (`status.blocks_access`, `status.is_archived`). Grep `TENANT_STATUS_SUSPENDED`/`ARCHIVED`/`category` in `app/services/`, `app/dependencies.py`, tenant service/repo.
 
-## Frontend (`dreamz_ems_frontend/`)
+## Frontend (`service_frontend/`)
 
 - **Dep:** `@xyflow/react` (v12, React 19-safe), `npm i --force`.
 - **Generic canvas** — `components/platform/flow-canvas/` (`<FlowCanvas>`): nodes, edges, drag-create edges, node/edge selection → drawer. Built generic so the Workflow engine reuses it.

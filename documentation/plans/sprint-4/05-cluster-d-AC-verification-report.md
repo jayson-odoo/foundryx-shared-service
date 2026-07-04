@@ -4,7 +4,7 @@
 **Date:** 2026-06-21
 **Tester:** QA (Claude Opus 4.8)
 **Spec:** `documentation/plans/sprint-4/05-cluster-d-registration-ticketing-venue-acceptance-criteria.md`
-**Stack under test:** FE `http://localhost:3001` (fresh `rm -rf .next && npm run build` + restart) → BE `http://localhost:8001` (Dreamz, default tenant) → native Postgres. Login `demo@example.com` / `demo1234`.
+**Stack under test:** FE `http://localhost:3001` (fresh `rm -rf .next && npm run build` + restart) → BE `http://localhost:8001` (FoundryX, default tenant) → native Postgres. Login `demo@example.com` / `demo1234`.
 
 ---
 
@@ -29,7 +29,7 @@ vitest run services/ems-service.ticket-actions.test.ts services/ems-service.chec
 
 ## 3. E2E (real-clicks, live stack)
 
-**New spec authored: `dreamz_ems_frontend/e2e/cluster-d-admin.spec.ts` — 5/5 PASS** (workers=1):
+**New spec authored: `service_frontend/e2e/cluster-d-admin.spec.ts` — 5/5 PASS** (workers=1):
 - ① Admin add-one — Tickets tab → Add attendee → ticket appears (CART-09)
 - ② QR render + ③ Void — detail QR renders + form "…" Void flips status & hides the action (TKT-02, TKT-04)
 - ④ Check-in — create checkpoint, scan a ticket, admit lands in the recent-scans feed (CHK-01)
@@ -144,5 +144,5 @@ The Check-in "QR token" `<Input>` does not reliably update its React state via P
 
 ## 7. Files
 
-- New E2E: `dreamz_ems_frontend/e2e/cluster-d-admin.spec.ts` (5 tests, all green).
+- New E2E: `service_frontend/e2e/cluster-d-admin.spec.ts` (5 tests, all green).
 - Existing backend coverage (no duplication added — the brief's target gaps were already covered): `tests/test_cluster_d_slice3.py` (QR/void/refund/checkpoint/derived), `tests/test_cluster_d_import.py` (IMP-01..05), `tests/test_finance.py`, `tests/test_cluster_d.py`.

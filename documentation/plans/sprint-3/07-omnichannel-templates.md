@@ -4,7 +4,7 @@
 >
 > **This plan = Slice B1** (text + media-header + standard-button templates, categories Marketing/Utility). Configuration + Profile = plan 06 (Slice A). **Authentication** templates = plan 08 (Slice B2, distinct shape, grilled separately).
 >
-> Builds on plan 06's tab structure, mirror-with-Sync model, and dev-safe stance. Module: `dreamz_ems_backend/modules/omnichannel/` (schema `app_omnichannel`, idempotent-ALTER, no core pollution).
+> Builds on plan 06's tab structure, mirror-with-Sync model, and dev-safe stance. Module: `service_backend/modules/omnichannel/` (schema `app_omnichannel`, idempotent-ALTER, no core pollution).
 
 ---
 

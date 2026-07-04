@@ -30,7 +30,7 @@ Out of scope (deferred, see §10): public self-signup, invite emails, custom dom
 | D1 | Where does the platform-operator concept live? | **Reserved platform tenant** (`is_platform=true`, slug `platform`), seeded at bootstrap. No god-flag on users; no separate admin app. |
 | D2 | How are platform endpoints gated? | **Permission keys + tenant guard**: `require_platform_permission(key)` = `require_permission(key)` AND `user.tenant_id == platform tenant`. Double lock — a tenant role holding the key is still blocked. |
 | D3 | Tenant creation scope | **Operator-created only** this plan. Provisioning service built so self-signup (BL-032) later just calls it. |
-| D4 | Tenant resolution at login | **Subdomain slug** (`acme.dreamzems.com`). Frontend derives slug from hostname → sends in login payload (+ `X-Tenant-Slug` header on all API calls, defense-in-depth). Dev fallback `NEXT_PUBLIC_TENANT_SLUG` → `default`. |
+| D4 | Tenant resolution at login | **Subdomain slug** (`acme.foundryxems.com`). Frontend derives slug from hostname → sends in login payload (+ `X-Tenant-Slug` header on all API calls, defense-in-depth). Dev fallback `NEXT_PUBLIC_TENANT_SLUG` → `default`. |
 | D5 | Tenant lifecycle states | **Hybrid status foundation**: new core `statuses` table; tenant lifecycle = 3 system rows (active/suspended/archived). Code branches on fixed `category`, labels/colors editable (operator only). Full configurable engine stays BL-027. |
 | D6 | First admin credentials | **Operator-set temp password**, handed out-of-band. Invite-email flow = BL-033 (the `EmailService` console adapter from sprint-1/02 can be reused as a fast-follow). |
 | D7 | Console placement | **Same app**: `/platform/tenants` route group, "Platform" menu section visible only to platform-tenant users with `tenants.read`. Resource shell clone (Users = reference). |
@@ -117,7 +117,7 @@ tenants,Tenant Management,manage_modules,Manage tenant modules,Can operate a ten
 
 ## 6. Tenant resolution at login (D4)
 
-- **Frontend:** `lib/tenant.ts` derives slug from `window.location.hostname` (first label of `*.dreamzems.com`-style hosts); fallback chain → `NEXT_PUBLIC_TENANT_SLUG` env → `"default"`. NextAuth `authorize()` includes `tenantSlug` in the login POST; `lib/api-client.ts` attaches `X-Tenant-Slug` on every request (defense-in-depth — backend may cross-check vs JWT claim, JWT remains source of truth post-login).
+- **Frontend:** `lib/tenant.ts` derives slug from `window.location.hostname` (first label of `*.foundryxems.com`-style hosts); fallback chain → `NEXT_PUBLIC_TENANT_SLUG` env → `"default"`. NextAuth `authorize()` includes `tenantSlug` in the login POST; `lib/api-client.ts` attaches `X-Tenant-Slug` on every request (defense-in-depth — backend may cross-check vs JWT claim, JWT remains source of truth post-login).
 - **Backend:** `POST /auth/login {email, password, tenantSlug?}` → resolve slug→tenant (missing slug = `default`, preserving current behavior); unknown slug or non-active tenant → uniform 403 path; auth proceeds tenant-scoped exactly as today. JWT `tenant_id` claim unchanged.
 - `get_current_user` additionally loads the tenant and rejects when its status category ≠ `active` (suspension takes effect on next request).
 - Local dev / tests keep working with zero config (default fallback). Wildcard DNS + per-tenant subdomains = infra-level, runbook note only.

@@ -1,7 +1,7 @@
 # Sprint 3 · Plan 08 — Terminology (per-tenant entity relabeling)
 
 **Branch:** `sprint-3/08-terminology`
-**Advances:** F10 (roadmap `sprint-3/00-foundation-gaps-roadmap.md`; full grill record `sprint-3/F4-foundations-grill-decisions.md` §3). First of the four F4-prerequisite foundations (F10 → F8 → F9 → F4). **Consumed by** every list title / menu / breadcrumb / create-button in the system, and most visibly by F4 (`project` → "Event" for Dreamz, "Project" for a Sorento-style tenant).
+**Advances:** F10 (roadmap `sprint-3/00-foundation-gaps-roadmap.md`; full grill record `sprint-3/F4-foundations-grill-decisions.md` §3). First of the four F4-prerequisite foundations (F10 → F8 → F9 → F4). **Consumed by** every list title / menu / breadcrumb / create-button in the system, and most visibly by F4 (`project` → "Event" for FoundryX, "Project" for a Sorento-style tenant).
 **Spawns:** BL-1xx language i18n layer (multi-language labels, not just rename) · BL-1xx auto-pluralization helper (v1 stores both forms explicitly) · BL-1xx field-level relabeling (rename a column/field, not just the entity) · BL-1xx purge override rows on module uninstall.
 **Depends on:** Resource shell (sprint-1/02), the cached-config delivery pattern (permissions / branding SSR), the code-side registry pattern (StatusEntity / TriggerDef / FactSource — terminology mirrors it), `useCan` + core `permissions.csv`, the menu config arrays + `filterMenu` (sprint-2/05).
 
@@ -9,7 +9,7 @@
 
 ## Context
 
-Dreamz EMS is multi-tenant: one deployment serves a tenant who calls the core entity an **"Event"** and another who calls it a **"Project"** (and a CRM tenant who calls a `profile` a "Contact"). The display word can't be a build-time constant — it must be **per-tenant config**. This is Salesforce-style "rename tabs and labels."
+FoundryX EMS is multi-tenant: one deployment serves a tenant who calls the core entity an **"Event"** and another who calls it a **"Project"** (and a CRM tenant who calls a `profile` a "Contact"). The display word can't be a build-time constant — it must be **per-tenant config**. This is Salesforce-style "rename tabs and labels."
 
 The mechanism is **general and core** (horizontal — any module's entities register a default label; any tenant overrides), seeded with the entities that already exist and reused by every future vertical. It is deliberately small: it ships *before* the Import Engine (F8) so the import-history list title and every other list/menu already resolve their words through one place.
 

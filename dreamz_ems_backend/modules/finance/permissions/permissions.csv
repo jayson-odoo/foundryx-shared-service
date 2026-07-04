@@ -1,5 +1,0 @@
-resource,resource_label,action,action_label,description
-invoices,Invoices,read,View invoices,Can view invoices and their lines
-invoices,Invoices,manage,Manage invoices,Can issue / cancel / transition invoices / record payments / refund
-settlements,Settlements,read,View settlements,Can view agency give-back settlements
-settlements,Settlements,manage,Manage settlements,Can generate / approve / mark-remitted settlements

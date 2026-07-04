@@ -134,7 +134,7 @@
 **AC-PUBLIC-01 — Open a live public file link (white-labeled)**
 - Given a live **public + view** file link,
 - When an Anonymous visitor opens `/public/documents/{token}`,
-- Then they see a **clean, branded** page (tenant logo/colors/name, **minimal chrome — no app sidebar/menus**): the file preview + a **Download** button. No "Dreamz", no provider leakage.
+- Then they see a **clean, branded** page (tenant logo/colors/name, **minimal chrome — no app sidebar/menus**): the file preview + a **Download** button. No "FoundryX", no provider leakage.
 
 **AC-PUBLIC-02 — Open a live public folder link (Drive-lite)**
 - Given a live **public + view** folder link,
@@ -273,7 +273,7 @@
 - **X-E1 Tenant isolation:** no share, allow-list entry, or `file_link` from another tenant is ever resolvable or visible (Phase B backend test; oversight list shows own-tenant only).
 - **X-E2 Long target names** in the dialog, links list, oversight list and public page truncate with the full name available (ClampedText/tooltip), never breaking layout.
 - **X-E3 Slice-04 suites stay green:** Drive browse/upload/version/trash/quota behavior is unchanged by this slice.
-- **X-E4 White-label:** the public page shows the tenant's branding (or its NAME when no logo) and never the Dreamz wordmark; a missing branding asset falls back to the name, not a 500/broken image.
+- **X-E4 White-label:** the public page shows the tenant's branding (or its NAME when no logo) and never the FoundryX wordmark; a missing branding asset falls back to the name, not a 500/broken image.
 - **X-E5 Token is a bearer capability:** the token grants exactly the share's scope — guessing/altering it = 404; it never widens access beyond its tier/capability/target.
 
 ---

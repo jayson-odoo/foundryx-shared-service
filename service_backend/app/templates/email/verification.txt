@@ -1,0 +1,7 @@
+Verify your email
+
+Confirm this email address to activate your FoundryX EMS account:
+
+{{ link }}
+
+If this wasn't you, you can safely ignore this email.

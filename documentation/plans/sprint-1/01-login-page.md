@@ -13,7 +13,7 @@
 
 ## 1. Goal
 
-Ship the Dreamz EMS sign-in page matching the Figma design, evolving the existing
+Ship the FoundryX EMS sign-in page matching the Figma design, evolving the existing
 Metronic `signin/page.tsx` rather than rebuilding. Frontend-first (mock auth) to tune
 UI/UX, then wire the existing FastAPI `/auth/login`, refactor it to be governance-compliant,
 fold in cheap security fixes, and verify end-to-end.
@@ -23,12 +23,12 @@ fold in cheap security fixes, and verify end-to-end.
 Split-screen, light theme.
 
 **Left panel** — solid orange `#FF5A00`:
-- `DREAMZ` wordmark logo (top).
+- `FOUNDRYX` wordmark logo (top).
 - Tagline "Bringing Events to Life." (white, Poppins).
 - Line-art illustration (person + laptop, teal stroke), bottom-anchored.
 
 **Right panel** — white:
-- Title "Welcome to Dreamz EMS." (navy, Poppins 600 / 30px).
+- Title "Welcome to FoundryX EMS." (navy, Poppins 600 / 30px).
 - Subtitle "New Here? **Create an Account**" — "New Here?" muted, "Create an Account" orange → `/signup`.
 - Email label + input (placeholder "Your email", Inter 400).
 - Password label + "Forgot Password?" (orange) → `/reset-password`.
@@ -45,8 +45,8 @@ Dropped from existing Metronic page: Google OAuth button, blue demo-credentials 
 | Scope | Evolve existing `signin/page.tsx` + `BrandedLayout`; fill Figma gaps with restyled functional elements. |
 | Google + demo alert | Dropped. |
 | Footer links | Styled, `href="#"` stubs; real pages later sprints. |
-| Left panel | Match Figma: solid orange + DREAMZ logo + illustration + tagline. |
-| Assets | Export logo + illustration from Figma as **SVG** → `public/media/dreamz/`. |
+| Left panel | Match Figma: solid orange + FOUNDRYX logo + illustration + tagline. |
+| Assets | Export logo + illustration from Figma as **SVG** → `public/media/foundryx/`. |
 | Credentials | Empty fields (no prefill). Canonical seed `demo@example.com` / `demo1234`. |
 | Route | Keep `/signin` (Figma "login" is a layer name only). |
 | Frontend-first | Submit hits a **mock auth service** behind the service layer; swap to real `signIn`→FastAPI in backend phase. |
@@ -69,8 +69,8 @@ UI never calls fetch/axios directly.
 
 ### Phase A — Frontend-first (mock backend), tune UI/UX
 1. `git init`, `.gitignore`, baseline commit, branch `sprint-1/login-page`.
-2. Add Poppins font (`next/font/google`); expose brand-font CSS var. Confirm `--primary` = `#FF5A00` (dreamz-tokens) wins over Metronic blue.
-3. Export SVG assets from Figma → `public/media/dreamz/` (DREAMZ logo, illustration).
+2. Add Poppins font (`next/font/google`); expose brand-font CSS var. Confirm `--primary` = `#FF5A00` (foundryx-tokens) wins over Metronic blue.
+3. Export SVG assets from Figma → `public/media/foundryx/` (FOUNDRYX logo, illustration).
 4. Build shared components: `AuthBrandPanel`, `AuthFooter` (Metronic utility classes only, explicit TS interfaces, no `<style>`/raw CSS).
 5. Rewrite `BrandedLayout` → solid-orange split using `AuthBrandPanel`; **delete `<style>` block**.
 6. Build `authService` with a **mock** implementation (fakes loading → success/error). Toggle via env/flag.
@@ -103,7 +103,7 @@ UI never calls fetch/axios directly.
 - `components/auth/auth-footer.tsx` (new) — footer links.
 - `services/auth-service.ts` (new) — mock | real auth.
 - `hooks/use-signin.ts` (new).
-- `public/media/dreamz/` (new) — logo.svg, illustration.svg.
+- `public/media/foundryx/` (new) — logo.svg, illustration.svg.
 - Test: `*.test.tsx` (Vitest), `e2e/signin.spec.ts` (Playwright), config files.
 
 **Backend**

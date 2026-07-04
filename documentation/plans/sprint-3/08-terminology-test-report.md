@@ -1,7 +1,7 @@
 # Sprint 3 · Plan 08 — Terminology · Test Execution Report
 
 **Branch:** `sprint-3/08-terminology` · **Date:** 2026-06-16
-**Stack:** Next 15 :3001 → FastAPI :8001 → native Postgres `dreamz_ems`
+**Stack:** Next 15 :3001 → FastAPI :8001 → native Postgres `foundryx_service`
 
 Validates the plan-08 acceptance criteria (`08-terminology-acceptance-criteria.md`).
 
@@ -18,7 +18,7 @@ Validates the plan-08 acceptance criteria (`08-terminology-acceptance-criteria.m
 | Backend live smoke (curl → Postgres) | **PASS** (rename persists, 422, reset→fallback) |
 | E2E (`e2e/terminology.spec.ts`) | see §E2E |
 
-\* `app/(auth)/signin/page.test.tsx` expects the heading "Welcome to Dreamz EMS";
+\* `app/(auth)/signin/page.test.tsx` expects the heading "Welcome to FoundryX EMS";
 the heading is now the tenant-settable system name (commit `2aa5ab7`). Pre-existing
 on `main`, untouched by this branch (`git status` shows no signin file in the diff).
 

@@ -68,7 +68,7 @@ Branch context: `sprint-2/06-storage-integrations`, rebased onto main (plan 05 d
 | **Steps** | 1. Connect Cloudflare R2 with real Account ID/bucket/keys + CDN base URL. 2. Verify storage. |
 | **Expected** | Probe uploads, fetches back THROUGH the CDN, byte-compares, deletes → status **Connected**. |
 | **Actual** | **Connected, last tested 2026-06-07 14:50** (real WhatsApp-style live-rig posture, omnichannel precedent). |
-| **Remarks** | Caught a REAL bug: Cloudflare's WAF (Bot Fight Mode) 403s the default `Python-urllib/x.y` UA — probe failed with "HTTP Error 403: Forbidden" despite correct wiring. Fixed: probe sends `User-Agent: DreamzEMS-StorageProbe/1.0`. Also surfaced locally: `FERNET_KEY` was unset in dev `.env` → ephemeral key per process → stored credentials died on every backend restart ("Stored credentials can no longer be decrypted"). Key now pinned; prod already guarded (seed refuses without it). |
+| **Remarks** | Caught a REAL bug: Cloudflare's WAF (Bot Fight Mode) 403s the default `Python-urllib/x.y` UA — probe failed with "HTTP Error 403: Forbidden" despite correct wiring. Fixed: probe sends `User-Agent: FoundryXEMS-StorageProbe/1.0`. Also surfaced locally: `FERNET_KEY` was unset in dev `.env` → ephemeral key per process → stored credentials died on every backend restart ("Stored credentials can no longer be decrypted"). Key now pinned; prod already guarded (seed refuses without it). |
 
 ---
 

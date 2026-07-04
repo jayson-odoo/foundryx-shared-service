@@ -2,7 +2,7 @@
 
 **Sprint:** 1
 **Branch:** `sprint-1/auth-hardening`
-**Closes:** BL-001 (login rate-limiting), BL-002 (`rememberMe` end-to-end), BL-003 (auth pages → Dreamz design/DX)
+**Closes:** BL-001 (login rate-limiting), BL-002 (`rememberMe` end-to-end), BL-003 (auth pages → FoundryX design/DX)
 **Depends on:** sprint-1/09 (working `EmailService` — forgot-password sends real mail), sprint-1/07 (tenant resolution at login)
 
 ---
@@ -59,7 +59,7 @@ architecture, per-tenant security policy (configurable TTLs).
 ### Frontend (BL-003 residue)
 
 Rebuild the leftover Metronic internals on the login reference DX
-(`hook → service → api-client`, shared `components/auth/` pieces, Dreamz tokens):
+(`hook → service → api-client`, shared `components/auth/` pieces, FoundryX tokens):
 
 - **`/reset-password`** (request page): email field → `POST /auth/forgot-password` →
   success state shows the uniform message. reCAPTCHA popover removed.

@@ -363,7 +363,7 @@
 - **X-E3 Special characters / unicode** in names render and round-trip correctly through create/rename/breadcrumb.
 - **X-E4 Tenant isolation:** no folder, file, type, setting, or download job from another tenant is ever visible (Phase B backend test; UI shows only own-tenant data).
 - **X-E5 Empty Drive:** a brand-new tenant with no folders/files shows a clean empty root + working Upload/New-folder, not an error.
-- **X-E6 No "Dreamz"/no provider leakage:** tenant-facing copy stays neutral/white-label (no product-name strings on the Drive surface).
+- **X-E6 No "FoundryX"/no provider leakage:** tenant-facing copy stays neutral/white-label (no product-name strings on the Drive surface).
 
 ---
 

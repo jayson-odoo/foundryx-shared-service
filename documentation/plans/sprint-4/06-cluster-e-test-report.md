@@ -10,7 +10,7 @@
 
 | Component | Value |
 | --- | --- |
-| Backend | `http://localhost:8002` (uvicorn), DB `dreamz_ems_clustere` |
+| Backend | `http://localhost:8002` (uvicorn), DB `foundryx_service_clustere` |
 | Frontend | `http://localhost:3002` (prod `next start`, worktree `cluster-e`) — fresh build carrying the portal-signout fix |
 | Staff admin | `demo@example.com` / `demo1234`, tenant `default` (bare `localhost` host) |
 | Eager workflows | `CELERY_TASK_ALWAYS_EAGER=true` (review.allocate fires inline on the submit transition) |
@@ -20,10 +20,10 @@
 
 ## Artifacts
 
-- Setup script: `dreamz_ems_frontend/e2e/helpers/cluster-e-setup.ts` (operator-API scenario builder — forms, scoped status graph, persona-bound review config, profiles + persona grants; everything timestamped).
-- OTP "mailbox" reader: `dreamz_ems_frontend/e2e/helpers/cluster-e-otp.ts` (psql → latest `portal.otp` code).
-- Spec: `dreamz_ems_frontend/e2e/cluster-e-review.spec.ts` (real clicks; canonical flow + mobile + staff variant + isolation).
-- Config: `dreamz_ems_frontend/playwright.cluster-e.config.ts` (baseURL :3002, reuses the running server, never boots :3001).
+- Setup script: `service_frontend/e2e/helpers/cluster-e-setup.ts` (operator-API scenario builder — forms, scoped status graph, persona-bound review config, profiles + persona grants; everything timestamped).
+- OTP "mailbox" reader: `service_frontend/e2e/helpers/cluster-e-otp.ts` (psql → latest `portal.otp` code).
+- Spec: `service_frontend/e2e/cluster-e-review.spec.ts` (real clicks; canonical flow + mobile + staff variant + isolation).
+- Config: `service_frontend/playwright.cluster-e.config.ts` (baseURL :3002, reuses the running server, never boots :3001).
 
 ## Run result (final — run twice, stable)
 

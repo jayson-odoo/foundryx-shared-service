@@ -19,7 +19,7 @@
 | Code review (high-effort, 8 finder angles + verify) | 3 findings actioned, rest verified non-issues |
 
 **Pre-existing failures (NOT introduced here, confirmed by stashing the branch diff):**
-`app/(auth)/signin/page.test.tsx › renders the Dreamz heading` and
+`app/(auth)/signin/page.test.tsx › renders the FoundryX heading` and
 `services/import-service.test.ts › commit() POSTs to the commit endpoint` — both in files this plan never touches; fail identically on the branch base.
 
 ## AC coverage (see `03-...-acceptance-criteria.md`)

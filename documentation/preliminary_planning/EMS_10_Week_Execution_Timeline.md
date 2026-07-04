@@ -3,7 +3,7 @@
 ## 1. Architectural Verdict: Metronic (Next.js) + FastAPI
 **Recommendation: HIGHLY RECOMMENDED.** 
 This stack is the absolute gold standard for an AI-accelerated SaaS project.
-* **Why Next.js + Metronic?** Metronic provides 80% of the enterprise UI boilerplate (data tables, wizards, advanced forms) out of the box. Next.js provides the powerful App Router, which is mandatory for our CMS Subdomain functionality (rendering `event.dreamz.com.my` seamlessly).
+* **Why Next.js + Metronic?** Metronic provides 80% of the enterprise UI boilerplate (data tables, wizards, advanced forms) out of the box. Next.js provides the powerful App Router, which is mandatory for our CMS Subdomain functionality (rendering `event.foundryx.com.my` seamlessly).
 * **Why FastAPI?** Python/FastAPI relies heavily on `Pydantic` models. AI coding agents (like Claude) are exceptionally good at writing Python and generating JSON schemas for Pydantic. It also naturally supports the modular "Service-Repository" and Alembic architecture we designed.
 
 ## 2. Feasibility Assessment (2.5 Months / 10 Weeks)

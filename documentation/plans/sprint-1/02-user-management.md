@@ -4,7 +4,7 @@
 **Branch:** `sprint-1/user-management`
 **Route:** `/user-management/users` (list) · `/user-management/users/new` (create) · `/user-management/users/[id]` (form)
 **Depends on:** Plan 01 (auth, `public.users`, tenant groundwork).
-**Design source:** **No Figma** for this feature (Figma Make output didn't conform to the design system). Build **directly to the Dreamz design system** — tokens (`css/dreamz-tokens.css`, primary orange `#FF5A00`), Poppins/Inter, **Metronic demo1** components — with the two provided screenshots as **layout reference only**. Per-feature divergence from the methodology's "Figma first" step.
+**Design source:** **No Figma** for this feature (Figma Make output didn't conform to the design system). Build **directly to the FoundryX design system** — tokens (`css/foundryx-tokens.css`, primary orange `#FF5A00`), Poppins/Inter, **Metronic demo1** components — with the two provided screenshots as **layout reference only**. Per-feature divergence from the methodology's "Figma first" step.
 
 ---
 
@@ -84,7 +84,7 @@ One action set per entity, surfaced consistently in: **form top-right** (primary
 | # | Decision |
 |---|----------|
 | Module vs core | Shell = core component library; User Management = core feature. Neither is an App Store module; modules later **consume** the shell. |
-| Field scope | Screenshots are **layout reference only**. Use real Dreamz fields. List: User(avatar+name+email) · Role · Status · Joined(`created_at`) · Last Sign In. Form tabs: Profile · Security · Activity(stub). |
+| Field scope | Screenshots are **layout reference only**. Use real FoundryX fields. List: User(avatar+name+email) · Role · Status · Joined(`created_at`) · Last Sign In. Form tabs: Profile · Security · Activity(stub). |
 | Roles | New core **`roles`** table + **`user_roles`** junction — **many-to-many both directions**. Seed Admin, Member. List renders multiple role pills; form Profile multi-select. RBAC/permissions → backlog. |
 | Auth contract | **Replace `roleId` with `roles[]`** — JWT + NextAuth session carry `roles:[{id,name}]`. Touches `security.py`, `auth-options.ts`, session/`next-auth` types, login response. `role_id` column dropped. |
 | Column prefs | **Backend-persisted** per user: core `user_view_preferences` (`user_id, tenant_id, view_key, prefs JSON`). `GET/PATCH /me/preferences/{view_key}`. Cross-device. Shell passes a `view_key` (e.g. `users.list`). |
@@ -105,8 +105,8 @@ One action set per entity, surfaced consistently in: **form top-right** (primary
 | Status editing | Profile select: ACTIVE / INACTIVE / BLOCKED. **INVITED is system-managed** (set by create, cleared on set-password) — shown read-only, not manually selectable. |
 | Pagination | Default 25; options 10/25/50/100. |
 | Migrations | **Adopt Alembic for core now** (diverges from CLAUDE.md create_all guidance — update it). Baseline existing `tenants`+`users`, then migration: +`roles`,+`user_roles`,+`user_view_preferences`,+`invite_tokens`, **drop `users.role_id`**, `INVITED` status. Use `batch_alter_table` for the `role_id` drop (SQLite-safe, no-op on PG). `bootstrap_db` runs `alembic upgrade head` then seeds (roles Admin/Member; demo user → Admin). |
-| Database | **Postgres everywhere — drop SQLite entirely.** Local = native Postgres (no Docker; app runs native `uvicorn --reload` for instant reload). Prod/on-prem = Postgres (Docker for the app there). Dedicated role `dreamz` + db `dreamz_ems`, local mirrors prod: `DATABASE_URL=postgresql://dreamz:dreamz@localhost:5432/dreamz_ems`. `database_url` becomes a required Postgres URL. Forced by module schema-isolation (`CREATE SCHEMA app_*`) which SQLite cannot do. |
-| DB bootstrap | **Idempotent auto-bootstrap for zero-touch on-prem deploy.** `scripts/bootstrap_db.py`: connect as admin (`POSTGRES_ADMIN_URL` → `postgres` db) → ensure role `dreamz` exists → ensure db `dreamz_ems` exists → connect via `DATABASE_URL` → `alembic upgrade head` → idempotent seed (default tenant, roles, demo user). Same command handles a blank server and an upgrade; re-runnable. On-prem = set admin creds in `.env`, run once. Replaces the old `init_db` create_all + delete-db dev loop. |
+| Database | **Postgres everywhere — drop SQLite entirely.** Local = native Postgres (no Docker; app runs native `uvicorn --reload` for instant reload). Prod/on-prem = Postgres (Docker for the app there). Dedicated role `foundryx` + db `foundryx_service`, local mirrors prod: `DATABASE_URL=postgresql://foundryx:foundryx@localhost:5432/foundryx_service`. `database_url` becomes a required Postgres URL. Forced by module schema-isolation (`CREATE SCHEMA app_*`) which SQLite cannot do. |
+| DB bootstrap | **Idempotent auto-bootstrap for zero-touch on-prem deploy.** `scripts/bootstrap_db.py`: connect as admin (`POSTGRES_ADMIN_URL` → `postgres` db) → ensure role `foundryx` exists → ensure db `foundryx_service` exists → connect via `DATABASE_URL` → `alembic upgrade head` → idempotent seed (default tenant, roles, demo user). Same command handles a blank server and an upgrade; re-runnable. On-prem = set admin creds in `.env`, run once. Replaces the old `init_db` create_all + delete-db dev loop. |
 | Routing/menu | `/user-management/users[/new|/[id]]`; add `User Management > Users` to Metronic sidebar menu config. |
 | Frontend-first | Build shell + user UI against a **mock service** (all states tunable), then swap to real `api-client` at the service boundary (one-line). |
 | Tests | Vitest + RTL (component/validation) · `@playwright/test` real-click E2E · pytest + httpx (backend). TDD red-green-refactor. |
@@ -157,14 +157,14 @@ Reuse existing Metronic primitives: `data-grid`, `data-grid-table` (`columnsResi
 ### Phase A — Frontend prototype (mock, no backend)
 Goal: nail the Resource design language + user list/form UI/UX against a mock service, all states tunable.
 1. Branch `sprint-1/user-management`.
-2. Build the **Resource shell** (core lib, to Dreamz design system + Metronic demo1): `ResourceList` + toolbar (Search/Filters/Export/Columns/Create), `FilterBuilder` (AND/OR), `ExportDialog`, `ColumnsMenu`, `Active|Trashed` segmented, `StatusBadge`; `ResourceForm` + `RecordNav` (URL ctx), `FormTabs`, `ActionBar` (Edit toggle + `...`), dirty-guard.
+2. Build the **Resource shell** (core lib, to FoundryX design system + Metronic demo1): `ResourceList` + toolbar (Search/Filters/Export/Columns/Create), `FilterBuilder` (AND/OR), `ExportDialog`, `ColumnsMenu`, `Active|Trashed` segmented, `StatusBadge`; `ResourceForm` + `RecordNav` (URL ctx), `FormTabs`, `ActionBar` (Edit toggle + `...`), dirty-guard.
 3. **User configs + custom cells** (`users.list.config.ts`, `users.form.config.ts`, UserCell, RolePills) wired to `user-service.mock` (loading/error/empty/success, paginated, filterable). Sidebar menu entry.
 4. **Iterate UI/UX until friendly** (the prototype loop — this is the priority).
 5. **Vitest + RTL** component/validation tests. **Playwright real-click E2E** against the mock.
 6. ✋ **Gate:** UI/UX approved → proceed to B.
 
 ### Phase B — Backend (wire real, TDD)
-7. **DB switch** — drop SQLite; native Postgres `dreamz`/`dreamz_ems`; `database_url` required PG; `scripts/bootstrap_db.py` (idempotent ensure-role/db → upgrade → seed).
+7. **DB switch** — drop SQLite; native Postgres `foundryx`/`foundryx_service`; `database_url` required PG; `scripts/bootstrap_db.py` (idempotent ensure-role/db → upgrade → seed).
 8. **Schema + Alembic** — adopt core Alembic, baseline `tenants`+`users`, migration (+roles,+user_roles,+user_view_preferences,+invite_tokens, drop `role_id` via `batch_alter_table`, `INVITED`), seed (roles + demo→Admin).
 9. **Auth contract** — `roleId` → `roles[]` (security.py JWT, auth-options, session types, login response).
 10. **Service-Repository** — `UserService`/`RoleService` + repos + recursive filter translator (whitelist) + `EmailService` (dev-log adapter) + invite/set-password + prefs (`/me/preferences`) + CSV export endpoint.

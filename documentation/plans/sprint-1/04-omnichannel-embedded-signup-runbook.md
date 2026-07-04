@@ -1,4 +1,4 @@
-# Embedded Signup — Go-Live Runbook (Route A: Dreamz = Meta Tech Provider)
+# Embedded Signup — Go-Live Runbook (Route A: FoundryX = Meta Tech Provider)
 
 The code path is built (frontend SDK + backend exchange). It runs in **simulated**
 mode until the Meta app env vars are set, then flips to the **real** Meta Embedded
@@ -14,7 +14,7 @@ Signup popup automatically — no code change.
 7. **Public rollout (later):** Business Verification + App Review for Advanced Access on `whatsapp_business_management` + `whatsapp_business_messaging` (BL-017). Not needed for your own number in Dev Mode.
 
 ## 2. Env vars to flip it live
-**Backend** (`dreamz_ems_backend/.env`):
+**Backend** (`service_backend/.env`):
 ```
 META_APP_ID=<app id>
 META_APP_SECRET=<app secret>
@@ -22,7 +22,7 @@ META_ES_CONFIG_ID=<embedded signup config id>
 META_GRAPH_VERSION=v19.0
 OMNICHANNEL_FERNET_KEY=<run: python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())">
 ```
-**Frontend** (`dreamz_ems_frontend/.env.local`):
+**Frontend** (`service_frontend/.env.local`):
 ```
 NEXT_PUBLIC_META_APP_ID=<app id>
 NEXT_PUBLIC_META_ES_CONFIG_ID=<embedded signup config id>

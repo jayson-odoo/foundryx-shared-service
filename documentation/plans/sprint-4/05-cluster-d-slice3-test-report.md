@@ -32,7 +32,7 @@
 - **Why the suite is green anyway:** conftest builds the schema via `EmsBase.metadata.create_all` (no Alembic), so SQLite tests have the columns and never exercise the migration path. The broken migration is invisible to every existing test.
 - **Repro (clean):**
   ```bash
-  cd dreamz_ems_backend && source .venv/bin/activate
+  cd service_backend && source .venv/bin/activate
   python -c "from sqlalchemy import create_engine; from app.config import settings; \
   from app.module_platform.migrations import run_module_migrations; \
   run_module_migrations(create_engine(settings.database_url),'ems')"
@@ -74,11 +74,11 @@
 
 ```bash
 # backend up + seeded (slice-3 migration applied):
-cd dreamz_ems_backend && source .venv/bin/activate
+cd service_backend && source .venv/bin/activate
 python -m scripts.bootstrap_db        # after the coder shortens the 0005 revision id
 uvicorn app.main:app --reload --port 8001
 # frontend served from a clean build of this branch:
-cd ../dreamz_ems_frontend && rm -rf .next && npm run build && npm start   # :3001
+cd ../service_frontend && rm -rf .next && npm run build && npm start   # :3001
 # clear the shared throttle, then:
 npx playwright test cluster-d.spec.ts -g "Nomination/transfer"
 ```

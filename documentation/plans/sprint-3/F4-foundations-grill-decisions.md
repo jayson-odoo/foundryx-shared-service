@@ -67,7 +67,7 @@ First-class inter-module dependencies + 3rd-party extensibility. Extends the App
 
 ## 3. F10 — Terminology (core, small, general)
 
-Per-tenant entity relabeling (Dreamz "Event" vs Sorento "Project"). Multi-tenant → must be per-tenant config, not build-time.
+Per-tenant entity relabeling (FoundryX "Event" vs Sorento "Project"). Multi-tenant → must be per-tenant config, not build-time.
 
 - **General system-wide mechanism** (any entity relabelable), seeded with EMS entities.
 - Each registered entity declares a default **`{singular, plural}`** label; **`terminology_overrides`** table (tenant_id, entity_key, singular, plural) holds renames.

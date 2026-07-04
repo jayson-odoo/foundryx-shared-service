@@ -141,4 +141,4 @@ Format: each AC is independently verifiable (Given / When / Then). Grouped by sl
 2. **Backfill existing rows/tenants** — `traits_json` is stamped on EVERY matching status across the platform tier AND every tenant fork (not seed-if-absent only); diverged-key rows warned, never auto-reset.
 3. **No hardcoded tenant-editable keys** — zero `key == "<literal>"` semantic branches remain in the gate-swapped paths (grep-verified).
 4. **Perm-grant sweep** — **N/A** (no new permission; trait edits ride existing `statuses.manage`, catalog read rides `get_current_user`). State it explicitly in the report.
-5. **Real-data user-perspective verify** — AC-09-30 verified end-to-end with real data at **375px AND 1280px** on a freshly REBUILT frontend (`rm -rf .next && npm run build`) against correctly-owned ports (3001 FE / 8001 Dreamz BE).
+5. **Real-data user-perspective verify** — AC-09-30 verified end-to-end with real data at **375px AND 1280px** on a freshly REBUILT frontend (`rm -rf .next && npm run build`) against correctly-owned ports (3001 FE / 8001 FoundryX BE).

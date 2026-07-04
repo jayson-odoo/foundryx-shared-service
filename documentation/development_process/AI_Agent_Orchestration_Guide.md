@@ -1,6 +1,6 @@
 # AI Agent Orchestration & TDD Guide
 
-This guide details how to technically set up your local multi-agent "virtual development team" using Claude, CrewAI/LangGraph, and Playwright for the Dreamz EMS project.
+This guide details how to technically set up your local multi-agent "virtual development team" using Claude, CrewAI/LangGraph, and Playwright for the FoundryX EMS project.
 
 ---
 

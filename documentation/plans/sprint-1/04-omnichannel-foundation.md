@@ -3,7 +3,7 @@
 **Sprint:** 1
 **Branch:** `sprint-1/omnichannel-foundation`
 **Source spec:** `documentation/high_level_plan_from_gemini/Whatsapp_BSP_Omnichannel_Functional_Spec.md` (§1, §2)
-**Source of truth for UI:** Dreamz design system + the Resource shell (`components/platform/`). Spec mermaid/wireframes are reference only.
+**Source of truth for UI:** FoundryX design system + the Resource shell (`components/platform/`). Spec mermaid/wireframes are reference only.
 **Module:** first real **App Store module** — schema `app_omnichannel`, own `manifest.json`, isolated Alembic history.
 
 > This is one of three plans. **Plan 04 (this)** = module skeleton + *all* schema + channel onboarding. **Plan 05** = message processing (inbound/outbound) + inbox UI + Redis/Celery/WS infra. **Plan 06** = engine integration (deferred to backlog, paper contract only).
@@ -59,7 +59,7 @@ omnichannel/
 {
   "module_name": "omnichannel",
   "version": "0.1.0",
-  "author": "Dreamz",
+  "author": "FoundryX",
   "required_core_version": ">=1.0.0",
   "schema": "app_omnichannel",
   "alembic_version_table": "alembic_version_omnichannel",
@@ -109,8 +109,8 @@ All tables: `id UUID PK`, **`tenant_id` (FK `public.tenants`)** + **`workspace_i
 
 ## 5. Channel onboarding — Embedded Signup *(decisions 5, 6)*
 
-### 5.1 One-time Dreamz Meta-app setup (outside code — checklist)
-Prerequisite for any Embedded Signup, done once at the Dreamz level (NOT per tenant):
+### 5.1 One-time FoundryX Meta-app setup (outside code — checklist)
+Prerequisite for any Embedded Signup, done once at the FoundryX level (NOT per tenant):
 1. Create a Meta Developer App; add **WhatsApp** + **Facebook Login for Business** products.
 2. Create an **Embedded Signup configuration**; note the **config_id** + **app_id**.
 3. Add yourself as a **tester** (Dev Mode) → the full flow works today with your approved number.

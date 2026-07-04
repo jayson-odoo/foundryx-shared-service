@@ -41,7 +41,7 @@ Email is read-only after user creation (BL-008). The user mandate: changing emai
 - `GET /me/change-email` / `DELETE /me/change-email` — pending-request status / cancel.
 - Throttle: token-redeem failures count into the IP bucket (plan-10 pattern).
 - Admin path: `PATCH /users/{id}` accepts `email` (currently rejected/read-only) when actor ≠ target and holds `users.update` → immediate change + notify both. Self-edit via admin form still routes to the ceremony (no self-bypass).
-- Email templates: `email_change_approve`, `email_change_verify`, `email_change_notice` (Jinja2, Dreamz base, text siblings).
+- Email templates: `email_change_approve`, `email_change_verify`, `email_change_notice` (Jinja2, FoundryX base, text siblings).
 - Layering: `api/v1/me.py` + `auth.py` → `services/email_change_service.py` → repositories.
 
 ## Frontend

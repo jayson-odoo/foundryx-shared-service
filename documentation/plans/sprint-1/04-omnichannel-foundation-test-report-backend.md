@@ -9,7 +9,7 @@
 ---
 
 ## 1. What shipped
-- **Module** `dreamz_ems_backend/modules/omnichannel/`: `OmniBase` + schema `app_omnichannel`; models (workspaces, workspace_members, channels, statuses, contacts, contact_channel_identities, conversation_messages, whatsapp_templates, quick_replies); camelCase schemas; Fernet credential encryption; `ChannelAdapter` + `WhatsAppCloudAdapter` (dev-safe); workspace/channel repositories; workspace/channel/onboarding services; routers gated by `omnichannel.*`.
+- **Module** `service_backend/modules/omnichannel/`: `OmniBase` + schema `app_omnichannel`; models (workspaces, workspace_members, channels, statuses, contacts, contact_channel_identities, conversation_messages, whatsapp_templates, quick_replies); camelCase schemas; Fernet credential encryption; `ChannelAdapter` + `WhatsAppCloudAdapter` (dev-safe); workspace/channel repositories; workspace/channel/onboarding services; routers gated by `omnichannel.*`.
 - **Core wiring:** `app/module_loader.py` (`load_modules` + `bootstrap_modules`); one-line `load_modules(app)` in `main.py`; `bootstrap_modules()` in `bootstrap_db.py`. Omnichannel permissions moved from the core CSV (Phase-A enabler) to the module CSV.
 - **Frontend:** `workspace-service` / `channel-service` / `onboarding-service` swapped to the real api-client impls (one line each); by-workspace path aligned.
 

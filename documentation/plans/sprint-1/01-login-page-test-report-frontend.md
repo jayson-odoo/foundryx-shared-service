@@ -2,7 +2,7 @@
 
 **Plan:** [01-login-page](./01-login-page.md) · **Branch:** `sprint-1/login-page`
 **Phase:** A (frontend-first, `NEXT_PUBLIC_AUTH_MODE` unset → mock auth service)
-**User Story:** As a Dreamz EMS user, I can sign in from a branded login page so I can reach my dashboard.
+**User Story:** As a FoundryX EMS user, I can sign in from a branded login page so I can reach my dashboard.
 **Suites:** Vitest (component/unit, 10) · Playwright (E2E real-click, 6) — **all green**.
 
 > Backend not wired this phase. The happy-path redirect-to-dashboard is verified

@@ -12,7 +12,7 @@
 | Suite | Command | Result |
 |---|---|---|
 | Backend (pytest + httpx, in-memory SQLite) | `python -m pytest -q` | **1153 passed, 0 failed** (592 warnings, 13m06s) |
-| Frontend unit (Vitest) | `npx vitest run` | **722 passed, 1 failed** — the 1 failure is the **PRE-EXISTING** `app/(auth)/signin/page.test.tsx` "welcome to dreamz ems" branding-heading test, **unrelated to Cluster F** (flagged in the brief). No Cluster F regression. |
+| Frontend unit (Vitest) | `npx vitest run` | **722 passed, 1 failed** — the 1 failure is the **PRE-EXISTING** `app/(auth)/signin/page.test.tsx` "welcome to foundryx ems" branding-heading test, **unrelated to Cluster F** (flagged in the brief). No Cluster F regression. |
 | Frontend build (prod, tsc + lint gate) | `rm -rf .next && npm run build` | **Compiled successfully** (159/159 static pages). All F routes present: `/settings/numbering`, `/finance/invoices`, `/finance/settlements`, `/ems/sales-orders[/new][/[id]]`. |
 
 **Live stack:** backend `uvicorn :8001` (health `{"status":"ok"}`), frontend `npm start :3001` (HTTP 200, cwd-confirmed owner of port). `bootstrap_db` ran clean — Alembic core + per-module finance migrations (`0001..0005`) applied to **live Postgres** (NOT just create_all). E2E driven via Playwright real-clicks + live HTTP (CASH/CARD/BANK manual-payment path; no live gateway creds — gateway-only ACs verified via the HTTP-mocked adapter unit tests as planned).

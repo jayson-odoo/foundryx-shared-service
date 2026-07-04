@@ -1,0 +1,14 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: foundryx
+      POSTGRES_PASSWORD: foundryx
+      POSTGRES_DB: foundryx_service
+    ports:
+      - "5432:5432"
+    volumes:
+      - foundryx_pg:/var/lib/postgresql/data
+
+volumes:
+  foundryx_pg:

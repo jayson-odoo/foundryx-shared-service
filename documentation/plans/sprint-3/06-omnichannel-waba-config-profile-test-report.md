@@ -30,7 +30,7 @@ E2E journeys: ① three tabs + read-by-default + Sync→business name · ② Syn
 |---|-----------|----------|:------:|----------|
 | BR-1 | Three tabs (Configuration, Templates, Profile), read-by-default | MUST | ✅ | E2E ①; live snapshot |
 | BR-2 | Config editable (name/workspace/active) + synced identity block | MUST | ✅ | live snapshot |
-| BR-3 | Sync pulls WABA/phone identity → business account name | MUST | ✅ | E2E ①; DB shows "Dreamz Events (dev sandbox)" |
+| BR-3 | Sync pulls WABA/phone identity → business account name | MUST | ✅ | E2E ①; DB shows "FoundryX Events (dev sandbox)" |
 | BR-4 | Profile tab mirrors business profile from local DB | MUST | ✅ | live snapshot; instant render (no Meta call) |
 | BR-5 | Sync Profile pulls latest from Meta + stamps | MUST | ✅ | E2E ②; `profile_synced_at` set |
 | BR-6 | Save write-through (only changed fields to Meta) | MUST | ✅ | E2E ③ + DB; backend `test_save_profile_only_changed_fields_sent_to_meta` |
@@ -49,7 +49,7 @@ E2E journeys: ① three tabs + read-by-default + Sync→business name · ② Syn
 | UX-1 | Built on Resource shell | MUST | ✅ | `ResourceForm` config-driven, icon tabs, record-nav |
 | UX-2 | Every dropdown a SearchSelect | MUST | ✅ | vertical picker is `SearchSelect` |
 | UX-3 | Responsive 375 + 1280, no overflow | MUST | ✅ | E2E ⑤ |
-| UX-4 | Brand + white-label (no "Dreamz" tenant copy, utility classes) | MUST | ✅ | neutral placeholders; no raw CSS |
+| UX-4 | Brand + white-label (no "FoundryX" tenant copy, utility classes) | MUST | ✅ | neutral placeholders; no raw CSS |
 | UX-5 | House datetime formatter | SHOULD | ✅ | `useDatetime` everywhere; no `new Date(iso)` |
 | UX-6 | Read/edit affordance clear | SHOULD | ✅ | text in read, inputs in edit |
 | UX-7 | No instructional/teaching copy | MUST | ✅ | labels + neutral empty states only |

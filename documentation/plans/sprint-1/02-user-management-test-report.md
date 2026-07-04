@@ -1,6 +1,6 @@
 # Sprint 1 · Plan 02 — User Management · Test Execution Report
 
-**Stack under test:** Next.js :3001 → FastAPI :8001 → Postgres (`dreamz_ems`).
+**Stack under test:** Next.js :3001 → FastAPI :8001 → Postgres (`foundryx_service`).
 **Date:** sprint-1/user-management branch.
 
 ## Summary
