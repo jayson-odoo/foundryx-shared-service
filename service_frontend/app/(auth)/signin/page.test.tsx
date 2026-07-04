@@ -25,10 +25,10 @@ describe('Signin page', () => {
     push.mockReset();
   });
 
-  it('renders the FoundryX heading and submit', () => {
+  it('renders the welcome heading and submit', () => {
     render(<Page />);
     expect(
-      screen.getByRole('heading', { name: /welcome to foundryx ems/i }),
+      screen.getByRole('heading', { name: /welcome back/i }),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument();
   });

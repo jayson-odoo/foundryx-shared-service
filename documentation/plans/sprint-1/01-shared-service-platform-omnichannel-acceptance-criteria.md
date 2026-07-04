@@ -25,9 +25,10 @@ Format: each AC is independently verifiable (Given / When / Then). Grouped by sl
 - **Given** the stripped frontend, **when** inspecting `app/(protected)/`, **then** the domain route groups `ems/`, `finance/`, `network/`, `public-profile/`, `reviews/`, `store-admin/`, `store-client/` are **gone**; `omnichannel/`, `app-store/`→`services/`, `settings/`, `user-management/`, `platform/`, `account/` remain.
 - **Given** `rm -rf .next && npm run build`, **then** it succeeds with no missing-import / dangling-route errors and no dead menu entries pointing at a removed route.
 
-### AC-01-03 — App Store relabeled to "Services" (tenant + operator surfaces) [FE][E2E]
-- **Given** an authenticated tenant admin, **when** they open the catalog nav entry, **then** it reads **"Services"** (not "App Store") and lives at `/services`; the page lists installable services (Omnichannel visible), reusing the existing card/Resource-shell config — **not** a hand-rolled grid.
-- **Given** the platform operator on a tenant-detail console, **when** they open the modules tab, **then** it reads **"Services"** and drives the same install/deactivate/uninstall lifecycle. **No** tenant-facing string says "App Store", "FoundryX", or "EMS" (white-label). Verified 375px AND 1280px.
+### AC-01-03 — module catalog is "App Store" (tenant + operator surfaces) [FE][E2E]
+> **DECISION (2026-07-04, user override):** the catalog keeps the name **"App Store"** for BOTH the internal route/component names AND the tenant-facing label — the earlier "Services" relabel was reverted. Route stays `/app-store`; nav + breadcrumbs + operator modules tab read "App Store". "Service" remains the conceptual term for an installable module in docs, but the surface is labelled "App Store".
+- **Given** an authenticated tenant admin, **when** they open the catalog nav entry, **then** it reads **"App Store"** and lives at `/app-store`; the page lists installable modules (Omnichannel visible), reusing the existing card/Resource-shell config — **not** a hand-rolled grid.
+- **Given** the platform operator on a tenant-detail console, **when** they open the modules tab, **then** it drives the same install/deactivate/uninstall lifecycle. **No** tenant-facing string says "FoundryX" or "EMS" (white-label). Verified 375px AND 1280px.
 
 ### AC-01-04 — core engines + module platform + storage survive the strip [BE][T]
 - **Given** the stripped backend, **when** the test suite runs, **then** core auth/RBAC/tenant/user, the module platform (capability registry, per-module Alembic orchestrator), StorageService, Fernet secrets, and the retained core engines still pass their suites. Removing the three domain modules did **not** break a core engine (no domain module was a hidden core dependency).

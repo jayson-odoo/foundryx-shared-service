@@ -11,7 +11,6 @@ import {
   Eye,
   FileQuestion,
   FolderClosed,
-  Grid,
   HelpCircle,
   Key,
   LayoutGrid,
@@ -19,7 +18,6 @@ import {
   MessageSquare,
   Network,
   Plug,
-  Receipt,
   Settings,
   Share2,
   Shield,
@@ -208,11 +206,11 @@ export const MENU_SIDEBAR: MenuConfig = [
   },
   { heading: 'Apps' },
   {
-    title: 'Services',
+    title: 'App Store',
     icon: Blocks,
     children: [
       {
-        title: 'Browse Services',
+        title: 'App Store',
         path: '/app-store',
         permission: 'app_store.read',
       },

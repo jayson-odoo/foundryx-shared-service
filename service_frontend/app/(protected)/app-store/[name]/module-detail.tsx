@@ -52,9 +52,9 @@ export function ModuleDetail({ name }: { name: string }) {
     if (!module) return null;
     const installed = module.status !== null;
     return {
-      breadcrumb: [{ label: 'Services', href: '/app-store' }, { label: module.title }],
+      breadcrumb: [{ label: 'App Store', href: '/app-store' }, { label: module.title }],
       backHref: '/app-store',
-      backLabel: 'Services',
+      backLabel: 'App Store',
       title: module.title,
       subtitle: module.name,
       tabs: [
