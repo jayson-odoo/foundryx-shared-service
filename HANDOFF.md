@@ -45,17 +45,22 @@ It is a duplicate-and-strip from EMS. The whole EMS platform backbone (auth, RBA
 
 ## Slices
 
-- **S1 — DONE** (strip + rename + Services relabel + docs + UAC/plan).
-- **S2** — verify omnichannel + inbox + CSW work end-to-end inside the stripped shell (frontend build + backend run + seed).
-- **S3** — `workspace_api_keys` (SHA-256 + prefix, one-time reveal, `get_api_workspace` Bearer dependency, service-binding reject) + public `POST /api/v1/omnichannel/messages` (202 + our id, `Idempotency-Key` Redis dedup, reuse existing CSW/send logic) + **`phone_number_id` UNIQUE migration with duplicate-reconcile**.
-- **S4** — `webhook_subscriptions` + durable signed-delivery outbox (`X-Fx-Signature`, retry→dead-letter) + `GET .../messages?since=` backfill + Redis-Streams `EventBus` behind an interface + per-number token bucket.
+- **S1 — DONE** (strip + rename + docs + UAC/plan). Catalog relabel REVERTED per user: it is **"App Store"** everywhere (route `/app-store` + label), not "Services"; AC-01-03 annotated. Orphan cleanup done (67 dead-EMS files deleted). Commit `5a01060`.
+- **S2 — DONE (verified this session).** omnichannel installs + seeds + inbox works in the stripped shell. Fixed TWO real gaps: (a) `bootstrap_db` now installs omnichannel for the **default tenant** (fresh DB had no install row → inbox 403'd) + runs the admin **grant sweep AFTER** module perms sync; (b) the demo1 header **MegaMenu crashed every protected page** (hardcoded stripped-EMS section indices) — rewritten generic. Both browser-verified.
+- **S3 — DONE (branch `sprint-1/omnichannel-api-gateway`, reviewed + fixed, NOT yet merged to main).** `workspace_api_keys` (SHA-256 + 8-char prefix, one-time reveal, `get_api_workspace` Bearer dep, constant-time compare, service-binding 403) + public `POST /api/v1/omnichannel/messages` (202 + our id, `Idempotency-Key` reserve-before-send dedup, reuses the CSW gate + MessageService send → inbox bubble) + `GET /api/v1/omnichannel/templates` + structured `{error:{code,message}}` envelope + `phone_number_id` service-wide partial-UNIQUE (scoped `is_trashed=false`, reconcile + 409 guard) + module migration `0002` + API-keys management UI (Resource shell + mint/revoke). Perms `api_keys.read/manage`. Commits `de2297b`, `7f7b9a3`, `2788f1a`. Full backend suite **908 passed**; frontend **633 vitest**; verified live (Postgres+Redis) end-to-end. Report: `documentation/plans/sprint-1/01-...-slice3-test-report.md`. **Media send + interactive deferred** (unsupported_type → S4 / BL-SS-002); async dispatch is inline in S3 (bus is S4).
+- **S4 — NEXT.** `webhook_subscriptions` + durable signed-delivery outbox (`X-Fx-Signature`, retry→dead-letter) + `GET .../messages?since=` backfill + Redis-Streams `EventBus` behind an interface + per-number token bucket + **media durable both ways** (closes the S3 media deferral). Mirror the `email_dispatcher` outbox pattern.
 - **S5** — full Compose+Caddy+CI + platform-settings super-admin config UI + provisioning runbook + connect a live number.
 
 ## Immediate TODO (start here)
 
-1. **Frontend build verify** — `cd service_frontend && npm install --force && npm run build`. NOT run yet since the strip; expect to fix leftover imports.
-2. **Orphan cleanup** (coder flagged, dead-but-compiling EMS residue — safe to delete, ~50+ interdependent files): the portal layer (`providers/portal-*`, `hooks/use-portal-*`, `lib/portal-*`, `services/portal-*`, `types/portal-*`, `components/platform/portal-invite-button*`, `app/api/portal-auth/`), review surfaces (`components/platform/review/`, `hooks/use-*review*`, `services/*review*`/`staff-review*`), and EMS/finance/CRM service files (`event-billing-service`, `checkout-service`, `persona-service`, `profile-preferences-service`, `ems-service.*`, etc.). NOTE `components/.../review` may include a generic core `review-engine` — keep core, drop EMS-specific. Also clean dead demo menu arrays `MENU_SIDEBAR_CUSTOM/COMPACT/ROOT` in `config/menu.config.tsx` (feed non-active demo2/3/6/10 layouts, point at deleted routes).
-3. Then build **S3** (the actual respond.io-bypass core: API-key auth + public send API). This is the highest-value next feature.
+1. **Merge S3** — branch `sprint-1/omnichannel-api-gateway` (4 commits) is review-approved-after-fixes + verified. Confirm with the user, then merge to `main`. (Not auto-merged — user codes concurrently in the main checkout; `git status` before any branch op.)
+2. Then build **S4** (consumer webhooks + delivery outbox + Redis-Streams bus + media). See the plan §Slice 4.
+
+## Env set up this session (both gitignored)
+- `service_backend/.env` — `DATABASE_URL=postgresql://foundryx:foundryx@localhost:5432/foundryx_service`, `POSTGRES_ADMIN_URL` (local superuser), fresh `FERNET_KEY`+`OMNICHANNEL_FERNET_KEY`, `REDIS_URL`, `CELERY_TASK_ALWAYS_EAGER=true`, `THROTTLE_IP_MAX_FAILS=200`. venv at `service_backend/.venv` (Python 3.14, deps install clean).
+- `service_frontend/.env.local` — `NEXT_PUBLIC_BACKEND_API_URL`/`BACKEND_API_URL=http://localhost:8001`, `NEXTAUTH_URL=http://localhost:3001`, `NEXTAUTH_SECRET`.
+- **`next start` does NOT serve** (config `output: standalone`) — use `next dev` for verification (or `node .next/standalone/server.js`).
+- New backlog: **BL-SS-008** (de-EMS `ems-service`/`registration-service` coupling in core imports/settings pages), **BL-SS-009** (Metronic demo cruft: MENU_MEGA dead routes, Keenthemes footer, demo dashboard, orphaned mega-menu sub-components + demo2/3/6/10 layouts).
 
 ## Working rules (from PRINCIPLES.md / CLAUDE.md — still apply)
 
