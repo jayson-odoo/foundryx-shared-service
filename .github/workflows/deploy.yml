@@ -13,7 +13,7 @@ env:
   # Override IMAGE_REPO / RELEASE_TAG via repo Variables if your Docker Hub
   # namespace differs. NEXT_PUBLIC_BACKEND_API_URL is a repo Variable (baked
   # into the frontend image at build time — must be the PUBLIC api origin).
-  IMAGE_REPO: ${{ vars.IMAGE_REPO || 'jayson1004/foundryx-ems' }}
+  IMAGE_REPO: ${{ vars.IMAGE_REPO || 'jayson1004/foundryx-shared-service' }}
   RELEASE_TAG: ${{ vars.RELEASE_TAG || '1.0.0' }}
   # Valid throwaway Fernet keys so app.main imports cleanly in CI (NOT secrets).
   CI_FERNET_KEY: MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=
@@ -206,7 +206,7 @@ jobs:
           command: |
             P="${{ vars.SSH_PORT || 22 }}"; H="${{ secrets.SSH_HOST }}"; U="${{ secrets.SSH_USER }}"; D="${{ secrets.DEPLOY_PATH }}"
             O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20"
-            ssh $O -p "$P" "$U@$H" "ACTIVE=\$(cat $D/.active_color 2>/dev/null || echo blue); if [ \"\$ACTIVE\" = blue ]; then BE=8000; FE=3001; else BE=8010; FE=3011; fi; echo \"active=\$ACTIVE be=\$BE fe=\$FE\"; curl -fsS -o /dev/null http://127.0.0.1:\$BE/health && curl -fsS -o /dev/null http://127.0.0.1:\$FE/ && echo endpoints OK"
+            ssh $O -p "$P" "$U@$H" "ACTIVE=\$(cat $D/.active_color 2>/dev/null || echo blue); if [ \"\$ACTIVE\" = blue ]; then BE=8200; FE=3200; else BE=8210; FE=3210; fi; echo \"active=\$ACTIVE be=\$BE fe=\$FE\"; curl -fsS -o /dev/null http://127.0.0.1:\$BE/health && curl -fsS -o /dev/null http://127.0.0.1:\$FE/ && echo endpoints OK"
 
   notify-owner:
     name: Notify owner by email

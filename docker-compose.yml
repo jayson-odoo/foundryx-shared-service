@@ -51,7 +51,7 @@ x-backend-env: &backend-env
   PLATFORM_SMTP_FROM_NAME: ${PLATFORM_SMTP_FROM_NAME:-FoundryX EMS}
 
 x-backend-base: &backend-base
-  image: ${IMAGE_REPO:-jayson1004/foundryx-ems}:backend-${IMAGE_TAG:-latest}
+  image: ${IMAGE_REPO:-jayson1004/foundryx-shared-service}:backend-${IMAGE_TAG:-latest}
   build:
     context: ./service_backend
     dockerfile: Dockerfile
@@ -65,13 +65,13 @@ x-backend-base: &backend-base
   # here — otherwise the workers/beat would also answer to `backend:8001` and the
   # frontend's BACKEND_API_URL could resolve to a process with no HTTP server.
   networks:
-    - foundryx_network
+    - foundryx_ss_network
 
 services:
   # ---------------- Infra (NOT blue/green) ----------------
   db:
     image: postgres:16
-    container_name: foundryx_db
+    container_name: foundryx_ss_db
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-foundryx}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
@@ -84,7 +84,7 @@ services:
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - foundryx_pg:/var/lib/postgresql/data
+      - foundryx_ss_pg:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-foundryx}"]
       interval: 10s
@@ -92,21 +92,21 @@ services:
       retries: 5
     restart: unless-stopped
     networks:
-      - foundryx_network
+      - foundryx_ss_network
 
   redis:
     image: redis:7-alpine
-    container_name: foundryx_redis
+    container_name: foundryx_ss_redis
     command: redis-server --appendonly yes
     volumes:
-      - foundryx_redis:/data
+      - foundryx_ss_redis:/data
     restart: unless-stopped
     networks:
-      - foundryx_network
+      - foundryx_ss_network
 
   pgbackups:
     image: prodrigestivill/postgres-backup-local
-    container_name: foundryx_pgbackups
+    container_name: foundryx_ss_pgbackups
     environment:
       POSTGRES_HOST: db
       POSTGRES_DB: ${POSTGRES_DB:-foundryx_service}
@@ -121,7 +121,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - foundryx_network
+      - foundryx_ss_network
 
   # ---------------- Celery (NOT blue/green; recreated in place) ----------------
   # Two distinct Celery apps share the backend image:
@@ -130,7 +130,7 @@ services:
   # ONE beat instance owns the workflow cron ticks.
   worker_workflow:
     <<: *backend-base
-    container_name: foundryx_worker_workflow
+    container_name: foundryx_ss_worker_workflow
     environment: *backend-env
     command: ["celery", "-A", "app.workflow_engine.worker", "worker", "--loglevel", "info"]
     healthcheck:
@@ -138,7 +138,7 @@ services:
 
   worker_omni:
     <<: *backend-base
-    container_name: foundryx_worker_omni
+    container_name: foundryx_ss_worker_omni
     environment: *backend-env
     command: ["celery", "-A", "modules.omnichannel.worker", "worker", "--loglevel", "info"]
     healthcheck:
@@ -146,7 +146,7 @@ services:
 
   beat:
     <<: *backend-base
-    container_name: foundryx_beat
+    container_name: foundryx_ss_beat
     environment: *backend-env
     command: ["celery", "-A", "app.workflow_engine.worker", "beat", "--loglevel", "info"]
     healthcheck:
@@ -155,31 +155,31 @@ services:
   # ---------------- Backend API blue/green ----------------
   backend_blue:
     <<: *backend-base
-    container_name: foundryx_backend_blue
+    container_name: foundryx_ss_backend_blue
     profiles: ["blue"]
     environment: *backend-env
     networks:
-      foundryx_network:
+      foundryx_ss_network:
         aliases:
           - backend
     ports:
-      - "127.0.0.1:8000:8001"
+      - "127.0.0.1:8200:8001"
 
   backend_green:
     <<: *backend-base
-    container_name: foundryx_backend_green
+    container_name: foundryx_ss_backend_green
     profiles: ["green"]
     environment: *backend-env
     networks:
-      foundryx_network:
+      foundryx_ss_network:
         aliases:
           - backend
     ports:
-      - "127.0.0.1:8010:8001"
+      - "127.0.0.1:8210:8001"
 
   # ---------------- Frontend blue/green ----------------
   frontend_blue:
-    image: ${IMAGE_REPO:-jayson1004/foundryx-ems}:frontend-${IMAGE_TAG:-latest}
+    image: ${IMAGE_REPO:-jayson1004/foundryx-shared-service}:frontend-${IMAGE_TAG:-latest}
     build:
       context: ./service_frontend
       dockerfile: Dockerfile
@@ -188,7 +188,7 @@ services:
         NEXT_PUBLIC_META_APP_ID: ${NEXT_PUBLIC_META_APP_ID:-}
         NEXT_PUBLIC_META_ES_CONFIG_ID: ${NEXT_PUBLIC_META_ES_CONFIG_ID:-}
         NEXT_PUBLIC_META_GRAPH_VERSION: ${NEXT_PUBLIC_META_GRAPH_VERSION:-v19.0}
-    container_name: foundryx_frontend_blue
+    container_name: foundryx_ss_frontend_blue
     profiles: ["blue"]
     environment: &frontend-env
       NODE_ENV: production
@@ -200,12 +200,12 @@ services:
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set in .env}
     restart: unless-stopped
     networks:
-      - foundryx_network
+      - foundryx_ss_network
     ports:
-      - "127.0.0.1:3001:3001"
+      - "127.0.0.1:3200:3001"
 
   frontend_green:
-    image: ${IMAGE_REPO:-jayson1004/foundryx-ems}:frontend-${IMAGE_TAG:-latest}
+    image: ${IMAGE_REPO:-jayson1004/foundryx-shared-service}:frontend-${IMAGE_TAG:-latest}
     build:
       context: ./service_frontend
       dockerfile: Dockerfile
@@ -214,21 +214,21 @@ services:
         NEXT_PUBLIC_META_APP_ID: ${NEXT_PUBLIC_META_APP_ID:-}
         NEXT_PUBLIC_META_ES_CONFIG_ID: ${NEXT_PUBLIC_META_ES_CONFIG_ID:-}
         NEXT_PUBLIC_META_GRAPH_VERSION: ${NEXT_PUBLIC_META_GRAPH_VERSION:-v19.0}
-    container_name: foundryx_frontend_green
+    container_name: foundryx_ss_frontend_green
     profiles: ["green"]
     environment: *frontend-env
     restart: unless-stopped
     networks:
-      - foundryx_network
+      - foundryx_ss_network
     ports:
-      - "127.0.0.1:3011:3001"
+      - "127.0.0.1:3210:3001"
 
 volumes:
-  foundryx_pg:
+  foundryx_ss_pg:
     driver: local
-  foundryx_redis:
+  foundryx_ss_redis:
     driver: local
 
 networks:
-  foundryx_network:
+  foundryx_ss_network:
     driver: bridge

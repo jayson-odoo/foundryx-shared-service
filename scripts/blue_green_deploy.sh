@@ -11,10 +11,11 @@
 # backend's own absolute URLs are correct because PUBLIC_BASE_URL carries the
 # prefix. The swap = rewrite the Caddy fragment to the new color's ports + reload.
 #
-# Container loopback ports alternate per color (3000/php taken by ecohub on
-# this host, so blue uses 3001/8000):
-#   blue:  backend 127.0.0.1:8000 | frontend 127.0.0.1:3001
-#   green: backend 127.0.0.1:8010 | frontend 127.0.0.1:3011
+# Container loopback ports alternate per color. This platform shares the host
+# with the dreamz EMS stack (which owns 8000/8010/3001/3011), so foundryx-shared-
+# service uses a DISTINCT range:
+#   blue:  backend 127.0.0.1:8200 | frontend 127.0.0.1:3200
+#   green: backend 127.0.0.1:8210 | frontend 127.0.0.1:3210
 #
 # Required env: IMAGE_TAG (git SHA, set by CI), APP_DOMAIN, TLS_EMAIL.
 # Active color in .active_color (defaults to blue on first run).
@@ -41,10 +42,10 @@ TICK_SECONDS=2
 ACTIVE=$(cat .active_color 2>/dev/null || echo blue)
 if [ "$ACTIVE" = "blue" ]; then
   NEW=green; OLD=blue
-  NEW_BE_PORT=8010; NEW_FE_PORT=3011
+  NEW_BE_PORT=8210; NEW_FE_PORT=3210
 else
   NEW=blue;  OLD=green
-  NEW_BE_PORT=8000; NEW_FE_PORT=3001
+  NEW_BE_PORT=8200; NEW_FE_PORT=3200
 fi
 
 echo "==> Active=${ACTIVE} New=${NEW} IMAGE_TAG=${IMAGE_TAG}"

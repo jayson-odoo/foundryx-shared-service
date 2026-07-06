@@ -24,11 +24,18 @@ because `PUBLIC_BASE_URL` carries the `/be` prefix. Bonus: API calls are
 same-origin → no CORS preflight. (Backend root routes like `/forms`/`/templates`
 would collide with frontend pages on a shared root — the prefix is what avoids it.)
 
+This platform **shares the host with the dreamz EMS stack** (the fork origin),
+so every identifier is namespaced away from it: containers `foundryx_ss_*`,
+volumes `foundryx_ss_pg`/`_redis`, network `foundryx_ss_network`, image
+`foundryx-shared-service`, DB host port `5433` (`POSTGRES_PORT` var), Caddy
+fragment `/etc/caddy/foundryx-ss.caddy` (`CADDY_SITE_FILE` var), and the
+loopback port range below (dreamz owns 8000/8010/3001/3011).
+
 | Service | blue | green | notes |
 |---|---|---|---|
-| backend (API) | `:8000` | `:8010` | gunicorn/UvicornWorker, `/health` (`:3000`/php = ecohub) |
-| frontend (Next standalone) | `:3001` | `:3011` | `node server.js` |
-| db / redis / pgbackups | — | — | infra, not blue/green |
+| backend (API) | `:8200` | `:8210` | gunicorn/UvicornWorker, `/health` |
+| frontend (Next standalone) | `:3200` | `:3210` | `node server.js` |
+| db / redis / pgbackups | — | — | infra, not blue/green; db host port `5433` |
 | worker_workflow / worker_omni / beat | — | — | Celery; recreated in place each deploy |
 
 Two Celery apps share the backend image: `app.workflow_engine.worker` (tasks +
