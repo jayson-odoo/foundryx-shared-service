@@ -31,3 +31,13 @@ def encrypt_credentials(data: Dict[str, Any]) -> str:
 def decrypt_credentials(token: str) -> Dict[str, Any]:
     """Decrypt ciphertext → credentials dict. Raises on tamper/wrong key."""
     return json.loads(_fernet().decrypt(token.encode()).decode())
+
+
+def encrypt_secret(value: str) -> str:
+    """Encrypt an opaque string (e.g. a webhook signing secret) at rest."""
+    return _fernet().encrypt(value.encode()).decode()
+
+
+def decrypt_secret(token: str) -> str:
+    """Decrypt an encrypted string. Raises on tamper/wrong key."""
+    return _fernet().decrypt(token.encode()).decode()

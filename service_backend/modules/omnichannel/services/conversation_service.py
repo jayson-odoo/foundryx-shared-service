@@ -4,6 +4,7 @@ Maps Contact/ConversationMessage rows to the camelCase API shapes, resolves
 status keys + user display names, maintains the read marker, and applies the
 PATCH operations (assign / lifecycle / priority).
 """
+import logging
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -13,6 +14,8 @@ from ..models import Channel, Contact, ConversationMessage, Status
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import MessageItem, ReplyRefItem, ThreadItem
 from . import realtime, statuses
+
+logger = logging.getLogger(__name__)
 
 
 class ThreadNotFound(Exception):
@@ -198,4 +201,27 @@ class ConversationService:
             c.workspace_id,
             {"type": "contact.updated", "thread": item.model_dump(mode="json")},
         )
+        # Fan out to consumer webhooks (Slice 4). Endpoints are per-channel, so
+        # forward on the contact's current channel (its latest message's); skip
+        # if the contact has never messaged on a channel yet. Fully isolated —
+        # the PATCH already committed, forwarding must never 500 the response.
+        if item.channelId:
+            try:
+                from .webhook_delivery import enqueue_event
+
+                channel = (
+                    self.db.query(Channel)
+                    .filter(Channel.id == item.channelId, Channel.tenant_id == tenant_id)
+                    .first()
+                )
+                if channel is not None:
+                    enqueue_event(
+                        self.db,
+                        channel,
+                        "contact.updated",
+                        f"{c.id}:{int(c.updated_at.timestamp())}",
+                        {"contact": item.model_dump(mode="json")},
+                    )
+            except Exception:  # noqa: BLE001 — forwarding never breaks the PATCH
+                logger.exception("contact.updated webhook fan-out failed for %s", c.id)
         return item

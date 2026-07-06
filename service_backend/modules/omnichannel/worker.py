@@ -43,3 +43,31 @@ def process_inbound_webhook(channel_id: str, payload: dict) -> dict:
         return InboundService(db).process_payload(channel_id, payload)
     finally:
         db.close()
+
+
+@celery_app.task(name="omnichannel.deliver_webhook")
+def deliver_webhook(delivery_id: str) -> str:
+    """Deliver one consumer-webhook row. On a retryable failure it reschedules
+    itself with the backoff computed by ``dispatch`` (no beat needed); in eager
+    dev it runs a single attempt inline (no self-recursion)."""
+    from datetime import datetime, timezone
+
+    from app.database import SessionLocal
+    from modules.omnichannel.models import WebhookDelivery
+    from modules.omnichannel.services.webhook_delivery import dispatch
+
+    db = SessionLocal()
+    try:
+        outcome = dispatch(db, delivery_id)
+        if outcome == "retry" and not settings.celery_task_always_eager:
+            row = (
+                db.query(WebhookDelivery)
+                .filter(WebhookDelivery.id == delivery_id)
+                .first()
+            )
+            if row is not None and row.next_attempt_at is not None:
+                delay = (row.next_attempt_at - datetime.now(timezone.utc)).total_seconds()
+                deliver_webhook.apply_async((delivery_id,), countdown=max(1, int(delay)))
+        return outcome
+    finally:
+        db.close()
