@@ -36,45 +36,98 @@ class WhatsAppCloudAdapter:
         if not self._configured:
             # Dev fallback — no Meta app configured yet (see module docstring).
             return {"access_token": f"dev-token-{code}", "dev": True}
-        base = {
+        # Self-hosted redirect flow: the code is minted against a redirect_uri WE
+        # own + registered (strict mode requires an EXACT match at exchange), so
+        # we send that identical value. Omitting it works only for the (rare)
+        # config-code exemption — kept as the fallback when the client sends none.
+        params = {
             "client_id": settings.meta_app_id,
             "client_secret": settings.meta_app_secret,
             "code": code,
         }
-        # The redirect_uri a JS-SDK code is bound to varies by app config:
-        #   - None  → the documented Tech-Provider ES config-code flow
-        #   - ""    → the classic FB JS-SDK code (empty redirect_uri)
-        #   - origin→ apps with "Use Strict Mode for redirect URIs" on
-        # A redirect_uri MISMATCH does NOT consume the code, so we try each in
-        # turn and take the first Meta accepts. Every failure is logged with
-        # Meta's full error (code/subcode/fbtrace_id) for diagnosis.
-        variants: list[Optional[str]] = [None, ""]
-        if redirect_uri and redirect_uri not in variants:
-            variants.append(redirect_uri)
+        if redirect_uri:
+            params["redirect_uri"] = redirect_uri
 
         client = self._http()
-        last_detail = ""
         try:
-            for variant in variants:
-                params = dict(base)
-                if variant is not None:
-                    params["redirect_uri"] = variant
-                try:
-                    resp = client.get(f"{self._base}/oauth/access_token", params=params)
-                except httpx.HTTPError as exc:
-                    raise CodeExchangeError(f"Could not reach Meta: {exc}") from exc
-                if resp.status_code == 200:
-                    return {"access_token": resp.json().get("access_token", "")}
-                try:
-                    err = resp.json().get("error", {})
-                    last_detail = err.get("message", "")
-                except ValueError:
-                    err = {"raw": resp.text[:300]}
-                    last_detail = f"Meta returned {resp.status_code}."
-                logger.warning(
-                    "WA code exchange failed (redirect_uri=%r): %s", variant, err
+            try:
+                resp = client.get(f"{self._base}/oauth/access_token", params=params)
+            except httpx.HTTPError as exc:
+                raise CodeExchangeError(f"Could not reach Meta: {exc}") from exc
+            if resp.status_code == 200:
+                return {"access_token": resp.json().get("access_token", "")}
+            try:
+                err = resp.json().get("error", {})
+                detail = err.get("message", "")
+            except ValueError:
+                err = {"raw": resp.text[:300]}
+                detail = f"Meta returned {resp.status_code}."
+            # Full Meta error (code/subcode/fbtrace_id) for diagnosis.
+            logger.warning(
+                "WA code exchange failed (redirect_uri=%r): %s", redirect_uri, err
+            )
+            raise CodeExchangeError(detail or "Code exchange failed.")
+        finally:
+            if self._client is None:
+                client.close()
+
+    def resolve_onboarded_assets(self, credentials: Dict[str, Any]) -> Dict[str, Any]:
+        """After the token exchange, discover WHICH WABA + phone number the token
+        grants access to — the self-hosted redirect flow has no postMessage
+        session info, so we read it back from the token itself:
+
+          debug_token → granular_scopes[whatsapp_business_*].target_ids → WABA
+          → GET /{waba_id}/phone_numbers → phone_number_id + display number
+
+        Returns {} in dev / when nothing resolves; the caller enforces presence.
+        """
+        token = credentials.get("access_token", "")
+        if not token or credentials.get("dev") or not self._configured:
+            return {}
+        app_token = f"{settings.meta_app_id}|{settings.meta_app_secret}"
+        client = self._http()
+        try:
+            waba_id: Optional[str] = None
+            try:
+                dbg = client.get(
+                    f"{self._base}/debug_token",
+                    params={"input_token": token, "access_token": app_token},
                 )
-            raise CodeExchangeError(last_detail or "Code exchange failed.")
+                if dbg.status_code == 200:
+                    scopes = (dbg.json().get("data") or {}).get("granular_scopes") or []
+                    for scope in scopes:
+                        if scope.get("scope") in (
+                            "whatsapp_business_management",
+                            "whatsapp_business_messaging",
+                        ):
+                            ids = scope.get("target_ids") or []
+                            if ids:
+                                waba_id = ids[0]
+                                break
+            except httpx.HTTPError:
+                waba_id = None
+
+            phone_number_id: Optional[str] = None
+            display: Optional[str] = None
+            if waba_id:
+                try:
+                    pr = client.get(
+                        f"{self._base}/{waba_id}/phone_numbers",
+                        params={"access_token": token},
+                    )
+                    if pr.status_code == 200:
+                        nums = pr.json().get("data") or []
+                        if nums:
+                            phone_number_id = nums[0].get("id")
+                            display = nums[0].get("display_phone_number")
+                except httpx.HTTPError:
+                    phone_number_id = None
+
+            return {
+                "waba_id": waba_id,
+                "phone_number_id": phone_number_id,
+                "display_phone_number": display,
+            }
         finally:
             if self._client is None:
                 client.close()

@@ -33,6 +33,10 @@ class PhoneNumberInUse(Exception):
     """The phone_number_id is already bound to another (live) channel service-wide."""
 
 
+class OnboardingResolveError(Exception):
+    """Token exchanged, but no WhatsApp number could be resolved from it."""
+
+
 def _digits(value: str) -> str:
     return "".join(c for c in (value or "") if c.isdigit())
 
@@ -84,13 +88,34 @@ class OnboardingService:
         adapter = get_adapter("WHATSAPP")
         credentials = adapter.exchange_code(payload.code, payload.redirectUri)
 
+        # The self-hosted redirect flow sends no waba/phone ids (no postMessage
+        # session info) — discover them from the exchanged token. The simulated
+        # popup (dev) supplies both, so we only resolve what's missing.
+        waba_id = payload.wabaId or None
+        phone_number_id = payload.phoneNumberId or None
+        resolved: dict = {}
+        if not waba_id or not phone_number_id:
+            resolved = adapter.resolve_onboarded_assets(credentials)
+            waba_id = waba_id or resolved.get("waba_id")
+            phone_number_id = phone_number_id or resolved.get("phone_number_id")
+        if not phone_number_id:
+            raise OnboardingResolveError(
+                "Connected to Meta, but no WhatsApp number was found on this account. "
+                "Finish WhatsApp setup in Meta Business, then try again."
+            )
+
         # Resolve display number + verified name from Meta when the client didn't
         # supply them (real Embedded Signup hands back only ids).
-        details = adapter.fetch_phone_details(credentials, payload.phoneNumberId)
-        display = payload.displayPhoneNumber or details.get("display_phone_number") or payload.phoneNumberId
+        details = adapter.fetch_phone_details(credentials, phone_number_id)
+        display = (
+            payload.displayPhoneNumber
+            or details.get("display_phone_number")
+            or resolved.get("display_phone_number")
+            or phone_number_id
+        )
         name = (payload.businessName or details.get("verified_name") or display or "WhatsApp").strip()
 
-        self._assert_phone_available(payload.phoneNumberId)
+        self._assert_phone_available(phone_number_id)
 
         channel = Channel(
             tenant_id=tenant_id,
@@ -98,8 +123,8 @@ class OnboardingService:
             channel_type="WHATSAPP",
             name=name,
             credentials_json=encrypt_credentials(credentials),
-            waba_id=payload.wabaId,
-            phone_number_id=payload.phoneNumberId,
+            waba_id=waba_id,
+            phone_number_id=phone_number_id,
             display_phone_number=display,
             is_active=True,
             status_id=statuses.status_id_for(self.db, tenant_id, "CHANNEL", "ACTIVE"),
@@ -108,11 +133,12 @@ class OnboardingService:
         self._persist_channel(channel)
 
         # Best-effort webhook subscription (no-op in dev / when unconfigured).
-        callback_url = f"/omnichannel/webhooks/{channel.id}"
-        try:
-            adapter.subscribe_webhook(credentials, payload.wabaId, callback_url)
-        except Exception:  # noqa: BLE001 — subscription failure shouldn't block onboarding
-            pass
+        if waba_id:
+            callback_url = f"/omnichannel/webhooks/{channel.id}"
+            try:
+                adapter.subscribe_webhook(credentials, waba_id, callback_url)
+            except Exception:  # noqa: BLE001 — subscription failure shouldn't block onboarding
+                pass
 
         return ChannelService(self.db)._items([channel], tenant_id)[0]
 

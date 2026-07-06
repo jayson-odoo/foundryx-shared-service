@@ -1,116 +1,98 @@
 /**
  * Meta WhatsApp Embedded Signup (Route A — FoundryX = Tech Provider).
  *
- * Loads Meta's JS SDK and launches the Embedded Signup popup. The tenant logs
- * into Facebook, picks/registers their WhatsApp number, and Meta hands back an
- * auth `code` (via FB.login) plus `waba_id` + `phone_number_id` (via a window
- * message event). We post those to the backend `oauth-callback`, which exchanges
- * the code for a permanent token against the ONE FoundryX Meta app.
+ * SELF-HOSTED REDIRECT FLOW. We do NOT use `FB.login` (the JS SDK): under Meta's
+ * forced "Use Strict Mode for redirect URIs", `FB.login` mints the code against a
+ * dynamic internal `xd_arbiter` URL that can never be matched server-side, so the
+ * token exchange always fails with error 36008. Instead we drive Meta's OAuth
+ * dialog ourselves with a redirect_uri WE own + registered — the code is bound to
+ * that fixed URL, and the backend exchanges with the identical value. The WABA +
+ * phone number are then read back from the token (no postMessage needed).
  *
- * Gated by env: when `NEXT_PUBLIC_META_APP_ID` + `NEXT_PUBLIC_META_ES_CONFIG_ID`
- * are unset (dev / no Meta app yet) the wizard falls back to the simulated popup,
- * so local dev + tests don't need a real Meta app.
+ * The dialog opens in a popup; Meta redirects it to `/wa-callback?code=…`, which
+ * relays the code to this opener via postMessage. Gated by env: when
+ * `NEXT_PUBLIC_META_APP_ID` + `NEXT_PUBLIC_META_ES_CONFIG_ID` are unset (dev / no
+ * Meta app) the wizard falls back to the simulated popup instead.
  */
 import type { EmbeddedSignupResult } from '@/types/omnichannel';
 
 const META_APP_ID = process.env.NEXT_PUBLIC_META_APP_ID ?? '';
 const META_CONFIG_ID = process.env.NEXT_PUBLIC_META_ES_CONFIG_ID ?? '';
-const GRAPH_VERSION = process.env.NEXT_PUBLIC_META_GRAPH_VERSION ?? 'v19.0';
+const GRAPH_VERSION = process.env.NEXT_PUBLIC_META_GRAPH_VERSION ?? 'v23.0';
+
+/** Path of our OAuth callback page — must be registered as a Valid OAuth
+ *  Redirect URI in the Meta app (Facebook Login for Business → Settings). */
+const CALLBACK_PATH = '/wa-callback';
 
 /** True only when the Meta app is configured — drives real-vs-simulated popup. */
 export function isEmbeddedSignupConfigured(): boolean {
   return Boolean(META_APP_ID && META_CONFIG_ID);
 }
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-declare global {
-  interface Window {
-    FB?: any;
-    fbAsyncInit?: () => void;
-  }
-}
-
-let sdkPromise: Promise<void> | null = null;
-
-function loadSdk(): Promise<void> {
-  if (typeof window === 'undefined') return Promise.reject(new Error('SSR'));
-  if (window.FB) return Promise.resolve();
-  if (sdkPromise) return sdkPromise;
-
-  sdkPromise = new Promise<void>((resolve, reject) => {
-    window.fbAsyncInit = () => {
-      window.FB.init({ appId: META_APP_ID, autoLogAppEvents: true, xfbml: false, version: GRAPH_VERSION });
-      resolve();
-    };
-    const script = document.createElement('script');
-    script.src = 'https://connect.facebook.net/en_US/sdk.js';
-    script.async = true;
-    script.defer = true;
-    script.crossOrigin = 'anonymous';
-    script.onerror = () => reject(new Error('Failed to load the Facebook SDK.'));
-    document.body.appendChild(script);
-  });
-  return sdkPromise;
+/** postMessage envelope the callback page relays back to this window. */
+interface OAuthMessage {
+  type: 'FX_WA_OAUTH';
+  code?: string;
+  error?: string;
 }
 
 /**
- * Launch Embedded Signup. Resolves with the auth code + WABA/phone ids once the
- * tenant finishes. Display number/name are resolved server-side from the
- * phone_number_id, so they're omitted here.
+ * Launch Embedded Signup. Opens Meta's OAuth dialog in a popup and resolves with
+ * the auth code once the tenant finishes. The WABA + phone ids are resolved
+ * server-side from the exchanged token, so they're omitted here.
  */
 export async function launchEmbeddedSignup(): Promise<EmbeddedSignupResult> {
-  await loadSdk();
+  if (typeof window === 'undefined') throw new Error('Embedded Signup runs in the browser only.');
+
+  const redirectUri = `${window.location.origin}${CALLBACK_PATH}`;
+  const extras = encodeURIComponent(
+    JSON.stringify({ setup: {}, featureType: '', sessionInfoVersion: '3' }),
+  );
+  const dialogUrl =
+    `https://www.facebook.com/${GRAPH_VERSION}/dialog/oauth` +
+    `?client_id=${encodeURIComponent(META_APP_ID)}` +
+    `&config_id=${encodeURIComponent(META_CONFIG_ID)}` +
+    `&response_type=code` +
+    `&override_default_response_type=true` +
+    `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+    `&extras=${extras}`;
+
+  const popup = window.open(dialogUrl, 'fx_wa_es', 'popup,width=600,height=760');
+  if (!popup) {
+    throw new Error('Popup blocked — allow popups for this site and try again.');
+  }
 
   return new Promise<EmbeddedSignupResult>((resolve, reject) => {
-    let sessionInfo: { phone_number_id?: string; waba_id?: string } | null = null;
-    let aborted: string | null = null;
+    let settled = false;
+    const cleanup = () => {
+      window.removeEventListener('message', onMessage);
+      window.clearInterval(timer);
+    };
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn();
+    };
 
     const onMessage = (event: MessageEvent) => {
-      if (typeof event.origin !== 'string' || !event.origin.endsWith('facebook.com')) return;
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg?.type !== 'WA_EMBEDDED_SIGNUP') return;
-        if (msg.event === 'FINISH') sessionInfo = msg.data ?? msg;
-        else if (msg.event === 'CANCEL') aborted = 'Signup cancelled.';
-        else if (msg.event === 'ERROR') aborted = msg.data?.error_message || 'Signup failed.';
-      } catch {
-        /* non-JSON messages from the SDK — ignore */
+      if (event.origin !== window.location.origin) return;
+      const data = event.data as OAuthMessage | undefined;
+      if (!data || data.type !== 'FX_WA_OAUTH') return;
+      if (data.code) {
+        settle(() =>
+          resolve({ code: data.code as string, wabaId: '', phoneNumberId: '', redirectUri }),
+        );
+      } else {
+        settle(() => reject(new Error(data.error || 'Signup cancelled.')));
       }
     };
-    window.addEventListener('message', onMessage);
-    const cleanup = () => window.removeEventListener('message', onMessage);
 
-    window.FB.login(
-      (response: any) => {
-        cleanup();
-        if (aborted) {
-          reject(new Error(aborted));
-          return;
-        }
-        const code = response?.authResponse?.code;
-        if (!code) {
-          reject(new Error('Signup cancelled.'));
-          return;
-        }
-        resolve({
-          code,
-          wabaId: sessionInfo?.waba_id ?? '',
-          phoneNumberId: sessionInfo?.phone_number_id ?? '',
-          // Resolved server-side from phone_number_id.
-          displayPhoneNumber: '',
-          businessName: '',
-          // Origin the OAuth dialog ran on. Meta binds the JS-SDK code to a
-          // redirect_uri under strict mode; the backend must echo it verbatim
-          // on exchange. Trailing slash matches the registered Valid OAuth URI.
-          redirectUri: `${window.location.origin}/`,
-        });
-      },
-      {
-        config_id: META_CONFIG_ID,
-        response_type: 'code',
-        override_default_response_type: true,
-        extras: { setup: {}, featureType: '', sessionInfoVersion: '3' },
-      },
-    );
+    // Popup closed without a message → the tenant abandoned the flow.
+    const timer = window.setInterval(() => {
+      if (popup.closed) settle(() => reject(new Error('Signup cancelled.')));
+    }, 500);
+
+    window.addEventListener('message', onMessage);
   });
 }

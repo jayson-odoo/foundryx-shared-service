@@ -144,6 +144,110 @@ def test_onboarding_surfaces_meta_exchange_error(client, monkeypatch):
     assert "Error validating verification code" in res.json()["detail"]
 
 
+def test_onboarding_resolves_waba_phone_from_token(client, monkeypatch):
+    """Self-hosted redirect flow: the client sends only code + redirectUri; the
+    backend exchanges, then discovers the WABA + phone from the token
+    (debug_token → phone_numbers) and provisions the channel."""
+    import httpx
+
+    from app.config import settings
+    from modules.omnichannel.adapters.whatsapp_cloud import WhatsAppCloudAdapter
+    from modules.omnichannel.services import onboarding_service
+
+    monkeypatch.setattr(settings, "meta_app_id", "test-app-id")
+    monkeypatch.setattr(settings, "meta_app_secret", "test-app-secret")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/oauth/access_token"):
+            # redirect_uri must be echoed verbatim (strict mode).
+            assert request.url.params.get("redirect_uri") == "https://x.example/wa-callback"
+            return httpx.Response(200, json={"access_token": "perm-token"})
+        if path.endswith("/debug_token"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "granular_scopes": [
+                            {"scope": "whatsapp_business_management", "target_ids": ["waba-xyz"]}
+                        ]
+                    }
+                },
+            )
+        if path.endswith("/waba-xyz/phone_numbers"):
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "pn-xyz", "display_phone_number": "+65 9111 2222"}]},
+            )
+        if path.endswith("/pn-xyz"):
+            return httpx.Response(
+                200,
+                json={"display_phone_number": "+65 9111 2222", "verified_name": "Acme"},
+            )
+        return httpx.Response(404, json={"error": {"message": f"unexpected {path}"}})
+
+    fake = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(
+        onboarding_service,
+        "get_adapter",
+        lambda channel_type="WHATSAPP": WhatsAppCloudAdapter(client=fake),
+    )
+
+    res = client.post(
+        "/omnichannel/onboarding/oauth-callback",
+        headers=_auth(client),
+        json={
+            "workspaceId": _default_workspace_id(client),
+            "code": "auth-code",
+            "redirectUri": "https://x.example/wa-callback",
+        },
+    )
+    assert res.status_code == 201, res.text
+    ch = res.json()
+    assert ch["phoneNumberId"] == "pn-xyz"
+    assert ch["wabaId"] == "waba-xyz"
+    assert ch["displayPhoneNumber"] == "+65 9111 2222"
+    assert ch["name"] == "Acme"
+
+
+def test_onboarding_resolve_failure_is_400(client, monkeypatch):
+    """Token exchanged but no number on the account → clean 400, not a 500."""
+    import httpx
+
+    from app.config import settings
+    from modules.omnichannel.adapters.whatsapp_cloud import WhatsAppCloudAdapter
+    from modules.omnichannel.services import onboarding_service
+
+    monkeypatch.setattr(settings, "meta_app_id", "test-app-id")
+    monkeypatch.setattr(settings, "meta_app_secret", "test-app-secret")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/oauth/access_token"):
+            return httpx.Response(200, json={"access_token": "perm-token"})
+        if request.url.path.endswith("/debug_token"):
+            return httpx.Response(200, json={"data": {"granular_scopes": []}})
+        return httpx.Response(404, json={"error": {"message": "none"}})
+
+    fake = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(
+        onboarding_service,
+        "get_adapter",
+        lambda channel_type="WHATSAPP": WhatsAppCloudAdapter(client=fake),
+    )
+
+    res = client.post(
+        "/omnichannel/onboarding/oauth-callback",
+        headers=_auth(client),
+        json={
+            "workspaceId": _default_workspace_id(client),
+            "code": "auth-code",
+            "redirectUri": "https://x.example/wa-callback",
+        },
+    )
+    assert res.status_code == 400
+    assert "no WhatsApp number" in res.json()["detail"]
+
+
 def test_onboarding_provisions_channel(client):
     h = _auth(client)
     wid = _default_workspace_id(client)

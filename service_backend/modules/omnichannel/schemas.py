@@ -142,15 +142,17 @@ class TestConnectionResult(ApiModel):
 class OnboardingCallbackRequest(ApiModel):
     workspaceId: str
     code: str
-    wabaId: str
-    phoneNumberId: str
-    # Optional: the real Embedded Signup SDK omits these; resolved server-side
-    # from phone_number_id via Graph. The simulated popup supplies them.
+    # Resolved server-side from the exchanged token (debug_token → phone_numbers)
+    # when the client omits them. The self-hosted redirect flow sends neither;
+    # the simulated popup (dev) supplies both.
+    wabaId: Optional[str] = None
+    phoneNumberId: Optional[str] = None
     displayPhoneNumber: Optional[str] = None
     businessName: Optional[str] = None
-    # The origin the JS SDK OAuth dialog ran on. Under Meta "strict mode" the
-    # code is redirect_uri-bound; the token exchange must send the identical
-    # value. None for the simulated popup (dev) — exchange stays redirect-less.
+    # The redirect_uri the OAuth dialog was minted against. Under Meta "strict
+    # mode" the code is redirect_uri-bound; the token exchange MUST send the
+    # identical value. None for the simulated popup (dev) — exchange stays
+    # redirect-less.
     redirectUri: Optional[str] = None
 
 

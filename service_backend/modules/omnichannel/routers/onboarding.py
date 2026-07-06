@@ -10,6 +10,7 @@ from ..adapters.base import CodeExchangeError
 from ..schemas import ChannelItem, ManualConnectRequest, OnboardingCallbackRequest
 from ..services.onboarding_service import (
     ManualConnectError,
+    OnboardingResolveError,
     OnboardingService,
     PhoneNumberInUse,
     WorkspaceNotFound,
@@ -30,6 +31,8 @@ def oauth_callback(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.")
     except PhoneNumberInUse as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
+    except OnboardingResolveError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
     except CodeExchangeError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
 
