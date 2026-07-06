@@ -139,6 +139,7 @@ jobs:
             POSTGRES_USER=${{ vars.POSTGRES_USER || 'foundryx' }}
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             POSTGRES_DB=${{ vars.POSTGRES_DB || 'foundryx_service' }}
+            POSTGRES_PORT=${{ vars.POSTGRES_PORT || '5432' }}
             JWT_SECRET=${{ secrets.JWT_SECRET }}
             JWT_ALGORITHM=${{ vars.JWT_ALGORITHM || 'HS256' }}
             ACCESS_TOKEN_EXPIRE_MINUTES=${{ vars.ACCESS_TOKEN_EXPIRE_MINUTES || '1440' }}
