@@ -11,6 +11,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -82,7 +83,10 @@ class Channel(OmniBase):
     name = Column(String, nullable=False)
     credentials_json = Column(Text, nullable=True)  # Fernet-encrypted
     waba_id = Column(String, nullable=True)
-    phone_number_id = Column(String, nullable=True)
+    # Service-wide unique among live channels via a PARTIAL unique index (migration
+    # 0002, WHERE phone_number_id IS NOT NULL AND is_trashed=false) — inbound
+    # routing keys off it (O(1)). index=True mirrors that for the create_all path.
+    phone_number_id = Column(String, nullable=True, index=True)
     display_phone_number = Column(String, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     status_id = Column(String, ForeignKey("statuses.id"), nullable=True)
@@ -220,6 +224,69 @@ class WorkspaceApiKey(OmniBase):
     revoked_at = Column(UTCDateTime(), nullable=True)
     created_by = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
+class WebhookEndpoint(OmniBase):
+    """A consumer's webhook subscription (plan sprint-1/01 Slice 4, AC-01-22).
+
+    Scope = per CHANNEL (one WhatsApp number). A channel can have many endpoints
+    (fan-out to N consumer systems). ``secret`` is a Fernet-encrypted signing
+    secret (reversible — we HMAC-sign every delivery with it AND reveal it to the
+    consumer on create/rotate). ``events`` selects which event types forward.
+    Auto-disable: after ``consecutive_failures`` exhausted deliveries reach the
+    threshold the status flips to AUTO_DISABLED until re-enabled.
+    """
+
+    __tablename__ = "webhook_endpoints"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, nullable=False, index=True)
+    channel_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    url = Column(String, nullable=False)
+    secret_encrypted = Column(Text, nullable=False)  # Fernet(signing secret)
+    events_json = Column(JSON, nullable=False, default=list)  # ["message.inbound", …]
+    status = Column(String, nullable=False, default="ACTIVE")  # ACTIVE|DISABLED|AUTO_DISABLED
+    consecutive_failures = Column(Integer, nullable=False, default=0)
+    disabled_at = Column(UTCDateTime(), nullable=True)
+    disabled_reason = Column(String, nullable=True)
+    last_success_at = Column(UTCDateTime(), nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class WebhookDelivery(OmniBase):
+    """One durable delivery attempt-set for an event → endpoint (AC-01-24).
+
+    The outbox row is the source of truth: created PENDING, POSTed with backoff
+    retries, marked SUCCESS on 2xx or FAILED (dead-letter, attempts preserved)
+    on exhaustion. ``event_id`` is the consumer's dedup key (at-least-once).
+    """
+
+    __tablename__ = "webhook_deliveries"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    endpoint_id = Column(String, nullable=False, index=True)
+    event_id = Column(String, nullable=False)  # stable dedup key
+    event_type = Column(String, nullable=False)
+    payload_json = Column(JSON, nullable=False)  # the full signed envelope
+    status = Column(String, nullable=False, default="PENDING")  # PENDING|SUCCESS|FAILED
+    attempt_count = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(UTCDateTime(), nullable=True)
+    last_attempt_at = Column(UTCDateTime(), nullable=True)
+    response_status = Column(Integer, nullable=True)
+    response_ms = Column(Integer, nullable=True)
+    error = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_webhook_deliveries_due", "status", "next_attempt_at"),
+    )
 
 
 class QuickReply(OmniBase):

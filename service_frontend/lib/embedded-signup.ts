@@ -24,6 +24,14 @@ const GRAPH_VERSION = process.env.NEXT_PUBLIC_META_GRAPH_VERSION ?? 'v23.0';
  *  Redirect URI in the Meta app (Facebook Login for Business → Settings). */
 const CALLBACK_PATH = '/wa-callback';
 
+/** Exact origins Meta's Embedded Signup posts its session info from. */
+const FB_ORIGINS = new Set([
+  'https://www.facebook.com',
+  'https://web.facebook.com',
+  'https://business.facebook.com',
+  'https://m.facebook.com',
+]);
+
 /** True only when the Meta app is configured — drives real-vs-simulated popup. */
 export function isEmbeddedSignupConfigured(): boolean {
   return Boolean(META_APP_ID && META_CONFIG_ID);
@@ -34,6 +42,13 @@ interface OAuthMessage {
   type: 'FX_WA_OAUTH';
   code?: string;
   error?: string;
+}
+
+/** Meta's Embedded Signup session-info message — identifies the EXACT number the
+ *  user selected/registered, so we don't have to guess it from the token. */
+interface WaSessionInfo {
+  phone_number_id?: string;
+  waba_id?: string;
 }
 
 /**
@@ -64,8 +79,12 @@ export async function launchEmbeddedSignup(): Promise<EmbeddedSignupResult> {
 
   return new Promise<EmbeddedSignupResult>((resolve, reject) => {
     let settled = false;
+    // Captured from Meta's ES FINISH message during the flow — the EXACT number
+    // the user picked. Falls back to server-side token resolution if absent.
+    let session: WaSessionInfo = {};
     const cleanup = () => {
       window.removeEventListener('message', onMessage);
+      window.removeEventListener('message', onWaMessage);
       window.clearInterval(timer);
     };
     const settle = (fn: () => void) => {
@@ -75,13 +94,34 @@ export async function launchEmbeddedSignup(): Promise<EmbeddedSignupResult> {
       fn();
     };
 
+    // Meta's Embedded Signup posts session info (selected phone_number_id +
+    // waba_id) to the opener while the popup runs. Exact-origin allowlist —
+    // `endsWith('facebook.com')` would also match `evilfacebook.com`.
+    const onWaMessage = (event: MessageEvent) => {
+      if (!FB_ORIGINS.has(event.origin)) return;
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg?.type === 'WA_EMBEDDED_SIGNUP' && msg.event === 'FINISH') {
+          session = (msg.data ?? {}) as WaSessionInfo;
+        }
+      } catch {
+        /* non-JSON SDK chatter — ignore */
+      }
+    };
+
+    // Our callback page relays the auth code back once Meta redirects.
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
       const data = event.data as OAuthMessage | undefined;
       if (!data || data.type !== 'FX_WA_OAUTH') return;
       if (data.code) {
         settle(() =>
-          resolve({ code: data.code as string, wabaId: '', phoneNumberId: '', redirectUri }),
+          resolve({
+            code: data.code as string,
+            wabaId: session.waba_id ?? '',
+            phoneNumberId: session.phone_number_id ?? '',
+            redirectUri,
+          }),
         );
       } else {
         settle(() => reject(new Error(data.error || 'Signup cancelled.')));
@@ -94,5 +134,6 @@ export async function launchEmbeddedSignup(): Promise<EmbeddedSignupResult> {
     }, 500);
 
     window.addEventListener('message', onMessage);
+    window.addEventListener('message', onWaMessage);
   });
 }

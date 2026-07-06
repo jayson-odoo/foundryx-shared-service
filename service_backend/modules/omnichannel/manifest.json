@@ -42,6 +42,10 @@
       "prefix": "/omnichannel/workspaces"
     },
     {
+      "name": "webhooks_subs",
+      "prefix": "/omnichannel"
+    },
+    {
       "name": "api_v1",
       "prefix": "/api/v1/omnichannel",
       "public": true

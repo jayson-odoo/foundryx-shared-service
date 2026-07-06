@@ -3,15 +3,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { Settings as SettingsIcon, MessageSquareText, IdCard } from 'lucide-react';
+import { Settings as SettingsIcon, MessageSquareText, IdCard, Webhook } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import { useCan } from '@/hooks/use-can';
 import { channelService } from '@/services/channel-service';
 import { ApiError } from '@/lib/api-client';
 import type { Channel, ChannelProfile } from '@/types/omnichannel';
 import { ConfigurationTab } from './channel-form-fields';
 import { ChannelProfileTab } from './channel-profile-tab';
 import { ChannelTemplatesTab } from './channel-templates-tab';
+import { ChannelWebhooksTab } from './channel-webhooks-tab';
 import { useChannelActions } from './use-channel-actions';
 import { channelFormHref, channelsListPath } from './paths';
 import { channelDetailSchema, type ChannelDetailValues } from './channel-schema';
@@ -40,6 +42,8 @@ export interface UseChannelFormResult {
 /** Loads the channel + profile, wires one RHF form, assembles the 3-tab config. */
 export function useChannelForm(channelId: string, initialEditing: boolean): UseChannelFormResult {
   const actions = useChannelActions();
+  const { can } = useCan();
+  const canReadWebhooks = can('webhooks.read');
   const [channel, setChannel] = useState<Channel | null>(null);
   const [profile, setProfile] = useState<ChannelProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -174,6 +178,16 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
           />
         ),
       },
+      ...(canReadWebhooks
+        ? [
+            {
+              id: 'webhooks',
+              label: 'Webhooks',
+              icon: Webhook,
+              render: () => <ChannelWebhooksTab channelId={channelId} />,
+            },
+          ]
+        : []),
     ];
 
     return {
@@ -206,7 +220,7 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
         buildHref: (recordId, ctx, index) => channelFormHref(recordId, { ctx, index }),
       },
     };
-  }, [isLoading, notFound, channel, profile, actions, form, initialEditing, channelId]);
+  }, [isLoading, notFound, channel, profile, actions, form, initialEditing, channelId, canReadWebhooks]);
 
   return { config, form, isLoading, notFound };
 }

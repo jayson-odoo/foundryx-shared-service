@@ -343,6 +343,67 @@ class PublicTemplateListResponse(ApiModel):
     data: List[PublicTemplateItem]
 
 
+# ── Consumer webhooks (plan sprint-1/01 Slice 4) ─────────────────────────────
+class WebhookEndpointItem(ApiModel):
+    id: str
+    tenantId: str
+    workspaceId: str
+    channelId: str
+    name: str
+    url: str
+    events: List[str]
+    status: str  # ACTIVE | DISABLED | AUTO_DISABLED
+    consecutiveFailures: int
+    lastSuccessAt: Optional[datetime] = None
+    disabledAt: Optional[datetime] = None
+    disabledReason: Optional[str] = None
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class WebhookEndpointListResponse(ApiModel):
+    data: List[WebhookEndpointItem]
+
+
+class WebhookEndpointCreateRequest(ApiModel):
+    name: str
+    url: str
+    events: List[str]
+
+
+class WebhookEndpointUpdateRequest(ApiModel):
+    name: Optional[str] = None
+    url: Optional[str] = None
+    events: Optional[List[str]] = None
+
+
+class WebhookEndpointMintResponse(ApiModel):
+    endpoint: WebhookEndpointItem
+    signingSecret: str  # shown ONCE at create/rotate
+
+
+class WebhookSecretResponse(ApiModel):
+    signingSecret: str
+
+
+class WebhookDeliveryItem(ApiModel):
+    id: str
+    eventId: str
+    eventType: str
+    status: str  # PENDING | SUCCESS | FAILED
+    attemptCount: int
+    responseStatus: Optional[int] = None
+    responseMs: Optional[int] = None
+    error: Optional[str] = None
+    lastAttemptAt: Optional[datetime] = None
+    nextAttemptAt: Optional[datetime] = None
+    createdAt: datetime
+
+
+class WebhookDeliveryListResponse(ApiModel):
+    data: List[WebhookDeliveryItem]
+
+
 # ── Template management (plan 07) ─────────────────────────────────────────────
 class TemplateManageItem(ApiModel):
     id: str

@@ -20,6 +20,21 @@ logger = logging.getLogger(__name__)
 
 CSW_WINDOW = timedelta(hours=24)
 
+
+def _payload_phone_number_id(payload: Dict[str, Any]) -> Optional[str]:
+    """Pull ``entry[].changes[].value.metadata.phone_number_id`` from a WhatsApp
+    webhook — the number the event is FOR (Meta uses one app-level callback)."""
+    try:
+        for entry in payload.get("entry", []) or []:
+            for change in entry.get("changes", []) or []:
+                meta = (change.get("value") or {}).get("metadata") or {}
+                pnid = meta.get("phone_number_id")
+                if pnid:
+                    return str(pnid)
+    except AttributeError:
+        pass
+    return None
+
 # Delivery receipts only ever move forward (a late DELIVERED after READ is
 # dropped); FAILED always applies.
 _STATUS_RANK = {"SENT": 0, "DELIVERED": 1, "READ": 2}
@@ -32,8 +47,13 @@ class InboundService:
         self.conversations = ConversationService(db)
 
     def process_payload(self, channel_id: str, payload: Dict[str, Any]) -> Dict[str, int]:
-        """Process one raw webhook payload for a channel. Returns counters."""
-        channel = self.db.query(Channel).filter(Channel.id == channel_id).first()
+        """Process one raw webhook payload. The channel is resolved by the
+        payload's ``metadata.phone_number_id`` (Meta delivers ALL numbers to the
+        one app-level callback URL, so the URL's ``channel_id`` can't identify the
+        number) — falling back to the URL id for the single-channel/legacy case.
+        This is what makes multi-number correct: number #2's inbound is attributed
+        to number #2's channel, not the URL's."""
+        channel = self._resolve_channel(channel_id, payload)
         if channel is None:
             logger.warning("webhook for unknown channel %s dropped", channel_id)
             return {"messages": 0, "statuses": 0, "skipped": 0}
@@ -70,6 +90,23 @@ class InboundService:
                 else:
                     counters["skipped"] += 1
         return counters
+
+    def _resolve_channel(self, channel_id: str, payload: Dict[str, Any]) -> Optional[Channel]:
+        """Prefer the number in the payload (unique + indexed); fall back to the
+        URL's channel id."""
+        pnid = _payload_phone_number_id(payload)
+        if pnid:
+            by_phone = (
+                self.db.query(Channel)
+                .filter(
+                    Channel.phone_number_id == pnid,
+                    Channel.is_trashed.is_(False),
+                )
+                .first()
+            )
+            if by_phone is not None:
+                return by_phone
+        return self.db.query(Channel).filter(Channel.id == channel_id).first()
 
     # ── Inbound messages ─────────────────────────────────────────────────────
     def _handle_message(self, channel: Channel, event: Dict[str, Any]) -> bool:
@@ -142,6 +179,20 @@ class InboundService:
                 "type": "message.created",
                 "message": item.model_dump(mode="json"),
                 "thread": thread.model_dump(mode="json"),
+            },
+        )
+        # Fan out to consumer webhooks (Slice 4). event_id = wamid so the consumer
+        # dedups across our retries. Failure-isolated inside enqueue_event.
+        from .webhook_delivery import enqueue_event
+
+        enqueue_event(
+            self.db,
+            channel,
+            "message.inbound",
+            external_id,
+            {
+                "message": item.model_dump(mode="json"),
+                "contact": thread.model_dump(mode="json"),
             },
         )
         return True
@@ -248,4 +299,22 @@ class InboundService:
                     "errorMessage": msg.error_message,
                 },
             )
+        # Fan out the receipt to consumer webhooks (Slice 4). event_id per status
+        # so each transition (sent→delivered→read) is a distinct consumer event.
+        from .webhook_delivery import enqueue_event
+
+        enqueue_event(
+            self.db,
+            channel,
+            "message.status",
+            f"{msg.id}:{msg.delivery_status}",
+            {
+                "messageId": msg.id,
+                "externalMessageId": external_id,
+                "contactId": msg.contact_id,
+                "deliveryStatus": msg.delivery_status,
+                "errorCode": msg.error_code,
+                "errorMessage": msg.error_message,
+            },
+        )
         return True

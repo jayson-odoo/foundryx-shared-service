@@ -31,6 +31,10 @@ celery_app.conf.beat_schedule = {
     # Derived status time sweep (sprint-4/03 G4) — advance time-conditioned auto
     # edges (e.g. invoice Overdue) the event bus can't catch. Same 60s tick.
     "reevaluate-derived-status": {"task": "status.reevaluate_time_based", "schedule": 60.0},
+    # Reclaim consumer-webhook deliveries whose backoff elapsed but whose worker
+    # self-reschedule was lost to a crash (omnichannel Slice 4). Defined in this
+    # worker (the sole beat host); guarded so a missing module is a no-op.
+    "retry-due-webhooks": {"task": "webhooks.retry_due", "schedule": 60.0},
 }
 
 
@@ -55,6 +59,28 @@ def run_due_workflows_task() -> dict:
         logger.exception("scheduled-workflow tick failed")
         db.rollback()
         return {"fired": 0, "pruned": 0}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="webhooks.retry_due")
+def retry_due_webhooks_task() -> dict:
+    """Backstop re-driver for consumer-webhook deliveries (omnichannel Slice 4).
+    Failure-isolated; a no-op when the omnichannel module isn't installed."""
+    from app.database import SessionLocal
+
+    try:
+        from modules.omnichannel.services.webhook_delivery import run_due_deliveries
+    except ImportError:
+        return {"redriven": 0}
+
+    db = SessionLocal()
+    try:
+        return {"redriven": run_due_deliveries(db)}
+    except Exception:  # noqa: BLE001 — a bad tick never kills the beat loop
+        logger.exception("webhook retry tick failed")
+        db.rollback()
+        return {"redriven": 0}
     finally:
         db.close()
 
