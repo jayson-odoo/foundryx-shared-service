@@ -99,6 +99,10 @@ export async function launchEmbeddedSignup(): Promise<EmbeddedSignupResult> {
           // Resolved server-side from phone_number_id.
           displayPhoneNumber: '',
           businessName: '',
+          // Origin the OAuth dialog ran on. Meta binds the JS-SDK code to a
+          // redirect_uri under strict mode; the backend must echo it verbatim
+          // on exchange. Trailing slash matches the registered Valid OAuth URI.
+          redirectUri: `${window.location.origin}/`,
         });
       },
       {

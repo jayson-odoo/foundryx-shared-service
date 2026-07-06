@@ -132,6 +132,10 @@ export interface EmbeddedSignupResult {
   /** Resolved server-side from phone_number_id when the real SDK omits them. */
   displayPhoneNumber?: string;
   businessName?: string;
+  /** The origin the JS SDK dialog ran on — sent to the backend so the code
+   *  exchange can pass a matching redirect_uri (required by Meta apps with
+   *  "Use Strict Mode for redirect URIs" on). Absent for the simulated popup. */
+  redirectUri?: string;
 }
 
 /** Manual channel connect — paste a System User token + phone ids (validation

@@ -29,19 +29,26 @@ class WhatsAppCloudAdapter:
     def _http(self) -> httpx.Client:
         return self._client or httpx.Client(timeout=10.0)
 
-    def exchange_code(self, code: str) -> Dict[str, Any]:
+    def exchange_code(self, code: str, redirect_uri: Optional[str] = None) -> Dict[str, Any]:
         if not self._configured:
             # Dev fallback — no Meta app configured yet (see module docstring).
             return {"access_token": f"dev-token-{code}", "dev": True}
         client = self._http()
         try:
+            params = {
+                "client_id": settings.meta_app_id,
+                "client_secret": settings.meta_app_secret,
+                "code": code,
+            }
+            # Echo the dialog's origin when the SDK supplied it. Meta apps with
+            # "Use Strict Mode for redirect URIs" bind the code to a redirect_uri
+            # and reject an exchange that omits it (subcode 36008). Harmless when
+            # absent (dev/simulated) — the classic redirect-less ES flow.
+            if redirect_uri:
+                params["redirect_uri"] = redirect_uri
             resp = client.get(
                 f"{self._base}/oauth/access_token",
-                params={
-                    "client_id": settings.meta_app_id,
-                    "client_secret": settings.meta_app_secret,
-                    "code": code,
-                },
+                params=params,
             )
             if resp.status_code != 200:
                 # Surface Meta's reason (e.g. subcode 36008 redirect_uri mismatch,

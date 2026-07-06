@@ -148,6 +148,10 @@ class OnboardingCallbackRequest(ApiModel):
     # from phone_number_id via Graph. The simulated popup supplies them.
     displayPhoneNumber: Optional[str] = None
     businessName: Optional[str] = None
+    # The origin the JS SDK OAuth dialog ran on. Under Meta "strict mode" the
+    # code is redirect_uri-bound; the token exchange must send the identical
+    # value. None for the simulated popup (dev) — exchange stays redirect-less.
+    redirectUri: Optional[str] = None
 
 
 class ManualConnectRequest(ApiModel):

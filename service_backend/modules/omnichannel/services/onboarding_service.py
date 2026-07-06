@@ -82,7 +82,7 @@ class OnboardingService:
 
         statuses.ensure_statuses(self.db, tenant_id)
         adapter = get_adapter("WHATSAPP")
-        credentials = adapter.exchange_code(payload.code)
+        credentials = adapter.exchange_code(payload.code, payload.redirectUri)
 
         # Resolve display number + verified name from Meta when the client didn't
         # supply them (real Embedded Signup hands back only ids).
