@@ -7,12 +7,15 @@ Dev-safe: when ``META_APP_ID``/``META_APP_SECRET`` are unset (local, no Meta app
 yet) the adapter returns stub credentials so the flow runs end-to-end without a
 real Meta app. Tests inject a fake ``client`` to assert behaviour deterministically.
 """
+import logging
 from typing import Any, Dict, Optional
 
 import httpx
 
 from app.config import settings
 from .base import CodeExchangeError, ConnectionStatus, SendError
+
+logger = logging.getLogger(__name__)
 
 
 class WhatsAppCloudAdapter:
@@ -33,35 +36,45 @@ class WhatsAppCloudAdapter:
         if not self._configured:
             # Dev fallback — no Meta app configured yet (see module docstring).
             return {"access_token": f"dev-token-{code}", "dev": True}
+        base = {
+            "client_id": settings.meta_app_id,
+            "client_secret": settings.meta_app_secret,
+            "code": code,
+        }
+        # The redirect_uri a JS-SDK code is bound to varies by app config:
+        #   - None  → the documented Tech-Provider ES config-code flow
+        #   - ""    → the classic FB JS-SDK code (empty redirect_uri)
+        #   - origin→ apps with "Use Strict Mode for redirect URIs" on
+        # A redirect_uri MISMATCH does NOT consume the code, so we try each in
+        # turn and take the first Meta accepts. Every failure is logged with
+        # Meta's full error (code/subcode/fbtrace_id) for diagnosis.
+        variants: list[Optional[str]] = [None, ""]
+        if redirect_uri and redirect_uri not in variants:
+            variants.append(redirect_uri)
+
         client = self._http()
+        last_detail = ""
         try:
-            params = {
-                "client_id": settings.meta_app_id,
-                "client_secret": settings.meta_app_secret,
-                "code": code,
-            }
-            # Echo the dialog's origin when the SDK supplied it. Meta apps with
-            # "Use Strict Mode for redirect URIs" bind the code to a redirect_uri
-            # and reject an exchange that omits it (subcode 36008). Harmless when
-            # absent (dev/simulated) — the classic redirect-less ES flow.
-            if redirect_uri:
-                params["redirect_uri"] = redirect_uri
-            resp = client.get(
-                f"{self._base}/oauth/access_token",
-                params=params,
-            )
-            if resp.status_code != 200:
-                # Surface Meta's reason (e.g. subcode 36008 redirect_uri mismatch,
-                # expired/used code) instead of letting a 500 escape the router.
+            for variant in variants:
+                params = dict(base)
+                if variant is not None:
+                    params["redirect_uri"] = variant
                 try:
-                    detail = resp.json().get("error", {}).get("message", "")
+                    resp = client.get(f"{self._base}/oauth/access_token", params=params)
+                except httpx.HTTPError as exc:
+                    raise CodeExchangeError(f"Could not reach Meta: {exc}") from exc
+                if resp.status_code == 200:
+                    return {"access_token": resp.json().get("access_token", "")}
+                try:
+                    err = resp.json().get("error", {})
+                    last_detail = err.get("message", "")
                 except ValueError:
-                    detail = ""
-                raise CodeExchangeError(detail or f"Meta returned {resp.status_code}.")
-            data = resp.json()
-            return {"access_token": data.get("access_token", "")}
-        except httpx.HTTPError as exc:
-            raise CodeExchangeError(f"Could not reach Meta: {exc}") from exc
+                    err = {"raw": resp.text[:300]}
+                    last_detail = f"Meta returned {resp.status_code}."
+                logger.warning(
+                    "WA code exchange failed (redirect_uri=%r): %s", variant, err
+                )
+            raise CodeExchangeError(last_detail or "Code exchange failed.")
         finally:
             if self._client is None:
                 client.close()
