@@ -21,6 +21,11 @@ celery_app.conf.update(
     task_always_eager=settings.celery_task_always_eager,
     task_eager_propagates=True,
     broker_connection_retry_on_startup=True,
+    # Dedicated queue — worker_omni consumes ONLY this. Both Celery apps share the
+    # Redis broker; without per-app queues the workflow beat's tasks land on this
+    # worker (unregistered → discarded) and vice-versa. process_inbound_webhook +
+    # deliver_webhook publish here; worker runs with `-Q omni`.
+    task_default_queue="omni",
 )
 
 

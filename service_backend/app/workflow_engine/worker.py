@@ -21,6 +21,10 @@ celery_app.conf.update(
     task_always_eager=settings.celery_task_always_eager,
     task_eager_propagates=False,  # a failing run is recorded, not raised
     broker_connection_retry_on_startup=True,
+    # Dedicated queue — worker_workflow + beat use ONLY this (see omni worker for
+    # why). run_workflow / run_due / status.reevaluate / webhooks.retry_due all
+    # publish here; worker runs with `-Q workflow`, beat inherits this default.
+    task_default_queue="workflow",
 )
 
 # Single minute-tick draining due scheduled workflows (plan sprint-2/09 D9).

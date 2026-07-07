@@ -132,7 +132,7 @@ services:
     <<: *backend-base
     container_name: foundryx_ss_worker_workflow
     environment: *backend-env
-    command: ["celery", "-A", "app.workflow_engine.worker", "worker", "--loglevel", "info"]
+    command: ["celery", "-A", "app.workflow_engine.worker", "worker", "-Q", "workflow", "--loglevel", "info"]
     healthcheck:
       disable: true
 
@@ -140,7 +140,7 @@ services:
     <<: *backend-base
     container_name: foundryx_ss_worker_omni
     environment: *backend-env
-    command: ["celery", "-A", "modules.omnichannel.worker", "worker", "--loglevel", "info"]
+    command: ["celery", "-A", "modules.omnichannel.worker", "worker", "-Q", "omni", "--loglevel", "info"]
     healthcheck:
       disable: true
 
