@@ -180,6 +180,41 @@ class WhatsAppCloudAdapter:
             if self._client is None:
                 client.close()
 
+    def upload_media(
+        self, credentials: Dict[str, Any], phone_number_id: str, content: bytes, mime: str
+    ) -> str:
+        """Upload a media blob to ``/{phone_number_id}/media`` → a reusable
+        ``media_id`` (the upload-by-id contract, plan 12 AC-12-02). Dev stub:
+        fake id so the flow runs without a Meta app."""
+        if not self._configured or credentials.get("dev"):
+            import uuid
+
+            return f"media.dev-{uuid.uuid4().hex[:12]}"
+        token = credentials.get("access_token", "")
+        client = self._http()
+        try:
+            resp = client.post(
+                f"{self._base}/{phone_number_id}/media",
+                data={"messaging_product": "whatsapp", "type": mime},
+                files={"file": ("upload", content, mime)},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if resp.status_code != 200:
+                try:
+                    detail = resp.json().get("error", {}).get("message", "")
+                except ValueError:
+                    detail = ""
+                raise SendError(detail or f"Media upload failed ({resp.status_code}).")
+            media_id = resp.json().get("id", "")
+            if not media_id:
+                raise SendError("Media upload returned no id.")
+            return media_id
+        except httpx.HTTPError as exc:
+            raise SendError(f"Could not reach Meta: {exc}") from exc
+        finally:
+            if self._client is None:
+                client.close()
+
     def send(
         self,
         credentials: Dict[str, Any],
@@ -188,13 +223,15 @@ class WhatsAppCloudAdapter:
         *,
         text: Optional[str] = None,
         template: Optional[Dict[str, Any]] = None,
+        media: Optional[Dict[str, Any]] = None,
         context_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Send a text or template message. Returns {"external_message_id": wamid}.
+        """Send a text, template or media message. Returns {"external_message_id": wamid}.
 
         `template` = {"name": str, "language": str, "components": [...]} per the
-        Cloud API shape. `context_message_id` threads a reply (WhatsApp quote).
-        Dev mode returns a stub wamid so the flow runs without a Meta app.
+        Cloud API shape. `media` = {"kind": image|video|audio|voice|document|
+        sticker, "id": media_id, "caption"?, "filename"?} (plan 12). `context_
+        message_id` threads a reply (WhatsApp quote). Dev mode returns a stub wamid.
         """
         if not self._configured or credentials.get("dev"):
             import uuid
@@ -210,6 +247,18 @@ class WhatsAppCloudAdapter:
             }
             if template.get("components"):
                 payload["template"]["components"] = template["components"]
+        elif media is not None:
+            kind = (media.get("kind") or "").lower()
+            # VOICE is uploaded/sent as an audio object; Meta infers "voice" from
+            # the ogg/opus payload the pipeline transcodes to.
+            wa_type = "audio" if kind == "voice" else kind
+            obj: Dict[str, Any] = {"id": media["id"]}
+            if media.get("caption") and wa_type in ("image", "video", "document"):
+                obj["caption"] = media["caption"]
+            if media.get("filename") and wa_type == "document":
+                obj["filename"] = media["filename"]
+            payload["type"] = wa_type
+            payload[wa_type] = obj
         else:
             payload["type"] = "text"
             payload["text"] = {"body": text or ""}
@@ -527,12 +576,23 @@ class WhatsAppCloudAdapter:
                     mtype = (m.get("type") or "text").lower()
                     body: Optional[str] = None
                     media_id: Optional[str] = None
+                    media_mime: Optional[str] = None
+                    media_filename: Optional[str] = None
+                    voice = False
+                    resolved_type = mtype.upper()
                     if mtype == "text":
                         body = (m.get("text") or {}).get("body")
                     elif mtype in ("image", "video", "audio", "document", "sticker"):
                         media = m.get(mtype) or {}
                         media_id = media.get("id")
                         body = media.get("caption") or media.get("filename")
+                        media_mime = media.get("mime_type")
+                        media_filename = media.get("filename")
+                        # An inbound audio flagged voice==true is a voice note
+                        # (plan 12 AC-12-09) — store it as VOICE, not AUDIO.
+                        if mtype == "audio" and bool(media.get("voice")):
+                            voice = True
+                            resolved_type = "VOICE"
                     elif mtype == "interactive":
                         inter = m.get("interactive") or {}
                         body = (
@@ -548,9 +608,12 @@ class WhatsAppCloudAdapter:
                             "external_message_id": m.get("id"),
                             "from": m.get("from"),
                             "profile_name": profiles.get(m.get("from")),
-                            "message_type": mtype.upper(),
+                            "message_type": resolved_type,
                             "body": body,
                             "media_id": media_id,
+                            "media_mime": media_mime,
+                            "media_filename": media_filename,
+                            "voice": voice,
                             "reply_to_external_id": (m.get("context") or {}).get("id"),
                             "timestamp": m.get("timestamp"),
                         }

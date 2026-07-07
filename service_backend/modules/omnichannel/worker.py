@@ -50,6 +50,29 @@ def process_inbound_webhook(channel_id: str, payload: dict) -> dict:
         db.close()
 
 
+@celery_app.task(
+    name="omnichannel.send_message",
+    autoretry_for=(Exception,),
+    retry_backoff=5,
+    retry_backoff_max=600,
+    retry_jitter=True,
+    max_retries=3,
+)
+def omnichannel_send_message(message_id: str) -> str:
+    """Execute one QUEUED outbound message (plan 12 AC-12-03): transcode/upload/
+    ``adapter.send`` → SENT/FAILED + WS status. Runs on a FRESH session (a worker
+    process has its own DB engine); in eager dev the service calls ``run_send``
+    inline instead (see ``send_runner``)."""
+    from app.database import SessionLocal
+    from modules.omnichannel.services.send_runner import run_send
+
+    db = SessionLocal()
+    try:
+        return run_send(db, message_id)
+    finally:
+        db.close()
+
+
 @celery_app.task(name="omnichannel.deliver_webhook")
 def deliver_webhook(delivery_id: str) -> str:
     """Deliver one consumer-webhook row. On a retryable failure it reschedules

@@ -9,13 +9,15 @@ dedup is workspace-scoped with a 24h TTL.
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
+import httpx
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
 
-from ..models import Channel, Contact, WhatsappTemplate
+from ..models import MEDIA_MESSAGE_TYPES, Channel, Contact, WhatsappTemplate
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import PublicSendRequest, PublicTemplateItem, SendMessageRequest
+from .media_pipeline import META_CEILINGS, MediaRejected
 from .message_service import (
     CSW_CLOSED_MESSAGE,
     MessageService,
@@ -24,6 +26,8 @@ from .message_service import (
     template_variable_count,
 )
 from . import idempotency, statuses
+
+_MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
 
 
 def _digits(value: str) -> str:
@@ -151,9 +155,23 @@ class PublicGatewayService:
                 templateId=template_id,
                 templateVariables=(req.template.variables if req.template else None) or [],
             )
-        elif msg_type in ("media", "interactive"):
-            # Media outbound (durable both ways) lands in Slice 4; interactive is
-            # deferred to BL-SS-002. Foolproof: reject with a stable code.
+        elif msg_type.upper() in MEDIA_MESSAGE_TYPES:
+            # Media-by-URL (plan 12 AC-12-10): fetch the bytes + re-upload through
+            # the SAME upload-by-id pipeline (never pass Meta a bare `link`).
+            if req.media is None or not (req.media.url or "").strip():
+                raise ApiError(422, "invalid_request", "media.url is required.")
+            content = self._fetch_url(req.media.url)
+            return self._send_media(
+                tenant_id,
+                workspace_id,
+                key_id,
+                kind=msg_type.upper(),
+                content=content,
+                filename=req.media.filename,
+                caption=req.media.caption,
+                to=req.to,
+            )
+        elif msg_type in ("interactive", "location", "contacts", "reaction"):
             raise ApiError(
                 400, "unsupported_type", f"Message type '{msg_type}' is not supported yet."
             )
@@ -169,6 +187,103 @@ class PublicGatewayService:
                 raise ApiError(409, "csw_window_closed", exc.message) from exc
             raise ApiError(422, "send_rejected", exc.message) from exc
         return item.id
+
+    def _fetch_url(self, url: str) -> bytes:
+        """Fetch a media URL (capped) so it can be re-uploaded by id."""
+        try:
+            with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+                resp = client.get(url)
+                resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ApiError(422, "media_fetch_failed", f"Could not fetch media url: {exc}") from exc
+        content = resp.content
+        if len(content) > _MEDIA_HARD_CAP:
+            raise ApiError(422, "oversize", "The fetched media exceeds the maximum size.")
+        return content
+
+    def _send_media(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        key_id: str,
+        *,
+        kind: str,
+        content: bytes,
+        filename: Optional[str],
+        caption: Optional[str],
+        to: str,
+    ) -> str:
+        contact = self._resolve_or_create_contact(tenant_id, workspace_id, to)
+        actor = f"apikey:{key_id}"
+        try:
+            item = self.messages.send_media(
+                contact.id,
+                tenant_id,
+                actor,
+                kind=kind,
+                content=content,
+                filename=filename,
+                caption=caption,
+            )
+        except MediaRejected as exc:
+            raise ApiError(422, exc.code, exc.message) from exc
+        except SendRejected as exc:
+            if exc.message == CSW_CLOSED_MESSAGE:
+                raise ApiError(409, "csw_window_closed", exc.message) from exc
+            raise ApiError(422, "send_rejected", exc.message) from exc
+        return item.id
+
+    # ── Multipart media send (file part) ──────────────────────────────────────
+    def send_multipart(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        key_id: str,
+        *,
+        kind: str,
+        content: bytes,
+        filename: Optional[str],
+        caption: Optional[str],
+        to: str,
+        idempotency_key: Optional[str],
+    ) -> Tuple[str, bool]:
+        """Gateway multipart media send (plan 12 AC-12-10). Same idempotency
+        semantics as the JSON ``send`` path."""
+        if kind.upper() not in MEDIA_MESSAGE_TYPES:
+            raise ApiError(400, "unsupported_type", f"Unknown media type '{kind}'.")
+        if not (to or "").strip():
+            raise ApiError(422, "invalid_recipient", "A recipient phone number is required.")
+        store = idempotency.get_store()
+        reserved = False
+        if idempotency_key:
+            claimed = store.reserve(workspace_id, idempotency_key)
+            if claimed is not None:
+                if claimed == idempotency.PENDING:
+                    raise ApiError(
+                        409,
+                        "idempotency_in_progress",
+                        "A request with this Idempotency-Key is still being processed.",
+                    )
+                return claimed, True
+            reserved = True
+        try:
+            message_id = self._send_media(
+                tenant_id,
+                workspace_id,
+                key_id,
+                kind=kind.upper(),
+                content=content,
+                filename=filename,
+                caption=caption,
+                to=to,
+            )
+        except Exception:
+            if reserved:
+                store.release(workspace_id, idempotency_key)
+            raise
+        if reserved:
+            store.finalize(workspace_id, idempotency_key, message_id)
+        return message_id, False
 
     # ── Templates (read-only mirror) ─────────────────────────────────────────
     def list_templates(self, tenant_id: str, workspace_id: str) -> list[PublicTemplateItem]:

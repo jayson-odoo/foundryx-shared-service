@@ -10,6 +10,8 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
+
 from ..adapters.whatsapp_cloud import get_adapter
 from ..models import Channel, Contact, ContactChannelIdentity, ConversationMessage
 from ..repositories.contact_repository import ContactRepository
@@ -138,11 +140,17 @@ class InboundService:
                     }
                 }
 
-        # Media (§4.2.4): fetch via Graph + store. Dev/unconfigured → no URL,
-        # the body/caption still lands. (StorageService — B-6.)
-        media_url = None
+        # Media (§4.2.4 / plan 12 AC-12-09): fetch via Graph + store by KEY.
+        # Dev/unconfigured → no key, the body/caption still lands.
+        media_key = None
+        media_mime = event.get("media_mime")
+        media_size = None
         if event.get("media_id"):
-            media_url = self._store_media(channel, event["media_id"])
+            stored = self._store_media(channel, event["media_id"])
+            if stored is not None:
+                media_key = stored["key"]
+                media_mime = stored.get("mime") or media_mime
+                media_size = stored.get("size")
 
         now = datetime.now(timezone.utc)
         row = ConversationMessage(
@@ -152,7 +160,10 @@ class InboundService:
             sender_type="CONTACT",
             message_type=event.get("message_type") or "TEXT",
             body=event.get("body"),
-            media_url=media_url,
+            media_key=media_key,
+            media_mime=media_mime,
+            media_filename=event.get("media_filename"),
+            media_size=media_size,
             external_message_id=external_id,
             metadata_json=metadata,
             # Explicit (µs precision) — the DB server_default is second-granular
@@ -185,13 +196,20 @@ class InboundService:
         # dedups across our retries. Failure-isolated inside enqueue_event.
         from .webhook_delivery import enqueue_event
 
+        # The consumer (EMS) fetches media bytes from an ABSOLUTE, API-key-authed
+        # gateway URL (plan 12 AC-12-11) — override the inbox-relative mediaUrl.
+        message_payload = item.model_dump(mode="json")
+        if row.media_key:
+            message_payload["mediaUrl"] = (
+                f"{settings.public_base_url}/omnichannel/media/{row.id}"
+            )
         enqueue_event(
             self.db,
             channel,
             "message.inbound",
             external_id,
             {
-                "message": item.model_dump(mode="json"),
+                "message": message_payload,
                 "contact": thread.model_dump(mode="json"),
             },
         )
@@ -240,7 +258,10 @@ class InboundService:
         self.db.flush()
         return contact
 
-    def _store_media(self, channel: Channel, media_id: str) -> Optional[str]:
+    def _store_media(self, channel: Channel, media_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch inbound media via Graph + store by KEY (plan 12 AC-12-09).
+        Returns {key, mime, size} or None (dev/unconfigured/hiccup — media-less
+        beats a dropped message)."""
         from app.services.storage import storage_for_tenant
 
         from ..security import decrypt_credentials
@@ -253,18 +274,18 @@ class InboundService:
         blob = adapter.fetch_media(credentials, media_id)
         if not blob:
             return None
-        # Connection-driven storage (plan 06 D1): the tenant's CDN-backed
-        # bucket when connected, the local media route otherwise. Best-effort:
-        # a storage hiccup (bad bucket creds, network) must not fail the
-        # Celery task and drop the MESSAGE — media-less beats lost (review
-        # finding; the old local-disk path could effectively never raise).
+        content = blob["content"]
+        mime = blob.get("mime_type") or "application/octet-stream"
+        # Connection-driven storage (plan 06 D1). Best-effort: a storage hiccup
+        # (bad bucket creds, network) must not fail the task and drop the MESSAGE.
         try:
-            return storage_for_tenant(self.db, channel.tenant_id).put(
-                f"omnichannel/{channel.tenant_id}/{media_id}", blob["content"], blob["mime_type"]
+            key = storage_for_tenant(self.db, channel.tenant_id).save(
+                f"omnichannel/{channel.tenant_id}/{media_id}", content, mime
             )
         except Exception:  # noqa: BLE001
             logger.exception("media store failed for channel %s media %s", channel.id, media_id)
             return None
+        return {"key": key, "mime": mime, "size": len(content)}
 
     # ── Delivery receipts ────────────────────────────────────────────────────
     def _handle_status(self, channel: Channel, event: Dict[str, Any]) -> bool:

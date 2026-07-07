@@ -33,6 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi8 \
     shared-mime-info \
     fonts-dejavu-core \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -u 1000 appuser

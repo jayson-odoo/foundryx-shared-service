@@ -94,6 +94,21 @@ def create_schema_and_tables(engine: Engine) -> None:
                         f"ADD COLUMN IF NOT EXISTS {col} {coltype}"
                     )
                 )
+            # Rich-media columns (plan 12) — idempotent add for existing deploys.
+            _message_cols = [
+                ("media_key", "VARCHAR"),
+                ("media_mime", "VARCHAR"),
+                ("media_filename", "VARCHAR"),
+                ("media_size", "INTEGER"),
+                ("payload_json", "JSONB"),
+            ]
+            for col, coltype in _message_cols:
+                conn.execute(
+                    text(
+                        f'ALTER TABLE "{OMNI_SCHEMA}".conversation_messages '
+                        f"ADD COLUMN IF NOT EXISTS {col} {coltype}"
+                    )
+                )
             # Template management columns (plan 07 §8) — idempotent add.
             _template_cols = [
                 ("meta_template_id", "VARCHAR"),

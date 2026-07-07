@@ -5,7 +5,16 @@ status/priority transitions need `conversations.reply`.
 """
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from sqlalchemy.orm import Session
 
 from pydantic import BaseModel
@@ -30,9 +39,14 @@ from ..services.conversation_service import (
     InvalidPatch,
     ThreadNotFound,
 )
+from ..services.media_pipeline import META_CEILINGS, MediaRejected
 from ..services.message_service import MessageService, SendRejected
 
 router = APIRouter()
+
+# Capped read: never buffer more than the largest Meta ceiling + 1 (oversize is
+# then rejected by the pipeline), so a hostile body can't exhaust memory.
+_MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
 
 
 @router.get("", response_model=ThreadListResponse)
@@ -138,6 +152,39 @@ def send_message(
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    except SendRejected as exc:
+        raise HTTPException(status_code=422, detail=exc.message)
+
+
+@router.post("/{contact_id}/media", response_model=MessageItem, status_code=201)
+async def send_message_media(
+    contact_id: str,
+    kind: str = Form(...),
+    caption: Optional[str] = Form(None),
+    reply_to_message_id: Optional[str] = Form(None),
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_permission("conversations.reply")),
+    actor_user_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> MessageItem:
+    """Send outbound media (image/video/audio/voice/document/sticker) — multipart.
+    Sniff-gated + cap-checked, then queued for async upload-by-id send."""
+    content = await file.read(_MEDIA_HARD_CAP)
+    try:
+        return MessageService(db).send_media(
+            contact_id,
+            current_user.tenant_id,
+            actor_user_id,
+            kind=kind,
+            content=content,
+            filename=file.filename,
+            caption=caption,
+            reply_to_message_id=reply_to_message_id,
+        )
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except MediaRejected as exc:
+        raise HTTPException(status_code=422, detail=exc.message)
     except SendRejected as exc:
         raise HTTPException(status_code=422, detail=exc.message)
 

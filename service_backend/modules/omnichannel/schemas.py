@@ -204,8 +204,12 @@ class MessageItem(ApiModel):
     messageType: str
     body: Optional[str] = None
     mediaUrl: Optional[str] = None
+    mediaMime: Optional[str] = None
+    mediaFilename: Optional[str] = None
+    mediaSize: Optional[int] = None
+    voice: bool = False
     externalMessageId: Optional[str] = None
-    deliveryStatus: Optional[str] = None  # SENT | DELIVERED | READ | FAILED
+    deliveryStatus: Optional[str] = None  # QUEUED | SENT | DELIVERED | READ | FAILED
     errorCode: Optional[str] = None
     errorMessage: Optional[str] = None
     replyTo: Optional[ReplyRefItem] = None
@@ -273,6 +277,30 @@ class QuickReplyItem(ApiModel):
     body: str
 
 
+# ── Omnichannel media settings (plan 12 — per-workspace caps) ────────────────
+class MediaCapItem(ApiModel):
+    maxBytes: int
+    ceilingBytes: int
+    acceptedMimes: List[str]
+
+
+class OmnichannelSettingsUpdate(ApiModel):
+    """Per-type max-size overrides (bytes). Null clears an override (= Meta
+    ceiling). Values are clamped ≤ the Meta ceiling at enforcement."""
+
+    imageMaxBytes: Optional[int] = None
+    videoMaxBytes: Optional[int] = None
+    audioMaxBytes: Optional[int] = None
+    documentMaxBytes: Optional[int] = None
+    stickerMaxBytes: Optional[int] = None
+
+
+class OmnichannelSettingsResponse(ApiModel):
+    workspaceId: Optional[str] = None
+    overrides: dict  # {imageMaxBytes: int|null, ...}
+    effective: dict  # {IMAGE: {maxBytes, ceilingBytes, acceptedMimes}, ...}
+
+
 # ── Public gateway API keys (plan sprint-1/01 Slice 3) ───────────────────────
 class ApiKeyItem(ApiModel):
     id: str
@@ -311,14 +339,16 @@ class PublicTemplateBody(ApiModel):
 
 
 class PublicMediaBody(ApiModel):
-    url: Optional[str] = None
+    url: Optional[str] = None  # fetched + re-uploaded (never passed to Meta as a bare link)
     caption: Optional[str] = None
-    type: Optional[str] = None
+    filename: Optional[str] = None
 
 
 class PublicSendRequest(ApiModel):
     to: str
-    type: str = "text"  # text | template | (media/interactive deferred)
+    # text | template | image | video | audio | voice | document | sticker
+    # (interactive/location/contacts/reaction land in slices 2/3)
+    type: str = "text"
     text: Optional[PublicTextBody] = None
     template: Optional[PublicTemplateBody] = None
     media: Optional[PublicMediaBody] = None

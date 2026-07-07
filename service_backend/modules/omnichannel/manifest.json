@@ -38,6 +38,10 @@
       "prefix": "/omnichannel/contacts"
     },
     {
+      "name": "settings",
+      "prefix": "/omnichannel/settings"
+    },
+    {
       "name": "api_keys",
       "prefix": "/omnichannel/workspaces"
     },

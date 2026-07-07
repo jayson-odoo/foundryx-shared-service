@@ -6,6 +6,7 @@ Contacts/messages/identities/templates/quick_replies tables are created here
 (schema is owned by plan 04) but only operated on from plan 05.
 """
 import uuid
+from typing import Optional
 
 from sqlalchemy import (
     Boolean,
@@ -26,6 +27,28 @@ from .db import OmniBase
 
 def _uuid() -> str:
     return str(uuid.uuid4())
+
+
+# Full outbound/inbound message-type vocabulary (plan 12 §Locked D3). Slice 1
+# sends/receives the media set; INTERACTIVE*/LOCATION/CONTACTS/REACTION land in
+# slices 2/3 (the enum is widened now so their rows validate).
+MESSAGE_TYPES = (
+    "TEXT",
+    "IMAGE",
+    "VIDEO",
+    "AUDIO",
+    "VOICE",
+    "DOCUMENT",
+    "STICKER",
+    "INTERACTIVE",
+    "INTERACTIVE_REPLY",
+    "LOCATION",
+    "CONTACTS",
+    "REACTION",
+    "TEMPLATE",
+)
+# The media-bearing kinds handled by the upload-by-id pipeline (Slice 1).
+MEDIA_MESSAGE_TYPES = ("IMAGE", "VIDEO", "AUDIO", "VOICE", "DOCUMENT", "STICKER")
 
 
 class Status(OmniBase):
@@ -169,13 +192,36 @@ class ConversationMessage(OmniBase):
     sender_id = Column(String, nullable=True)
     message_type = Column(String, nullable=False, default="TEXT")
     body = Column(Text, nullable=True)
+    # LEGACY (plan 04/05): full public URL of an inbound media blob. Deprecated by
+    # plan 12 — new media rides ``media_key`` (served via the blob endpoint). Kept
+    # so pre-plan-12 rows stay valid; the wire ``mediaUrl`` prefers ``media_key``.
     media_url = Column(String, nullable=True)
+    # ── Rich media (plan 12 §Locked D3): storage KEY (never a presigned URL) +
+    # sniffed metadata. The wire ``mediaUrl`` is a @property off ``media_key``. ──
+    media_key = Column(String, nullable=True)
+    media_mime = Column(String, nullable=True)
+    media_filename = Column(String, nullable=True)
+    media_size = Column(Integer, nullable=True)
+    # Structured payload for non-text types (interactive/location/contacts/
+    # reaction definitions — slices 2/3). JSON(none_as_null) per the house rule.
+    payload_json = Column(JSON(none_as_null=True), nullable=True)
     external_message_id = Column(String, nullable=True, index=True)
-    delivery_status = Column(String, nullable=True)  # SENT | DELIVERED | READ | FAILED
+    delivery_status = Column(String, nullable=True)  # QUEUED | SENT | DELIVERED | READ | FAILED
     error_code = Column(String, nullable=True)
     error_message = Column(Text, nullable=True)
     metadata_json = Column(JSON, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    @property
+    def media_url_wire(self) -> Optional[str]:
+        """The URL the frontend renders (plan 12 D3/D8). A stored ``media_key``
+        resolves to the authed blob-fetch endpoint (relative path — the agent's
+        browser fetches it with the Bearer via ``apiFetchBlob``); otherwise fall
+        back to the legacy stored ``media_url``. No presigned URL is ever
+        persisted (it would expire)."""
+        if self.media_key:
+            return f"/omnichannel/media/{self.id}"
+        return self.media_url
 
     __table_args__ = (
         UniqueConstraint("external_message_id", name="uq_message_external_id"),
@@ -301,4 +347,34 @@ class QuickReply(OmniBase):
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class OmnichannelSettings(OmniBase):
+    """Per-workspace media caps (plan 12 §Locked D12/AC-12-12).
+
+    ``workspace_id`` NULL = the tenant-wide default (resolved when a workspace has
+    no row of its own). Per-type max-size overrides are clamped to Meta's hard
+    ceilings at enforcement; NULL = use the Meta ceiling. Accepted mimes are fixed
+    (Meta's set) and never tenant-configurable — the sniff-gate is the security
+    boundary, not this table.
+    """
+
+    __tablename__ = "omnichannel_settings"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, nullable=True, index=True)  # NULL = tenant default
+    image_max_bytes = Column(Integer, nullable=True)
+    video_max_bytes = Column(Integer, nullable=True)
+    audio_max_bytes = Column(Integer, nullable=True)
+    document_max_bytes = Column(Integer, nullable=True)
+    sticker_max_bytes = Column(Integer, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "workspace_id", name="uq_omnichannel_settings_ws"),
     )
