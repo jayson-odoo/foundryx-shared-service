@@ -53,7 +53,9 @@ async def send_message(
         except (ValueError, TypeError):
             raise ApiError(422, "invalid_request", "payload must be valid JSON.")
         media = payload_obj.get("media") or {}
-        content = await upload.read(_MEDIA_HARD_CAP)
+        # Cap the buffered read at this kind's Meta ceiling (memory safety).
+        hard_cap = META_CEILINGS.get(str(payload_obj.get("type") or "").upper(), _MEDIA_HARD_CAP) + 1
+        content = await upload.read(hard_cap)
         message_id, replay = svc.send_multipart(
             api_ws.tenant_id,
             api_ws.workspace_id,

@@ -198,11 +198,16 @@ class InboundService:
 
         # The consumer (EMS) fetches media bytes from an ABSOLUTE, API-key-authed
         # gateway URL (plan 12 AC-12-11) — override the inbox-relative mediaUrl.
+        # The consumer-facing envelope uses mimeType/filename/size (the EMS
+        # integration ticket + UAC), distinct from the internal FE naming.
         message_payload = item.model_dump(mode="json")
         if row.media_key:
             message_payload["mediaUrl"] = (
                 f"{settings.public_base_url}/omnichannel/media/{row.id}"
             )
+            message_payload["mimeType"] = message_payload.pop("mediaMime", None)
+            message_payload["filename"] = message_payload.pop("mediaFilename", None)
+            message_payload["size"] = message_payload.pop("mediaSize", None)
         enqueue_event(
             self.db,
             channel,

@@ -22,6 +22,7 @@ from .message_service import (
     CSW_CLOSED_MESSAGE,
     MessageService,
     SendRejected,
+    _window_open,
     template_body_text,
     template_variable_count,
 )
@@ -160,6 +161,11 @@ class PublicGatewayService:
             # the SAME upload-by-id pipeline (never pass Meta a bare `link`).
             if req.media is None or not (req.media.url or "").strip():
                 raise ApiError(422, "invalid_request", "media.url is required.")
+            # Enforce the 24h CSW BEFORE fetching (don't do SSRF-fetch work on a
+            # closed window; media is free-form → an open window is required).
+            contact = self._resolve_or_create_contact(tenant_id, workspace_id, req.to)
+            if not _window_open(contact):
+                raise ApiError(409, "csw_window_closed", CSW_CLOSED_MESSAGE)
             content = self._fetch_url(req.media.url)
             return self._send_media(
                 tenant_id,
@@ -189,17 +195,40 @@ class PublicGatewayService:
         return item.id
 
     def _fetch_url(self, url: str) -> bytes:
-        """Fetch a media URL (capped) so it can be re-uploaded by id."""
+        """Fetch a media URL so it can be re-uploaded by id (plan 12 review — SSRF).
+
+        Reuses the consumer-webhook SSRF guard (``validate_callback_url``): https
+        only, blocks private/loopback/link-local/reserved/metadata targets given
+        as a literal, numeric/hex IP, OR a hostname that resolves to one. Redirects
+        are DISABLED (a 3xx to an internal host would bypass the guard); the read
+        is streamed + capped so a hostile body can't exhaust memory."""
+        from .webhook_service import WebhookError, validate_callback_url
+
         try:
-            with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-                resp = client.get(url)
-                resp.raise_for_status()
+            safe = validate_callback_url(url)
+        except WebhookError as exc:
+            raise ApiError(422, "invalid_media_url", str(exc)) from exc
+        try:
+            with httpx.Client(timeout=15.0, follow_redirects=False) as client:
+                with client.stream("GET", safe) as resp:
+                    if resp.is_redirect:
+                        raise ApiError(
+                            422, "invalid_media_url", "Redirects are not allowed for media URLs."
+                        )
+                    if resp.status_code >= 400:
+                        raise ApiError(
+                            422, "media_fetch_failed", f"Media url returned {resp.status_code}."
+                        )
+                    chunks: list[bytes] = []
+                    total = 0
+                    for chunk in resp.iter_bytes():
+                        total += len(chunk)
+                        if total > _MEDIA_HARD_CAP:
+                            raise ApiError(422, "oversize", "The fetched media exceeds the maximum size.")
+                        chunks.append(chunk)
         except httpx.HTTPError as exc:
             raise ApiError(422, "media_fetch_failed", f"Could not fetch media url: {exc}") from exc
-        content = resp.content
-        if len(content) > _MEDIA_HARD_CAP:
-            raise ApiError(422, "oversize", "The fetched media exceeds the maximum size.")
-        return content
+        return b"".join(chunks)
 
     def _send_media(
         self,

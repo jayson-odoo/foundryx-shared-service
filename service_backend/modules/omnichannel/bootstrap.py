@@ -100,7 +100,9 @@ def create_schema_and_tables(engine: Engine) -> None:
                 ("media_mime", "VARCHAR"),
                 ("media_filename", "VARCHAR"),
                 ("media_size", "INTEGER"),
-                ("payload_json", "JSONB"),
+                # Generic JSON (matches the model's JSON(none_as_null) + the
+                # module's other JSON columns + the 0004 migration's sa.JSON()).
+                ("payload_json", "JSON"),
             ]
             for col, coltype in _message_cols:
                 conn.execute(

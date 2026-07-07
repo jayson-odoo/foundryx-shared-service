@@ -52,13 +52,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { SearchSelect } from '@/components/platform/search-select';
 import { Textarea } from '@/components/ui/textarea';
 import { EMOJI_GROUPS } from '@/lib/emoji';
 import type {
@@ -154,24 +148,17 @@ function TemplateSendDialog({
         <DialogBody className="space-y-4">
           <div className="space-y-1.5">
             <label className="text-sm font-medium">Template</label>
-            <Select
-              value={selectedId ?? ''}
-              onValueChange={(v) => {
+            <SearchSelect
+              options={templates.map((t) => ({ value: t.id, label: `${t.name} (${t.language})` }))}
+              value={selectedId}
+              onChange={(v) => {
                 setSelectedId(v || null);
                 setVariables([]);
               }}
-            >
-              <SelectTrigger data-testid="template-select">
-                <SelectValue placeholder="Choose a template…" />
-              </SelectTrigger>
-              <SelectContent>
-                {templates.map((t) => (
-                  <SelectItem key={t.id} value={t.id}>
-                    {t.name} ({t.language})
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              placeholder="Choose a template…"
+              ariaLabel="Template"
+              className="w-full"
+            />
           </div>
           {selected && (
             <>

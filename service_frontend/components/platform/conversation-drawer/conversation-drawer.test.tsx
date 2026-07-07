@@ -136,7 +136,7 @@ describe('Composer — CSW lock (decision 14)', () => {
     render(<Composer {...base} onSend={onSend} windowOpen={false} />);
 
     await user.click(screen.getByTestId('csw-pick-template'));
-    await user.click(screen.getByTestId('template-select'));
+    await user.click(screen.getByRole('combobox', { name: 'Template' }));
     await user.click(await screen.findByRole('option', { name: /booking_update/ }));
     expect(screen.getByTestId('template-send')).toBeDisabled();
 

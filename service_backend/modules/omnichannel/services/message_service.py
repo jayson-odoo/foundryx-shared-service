@@ -28,7 +28,7 @@ from ..security import decrypt_credentials
 from .conversation_service import ConversationService, ThreadNotFound
 from .media_pipeline import MediaRejected, sniff_and_validate
 from .media_settings_service import MediaSettingsService
-from .send_runner import run_send
+from .send_runner import TransientSendError, run_send
 from . import realtime
 
 
@@ -155,7 +155,13 @@ class MessageService:
             },
         )
         if settings.celery_task_always_eager:
-            run_send(self.db, row.id)  # same session — see send_runner docstring
+            # Same session — see send_runner docstring. A transient failure leaves
+            # the row QUEUED for a later retry; eager dev uses the stub adapter
+            # (no transient failures), so this never surfaces to the caller.
+            try:
+                run_send(self.db, row.id)
+            except TransientSendError:
+                self.db.refresh(row)
         else:
             from ..worker import omnichannel_send_message
 

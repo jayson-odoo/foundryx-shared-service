@@ -534,8 +534,10 @@ def test_inbound_publishes_ws_and_webhook_media_fields(session_factory, monkeypa
     # Absolute gateway URL (not the inbox-relative path) so EMS can fetch it.
     assert msg["mediaUrl"].startswith("http")
     assert "/omnichannel/media/" in msg["mediaUrl"]
-    assert msg["mediaMime"] == "image/png"
-    assert msg["mediaSize"] == len(PNG)
+    # Consumer-facing envelope names (EMS integration ticket): mimeType/filename/size.
+    assert msg["mimeType"] == "image/png"
+    assert msg["size"] == len(PNG)
+    assert "mediaMime" not in msg and "mediaSize" not in msg
     assert msg["voice"] is False
 
 
@@ -600,3 +602,167 @@ def test_sniff_rejects_executable():
     assert detect_media_mime(EXE) is None
     assert detect_media_mime(PNG) == "image/png"
     assert detect_media_mime(WEBM) == "video/webm"
+
+
+# ── SSRF guard on gateway media-by-url (plan 12 review BLOCKER) ───────────────
+def test_gateway_media_url_blocks_metadata_ip(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    _seed_contact(session_factory, ws, phone="+60123456799")
+    key = _mint_key(client, ws)
+    res = client.post(
+        "/api/v1/omnichannel/messages",
+        json={
+            "to": "+60123456799",
+            "type": "image",
+            "media": {"url": "https://169.254.169.254/latest/meta-data/"},
+        },
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert res.status_code == 422
+    assert res.json()["error"]["code"] == "invalid_media_url"
+
+
+def test_gateway_media_url_requires_https(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    _seed_contact(session_factory, ws, phone="+60123456798")
+    key = _mint_key(client, ws)
+    res = client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": "+60123456798", "type": "image", "media": {"url": "http://example.com/a.png"}},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert res.status_code == 422
+    assert res.json()["error"]["code"] == "invalid_media_url"
+
+
+# ── Media endpoint permission scoping (plan 12 review SHOULD-FIX 2) ───────────
+def _limited_user_token(client, session_factory) -> str:
+    from sqlalchemy.sql import func
+
+    from app.models import Role, User, UserStatus
+    from app.security import hash_password
+
+    db = session_factory()
+    role = Role(tenant_id=DEFAULT_TENANT_ID, name="NoOmni", description="no perms", is_system=False)
+    db.add(role)
+    db.flush()
+    user = User(
+        tenant_id=DEFAULT_TENANT_ID,
+        email="noomni@example.com",
+        password=hash_password("Passw0rd!x"),
+        name="No Omni",
+        status=UserStatus.ACTIVE.value,
+        email_verified_at=func.now(),
+    )
+    user.roles = [role]
+    db.add(user)
+    db.commit()
+    db.close()
+    return client.post(
+        "/auth/login", json={"email": "noomni@example.com", "password": "Passw0rd!x"}
+    ).json()["access_token"]
+
+
+def test_media_endpoint_requires_read_permission(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    msg_id = _send_image(client, cid).json()["id"]
+
+    token = _limited_user_token(client, session_factory)
+    r = client.get(f"/omnichannel/media/{msg_id}", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 403
+
+
+# ── Send idempotency + transient handling (plan 12 review SHOULD-FIX 3/4) ─────
+def _queued_text_row(session_factory, channel_id, contact_id) -> str:
+    from modules.omnichannel.models import ConversationMessage
+
+    db = session_factory()
+    row = ConversationMessage(
+        tenant_id=DEFAULT_TENANT_ID,
+        contact_id=contact_id,
+        channel_id=channel_id,
+        sender_type="AGENT",
+        message_type="TEXT",
+        body="hi",
+        delivery_status="QUEUED",
+    )
+    db.add(row)
+    db.commit()
+    rid = row.id
+    db.close()
+    return rid
+
+
+def test_run_send_no_double_send_on_reentry(session_factory, monkeypatch):
+    from modules.omnichannel.adapters import whatsapp_cloud
+    from modules.omnichannel.services.send_runner import run_send
+
+    ws = _default_workspace_id(session_factory)
+    ch = _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    rid = _queued_text_row(session_factory, ch, cid)
+
+    calls = {"n": 0}
+
+    def fake_send(self, creds, phone, to, **kw):
+        calls["n"] += 1
+        return {"external_message_id": "wamid.once"}
+
+    monkeypatch.setattr(whatsapp_cloud.WhatsAppCloudAdapter, "send", fake_send)
+    db = session_factory()
+    assert run_send(db, rid) == "SENT"
+    # A retry of an already-sent row must NOT call adapter.send again.
+    assert run_send(db, rid) == "SENT"
+    db.close()
+    assert calls["n"] == 1
+
+
+def test_run_send_transient_requeues_and_raises(session_factory, monkeypatch):
+    import pytest as _pytest
+
+    from modules.omnichannel.adapters import whatsapp_cloud
+    from modules.omnichannel.adapters.base import SendError
+    from modules.omnichannel.models import ConversationMessage
+    from modules.omnichannel.services.send_runner import TransientSendError, run_send
+
+    ws = _default_workspace_id(session_factory)
+    ch = _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    rid = _queued_text_row(session_factory, ch, cid)
+
+    def boom(self, creds, phone, to, **kw):
+        raise SendError("Meta 503", transient=True)
+
+    monkeypatch.setattr(whatsapp_cloud.WhatsAppCloudAdapter, "send", boom)
+    db = session_factory()
+    with _pytest.raises(TransientSendError):
+        run_send(db, rid)
+    row = db.query(ConversationMessage).filter(ConversationMessage.id == rid).first()
+    assert row.delivery_status == "QUEUED"  # requeued for a backoff retry
+    db.close()
+
+
+def test_run_send_permanent_meta_rejection_fails(session_factory, monkeypatch):
+    from modules.omnichannel.adapters import whatsapp_cloud
+    from modules.omnichannel.adapters.base import SendError
+    from modules.omnichannel.models import ConversationMessage
+    from modules.omnichannel.services.send_runner import run_send
+
+    ws = _default_workspace_id(session_factory)
+    ch = _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    rid = _queued_text_row(session_factory, ch, cid)
+
+    def boom(self, creds, phone, to, **kw):
+        raise SendError("Invalid recipient", transient=False)
+
+    monkeypatch.setattr(whatsapp_cloud.WhatsAppCloudAdapter, "send", boom)
+    db = session_factory()
+    assert run_send(db, rid) == "FAILED"
+    row = db.query(ConversationMessage).filter(ConversationMessage.id == rid).first()
+    assert row.delivery_status == "FAILED"
+    db.close()

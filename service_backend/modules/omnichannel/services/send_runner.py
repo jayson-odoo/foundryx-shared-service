@@ -57,19 +57,50 @@ def _publish_status(db: Session, row: ConversationMessage) -> None:
     )
 
 
+class TransientSendError(Exception):
+    """A retryable send failure (network/5xx/storage blip). The Celery task
+    re-raises this so ``autoretry_for`` applies bounded backoff; eager dev leaves
+    the row QUEUED for a later manual retry (dev uses the stub adapter — no
+    transient failures)."""
+
+
+def _fail(db: Session, row: ConversationMessage, message: str) -> str:
+    row.delivery_status = "FAILED"
+    row.error_message = message
+    db.commit()
+    _publish_status(db, row)
+    return "FAILED"
+
+
+def _requeue_transient(db: Session, row: ConversationMessage, message: str) -> None:
+    """Reset a claimed row to QUEUED so a retry re-sends (the send did NOT reach
+    the contact), then raise for backoff. Only reached BEFORE ``adapter.send``
+    returns — a post-success commit failure leaves the row SENDING (never re-sent)."""
+    row.delivery_status = "QUEUED"
+    row.error_message = message
+    db.commit()
+    raise TransientSendError(message)
+
+
 def run_send(db: Session, message_id: str) -> str:
     """Execute a QUEUED outbound row. Returns the final delivery status.
 
-    Idempotent: a row already past QUEUED is left untouched (double-dispatch
-    guard). Never raises for a Meta/transcode failure — the row is stamped
-    FAILED and the error surfaces via WS + the delivery tick."""
+    IDEMPOTENT double-send guard (plan 12 review): the row is CLAIMED (QUEUED →
+    SENDING, committed) BEFORE ``adapter.send`` touches Meta. A row not in QUEUED
+    is a no-op — so if the post-send commit fails and Celery retries, the retry
+    sees SENDING and never re-calls ``adapter.send`` (the contact can't get it
+    twice). A transient failure (network/5xx/storage) raises ``TransientSendError``
+    for backoff; a permanent Meta rejection / transcode error stamps FAILED."""
     row = (
         db.query(ConversationMessage)
         .filter(ConversationMessage.id == message_id)
         .first()
     )
-    if row is None or (row.delivery_status not in (None, "QUEUED")):
-        return row.delivery_status if row else "MISSING"
+    if row is None:
+        return "MISSING"
+    if row.delivery_status not in (None, "QUEUED"):
+        # Already claimed/sent/failed — never re-send (double-dispatch guard).
+        return row.delivery_status
 
     channel = (
         db.query(Channel)
@@ -78,11 +109,12 @@ def run_send(db: Session, message_id: str) -> str:
     )
     contact = ContactRepository(db).get_by_id(row.contact_id, row.tenant_id)
     if channel is None or contact is None:
-        row.delivery_status = "FAILED"
-        row.error_message = "No active channel for this thread."
-        db.commit()
-        _publish_status(db, row)
-        return "FAILED"
+        return _fail(db, row, "No active channel for this thread.")
+
+    # CLAIM before touching Meta. If this commit fails the row stays QUEUED and a
+    # retry safely re-claims (no send happened yet).
+    row.delivery_status = "SENDING"
+    db.commit()
 
     credentials = decrypt_credentials(channel.credentials_json)
     adapter = get_adapter(channel.channel_type)
@@ -103,6 +135,14 @@ def run_send(db: Session, message_id: str) -> str:
             if row.message_type == "VOICE":
                 content = transcode_voice(content)  # webm/opus → ogg/opus
                 mime = "audio/ogg"
+                # The stored blob is now ogg — keep media_key/mime consistent so
+                # agent playback + the media endpoint serve the correct type.
+                from app.services.storage import storage_for_tenant
+
+                row.media_key = storage_for_tenant(db, row.tenant_id).save(
+                    f"omnichannel/{row.tenant_id}/voice", content, mime
+                )
+                row.media_mime = mime
             media_id = adapter.upload_media(credentials, phone_id, content, mime)
             result = adapter.send(
                 credentials,
@@ -120,12 +160,16 @@ def run_send(db: Session, message_id: str) -> str:
             result = adapter.send(
                 credentials, phone_id, to, text=row.body, context_message_id=context_id
             )
-    except (SendError, MediaRejected, httpx.HTTPError, OSError) as exc:
-        row.delivery_status = "FAILED"
-        row.error_message = getattr(exc, "message", None) or str(exc)
-        db.commit()
-        _publish_status(db, row)
-        return "FAILED"
+    except MediaRejected as exc:
+        # Sniff/cap/transcode failure — permanent.
+        return _fail(db, row, exc.message)
+    except SendError as exc:
+        if getattr(exc, "transient", False):
+            _requeue_transient(db, row, str(exc))
+        return _fail(db, row, str(exc))
+    except (httpx.HTTPError, OSError) as exc:
+        # Transport / stored-media read blip — retryable with backoff.
+        _requeue_transient(db, row, str(exc))
 
     row.external_message_id = result.get("external_message_id")
     row.delivery_status = "SENT"

@@ -204,13 +204,16 @@ class WhatsAppCloudAdapter:
                     detail = resp.json().get("error", {}).get("message", "")
                 except ValueError:
                     detail = ""
-                raise SendError(detail or f"Media upload failed ({resp.status_code}).")
+                raise SendError(
+                    detail or f"Media upload failed ({resp.status_code}).",
+                    transient=resp.status_code >= 500,
+                )
             media_id = resp.json().get("id", "")
             if not media_id:
                 raise SendError("Media upload returned no id.")
             return media_id
         except httpx.HTTPError as exc:
-            raise SendError(f"Could not reach Meta: {exc}") from exc
+            raise SendError(f"Could not reach Meta: {exc}", transient=True) from exc
         finally:
             if self._client is None:
                 client.close()
@@ -277,12 +280,15 @@ class WhatsAppCloudAdapter:
                     detail = resp.json().get("error", {}).get("message", "")
                 except ValueError:
                     detail = ""
-                raise SendError(detail or f"Meta returned {resp.status_code}.")
+                raise SendError(
+                    detail or f"Meta returned {resp.status_code}.",
+                    transient=resp.status_code >= 500,
+                )
             data = resp.json()
             wamid = (data.get("messages") or [{}])[0].get("id", "")
             return {"external_message_id": wamid}
         except httpx.HTTPError as exc:
-            raise SendError(f"Could not reach Meta: {exc}") from exc
+            raise SendError(f"Could not reach Meta: {exc}", transient=True) from exc
         finally:
             if self._client is None:
                 client.close()

@@ -169,7 +169,10 @@ async def send_message_media(
 ) -> MessageItem:
     """Send outbound media (image/video/audio/voice/document/sticker) — multipart.
     Sniff-gated + cap-checked, then queued for async upload-by-id send."""
-    content = await file.read(_MEDIA_HARD_CAP)
+    # Cap the buffered read at THIS kind's Meta ceiling (memory safety); the real
+    # per-workspace cap is enforced in send_media.
+    hard_cap = META_CEILINGS.get((kind or "").upper(), _MEDIA_HARD_CAP) + 1
+    content = await file.read(hard_cap)
     try:
         return MessageService(db).send_media(
             contact_id,

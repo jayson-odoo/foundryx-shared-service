@@ -351,8 +351,13 @@ def test_unknown_channel_dropped(session_factory):
     assert res == {"messages": 0, "statuses": 0, "skipped": 0}
 
 
-# ── StorageService + media route (Phase B-6) ────────────────────────────────
-def test_local_storage_put_and_serve(client, tmp_path, monkeypatch):
+# ── StorageService URL shape (Phase B-6) ────────────────────────────────────
+def test_local_storage_put_url_shape(client, tmp_path, monkeypatch):
+    # The legacy unauthenticated /omnichannel/media/{path} serve route was removed
+    # in plan 12 (it co-served outbound blobs under media_root with no auth). All
+    # blobs now flow through the authed GET /omnichannel/media/{message_id}. This
+    # only asserts the LocalDiskStorage.put() URL SHAPE (still used by the URL
+    # contract), not unauthenticated serving.
     from modules.omnichannel.services.storage import LocalDiskStorage
 
     monkeypatch.setattr(settings, "media_root", str(tmp_path))
@@ -360,11 +365,9 @@ def test_local_storage_put_and_serve(client, tmp_path, monkeypatch):
     url = storage.put("default/media-1", b"fake-image-bytes", "image/jpeg")
     assert "/omnichannel/media/default/media-1-" in url
     assert url.endswith(".jpg")
-
+    # The path is no longer served unauthenticated.
     rel = url.split("/omnichannel/media/")[1]
-    res = client.get(f"/omnichannel/media/{rel}")
-    assert res.status_code == 200
-    assert res.content == b"fake-image-bytes"
+    assert client.get(f"/omnichannel/media/{rel}").status_code in (401, 404)
 
 
 def test_media_route_blocks_traversal(client, tmp_path, monkeypatch):

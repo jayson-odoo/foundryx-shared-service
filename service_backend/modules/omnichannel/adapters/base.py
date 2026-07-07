@@ -19,7 +19,15 @@ class CodeExchangeError(Exception):
 
 class SendError(Exception):
     """Provider rejected an outbound send (carries the provider's reason so the
-    composer can surface it — e.g. re-engagement outside the 24h window)."""
+    composer can surface it — e.g. re-engagement outside the 24h window).
+
+    ``transient`` distinguishes a retryable transport/5xx failure (network blip,
+    Meta 5xx → the send task retries with backoff) from a permanent rejection
+    (bad number, 4xx, template issue → stamp FAILED, plan 12 review)."""
+
+    def __init__(self, message: str, *, transient: bool = False):
+        super().__init__(message)
+        self.transient = transient
 
 
 class ChannelAdapter(Protocol):

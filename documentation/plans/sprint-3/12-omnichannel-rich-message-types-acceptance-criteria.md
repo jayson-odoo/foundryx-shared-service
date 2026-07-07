@@ -41,7 +41,7 @@ Legend — the three surfaces every type touches: **INBOX** (composer + bubble) 
 - **Given** `POST /api/v1/omnichannel/messages` with `type ∈ {image,video,audio,voice,document,sticker}`, **when** called with **JSON** (`media:{url,caption,filename}`) **or** **multipart** (`file` part + `payload` json), **then** it accepts either, runs the upload pipeline, returns `202 {id,status:queued}`; oversize/wrong-mime → typed error.
 
 ### AC-12-11 — webhook media fields [BE][T]
-- **Given** a `message.inbound` delivery, **when** the message is media, **then** `data.message` carries `mediaUrl` (the API-key gateway endpoint), `mimeType`, `filename`, `size`, `voice` — additive, backward-compatible; EMS fetches bytes from `mediaUrl` with its API key.
+- **Given** a `message.inbound` delivery, **when** the message is media, **then** `data.message` carries `mediaUrl` (the absolute API-key gateway endpoint `{public_base_url}/omnichannel/media/{id}`), `mimeType`, `filename`, `size`, `voice` — additive, backward-compatible; EMS fetches bytes from `mediaUrl` with its API key. (Consumer-facing envelope names are `mimeType`/`filename`/`size`; the internal inbox wire keeps `mediaMime`/`mediaFilename`/`mediaSize`.)
 
 ### AC-12-12 — per-workspace caps [BE][FE][T]
 - **Given** an `omnichannel_settings` row keyed by `workspace_id` (nullable = default), **when** an admin sets per-type max sizes, **then** send validation enforces `min(configured, Meta ceiling)` (never above Meta's hard cap — clamp + warn); mimes are fixed to Meta's accepted set (not editable); sniff-gate always on; oversize/bad-mime rejected on **both** inbox + gateway.
