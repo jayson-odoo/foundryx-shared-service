@@ -20,6 +20,8 @@ import {
 import { cn } from '@/lib/utils';
 import type { ConversationMessage, DeliveryStatus, ReplyRef } from '@/types/omnichannel';
 
+import { MessageMedia, isMediaMessage } from './message-media';
+
 export interface MessageBubbleProps {
   message: ConversationMessage;
   /** Contact display name — labels quoted CONTACT messages. */
@@ -172,15 +174,17 @@ export function MessageBubble({
                   Template
                 </div>
               )}
-              {message.mediaUrl ? (
-                // Media rendering (image preview etc.) lands with StorageService in
-                // Phase B; Phase A shows the link placeholder.
-                <a
-                  href={message.mediaUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline underline-offset-2"
-                >
+              {isMediaMessage(message) ? (
+                <div className="space-y-1">
+                  <MessageMedia message={message} />
+                  {message.body && (
+                    <p className="whitespace-pre-wrap break-words">
+                      <HighlightedText text={message.body} term={highlight} />
+                    </p>
+                  )}
+                </div>
+              ) : message.mediaUrl ? (
+                <a href={message.mediaUrl} target="_blank" rel="noreferrer" className="underline underline-offset-2">
                   {message.body ?? 'Attachment'}
                 </a>
               ) : (

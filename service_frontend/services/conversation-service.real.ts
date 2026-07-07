@@ -14,6 +14,7 @@ import type {
   ConversationSocketEvent,
   ConversationThread,
   QuickReply,
+  SendMediaInput,
   SendMessageInput,
   ThreadListQuery,
   ThreadPriority,
@@ -67,6 +68,19 @@ export const realConversationService: ConversationService = {
     return apiFetch<ConversationMessage>(`/omnichannel/contacts/${contactId}/messages`, {
       method: 'POST',
       body: JSON.stringify(input),
+    });
+  },
+
+  async sendMedia(contactId, input: SendMediaInput) {
+    // Multipart — apiFetch skips the JSON content-type for a FormData body.
+    const form = new FormData();
+    form.append('kind', input.kind);
+    form.append('file', input.file);
+    if (input.caption) form.append('caption', input.caption);
+    if (input.replyToMessageId) form.append('reply_to_message_id', input.replyToMessageId);
+    return apiFetch<ConversationMessage>(`/omnichannel/contacts/${contactId}/media`, {
+      method: 'POST',
+      body: form,
     });
   },
 

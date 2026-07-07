@@ -37,7 +37,7 @@ function msg(over: Partial<ConversationMessage> = {}): ConversationMessage {
     senderName: null,
     messageType: 'TEXT',
     body: 'Hello there',
-    mediaUrl: null,
+    mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false,
     externalMessageId: null,
     deliveryStatus: null,
     errorCode: null,

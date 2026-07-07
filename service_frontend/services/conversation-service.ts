@@ -11,6 +11,7 @@ import type {
   ConversationSocketEvent,
   ConversationThread,
   QuickReply,
+  SendMediaInput,
   SendMessageInput,
   ThreadListQuery,
   ThreadPriority,
@@ -27,6 +28,9 @@ export interface ConversationService {
   listMessages(contactId: string): Promise<ConversationMessage[]>;
   /** Send free-form/template. Backend enforces CSW; mock mirrors the rule. */
   sendMessage(contactId: string, input: SendMessageInput): Promise<ConversationMessage>;
+  /** Send a media file (image/video/audio/voice/document/sticker) — multipart.
+   *  Backend sniff-gates + cap-checks then queues the async upload-by-id send. */
+  sendMedia(contactId: string, input: SendMediaInput): Promise<ConversationMessage>;
   /** Internal note (SYSTEM bubble) — never delivered to the contact. */
   addInternalNote(contactId: string, body: string): Promise<ConversationMessage>;
   /** Assign/reassign (userId) or unassign (null). */

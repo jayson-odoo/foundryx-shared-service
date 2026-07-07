@@ -15,6 +15,7 @@ import type {
   ConversationSocketEvent,
   ConversationThread,
   QuickReply,
+  SendMediaInput,
   SendMessageInput,
   ThreadListQuery,
   ThreadPriority,
@@ -125,7 +126,7 @@ function seedMessages(): ConversationMessage[] {
     senderName: senderType === 'CONTACT' ? null : 'Demo User',
     messageType: 'TEXT',
     body,
-    mediaUrl: null,
+    mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false,
     externalMessageId: senderType === 'CONTACT' ? nextId('wamid') : null,
     deliveryStatus: senderType === 'AGENT' ? 'READ' : null,
     errorCode: null,
@@ -259,7 +260,7 @@ export function __mockSimulateInbound(workspaceId = 'wsp-001', contactId = 'cnt-
   const message: ConversationMessage = {
     id: nextId('msg'), contactId, channelId: t.channelId,
     senderType: 'CONTACT', senderId: null, senderName: null,
-    messageType: 'TEXT', body, mediaUrl: null,
+    messageType: 'TEXT', body, mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false,
     externalMessageId: nextId('wamid'), deliveryStatus: null,
     errorCode: null, errorMessage: null, replyTo: null, createdAt: new Date().toISOString(),
   };
@@ -354,7 +355,7 @@ export const mockConversationService: ConversationService = {
     const message: ConversationMessage = {
       id: nextId('msg'), contactId, channelId: t.channelId,
       senderType: 'AGENT', senderId: MOCK_CURRENT_USER.id, senderName: MOCK_CURRENT_USER.name,
-      messageType, body, mediaUrl: null,
+      messageType, body, mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false,
       externalMessageId: nextId('wamid'), deliveryStatus: 'SENT',
       errorCode: null, errorMessage: null,
       replyTo: quoted
@@ -372,13 +373,43 @@ export const mockConversationService: ConversationService = {
     return delay(message, 250);
   },
 
+  async sendMedia(contactId, input: SendMediaInput) {
+    const t = threadOf(contactId);
+    const windowOpen = !!t.cswExpiresAt && Date.parse(t.cswExpiresAt) > Date.now();
+    if (!windowOpen) {
+      throw new Error('The 24-hour window has closed — send an approved template to re-engage.');
+    }
+    const messageType = input.kind.toUpperCase() as ConversationMessage['messageType'];
+    const message: ConversationMessage = {
+      id: nextId('msg'), contactId, channelId: t.channelId,
+      senderType: 'AGENT', senderId: MOCK_CURRENT_USER.id, senderName: MOCK_CURRENT_USER.name,
+      messageType, body: input.caption ?? null,
+      mediaUrl: `/omnichannel/media/${nextId('media')}`,
+      mediaMime: input.file.type || null,
+      mediaFilename: input.file.name,
+      mediaSize: input.file.size,
+      voice: input.kind === 'voice',
+      externalMessageId: nextId('wamid'), deliveryStatus: 'SENT',
+      errorCode: null, errorMessage: null, replyTo: null,
+      createdAt: new Date().toISOString(),
+    };
+    messages = [...messages, message];
+    const updated = touchThread(t, {
+      lastMessageAt: message.createdAt,
+      lastMessagePreview: input.caption || `[${input.kind}]`,
+    });
+    emit(t.workspaceId, { type: 'message.created', message, thread: updated });
+    simulateReceipts(message);
+    return delay(message, 250);
+  },
+
   async addInternalNote(contactId, body) {
     const t = threadOf(contactId);
     if (!body.trim()) throw new Error('Note body is required');
     const message: ConversationMessage = {
       id: nextId('msg'), contactId, channelId: t.channelId,
       senderType: 'SYSTEM', senderId: MOCK_CURRENT_USER.id, senderName: MOCK_CURRENT_USER.name,
-      messageType: 'TEXT', body: body.trim(), mediaUrl: null,
+      messageType: 'TEXT', body: body.trim(), mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false,
       externalMessageId: null, deliveryStatus: null,
       errorCode: null, errorMessage: null, replyTo: null, createdAt: new Date().toISOString(),
     };

@@ -13,6 +13,7 @@ import type {
   ConversationMessage,
   ConversationSocketEvent,
   ConversationThread,
+  SendMediaInput,
   SendMessageInput,
   ThreadPriority,
   ThreadStatus,
@@ -30,6 +31,7 @@ export interface UseMessagesResult {
   /** Last send failure (CSW rejection etc). Cleared on the next attempt. */
   sendError: string | null;
   send: (input: SendMessageInput) => Promise<boolean>;
+  sendMedia: (input: SendMediaInput) => Promise<boolean>;
   addNote: (body: string) => Promise<boolean>;
   assign: (userId: string | null) => Promise<void>;
   assignToMe: () => Promise<void>;
@@ -115,7 +117,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
         senderName: null,
         messageType: input.messageType,
         body: input.body ?? null,
-        mediaUrl: null,
+        mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false,
         externalMessageId: null,
         deliveryStatus: null,
         errorCode: null,
@@ -146,6 +148,59 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
               ? { ...m, deliveryStatus: 'FAILED', errorMessage: msg }
               : m,
           ),
+        );
+        return false;
+      } finally {
+        setIsSending(false);
+      }
+    },
+    [contactId],
+  );
+
+  const sendMedia = useCallback(
+    async (input: SendMediaInput): Promise<boolean> => {
+      if (!contactId) return false;
+      setSendError(null);
+      // Optimistic bubble with a local preview (object URL — useMediaBlob uses
+      // blob: URLs directly; the real message swaps in the backend path).
+      const tempId = `temp-${crypto.randomUUID()}`;
+      const previewUrl = URL.createObjectURL(input.file);
+      const optimistic: ConversationMessage = {
+        id: tempId,
+        contactId,
+        channelId: null,
+        senderType: 'AGENT',
+        senderId: null,
+        senderName: null,
+        messageType: input.kind.toUpperCase() as ConversationMessage['messageType'],
+        body: input.caption ?? null,
+        mediaUrl: previewUrl,
+        mediaMime: input.file.type || null,
+        mediaFilename: input.file.name,
+        mediaSize: input.file.size,
+        voice: input.kind === 'voice',
+        externalMessageId: null,
+        deliveryStatus: 'QUEUED',
+        errorCode: null,
+        errorMessage: null,
+        replyTo: null,
+        createdAt: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, optimistic]);
+      setIsSending(true);
+      try {
+        const created = await conversationService.sendMedia(contactId, input);
+        URL.revokeObjectURL(previewUrl);
+        setMessages((prev) => {
+          const withoutTemp = prev.filter((m) => m.id !== tempId);
+          return withoutTemp.some((m) => m.id === created.id) ? withoutTemp : [...withoutTemp, created];
+        });
+        return true;
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'Could not send the attachment';
+        setSendError(msg);
+        setMessages((prev) =>
+          prev.map((m) => (m.id === tempId ? { ...m, deliveryStatus: 'FAILED', errorMessage: msg } : m)),
         );
         return false;
       } finally {
@@ -199,5 +254,5 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     [contactId],
   );
 
-  return { thread, messages, isLoading, error, isSending, sendError, send, addNote, assign, assignToMe, setStatus, setPriority };
+  return { thread, messages, isLoading, error, isSending, sendError, send, sendMedia, addNote, assign, assignToMe, setStatus, setPriority };
 }

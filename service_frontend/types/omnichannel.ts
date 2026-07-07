@@ -163,11 +163,29 @@ export interface MockWabaOption {
 /** Who authored a message bubble. SYSTEM = internal note (never sent to the contact). */
 export type SenderType = 'AGENT' | 'CONTACT' | 'SYSTEM';
 
-/** Message payload kinds (inbound INTERACTIVE renders; compose is backlog). */
-export type MessageType = 'TEXT' | 'IMAGE' | 'VIDEO' | 'AUDIO' | 'DOCUMENT' | 'TEMPLATE' | 'INTERACTIVE';
+/** Message payload kinds (plan 12 — full media set; interactive/location/
+ *  contacts/reaction land in slices 2/3). */
+export type MessageType =
+  | 'TEXT'
+  | 'IMAGE'
+  | 'VIDEO'
+  | 'AUDIO'
+  | 'VOICE'
+  | 'DOCUMENT'
+  | 'STICKER'
+  | 'TEMPLATE'
+  | 'INTERACTIVE'
+  | 'INTERACTIVE_REPLY'
+  | 'LOCATION'
+  | 'CONTACTS'
+  | 'REACTION';
 
-/** Outbound delivery lifecycle (Meta status webhooks drive transitions). */
-export type DeliveryStatus = 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
+/** The media-bearing kinds an agent can attach + send (plan 12 Slice 1). */
+export type MediaKind = 'image' | 'video' | 'audio' | 'voice' | 'document' | 'sticker';
+
+/** Outbound delivery lifecycle (Meta status webhooks drive transitions). QUEUED
+ *  = the async send task hasn't reached Meta yet (optimistic bubble). */
+export type DeliveryStatus = 'QUEUED' | 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
 
 /** Thread lifecycle (statuses table, CONTACT scope). Inbound re-opens a thread. */
 export type ThreadStatus = 'OPEN' | 'SNOOZED' | 'CLOSED';
@@ -224,7 +242,14 @@ export interface ConversationMessage {
   senderName: string | null;
   messageType: MessageType;
   body: string | null;
+  /** Relative blob-fetch path (`/omnichannel/media/{id}`) when media is stored;
+   *  the bubble fetches it with the Bearer via `apiFetchBlob` (never `<img src>`). */
   mediaUrl: string | null;
+  mediaMime: string | null;
+  mediaFilename: string | null;
+  mediaSize: number | null;
+  /** True for a voice note (renders the voice-note player, not a plain audio). */
+  voice: boolean;
   externalMessageId: string | null;
   deliveryStatus: DeliveryStatus | null;
   errorCode: string | null;
@@ -263,6 +288,15 @@ export interface SendMessageInput {
   templateId?: string;
   templateVariables?: string[];
   /** Reply target (WhatsApp Cloud `context.message_id` in Phase B). */
+  replyToMessageId?: string;
+}
+
+/** Outbound media send (plan 12 Slice 1). One file → one message; multi-select
+ *  in the composer dispatches one of these per file. */
+export interface SendMediaInput {
+  kind: MediaKind;
+  file: File;
+  caption?: string;
   replyToMessageId?: string;
 }
 

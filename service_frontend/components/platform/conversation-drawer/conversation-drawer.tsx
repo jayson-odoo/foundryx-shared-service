@@ -103,6 +103,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     isSending,
     sendError,
     send,
+    sendMedia,
     addNote,
     assign,
     assignToMe,
@@ -399,6 +400,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
         isSending={isSending}
         sendError={sendError}
         onSend={send}
+        onSendMedia={sendMedia}
         mode={tab === 'activities' ? 'note' : 'message'}
         onAddNote={addNote}
         replyTo={replyTo}
