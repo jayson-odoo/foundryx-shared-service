@@ -79,7 +79,7 @@ describe('Composer — attach + emoji (plan 12)', () => {
     await user.type(captions[0], 'first');
     await user.click(screen.getByTestId('message-send'));
     await waitFor(() => expect(onSendMedia).toHaveBeenCalledTimes(2));
-    const call0 = onSendMedia.mock.calls[0][0] as SendMediaInput;
+    const call0 = (onSendMedia.mock.calls[0] as unknown as [SendMediaInput])[0];
     expect(call0.kind).toBe('image');
     expect(call0.caption).toBe('first');
   });
@@ -92,6 +92,21 @@ describe('Composer — attach + emoji (plan 12)', () => {
     await user.click(first);
     const textarea = screen.getByTestId('message-input') as HTMLTextAreaElement;
     expect(textarea.value.length).toBeGreaterThan(0);
+  });
+
+  it('inserts a picked canned quick reply into the textarea (AC-12-08)', async () => {
+    const user = userEvent.setup();
+    render(
+      <Composer
+        {...baseComposer}
+        quickReplies={[{ id: 'q1', workspaceId: 'w1', shortcut: '/hi', body: 'Hello from support!' }]}
+        onSendMedia={vi.fn(async () => true)}
+      />,
+    );
+    await user.click(screen.getByTestId('quick-replies'));
+    await user.click(await screen.findByText('Hello from support!'));
+    const textarea = screen.getByTestId('message-input') as HTMLTextAreaElement;
+    expect(textarea.value).toContain('Hello from support!');
   });
 
   it('hides attach + voice controls when the CSW window is closed', () => {

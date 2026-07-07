@@ -445,6 +445,154 @@ def test_gateway_media_oversize_typed_error(client, session_factory):
     assert res.json()["error"]["code"] == "oversize"
 
 
+# ── AC-12-26 WS realtime on every mutation ───────────────────────────────────
+def test_ws_publish_on_outbound_send(client, session_factory, monkeypatch):
+    """An outbound media send publishes the optimistic ``message.created`` AND
+    the async ``message.status`` (SENT) to the workspace room (AC-12-26)."""
+    from modules.omnichannel.services import realtime
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+
+    events = []
+    monkeypatch.setattr(realtime, "publish", lambda w, ev: events.append((w, ev)))
+
+    res = _send_image(client, cid)
+    assert res.status_code == 201, res.text
+    types = [ev["type"] for _, ev in events]
+    assert "message.created" in types  # optimistic bubble
+    assert "message.status" in types  # async upload-by-id → SENT
+    # Every publish targets the contact's workspace room.
+    assert all(w == ws for w, _ in events)
+    status_ev = next(ev for _, ev in events if ev["type"] == "message.status")
+    assert status_ev["deliveryStatus"] == "SENT"
+    assert status_ev["messageId"] == res.json()["id"]
+
+
+def test_ws_publish_on_failed_send(client, session_factory, monkeypatch):
+    """A transcode failure still publishes ``message.status`` = FAILED (no mutation
+    path leaves inboxes stale, AC-12-26)."""
+    from modules.omnichannel.services import realtime
+    from modules.omnichannel.services.media_pipeline import MediaRejected
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+
+    events = []
+    monkeypatch.setattr(realtime, "publish", lambda w, ev: events.append(ev))
+    monkeypatch.setattr(
+        "modules.omnichannel.services.send_runner.transcode_voice",
+        lambda content: (_ for _ in ()).throw(MediaRejected("transcode_failed", "bad")),
+    )
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/media",
+        files={"file": ("v.webm", WEBM, "audio/webm")},
+        data={"kind": "voice"},
+        headers=_auth(client),
+    )
+    assert res.status_code == 201
+    status_evs = [e for e in events if e["type"] == "message.status"]
+    assert status_evs and status_evs[-1]["deliveryStatus"] == "FAILED"
+
+
+# ── AC-12-11 / AC-12-26 inbound: WS publish + webhook media envelope ──────────
+def test_inbound_publishes_ws_and_webhook_media_fields(session_factory, monkeypatch):
+    """Inbound media publishes ``message.created`` on WS AND fans a consumer
+    ``message.inbound`` whose ``data.message`` carries the ABSOLUTE API-key gateway
+    ``mediaUrl`` + media metadata + the ``voice`` flag (AC-12-11 additive fields)."""
+    from modules.omnichannel.adapters import whatsapp_cloud
+    from modules.omnichannel.services import realtime, webhook_delivery
+    from modules.omnichannel.services.inbound_service import InboundService
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws, phone_number_id="pn-wh")
+
+    monkeypatch.setattr(
+        whatsapp_cloud.WhatsAppCloudAdapter,
+        "fetch_media",
+        lambda self, creds, mid: {"content": PNG, "mime_type": "image/png"},
+    )
+    ws_events = []
+    monkeypatch.setattr(realtime, "publish", lambda w, ev: ws_events.append(ev))
+    captured: dict = {}
+    monkeypatch.setattr(
+        webhook_delivery,
+        "enqueue_event",
+        lambda db, channel, event_type, event_id, data: captured.__setitem__(event_type, data),
+    )
+
+    db = session_factory()
+    InboundService(db).process_payload(
+        "pn-wh", _inbound_payload("pn-wh", "image", {"mime_type": "image/png"})
+    )
+    db.close()
+
+    assert any(e["type"] == "message.created" for e in ws_events)
+    msg = captured["message.inbound"]["message"]
+    # Absolute gateway URL (not the inbox-relative path) so EMS can fetch it.
+    assert msg["mediaUrl"].startswith("http")
+    assert "/omnichannel/media/" in msg["mediaUrl"]
+    assert msg["mediaMime"] == "image/png"
+    assert msg["mediaSize"] == len(PNG)
+    assert msg["voice"] is False
+
+
+def test_inbound_status_receipt_publishes_ws(session_factory, monkeypatch):
+    """A delivery receipt for an outbound message publishes ``message.status`` on
+    WS (AC-12-26)."""
+    from modules.omnichannel.models import ConversationMessage
+    from modules.omnichannel.services import realtime, webhook_delivery
+    from modules.omnichannel.services.inbound_service import InboundService
+
+    ws = _default_workspace_id(session_factory)
+    ch = _seed_channel(session_factory, ws, phone_number_id="pn-st")
+    cid = _seed_contact(session_factory, ws, phone="+60123456777")
+
+    db = session_factory()
+    row = ConversationMessage(
+        tenant_id=DEFAULT_TENANT_ID,
+        contact_id=cid,
+        channel_id=ch,
+        sender_type="AGENT",
+        message_type="TEXT",
+        body="hi",
+        external_message_id="wamid.out-1",
+        delivery_status="SENT",
+        created_at=_now(),
+    )
+    db.add(row)
+    db.commit()
+    db.close()
+
+    events = []
+    monkeypatch.setattr(realtime, "publish", lambda w, ev: events.append(ev))
+    monkeypatch.setattr(
+        webhook_delivery, "enqueue_event", lambda *a, **k: 0
+    )
+    status_payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "metadata": {"phone_number_id": "pn-st"},
+                            "statuses": [{"id": "wamid.out-1", "status": "delivered"}],
+                        },
+                    }
+                ]
+            }
+        ]
+    }
+    db = session_factory()
+    InboundService(db).process_payload("pn-st", status_payload)
+    db.close()
+    status_evs = [e for e in events if e["type"] == "message.status"]
+    assert status_evs and status_evs[-1]["deliveryStatus"] == "DELIVERED"
+
+
 # ── media pipeline unit checks (sniff) ───────────────────────────────────────
 def test_sniff_rejects_executable():
     from modules.omnichannel.services.media_pipeline import detect_media_mime
