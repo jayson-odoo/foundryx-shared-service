@@ -23,7 +23,14 @@ from ..models import (
     WhatsappTemplate,
 )
 from ..repositories.contact_repository import ContactRepository
-from ..schemas import MessageItem, QuickReplyItem, SendMessageRequest, TemplateItem
+from ..schemas import (
+    MessageItem,
+    QuickReplyCreate,
+    QuickReplyItem,
+    QuickReplyUpdate,
+    SendMessageRequest,
+    TemplateItem,
+)
 from ..security import decrypt_credentials
 from .conversation_service import ConversationService, ThreadNotFound
 from .media_pipeline import MediaRejected, sniff_and_validate
@@ -38,6 +45,14 @@ class SendRejected(Exception):
     def __init__(self, message: str):
         super().__init__(message)
         self.message = message
+
+
+class QuickReplyNotFound(Exception):
+    """The quick reply doesn't exist in this tenant + workspace (→ 404)."""
+
+
+class ShortcutConflict(Exception):
+    """Another quick reply in this workspace already uses the shortcut (→ 409)."""
 
 
 CSW_CLOSED_MESSAGE = (
@@ -719,7 +734,107 @@ class MessageService:
             .order_by(QuickReply.shortcut.asc().nullslast(), QuickReply.created_at.asc())
             .all()
         )
-        return [
-            QuickReplyItem(id=r.id, workspaceId=r.workspace_id, shortcut=r.shortcut, body=r.body)
-            for r in rows
-        ]
+        return [self._quick_reply_item(r) for r in rows]
+
+    def _quick_reply_item(self, r: QuickReply) -> QuickReplyItem:
+        return QuickReplyItem(
+            id=r.id, workspaceId=r.workspace_id, shortcut=r.shortcut, body=r.body
+        )
+
+    def _require_workspace(self, workspace_id: str, tenant_id: str) -> None:
+        """Verify the workspace belongs to the tenant (never trust client input).
+        Raises ``WorkspaceNotFound`` (→ 404) otherwise."""
+        from ..repositories.workspace_repository import WorkspaceRepository
+        from .workspace_service import WorkspaceNotFound
+
+        if WorkspaceRepository(self.db).get_by_id(workspace_id, tenant_id) is None:
+            raise WorkspaceNotFound()
+
+    def _quick_reply_row(
+        self, quick_reply_id: str, workspace_id: str, tenant_id: str
+    ) -> Optional[QuickReply]:
+        return (
+            self.db.query(QuickReply)
+            .filter(
+                QuickReply.id == quick_reply_id,
+                QuickReply.tenant_id == tenant_id,
+                QuickReply.workspace_id == workspace_id,
+            )
+            .first()
+        )
+
+    def _shortcut_taken(
+        self,
+        workspace_id: str,
+        tenant_id: str,
+        shortcut: Optional[str],
+        *,
+        exclude_id: Optional[str] = None,
+    ) -> bool:
+        if not shortcut:
+            return False
+        q = self.db.query(QuickReply.id).filter(
+            QuickReply.tenant_id == tenant_id,
+            QuickReply.workspace_id == workspace_id,
+            QuickReply.shortcut == shortcut,
+        )
+        if exclude_id is not None:
+            q = q.filter(QuickReply.id != exclude_id)
+        return q.first() is not None
+
+    def create_quick_reply(
+        self,
+        workspace_id: str,
+        tenant_id: str,
+        payload: QuickReplyCreate,
+        *,
+        actor_user_id: Optional[str] = None,
+    ) -> QuickReplyItem:
+        self._require_workspace(workspace_id, tenant_id)
+        if self._shortcut_taken(workspace_id, tenant_id, payload.shortcut):
+            raise ShortcutConflict()
+        row = QuickReply(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            shortcut=payload.shortcut,
+            body=payload.body,
+            created_by=actor_user_id,
+        )
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return self._quick_reply_item(row)
+
+    def update_quick_reply(
+        self,
+        quick_reply_id: str,
+        workspace_id: str,
+        tenant_id: str,
+        payload: QuickReplyUpdate,
+    ) -> QuickReplyItem:
+        self._require_workspace(workspace_id, tenant_id)
+        row = self._quick_reply_row(quick_reply_id, workspace_id, tenant_id)
+        if row is None:
+            raise QuickReplyNotFound()
+        fields = payload.model_fields_set
+        if "shortcut" in fields and self._shortcut_taken(
+            workspace_id, tenant_id, payload.shortcut, exclude_id=quick_reply_id
+        ):
+            raise ShortcutConflict()
+        if "shortcut" in fields:
+            row.shortcut = payload.shortcut
+        if "body" in fields and payload.body is not None:
+            row.body = payload.body
+        self.db.commit()
+        self.db.refresh(row)
+        return self._quick_reply_item(row)
+
+    def delete_quick_reply(
+        self, quick_reply_id: str, workspace_id: str, tenant_id: str
+    ) -> None:
+        self._require_workspace(workspace_id, tenant_id)
+        row = self._quick_reply_row(quick_reply_id, workspace_id, tenant_id)
+        if row is None:
+            raise QuickReplyNotFound()
+        self.db.delete(row)
+        self.db.commit()

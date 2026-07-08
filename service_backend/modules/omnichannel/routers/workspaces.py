@@ -9,13 +9,16 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import require_permission
+from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 from ..schemas import (
     AssignMembersRequest,
     ExportRequest,
     IdsRequest,
     MemberCandidateItem,
+    QuickReplyCreate,
+    QuickReplyItem,
+    QuickReplyUpdate,
     WorkspaceCreate,
     WorkspaceItem,
     WorkspaceListResponse,
@@ -222,3 +225,73 @@ def list_quick_replies(
     from ..services.message_service import MessageService
 
     return MessageService(db).list_quick_replies(ws_id, current_user.tenant_id)
+
+
+@router.post(
+    "/{ws_id}/quick-replies",
+    response_model=QuickReplyItem,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_quick_reply(
+    ws_id: str,
+    body: QuickReplyCreate,
+    current_user: User = Depends(require_permission("workspaces.manage")),
+    actor_user_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> QuickReplyItem:
+    from ..services.message_service import MessageService, ShortcutConflict
+
+    try:
+        return MessageService(db).create_quick_reply(
+            ws_id, current_user.tenant_id, body, actor_user_id=actor_user_id
+        )
+    except WorkspaceNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.")
+    except ShortcutConflict:
+        raise HTTPException(status.HTTP_409_CONFLICT, "That shortcut is already in use.")
+
+
+@router.patch("/{ws_id}/quick-replies/{qr_id}", response_model=QuickReplyItem)
+def update_quick_reply(
+    ws_id: str,
+    qr_id: str,
+    body: QuickReplyUpdate,
+    current_user: User = Depends(require_permission("workspaces.manage")),
+    db: Session = Depends(get_db),
+) -> QuickReplyItem:
+    from ..services.message_service import (
+        MessageService,
+        QuickReplyNotFound,
+        ShortcutConflict,
+    )
+
+    try:
+        return MessageService(db).update_quick_reply(
+            qr_id, ws_id, current_user.tenant_id, body
+        )
+    except WorkspaceNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.")
+    except QuickReplyNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Quick reply not found.")
+    except ShortcutConflict:
+        raise HTTPException(status.HTTP_409_CONFLICT, "That shortcut is already in use.")
+
+
+@router.delete(
+    "/{ws_id}/quick-replies/{qr_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+def delete_quick_reply(
+    ws_id: str,
+    qr_id: str,
+    current_user: User = Depends(require_permission("workspaces.manage")),
+    db: Session = Depends(get_db),
+) -> Response:
+    from ..services.message_service import MessageService, QuickReplyNotFound
+
+    try:
+        MessageService(db).delete_quick_reply(qr_id, ws_id, current_user.tenant_id)
+    except WorkspaceNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.")
+    except QuickReplyNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Quick reply not found.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

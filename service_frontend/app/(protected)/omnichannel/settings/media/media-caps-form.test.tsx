@@ -52,9 +52,10 @@ describe('MediaCapsForm', () => {
     await waitFor(() => expect(screen.getByText('Image')).toBeInTheDocument());
     expect(screen.getByText('Audio & voice notes')).toBeInTheDocument();
     expect(screen.getByText('Sticker')).toBeInTheDocument();
-    // accepted mimes shown read-only
-    expect(screen.getByText('image/png')).toBeInTheDocument();
-    expect(screen.getByText('image/webp')).toBeInTheDocument();
+    // accepted mimes shown read-only as short labels, exact MIME on hover (title)
+    expect(screen.getByText('PNG')).toBeInTheDocument();
+    expect(screen.getByTitle('image/png')).toBeInTheDocument();
+    expect(screen.getByTitle('image/webp')).toBeInTheDocument();
     // ceiling hint
     expect(screen.getAllByText(/max .* MB/).length).toBeGreaterThan(0);
   });

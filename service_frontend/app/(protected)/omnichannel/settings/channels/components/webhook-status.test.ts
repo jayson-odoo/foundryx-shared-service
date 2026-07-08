@@ -26,14 +26,16 @@ describe('webhook event-type labels', () => {
     expect(WEBHOOK_EVENT_LABELS['message.inbound']).toBe('Inbound messages');
     expect(WEBHOOK_EVENT_LABELS['message.status']).toBe('Delivery receipts');
     expect(WEBHOOK_EVENT_LABELS['contact.updated']).toBe('Contact updates');
+    expect(WEBHOOK_EVENT_LABELS['message.reaction']).toBe('Reactions');
   });
 
-  it('exposes the three events as picker options in label/value shape', () => {
-    expect(WEBHOOK_EVENT_OPTIONS).toHaveLength(3);
+  it('exposes the four events as picker options in label/value shape', () => {
+    expect(WEBHOOK_EVENT_OPTIONS).toHaveLength(4);
     expect(WEBHOOK_EVENT_OPTIONS.map((o) => o.value)).toEqual([
       'message.inbound',
       'message.status',
       'contact.updated',
+      'message.reaction',
     ]);
   });
 

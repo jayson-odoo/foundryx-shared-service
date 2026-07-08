@@ -5,6 +5,7 @@ keys by the services before constructing these models.
 from datetime import datetime
 from typing import List, Optional
 
+from pydantic import field_validator
 
 from app.schemas.base import ApiModel
 
@@ -300,6 +301,56 @@ class QuickReplyItem(ApiModel):
     workspaceId: str
     shortcut: Optional[str] = None
     body: str
+
+
+class QuickReplyCreate(ApiModel):
+    """Create a canned response. ``body`` required (non-blank); ``shortcut``
+    optional (a leading ``/`` is fine — the composer matches ``/xyz``)."""
+
+    shortcut: Optional[str] = None
+    body: str
+
+    @field_validator("shortcut")
+    @classmethod
+    def _norm_shortcut(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
+    @field_validator("body")
+    @classmethod
+    def _nonblank_body(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("Message body is required.")
+        return v
+
+
+class QuickReplyUpdate(ApiModel):
+    """Partial update. Only fields present in the payload are applied
+    (``model_fields_set``); an explicit ``shortcut: null`` clears the shortcut."""
+
+    shortcut: Optional[str] = None
+    body: Optional[str] = None
+
+    @field_validator("shortcut")
+    @classmethod
+    def _norm_shortcut(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
+    @field_validator("body")
+    @classmethod
+    def _nonblank_body(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            raise ValueError("Message body cannot be empty.")
+        return v
 
 
 # ── Omnichannel media settings (plan 12 — per-workspace caps) ────────────────

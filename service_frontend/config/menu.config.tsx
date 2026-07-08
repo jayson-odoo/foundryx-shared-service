@@ -403,6 +403,11 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/omnichannel/settings/media',
         permission: 'channels.manage',
       },
+      {
+        title: 'Quick replies',
+        path: '/omnichannel/settings/quick-replies',
+        permission: 'workspaces.manage',
+      },
     ],
   },
 ];
@@ -727,6 +732,10 @@ export const MENU_SIDEBAR_COMPACT: MenuConfig = [
       {
         title: 'Media limits',
         path: '/omnichannel/settings/media',
+      },
+      {
+        title: 'Quick replies',
+        path: '/omnichannel/settings/quick-replies',
       },
     ],
   },
