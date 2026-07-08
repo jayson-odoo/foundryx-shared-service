@@ -27,14 +27,17 @@ async function openInbox(page: Page) {
   await page.waitForURL(/\/omnichannel\/inbox/);
 }
 
-async function openFirstThread(page: Page) {
-  // The thread list is the left panel; click the first thread row to open it.
-  const firstThread = page.locator('[data-testid^="thread-row-"]').first();
-  await expect(firstThread).toBeVisible({ timeout: 15_000 });
-  await firstThread.click();
-  await expect(page.getByTestId('bubble-contact').or(page.getByTestId('bubble-agent')).first()).toBeVisible({
-    timeout: 15_000,
-  });
+async function openDemoThread(page: Page) {
+  // Open the seeded "Sarah Chen" thread (cnt-001) by its stable row testid — it
+  // carries inbound CONTACT bubbles with real wamids + an open CSW window, so a
+  // reaction can send (the dev channel stubs Graph).
+  const row = page.getByTestId('thread-row-cnt-001');
+  await expect(row).toBeVisible({ timeout: 15_000 });
+  await row.click();
+  // Wait for the thread to actually switch (a known Sarah contact message) then
+  // for a CONTACT bubble to be present.
+  await expect(page.getByText('Grand Ballroom', { exact: false }).first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('bubble-contact').first()).toBeVisible({ timeout: 15_000 });
 }
 
 test.describe('Omnichannel rich messages — Slice 3', () => {
@@ -44,11 +47,11 @@ test.describe('Omnichannel rich messages — Slice 3', () => {
 
   test('react to a message → the emoji chip appears on the bubble (AC-12-20)', async ({ page }) => {
     await openInbox(page);
-    await openFirstThread(page);
+    await openDemoThread(page);
 
     // Right-click a bubble to open the WhatsApp-style context menu with the
     // quick-react palette, then pick 👍.
-    const bubble = page.getByTestId('bubble-agent').first();
+    const bubble = page.getByTestId('bubble-contact').first();
     await bubble.click({ button: 'right' });
     const reactRow = page.getByTestId('react-row');
     await expect(reactRow).toBeVisible();
@@ -61,17 +64,20 @@ test.describe('Omnichannel rich messages — Slice 3', () => {
 
   test('remove a reaction via the context menu (AC-12-19)', async ({ page }) => {
     await openInbox(page);
-    await openFirstThread(page);
+    await openDemoThread(page);
 
-    const bubble = page.getByTestId('bubble-agent').first();
+    const bubble = page.getByTestId('bubble-contact').first();
     await bubble.click({ button: 'right' });
     await page.getByTestId('react-❤️').click();
     await expect(page.getByTestId('reaction-chips').first()).toContainText('❤️', { timeout: 10_000 });
+    // The menu closes on react — wait for it to be gone before re-opening.
+    await expect(page.getByTestId('react-row')).toBeHidden();
 
-    // Re-open the menu → the remove control is now offered → chip clears.
+    // Re-open the menu → the remove control is now offered → the chip element is
+    // removed entirely (ReactionChips renders nothing when there are no reactions).
     await bubble.click({ button: 'right' });
     await page.getByTestId('react-remove').click();
-    await expect(page.getByTestId('reaction-chips').first()).not.toContainText('❤️', { timeout: 10_000 });
+    await expect(page.getByTestId('reaction-chips')).toHaveCount(0, { timeout: 10_000 });
   });
 
   test('the media caps settings page loads and is editable (AC-12-23)', async ({ page }) => {

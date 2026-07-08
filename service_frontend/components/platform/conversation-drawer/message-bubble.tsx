@@ -250,30 +250,28 @@ export function MessageBubble({
       <ContextMenuContent data-testid="bubble-menu">
         {onReact && (
           <>
-            <div className="flex items-center gap-1 px-2 py-1.5" data-testid="react-row">
-              <SmilePlus className="mr-0.5 size-4 text-muted-foreground" />
+            <div className="flex items-center gap-0.5 px-1 py-0.5" data-testid="react-row">
+              <SmilePlus className="mx-1 size-4 shrink-0 text-muted-foreground" />
               {QUICK_EMOJIS.map((emoji) => (
-                <button
+                <ContextMenuItem
                   key={emoji}
-                  type="button"
-                  onClick={() => onReact(message, emoji)}
-                  className="rounded px-1 text-base leading-none hover:bg-muted"
+                  onSelect={() => onReact(message, emoji)}
+                  className="justify-center rounded px-1.5 py-1 text-base leading-none"
                   data-testid={`react-${emoji}`}
                   aria-label={`React ${emoji}`}
                 >
                   {emoji}
-                </button>
+                </ContextMenuItem>
               ))}
               {agentReacted && (
-                <button
-                  type="button"
-                  onClick={() => onReact(message, '')}
-                  className="ms-0.5 rounded p-1 text-muted-foreground hover:bg-muted"
+                <ContextMenuItem
+                  onSelect={() => onReact(message, '')}
+                  className="ms-0.5 justify-center rounded p-1 text-muted-foreground"
                   data-testid="react-remove"
                   aria-label="Remove reaction"
                 >
                   <X className="size-3.5" />
-                </button>
+                </ContextMenuItem>
               )}
             </div>
             <ContextMenuSeparator />

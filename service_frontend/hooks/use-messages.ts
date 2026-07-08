@@ -102,16 +102,24 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
         );
       } else if (event.type === 'contact.updated' && event.thread.id === contactId) {
         setThread(event.thread);
-      } else if (event.type === 'message.reaction' && event.contactId === contactId) {
+      } else if (
+        event.type === 'message.reaction' &&
+        event.contactId === contactId &&
+        // An AGENT reaction is applied optimistically by the acting client — its
+        // own WS echo would race that update (a late add re-applying after a
+        // remove), so only CONTACT reactions update live here. Cross-agent live
+        // reaction sync is a follow-up; another agent's reaction shows on reload.
+        event.reactorType === 'CONTACT'
+      ) {
         setMessages((prev) =>
           prev.map((m) => {
             if (m.id !== event.targetMessageId) return m;
-            const others = m.reactions.filter((r) => r.reactorType !== event.reactorType);
+            const others = m.reactions.filter((r) => r.reactorType !== 'CONTACT');
             return {
               ...m,
               reactions: event.removed
                 ? others
-                : [...others, { emoji: event.emoji, reactorType: event.reactorType, reactor: event.reactorType }],
+                : [...others, { emoji: event.emoji, reactorType: 'CONTACT', reactor: 'CONTACT' }],
             };
           }),
         );
@@ -302,7 +310,9 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
             const others = m.reactions.filter((r) => r.reactorType !== 'AGENT');
             return {
               ...m,
-              reactions: res.removed ? others : [...others, { emoji: res.emoji, reactorType: 'AGENT', reactor: 'AGENT' }],
+              reactions: res.removed
+                ? others
+                : [...others, { emoji: res.emoji, reactorType: 'AGENT' as const, reactor: 'AGENT' }],
             };
           }),
         );

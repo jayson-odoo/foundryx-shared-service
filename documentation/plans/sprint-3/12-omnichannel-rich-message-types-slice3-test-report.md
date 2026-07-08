@@ -11,8 +11,7 @@
 
 | Result | Count | AC ids |
 |---|---|---|
-| PASS | 6 | AC-12-19, 20, 21, 22, 23, 24 |
-| PARTIAL | 1 | AC-12-28 (E2E spec written; live-stack run pending) |
+| PASS | 7 | AC-12-19, 20, 21, 22, 23, 24, 28 |
 
 **Suites green after Slice 3 + reviewer fixes:**
 - Backend: full omnichannel module **164 passed** (`test_omnichannel_rich_messages` incl. reactions + templates + regression, `test_omnichannel_api_gateway`, `test_omnichannel_consumer_webhooks`, …).
@@ -59,8 +58,15 @@ Nit #2 (FE `reactor` field holds the reactor type) is cosmetic — chips don't r
 ### AC-12-24 — consumer webhook + docs finalized `[BE][FE]` — **PASS**
 - Standalone contract doc `12-omnichannel-consumer-webhook-contract.md` lists `message.inbound` (media+payload), `message.status`, `contact.updated`, `message.reaction`. Backlog carries the deferred set (BL-SS-010..013) + a cross-repo EMS-ticket handoff (BL-SS-015 — `dreamz_ems` can't be edited from this repo).
 
-### AC-12-28 — E2E rich-message journeys `[E2E]` — **PARTIAL**
-- Spec written: `e2e/omnichannel-rich.spec.ts` (real-click reaction add/remove chips + media-caps settings page), driving the seeded demo inbox. Inbound-simulation journeys (receive image / button reply / contact reaction) require POSTing a Meta webhook to the receiver and are documented for a follow-up API-driven run. **Live-stack run pending** (backend :8001 + built frontend :3001 + `seed_demo_conversations`); recorded here per the plan's E2E-consolidation note.
+### AC-12-28 — E2E rich-message journeys `[E2E]` — **PASS**
+- `e2e/omnichannel-rich.spec.ts` **run green against the live stack** (Next :3001 → FastAPI :8001 → Postgres `app_omnichannel`, `seed_demo_conversations` demo inbox on dev-cred `chn-demo`): **3/3 pass** —
+  - AC-12-20 react → 👍 chip appears on the bubble (right-click → quick-react palette).
+  - AC-12-19 remove reaction → the chip element is removed (assert `reaction-chips` `toHaveCount(0)`).
+  - AC-12-23 media-caps settings page loads + is editable.
+- Inbound-simulation journeys (receive image / button reply / contact reaction) require POSTing a Meta webhook to the receiver — documented for a follow-up API-driven run.
+- **Two fixes during the live run (product + test):**
+  1. **Product** — the quick-react palette used plain `<button>`s inside a Radix `ContextMenu`, which don't auto-close on select; the stale menu's overlay swallowed the next click. Switched to `ContextMenuItem` (auto-closes on `onSelect`). Also suppressed the acting client's own AGENT reaction WS echo (the add-echo raced the optimistic remove) — AGENT reactions are applied optimistically, CONTACT reactions sync live; cross-agent live sync = **BL-SS-016**.
+  2. **Test** — the remove assertion used `not.toContainText('❤️')` on `reaction-chips.first()`, but on removal the chip element is unmounted entirely, so the locator never resolves and the negative text assertion times out. Corrected to `expect(reaction-chips).toHaveCount(0)`.
 
 ---
 
@@ -73,4 +79,4 @@ Nit #2 (FE `reactor` field holds the reactor type) is cosmetic — chips don't r
 - No new permission — reactions/templates reuse `conversations.reply`, settings reuse `channels.manage`; no grant sweep. ✅
 - Security: every reaction/template query tenant-scoped; gateway reaction workspace-scoped (404 cross-workspace); template header media sniff-gated; reactions gate on the 24h CSW window; parity FE↔BE (`message.reaction` event, `reactions` field). ✅
 
-**Verdict:** Slice 3 AC-12-19…24 **PASS**; AC-12-28 spec written (live run pending). Reviewer APPROVED after the multi-agent-reaction fix. Plan 12 is feature-complete across all 3 slices.
+**Verdict:** Slice 3 AC-12-19…24 + AC-12-28 **PASS** (E2E 3/3 green on the live stack). Reviewer APPROVED after the multi-agent-reaction fix; two live-run fixes (Radix react-item auto-close + AGENT WS-echo suppression, and the removed-chip assertion) applied. Plan 12 is feature-complete across all 3 slices.
