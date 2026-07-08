@@ -14,11 +14,13 @@ import type {
   ConversationSocketEvent,
   ConversationThread,
   QuickReply,
+  ReactionResult,
   SendContactsInput,
   SendInteractiveInput,
   SendLocationInput,
   SendMediaInput,
   SendMessageInput,
+  SendTemplateInput,
   ThreadListQuery,
   ThreadPriority,
   ThreadStatus,
@@ -74,6 +76,31 @@ export const realConversationService: ConversationService = {
     });
   },
 
+  async sendTemplate(contactId, input: SendTemplateInput) {
+    const payload = {
+      messageType: 'TEMPLATE' as const,
+      templateId: input.templateId,
+      templateVariables: input.templateVariables,
+      templateHeaderVariables: input.templateHeaderVariables,
+      templateButtonVariables: input.templateButtonVariables,
+      replyToMessageId: input.replyToMessageId,
+    };
+    if (input.headerFile) {
+      // Multipart when a media header is attached (apiFetch skips JSON for FormData).
+      const form = new FormData();
+      form.append('payload', JSON.stringify(payload));
+      form.append('file', input.headerFile);
+      return apiFetch<ConversationMessage>(`/omnichannel/contacts/${contactId}/template`, {
+        method: 'POST',
+        body: form,
+      });
+    }
+    return apiFetch<ConversationMessage>(`/omnichannel/contacts/${contactId}/template`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
   async sendMedia(contactId, input: SendMediaInput) {
     // Multipart — apiFetch skips the JSON content-type for a FormData body.
     const form = new FormData();
@@ -117,6 +144,13 @@ export const realConversationService: ConversationService = {
       method: 'POST',
       body: JSON.stringify(input),
     });
+  },
+
+  async react(contactId, messageId, emoji) {
+    return apiFetch<ReactionResult>(
+      `/omnichannel/contacts/${contactId}/messages/${messageId}/react`,
+      { method: 'POST', body: JSON.stringify({ emoji }) },
+    );
   },
 
   async addInternalNote(contactId, body) {

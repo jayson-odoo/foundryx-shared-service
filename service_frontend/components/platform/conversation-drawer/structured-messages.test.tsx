@@ -34,6 +34,7 @@ const baseComposer = {
   isSending: false,
   sendError: null,
   onSend: vi.fn(async () => true),
+  onSendTemplate: vi.fn(async () => true),
 };
 
 function msg(over: Partial<ConversationMessage>): ConversationMessage {
@@ -42,6 +43,7 @@ function msg(over: Partial<ConversationMessage>): ConversationMessage {
     senderType: 'CONTACT', senderId: null, senderName: null,
     messageType: 'TEXT', body: null,
     mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false, payload: null,
+    reactions: [],
     externalMessageId: null, deliveryStatus: null, errorCode: null, errorMessage: null,
     replyTo: null, createdAt: '2026-07-07T10:00:00Z',
     ...over,

@@ -8,7 +8,7 @@
  * Copy link to message.
  */
 import { formatTime as formatTimeUtc } from '@/lib/datetime';
-import { AlertTriangle, Check, CheckCheck, Copy, Link2, Reply, StickyNote } from 'lucide-react';
+import { AlertTriangle, Check, CheckCheck, Copy, Link2, Reply, SmilePlus, StickyNote, X } from 'lucide-react';
 
 import {
   ContextMenu,
@@ -35,6 +35,42 @@ export interface MessageBubbleProps {
   highlight?: string;
   /** This bubble is the active search match (ring + scroll target). */
   isActiveMatch?: boolean;
+  /** React to this message with an emoji ('' removes the agent's reaction). */
+  onReact?: (message: ConversationMessage, emoji: string) => void;
+}
+
+/** Quick-react palette (WhatsApp's six). */
+const QUICK_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+
+/** Aggregated emoji → count chip row under a bubble. */
+function ReactionChips({
+  message,
+  align,
+}: {
+  message: ConversationMessage;
+  align: 'start' | 'end';
+}) {
+  if (message.reactions.length === 0) return null;
+  const counts = message.reactions.reduce<Record<string, number>>((acc, r) => {
+    acc[r.emoji] = (acc[r.emoji] ?? 0) + 1;
+    return acc;
+  }, {});
+  return (
+    <div
+      className={cn('mt-1 flex flex-wrap gap-1', align === 'end' ? 'justify-end' : 'justify-start')}
+      data-testid="reaction-chips"
+    >
+      {Object.entries(counts).map(([emoji, count]) => (
+        <span
+          key={emoji}
+          className="inline-flex items-center gap-0.5 rounded-full border bg-background px-1.5 py-0.5 text-xs shadow-xs"
+        >
+          <span>{emoji}</span>
+          {count > 1 && <span className="text-muted-foreground">{count}</span>}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 /** Split `text` on case-insensitive `term` occurrences and <mark> them. */
@@ -114,8 +150,10 @@ export function MessageBubble({
   formatTime = defaultFormatTime,
   highlight,
   isActiveMatch = false,
+  onReact,
 }: MessageBubbleProps) {
   const time = formatTime(message.createdAt);
+  const agentReacted = message.reactions.some((r) => r.reactorType === 'AGENT');
 
   if (message.senderType === 'SYSTEM') {
     // Internal note — visible to agents only, never sent to the contact.
@@ -205,10 +243,42 @@ export function MessageBubble({
                 {message.errorMessage}
               </p>
             )}
+            <ReactionChips message={message} align={isAgent ? 'end' : 'start'} />
           </div>
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent data-testid="bubble-menu">
+        {onReact && (
+          <>
+            <div className="flex items-center gap-1 px-2 py-1.5" data-testid="react-row">
+              <SmilePlus className="mr-0.5 size-4 text-muted-foreground" />
+              {QUICK_EMOJIS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => onReact(message, emoji)}
+                  className="rounded px-1 text-base leading-none hover:bg-muted"
+                  data-testid={`react-${emoji}`}
+                  aria-label={`React ${emoji}`}
+                >
+                  {emoji}
+                </button>
+              ))}
+              {agentReacted && (
+                <button
+                  type="button"
+                  onClick={() => onReact(message, '')}
+                  className="ms-0.5 rounded p-1 text-muted-foreground hover:bg-muted"
+                  data-testid="react-remove"
+                  aria-label="Remove reaction"
+                >
+                  <X className="size-3.5" />
+                </button>
+              )}
+            </div>
+            <ContextMenuSeparator />
+          </>
+        )}
         {onReply && (
           <>
             <ContextMenuItem onClick={() => onReply(message)} data-testid="menu-reply">

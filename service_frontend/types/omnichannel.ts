@@ -257,6 +257,8 @@ export interface ConversationMessage {
     | LocationPayload
     | ContactsPayload
     | null;
+  /** Emoji reaction chips on this message (plan 12 Slice 3). */
+  reactions: MessageReaction[];
   externalMessageId: string | null;
   deliveryStatus: DeliveryStatus | null;
   errorCode: string | null;
@@ -265,6 +267,16 @@ export interface ConversationMessage {
   replyTo: ReplyRef | null;
   createdAt: string; // ISO
 }
+
+/** One emoji reaction on a message (plan 12 Slice 3, AC-12-19/20). */
+export interface MessageReaction {
+  emoji: string;
+  reactorType: 'CONTACT' | 'AGENT';
+  reactor: string;
+}
+
+/** Header format of a template (drives which send input to show). */
+export type TemplateHeaderFormat = 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT';
 
 /** A synced (read-only) WhatsApp template — authoring lives in Meta (backlog). */
 export interface WhatsAppTemplate {
@@ -275,8 +287,14 @@ export interface WhatsAppTemplate {
   category: string | null;
   /** Approved body text with {{n}} placeholders (from components_json). */
   bodyText: string;
-  /** Number of {{n}} variables the body expects. */
+  /** Number of {{n}} variables the BODY expects. */
   variableCount: number;
+  /** Header format, if the template has a header (plan 12 Slice 3). */
+  headerFormat: TemplateHeaderFormat | null;
+  /** Number of {{n}} variables a TEXT header expects (0 for media/none). */
+  headerVariableCount: number;
+  /** Number of dynamic URL buttons that need a value at send time. */
+  buttonVariableCount: number;
   status: string | null; // APPROVED | PENDING | REJECTED (Meta-owned)
 }
 
@@ -304,6 +322,21 @@ export interface SendMediaInput {
   kind: MediaKind;
   file: File;
   caption?: string;
+  replyToMessageId?: string;
+}
+
+/** Send an approved template (plan 12 Slice 3, AC-12-22). Supplies BODY vars plus
+ *  optional TEXT-header vars, dynamic URL-button vars, and a header-media file. */
+export interface SendTemplateInput {
+  templateId: string;
+  /** BODY {{n}} values (positional). */
+  templateVariables?: string[];
+  /** TEXT-header {{n}} values (positional). */
+  templateHeaderVariables?: string[];
+  /** Dynamic URL-button values (in button order). */
+  templateButtonVariables?: string[];
+  /** Image/video/document header media (multipart when present). */
+  headerFile?: File | null;
   replyToMessageId?: string;
 }
 
@@ -396,4 +429,19 @@ export interface ThreadListQuery {
 export type ConversationSocketEvent =
   | { type: 'message.created'; message: ConversationMessage; thread: ConversationThread }
   | { type: 'message.status'; messageId: string; contactId: string; deliveryStatus: DeliveryStatus; errorMessage?: string }
-  | { type: 'contact.updated'; thread: ConversationThread };
+  | { type: 'contact.updated'; thread: ConversationThread }
+  | {
+      type: 'message.reaction';
+      targetMessageId: string;
+      contactId: string;
+      reactorType: 'CONTACT' | 'AGENT';
+      emoji: string;
+      removed: boolean;
+    };
+
+/** Result of an agent reaction (POST …/react). */
+export interface ReactionResult {
+  targetMessageId: string;
+  emoji: string;
+  removed: boolean;
+}

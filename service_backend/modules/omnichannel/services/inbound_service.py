@@ -82,6 +82,11 @@ class InboundService:
                     counters["statuses"] += 1
                 else:
                     counters["skipped"] += 1
+            elif event["kind"] == "reaction":
+                if self._handle_reaction(channel, event):
+                    counters["reactions"] = counters.get("reactions", 0) + 1
+                else:
+                    counters["skipped"] += 1
             elif event["kind"] in ("template_status", "template_quality", "template_category"):
                 # Template review/quality/category webhooks (plan 07 T6). Safe +
                 # idempotent; never crashes the pipeline.
@@ -229,6 +234,51 @@ class InboundService:
                 "message": message_payload,
                 "contact": thread.model_dump(mode="json"),
             },
+        )
+        return True
+
+    # ── Inbound reactions (plan 12 AC-12-19/20) ──────────────────────────────
+    def _handle_reaction(self, channel: Channel, event: Dict[str, Any]) -> bool:
+        """A contact reacted to one of our messages. Upsert (emoji) / delete
+        (empty emoji) keyed to the target message + reactor — never a bubble.
+        Unknown target wamid → drop + log."""
+        target_ext = event.get("target_external_id")
+        reactor = event.get("from")
+        if not target_ext or not reactor:
+            return False
+        target = self.repo.get_message_by_external_id(target_ext, channel.tenant_id)
+        if target is None:
+            logger.info(
+                "inbound reaction for unknown target %s (channel %s) dropped",
+                target_ext,
+                channel.id,
+            )
+            return False
+        contact = self.repo.get_by_id(target.contact_id, channel.tenant_id)
+        workspace_id = contact.workspace_id if contact is not None else None
+        # A reaction is a single emoji — clamp a garbage/oversize payload defensively.
+        emoji = (event.get("emoji") or "")[:32]
+        _, removed = self.repo.set_reaction(
+            target,
+            reactor_type="CONTACT",
+            reactor=reactor,
+            emoji=emoji,
+            workspace_id=workspace_id,
+        )
+        self.db.commit()
+
+        from . import reactions
+
+        reactions.emit_reaction(
+            self.db,
+            channel,
+            workspace_id=workspace_id,
+            contact_id=target.contact_id,
+            target_message_id=target.id,
+            reactor_type="CONTACT",
+            emoji=emoji,
+            removed=removed,
+            event_id=event.get("external_message_id") or f"{target.id}:{reactor}",
         )
         return True
 

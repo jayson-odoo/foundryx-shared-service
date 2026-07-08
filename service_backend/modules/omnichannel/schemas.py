@@ -211,6 +211,8 @@ class MessageItem(ApiModel):
     # Structured payload for interactive/interactive-reply/location/contacts
     # (plan 12 Slice 2) — the friendly definition the bubble renders.
     payload: Optional[dict] = None
+    # Emoji reaction chips (plan 12 Slice 3) — [{emoji, reactorType, reactor}].
+    reactions: List[dict] = []
     externalMessageId: Optional[str] = None
     deliveryStatus: Optional[str] = None  # QUEUED | SENT | DELIVERED | READ | FAILED
     errorCode: Optional[str] = None
@@ -258,7 +260,9 @@ class SendMessageRequest(ApiModel):
     messageType: str = "TEXT"  # TEXT | TEMPLATE
     body: Optional[str] = None
     templateId: Optional[str] = None
-    templateVariables: Optional[List[str]] = None
+    templateVariables: Optional[List[str]] = None  # BODY {{n}} values
+    templateHeaderVariables: Optional[List[str]] = None  # TEXT-header {{n}} values
+    templateButtonVariables: Optional[List[str]] = None  # dynamic URL-button values
     replyToMessageId: Optional[str] = None
 
 
@@ -282,7 +286,12 @@ class TemplateItem(ApiModel):
     language: Optional[str] = None
     category: Optional[str] = None
     bodyText: str
-    variableCount: int
+    variableCount: int  # BODY {{n}} count (back-compat)
+    # Rich-header/button metadata (plan 12 Slice 3) — drives the send dialog's
+    # inputs so it asks for ONLY what a given template needs.
+    headerFormat: Optional[str] = None  # None | TEXT | IMAGE | VIDEO | DOCUMENT
+    headerVariableCount: int = 0  # TEXT-header {{n}} count
+    buttonVariableCount: int = 0  # dynamic URL-button count
     status: Optional[str] = None
 
 
@@ -360,10 +369,15 @@ class PublicMediaBody(ApiModel):
     filename: Optional[str] = None
 
 
+class PublicReactionBody(ApiModel):
+    messageId: str  # OUR durable message id (never a raw wamid — AC-12-21)
+    emoji: str = ""  # empty removes
+
+
 class PublicSendRequest(ApiModel):
     to: str
     # text | template | image | video | audio | voice | document | sticker |
-    # interactive | location | contacts (reaction lands in Slice 3)
+    # interactive | location | contacts | reaction
     type: str = "text"
     text: Optional[PublicTextBody] = None
     template: Optional[PublicTemplateBody] = None
@@ -372,6 +386,8 @@ class PublicSendRequest(ApiModel):
     interactive: Optional[dict] = None
     location: Optional[dict] = None
     contacts: Optional[List[dict]] = None
+    # Reaction (plan 12 Slice 3) — targets OUR durable id.
+    reaction: Optional[PublicReactionBody] = None
 
 
 class PublicSendResponse(ApiModel):

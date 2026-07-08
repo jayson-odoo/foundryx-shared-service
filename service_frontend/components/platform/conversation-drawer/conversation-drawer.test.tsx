@@ -6,7 +6,12 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ConversationMessage, QuickReply, WhatsAppTemplate } from '@/types/omnichannel';
+import type {
+  ConversationMessage,
+  QuickReply,
+  SendTemplateInput,
+  WhatsAppTemplate,
+} from '@/types/omnichannel';
 
 import { Composer } from './composer';
 import { ConversationDrawer, dayLabel } from './conversation-drawer';
@@ -38,6 +43,7 @@ function msg(over: Partial<ConversationMessage> = {}): ConversationMessage {
     messageType: 'TEXT',
     body: 'Hello there',
     mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false, payload: null,
+    reactions: [],
     externalMessageId: null,
     deliveryStatus: null,
     errorCode: null,
@@ -53,6 +59,19 @@ const TEMPLATES: WhatsAppTemplate[] = [
     id: 'tpl-1', channelId: 'chn-001', name: 'booking_update', language: 'en',
     category: 'UTILITY', status: 'APPROVED',
     bodyText: 'Hi {{1}}, update: {{2}}.', variableCount: 2,
+    headerFormat: null, headerVariableCount: 0, buttonVariableCount: 0,
+  },
+  {
+    id: 'tpl-2', channelId: 'chn-001', name: 'order_shipped', language: 'en',
+    category: 'UTILITY', status: 'APPROVED',
+    bodyText: 'Hi {{1}}, your order is on its way.', variableCount: 1,
+    headerFormat: 'TEXT', headerVariableCount: 1, buttonVariableCount: 1,
+  },
+  {
+    id: 'tpl-3', channelId: 'chn-001', name: 'venue_promo', language: 'en',
+    category: 'MARKETING', status: 'APPROVED',
+    bodyText: 'Big news {{1}}!', variableCount: 1,
+    headerFormat: 'IMAGE', headerVariableCount: 0, buttonVariableCount: 0,
   },
 ];
 const QUICK: QuickReply[] = [
@@ -112,6 +131,7 @@ describe('Composer — CSW lock (decision 14)', () => {
     isSending: false,
     sendError: null,
     onSend: vi.fn(async () => true),
+    onSendTemplate: vi.fn(async () => true),
   };
 
   it('free-form enabled while the window is open', () => {
@@ -131,9 +151,9 @@ describe('Composer — CSW lock (decision 14)', () => {
   });
 
   it('template send requires every variable, then sends', async () => {
-    const onSend = vi.fn(async () => true);
+    const onSendTemplate = vi.fn(async () => true);
     const user = userEvent.setup();
-    render(<Composer {...base} onSend={onSend} windowOpen={false} />);
+    render(<Composer {...base} onSendTemplate={onSendTemplate} windowOpen={false} />);
 
     await user.click(screen.getByTestId('csw-pick-template'));
     await user.click(screen.getByRole('combobox', { name: 'Template' }));
@@ -145,11 +165,70 @@ describe('Composer — CSW lock (decision 14)', () => {
     expect(screen.getByTestId('template-preview')).toHaveTextContent('Hi Marcus, update: slot moved.');
 
     await user.click(screen.getByTestId('template-send'));
-    expect(onSend).toHaveBeenCalledWith({
-      messageType: 'TEMPLATE',
+    expect(onSendTemplate).toHaveBeenCalledWith({
       templateId: 'tpl-1',
       templateVariables: ['Marcus', 'slot moved'],
+      templateHeaderVariables: undefined,
+      templateButtonVariables: undefined,
+      headerFile: undefined,
     });
+  });
+
+  it('template with a TEXT-header var + URL-button var shows those inputs and passes them (AC-12-22)', async () => {
+    const onSendTemplate = vi.fn(async () => true);
+    const user = userEvent.setup();
+    render(<Composer {...base} onSendTemplate={onSendTemplate} windowOpen={false} />);
+
+    await user.click(screen.getByTestId('csw-pick-template'));
+    await user.click(screen.getByRole('combobox', { name: 'Template' }));
+    await user.click(await screen.findByRole('option', { name: /order_shipped/ }));
+
+    // Header-var + body-var + button-var inputs are all present; no media input.
+    expect(screen.getByTestId('template-header-var-1')).toBeInTheDocument();
+    expect(screen.getByTestId('template-var-1')).toBeInTheDocument();
+    expect(screen.getByTestId('template-button-var-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('template-header-file')).not.toBeInTheDocument();
+    expect(screen.getByTestId('template-send')).toBeDisabled();
+
+    await user.type(screen.getByTestId('template-header-var-1'), 'Sarah');
+    await user.type(screen.getByTestId('template-var-1'), 'Sarah');
+    await user.type(screen.getByTestId('template-button-var-1'), 'abc123');
+    await user.click(screen.getByTestId('template-send'));
+
+    expect(onSendTemplate).toHaveBeenCalledWith({
+      templateId: 'tpl-2',
+      templateVariables: ['Sarah'],
+      templateHeaderVariables: ['Sarah'],
+      templateButtonVariables: ['abc123'],
+      headerFile: undefined,
+    });
+  });
+
+  it('template with a media header shows a file input and requires it (AC-12-22)', async () => {
+    const onSendTemplate = vi.fn(async () => true);
+    const user = userEvent.setup();
+    render(<Composer {...base} onSendTemplate={onSendTemplate} windowOpen={false} />);
+
+    await user.click(screen.getByTestId('csw-pick-template'));
+    await user.click(screen.getByRole('combobox', { name: 'Template' }));
+    await user.click(await screen.findByRole('option', { name: /venue_promo/ }));
+
+    const fileInput = screen.getByTestId('template-header-file');
+    expect(fileInput).toBeInTheDocument();
+    expect(screen.queryByTestId('template-header-var-1')).not.toBeInTheDocument();
+
+    // Body var filled but no file yet → still blocked (media header is required).
+    await user.type(screen.getByTestId('template-var-1'), 'everyone');
+    expect(screen.getByTestId('template-send')).toBeDisabled();
+
+    await user.upload(fileInput, new File(['x'], 'promo.png', { type: 'image/png' }));
+    await user.click(screen.getByTestId('template-send'));
+
+    expect(onSendTemplate).toHaveBeenCalledTimes(1);
+    const arg = (onSendTemplate.mock.calls[0] as unknown as [SendTemplateInput])[0];
+    expect(arg.templateId).toBe('tpl-3');
+    expect(arg.templateVariables).toEqual(['everyone']);
+    expect(arg.headerFile).toBeInstanceOf(File);
   });
 
   it('sends free-form on Enter', async () => {

@@ -44,6 +44,12 @@ CSW_CLOSED_MESSAGE = (
     "The 24-hour window has closed — send an approved template to re-engage."
 )
 
+# All agents react as the ONE business number (Meta stores one reaction per
+# direction) — a single reactor identity keeps our mirror matching Meta.
+AGENT_REACTOR = "agent"
+# A WhatsApp reaction is a single emoji (possibly a ZWJ sequence); cap defensively.
+MAX_EMOJI_LEN = 32
+
 
 def _window_open(contact: Contact, now: Optional[datetime] = None) -> bool:
     if contact.csw_expires_at is None:
@@ -176,6 +182,9 @@ class MessageService:
         tenant_id: str,
         actor_user_id: str,
         payload: SendMessageRequest,
+        *,
+        header_content: Optional[bytes] = None,
+        header_filename: Optional[str] = None,
     ) -> MessageItem:
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
@@ -185,6 +194,8 @@ class MessageService:
 
         message_type = (payload.messageType or "TEXT").upper()
         payload_json: Optional[Dict[str, Any]] = None
+        media_key = media_mime = media_filename = None
+        media_size: Optional[int] = None
         if message_type == "TEMPLATE":
             tpl = (
                 self.db.query(WhatsappTemplate)
@@ -198,31 +209,68 @@ class MessageService:
                 raise SendRejected("Template not found.")
             if (tpl.status or "").upper() != "APPROVED":
                 raise SendRejected("Template is not approved.")
-            body_text = template_body_text(tpl.components_json)
-            variables = payload.templateVariables or []
-            # Meta rejects a parameter-count mismatch — validate before queueing.
-            expected = template_variable_count(body_text)
-            if len(variables) != expected:
-                raise SendRejected(
-                    f"This template needs {expected} variable(s); {len(variables)} provided."
+            from .template_send import (
+                analyze_template,
+                build_send_components,
+                validate_template_params,
+                TemplateParamError,
+            )
+
+            shape = analyze_template(tpl.components_json)
+            header_vars = payload.templateHeaderVariables or []
+            body_vars = payload.templateVariables or []
+            button_vars = payload.templateButtonVariables or []
+            # Meta rejects a parameter-count mismatch on ANY of header/body/button —
+            # validate before queueing (extends the old body-only rule).
+            try:
+                validate_template_params(
+                    shape,
+                    header_text_vars=header_vars,
+                    body_vars=body_vars,
+                    button_vars=button_vars,
+                    has_header_media=bool(header_content),
                 )
-            body = fill_template(body_text, variables)
-            payload_json = {
-                "template": {
-                    "name": tpl.name,
-                    "language": tpl.language,
-                    "components": (
-                        [
-                            {
-                                "type": "body",
-                                "parameters": [{"type": "text", "text": v} for v in variables],
-                            }
-                        ]
-                        if variables
-                        else None
-                    ),
-                }
+            except TemplateParamError as exc:
+                raise SendRejected(str(exc)) from exc
+
+            header_media: Optional[Dict[str, Any]] = None
+            if shape.has_media_header:
+                # Header media rides the SAME upload-by-id pipeline as every other
+                # outbound media: sniff-gate + cap-check + store, then send_runner
+                # uploads it + injects the id. Templates are exempt from the 24h
+                # CSW, so no window guard here.
+                max_bytes = MediaSettingsService(self.db).max_bytes_for(
+                    tenant_id, contact.workspace_id, shape.header_format
+                )
+                sniffed = sniff_and_validate(
+                    shape.header_format, header_content, filename=header_filename, max_bytes=max_bytes
+                )
+                from app.services.storage import storage_for_tenant
+
+                media_key = storage_for_tenant(self.db, tenant_id).save(
+                    f"omnichannel/{tenant_id}/template-header", sniffed.content, sniffed.mime
+                )
+                media_mime = sniffed.mime
+                media_size = sniffed.size
+                media_filename = header_filename
+                header_media = {"kind": shape.header_format.lower()}
+
+            components = build_send_components(
+                tpl.components_json,
+                header_text_vars=header_vars,
+                body_vars=body_vars,
+                button_vars=button_vars,
+                header_media_id=None,  # injected at send time by send_runner
+            )
+            body = fill_template(template_body_text(tpl.components_json), body_vars)
+            template_payload: Dict[str, Any] = {
+                "name": tpl.name,
+                "language": tpl.language,
+                "components": components or None,
             }
+            if header_media is not None:
+                template_payload["headerMedia"] = header_media
+            payload_json = {"template": template_payload}
         else:
             message_type = "TEXT"
             # Backend-enforced CSW (decision 14): free-form only inside 24h.
@@ -242,6 +290,10 @@ class MessageService:
             message_type=message_type,
             body=body,
             payload_json=payload_json,
+            media_key=media_key,
+            media_mime=media_mime,
+            media_filename=media_filename,
+            media_size=media_size,
             delivery_status="QUEUED",
             metadata_json=metadata,
             created_at=now,  # µs precision — keeps rapid messages ordered
@@ -474,6 +526,82 @@ class MessageService:
             reply_to_message_id=reply_to_message_id,
         )
 
+    # ── Reactions (plan 12 Slice 3 — AC-12-19/20/21) ────────────────────────
+    def react(
+        self,
+        message_id: str,
+        tenant_id: str,
+        actor_user_id: str,
+        *,
+        emoji: Optional[str],
+        expected_contact_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """An agent reacts to a message by our DURABLE id (never a raw wamid).
+        Sends the reaction to Meta, upserts our row (empty emoji removes), and
+        fans WS + consumer-webhook events. Returns ``{targetMessageId, emoji,
+        removed}``."""
+        target = self.repo.get_message(message_id, tenant_id)
+        if target is None:
+            raise ThreadNotFound()
+        # The message must belong to the thread named in the path (defence in depth).
+        if expected_contact_id is not None and target.contact_id != expected_contact_id:
+            raise ThreadNotFound()
+        contact = self.repo.get_by_id(target.contact_id, tenant_id)
+        if contact is None:
+            raise ThreadNotFound()
+        channel = self._channel_for_contact(contact)
+        # Reactions are free-form → the 24h window applies (Meta rule, AC-12-25).
+        if not _window_open(contact):
+            raise SendRejected(CSW_CLOSED_MESSAGE)
+        if not target.external_message_id:
+            raise SendRejected("This message hasn't been delivered yet — can't react to it.")
+
+        clean = (emoji or "").strip()
+        if len(clean) > MAX_EMOJI_LEN:
+            raise SendRejected("That doesn't look like an emoji reaction.")
+        credentials = decrypt_credentials(channel.credentials_json)
+        adapter = get_adapter(channel.channel_type)
+        from ..adapters.base import SendError
+
+        try:
+            adapter.send(
+                credentials,
+                channel.phone_number_id or "",
+                "".join(ch for ch in (contact.phone or "") if ch.isdigit()),
+                reaction={"message_id": target.external_message_id, "emoji": clean},
+            )
+        except SendError as exc:
+            raise SendRejected(str(exc)) from exc
+
+        # Meta stores ONE reaction per direction — every agent reacts as the same
+        # business number, so a later agent's emoji OVERWRITES the earlier one at
+        # Meta. Key AGENT reactions by a single business identity (not the actor)
+        # so our mirror matches: agent B replaces agent A's row, one agent chip.
+        _, removed = self.repo.set_reaction(
+            target,
+            reactor_type="AGENT",
+            reactor=AGENT_REACTOR,
+            emoji=clean,
+            workspace_id=contact.workspace_id,
+        )
+        self.db.commit()
+
+        now = datetime.now(timezone.utc)
+        from . import reactions
+
+        reactions.emit_reaction(
+            self.db,
+            channel,
+            workspace_id=contact.workspace_id,
+            contact_id=target.contact_id,
+            target_message_id=target.id,
+            reactor_type="AGENT",
+            emoji=clean,
+            removed=removed,
+            event_id=f"{target.id}:{AGENT_REACTOR}:{now.timestamp()}",
+        )
+        return {"targetMessageId": target.id, "emoji": clean, "removed": removed}
+
     # ── Internal notes (SYSTEM bubbles — never sent to the contact) ─────────
     def add_internal_note(
         self, contact_id: str, tenant_id: str, actor_user_id: str, body: str
@@ -534,7 +662,10 @@ class MessageService:
         return [self._template_item(t) for t in rows]
 
     def _template_item(self, t: WhatsappTemplate) -> TemplateItem:
+        from .template_send import analyze_template
+
         body = template_body_text(t.components_json)
+        shape = analyze_template(t.components_json)
         return TemplateItem(
             id=t.id,
             channelId=t.channel_id,
@@ -542,7 +673,10 @@ class MessageService:
             language=t.language,
             category=t.category,
             bodyText=body,
-            variableCount=template_variable_count(body),
+            variableCount=shape.body_var_count,
+            headerFormat=shape.header_format,
+            headerVariableCount=shape.header_text_var_count,
+            buttonVariableCount=shape.button_url_var_count,
             status=t.status,
         )
 

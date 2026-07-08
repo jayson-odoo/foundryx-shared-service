@@ -38,6 +38,7 @@ function mediaMsg(over: Partial<ConversationMessage> = {}): ConversationMessage 
     messageType: 'IMAGE', body: null,
     mediaUrl: '/omnichannel/media/m1', mediaMime: 'image/png',
     mediaFilename: 'pic.png', mediaSize: 2048, voice: false, payload: null,
+    reactions: [],
     externalMessageId: null, deliveryStatus: null, errorCode: null, errorMessage: null,
     replyTo: null, createdAt: '2026-07-07T10:00:00Z',
     ...over,
@@ -51,6 +52,7 @@ const baseComposer = {
   isSending: false,
   sendError: null,
   onSend: vi.fn(async () => true),
+  onSendTemplate: vi.fn(async () => true),
 };
 
 describe('Composer — attach + emoji (plan 12)', () => {

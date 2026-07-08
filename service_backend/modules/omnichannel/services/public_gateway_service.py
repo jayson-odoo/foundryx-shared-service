@@ -180,9 +180,7 @@ class PublicGatewayService:
         elif msg_type in ("interactive", "location", "contacts"):
             return self._send_structured(tenant_id, workspace_id, key_id, msg_type, req)
         elif msg_type == "reaction":
-            raise ApiError(
-                400, "unsupported_type", f"Message type '{msg_type}' is not supported yet."
-            )
+            return self._send_reaction(tenant_id, workspace_id, key_id, req)
         else:
             raise ApiError(400, "unsupported_type", f"Unknown message type '{msg_type}'.")
 
@@ -319,6 +317,31 @@ class PublicGatewayService:
                 raise ApiError(409, "csw_window_closed", exc.message) from exc
             raise ApiError(422, "invalid_request", exc.message) from exc
         return item.id
+
+    # ── Reaction send (targets OUR durable id — AC-12-21) ─────────────────────
+    def _send_reaction(
+        self, tenant_id: str, workspace_id: str, key_id: str, req: PublicSendRequest
+    ) -> str:
+        if not req.reaction or not (req.reaction.messageId or "").strip():
+            raise ApiError(422, "invalid_request", "reaction.messageId is required.")
+        # Resolve OUR durable id → message, scoped to this key's tenant AND
+        # workspace (a key can never react on another workspace's thread).
+        target = self.messages.repo.get_message(req.reaction.messageId, tenant_id)
+        if target is None:
+            raise ApiError(404, "not_found", "Message not found.")
+        contact = self.messages.repo.get_by_id(target.contact_id, tenant_id)
+        if contact is None or contact.workspace_id != workspace_id:
+            raise ApiError(404, "not_found", "Message not found.")
+        actor = f"apikey:{key_id}"
+        try:
+            self.messages.react(
+                req.reaction.messageId, tenant_id, actor, emoji=req.reaction.emoji
+            )
+        except SendRejected as exc:
+            if exc.message == CSW_CLOSED_MESSAGE:
+                raise ApiError(409, "csw_window_closed", exc.message) from exc
+            raise ApiError(422, "invalid_request", exc.message) from exc
+        return target.id
 
     # ── Multipart media send (file part) ──────────────────────────────────────
     def send_multipart(

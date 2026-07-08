@@ -97,6 +97,7 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
   const onEvent = useCallback(
     (event: ConversationSocketEvent) => {
       if (event.type === 'message.status') return; // tick updates live in the drawer
+      if (event.type === 'message.reaction') return; // chips update in the drawer, not the list
       if (isFiltered) {
         load();
         return;

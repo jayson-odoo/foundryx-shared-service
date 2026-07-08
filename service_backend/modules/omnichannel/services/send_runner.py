@@ -125,7 +125,17 @@ def run_send(db: Session, message_id: str) -> str:
 
     try:
         if row.message_type == "TEMPLATE":
-            template = (row.payload_json or {}).get("template")
+            template = (row.payload_json or {}).get("template") or {}
+            # A media header rides row.media_key → upload it + inject the id into
+            # the built HEADER component before sending (upload-by-id contract).
+            if template.get("headerMedia") and row.media_key:
+                from .template_send import inject_header_media_id
+
+                content = _read_media(db, row.tenant_id, row.media_key)
+                media_id = adapter.upload_media(
+                    credentials, phone_id, content, row.media_mime or "application/octet-stream"
+                )
+                inject_header_media_id(template, media_id)
             result = adapter.send(
                 credentials, phone_id, to, template=template, context_message_id=context_id
             )

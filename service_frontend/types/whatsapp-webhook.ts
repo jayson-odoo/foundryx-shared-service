@@ -9,7 +9,11 @@
  */
 
 /** The three event kinds an endpoint may subscribe to. */
-export type WebhookEventType = 'message.inbound' | 'message.status' | 'contact.updated';
+export type WebhookEventType =
+  | 'message.inbound'
+  | 'message.status'
+  | 'contact.updated'
+  | 'message.reaction';
 
 /** Endpoint lifecycle — AUTO_DISABLED = the delivery pipeline gave up after repeated failures. */
 export type WebhookStatus = 'ACTIVE' | 'DISABLED' | 'AUTO_DISABLED';

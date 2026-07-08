@@ -243,11 +243,11 @@ def test_unsupported_type(client, session_factory):
     ws = _default_workspace_id(session_factory)
     _seed_channel(session_factory, ws)
     key = _mint(client, ws).json()["fullKey"]
-    # interactive/location/contacts are supported since plan 12 Slice 2; reaction
-    # (Slice 3) is still unsupported → the stable typed error.
+    # interactive/location/contacts/reaction are supported since plan 12
+    # Slices 2/3; a genuinely unknown type → the stable typed error.
     r = client.post(
         "/api/v1/omnichannel/messages",
-        json={"to": "+60123", "type": "reaction"},
+        json={"to": "+60123", "type": "carousel"},
         headers={"Authorization": f"Bearer {key}"},
     )
     assert r.status_code == 400

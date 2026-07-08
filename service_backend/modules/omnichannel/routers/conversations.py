@@ -160,6 +160,63 @@ def send_message(
         raise HTTPException(status_code=422, detail=exc.message)
 
 
+@router.post("/{contact_id}/template", response_model=MessageItem, status_code=201)
+async def send_template(
+    contact_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission("conversations.reply")),
+    actor_user_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> MessageItem:
+    """Send an approved template — accepts JSON (the SendMessageRequest fields) OR
+    multipart (a ``payload`` JSON part + an optional ``file`` header-media part).
+    Handles TEXT-header / body / URL-button variables + image/video/document
+    header media (AC-12-22). The header-less/text path also works via
+    ``POST /{contact_id}/messages``."""
+    header_content: Optional[bytes] = None
+    header_filename: Optional[str] = None
+    if request.headers.get("content-type", "").startswith("multipart/"):
+        form = await request.form()
+        raw = form.get("payload")
+        upload = form.get("file")
+        if raw is None:
+            raise HTTPException(status_code=422, detail="A payload part is required.")
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail="payload must be valid JSON.")
+        if upload is not None:
+            header_content = await upload.read(_MEDIA_HARD_CAP)
+            header_filename = getattr(upload, "filename", None)
+    else:
+        try:
+            data = await request.json()
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail="Request body must be valid JSON.")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=422, detail="Invalid template request.")
+    data.setdefault("messageType", "TEMPLATE")
+    try:
+        payload = SendMessageRequest(**data)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Invalid template request.")
+    try:
+        return MessageService(db).send_message(
+            contact_id,
+            current_user.tenant_id,
+            actor_user_id,
+            payload,
+            header_content=header_content,
+            header_filename=header_filename,
+        )
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except MediaRejected as exc:
+        raise HTTPException(status_code=422, detail=exc.message)
+    except SendRejected as exc:
+        raise HTTPException(status_code=422, detail=exc.message)
+
+
 @router.post("/{contact_id}/media", response_model=MessageItem, status_code=201)
 async def send_message_media(
     contact_id: str,
@@ -291,6 +348,41 @@ def send_contacts(
         raise HTTPException(status_code=404, detail="Conversation not found")
     except SendRejected as exc:
         raise HTTPException(status_code=422, detail=exc.message)
+
+
+class ReactRequest(BaseModel):
+    emoji: str = ""  # empty removes the agent's reaction
+
+
+class ReactionResult(BaseModel):
+    targetMessageId: str
+    emoji: str
+    removed: bool
+
+
+@router.post("/{contact_id}/messages/{message_id}/react", response_model=ReactionResult)
+def react_to_message(
+    contact_id: str,
+    message_id: str,
+    payload: ReactRequest,
+    current_user: User = Depends(require_permission("conversations.reply")),
+    actor_user_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> ReactionResult:
+    """React (emoji) to a message by our durable id — empty emoji removes."""
+    try:
+        result = MessageService(db).react(
+            message_id,
+            current_user.tenant_id,
+            actor_user_id,
+            emoji=payload.emoji,
+            expected_contact_id=contact_id,
+        )
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Message not found")
+    except SendRejected as exc:
+        raise HTTPException(status_code=422, detail=exc.message)
+    return ReactionResult(**result)
 
 
 class NoteRequest(BaseModel):

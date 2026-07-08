@@ -1172,3 +1172,464 @@ def test_build_meta_interactive_shapes():
         media_id="MID",
     )
     assert img["header"] == {"type": "image", "image": {"id": "MID"}}
+
+
+# ── AC-12-19/20/21 reactions ─────────────────────────────────────────────────
+def _seed_message(session_factory, contact_id, external_id, sender_type="CONTACT"):
+    from modules.omnichannel.models import ConversationMessage
+
+    db = session_factory()
+    row = ConversationMessage(
+        tenant_id=DEFAULT_TENANT_ID,
+        contact_id=contact_id,
+        sender_type=sender_type,
+        message_type="TEXT",
+        body="hi",
+        external_message_id=external_id,
+        delivery_status="DELIVERED",
+    )
+    db.add(row)
+    db.commit()
+    mid = row.id
+    db.close()
+    return mid
+
+
+def _reactions_count(session_factory):
+    from modules.omnichannel.models import MessageReaction
+
+    db = session_factory()
+    n = db.query(MessageReaction).count()
+    db.close()
+    return n
+
+
+def test_inbound_reaction_upserts_never_a_bubble(session_factory):
+    from modules.omnichannel.models import ConversationMessage
+    from modules.omnichannel.services.inbound_service import InboundService
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws, phone_number_id="pn-rx")
+    cid = _seed_contact(session_factory, ws, phone="+60123456900")
+    mid = _seed_message(session_factory, cid, "wamid.tgt1", sender_type="AGENT")
+
+    db = session_factory()
+    res = InboundService(db).process_payload(
+        "pn-rx",
+        _inbound_msg(
+            "pn-rx",
+            {"id": "wamid.rx1", "type": "reaction", "reaction": {"message_id": "wamid.tgt1", "emoji": "👍"}},
+            wa_from="60123456900",
+        ),
+    )
+    db.close()
+    assert res.get("reactions") == 1
+    # No REACTION message bubble stored.
+    db = session_factory()
+    bubbles = db.query(ConversationMessage).filter(ConversationMessage.message_type == "REACTION").count()
+    db.close()
+    assert bubbles == 0
+    assert _reactions_count(session_factory) == 1
+
+    # The chip rides the message wire.
+    from modules.omnichannel.services.conversation_service import ConversationService
+
+    db = session_factory()
+    items = ConversationService(db).list_messages(cid, DEFAULT_TENANT_ID)
+    db.close()
+    target = next(i for i in items if i.id == mid)
+    assert target.reactions and target.reactions[0]["emoji"] == "👍"
+
+    # Empty emoji removes.
+    db = session_factory()
+    InboundService(db).process_payload(
+        "pn-rx",
+        _inbound_msg(
+            "pn-rx",
+            {"id": "wamid.rx2", "type": "reaction", "reaction": {"message_id": "wamid.tgt1", "emoji": ""}},
+            wa_from="60123456900",
+        ),
+    )
+    db.close()
+    assert _reactions_count(session_factory) == 0
+
+
+def test_inbound_reaction_unknown_target_dropped(session_factory):
+    from modules.omnichannel.services.inbound_service import InboundService
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws, phone_number_id="pn-rx2")
+    _seed_contact(session_factory, ws, phone="+60123456901")
+    db = session_factory()
+    res = InboundService(db).process_payload(
+        "pn-rx2",
+        _inbound_msg(
+            "pn-rx2",
+            {"id": "wamid.rx3", "type": "reaction", "reaction": {"message_id": "wamid.nope", "emoji": "❤️"}},
+            wa_from="60123456901",
+        ),
+    )
+    db.close()
+    assert res.get("reactions", 0) == 0
+    assert res["skipped"] >= 1
+    assert _reactions_count(session_factory) == 0
+
+
+def test_agent_react_endpoint_and_wire(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws, phone_number_id="pn-rx3")
+    cid = _seed_contact(session_factory, ws, phone="+60123456902")
+    mid = _seed_message(session_factory, cid, "wamid.tgt2")
+
+    r = client.post(
+        f"/omnichannel/contacts/{cid}/messages/{mid}/react",
+        json={"emoji": "🎉"},
+        headers=_auth(client),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["removed"] is False
+    assert _reactions_count(session_factory) == 1
+
+    msgs = client.get(f"/omnichannel/contacts/{cid}/messages", headers=_auth(client)).json()
+    target = next(m for m in msgs if m["id"] == mid)
+    assert target["reactions"][0]["emoji"] == "🎉"
+
+    # Re-react empty removes.
+    r2 = client.post(
+        f"/omnichannel/contacts/{cid}/messages/{mid}/react",
+        json={"emoji": ""},
+        headers=_auth(client),
+    )
+    assert r2.status_code == 200
+    assert r2.json()["removed"] is True
+    assert _reactions_count(session_factory) == 0
+
+
+def test_agent_react_single_business_identity(session_factory):
+    """Two DIFFERENT agents reacting on the same message keep ONE row — Meta
+    stores one reaction per direction, so agent B overwrites agent A (reviewer)."""
+    from modules.omnichannel.services.message_service import MessageService
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws, phone_number_id="pn-rx8")
+    cid = _seed_contact(session_factory, ws, phone="+60123456907")
+    mid = _seed_message(session_factory, cid, "wamid.tgt7")
+
+    db = session_factory()
+    MessageService(db).react(mid, DEFAULT_TENANT_ID, "usr-agent-a", emoji="👍")
+    db.close()
+    db = session_factory()
+    MessageService(db).react(mid, DEFAULT_TENANT_ID, "usr-agent-b", emoji="❤️")
+    db.close()
+
+    from modules.omnichannel.models import MessageReaction
+
+    db = session_factory()
+    rows = db.query(MessageReaction).filter(MessageReaction.target_message_id == mid).all()
+    db.close()
+    assert len(rows) == 1  # one agent chip, not two
+    assert rows[0].emoji == "❤️"  # the later react wins
+
+
+def test_agent_react_closed_window_409_via_422(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws, phone_number_id="pn-rx4")
+    cid = _seed_contact(session_factory, ws, phone="+60123456903", open_window=False)
+    mid = _seed_message(session_factory, cid, "wamid.tgt3")
+    r = client.post(
+        f"/omnichannel/contacts/{cid}/messages/{mid}/react",
+        json={"emoji": "👍"},
+        headers=_auth(client),
+    )
+    assert r.status_code == 422  # CSW closed
+
+
+def test_reaction_ws_publish(client, session_factory, monkeypatch):
+    from modules.omnichannel.services import realtime
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws, phone_number_id="pn-rx5")
+    cid = _seed_contact(session_factory, ws, phone="+60123456904")
+    mid = _seed_message(session_factory, cid, "wamid.tgt4")
+    published: list = []
+    monkeypatch.setattr(realtime, "publish", lambda wsid, ev: published.append(ev))
+    client.post(
+        f"/omnichannel/contacts/{cid}/messages/{mid}/react",
+        json={"emoji": "🔥"},
+        headers=_auth(client),
+    )
+    assert any(e.get("type") == "message.reaction" and e.get("emoji") == "🔥" for e in published)
+
+
+def test_gateway_reaction_durable_id(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws, phone_number_id="pn-rx6")
+    cid = _seed_contact(session_factory, ws, phone="+60123456905")
+    mid = _seed_message(session_factory, cid, "wamid.tgt5")
+    key = _mint_key(client, ws)
+    res = client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": "+60123456905", "type": "reaction", "reaction": {"messageId": mid, "emoji": "😀"}},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert res.status_code == 202, res.text
+    assert _reactions_count(session_factory) == 1
+
+
+def _seed_second_workspace(session_factory):
+    from modules.omnichannel.models import Workspace
+
+    db = session_factory()
+    ws = Workspace(tenant_id=DEFAULT_TENANT_ID, name="Second RX", is_default=False)
+    db.add(ws)
+    db.commit()
+    wid = ws.id
+    db.close()
+    return wid
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AC-12-22 — template media/button headers at send
+# ══════════════════════════════════════════════════════════════════════════════
+def _seed_template(session_factory, channel_id, components, name="tpl_rich", status="APPROVED"):
+    from modules.omnichannel.models import WhatsappTemplate
+
+    db = session_factory()
+    t = WhatsappTemplate(
+        tenant_id=DEFAULT_TENANT_ID,
+        channel_id=channel_id,
+        name=name,
+        language="en",
+        category="UTILITY",
+        status=status,
+        components_json=components,
+    )
+    db.add(t)
+    db.commit()
+    tid = t.id
+    db.close()
+    return tid
+
+
+_TEXT_HEADER_BUTTON = [
+    {"type": "HEADER", "format": "TEXT", "text": "Hi {{1}}"},
+    {"type": "BODY", "text": "Your order {{1}} has shipped."},
+    {
+        "type": "BUTTONS",
+        "buttons": [
+            {"type": "URL", "text": "Track", "url": "https://track.example.com/{{1}}"},
+            {"type": "QUICK_REPLY", "text": "Thanks"},
+        ],
+    },
+]
+_MEDIA_HEADER = [
+    {"type": "HEADER", "format": "IMAGE"},
+    {"type": "BODY", "text": "Hi {{1}}, see the flyer."},
+]
+
+
+def test_analyze_template_matrix():
+    from modules.omnichannel.services.template_send import analyze_template
+
+    s = analyze_template(_TEXT_HEADER_BUTTON)
+    assert s.header_format == "TEXT"
+    assert s.header_text_var_count == 1
+    assert s.body_var_count == 1
+    assert s.button_url_var_count == 1
+    assert s.button_url_indices == [0]
+    assert s.has_media_header is False
+
+    m = analyze_template(_MEDIA_HEADER)
+    assert m.header_format == "IMAGE"
+    assert m.has_media_header is True
+    assert m.header_text_var_count == 0
+    assert m.body_var_count == 1
+
+    # No header, no buttons.
+    plain = analyze_template([{"type": "BODY", "text": "Hi {{1}} and {{2}}"}])
+    assert plain.header_format is None
+    assert plain.body_var_count == 2
+    assert plain.button_url_var_count == 0
+
+
+def test_build_and_inject_header_media_id():
+    from modules.omnichannel.services.template_send import (
+        build_send_components,
+        inject_header_media_id,
+    )
+
+    comps = build_send_components(
+        _MEDIA_HEADER, header_text_vars=[], body_vars=["Sarah"], button_vars=[], header_media_id=None
+    )
+    header = next(c for c in comps if c["type"] == "header")
+    assert header["parameters"][0]["type"] == "image"
+    assert header["parameters"][0]["image"]["id"] is None
+    inject_header_media_id({"components": comps}, "MID-123")
+    assert header["parameters"][0]["image"]["id"] == "MID-123"
+
+    # TEXT header + body + dynamic URL button build.
+    comps2 = build_send_components(
+        _TEXT_HEADER_BUTTON,
+        header_text_vars=["Sarah"],
+        body_vars=["ORD-9"],
+        button_vars=["ORD-9"],
+    )
+    kinds = [(c["type"], c.get("sub_type")) for c in comps2]
+    assert ("header", None) in kinds and ("body", None) in kinds and ("button", "url") in kinds
+    btn = next(c for c in comps2 if c["type"] == "button")
+    assert btn["index"] == "0" and btn["parameters"][0]["text"] == "ORD-9"
+
+
+def test_template_list_exposes_header_button_metadata(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    ch = _seed_channel(session_factory, ws, phone_number_id="pn-tpl-list")
+    _seed_template(session_factory, ch, _TEXT_HEADER_BUTTON, name="rich_meta")
+    res = client.get(f"/omnichannel/channels/{ch}/templates", headers=_auth(client))
+    assert res.status_code == 200, res.text
+    item = next(t for t in res.json() if t["name"] == "rich_meta")
+    assert item["headerFormat"] == "TEXT"
+    assert item["headerVariableCount"] == 1
+    assert item["variableCount"] == 1
+    assert item["buttonVariableCount"] == 1
+
+
+def test_send_template_text_header_body_button_components(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    ch = _seed_channel(session_factory, ws, phone_number_id="pn-tpl-1")
+    cid = _seed_contact(session_factory, ws, phone="+60123457001")
+    tid = _seed_template(session_factory, ch, _TEXT_HEADER_BUTTON, name="order_shipped")
+
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/template",
+        json={
+            "templateId": tid,
+            "templateHeaderVariables": ["Sarah"],
+            "templateVariables": ["ORD-9"],
+            "templateButtonVariables": ["ORD-9"],
+        },
+        headers=_auth(client),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["messageType"] == "TEMPLATE"
+    assert res.json()["deliveryStatus"] == "SENT"
+
+    from modules.omnichannel.models import ConversationMessage
+
+    db = session_factory()
+    row = db.query(ConversationMessage).filter(ConversationMessage.id == res.json()["id"]).first()
+    comps = row.payload_json["template"]["components"]
+    db.close()
+    header = next(c for c in comps if c["type"] == "header")
+    body = next(c for c in comps if c["type"] == "body")
+    button = next(c for c in comps if c["type"] == "button")
+    assert header["parameters"][0] == {"type": "text", "text": "Sarah"}
+    assert body["parameters"][0] == {"type": "text", "text": "ORD-9"}
+    assert button["sub_type"] == "url" and button["index"] == "0"
+    assert button["parameters"][0]["text"] == "ORD-9"
+
+
+def test_send_template_media_header_stores_key_and_headermedia(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    ch = _seed_channel(session_factory, ws, phone_number_id="pn-tpl-2")
+    cid = _seed_contact(session_factory, ws, phone="+60123457002")
+    tid = _seed_template(session_factory, ch, _MEDIA_HEADER, name="flyer_promo")
+
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/template",
+        files={"file": ("flyer.png", PNG, "image/png")},
+        data={"payload": json.dumps({"templateId": tid, "templateVariables": ["Sarah"]})},
+        headers=_auth(client),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["deliveryStatus"] == "SENT"
+
+    from modules.omnichannel.models import ConversationMessage
+
+    db = session_factory()
+    row = db.query(ConversationMessage).filter(ConversationMessage.id == res.json()["id"]).first()
+    assert row.media_key and row.media_mime == "image/png"
+    assert row.payload_json["template"]["headerMedia"]["kind"] == "image"
+    header = next(c for c in row.payload_json["template"]["components"] if c["type"] == "header")
+    assert header["parameters"][0]["type"] == "image"
+    db.close()
+
+
+def test_send_template_media_header_missing_file_422(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    ch = _seed_channel(session_factory, ws, phone_number_id="pn-tpl-3")
+    cid = _seed_contact(session_factory, ws, phone="+60123457003")
+    tid = _seed_template(session_factory, ch, _MEDIA_HEADER, name="flyer_nofile")
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/template",
+        json={"templateId": tid, "templateVariables": ["Sarah"]},
+        headers=_auth(client),
+    )
+    assert res.status_code == 422
+    assert "media header" in res.json()["detail"].lower()
+
+
+def test_send_template_count_mismatches_422(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    ch = _seed_channel(session_factory, ws, phone_number_id="pn-tpl-4")
+    cid = _seed_contact(session_factory, ws, phone="+60123457004")
+    tid = _seed_template(session_factory, ch, _TEXT_HEADER_BUTTON, name="order_counts")
+
+    # Wrong body count.
+    r_body = client.post(
+        f"/omnichannel/contacts/{cid}/template",
+        json={"templateId": tid, "templateHeaderVariables": ["S"], "templateVariables": [], "templateButtonVariables": ["x"]},
+        headers=_auth(client),
+    )
+    assert r_body.status_code == 422 and "body" in r_body.json()["detail"].lower()
+
+    # Wrong header count.
+    r_head = client.post(
+        f"/omnichannel/contacts/{cid}/template",
+        json={"templateId": tid, "templateHeaderVariables": [], "templateVariables": ["ORD"], "templateButtonVariables": ["x"]},
+        headers=_auth(client),
+    )
+    assert r_head.status_code == 422 and "header" in r_head.json()["detail"].lower()
+
+    # Wrong button count.
+    r_btn = client.post(
+        f"/omnichannel/contacts/{cid}/template",
+        json={"templateId": tid, "templateHeaderVariables": ["S"], "templateVariables": ["ORD"], "templateButtonVariables": []},
+        headers=_auth(client),
+    )
+    assert r_btn.status_code == 422 and "button" in r_btn.json()["detail"].lower()
+
+
+def test_send_template_via_messages_endpoint_still_works(client, session_factory):
+    """Back-compat: a header-less/text template still sends via POST /messages."""
+    ws = _default_workspace_id(session_factory)
+    ch = _seed_channel(session_factory, ws, phone_number_id="pn-tpl-5")
+    cid = _seed_contact(session_factory, ws, phone="+60123457005")
+    tid = _seed_template(
+        session_factory, ch, [{"type": "BODY", "text": "Hi {{1}}, thanks!"}], name="plain_body"
+    )
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/messages",
+        json={"messageType": "TEMPLATE", "templateId": tid, "templateVariables": ["Sarah"]},
+        headers=_auth(client),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["deliveryStatus"] == "SENT"
+    assert "Hi Sarah, thanks!" == res.json()["body"]
+
+
+def test_gateway_reaction_cross_workspace_404(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws, phone_number_id="pn-rx7")
+    cid = _seed_contact(session_factory, ws, phone="+60123456906")
+    mid = _seed_message(session_factory, cid, "wamid.tgt6")
+    # A key minted on a DIFFERENT workspace must not react on this thread.
+    other_ws = _seed_second_workspace(session_factory)
+    _seed_channel(session_factory, other_ws, phone_number_id="pn-rx7b")
+    key = _mint_key(client, other_ws, name="Other WS key")
+    res = client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": "+60123456906", "type": "reaction", "reaction": {"messageId": mid, "emoji": "😀"}},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert res.status_code == 404
+    assert _reactions_count(session_factory) == 0

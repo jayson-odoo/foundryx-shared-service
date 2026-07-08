@@ -73,6 +73,8 @@ import type {
   SendLocationInput,
   SendMediaInput,
   SendMessageInput,
+  SendTemplateInput,
+  TemplateHeaderFormat,
   WhatsAppTemplate,
 } from '@/types/omnichannel';
 
@@ -84,6 +86,8 @@ export interface ComposerProps {
   isSending: boolean;
   sendError: string | null;
   onSend: (input: SendMessageInput) => Promise<boolean>;
+  /** Send an approved template (BODY/header/button vars + optional header media). */
+  onSendTemplate: (input: SendTemplateInput) => Promise<boolean>;
   /** Send a media attachment (image/video/audio/voice/document/sticker). */
   onSendMedia?: (input: SendMediaInput) => Promise<boolean>;
   /** Structured sends (interactive/location/contacts) — plan 12 Slice 2. */
@@ -114,41 +118,102 @@ const ATTACH_OPTIONS: { kind: MediaKind; label: string; accept: string; Icon: ty
   { kind: 'sticker', label: 'Sticker', accept: 'image/webp', Icon: Sticker },
 ];
 
+/** File-picker accept string per media-header format. */
+const HEADER_ACCEPT: Record<Exclude<TemplateHeaderFormat, 'TEXT'>, string> = {
+  IMAGE: 'image/png,image/jpeg',
+  VIDEO: 'video/mp4,video/3gpp',
+  DOCUMENT: '.pdf,.docx,.xlsx,.pptx,.txt',
+};
+
+/** A row of positional {{n}} variable inputs. */
+function VariableInputs({
+  count,
+  values,
+  onChange,
+  labelPrefix,
+  testidPrefix,
+}: {
+  count: number;
+  values: string[];
+  onChange: (next: string[]) => void;
+  labelPrefix: string;
+  testidPrefix: string;
+}) {
+  return (
+    <>
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className="space-y-1.5">
+          <label className="text-sm text-muted-foreground">{`${labelPrefix} {{${i + 1}}} *`}</label>
+          <Input
+            value={values[i] ?? ''}
+            onChange={(e) => {
+              const next = [...values];
+              next[i] = e.target.value;
+              onChange(next);
+            }}
+            data-testid={`${testidPrefix}-${i + 1}`}
+          />
+        </div>
+      ))}
+    </>
+  );
+}
+
 function TemplateSendDialog({
   open,
   onOpenChange,
   templates,
   isSending,
-  onSend,
+  onSendTemplate,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   templates: WhatsAppTemplate[];
   isSending: boolean;
-  onSend: (input: SendMessageInput) => Promise<boolean>;
+  onSendTemplate: (input: SendTemplateInput) => Promise<boolean>;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [variables, setVariables] = useState<string[]>([]);
+  const [headerVariables, setHeaderVariables] = useState<string[]>([]);
+  const [buttonVariables, setButtonVariables] = useState<string[]>([]);
+  const [headerFile, setHeaderFile] = useState<File | null>(null);
   const selected = useMemo(() => templates.find((t) => t.id === selectedId) ?? null, [templates, selectedId]);
+  const mediaHeader = !!selected && !!selected.headerFormat && selected.headerFormat !== 'TEXT';
+
+  const reset = () => {
+    setSelectedId(null);
+    setVariables([]);
+    setHeaderVariables([]);
+    setButtonVariables([]);
+    setHeaderFile(null);
+  };
 
   const preview = selected
     ? selected.bodyText.replace(/\{\{(\d+)\}\}/g, (_, n) => variables[Number(n) - 1] || `{{${n}}}`)
     : '';
+  const filled = (n: number, vals: string[]) =>
+    Array.from({ length: n }, (_, i) => vals[i]).every((v) => v?.trim());
   const ready =
     !!selected &&
-    Array.from({ length: selected.variableCount }, (_, i) => variables[i]).every((v) => v?.trim());
+    filled(selected.variableCount, variables) &&
+    filled(selected.headerVariableCount, headerVariables) &&
+    filled(selected.buttonVariableCount, buttonVariables) &&
+    (!mediaHeader || !!headerFile);
 
   const submit = async () => {
-    if (!selected) return;
-    const ok = await onSend({
-      messageType: 'TEMPLATE',
+    if (!selected || !ready) return;
+    const ok = await onSendTemplate({
       templateId: selected.id,
       templateVariables: variables.slice(0, selected.variableCount),
+      templateHeaderVariables:
+        selected.headerVariableCount > 0 ? headerVariables.slice(0, selected.headerVariableCount) : undefined,
+      templateButtonVariables:
+        selected.buttonVariableCount > 0 ? buttonVariables.slice(0, selected.buttonVariableCount) : undefined,
+      headerFile: mediaHeader ? headerFile : undefined,
     });
     if (ok) {
       onOpenChange(false);
-      setSelectedId(null);
-      setVariables([]);
+      reset();
     }
   };
 
@@ -170,6 +235,9 @@ function TemplateSendDialog({
               onChange={(v) => {
                 setSelectedId(v || null);
                 setVariables([]);
+                setHeaderVariables([]);
+                setButtonVariables([]);
+                setHeaderFile(null);
               }}
               placeholder="Choose a template…"
               ariaLabel="Template"
@@ -178,22 +246,44 @@ function TemplateSendDialog({
           </div>
           {selected && (
             <>
-              {Array.from({ length: selected.variableCount }, (_, i) => (
-                <div key={i} className="space-y-1.5">
-                  <label className="text-sm text-muted-foreground">{`Variable {{${i + 1}}} *`}</label>
+              {mediaHeader && (
+                <div className="space-y-1.5">
+                  <label className="text-sm text-muted-foreground">
+                    {`${selected.headerFormat === 'IMAGE' ? 'Image' : selected.headerFormat === 'VIDEO' ? 'Video' : 'Document'} header *`}
+                  </label>
                   <Input
-                    value={variables[i] ?? ''}
-                    onChange={(e) =>
-                      setVariables((prev) => {
-                        const next = [...prev];
-                        next[i] = e.target.value;
-                        return next;
-                      })
-                    }
-                    data-testid={`template-var-${i + 1}`}
+                    type="file"
+                    accept={HEADER_ACCEPT[selected.headerFormat as Exclude<TemplateHeaderFormat, 'TEXT'>]}
+                    onChange={(e) => setHeaderFile(e.target.files?.[0] ?? null)}
+                    data-testid="template-header-file"
                   />
                 </div>
-              ))}
+              )}
+              {selected.headerVariableCount > 0 && (
+                <VariableInputs
+                  count={selected.headerVariableCount}
+                  values={headerVariables}
+                  onChange={setHeaderVariables}
+                  labelPrefix="Header"
+                  testidPrefix="template-header-var"
+                />
+              )}
+              <VariableInputs
+                count={selected.variableCount}
+                values={variables}
+                onChange={setVariables}
+                labelPrefix="Variable"
+                testidPrefix="template-var"
+              />
+              {selected.buttonVariableCount > 0 && (
+                <VariableInputs
+                  count={selected.buttonVariableCount}
+                  values={buttonVariables}
+                  onChange={setButtonVariables}
+                  labelPrefix="Button URL"
+                  testidPrefix="template-button-var"
+                />
+              )}
               <div className="rounded-md bg-muted p-3 text-sm" data-testid="template-preview">
                 {preview}
               </div>
@@ -236,6 +326,7 @@ export function Composer({
   isSending,
   sendError,
   onSend,
+  onSendTemplate,
   onSendMedia,
   onSendInteractive,
   onSendLocation,
@@ -661,7 +752,7 @@ export function Composer({
         onOpenChange={setTemplateOpen}
         templates={templates}
         isSending={isSending}
-        onSend={onSend}
+        onSendTemplate={onSendTemplate}
       />
       {onSendInteractive && (
         <InteractiveBuilderDialog

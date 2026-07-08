@@ -206,6 +206,68 @@ def test_status_receipt_forwards(client, session_factory, _capture_post):
         db.close()
 
 
+def _reaction_payload(*, target_wamid, emoji, from_="60123456789", wamid="wamid.rx"):
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "waba-1",
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "contacts": [{"wa_id": from_, "profile": {"name": "Sarah Chen"}}],
+                            "messages": [
+                                {
+                                    "id": wamid,
+                                    "from": from_,
+                                    "timestamp": "1717550000",
+                                    "type": "reaction",
+                                    "reaction": {"message_id": target_wamid, "emoji": emoji},
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_reaction_forwards_to_consumer(client, session_factory, _capture_post):
+    """A contact reaction fans out on the consumer webhook (AC-12-20) with the
+    documented data shape — targeting OUR durable id, never a raw wamid."""
+    from tests.test_omnichannel_conversations import _seed_thread
+
+    _seed_thread(
+        session_factory,
+        messages=[{"body": "out", "sender_type": "AGENT", "external_message_id": "wamid.rtgt", "delivery_status": "DELIVERED"}],
+    )
+    channel_id = _channel_id(session_factory)
+    endpoint_id, _ = _create_endpoint(session_factory, channel_id, ["message.reaction"])
+
+    _process(session_factory, channel_id, _reaction_payload(target_wamid="wamid.rtgt", emoji="👍"))
+
+    db = session_factory()
+    try:
+        from modules.omnichannel.models import ConversationMessage
+
+        target = (
+            db.query(ConversationMessage)
+            .filter(ConversationMessage.external_message_id == "wamid.rtgt")
+            .one()
+        )
+        row = db.query(WebhookDelivery).filter(WebhookDelivery.endpoint_id == endpoint_id).one()
+        assert row.event_type == "message.reaction"
+        data = row.payload_json["data"]
+        assert data["targetMessageId"] == target.id  # our durable id, not the wamid
+        assert data["emoji"] == "👍" and data["reactorType"] == "CONTACT"
+        assert data["removed"] is False
+    finally:
+        db.close()
+
+
 def test_unsubscribed_event_not_forwarded(client, session_factory, _capture_post):
     from tests.test_omnichannel_webhooks import _seed_thread
 

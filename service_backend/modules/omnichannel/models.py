@@ -228,6 +228,37 @@ class ConversationMessage(OmniBase):
     )
 
 
+class MessageReaction(OmniBase):
+    """A reaction (emoji) on a message — plan 12 Slice 3 (AC-12-19).
+
+    Never a message row: reactions upsert here keyed to the target message +
+    the reactor, so re-reacting replaces and an empty emoji deletes. ``reactor``
+    is the stable id of who reacted — the contact's wa id/phone for CONTACT,
+    the user id for AGENT — so ``UNIQUE(target_message_id, reactor)`` holds one
+    reaction per party per message.
+    """
+
+    __tablename__ = "message_reactions"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, nullable=True, index=True)  # WS realtime room
+    target_message_id = Column(
+        String, ForeignKey("conversation_messages.id"), nullable=False, index=True
+    )
+    reactor_type = Column(String, nullable=False)  # CONTACT | AGENT
+    reactor = Column(String, nullable=False)  # wa id/phone (contact) or user id (agent)
+    emoji = Column(String, nullable=False)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("target_message_id", "reactor", name="uq_reaction_target_reactor"),
+    )
+
+
 class WhatsappTemplate(OmniBase):
     __tablename__ = "whatsapp_templates"
 

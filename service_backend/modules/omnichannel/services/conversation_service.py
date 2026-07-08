@@ -111,12 +111,18 @@ class ConversationService:
 
     def message_items(self, messages: List[ConversationMessage]) -> List[MessageItem]:
         names = self._user_names([m.sender_id for m in messages if m.sender_id])
+        # Batched reaction chips (plan 12 Slice 3) — one query for the whole page.
+        reactions_by_msg = self.repo.reactions_for(
+            [m.id for m in messages],
+            messages[0].tenant_id if messages else "",
+        )
         items: List[MessageItem] = []
         for m in messages:
             meta = m.metadata_json or {}
             reply = meta.get("reply_to")
             items.append(
                 MessageItem(
+                    reactions=reactions_by_msg.get(m.id, []),
                     id=m.id,
                     contactId=m.contact_id,
                     channelId=m.channel_id,

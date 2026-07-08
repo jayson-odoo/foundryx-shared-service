@@ -398,6 +398,11 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/omnichannel/settings/workspaces',
         permission: 'workspaces.read',
       },
+      {
+        title: 'Media limits',
+        path: '/omnichannel/settings/media',
+        permission: 'channels.manage',
+      },
     ],
   },
 ];
@@ -718,6 +723,10 @@ export const MENU_SIDEBAR_COMPACT: MenuConfig = [
       {
         title: 'Workspaces',
         path: '/omnichannel/settings/workspaces',
+      },
+      {
+        title: 'Media limits',
+        path: '/omnichannel/settings/media',
       },
     ],
   },

@@ -20,6 +20,7 @@ import type {
   SendLocationInput,
   SendMediaInput,
   SendMessageInput,
+  SendTemplateInput,
   ThreadListQuery,
   ThreadPriority,
   ThreadStatus,
@@ -130,6 +131,7 @@ function seedMessages(): ConversationMessage[] {
     messageType: 'TEXT',
     body,
     mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false, payload: null,
+    reactions: [],
     externalMessageId: senderType === 'CONTACT' ? nextId('wamid') : null,
     deliveryStatus: senderType === 'AGENT' ? 'READ' : null,
     errorCode: null,
@@ -178,19 +180,33 @@ const TEMPLATES: WhatsAppTemplate[] = [
     id: 'tpl-001', channelId: 'chn-001', name: 'booking_update', language: 'en',
     category: 'UTILITY', status: 'APPROVED',
     bodyText: 'Hi {{1}}, there is an update on your booking: {{2}}. Reply to this message to continue the conversation.',
-    variableCount: 2,
+    variableCount: 2, headerFormat: null, headerVariableCount: 0, buttonVariableCount: 0,
   },
   {
     id: 'tpl-002', channelId: 'chn-001', name: 'payment_reminder', language: 'en',
     category: 'UTILITY', status: 'APPROVED',
     bodyText: 'Hi {{1}}, a friendly reminder that invoice {{2}} is due on {{3}}.',
-    variableCount: 3,
+    variableCount: 3, headerFormat: null, headerVariableCount: 0, buttonVariableCount: 0,
+  },
+  {
+    // TEXT header with a variable + a dynamic URL button (AC-12-22 rich send).
+    id: 'tpl-004', channelId: 'chn-001', name: 'order_shipped', language: 'en',
+    category: 'UTILITY', status: 'APPROVED',
+    bodyText: 'Hi {{1}}, your order is on its way. Track it any time.',
+    variableCount: 1, headerFormat: 'TEXT', headerVariableCount: 1, buttonVariableCount: 1,
+  },
+  {
+    // Image header (media, uploaded-by-id at send).
+    id: 'tpl-005', channelId: 'chn-001', name: 'new_venue_promo', language: 'en',
+    category: 'MARKETING', status: 'APPROVED',
+    bodyText: 'Big news {{1}}! Our new venue is now open.',
+    variableCount: 1, headerFormat: 'IMAGE', headerVariableCount: 0, buttonVariableCount: 0,
   },
   {
     id: 'tpl-003', channelId: 'chn-001', name: 'promo_blast', language: 'en',
     category: 'MARKETING', status: 'PENDING', // not approved — must NOT be sendable
     bodyText: 'Big news {{1}}! Our new venue is open.',
-    variableCount: 1,
+    variableCount: 1, headerFormat: null, headerVariableCount: 0, buttonVariableCount: 0,
   },
 ];
 
@@ -264,6 +280,7 @@ export function __mockSimulateInbound(workspaceId = 'wsp-001', contactId = 'cnt-
     id: nextId('msg'), contactId, channelId: t.channelId,
     senderType: 'CONTACT', senderId: null, senderName: null,
     messageType: 'TEXT', body, mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false, payload: null,
+    reactions: [],
     externalMessageId: nextId('wamid'), deliveryStatus: null,
     errorCode: null, errorMessage: null, replyTo: null, createdAt: new Date().toISOString(),
   };
@@ -326,6 +343,7 @@ function mockStructured(
     body: messageType === 'INTERACTIVE' ? ((payload as { body?: string })?.body ?? null) : preview,
     mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false,
     payload,
+    reactions: [],
     externalMessageId: nextId('wamid'), deliveryStatus: 'SENT',
     errorCode: null, errorMessage: null, replyTo: null,
     createdAt: new Date().toISOString(),
@@ -389,6 +407,7 @@ export const mockConversationService: ConversationService = {
       id: nextId('msg'), contactId, channelId: t.channelId,
       senderType: 'AGENT', senderId: MOCK_CURRENT_USER.id, senderName: MOCK_CURRENT_USER.name,
       messageType, body, mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false, payload: null,
+      reactions: [],
       externalMessageId: nextId('wamid'), deliveryStatus: 'SENT',
       errorCode: null, errorMessage: null,
       replyTo: quoted
@@ -401,6 +420,49 @@ export const mockConversationService: ConversationService = {
       lastMessageAt: message.createdAt,
       lastMessagePreview: body,
     });
+    emit(t.workspaceId, { type: 'message.created', message, thread: updated });
+    simulateReceipts(message);
+    return delay(message, 250);
+  },
+
+  async sendTemplate(contactId, input: SendTemplateInput) {
+    const tpl = TEMPLATES.find((x) => x.id === input.templateId);
+    if (!tpl) throw new Error('Template not found');
+    if (tpl.status !== 'APPROVED') throw new Error('Template is not approved.');
+    // Mirror the backend count validation (AC-12-22).
+    const headerVars = input.templateHeaderVariables ?? [];
+    const bodyVars = input.templateVariables ?? [];
+    const buttonVars = input.templateButtonVariables ?? [];
+    if (tpl.headerFormat && tpl.headerFormat !== 'TEXT' && !input.headerFile) {
+      throw new Error('This template has a media header — attach an image, video or document.');
+    }
+    if (headerVars.length !== tpl.headerVariableCount) {
+      throw new Error(`This template's header needs ${tpl.headerVariableCount} variable(s); ${headerVars.length} provided.`);
+    }
+    if (bodyVars.length !== tpl.variableCount) {
+      throw new Error(`This template's body needs ${tpl.variableCount} variable(s); ${bodyVars.length} provided.`);
+    }
+    if (buttonVars.length !== tpl.buttonVariableCount) {
+      throw new Error(`This template's buttons need ${tpl.buttonVariableCount} variable(s); ${buttonVars.length} provided.`);
+    }
+    const t = threadOf(contactId);
+    const body = tpl.bodyText.replace(/\{\{(\d+)\}\}/g, (_, n) => bodyVars[Number(n) - 1] ?? '');
+    const message: ConversationMessage = {
+      id: nextId('msg'), contactId, channelId: t.channelId,
+      senderType: 'AGENT', senderId: MOCK_CURRENT_USER.id, senderName: MOCK_CURRENT_USER.name,
+      messageType: 'TEMPLATE', body,
+      mediaUrl: input.headerFile ? `/omnichannel/media/${nextId('media')}` : null,
+      mediaMime: input.headerFile?.type ?? null,
+      mediaFilename: input.headerFile?.name ?? null,
+      mediaSize: input.headerFile?.size ?? null,
+      voice: false, payload: null,
+      reactions: [],
+      externalMessageId: nextId('wamid'), deliveryStatus: 'SENT',
+      errorCode: null, errorMessage: null, replyTo: null,
+      createdAt: new Date().toISOString(),
+    };
+    messages = [...messages, message];
+    const updated = touchThread(t, { lastMessageAt: message.createdAt, lastMessagePreview: body });
     emit(t.workspaceId, { type: 'message.created', message, thread: updated });
     simulateReceipts(message);
     return delay(message, 250);
@@ -422,6 +484,7 @@ export const mockConversationService: ConversationService = {
       mediaFilename: input.file.name,
       mediaSize: input.file.size,
       voice: input.kind === 'voice', payload: null,
+      reactions: [],
       externalMessageId: nextId('wamid'), deliveryStatus: 'SENT',
       errorCode: null, errorMessage: null, replyTo: null,
       createdAt: new Date().toISOString(),
@@ -450,6 +513,29 @@ export const mockConversationService: ConversationService = {
     return mockStructured(contactId, 'CONTACTS', { contacts: input.contacts }, label);
   },
 
+  async react(contactId, messageId, emoji) {
+    const clean = emoji.trim();
+    const target = messages.find((m) => m.id === messageId);
+    if (target) {
+      const others = target.reactions.filter((r) => r.reactorType !== 'AGENT');
+      const updated: ConversationMessage = {
+        ...target,
+        reactions: clean ? [...others, { emoji: clean, reactorType: 'AGENT', reactor: MOCK_CURRENT_USER.id }] : others,
+      };
+      messages = messages.map((m) => (m.id === messageId ? updated : m));
+      const t = threadOf(contactId);
+      emit(t.workspaceId, {
+        type: 'message.reaction',
+        targetMessageId: messageId,
+        contactId,
+        reactorType: 'AGENT',
+        emoji: clean,
+        removed: !clean,
+      });
+    }
+    return delay({ targetMessageId: messageId, emoji: clean, removed: !clean }, 120);
+  },
+
   async addInternalNote(contactId, body) {
     const t = threadOf(contactId);
     if (!body.trim()) throw new Error('Note body is required');
@@ -457,6 +543,7 @@ export const mockConversationService: ConversationService = {
       id: nextId('msg'), contactId, channelId: t.channelId,
       senderType: 'SYSTEM', senderId: MOCK_CURRENT_USER.id, senderName: MOCK_CURRENT_USER.name,
       messageType: 'TEXT', body: body.trim(), mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false, payload: null,
+      reactions: [],
       externalMessageId: null, deliveryStatus: null,
       errorCode: null, errorMessage: null, replyTo: null, createdAt: new Date().toISOString(),
     };

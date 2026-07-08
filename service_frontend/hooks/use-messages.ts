@@ -18,6 +18,7 @@ import type {
   SendLocationInput,
   SendMediaInput,
   SendMessageInput,
+  SendTemplateInput,
   ThreadPriority,
   ThreadStatus,
 } from '@/types/omnichannel';
@@ -34,10 +35,14 @@ export interface UseMessagesResult {
   /** Last send failure (CSW rejection etc). Cleared on the next attempt. */
   sendError: string | null;
   send: (input: SendMessageInput) => Promise<boolean>;
+  /** Send an approved template (BODY/header/button vars + optional header media). */
+  sendTemplate: (input: SendTemplateInput) => Promise<boolean>;
   sendMedia: (input: SendMediaInput) => Promise<boolean>;
   sendInteractive: (input: SendInteractiveInput) => Promise<boolean>;
   sendLocation: (input: SendLocationInput) => Promise<boolean>;
   sendContacts: (input: SendContactsInput) => Promise<boolean>;
+  /** React to a message by its id (empty emoji removes the agent's reaction). */
+  react: (messageId: string, emoji: string) => Promise<boolean>;
   addNote: (body: string) => Promise<boolean>;
   assign: (userId: string | null) => Promise<void>;
   assignToMe: () => Promise<void>;
@@ -97,6 +102,19 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
         );
       } else if (event.type === 'contact.updated' && event.thread.id === contactId) {
         setThread(event.thread);
+      } else if (event.type === 'message.reaction' && event.contactId === contactId) {
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== event.targetMessageId) return m;
+            const others = m.reactions.filter((r) => r.reactorType !== event.reactorType);
+            return {
+              ...m,
+              reactions: event.removed
+                ? others
+                : [...others, { emoji: event.emoji, reactorType: event.reactorType, reactor: event.reactorType }],
+            };
+          }),
+        );
       }
     },
     [contactId],
@@ -124,6 +142,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
         messageType: input.messageType,
         body: input.body ?? null,
         mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false, payload: null,
+        reactions: [],
         externalMessageId: null,
         deliveryStatus: null,
         errorCode: null,
@@ -163,6 +182,25 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     [contactId],
   );
 
+  const sendTemplate = useCallback(
+    async (input: SendTemplateInput): Promise<boolean> => {
+      if (!contactId) return false;
+      setSendError(null);
+      setIsSending(true);
+      try {
+        const created = await conversationService.sendTemplate(contactId, input);
+        setMessages((prev) => (prev.some((m) => m.id === created.id) ? prev : [...prev, created]));
+        return true;
+      } catch (e: unknown) {
+        setSendError(e instanceof Error ? e.message : 'Could not send the template');
+        return false;
+      } finally {
+        setIsSending(false);
+      }
+    },
+    [contactId],
+  );
+
   const sendMedia = useCallback(
     async (input: SendMediaInput): Promise<boolean> => {
       if (!contactId) return false;
@@ -185,6 +223,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
         mediaFilename: input.file.name,
         mediaSize: input.file.size,
         voice: input.kind === 'voice', payload: null,
+        reactions: [],
         externalMessageId: null,
         deliveryStatus: 'QUEUED',
         errorCode: null,
@@ -252,6 +291,30 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     [contactId, runStructured],
   );
 
+  const react = useCallback(
+    async (messageId: string, emoji: string): Promise<boolean> => {
+      if (!contactId) return false;
+      try {
+        const res = await conversationService.react(contactId, messageId, emoji);
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== messageId) return m;
+            const others = m.reactions.filter((r) => r.reactorType !== 'AGENT');
+            return {
+              ...m,
+              reactions: res.removed ? others : [...others, { emoji: res.emoji, reactorType: 'AGENT', reactor: 'AGENT' }],
+            };
+          }),
+        );
+        return true;
+      } catch (e: unknown) {
+        setSendError(e instanceof Error ? e.message : 'Could not react to the message');
+        return false;
+      }
+    },
+    [contactId],
+  );
+
   const addNote = useCallback(
     async (body: string): Promise<boolean> => {
       if (!contactId) return false;
@@ -296,5 +359,5 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     [contactId],
   );
 
-  return { thread, messages, isLoading, error, isSending, sendError, send, sendMedia, sendInteractive, sendLocation, sendContacts, addNote, assign, assignToMe, setStatus, setPriority };
+  return { thread, messages, isLoading, error, isSending, sendError, send, sendTemplate, sendMedia, sendInteractive, sendLocation, sendContacts, react, addNote, assign, assignToMe, setStatus, setPriority };
 }

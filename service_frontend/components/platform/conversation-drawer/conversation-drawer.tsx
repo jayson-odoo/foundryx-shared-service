@@ -103,10 +103,12 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     isSending,
     sendError,
     send,
+    sendTemplate,
     sendMedia,
     sendInteractive,
     sendLocation,
     sendContacts,
+    react,
     addNote,
     assign,
     assignToMe,
@@ -387,6 +389,11 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
                         }
                       : undefined
                   }
+                  onReact={
+                    tab === 'messages' && m.senderType !== 'SYSTEM'
+                      ? (msg, emoji) => void react(msg.id, emoji)
+                      : undefined
+                  }
                 />
               </div>
             </Fragment>
@@ -403,6 +410,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
         isSending={isSending}
         sendError={sendError}
         onSend={send}
+        onSendTemplate={sendTemplate}
         onSendMedia={sendMedia}
         onSendInteractive={sendInteractive}
         onSendLocation={sendLocation}

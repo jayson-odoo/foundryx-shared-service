@@ -10,7 +10,13 @@ from typing import List, Optional, Tuple
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from ..models import Contact, ContactChannelIdentity, ConversationMessage, Status
+from ..models import (
+    Contact,
+    ContactChannelIdentity,
+    ConversationMessage,
+    MessageReaction,
+    Status,
+)
 
 
 class ContactRepository:
@@ -116,6 +122,69 @@ class ContactRepository:
             )
             .first()
         )
+
+    # ── Reactions (plan 12 Slice 3) ─────────────────────────────────────────
+    def set_reaction(
+        self,
+        target_message: ConversationMessage,
+        *,
+        reactor_type: str,
+        reactor: str,
+        emoji: Optional[str],
+        workspace_id: Optional[str],
+    ) -> Tuple[Optional[MessageReaction], bool]:
+        """Upsert an emoji reaction (or delete on empty emoji), keyed to
+        (target_message, reactor). Returns ``(row_or_None, removed)``. Caller
+        commits."""
+        existing = (
+            self.db.query(MessageReaction)
+            .filter(
+                MessageReaction.target_message_id == target_message.id,
+                MessageReaction.reactor == reactor,
+            )
+            .first()
+        )
+        clean = (emoji or "").strip()
+        if not clean:
+            if existing is not None:
+                self.db.delete(existing)
+                return None, True
+            return None, True
+        if existing is not None:
+            existing.emoji = clean
+            existing.reactor_type = reactor_type
+            return existing, False
+        row = MessageReaction(
+            tenant_id=target_message.tenant_id,
+            workspace_id=workspace_id,
+            target_message_id=target_message.id,
+            reactor_type=reactor_type,
+            reactor=reactor,
+            emoji=clean,
+        )
+        self.db.add(row)
+        return row, False
+
+    def reactions_for(self, message_ids: List[str], tenant_id: str) -> dict:
+        """Batched: message_id → [{emoji, reactorType, reactor}] for the bubble
+        chips."""
+        if not message_ids:
+            return {}
+        rows = (
+            self.db.query(MessageReaction)
+            .filter(
+                MessageReaction.tenant_id == tenant_id,
+                MessageReaction.target_message_id.in_(message_ids),
+            )
+            .order_by(MessageReaction.created_at.asc())
+            .all()
+        )
+        out: dict = {}
+        for r in rows:
+            out.setdefault(r.target_message_id, []).append(
+                {"emoji": r.emoji, "reactorType": r.reactor_type, "reactor": r.reactor}
+            )
+        return out
 
     # ── Thread-list computed columns (preview + unread), batched ────────────
     def previews_for(self, contact_ids: List[str], tenant_id: str) -> dict:

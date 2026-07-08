@@ -11,11 +11,13 @@ import type {
   ConversationSocketEvent,
   ConversationThread,
   QuickReply,
+  ReactionResult,
   SendContactsInput,
   SendInteractiveInput,
   SendLocationInput,
   SendMediaInput,
   SendMessageInput,
+  SendTemplateInput,
   ThreadListQuery,
   ThreadPriority,
   ThreadStatus,
@@ -31,6 +33,9 @@ export interface ConversationService {
   listMessages(contactId: string): Promise<ConversationMessage[]>;
   /** Send free-form/template. Backend enforces CSW; mock mirrors the rule. */
   sendMessage(contactId: string, input: SendMessageInput): Promise<ConversationMessage>;
+  /** Send an approved template (BODY + TEXT-header + URL-button vars + optional
+   *  header media). Multipart when a header file is attached (AC-12-22). */
+  sendTemplate(contactId: string, input: SendTemplateInput): Promise<ConversationMessage>;
   /** Send a media file (image/video/audio/voice/document/sticker) — multipart.
    *  Backend sniff-gates + cap-checks then queues the async upload-by-id send. */
   sendMedia(contactId: string, input: SendMediaInput): Promise<ConversationMessage>;
@@ -40,6 +45,8 @@ export interface ConversationService {
   sendLocation(contactId: string, input: SendLocationInput): Promise<ConversationMessage>;
   /** Send one or more contact cards. */
   sendContacts(contactId: string, input: SendContactsInput): Promise<ConversationMessage>;
+  /** React to a message by its durable id (empty emoji removes). */
+  react(contactId: string, messageId: string, emoji: string): Promise<ReactionResult>;
   /** Internal note (SYSTEM bubble) — never delivered to the contact. */
   addInternalNote(contactId: string, body: string): Promise<ConversationMessage>;
   /** Assign/reassign (userId) or unassign (null). */

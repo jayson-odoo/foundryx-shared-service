@@ -230,6 +230,7 @@ class WhatsAppCloudAdapter:
         interactive: Optional[Dict[str, Any]] = None,
         location: Optional[Dict[str, Any]] = None,
         contacts: Optional[list] = None,
+        reaction: Optional[Dict[str, Any]] = None,
         context_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Send a text/template/media/interactive/location/contacts message.
@@ -247,7 +248,13 @@ class WhatsAppCloudAdapter:
             return {"external_message_id": f"wamid.dev-{uuid.uuid4().hex[:12]}", "dev": True}
 
         payload: Dict[str, Any] = {"messaging_product": "whatsapp", "to": to}
-        if interactive is not None:
+        if reaction is not None:
+            payload["type"] = "reaction"
+            payload["reaction"] = {
+                "message_id": reaction.get("message_id"),
+                "emoji": reaction.get("emoji") or "",
+            }
+        elif interactive is not None:
             payload["type"] = "interactive"
             payload["interactive"] = interactive
         elif location is not None:
@@ -594,6 +601,22 @@ class WhatsAppCloudAdapter:
                 }
                 for m in value.get("messages") or []:
                     mtype = (m.get("type") or "text").lower()
+                    if mtype == "reaction":
+                        # A reaction is NEVER a message bubble (plan 12 AC-12-19).
+                        # Emit a distinct event keyed to the TARGET message wamid;
+                        # an empty emoji removes. inbound_service upserts/deletes.
+                        rx = m.get("reaction") or {}
+                        events.append(
+                            {
+                                "kind": "reaction",
+                                "external_message_id": m.get("id"),
+                                "from": m.get("from"),
+                                "target_external_id": rx.get("message_id"),
+                                "emoji": rx.get("emoji") or "",
+                                "timestamp": m.get("timestamp"),
+                            }
+                        )
+                        continue
                     body: Optional[str] = None
                     media_id: Optional[str] = None
                     media_mime: Optional[str] = None
@@ -648,9 +671,6 @@ class WhatsAppCloudAdapter:
                     elif mtype == "button":
                         # A quick-reply button tap on a template message.
                         body = (m.get("button") or {}).get("text")
-                    elif mtype == "reaction":
-                        # Reactions land in Slice 3 — carry the emoji for now.
-                        body = (m.get("reaction") or {}).get("emoji")
                     else:
                         # Unsupported inbound type (order/system/ephemeral/…) — kept
                         # as a placeholder, never silently dropped (plan 12 AC-12-17).
