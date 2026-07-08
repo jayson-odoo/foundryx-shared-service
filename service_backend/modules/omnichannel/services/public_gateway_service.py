@@ -177,7 +177,9 @@ class PublicGatewayService:
                 caption=req.media.caption,
                 to=req.to,
             )
-        elif msg_type in ("interactive", "location", "contacts", "reaction"):
+        elif msg_type in ("interactive", "location", "contacts"):
+            return self._send_structured(tenant_id, workspace_id, key_id, msg_type, req)
+        elif msg_type == "reaction":
             raise ApiError(
                 400, "unsupported_type", f"Message type '{msg_type}' is not supported yet."
             )
@@ -260,6 +262,62 @@ class PublicGatewayService:
             if exc.message == CSW_CLOSED_MESSAGE:
                 raise ApiError(409, "csw_window_closed", exc.message) from exc
             raise ApiError(422, "send_rejected", exc.message) from exc
+        return item.id
+
+    # ── Structured send (interactive / location / contacts) ───────────────────
+    def _send_structured(
+        self, tenant_id: str, workspace_id: str, key_id: str, msg_type: str, req: PublicSendRequest
+    ) -> str:
+        # Ensure the workspace has a channel (uniform error shape) before sending.
+        self._workspace_channel(tenant_id, workspace_id)
+        contact = self._resolve_or_create_contact(tenant_id, workspace_id, req.to)
+        actor = f"apikey:{key_id}"
+        messages = self.messages
+        try:
+            if msg_type == "interactive":
+                if not req.interactive:
+                    raise ApiError(422, "invalid_request", "interactive is required.")
+                defn = dict(req.interactive)
+                # Validate the definition BEFORE doing any header fetch/store work —
+                # a malformed interactive must 422 without a wasted SSRF fetch.
+                from .structured import StructuredError, validate_interactive
+
+                try:
+                    validate_interactive(defn)
+                except StructuredError as exc:
+                    raise ApiError(422, "invalid_request", str(exc)) from exc
+                header_content = None
+                header_filename = None
+                # A media header may reference a URL — fetch it (SSRF-guarded) so it
+                # rides the upload-by-id pipeline (never a bare Meta link).
+                header = defn.get("header") or {}
+                if str(header.get("type") or "") in ("image", "video", "document") and header.get("url"):
+                    header_content = self._fetch_url(header["url"])
+                    header_filename = header.get("filename")
+                item = messages.send_interactive(
+                    contact.id,
+                    tenant_id,
+                    actor,
+                    defn=defn,
+                    header_content=header_content,
+                    header_filename=header_filename,
+                )
+            elif msg_type == "location":
+                if not req.location:
+                    raise ApiError(422, "invalid_request", "location is required.")
+                item = messages.send_location(contact.id, tenant_id, actor, defn=dict(req.location))
+            else:  # contacts
+                if not req.contacts:
+                    raise ApiError(422, "invalid_request", "contacts is required.")
+                item = messages.send_contacts(
+                    contact.id, tenant_id, actor, defn={"contacts": req.contacts}
+                )
+        except MediaRejected as exc:
+            raise ApiError(422, exc.code, exc.message) from exc
+        except SendRejected as exc:
+            if exc.message == CSW_CLOSED_MESSAGE:
+                raise ApiError(409, "csw_window_closed", exc.message) from exc
+            raise ApiError(422, "invalid_request", exc.message) from exc
         return item.id
 
     # ── Multipart media send (file part) ──────────────────────────────────────

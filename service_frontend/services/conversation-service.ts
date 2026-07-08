@@ -11,6 +11,9 @@ import type {
   ConversationSocketEvent,
   ConversationThread,
   QuickReply,
+  SendContactsInput,
+  SendInteractiveInput,
+  SendLocationInput,
   SendMediaInput,
   SendMessageInput,
   ThreadListQuery,
@@ -31,6 +34,12 @@ export interface ConversationService {
   /** Send a media file (image/video/audio/voice/document/sticker) — multipart.
    *  Backend sniff-gates + cap-checks then queues the async upload-by-id send. */
   sendMedia(contactId: string, input: SendMediaInput): Promise<ConversationMessage>;
+  /** Send an interactive message (reply-buttons/list/CTA-URL/location-request). */
+  sendInteractive(contactId: string, input: SendInteractiveInput): Promise<ConversationMessage>;
+  /** Send a location (coords + optional name/address). */
+  sendLocation(contactId: string, input: SendLocationInput): Promise<ConversationMessage>;
+  /** Send one or more contact cards. */
+  sendContacts(contactId: string, input: SendContactsInput): Promise<ConversationMessage>;
   /** Internal note (SYSTEM bubble) — never delivered to the contact. */
   addInternalNote(contactId: string, body: string): Promise<ConversationMessage>;
   /** Assign/reassign (userId) or unassign (null). */

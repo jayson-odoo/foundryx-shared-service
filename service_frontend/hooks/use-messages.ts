@@ -13,6 +13,9 @@ import type {
   ConversationMessage,
   ConversationSocketEvent,
   ConversationThread,
+  SendContactsInput,
+  SendInteractiveInput,
+  SendLocationInput,
   SendMediaInput,
   SendMessageInput,
   ThreadPriority,
@@ -32,6 +35,9 @@ export interface UseMessagesResult {
   sendError: string | null;
   send: (input: SendMessageInput) => Promise<boolean>;
   sendMedia: (input: SendMediaInput) => Promise<boolean>;
+  sendInteractive: (input: SendInteractiveInput) => Promise<boolean>;
+  sendLocation: (input: SendLocationInput) => Promise<boolean>;
+  sendContacts: (input: SendContactsInput) => Promise<boolean>;
   addNote: (body: string) => Promise<boolean>;
   assign: (userId: string | null) => Promise<void>;
   assignToMe: () => Promise<void>;
@@ -117,7 +123,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
         senderName: null,
         messageType: input.messageType,
         body: input.body ?? null,
-        mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false,
+        mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false, payload: null,
         externalMessageId: null,
         deliveryStatus: null,
         errorCode: null,
@@ -178,7 +184,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
         mediaMime: input.file.type || null,
         mediaFilename: input.file.name,
         mediaSize: input.file.size,
-        voice: input.kind === 'voice',
+        voice: input.kind === 'voice', payload: null,
         externalMessageId: null,
         deliveryStatus: 'QUEUED',
         errorCode: null,
@@ -208,6 +214,42 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
       }
     },
     [contactId],
+  );
+
+  // Structured sends (interactive/location/contacts) — append the created bubble.
+  const runStructured = useCallback(
+    async (fn: () => Promise<ConversationMessage>): Promise<boolean> => {
+      if (!contactId) return false;
+      setSendError(null);
+      setIsSending(true);
+      try {
+        const created = await fn();
+        setMessages((prev) => (prev.some((m) => m.id === created.id) ? prev : [...prev, created]));
+        return true;
+      } catch (e: unknown) {
+        setSendError(e instanceof Error ? e.message : 'Could not send the message');
+        return false;
+      } finally {
+        setIsSending(false);
+      }
+    },
+    [contactId],
+  );
+
+  const sendInteractive = useCallback(
+    (input: SendInteractiveInput) =>
+      runStructured(() => conversationService.sendInteractive(contactId as string, input)),
+    [contactId, runStructured],
+  );
+  const sendLocation = useCallback(
+    (input: SendLocationInput) =>
+      runStructured(() => conversationService.sendLocation(contactId as string, input)),
+    [contactId, runStructured],
+  );
+  const sendContacts = useCallback(
+    (input: SendContactsInput) =>
+      runStructured(() => conversationService.sendContacts(contactId as string, input)),
+    [contactId, runStructured],
   );
 
   const addNote = useCallback(
@@ -254,5 +296,5 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     [contactId],
   );
 
-  return { thread, messages, isLoading, error, isSending, sendError, send, sendMedia, addNote, assign, assignToMe, setStatus, setPriority };
+  return { thread, messages, isLoading, error, isSending, sendError, send, sendMedia, sendInteractive, sendLocation, sendContacts, addNote, assign, assignToMe, setStatus, setPriority };
 }

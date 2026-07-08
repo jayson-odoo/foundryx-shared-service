@@ -130,6 +130,7 @@ class ConversationService:
                     mediaFilename=m.media_filename,
                     mediaSize=m.media_size,
                     voice=(m.message_type == "VOICE"),
+                    payload=m.payload_json,
                     externalMessageId=m.external_message_id,
                     deliveryStatus=m.delivery_status,
                     errorCode=m.error_code,

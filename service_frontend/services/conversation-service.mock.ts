@@ -15,6 +15,9 @@ import type {
   ConversationSocketEvent,
   ConversationThread,
   QuickReply,
+  SendContactsInput,
+  SendInteractiveInput,
+  SendLocationInput,
   SendMediaInput,
   SendMessageInput,
   ThreadListQuery,
@@ -126,7 +129,7 @@ function seedMessages(): ConversationMessage[] {
     senderName: senderType === 'CONTACT' ? null : 'Demo User',
     messageType: 'TEXT',
     body,
-    mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false,
+    mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false, payload: null,
     externalMessageId: senderType === 'CONTACT' ? nextId('wamid') : null,
     deliveryStatus: senderType === 'AGENT' ? 'READ' : null,
     errorCode: null,
@@ -260,7 +263,7 @@ export function __mockSimulateInbound(workspaceId = 'wsp-001', contactId = 'cnt-
   const message: ConversationMessage = {
     id: nextId('msg'), contactId, channelId: t.channelId,
     senderType: 'CONTACT', senderId: null, senderName: null,
-    messageType: 'TEXT', body, mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false,
+    messageType: 'TEXT', body, mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false, payload: null,
     externalMessageId: nextId('wamid'), deliveryStatus: null,
     errorCode: null, errorMessage: null, replyTo: null, createdAt: new Date().toISOString(),
   };
@@ -302,6 +305,36 @@ function matches(t: ThreadRow, q: ThreadListQuery): boolean {
     if (!hay.includes(s)) return false;
   }
   return true;
+}
+
+/** Shared structured-send path (interactive/location/contacts) for the mock. */
+function mockStructured(
+  contactId: string,
+  messageType: ConversationMessage['messageType'],
+  payload: ConversationMessage['payload'],
+  preview: string,
+): Promise<ConversationMessage> {
+  const t = threadOf(contactId);
+  const windowOpen = !!t.cswExpiresAt && Date.parse(t.cswExpiresAt) > Date.now();
+  if (!windowOpen) {
+    throw new Error('The 24-hour window has closed — send an approved template to re-engage.');
+  }
+  const message: ConversationMessage = {
+    id: nextId('msg'), contactId, channelId: t.channelId,
+    senderType: 'AGENT', senderId: MOCK_CURRENT_USER.id, senderName: MOCK_CURRENT_USER.name,
+    messageType,
+    body: messageType === 'INTERACTIVE' ? ((payload as { body?: string })?.body ?? null) : preview,
+    mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false,
+    payload,
+    externalMessageId: nextId('wamid'), deliveryStatus: 'SENT',
+    errorCode: null, errorMessage: null, replyTo: null,
+    createdAt: new Date().toISOString(),
+  };
+  messages = [...messages, message];
+  const updated = touchThread(t, { lastMessageAt: message.createdAt, lastMessagePreview: preview });
+  emit(t.workspaceId, { type: 'message.created', message, thread: updated });
+  simulateReceipts(message);
+  return delay(message, 250);
 }
 
 export const mockConversationService: ConversationService = {
@@ -355,7 +388,7 @@ export const mockConversationService: ConversationService = {
     const message: ConversationMessage = {
       id: nextId('msg'), contactId, channelId: t.channelId,
       senderType: 'AGENT', senderId: MOCK_CURRENT_USER.id, senderName: MOCK_CURRENT_USER.name,
-      messageType, body, mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false,
+      messageType, body, mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false, payload: null,
       externalMessageId: nextId('wamid'), deliveryStatus: 'SENT',
       errorCode: null, errorMessage: null,
       replyTo: quoted
@@ -388,7 +421,7 @@ export const mockConversationService: ConversationService = {
       mediaMime: input.file.type || null,
       mediaFilename: input.file.name,
       mediaSize: input.file.size,
-      voice: input.kind === 'voice',
+      voice: input.kind === 'voice', payload: null,
       externalMessageId: nextId('wamid'), deliveryStatus: 'SENT',
       errorCode: null, errorMessage: null, replyTo: null,
       createdAt: new Date().toISOString(),
@@ -403,13 +436,27 @@ export const mockConversationService: ConversationService = {
     return delay(message, 250);
   },
 
+  async sendInteractive(contactId, input: SendInteractiveInput) {
+    return mockStructured(contactId, 'INTERACTIVE', input.definition, input.definition.body);
+  },
+  async sendLocation(contactId, input: SendLocationInput) {
+    const { replyToMessageId, ...loc } = input;
+    void replyToMessageId;
+    return mockStructured(contactId, 'LOCATION', loc, loc.name ?? loc.address ?? `${loc.lat}, ${loc.lng}`);
+  },
+  async sendContacts(contactId, input: SendContactsInput) {
+    const name = input.contacts[0]?.name;
+    const label = typeof name === 'string' ? name : (name?.formatted_name ?? 'Contact');
+    return mockStructured(contactId, 'CONTACTS', { contacts: input.contacts }, label);
+  },
+
   async addInternalNote(contactId, body) {
     const t = threadOf(contactId);
     if (!body.trim()) throw new Error('Note body is required');
     const message: ConversationMessage = {
       id: nextId('msg'), contactId, channelId: t.channelId,
       senderType: 'SYSTEM', senderId: MOCK_CURRENT_USER.id, senderName: MOCK_CURRENT_USER.name,
-      messageType: 'TEXT', body: body.trim(), mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false,
+      messageType: 'TEXT', body: body.trim(), mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false, payload: null,
       externalMessageId: null, deliveryStatus: null,
       errorCode: null, errorMessage: null, replyTo: null, createdAt: new Date().toISOString(),
     };

@@ -10,9 +10,12 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Contact as ContactIcon,
   FileText,
   Image as ImageIcon,
+  LayoutList,
   Lock,
+  MapPin,
   Mic,
   Music,
   Paperclip,
@@ -48,6 +51,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
@@ -55,10 +59,18 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { SearchSelect } from '@/components/platform/search-select';
 import { Textarea } from '@/components/ui/textarea';
 import { EMOJI_GROUPS } from '@/lib/emoji';
+import {
+  ContactsBuilderDialog,
+  InteractiveBuilderDialog,
+  LocationBuilderDialog,
+} from './structured-composer';
 import type {
   ConversationMessage,
   MediaKind,
   QuickReply,
+  SendContactsInput,
+  SendInteractiveInput,
+  SendLocationInput,
   SendMediaInput,
   SendMessageInput,
   WhatsAppTemplate,
@@ -74,6 +86,10 @@ export interface ComposerProps {
   onSend: (input: SendMessageInput) => Promise<boolean>;
   /** Send a media attachment (image/video/audio/voice/document/sticker). */
   onSendMedia?: (input: SendMediaInput) => Promise<boolean>;
+  /** Structured sends (interactive/location/contacts) — plan 12 Slice 2. */
+  onSendInteractive?: (input: SendInteractiveInput) => Promise<boolean>;
+  onSendLocation?: (input: SendLocationInput) => Promise<boolean>;
+  onSendContacts?: (input: SendContactsInput) => Promise<boolean>;
   /** Note mode (Activities tab): SYSTEM bubble, no CSW involved. */
   mode?: 'message' | 'note';
   onAddNote?: (body: string) => Promise<boolean>;
@@ -221,6 +237,9 @@ export function Composer({
   sendError,
   onSend,
   onSendMedia,
+  onSendInteractive,
+  onSendLocation,
+  onSendContacts,
   mode = 'message',
   onAddNote,
   replyTo = null,
@@ -230,6 +249,7 @@ export function Composer({
   const [quickOpen, setQuickOpen] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [structured, setStructured] = useState<'interactive' | 'location' | 'contacts' | null>(null);
   const [pending, setPending] = useState<PendingFile[]>([]);
   const [recording, setRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
@@ -243,6 +263,9 @@ export function Composer({
   const isNote = mode === 'note';
   const locked = !isNote && !windowOpen;
   const canAttach = !isNote && !locked && !!onSendMedia;
+  // Structured types are free-form → only offered inside the open 24h window.
+  const canStructured =
+    !isNote && !locked && !!(onSendInteractive || onSendLocation || onSendContacts);
 
   // Revoke object URLs + stop the mic on unmount so previews/streams don't leak.
   useEffect(() => {
@@ -473,7 +496,7 @@ export function Composer({
       )}
 
       <div className="flex items-end gap-2">
-        {canAttach && !recording && (
+        {(canAttach || canStructured) && !recording && (
           <>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -482,15 +505,32 @@ export function Composer({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start">
-                {ATTACH_OPTIONS.map(({ kind, label, Icon }) => (
-                  <DropdownMenuItem
-                    key={kind}
-                    onSelect={() => openPicker(kind)}
-                    data-testid={`attach-${kind}`}
-                  >
-                    <Icon className="size-4" /> {label}
+                {canAttach &&
+                  ATTACH_OPTIONS.map(({ kind, label, Icon }) => (
+                    <DropdownMenuItem
+                      key={kind}
+                      onSelect={() => openPicker(kind)}
+                      data-testid={`attach-${kind}`}
+                    >
+                      <Icon className="size-4" /> {label}
+                    </DropdownMenuItem>
+                  ))}
+                {canAttach && canStructured && <DropdownMenuSeparator />}
+                {onSendInteractive && (
+                  <DropdownMenuItem onSelect={() => setStructured('interactive')} data-testid="attach-interactive">
+                    <LayoutList className="size-4" /> Interactive
                   </DropdownMenuItem>
-                ))}
+                )}
+                {onSendLocation && (
+                  <DropdownMenuItem onSelect={() => setStructured('location')} data-testid="attach-location">
+                    <MapPin className="size-4" /> Location
+                  </DropdownMenuItem>
+                )}
+                {onSendContacts && (
+                  <DropdownMenuItem onSelect={() => setStructured('contacts')} data-testid="attach-contact">
+                    <ContactIcon className="size-4" /> Contact
+                  </DropdownMenuItem>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
             <Popover open={emojiOpen} onOpenChange={setEmojiOpen}>
@@ -623,6 +663,30 @@ export function Composer({
         isSending={isSending}
         onSend={onSend}
       />
+      {onSendInteractive && (
+        <InteractiveBuilderDialog
+          open={structured === 'interactive'}
+          onOpenChange={(o) => setStructured(o ? 'interactive' : null)}
+          isSending={isSending}
+          onSubmit={onSendInteractive}
+        />
+      )}
+      {onSendLocation && (
+        <LocationBuilderDialog
+          open={structured === 'location'}
+          onOpenChange={(o) => setStructured(o ? 'location' : null)}
+          isSending={isSending}
+          onSubmit={onSendLocation}
+        />
+      )}
+      {onSendContacts && (
+        <ContactsBuilderDialog
+          open={structured === 'contacts'}
+          onOpenChange={(o) => setStructured(o ? 'contacts' : null)}
+          isSending={isSending}
+          onSubmit={onSendContacts}
+        />
+      )}
     </div>
   );
 }

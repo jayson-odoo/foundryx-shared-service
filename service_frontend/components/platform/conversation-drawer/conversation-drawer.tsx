@@ -104,6 +104,9 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     sendError,
     send,
     sendMedia,
+    sendInteractive,
+    sendLocation,
+    sendContacts,
     addNote,
     assign,
     assignToMe,
@@ -401,6 +404,9 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
         sendError={sendError}
         onSend={send}
         onSendMedia={sendMedia}
+        onSendInteractive={sendInteractive}
+        onSendLocation={sendLocation}
+        onSendContacts={sendContacts}
         mode={tab === 'activities' ? 'note' : 'message'}
         onAddNote={addNote}
         replyTo={replyTo}

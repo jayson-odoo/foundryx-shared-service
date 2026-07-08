@@ -14,6 +14,9 @@ import type {
   ConversationSocketEvent,
   ConversationThread,
   QuickReply,
+  SendContactsInput,
+  SendInteractiveInput,
+  SendLocationInput,
   SendMediaInput,
   SendMessageInput,
   ThreadListQuery,
@@ -81,6 +84,38 @@ export const realConversationService: ConversationService = {
     return apiFetch<ConversationMessage>(`/omnichannel/contacts/${contactId}/media`, {
       method: 'POST',
       body: form,
+    });
+  },
+
+  async sendInteractive(contactId, input: SendInteractiveInput) {
+    const defn = { ...input.definition, replyToMessageId: input.replyToMessageId };
+    if (input.headerFile) {
+      // Multipart when a media header is attached (apiFetch skips JSON for FormData).
+      const form = new FormData();
+      form.append('payload', JSON.stringify(defn));
+      form.append('file', input.headerFile);
+      return apiFetch<ConversationMessage>(`/omnichannel/contacts/${contactId}/interactive`, {
+        method: 'POST',
+        body: form,
+      });
+    }
+    return apiFetch<ConversationMessage>(`/omnichannel/contacts/${contactId}/interactive`, {
+      method: 'POST',
+      body: JSON.stringify(defn),
+    });
+  },
+
+  async sendLocation(contactId, input: SendLocationInput) {
+    return apiFetch<ConversationMessage>(`/omnichannel/contacts/${contactId}/location`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  async sendContacts(contactId, input: SendContactsInput) {
+    return apiFetch<ConversationMessage>(`/omnichannel/contacts/${contactId}/contacts`, {
+      method: 'POST',
+      body: JSON.stringify(input),
     });
   },
 

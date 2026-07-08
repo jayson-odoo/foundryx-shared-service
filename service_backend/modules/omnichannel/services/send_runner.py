@@ -156,6 +156,39 @@ def run_send(db: Session, message_id: str) -> str:
                 },
                 context_message_id=context_id,
             )
+        elif row.message_type == "INTERACTIVE":
+            from .structured import build_meta_interactive, header_media_kind
+
+            defn = row.payload_json or {}
+            media_id = None
+            # A media header rides row.media_key → upload it + inject the id.
+            if header_media_kind(defn) and row.media_key:
+                content = _read_media(db, row.tenant_id, row.media_key)
+                media_id = adapter.upload_media(
+                    credentials, phone_id, content, row.media_mime or "application/octet-stream"
+                )
+            interactive = build_meta_interactive(defn, media_id=media_id)
+            result = adapter.send(
+                credentials, phone_id, to, interactive=interactive, context_message_id=context_id
+            )
+        elif row.message_type == "LOCATION":
+            from .structured import build_meta_location
+
+            result = adapter.send(
+                credentials,
+                phone_id,
+                to,
+                location=build_meta_location(row.payload_json or {}),
+                context_message_id=context_id,
+            )
+        elif row.message_type == "CONTACTS":
+            result = adapter.send(
+                credentials,
+                phone_id,
+                to,
+                contacts=(row.payload_json or {}).get("contacts") or [],
+                context_message_id=context_id,
+            )
         else:  # TEXT (and any free-form fallback)
             result = adapter.send(
                 credentials, phone_id, to, text=row.body, context_message_id=context_id

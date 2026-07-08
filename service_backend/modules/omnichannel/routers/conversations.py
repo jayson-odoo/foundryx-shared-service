@@ -3,6 +3,7 @@
 PATCH is field-gated per plan 05 §7: assignment needs `conversations.assign`,
 status/priority transitions need `conversations.reply`.
 """
+import json
 from typing import List, Optional
 
 from fastapi import (
@@ -12,6 +13,7 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Request,
     UploadFile,
     status,
 )
@@ -29,6 +31,8 @@ from app.dependencies import (
 from app.models.user import User
 from ..schemas import (
     MessageItem,
+    SendContactsRequest,
+    SendLocationRequest,
     SendMessageRequest,
     ThreadItem,
     ThreadListResponse,
@@ -188,6 +192,103 @@ async def send_message_media(
         raise HTTPException(status_code=404, detail="Conversation not found")
     except MediaRejected as exc:
         raise HTTPException(status_code=422, detail=exc.message)
+    except SendRejected as exc:
+        raise HTTPException(status_code=422, detail=exc.message)
+
+
+@router.post("/{contact_id}/interactive", response_model=MessageItem, status_code=201)
+async def send_interactive(
+    contact_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission("conversations.reply")),
+    actor_user_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> MessageItem:
+    """Send an interactive message (reply-buttons/list/CTA-URL/location-request).
+    Accepts JSON (the interactive definition) OR multipart (``file`` media header
+    + a ``payload`` JSON part)."""
+    header_content: Optional[bytes] = None
+    header_filename: Optional[str] = None
+    reply_to: Optional[str] = None
+    if request.headers.get("content-type", "").startswith("multipart/"):
+        form = await request.form()
+        raw = form.get("payload")
+        upload = form.get("file")
+        if raw is None:
+            raise HTTPException(status_code=422, detail="A payload part is required.")
+        try:
+            defn = json.loads(raw)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail="payload must be valid JSON.")
+        if upload is not None:
+            header_content = await upload.read(max(META_CEILINGS.values()) + 1)
+            header_filename = getattr(upload, "filename", None)
+    else:
+        try:
+            defn = await request.json()
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail="Request body must be valid JSON.")
+    if not isinstance(defn, dict):
+        raise HTTPException(status_code=422, detail="Invalid interactive definition.")
+    reply_to = defn.pop("replyToMessageId", None)
+    try:
+        return MessageService(db).send_interactive(
+            contact_id,
+            current_user.tenant_id,
+            actor_user_id,
+            defn=defn,
+            header_content=header_content,
+            header_filename=header_filename,
+            reply_to_message_id=reply_to,
+        )
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except MediaRejected as exc:
+        raise HTTPException(status_code=422, detail=exc.message)
+    except SendRejected as exc:
+        raise HTTPException(status_code=422, detail=exc.message)
+
+
+@router.post("/{contact_id}/location", response_model=MessageItem, status_code=201)
+def send_location(
+    contact_id: str,
+    payload: SendLocationRequest,
+    current_user: User = Depends(require_permission("conversations.reply")),
+    actor_user_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> MessageItem:
+    try:
+        return MessageService(db).send_location(
+            contact_id,
+            current_user.tenant_id,
+            actor_user_id,
+            defn=payload.model_dump(exclude={"replyToMessageId"}),
+            reply_to_message_id=payload.replyToMessageId,
+        )
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except SendRejected as exc:
+        raise HTTPException(status_code=422, detail=exc.message)
+
+
+@router.post("/{contact_id}/contacts", response_model=MessageItem, status_code=201)
+def send_contacts(
+    contact_id: str,
+    payload: SendContactsRequest,
+    current_user: User = Depends(require_permission("conversations.reply")),
+    actor_user_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> MessageItem:
+    try:
+        return MessageService(db).send_contacts(
+            contact_id,
+            current_user.tenant_id,
+            actor_user_id,
+            defn={"contacts": payload.contacts},
+            reply_to_message_id=payload.replyToMessageId,
+        )
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
     except SendRejected as exc:
         raise HTTPException(status_code=422, detail=exc.message)
 

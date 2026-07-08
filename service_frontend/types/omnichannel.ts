@@ -250,6 +250,13 @@ export interface ConversationMessage {
   mediaSize: number | null;
   /** True for a voice note (renders the voice-note player, not a plain audio). */
   voice: boolean;
+  /** Structured payload for interactive / interactive-reply / location / contacts. */
+  payload:
+    | InteractiveDefinition
+    | InteractiveReplyPayload
+    | LocationPayload
+    | ContactsPayload
+    | null;
   externalMessageId: string | null;
   deliveryStatus: DeliveryStatus | null;
   errorCode: string | null;
@@ -297,6 +304,82 @@ export interface SendMediaInput {
   kind: MediaKind;
   file: File;
   caption?: string;
+  replyToMessageId?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Plan 12 Slice 2 — interactive / location / contacts (structured payloads)
+// ---------------------------------------------------------------------------
+
+export type InteractiveKind = 'buttons' | 'list' | 'cta_url' | 'location_request';
+
+export interface InteractiveButton {
+  id: string;
+  title: string;
+}
+export interface InteractiveListRow {
+  id: string;
+  title: string;
+  description?: string;
+}
+export interface InteractiveListSection {
+  title?: string;
+  rows: InteractiveListRow[];
+}
+export interface InteractiveHeader {
+  type: 'text' | 'image' | 'video' | 'document';
+  text?: string;
+}
+/** The friendly interactive definition (stored in `payload_json`, rendered in the bubble). */
+export interface InteractiveDefinition {
+  kind: InteractiveKind;
+  header?: InteractiveHeader | null;
+  body: string;
+  footer?: string | null;
+  buttons?: InteractiveButton[];
+  list?: { button: string; sections: InteractiveListSection[] };
+  cta?: { displayText: string; url: string };
+}
+
+/** An inbound tapped reply (`INTERACTIVE_REPLY` payload). */
+export interface InteractiveReplyPayload {
+  kind: 'button' | 'list';
+  id: string;
+  title: string;
+  description?: string | null;
+}
+
+export interface LocationPayload {
+  lat: number;
+  lng: number;
+  name?: string | null;
+  address?: string | null;
+}
+
+export interface ContactPhone {
+  phone: string;
+  type?: string;
+  wa_id?: string;
+}
+export interface ContactCard {
+  name: { formatted_name?: string; first_name?: string; last_name?: string } | string;
+  phones: ContactPhone[];
+}
+export interface ContactsPayload {
+  contacts: ContactCard[];
+}
+
+/** Send an interactive message (optional media header attached as a File). */
+export interface SendInteractiveInput {
+  definition: InteractiveDefinition;
+  headerFile?: File | null;
+  replyToMessageId?: string;
+}
+export interface SendLocationInput extends LocationPayload {
+  replyToMessageId?: string;
+}
+export interface SendContactsInput {
+  contacts: ContactCard[];
   replyToMessageId?: string;
 }
 

@@ -152,18 +152,30 @@ class InboundService:
                 media_mime = stored.get("mime") or media_mime
                 media_size = stored.get("size")
 
+        message_type = event.get("message_type") or "TEXT"
+        # Unsupported inbound type → placeholder, never dropped (plan 12 AC-12-17).
+        if message_type == "UNSUPPORTED":
+            logger.info(
+                "unsupported inbound type '%s' from %s (channel %s) stored as placeholder",
+                event.get("original_type"),
+                event.get("from"),
+                channel.id,
+            )
+
         now = datetime.now(timezone.utc)
         row = ConversationMessage(
             tenant_id=channel.tenant_id,
             contact_id=contact.id,
             channel_id=channel.id,
             sender_type="CONTACT",
-            message_type=event.get("message_type") or "TEXT",
+            message_type=message_type,
             body=event.get("body"),
             media_key=media_key,
             media_mime=media_mime,
             media_filename=event.get("media_filename"),
             media_size=media_size,
+            # Structured payload (interactive-reply / location / contacts, Slice 2).
+            payload_json=event.get("payload"),
             external_message_id=external_id,
             metadata_json=metadata,
             # Explicit (µs precision) — the DB server_default is second-granular

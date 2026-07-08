@@ -227,14 +227,19 @@ class WhatsAppCloudAdapter:
         text: Optional[str] = None,
         template: Optional[Dict[str, Any]] = None,
         media: Optional[Dict[str, Any]] = None,
+        interactive: Optional[Dict[str, Any]] = None,
+        location: Optional[Dict[str, Any]] = None,
+        contacts: Optional[list] = None,
         context_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Send a text, template or media message. Returns {"external_message_id": wamid}.
+        """Send a text/template/media/interactive/location/contacts message.
+        Returns {"external_message_id": wamid}.
 
-        `template` = {"name": str, "language": str, "components": [...]} per the
-        Cloud API shape. `media` = {"kind": image|video|audio|voice|document|
-        sticker, "id": media_id, "caption"?, "filename"?} (plan 12). `context_
-        message_id` threads a reply (WhatsApp quote). Dev mode returns a stub wamid.
+        `template` = {"name","language","components"}. `media` = {"kind","id",
+        "caption"?,"filename"?}. `interactive` = the Meta interactive object.
+        `location` = {"latitude","longitude","name"?,"address"?}. `contacts` = the
+        Meta contacts array. `context_message_id` threads a reply (WhatsApp quote).
+        Dev mode returns a stub wamid.
         """
         if not self._configured or credentials.get("dev"):
             import uuid
@@ -242,7 +247,16 @@ class WhatsAppCloudAdapter:
             return {"external_message_id": f"wamid.dev-{uuid.uuid4().hex[:12]}", "dev": True}
 
         payload: Dict[str, Any] = {"messaging_product": "whatsapp", "to": to}
-        if template is not None:
+        if interactive is not None:
+            payload["type"] = "interactive"
+            payload["interactive"] = interactive
+        elif location is not None:
+            payload["type"] = "location"
+            payload["location"] = location
+        elif contacts is not None:
+            payload["type"] = "contacts"
+            payload["contacts"] = contacts
+        elif template is not None:
             payload["type"] = "template"
             payload["template"] = {
                 "name": template["name"],
@@ -584,6 +598,7 @@ class WhatsAppCloudAdapter:
                     media_id: Optional[str] = None
                     media_mime: Optional[str] = None
                     media_filename: Optional[str] = None
+                    payload_data: Optional[Dict[str, Any]] = None
                     voice = False
                     resolved_type = mtype.upper()
                     if mtype == "text":
@@ -600,14 +615,46 @@ class WhatsAppCloudAdapter:
                             voice = True
                             resolved_type = "VOICE"
                     elif mtype == "interactive":
+                        # A recipient tapped a reply-button or picked a list row
+                        # (plan 12 AC-12-14) → INTERACTIVE_REPLY, threaded via context.
                         inter = m.get("interactive") or {}
-                        body = (
-                            (inter.get("button_reply") or inter.get("list_reply") or {})
-                        ).get("title")
+                        br = inter.get("button_reply")
+                        lr = inter.get("list_reply")
+                        reply = br or lr or {}
+                        resolved_type = "INTERACTIVE_REPLY"
+                        body = reply.get("title")
+                        payload_data = {
+                            "kind": "button" if br else "list",
+                            "id": reply.get("id"),
+                            "title": reply.get("title"),
+                            "description": reply.get("description"),
+                        }
+                    elif mtype == "location":
+                        loc = m.get("location") or {}
+                        resolved_type = "LOCATION"
+                        payload_data = {
+                            "lat": loc.get("latitude"),
+                            "lng": loc.get("longitude"),
+                            "name": loc.get("name"),
+                            "address": loc.get("address"),
+                        }
+                        body = loc.get("name") or loc.get("address")
+                    elif mtype == "contacts":
+                        contact_list = m.get("contacts") or []
+                        resolved_type = "CONTACTS"
+                        payload_data = {"contacts": contact_list}
+                        first = (contact_list[0].get("name") or {}) if contact_list else {}
+                        body = first.get("formatted_name")
                     elif mtype == "button":
+                        # A quick-reply button tap on a template message.
                         body = (m.get("button") or {}).get("text")
                     elif mtype == "reaction":
+                        # Reactions land in Slice 3 — carry the emoji for now.
                         body = (m.get("reaction") or {}).get("emoji")
+                    else:
+                        # Unsupported inbound type (order/system/ephemeral/…) — kept
+                        # as a placeholder, never silently dropped (plan 12 AC-12-17).
+                        resolved_type = "UNSUPPORTED"
                     events.append(
                         {
                             "kind": "message",
@@ -615,10 +662,12 @@ class WhatsAppCloudAdapter:
                             "from": m.get("from"),
                             "profile_name": profiles.get(m.get("from")),
                             "message_type": resolved_type,
+                            "original_type": mtype,
                             "body": body,
                             "media_id": media_id,
                             "media_mime": media_mime,
                             "media_filename": media_filename,
+                            "payload": payload_data,
                             "voice": voice,
                             "reply_to_external_id": (m.get("context") or {}).get("id"),
                             "timestamp": m.get("timestamp"),

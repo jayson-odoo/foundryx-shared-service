@@ -21,6 +21,7 @@ import { cn } from '@/lib/utils';
 import type { ConversationMessage, DeliveryStatus, ReplyRef } from '@/types/omnichannel';
 
 import { MessageMedia, isMediaMessage } from './message-media';
+import { MessageStructured, isStructuredMessage } from './message-structured';
 
 export interface MessageBubbleProps {
   message: ConversationMessage;
@@ -174,7 +175,9 @@ export function MessageBubble({
                   Template
                 </div>
               )}
-              {isMediaMessage(message) ? (
+              {isStructuredMessage(message) ? (
+                <MessageStructured message={message} />
+              ) : isMediaMessage(message) ? (
                 <div className="space-y-1">
                   <MessageMedia message={message} />
                   {message.body && (

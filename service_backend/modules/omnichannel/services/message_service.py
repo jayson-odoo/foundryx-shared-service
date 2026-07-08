@@ -315,6 +315,165 @@ class MessageService:
         self.db.refresh(row)
         return self._enqueue_and_finalize(row, contact)
 
+    # ── Send (structured: interactive / location / contacts, Slice 2) ─────────
+    def _structured_row(
+        self,
+        contact_id: str,
+        tenant_id: str,
+        actor_user_id: str,
+        *,
+        message_type: str,
+        body: Optional[str],
+        payload_json: Dict[str, Any],
+        reply_to_message_id: Optional[str],
+        media_key: Optional[str] = None,
+        media_mime: Optional[str] = None,
+        media_filename: Optional[str] = None,
+        media_size: Optional[int] = None,
+    ) -> MessageItem:
+        contact = self.repo.get_by_id(contact_id, tenant_id)
+        if contact is None:
+            raise ThreadNotFound()
+        channel = self._channel_for_contact(contact)
+        # Interactive/location/contacts are free-form → 24h CSW applies (AC-12-25).
+        if not _window_open(contact):
+            raise SendRejected(CSW_CLOSED_MESSAGE)
+        metadata, _ = self._reply_metadata(contact, tenant_id, reply_to_message_id)
+        now = datetime.now(timezone.utc)
+        row = ConversationMessage(
+            tenant_id=tenant_id,
+            contact_id=contact.id,
+            channel_id=channel.id,
+            sender_type="AGENT",
+            sender_id=actor_user_id,
+            message_type=message_type,
+            body=body,
+            payload_json=payload_json,
+            media_key=media_key,
+            media_mime=media_mime,
+            media_filename=media_filename,
+            media_size=media_size,
+            delivery_status="QUEUED",
+            metadata_json=metadata,
+            created_at=now,
+        )
+        self.db.add(row)
+        contact.last_message_at = now
+        self.db.commit()
+        self.db.refresh(row)
+        return self._enqueue_and_finalize(row, contact)
+
+    def send_interactive(
+        self,
+        contact_id: str,
+        tenant_id: str,
+        actor_user_id: str,
+        *,
+        defn: Dict[str, Any],
+        header_content: Optional[bytes] = None,
+        header_filename: Optional[str] = None,
+        reply_to_message_id: Optional[str] = None,
+    ) -> MessageItem:
+        from .structured import StructuredError, header_media_kind, validate_interactive
+
+        try:
+            validate_interactive(defn)
+        except StructuredError as exc:
+            raise SendRejected(str(exc)) from exc
+
+        media_key = media_mime = None
+        media_size = None
+        hkind = header_media_kind(defn)  # image | video | document | None
+        if hkind:
+            if not header_content:
+                raise SendRejected("This interactive message has a media header — attach a file.")
+            contact = self.repo.get_by_id(contact_id, tenant_id)
+            if contact is None:
+                raise ThreadNotFound()
+            # Reject on a closed 24h window BEFORE sniffing/storing the header blob —
+            # else a closed-window send orphans a persisted blob (never sent).
+            if not _window_open(contact):
+                raise SendRejected(CSW_CLOSED_MESSAGE)
+            max_bytes = MediaSettingsService(self.db).max_bytes_for(
+                tenant_id, contact.workspace_id, hkind.upper()
+            )
+            sniffed = sniff_and_validate(
+                hkind.upper(), header_content, filename=header_filename, max_bytes=max_bytes
+            )
+            from app.services.storage import storage_for_tenant
+
+            media_key = storage_for_tenant(self.db, tenant_id).save(
+                f"omnichannel/{tenant_id}/interactive-header", sniffed.content, sniffed.mime
+            )
+            media_mime = sniffed.mime
+            media_size = sniffed.size
+
+        return self._structured_row(
+            contact_id,
+            tenant_id,
+            actor_user_id,
+            message_type="INTERACTIVE",
+            body=(defn.get("body") or None),
+            payload_json=defn,
+            reply_to_message_id=reply_to_message_id,
+            media_key=media_key,
+            media_mime=media_mime,
+            media_filename=header_filename if hkind else None,
+            media_size=media_size,
+        )
+
+    def send_location(
+        self,
+        contact_id: str,
+        tenant_id: str,
+        actor_user_id: str,
+        *,
+        defn: Dict[str, Any],
+        reply_to_message_id: Optional[str] = None,
+    ) -> MessageItem:
+        from .structured import StructuredError, validate_location
+
+        try:
+            payload = validate_location(defn)
+        except StructuredError as exc:
+            raise SendRejected(str(exc)) from exc
+        body = payload.get("name") or payload.get("address") or f"{payload['lat']}, {payload['lng']}"
+        return self._structured_row(
+            contact_id,
+            tenant_id,
+            actor_user_id,
+            message_type="LOCATION",
+            body=body,
+            payload_json=payload,
+            reply_to_message_id=reply_to_message_id,
+        )
+
+    def send_contacts(
+        self,
+        contact_id: str,
+        tenant_id: str,
+        actor_user_id: str,
+        *,
+        defn: Dict[str, Any],
+        reply_to_message_id: Optional[str] = None,
+    ) -> MessageItem:
+        from .structured import StructuredError, validate_contacts
+
+        try:
+            payload = validate_contacts(defn)
+        except StructuredError as exc:
+            raise SendRejected(str(exc)) from exc
+        first = payload["contacts"][0]["name"].get("formatted_name")
+        return self._structured_row(
+            contact_id,
+            tenant_id,
+            actor_user_id,
+            message_type="CONTACTS",
+            body=first,
+            payload_json=payload,
+            reply_to_message_id=reply_to_message_id,
+        )
+
     # ── Internal notes (SYSTEM bubbles — never sent to the contact) ─────────
     def add_internal_note(
         self, contact_id: str, tenant_id: str, actor_user_id: str, body: str

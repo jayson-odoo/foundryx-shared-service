@@ -37,7 +37,7 @@ function mediaMsg(over: Partial<ConversationMessage> = {}): ConversationMessage 
     senderType: 'CONTACT', senderId: null, senderName: null,
     messageType: 'IMAGE', body: null,
     mediaUrl: '/omnichannel/media/m1', mediaMime: 'image/png',
-    mediaFilename: 'pic.png', mediaSize: 2048, voice: false,
+    mediaFilename: 'pic.png', mediaSize: 2048, voice: false, payload: null,
     externalMessageId: null, deliveryStatus: null, errorCode: null, errorMessage: null,
     replyTo: null, createdAt: '2026-07-07T10:00:00Z',
     ...over,

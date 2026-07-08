@@ -208,6 +208,9 @@ class MessageItem(ApiModel):
     mediaFilename: Optional[str] = None
     mediaSize: Optional[int] = None
     voice: bool = False
+    # Structured payload for interactive/interactive-reply/location/contacts
+    # (plan 12 Slice 2) — the friendly definition the bubble renders.
+    payload: Optional[dict] = None
     externalMessageId: Optional[str] = None
     deliveryStatus: Optional[str] = None  # QUEUED | SENT | DELIVERED | READ | FAILED
     errorCode: Optional[str] = None
@@ -256,6 +259,19 @@ class SendMessageRequest(ApiModel):
     body: Optional[str] = None
     templateId: Optional[str] = None
     templateVariables: Optional[List[str]] = None
+    replyToMessageId: Optional[str] = None
+
+
+class SendLocationRequest(ApiModel):
+    lat: float
+    lng: float
+    name: Optional[str] = None
+    address: Optional[str] = None
+    replyToMessageId: Optional[str] = None
+
+
+class SendContactsRequest(ApiModel):
+    contacts: List[dict]
     replyToMessageId: Optional[str] = None
 
 
@@ -346,12 +362,16 @@ class PublicMediaBody(ApiModel):
 
 class PublicSendRequest(ApiModel):
     to: str
-    # text | template | image | video | audio | voice | document | sticker
-    # (interactive/location/contacts/reaction land in slices 2/3)
+    # text | template | image | video | audio | voice | document | sticker |
+    # interactive | location | contacts (reaction lands in Slice 3)
     type: str = "text"
     text: Optional[PublicTextBody] = None
     template: Optional[PublicTemplateBody] = None
     media: Optional[PublicMediaBody] = None
+    # Structured types (plan 12 Slice 2) — friendly definitions (see structured.py).
+    interactive: Optional[dict] = None
+    location: Optional[dict] = None
+    contacts: Optional[List[dict]] = None
 
 
 class PublicSendResponse(ApiModel):

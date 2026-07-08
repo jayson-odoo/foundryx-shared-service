@@ -766,3 +766,409 @@ def test_run_send_permanent_meta_rejection_fails(session_factory, monkeypatch):
     row = db.query(ConversationMessage).filter(ConversationMessage.id == rid).first()
     assert row.delivery_status == "FAILED"
     db.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Slice 2 — Interactive + structured types (AC-12-13..18)
+# ══════════════════════════════════════════════════════════════════════════════
+def _inbound_msg(pnid, message: dict, wa_from="60123456700"):
+    return {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "metadata": {"phone_number_id": pnid},
+                            "contacts": [{"wa_id": wa_from, "profile": {"name": "In User"}}],
+                            "messages": [{"from": wa_from, **message}],
+                        },
+                    }
+                ]
+            }
+        ]
+    }
+
+
+# ── AC-12-13 interactive send ────────────────────────────────────────────────
+def test_send_interactive_buttons(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/interactive",
+        json={
+            "kind": "buttons",
+            "body": "Pick one",
+            "buttons": [{"id": "y", "title": "Yes"}, {"id": "n", "title": "No"}],
+        },
+        headers=_auth(client),
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["messageType"] == "INTERACTIVE"
+    assert body["deliveryStatus"] == "SENT"
+    assert body["payload"]["kind"] == "buttons"
+    assert len(body["payload"]["buttons"]) == 2
+
+
+def test_send_interactive_too_many_buttons_422(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/interactive",
+        json={
+            "kind": "buttons",
+            "body": "x",
+            "buttons": [{"id": str(i), "title": f"b{i}"} for i in range(4)],
+        },
+        headers=_auth(client),
+    )
+    assert res.status_code == 422
+
+
+def test_interactive_media_header_closed_window_no_orphan_blob(session_factory, monkeypatch):
+    """A media-header interactive on a CLOSED 24h window must reject BEFORE storing
+    the header blob — else the blob is orphaned (never sent) (reviewer #2)."""
+    import app.services.storage as storage_mod
+    from modules.omnichannel.services.message_service import MessageService, SendRejected
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws, phone="+60123456683", open_window=False)
+
+    def _boom(*_a, **_k):  # storage must never be touched on a closed window
+        raise AssertionError("storage_for_tenant should not be called on a closed window")
+
+    monkeypatch.setattr(storage_mod, "storage_for_tenant", _boom)
+
+    db = session_factory()
+    svc = MessageService(db)
+    with pytest.raises(SendRejected):
+        svc.send_interactive(
+            cid,
+            DEFAULT_TENANT_ID,
+            "usr-test",
+            defn={
+                "kind": "buttons",
+                "body": "Hi",
+                "header": {"type": "image"},
+                "buttons": [{"id": "a", "title": "A"}],
+            },
+            header_content=PNG,
+            header_filename="a.png",
+        )
+    db.close()
+
+
+def test_send_interactive_list_over_10_rows_422(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    rows = [{"id": str(i), "title": f"r{i}"} for i in range(11)]
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/interactive",
+        json={"kind": "list", "body": "b", "list": {"button": "Open", "sections": [{"rows": rows}]}},
+        headers=_auth(client),
+    )
+    assert res.status_code == 422
+
+
+def test_send_interactive_cta_bad_url_422(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/interactive",
+        json={"kind": "cta_url", "body": "b", "cta": {"displayText": "Go", "url": "javascript:alert(1)"}},
+        headers=_auth(client),
+    )
+    assert res.status_code == 422
+
+
+def test_send_interactive_media_header_multipart(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    defn = {
+        "kind": "buttons",
+        "header": {"type": "image"},
+        "body": "See attached",
+        "buttons": [{"id": "ok", "title": "OK"}],
+    }
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/interactive",
+        files={"file": ("h.png", PNG, "image/png")},
+        data={"payload": json.dumps(defn)},
+        headers=_auth(client),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["messageType"] == "INTERACTIVE"
+    assert res.json()["mediaMime"] == "image/png"
+
+
+# ── AC-12-15 location send ───────────────────────────────────────────────────
+def test_send_location(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/location",
+        json={"lat": 3.15, "lng": 101.7, "name": "KLCC", "address": "Kuala Lumpur"},
+        headers=_auth(client),
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["messageType"] == "LOCATION"
+    assert body["payload"]["lat"] == 3.15 and body["payload"]["name"] == "KLCC"
+
+
+def test_send_location_out_of_range_422(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/location",
+        json={"lat": 999, "lng": 0},
+        headers=_auth(client),
+    )
+    assert res.status_code == 422
+
+
+# ── AC-12-16 contacts send ───────────────────────────────────────────────────
+def test_send_contacts(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/contacts",
+        json={"contacts": [{"name": "Jane Doe", "phones": [{"phone": "+60123", "type": "CELL"}]}]},
+        headers=_auth(client),
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["messageType"] == "CONTACTS"
+    assert body["payload"]["contacts"][0]["name"]["formatted_name"] == "Jane Doe"
+
+
+def test_send_contacts_no_phone_422(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/contacts",
+        json={"contacts": [{"name": "No Phone", "phones": []}]},
+        headers=_auth(client),
+    )
+    assert res.status_code == 422
+
+
+# ── AC-12-25 CSW applies to structured types ─────────────────────────────────
+def test_structured_blocked_when_window_closed(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws, phone="+60123456690", open_window=False)
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/location",
+        json={"lat": 3.1, "lng": 101.6},
+        headers=_auth(client),
+    )
+    assert res.status_code == 422
+    assert "window" in res.json()["detail"].lower()
+
+
+# ── AC-12-14 inbound interactive reply threaded ──────────────────────────────
+def test_inbound_interactive_reply_threaded(session_factory):
+    from modules.omnichannel.models import Contact, ConversationMessage
+    from modules.omnichannel.services.inbound_service import InboundService
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws, phone_number_id="pn-ir")
+    # Seed the ORIGINAL outbound interactive the reply threads to.
+    db = session_factory()
+    from modules.omnichannel.models import Channel
+
+    ch = db.query(Channel).filter(Channel.phone_number_id == "pn-ir").first()
+    contact = Contact(
+        tenant_id=DEFAULT_TENANT_ID, workspace_id=ws, first_name="R", phone="+60123456700",
+        priority="MEDIUM",
+    )
+    db.add(contact)
+    db.flush()
+    orig = ConversationMessage(
+        tenant_id=DEFAULT_TENANT_ID, contact_id=contact.id, channel_id=ch.id, sender_type="AGENT",
+        message_type="INTERACTIVE", body="Pick", external_message_id="wamid.orig",
+        payload_json={"kind": "buttons", "body": "Pick"},
+    )
+    db.add(orig)
+    db.commit()
+    orig_id = orig.id
+    db.close()
+
+    db = session_factory()
+    InboundService(db).process_payload(
+        "pn-ir",
+        _inbound_msg(
+            "pn-ir",
+            {
+                "id": "wamid.reply",
+                "type": "interactive",
+                "interactive": {"type": "button_reply", "button_reply": {"id": "y", "title": "Yes"}},
+                "context": {"id": "wamid.orig"},
+            },
+        ),
+    )
+    row = (
+        db.query(ConversationMessage)
+        .filter(ConversationMessage.external_message_id == "wamid.reply")
+        .first()
+    )
+    assert row.message_type == "INTERACTIVE_REPLY"
+    assert row.payload_json["title"] == "Yes" and row.payload_json["kind"] == "button"
+    assert (row.metadata_json or {}).get("reply_to", {}).get("id") == orig_id
+    db.close()
+
+
+# ── AC-12-15/16 inbound location + contacts parse ────────────────────────────
+def test_inbound_location_and_contacts(session_factory):
+    from modules.omnichannel.models import ConversationMessage
+    from modules.omnichannel.services.inbound_service import InboundService
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws, phone_number_id="pn-lc")
+
+    db = session_factory()
+    InboundService(db).process_payload(
+        "pn-lc",
+        _inbound_msg(
+            "pn-lc",
+            {"id": "wamid.loc", "type": "location", "location": {"latitude": 1.3, "longitude": 103.8, "name": "Home"}},
+        ),
+    )
+    InboundService(db).process_payload(
+        "pn-lc",
+        _inbound_msg(
+            "pn-lc",
+            {
+                "id": "wamid.con",
+                "type": "contacts",
+                "contacts": [{"name": {"formatted_name": "Bob"}, "phones": [{"phone": "+60199"}]}],
+            },
+        ),
+    )
+    loc = db.query(ConversationMessage).filter(ConversationMessage.external_message_id == "wamid.loc").first()
+    con = db.query(ConversationMessage).filter(ConversationMessage.external_message_id == "wamid.con").first()
+    assert loc.message_type == "LOCATION" and loc.payload_json["lat"] == 1.3
+    assert con.message_type == "CONTACTS" and con.payload_json["contacts"][0]["name"]["formatted_name"] == "Bob"
+    db.close()
+
+
+# ── AC-12-17 unknown-type placeholder ────────────────────────────────────────
+def test_inbound_unknown_type_placeholder(session_factory):
+    from modules.omnichannel.models import ConversationMessage
+    from modules.omnichannel.services.inbound_service import InboundService
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws, phone_number_id="pn-unk")
+    db = session_factory()
+    res = InboundService(db).process_payload(
+        "pn-unk", _inbound_msg("pn-unk", {"id": "wamid.order", "type": "order", "order": {"x": 1}})
+    )
+    assert res["messages"] == 1
+    row = db.query(ConversationMessage).filter(ConversationMessage.external_message_id == "wamid.order").first()
+    assert row.message_type == "UNSUPPORTED"
+    db.close()
+
+
+# ── AC-12-18 gateway interactive/location/contacts ───────────────────────────
+def test_gateway_location(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    _seed_contact(session_factory, ws, phone="+60123456680")
+    key = _mint_key(client, ws)
+    res = client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": "+60123456680", "type": "location", "location": {"lat": 3.1, "lng": 101.6, "name": "HQ"}},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert res.status_code == 202, res.text
+    assert res.json()["status"] == "queued"
+
+
+def test_gateway_interactive_and_malformed(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    _seed_contact(session_factory, ws, phone="+60123456681")
+    key = _mint_key(client, ws)
+    ok = client.post(
+        "/api/v1/omnichannel/messages",
+        json={
+            "to": "+60123456681",
+            "type": "interactive",
+            "interactive": {"kind": "buttons", "body": "Hi", "buttons": [{"id": "a", "title": "A"}]},
+        },
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert ok.status_code == 202, ok.text
+    bad = client.post(
+        "/api/v1/omnichannel/messages",
+        json={
+            "to": "+60123456681",
+            "type": "interactive",
+            "interactive": {"kind": "buttons", "body": "Hi", "buttons": []},
+        },
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert bad.status_code == 422
+
+
+def test_gateway_interactive_bad_media_header_is_422(client, session_factory, monkeypatch):
+    """An interactive with a media header whose URL yields non-image bytes must
+    surface a typed 422 (MediaRejected), never an unhandled 500 (reviewer #1)."""
+    from modules.omnichannel.services.public_gateway_service import PublicGatewayService
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    _seed_contact(session_factory, ws, phone="+60123456682")
+    key = _mint_key(client, ws)
+    # Fetched bytes are HTML, not an image → sniff rejects.
+    monkeypatch.setattr(PublicGatewayService, "_fetch_url", lambda self, url: b"<html>nope</html>")
+    res = client.post(
+        "/api/v1/omnichannel/messages",
+        json={
+            "to": "+60123456682",
+            "type": "interactive",
+            "interactive": {
+                "kind": "buttons",
+                "body": "Hi",
+                "header": {"type": "image", "url": "https://example.com/page.html"},
+                "buttons": [{"id": "a", "title": "A"}],
+            },
+        },
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert res.status_code == 422, res.text
+
+
+# ── structured.py unit checks ────────────────────────────────────────────────
+def test_build_meta_interactive_shapes():
+    from modules.omnichannel.services.structured import build_meta_interactive
+
+    btn = build_meta_interactive(
+        {"kind": "buttons", "body": "b", "buttons": [{"id": "x", "title": "X"}]}
+    )
+    assert btn["type"] == "button"
+    assert btn["action"]["buttons"][0]["reply"]["id"] == "x"
+
+    cta = build_meta_interactive(
+        {"kind": "cta_url", "body": "b", "cta": {"displayText": "Go", "url": "https://x.io"}}
+    )
+    assert cta["type"] == "cta_url"
+    assert cta["action"]["parameters"]["url"] == "https://x.io"
+
+    img = build_meta_interactive(
+        {"kind": "buttons", "header": {"type": "image"}, "body": "b", "buttons": [{"id": "x", "title": "X"}]},
+        media_id="MID",
+    )
+    assert img["header"] == {"type": "image", "image": {"id": "MID"}}
