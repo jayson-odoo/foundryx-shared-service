@@ -127,6 +127,15 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
   const [searchTerm, setSearchTerm] = useState('');
   const [matchCursor, setMatchCursor] = useState(0); // 0 = newest match
 
+  // Deep link: ?msg=<id> (the bubble menu's "Copy link to message") — scroll to
+  // + briefly highlight that message once its thread is loaded.
+  const [focusMsgId, setFocusMsgId] = useState<string | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('thread') === contactId) setFocusMsgId(params.get('msg'));
+    else setFocusMsgId(null);
+  }, [contactId]);
+
   // Switching threads drops any in-progress reply + search.
   useEffect(() => {
     setReplyTo(null);
@@ -191,11 +200,22 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     }
   }, [activeMatchId]);
 
+  // Once the deep-linked message is in view, scroll to it; drop the focus after a
+  // beat so new-message auto-scroll resumes (highlight rides `isActiveMatch`).
   useEffect(() => {
-    // Don't yank the view to the bottom while the user is jumping matches.
-    if (activeSearch) return;
+    if (!focusMsgId) return;
+    const el = messageRefs.current.get(focusMsgId);
+    if (!el) return;
+    el.scrollIntoView({ block: 'center' });
+    const t = setTimeout(() => setFocusMsgId(null), 2500);
+    return () => clearTimeout(t);
+  }, [focusMsgId, visibleMessages.length]);
+
+  useEffect(() => {
+    // Don't yank the view to the bottom while jumping matches or focusing a deep link.
+    if (activeSearch || focusMsgId) return;
     bottomRef.current?.scrollIntoView({ block: 'end' });
-  }, [visibleMessages.length, contactId, activeSearch]);
+  }, [visibleMessages.length, contactId, activeSearch, focusMsgId]);
 
   const closeSearch = useCallback(() => {
     setSearchOpen(false);
@@ -381,7 +401,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
                   contactName={thread.name}
                   formatTime={formatTime}
                   highlight={activeSearch || undefined}
-                  isActiveMatch={m.id === activeMatchId}
+                  isActiveMatch={m.id === activeMatchId || m.id === focusMsgId}
                   onReply={
                     tab === 'messages'
                       ? (msg) => {

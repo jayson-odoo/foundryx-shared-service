@@ -2,7 +2,7 @@
  * Plan 12 Slice 3 (frontend): reaction chips render on a bubble + the react
  * control fires onReact with the picked emoji (or '' to remove). AC-12-20.
  */
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -55,6 +55,19 @@ describe('reaction chips', () => {
     await user.pointer({ keys: '[MouseRight]', target: screen.getByTestId('bubble-contact') });
     await user.click(await screen.findByTestId('react-👍'));
     expect(onReact).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }), '👍');
+  });
+
+  it('opens the full emoji picker submenu and reacts with any emoji', async () => {
+    const user = userEvent.setup();
+    const onReact = vi.fn();
+    render(<MessageBubble message={msg()} onReact={onReact} />);
+    await user.pointer({ keys: '[MouseRight]', target: screen.getByTestId('bubble-contact') });
+    // The "+" submenu trigger reveals the bundled picker (beyond the quick six).
+    await user.hover(await screen.findByTestId('react-more'));
+    const items = await screen.findAllByTestId('react-emoji-item');
+    expect(items.length).toBeGreaterThan(6);
+    fireEvent.click(items[0]);
+    expect(onReact).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }), items[0].textContent);
   });
 
   it('offers a remove control when the agent already reacted', async () => {

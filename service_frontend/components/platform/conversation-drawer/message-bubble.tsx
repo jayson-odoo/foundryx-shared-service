@@ -15,8 +15,12 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu';
+import { EMOJI_GROUPS } from '@/lib/emoji';
 import { cn } from '@/lib/utils';
 import type { ConversationMessage, DeliveryStatus, ReplyRef } from '@/types/omnichannel';
 
@@ -251,7 +255,6 @@ export function MessageBubble({
         {onReact && (
           <>
             <div className="flex items-center gap-0.5 px-1 py-0.5" data-testid="react-row">
-              <SmilePlus className="mx-1 size-4 shrink-0 text-muted-foreground" />
               {QUICK_EMOJIS.map((emoji) => (
                 <ContextMenuItem
                   key={emoji}
@@ -263,6 +266,37 @@ export function MessageBubble({
                   {emoji}
                 </ContextMenuItem>
               ))}
+              {/* Full bundled picker (no CDN — CSP) for any emoji beyond the six. */}
+              <ContextMenuSub>
+                <ContextMenuSubTrigger
+                  className="justify-center rounded px-1.5 py-1 [&>svg]:hidden"
+                  data-testid="react-more"
+                  aria-label="More emojis"
+                >
+                  <SmilePlus className="size-4 text-muted-foreground" />
+                </ContextMenuSubTrigger>
+                <ContextMenuSubContent className="max-h-64 w-64 overflow-y-auto p-2">
+                  {EMOJI_GROUPS.map((group) => (
+                    <div key={group.label}>
+                      <div className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                        {group.label}
+                      </div>
+                      <div className="grid grid-cols-8 gap-0.5 pb-1">
+                        {group.emojis.map((emoji, i) => (
+                          <ContextMenuItem
+                            key={`${group.label}-${i}`}
+                            onSelect={() => onReact(message, emoji)}
+                            className="justify-center rounded p-1 text-lg leading-none"
+                            data-testid="react-emoji-item"
+                          >
+                            {emoji}
+                          </ContextMenuItem>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </ContextMenuSubContent>
+              </ContextMenuSub>
               {agentReacted && (
                 <ContextMenuItem
                   onSelect={() => onReact(message, '')}

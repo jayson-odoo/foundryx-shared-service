@@ -33,6 +33,28 @@ const CAPS: CapConfig[] = [
   { overrideKey: 'stickerMaxBytes', effectiveKind: 'STICKER', label: 'Sticker' },
 ];
 
+// Meta's raw MIME strings (esp. the Office `application/vnd.openxmlformats-…`
+// ones) are long enough to blow out the pill row. Show a short human label; the
+// full MIME stays on hover (title) for the exact value.
+const MIME_LABELS: Record<string, string> = {
+  'application/pdf': 'PDF',
+  'application/zip': 'ZIP',
+  'text/plain': 'Text',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'PowerPoint',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'Excel',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'Word',
+  'application/vnd.ms-powerpoint': 'PowerPoint (legacy)',
+  'application/vnd.ms-excel': 'Excel (legacy)',
+  'application/msword': 'Word (legacy)',
+};
+
+function mimeLabel(mime: string): string {
+  if (MIME_LABELS[mime]) return MIME_LABELS[mime];
+  // image/jpeg, video/mp4, audio/ogg → jpeg / mp4 / ogg (subtype only).
+  const sub = mime.split('/')[1] ?? mime;
+  return sub.length <= 12 ? sub.toUpperCase() : mime;
+}
+
 type CapValues = Record<keyof OmnichannelSettingsOverrides, string>;
 
 /** Seed the MB-string inputs from the stored byte overrides (null → blank). */
@@ -154,8 +176,9 @@ export function MediaCapsForm() {
                         variant="outline"
                         appearance="outline"
                         className="font-normal"
+                        title={mime}
                       >
-                        {mime}
+                        {mimeLabel(mime)}
                       </Badge>
                     ))}
                   </div>
