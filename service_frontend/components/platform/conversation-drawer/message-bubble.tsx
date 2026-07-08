@@ -269,11 +269,11 @@ export function MessageBubble({
               {/* Full bundled picker (no CDN — CSP) for any emoji beyond the six. */}
               <ContextMenuSub>
                 <ContextMenuSubTrigger
-                  className="justify-center rounded px-1.5 py-1 [&>svg]:hidden"
+                  className="justify-center rounded px-1.5 py-1 [&>svg:last-child]:hidden"
                   data-testid="react-more"
                   aria-label="More emojis"
                 >
-                  <SmilePlus className="size-4 text-muted-foreground" />
+                  <SmilePlus className="size-4 text-foreground/70" />
                 </ContextMenuSubTrigger>
                 <ContextMenuSubContent className="max-h-64 w-64 overflow-y-auto p-2">
                   {EMOJI_GROUPS.map((group) => (

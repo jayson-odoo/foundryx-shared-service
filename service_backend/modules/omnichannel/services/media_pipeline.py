@@ -14,6 +14,7 @@ upload + ``adapter.send``.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -160,6 +161,23 @@ def sniff_and_validate(
     return SniffedMedia(content=content, mime=mime, size=size)
 
 
+def _ffmpeg_exe() -> str:
+    """Resolve an ffmpeg binary. Prefer a system ffmpeg on PATH (the Docker image
+    ships a full build); otherwise fall back to the static binary bundled by the
+    ``imageio-ffmpeg`` pip dependency, so a native local boot (no brew/apt ffmpeg)
+    still transcodes voice notes. Returns ``"ffmpeg"`` if neither resolves, so the
+    subprocess still raises a clean FileNotFoundError → transcode_failed."""
+    system = shutil.which("ffmpeg")
+    if system:
+        return system
+    try:
+        import imageio_ffmpeg  # optional; installed via requirements
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return "ffmpeg"
+
+
 def transcode_voice(content: bytes) -> bytes:
     """Transcode a browser voice recording (webm/opus) → ogg/opus via ffmpeg so
     WhatsApp treats it as a true voice note (AC-12-04). A failure raises
@@ -172,7 +190,7 @@ def transcode_voice(content: bytes) -> bytes:
             fh.write(content)
         try:
             subprocess.run(
-                ["ffmpeg", "-y", "-i", src, "-c:a", "libopus", "-b:a", "32k", dst],
+                [_ffmpeg_exe(), "-y", "-i", src, "-c:a", "libopus", "-b:a", "32k", dst],
                 capture_output=True,
                 check=True,
             )
