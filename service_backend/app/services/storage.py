@@ -45,6 +45,14 @@ class StorageService(Protocol):
         let clients cache it past the presign TTL)."""
         ...
 
+    def fetch(self, key: str) -> Tuple[bytes, Optional[str]]:
+        """Storage key → (raw bytes, stored content-type | None). Reads the
+        blob straight from the backend so a serving route can stream it
+        SAME-ORIGIN — no redirect to a presigned remote URL (which a browser
+        then CORS-blocks against the bucket). Raises FileNotFoundError when the
+        blob is gone."""
+        ...
+
     def delete(self, key: str) -> None:
         """Remove a stored blob (replace/remove flows). Missing = no-op."""
         ...
@@ -82,6 +90,12 @@ class LocalDiskStorage:
 
     def resolve(self, key: str) -> Tuple[str, str]:
         return ("path", str(self.root / key))
+
+    def fetch(self, key: str) -> Tuple[bytes, Optional[str]]:
+        path = self.root / key
+        if not path.is_file():
+            raise FileNotFoundError(key)
+        return path.read_bytes(), mimetypes.guess_type(str(path))[0]
 
     def delete(self, key: str) -> None:
         try:
@@ -178,6 +192,13 @@ class TenantStorage:
             return self._local.resolve(key)
         connection_id, raw = parts
         return _adapter_for(self._connection_for_key(connection_id)).resolve(raw)
+
+    def fetch(self, key: str) -> Tuple[bytes, Optional[str]]:
+        parts = self._split(key)
+        if parts is None:
+            return self._local.fetch(key)
+        connection_id, raw = parts
+        return _adapter_for(self._connection_for_key(connection_id)).fetch(raw)
 
     def delete(self, key: str) -> None:
         parts = self._split(key)

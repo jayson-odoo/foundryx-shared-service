@@ -230,7 +230,11 @@ class TemplateManagementService:
         try:
             result = get_adapter(channel.channel_type).create_template(creds, channel.waba_id or "", payload)
         except SendError as exc:
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
+            # Meta rejected the template = client-fixable input → 422, NOT 5xx.
+            # Cloudflare replaces any origin 5xx body with its own error page, so
+            # a 502 hid Meta's actual reason from the operator; a 4xx passes the
+            # detail straight through (mirrors how send/react surface SendError).
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
         t.meta_template_id = result.get("meta_template_id")
         t.status = (result.get("status") or "PENDING").upper()
         t.rejected_reason = None
@@ -249,7 +253,8 @@ class TemplateManagementService:
                         creds, channel.waba_id or "", t.name, t.meta_template_id
                     )
                 except SendError as exc:
-                    raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
+                    # 4xx so Cloudflare passes Meta's reason through (see submit).
+                    raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
         self.db.delete(t)
         self.db.commit()
 

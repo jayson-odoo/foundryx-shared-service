@@ -126,6 +126,17 @@ class S3CompatibleAdapter:
             return ("url", self.public_url(key))
         return ("presigned", self.public_url(key))
 
+    def fetch(self, key: str) -> Tuple[bytes, Optional[str]]:
+        """Read the object bytes straight through boto3 so the serving route
+        streams them SAME-ORIGIN (no presigned redirect → no bucket-CORS
+        preflight, which browsers 403 against R2/S3). Missing object →
+        FileNotFoundError."""
+        try:
+            obj = self.client.get_object(Bucket=self.bucket, Key=key)
+        except Exception as exc:  # noqa: BLE001 — boto3 ClientError (NoSuchKey etc.)
+            raise FileNotFoundError(key) from exc
+        return obj["Body"].read(), obj.get("ContentType")
+
     def delete(self, key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=key)
 

@@ -16,11 +16,10 @@ NOTE: the legacy unauthenticated ``GET /{path:path}`` local-disk route was remov
 (plan 12 review) — it co-served outbound blobs under ``media_root`` with no auth/
 CSP. All blobs now flow through this authed endpoint only.
 """
-from pathlib import Path
 from typing import Optional, Tuple
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.responses import Response
 from jose import JWTError
 from sqlalchemy.orm import Session
 
@@ -102,15 +101,15 @@ def serve_message_media(
         if contact is None or contact.workspace_id != workspace_id:
             raise HTTPException(status_code=404, detail="Not found")
 
+    # Stream the bytes back SAME-ORIGIN (plan 12 review). A remote backend (R2/
+    # S3) is read through the storage adapter and re-served from our origin —
+    # never a 307 to a presigned bucket URL, which the browser then CORS-blocks
+    # (the client sends x-tenant-slug/Authorization, so the redirected fetch
+    # triggers an OPTIONS preflight the bucket 403s). Local disk still streams
+    # from the media root.
     try:
-        kind, value = storage_for_tenant(db, tenant_id).resolve(message.media_key)
+        data, stored_mime = storage_for_tenant(db, tenant_id).fetch(message.media_key)
     except (UnresolvableKey, FileNotFoundError):
         raise HTTPException(status_code=404, detail="Not found")
-    media_type = message.media_mime or "application/octet-stream"
-    if kind == "path":
-        path = Path(value)
-        if not path.is_file():
-            raise HTTPException(status_code=404, detail="Not found")
-        return FileResponse(path, media_type=media_type, headers=_MEDIA_HEADERS)
-    # 'url' | 'presigned' — redirect (presigned expires; never cache it hard).
-    return RedirectResponse(value, headers=_MEDIA_HEADERS)
+    media_type = message.media_mime or stored_mime or "application/octet-stream"
+    return Response(content=data, media_type=media_type, headers=_MEDIA_HEADERS)
