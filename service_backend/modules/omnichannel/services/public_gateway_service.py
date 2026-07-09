@@ -60,6 +60,24 @@ class PublicGatewayService:
             )
         return channel
 
+    def list_contact_messages(
+        self, tenant_id: str, workspace_id: str, contact_id: str, *, limit: int, before_id: Optional[str] = None
+    ):
+        """Read-only message history for a contact — ALL message types (text,
+        media, interactive, location, contacts, template, reaction, replies) via
+        the SAME ``message_items`` builder the inbox uses. Workspace-scoped (the
+        contact must belong to the key's workspace) and side-effect-free: unlike
+        the agent inbox, a consumer read does NOT mark the thread read."""
+        from .conversation_service import ConversationService
+
+        contact = self.contacts.get_by_id(contact_id, tenant_id)
+        if contact is None or contact.workspace_id != workspace_id:
+            raise ApiError(404, "contact_not_found", "Contact not found for this workspace.")
+        rows = self.contacts.list_messages_recent(
+            contact_id, tenant_id, limit=limit, before_id=before_id
+        )
+        return ConversationService(self.db).message_items(rows)
+
     def _resolve_or_create_contact(
         self, tenant_id: str, workspace_id: str, phone: str
     ) -> Contact:

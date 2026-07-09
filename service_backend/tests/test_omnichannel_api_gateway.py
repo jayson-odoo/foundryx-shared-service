@@ -223,6 +223,44 @@ def test_public_send_text_open_window(client, session_factory):
     assert "Hi there" in bodies
 
 
+def test_public_list_contact_messages(client, session_factory):
+    """Consumer can fetch a contact's message history (all types) read-only."""
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    _seed_open_contact(session_factory, ws, phone="+60123123123", open_window=True)
+    key = _mint(client, ws).json()["fullKey"]
+    hdr = {"Authorization": f"Bearer {key}"}
+
+    client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": "+60123123123", "type": "text", "text": {"body": "Hi there"}},
+        headers=hdr,
+    )
+    from modules.omnichannel.models import Contact
+
+    db = session_factory()
+    cid = db.query(Contact).filter(Contact.phone == "+60123123123").first().id
+    db.close()
+
+    r = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages", headers=hdr)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["contactId"] == cid
+    assert "Hi there" in [m["body"] for m in body["data"]]
+
+
+def test_public_list_messages_unknown_contact_404(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    key = _mint(client, ws).json()["fullKey"]
+    r = client.get(
+        "/api/v1/omnichannel/contacts/does-not-exist/messages",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "contact_not_found"
+
+
 # ── CSW on the public API (AC-01-17) ─────────────────────────────────────────
 def test_csw_closed_free_form_409(client, session_factory):
     ws = _default_workspace_id(session_factory)

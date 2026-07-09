@@ -9,7 +9,7 @@ JWT `require_module` gate — service-active is re-checked inside the dependency
 import json
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi import APIRouter, Depends, Header, Query, Request, status
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
@@ -17,6 +17,7 @@ from app.database import get_db
 
 from ..api_auth import ApiWorkspace, get_api_workspace
 from ..schemas import (
+    PublicMessageListResponse,
     PublicSendRequest,
     PublicSendResponse,
     PublicTemplateListResponse,
@@ -87,3 +88,24 @@ def list_templates(
 ) -> PublicTemplateListResponse:
     items = PublicGatewayService(db).list_templates(api_ws.tenant_id, api_ws.workspace_id)
     return PublicTemplateListResponse(data=items)
+
+
+@router.get("/contacts/{contact_id}/messages", response_model=PublicMessageListResponse)
+def list_contact_messages(
+    contact_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    before: Optional[str] = Query(default=None),
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicMessageListResponse:
+    """A contact's message history — ALL message types, workspace-scoped, read-
+    only (never marks the thread read). Newest ``limit`` oldest→newest; pass the
+    returned ``nextBefore`` back as ``before`` to page further into history.
+    Media rides the same authed ``/omnichannel/media/{id}`` route (the API key
+    is accepted there too)."""
+    items = PublicGatewayService(db).list_contact_messages(
+        api_ws.tenant_id, api_ws.workspace_id, contact_id, limit=limit, before_id=before
+    )
+    # More history exists when the page filled to the limit → oldest row is the cursor.
+    next_before = items[0].id if len(items) == limit else None
+    return PublicMessageListResponse(contactId=contact_id, data=items, nextBefore=next_before)

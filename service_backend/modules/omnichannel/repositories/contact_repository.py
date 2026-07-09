@@ -101,6 +101,33 @@ class ContactRepository:
             .all()
         )
 
+    def list_messages_recent(
+        self, contact_id: str, tenant_id: str, *, limit: int, before_id: Optional[str] = None
+    ) -> List[ConversationMessage]:
+        """The most recent ``limit`` messages, oldest→newest. ``before_id`` pages
+        further back (keyset on the created_at of that message). Bounded query —
+        never loads an entire (possibly huge) thread for the public API."""
+        q = self.db.query(ConversationMessage).filter(
+            ConversationMessage.tenant_id == tenant_id,
+            ConversationMessage.contact_id == contact_id,
+        )
+        if before_id:
+            anchor = self.get_message(before_id, tenant_id)
+            if anchor is not None:
+                q = q.filter(
+                    (ConversationMessage.created_at < anchor.created_at)
+                    | (
+                        (ConversationMessage.created_at == anchor.created_at)
+                        & (ConversationMessage.id < anchor.id)
+                    )
+                )
+        rows = (
+            q.order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
+            .limit(limit)
+            .all()
+        )
+        return list(reversed(rows))
+
     def get_message(self, message_id: str, tenant_id: str) -> Optional[ConversationMessage]:
         return (
             self.db.query(ConversationMessage)

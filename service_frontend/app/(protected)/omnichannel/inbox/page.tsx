@@ -5,7 +5,7 @@
  * the reusable <ConversationDrawer>. Workspace-scoped; gated by
  * conversations.read.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
@@ -32,12 +32,26 @@ export default function InboxPage() {
   const { threads, isLoading, error, filters, setFilters } = useConversations(workspaceId);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // Deep link: ?thread=<contactId> (the bubble menu's "Copy link to message").
-  // Read from window on mount instead of useSearchParams to keep the route
-  // statically prerenderable. Scroll-to-?msg= is a follow-up (backlog).
+  // Deep link: ?thread=<contactId> is the source of truth for the open
+  // conversation — opening a thread pushes it into the URL (shareable +
+  // debuggable), and browser back/forward re-selects. Read from window/history
+  // instead of useSearchParams to keep the route statically prerenderable.
   useEffect(() => {
-    const thread = new URLSearchParams(window.location.search).get('thread');
-    if (thread) setSelectedId(thread);
+    const sync = () => setSelectedId(new URLSearchParams(window.location.search).get('thread'));
+    sync(); // initial deep link
+    window.addEventListener('popstate', sync);
+    return () => window.removeEventListener('popstate', sync);
+  }, []);
+
+  const openThread = useCallback((id: string | null) => {
+    setSelectedId(id);
+    const url = new URL(window.location.href);
+    if (id) url.searchParams.set('thread', id);
+    else url.searchParams.delete('thread');
+    // Same thread re-click = no history spam; a new thread = a back-navigable entry.
+    if (id !== new URLSearchParams(window.location.search).get('thread')) {
+      window.history.pushState(null, '', url);
+    }
   }, []);
 
   return (
@@ -56,7 +70,7 @@ export default function InboxPage() {
               filters={filters}
               setFilters={setFilters}
               selectedId={selectedId}
-              onSelect={setSelectedId}
+              onSelect={openThread}
             />
           </div>
           <div className="min-h-0">

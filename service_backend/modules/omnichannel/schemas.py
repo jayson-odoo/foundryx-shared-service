@@ -460,6 +460,15 @@ class PublicTemplateListResponse(ApiModel):
     data: List[PublicTemplateItem]
 
 
+class PublicMessageListResponse(ApiModel):
+    """A contact's message history for the consumer API — full-fidelity
+    ``MessageItem`` (every message type). ``nextBefore`` = pass back as
+    ``before`` to page further into history (null when the page is the oldest)."""
+    contactId: str
+    data: List[MessageItem]
+    nextBefore: Optional[str] = None
+
+
 # ── Consumer webhooks (plan sprint-1/01 Slice 4) ─────────────────────────────
 class WebhookEndpointItem(ApiModel):
     id: str
