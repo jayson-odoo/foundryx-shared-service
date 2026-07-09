@@ -18,6 +18,29 @@ from .base import CodeExchangeError, ConnectionStatus, SendError
 logger = logging.getLogger(__name__)
 
 
+def _meta_error_detail(resp: "httpx.Response") -> str:
+    """Assemble the most specific message Meta gives. ``error.message`` alone is
+    often the generic title ("Invalid parameter"); the real reason lives in
+    ``error_user_title``/``error_user_msg`` and ``error_data.details``. Surface
+    all of them so the operator sees WHY a template was rejected."""
+    try:
+        err = (resp.json() or {}).get("error", {}) or {}
+    except ValueError:
+        return f"Meta returned {resp.status_code}."
+    parts = []
+    for key in ("error_user_title", "error_user_msg"):
+        val = (err.get(key) or "").strip()
+        if val and val not in parts:
+            parts.append(val)
+    details = ((err.get("error_data") or {}).get("details") or "").strip()
+    if details and details not in parts:
+        parts.append(details)
+    if not parts:
+        msg = (err.get("message") or "").strip()
+        parts.append(msg or f"Meta returned {resp.status_code}.")
+    return " — ".join(parts)
+
+
 class WhatsAppCloudAdapter:
     channel_type = "WHATSAPP"
 
@@ -431,11 +454,7 @@ class WhatsAppCloudAdapter:
                 headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
             )
             if resp.status_code not in (200, 201):
-                try:
-                    detail = resp.json().get("error", {}).get("message", "")
-                except ValueError:
-                    detail = ""
-                raise SendError(detail or f"Meta returned {resp.status_code}.")
+                raise SendError(_meta_error_detail(resp))
             data = resp.json()
             return {"meta_template_id": data.get("id"), "status": (data.get("status") or "PENDING").upper()}
         except httpx.HTTPError as exc:
@@ -458,11 +477,7 @@ class WhatsAppCloudAdapter:
                 headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
             )
             if resp.status_code != 200:
-                try:
-                    detail = resp.json().get("error", {}).get("message", "")
-                except ValueError:
-                    detail = ""
-                raise SendError(detail or f"Meta returned {resp.status_code}.")
+                raise SendError(_meta_error_detail(resp))
         except httpx.HTTPError as exc:
             raise SendError(f"Could not reach Meta: {exc}") from exc
         finally:
