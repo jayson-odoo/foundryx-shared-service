@@ -87,7 +87,15 @@ describe('validateDoc (mirrors backend 422 gate)', () => {
     expect(validateDoc({ ...ok, body: { text: 'Hi {{1}} {{2}}', examples: ['one'] } }).body).toBeTruthy();
   });
   it('accepts a matching sample count', () => {
-    expect(validateDoc({ ...ok, body: { text: 'Hi {{1}} {{2}}', examples: ['a', 'b'] } })).toEqual({});
+    expect(validateDoc({ ...ok, body: { text: 'Hi {{1}}, order {{2}} shipped', examples: ['a', 'b'] } })).toEqual({});
+  });
+
+  it('rejects a body ending with a variable (Meta rule)', () => {
+    expect(validateDoc({ ...ok, body: { text: 'Your order is {{1}}', examples: ['a'] } }).body).toBeTruthy();
+  });
+
+  it('rejects two adjacent variables (Meta rule)', () => {
+    expect(validateDoc({ ...ok, body: { text: 'Hi {{1}} {{2}} welcome', examples: ['a', 'b'] } }).body).toBeTruthy();
   });
   it('rejects a bad URL button', () => {
     expect(validateDoc({ ...ok, buttons: [{ type: 'URL', text: 'x', url: 'ftp://no' }] }).buttons).toBeTruthy();

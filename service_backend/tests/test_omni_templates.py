@@ -87,7 +87,19 @@ def test_validate_sample_mismatch():
 
 
 def test_validate_sample_match_ok():
-    ts.validate_doc(_valid_doc(body=ts.WaBody(text="Hi {{1}} {{2}}", examples=["a", "b"])))
+    ts.validate_doc(_valid_doc(body=ts.WaBody(text="Hi {{1}}, order {{2}} shipped", examples=["a", "b"])))
+
+
+def test_validate_body_ends_with_var():
+    with pytest.raises(Exception) as e:
+        ts.validate_doc(_valid_doc(body=ts.WaBody(text="Your order is {{1}}", examples=["a"])))
+    assert "body" in e.value.detail["fieldErrors"]
+
+
+def test_validate_adjacent_vars():
+    with pytest.raises(Exception) as e:
+        ts.validate_doc(_valid_doc(body=ts.WaBody(text="Hi {{1}} {{2}} welcome", examples=["a", "b"])))
+    assert "body" in e.value.detail["fieldErrors"]
 
 
 def test_validate_non_sequential_vars():

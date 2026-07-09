@@ -46,6 +46,16 @@ export function varsSequential(text: string): boolean {
   return true;
 }
 
+/** Meta rejects a body that ENDS with a variable. Mirror of backend `ends_with_var`. */
+export function endsWithVar(text: string): boolean {
+  return /\{\{\s*\d+\s*\}\}\s*$/.test(text || '');
+}
+
+/** Meta rejects two adjacent variables. Mirror of backend `has_adjacent_vars`. */
+export function hasAdjacentVars(text: string): boolean {
+  return /\}\}\s*\{\{/.test(text || '');
+}
+
 type MetaComponent = Record<string, unknown>;
 
 export function toMetaComponents(doc: WaTemplateDoc): MetaComponent[] {
@@ -170,6 +180,10 @@ export function validateDoc(
     e.body = 'Body text is required.';
   } else if (!varsSequential(doc.body.text)) {
     e.body = 'Variables must be numbered sequentially: {{1}}, {{2}}, …';
+  } else if (endsWithVar(doc.body.text)) {
+    e.body = 'Body can’t end with a variable — add text after the last {{n}} (Meta rule).';
+  } else if (hasAdjacentVars(doc.body.text)) {
+    e.body = 'Two variables can’t be adjacent — put text between them (Meta rule).';
   } else {
     const nvars = distinctVarCount(doc.body.text);
     const provided = (doc.body.examples || []).filter((x) => (x || '').trim()).length;

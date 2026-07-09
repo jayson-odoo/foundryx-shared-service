@@ -82,6 +82,16 @@ def vars_sequential(text: str) -> bool:
     return not nums or nums == set(range(1, len(nums) + 1))
 
 
+def ends_with_var(text: str) -> bool:
+    """Meta rejects a body that ENDS with a variable (needs trailing text)."""
+    return bool(re.search(r"\{\{\s*\d+\s*\}\}\s*$", text or ""))
+
+
+def has_adjacent_vars(text: str) -> bool:
+    """Meta rejects two variables with no static text between them."""
+    return bool(re.search(r"\}\}\s*\{\{", text or ""))
+
+
 # ── transform: friendly doc → Meta components array ──────────────────────────
 def to_meta_components(doc: WaTemplateDoc) -> List[Dict[str, Any]]:
     components: List[Dict[str, Any]] = []
@@ -218,6 +228,10 @@ def validate_doc(doc: WaTemplateDoc, *, existing_names: Optional[set] = None) ->
         raise _err("body", "Body text is required.")
     if not vars_sequential(doc.body.text):
         raise _err("body", "Variables must be numbered sequentially: {{1}}, {{2}}, …")
+    if ends_with_var(doc.body.text):
+        raise _err("body", "Body can’t end with a variable — add text after the last {{n}} (Meta rule).")
+    if has_adjacent_vars(doc.body.text):
+        raise _err("body", "Two variables can’t be adjacent — put text between them (Meta rule).")
     nvars = distinct_var_count(doc.body.text)
     provided = [e for e in (doc.body.examples or []) if (e or "").strip()]
     if len(provided) != nvars:
