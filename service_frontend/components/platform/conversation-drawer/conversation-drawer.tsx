@@ -410,7 +410,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
                       : undefined
                   }
                   onReact={
-                    tab === 'messages' && m.senderType !== 'SYSTEM'
+                    tab === 'messages' && m.senderType !== 'SYSTEM' && windowOpen
                       ? (msg, emoji) => void react(msg.id, emoji)
                       : undefined
                   }
