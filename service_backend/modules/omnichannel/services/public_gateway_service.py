@@ -60,23 +60,127 @@ class PublicGatewayService:
             )
         return channel
 
+    # ── Contact identifier resolution (respond.io-style) ─────────────────────
+    def _resolve_contact(self, tenant_id: str, workspace_id: str, identifier: str) -> Contact:
+        """Resolve a contact from a polymorphic identifier — ``phone:+60…``,
+        ``id:<uuid>``, or a bare id. Always workspace-scoped; a miss (or a
+        contact in another workspace) is a uniform ``404 contact_not_found``."""
+        ident = (identifier or "").strip()
+        if ident.lower().startswith("phone:"):
+            contact = self.contacts.find_by_phone_in_workspace(
+                _digits(ident.split(":", 1)[1]), workspace_id, tenant_id
+            )
+        else:
+            cid = ident.split(":", 1)[1] if ident.lower().startswith("id:") else ident
+            contact = self.contacts.get_by_id(cid, tenant_id)
+        if contact is None or contact.workspace_id != workspace_id:
+            raise ApiError(404, "contact_not_found", "Contact not found for this workspace.")
+        return contact
+
+    # ── Contact read ─────────────────────────────────────────────────────────
+    def get_contact(self, tenant_id: str, workspace_id: str, identifier: str):
+        from .conversation_service import ConversationService
+
+        contact = self._resolve_contact(tenant_id, workspace_id, identifier)
+        return ConversationService(self.db).thread_item(contact)
+
+    def list_contacts(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        *,
+        status: Optional[str] = None,
+        assignee: str = "all",
+        priority: Optional[str] = None,
+        search: Optional[str] = None,
+        page: int = 0,
+        page_size: int = 50,
+    ):
+        from .conversation_service import ConversationService
+
+        return ConversationService(self.db).list_threads(
+            tenant_id,
+            workspace_id=workspace_id,
+            status_key=status,
+            assignee=assignee or "all",
+            priority=priority,
+            search=search,
+            page=page,
+            page_size=page_size,
+        )
+
     def list_contact_messages(
-        self, tenant_id: str, workspace_id: str, contact_id: str, *, limit: int, before_id: Optional[str] = None
+        self, tenant_id: str, workspace_id: str, identifier: str, *, limit: int, before_id: Optional[str] = None
     ):
         """Read-only message history for a contact — ALL message types (text,
         media, interactive, location, contacts, template, reaction, replies) via
-        the SAME ``message_items`` builder the inbox uses. Workspace-scoped (the
-        contact must belong to the key's workspace) and side-effect-free: unlike
-        the agent inbox, a consumer read does NOT mark the thread read."""
+        the SAME ``message_items`` builder the inbox uses. Workspace-scoped and
+        side-effect-free: unlike the agent inbox, a consumer read does NOT mark
+        the thread read."""
         from .conversation_service import ConversationService
 
-        contact = self.contacts.get_by_id(contact_id, tenant_id)
-        if contact is None or contact.workspace_id != workspace_id:
-            raise ApiError(404, "contact_not_found", "Contact not found for this workspace.")
+        contact = self._resolve_contact(tenant_id, workspace_id, identifier)
         rows = self.contacts.list_messages_recent(
-            contact_id, tenant_id, limit=limit, before_id=before_id
+            contact.id, tenant_id, limit=limit, before_id=before_id
         )
         return ConversationService(self.db).message_items(rows)
+
+    def get_contact_message(self, tenant_id: str, workspace_id: str, identifier: str, message_id: str):
+        from .conversation_service import ConversationService
+
+        contact = self._resolve_contact(tenant_id, workspace_id, identifier)
+        msg = self.contacts.get_message(message_id, tenant_id)
+        if msg is None or msg.contact_id != contact.id:
+            raise ApiError(404, "message_not_found", "Message not found for this contact.")
+        return ConversationService(self.db).message_items([msg])[0]
+
+    # ── Contact / conversation mutation ──────────────────────────────────────
+    def update_contact(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        identifier: str,
+        *,
+        first_name=...,
+        last_name=...,
+        priority: Optional[str] = None,
+        assigned_user_id=...,
+        custom_fields=...,
+    ):
+        from .conversation_service import ConversationService, InvalidPatch
+
+        contact = self._resolve_contact(tenant_id, workspace_id, identifier)
+        try:
+            return ConversationService(self.db).patch_thread(
+                contact.id,
+                tenant_id,
+                assigned_user_id=assigned_user_id,
+                priority=priority,
+                first_name=first_name,
+                last_name=last_name,
+                custom_fields=custom_fields,
+            )
+        except InvalidPatch as exc:
+            raise ApiError(422, "invalid_request", str(exc)) from exc
+
+    def set_conversation_state(self, tenant_id: str, workspace_id: str, identifier: str, *, open_: bool):
+        from .conversation_service import ConversationService, InvalidPatch
+
+        contact = self._resolve_contact(tenant_id, workspace_id, identifier)
+        try:
+            return ConversationService(self.db).patch_thread(
+                contact.id, tenant_id, status="OPEN" if open_ else "CLOSED"
+            )
+        except InvalidPatch as exc:
+            raise ApiError(422, "invalid_request", str(exc)) from exc
+
+    def add_comment(self, tenant_id: str, workspace_id: str, identifier: str, body: str):
+        """Add an internal note (comment) to a contact's thread — SYSTEM bubble,
+        never sent to the customer. No user actor (consumer/API-key context)."""
+        contact = self._resolve_contact(tenant_id, workspace_id, identifier)
+        if not (body or "").strip():
+            raise ApiError(422, "invalid_request", "Comment body is required.")
+        return self.messages.add_internal_note(contact.id, tenant_id, None, body)
 
     def _resolve_or_create_contact(
         self, tenant_id: str, workspace_id: str, phone: str

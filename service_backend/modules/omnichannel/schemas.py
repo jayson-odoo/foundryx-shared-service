@@ -469,6 +469,28 @@ class PublicMessageListResponse(ApiModel):
     nextBefore: Optional[str] = None
 
 
+class PublicContactListResponse(ApiModel):
+    """Paginated contacts (threads) for the consumer API."""
+    data: List[ThreadItem]
+    total: int
+    page: int
+    pageSize: int
+
+
+class PublicContactUpdateRequest(ApiModel):
+    """Partial update of a contact. Only the fields you SEND are changed;
+    ``assignedUserId``/``customFields`` sent as ``null`` clear the value."""
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
+    priority: Optional[str] = None  # LOW|MEDIUM|HIGH|URGENT
+    assignedUserId: Optional[str] = None
+    customFields: Optional[dict] = None
+
+
+class PublicCommentRequest(ApiModel):
+    body: str
+
+
 # ── Consumer webhooks (plan sprint-1/01 Slice 4) ─────────────────────────────
 class WebhookEndpointItem(ApiModel):
     id: str

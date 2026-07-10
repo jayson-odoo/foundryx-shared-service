@@ -17,10 +17,15 @@ from app.database import get_db
 
 from ..api_auth import ApiWorkspace, get_api_workspace
 from ..schemas import (
+    MessageItem,
+    PublicCommentRequest,
+    PublicContactListResponse,
+    PublicContactUpdateRequest,
     PublicMessageListResponse,
     PublicSendRequest,
     PublicSendResponse,
     PublicTemplateListResponse,
+    ThreadItem,
 )
 from ..services.media_pipeline import META_CEILINGS
 from ..services.public_gateway_service import PublicGatewayService
@@ -90,9 +95,61 @@ def list_templates(
     return PublicTemplateListResponse(data=items)
 
 
-@router.get("/contacts/{contact_id}/messages", response_model=PublicMessageListResponse)
+# ── Contacts (respond.io-style: {identifier} = phone:+60… | id:<uuid> | <uuid>) ──
+@router.get("/contacts", response_model=PublicContactListResponse)
+def list_contacts(
+    status: Optional[str] = Query(default=None, description="OPEN|SNOOZED|CLOSED"),
+    assignee: str = Query(default="all", description="all|unassigned"),
+    priority: Optional[str] = Query(default=None, description="LOW|MEDIUM|HIGH|URGENT"),
+    search: Optional[str] = Query(default=None),
+    page: int = Query(0, ge=0),
+    page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicContactListResponse:
+    """List contacts (threads) in the workspace, filterable + paginated."""
+    items, total = PublicGatewayService(db).list_contacts(
+        api_ws.tenant_id, api_ws.workspace_id,
+        status=status, assignee=assignee, priority=priority, search=search,
+        page=page, page_size=page_size,
+    )
+    return PublicContactListResponse(data=items, total=total, page=page, pageSize=page_size)
+
+
+@router.get("/contacts/{identifier}", response_model=ThreadItem)
+def get_contact(
+    identifier: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> ThreadItem:
+    """Get one contact by ``phone:+60…``, ``id:<uuid>`` or a bare id."""
+    return PublicGatewayService(db).get_contact(api_ws.tenant_id, api_ws.workspace_id, identifier)
+
+
+@router.patch("/contacts/{identifier}", response_model=ThreadItem)
+def update_contact(
+    identifier: str,
+    payload: PublicContactUpdateRequest,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> ThreadItem:
+    """Partial update — only sent fields change. Send ``assignedUserId``/
+    ``customFields`` as null to clear; omit to leave unchanged."""
+    sent = payload.model_fields_set
+    _S = ...  # sentinel = "not provided"
+    return PublicGatewayService(db).update_contact(
+        api_ws.tenant_id, api_ws.workspace_id, identifier,
+        first_name=payload.firstName if "firstName" in sent else _S,
+        last_name=payload.lastName if "lastName" in sent else _S,
+        priority=payload.priority if "priority" in sent else None,
+        assigned_user_id=payload.assignedUserId if "assignedUserId" in sent else _S,
+        custom_fields=payload.customFields if "customFields" in sent else _S,
+    )
+
+
+@router.get("/contacts/{identifier}/messages", response_model=PublicMessageListResponse)
 def list_contact_messages(
-    contact_id: str,
+    identifier: str,
     limit: int = Query(50, ge=1, le=200),
     before: Optional[str] = Query(default=None),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
@@ -103,9 +160,59 @@ def list_contact_messages(
     returned ``nextBefore`` back as ``before`` to page further into history.
     Media rides the same authed ``/omnichannel/media/{id}`` route (the API key
     is accepted there too)."""
-    items = PublicGatewayService(db).list_contact_messages(
-        api_ws.tenant_id, api_ws.workspace_id, contact_id, limit=limit, before_id=before
+    svc = PublicGatewayService(db)
+    contact = svc._resolve_contact(api_ws.tenant_id, api_ws.workspace_id, identifier)
+    items = svc.list_contact_messages(
+        api_ws.tenant_id, api_ws.workspace_id, identifier, limit=limit, before_id=before
     )
-    # More history exists when the page filled to the limit → oldest row is the cursor.
     next_before = items[0].id if len(items) == limit else None
-    return PublicMessageListResponse(contactId=contact_id, data=items, nextBefore=next_before)
+    return PublicMessageListResponse(contactId=contact.id, data=items, nextBefore=next_before)
+
+
+@router.get("/contacts/{identifier}/messages/{message_id}", response_model=MessageItem)
+def get_contact_message(
+    identifier: str,
+    message_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> MessageItem:
+    """Get one message on a contact's thread (full fidelity, any type)."""
+    return PublicGatewayService(db).get_contact_message(
+        api_ws.tenant_id, api_ws.workspace_id, identifier, message_id
+    )
+
+
+# ── Conversation lifecycle ───────────────────────────────────────────────────
+@router.post("/contacts/{identifier}/conversation/open", response_model=ThreadItem)
+def open_conversation(
+    identifier: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> ThreadItem:
+    return PublicGatewayService(db).set_conversation_state(
+        api_ws.tenant_id, api_ws.workspace_id, identifier, open_=True
+    )
+
+
+@router.post("/contacts/{identifier}/conversation/close", response_model=ThreadItem)
+def close_conversation(
+    identifier: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> ThreadItem:
+    return PublicGatewayService(db).set_conversation_state(
+        api_ws.tenant_id, api_ws.workspace_id, identifier, open_=False
+    )
+
+
+# ── Comments (internal notes — never sent to the customer) ────────────────────
+@router.post("/contacts/{identifier}/comments", response_model=MessageItem, status_code=201)
+def add_comment(
+    identifier: str,
+    payload: PublicCommentRequest,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> MessageItem:
+    return PublicGatewayService(db).add_comment(
+        api_ws.tenant_id, api_ws.workspace_id, identifier, payload.body
+    )

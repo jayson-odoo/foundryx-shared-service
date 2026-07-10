@@ -329,6 +329,66 @@ You typically discover a `contactId` from the `message.inbound` webhook
 
 ---
 
+## 6a. Contacts & conversations
+
+These endpoints let you read and manage contacts (threads) directly, respond.io-style.
+
+### The `{identifier}` convention
+
+Anywhere a contact is addressed you may use a **polymorphic identifier**:
+
+| Form | Example | Meaning |
+|------|---------|---------|
+| `phone:<e164>` | `phone:+60123456789` | look up by phone within your workspace |
+| `id:<uuid>` | `id:b2ad5218-…` | FoundryX contact id |
+| bare id | `b2ad5218-…` | same as `id:` |
+
+A miss (or a contact in another workspace) → `404 contact_not_found`.
+
+### List contacts — `GET /api/v1/omnichannel/contacts`
+
+Query params: `status` (`OPEN|SNOOZED|CLOSED`), `assignee` (`all|unassigned`),
+`priority` (`LOW|MEDIUM|HIGH|URGENT`), `search` (name / phone / message body),
+`page` (0-based), `pageSize` (1–200).
+
+```json
+{ "data": [ /* ThreadItem (§9) */ ], "total": 42, "page": 0, "pageSize": 50 }
+```
+
+### Get a contact — `GET /api/v1/omnichannel/contacts/{identifier}`
+Returns one `ThreadItem` (§9). `GET …/contacts/phone:+60123456789` works too.
+
+### Update a contact — `PATCH /api/v1/omnichannel/contacts/{identifier}`
+Partial — only fields you send change. Send `assignedUserId`/`customFields` as
+`null` to clear; omit to leave unchanged.
+
+```json
+{ "firstName": "Jayson", "lastName": "Teh",
+  "priority": "HIGH", "assignedUserId": "…", "customFields": { "orderId": "ORD0001" } }
+```
+Assign a conversation to an agent by setting `assignedUserId`; unassign by
+sending it as `null`. Unknown assignee → `422 invalid_request`.
+
+### Get a single message — `GET /api/v1/omnichannel/contacts/{identifier}/messages/{messageId}`
+Returns one `MessageItem` (§9), full fidelity. Not on this contact → `404 message_not_found`.
+
+### Open / close a conversation
+- `POST /api/v1/omnichannel/contacts/{identifier}/conversation/open`  → status `OPEN`
+- `POST /api/v1/omnichannel/contacts/{identifier}/conversation/close` → status `CLOSED`
+
+Both return the updated `ThreadItem`.
+
+### Add an internal comment (note) — `POST /api/v1/omnichannel/contacts/{identifier}/comments`
+An internal note on the thread — **never sent to the customer** (a `SYSTEM`
+bubble visible to your agents / in history).
+
+```json
+{ "body": "Customer asked for a refund — escalating." }
+```
+Returns the created `MessageItem` (`senderType: "SYSTEM"`), `201`.
+
+---
+
 ## 7. Receiving events (webhooks: FoundryX → you)
 
 FoundryX POSTs a **signed JSON envelope** to each callback URL you registered for
@@ -559,7 +619,8 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | `send_rejected` | 422 | WhatsApp/Meta rejected the send (message has the reason). |
 | `unsupported_type` | 400 | Unknown `type`. |
 | `not_found` | 404 | Reaction target message not found / not in your workspace. |
-| `contact_not_found` | 404 | Contact not in your workspace (history endpoint). |
+| `contact_not_found` | 404 | Contact not found / not in your workspace. |
+| `message_not_found` | 404 | Message id not on that contact's thread. |
 | `idempotency_in_progress` | 409 | A duplicate `Idempotency-Key` is still processing. |
 | `invalid_media_url` / `media_fetch_failed` / `oversize` / `unsupported_media` / `transcode_failed` | 422 | Media fetch/validation failed (see §4.2). |
 
@@ -592,12 +653,21 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 
 **Consumer Gateway (API key):**
 
-| Method | Path |
-|--------|------|
-| POST | `/api/v1/omnichannel/messages` |
-| GET | `/api/v1/omnichannel/templates` |
-| GET | `/api/v1/omnichannel/contacts/{contactId}/messages` |
-| GET | `/omnichannel/media/{messageId}` |
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/v1/omnichannel/messages` | Send a message (all types) |
+| GET | `/api/v1/omnichannel/templates` | List approved templates |
+| GET | `/api/v1/omnichannel/contacts` | List contacts (filters + paging) |
+| GET | `/api/v1/omnichannel/contacts/{identifier}` | Get a contact |
+| PATCH | `/api/v1/omnichannel/contacts/{identifier}` | Update contact (name/priority/assignee/fields) |
+| GET | `/api/v1/omnichannel/contacts/{identifier}/messages` | Message history |
+| GET | `/api/v1/omnichannel/contacts/{identifier}/messages/{messageId}` | Get one message |
+| POST | `/api/v1/omnichannel/contacts/{identifier}/conversation/open` | Open conversation |
+| POST | `/api/v1/omnichannel/contacts/{identifier}/conversation/close` | Close conversation |
+| POST | `/api/v1/omnichannel/contacts/{identifier}/comments` | Add internal note |
+| GET | `/omnichannel/media/{messageId}` | Fetch media bytes |
+
+`{identifier}` = `phone:+60…` | `id:<uuid>` | bare `<uuid>`.
 
 **Managed for you in the FoundryX dashboard (session-authed):** workspace +
 channel onboarding (Embedded Signup), API-key mint/revoke, webhook

@@ -261,6 +261,80 @@ def test_public_list_messages_unknown_contact_404(client, session_factory):
     assert r.json()["error"]["code"] == "contact_not_found"
 
 
+def _seeded(client, session_factory, phone="+60123123123"):
+    """Seed a channel + open contact + send one text; returns (hdr, contactId)."""
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    _seed_open_contact(session_factory, ws, phone=phone, open_window=True)
+    key = _mint(client, ws).json()["fullKey"]
+    hdr = {"Authorization": f"Bearer {key}"}
+    client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": phone, "type": "text", "text": {"body": "Hi there"}},
+        headers=hdr,
+    )
+    from modules.omnichannel.models import Contact
+
+    db = session_factory()
+    cid = db.query(Contact).filter(Contact.phone == phone).first().id
+    db.close()
+    return hdr, cid
+
+
+def test_public_list_contacts(client, session_factory):
+    hdr, cid = _seeded(client, session_factory)
+    r = client.get("/api/v1/omnichannel/contacts?pageSize=10", headers=hdr)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] >= 1 and any(c["id"] == cid for c in body["data"])
+
+
+def test_public_get_contact_by_id_and_phone(client, session_factory):
+    hdr, cid = _seeded(client, session_factory, phone="+60555111222")
+    by_id = client.get(f"/api/v1/omnichannel/contacts/{cid}", headers=hdr)
+    assert by_id.status_code == 200 and by_id.json()["id"] == cid
+    by_phone = client.get("/api/v1/omnichannel/contacts/phone:+60555111222", headers=hdr)
+    assert by_phone.status_code == 200 and by_phone.json()["id"] == cid
+
+
+def test_public_get_single_message(client, session_factory):
+    hdr, cid = _seeded(client, session_factory, phone="+60555111333")
+    msgs = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages", headers=hdr).json()["data"]
+    mid = msgs[0]["id"]
+    r = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}", headers=hdr)
+    assert r.status_code == 200 and r.json()["id"] == mid
+
+
+def test_public_update_contact_priority(client, session_factory):
+    hdr, cid = _seeded(client, session_factory, phone="+60555111444")
+    r = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}",
+        json={"priority": "HIGH", "firstName": "Kay"},
+        headers=hdr,
+    )
+    assert r.status_code == 200
+    assert r.json()["priority"] == "HIGH" and r.json()["name"] == "Kay"
+
+
+def test_public_open_close_conversation(client, session_factory):
+    hdr, cid = _seeded(client, session_factory, phone="+60555111555")
+    closed = client.post(f"/api/v1/omnichannel/contacts/{cid}/conversation/close", headers=hdr)
+    assert closed.status_code == 200 and closed.json()["status"] == "CLOSED"
+    opened = client.post(f"/api/v1/omnichannel/contacts/{cid}/conversation/open", headers=hdr)
+    assert opened.status_code == 200 and opened.json()["status"] == "OPEN"
+
+
+def test_public_add_comment(client, session_factory):
+    hdr, cid = _seeded(client, session_factory, phone="+60555111666")
+    r = client.post(
+        f"/api/v1/omnichannel/contacts/{cid}/comments",
+        json={"body": "internal note"},
+        headers=hdr,
+    )
+    assert r.status_code == 201
+    assert r.json()["senderType"] == "SYSTEM" and r.json()["body"] == "internal note"
+
+
 # ── CSW on the public API (AC-01-17) ─────────────────────────────────────────
 def test_csw_closed_free_form_409(client, session_factory):
     ws = _default_workspace_id(session_factory)

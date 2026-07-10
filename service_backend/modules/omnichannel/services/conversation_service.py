@@ -177,6 +177,9 @@ class ConversationService:
         assigned_user_id: Optional[str] = ...,
         status: Optional[str] = None,
         priority: Optional[str] = None,
+        first_name: Optional[str] = ...,
+        last_name: Optional[str] = ...,
+        custom_fields: Optional[dict] = ...,
     ) -> ThreadItem:
         c = self.repo.get_by_id(contact_id, tenant_id)
         if c is None:
@@ -202,6 +205,13 @@ class ConversationService:
             if priority not in VALID_PRIORITY:
                 raise InvalidPatch(f"Invalid priority: {priority}")
             c.priority = priority
+
+        if first_name is not ...:
+            c.first_name = first_name
+        if last_name is not ...:
+            c.last_name = last_name
+        if custom_fields is not ...:
+            c.custom_fields_json = custom_fields
 
         self.db.commit()
         self.db.refresh(c)
