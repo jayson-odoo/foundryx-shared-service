@@ -61,44 +61,106 @@ def _register_core_locations() -> None:
 ensure_core_locations = lazy_once(_register_core_locations)
 
 
+def register_module_declared_locations(manifest: dict) -> int:
+    """Register a module's manifest-declared storage-key locations, importing
+    ONLY its ``models`` package (deliberately lighter + more import-safe than the
+    full ``bootstrap`` chain). Returns how many specs were registered.
+
+    Declaration lives in ``manifest.json`` under ``"storage_locations"``::
+
+        {"model": "ConversationMessage", "column": "media_key",
+         "tenantColumn": "tenant_id"}          # scalar
+        {"model": "Foo", "jsonColumn": "doc_json", "tenantColumn": "tenant_id"}
+
+    A module that declares locations is thereby PROTECTED by the completeness
+    gate below — a migration refuses to cut over if these did not register.
+    """
+    import importlib
+
+    specs = manifest.get("storage_locations") or []
+    if not specs:
+        return 0
+    models_mod = importlib.import_module(f"modules.{manifest['_dir']}.models")
+    for spec in specs:
+        model = getattr(models_mod, spec["model"])
+        register_storage_key_location(
+            StorageKeyLoc(
+                model=model,
+                column=spec.get("column"),
+                json_column=spec.get("jsonColumn"),
+                tenant_column=spec.get("tenantColumn"),
+                module=manifest["module_name"],
+            )
+        )
+    return len(specs)
+
+
 def ensure_all_storage_locations() -> list:
     """Register EVERY storage-key location — core + all on-disk modules' — into
     ``_LOCATIONS``. Idempotent. Returns a list of ``(module, error)`` for any
-    module whose registration failed (surfaced into the job log — never silent).
+    module whose registration RAISED (surfaced into the job log — never silent).
 
-    **The fix for the worker no-op bug (sprint-4/12).** Location registration
-    was previously a side effect of the FastAPI app boot only:
-    ``ensure_core_locations()`` runs in ``main.py`` lifespan, and each module's
-    ``register_engine_entities()`` runs via ``load_modules`` at app startup. A
-    ``storage_migration`` job, however, executes in the **Celery worker**
-    process, which runs neither — so ``_LOCATIONS`` was empty, ``enumerate_keys``
-    returned 0 keys, and the migration finished "done" having copied/rewritten
-    NOTHING. Calling this at the top of the job handler makes enumeration correct
-    regardless of which process runs it.
+    **Why this exists (the worker no-op bug, sprint-4/12).** Location
+    registration was originally a side effect of FastAPI app boot only
+    (``ensure_core_locations`` in ``main.py`` lifespan + each module's
+    ``register_engine_entities`` via ``load_modules``). A ``storage_migration``
+    job runs in the **Celery worker**, which boots neither — so ``_LOCATIONS``
+    was empty and the migration copied/rewrote NOTHING.
 
-    We call each module's ``register_engine_entities`` **directly** rather than
-    ``register_module_boot`` — the latter runs ``register_capabilities`` FIRST,
-    and a capability-registration failure there would skip engine-entity (hence
-    storage-location) registration entirely (the prod "Registered 13 not 15" bug:
-    omnichannel's ``conversation_messages.media_key`` was silently unregistered,
-    so its media never enumerated). Storage migration needs zero capabilities.
+    **Why it's now declarative (sprint-4/12 round 3).** The earlier fix called
+    each module's ``register_engine_entities`` via ``module_hooks``, but
+    ``module_hooks`` SWALLOWS ``ModuleNotFoundError`` — so when importing the
+    module's heavy ``bootstrap`` chain failed in the worker process, it returned
+    ``None`` and the module's locations were silently skipped (the prod
+    "Registered 13 not 15" bug: omnichannel media never enumerated, then A was
+    retired and the media stranded). We now:
+
+    1. Register from the module's **manifest declaration**, importing only its
+       ``models`` package — no capabilities, no bootstrap side effects.
+    2. NEVER swallow an import error: a raise is recorded as a ``(module, err)``
+       failure with its type + message, logged with a traceback.
+
+    The real safety, though, is the **completeness gate** (``missing_declared_
+    location_modules``): the migration HOLDS instead of cutting over whenever a
+    declaring module's locations are not all registered — so an undercount can
+    never silently strand + retire.
     """
     ensure_core_locations()
     # Deferred import — avoids a module_loader ↔ storage_migration import cycle.
     from app.module_loader import discover_manifests
-    from app.services.app_store_service import module_hooks
 
     failures: list = []
     for manifest in discover_manifests():
         name = manifest["module_name"]
         try:
-            hooks = module_hooks(name)
-            register = getattr(hooks, "register_engine_entities", None) if hooks else None
-            if register is not None:
-                register()  # registers the module's StorageKeyLocations
+            register_module_declared_locations(manifest)
         except Exception as exc:  # noqa: BLE001 — a broken module must not abort a migration
             logger.exception(
                 "module '%s' storage-location registration failed during migration", name
             )
             failures.append((name, f"{type(exc).__name__}: {exc}"))
     return failures
+
+
+def missing_declared_location_modules() -> list:
+    """Modules that DECLARE storage locations in their manifest but have fewer
+    registered than declared — the completeness gate. A migration must HOLD (not
+    cut over) while this is non-empty: an undercount means some of that module's
+    blobs would be missed, then stranded when the source connection is retired.
+
+    Counts by the ``module`` tag on registered locations (no model import needed
+    — so it still catches the case where the models import itself failed).
+    """
+    from app.module_loader import discover_manifests
+    from app.storage_migration.registry import list_locations
+
+    registered_by_module: dict = {}
+    for loc in list_locations():
+        registered_by_module[loc.module] = registered_by_module.get(loc.module, 0) + 1
+
+    missing: list = []
+    for manifest in discover_manifests():
+        want = len(manifest.get("storage_locations") or [])
+        if want and registered_by_module.get(manifest["module_name"], 0) < want:
+            missing.append(manifest["module_name"])
+    return missing

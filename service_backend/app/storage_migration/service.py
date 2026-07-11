@@ -46,7 +46,10 @@ from app.models.connection import (
 from app.jobs.repository import BackgroundJobRepository
 from app.repositories.connection_repository import ConnectionRepository
 from app.secrets import encrypt_secret
-from app.storage_migration.core_locations import ensure_all_storage_locations
+from app.storage_migration.core_locations import (
+    ensure_all_storage_locations,
+    missing_declared_location_modules,
+)
 from app.storage_migration.registry import enumerate_keys, list_locations, rewrite_keys
 
 logger = logging.getLogger("foundryx.storage_migration")
@@ -341,6 +344,33 @@ def run_storage_migration(db: Session, job: BackgroundJob) -> None:
             f"old connection.",
             level="error",
         )
+
+    # Completeness gate (sprint-4/12 round 3): a module that DECLARES storage
+    # locations in its manifest but registered FEWER than declared = a partial
+    # registration (typically a stale/mis-booted worker that couldn't import the
+    # module). Enumeration would then miss that module's blobs and, on cutover,
+    # RETIRE the source with those blobs stranded on it — the exact prod bug
+    # (omnichannel media left on the old connection). HOLD at needs_review BEFORE
+    # any enumerate/cutover — reversible via Abort. Fix the worker (restart onto
+    # the current image) and Retry. This catches the PARTIAL undercount the
+    # zero-locations guard below cannot.
+    incomplete = missing_declared_location_modules()
+    if incomplete:
+        service.log(
+            job,
+            "Incomplete storage-key registration — module(s) "
+            f"{', '.join(incomplete)} declare storage locations that did NOT all "
+            "register in this process (a stale or mis-booted worker). Holding "
+            "WITHOUT cutover so no blob is stranded — restart the worker onto the "
+            "current image, then Retry.",
+            level="error",
+        )
+        service.finish(
+            db_job_reload(db, job),
+            status=JOB_NEEDS_REVIEW,
+            error="Incomplete storage-key registration — held before cutover.",
+        )
+        return
 
     # Hard guard: no registered locations = a boot/deploy problem, not an empty
     # bucket. Enumeration would find 0 keys and auto-cutover to "done" having
