@@ -53,6 +53,10 @@
       "prefix": "/omnichannel/settings"
     },
     {
+      "name": "embed_config",
+      "prefix": "/omnichannel/embed-config"
+    },
+    {
       "name": "api_keys",
       "prefix": "/omnichannel/workspaces"
     },

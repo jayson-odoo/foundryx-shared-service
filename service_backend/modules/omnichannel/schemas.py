@@ -674,3 +674,34 @@ class TemplateDetail(TemplateManageItem):
 
     doc: dict
     components: List[dict]
+
+
+# ── Embed access config (plan 11H — tenant-level embed connection admin) ──────
+class EmbedWorkspaceOption(ApiModel):
+    """A (id, name) workspace pick for the iframe-snippet workspace selector."""
+
+    id: str
+    name: str
+
+
+class EmbedConfigResponse(ApiModel):
+    """The tenant's embed-access state. The ``embedSecret`` is NEVER included —
+    ``hasSecret`` only reports whether one is set (write-only, echoed once at
+    rotate)."""
+
+    connectionId: Optional[str] = None
+    allowedOrigins: List[str]
+    hasSecret: bool
+    # Public backend origin the consumer frames the iframe against.
+    host: str
+    workspaces: List[EmbedWorkspaceOption]
+
+
+class EmbedRotateSecretResponse(ApiModel):
+    """The freshly-minted secret — returned EXACTLY ONCE (write-only after)."""
+
+    embedSecret: str
+
+
+class EmbedOriginsUpdate(ApiModel):
+    allowedOrigins: List[str]
