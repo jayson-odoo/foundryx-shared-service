@@ -395,6 +395,38 @@ def test_abort_restores_a_and_keeps_b(db, only_avatar_location, fakes, stub_prob
     assert ConnectionRepository(db).resolve_for_type(DEFAULT_TENANT_ID, "storage").id == a.id
 
 
+def test_abort_mid_run_prevents_cutover(db, only_avatar_location, fakes, stub_probe):
+    """Cooperative cancel (real Celery path): a job flipped to ABORTED before the
+    handler reaches cutover must NOT rewrite keys nor overwrite the aborted status
+    (AC-10-14). Reviewer should-fix #1."""
+    a = _storage_conn(db)
+    a_fake = fakes.setdefault(a.id, FakeAdapter())
+    a_fake.store["raw1"] = (b"one", "image/png")
+    a_fake.store["raw2"] = (b"two", "image/png")
+    _point_avatar(db, DEFAULT_TENANT_ID, [f"conn:{a.id}:raw1", f"conn:{a.id}:raw2"])
+
+    b = _storage_conn(db, name="B", active=False)
+    fakes.setdefault(b.id, FakeAdapter())
+    ConnectionRepository(db).mark_active(a.id, False)
+    ConnectionRepository(db).mark_active(b.id, True)
+    # Job already ABORTED (a concurrent abort committed it) — the handler's
+    # pre-cutover status re-read must bail.
+    job = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID, type=STORAGE_MIGRATION, status=JOB_ABORTED,
+        payload_json={"fromConnectionId": a.id, "toConnectionId": b.id},
+    )
+    db.add(job)
+    db.commit()
+
+    run_storage_migration(db, job)
+
+    db.refresh(job)
+    assert job.status == JOB_ABORTED  # never overwritten to DONE
+    db.expire_all()
+    vals = {u.avatar_key for u in db.query(User).filter(User.avatar_key.isnot(None))}
+    assert vals == {f"conn:{a.id}:raw1", f"conn:{a.id}:raw2"}  # NO rewrite to conn:B:
+
+
 def test_retry_reruns_and_cutovers_when_clean(db, only_avatar_location, fakes, stub_probe):
     a = _storage_conn(db)
     a_fake = fakes.setdefault(a.id, FakeAdapter())

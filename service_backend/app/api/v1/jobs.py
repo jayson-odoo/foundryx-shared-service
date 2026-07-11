@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_actor_user_id, get_current_user, require_permission
-from app.jobs.repository import BackgroundJobRepository
+from app.jobs.service import JobService
 from app.models.user import User
 from app.schemas.job import JobListResponse, JobOut, StorageMigrationStartRequest
 from app.storage_migration.service import StorageMigrationService
@@ -50,7 +50,7 @@ def list_jobs(
     type: Optional[str] = None,
     status_filter: Optional[str] = Query(None, alias="status"),
 ) -> JobListResponse:
-    rows, total = BackgroundJobRepository(db).list(
+    rows, total = JobService(db).list(
         user.tenant_id, job_type=type, status=status_filter, page=page, page_size=page_size
     )
     return JobListResponse(items=[JobOut.model_validate(r) for r in rows], total=total)
@@ -62,7 +62,7 @@ def get_job(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> JobOut:
-    job = BackgroundJobRepository(db).get(user.tenant_id, job_id)
+    job = JobService(db).get(user.tenant_id, job_id)
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found.")
     return JobOut.model_validate(job)

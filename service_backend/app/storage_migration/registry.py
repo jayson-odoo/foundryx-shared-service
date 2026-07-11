@@ -182,15 +182,40 @@ def rewrite_keys(
                     count += 1
         else:
             col = getattr(loc.model, loc.column)
-            q = db.query(loc.model).filter(col.like(f"{from_prefix}%"))
             if only_set is not None:
-                q = q.filter(col.in_(only_set))
-            count += q.update(
-                {col: func.replace(col, from_prefix, to_prefix)},
-                synchronize_session=False,
-            )
+                # Chunk the IN-clause — a large copied set can exceed DB bind-
+                # param limits (SQLite ~999, Postgres ~65535).
+                for batch in _chunked(only_set, 500):
+                    count += (
+                        db.query(loc.model)
+                        .filter(col.like(f"{from_prefix}%"), col.in_(batch))
+                        .update(
+                            {col: func.replace(col, from_prefix, to_prefix)},
+                            synchronize_session=False,
+                        )
+                    )
+            else:
+                count += (
+                    db.query(loc.model)
+                    .filter(col.like(f"{from_prefix}%"))
+                    .update(
+                        {col: func.replace(col, from_prefix, to_prefix)},
+                        synchronize_session=False,
+                    )
+                )
         db.flush()
     return count
+
+
+def _chunked(items: Set[str], size: int) -> Iterator[List[str]]:
+    batch: List[str] = []
+    for item in items:
+        batch.append(item)
+        if len(batch) == size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
 
 
 # ── drift-test reflection helper (D9 / AC-10-07) ──────────────────────────────

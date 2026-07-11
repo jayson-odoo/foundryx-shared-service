@@ -352,12 +352,20 @@ def run_storage_migration(db: Session, job: BackgroundJob) -> None:
         job.cursor_json = dict(cursor)
         if index % _CURSOR_COMMIT_EVERY == 0:
             db.commit()
+            # Cooperative cancel: a concurrent abort (real Celery path) set
+            # JOB_ABORTED + restored the connection flags on another session.
+            # Bail BEFORE cutover so an aborted migration never rewrites keys
+            # (AC-10-14). Progress persisted above → resume-safe if retried.
+            if _aborted(db, job.id):
+                return
 
     cursor.update(index=index, copied=list(copied), failures=failures)
     job.cursor_json = dict(cursor)
     job.progress_done = len(copied)
     job.progress_failed = len(failures)
     db.commit()
+    if _aborted(db, job.id):
+        return
 
     if failures:
         # Assets keep serving (A active-by-key / B) until the user Completes or
@@ -369,6 +377,16 @@ def run_storage_migration(db: Session, job: BackgroundJob) -> None:
 
 def db_job_reload(db: Session, job: BackgroundJob) -> BackgroundJob:
     return BackgroundJobRepository(db).get_unscoped(job.id) or job
+
+
+def _aborted(db: Session, job_id: str) -> bool:
+    """Re-read the job's status FRESH from the DB (a concurrent abort commits
+    JOB_ABORTED on a different session). Eager mode has no interleave — this
+    guards the real Celery worker path so the copy loop stops before cutover."""
+    return (
+        db.query(BackgroundJob.status).filter(BackgroundJob.id == job_id).scalar()
+        == JOB_ABORTED
+    )
 
 
 # ── boot registration (idempotent) ────────────────────────────────────────────

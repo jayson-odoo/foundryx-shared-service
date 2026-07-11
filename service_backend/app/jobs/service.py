@@ -80,6 +80,24 @@ class JobService:
         self.enqueue(job.id)
         return job
 
+    # ── reads ────────────────────────────────────────────────────────────────
+
+    def list(
+        self,
+        tenant_id: str,
+        *,
+        job_type: Optional[str] = None,
+        status: Optional[str] = None,
+        page: int = 0,
+        page_size: int = 25,
+    ):
+        return self.repo.list(
+            tenant_id, job_type=job_type, status=status, page=page, page_size=page_size
+        )
+
+    def get(self, tenant_id: str, job_id: str) -> Optional[BackgroundJob]:
+        return self.repo.get(tenant_id, job_id)
+
     # ── claim (exactly-once) ─────────────────────────────────────────────────
 
     def claim(self, job_id: str, *, from_status: str = JOB_PENDING) -> bool:
