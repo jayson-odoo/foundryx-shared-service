@@ -67,6 +67,15 @@ def run_due_workflows_task() -> dict:
         except Exception:  # noqa: BLE001
             logger.exception("background job prune failed")
             db.rollback()
+        # Integration-activity retention (plan sprint-4/12 AC-DLC-22) — per-tenant
+        # window, same beat tick, isolated.
+        try:
+            from app.activity_log.retention import prune_integration_activity
+
+            prune_integration_activity(db)
+        except Exception:  # noqa: BLE001
+            logger.exception("integration-activity prune failed")
+            db.rollback()
         return {"fired": fired, "pruned": pruned}
     except Exception:  # noqa: BLE001 — a bad tick never kills the beat loop
         logger.exception("scheduled-workflow tick failed")

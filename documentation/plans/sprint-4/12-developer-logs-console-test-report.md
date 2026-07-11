@@ -183,3 +183,97 @@
 
 ## Verdict (Slice 2)
 **Slice 2 is GREEN to advance.** AC-DLC-14/15/17/18/19 PASS cleanly; AC-DLC-16 PASSES on intent with a disclosed, defensible mechanism deviation (write-time core-seam denormalization instead of read-time cross-schema join) plus one historical-surfacing limitation. The one quality finding (timeline causal-order inversion) and the two limitations are backlog candidates, none breaking an AC as written. The trace timeline was confirmed rendering REAL correlated data (live gateway send → two-leg trace), not just green pytest.
+
+---
+
+# Slice 3 — Embed logging + per-tenant retention + hardening
+
+> Scope: **AC-DLC-20 … AC-DLC-26**. Executed 2026-07-11 by the QA agent against this branch (Slice 3 = uncommitted working-tree changes on top of the Slice-2 commit `cb583ff` + the head-merge `1b41dfe`).
+> Environment: FastAPI :8001 + Next :3001 → Postgres `foundryx_service`. DB at the single alembic head `dlc_s412b_log_settings` (`integration_log_settings` table present). Demo Admin `demo@example.com` / `demo1234` (holds `integration_logs.read` + `.manage`).
+
+## Test environment notes (load-bearing)
+- **Both servers were serving STALE code and had to be restarted** — the running uvicorn (started 21:50) and next-server (started 21:50) both PREDATED the Slice-3 source (embed_session_service edited 22:34, build 22:53). The stale uvicorn had NO `--reload`, so the embed-recording code path did not exist in-process: a real failing `/embed/session` returned the correct 403 but wrote **zero** `embed_session` rows (`SELECT … WHERE source='embed_session'` → 0 across all tenants). Killed both, restarted uvicorn fresh on :8001, clean-rebuilt the frontend (`rm -rf .next && npm run build`, `/developers/logs/settings` present in the manifest) and restarted next-server on :3001 (owner cwd confirmed = `foundryx-shared-service/service_{backend,frontend}`). After the restart the identical exchange recorded the row correctly. **This is the documented "uvicorn without --reload won't pick up new code" + stale-build trap — it would have silently failed the E2E and masked a working feature.**
+- `auth_throttle` cleared before the E2E run (manual validation logins had pumped the shared 127.0.0.1 bucket).
+- `chn-demo` present + not trashed (Slice-2 trace test dependency) — re-verified.
+
+## Suite results (Task 1)
+| Suite | Command | Result |
+|---|---|---|
+| Backend Slice-3 targeted | `pytest -q test_activity_embed test_activity_retention test_activity_redaction test_activity_volume_guard test_activity_log test_activity_trace` | **32 passed** (embed 7 · retention 7 · redaction 2 · volume_guard 2 · log 8 · trace 6) |
+| Backend full smoke | `pytest -q` | **1139 passed**, 0 failed (182 warnings), 11m17s (= Slice-2 1116 + 18 new activity cases + 5 others; no regressions) |
+| Frontend targeted | `vitest run integration-log-service log-badges menu-filter` | **24 passed** (3 files; mock-service grew to 10 incl. `getSettings`/`updateSettings` round-trip) |
+| E2E | `playwright test developer-logs.spec.ts` | **6 passed** (2 Slice-1 + 2 Slice-2 + 2 new Slice-3) |
+
+---
+
+## Per-AC verdict (Slice 3)
+
+| AC | Area | Verdict |
+|---|---|---|
+| AC-DLC-20 | `EmbedSessionService.exchange()` records `embed_session` on success + each typed EmbedError; parent origin captured; no raw assertion/secret; unattributable → nothing | **PASS** |
+| AC-DLC-21 | per-tenant `retention_days`; `GET/PUT /integration-logs/settings` gated `integration_logs.manage`; global default key | **PASS** |
+| AC-DLC-22 | beat pruner deletes only past-window rows, per-tenant override else global default, failure-isolated | **PASS** |
+| AC-DLC-23 | `Developers → Logs → Log settings` page to set retention, gated `integration_logs.manage`, Resource/settings pattern | **PASS** |
+| AC-DLC-24 | embed rows render with a distinct source badge; failed embed shows its typed error clearly | **PASS** |
+| AC-DLC-25 | redaction matrix: API key + bearer + `embedSecret` + Meta token masked across ALL 4 sources; message content preserved | **PASS** |
+| AC-DLC-26 | volume guard documented + drops/degrades (not blocks) under burst; cap=0 disables | **PASS** |
+
+**Slice 3 verdict: GREEN.** All seven ACs PASS. The embed-error rendering AND the retention save were both confirmed with REAL clicks against the live stack (screenshots below), not just green pytest.
+
+---
+
+## Detailed scenarios (Slice 3)
+
+### AC-DLC-20 — embed-session logging — PASS
+- **Precondition:** `tests/test_activity_embed.py` (7 cases, all green) is the reference; live-verified via a real dedicated-tenant exchange.
+- **Actual (unit):** a SUCCESS exchange records ONE `embed_session` row (`operation="embed:session"`, `status="success"`, `statusCode=200`, `workspaceId` captured, `request={"parentOrigin": ORIGIN}`, and `SECRET_A not in str(row)` — no raw secret). Each typed `EmbedError` records an `error` row with the code as `error_code`: `invalid_assertion` (bad signature), `expired`, `origin_not_allowed` (403), `workspace_not_found` (404), `replayed` (a 2nd exchange of the same jti → one success + one replayed). An unknown-issuer failure (no resolvable tenant) records **nothing** (documented skip, mirrors the inbound-401 case).
+- **Actual (live):** a genuine `POST /embed/session` with a valid HS256 assertion but a mismatched `parentOrigin` → 403 `origin_not_allowed` → exactly ONE `embed_session error origin_not_allowed statusCode=403` row in the tenant's console (`SELECT` confirmed). No raw assertion/embedSecret stored (`requestSummary` = `{"parentOrigin": …}` only). The recorder is failure-isolated (fresh `Session(bind=…)`, swallow-and-log) so it can never break the security path.
+
+### AC-DLC-21 — retention settings endpoints + gate — PASS
+- **Live (demo Admin, has `integration_logs.manage`):** `GET /integration-logs/settings` → **200**; `PUT {retentionDays:0}` → **422**; `PUT {retentionDays:5000}` (>3650) → **422**; `PUT {retentionDays:30}` → **200**; unauthenticated `GET` → **401**.
+- **Gate (unit `test_settings_requires_manage_permission`):** a user granted `integration_logs.read` but NOT `.manage` gets **200** on the read list but **403** on both `GET` and `PUT /settings` — backend is the real boundary. `IntegrationLogSettingsUpdate.retentionDays` is `Field(ge=1, le=3650)` (the 422 source). Effective retention resolves override else the global default `integration_activity_retention_days=30` (`isDefault` flag on the wire).
+
+### AC-DLC-22 — retention prune — PASS
+- **Direct call (`prune_integration_activity(db)`, eager dev has no beat):** `test_prune_deletes_only_past_window_rows` seeds an age=default+5 row and an age=default-5 row for the default tenant → prune deletes exactly the old one (`deleted==1`), fresh survives. `test_prune_respects_per_tenant_override` seeds `IntegrationLogSettings(tenant=OTHER, retention_days=7)` then a 10-day + 3-day row for OTHER and a 10-day row for the 30-day-default tenant → only OTHER's 10-day row is pruned (past its 7-day override), OTHER's 3-day + the default tenant's 10-day survive (`deleted==1`). Per-tenant, isolated per tenant (a bad delete rolls back + continues), wired into the workflow beat tick (`run_due_workflows_task`, failure-isolated try/except).
+
+### AC-DLC-23 — retention settings page (real clicks) — PASS
+- **Live (E2E, default tenant demo Admin):** real-click nav sign in → expand **Developers** → click **Log settings** (`/developers/logs/settings`) → the "Log retention" card (`RequirePermission integration_logs.manage`) → filled **Keep developer logs for (days)** = a run-unique value (40–159) → **Save** → "Log retention saved." toast → **hard reload** → the input still shows the saved value (round-trips backend PUT→GET; caption flips to "Custom for this workspace."). Screenshot `dlc-settings-desktop.png` (157 persisted). Reuses the `/settings/workflows` shape (no hand-rolled form; UI → `useIntegrationLogSettings` hook → service, never a direct fetch).
+- **Responsive:** asserted horizontal overflow ≤ 2px and the value intact at 1280×800 AND 375×812 (`dlc-settings-{desktop,mobile}.png`).
+- **Isolation note:** run on the `default` tenant (benign — no Celery beat runs in the E2E stack so nothing is pruned, and the value is kept well above any seeded row's age; no other spec reads retention). Left an `integration_log_settings` override row on `default` (harmless).
+
+### AC-DLC-24 — embed error rendering (real clicks) — PASS
+- **Setup (operator/API, isolated):** the `default` tenant's live embed-config connection is depended on by `omnichannel-embed*.spec` ("DO NOT MUTATE … NEVER rotate the secret", and the one-active-`omnichannel_shared`-per-tenant unique index blocks a 2nd), so this journey **provisions a DEDICATED tenant** (`e2e-dlc-embed-<ts>`), seeds it its OWN `omnichannel_shared` connection with a known `embedSecret` + `allowedOrigins` (new helper `e2e/helpers/seed_embed_connection_for_tenant.py`, resolves tenant by slug — a fresh tenant has no existing row so the unique index is never touched), mints a valid HS256 assertion (`jose SignJWT`) and drives a real `POST /embed/session` with a mismatched `parentOrigin` → 403 `origin_not_allowed`, recording one `embed_session` error row in that tenant's console.
+- **Flow (real clicks):** sign in as the dedicated tenant's admin at `<slug>.localhost:3001` → expand **Developers** → click **Logs** → the LIST row shows the **Embed** source badge + the typed `origin_not_allowed` inline (the status column renders `errorCode` for error rows instead of the numeric code) → click the row → the read-only DETAIL surfaces the error code (`data-testid="log-error-code"` = `origin_not_allowed`, in destructive red), the Embed source, the error message "This origin is not permitted to embed.", and the raw `embedSecret` appears **nowhere** on the page. Screenshots `dlc-embed-desktop.png` / `dlc-embed-mobile.png` (both viewports, overflow ≤ 2px).
+- **`log-badges.test.ts`** pins the badge registry: `LOG_SOURCE_REGISTRY.embed_session.label === 'Embed'`, tone `primary`.
+
+### AC-DLC-25 — redaction matrix — PASS (all sources + secrets present)
+- **Confirmed the matrix is COMPLETE** (the task's fail-if-missing check): `tests/test_activity_redaction.py` `_summary()` carries all four secret shapes — API key (`apiKey`/`api_key`), bearer token (`authorization` header + a nested `list[].token`), `embedSecret` (+ nested `clientSecret`), Meta access token (`accessToken`/`access_token`) — plus a WhatsApp message body. `test_redaction_matrix_masks_all_secret_shapes` asserts each is `"***"` and message content survives. `test_redaction_matrix_across_all_four_sources` drives a real `ActivityLogService.record` write for **each of `inbound_api`, `embed_session`, `outbound_meta`, `webhook_delivery`** and re-reads the STORED `request_summary_json` AND `response_summary_json`, asserting `_all_secrets_masked` (API key / `fxw_live_bearer` / embedSecret / Meta token all absent, `MESSAGE` present) on both. No source or secret shape is missing from the matrix.
+
+### AC-DLC-26 — volume guard — PASS
+- **Documented + verified:** `ActivityLogService._volume_guard_admits()` is a per-process 1s token counter (`integration_activity_max_writes_per_second`, default 500); over cap → the write is DROPPED (returns `None`, no row) with a running dropped-counter logged every 100 drops, never blocked. `test_volume_guard_drops_over_cap` (cap=2, 5 writes → 2 admitted rows persisted, 3 return `None`) and `test_volume_guard_disabled_when_cap_zero` (cap=0 → all 4 admitted) prove drop-not-block + the disable switch. The write is already off the request critical path (fresh-session / prod BackgroundTask) and swallow-isolated, so dropping is graceful degradation. Documented trade-off (per-process cap; an async/buffered writer is the true scale path) noted in the plan/code as a backlog candidate.
+
+---
+
+## Screenshots (scratchpad)
+- `dlc-settings-desktop.png` / `dlc-settings-mobile.png` — Log-retention form, value 157 persisted after reload ("Custom for this workspace."), sidebar Developers → Logs / Log settings.
+- `dlc-embed-desktop.png` / `dlc-embed-mobile.png` — embed_session detail: Embed source badge, Error 403, Error code `origin_not_allowed`, message, no secret.
+
+## Other remarks (not AC failures)
+- **New E2E helper** `service_frontend/e2e/helpers/seed_embed_connection_for_tenant.py` (sibling of the existing `seed_embed_connection.py`, generalized to an arbitrary tenant-by-slug) — required so AC-DLC-24 uses a dedicated tenant and never mutates the default tenant's live embed-config connection. Invoked with `PYTHONPATH=<backend>` (script-dir-on-sys.path means `cwd` alone doesn't import `app`); the spec parses the JSON line by matching `"connectionId"` because local SQLAlchemy echo pollutes stdout.
+- **E2E residue (consistent with existing specs, BL-069):** each AC-DLC-24 run leaves a provisioned `e2e-dlc-embed-%` tenant (+ its one embed error row) — never purged (BL-035). Suspect + clean these before blaming code if the tenants list crowds. The AC-DLC-23 run leaves a benign `integration_log_settings` override on the `default` tenant.
+- **Migration:** single alembic head `dlc_s412b_log_settings` (≤ 32 chars). The two-heads condition noted in Slice 1 was reconciled by the merge commit `1b41dfe`; `alembic upgrade head` now succeeds.
+
+## Verdict (Slice 3)
+**Slice 3 is GREEN.** All seven ACs (AC-DLC-20…26) PASS — including the two that a green pytest alone can't satisfy: the retention **save** and the **embed error rendering** were both confirmed with real clicks against the live stack (screenshots), after catching + fixing a stale-code/stale-build environment that had silently disabled embed recording. No regressions (full backend suite 1139 passed; frontend targeted 24; E2E 6).
+
+---
+
+# Feature-wide summary — all 26 ACs across the 3 slices
+
+| Slice | AC ids | Final status |
+|---|---|---|
+| **1 — store + inbound-API capture + console** | AC-DLC-01 … 13 | **ALL PASS** (2 documented deferrals, none breaking an AC: unattributed inbound-401 writes no row [AC-DLC-03]; inbound `responseSummary` null / body metadata-only [AC-DLC-07/11]) |
+| **2 — correlated trace (outbound Meta + webhook unify + trace view)** | AC-DLC-14 … 19 | **ALL PASS** (AC-DLC-16 disclosed mechanism deviation: write-time core-seam vs read-time join — outcome met, historical rows not backfilled; AC-DLC-17 timeline causal-order inversion — quality finding, contract met) |
+| **3 — embed logging + per-tenant retention + hardening** | AC-DLC-20 … 26 | **ALL PASS** |
+
+**FEATURE VERDICT: GREEN.** All 26 acceptance criteria pass. The remaining items are backlog candidates (unattributed-401 stream, inbound response-summary capture, historical webhook backfill, trace causal ordering, async/buffered activity writer) — none blocks a slice as written. Recommend merge after code review.

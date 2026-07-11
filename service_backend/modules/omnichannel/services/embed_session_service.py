@@ -59,6 +59,60 @@ class EmbedSessionService:
         self.db = db
 
     def exchange(self, assertion: str, parent_origin: Optional[str]) -> Dict[str, Any]:
+        """Verify + exchange, recording ONE ``embed_session`` activity row on both
+        the success and each typed-``EmbedError`` path (AC-DLC-20). The recorder is
+        fully failure-isolated (fresh session, swallow-and-log) so logging can
+        never break this security path; a tenant is resolved from the connection
+        the assertion maps to as soon as it's known (``ctx``), and a failure
+        before that (no attributable tenant) is skipped."""
+        # Tracks the tenant/workspace resolved DURING the exchange so a failure at
+        # any step still attributes what it can (the recorder skips a None tenant).
+        ctx: Dict[str, Any] = {"tenant_id": None, "workspace_id": None}
+        try:
+            result = self._exchange(assertion, parent_origin, ctx)
+        except EmbedError as exc:
+            self._record(
+                ctx,
+                status="error",
+                status_code=exc.status_code,
+                parent_origin=parent_origin,
+                error_code=exc.code,
+                error_message=exc.message,
+            )
+            raise
+        self._record(
+            ctx, status="success", status_code=200, parent_origin=parent_origin
+        )
+        return result
+
+    def _record(
+        self,
+        ctx: Dict[str, Any],
+        *,
+        status: str,
+        status_code: int,
+        parent_origin: Optional[str],
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        # Import here to avoid a circular import at module load (activity imports
+        # the adapter, which the module wires eagerly).
+        from .activity import record_embed_session
+
+        record_embed_session(
+            self.db,
+            tenant_id=ctx.get("tenant_id"),
+            workspace_id=ctx.get("workspace_id"),
+            status=status,
+            status_code=status_code,
+            parent_origin=parent_origin,
+            error_code=error_code,
+            error_message=error_message,
+        )
+
+    def _exchange(
+        self, assertion: str, parent_origin: Optional[str], ctx: Dict[str, Any]
+    ) -> Dict[str, Any]:
         assertion = (assertion or "").strip()
         if not assertion:
             raise EmbedError(401, "invalid_assertion", "Missing assertion.")
@@ -87,6 +141,9 @@ class EmbedSessionService:
         )
         if conn is None:
             raise EmbedError(401, "invalid_assertion", "Unknown assertion issuer.")
+        # Tenant is now attributable — every subsequent failure lands on the
+        # connection's tenant console (AC-DLC-20).
+        ctx["tenant_id"] = conn.tenant_id
 
         embed_secret = self._embed_secret(conn)
 
@@ -131,6 +188,7 @@ class EmbedSessionService:
 
         # 6) Connection active for tenant + workspace belongs to it.
         workspace_id = claims.get("workspaceId")
+        ctx["workspace_id"] = workspace_id
         if not workspace_id or not ModuleRepository(self.db).is_active(conn.tenant_id, MODULE_NAME):
             raise EmbedError(404, "workspace_not_found", "Workspace not found.")
         workspace = (

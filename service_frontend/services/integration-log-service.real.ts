@@ -6,6 +6,7 @@ import type { ListQuery, ListResult } from '@/types/resource';
 import type {
   IntegrationLogDetail,
   IntegrationLogItem,
+  IntegrationLogSettings,
   IntegrationLogTrace,
 } from '@/types/integration-logs';
 import type { IntegrationLogService } from './integration-log-service';
@@ -46,5 +47,16 @@ export const realIntegrationLogService: IntegrationLogService = {
       columns.map((c) => String((r as unknown as Record<string, unknown>)[c] ?? '')),
     );
     return toCsv(columns, rows);
+  },
+
+  getSettings(): Promise<IntegrationLogSettings> {
+    return apiFetch<IntegrationLogSettings>('/integration-logs/settings');
+  },
+
+  updateSettings(retentionDays: number): Promise<IntegrationLogSettings> {
+    return apiFetch<IntegrationLogSettings>('/integration-logs/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ retentionDays }),
+    });
   },
 };

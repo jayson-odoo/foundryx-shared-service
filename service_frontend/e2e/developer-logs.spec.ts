@@ -1,4 +1,10 @@
-import { expect, test, request as pwRequest, type Page } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+
+import { expect, test, request as pwRequest, type APIRequestContext, type Page } from '@playwright/test';
+import { SignJWT } from 'jose';
 
 /**
  * Developer Logs / Integration Activity console — Slice 1 E2E (sprint-4/12).
@@ -358,6 +364,208 @@ test.describe('Developer Logs trace (Slice 2)', () => {
       expect(overflow, `no horizontal scroll at ${tag} (${w}px)`).toBeLessThanOrEqual(2);
       await page.screenshot({
         path: `/private/tmp/claude-501/-Users-tehjayson-Documents-foundryx-foundryx-shared-service/80e7ad94-f293-461e-a342-c2b76c6b38a9/scratchpad/dlc-trace-${tag}.png`,
+        fullPage: true,
+      });
+    }
+  });
+});
+
+/**
+ * Slice 3 — retention settings + embed logging (AC-DLC-23/24). Real user clicks
+ * against the live stack. Two independent journeys:
+ *
+ *  ① AC-DLC-23 — a developer navigates Developers → Logs → Log settings, sets a
+ *     retention window, saves, and the value persists across a reload. On the
+ *     `default` tenant (benign: no beat runs in the E2E stack, and the value is
+ *     kept high enough to never prune a recently-seeded row). Verified 375+1280.
+ *  ② AC-DLC-24 — an `embed_session` row with a TYPED error renders with the Embed
+ *     source badge + its visible error code, in the list AND the detail. To get a
+ *     real failing exchange WITHOUT touching the default tenant's live embed-config
+ *     connection (depended on by omnichannel-embed*.spec), a DEDICATED tenant is
+ *     provisioned, given its OWN omnichannel_shared connection (operator/python
+ *     seed), and a genuine `POST /embed/session` with a mismatched parentOrigin is
+ *     driven → `origin_not_allowed`. The FLOW under test (viewing the row) is real
+ *     clicks; generating it is precondition setup.
+ */
+
+async function operatorToken(request: APIRequestContext): Promise<string> {
+  const res = await request.post(`${BACKEND}/auth/login`, {
+    data: { email: 'platform@example.com', password: 'platform1234', tenantSlug: 'platform' },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  return (await res.json()).access_token as string;
+}
+
+const tenantHost = (slug: string) => `http://${slug}.localhost:3001`;
+
+async function loginAt(page: Page, base: string, email: string, password: string) {
+  await page.goto(`${base}/signin`);
+  await page.getByPlaceholder('Your email').fill(email);
+  await page.getByPlaceholder('Your password').fill(password);
+  await page.getByRole('button', { name: /sign in/i }).click();
+  await page.waitForURL((url) => !url.pathname.startsWith('/signin'));
+}
+
+/** Real clicks: expand the Developers section (if collapsed), then click a child. */
+async function gotoDevelopersChild(page: Page, name: RegExp | string, urlRe: RegExp) {
+  const link = page.getByRole('link', { name, exact: true });
+  if (!(await link.isVisible().catch(() => false))) {
+    await page.getByText('Developers', { exact: true }).click();
+  }
+  await link.click();
+  await expect(page).toHaveURL(urlRe);
+}
+
+test.describe('Developer Logs retention settings (Slice 3)', () => {
+  test('AC-DLC-23: set retention → save → persists across reload (375 + 1280)', async ({
+    page,
+  }) => {
+    // A distinctive, always-safe value (>> any seeded row's age in days) so the
+    // save is provably NOT a stale default read, and no prune could touch data.
+    const value = 40 + (Date.now() % 120); // 40..159
+
+    await loginAt(page, 'http://localhost:3001', 'demo@example.com', 'demo1234');
+
+    // Navigate by REAL clicks to Developers → Log settings.
+    await gotoDevelopersChild(page, 'Log settings', /\/developers\/logs\/settings$/);
+
+    const input = page.getByLabel('Keep developer logs for (days)');
+    await expect(input).toBeVisible();
+    await input.fill(String(value));
+    await page.getByRole('button', { name: /^Save$/ }).click();
+    await expect(page.getByText('Log retention saved.')).toBeVisible();
+
+    // Persisted across a hard reload (round-trips the backend PUT→GET).
+    await page.reload();
+    await expect(page.getByLabel('Keep developer logs for (days)')).toHaveValue(String(value));
+
+    // Responsive — the form reflows with no horizontal scroll at both widths.
+    for (const [w, h, tag] of [
+      [1280, 800, 'desktop'],
+      [375, 812, 'mobile'],
+    ] as const) {
+      await page.setViewportSize({ width: w, height: h });
+      await page.waitForTimeout(300);
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      expect(overflow, `no horizontal scroll at ${tag} (${w}px)`).toBeLessThanOrEqual(2);
+      await expect(page.getByLabel('Keep developer logs for (days)')).toHaveValue(String(value));
+      await page.screenshot({
+        path: `/private/tmp/claude-501/-Users-tehjayson-Documents-foundryx-foundryx-shared-service/80e7ad94-f293-461e-a342-c2b76c6b38a9/scratchpad/dlc-settings-${tag}.png`,
+        fullPage: true,
+      });
+    }
+  });
+});
+
+type EmbedSeed = { slug: string; email: string; password: string; connectionId: string; secret: string };
+
+/** Provision a dedicated tenant + its own omnichannel_shared connection, then drive
+ * a real failing /embed/session (origin_not_allowed) → one embed_session error row
+ * in that tenant's console. Fully isolated from the default tenant's embed config. */
+async function seedEmbedError(request: APIRequestContext): Promise<EmbedSeed> {
+  const ts = Date.now();
+  const slug = `e2e-dlc-embed-${ts}`;
+  const email = `admin-${slug}@example.com`;
+  const password = 'ChangeMe1!';
+  const token = await operatorToken(request);
+  const prov = await request.post(`${BACKEND}/platform/tenants`, {
+    headers: { Authorization: `Bearer ${token}` },
+    data: { name: `E2E DLC Embed ${ts}`, slug, adminName: 'DLC Admin', adminEmail: email, adminPassword: password },
+  });
+  expect(prov.status(), await prov.text()).toBe(201);
+
+  // Seed the dedicated tenant's embed connection (operator python helper; cwd =
+  // service_backend, its venv). Non-destructive: a fresh tenant has no existing
+  // omnichannel_shared row so the one-active-per-provider index is never touched.
+  const secret = `e2e-dlc-embed-secret-${ts}-${randomUUID()}`;
+  const connectionId = `e2e-dlc-embed-conn-${ts}`;
+  const backendDir = path.resolve(__dirname, '..', '..', 'service_backend');
+  const venvPy = path.join(backendDir, '.venv', 'bin', 'python');
+  const py = existsSync(venvPy) ? venvPy : 'python';
+  const script = path.join(__dirname, 'helpers', 'seed_embed_connection_for_tenant.py');
+  const out = execFileSync(
+    py,
+    [script, '--tenant-slug', slug, '--secret', secret, '--origin', 'https://consumer.example', '--connection-id', connectionId],
+    { cwd: backendDir, encoding: 'utf8', env: { ...process.env, PYTHONPATH: backendDir } },
+  );
+  const jsonLine = out.split('\n').find((l) => l.includes('"connectionId"'));
+  expect(jsonLine, `seed helper should print connection JSON; got:\n${out}`).toBeTruthy();
+  expect((JSON.parse(jsonLine!) as { connectionId: string }).connectionId).toBe(connectionId);
+
+  // Mint a valid HS256 assertion (passes signature/aud/exp/iat/jti) but POST with a
+  // parentOrigin NOT in allowedOrigins → the exchange reaches the origin check and
+  // fails origin_not_allowed (403), recording ONE embed_session error row.
+  const now = Math.floor(Date.now() / 1000);
+  const assertion = await new SignJWT({
+    workspaceId: 'ws-e2e',
+    scope: 'inbox',
+    name: 'DLC Embed Agent',
+    caps: ['reply'],
+    allowedOrigins: ['https://consumer.example'],
+  })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuer(connectionId)
+    .setSubject('dlc-agent-1')
+    .setAudience('omnichannel-embed')
+    .setIssuedAt(now)
+    .setExpirationTime(now + 900)
+    .setJti(randomUUID())
+    .sign(new TextEncoder().encode(secret));
+
+  const exch = await request.post(`${BACKEND}/embed/session`, {
+    data: { assertion, parentOrigin: 'https://evil.example' },
+  });
+  expect(exch.status(), await exch.text()).toBe(403);
+  expect((await exch.json()).error.code).toBe('origin_not_allowed');
+  return { slug, email, password, connectionId, secret };
+}
+
+test.describe('Developer Logs embed error (Slice 3)', () => {
+  let seed: EmbedSeed;
+
+  test.beforeAll(async ({ request }) => {
+    seed = await seedEmbedError(request);
+  });
+
+  test('AC-DLC-24: embed_session error row renders with the Embed badge + error code', async ({
+    page,
+  }) => {
+    // View as the DEDICATED tenant's admin (its console has exactly the one row).
+    await loginAt(page, tenantHost(seed.slug), seed.email, seed.password);
+
+    // Real clicks → Developers → Logs.
+    await gotoDevelopersChild(page, /^Logs$/, /\/developers\/logs$/);
+
+    // The list row shows the Embed source badge + the typed error code inline.
+    const row = page.getByRole('row').filter({ hasText: 'embed:session' });
+    await expect(row.first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('Embed').first()).toBeVisible();
+    await expect(page.getByText('origin_not_allowed').first()).toBeVisible();
+
+    // Open the read-only detail — the error code is surfaced (data-testid pin).
+    await row.first().click();
+    await expect(page).toHaveURL(/\/developers\/logs\/[\w-]+(\?|$)/);
+    await expect(page.getByTestId('log-error-code')).toHaveText('origin_not_allowed');
+    // Overview shows the Embed source; NO raw assertion / embedSecret on the page.
+    const body = (await page.textContent('body')) ?? '';
+    expect(body).toContain('Embed');
+    expect(body).not.toContain(seed.secret);
+
+    // Responsive check at both widths.
+    for (const [w, h, tag] of [
+      [1280, 800, 'desktop'],
+      [375, 812, 'mobile'],
+    ] as const) {
+      await page.setViewportSize({ width: w, height: h });
+      await page.waitForTimeout(300);
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      expect(overflow, `no horizontal scroll at ${tag} (${w}px)`).toBeLessThanOrEqual(2);
+      await page.screenshot({
+        path: `/private/tmp/claude-501/-Users-tehjayson-Documents-foundryx-foundryx-shared-service/80e7ad94-f293-461e-a342-c2b76c6b38a9/scratchpad/dlc-embed-${tag}.png`,
         fullPage: true,
       });
     }

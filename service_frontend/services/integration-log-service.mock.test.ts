@@ -73,4 +73,19 @@ describe('mock integration-log service', () => {
     const trace = await svc.getTrace('trace-nope');
     expect(trace!.legs).toEqual([]);
   });
+
+  // AC-DLC-21/23: retention settings round-trip.
+  it('getSettings returns the deployment default', async () => {
+    const s = await svc.getSettings();
+    expect(s.retentionDays).toBe(30);
+    expect(s.isDefault).toBe(true);
+  });
+
+  it('updateSettings persists an override (isDefault=false)', async () => {
+    const updated = await svc.updateSettings(14);
+    expect(updated).toEqual({ retentionDays: 14, isDefault: false });
+    const again = await svc.getSettings();
+    expect(again.retentionDays).toBe(14);
+    expect(again.isDefault).toBe(false);
+  });
 });

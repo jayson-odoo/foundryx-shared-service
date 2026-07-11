@@ -58,3 +58,13 @@ export interface IntegrationLogTrace {
   traceId: string;
   legs: IntegrationLogItem[];
 }
+
+/**
+ * `GET/PUT /integration-logs/settings` — per-tenant retention window (sprint-4/12
+ * Slice 3, AC-DLC-21). `isDefault` = using the deployment default (no override).
+ * Matches backend `IntegrationLogSettingsOut`.
+ */
+export interface IntegrationLogSettings {
+  retentionDays: number;
+  isDefault: boolean;
+}

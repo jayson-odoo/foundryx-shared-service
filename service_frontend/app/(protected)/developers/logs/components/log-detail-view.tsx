@@ -108,6 +108,13 @@ export function LogDetailView({ logId }: { logId: string }) {
                 {log.externalRef ? <code className="text-xs">{log.externalRef}</code> : '—'}
               </OverviewRow>
               <OverviewRow label="Time">{formatDateTime(log.createdAt)}</OverviewRow>
+              {log.status === 'error' && log.errorCode && (
+                <OverviewRow label="Error code">
+                  <code data-testid="log-error-code" className="text-destructive text-xs">
+                    {log.errorCode}
+                  </code>
+                </OverviewRow>
+              )}
               {log.errorMessage && (
                 <OverviewRow label="Error">
                   <pre

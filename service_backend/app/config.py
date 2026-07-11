@@ -142,6 +142,17 @@ class Settings(BaseSettings):
     # pending and needs_review jobs are never pruned.
     background_job_retention_days: int = 30
 
+    # ── Developer Logs / Integration Activity (plan sprint-4/12) ────────────
+    # Global default retention for integration_activity rows (a per-tenant
+    # integration_log_settings.retention_days NULL falls back to this). The beat
+    # pruner deletes rows older than the effective window per tenant.
+    integration_activity_retention_days: int = 30
+    # Volume guard (AC-DLC-26) — a lightweight per-process cap on activity writes
+    # so a burst degrades to dropping rows (with a logged counter) rather than
+    # hammering the DB or blocking. Async/buffered writer = the scale path
+    # (backlog). Set generously; 0 disables the guard.
+    integration_activity_max_writes_per_second: int = 500
+
     # ── Omnichannel module (WhatsApp BSP) ───────────────────────────────────
     # Meta app (FoundryX = Tech Provider). Embedded Signup exchanges the code
     # against this one app. Empty in dev until the Meta app is configured.

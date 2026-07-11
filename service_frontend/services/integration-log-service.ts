@@ -11,6 +11,7 @@ import type { ListQuery, ListResult } from '@/types/resource';
 import type {
   IntegrationLogDetail,
   IntegrationLogItem,
+  IntegrationLogSettings,
   IntegrationLogTrace,
 } from '@/types/integration-logs';
 import { realIntegrationLogService } from './integration-log-service.real';
@@ -24,6 +25,10 @@ export interface IntegrationLogService {
   getTrace(traceId: string): Promise<IntegrationLogTrace | null>;
   /** CSV export of the current query (shell export button). */
   export(query: ListQuery, columns: string[]): Promise<string>;
+  /** Tenant retention settings (`GET /integration-logs/settings`). */
+  getSettings(): Promise<IntegrationLogSettings>;
+  /** Update the tenant retention window (`PUT /integration-logs/settings`). */
+  updateSettings(retentionDays: number): Promise<IntegrationLogSettings>;
 }
 
 // Phase B: real api-client implementation is the shipped boundary.

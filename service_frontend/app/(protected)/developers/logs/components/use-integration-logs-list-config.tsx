@@ -86,12 +86,22 @@ export function useIntegrationLogsListConfig(): ResourceListConfig<IntegrationLo
         cell: ({ row }) => (
           <div className="flex items-center gap-2">
             <StatusBadge status={row.original.status} registry={LOG_STATUS_REGISTRY} size="sm" />
-            {row.original.statusCode != null && (
-              <span className="text-muted-foreground text-xs">{row.original.statusCode}</span>
+            {/* Typed error code (e.g. embed origin_not_allowed) reads clearer than
+                the numeric status; fall back to the HTTP/Meta status code. */}
+            {row.original.status === 'error' && row.original.errorCode ? (
+              <span className="text-destructive font-mono text-xs">
+                {row.original.errorCode}
+              </span>
+            ) : (
+              row.original.statusCode != null && (
+                <span className="text-muted-foreground text-xs">
+                  {row.original.statusCode}
+                </span>
+              )
             )}
           </div>
         ),
-        size: 150,
+        size: 180,
         enableSorting: true,
       },
       {

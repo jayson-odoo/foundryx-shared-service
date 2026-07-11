@@ -72,6 +72,7 @@ from app.models.integration_activity import (
     SOURCE_WEBHOOK_DELIVERY,
     IntegrationActivity,
 )
+from app.models.integration_log_settings import IntegrationLogSettings
 from app.models.invite_token import InviteToken
 from app.models.email_change_request import (
     CHANGE_CANCELLED,
@@ -167,6 +168,7 @@ from app.models.review import (
 
 __all__ = [
     "IntegrationActivity",
+    "IntegrationLogSettings",
     "ACTIVITY_SOURCES",
     "ACTIVITY_STATUSES",
     "ACTIVITY_SUCCESS",

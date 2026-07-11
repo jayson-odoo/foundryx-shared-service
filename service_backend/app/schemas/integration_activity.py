@@ -6,7 +6,7 @@ request/response summaries. Both inherit ``ApiModel`` (the datetime→Z net).
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.base import ApiModel
 
@@ -52,3 +52,15 @@ class IntegrationActivityTraceResponse(ApiModel):
 
     traceId: str
     legs: List[IntegrationActivityItem]
+
+
+class IntegrationLogSettingsOut(ApiModel):
+    """Per-tenant developer-logs retention (AC-DLC-21). ``isDefault`` = using the
+    deployment default (no per-tenant override)."""
+
+    retention_days: int = Field(serialization_alias="retentionDays")
+    is_default: bool = Field(serialization_alias="isDefault")
+
+
+class IntegrationLogSettingsUpdate(BaseModel):
+    retentionDays: int = Field(ge=1, le=3650)

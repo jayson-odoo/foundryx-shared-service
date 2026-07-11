@@ -273,6 +273,11 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/developers/logs',
         permission: 'integration_logs.read',
       },
+      {
+        title: 'Log settings',
+        path: '/developers/logs/settings',
+        permission: 'integration_logs.manage',
+      },
     ],
   },
   // Document management / the Drive (sprint-3/04) — files, folders, sharing.
@@ -914,6 +919,11 @@ export const MENU_MEGA: MenuConfig = [
                 path: '/developers/logs',
                 permission: 'integration_logs.read',
               },
+              {
+                title: 'Log settings',
+                path: '/developers/logs/settings',
+                permission: 'integration_logs.manage',
+              },
             ],
           },
         ],
@@ -1028,6 +1038,11 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Logs',
         path: '/developers/logs',
         permission: 'integration_logs.read',
+      },
+      {
+        title: 'Log settings',
+        path: '/developers/logs/settings',
+        permission: 'integration_logs.manage',
       },
     ],
   },

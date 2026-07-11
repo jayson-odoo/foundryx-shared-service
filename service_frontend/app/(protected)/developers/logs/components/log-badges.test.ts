@@ -14,6 +14,9 @@ describe('integration-log badge registries', () => {
       expect(LOG_SOURCE_REGISTRY[key].tone).toBeTruthy();
     }
     expect(LOG_SOURCE_REGISTRY.inbound_api.label).toBe('Inbound API');
+    // AC-DLC-24: embed rows get a distinct source badge.
+    expect(LOG_SOURCE_REGISTRY.embed_session.label).toBe('Embed');
+    expect(LOG_SOURCE_REGISTRY.embed_session.tone).toBe('primary');
   });
 
   it('covers every status', () => {

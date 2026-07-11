@@ -12,6 +12,7 @@ import type { ListQuery, ListResult } from '@/types/resource';
 import type {
   IntegrationLogDetail,
   IntegrationLogItem,
+  IntegrationLogSettings,
   IntegrationLogStatus,
   IntegrationLogTrace,
 } from '@/types/integration-logs';
@@ -74,6 +75,8 @@ const MOCK_ROWS: IntegrationLogDetail[] = [
   _leg('log-0-hook', 'webhook_delivery', 'webhook:message.status'),
 ];
 
+let MOCK_SETTINGS: IntegrationLogSettings = { retentionDays: 30, isDefault: true };
+
 function _match(row: IntegrationLogItem, query: ListQuery): boolean {
   if (query.search) {
     const s = query.search.toLowerCase();
@@ -111,5 +114,14 @@ export const mockIntegrationLogService: IntegrationLogService = {
       columns.map((c) => String((r as unknown as Record<string, unknown>)[c] ?? '')),
     );
     return toCsv(columns, rows);
+  },
+
+  async getSettings(): Promise<IntegrationLogSettings> {
+    return { ...MOCK_SETTINGS };
+  },
+
+  async updateSettings(retentionDays: number): Promise<IntegrationLogSettings> {
+    MOCK_SETTINGS = { retentionDays, isDefault: false };
+    return { ...MOCK_SETTINGS };
   },
 };

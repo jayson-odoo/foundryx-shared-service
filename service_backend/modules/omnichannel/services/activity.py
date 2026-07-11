@@ -20,7 +20,10 @@ from sqlalchemy.orm import Session
 
 from app.activity_log.context import get_trace_id
 from app.activity_log.service import ActivityLogService
-from app.models.integration_activity import SOURCE_OUTBOUND_META
+from app.models.integration_activity import (
+    SOURCE_EMBED_SESSION,
+    SOURCE_OUTBOUND_META,
+)
 
 from ..adapters.whatsapp_cloud import GraphCall, GraphRecorder
 
@@ -59,3 +62,49 @@ def build_meta_recorder(
             logger.exception("outbound-meta activity record failed (%s)", call.operation)
 
     return _record
+
+
+def record_embed_session(
+    db: Session,
+    *,
+    tenant_id: Optional[str],
+    workspace_id: Optional[str],
+    status: str,
+    status_code: Optional[int],
+    parent_origin: Optional[str],
+    error_code: Optional[str] = None,
+    error_message: Optional[str] = None,
+) -> None:
+    """Log ONE ``embed_session`` activity row for a ``POST /embed/session``
+    exchange (AC-DLC-20) — ``success`` on a minted token, ``error`` with the typed
+    ``EmbedError`` code on a failed verification. Fully failure-isolated (fresh
+    session + swallow-and-log) so a logging failure can NEVER break the embed
+    exchange — a security path.
+
+    The raw assertion and ``embedSecret`` are NEVER passed here; only the parent
+    origin (a URL, not a secret — redaction preserves it) is captured. When the
+    failure is so early there's no resolvable tenant (malformed assertion before
+    the connection lookup), ``tenant_id`` is None and ``record()`` skips."""
+    if not tenant_id:
+        # Unattributable (e.g. malformed assertion before iss resolution) — record
+        # everything we CAN attribute, skip the rest (mirrors the inbound-401 case).
+        return
+    bind = db.get_bind()
+    try:
+        fresh = Session(bind=bind)
+        try:
+            ActivityLogService(fresh).record(
+                tenant_id=tenant_id,
+                source=SOURCE_EMBED_SESSION,
+                operation="embed:session",
+                status=status,
+                workspace_id=workspace_id,
+                status_code=status_code,
+                error_code=error_code,
+                error_message=error_message,
+                request={"parentOrigin": parent_origin} if parent_origin else None,
+            )
+        finally:
+            fresh.close()
+    except Exception:  # noqa: BLE001 — logging must never break the embed exchange.
+        logger.exception("embed-session activity record failed")

@@ -19,12 +19,15 @@ from app.schemas.integration_activity import (
     IntegrationActivityItem,
     IntegrationActivityListResponse,
     IntegrationActivityTraceResponse,
+    IntegrationLogSettingsOut,
+    IntegrationLogSettingsUpdate,
 )
 from app.services.filter_translator import FilterError
 
 router = APIRouter()
 
 _READ = "integration_logs.read"
+_MANAGE = "integration_logs.manage"
 
 
 def _parse_filter(raw: Optional[str]) -> Optional[FilterGroup]:
@@ -66,6 +69,28 @@ def list_integration_logs(
         total=total,
         page=page,
     )
+
+
+@router.get("/settings", response_model=IntegrationLogSettingsOut)
+def get_log_settings(
+    current_user: User = Depends(require_permission(_MANAGE)),
+    db: Session = Depends(get_db),
+) -> IntegrationLogSettingsOut:
+    """Tenant developer-logs settings — retention window (AC-DLC-21)."""
+    days, is_default = ActivityLogService(db).get_retention(current_user.tenant_id)
+    return IntegrationLogSettingsOut(retention_days=days, is_default=is_default)
+
+
+@router.put("/settings", response_model=IntegrationLogSettingsOut)
+def update_log_settings(
+    body: IntegrationLogSettingsUpdate,
+    current_user: User = Depends(require_permission(_MANAGE)),
+    db: Session = Depends(get_db),
+) -> IntegrationLogSettingsOut:
+    days, is_default = ActivityLogService(db).set_retention(
+        current_user.tenant_id, body.retentionDays
+    )
+    return IntegrationLogSettingsOut(retention_days=days, is_default=is_default)
 
 
 @router.get("/trace/{trace_id}", response_model=IntegrationActivityTraceResponse)
