@@ -88,6 +88,7 @@ def _connection_out(c: Connection) -> ConnectionOut:
         name=c.name,
         config={k: str(v) for k, v in (c.config_json or {}).items()},
         status=c.status,
+        isActive=bool(c.is_active),
         lastTestedAt=c.last_tested_at,
         lastError=c.last_error,
         rateLimitPerMinute=c.rate_limit_per_minute,
@@ -297,6 +298,42 @@ class IntegrationService:
         connection.status = CONNECTION_STATUS_UNVERIFIED
         connection.last_error = None
         emit_entity_event(self.db, "connection", "updated", connection, tenant_id=tenant_id, changes=changes or None)
+        self.db.commit()
+        self.db.refresh(connection)
+        return _connection_out(connection)
+
+    def set_active(self, tenant_id: str, connection_id: str) -> ConnectionOut:
+        """Make a STORAGE connection the tenant's single active write-target
+        (sprint-4/12). New uploads land here; resolve-by-type serves it. The
+        partial-unique index permits only one active row per (tenant, type), so
+        deactivate every other storage row of this tenant FIRST, then activate
+        the target — one transaction. Blobs written under a now-retired
+        connection keep resolving by key (resolve-by-id ignores is_active)."""
+        connection = self._get_or_404(tenant_id, connection_id)
+        if connection.type != "storage":
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Only a storage connection has an active write-target.",
+            )
+        self._guard_not_migrating(tenant_id, connection_id)
+        if connection.status == CONNECTION_STATUS_ERROR:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Test this connection successfully before making it active.",
+            )
+        # Two flushes so we never hold two active storage rows at once (the
+        # partial-unique index forbids it): deactivate ALL this tenant's storage
+        # rows first, flush to zero-active, THEN activate the target.
+        rows = (
+            self.db.query(Connection)
+            .filter(Connection.tenant_id == tenant_id, Connection.type == "storage")
+            .all()
+        )
+        for row in rows:
+            row.is_active = False
+        self.db.flush()
+        connection.is_active = True
+        self.db.flush()
         self.db.commit()
         self.db.refresh(connection)
         return _connection_out(connection)

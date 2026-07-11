@@ -70,4 +70,9 @@ export const realIntegrationService: IntegrationService = {
       body: JSON.stringify(target ? { target } : {}),
     });
   },
+  activate(id) {
+    return apiFetch<Connection>(`/integrations/connections/${id}/activate`, {
+      method: 'POST',
+    });
+  },
 };

@@ -329,8 +329,18 @@ def run_storage_migration(db: Session, job: BackgroundJob) -> None:
     # CRITICAL — register every storage-key location BEFORE enumerating. The job
     # may run in the Celery worker, which never boots the FastAPI app; without
     # this, ``_LOCATIONS`` is empty and enumeration silently finds 0 keys (the
-    # sprint-4/12 no-op bug). Idempotent.
-    ensure_all_storage_locations()
+    # sprint-4/12 no-op bug). Idempotent. Surfaces per-module registration
+    # failures into the job log so a partially-registered run (e.g. omnichannel
+    # skipped → its media never migrated) is VISIBLE, never a silent undercount.
+    reg_failures = ensure_all_storage_locations()
+    for mod, err in reg_failures:
+        service.log(
+            job,
+            f"Module '{mod}' failed to register its storage-key locations: {err}. "
+            f"Its blobs will NOT be migrated — fix and retry before retiring the "
+            f"old connection.",
+            level="error",
+        )
 
     # Hard guard: no registered locations = a boot/deploy problem, not an empty
     # bucket. Enumeration would find 0 keys and auto-cutover to "done" having

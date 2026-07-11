@@ -32,6 +32,9 @@ class ConnectionOut(ApiModel):
     # Non-secret config only — camelCase keys for the frontend.
     config: Dict[str, str]
     status: str
+    # The write-target flag (storage): exactly one storage connection per tenant
+    # is active; resolve-by-type serves it. Non-storage rows are typically active.
+    isActive: bool = True
     lastTestedAt: Optional[datetime] = None
     lastError: Optional[str] = None
     rateLimitPerMinute: int

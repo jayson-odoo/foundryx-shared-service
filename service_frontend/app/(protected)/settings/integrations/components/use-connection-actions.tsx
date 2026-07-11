@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { usePathname } from 'next/navigation';
-import { HardDriveDownload, Pencil, PlugZap, Unplug } from 'lucide-react';
+import { CircleCheck, HardDriveDownload, Pencil, PlugZap, Unplug } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { integrationService } from '@/services/integration-service';
@@ -48,6 +48,29 @@ export function useConnectionActions(): ResourceAction<Connection>[] {
           const result = await integrationService.test(connection.id);
           if (result.ok) toast.success(result.message);
           else toast.error(result.message);
+          rt.reload();
+        },
+      },
+      {
+        id: 'set-active',
+        label: 'Set as active',
+        icon: CircleCheck,
+        permission: 'integrations.manage',
+        surfaces: { row: true, form: true },
+        // Only a storage connection that ISN'T already the active write-target.
+        // Making it active retires the others; new uploads land here.
+        isVisible: (rows) =>
+          rows.length === 1 && rows[0].type === 'storage' && !rows[0].isActive,
+        confirm: {
+          title: 'Make this the active storage bucket?',
+          description:
+            'New uploads will be written here. Files already stored on the current bucket keep resolving from it. Only one storage connection can be active at a time.',
+          confirmLabel: 'Set as active',
+        },
+        run: async ([connection], rt) => {
+          if (!connection) return;
+          await integrationService.activate(connection.id);
+          toast.success(`${connection.name} is now the active storage bucket.`);
           rt.reload();
         },
       },
