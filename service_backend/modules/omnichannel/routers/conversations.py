@@ -1,7 +1,14 @@
-"""Conversation (inbox) routes — thin; gated by `conversations.*` permissions.
+"""Conversation (inbox) routes — thin; authorized by the unified conversation
+principal (native session/permission OR embed access token, plan 11H Slice 3).
 
-PATCH is field-gated per plan 05 §7: assignment needs `conversations.assign`,
-status/priority transitions need `conversations.reply`.
+Every route depends on ``get_conversation_principal`` and enforces:
+- **scope** — embed thread/inbox tokens can't widen (``enforce_list`` /
+  ``enforce_thread_access``);
+- **caps/permissions** — native PATCH is field-gated (assign vs reply); embed
+  writes require the matching cap. Backend is the boundary.
+
+Sends are attributed to the native actor (real admin under impersonation) OR the
+federated external agent — never to client input.
 """
 import json
 from typing import List, Optional
@@ -15,20 +22,17 @@ from fastapi import (
     Query,
     Request,
     UploadFile,
-    status,
 )
 from sqlalchemy.orm import Session
 
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.dependencies import (
-    effective_permission_keys,
-    get_actor_user_id,
-    get_current_user,
-    require_permission,
+from ..embed_auth import (
+    ConversationPrincipal,
+    enforce_thread_access,
+    get_conversation_principal,
 )
-from app.models.user import User
 from ..schemas import (
     MessageItem,
     SendContactsRequest,
@@ -55,7 +59,7 @@ _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
 
 @router.get("", response_model=ThreadListResponse)
 def list_threads(
-    current_user: User = Depends(require_permission("conversations.read")),
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
     workspace_id: Optional[str] = Query(None, alias="workspaceId"),
     assignee: str = Query("all", pattern="^(all|me|unassigned)$"),
@@ -65,11 +69,19 @@ def list_threads(
     page: int = Query(0, ge=0),
     page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
 ) -> ThreadListResponse:
+    principal.require_read()
+    # A thread-scoped embed token cannot list the workspace.
+    principal.enforce_list()
+    # Embed tokens are pinned to their own workspace + agent identity (client
+    # query is ignored for tenancy — never trust it).
+    if principal.is_embed:
+        workspace_id = principal.workspace_id
     items, total = ConversationService(db).list_threads(
-        current_user.tenant_id,
+        principal.tenant_id,
         workspace_id=workspace_id,
         assignee=assignee,
-        me_user_id=current_user.id,
+        me_user_id=principal.actor_user_id,
+        me_external_agent_id=principal.external_agent_id,
         status_key=None if thread_status in (None, "ALL") else thread_status,
         priority=None if priority in (None, "ALL") else priority,
         search=search,
@@ -82,11 +94,13 @@ def list_threads(
 @router.get("/{contact_id}", response_model=ThreadItem)
 def get_thread(
     contact_id: str,
-    current_user: User = Depends(require_permission("conversations.read")),
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> ThreadItem:
+    principal.require_read()
+    enforce_thread_access(db, principal, contact_id)
     try:
-        return ConversationService(db).get_thread(contact_id, current_user.tenant_id)
+        return ConversationService(db).get_thread(contact_id, principal.tenant_id)
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -94,11 +108,13 @@ def get_thread(
 @router.get("/{contact_id}/messages", response_model=List[MessageItem])
 def list_messages(
     contact_id: str,
-    current_user: User = Depends(require_permission("conversations.read")),
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> List[MessageItem]:
+    principal.require_read()
+    enforce_thread_access(db, principal, contact_id)
     try:
-        return ConversationService(db).list_messages(contact_id, current_user.tenant_id)
+        return ConversationService(db).list_messages(contact_id, principal.tenant_id)
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -107,34 +123,30 @@ def list_messages(
 def patch_thread(
     contact_id: str,
     payload: ThreadPatch,
-    current_user: User = Depends(get_current_user),
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> ThreadItem:
-    # Field-level gates (plan 05 §7). Distinguish omitted vs explicit-null for
-    # assignedUserId via model_fields_set (null = unassign).
-    keys = effective_permission_keys(current_user)
+    enforce_thread_access(db, principal, contact_id)
+    # Field-level gates (plan 05 §7): assignment vs lifecycle. Distinguish omitted
+    # vs explicit-null for assignedUserId via model_fields_set (null = unassign).
     wants_assign = "assignedUserId" in payload.model_fields_set
     wants_lifecycle = payload.status is not None or payload.priority is not None
     if not wants_assign and not wants_lifecycle:
         raise HTTPException(status_code=400, detail="Nothing to update")
-    if wants_assign and "conversations.assign" not in keys:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Missing permission: conversations.assign",
-        )
-    if wants_lifecycle and "conversations.reply" not in keys:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Missing permission: conversations.reply",
-        )
+    if wants_assign:
+        principal.require(native_perm="conversations.assign", embed_cap="assign")
+    if wants_lifecycle:
+        # Close/priority ride the reply-class gate natively; embed maps to "close".
+        principal.require(native_perm="conversations.reply", embed_cap="close")
 
     try:
         return ConversationService(db).patch_thread(
             contact_id,
-            current_user.tenant_id,
+            principal.tenant_id,
             assigned_user_id=payload.assignedUserId if wants_assign else ...,
             status=payload.status,
             priority=payload.priority,
+            external_connection_id=principal.connection_id if principal.is_embed else None,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -146,13 +158,18 @@ def patch_thread(
 def send_message(
     contact_id: str,
     payload: SendMessageRequest,
-    current_user: User = Depends(require_permission("conversations.reply")),
-    actor_user_id: str = Depends(get_actor_user_id),
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> MessageItem:
+    principal.require(native_perm="conversations.reply", embed_cap="reply")
+    enforce_thread_access(db, principal, contact_id)
     try:
         return MessageService(db).send_message(
-            contact_id, current_user.tenant_id, actor_user_id, payload
+            contact_id,
+            principal.tenant_id,
+            principal.actor_user_id,
+            payload,
+            external_agent_id=principal.external_agent_id,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -164,8 +181,7 @@ def send_message(
 async def send_template(
     contact_id: str,
     request: Request,
-    current_user: User = Depends(require_permission("conversations.reply")),
-    actor_user_id: str = Depends(get_actor_user_id),
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> MessageItem:
     """Send an approved template — accepts JSON (the SendMessageRequest fields) OR
@@ -173,6 +189,8 @@ async def send_template(
     Handles TEXT-header / body / URL-button variables + image/video/document
     header media (AC-12-22). The header-less/text path also works via
     ``POST /{contact_id}/messages``."""
+    principal.require(native_perm="conversations.reply", embed_cap="send_template")
+    enforce_thread_access(db, principal, contact_id)
     header_content: Optional[bytes] = None
     header_filename: Optional[str] = None
     if request.headers.get("content-type", "").startswith("multipart/"):
@@ -203,11 +221,12 @@ async def send_template(
     try:
         return MessageService(db).send_message(
             contact_id,
-            current_user.tenant_id,
-            actor_user_id,
+            principal.tenant_id,
+            principal.actor_user_id,
             payload,
             header_content=header_content,
             header_filename=header_filename,
+            external_agent_id=principal.external_agent_id,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -224,12 +243,13 @@ async def send_message_media(
     caption: Optional[str] = Form(None),
     reply_to_message_id: Optional[str] = Form(None),
     file: UploadFile = File(...),
-    current_user: User = Depends(require_permission("conversations.reply")),
-    actor_user_id: str = Depends(get_actor_user_id),
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> MessageItem:
     """Send outbound media (image/video/audio/voice/document/sticker) — multipart.
     Sniff-gated + cap-checked, then queued for async upload-by-id send."""
+    principal.require(native_perm="conversations.reply", embed_cap="reply")
+    enforce_thread_access(db, principal, contact_id)
     # Cap the buffered read at THIS kind's Meta ceiling (memory safety); the real
     # per-workspace cap is enforced in send_media.
     hard_cap = META_CEILINGS.get((kind or "").upper(), _MEDIA_HARD_CAP) + 1
@@ -237,13 +257,14 @@ async def send_message_media(
     try:
         return MessageService(db).send_media(
             contact_id,
-            current_user.tenant_id,
-            actor_user_id,
+            principal.tenant_id,
+            principal.actor_user_id,
             kind=kind,
             content=content,
             filename=file.filename,
             caption=caption,
             reply_to_message_id=reply_to_message_id,
+            external_agent_id=principal.external_agent_id,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -257,13 +278,14 @@ async def send_message_media(
 async def send_interactive(
     contact_id: str,
     request: Request,
-    current_user: User = Depends(require_permission("conversations.reply")),
-    actor_user_id: str = Depends(get_actor_user_id),
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> MessageItem:
     """Send an interactive message (reply-buttons/list/CTA-URL/location-request).
     Accepts JSON (the interactive definition) OR multipart (``file`` media header
     + a ``payload`` JSON part)."""
+    principal.require(native_perm="conversations.reply", embed_cap="reply")
+    enforce_thread_access(db, principal, contact_id)
     header_content: Optional[bytes] = None
     header_filename: Optional[str] = None
     reply_to: Optional[str] = None
@@ -291,12 +313,13 @@ async def send_interactive(
     try:
         return MessageService(db).send_interactive(
             contact_id,
-            current_user.tenant_id,
-            actor_user_id,
+            principal.tenant_id,
+            principal.actor_user_id,
             defn=defn,
             header_content=header_content,
             header_filename=header_filename,
             reply_to_message_id=reply_to,
+            external_agent_id=principal.external_agent_id,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -310,17 +333,19 @@ async def send_interactive(
 def send_location(
     contact_id: str,
     payload: SendLocationRequest,
-    current_user: User = Depends(require_permission("conversations.reply")),
-    actor_user_id: str = Depends(get_actor_user_id),
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> MessageItem:
+    principal.require(native_perm="conversations.reply", embed_cap="reply")
+    enforce_thread_access(db, principal, contact_id)
     try:
         return MessageService(db).send_location(
             contact_id,
-            current_user.tenant_id,
-            actor_user_id,
+            principal.tenant_id,
+            principal.actor_user_id,
             defn=payload.model_dump(exclude={"replyToMessageId"}),
             reply_to_message_id=payload.replyToMessageId,
+            external_agent_id=principal.external_agent_id,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -332,17 +357,19 @@ def send_location(
 def send_contacts(
     contact_id: str,
     payload: SendContactsRequest,
-    current_user: User = Depends(require_permission("conversations.reply")),
-    actor_user_id: str = Depends(get_actor_user_id),
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> MessageItem:
+    principal.require(native_perm="conversations.reply", embed_cap="reply")
+    enforce_thread_access(db, principal, contact_id)
     try:
         return MessageService(db).send_contacts(
             contact_id,
-            current_user.tenant_id,
-            actor_user_id,
+            principal.tenant_id,
+            principal.actor_user_id,
             defn={"contacts": payload.contacts},
             reply_to_message_id=payload.replyToMessageId,
+            external_agent_id=principal.external_agent_id,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -365,16 +392,17 @@ def react_to_message(
     contact_id: str,
     message_id: str,
     payload: ReactRequest,
-    current_user: User = Depends(require_permission("conversations.reply")),
-    actor_user_id: str = Depends(get_actor_user_id),
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> ReactionResult:
     """React (emoji) to a message by our durable id — empty emoji removes."""
+    principal.require(native_perm="conversations.reply", embed_cap="reply")
+    enforce_thread_access(db, principal, contact_id)
     try:
         result = MessageService(db).react(
             message_id,
-            current_user.tenant_id,
-            actor_user_id,
+            principal.tenant_id,
+            principal.actor_user_id,
             emoji=payload.emoji,
             expected_contact_id=contact_id,
         )
@@ -393,13 +421,18 @@ class NoteRequest(BaseModel):
 def add_internal_note(
     contact_id: str,
     payload: NoteRequest,
-    current_user: User = Depends(require_permission("conversations.reply")),
-    actor_user_id: str = Depends(get_actor_user_id),
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> MessageItem:
+    principal.require(native_perm="conversations.reply", embed_cap="note")
+    enforce_thread_access(db, principal, contact_id)
     try:
         return MessageService(db).add_internal_note(
-            contact_id, current_user.tenant_id, actor_user_id, payload.body
+            contact_id,
+            principal.tenant_id,
+            principal.actor_user_id,
+            payload.body,
+            external_agent_id=principal.external_agent_id,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")

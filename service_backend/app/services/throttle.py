@@ -27,6 +27,7 @@ from app.config import settings
 from app.models.auth_throttle import (
     THROTTLE_SCOPE_DOC_SHARE,
     THROTTLE_SCOPE_EMAIL,
+    THROTTLE_SCOPE_EMBED,
     THROTTLE_SCOPE_FORM_PUBLIC,
     THROTTLE_SCOPE_IP,
     THROTTLE_SCOPE_PORTAL,
@@ -72,6 +73,12 @@ def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
         return (
             settings.throttle_portal_max_fails,
             timedelta(minutes=settings.throttle_portal_window_minutes),
+            None,  # over-limit throttles until the window rolls over (like IP)
+        )
+    if scope == THROTTLE_SCOPE_EMBED:
+        return (
+            settings.throttle_embed_max_fails,
+            timedelta(minutes=settings.throttle_embed_window_minutes),
             None,  # over-limit throttles until the window rolls over (like IP)
         )
     return (
@@ -264,3 +271,13 @@ class ThrottleService:
 
     def record_portal(self, *, ip: str) -> None:
         self.store.record_failure(THROTTLE_SCOPE_PORTAL, ip)
+
+    # ---- omnichannel embed session exchange (own bucket, sprint-4/11H AC-11H-08) ----
+
+    def enforce_embed(self, *, ip: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_EMBED, ip)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_embed(self, *, ip: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_EMBED, ip)

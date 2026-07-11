@@ -102,6 +102,17 @@ class MessageService:
         self.repo = ContactRepository(db)
         self.conversations = ConversationService(db)
 
+    @staticmethod
+    def _sender_cols(
+        actor_user_id: Optional[str], external_agent_id: Optional[str]
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """(sender_id, sender_external_agent_id) — a federated (embed) agent stamps
+        the external column and leaves sender_id NULL (plan 11H Slice 1); a native
+        agent stamps sender_id."""
+        if external_agent_id:
+            return None, external_agent_id
+        return actor_user_id, None
+
     # ── Channel resolution ───────────────────────────────────────────────────
     def _channel_for_contact(self, contact: Contact) -> Channel:
         """The channel this thread lives on: the identity's channel, else the
@@ -150,6 +161,12 @@ class MessageService:
         if quoted.sender_id:
             names = self.conversations._user_names([quoted.sender_id])
             sender_name = names.get(quoted.sender_id)
+        elif quoted.sender_external_agent_id:
+            agents = self.conversations._external_agents(
+                [quoted.sender_external_agent_id], tenant_id
+            )
+            agent = agents.get(quoted.sender_external_agent_id)
+            sender_name = agent.name if agent is not None else None
         metadata = {
             "reply_to": {
                 "id": quoted.id,
@@ -195,11 +212,12 @@ class MessageService:
         self,
         contact_id: str,
         tenant_id: str,
-        actor_user_id: str,
+        actor_user_id: Optional[str],
         payload: SendMessageRequest,
         *,
         header_content: Optional[bytes] = None,
         header_filename: Optional[str] = None,
+        external_agent_id: Optional[str] = None,
     ) -> MessageItem:
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
@@ -296,12 +314,14 @@ class MessageService:
             body = (payload.body or "").strip()
 
         now = datetime.now(timezone.utc)
+        sender_id, sender_ext = self._sender_cols(actor_user_id, external_agent_id)
         row = ConversationMessage(
             tenant_id=tenant_id,
             contact_id=contact.id,
             channel_id=channel.id,
             sender_type="AGENT",
-            sender_id=actor_user_id,
+            sender_id=sender_id,
+            sender_external_agent_id=sender_ext,
             message_type=message_type,
             body=body,
             payload_json=payload_json,
@@ -332,6 +352,7 @@ class MessageService:
         caption: Optional[str],
         reply_to_message_id: Optional[str] = None,
         workspace_id_override: Optional[str] = None,
+        external_agent_id: Optional[str] = None,
     ) -> MessageItem:
         """Sniff-gate + cap-check + store an outbound media blob, create a QUEUED
         row and dispatch the async upload-by-id send (AC-12-02/03/10). Raises
@@ -360,12 +381,14 @@ class MessageService:
         )
 
         now = datetime.now(timezone.utc)
+        sender_id, sender_ext = self._sender_cols(actor_user_id, external_agent_id)
         row = ConversationMessage(
             tenant_id=tenant_id,
             contact_id=contact.id,
             channel_id=channel.id,
             sender_type="AGENT",
-            sender_id=actor_user_id,
+            sender_id=sender_id,
+            sender_external_agent_id=sender_ext,
             message_type=kind,
             body=(caption or None),
             media_key=media_key,
@@ -397,6 +420,7 @@ class MessageService:
         media_mime: Optional[str] = None,
         media_filename: Optional[str] = None,
         media_size: Optional[int] = None,
+        external_agent_id: Optional[str] = None,
     ) -> MessageItem:
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
@@ -407,12 +431,14 @@ class MessageService:
             raise SendRejected(CSW_CLOSED_MESSAGE)
         metadata, _ = self._reply_metadata(contact, tenant_id, reply_to_message_id)
         now = datetime.now(timezone.utc)
+        sender_id, sender_ext = self._sender_cols(actor_user_id, external_agent_id)
         row = ConversationMessage(
             tenant_id=tenant_id,
             contact_id=contact.id,
             channel_id=channel.id,
             sender_type="AGENT",
-            sender_id=actor_user_id,
+            sender_id=sender_id,
+            sender_external_agent_id=sender_ext,
             message_type=message_type,
             body=body,
             payload_json=payload_json,
@@ -440,6 +466,7 @@ class MessageService:
         header_content: Optional[bytes] = None,
         header_filename: Optional[str] = None,
         reply_to_message_id: Optional[str] = None,
+        external_agent_id: Optional[str] = None,
     ) -> MessageItem:
         from .structured import StructuredError, header_media_kind, validate_interactive
 
@@ -487,6 +514,7 @@ class MessageService:
             media_mime=media_mime,
             media_filename=header_filename if hkind else None,
             media_size=media_size,
+            external_agent_id=external_agent_id,
         )
 
     def send_location(
@@ -497,6 +525,7 @@ class MessageService:
         *,
         defn: Dict[str, Any],
         reply_to_message_id: Optional[str] = None,
+        external_agent_id: Optional[str] = None,
     ) -> MessageItem:
         from .structured import StructuredError, validate_location
 
@@ -513,6 +542,7 @@ class MessageService:
             body=body,
             payload_json=payload,
             reply_to_message_id=reply_to_message_id,
+            external_agent_id=external_agent_id,
         )
 
     def send_contacts(
@@ -523,6 +553,7 @@ class MessageService:
         *,
         defn: Dict[str, Any],
         reply_to_message_id: Optional[str] = None,
+        external_agent_id: Optional[str] = None,
     ) -> MessageItem:
         from .structured import StructuredError, validate_contacts
 
@@ -539,6 +570,7 @@ class MessageService:
             body=first,
             payload_json=payload,
             reply_to_message_id=reply_to_message_id,
+            external_agent_id=external_agent_id,
         )
 
     # ── Reactions (plan 12 Slice 3 — AC-12-19/20/21) ────────────────────────
@@ -619,19 +651,27 @@ class MessageService:
 
     # ── Internal notes (SYSTEM bubbles — never sent to the contact) ─────────
     def add_internal_note(
-        self, contact_id: str, tenant_id: str, actor_user_id: str, body: str
+        self,
+        contact_id: str,
+        tenant_id: str,
+        actor_user_id: Optional[str],
+        body: str,
+        *,
+        external_agent_id: Optional[str] = None,
     ) -> MessageItem:
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
             raise ThreadNotFound()
         if not body.strip():
             raise SendRejected("Note body is required.")
+        sender_id, sender_ext = self._sender_cols(actor_user_id, external_agent_id)
         row = ConversationMessage(
             tenant_id=tenant_id,
             contact_id=contact.id,
             channel_id=None,
             sender_type="SYSTEM",
-            sender_id=actor_user_id,
+            sender_id=sender_id,
+            sender_external_agent_id=sender_ext,
             message_type="TEXT",
             body=body.strip(),
             created_at=datetime.now(timezone.utc),  # µs precision ordering

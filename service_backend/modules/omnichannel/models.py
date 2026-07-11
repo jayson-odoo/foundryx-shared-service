@@ -150,6 +150,11 @@ class Contact(OmniBase):
     avatar_url = Column(String, nullable=True)
     custom_fields_json = Column(JSON, nullable=True)
     assigned_user_id = Column(String,nullable=True)
+    # Federated (embed) assignee — set instead of ``assigned_user_id`` when the
+    # thread is assigned by an external agent (plan 11H Slice 1). Plain indexed
+    # str, no FK (mirrors ``assigned_user_id`` — external_agent lives in this
+    # schema but the no-FK convention keeps the assignee columns symmetric).
+    assigned_external_agent_id = Column(String, nullable=True, index=True)
     status_id = Column(String, ForeignKey("statuses.id"), nullable=True)
     priority = Column(String, nullable=False, default="MEDIUM")
     csw_expires_at = Column(UTCDateTime(), nullable=True)
@@ -190,6 +195,10 @@ class ConversationMessage(OmniBase):
     channel_id = Column(String, ForeignKey("channels.id"), nullable=True, index=True)
     sender_type = Column(String, nullable=False)  # AGENT | CONTACT | SYSTEM
     sender_id = Column(String, nullable=True)
+    # Federated (embed) sender — set instead of ``sender_id`` when the message is
+    # sent by an external agent (plan 11H Slice 1). The conversation mapper
+    # resolves display name/avatar from whichever column is set.
+    sender_external_agent_id = Column(String, nullable=True, index=True)
     message_type = Column(String, nullable=False, default="TEXT")
     body = Column(Text, nullable=True)
     # LEGACY (plan 04/05): full public URL of an inbound media blob. Deprecated by
@@ -409,3 +418,52 @@ class OmnichannelSettings(OmniBase):
     __table_args__ = (
         UniqueConstraint("tenant_id", "workspace_id", name="uq_omnichannel_settings_ws"),
     )
+
+
+class ExternalAgent(OmniBase):
+    """Federated (embed) agent identity — plan 11H Slice 1 (AC-11H-01/02/03).
+
+    A consumer (EMS) embeds the conversation UI as a chromeless iframe; its
+    agents have NO shared-service login. On ``/embed/session`` we provision-or-load
+    an external agent keyed by ``(connection_id, sub)`` — the connection is the
+    consumer link, ``sub`` the consumer's agent id. ``(connection_id, sub)`` keeps
+    two consumers whose agents share a ``sub`` value ("u-1") strictly distinct
+    (cross-consumer isolation). No password, no login — provisioned on first use,
+    name/email/avatar refreshed on later assertions.
+    """
+
+    __tablename__ = "external_agent"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    # Derivable from the connection, but stored so display-name/avatar resolution
+    # stays tenant-scoped (the polymorphic-target_id rule — never resolve a stored
+    # id unscoped).
+    tenant_id = Column(String, nullable=False, index=True)
+    connection_id = Column(String, nullable=False, index=True)
+    sub = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=True)
+    avatar_url = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("connection_id", "sub", name="uq_external_agent_conn_sub"),
+    )
+
+
+class EmbedJti(OmniBase):
+    """Single-use ledger for embed assertion ``jti`` values — plan 11H Slice 2
+    (AC-11H-05). An assertion may be exchanged at ``/embed/session`` exactly once;
+    a replay (same ``jti``) is rejected ``401 replayed``. Rows are retained ≥ the
+    assertion TTL (``expires_at`` = the assertion ``exp``) and pruned
+    opportunistically once past expiry.
+    """
+
+    __tablename__ = "embed_jti"
+
+    jti = Column(String, primary_key=True)
+    expires_at = Column(UTCDateTime(), nullable=False)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)

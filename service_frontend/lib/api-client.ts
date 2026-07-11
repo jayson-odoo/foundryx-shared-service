@@ -1,4 +1,5 @@
 import { getSession } from 'next-auth/react';
+import { embedAuthStore } from '@/lib/embed-auth-store';
 import { impersonationStore } from '@/lib/impersonation-store';
 import { deriveTenantSlug } from '@/lib/tenant';
 
@@ -53,17 +54,27 @@ async function endSessionOn401(hadToken: boolean, status: number): Promise<void>
   await signOut({ callbackUrl: '/signin' });
 }
 
-export async function apiFetch<T = unknown>(
-  path: string,
-  init: RequestInit = {},
-): Promise<T> {
+/**
+ * Attach the request's auth + tenant headers and report how the request should
+ * handle a 401. In the omnichannel EMBED runtime (an in-memory
+ * `embedAuthStore` session) the credential is the `/embed/session` access
+ * token, NOT the NextAuth JWT — so we skip `getSession()` and, critically,
+ * never `signOut()` on a 401 (the iframe has no NextAuth session to end; a
+ * near-expiry token is refreshed via the postMessage `needToken` handshake).
+ * Everywhere else this is the unchanged NextAuth Bearer path.
+ */
+async function attachAuth(headers: Headers): Promise<{ hadToken: boolean; signOutOn401: boolean }> {
+  const embed = embedAuthStore.getState();
+  if (embed) {
+    headers.set('Authorization', `Bearer ${embed.accessToken}`);
+    if (typeof window !== 'undefined') {
+      headers.set('X-Tenant-Slug', deriveTenantSlug(window.location.hostname));
+    }
+    return { hadToken: true, signOutOn401: false };
+  }
+
   const session = await getSession();
   const token = session?.accessToken;
-
-  const headers = new Headers(init.headers);
-  if (!headers.has('Content-Type') && !(init.body instanceof FormData)) {
-    headers.set('Content-Type', 'application/json');
-  }
   if (token) headers.set('Authorization', `Bearer ${token}`);
   // Defense-in-depth: name the tenant the browser believes it's on (plan 07
   // §6). The JWT claim stays the source of truth server-side.
@@ -74,6 +85,18 @@ export async function apiFetch<T = unknown>(
   // it only with an active session; the real admin stays the actor.
   const impersonation = impersonationStore.getState();
   if (impersonation) headers.set('X-Impersonate-User-Id', impersonation.targetUser.id);
+  return { hadToken: Boolean(token), signOutOn401: Boolean(token) };
+}
+
+export async function apiFetch<T = unknown>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (!headers.has('Content-Type') && !(init.body instanceof FormData)) {
+    headers.set('Content-Type', 'application/json');
+  }
+  const { signOutOn401 } = await attachAuth(headers);
 
   const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
 
@@ -89,7 +112,7 @@ export async function apiFetch<T = unknown>(
     } catch {
       // non-JSON error body (proxy HTML, network blip)
     }
-    await endSessionOn401(Boolean(token), res.status);
+    await endSessionOn401(signOutOn401, res.status);
     throw new ApiError(message, res.status, retryAfterSecondsOf(res), detail);
   }
 
@@ -99,27 +122,15 @@ export async function apiFetch<T = unknown>(
 
 /** Like {@link apiFetch} but returns the raw response body as text (e.g. CSV export). */
 export async function apiFetchText(path: string, init: RequestInit = {}): Promise<string> {
-  const session = await getSession();
-  const token = session?.accessToken;
-
   const headers = new Headers(init.headers);
   if (!headers.has('Content-Type') && !(init.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
   }
-  if (token) headers.set('Authorization', `Bearer ${token}`);
-  // Defense-in-depth: name the tenant the browser believes it's on (plan 07
-  // §6). The JWT claim stays the source of truth server-side.
-  if (typeof window !== 'undefined') {
-    headers.set('X-Tenant-Slug', deriveTenantSlug(window.location.hostname));
-  }
-  // While impersonating, signal the effective (target) user. The backend honors
-  // it only with an active session; the real admin stays the actor.
-  const impersonation = impersonationStore.getState();
-  if (impersonation) headers.set('X-Impersonate-User-Id', impersonation.targetUser.id);
+  const { signOutOn401 } = await attachAuth(headers);
 
   const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
   if (!res.ok) {
-    await endSessionOn401(Boolean(token), res.status);
+    await endSessionOn401(signOutOn401, res.status);
     throw new ApiError(res.statusText || 'Request failed', res.status);
   }
   return res.text();
@@ -133,19 +144,11 @@ export async function apiFetchText(path: string, init: RequestInit = {}): Promis
  * headers attach as elsewhere; the caller object-URLs the blob.
  */
 export async function apiFetchBlob(path: string, init: RequestInit = {}): Promise<Blob> {
-  const session = await getSession();
-  const token = session?.accessToken;
-
   const headers = new Headers(init.headers);
   if (!headers.has('Content-Type') && !(init.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
   }
-  if (token) headers.set('Authorization', `Bearer ${token}`);
-  if (typeof window !== 'undefined') {
-    headers.set('X-Tenant-Slug', deriveTenantSlug(window.location.hostname));
-  }
-  const impersonation = impersonationStore.getState();
-  if (impersonation) headers.set('X-Impersonate-User-Id', impersonation.targetUser.id);
+  const { signOutOn401 } = await attachAuth(headers);
 
   const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
   if (!res.ok) {
@@ -159,7 +162,7 @@ export async function apiFetchBlob(path: string, init: RequestInit = {}): Promis
     } catch {
       // non-JSON error body
     }
-    await endSessionOn401(Boolean(token), res.status);
+    await endSessionOn401(signOutOn401, res.status);
     throw new ApiError(message, res.status, retryAfterSecondsOf(res), detail);
   }
   return res.blob();

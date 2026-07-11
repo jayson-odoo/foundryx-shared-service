@@ -31,6 +31,7 @@ class ContactRepository:
         workspace_id: Optional[str] = None,
         assignee: str = "all",  # all | me | unassigned
         me_user_id: Optional[str] = None,
+        me_external_agent_id: Optional[str] = None,
         status_key: Optional[str] = None,  # OPEN | SNOOZED | CLOSED | None=ALL
         priority: Optional[str] = None,
         search: Optional[str] = None,
@@ -40,10 +41,19 @@ class ContactRepository:
         q = self.db.query(Contact).filter(Contact.tenant_id == tenant_id)
         if workspace_id:
             q = q.filter(Contact.workspace_id == workspace_id)
-        if assignee == "me" and me_user_id:
-            q = q.filter(Contact.assigned_user_id == me_user_id)
+        if assignee == "me":
+            # "Mine" resolves to the CALLER's identity — a federated (embed) agent
+            # matches on the external-agent column, a native user on the user column.
+            if me_external_agent_id:
+                q = q.filter(Contact.assigned_external_agent_id == me_external_agent_id)
+            elif me_user_id:
+                q = q.filter(Contact.assigned_user_id == me_user_id)
         elif assignee == "unassigned":
-            q = q.filter(Contact.assigned_user_id.is_(None))
+            # Unassigned = neither a native user NOR a federated agent owns it.
+            q = q.filter(
+                Contact.assigned_user_id.is_(None),
+                Contact.assigned_external_agent_id.is_(None),
+            )
         if status_key:
             q = q.join(Status, Contact.status_id == Status.id).filter(Status.key == status_key)
         if priority:

@@ -29,6 +29,13 @@ class ApiError(Exception):
         self.code = code
         self.message = message
         self.details = details
+        self.headers: dict[str, str] = {}
+
+    def with_retry_after(self, seconds: int) -> "ApiError":
+        """Attach a ``Retry-After`` header (429 throttling). Returns self so it
+        chains at the raise site."""
+        self.headers["Retry-After"] = str(int(seconds))
+        return self
 
     def to_body(self) -> dict:
         err: dict[str, Any] = {"code": self.code, "message": self.message}
@@ -40,7 +47,11 @@ class ApiError(Exception):
 def install_api_error_handler(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
     async def _handle_api_error(_: Request, exc: ApiError) -> JSONResponse:  # noqa: ANN202
-        return JSONResponse(status_code=exc.status_code, content=exc.to_body())
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=exc.to_body(),
+            headers=exc.headers or None,
+        )
 
     @app.exception_handler(RequestValidationError)
     async def _handle_validation(  # noqa: ANN202
