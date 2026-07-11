@@ -107,16 +107,20 @@ class PublicGatewayService:
         return contact
 
     # ── respond.io-parity mappers ────────────────────────────────────────────
-    def _users_by_id(self, user_ids) -> dict:
-        """Batch-load core users for assignee rendering. Tenant-agnostic lookup by
-        id is safe here — the ids come from our OWN contact rows (already tenant-
-        scoped), and we only read display fields."""
+    def _users_by_id(self, tenant_id: str, user_ids) -> dict:
+        """Batch-load core users for assignee rendering, TENANT-SCOPED (the
+        polymorphic-target_id house rule — resolve a stored user id scoped, never
+        via a bare id lookup, even though patch_thread validates on write)."""
         from app.models.user import User
 
         ids = [u for u in {uid for uid in user_ids if uid}]
         if not ids:
             return {}
-        rows = self.db.query(User).filter(User.id.in_(ids)).all()
+        rows = (
+            self.db.query(User)
+            .filter(User.tenant_id == tenant_id, User.id.in_(ids))
+            .all()
+        )
         return {u.id: u for u in rows}
 
     def _rio_contact(self, contact: Contact, *, status_str: str, users: dict) -> RioContactItem:
@@ -194,7 +198,7 @@ class PublicGatewayService:
 
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
         status_str = ConversationService(self.db).thread_item(contact).status
-        users = self._users_by_id([contact.assigned_user_id])
+        users = self._users_by_id(tenant_id, [contact.assigned_user_id])
         return self._rio_contact(contact, status_str=status_str, users=users)
 
     def list_contacts(
@@ -235,7 +239,7 @@ class PublicGatewayService:
         )
         by_id = {c.id: c for c in contacts}
         status_by_id = {t.id: t.status for t in items}
-        users = self._users_by_id([c.assigned_user_id for c in contacts])
+        users = self._users_by_id(tenant_id, [c.assigned_user_id for c in contacts])
         rio = [
             self._rio_contact(by_id[t.id], status_str=status_by_id.get(t.id, "OPEN"), users=users)
             for t in items
@@ -316,7 +320,7 @@ class PublicGatewayService:
         """Re-read the mutated contact + map to the respond.io shape (parity with
         GET). ``thread`` carries the resolved status string."""
         contact = self.contacts.get_by_id(contact_id, tenant_id)
-        users = self._users_by_id([contact.assigned_user_id])
+        users = self._users_by_id(tenant_id, [contact.assigned_user_id])
         return self._rio_contact(contact, status_str=thread.status, users=users)
 
     def add_comment(self, tenant_id: str, workspace_id: str, identifier: str, body: str):
