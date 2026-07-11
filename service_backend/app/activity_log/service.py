@@ -8,6 +8,7 @@ never reach an arbitrary column.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -69,6 +70,7 @@ class ActivityLogService:
         error_code: Optional[str] = None,
         error_message: Optional[str] = None,
         external_ref: Optional[str] = None,
+        occurred_at: Optional[datetime] = None,
         request: Any = None,
         response: Any = None,
     ) -> Optional[IntegrationActivity]:
@@ -101,6 +103,13 @@ class ActivityLogService:
                     redact(response) if response is not None else None
                 ),
             )
+            # An inbound_api row is written post-response but its interaction
+            # STARTED before the outbound legs it caused — stamp it at
+            # request-start so the trace timeline reads in causal order (else a
+            # pure created_at sort inverts inbound vs outbound). Set only when
+            # provided; otherwise the column's server_default(now()) applies.
+            if occurred_at is not None:
+                row.created_at = occurred_at
             self.repo.add(row)
             self.db.commit()
             return row
@@ -140,3 +149,20 @@ class ActivityLogService:
 
     def get(self, tenant_id: str, row_id: str) -> Optional[IntegrationActivity]:
         return self.repo.get(tenant_id, row_id)
+
+    def list_by_trace(
+        self, tenant_id: str, trace_id: str
+    ) -> List[IntegrationActivity]:
+        """Ordered legs (oldest→newest) of ONE consumption — inbound API →
+        outbound Meta → webhook delivery — for the trace timeline (AC-DLC-17).
+        Tenant-scoped."""
+        return self.repo.list_by_trace(tenant_id, trace_id)
+
+    def trace_for_external_ref(
+        self, tenant_id: str, external_ref: str
+    ) -> Optional[str]:
+        """Resolve the trace a stored ``external_ref`` (wamid) belongs to, so the
+        async webhook leg attaches to the same consumption (AC-DLC-16)."""
+        if not external_ref:
+            return None
+        return self.repo.trace_for_external_ref(tenant_id, external_ref)

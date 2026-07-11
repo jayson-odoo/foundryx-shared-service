@@ -189,6 +189,13 @@ def dispatch(db: Session, delivery_id: str) -> str:
     )
     delivery.error = error
 
+    # Denormalize this attempt into the Developers → Logs console as a
+    # ``webhook_delivery`` row (sprint-4/12 Slice 2, AC-DLC-16). ``webhook_deliveries``
+    # stays the operational source of truth (retry queue); this is the observability
+    # copy, attached to the originating trace by wamid — written via the CORE seam so
+    # the console needs NO cross-schema read. Best-effort, own isolated session.
+    _record_webhook_activity(db, delivery, ok=ok, status_code=status_code, error=error)
+
     if ok:
         delivery.status = "SUCCESS"
         delivery.next_attempt_at = None
@@ -215,6 +222,53 @@ def dispatch(db: Session, delivery_id: str) -> str:
         )
     db.commit()
     return "dead"
+
+
+def _record_webhook_activity(
+    db: Session,
+    delivery: "WebhookDelivery",
+    *,
+    ok: bool,
+    status_code: Optional[int],
+    error: Optional[str],
+) -> None:
+    """Write ONE ``webhook_delivery`` activity row for this attempt, attached to
+    the originating trace by the message's wamid when resolvable. Fully failure-
+    isolated: runs on a FRESH session (never touches the delivery transaction)
+    and swallows every error — a logging failure can NEVER break delivery."""
+    try:
+        from app.activity_log.service import ActivityLogService
+        from app.models.integration_activity import SOURCE_WEBHOOK_DELIVERY
+
+        data = (delivery.payload_json or {}).get("data") or {}
+        # The wamid ties the receipt back to the outbound_meta leg's external_ref;
+        # fall back to our durable message id, then the event id.
+        external_ref = (
+            data.get("externalMessageId")
+            or data.get("messageId")
+            or delivery.event_id
+        )
+        fresh = Session(bind=db.get_bind())
+        try:
+            svc = ActivityLogService(fresh)
+            trace_id = svc.trace_for_external_ref(delivery.tenant_id, external_ref)
+            svc.record(
+                tenant_id=delivery.tenant_id,
+                source=SOURCE_WEBHOOK_DELIVERY,
+                operation=f"webhook:{delivery.event_type}",
+                status="success" if ok else "error",
+                trace_id=trace_id,
+                status_code=status_code,
+                latency_ms=delivery.response_ms,
+                error_code=(str(status_code) if (status_code and not ok) else None),
+                error_message=error,
+                external_ref=external_ref,
+                request=data,
+            )
+        finally:
+            fresh.close()
+    except Exception:  # noqa: BLE001 — logging must never break delivery.
+        logger.exception("webhook activity record failed for delivery %s", delivery.id)
 
 
 def run_due_deliveries(db: Session, limit: int = 100) -> int:

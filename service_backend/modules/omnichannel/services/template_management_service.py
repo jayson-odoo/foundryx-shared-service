@@ -77,6 +77,16 @@ class TemplateManagementService:
     def _credentials(self, c: Channel) -> dict:
         return decrypt_credentials(c.credentials_json) if c.credentials_json else {}
 
+    def _adapter(self, c: Channel):
+        """A channel adapter instrumented to log ``graph:template_submit`` rows to
+        the Developers → Logs console (sprint-4/12 Slice 2)."""
+        from .activity import build_meta_recorder
+
+        return get_adapter(
+            c.channel_type,
+            recorder=build_meta_recorder(self.db, c.tenant_id, c.workspace_id),
+        )
+
     def _is_dev(self, creds: dict) -> bool:
         return bool(creds.get("dev")) or not settings.meta_app_id
 
@@ -177,10 +187,11 @@ class TemplateManagementService:
         t.media_sample_key = doc.header.sampleKey if doc.header and doc.header.format != "TEXT" else None
         if cur_status in _EDIT_RESUBMIT:
             # Synced template edited → re-enters Meta review.
-            creds = self._credentials(self._channel(channel_id, tenant_id))
+            ch = self._channel(channel_id, tenant_id)
+            creds = self._credentials(ch)
             if not self._is_dev(creds) and t.meta_template_id:
                 payload = self._submit_payload(t, doc, creds, channel_id, tenant_id)
-                get_adapter("WHATSAPP").edit_template(creds, t.meta_template_id, payload)
+                self._adapter(ch).edit_template(creds, t.meta_template_id, payload)
             t.status = "PENDING"
             t.rejected_reason = None
         # LOCAL_DRAFT stays LOCAL_DRAFT.
@@ -228,7 +239,7 @@ class TemplateManagementService:
         creds = self._credentials(channel)
         payload = self._submit_payload(t, doc, creds, channel_id, tenant_id)
         try:
-            result = get_adapter(channel.channel_type).create_template(creds, channel.waba_id or "", payload)
+            result = self._adapter(channel).create_template(creds, channel.waba_id or "", payload)
         except SendError as exc:
             # Meta rejected the template = client-fixable input → 422, NOT 5xx.
             # Cloudflare replaces any origin 5xx body with its own error page, so

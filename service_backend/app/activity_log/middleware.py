@@ -23,6 +23,7 @@ in the model).
 import logging
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 from starlette.background import BackgroundTask
@@ -32,6 +33,7 @@ from starlette.responses import Response
 
 from app.activity_log.context import set_trace_id, trace_id_var
 from app.activity_log.service import ActivityLogService
+from app.config import settings
 from app.database import SessionLocal, get_db
 from app.models.integration_activity import (
     ACTIVITY_ERROR,
@@ -74,6 +76,10 @@ class GatewayActivityMiddleware(BaseHTTPMiddleware):
         request.state.trace_id = trace_id
         token = set_trace_id(trace_id)
 
+        # Wall-clock at request START — the row is written post-response but is
+        # stamped with this so a trace timeline reads in causal order (inbound
+        # before the outbound legs it caused).
+        occurred_at = datetime.now(timezone.utc)
         started = time.monotonic()
         try:
             try:
@@ -81,20 +87,33 @@ class GatewayActivityMiddleware(BaseHTTPMiddleware):
             except Exception as exc:  # noqa: BLE001 — record best-effort, re-raise unchanged.
                 latency_ms = int((time.monotonic() - started) * 1000)
                 self._safe_record(
-                    request, trace_id, 500, latency_ms, f"{type(exc).__name__}: {exc}"
+                    request, trace_id, 500, latency_ms, f"{type(exc).__name__}: {exc}", occurred_at
                 )
                 raise
             # Handled/success path — record OFF the response critical path so the
             # write never adds latency or blocks the loop. A sync BackgroundTask
             # runs in a threadpool after the response is sent.
             latency_ms = int((time.monotonic() - started) * 1000)
+            # Eager mode (dev/E2E/tests) mirrors "eager = run inline": the send it
+            # observes runs inline on the request, so record the inbound row inline
+            # too — deterministically committed + observable (no BackgroundTask
+            # race, which flaked the trace test). Prod (non-eager) keeps the
+            # off-critical-path BackgroundTask so the write adds no latency.
+            if settings.celery_task_always_eager:
+                self._safe_record(
+                    request, trace_id, response.status_code, latency_ms, None, occurred_at
+                )
+                return response
             task = BackgroundTask(
-                self._safe_record, request, trace_id, response.status_code, latency_ms, None
+                self._safe_record,
+                request, trace_id, response.status_code, latency_ms, None, occurred_at,
             )
             if response.background is None:
                 response.background = task
             else:  # a handler already set a background task — record inline (guarded).
-                self._safe_record(request, trace_id, response.status_code, latency_ms, None)
+                self._safe_record(
+                    request, trace_id, response.status_code, latency_ms, None, occurred_at
+                )
             return response
         finally:
             trace_id_var.reset(token)
@@ -107,12 +126,13 @@ class GatewayActivityMiddleware(BaseHTTPMiddleware):
         status_code: int,
         latency_ms: int,
         error_message: Optional[str],
+        occurred_at: datetime,
     ) -> None:
         """Bare guard around ``_record`` — the logging path (session open, summary
         build, insert, close) can NEVER propagate into or mask the observed
         request. Any failure is swallowed + logged."""
         try:
-            cls._record(request, trace_id, status_code, latency_ms, error_message)
+            cls._record(request, trace_id, status_code, latency_ms, error_message, occurred_at)
         except Exception:  # noqa: BLE001 — logging must never break the request.
             logger.exception("integration_activity: failed to record gateway request")
 
@@ -123,6 +143,7 @@ class GatewayActivityMiddleware(BaseHTTPMiddleware):
         status_code: int,
         latency_ms: int,
         error_message: Optional[str],
+        occurred_at: datetime,
     ) -> None:
         # Attribution: the gateway auth dep stashes the resolved ApiWorkspace on
         # request.state (set as soon as the key resolves — even a 403
@@ -152,6 +173,7 @@ class GatewayActivityMiddleware(BaseHTTPMiddleware):
                 latency_ms=latency_ms,
                 error_code=(str(status_code) if status_code >= 400 else None),
                 error_message=error_message,
+                occurred_at=occurred_at,
                 request=_request_summary(request),
             )
         finally:

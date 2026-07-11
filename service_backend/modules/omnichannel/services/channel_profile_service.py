@@ -72,7 +72,12 @@ class ChannelProfileService:
         """Pull phone + WABA identity from Meta, stamp last_verified_at."""
         c = self._channel(channel_id, tenant_id)
         creds = self._credentials(c)
-        adapter = get_adapter(c.channel_type)
+        from .activity import build_meta_recorder
+
+        adapter = get_adapter(
+            c.channel_type,
+            recorder=build_meta_recorder(self.db, c.tenant_id, c.workspace_id),
+        )
         phone = adapter.fetch_phone_details(creds, c.phone_number_id or "")
         waba = adapter.fetch_waba_details(creds, c.waba_id or "")
         if phone.get("display_phone_number"):

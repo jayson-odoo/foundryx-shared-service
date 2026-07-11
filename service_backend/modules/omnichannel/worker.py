@@ -8,6 +8,8 @@ task owns parse → resolve → persist → broadcast. DB down → autoretry wit
 backoff (≈5s/10s/.../10m, spec §3.3); the payload stays safe in Redis until
 the task succeeds or exhausts retries.
 """
+from typing import Optional
+
 from celery import Celery
 
 from app.config import settings
@@ -58,17 +60,22 @@ def process_inbound_webhook(channel_id: str, payload: dict) -> dict:
     retry_jitter=True,
     max_retries=3,
 )
-def omnichannel_send_message(message_id: str) -> str:
+def omnichannel_send_message(message_id: str, trace_id: Optional[str] = None) -> str:
     """Execute one QUEUED outbound message (plan 12 AC-12-03): transcode/upload/
     ``adapter.send`` → SENT/FAILED + WS status. Runs on a FRESH session (a worker
     process has its own DB engine); in eager dev the service calls ``run_send``
-    inline instead (see ``send_runner``)."""
+    inline instead (see ``send_runner``).
+
+    ``trace_id`` carries the inbound gateway request's correlation id ACROSS the
+    Celery process boundary (sprint-4/12 Slice 2, AC-DLC-15) — the worker's
+    ``trace_id_var`` defaults to None, so without this the outbound Meta row would
+    lose the trace in prod. ``run_send`` re-seeds the contextvar from it."""
     from app.database import SessionLocal
     from modules.omnichannel.services.send_runner import run_send
 
     db = SessionLocal()
     try:
-        return run_send(db, message_id)
+        return run_send(db, message_id, trace_id=trace_id)
     finally:
         db.close()
 

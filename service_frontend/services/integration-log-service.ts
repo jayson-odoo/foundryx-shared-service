@@ -8,7 +8,11 @@
  * `.real` api-client impl — the mock→real swap is this one line.
  */
 import type { ListQuery, ListResult } from '@/types/resource';
-import type { IntegrationLogDetail, IntegrationLogItem } from '@/types/integration-logs';
+import type {
+  IntegrationLogDetail,
+  IntegrationLogItem,
+  IntegrationLogTrace,
+} from '@/types/integration-logs';
 import { realIntegrationLogService } from './integration-log-service.real';
 
 export interface IntegrationLogService {
@@ -16,6 +20,8 @@ export interface IntegrationLogService {
   list(query: ListQuery): Promise<ListResult<IntegrationLogItem>>;
   /** One log row incl. redacted request/response (`GET /integration-logs/{id}`). */
   get(id: string): Promise<IntegrationLogDetail | null>;
+  /** Ordered legs of one consumption (`GET /integration-logs/trace/{traceId}`). */
+  getTrace(traceId: string): Promise<IntegrationLogTrace | null>;
   /** CSV export of the current query (shell export button). */
   export(query: ListQuery, columns: string[]): Promise<string>;
 }

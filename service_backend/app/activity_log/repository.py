@@ -32,6 +32,40 @@ class IntegrationActivityRepository:
             .first()
         )
 
+    def list_by_trace(
+        self, tenant_id: str, trace_id: str
+    ) -> List[IntegrationActivity]:
+        """All rows of one consumption (a trace), oldest→newest. Tenant-scoped."""
+        return (
+            self.db.query(IntegrationActivity)
+            .filter(
+                IntegrationActivity.tenant_id == tenant_id,
+                IntegrationActivity.trace_id == trace_id,
+            )
+            .order_by(
+                IntegrationActivity.created_at.asc(), IntegrationActivity.id.asc()
+            )
+            .all()
+        )
+
+    def trace_for_external_ref(
+        self, tenant_id: str, external_ref: str
+    ) -> Optional[str]:
+        """The trace id of the most-recent row carrying ``external_ref`` (e.g. the
+        ``outbound_meta`` row whose wamid a later status webhook references), so
+        the async webhook leg can be stamped onto the same trace. Tenant-scoped."""
+        row = (
+            self.db.query(IntegrationActivity.trace_id)
+            .filter(
+                IntegrationActivity.tenant_id == tenant_id,
+                IntegrationActivity.external_ref == external_ref,
+                IntegrationActivity.trace_id.isnot(None),
+            )
+            .order_by(IntegrationActivity.created_at.desc())
+            .first()
+        )
+        return row[0] if row else None
+
     def list(
         self,
         tenant_id: str,

@@ -48,3 +48,13 @@ export interface IntegrationLogListResponse {
   total: number;
   page: number;
 }
+
+/**
+ * `GET /integration-logs/trace/{traceId}` — the ordered legs (oldest→newest) of
+ * ONE consumption: inbound API → outbound Meta → webhook delivery (sprint-4/12
+ * Slice 2, AC-DLC-17). Matches backend `IntegrationActivityTraceResponse`.
+ */
+export interface IntegrationLogTrace {
+  traceId: string;
+  legs: IntegrationLogItem[];
+}

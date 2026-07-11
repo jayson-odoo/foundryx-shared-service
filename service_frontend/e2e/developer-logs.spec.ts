@@ -149,3 +149,217 @@ test.describe('Developer Logs console (Slice 1)', () => {
     }
   });
 });
+
+/**
+ * Slice 2 — correlated trace (AC-DLC-19). A consumer sends a WhatsApp message via
+ * the public gateway (through the dev channel `chn-demo`, which STUBS Meta so no
+ * Graph traffic leaves the box). That single consumption yields TWO legs sharing
+ * ONE trace: the `inbound_api` POST /messages row and the `outbound_meta`
+ * graph:send row. The FLOW under test = a developer OPENING the inbound row and
+ * seeing both correlated legs on the Trace timeline (real clicks). Generating the
+ * consumption (reopen a window + gateway-send) is precondition setup via the API.
+ *
+ * Covers AC-DLC-14/15 (outbound Meta row + shared trace), AC-DLC-18 (timeline
+ * renders the legs), AC-DLC-19 (end-to-end real-click), + responsive.
+ */
+type TraceSeed = { traceId: string; wamid: string; workspaceId: string };
+
+async function seedTracedSend(): Promise<TraceSeed> {
+  const api = await pwRequest.newContext({ baseURL: BACKEND });
+  const loginRes = await api.post('/auth/login', {
+    data: { email: 'demo@example.com', password: 'demo1234' },
+  });
+  expect(loginRes.ok(), await loginRes.text()).toBeTruthy();
+  const token = (await loginRes.json()).access_token as string;
+  const auth = { Authorization: `Bearer ${token}` };
+
+  // Find the workspace that owns the dev channel `chn-demo` (Meta-stubbed).
+  const wsRes = await api.get('/omnichannel/workspaces', { headers: auth });
+  expect(wsRes.ok(), await wsRes.text()).toBeTruthy();
+  const workspaces = (await wsRes.json()).data as Array<{ id: string }>;
+  let workspaceId = '';
+  for (const ws of workspaces) {
+    const chRes = await api.get(`/omnichannel/channels?workspaceId=${ws.id}`, { headers: auth });
+    if (!chRes.ok()) continue;
+    const channels = (await chRes.json()).data as Array<{ id: string }>;
+    if (channels.some((c) => c.id === 'chn-demo')) {
+      workspaceId = ws.id;
+      break;
+    }
+  }
+  expect(workspaceId, 'dev channel chn-demo must be present (restore it if trashed)').toBeTruthy();
+
+  // Reopen a 24h window: POST a unique inbound message to chn-demo. A fresh,
+  // timestamped phone means a new/re-stitched contact each run (no residue).
+  const phone = `60199${Date.now().toString().slice(-9)}`;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const inbound = {
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        id: 'waba-e2e',
+        changes: [
+          {
+            field: 'messages',
+            value: {
+              messaging_product: 'whatsapp',
+              contacts: [{ wa_id: phone, profile: { name: 'DLC E2E Trace' } }],
+              messages: [
+                {
+                  id: `wamid.e2e-in-${Date.now()}`,
+                  from: phone,
+                  timestamp: String(nowSec),
+                  type: 'text',
+                  text: { body: 'open my window' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+  const whRes = await api.post('/omnichannel/webhooks/chn-demo', { data: inbound });
+  expect(whRes.ok(), await whRes.text()).toBeTruthy();
+
+  // Mint a workspace API key + make the real gateway send (dev-stubbed Meta).
+  const mintRes = await api.post(`/omnichannel/workspaces/${workspaceId}/api-keys`, {
+    headers: auth,
+    data: { name: `dlc-trace-e2e-${Date.now()}` },
+  });
+  expect(mintRes.ok(), await mintRes.text()).toBeTruthy();
+  const fullKey = (await mintRes.json()).fullKey as string;
+
+  let sent = false;
+  for (let i = 0; i < 8 && !sent; i++) {
+    const gwRes = await api.post('/api/v1/omnichannel/messages', {
+      headers: { Authorization: `Bearer ${fullKey}` },
+      data: { to: phone, type: 'text', text: { body: 'DLC E2E traced send' } },
+    });
+    if (gwRes.status() === 202) {
+      sent = true;
+    } else {
+      // Window may still be settling from the async inbound processing.
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  expect(sent, 'gateway send should be accepted (202) once the window is open').toBeTruthy();
+
+  // Read back the inbound_api POST /messages row's trace + confirm the
+  // outbound_meta leg shares it (the correlation this journey visualises).
+  let traceId = '';
+  let wamid = '';
+  for (let i = 0; i < 12 && !(traceId && wamid); i++) {
+    const logs = await api.get(
+      '/integration-logs?page=0&page_size=20&sort_by=created_at&sort_dir=desc',
+      { headers: auth },
+    );
+    expect(logs.ok(), await logs.text()).toBeTruthy();
+    const rows = (await logs.json()).data as Array<{
+      source: string;
+      traceId: string;
+      operation: string;
+      externalRef: string | null;
+    }>;
+    const inboundSend = rows.find(
+      (r) => r.source === 'inbound_api' && r.operation === 'POST /messages',
+    );
+    if (inboundSend?.traceId) {
+      const outbound = rows.find(
+        (r) => r.source === 'outbound_meta' && r.traceId === inboundSend.traceId,
+      );
+      if (outbound) {
+        traceId = inboundSend.traceId;
+        wamid = outbound.externalRef ?? '';
+      }
+    }
+    if (!(traceId && wamid)) await new Promise((r) => setTimeout(r, 400));
+  }
+  expect(traceId, 'inbound_api POST /messages row should be recorded').toBeTruthy();
+  expect(wamid, 'an outbound_meta leg should share the inbound trace').toBeTruthy();
+  await api.dispose();
+  return { traceId, wamid, workspaceId };
+}
+
+test.describe('Developer Logs trace (Slice 2)', () => {
+  let seed: TraceSeed;
+
+  test.beforeAll(async () => {
+    seed = await seedTracedSend();
+  });
+
+  test('AC-DLC-19/18: trace timeline shows the correlated inbound + outbound legs', async ({
+    page,
+  }) => {
+    await login(page);
+
+    // Navigate by REAL clicks to Developers → Logs.
+    const logsLink = page.getByRole('link', { name: 'Logs', exact: true });
+    if (!(await logsLink.isVisible().catch(() => false))) {
+      await page.getByText('Developers', { exact: true }).click();
+    }
+    await logsLink.click();
+    await expect(page).toHaveURL(/\/developers\/logs$/);
+
+    // Find the inbound POST /messages row for our unique trace and open it.
+    await page.getByPlaceholder(/Search operation, trace/i).fill(seed.traceId);
+    const inboundRow = page.getByRole('row').filter({ hasText: 'POST /messages' });
+    await expect(inboundRow.first()).toBeVisible({ timeout: 10_000 });
+    await inboundRow.first().click();
+    await expect(page).toHaveURL(/\/developers\/logs\/[\w-]+(\?|$)/);
+    await expect(page.getByText(`Trace ${seed.traceId}`)).toBeVisible();
+
+    // AC-DLC-18: the Trace tab renders the timeline with BOTH legs, each with a
+    // source badge + latency + status. Inbound API (POST /messages) + Outbound
+    // (graph:send) — the end-to-end correlated picture for one consumption.
+    await page.getByRole('tab', { name: /Trace/i }).click();
+    const timeline = page.getByTestId('trace-timeline');
+    await expect(timeline).toBeVisible();
+    const legs = timeline.getByRole('listitem');
+    await expect(legs).toHaveCount(2);
+    await expect(timeline.getByText('Inbound API')).toBeVisible();
+    await expect(timeline.getByText('Outbound')).toBeVisible();
+    await expect(timeline.getByText('POST /messages')).toBeVisible();
+    await expect(timeline.getByText('graph:send')).toBeVisible();
+    // Both legs carry a status badge; at least the successful send is shown.
+    await expect(timeline.getByText('Success').first()).toBeVisible();
+
+    // Clicking the outbound leg navigates to that leg's detail (same trace).
+    await timeline.getByText('graph:send').click();
+    await expect(page).toHaveURL(/\/developers\/logs\/[\w-]+(\?|$)/);
+    await expect(page.getByText(`Trace ${seed.traceId}`)).toBeVisible();
+    // The outbound leg's detail surfaces the wamid as its external ref.
+    await expect(page.getByText(seed.wamid).first()).toBeVisible();
+  });
+
+  test('AC-DLC-19: trace timeline responsive at 375px and 1280px', async ({ page }) => {
+    await login(page);
+    const logsLink = page.getByRole('link', { name: 'Logs', exact: true });
+    if (!(await logsLink.isVisible().catch(() => false))) {
+      await page.getByText('Developers', { exact: true }).click();
+    }
+    await logsLink.click();
+    await page.getByPlaceholder(/Search operation, trace/i).fill(seed.traceId);
+    const inboundRow = page.getByRole('row').filter({ hasText: 'POST /messages' });
+    await expect(inboundRow.first()).toBeVisible({ timeout: 10_000 });
+    await inboundRow.first().click();
+    await page.getByRole('tab', { name: /Trace/i }).click();
+    await expect(page.getByTestId('trace-timeline')).toBeVisible();
+
+    for (const [w, h, tag] of [
+      [1280, 800, 'desktop'],
+      [375, 812, 'mobile'],
+    ] as const) {
+      await page.setViewportSize({ width: w, height: h });
+      await page.waitForTimeout(300);
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      expect(overflow, `no horizontal scroll at ${tag} (${w}px)`).toBeLessThanOrEqual(2);
+      await page.screenshot({
+        path: `/private/tmp/claude-501/-Users-tehjayson-Documents-foundryx-foundryx-shared-service/80e7ad94-f293-461e-a342-c2b76c6b38a9/scratchpad/dlc-trace-${tag}.png`,
+        fullPage: true,
+      });
+    }
+  });
+});

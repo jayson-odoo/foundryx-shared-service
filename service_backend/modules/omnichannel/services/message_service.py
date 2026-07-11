@@ -201,9 +201,12 @@ class MessageService:
             except TransientSendError:
                 self.db.refresh(row)
         else:
+            from app.activity_log.context import get_trace_id
             from ..worker import omnichannel_send_message
 
-            omnichannel_send_message.delay(row.id)
+            # Carry the inbound gateway trace across the Celery process boundary
+            # so the worker's outbound Meta row lands on the same trace (AC-DLC-15).
+            omnichannel_send_message.delay(row.id, trace_id=get_trace_id())
         self.db.refresh(row)
         return self.conversations.message_items([row])[0]
 
@@ -607,7 +610,12 @@ class MessageService:
         if len(clean) > MAX_EMOJI_LEN:
             raise SendRejected("That doesn't look like an emoji reaction.")
         credentials = decrypt_credentials(channel.credentials_json)
-        adapter = get_adapter(channel.channel_type)
+        from .activity import build_meta_recorder
+
+        adapter = get_adapter(
+            channel.channel_type,
+            recorder=build_meta_recorder(self.db, channel.tenant_id, channel.workspace_id),
+        )
         from ..adapters.base import SendError
 
         try:

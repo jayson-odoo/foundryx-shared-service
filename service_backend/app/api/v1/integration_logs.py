@@ -18,6 +18,7 @@ from app.schemas.integration_activity import (
     IntegrationActivityDetail,
     IntegrationActivityItem,
     IntegrationActivityListResponse,
+    IntegrationActivityTraceResponse,
 )
 from app.services.filter_translator import FilterError
 
@@ -64,6 +65,22 @@ def list_integration_logs(
         data=[IntegrationActivityItem.model_validate(r) for r in rows],
         total=total,
         page=page,
+    )
+
+
+@router.get("/trace/{trace_id}", response_model=IntegrationActivityTraceResponse)
+def get_integration_log_trace(
+    trace_id: str,
+    current_user: User = Depends(require_permission(_READ)),
+    db: Session = Depends(get_db),
+) -> IntegrationActivityTraceResponse:
+    """Ordered legs of ONE consumption (inbound API → outbound Meta → webhook),
+    tenant-scoped. Empty legs for an unknown trace (never leaks another tenant's
+    rows)."""
+    rows = ActivityLogService(db).list_by_trace(current_user.tenant_id, trace_id)
+    return IntegrationActivityTraceResponse(
+        traceId=trace_id,
+        legs=[IntegrationActivityItem.model_validate(r) for r in rows],
     )
 
 

@@ -53,4 +53,24 @@ describe('mock integration-log service', () => {
     expect(lines[0]).toContain('source');
     expect(lines.length).toBeGreaterThan(1);
   });
+
+  // AC-DLC-17: ordered legs of one consumption.
+  it('getTrace returns the correlated legs oldest→newest', async () => {
+    const trace = await svc.getTrace('trace-0');
+    expect(trace).not.toBeNull();
+    expect(trace!.traceId).toBe('trace-0');
+    // The inbound leg + the outbound-Meta + webhook legs share trace-0.
+    const sources = trace!.legs.map((l) => l.source);
+    expect(sources).toContain('inbound_api');
+    expect(sources).toContain('outbound_meta');
+    expect(sources).toContain('webhook_delivery');
+    // Ordered by created time.
+    const times = trace!.legs.map((l) => l.createdAt);
+    expect([...times].sort()).toEqual(times);
+  });
+
+  it('getTrace returns empty legs for an unknown trace', async () => {
+    const trace = await svc.getTrace('trace-nope');
+    expect(trace!.legs).toEqual([]);
+  });
 });

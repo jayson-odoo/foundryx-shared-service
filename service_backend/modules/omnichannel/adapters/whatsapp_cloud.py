@@ -8,7 +8,9 @@ yet) the adapter returns stub credentials so the flow runs end-to-end without a
 real Meta app. Tests inject a fake ``client`` to assert behaviour deterministically.
 """
 import logging
-from typing import Any, Dict, Optional
+import time
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Optional
 
 import httpx
 
@@ -16,6 +18,28 @@ from app.config import settings
 from .base import CodeExchangeError, ConnectionStatus, SendError
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class GraphCall:
+    """Telemetry for ONE outbound Meta/Graph call — what the adapter reports to
+    an (optional) recorder so the Developers → Logs console gets an
+    ``outbound_meta`` row (sprint-4/12 Slice 2, AC-DLC-14). The adapter stays
+    free of any DB knowledge: it only describes the call; the recorder (owned by
+    the service layer) persists it, attributing tenant + reading the inbound
+    trace id off the contextvar."""
+
+    operation: str  # graph:send | graph:template_submit | graph:sync
+    status: str  # "success" | "error"
+    status_code: Optional[int]
+    latency_ms: int
+    error_code: Optional[str]
+    error_message: Optional[str]
+    external_ref: Optional[str]  # wamid on a successful send
+
+
+# A recorder is a failure-isolated sink; it must never raise back into the send.
+GraphRecorder = Callable[[GraphCall], None]
 
 
 def _meta_error_detail(resp: "httpx.Response") -> str:
@@ -44,9 +68,69 @@ def _meta_error_detail(resp: "httpx.Response") -> str:
 class WhatsAppCloudAdapter:
     channel_type = "WHATSAPP"
 
-    def __init__(self, client: Optional[httpx.Client] = None):
+    def __init__(
+        self,
+        client: Optional[httpx.Client] = None,
+        recorder: Optional[GraphRecorder] = None,
+    ):
         self._client = client
+        self._recorder = recorder
+        # Last Meta HTTP status seen inside a wrapped call (one logical exchange
+        # per ``_graph_call``) so the recorder can stamp the real status code on
+        # BOTH success and error rows. Reset per call.
+        self._last_http_status: Optional[int] = None
         self._base = f"https://graph.facebook.com/{settings.meta_graph_version}"
+
+    def _graph_call(
+        self,
+        operation: str,
+        fn: Callable[[], Any],
+        *,
+        extract_ref: Optional[Callable[[Any], Optional[str]]] = None,
+    ) -> Any:
+        """Time + record ONE Graph call (AC-DLC-14). With no recorder this is a
+        transparent pass-through (existing behaviour, tests unaffected). The
+        record is fully failure-isolated — a logging failure can NEVER break the
+        send."""
+        if self._recorder is None:
+            return fn()
+        self._last_http_status = None
+        started = time.monotonic()
+        status = "success"
+        error_code: Optional[str] = None
+        error_message: Optional[str] = None
+        external_ref: Optional[str] = None
+        try:
+            result = fn()
+            if extract_ref is not None:
+                external_ref = extract_ref(result)
+            return result
+        except SendError as exc:
+            status = "error"
+            error_code = "SendError"
+            error_message = str(exc)
+            raise
+        except Exception as exc:  # noqa: BLE001 — report + re-raise unchanged.
+            status = "error"
+            error_code = type(exc).__name__
+            error_message = str(exc)
+            raise
+        finally:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            try:
+                self._recorder(
+                    GraphCall(
+                        operation=operation,
+                        status=status,
+                        status_code=self._last_http_status,
+                        latency_ms=latency_ms,
+                        error_code=error_code,
+                        error_message=error_message,
+                        external_ref=external_ref,
+                    )
+                )
+            except Exception:  # noqa: BLE001 — recording must never break the send.
+                logger.exception("outbound-meta activity record failed (%s)", operation)
 
     @property
     def _configured(self) -> bool:
@@ -257,7 +341,44 @@ class WhatsAppCloudAdapter:
         context_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Send a text/template/media/interactive/location/contacts message.
-        Returns {"external_message_id": wamid}.
+        Returns {"external_message_id": wamid}. Instrumented once via
+        ``_graph_call`` so every send yields an ``outbound_meta`` activity row
+        (AC-DLC-14) carrying the inbound trace id + the resulting wamid."""
+        return self._graph_call(
+            "graph:send",
+            lambda: self._send_impl(
+                credentials,
+                phone_number_id,
+                to,
+                text=text,
+                template=template,
+                media=media,
+                interactive=interactive,
+                location=location,
+                contacts=contacts,
+                reaction=reaction,
+                context_message_id=context_message_id,
+            ),
+            extract_ref=lambda result: (result or {}).get("external_message_id"),
+        )
+
+    def _send_impl(
+        self,
+        credentials: Dict[str, Any],
+        phone_number_id: str,
+        to: str,
+        *,
+        text: Optional[str] = None,
+        template: Optional[Dict[str, Any]] = None,
+        media: Optional[Dict[str, Any]] = None,
+        interactive: Optional[Dict[str, Any]] = None,
+        location: Optional[Dict[str, Any]] = None,
+        contacts: Optional[list] = None,
+        reaction: Optional[Dict[str, Any]] = None,
+        context_message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """The concrete send (payload build + one Graph POST). ``send`` wraps this
+        with telemetry; keep the two signatures in lock-step.
 
         `template` = {"name","language","components"}. `media` = {"kind","id",
         "caption"?,"filename"?}. `interactive` = the Meta interactive object.
@@ -319,6 +440,7 @@ class WhatsAppCloudAdapter:
                 json=payload,
                 headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
             )
+            self._last_http_status = resp.status_code
             if resp.status_code != 200:
                 try:
                     detail = resp.json().get("error", {}).get("message", "")
@@ -338,7 +460,14 @@ class WhatsAppCloudAdapter:
                 client.close()
 
     def fetch_waba_details(self, credentials: Dict[str, Any], waba_id: str) -> Dict[str, Any]:
-        """Fetch the WABA's business account name. Dev stub: canned name."""
+        """Fetch the WABA's business account name. Instrumented once → a
+        ``graph:sync`` activity row (AC-DLC-14). Dev stub: canned name."""
+        return self._graph_call(
+            "graph:sync",
+            lambda: self._fetch_waba_details_impl(credentials, waba_id),
+        )
+
+    def _fetch_waba_details_impl(self, credentials: Dict[str, Any], waba_id: str) -> Dict[str, Any]:
         if not self._configured or credentials.get("dev") or not waba_id:
             return {"name": "FoundryX Events (dev sandbox)"}
         client = self._http()
@@ -348,6 +477,7 @@ class WhatsAppCloudAdapter:
                 params={"fields": "name"},
                 headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
             )
+            self._last_http_status = resp.status_code
             return resp.json() if resp.status_code == 200 else {}
         except httpx.HTTPError:
             return {}
@@ -441,7 +571,17 @@ class WhatsAppCloudAdapter:
         self, credentials: Dict[str, Any], waba_id: str, payload: Dict[str, Any]
     ) -> Dict[str, Any]:
         """POST a template for review. Returns {meta_template_id, status}.
+        Instrumented once → a ``graph:template_submit`` activity row (AC-DLC-14).
         Dev stub: fake id + PENDING (T9)."""
+        return self._graph_call(
+            "graph:template_submit",
+            lambda: self._create_template_impl(credentials, waba_id, payload),
+            extract_ref=lambda result: (result or {}).get("meta_template_id"),
+        )
+
+    def _create_template_impl(
+        self, credentials: Dict[str, Any], waba_id: str, payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
         if not self._configured or credentials.get("dev") or not waba_id:
             import uuid
 
@@ -453,6 +593,7 @@ class WhatsAppCloudAdapter:
                 json=payload,
                 headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
             )
+            self._last_http_status = resp.status_code
             if resp.status_code not in (200, 201):
                 raise SendError(_meta_error_detail(resp))
             data = resp.json()
@@ -466,7 +607,16 @@ class WhatsAppCloudAdapter:
     def edit_template(
         self, credentials: Dict[str, Any], meta_template_id: str, payload: Dict[str, Any]
     ) -> None:
-        """Edit an existing template's components → re-enters review. Dev: no-op."""
+        """Edit an existing template's components → re-enters review. Instrumented
+        once → a ``graph:template_submit`` activity row. Dev: no-op."""
+        self._graph_call(
+            "graph:template_submit",
+            lambda: self._edit_template_impl(credentials, meta_template_id, payload),
+        )
+
+    def _edit_template_impl(
+        self, credentials: Dict[str, Any], meta_template_id: str, payload: Dict[str, Any]
+    ) -> None:
         if not self._configured or credentials.get("dev") or not meta_template_id:
             return
         client = self._http()
@@ -476,6 +626,7 @@ class WhatsAppCloudAdapter:
                 json=payload,
                 headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
             )
+            self._last_http_status = resp.status_code
             if resp.status_code != 200:
                 raise SendError(_meta_error_detail(resp))
         except httpx.HTTPError as exc:
@@ -749,8 +900,14 @@ class WhatsAppCloudAdapter:
                 client.close()
 
 
-def get_adapter(channel_type: str = "WHATSAPP", client: Optional[httpx.Client] = None):
-    """Resolve a channel adapter by type (WhatsApp only for MVP)."""
+def get_adapter(
+    channel_type: str = "WHATSAPP",
+    client: Optional[httpx.Client] = None,
+    recorder: Optional[GraphRecorder] = None,
+):
+    """Resolve a channel adapter by type (WhatsApp only for MVP). An optional
+    ``recorder`` (owned by the service layer) turns on outbound-Meta activity
+    logging — see ``build_meta_recorder`` (sprint-4/12 Slice 2)."""
     if channel_type == "WHATSAPP":
-        return WhatsAppCloudAdapter(client=client)
+        return WhatsAppCloudAdapter(client=client, recorder=recorder)
     raise ValueError(f"Unsupported channel type: {channel_type}")

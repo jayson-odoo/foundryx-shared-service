@@ -101,3 +101,85 @@
 
 ## Verdict
 **Slice 1 is GREEN to advance.** All 13 Slice-1 ACs PASS; the two coder-noted limitations are documented deferrals that do not break any AC as written. Recommend logging the two backlog items above.
+
+---
+
+# Slice 2 — Correlated trace (outbound Meta + webhook unify + trace view)
+
+> Scope: **AC-DLC-14 … AC-DLC-19**. Executed 2026-07-11 by the QA agent against this branch (Slice 2 = uncommitted working-tree changes on top of Slice-1 commit `6a98148`).
+> Environment: FastAPI :8001 + Next :3001 (both freshly rebuilt from this tree, port ownership confirmed cwd=`foundryx-shared-service`) → Postgres `foundryx_service` (already at head; NO `alembic upgrade`/`bootstrap_db` — Slice 2 adds no schema). Dev channel `chn-demo` present + ACTIVE (Meta-stubbed). `auth_throttle` cleared.
+
+## Test environment notes (load-bearing)
+- Both ports were again squatted by the sister product `dreamz_ems`; killed, and the final listeners' cwd verified = `foundryx-shared-service/service_{backend,frontend}` before E2E. The frontend was clean-rebuilt (`rm -rf .next && npm run build`) and a **pre-existing foundryx `next-server` (stale build) that had reclaimed :3001 was killed** so E2E ran against the just-built bundle (the documented wrong-build trap — caught here).
+- Meta is stubbed for `chn-demo` because `META_APP_ID` is unset in `.env` (`_is_dev = not settings.meta_app_id`), so a gateway send records an `outbound_meta` row without Graph traffic — the intended E2E path.
+
+## Suite results (Task 1)
+| Suite | Command | Result |
+|---|---|---|
+| Backend Slice-2 targeted | `pytest -q tests/test_activity_trace.py tests/test_activity_log.py tests/test_omnichannel_api_gateway.py tests/test_omnichannel_consumer_webhooks.py` | **53 passed** |
+| Backend full smoke | `pytest -q` | **1116 passed**, 0 failed (181 warnings), 12m49s (= Slice-1 1111 + 5 new trace tests) |
+| Frontend targeted | `vitest run integration-log-service trace-timeline log-badges menu-filter` | **25 passed** (4 files; mock-service grew 6→8 for trace) |
+| Frontend full | `vitest run` | **769 passed** (99 files) |
+| E2E | `playwright test developer-logs.spec.ts` | **4 passed** (2 Slice-1 + 2 new Slice-2 trace) |
+
+---
+
+## Per-AC verdict (Slice 2)
+
+| AC | Area | Verdict |
+|---|---|---|
+| AC-DLC-14 | `outbound_meta` row: operation/status/Meta-HTTP/latency/error + `external_ref=wamid`, token redacted | **PASS** |
+| AC-DLC-15 | inbound + outbound share ONE `trace_id` (contextvar) | **PASS** |
+| AC-DLC-16 | webhook legs surface in console + attach to trace by external_ref | **PASS (with deviation — see below)** |
+| AC-DLC-17 | `GET /integration-logs/trace/{id}` ordered, tenant-scoped, gated | **PASS (ordering finding — see below)** |
+| AC-DLC-18 | detail view renders the whole-trace timeline, each leg status/latency | **PASS** |
+| AC-DLC-19 | real-click E2E: send → console → trace links legs → timeline | **PASS** |
+
+**Slice 2 verdict: GREEN to advance.** All six ACs pass. One intentional mechanism deviation (AC-DLC-16, judged acceptable) and one quality finding (AC-DLC-17 timeline causal-order inversion) are documented below as backlog candidates; neither breaks an AC as written.
+
+---
+
+## Detailed scenarios (Slice 2)
+
+### AC-DLC-14 — outbound_meta capture — PASS
+- **Steps (live):** reopened a 24h window on `cnt-001` via an inbound webhook to `chn-demo`, minted a workspace API key, then real gateway `POST /api/v1/omnichannel/messages` (text). 
+- **Actual:** exactly ONE `outbound_meta` row: `operation="graph:send"`, `status="success"`, `external_ref="wamid.dev-077f78ca8452"` (the dev-stub wamid), `latency_ms` present, on the same trace as the inbound send. Adapter instruments all three Graph calls through one `_graph_call` wrapper — `graph:send` (verified live + unit), `graph:sync` (`fetch_waba_details`) and `graph:template_submit` (`submit_template`) share the identical instrumentation path (wired in `channel_profile_service` / `template_management_service` / `message_service` / `send_runner`; not independently exercised live).
+- **Redaction (Task 4):** the `outbound_meta` row stores NO request/response summary (both `*_summary_json` NULL) → no Meta access token can leak. A DB-wide scan for `EAA%` / `fxw_live_%` / unmasked `authorization` across ALL `integration_activity` rows returned **0**.
+- **Note (dev-stub artifact, not a fail):** on the stubbed channel `status_code` is NULL and `latency_ms=0` (the stub is instant + sets no HTTP status). A real Graph call populates `_last_http_status` (adapter sets it on the live POST) → the field is real in production.
+
+### AC-DLC-15 — shared trace id — PASS
+- **Live:** the inbound `POST /messages` row and the resulting `outbound_meta graph:send` row both carry `trace_id=73a906e1-22b7-4d54-89a1-88a71fbcc450`. The gateway middleware mints the trace onto a `contextvars.ContextVar`; `build_meta_recorder` reads `get_trace_id()` when persisting — no plumbing through call args. Also proven by `test_inbound_and_outbound_share_trace_id`.
+
+### AC-DLC-16 — webhook unify — PASS (with deviation)
+- **Deviation from the AC's literal wording (intentional, disclosed in the brief):** the AC specifies a *read-time join/adapter, NOT duplicated writes*. Slice 2 instead **writes** a `webhook_delivery` `integration_activity` row per delivery attempt (`webhook_delivery.py _record_webhook_activity`) via the core `ActivityLogService.record` seam, attaching the trace by resolving the message wamid (`trace_for_external_ref`). `webhook_deliveries` stays the operational source of truth (retry queue/backoff); the activity row is a pure observability copy on a fresh, failure-isolated session.
+- **Judgment against the AC's INTENT (webhook legs appear in the console + attach to a trace):** OUTCOME MET → **PASS**. Verified: (a) `test_webhook_delivery_records_activity_on_trace` drives a real `dispatch()` (stubbed 200 POST) and asserts a `webhook_delivery` row with `operation="webhook:message.status"`, `status="success"`, `external_ref="wamid.o1"`, `trace_id="trace-xyz"`; (b) live-DB assertion that the join key `trace_for_external_ref(DEFAULT_TENANT, "wamid.dev-077f78ca8452")` resolves the REAL traced wamid → `73a906e1…`, and is tenant-scoped (a foreign tenant → `None`).
+- **Why the deviation is defensible:** the AC's read-time-join would force the CORE console to read a MODULE's schema (`app_omnichannel.webhook_deliveries`) — a module-governance smell (core reaching into a module). The write-time seam keeps the module writing UP to the core seam (the sanctioned direction), so the console reads ONE table uniformly across all sources. Per-attempt granularity is arguably more useful for troubleshooting than a single joined row. Failure-isolated (fresh session, swallows errors — cannot break delivery).
+- **LIMITATION (backlog candidate — real functional gap vs the literal AC):** because it is write-time (no read-time join, no backfill), **pre-existing `webhook_deliveries` rows created before Slice 2 do NOT appear** in the console, and only NEW delivery attempts get an activity row. The literal AC ("existing `webhook_deliveries` rows surface") would have shown history. New deliveries surface correctly; historical ones are invisible.
+- **E2E note:** a live webhook-delivery leg could NOT be added to the E2E trace — endpoint creation is SSRF-guarded (rejects non-HTTPS + private/reserved IPs), so no local receiver is reachable in the sandbox. Per the brief this is acceptable; the webhook→trace attachment is covered by the unit test + the live join-key assertion above.
+
+### AC-DLC-17 — trace endpoint — PASS (ordering finding)
+- **Live:** `GET /integration-logs/trace/73a906e1…` (authed) returns 2 legs ordered oldest→newest by `created_at`. **Tenant-scoped:** an unknown/other-tenant trace → `200 {legs: []}` (never leaks). **Gated:** unauthenticated → 401; an authenticated user WITHOUT `integration_logs.read` (`demo@kt.com`, app-signed JWT) → **403** on both `/trace/{id}` and the list (same `require_permission("integration_logs.read")` dependency).
+- **FINDING (quality, not a literal-AC fail — backlog candidate):** the endpoint orders strictly by `created_at` (contract met), BUT the gateway middleware records the `inbound_api` row **after the response is produced** (to capture status_code + latency), so its `created_at` is ~10 ms LATER than the `outbound_meta` leg it caused (084190Z vs 094501Z live). Result: the timeline lists **Outbound Meta BEFORE the Inbound API request that triggered it** — the causal order the AC illustrates (`inbound → outbound Meta → webhook`) is visually inverted for the real gateway flow. (The unit test masks this by seeding explicit increasing `created_at`.) Recommend a stable causal sort (record the inbound row at request-start, or add a monotonic sequence, or sort by a per-source causal rank within a trace).
+
+### AC-DLC-18 — trace timeline in the detail view — PASS
+- **Live (E2E + screenshots):** the log detail has a dedicated **Trace** tab (`GitBranch` icon) rendering `TraceTimeline` — an ordered rail of legs, each with a source badge (Inbound API / Outbound), the operation code (`POST /messages` / `graph:send`), formatted time, latency (`46 ms` / `0 ms`) and a status badge (Success). The currently-viewed leg is highlighted (`border-primary bg-primary/5`); clicking another leg navigates to that leg's detail (verified: clicking `graph:send` → the outbound leg's detail on the same trace, wamid shown as External ref). A row with no trace shows "not part of a correlated trace"; an empty trace shows "No correlated legs found".
+- Screenshots: `scratchpad/dlc-trace-desktop.png` (1280 — two-leg timeline, outbound above inbound per the finding), `dlc-trace-mobile.png` (375 — legs stack, status/latency wrap below the operation, no clipping).
+
+### AC-DLC-19 — real-click E2E — PASS
+- Extended `e2e/developer-logs.spec.ts` with a **Slice-2 `Developer Logs trace` describe** (2 tests, both green). Precondition (API setup, timestamped/unique per run): locate the workspace owning `chn-demo`, POST a unique inbound message to reopen a window, mint a key, real gateway send → read back the inbound `POST /messages` trace id + confirm an `outbound_meta` leg shares it. The FLOW is real clicks: sign in → expand **Developers** → click **Logs** → search the trace → open the inbound row → **Trace** tab → assert the timeline shows BOTH legs (Inbound API `POST /messages` + Outbound `graph:send`) each with status/latency → click the outbound leg → its detail on the same trace shows the wamid. Second test re-checks the timeline at 375px + 1280px (horizontal overflow ≤ 2px both).
+- Webhook leg intentionally NOT part of the live E2E trace (SSRF-guarded endpoint; see AC-DLC-16) — the inbound→outbound correlation is the asserted real-click picture.
+
+---
+
+## Backlog candidates (Slice 2 — recommend logging)
+1. **Trace-timeline causal-order inversion (AC-DLC-17 finding).** `inbound_api` is recorded post-response so it sorts AFTER the `outbound_meta` leg it caused; the timeline shows outbound before inbound. Give the trace a stable causal ordering (inbound row stamped at request-start, a monotonic per-trace sequence, or a source-rank sort) so the timeline reads inbound → outbound → webhook.
+2. **Historical webhook deliveries invisible (AC-DLC-16 deviation limitation).** The write-time seam only records NEW delivery attempts; pre-Slice-2 `webhook_deliveries` rows never surface (no backfill, no read-time join). Either backfill or add a read-time adapter if surfacing history matters.
+3. **(Carried from Slice 1, still open)** unattributed inbound `401`s write no row; inbound `responseSummary` always null.
+
+## Other remarks (not AC failures)
+- Slice 2 adds NO migration/schema — no Alembic risk; the two-heads condition from Slice 1 (untracked user WIP `bgjob_logs_ab12cd34`) is unchanged and out of scope.
+- Full backend suite delta is exactly +5 (1111→1116) = the 5 new cases in `tests/test_activity_trace.py`; no regressions in the load-bearing status-engine / tenant-lifecycle / omnichannel suites.
+- Redaction: outbound_meta and webhook_delivery rows store summaries that carry no secrets (outbound stores no summary at all); the webhook row's `request` summary is the envelope `data` block (message metadata, no signing secret — the HMAC secret lives only in the delivery headers, never in the stored summary).
+
+## Verdict (Slice 2)
+**Slice 2 is GREEN to advance.** AC-DLC-14/15/17/18/19 PASS cleanly; AC-DLC-16 PASSES on intent with a disclosed, defensible mechanism deviation (write-time core-seam denormalization instead of read-time cross-schema join) plus one historical-surfacing limitation. The one quality finding (timeline causal-order inversion) and the two limitations are backlog candidates, none breaking an AC as written. The trace timeline was confirmed rendering REAL correlated data (live gateway send → two-leg trace), not just green pytest.

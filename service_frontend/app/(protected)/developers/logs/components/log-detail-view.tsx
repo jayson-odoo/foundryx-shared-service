@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Braces, Info, LoaderCircleIcon } from 'lucide-react';
+import { Braces, GitBranch, Info, LoaderCircleIcon } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
@@ -19,6 +19,7 @@ import {
   LOG_SOURCE_REGISTRY,
   LOG_STATUS_REGISTRY,
 } from './log-badges';
+import { TraceTimeline } from './trace-timeline';
 
 function OverviewRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -117,6 +118,16 @@ export function LogDetailView({ logId }: { logId: string }) {
                   </pre>
                 </OverviewRow>
               )}
+            </div>
+          ),
+        },
+        {
+          id: 'trace',
+          label: 'Trace',
+          icon: GitBranch,
+          render: () => (
+            <div className="flex flex-col gap-4 py-2">
+              <TraceTimeline traceId={log.traceId} currentId={log.id} />
             </div>
           ),
         },

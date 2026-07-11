@@ -44,3 +44,11 @@ class IntegrationActivityListResponse(ApiModel):
     data: List[IntegrationActivityItem]
     total: int
     page: int
+
+
+class IntegrationActivityTraceResponse(ApiModel):
+    """The ordered legs (oldest→newest) of ONE consumption — inbound API →
+    outbound Meta → webhook delivery — for the trace timeline (AC-DLC-17/18)."""
+
+    traceId: str
+    legs: List[IntegrationActivityItem]

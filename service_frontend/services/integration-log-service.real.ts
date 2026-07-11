@@ -3,7 +3,11 @@
 import { apiFetch } from '@/lib/api-client';
 import { toCsv } from '@/lib/csv';
 import type { ListQuery, ListResult } from '@/types/resource';
-import type { IntegrationLogDetail, IntegrationLogItem } from '@/types/integration-logs';
+import type {
+  IntegrationLogDetail,
+  IntegrationLogItem,
+  IntegrationLogTrace,
+} from '@/types/integration-logs';
 import type { IntegrationLogService } from './integration-log-service';
 
 function listParams(query: ListQuery): URLSearchParams {
@@ -28,6 +32,12 @@ export const realIntegrationLogService: IntegrationLogService = {
 
   get(id: string): Promise<IntegrationLogDetail | null> {
     return apiFetch<IntegrationLogDetail>(`/integration-logs/${id}`).catch(() => null);
+  },
+
+  getTrace(traceId: string): Promise<IntegrationLogTrace | null> {
+    return apiFetch<IntegrationLogTrace>(
+      `/integration-logs/trace/${encodeURIComponent(traceId)}`,
+    ).catch(() => null);
   },
 
   async export(query: ListQuery, columns: string[]): Promise<string> {

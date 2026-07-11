@@ -82,7 +82,7 @@ def _requeue_transient(db: Session, row: ConversationMessage, message: str) -> N
     raise TransientSendError(message)
 
 
-def run_send(db: Session, message_id: str) -> str:
+def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> str:
     """Execute a QUEUED outbound row. Returns the final delivery status.
 
     IDEMPOTENT double-send guard (plan 12 review): the row is CLAIMED (QUEUED →
@@ -90,7 +90,18 @@ def run_send(db: Session, message_id: str) -> str:
     is a no-op — so if the post-send commit fails and Celery retries, the retry
     sees SENDING and never re-calls ``adapter.send`` (the contact can't get it
     twice). A transient failure (network/5xx/storage) raises ``TransientSendError``
-    for backoff; a permanent Meta rejection / transcode error stamps FAILED."""
+    for backoff; a permanent Meta rejection / transcode error stamps FAILED.
+
+    ``trace_id`` (sprint-4/12 Slice 2) carries the inbound gateway request's
+    correlation id when the send crossed the Celery boundary (the worker's
+    contextvar is None by default). We re-seed it here so the ``outbound_meta``
+    activity row lands on the SAME trace as the inbound leg (AC-DLC-15). In eager
+    dev/tests the contextvar is already set on the request context — passing None
+    leaves it untouched."""
+    if trace_id is not None:
+        from app.activity_log.context import set_trace_id
+
+        set_trace_id(trace_id)
     row = (
         db.query(ConversationMessage)
         .filter(ConversationMessage.id == message_id)
@@ -117,7 +128,14 @@ def run_send(db: Session, message_id: str) -> str:
     db.commit()
 
     credentials = decrypt_credentials(channel.credentials_json)
-    adapter = get_adapter(channel.channel_type)
+    # Instrument the outbound Meta call — an ``outbound_meta`` activity row lands
+    # on the inbound trace (gateway sends) or standalone (internal inbox sends).
+    from .activity import build_meta_recorder
+
+    adapter = get_adapter(
+        channel.channel_type,
+        recorder=build_meta_recorder(db, channel.tenant_id, channel.workspace_id),
+    )
     phone_id = channel.phone_number_id or ""
     to = "".join(ch for ch in (contact.phone or "") if ch.isdigit())
     meta = row.metadata_json or {}
