@@ -14,7 +14,7 @@ Create Date: 2026-07-11
 """
 import logging
 
-from alembic import op
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 revision = "0006_omni_media_url_bf"
@@ -26,10 +26,18 @@ logger = logging.getLogger("foundryx.omnichannel.backfill")
 
 
 def upgrade() -> None:
+    from app.config import settings
     from modules.omnichannel.backfill import backfill_media_urls
 
-    bind = op.get_bind()
-    session = Session(bind=bind)
+    # Run on a SEPARATE engine/connection — NOT ``op.get_bind()``. The backfill
+    # commits per batch (crash-safe partial progress); committing Alembic's own
+    # migration connection mid-run would corrupt the ``alembic_version`` stamp
+    # (reviewer blocker). This revision alters no schema, so the rows read on the
+    # side connection are already-committed data (no contention with Alembic's
+    # open transaction). Failure-isolated at the migration level too — a backfill
+    # hiccup must never block the module's migration chain.
+    engine = create_engine(settings.database_url)
+    session = Session(bind=engine)
     try:
         result = backfill_media_urls(session)
         logger.info(
@@ -43,6 +51,7 @@ def upgrade() -> None:
         session.rollback()
     finally:
         session.close()
+        engine.dispose()
 
 
 def downgrade() -> None:
