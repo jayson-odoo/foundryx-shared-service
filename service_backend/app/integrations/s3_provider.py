@@ -116,6 +116,12 @@ class S3CompatibleAdapter:
         )
         return key
 
+    def put_raw(self, raw: str, content: bytes, mime_type: str) -> None:
+        """Path-preserving write at the EXACT key (no uuid mint) — sprint-4/10 D2."""
+        self.client.put_object(
+            Bucket=self.bucket, Key=raw, Body=content, ContentType=mime_type
+        )
+
     def resolve(self, key: str) -> Tuple[str, str]:
         # CDN URLs are STABLE → "url" (immutable-cacheable). Without a CDN the
         # URL is PRESIGNED and expires in PRESIGN_TTL_SECONDS → "presigned",

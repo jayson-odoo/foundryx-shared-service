@@ -131,6 +131,12 @@ class Settings(BaseSettings):
     import_max_file_mb: int = 10
     import_file_retention_days: int = 30
 
+    # ── Background jobs (plan sprint-4/10) ──────────────────────────────────
+    # Centralized background_jobs retention — the beat housekeeping pass prunes
+    # TERMINAL jobs (done/failed/aborted) older than this window; running,
+    # pending and needs_review jobs are never pruned.
+    background_job_retention_days: int = 30
+
     # ── Omnichannel module (WhatsApp BSP) ───────────────────────────────────
     # Meta app (FoundryX = Tech Provider). Embedded Signup exchanges the code
     # against this one app. Empty in dev until the Meta app is configured.

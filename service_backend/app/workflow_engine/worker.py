@@ -58,6 +58,15 @@ def run_due_workflows_task() -> dict:
         except Exception:  # noqa: BLE001
             logger.exception("workflow run prune failed")
             db.rollback()
+        # Centralized background_jobs retention (plan sprint-4/10) — same beat
+        # tick, isolated so a prune failure never masks a successful fire.
+        try:
+            from app.jobs.service import prune_jobs
+
+            prune_jobs(db)
+        except Exception:  # noqa: BLE001
+            logger.exception("background job prune failed")
+            db.rollback()
         return {"fired": fired, "pruned": pruned}
     except Exception:  # noqa: BLE001 — a bad tick never kills the beat loop
         logger.exception("scheduled-workflow tick failed")

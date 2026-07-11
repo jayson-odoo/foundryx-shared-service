@@ -45,6 +45,12 @@ async def lifespan(_: FastAPI):
     from app.status_engine.derived import install_derived_status
 
     install_derived_status()
+    # Storage-key location registry (sprint-4/10) — register core scalar/JSON
+    # locations so a storage migration finds every asset (idempotent; modules
+    # register their own via register_module_boot).
+    from app.storage_migration.core_locations import ensure_core_locations
+
+    ensure_core_locations()
     # Email outbox dispatcher (plan 09 §5) — daemon thread, gated by an
     # explicit settings flag (conftest turns it off; tests drive
     # dispatch_pending() directly against their own session).
