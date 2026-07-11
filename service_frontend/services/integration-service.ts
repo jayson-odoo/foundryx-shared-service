@@ -46,6 +46,9 @@ export interface IntegrationService {
    *  targeted test (SMTP: send a real email). Either way updates
    *  status/lastTestedAt. */
   test(id: string, target?: string): Promise<TestConnectionResult>;
+  /** Make a STORAGE connection the tenant's active write-target
+   *  (POST …/{id}/activate). Deactivates every other storage connection. */
+  activate(id: string): Promise<Connection>;
 }
 
 // Phase B swap done — mock retained in integration-service.mock.ts for tests.

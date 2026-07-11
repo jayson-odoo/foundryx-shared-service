@@ -56,6 +56,9 @@ export interface Connection {
   /** Non-secret config only (host, port, fromEmail, …). */
   config: Record<string, string>;
   status: ConnectionStatus;
+  /** Storage write-target flag — exactly one active storage connection per
+   * tenant; new uploads land there, resolve-by-type serves it. */
+  isActive: boolean;
   lastTestedAt: string | null; // ISO
   lastError: string | null;
   /** Outbox dispatcher throttle (plan 09 §5 — low-spec SMTP guard). */

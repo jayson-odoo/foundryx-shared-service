@@ -169,6 +169,16 @@ def delete_connection(
     IntegrationService(db).delete(user.tenant_id, connection_id)
 
 
+@router.post("/connections/{connection_id}/activate", response_model=ConnectionOut)
+def activate_connection(
+    connection_id: str,
+    user: User = Depends(require_permission("integrations.manage")),
+    db: Session = Depends(get_db),
+) -> ConnectionOut:
+    """Make this STORAGE connection the tenant's active write-target."""
+    return IntegrationService(db).set_active(user.tenant_id, connection_id)
+
+
 @router.post("/connections/{connection_id}/test", response_model=TestResultOut)
 def test_connection(
     connection_id: str,

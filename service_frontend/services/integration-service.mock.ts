@@ -280,6 +280,7 @@ export const mockIntegrationService: IntegrationService = {
       name: input.name,
       config: { ...input.config },
       status: 'UNVERIFIED',
+      isActive: true,
       lastTestedAt: null,
       lastError: null,
       rateLimitPerMinute: input.rateLimitPerMinute ?? 30,
@@ -318,6 +319,15 @@ export const mockIntegrationService: IntegrationService = {
     connections = connections.filter((c) => c.id !== id);
     secrets.delete(id);
     return delay(undefined);
+  },
+
+  async activate(id: string) {
+    const target = connections.find((c) => c.id === id);
+    if (!target) throw new Error('Connection not found.');
+    connections = connections.map((c) =>
+      c.type === 'storage' ? { ...c, isActive: c.id === id } : c,
+    );
+    return delay({ ...connections.find((c) => c.id === id)! });
   },
 
   async test(id: string, target?: string) {

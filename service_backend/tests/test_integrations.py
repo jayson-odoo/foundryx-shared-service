@@ -223,6 +223,49 @@ def test_delete_connection(client):
     assert client.get("/integrations/connections", headers=h).json()["data"] == []
 
 
+# ---- set active (storage write-target, sprint-4/12) ----
+
+def _storage_row(db, name, *, active):
+    from app.models.connection import CONNECTION_STATUS_ACTIVE, Connection
+    from app.models.tenant import DEFAULT_TENANT_ID
+
+    row = Connection(
+        tenant_id=DEFAULT_TENANT_ID,
+        provider="s3",
+        type="storage",
+        name=name,
+        config_json={},
+        credentials_json="",
+        status=CONNECTION_STATUS_ACTIVE,
+        is_active=active,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row.id
+
+
+def test_set_active_switches_storage_write_target(client, session_factory):
+    db = session_factory()
+    a_id = _storage_row(db, "Bucket A", active=True)
+    b_id = _storage_row(db, "Bucket B", active=False)
+    db.close()
+
+    h = _demo_headers(client)
+    res = client.post(f"/integrations/connections/{b_id}/activate", headers=h)
+    assert res.status_code == 200, res.text
+    assert res.json()["isActive"] is True
+    # A is now retired; only one storage row is active.
+    assert client.get(f"/integrations/connections/{a_id}", headers=h).json()["isActive"] is False
+
+
+def test_set_active_rejects_non_storage(client):
+    h = _demo_headers(client)
+    smtp = _create(client, h)  # email type
+    res = client.post(f"/integrations/connections/{smtp['id']}/activate", headers=h)
+    assert res.status_code == 409
+
+
 # ---- tenant scoping ----
 
 def test_connections_are_tenant_scoped(client):

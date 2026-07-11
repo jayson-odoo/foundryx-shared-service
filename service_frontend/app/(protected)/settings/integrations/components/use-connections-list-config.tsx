@@ -9,6 +9,7 @@ import {
   DataGridTableRowSelectAll,
 } from '@/components/ui/data-grid-table';
 import { StatusBadge } from '@/components/platform/status-badge';
+import { Badge } from '@/components/ui/badge';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
@@ -109,8 +110,13 @@ export function useConnectionsListConfig(): ResourceListConfig<Connection> {
         header: ({ column }) => <DataGridColumnHeader title="Name" column={column} />,
         cell: ({ row }) => (
           <div className="flex flex-col">
-            <span className="font-medium text-foreground leading-tight">
+            <span className="flex items-center gap-2 font-medium text-foreground leading-tight">
               {row.original.name}
+              {row.original.type === 'storage' && row.original.isActive && (
+                <Badge variant="success" appearance="light" size="sm">
+                  Active
+                </Badge>
+              )}
             </span>
             <span className="text-xs text-muted-foreground">
               {providerTitle(row.original.provider)}
