@@ -217,3 +217,102 @@ def test_list_endpoint_camelcase_and_gated(client, session_factory):
 
 def test_detail_endpoint_gated(client):
     assert client.get("/integration-logs/anything").status_code == 401
+
+
+# ── Body capture (enhancement): tee request + response bodies safely ────────
+
+
+def test_summarize_body_json_parsed():
+    from app.activity_log.middleware import _summarize_body
+
+    raw = b'{"to":"+60","type":"text","text":{"body":"hi"}}'
+    out = _summarize_body(
+        raw, content_type="application/json", total_size=len(raw), is_json=True, truncated=False
+    )
+    assert out == {"to": "+60", "type": "text", "text": {"body": "hi"}}
+
+
+def test_summarize_body_multipart_stores_note_not_bytes():
+    from app.activity_log.middleware import _summarize_body
+
+    # Multipart / binary body is NEVER buffered — capture=False, only the size.
+    out = _summarize_body(
+        b"",  # nothing buffered (capture was off)
+        content_type="multipart/form-data; boundary=xyz",
+        total_size=2048,
+        is_json=False,
+        truncated=False,
+    )
+    assert out == {"note": "multipart/form-data body (2048 bytes) not captured"}
+
+
+def test_summarize_body_oversize_truncates():
+    from app.activity_log.middleware import _summarize_body
+
+    capped = b'{"blob":"' + b"a" * 16 * 1024  # a JSON body clipped at the cap
+    out = _summarize_body(
+        capped,
+        content_type="application/json",
+        total_size=64 * 1024,
+        is_json=True,
+        truncated=True,
+    )
+    assert out["truncated"] is True
+    assert out["raw"].startswith('{"blob":"aaaa')
+
+
+def test_summarize_body_none_when_empty():
+    from app.activity_log.middleware import _summarize_body
+
+    assert (
+        _summarize_body(b"", content_type=None, total_size=0, is_json=False, truncated=False)
+        is None
+    )
+
+
+def test_gateway_send_captures_request_and_response_bodies(client, session_factory):
+    """A JSON POST /messages through the gateway records the inbound_api row with
+    the REQUEST body (secret Authorization header masked, message text kept) AND
+    the RESPONSE body — the 'No payload captured' case is gone for JSON."""
+    from app.models.integration_activity import IntegrationActivity
+    from tests.test_omnichannel_api_gateway import (
+        _default_workspace_id,
+        _mint,
+        _seed_channel,
+        _seed_open_contact,
+    )
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    _seed_open_contact(session_factory, ws, phone="+60123123123", open_window=True)
+    key = _mint(client, ws).json()["fullKey"]
+    res = client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": "+60123123123", "type": "text", "text": {"body": "Order #42 shipped"}},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert res.status_code == 202, res.text
+
+    db = session_factory()
+    try:
+        row = (
+            db.query(IntegrationActivity)
+            .filter(
+                IntegrationActivity.tenant_id == DEFAULT_TENANT_ID,
+                IntegrationActivity.source == SOURCE_INBOUND_API,
+                IntegrationActivity.operation.like("%/messages"),
+            )
+            .one()
+        )
+    finally:
+        db.close()
+
+    req = row.request_summary_json
+    assert req is not None
+    # Secret KEY masked, message CONTENT preserved.
+    assert req["headers"]["authorization"] == "***"
+    assert req["body"]["text"]["body"] == "Order #42 shipped"
+    assert "Bearer" not in str(req["headers"]["authorization"])
+    # Response body captured (the 202 send envelope), no longer "No payload".
+    assert row.response_summary_json is not None
+    assert row.response_summary_json["body"]["status"] == "queued"

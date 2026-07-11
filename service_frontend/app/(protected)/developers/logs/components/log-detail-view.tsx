@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Braces, GitBranch, Info, LoaderCircleIcon } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { Container } from '@/components/common/container';
@@ -12,14 +13,31 @@ import { ResourceForm, type ResourceFormConfig } from '@/components/platform/res
 import { StatusBadge } from '@/components/platform/status-badge';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useWorkspaceName } from '@/hooks/use-workspace-name';
+import { useIntegrationLogNav } from '@/hooks/use-integration-log-nav';
 import { integrationLogService } from '@/services/integration-log-service';
+import { workspaceFormPath } from '@/app/(protected)/omnichannel/settings/workspaces/components/paths';
 import type { IntegrationLogDetail } from '@/types/integration-logs';
 import {
   DEVELOPER_LOGS_PATH,
   LOG_SOURCE_REGISTRY,
   LOG_STATUS_REGISTRY,
+  integrationLogDetailPath,
 } from './log-badges';
 import { TraceTimeline } from './trace-timeline';
+
+/** A trace id styled as an inline link that jumps to the Trace tab. */
+function TraceLink({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="text-primary hover:underline font-mono text-xs"
+    >
+      {label}
+    </button>
+  );
+}
 
 function OverviewRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -45,7 +63,22 @@ export function LogDetailView({ logId }: { logId: string }) {
   const [log, setLog] = useState<IntegrationLogDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const { formatDateTime } = useDatetime();
+  const router = useRouter();
   const form = useForm();
+
+  // Clickable trace id → in-page switch to the Trace tab. `initialTabId` only
+  // applies on mount, so a nonce-keyed remount re-forces it on every click.
+  const [forcedTab, setForcedTab] = useState('overview');
+  const [tabNonce, setTabNonce] = useState(0);
+  const goToTrace = useCallback(() => {
+    setForcedTab('trace');
+    setTabNonce((n) => n + 1);
+  }, []);
+
+  // Resolve the workspace NAME (frontend-side, no core→module coupling).
+  const { name: workspaceName } = useWorkspaceName(log?.workspaceId);
+  // Circular prev/next across the log list.
+  const nav = useIntegrationLogNav(logId);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,7 +103,11 @@ export function LogDetailView({ logId }: { logId: string }) {
       ],
       backHref: DEVELOPER_LOGS_PATH,
       title: log.operation,
-      subtitle: log.traceId ? `Trace ${log.traceId}` : undefined,
+      subtitle: log.traceId ? (
+        <span className="text-muted-foreground text-sm">
+          Trace <TraceLink label={log.traceId} onClick={goToTrace} />
+        </span>
+      ) : undefined,
       tabs: [
         {
           id: 'overview',
@@ -96,13 +133,22 @@ export function LogDetailView({ logId }: { logId: string }) {
                 {log.latencyMs != null ? `${log.latencyMs} ms` : '—'}
               </OverviewRow>
               <OverviewRow label="Workspace">
-                {log.workspaceId ? <code className="text-xs">{log.workspaceId}</code> : '—'}
+                {log.workspaceId ? (
+                  <Link
+                    href={workspaceFormPath(log.workspaceId)}
+                    className="text-primary hover:underline text-xs"
+                  >
+                    {workspaceName ?? log.workspaceId}
+                  </Link>
+                ) : (
+                  '—'
+                )}
               </OverviewRow>
               <OverviewRow label="API key">
                 {log.apiKeyId ? <code className="text-xs">{log.apiKeyId}</code> : '—'}
               </OverviewRow>
               <OverviewRow label="Trace id">
-                {log.traceId ? <code className="text-xs">{log.traceId}</code> : '—'}
+                {log.traceId ? <TraceLink label={log.traceId} onClick={goToTrace} /> : '—'}
               </OverviewRow>
               <OverviewRow label="External ref">
                 {log.externalRef ? <code className="text-xs">{log.externalRef}</code> : '—'}
@@ -156,7 +202,18 @@ export function LogDetailView({ logId }: { logId: string }) {
           ),
         },
       ],
-      initialTabId: 'overview',
+      initialTabId: forcedTab,
+      // Circular record-nav (‹ N / M ›) top-right near Back — reuses the shell's
+      // built-in inlineNav pager rather than a hand-rolled one.
+      inlineNav:
+        nav.total > 1 && nav.index >= 0
+          ? {
+              index: nav.index,
+              total: nav.total,
+              onPrev: () => nav.prevId && router.push(integrationLogDetailPath(nav.prevId)),
+              onNext: () => nav.nextId && router.push(integrationLogDetailPath(nav.nextId)),
+            }
+          : undefined,
       actions: [],
       actionRows: [log],
       // Read-only surface — log rows are historical facts (no Edit toggle).
@@ -165,7 +222,7 @@ export function LogDetailView({ logId }: { logId: string }) {
       onSave: () => true,
       onCancel: () => undefined,
     };
-  }, [log, formatDateTime]);
+  }, [log, formatDateTime, forcedTab, goToTrace, workspaceName, nav, router]);
 
   if (isLoading) {
     return (
@@ -193,7 +250,8 @@ export function LogDetailView({ logId }: { logId: string }) {
   return (
     <Container width="fluid">
       <Form {...form}>
-        <ResourceForm config={config} />
+        {/* Nonce-keyed so a trace-id click re-forces the Trace tab every time. */}
+        <ResourceForm key={`${log.id}:${tabNonce}`} config={config} />
       </Form>
     </Container>
   );

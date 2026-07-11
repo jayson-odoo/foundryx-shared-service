@@ -29,7 +29,9 @@ export interface ResourceFormConfig<T> {
   backHref: string;
   backLabel?: string;
   title: string;
-  subtitle?: string;
+  /** Sub-identifier under the title. Accepts a node so it can carry a link
+   * (e.g. a clickable trace id) — a bare string is still valid (string ⊂ node). */
+  subtitle?: ReactNode;
   /** Identity avatar node (e.g. initials). */
   avatar?: ReactNode;
   tabs: FormTab[];

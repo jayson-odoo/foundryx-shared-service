@@ -277,3 +277,77 @@
 | **3 — embed logging + per-tenant retention + hardening** | AC-DLC-20 … 26 | **ALL PASS** |
 
 **FEATURE VERDICT: GREEN.** All 26 acceptance criteria pass. The remaining items are backlog candidates (unattributed-401 stream, inbound response-summary capture, historical webhook backfill, trace causal ordering, async/buffered activity writer) — none blocks a slice as written. Recommend merge after code review.
+
+---
+
+# Detail Enhancements — Test Execution Report (post-Slice-3 follow-up)
+
+> Scope: the **3 detail-view enhancements** added on top of the merged 3 slices — (1) request/response **body capture**, (2) **workspace name + clickable** links (workspace + trace id), (3) **record-nav** (‹ N / M › prev/next). Executed 2026-07-12 by the QA agent against this branch (uncommitted working-tree changes on top of commit `8758916`). No migration this round (single alembic head `dlc_s412b_log_settings`).
+> Environment: FastAPI :8001 + Next :3001 → Postgres `foundryx_service`. `ENVIRONMENT=development`, `CELERY_TASK_ALWAYS_EAGER=true` (middleware records inline), `META_APP_ID` unset (`chn-demo` Meta-stubbed), `FERNET_KEY` set. Demo Admin `demo@example.com` / `demo1234`.
+
+## Test environment notes (load-bearing — the stale-server trap struck again)
+- **Both servers were STALE and were restarted/rebuilt.** The running uvicorn (started Jul 11 23:08) PREDATED the middleware rewrite (`middleware.py` edited Jul 12 00:40); with no `--reload` the new pure-ASGI body-tee code did not exist in-process. The served Next build (built Jul 11 23:10) predated `log-detail-view.tsx` (edited Jul 12 00:44). Killed both (confirmed listener cwd = `foundryx-shared-service/service_{backend,frontend}`; no sister `dreamz_ems` squatting), restarted uvicorn fresh on :8001, `rm -rf .next && npm run build` (dev-logs routes present) + `npm start` on :3001. **Verifying against the stale processes would have shown "No payload captured" and silently failed the headline.**
+- `auth_throttle` cleared before each E2E run (shared 127.0.0.1 bucket).
+
+## Suite results
+| Suite | Command | Result |
+|---|---|---|
+| Backend targeted | `pytest -q test_activity_log test_activity_trace test_omnichannel_api_gateway test_omnichannel_consumer_webhooks` | **59 passed** |
+| Backend — `share_trace` ALONE | `pytest -q test_activity_trace.py -k share_trace` | **1 passed** |
+| Backend — new body-capture cases | `pytest -q test_activity_log.py -k "summarize_body or captures_request_and_response"` | **5 passed** (4 `_summarize_body` unit + 1 live gateway round-trip) |
+| Frontend targeted | `vitest run use-integration-log-nav integration-log-service log-badges menu-filter trace-timeline` | **32 passed** (5 files; `use-integration-log-nav` = 5 cases) |
+| E2E enhancements | `playwright test developer-logs.spec.ts -g "detail enhancements"` | **3 passed** (serial) |
+| Lint | `eslint` changed FE files (2 hooks + hook test + detail view + spec) | **clean** |
+
+## Per-enhancement verdict
+| # | Enhancement | Verdict |
+|---|---|---|
+| 1 | **Body capture** (tee request+response, JSON only, 16KB cap, redacted; multipart = note) | **PASS** |
+| 2 | **Workspace name + clickable** (+ trace-id → Trace tab) | **PASS** |
+| 3 | **Record-nav** (‹ N / M › circular prev/next) | **PASS** |
+| — | **Safety: normal send still works + not slowed** | **PASS** |
+| — | **Safety: multipart succeeds + note stored, not binary** | **PASS** |
+
+**ENHANCEMENTS VERDICT: GREEN.**
+
+---
+
+## ① Body capture — PASS (the headline, verified with a real gateway call on the restarted backend)
+- **Precondition (real API):** logged in as demo Admin, minted a workspace API key on the `General` workspace, made a real `POST /api/v1/omnichannel/messages` (dev channel `chn-demo`, open CSW window on `cnt-001`) with JSON `{"to":"+60123456789","type":"text","text":{"body":"QA body-capture Order #42 shipped"}}` and an `Authorization: Bearer fxw_live_…` header. Response **202** `{"status":"queued"}`.
+- **Recorded `inbound_api` row (read straight from Postgres `integration_activity`):**
+  - `request_summary_json.body` = `{"to":"+60123456789","text":{"body":"QA body-capture Order #42 shipped"},"type":"text"}` — **the message CONTENT is present**.
+  - `request_summary_json.headers.authorization` = `"***"` — **the bearer token is MASKED** (no `Bearer`, no key material).
+  - `response_summary_json` = `{"statusCode":202,"body":{"id":"…","status":"queued","idempotencyReplay":false}}` — **the response body is captured** (the "No payload captured" case is gone for JSON).
+- **Redaction leak scan:** the full minted key (`…euUQukB86Pkcpz1…`) appears in **0** rows' request/response/error columns.
+- **E2E (real clicks):** `① body capture` opens the `POST /messages` detail → Payloads tab → asserts the message text `DLC E2E traced send` visible, `"authorization": "***"` visible, `"status": "queued"` visible, and the page never says `No payload captured`.
+- **Unit backing:** `_summarize_body` cases pin JSON-parse, multipart-note, oversize-truncate (`{"truncated":true,"raw":…}`), and empty→None; `test_gateway_send_captures_request_and_response_bodies` drives the full round-trip through the TestClient.
+
+### Safety check (a) — MULTIPART not buffered, send still succeeds — PASS
+- Real multipart send: `POST /api/v1/omnichannel/messages` with a `payload` part `{"to":…,"type":"IMAGE","media":{…}}` + a `file` part (a real 70-byte PNG). Response **202** `{"status":"queued"}`.
+- **Message actually delivered:** `conversation_messages` row `message_type=IMAGE`, `media_mime=image/png`, `delivery_status=SENT`, `external_message_id=wamid.dev-7e9d5bdbee15`.
+- **The row stored a NOTE, not the binary:** `request_summary_json.body` = `{"note":"multipart/form-data body (502 bytes) not captured"}`; `authorization` still `"***"`. A scan for PNG magic bytes (`iVBOR`/`PNG`) across all rows = **0**. The tee never buffered the upload.
+
+### Safety check (b) — the gateway request is not broken or slowed — PASS
+- The normal JSON send returned its normal 202 and the message **actually sent** (`conversation_messages` row `delivery_status=SENT`, `external_message_id=wamid.dev-f794d1e923d4`, body = the sent text). Latency stamped 232 ms (first call incl. bcrypt key-hash) — normal.
+- Mechanism confirms no added latency: the pure-ASGI `wrapped_receive`/`wrapped_send` pass **every chunk through UNCHANGED** (capture is a side buffer); the row is recorded AFTER the response is produced, inline in eager dev / in a threadpool in prod; the whole capture+record path is double-wrapped (`_safe_record` + `record()` self-swallow) so it can never propagate into or mask the observed request.
+- The existing gateway suite (`test_omnichannel_api_gateway.py`, incl. the respond.io shapes + two-way cursor + signed-media) stays **green** under the rewritten middleware — no GET/POST gateway contract regressed.
+
+## ② Workspace name + clickable, trace-id link — PASS (real clicks)
+- **Overview "Workspace"** renders the resolved NAME **"General"** (not the raw uuid `4adcd5e6-…`), as an orange link with `href=/omnichannel/settings/workspaces/{workspaceId}`. Clicking it navigates to the workspace page (URL asserted). Confirmed at 1280px + 375px (screenshots `dlc-enh-nav-{desktop,mobile}.png`).
+- The name is resolved FRONTEND-side (`use-workspace-name` → `workspaceService.get` → `GET /omnichannel/workspaces/{id}`) so the CORE console never imports a MODULE table — correct layering. An unresolvable id (deleted workspace / omnichannel uninstalled) falls back to the raw id / em-dash (no crash — `.catch(() => setName(null))`); a row with no workspace shows `—`.
+- **Trace id** is clickable in BOTH the header subtitle and the Overview "Trace id" row; clicking switches to the **Trace** tab (E2E asserts `trace-timeline` becomes visible after the click). The tab-switch uses a nonce-keyed remount to re-force `initialTabId` on every click.
+
+## ③ Record-nav — PASS (real clicks, 375 + 1280)
+- The detail carries a **‹ N / M ›** pager top-right by Back (desktop) / above the title (mobile) — screenshots show `2 / 34`. It reuses the ResourceForm `inlineNav` pager (not hand-rolled), rendered only when `nav.total > 1 && nav.index >= 0` and `!editing` (always true — the surface is read-only).
+- **Next** opens a neighbouring row (id changes `f480f88f…` → `8af428b3…`); **Prev** returns to the original row (circular). Ordered ids come from the same list query capped at the endpoint max 200 (`use-integration-log-nav`, `pageSize: 200`), neighbours wrap modulo total (unit-pinned: middle-wrap, first↔last wrap, single-row = no neighbours, out-of-window index = -1, page-0/size-200 request).
+- Responsive: horizontal overflow ≤ 2px at 1280×800 and 375×812; the pager stays visible + legible at both.
+
+---
+
+## Findings / remarks (none block the enhancements)
+1. **No `use-workspace-name.test.ts` exists** (the brief mentioned a "new `use-workspace-name` spec"). The hook has NO dedicated unit test — it is exercised only indirectly by the E2E (the "General" name renders + links). `use-integration-log-nav.test.ts` (5 cases) DOES exist. Minor coverage gap; recommend a small unit test for the null/error fallback branches. **Not a functional failure** — the hook works live.
+2. **Enhancement E2E initially flaked under intra-describe parallelism.** Running the 3 new tests in `fullyParallel` collided on the shared 127.0.0.1 login throttle + raced the list search (two failed at the trace-subtitle assertion). Fixed in-spec by pinning the describe to `mode: 'serial'` (they share ONE read-only seed) — file-level isolation is unaffected. Re-ran serial → 3/3 green.
+3. **record-nav pushes URLs WITHOUT the ResourceForm `?ctx=&i=` record-nav query** (`router.push(integrationLogDetailPath(id))`). Cosmetic only — the log detail derives nav from `use-integration-log-nav` (re-fetches the list), not from the URL context, so navigation is correct; the dropped query just means the shell's URL-based recordNav context isn't carried. (My initial E2E Prev assertion compared the full URL incl. that query and was relaxed to compare by log id.)
+
+## Verdict
+**The 3 detail enhancements are GREEN.** Body capture works end-to-end on the restarted backend — the request body shows the message content with the bearer token masked, and the response body is captured (no more "No payload captured"). Both safety checks pass: a **normal JSON send still returns its normal 202 and the message actually sends**, and a **real multipart send succeeds end-to-end while the log row stores only a size note — the binary is never buffered and never leaks**. Workspace-name/trace links and circular record-nav both verified with real clicks at 375px + 1280px. One minor coverage gap (no `use-workspace-name` unit test) and two test-harness fixes (serial mode, id-based nav assertion) noted — none breaks the feature.

@@ -522,6 +522,113 @@ async function seedEmbedError(request: APIRequestContext): Promise<EmbedSeed> {
   return { slug, email, password, connectionId, secret };
 }
 
+/**
+ * Detail enhancements (sprint-4/12 follow-up) — three additions on the log detail:
+ *  ① Body capture — the Payloads tab shows the REAL request body (message text
+ *     visible, Authorization masked) + the response body (no "No payload captured").
+ *  ② Workspace name + clickable — Overview "Workspace" shows the resolved NAME
+ *     ("General"), clickable to the workspace page; the trace id switches tabs.
+ *  ③ Record-nav — ‹ N / M › prev/next pager navigates between neighbouring rows.
+ *
+ * Reuses `seedTracedSend` (a JSON gateway POST /messages → an inbound_api row
+ * with a JSON body + a resolvable workspace). Real clicks for the flow.
+ */
+test.describe('Developer Logs detail enhancements', () => {
+  // Serial: the three journeys share ONE read-only seed and each logs in — running
+  // them in parallel pumps the shared 127.0.0.1 login throttle + races the list
+  // search. Serial keeps them deterministic (file-level isolation is unaffected).
+  test.describe.configure({ mode: 'serial' });
+  let seed: TraceSeed;
+
+  test.beforeAll(async () => {
+    seed = await seedTracedSend();
+  });
+
+  async function openInboundDetail(page: Page) {
+    await login(page);
+    const logsLink = page.getByRole('link', { name: 'Logs', exact: true });
+    if (!(await logsLink.isVisible().catch(() => false))) {
+      await page.getByText('Developers', { exact: true }).click();
+    }
+    await logsLink.click();
+    await expect(page).toHaveURL(/\/developers\/logs$/);
+    await page.getByPlaceholder(/Search operation, trace/i).fill(seed.traceId);
+    const inboundRow = page.getByRole('row').filter({ hasText: 'POST /messages' });
+    await expect(inboundRow.first()).toBeVisible({ timeout: 10_000 });
+    await inboundRow.first().click();
+    await expect(page).toHaveURL(/\/developers\/logs\/[\w-]+(\?|$)/);
+    await expect(page.getByText(`Trace ${seed.traceId}`)).toBeVisible();
+  }
+
+  test('① body capture: Payloads tab shows request + response bodies, token masked', async ({
+    page,
+  }) => {
+    await openInboundDetail(page);
+    await page.getByRole('tab', { name: /Payloads/i }).click();
+
+    // Request body — the message text is visible, the Authorization header masked.
+    await expect(page.getByText('DLC E2E traced send')).toBeVisible();
+    await expect(page.getByText('"authorization": "***"')).toBeVisible();
+    // Response body captured — no longer "No payload captured" for the JSON send.
+    await expect(page.getByText('"status": "queued"')).toBeVisible();
+    const body = (await page.textContent('body')) ?? '';
+    expect(body).not.toContain('No payload captured');
+  });
+
+  test('② workspace shows a name + is clickable, trace id switches to the Trace tab', async ({
+    page,
+  }) => {
+    await openInboundDetail(page);
+
+    // Overview "Workspace" resolves the human NAME (not a raw uuid) + links out.
+    const wsLink = page.getByRole('link', { name: 'General' });
+    await expect(wsLink).toBeVisible();
+    await expect(wsLink).toHaveAttribute('href', new RegExp(`/omnichannel/settings/workspaces/${seed.workspaceId}`));
+    await wsLink.click();
+    await expect(page).toHaveURL(new RegExp(`/omnichannel/settings/workspaces/${seed.workspaceId}`));
+
+    // Back to the detail: clicking the trace id switches to the Trace tab.
+    await page.goBack();
+    await expect(page.getByText(`Trace ${seed.traceId}`)).toBeVisible();
+    await page.getByRole('button', { name: seed.traceId }).first().click();
+    await expect(page.getByTestId('trace-timeline')).toBeVisible();
+  });
+
+  test('③ record-nav: ‹ N / M › moves to a neighbouring row (375 + 1280)', async ({ page }) => {
+    await openInboundDetail(page);
+    // The detail id is the stable identity (the pushed nav URL drops the ?ctx
+    // record-nav query — compare by id, not the full URL).
+    const idOf = (u: string) => new URL(u).pathname.split('/').pop();
+    const firstId = idOf(page.url());
+
+    // The pager renders "N / M" with Prev/Next buttons (reused inlineNav).
+    await expect(page.getByText(/^\d+ \/ \d+$/)).toBeVisible();
+    await page.getByRole('button', { name: 'Next' }).click();
+    await expect(page).toHaveURL(/\/developers\/logs\/[\w-]+(\?|$)/);
+    await expect.poll(() => idOf(page.url())).not.toBe(firstId);
+    // Prev returns to the original row (circular, deterministic neighbours).
+    await page.getByRole('button', { name: 'Previous' }).click();
+    await expect.poll(() => idOf(page.url())).toBe(firstId);
+
+    for (const [w, h, tag] of [
+      [1280, 800, 'desktop'],
+      [375, 812, 'mobile'],
+    ] as const) {
+      await page.setViewportSize({ width: w, height: h });
+      await page.waitForTimeout(300);
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      expect(overflow, `no horizontal scroll at ${tag} (${w}px)`).toBeLessThanOrEqual(2);
+      await expect(page.getByText(/^\d+ \/ \d+$/)).toBeVisible();
+      await page.screenshot({
+        path: `/private/tmp/claude-501/-Users-tehjayson-Documents-foundryx-foundryx-shared-service/80e7ad94-f293-461e-a342-c2b76c6b38a9/scratchpad/dlc-enh-nav-${tag}.png`,
+        fullPage: true,
+      });
+    }
+  });
+});
+
 test.describe('Developer Logs embed error (Slice 3)', () => {
   let seed: EmbedSeed;
 
