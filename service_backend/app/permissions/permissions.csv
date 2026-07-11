@@ -50,6 +50,7 @@ app_store,App Store,deactivate,Deactivate modules,Can deactivate/reactivate modu
 app_store,App Store,uninstall,Uninstall modules,Can uninstall modules and wipe their data
 integrations,Integrations,read,View integrations,Can view configured integrations
 integrations,Integrations,manage,Manage integrations,Can connect / edit / test / remove integrations
+integrations,Integrations,migrate_storage,Migrate storage,Migrate assets to a new storage bucket
 statuses,Status Engine,read,View statuses,Can view status sets and transition graphs
 statuses,Status Engine,manage,Manage statuses,Can configure statuses and transitions / roles / notifications
 rules,Rule Engine,read,View rules,Can view the rules configured across consuming features

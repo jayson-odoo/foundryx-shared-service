@@ -86,9 +86,21 @@ class ConnectionRepository:
         )
 
     def get_by_type(self, tenant_id: str, type_: str) -> Optional[Connection]:
+        """The tenant's ACTIVE connection of this type (sprint-4/10 D10).
+
+        Only an ``is_active`` row is the write-target: during a storage
+        migration a retired ``A`` (is_active=false) and its successor ``B``
+        coexist, so the type-level resolver must pick the single active one.
+        Resolve-BY-KEY (``get_by_id``) deliberately ignores ``is_active`` so a
+        retired connection still serves its historical blobs.
+        """
         return (
             self.db.query(Connection)
-            .filter(Connection.tenant_id == tenant_id, Connection.type == type_)
+            .filter(
+                Connection.tenant_id == tenant_id,
+                Connection.type == type_,
+                Connection.is_active.is_(True),
+            )
             .first()
         )
 
@@ -124,6 +136,15 @@ class ConnectionRepository:
             if platform is not None and platform.status != CONNECTION_STATUS_ERROR:
                 return platform
         return None
+
+    def mark_active(self, connection_id: str, active: bool) -> None:
+        """Flip a connection's write-target flag (sprint-4/10 D10). Used by the
+        storage-migration engine to retire ``A`` / promote ``B`` (and reverse
+        on abort). Unscoped by id — the caller owns the tenant check."""
+        conn = self.db.query(Connection).filter(Connection.id == connection_id).first()
+        if conn is not None:
+            conn.is_active = active
+            self.db.flush()
 
     def create(self, connection: Connection) -> Connection:
         self.db.add(connection)

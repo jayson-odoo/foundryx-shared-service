@@ -1,6 +1,6 @@
 """Background-job repository (sprint-4/10) — pure SQLAlchemy, tenant-scoped."""
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -53,6 +53,21 @@ class BackgroundJobRepository:
             .all()
         )
         return rows, total
+
+    def active_of_type(
+        self, tenant_id: str, job_type: str, statuses: Iterable[str]
+    ) -> List[BackgroundJob]:
+        """Non-terminal jobs of a type for a tenant (the storage-migration
+        one-active / connection-lock guards filter payload in Python)."""
+        return (
+            self.db.query(BackgroundJob)
+            .filter(
+                BackgroundJob.tenant_id == tenant_id,
+                BackgroundJob.type == job_type,
+                BackgroundJob.status.in_(list(statuses)),
+            )
+            .all()
+        )
 
     def claim(self, job_id: str, from_status: str) -> bool:
         """Atomic status-claim (the import-engine double-commit guard):
