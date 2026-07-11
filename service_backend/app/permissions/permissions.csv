@@ -79,3 +79,5 @@ reviews,Review Processes,grade,Grade reviews,Can complete assigned reviews on th
 reviews,Review Processes,decide,Decide reviews,Can make the terminal accept/reject/revisions decision on the staff surface
 numbering,Numbering,read,View document numbering,Can view the document-numbering catalog (prefixes / formats / next values)
 numbering,Numbering,manage,Manage document numbering,Can edit document-numbering prefixes / formats / reset cadence / next values
+integration_logs,Developer Logs,read,View developer logs,Can view the integration activity console (inbound API / embed / outbound / webhook logs)
+integration_logs,Developer Logs,manage,Manage developer logs,Can configure log retention and manage the integration activity console

@@ -25,6 +25,7 @@ import {
   ShieldUser,
   ShoppingCart,
   Star,
+  Terminal,
   UserCheck,
   UserCircle,
   Users,
@@ -259,6 +260,20 @@ export const MENU_SIDEBAR: MenuConfig = [
     title: 'Jobs',
     icon: Cog,
     path: '/jobs',
+  },
+  // Developer Logs / Integration Activity console (sprint-4/12) — inbound API /
+  // embed / outbound / webhook activity for troubleshooting. Gated
+  // integration_logs.read (filterMenu prunes it when absent).
+  {
+    title: 'Developers',
+    icon: Terminal,
+    children: [
+      {
+        title: 'Logs',
+        path: '/developers/logs',
+        permission: 'integration_logs.read',
+      },
+    ],
   },
   // Document management / the Drive (sprint-3/04) — files, folders, sharing.
   {
@@ -889,6 +904,20 @@ export const MENU_MEGA: MenuConfig = [
           },
         ],
       },
+      {
+        title: 'Developers',
+        children: [
+          {
+            children: [
+              {
+                title: 'Logs',
+                path: '/developers/logs',
+                permission: 'integration_logs.read',
+              },
+            ],
+          },
+        ],
+      },
     ],
   },
 ];
@@ -988,6 +1017,17 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Roles',
         path: '/user-management/roles',
         permission: 'roles.read',
+      },
+    ],
+  },
+  {
+    title: 'Developers',
+    icon: Terminal,
+    children: [
+      {
+        title: 'Logs',
+        path: '/developers/logs',
+        permission: 'integration_logs.read',
       },
     ],
   },

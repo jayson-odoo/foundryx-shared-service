@@ -16,6 +16,7 @@ from app.api.v1 import (
     health,
     impersonation,
     imports,
+    integration_logs,
     integrations,
     jobs,
     me,
@@ -72,6 +73,13 @@ from app.api_errors import install_api_error_handler  # noqa: E402
 
 install_api_error_handler(app)
 
+# Developer Logs / Integration Activity (sprint-4/12) — logs one inbound_api row
+# per public-gateway request (path-prefix scoped, failure-isolated, records
+# AFTER the response so it never slows/breaks the observed call).
+from app.activity_log.middleware import GatewayActivityMiddleware  # noqa: E402
+
+app.add_middleware(GatewayActivityMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -124,6 +132,10 @@ app.include_router(terminology.router, prefix="/terminology", tags=["terminology
 app.include_router(numbering.router, prefix="/numbering", tags=["numbering"])
 # Import engine (plan sprint-3/09, F8): generic bulk import for opt-in lists.
 app.include_router(imports.router, prefix="/imports", tags=["imports"])
+# Developer Logs / Integration Activity console (sprint-4/12) — read API.
+app.include_router(
+    integration_logs.router, prefix="/integration-logs", tags=["integration-logs"]
+)
 # Form engine (plan sprint-3/01): the 5th core engine — capture + the scoped
 # submission status machine (one /submissions router for cross-form reads).
 # Generic Review/Approval engine (plan sprint-4/06 Part 2): core, horizontal.

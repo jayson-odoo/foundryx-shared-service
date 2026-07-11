@@ -9,7 +9,7 @@ active for its tenant (the workspace→service binding, AC-01-15).
 from dataclasses import dataclass
 from typing import Optional
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Request
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
@@ -40,6 +40,7 @@ def _parse_bearer(authorization: Optional[str]) -> Optional[str]:
 
 
 def get_api_workspace(
+    request: Request,
     authorization: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
 ) -> ApiWorkspace:
@@ -49,9 +50,15 @@ def get_api_workspace(
     row = ApiKeyService(db).resolve(token)
     if row is None:
         raise ApiError(401, "invalid_api_key", "Invalid API key.")
+    workspace = ApiWorkspace(
+        tenant_id=row.tenant_id, workspace_id=row.workspace_id, key_id=row.id
+    )
+    # Stash for the activity-log middleware (sprint-4/12) — set as soon as the
+    # key resolves so even a 403 service_not_enabled below is attributable.
+    request.state.api_workspace = workspace
     # Service binding (AC-01-15): the key's service must be ACTIVE for its tenant.
     if not ModuleRepository(db).is_active(row.tenant_id, MODULE_NAME):
         raise ApiError(
             403, "service_not_enabled", "This service is not enabled for the workspace."
         )
-    return ApiWorkspace(tenant_id=row.tenant_id, workspace_id=row.workspace_id, key_id=row.id)
+    return workspace

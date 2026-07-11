@@ -12,3 +12,5 @@ dist
 dist-ssr
 
 .next
+# App Router route named "logs" (Developers → Logs) — not a runtime log dir
+!app/(protected)/developers/logs/

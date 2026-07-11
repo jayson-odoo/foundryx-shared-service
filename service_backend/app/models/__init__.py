@@ -60,6 +60,18 @@ from app.models.background_job import (
     JOB_TERMINAL_STATUSES,
     BackgroundJob,
 )
+from app.models.integration_activity import (
+    ACTIVITY_ERROR,
+    ACTIVITY_PENDING,
+    ACTIVITY_STATUSES,
+    ACTIVITY_SOURCES,
+    ACTIVITY_SUCCESS,
+    SOURCE_EMBED_SESSION,
+    SOURCE_INBOUND_API,
+    SOURCE_OUTBOUND_META,
+    SOURCE_WEBHOOK_DELIVERY,
+    IntegrationActivity,
+)
 from app.models.invite_token import InviteToken
 from app.models.email_change_request import (
     CHANGE_CANCELLED,
@@ -154,6 +166,16 @@ from app.models.review import (
 )
 
 __all__ = [
+    "IntegrationActivity",
+    "ACTIVITY_SOURCES",
+    "ACTIVITY_STATUSES",
+    "ACTIVITY_SUCCESS",
+    "ACTIVITY_ERROR",
+    "ACTIVITY_PENDING",
+    "SOURCE_INBOUND_API",
+    "SOURCE_EMBED_SESSION",
+    "SOURCE_OUTBOUND_META",
+    "SOURCE_WEBHOOK_DELIVERY",
     "ReviewAssignment",
     "ReviewConfiguration",
     "ReviewDecision",
