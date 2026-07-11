@@ -41,3 +41,42 @@ def encrypt_secret(value: str) -> str:
 def decrypt_secret(token: str) -> str:
     """Decrypt an encrypted string. Raises on tamper/wrong key."""
     return _fernet().decrypt(token.encode()).decode()
+
+
+# ── Signed media URLs (public gateway, respond.io parity) ────────────────────
+# A stored blob is served through the authed ``/omnichannel/media/{id}`` route.
+# For external consumers we hand back an ABSOLUTE, HMAC-signed, time-limited URL
+# that carries its own authorization (``exp`` + ``sig``) so a raw browser click
+# works with no Authorization header. The signature binds the message id + expiry
+# under ``settings.jwt_secret`` — unforgeable, and the media route resolves the
+# message GLOBALLY (the valid signature IS the authz) once verified.
+import hashlib
+import hmac
+from datetime import datetime, timezone
+
+
+def _media_sig(message_id: str, exp: int) -> str:
+    from app.config import settings
+
+    payload = f"{message_id}:{exp}".encode()
+    return hmac.new(settings.jwt_secret.encode(), payload, hashlib.sha256).hexdigest()
+
+
+def verify_media_sig(message_id: str, exp: int, sig: str) -> bool:
+    """True iff ``sig`` is a valid, unexpired signature for ``message_id``.
+    Constant-time compare; a malformed/expired token is a clean False."""
+    now = int(datetime.now(timezone.utc).timestamp())
+    if exp < now:
+        return False
+    expected = _media_sig(message_id, exp)
+    return hmac.compare_digest(expected, sig or "")
+
+
+def signed_media_url(message_id: str) -> str:
+    """Absolute, time-limited, clickable URL for a message's media blob."""
+    from app.config import settings
+
+    exp = int(datetime.now(timezone.utc).timestamp()) + settings.media_signed_url_ttl_seconds
+    sig = _media_sig(message_id, exp)
+    base = settings.public_base_url.rstrip("/")
+    return f"{base}/omnichannel/media/{message_id}?exp={exp}&sig={sig}"

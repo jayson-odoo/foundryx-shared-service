@@ -102,15 +102,43 @@ class ContactRepository:
         )
 
     def list_messages_recent(
-        self, contact_id: str, tenant_id: str, *, limit: int, before_id: Optional[str] = None
+        self,
+        contact_id: str,
+        tenant_id: str,
+        *,
+        limit: int,
+        before_id: Optional[str] = None,
+        after_id: Optional[str] = None,
     ) -> List[ConversationMessage]:
-        """The most recent ``limit`` messages, oldest→newest. ``before_id`` pages
-        further back (keyset on the created_at of that message). Bounded query —
-        never loads an entire (possibly huge) thread for the public API."""
+        """A bounded window of a contact's messages, always returned oldest→newest.
+
+        Two-way keyset paging (respond.io next/previous):
+        - ``before_id`` — the ``limit`` messages OLDER than that anchor (page back
+          into history).
+        - ``after_id`` — the ``limit`` messages NEWER than that anchor (page
+          forward toward the present).
+        - neither — the most recent ``limit`` messages.
+        Never loads an entire (possibly huge) thread."""
         q = self.db.query(ConversationMessage).filter(
             ConversationMessage.tenant_id == tenant_id,
             ConversationMessage.contact_id == contact_id,
         )
+        if after_id:
+            anchor = self.get_message(after_id, tenant_id)
+            if anchor is not None:
+                q = q.filter(
+                    (ConversationMessage.created_at > anchor.created_at)
+                    | (
+                        (ConversationMessage.created_at == anchor.created_at)
+                        & (ConversationMessage.id > anchor.id)
+                    )
+                )
+            # Ascending window from the anchor forward — already oldest→newest.
+            return (
+                q.order_by(ConversationMessage.created_at.asc(), ConversationMessage.id.asc())
+                .limit(limit)
+                .all()
+            )
         if before_id:
             anchor = self.get_message(before_id, tenant_id)
             if anchor is not None:
@@ -127,6 +155,16 @@ class ContactRepository:
             .all()
         )
         return list(reversed(rows))
+
+    def get_message_global(self, message_id: str) -> Optional[ConversationMessage]:
+        """Resolve a message by id WITHOUT a tenant filter. ONLY for the signed
+        media path, where a verified HMAC signature is the authorization (it binds
+        this exact id) — never call from a tenant-scoped request path."""
+        return (
+            self.db.query(ConversationMessage)
+            .filter(ConversationMessage.id == message_id)
+            .first()
+        )
 
     def get_message(self, message_id: str, tenant_id: str) -> Optional[ConversationMessage]:
         return (

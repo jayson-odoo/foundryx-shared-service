@@ -245,8 +245,10 @@ def test_public_list_contact_messages(client, session_factory):
     r = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages", headers=hdr)
     assert r.status_code == 200
     body = r.json()
-    assert body["contactId"] == cid
-    assert "Hi there" in [m["body"] for m in body["data"]]
+    # respond.io shape: {items:[{messageId, contactId, traffic, message:{type,text}, ...}], pagination}
+    assert all(m["contactId"] == cid for m in body["items"])
+    assert "Hi there" in [m["message"]["text"] for m in body["items"]]
+    assert "pagination" in body and set(body["pagination"]) == {"next", "previous"}
 
 
 def test_public_list_messages_unknown_contact_404(client, session_factory):
@@ -286,7 +288,8 @@ def test_public_list_contacts(client, session_factory):
     r = client.get("/api/v1/omnichannel/contacts?pageSize=10", headers=hdr)
     assert r.status_code == 200
     body = r.json()
-    assert body["total"] >= 1 and any(c["id"] == cid for c in body["data"])
+    assert any(c["id"] == cid for c in body["items"])
+    assert "pagination" in body and set(body["pagination"]) == {"next", "previous"}
 
 
 def test_public_get_contact_by_id_and_phone(client, session_factory):
@@ -299,10 +302,10 @@ def test_public_get_contact_by_id_and_phone(client, session_factory):
 
 def test_public_get_single_message(client, session_factory):
     hdr, cid = _seeded(client, session_factory, phone="+60555111333")
-    msgs = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages", headers=hdr).json()["data"]
-    mid = msgs[0]["id"]
+    msgs = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages", headers=hdr).json()["items"]
+    mid = msgs[0]["messageId"]
     r = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}", headers=hdr)
-    assert r.status_code == 200 and r.json()["id"] == mid
+    assert r.status_code == 200 and r.json()["messageId"] == mid
 
 
 def test_public_update_contact_priority(client, session_factory):
@@ -313,15 +316,17 @@ def test_public_update_contact_priority(client, session_factory):
         headers=hdr,
     )
     assert r.status_code == 200
-    assert r.json()["priority"] == "HIGH" and r.json()["name"] == "Kay"
+    # RioContactItem shape: firstName reflects the write (priority isn't in the
+    # respond.io contact schema, so it's set server-side but not echoed).
+    assert r.json()["firstName"] == "Kay"
 
 
 def test_public_open_close_conversation(client, session_factory):
     hdr, cid = _seeded(client, session_factory, phone="+60555111555")
     closed = client.post(f"/api/v1/omnichannel/contacts/{cid}/conversation/close", headers=hdr)
-    assert closed.status_code == 200 and closed.json()["status"] == "CLOSED"
+    assert closed.status_code == 200 and closed.json()["status"] == "closed"
     opened = client.post(f"/api/v1/omnichannel/contacts/{cid}/conversation/open", headers=hdr)
-    assert opened.status_code == 200 and opened.json()["status"] == "OPEN"
+    assert opened.status_code == 200 and opened.json()["status"] == "open"
 
 
 def test_public_add_comment(client, session_factory):
@@ -537,3 +542,133 @@ def test_trashed_channel_does_not_block_reconnect(session_factory):
     # Must NOT raise — only a trashed row holds the number.
     OnboardingService(db)._assert_phone_available("pn-recon")
     db.close()
+
+
+# ── respond.io parity additions (signed media, two-way cursor, template filters) ──
+def test_verify_media_sig_pure():
+    """Signature round-trip: valid passes, tampered/wrong-id/expired all fail."""
+    import re
+
+    from modules.omnichannel.security import _media_sig, signed_media_url, verify_media_sig
+
+    url = signed_media_url("msg-123")
+    assert url.startswith("http") and "/omnichannel/media/msg-123" in url
+    m = re.search(r"exp=(\d+)&sig=([0-9a-f]+)", url)
+    exp, sig = int(m.group(1)), m.group(2)
+    assert verify_media_sig("msg-123", exp, sig)
+    assert not verify_media_sig("msg-123", exp, sig + "00")   # tampered
+    assert not verify_media_sig("other", exp, sig)             # bound to a different id
+    assert not verify_media_sig("msg-123", 1, _media_sig("msg-123", 1))  # exp=1970 → expired
+
+
+def _seed_media_message(session_factory, cid):
+    from app.models import DEFAULT_TENANT_ID
+    from app.services.storage import storage_for_tenant
+
+    from modules.omnichannel.models import Channel, Contact, ConversationMessage
+
+    db = session_factory()
+    contact = db.query(Contact).filter(Contact.id == cid).first()
+    ch = db.query(Channel).filter(Channel.workspace_id == contact.workspace_id).first()
+    key = storage_for_tenant(db, DEFAULT_TENANT_ID).save("omni-test.png", b"PNGDATA", "image/png")
+    msg = ConversationMessage(
+        tenant_id=DEFAULT_TENANT_ID, contact_id=cid, channel_id=ch.id,
+        sender_type="CONTACT", message_type="IMAGE",
+        media_key=key, media_mime="image/png",
+    )
+    db.add(msg)
+    db.commit()
+    mid = msg.id
+    db.close()
+    return mid
+
+
+def _relativize(url):
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    return parts.path + ("?" + parts.query if parts.query else "")
+
+
+def test_public_media_signed_url_serves_without_auth(client, session_factory):
+    hdr, cid = _seeded(client, session_factory, phone="+60555222111")
+    mid = _seed_media_message(session_factory, cid)
+
+    r = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages", headers=hdr)
+    item = [m for m in r.json()["items"] if m["messageId"] == mid][0]
+    url = item["message"]["url"]
+    assert url.startswith("http") and "exp=" in url and "sig=" in url
+
+    rel = _relativize(url)
+    # No Authorization header — the signature IS the authorization.
+    got = client.get(rel)
+    assert got.status_code == 200 and got.content == b"PNGDATA"
+
+    # Tampered signature → 401.
+    bad = client.get(rel.replace("sig=", "sig=x"))
+    assert bad.status_code == 401
+
+
+def test_public_messages_two_way_cursor(client, session_factory):
+    hdr, cid = _seeded(client, session_factory, phone="+60555333111")
+    # _seeded already sent one; add three more (total 4).
+    for i in range(3):
+        client.post(
+            "/api/v1/omnichannel/messages",
+            json={"to": "+60555333111", "type": "text", "text": {"body": f"m{i}"}},
+            headers=hdr,
+        )
+    page = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages?limit=2", headers=hdr).json()
+    assert len(page["items"]) == 2
+    # Full page ⇒ older history exists ⇒ a next cursor is offered; previous too.
+    assert page["pagination"]["next"] and page["pagination"]["previous"]
+
+    oldest_id = page["items"][0]["messageId"]
+    newest_id = page["items"][-1]["messageId"]
+    # before = OLDER than the page's oldest → distinct, non-empty.
+    older = client.get(
+        f"/api/v1/omnichannel/contacts/{cid}/messages?limit=10&before={oldest_id}", headers=hdr
+    ).json()
+    assert older["items"] and all(m["messageId"] != oldest_id for m in older["items"])
+    # after = NEWER than the newest returned → nothing newer.
+    newer = client.get(
+        f"/api/v1/omnichannel/contacts/{cid}/messages?limit=10&after={newest_id}", headers=hdr
+    ).json()
+    assert newer["items"] == []
+
+
+def test_public_templates_channel_and_filters(client, session_factory):
+    from app.models import DEFAULT_TENANT_ID
+
+    from modules.omnichannel.models import Channel, WhatsappTemplate
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    db = session_factory()
+    ch = db.query(Channel).filter(Channel.workspace_id == ws).first()
+    chid = ch.id
+    for name, cat in [("order_update", "UTILITY"), ("promo_blast", "MARKETING")]:
+        db.add(WhatsappTemplate(
+            tenant_id=DEFAULT_TENANT_ID, channel_id=ch.id, name=name,
+            language="en_US", category=cat, status="APPROVED",
+            components_json=[{"type": "BODY", "text": "Hi {{1}}"}],
+        ))
+    db.commit()
+    db.close()
+    key = _mint(client, ws).json()["fullKey"]
+    hdr = {"Authorization": f"Bearer {key}"}
+
+    allt = client.get("/api/v1/omnichannel/templates", headers=hdr).json()["data"]
+    assert {t["name"] for t in allt} >= {"order_update", "promo_blast"}
+
+    s = client.get("/api/v1/omnichannel/templates?search=order", headers=hdr).json()["data"]
+    assert [t["name"] for t in s] == ["order_update"]
+
+    c = client.get("/api/v1/omnichannel/templates?category=marketing", headers=hdr).json()["data"]
+    assert [t["name"] for t in c] == ["promo_blast"]
+
+    byc = client.get(f"/api/v1/omnichannel/templates?channelId={chid}", headers=hdr).json()["data"]
+    assert len(byc) >= 2
+
+    bad = client.get("/api/v1/omnichannel/templates?channelId=does-not-exist", headers=hdr)
+    assert bad.status_code == 404 and bad.json()["error"]["code"] == "channel_not_found"

@@ -16,7 +16,19 @@ from app.api_errors import ApiError
 
 from ..models import MEDIA_MESSAGE_TYPES, Channel, Contact, WhatsappTemplate
 from ..repositories.contact_repository import ContactRepository
-from ..schemas import PublicSendRequest, PublicTemplateItem, SendMessageRequest
+from ..schemas import (
+    PublicSendRequest,
+    PublicTemplateItem,
+    RioAssignee,
+    RioContactItem,
+    RioCustomField,
+    RioMessageItem,
+    RioMessagePayload,
+    RioMessageSender,
+    RioMessageStatus,
+    SendMessageRequest,
+)
+from ..security import signed_media_url
 from .media_pipeline import META_CEILINGS, MediaRejected
 from .message_service import (
     CSW_CLOSED_MESSAGE,
@@ -33,6 +45,23 @@ _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
 
 def _digits(value: str) -> str:
     return "".join(ch for ch in (value or "") if ch.isdigit())
+
+
+def _epoch(dt) -> Optional[int]:
+    """Aware-UTC datetime → epoch seconds (respond.io wire format)."""
+    return int(dt.timestamp()) if dt else None
+
+
+# ConversationMessage.delivery_status → respond.io status vocabulary.
+_RIO_STATUS = {
+    "QUEUED": "pending",
+    "SENDING": "pending",
+    "SENT": "sent",
+    "DELIVERED": "delivered",
+    "READ": "read",
+    "FAILED": "failed",
+}
+_RIO_SENDER_SOURCE = {"AGENT": "user", "CONTACT": "contact", "SYSTEM": "system"}
 
 
 class PublicGatewayService:
@@ -77,12 +106,96 @@ class PublicGatewayService:
             raise ApiError(404, "contact_not_found", "Contact not found for this workspace.")
         return contact
 
+    # ── respond.io-parity mappers ────────────────────────────────────────────
+    def _users_by_id(self, user_ids) -> dict:
+        """Batch-load core users for assignee rendering. Tenant-agnostic lookup by
+        id is safe here — the ids come from our OWN contact rows (already tenant-
+        scoped), and we only read display fields."""
+        from app.models.user import User
+
+        ids = [u for u in {uid for uid in user_ids if uid}]
+        if not ids:
+            return {}
+        rows = self.db.query(User).filter(User.id.in_(ids)).all()
+        return {u.id: u for u in rows}
+
+    def _rio_contact(self, contact: Contact, *, status_str: str, users: dict) -> RioContactItem:
+        cf = contact.custom_fields_json or {}
+        custom = [RioCustomField(name=str(k), value=None if v is None else str(v)) for k, v in cf.items()]
+        assignee = None
+        if contact.assigned_user_id and contact.assigned_user_id in users:
+            u = users[contact.assigned_user_id]
+            assignee = RioAssignee(id=u.id, firstName=u.name, lastName=None, email=u.email)
+        return RioContactItem(
+            id=contact.id,
+            firstName=contact.first_name,
+            lastName=contact.last_name,
+            phone=contact.phone,
+            email=contact.email,
+            language=None,          # not modeled (respond.io parity field)
+            profilePic=contact.avatar_url,
+            countryCode=None,       # not modeled
+            custom_fields=custom,
+            status=(status_str or "OPEN").lower(),
+            tags=[],                # not modeled
+            assignee=assignee,
+            lifecycle=None,         # not modeled
+            created_at=_epoch(contact.created_at),
+            isBlocked=False,        # not modeled
+        )
+
+    def _rio_message(self, m) -> RioMessageItem:
+        meta = m.metadata_json or {}
+        traffic = "incoming" if m.sender_type == "CONTACT" else "outgoing"
+        # Media URL: a stored blob becomes an absolute, signed, clickable link;
+        # a legacy stored URL passes through.
+        url = None
+        if getattr(m, "media_key", None):
+            url = signed_media_url(m.id)
+        elif getattr(m, "media_url", None):
+            url = m.media_url
+        payload = RioMessagePayload(
+            type=(m.message_type or "text").lower(),
+            text=m.body,
+            url=url,
+            caption=m.body if url else None,
+            filename=m.media_filename,
+            mimeType=m.media_mime,
+            messageTag=meta.get("message_tag"),
+        )
+        status: list = []
+        if m.delivery_status:
+            status.append(
+                RioMessageStatus(
+                    value=_RIO_STATUS.get(m.delivery_status, m.delivery_status.lower()),
+                    timestamp=_epoch(m.created_at),
+                    message=m.error_message,
+                )
+            )
+        sender = RioMessageSender(
+            source=_RIO_SENDER_SOURCE.get(m.sender_type, "system"),
+            userId=m.sender_id if m.sender_type == "AGENT" else None,
+            teamId=None,
+        )
+        return RioMessageItem(
+            messageId=m.id,
+            channelMessageId=m.external_message_id,
+            contactId=m.contact_id,
+            channelId=m.channel_id,
+            traffic=traffic,
+            message=payload,
+            status=status,
+            sender=sender,
+        )
+
     # ── Contact read ─────────────────────────────────────────────────────────
-    def get_contact(self, tenant_id: str, workspace_id: str, identifier: str):
+    def get_contact(self, tenant_id: str, workspace_id: str, identifier: str) -> RioContactItem:
         from .conversation_service import ConversationService
 
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
-        return ConversationService(self.db).thread_item(contact)
+        status_str = ConversationService(self.db).thread_item(contact).status
+        users = self._users_by_id([contact.assigned_user_id])
+        return self._rio_contact(contact, status_str=status_str, users=users)
 
     def list_contacts(
         self,
@@ -96,9 +209,12 @@ class PublicGatewayService:
         page: int = 0,
         page_size: int = 50,
     ):
+        """Returns ``(rio_items, total)``. Filtering/pagination reuse the inbox's
+        ``list_threads`` (offset-based); the router turns page/total into the
+        respond.io ``{next, previous}`` cursor URLs."""
         from .conversation_service import ConversationService
 
-        return ConversationService(self.db).list_threads(
+        items, total = ConversationService(self.db).list_threads(
             tenant_id,
             workspace_id=workspace_id,
             status_key=status,
@@ -108,31 +224,51 @@ class PublicGatewayService:
             page=page,
             page_size=page_size,
         )
+        # Full-fidelity Contact rows for the page (thread items omit email/custom).
+        ids = [t.id for t in items]
+        contacts = (
+            self.db.query(Contact)
+            .filter(Contact.tenant_id == tenant_id, Contact.id.in_(ids))
+            .all()
+            if ids
+            else []
+        )
+        by_id = {c.id: c for c in contacts}
+        status_by_id = {t.id: t.status for t in items}
+        users = self._users_by_id([c.assigned_user_id for c in contacts])
+        rio = [
+            self._rio_contact(by_id[t.id], status_str=status_by_id.get(t.id, "OPEN"), users=users)
+            for t in items
+            if t.id in by_id
+        ]
+        return rio, total
 
     def list_contact_messages(
-        self, tenant_id: str, workspace_id: str, identifier: str, *, limit: int, before_id: Optional[str] = None
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        identifier: str,
+        *,
+        limit: int,
+        before_id: Optional[str] = None,
+        after_id: Optional[str] = None,
     ):
-        """Read-only message history for a contact — ALL message types (text,
-        media, interactive, location, contacts, template, reaction, replies) via
-        the SAME ``message_items`` builder the inbox uses. Workspace-scoped and
-        side-effect-free: unlike the agent inbox, a consumer read does NOT mark
-        the thread read."""
-        from .conversation_service import ConversationService
-
+        """Read-only message history for a contact — ALL message types, mapped to
+        the respond.io shape. Two-way keyset paging (``before_id`` older /
+        ``after_id`` newer); always returned oldest→newest. Workspace-scoped and
+        side-effect-free (a consumer read never marks the thread read)."""
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
         rows = self.contacts.list_messages_recent(
-            contact.id, tenant_id, limit=limit, before_id=before_id
+            contact.id, tenant_id, limit=limit, before_id=before_id, after_id=after_id
         )
-        return ConversationService(self.db).message_items(rows)
+        return contact.id, [self._rio_message(m) for m in rows]
 
-    def get_contact_message(self, tenant_id: str, workspace_id: str, identifier: str, message_id: str):
-        from .conversation_service import ConversationService
-
+    def get_contact_message(self, tenant_id: str, workspace_id: str, identifier: str, message_id: str) -> RioMessageItem:
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
         msg = self.contacts.get_message(message_id, tenant_id)
         if msg is None or msg.contact_id != contact.id:
             raise ApiError(404, "message_not_found", "Message not found for this contact.")
-        return ConversationService(self.db).message_items([msg])[0]
+        return self._rio_message(msg)
 
     # ── Contact / conversation mutation ──────────────────────────────────────
     def update_contact(
@@ -151,7 +287,7 @@ class PublicGatewayService:
 
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
         try:
-            return ConversationService(self.db).patch_thread(
+            thread = ConversationService(self.db).patch_thread(
                 contact.id,
                 tenant_id,
                 assigned_user_id=assigned_user_id,
@@ -162,17 +298,26 @@ class PublicGatewayService:
             )
         except InvalidPatch as exc:
             raise ApiError(422, "invalid_request", str(exc)) from exc
+        return self._rio_after_patch(tenant_id, contact.id, thread)
 
     def set_conversation_state(self, tenant_id: str, workspace_id: str, identifier: str, *, open_: bool):
         from .conversation_service import ConversationService, InvalidPatch
 
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
         try:
-            return ConversationService(self.db).patch_thread(
+            thread = ConversationService(self.db).patch_thread(
                 contact.id, tenant_id, status="OPEN" if open_ else "CLOSED"
             )
         except InvalidPatch as exc:
             raise ApiError(422, "invalid_request", str(exc)) from exc
+        return self._rio_after_patch(tenant_id, contact.id, thread)
+
+    def _rio_after_patch(self, tenant_id: str, contact_id: str, thread) -> RioContactItem:
+        """Re-read the mutated contact + map to the respond.io shape (parity with
+        GET). ``thread`` carries the resolved status string."""
+        contact = self.contacts.get_by_id(contact_id, tenant_id)
+        users = self._users_by_id([contact.assigned_user_id])
+        return self._rio_contact(contact, status_str=thread.status, users=users)
 
     def add_comment(self, tenant_id: str, workspace_id: str, identifier: str, body: str):
         """Add an internal note (comment) to a contact's thread — SYSTEM bubble,
@@ -518,18 +663,44 @@ class PublicGatewayService:
         return message_id, False
 
     # ── Templates (read-only mirror) ─────────────────────────────────────────
-    def list_templates(self, tenant_id: str, workspace_id: str) -> list[PublicTemplateItem]:
-        channel = self._workspace_channel(tenant_id, workspace_id)
-        rows = (
-            self.db.query(WhatsappTemplate)
-            .filter(
-                WhatsappTemplate.tenant_id == tenant_id,
-                WhatsappTemplate.channel_id == channel.id,
-                WhatsappTemplate.status == "APPROVED",
+    def list_templates(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        *,
+        channel_id: Optional[str] = None,
+        search: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> list[PublicTemplateItem]:
+        """Approved templates for the workspace. ``channel_id`` targets a specific
+        channel (default = the workspace's active channel); a channel in another
+        workspace/tenant is a uniform 404. ``search`` filters by name substring
+        (case-insensitive); ``category`` filters by Meta category (UTILITY|…)."""
+        if channel_id:
+            channel = (
+                self.db.query(Channel)
+                .filter(
+                    Channel.id == channel_id,
+                    Channel.tenant_id == tenant_id,
+                    Channel.workspace_id == workspace_id,
+                    Channel.is_trashed.is_(False),
+                )
+                .first()
             )
-            .order_by(WhatsappTemplate.name.asc())
-            .all()
+            if channel is None:
+                raise ApiError(404, "channel_not_found", "Channel not found for this workspace.")
+        else:
+            channel = self._workspace_channel(tenant_id, workspace_id)
+        q = self.db.query(WhatsappTemplate).filter(
+            WhatsappTemplate.tenant_id == tenant_id,
+            WhatsappTemplate.channel_id == channel.id,
+            WhatsappTemplate.status == "APPROVED",
         )
+        if search and search.strip():
+            q = q.filter(WhatsappTemplate.name.ilike(f"%{search.strip()}%"))
+        if category and category.strip():
+            q = q.filter(WhatsappTemplate.category == category.strip().upper())
+        rows = q.order_by(WhatsappTemplate.name.asc()).all()
         out: list[PublicTemplateItem] = []
         for t in rows:
             body = template_body_text(t.components_json)

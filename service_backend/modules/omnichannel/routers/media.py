@@ -18,7 +18,7 @@ CSP. All blobs now flow through this authed endpoint only.
 """
 from typing import Optional, Tuple
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import Response
 from jose import JWTError
 from sqlalchemy.orm import Session
@@ -33,6 +33,7 @@ from app.services.storage import UnresolvableKey, storage_for_tenant
 
 from ..api_auth import MODULE_NAME, _parse_bearer
 from ..repositories.contact_repository import ContactRepository
+from ..security import verify_media_sig
 from ..services.api_key_service import ApiKeyService
 
 router = APIRouter()
@@ -88,18 +89,32 @@ def _resolve_principal(
 def serve_message_media(
     message_id: str,
     authorization: Optional[str] = Header(default=None),
+    exp: Optional[int] = Query(default=None),
+    sig: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
 ) -> Response:
-    tenant_id, workspace_id = _resolve_principal(authorization, db)
-    # Defense-in-depth: resolve the message tenant-scoped (never unscoped).
-    message = ContactRepository(db).get_message(message_id, tenant_id)
-    if message is None or not message.media_key:
-        raise HTTPException(status_code=404, detail="Not found")
-    # API-key callers are additionally workspace-scoped (AC-12-27).
-    if workspace_id is not None:
-        contact = ContactRepository(db).get_by_id(message.contact_id, tenant_id)
-        if contact is None or contact.workspace_id != workspace_id:
+    # Signed-URL path (public gateway, respond.io parity): a valid HMAC signature
+    # over (message_id, exp) IS the authorization — no header needed, so the link
+    # opens on a raw browser click. Resolved GLOBALLY (the signature already binds
+    # this exact message id; it can't be pointed at another).
+    if exp is not None and sig is not None:
+        if not verify_media_sig(message_id, exp, sig):
+            raise HTTPException(status_code=401, detail="Invalid or expired media link.")
+        message = ContactRepository(db).get_message_global(message_id)
+        if message is None or not message.media_key:
             raise HTTPException(status_code=404, detail="Not found")
+        tenant_id = message.tenant_id
+    else:
+        tenant_id, workspace_id = _resolve_principal(authorization, db)
+        # Defense-in-depth: resolve the message tenant-scoped (never unscoped).
+        message = ContactRepository(db).get_message(message_id, tenant_id)
+        if message is None or not message.media_key:
+            raise HTTPException(status_code=404, detail="Not found")
+        # API-key callers are additionally workspace-scoped (AC-12-27).
+        if workspace_id is not None:
+            contact = ContactRepository(db).get_by_id(message.contact_id, tenant_id)
+            if contact is None or contact.workspace_id != workspace_id:
+                raise HTTPException(status_code=404, detail="Not found")
 
     # Stream the bytes back SAME-ORIGIN (plan 12 review). A remote backend (R2/
     # S3) is read through the storage adapter and re-served from our origin —

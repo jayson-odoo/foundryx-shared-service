@@ -5,7 +5,7 @@ keys by the services before constructing these models.
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import field_validator
+from pydantic import BaseModel, field_validator
 
 from app.schemas.base import ApiModel
 
@@ -489,6 +489,91 @@ class PublicContactUpdateRequest(ApiModel):
 
 class PublicCommentRequest(ApiModel):
     body: str
+
+
+# ── respond.io-parity response shapes (public gateway) ───────────────────────
+# These deliberately do NOT inherit ApiModel: they mirror respond.io's documented
+# JSON exactly — snake_case where respond.io uses it (``custom_fields``,
+# ``created_at``), epoch-second integer timestamps, and a ``{items, pagination}``
+# envelope with cursor URLs. Field NAMES/TYPES are the external contract.
+# NB: respond.io ids are int64; ours are UUID strings — ``id``/``messageId`` are
+# strings here (a documented, unavoidable deviation — we can't fabricate ints).
+class RioCursorPagination(BaseModel):
+    next: Optional[str] = None       # URL for the next page (older history), or null
+    previous: Optional[str] = None   # URL for the previous page (newer), or null
+
+
+class RioCustomField(BaseModel):
+    name: str
+    value: Optional[str] = None
+
+
+class RioAssignee(BaseModel):
+    id: str
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
+    email: Optional[str] = None
+
+
+class RioContactItem(BaseModel):
+    id: str
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    language: Optional[str] = None
+    profilePic: Optional[str] = None
+    countryCode: Optional[str] = None
+    custom_fields: List[RioCustomField] = []
+    status: str                       # open | snoozed | closed
+    tags: List[str] = []
+    assignee: Optional[RioAssignee] = None
+    lifecycle: Optional[str] = None
+    created_at: Optional[int] = None  # epoch seconds
+    isBlocked: bool = False
+
+
+class RioContactListResponse(BaseModel):
+    items: List[RioContactItem]
+    pagination: RioCursorPagination
+
+
+class RioMessageStatus(BaseModel):
+    value: str                        # pending | sent | delivered | read | failed
+    timestamp: Optional[int] = None   # epoch seconds
+    message: Optional[str] = None     # failure reason, when failed
+
+
+class RioMessageSender(BaseModel):
+    source: str                       # user | contact | system
+    userId: Optional[str] = None
+    teamId: Optional[str] = None
+
+
+class RioMessagePayload(BaseModel):
+    type: str                         # text | image | video | audio | document | ...
+    text: Optional[str] = None
+    url: Optional[str] = None         # signed, clickable media URL
+    caption: Optional[str] = None
+    filename: Optional[str] = None
+    mimeType: Optional[str] = None
+    messageTag: Optional[str] = None
+
+
+class RioMessageItem(BaseModel):
+    messageId: str
+    channelMessageId: Optional[str] = None   # the provider's id (wamid)
+    contactId: str
+    channelId: Optional[str] = None
+    traffic: str                      # incoming | outgoing
+    message: RioMessagePayload
+    status: List[RioMessageStatus] = []
+    sender: RioMessageSender
+
+
+class RioMessageListResponse(BaseModel):
+    items: List[RioMessageItem]
+    pagination: RioCursorPagination
 
 
 # ── Consumer webhooks (plan sprint-1/01 Slice 4) ─────────────────────────────

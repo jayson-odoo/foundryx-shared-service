@@ -152,6 +152,10 @@ class Settings(BaseSettings):
     celery_task_always_eager: bool = False
     # Webhook callback base (the public URL Meta calls; ngrok etc. in dev).
     public_base_url: str = "http://localhost:8001"
+    # Signed media URLs on the public gateway (respond.io parity): the returned
+    # mediaUrl is an ABSOLUTE, HMAC-signed, time-limited link that opens in a raw
+    # browser click (no Authorization header). TTL below (seconds).
+    media_signed_url_ttl_seconds: int = 3600
     # Meta webhook verify-token for the GET handshake (set the same value in
     # the Meta app's webhook config).
     meta_webhook_verify_token: str = "foundryx-omnichannel-verify"

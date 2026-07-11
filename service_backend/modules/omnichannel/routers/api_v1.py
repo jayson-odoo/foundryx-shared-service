@@ -19,13 +19,15 @@ from ..api_auth import ApiWorkspace, get_api_workspace
 from ..schemas import (
     MessageItem,
     PublicCommentRequest,
-    PublicContactListResponse,
     PublicContactUpdateRequest,
-    PublicMessageListResponse,
     PublicSendRequest,
     PublicSendResponse,
     PublicTemplateListResponse,
-    ThreadItem,
+    RioContactItem,
+    RioContactListResponse,
+    RioCursorPagination,
+    RioMessageItem,
+    RioMessageListResponse,
 )
 from ..services.media_pipeline import META_CEILINGS
 from ..services.public_gateway_service import PublicGatewayService
@@ -33,6 +35,13 @@ from ..services.public_gateway_service import PublicGatewayService
 router = APIRouter()
 
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
+
+
+def _page_url(request: Request, **params) -> str:
+    """Absolute URL for this endpoint with its query params fully replaced by
+    ``params`` (drops any None). Backs the respond.io ``{next, previous}`` cursors."""
+    clean = {k: v for k, v in params.items() if v is not None}
+    return str(request.url.replace_query_params(**clean))
 
 
 @router.post("/messages", response_model=PublicSendResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -88,16 +97,23 @@ async def send_message(
 
 @router.get("/templates", response_model=PublicTemplateListResponse)
 def list_templates(
+    channel_id: Optional[str] = Query(default=None, alias="channelId"),
+    search: Optional[str] = Query(default=None),
+    category: Optional[str] = Query(default=None, description="UTILITY|MARKETING|AUTHENTICATION"),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ) -> PublicTemplateListResponse:
-    items = PublicGatewayService(db).list_templates(api_ws.tenant_id, api_ws.workspace_id)
+    items = PublicGatewayService(db).list_templates(
+        api_ws.tenant_id, api_ws.workspace_id,
+        channel_id=channel_id, search=search, category=category,
+    )
     return PublicTemplateListResponse(data=items)
 
 
 # ── Contacts (respond.io-style: {identifier} = phone:+60… | id:<uuid> | <uuid>) ──
-@router.get("/contacts", response_model=PublicContactListResponse)
+@router.get("/contacts", response_model=RioContactListResponse)
 def list_contacts(
+    request: Request,
     status: Optional[str] = Query(default=None, description="OPEN|SNOOZED|CLOSED"),
     assignee: str = Query(default="all", description="all|unassigned"),
     priority: Optional[str] = Query(default=None, description="LOW|MEDIUM|HIGH|URGENT"),
@@ -106,33 +122,40 @@ def list_contacts(
     page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
-) -> PublicContactListResponse:
-    """List contacts (threads) in the workspace, filterable + paginated."""
+) -> RioContactListResponse:
+    """List contacts (threads) in the workspace, filterable. respond.io-shaped
+    ``{items, pagination}`` with ``{next, previous}`` page-cursor URLs."""
     items, total = PublicGatewayService(db).list_contacts(
         api_ws.tenant_id, api_ws.workspace_id,
         status=status, assignee=assignee, priority=priority, search=search,
         page=page, page_size=page_size,
     )
-    return PublicContactListResponse(data=items, total=total, page=page, pageSize=page_size)
+    base = dict(status=status, assignee=assignee, priority=priority, search=search, pageSize=page_size)
+    has_next = (page + 1) * page_size < total
+    pagination = RioCursorPagination(
+        next=_page_url(request, **base, page=page + 1) if has_next else None,
+        previous=_page_url(request, **base, page=page - 1) if page > 0 else None,
+    )
+    return RioContactListResponse(items=items, pagination=pagination)
 
 
-@router.get("/contacts/{identifier}", response_model=ThreadItem)
+@router.get("/contacts/{identifier}", response_model=RioContactItem)
 def get_contact(
     identifier: str,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
-) -> ThreadItem:
+) -> RioContactItem:
     """Get one contact by ``phone:+60…``, ``id:<uuid>`` or a bare id."""
     return PublicGatewayService(db).get_contact(api_ws.tenant_id, api_ws.workspace_id, identifier)
 
 
-@router.patch("/contacts/{identifier}", response_model=ThreadItem)
+@router.patch("/contacts/{identifier}", response_model=RioContactItem)
 def update_contact(
     identifier: str,
     payload: PublicContactUpdateRequest,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
-) -> ThreadItem:
+) -> RioContactItem:
     """Partial update — only sent fields change. Send ``assignedUserId``/
     ``customFields`` as null to clear; omit to leave unchanged."""
     sent = payload.model_fields_set
@@ -147,35 +170,42 @@ def update_contact(
     )
 
 
-@router.get("/contacts/{identifier}/messages", response_model=PublicMessageListResponse)
+@router.get("/contacts/{identifier}/messages", response_model=RioMessageListResponse)
 def list_contact_messages(
+    request: Request,
     identifier: str,
     limit: int = Query(50, ge=1, le=200),
-    before: Optional[str] = Query(default=None),
+    before: Optional[str] = Query(default=None, description="Message id — page into OLDER history"),
+    after: Optional[str] = Query(default=None, description="Message id — page toward NEWER messages"),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
-) -> PublicMessageListResponse:
-    """A contact's message history — ALL message types, workspace-scoped, read-
-    only (never marks the thread read). Newest ``limit`` oldest→newest; pass the
-    returned ``nextBefore`` back as ``before`` to page further into history.
-    Media rides the same authed ``/omnichannel/media/{id}`` route (the API key
-    is accepted there too)."""
-    svc = PublicGatewayService(db)
-    contact = svc._resolve_contact(api_ws.tenant_id, api_ws.workspace_id, identifier)
-    items = svc.list_contact_messages(
-        api_ws.tenant_id, api_ws.workspace_id, identifier, limit=limit, before_id=before
+) -> RioMessageListResponse:
+    """A contact's message history — ALL types, respond.io-shaped, always
+    oldest→newest. Two-way cursor: follow ``pagination.next`` for OLDER history,
+    ``pagination.previous`` for NEWER messages. Workspace-scoped + read-only
+    (never marks the thread read). Media URLs are absolute, signed and clickable."""
+    _contact_id, items = PublicGatewayService(db).list_contact_messages(
+        api_ws.tenant_id, api_ws.workspace_id, identifier,
+        limit=limit, before_id=before, after_id=after,
     )
-    next_before = items[0].id if len(items) == limit else None
-    return PublicMessageListResponse(contactId=contact.id, data=items, nextBefore=next_before)
+    oldest = items[0].messageId if items else None
+    newest = items[-1].messageId if items else None
+    # next = further into history (older); only when the page was full (more likely).
+    next_url = _page_url(request, limit=limit, before=oldest) if len(items) == limit else None
+    # previous = toward the present (newer); offered whenever we have an anchor.
+    prev_url = _page_url(request, limit=limit, after=newest) if items else None
+    return RioMessageListResponse(
+        items=items, pagination=RioCursorPagination(next=next_url, previous=prev_url)
+    )
 
 
-@router.get("/contacts/{identifier}/messages/{message_id}", response_model=MessageItem)
+@router.get("/contacts/{identifier}/messages/{message_id}", response_model=RioMessageItem)
 def get_contact_message(
     identifier: str,
     message_id: str,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
-) -> MessageItem:
+) -> RioMessageItem:
     """Get one message on a contact's thread (full fidelity, any type)."""
     return PublicGatewayService(db).get_contact_message(
         api_ws.tenant_id, api_ws.workspace_id, identifier, message_id
@@ -183,23 +213,23 @@ def get_contact_message(
 
 
 # ── Conversation lifecycle ───────────────────────────────────────────────────
-@router.post("/contacts/{identifier}/conversation/open", response_model=ThreadItem)
+@router.post("/contacts/{identifier}/conversation/open", response_model=RioContactItem)
 def open_conversation(
     identifier: str,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
-) -> ThreadItem:
+) -> RioContactItem:
     return PublicGatewayService(db).set_conversation_state(
         api_ws.tenant_id, api_ws.workspace_id, identifier, open_=True
     )
 
 
-@router.post("/contacts/{identifier}/conversation/close", response_model=ThreadItem)
+@router.post("/contacts/{identifier}/conversation/close", response_model=RioContactItem)
 def close_conversation(
     identifier: str,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
-) -> ThreadItem:
+) -> RioContactItem:
     return PublicGatewayService(db).set_conversation_state(
         api_ws.tenant_id, api_ws.workspace_id, identifier, open_=False
     )
