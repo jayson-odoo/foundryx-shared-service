@@ -20,7 +20,6 @@ from ..schemas import (
     ChannelUpdate,
     ExportRequest,
     IdsRequest,
-    TemplateItem,
     TestConnectionResult,
 )
 from ..services.channel_profile_service import ChannelProfileService
@@ -220,18 +219,7 @@ def sync_channel_profile(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
 
 
-@router.get("/{channel_id}/templates", response_model=List[TemplateItem])
-def list_channel_templates(
-    channel_id: str,
-    current_user: User = Depends(require_permission("conversations.reply")),
-    db: Session = Depends(get_db),
-) -> List[TemplateItem]:
-    """Approved templates for the channel (read-only mirror; syncs from Meta
-    when the app is configured — dev mode serves whatever is in the table)."""
-    from ..services.conversation_service import ThreadNotFound
-    from ..services.message_service import MessageService
-
-    try:
-        return MessageService(db).list_templates(channel_id, current_user.tenant_id)
-    except ThreadNotFound:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+# NOTE: ``GET /{channel_id}/templates`` (composer send-picker) moved to the
+# PUBLIC ``embed_reads`` router so BOTH the native session AND an embed access
+# token reach it (workspace-scoped for embed). Native perm ``conversations.reply``
+# is preserved there.

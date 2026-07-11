@@ -58,7 +58,7 @@ class EmbedSessionService:
     def __init__(self, db: Session):
         self.db = db
 
-    def exchange(self, assertion: str, origin: Optional[str]) -> Dict[str, Any]:
+    def exchange(self, assertion: str, parent_origin: Optional[str]) -> Dict[str, Any]:
         assertion = (assertion or "").strip()
         if not assertion:
             raise EmbedError(401, "invalid_assertion", "Missing assertion.")
@@ -114,10 +114,19 @@ class EmbedSessionService:
         if not jti:
             raise EmbedError(401, "invalid_assertion", "Assertion id (jti) missing.")
 
-        # 5) Origin allow-list — the request Origin must be one the connection
-        #    permits (drives clickjacking + postMessage trust).
+        # 5) Parent-origin allow-list — validate the VALIDATED PARENT origin the
+        #    widget captured from the accepted `init` (§5), NOT the widget's own
+        #    request Origin header. The widget's fetch carries the shared-service
+        #    origin as its browser Origin, never the parent's, so checking that
+        #    would be meaningless against the connection's PARENT allowedOrigins
+        #    (and would force the operator to whitelist the shared-service origin).
+        #    A widget COULD spoof parentOrigin, but a party without the connection's
+        #    embedSecret can't mint a valid assertion (step 3), and the browser-
+        #    enforced `frame-ancestors` CSP is the real clickjacking control — this
+        #    check keeps allowedOrigins purely parent origins, consistent with the
+        #    assertion's own `allowedOrigins` claim + frame-ancestors.
         allowed_origins = self._allowed_origins(conn)
-        if not origin or origin not in allowed_origins:
+        if not parent_origin or parent_origin not in allowed_origins:
             raise EmbedError(403, "origin_not_allowed", "This origin is not permitted to embed.")
 
         # 6) Connection active for tenant + workspace belongs to it.

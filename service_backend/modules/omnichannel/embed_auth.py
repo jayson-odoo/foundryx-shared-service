@@ -102,6 +102,18 @@ class ConversationPrincipal:
             )
         # Any embed token may READ within its scope (scope enforced separately).
 
+    def require_native_read(self, native_perm: str) -> None:
+        """Gate a READ helper that both auth schemes reach (workspace templates /
+        quick-replies / members). Native → the permission must be held (preserves
+        the pre-embed gate on those routes). Embed → any token may read its OWN
+        workspace's catalog (workspace scope enforced by ``enforce_workspace`` /
+        ``enforce_channel_workspace``); no write-cap needed for a read."""
+        if not self.is_embed and native_perm not in self.permission_keys:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing permission: {native_perm}",
+            )
+
     def require(self, *, native_perm: str, embed_cap: str) -> None:
         """Gate a mutation: embed → the cap must be present; native → the
         permission must be held. Backend is the boundary (AC-11H-11)."""
@@ -233,4 +245,41 @@ def enforce_thread_access(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This conversation is outside the token's workspace.",
+        )
+
+
+def enforce_workspace(principal: ConversationPrincipal, workspace_id: str) -> None:
+    """Workspace-scope gate for the reused workspace-catalog reads (quick-replies,
+    members). Native: no-op (a native user spans the tenant). Embed: the requested
+    workspace MUST be the token's own — a token for workspace A can never read
+    workspace B's quick-replies/members (backend is the boundary, never the
+    widget). This holds even for a ``thread:<contactId>`` token, which stays
+    confined to its workspace for these catalog lists."""
+    if not principal.is_embed:
+        return
+    if workspace_id != principal.workspace_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This resource is outside the token's workspace.",
+        )
+
+
+def enforce_channel_workspace(
+    db: Session, principal: ConversationPrincipal, channel_id: str
+) -> None:
+    """Workspace-scope gate for the send-picker template list (keyed by channel).
+    Native: no-op. Embed: the channel must live in the token's workspace, else the
+    template catalog of another workspace's channel would leak (403). A missing
+    channel is 404 (uniform)."""
+    if not principal.is_embed:
+        return
+    from .repositories.channel_repository import ChannelRepository
+
+    channel = ChannelRepository(db).get_by_id(channel_id, principal.tenant_id)
+    if channel is None:
+        raise HTTPException(status_code=404, detail="Channel not found.")
+    if channel.workspace_id != principal.workspace_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This channel is outside the token's workspace.",
         )

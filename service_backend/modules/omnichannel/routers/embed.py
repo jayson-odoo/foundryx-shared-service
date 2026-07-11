@@ -8,7 +8,7 @@ envelope via ``ApiError``.
 """
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -23,13 +23,17 @@ router = APIRouter()
 
 class EmbedSessionRequest(BaseModel):
     assertion: str
+    # The VALIDATED parent (embedding page) origin the widget captured from the
+    # accepted `init` — NOT the widget's own request Origin header (which is the
+    # shared-service origin and meaningless against the connection's PARENT
+    # allowedOrigins). See EmbedSessionService.exchange for the trust rationale.
+    parentOrigin: Optional[str] = None
 
 
 @router.post("/session")
 def create_embed_session(
     payload: EmbedSessionRequest,
     request: Request,
-    origin: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
 ) -> dict:
     ip = client_ip(request)
@@ -44,7 +48,7 @@ def create_embed_session(
         ).with_retry_after(exc.retry_after_seconds)
 
     try:
-        return EmbedSessionService(db).exchange(payload.assertion, origin)
+        return EmbedSessionService(db).exchange(payload.assertion, payload.parentOrigin)
     except EmbedError as exc:
         # A failed exchange pumps the IP bucket (bounds assertion-forgery spam).
         throttle.record_embed(ip=ip)

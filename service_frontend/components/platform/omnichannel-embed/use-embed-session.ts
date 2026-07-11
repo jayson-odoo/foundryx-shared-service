@@ -95,13 +95,17 @@ export function useEmbedSession(): UseEmbedSessionResult {
   );
 
   const exchange = useCallback(
-    async (assertion: string) => {
+    async (assertion: string, parentOrigin: string) => {
       setStatus((prev) => (prev === 'ready' ? prev : 'exchanging'));
       try {
         const res = await fetch(`${BACKEND_URL}/embed/session`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ assertion }),
+          // Send the VALIDATED parent origin (captured from the accepted `init`),
+          // not the browser Origin header (which is this widget's shared-service
+          // origin). The shared service validates THIS against the connection's
+          // allowedOrigins (contract §3/§5).
+          body: JSON.stringify({ assertion, parentOrigin }),
         });
         if (!res.ok) {
           let message = 'Could not start the conversation.';
@@ -152,7 +156,7 @@ export function useEmbedSession(): UseEmbedSessionResult {
         if (parentOriginRef.current && parentOriginRef.current !== event.origin) return;
         parentOriginRef.current = event.origin;
         applyTheme(payload.theme, payload.colorScheme);
-        void exchange(payload.assertion);
+        void exchange(payload.assertion, event.origin);
         return;
       }
 
@@ -168,7 +172,7 @@ export function useEmbedSession(): UseEmbedSessionResult {
           const claims = decodeAssertionClaims(payload.assertion);
           // A refreshed assertion must still name this parent origin.
           if (claims && claims.allowedOrigins.includes(event.origin)) {
-            void exchange(payload.assertion);
+            void exchange(payload.assertion, event.origin);
           }
         }
       }

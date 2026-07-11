@@ -144,8 +144,13 @@ def _assertion(
 
 
 def _exchange(client, assertion, *, origin=ORIGIN):
-    headers = {} if origin is None else {"Origin": origin}
-    return client.post("/embed/session", json={"assertion": assertion}, headers=headers)
+    # The widget sends the VALIDATED PARENT origin in the request BODY (contract
+    # §3/§5) — NOT the browser Origin header (that is the widget's own
+    # shared-service origin). `origin=None` omits it → origin_not_allowed.
+    body = {"assertion": assertion}
+    if origin is not None:
+        body["parentOrigin"] = origin
+    return client.post("/embed/session", json=body)
 
 
 def _bearer(token):
@@ -243,6 +248,30 @@ def test_missing_origin_rejected(client, session_factory):
     res = _exchange(client, _assertion(iss=cid, workspace_id=wid), origin=None)
     assert res.status_code == 403
     assert res.json()["error"]["code"] == "origin_not_allowed"
+
+
+def test_parent_origin_from_body_not_header(client, session_factory):
+    """Finding 2: the check validates the parentOrigin BODY field, and IGNORES the
+    browser Origin header (which is the widget's own shared-service origin). A
+    valid parentOrigin succeeds even with a foreign Origin header; a valid Origin
+    header without a parentOrigin body is refused."""
+    cid = _make_connection(session_factory)
+    wid = _workspace_id(session_factory)
+    # Valid parentOrigin body + a foreign/shared-service Origin header → 200.
+    ok = client.post(
+        "/embed/session",
+        json={"assertion": _assertion(iss=cid, workspace_id=wid), "parentOrigin": ORIGIN},
+        headers={"Origin": "https://widget.sharedservice.example"},
+    )
+    assert ok.status_code == 200, ok.text
+    # Allowed Origin header but NO parentOrigin body → origin_not_allowed.
+    no_body = client.post(
+        "/embed/session",
+        json={"assertion": _assertion(iss=cid, workspace_id=wid)},
+        headers={"Origin": ORIGIN},
+    )
+    assert no_body.status_code == 403
+    assert no_body.json()["error"]["code"] == "origin_not_allowed"
 
 
 def test_unknown_issuer_rejected(client, session_factory):
@@ -519,6 +548,118 @@ def test_native_path_still_works(client, session_factory):
     res = client.get("/omnichannel/contacts", headers=_bearer(token))
     assert res.status_code == 200
     assert res.json()["total"] >= 1
+
+
+def _channel_in_workspace(session_factory, workspace_id):
+    from modules.omnichannel.models import Channel
+
+    db = session_factory()
+    ch = (
+        db.query(Channel)
+        .filter(Channel.tenant_id == DEFAULT_TENANT_ID, Channel.workspace_id == workspace_id)
+        .first()
+    )
+    cid = ch.id if ch else None
+    db.close()
+    return cid
+
+
+def _other_workspace_with_channel(session_factory):
+    """A SECOND workspace + a channel in it (a different tenant-scoped workspace an
+    embed token for the default workspace must not be able to read)."""
+    from modules.omnichannel.models import Channel, Workspace
+    from modules.omnichannel.security import encrypt_credentials
+    from modules.omnichannel.services import statuses
+
+    db = session_factory()
+    ws = Workspace(tenant_id=DEFAULT_TENANT_ID, name="Second WS", is_default=False)
+    db.add(ws)
+    db.flush()
+    ch = Channel(
+        tenant_id=DEFAULT_TENANT_ID,
+        workspace_id=ws.id,
+        channel_type="WHATSAPP",
+        name="Other WA",
+        credentials_json=encrypt_credentials({"dev": True}),
+        phone_number_id="pn-other",
+        display_phone_number="+60 22-222 2222",
+        is_active=True,
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "CHANNEL", "ACTIVE"),
+    )
+    db.add(ch)
+    db.commit()
+    wid, cid = ws.id, ch.id
+    db.close()
+    return wid, cid
+
+
+# ── Finding 1: aux catalog reads reachable by the embed principal ────────────
+def test_embed_reads_own_workspace_catalogs(client, session_factory):
+    """The reused ConversationDrawer fetches templates / quick-replies / members
+    while rendering — an embed token reads its OWN workspace's catalogs (200)."""
+    cid = _make_connection(session_factory)
+    wid = _workspace_id(session_factory)
+    _seed_contact(session_factory, workspace_id=wid)  # ensures a channel in wid
+    channel_id = _channel_in_workspace(session_factory, wid)
+    token = _exchange(client, _assertion(iss=cid, workspace_id=wid)).json()["accessToken"]
+
+    tmpl = client.get(f"/omnichannel/channels/{channel_id}/templates", headers=_bearer(token))
+    assert tmpl.status_code == 200, tmpl.text
+    assert isinstance(tmpl.json(), list)
+
+    qr = client.get(f"/omnichannel/workspaces/{wid}/quick-replies", headers=_bearer(token))
+    assert qr.status_code == 200, qr.text
+    assert isinstance(qr.json(), list)
+
+    members = client.get(f"/omnichannel/workspaces/{wid}/members", headers=_bearer(token))
+    assert members.status_code == 200, members.text
+    assert isinstance(members.json(), list)
+
+
+def test_thread_scoped_token_reads_workspace_catalogs(client, session_factory):
+    """A thread:<contactId> token may still read its workspace's catalogs (it
+    needs templates to send / members to see assignees) — scope confines it to
+    its OWN workspace, not to zero catalog access."""
+    cid = _make_connection(session_factory)
+    wid = _workspace_id(session_factory)
+    contact_id = _seed_contact(session_factory, workspace_id=wid)
+    token = _exchange(
+        client, _assertion(iss=cid, workspace_id=wid, scope=f"thread:{contact_id}")
+    ).json()["accessToken"]
+    assert client.get(f"/omnichannel/workspaces/{wid}/quick-replies", headers=_bearer(token)).status_code == 200
+    assert client.get(f"/omnichannel/workspaces/{wid}/members", headers=_bearer(token)).status_code == 200
+
+
+def test_embed_reads_other_workspace_refused(client, session_factory):
+    """A token for workspace A is refused workspace B's quick-replies / members
+    AND another workspace's channel templates (403) — backend is the boundary."""
+    cid = _make_connection(session_factory)
+    wid = _workspace_id(session_factory)
+    other_wid, other_channel = _other_workspace_with_channel(session_factory)
+    token = _exchange(client, _assertion(iss=cid, workspace_id=wid)).json()["accessToken"]
+
+    assert (
+        client.get(f"/omnichannel/workspaces/{other_wid}/quick-replies", headers=_bearer(token)).status_code
+        == 403
+    )
+    assert (
+        client.get(f"/omnichannel/workspaces/{other_wid}/members", headers=_bearer(token)).status_code == 403
+    )
+    assert (
+        client.get(f"/omnichannel/channels/{other_channel}/templates", headers=_bearer(token)).status_code
+        == 403
+    )
+
+
+def test_native_reads_aux_catalogs_still_work(client, session_factory):
+    """The native session path is unchanged on the relocated read endpoints."""
+    wid = _workspace_id(session_factory)
+    _seed_contact(session_factory, workspace_id=wid)
+    channel_id = _channel_in_workspace(session_factory, wid)
+    token = _native_token(client)
+    assert client.get(f"/omnichannel/channels/{channel_id}/templates", headers=_bearer(token)).status_code == 200
+    assert client.get(f"/omnichannel/workspaces/{wid}/quick-replies", headers=_bearer(token)).status_code == 200
+    assert client.get(f"/omnichannel/workspaces/{wid}/members", headers=_bearer(token)).status_code == 200
 
 
 def test_embed_token_rejected_on_staff_endpoint(client, session_factory):

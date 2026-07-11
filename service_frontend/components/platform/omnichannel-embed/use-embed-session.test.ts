@@ -97,8 +97,12 @@ describe('useEmbedSession handshake', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain('/embed/session');
+    // The exchange sends the VALIDATED parent origin in the body (Finding 2) —
+    // the shared service validates THAT against the connection's allowedOrigins,
+    // not the widget's browser Origin header.
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
       assertion: makeAssertion([PARENT_ORIGIN]),
+      parentOrigin: PARENT_ORIGIN,
     });
     // Token held in memory for the reused conversation service.
     expect(embedAuthStore.getState()).toEqual({

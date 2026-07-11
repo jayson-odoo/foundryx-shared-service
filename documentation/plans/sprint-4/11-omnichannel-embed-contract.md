@@ -87,6 +87,8 @@ Envelope: `{ "v": 1, "type": "<type>", "payload": { ... } }`. **Every handler va
 
 `theme` = the whitelisted brand primitives (`{ primary, surface, text, bubbleIn, bubbleOut, radius, ... }`); `colorScheme` = `"light" | "dark"`. Business deep-links (create-X-from-conversation) are **deferred to v2** via the same `type` seam.
 
+**Assertions are single-use — mint a FRESH one per handshake cycle (MUST).** The parent mints a new, single-use assertion (unique `jti`) in response to **every** `ready` AND **every** `needToken` — it must NEVER cache/reuse an assertion across handshake cycles. The shared service consumes each `jti` exactly once (§8.1), so a replayed assertion is rejected `401 replayed`. A widget can legitimately re-`ready` on a genuine remount (recovery); if the parent replied to two `ready`s with the SAME assertion the second would `replayed`-fail and could brick the widget. The widget side minimises spurious remounts, but correctness rests on the parent honouring the mint-fresh-per-`ready` rule.
+
 ## 6. `message.received` webhook (the react bridge)
 
 Unchanged from the sprint-4/10 consumer webhook — the shared service already emits `message.inbound` on `POST /webhooks/omnichannel` (HMAC `X-Fx-Signature`, `X-Fx-Event-Id` dedup). EMS adds an `omnichannel.message_received` **workflow trigger** that consumes the inbound event and flattens it to the run context:

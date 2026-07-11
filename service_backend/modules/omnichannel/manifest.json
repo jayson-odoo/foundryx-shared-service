@@ -44,6 +44,11 @@
       "public": true
     },
     {
+      "name": "embed_reads",
+      "prefix": "",
+      "public": true
+    },
+    {
       "name": "settings",
       "prefix": "/omnichannel/settings"
     },

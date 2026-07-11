@@ -97,3 +97,27 @@ Legend: **PASS** (evidence executed green) · **DEFERRED** (authored/covered but
 - **Frontend token path:** `lib/api-client.ts` attaches the `embedAuthStore` access token as the Bearer whenever an embed session is set (else the NextAuth path) — the reused conversation service authenticates as the external agent with no code fork.
 - **Spec isolation:** the harness seeds its OWN dedicated `omnichannel_shared` connection (timestamped id + timestamped `embedSecret`) and only APPENDS a reply to the shared demo `cnt-001`; assertions match the specific timestamped reply text, so a parallel `inbox.spec.ts` send cannot cross-contaminate. No shared tenant state is mutated destructively.
 - **Follow-up for the next agent that owns the ports:** run the live E2E (command above) to convert AC-11H-12/13/14/15/16/17/20(live-clause)/21 from DEFERRED to PASS, and eyeball the embed thread + inbox at 375px and 1280px on a freshly rebuilt frontend.
+
+---
+
+## Live verification (executed 2026-07-11, this worktree owning :3001/:8001)
+
+Driven via Playwright against a cross-origin test parent on `:3009` (mints a fresh single-use assertion per `ready` — the real EMS pattern), iframe → the rebuilt `:3001` embed thread, live `:8001` backend on the shared Postgres (embed schema created surgically; no core reseed).
+
+| AC | Result | Live evidence |
+|---|---|---|
+| AC-11H-12 chromeless render | **PASS** | Embed thread renders with NO app shell (no sidebar/header/login) inside the iframe |
+| AC-11H-13 postMessage handshake | **PASS** | Cross-origin `ready`→`init`→`/embed/session` 200→paint; `event.origin` validated against the assertion's `allowedOrigins`; assertion never in URL. Single `ready` (double-mount fixed) |
+| AC-11H-14 theming | **PASS** | `init { theme, colorScheme }` accepted + applied as CSS vars |
+| AC-11H-15 frame-ancestors | **PASS** | `curl` embed route → `Content-Security-Policy: frame-ancestors http://localhost:3009` with `?c=`; `'none'` without `?c=`. Cross-origin framing from an allowed origin succeeds |
+| AC-11H-16 rich parity + composer | **PASS** | Full `ConversationDrawer`: contact header, status/priority chips, Messages/Activities tabs, in/out bubbles, internal note, timestamps, CSW-aware composer. Aux reads (`templates`, `quick-replies`, `members`) all 200 (the embed-reads router) — template picker + quick-replies + assignee list functional |
+| AC-11H-17 responsive | **PASS** | No horizontal overflow at 375px (scrollWidth 360 ≤ 375) AND 1280px; scrolls internally |
+| AC-11H-21 round-trip | **PASS (render/handshake); reply-send blocked by CSW** | Conversation renders + handshake round-trips attributed to the external agent. Free-form reply is CSW-locked (demo data > 24h → approved-template-only, a real product rule, not a defect); reply attribution to `sender_external_agent_id` remains pytest-verified |
+| AC-11H-20 DoD live clause | **PASS** | Verified end-to-end with a real cross-origin consumer embed at 375+1280 on a rebuilt frontend; no regression (backend 1036 / frontend 712) |
+
+### Three findings surfaced by live verify — all fixed
+1. **Aux endpoints 401 in embed mode** — the composer's `templates`/`quick-replies`/`members` reads lived on gated routers → 401 under the embed token. Moved to a public `embed_reads` router behind the unified principal, workspace-scoped (own-workspace only; cross-workspace 403). Now 200 live; +pytest.
+2. **`/embed/session` origin check validated the WIDGET origin, not the parent** — now the widget sends the validated `parentOrigin` in the body and the backend checks THAT against `allowedOrigins` (which stay purely parent origins). Verified live: exchange 200 with `allowedOrigins=['http://localhost:3009']` while the browser Origin header is `:3001`; +pytest (foreign Origin header ignored, missing/disallowed parentOrigin → `origin_not_allowed`).
+3. **Widget double-mount** (two `ready`s, could brick a single-assertion parent) — root-caused to a conditional wrapper in `providers/i18n-provider.tsx` (remount on i18n init); stabilized the tree (app-wide fix). Verified live: exactly one `ready`. Contract §5 also now mandates a fresh single-use assertion per `ready`/`needToken`.
+
+**Suites after fixes:** backend **1036 passed** (embed **35**), frontend **712 passed** (embed **7**).
