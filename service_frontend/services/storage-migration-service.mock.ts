@@ -40,6 +40,7 @@ export const mockStorageMigrationService: StorageMigrationService = {
       actorUserId: 'u-1',
       payload: { toConnectionId: 'conn-b', toBucket: input.config.bucket ?? input.name },
       result: null,
+      logs: null,
       progressTotal: 0,
       progressDone: 0,
       progressFailed: 0,

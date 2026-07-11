@@ -89,6 +89,7 @@ describe('EmbedAccessPanel', () => {
   it('adds an origin and saves it through the service', async () => {
     render(<EmbedAccessPanel />);
     await screen.findByDisplayValue('conn-embed-1');
+    await userEvent.click(screen.getByRole('tab', { name: /allowed origins/i }));
     const input = screen.getByLabelText(/new allowed origin/i);
     await userEvent.type(input, 'https://crm.acme.com');
     await userEvent.click(screen.getByRole('button', { name: /^add$/i }));
@@ -102,6 +103,7 @@ describe('EmbedAccessPanel', () => {
   it('removes a staged origin before saving', async () => {
     render(<EmbedAccessPanel />);
     await screen.findByDisplayValue('conn-embed-1');
+    await userEvent.click(screen.getByRole('tab', { name: /allowed origins/i }));
     const input = screen.getByLabelText(/new allowed origin/i);
     await userEvent.type(input, 'https://crm.acme.com');
     await userEvent.click(screen.getByRole('button', { name: /^add$/i }));
@@ -114,6 +116,9 @@ describe('buildSnippet', () => {
   it('reflects the selected route', () => {
     expect(buildSnippet('https://foundryx.example', 'c1', 'thread', 'ws-1')).toContain(
       '/embed/omnichannel/thread?c=c1',
+    );
+    expect(buildSnippet('https://foundryx.example', 'c1', 'thread-full', 'ws-1')).toContain(
+      '/embed/omnichannel/thread-full?c=c1',
     );
     expect(buildSnippet('https://foundryx.example', 'c1', 'inbox', 'ws-1')).toContain(
       '/embed/omnichannel/inbox?c=c1',

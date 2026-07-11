@@ -24,6 +24,13 @@ export interface JobFailure {
   reason: string;
 }
 
+/** One milestone log line (backend `JobService.log`). */
+export interface JobLogEntry {
+  ts: string; // ISO Z
+  level: string; // info | warning | error
+  message: string;
+}
+
 /** A storage-migration `result_json` payload (other types carry their own). */
 export interface StorageMigrationResult {
   copied: number;
@@ -41,6 +48,7 @@ export interface Job {
   actorUserId: string | null;
   payload: Record<string, unknown> | null;
   result: (StorageMigrationResult & Record<string, unknown>) | Record<string, unknown> | null;
+  logs: JobLogEntry[] | null;
   progressTotal: number;
   progressDone: number;
   progressFailed: number;

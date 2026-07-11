@@ -6,11 +6,15 @@ Modules register their own at install (omnichannel ``conversation_messages.
 media_key`` in its boot hook). Guarded by ``lazy_once`` (the house one-shot
 registration pattern).
 """
+import logging
+
 from app.lazy_registry import lazy_once
 from app.storage_migration.registry import (
     StorageKeyLoc,
     register_storage_key_location,
 )
+
+logger = logging.getLogger("foundryx.storage_migration")
 
 
 def _register_core_locations() -> None:
@@ -55,3 +59,31 @@ def _register_core_locations() -> None:
 
 
 ensure_core_locations = lazy_once(_register_core_locations)
+
+
+def ensure_all_storage_locations() -> None:
+    """Register EVERY storage-key location — core + all on-disk modules' — into
+    ``_LOCATIONS``. Idempotent.
+
+    **The fix for the worker no-op bug (sprint-4/12).** Location registration
+    was previously a side effect of the FastAPI app boot only:
+    ``ensure_core_locations()`` runs in ``main.py`` lifespan, and each module's
+    ``register_engine_entities()`` runs via ``load_modules`` → ``register_module
+    _boot`` at app startup. A ``storage_migration`` job, however, executes in the
+    **Celery worker** process, which runs neither — so ``_LOCATIONS`` was empty,
+    ``enumerate_keys`` returned 0 keys, and the migration finished "done" having
+    copied and rewritten NOTHING. Calling this at the top of the job handler
+    makes enumeration correct regardless of which process runs it.
+    """
+    ensure_core_locations()
+    # Deferred import — avoids a module_loader ↔ storage_migration import cycle.
+    from app.module_loader import discover_manifests, register_module_boot
+
+    for manifest in discover_manifests():
+        name = manifest["module_name"]
+        try:
+            register_module_boot(name)  # → module.register_engine_entities()
+        except Exception:  # noqa: BLE001 — a broken module must not abort a migration
+            logger.exception(
+                "module '%s' boot registration failed during storage migration", name
+            )

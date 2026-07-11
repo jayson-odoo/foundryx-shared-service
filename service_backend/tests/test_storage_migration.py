@@ -241,6 +241,78 @@ def test_start_refuses_when_new_bucket_test_fails(db, only_avatar_location, fake
 # ── AC-10-10..12: copy + auto-cutover (clean) ─────────────────────────────────
 
 
+# ── sprint-4/12 regression: worker self-registers storage-key locations ───────
+
+
+def test_ensure_all_storage_locations_registers_module_keys(db):
+    """Regression (sprint-4/12): a ``storage_migration`` job runs in the Celery
+    worker, which never boots the FastAPI app — so module ``register_engine_
+    entities`` (and core ``ensure_core_locations``) never ran there, ``_LOCATIONS``
+    was EMPTY, ``enumerate_keys`` found 0 keys, and the migration finished "done"
+    having copied/rewritten NOTHING (omnichannel ``conversation_messages.media_
+    key`` stayed on the old connection id in prod). ``ensure_all_storage_
+    locations`` registers core + every module location regardless of process.
+    """
+    from app.storage_migration.core_locations import ensure_all_storage_locations
+    from app.storage_migration.registry import registered_scalar_columns
+
+    # Snapshot AFTER a full populate — ``ensure_core_locations`` is ``lazy_once``,
+    # so restoring a pre-populate snapshot would permanently drop core locations.
+    ensure_all_storage_locations()
+    saved = dict(reg._LOCATIONS)
+    reg._LOCATIONS.clear()
+    try:
+        ensure_all_storage_locations()
+        cols = registered_scalar_columns()
+        # the exact columns that silently missed migration in production.
+        assert ("conversation_messages", "media_key") in cols
+        assert ("whatsapp_templates", "media_sample_key") in cols
+    finally:
+        reg._LOCATIONS.clear()
+        reg._LOCATIONS.update(saved)
+
+
+def test_migration_handler_self_registers_when_registry_empty(db, fakes, stub_probe):
+    """End-to-end: even with ``_LOCATIONS`` cleared (a fresh worker), running the
+    migration handler re-registers the module locations before enumerating — so
+    the omnichannel media-key location is present, not silently skipped. With no
+    keys seeded, the 0-keys guard HOLDS the job (needs_review) instead of a
+    silent auto-cutover — the visible-not-silent behaviour the prod bug lacked."""
+    from app.storage_migration.core_locations import ensure_all_storage_locations
+    from app.storage_migration.registry import registered_scalar_columns
+
+    ensure_all_storage_locations()  # populate before snapshot (lazy_once, see above)
+    _storage_conn(db)  # A: an active storage connection to migrate from
+    saved = dict(reg._LOCATIONS)
+    reg._LOCATIONS.clear()  # simulate the worker process (nothing registered)
+    try:
+        job = _start(db)  # start() enqueues → eager run of the handler inline
+        db.refresh(job)
+        # The module location that was missing before the fix is now registered …
+        assert ("conversation_messages", "media_key") in registered_scalar_columns()
+        # … and an empty enumeration HOLDS for review (never a silent "done").
+        assert job.status == JOB_NEEDS_REVIEW
+        assert job.logs_json and any(
+            "Enumerated" in e["message"] for e in job.logs_json
+        )
+    finally:
+        reg._LOCATIONS.clear()
+        reg._LOCATIONS.update(saved)
+
+
+def test_zero_keys_holds_for_review_not_silent_done(db, only_avatar_location, fakes, stub_probe):
+    """0-keys guard (sprint-4/12): a migration that enumerates nothing HOLDS at
+    needs_review — the operator Completes it if bucket A is genuinely empty,
+    rather than a "done" that migrated nothing (the prod silent no-op)."""
+    _storage_conn(db)  # A exists, but no avatar_key points at it → 0 keys
+    job = _start(db)
+    db.refresh(job)
+    assert job.status == JOB_NEEDS_REVIEW
+    # Complete accepts the empty result and cuts over (nothing to rewrite).
+    done = StorageMigrationService(db).complete(DEFAULT_TENANT_ID, job.id)
+    assert done.status == JOB_DONE
+
+
 def test_clean_migration_copies_and_cutovers(db, only_avatar_location, fakes, stub_probe):
     a = _storage_conn(db)
     a_fake = fakes.setdefault(a.id, FakeAdapter())

@@ -17,7 +17,11 @@ import { EmbedInboxView } from './embed-inbox-view';
 import { EmbedThreadView } from './embed-thread-view';
 import { useEmbedSession, type EmbedStatus } from './use-embed-session';
 
-export type EmbedMode = 'thread' | 'inbox';
+// `thread` = compact single conversation (messages + composer only); `thread-full`
+// = the same `thread:<contactId>` scope but the FULL conversation UI (contact
+// header / assign / lifecycle). Both share the thread scope — compactness is a
+// frontend render choice, not a token difference.
+export type EmbedMode = 'thread' | 'thread-full' | 'inbox';
 
 function EmbedStatusScreen({ status, error }: { status: EmbedStatus; error: string | null }) {
   return (
@@ -64,7 +68,9 @@ export function EmbedShell({ mode }: { mode: EmbedMode }) {
   }, [mode, status, postResize]);
 
   const renderReady = () => {
-    if (mode === 'thread') return <EmbedThreadView contactId={contactId} />;
+    if (mode === 'thread' || mode === 'thread-full') {
+      return <EmbedThreadView contactId={contactId} compact={mode === 'thread'} />;
+    }
     return <EmbedInboxView workspaceId={session!.workspace.id} />;
   };
 
