@@ -126,8 +126,18 @@ class IntegrationService:
             sort_by=sort_by,
             sort_dir=sort_dir,
             filter_clause=clause,
+            providers=self._registered_providers(),
         )
         return [_connection_out(c) for c in rows], total
+
+    @staticmethod
+    def _registered_providers() -> List[str]:
+        """Provider keys the Integrations surface owns. Infrastructure rows in
+        the same ``connections`` table under an unregistered provider (e.g. the
+        embed ``omnichannel_shared`` connection) are deliberately excluded — the
+        integrations Disconnect action would otherwise destroy them and mint a
+        new connection id, invalidating every consumer's embed iframe."""
+        return [p.provider for p in all_providers()]
 
     def get(self, tenant_id: str, connection_id: str) -> ConnectionOut:
         return _connection_out(self._get_or_404(tenant_id, connection_id))
@@ -305,6 +315,9 @@ class IntegrationService:
 
     def _get_or_404(self, tenant_id: str, connection_id: str) -> Connection:
         connection = self.repo.get(connection_id, tenant_id)
-        if connection is None:
+        # Infrastructure rows under an unregistered provider (embed
+        # ``omnichannel_shared``) are not part of the Integrations surface — hide
+        # them from detail/test/disconnect just as they're hidden from the list.
+        if connection is None or get_provider(connection.provider) is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Connection not found.")
         return connection

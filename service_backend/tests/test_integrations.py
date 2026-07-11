@@ -89,6 +89,26 @@ def test_create_connection_encrypts_credentials_and_never_echoes(client, session
         db.close()
 
 
+def test_embed_connection_hidden_from_integrations(client):
+    """The embed ``omnichannel_shared`` row lives in core ``connections`` but is
+    NOT part of the Integrations surface — it must never appear in the list
+    (where Disconnect would destroy it + mint a new connection id, breaking every
+    consumer's embed iframe) nor resolve on detail."""
+    h = _demo_headers(client)
+    # Enable the embed connection (creates the omnichannel_shared row).
+    assert client.post("/omnichannel/embed-config/enable", headers=h).status_code == 200
+    embed_id = client.get("/omnichannel/embed-config", headers=h).json()["connectionId"]
+    assert embed_id
+    # A normal SMTP connection for contrast — that one DOES show.
+    smtp = _create(client, h)
+
+    ids = [c["id"] for c in client.get("/integrations/connections", headers=h).json()["data"]]
+    assert smtp["id"] in ids
+    assert embed_id not in ids
+    # Detail refuses it too (so test/disconnect can't reach it).
+    assert client.get(f"/integrations/connections/{embed_id}", headers=h).status_code == 404
+
+
 def test_duplicate_provider_conflicts(client):
     h = _demo_headers(client)
     _create(client, h)

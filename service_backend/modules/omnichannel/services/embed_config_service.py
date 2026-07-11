@@ -18,6 +18,7 @@ Layering: this service owns the business logic; the router is HTTP-only. All DB
 access goes through the CORE ``ConnectionRepository`` (never raw SQL) and the
 module's workspace query — every read/write is tenant-scoped from the JWT.
 """
+import re
 import secrets as pysecrets
 from typing import Dict, List
 from urllib.parse import urlsplit
@@ -37,6 +38,12 @@ EMBED_TYPE = "omnichannel"
 EMBED_CONNECTION_NAME = "Embed access"
 # 32 bytes of entropy → ~43-char url-safe secret. Ample for HS256.
 SECRET_ENTROPY_BYTES = 32
+
+# Exact hostname (or IPv4) — dot-separated labels of letters/digits/hyphen only.
+# Rejects wildcards (`*.acme.com`) and other special characters.
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,62})?(\.[a-z0-9]([a-z0-9-]{0,62})?)*$"
+)
 
 
 class EmbedNotEnabled(Exception):
@@ -80,6 +87,14 @@ def _validate_origin(raw: str) -> str:
     host = (parts.hostname or "").lower()
     if not host:
         raise InvalidOrigin(f"'{value}' is missing a host.")
+    # Exact hostnames only — no wildcards / other special chars. A '*' is a legal
+    # urlsplit host code point and would otherwise pass and (if fed to a CSP
+    # frame-ancestors) silently broaden who may embed. Labels: letters/digits/hyphen.
+    if not _HOSTNAME_RE.match(host):
+        raise InvalidOrigin(
+            f"'{value}' has an invalid host — wildcards and special characters "
+            "are not allowed (e.g. https://crm.acme.com)."
+        )
     try:
         port = parts.port
     except ValueError:
@@ -91,7 +106,10 @@ def _validate_origin(raw: str) -> str:
             f"'{value}' must use https:// (http:// is only allowed for localhost)."
         )
 
-    netloc = host if port is None else f"{host}:{port}"
+    # Drop the scheme's default port so the stored value matches a browser Origin
+    # header (which omits :443/:80) — keeps the origins-editor dirty flag honest.
+    default_port = 443 if parts.scheme == "https" else 80
+    netloc = host if port is None or port == default_port else f"{host}:{port}"
     return f"{parts.scheme}://{netloc}"
 
 

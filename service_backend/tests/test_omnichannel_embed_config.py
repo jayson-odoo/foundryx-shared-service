@@ -151,6 +151,33 @@ def test_set_origins_rejects_query(client):
     assert res.status_code == 422
 
 
+def test_set_origins_rejects_wildcard_host(client):
+    """A wildcard host is a legal urlsplit host but must be refused — fed to a
+    CSP frame-ancestors it would silently broaden who may embed."""
+    token = _token(client)
+    client.post("/omnichannel/embed-config/enable", headers=_bearer(token))
+    res = client.put(
+        "/omnichannel/embed-config/origins",
+        json={"allowedOrigins": ["https://*.acme.com"]},
+        headers=_bearer(token),
+    )
+    assert res.status_code == 422
+
+
+def test_set_origins_strips_default_port(client):
+    """The scheme's default port is dropped so the stored value matches a
+    browser Origin header (which omits :443/:80)."""
+    token = _token(client)
+    client.post("/omnichannel/embed-config/enable", headers=_bearer(token))
+    res = client.put(
+        "/omnichannel/embed-config/origins",
+        json={"allowedOrigins": ["https://crm.acme.com:443", "http://localhost:80"]},
+        headers=_bearer(token),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["allowedOrigins"] == ["https://crm.acme.com", "http://localhost"]
+
+
 def test_set_origins_rejects_non_localhost_http(client):
     token = _token(client)
     client.post("/omnichannel/embed-config/enable", headers=_bearer(token))

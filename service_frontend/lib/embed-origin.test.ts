@@ -35,6 +35,15 @@ describe('validateEmbedOrigin', () => {
     expect(validateEmbedOrigin('https://crm.acme.com#a').ok).toBe(false);
   });
 
+  it('rejects a wildcard host', () => {
+    expect(validateEmbedOrigin('https://*.acme.com').ok).toBe(false);
+  });
+
+  it('strips the default port to match a browser Origin header', () => {
+    expect(validateEmbedOrigin('https://crm.acme.com:443').value).toBe('https://crm.acme.com');
+    expect(validateEmbedOrigin('http://localhost:80').value).toBe('http://localhost');
+  });
+
   it('rejects blanks and garbage', () => {
     expect(validateEmbedOrigin('').ok).toBe(false);
     expect(validateEmbedOrigin('not a url').ok).toBe(false);

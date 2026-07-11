@@ -43,10 +43,20 @@ class ConnectionRepository:
         sort_by: Optional[str] = None,
         sort_dir: str = "asc",
         filter_clause=None,
+        providers: Optional[List[str]] = None,
     ) -> Tuple[List[Connection], int]:
         """Server-side Resource list (plan 06 D6): search + filter + sort +
-        paginate. Returns (rows, total)."""
+        paginate. Returns (rows, total).
+
+        ``providers`` (when given) restricts to those provider keys — the
+        Integrations UI passes the registered-provider set so infrastructure
+        rows in the same table (e.g. the embed ``omnichannel_shared`` connection)
+        never surface where a Disconnect would silently destroy them.
+        """
         q = self.db.query(Connection).filter(Connection.tenant_id == tenant_id)
+
+        if providers is not None:
+            q = q.filter(Connection.provider.in_(providers))
 
         if search and search.strip():
             term = f"%{search.strip()}%"
