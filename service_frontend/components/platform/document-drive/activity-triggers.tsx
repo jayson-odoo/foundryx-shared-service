@@ -1,8 +1,15 @@
 'use client';
 
-import { Download, FileSpreadsheet, Upload, type LucideIcon } from 'lucide-react';
+import {
+  Download,
+  FileSpreadsheet,
+  Settings2,
+  Upload,
+  type LucideIcon,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useImportActivity } from '@/providers/import-activity-provider';
+import { useJobsActivity } from '@/providers/jobs-activity-provider';
 import { useDownloads } from './downloads-manager';
 import { useUploadManager } from './upload-manager';
 
@@ -17,6 +24,7 @@ export function ActivityTriggers() {
   const uploads = useUploadManager();
   const downloads = useDownloads();
   const imports = useImportActivity();
+  const jobs = useJobsActivity();
 
   return (
     <>
@@ -31,6 +39,12 @@ export function ActivityTriggers() {
         label="Imports"
         count={imports.activeCount}
         onClick={() => imports.setDrawerOpen(true)}
+      />
+      <TriggerButton
+        icon={Settings2}
+        label="Jobs"
+        count={jobs.activeCount}
+        onClick={() => jobs.setDrawerOpen(true)}
       />
       <TriggerButton
         icon={Download}

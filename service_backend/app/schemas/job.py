@@ -40,3 +40,17 @@ class StorageMigrationStartRequest(BaseModel):
     name: str
     config: Dict[str, str]
     credentials: Dict[str, str] = Field(default_factory=dict)
+
+
+class StorageMigrationTestRequest(BaseModel):
+    """Non-destructive pre-create probe of a candidate new bucket (wizard Test
+    step). No ``name`` — nothing is persisted."""
+
+    provider: str
+    config: Dict[str, str]
+    credentials: Dict[str, str] = Field(default_factory=dict)
+
+
+class StorageMigrationTestResult(BaseModel):
+    ok: bool
+    message: str

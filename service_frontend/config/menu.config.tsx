@@ -7,6 +7,7 @@ import {
   CheckCircle,
   ClipboardList,
   Coffee,
+  Cog,
   Euro,
   Eye,
   FileQuestion,
@@ -250,6 +251,14 @@ export const MENU_SIDEBAR: MenuConfig = [
     icon: FolderClosed,
     path: '/imports',
     termKey: 'import',
+  },
+  // Centralized background jobs (sprint-4/10) — storage migration + future async
+  // job types. Readable by any authed user (jobs are tenant-scoped server-side);
+  // the migration controls are gated separately. Sidebar-only, mirroring Imports.
+  {
+    title: 'Jobs',
+    icon: Cog,
+    path: '/jobs',
   },
   // Document management / the Drive (sprint-3/04) — files, folders, sharing.
   {

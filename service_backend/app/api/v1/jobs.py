@@ -15,7 +15,13 @@ from app.database import get_db
 from app.dependencies import get_actor_user_id, get_current_user, require_permission
 from app.jobs.service import JobService
 from app.models.user import User
-from app.schemas.job import JobListResponse, JobOut, StorageMigrationStartRequest
+from app.schemas.job import (
+    JobListResponse,
+    JobOut,
+    StorageMigrationStartRequest,
+    StorageMigrationTestRequest,
+    StorageMigrationTestResult,
+)
 from app.storage_migration.service import StorageMigrationService
 
 router = APIRouter()
@@ -39,6 +45,22 @@ def start_storage_migration(
         new_credentials=payload.credentials,
     )
     return JobOut.model_validate(job)
+
+
+@router.post("/storage/migrations/test", response_model=StorageMigrationTestResult)
+def test_storage_migration_bucket(
+    payload: StorageMigrationTestRequest,
+    user: User = Depends(require_permission(_MIGRATE_PERM)),
+    db: Session = Depends(get_db),
+) -> StorageMigrationTestResult:
+    """Non-destructive probe of a candidate new bucket (wizard Test step) —
+    nothing is persisted; Start stays disabled until this passes."""
+    ok, message = StorageMigrationService(db).test_bucket(
+        provider=payload.provider,
+        config=payload.config,
+        credentials=payload.credentials,
+    )
+    return StorageMigrationTestResult(ok=ok, message=message)
 
 
 @router.get("/jobs", response_model=JobListResponse)

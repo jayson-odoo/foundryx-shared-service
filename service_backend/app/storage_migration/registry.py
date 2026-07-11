@@ -232,9 +232,9 @@ _NON_STORAGE_KEY_COLUMNS = frozenset(
         "dynamic_key",  # notification dynamic-recipient key
         "period_key",  # numbering period key
         "score_field_key",  # review score-field reference
-        # A DRAFT WhatsApp media-header sample IS a storage key, but full
-        # omnichannel migration wiring is Slice 3 (plan §6) — deferred, tracked.
-        "media_sample_key",
+        # NOTE: `media_sample_key` (WhatsApp draft media-header sample) IS a
+        # storage key — registered by omnichannel at install (Slice 3), so it is
+        # deliberately NOT excluded here; the drift test now enforces it.
     }
 )
 

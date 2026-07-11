@@ -119,20 +119,13 @@ class StorageMigrationService:
                 "A storage migration for this connection is already in progress.",
             )
 
-        # 3. validate provider + TEST the new bucket B before committing to it.
-        prov = get_provider(provider)
-        if prov is None or getattr(prov, "type", None) != STORAGE_TYPE:
+        # 3. validate provider + TEST the new bucket B before committing to it
+        #    (the SAME probe the non-destructive wizard Test step runs).
+        ok, message = self._probe_bucket(provider, new_config, new_credentials)
+        if not ok:
             raise HTTPException(
                 http_status.HTTP_422_UNPROCESSABLE_ENTITY,
-                f'Unknown or non-storage provider "{provider}".',
-            )
-        probe = S3CompatibleAdapter.from_connection(
-            provider, dict(new_config), dict(new_credentials)
-        ).run_probe()
-        if not probe.ok:
-            raise HTTPException(
-                http_status.HTTP_422_UNPROCESSABLE_ENTITY,
-                f"The new storage bucket could not be verified: {probe.message}",
+                f"The new storage bucket could not be verified: {message}",
             )
 
         # 4. ONE transaction: retire A (so the partial-unique index permits a
@@ -164,6 +157,33 @@ class StorageMigrationService:
 
         JobService(self.db).enqueue(job.id)
         return self.jobs.get_unscoped(job.id) or job
+
+    def test_bucket(
+        self,
+        *,
+        provider: str,
+        config: Dict[str, Any],
+        credentials: Dict[str, str],
+    ) -> tuple[bool, str]:
+        """Non-destructive pre-create probe of a candidate new bucket B — the
+        SAME ``run_probe`` (head_bucket + round-trip) that ``start`` runs and
+        that the connect wizard's Test uses. Backs the wizard's Test step so
+        Start is disabled until a bucket verifies (foolproof-UI, AC-10-18)."""
+        return self._probe_bucket(provider, config, credentials)
+
+    def _probe_bucket(
+        self, provider: str, config: Dict[str, Any], credentials: Dict[str, str]
+    ) -> tuple[bool, str]:
+        prov = get_provider(provider)
+        if prov is None or getattr(prov, "type", None) != STORAGE_TYPE:
+            raise HTTPException(
+                http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f'Unknown or non-storage provider "{provider}".',
+            )
+        probe = S3CompatibleAdapter.from_connection(
+            provider, dict(config), dict(credentials)
+        ).run_probe()
+        return probe.ok, probe.message
 
     # ── job control ──────────────────────────────────────────────────────────
 
