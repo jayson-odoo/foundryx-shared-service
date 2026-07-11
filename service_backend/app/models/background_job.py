@@ -59,6 +59,10 @@ class BackgroundJob(Base):
     payload_json = Column(_JSON, nullable=True)  # type input
     result_json = Column(_JSON, nullable=True)  # type output
     cursor_json = Column(_JSON, nullable=True)  # resume point
+    # Human-readable milestone log for troubleshooting (sprint-4/12): a list of
+    # ``{ts, level, message}`` appended via ``JobService.log`` and surfaced on the
+    # job-detail page. Milestones only (never per-item) — cheap + reads well.
+    logs_json = Column(_JSON, nullable=True)
 
     progress_total = Column(Integer, nullable=False, default=0)
     progress_done = Column(Integer, nullable=False, default=0)

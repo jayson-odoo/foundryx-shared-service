@@ -48,6 +48,19 @@ PLATFORM_EMAIL = PLATFORM_ADMIN_EMAIL
 PLATFORM_PASSWORD = PLATFORM_ADMIN_PASSWORD
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _register_storage_locations():
+    """Populate the global storage-key location registry once, before any test
+    snapshots/clears it. Mirrors app boot (``ensure_core_locations`` +
+    ``load_modules``). ``ensure_core_locations`` is ``lazy_once``, so without an
+    early full populate a migration test that first triggers it inside a
+    clear/restore window would strand core locations for the drift test."""
+    from app.storage_migration.core_locations import ensure_all_storage_locations
+
+    ensure_all_storage_locations()
+    yield
+
+
 @pytest.fixture
 def session_factory():
     # The omnichannel module uses the `app_omnichannel` schema. SQLite has no

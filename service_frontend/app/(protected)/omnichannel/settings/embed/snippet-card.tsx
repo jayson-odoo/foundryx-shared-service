@@ -13,10 +13,11 @@ export interface SnippetCardProps {
   workspaces: EmbedWorkspaceOption[];
 }
 
-type EmbedRoute = 'thread' | 'inbox';
+type EmbedRoute = 'thread' | 'thread-full' | 'inbox';
 
 const ROUTE_OPTIONS = [
-  { value: 'thread', label: 'Single thread' },
+  { value: 'thread', label: 'Compact thread' },
+  { value: 'thread-full', label: 'Full thread' },
   { value: 'inbox', label: 'Full inbox' },
 ];
 

@@ -23,6 +23,7 @@ function makeJob(over: Partial<Job> = {}): Job {
     actorUserId: 'u-1',
     payload: { fromConnectionId: 'conn-a', toConnectionId: 'conn-b' },
     result: null,
+    logs: null,
     progressTotal: 20,
     progressDone: 4,
     progressFailed: 0,

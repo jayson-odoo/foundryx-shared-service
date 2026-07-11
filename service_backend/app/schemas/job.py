@@ -21,6 +21,7 @@ class JobOut(ApiModel):
     actorUserId: Optional[str] = Field(default=None, validation_alias="actor_user_id")
     payload: Optional[Dict[str, Any]] = Field(default=None, validation_alias="payload_json")
     result: Optional[Dict[str, Any]] = Field(default=None, validation_alias="result_json")
+    logs: Optional[List[Dict[str, Any]]] = Field(default=None, validation_alias="logs_json")
     progressTotal: int = Field(validation_alias="progress_total")
     progressDone: int = Field(validation_alias="progress_done")
     progressFailed: int = Field(validation_alias="progress_failed")

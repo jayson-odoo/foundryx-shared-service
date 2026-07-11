@@ -33,7 +33,7 @@ import {
 } from '@/components/platform/jobs-drawer';
 import { useDatetime } from '@/hooks/use-datetime';
 import { jobsService } from '@/services/jobs-service';
-import { JOB_IN_FLIGHT, type Job, type JobFailure } from '@/types/jobs';
+import { JOB_IN_FLIGHT, type Job, type JobFailure, type JobLogEntry } from '@/types/jobs';
 import { useJobActions } from '../use-job-actions';
 
 const POLL_MS = 3000;
@@ -100,6 +100,7 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
 
   const failures = (job.result?.failures as JobFailure[] | undefined) ?? [];
   const payload = job.payload ?? {};
+  const logs: JobLogEntry[] = job.logs ?? [];
 
   return (
     <Container width="fluid">
@@ -181,6 +182,41 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
           </CardContent>
         </Card>
       </div>
+
+      <Card className="mt-5">
+        <CardHeader>
+          <CardHeading>
+            <CardTitle>Logs</CardTitle>
+          </CardHeading>
+        </CardHeader>
+        <CardContent>
+          {logs.length === 0 ? (
+            <p className="text-muted-foreground text-sm">No log entries yet.</p>
+          ) : (
+            <ul className="space-y-1.5 font-mono text-xs">
+              {logs.map((entry, i) => (
+                <li key={i} className="flex flex-wrap gap-x-2 gap-y-0.5">
+                  <span className="text-muted-foreground shrink-0">
+                    {formatDateTime(entry.ts)}
+                  </span>
+                  <span
+                    className={
+                      entry.level === 'error'
+                        ? 'text-destructive shrink-0 uppercase'
+                        : entry.level === 'warning'
+                          ? 'shrink-0 uppercase text-amber-600'
+                          : 'text-muted-foreground shrink-0 uppercase'
+                    }
+                  >
+                    {entry.level}
+                  </span>
+                  <span className="min-w-0 break-words">{entry.message}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
 
       {failures.length > 0 && (
         <Card className="mt-5">

@@ -121,6 +121,19 @@ class JobService:
         job.cursor_json = cursor
         self.db.commit()
 
+    def log(self, job: BackgroundJob, message: str, *, level: str = "info") -> None:
+        """Append a milestone log line to the job (surfaced on the detail page).
+        Reassigns a FRESH list so SQLAlchemy tracks the change (a plain JSON
+        column drops in-place mutation — the house gotcha). Milestones only."""
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "level": level,
+            "message": message,
+        }
+        job.logs_json = list(job.logs_json or []) + [entry]
+        self.db.commit()
+        logger.info("[job %s] %s", job.id, message)
+
     def finish(
         self,
         job: BackgroundJob,

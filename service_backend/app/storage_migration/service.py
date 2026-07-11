@@ -46,7 +46,8 @@ from app.models.connection import (
 from app.jobs.repository import BackgroundJobRepository
 from app.repositories.connection_repository import ConnectionRepository
 from app.secrets import encrypt_secret
-from app.storage_migration.registry import enumerate_keys, rewrite_keys
+from app.storage_migration.core_locations import ensure_all_storage_locations
+from app.storage_migration.registry import enumerate_keys, list_locations, rewrite_keys
 
 logger = logging.getLogger("foundryx.storage_migration")
 
@@ -284,9 +285,15 @@ def _cutover(
     """Batch-rewrite the successfully-copied ``conn:A:`` keys → ``conn:B:``
     (value-checked, only-keys-checked), then mark the job done. A is already
     ``is_active=false`` from start — no bucket deletes, ever (D13)."""
-    rewrite_keys(db, from_id, to_id, only_keys=only_keys)
+    n = rewrite_keys(db, from_id, to_id, only_keys=only_keys)
     result = _result_from_cursor(job)
-    JobService(db).finish(job, status=JOB_DONE, result=result)
+    svc = JobService(db)
+    svc.log(
+        job,
+        f"Cutover complete — rewrote {n} key column(s) conn:{from_id}: → "
+        f"conn:{to_id}:. Old connection retired (serves stragglers by key).",
+    )
+    svc.finish(job, status=JOB_DONE, result=result)
 
 
 def _result_from_cursor(job: BackgroundJob) -> Dict[str, Any]:
@@ -308,24 +315,54 @@ def run_storage_migration(db: Session, job: BackgroundJob) -> None:
     Resumable: the cursor carries ``{keys, index, copied, failures}`` so a
     restart continues where it stopped (already-copied keys skip)."""
     from_id, to_id = StorageMigrationService._conn_ids(job)
+    service = JobService(db)
     conns = ConnectionRepository(db)
     a_conn = conns.get_by_id(from_id)
     b_conn = conns.get_by_id(to_id)
     if a_conn is None or b_conn is None:
+        service.log(job, "Migration connection missing — cannot start.", level="error")
         JobService(db).finish(
             db_job_reload(db, job), status=JOB_FAILED, error="Migration connection missing."
         )
         return
 
+    # CRITICAL — register every storage-key location BEFORE enumerating. The job
+    # may run in the Celery worker, which never boots the FastAPI app; without
+    # this, ``_LOCATIONS`` is empty and enumeration silently finds 0 keys (the
+    # sprint-4/12 no-op bug). Idempotent.
+    ensure_all_storage_locations()
+
+    # Hard guard: no registered locations = a boot/deploy problem, not an empty
+    # bucket. Enumeration would find 0 keys and auto-cutover to "done" having
+    # migrated nothing — the exact silent no-op that stranded prod media. Fail
+    # loudly instead (the connection flip is reversible via Abort).
+    if not list_locations():
+        service.log(
+            job,
+            "No storage-key locations are registered — cannot enumerate. This is a "
+            "boot/deploy problem (the worker did not load the modules).",
+            level="error",
+        )
+        service.finish(
+            db_job_reload(db, job),
+            status=JOB_FAILED,
+            error="No storage-key locations registered — nothing could be enumerated.",
+        )
+        return
+
     a_adapter = _adapter_for(a_conn)
     b_adapter = _adapter_for(b_conn)
-    service = JobService(db)
 
     cursor = dict(job.cursor_json or {})
     if not cursor.get("keys"):
         # Fresh start — enumerate the DISTINCT conn:A: blobs across ALL
         # registered locations (connection-scoped, so the platform connection
         # naturally sweeps every fallback tenant's rows — D11).
+        service.log(
+            job,
+            f"Registered {len(list_locations())} storage-key locations; "
+            f"enumerating conn:{from_id}: blobs.",
+        )
         keys = sorted(enumerate_keys(db, from_id))
         cursor = {"keys": keys, "index": 0, "copied": [], "failures": []}
         job.progress_total = len(keys)
@@ -333,6 +370,28 @@ def run_storage_migration(db: Session, job: BackgroundJob) -> None:
         job.progress_failed = 0
         job.cursor_json = cursor
         db.commit()
+        service.log(
+            job,
+            f"Enumerated {len(keys)} blob(s) to copy from {from_id} → {to_id}."
+            + ("" if keys else " Nothing to migrate."),
+        )
+        # 0-keys guard: do NOT silently auto-cutover on an empty enumeration.
+        # Either the source bucket is genuinely empty (fine — the operator
+        # Completes) OR something is misconfigured and blobs were missed (the
+        # prod bug). HOLD at needs_review so a human confirms rather than a
+        # "done" that migrated nothing.
+        if not keys:
+            service.log(
+                job,
+                "Nothing enumerated — holding for review instead of auto-cutover. "
+                "If bucket A truly has no assets, Complete to finish; otherwise "
+                "investigate before cutting over.",
+                level="warning",
+            )
+            service.finish(
+                job, status=JOB_NEEDS_REVIEW, result=_result_from_cursor(job)
+            )
+            return
 
     keys: List[str] = cursor["keys"]
     copied: Set[str] = set(cursor.get("copied", []))
@@ -390,8 +449,15 @@ def run_storage_migration(db: Session, job: BackgroundJob) -> None:
     if failures:
         # Assets keep serving (A active-by-key / B) until the user Completes or
         # Retries — never a silent partial cutover (D5).
+        service.log(
+            job,
+            f"Copied {len(copied)} blob(s), {len(failures)} failed — holding for "
+            "review (no cutover). Complete or Retry to proceed.",
+            level="warning",
+        )
         service.finish(job, status=JOB_NEEDS_REVIEW, result=_result_from_cursor(job))
         return
+    service.log(job, f"Copied {len(copied)} blob(s) cleanly — cutting over.")
     _cutover(db, job, from_id, to_id, copied)
 
 

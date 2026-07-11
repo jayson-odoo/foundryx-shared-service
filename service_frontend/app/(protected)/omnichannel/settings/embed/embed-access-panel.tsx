@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { KeyRound, ShieldCheck } from 'lucide-react';
+import { Code2, Globe, ShieldCheck, SlidersHorizontal } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   AlertDialog,
@@ -15,13 +15,37 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardHeading, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useEmbedConfig } from '@/hooks/use-embed-config';
 import { CopyField } from './copy-field';
 import { OriginsEditor } from './origins-editor';
 import { SnippetCard } from './snippet-card';
+
+/** One labelled setting row — label + description on the left, control on the
+ * right — matching the read-detail rows used across the platform (User detail). */
+function SettingRow({
+  label,
+  description,
+  children,
+}: {
+  label: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-3 py-4 md:flex-row md:items-start md:justify-between md:gap-6">
+      <div className="md:max-w-xs">
+        <div className="text-sm font-medium">{label}</div>
+        <p className="text-muted-foreground text-xs">{description}</p>
+      </div>
+      <div className="w-full md:max-w-md">{children}</div>
+    </div>
+  );
+}
 
 function LoadingSkeleton() {
   return (
@@ -107,72 +131,90 @@ export function EmbedAccessPanel() {
   }
 
   return (
-    <div className="flex flex-col gap-5">
-      {/* Connection id */}
-      <Card>
-        <CardHeader>
-          <CardHeading>
-            <CardTitle>Connection id</CardTitle>
-            <CardDescription>
-              The non-secret identifier — the iframe&apos;s <code>?c=</code> and the assertion
-              issuer.
-            </CardDescription>
-          </CardHeading>
-        </CardHeader>
-        <CardContent>
-          <CopyField value={config.connectionId} ariaLabel="connection id" />
-        </CardContent>
-      </Card>
+    <>
+      <Tabs defaultValue="setup">
+        <TabsList variant="line" className="max-w-full overflow-x-auto">
+          <TabsTrigger value="setup">
+            <SlidersHorizontal />
+            Setup
+          </TabsTrigger>
+          <TabsTrigger value="origins">
+            <Globe />
+            Allowed origins
+          </TabsTrigger>
+          <TabsTrigger value="snippet">
+            <Code2 />
+            Snippet
+          </TabsTrigger>
+        </TabsList>
 
-      {/* Embed secret */}
-      <Card>
-        <CardHeader>
-          <CardHeading>
-            <CardTitle>Embed secret</CardTitle>
-            <CardDescription>The signing key for embed assertions.</CardDescription>
-          </CardHeading>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <div className="flex items-center gap-2">
-            <KeyRound className="size-4 text-muted-foreground" />
-            {config.hasSecret ? (
-              <Badge variant="success" appearance="outline">
-                Set
-              </Badge>
-            ) : (
-              <Badge variant="secondary" appearance="outline">
-                Not set
-              </Badge>
-            )}
-          </div>
+        {/* Setup — connection id + secret. Both are tenant-wide; a workspace is
+            chosen per-assertion (see the Snippet tab), not per-connection. */}
+        <TabsContent value="setup" className="pt-2">
+          <Card>
+            <CardContent className="divide-y py-2">
+              <SettingRow
+                label="Connection id"
+                description="The non-secret identifier — the iframe's ?c= and the assertion issuer."
+              >
+                <CopyField value={config.connectionId} ariaLabel="connection id" />
+              </SettingRow>
 
-          {revealedSecret && (
-            <div className="flex flex-col gap-2 rounded-md border border-amber-500/40 bg-amber-50 p-3 dark:bg-amber-950/20">
-              <Label>New secret — copy it now, it won&apos;t be shown again</Label>
-              <CopyField value={revealedSecret} ariaLabel="embed secret" />
-            </div>
-          )}
+              <SettingRow
+                label="Embed secret"
+                description="The signing key for embed assertions. Shared across your workspaces; shown once when rotated."
+              >
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-center gap-3">
+                    <Input
+                      readOnly
+                      aria-label="embed secret status"
+                      value={config.hasSecret ? '••••••••••••••••' : ''}
+                      placeholder="No secret set"
+                      className="font-mono"
+                    />
+                    <Badge
+                      variant={config.hasSecret ? 'success' : 'secondary'}
+                      appearance="outline"
+                      className="shrink-0"
+                    >
+                      {config.hasSecret ? 'Set' : 'Not set'}
+                    </Badge>
+                  </div>
 
-          <div>
-            <Button
-              variant={config.hasSecret ? 'outline' : 'primary'}
-              onClick={() => setConfirmRotate(true)}
-            >
-              {config.hasSecret ? 'Rotate secret' : 'Generate secret'}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+                  {revealedSecret && (
+                    <div className="flex flex-col gap-2 rounded-md border border-amber-500/40 bg-amber-50 p-3 dark:bg-amber-950/20">
+                      <Label>New secret — copy it now, it won&apos;t be shown again</Label>
+                      <CopyField value={revealedSecret} ariaLabel="embed secret" />
+                    </div>
+                  )}
 
-      {/* Allowed origins */}
-      <OriginsEditor origins={config.allowedOrigins} onSave={setOrigins} />
+                  <div>
+                    <Button
+                      variant={config.hasSecret ? 'outline' : 'primary'}
+                      onClick={() => setConfirmRotate(true)}
+                    >
+                      {config.hasSecret ? 'Rotate secret' : 'Generate secret'}
+                    </Button>
+                  </div>
+                </div>
+              </SettingRow>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-      {/* Iframe snippet */}
-      <SnippetCard
-        host={config.host}
-        connectionId={config.connectionId}
-        workspaces={config.workspaces}
-      />
+        <TabsContent value="origins" className="pt-2">
+          <OriginsEditor origins={config.allowedOrigins} onSave={setOrigins} />
+        </TabsContent>
+
+        <TabsContent value="snippet" className="pt-2">
+          <SnippetCard
+            host={config.host}
+            connectionId={config.connectionId}
+            workspaces={config.workspaces}
+          />
+        </TabsContent>
+      </Tabs>
 
       <AlertDialog open={confirmRotate} onOpenChange={setConfirmRotate}>
         <AlertDialogContent>
@@ -194,6 +236,6 @@ export function EmbedAccessPanel() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </>
   );
 }
