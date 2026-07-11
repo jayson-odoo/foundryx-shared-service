@@ -48,6 +48,41 @@ def register_capabilities() -> None:
     )
 
 
+def register_engine_entities() -> None:
+    """Boot-time engine registration (plan 11 D9). Idempotent — called by
+    ``register_module_boot`` whenever the module is loaded.
+
+    Registers the omnichannel storage-key locations so its media rides the
+    generic storage migration automatically (sprint-4/10 AC-10-20):
+    ``conversation_messages.media_key`` (inbound/outbound chat media) and
+    ``whatsapp_templates.media_sample_key`` (a draft template's media-header
+    sample). Both are scalar ``conn:<id>:`` key columns.
+    """
+    from app.storage_migration.registry import (
+        StorageKeyLoc,
+        register_storage_key_location,
+    )
+
+    from .models import ConversationMessage, WhatsappTemplate
+
+    register_storage_key_location(
+        StorageKeyLoc(
+            model=ConversationMessage,
+            column="media_key",
+            tenant_column="tenant_id",
+            module=MODULE_NAME,
+        )
+    )
+    register_storage_key_location(
+        StorageKeyLoc(
+            model=WhatsappTemplate,
+            column="media_sample_key",
+            tenant_column="tenant_id",
+            module=MODULE_NAME,
+        )
+    )
+
+
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""
     if engine.dialect.name == "postgresql":

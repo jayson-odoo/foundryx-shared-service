@@ -9,6 +9,7 @@ Fernet-encrypted via ``app/secrets.py`` and write-only over the API.
 import uuid
 
 from sqlalchemy import (
+    Boolean,
     Column,
     ForeignKey,
     Index,
@@ -16,7 +17,7 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
-    UniqueConstraint,
+    and_,
 )
 from sqlalchemy.sql import func
 from app.models.utc_datetime import UTCDateTime
@@ -32,21 +33,38 @@ CONNECTION_STATUS_ERROR = "ERROR"
 class Connection(Base):
     __tablename__ = "connections"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "provider", name="uq_connection_tenant_provider"),
+        # ONE ACTIVE connection per (tenant, provider). RELAXED to a partial
+        # unique index on ``is_active`` (sprint-4/10 D10): a SAME-PROVIDER bucket
+        # migration (s3→s3) needs the retired A (is_active=false) and its active
+        # successor B to coexist — a plain unique on (tenant, provider) would
+        # block creating B. Two ACTIVE same-provider connections stay blocked
+        # (the payment invariant: two active Stripe rows forbidden; Stripe +
+        # Billplz still fine — different providers).
+        Index(
+            "uq_connection_tenant_provider",
+            "tenant_id",
+            "provider",
+            unique=True,
+            postgresql_where=Column("is_active"),
+            sqlite_where=Column("is_active"),
+        ),
         # ONE connection per TYPE per tenant (plan 06 D7) — StorageService /
         # EmailService resolution must be deterministic. RELAXED for
         # ``type='payment'`` (sprint-4/07 Cluster F AC-07-24): a tenant may hold
         # MULTIPLE payment connections (Stripe + Billplz), so checkout can resolve
-        # per-project; same-provider duplicates stay blocked by the
-        # (tenant, provider) unique above. A PARTIAL unique index enforces
-        # one-per-type for every NON-payment type.
+        # per-project.
+        # RELAXED again (sprint-4/10 D10): the predicate also requires
+        # ``is_active`` so a RETIRED storage connection (A, ``is_active=false``)
+        # and its ACTIVE successor (B) coexist during a bucket migration
+        # WITHOUT violating one-per-type. Only the single active row is the
+        # write-target; ``resolve_for_type`` filters on ``is_active`` to pick it.
         Index(
             "uq_connection_tenant_type",
             "tenant_id",
             "type",
             unique=True,
-            postgresql_where=Column("type") != "payment",
-            sqlite_where=Column("type") != "payment",
+            postgresql_where=and_(Column("type") != "payment", Column("is_active")),
+            sqlite_where=and_(Column("type") != "payment", Column("is_active")),
         ),
     )
 
@@ -64,6 +82,10 @@ class Connection(Base):
     # Fernet-encrypted secrets dict — write-only over the API.
     credentials_json = Column(Text, nullable=False, default="")
     status = Column(String, nullable=False, default=CONNECTION_STATUS_UNVERIFIED)
+    # Write-target flag (sprint-4/10 D10). Only an ``is_active`` connection is
+    # the type-level write/resolve target; a retired ``A`` stays readable by
+    # KEY (``get_by_id`` ignores this flag) so its historical blobs keep serving.
+    is_active = Column(Boolean, nullable=False, default=True, server_default="1")
     last_tested_at = Column(UTCDateTime(), nullable=True)
     last_error = Column(Text, nullable=True)
     # Outbox dispatcher throttle (plan 09 §5 — low-spec SMTP guard).

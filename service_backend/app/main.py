@@ -17,6 +17,7 @@ from app.api.v1 import (
     impersonation,
     imports,
     integrations,
+    jobs,
     me,
     permissions,
     platform_tenant_branding,
@@ -45,6 +46,15 @@ async def lifespan(_: FastAPI):
     from app.status_engine.derived import install_derived_status
 
     install_derived_status()
+    # Storage-key location registry (sprint-4/10) — register core scalar/JSON
+    # locations so a storage migration finds every asset (idempotent; modules
+    # register their own via register_module_boot).
+    from app.storage_migration.core_locations import ensure_core_locations
+    from app.storage_migration.service import register_storage_migration_handler
+
+    ensure_core_locations()
+    # Storage migration is the first background-job type (sprint-4/10 Slice 2).
+    register_storage_migration_handler()
     # Email outbox dispatcher (plan 09 §5) — daemon thread, gated by an
     # explicit settings flag (conftest turns it off; tests drive
     # dispatch_pending() directly against their own session).
@@ -83,6 +93,9 @@ app.include_router(me.router, prefix="/me", tags=["me"])
 app.include_router(app_store.router, prefix="/app-store", tags=["app-store"])
 # Integration core (plan 09): connections registry + guided setup.
 app.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
+# Centralized background jobs + storage migration (sprint-4/10). No prefix — the
+# router owns its own paths (/jobs, /storage/migrations).
+app.include_router(jobs.router, tags=["jobs"])
 # Public payment-webhook receiver (sprint-4/07 Cluster F slice 3) — no auth.
 app.include_router(
     integrations.webhooks_router, prefix="/integrations/webhooks", tags=["integrations"]

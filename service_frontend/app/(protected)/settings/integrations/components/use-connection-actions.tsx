@@ -3,10 +3,11 @@
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { usePathname } from 'next/navigation';
-import { Pencil, PlugZap, Unplug } from 'lucide-react';
+import { HardDriveDownload, Pencil, PlugZap, Unplug } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { integrationService } from '@/services/integration-service';
+import { useJobsActivity } from '@/providers/jobs-activity-provider';
 import type { Connection } from '@/types/integration';
 import { connectionFormHref, integrationsListPath } from './paths';
 
@@ -18,6 +19,7 @@ import { connectionFormHref, integrationsListPath } from './paths';
 export function useConnectionActions(): ResourceAction<Connection>[] {
   const router = useRouter();
   const pathname = usePathname();
+  const { openMigration } = useJobsActivity();
 
   return useMemo<ResourceAction<Connection>[]>(
     () => [
@@ -50,6 +52,17 @@ export function useConnectionActions(): ResourceAction<Connection>[] {
         },
       },
       {
+        id: 'migrate-storage',
+        label: 'Migrate storage',
+        icon: HardDriveDownload,
+        permission: 'integrations.migrate_storage',
+        surfaces: { row: true, form: true },
+        // Only for a storage connection — the migration drains this tenant's
+        // active storage bucket onto a new one (backend resolves the source).
+        isVisible: (rows) => rows.length === 1 && rows[0].type === 'storage',
+        run: () => openMigration(),
+      },
+      {
         id: 'disconnect',
         label: 'Disconnect',
         icon: Unplug,
@@ -77,6 +90,6 @@ export function useConnectionActions(): ResourceAction<Connection>[] {
         },
       },
     ],
-    [router, pathname],
+    [router, pathname, openMigration],
   );
 }

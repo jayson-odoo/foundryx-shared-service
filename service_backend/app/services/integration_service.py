@@ -250,8 +250,21 @@ class IntegrationService:
         self.db.refresh(connection)
         return _connection_out(connection)
 
+    def _guard_not_migrating(self, tenant_id: str, connection_id: str) -> None:
+        """A connection tied to a live storage migration (as source A or
+        target B) is frozen against edit/delete (sprint-4/10 AC-10-14)."""
+        from app.storage_migration.service import StorageMigrationService
+
+        if StorageMigrationService(self.db).is_connection_locked(tenant_id, connection_id):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "This connection is part of a storage migration in progress and "
+                "cannot be changed until it finishes.",
+            )
+
     def update(self, tenant_id: str, connection_id: str, req: ConnectionUpdateRequest) -> ConnectionOut:
         connection = self._get_or_404(tenant_id, connection_id)
+        self._guard_not_migrating(tenant_id, connection_id)
         changes: dict = {}
         if req.name is not None and connection.name != req.name:
             changes["name"] = {"from": connection.name, "to": req.name}
@@ -280,6 +293,7 @@ class IntegrationService:
 
     def delete(self, tenant_id: str, connection_id: str) -> None:
         connection = self._get_or_404(tenant_id, connection_id)
+        self._guard_not_migrating(tenant_id, connection_id)
         emit_entity_event(self.db, "connection", "deleted", connection, tenant_id=tenant_id)
         self.repo.delete(connection)
         self.db.commit()

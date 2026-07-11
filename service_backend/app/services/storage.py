@@ -39,6 +39,13 @@ class StorageService(Protocol):
         """Store a blob; returns an opaque storage key (persist it)."""
         ...
 
+    def put_raw(self, raw: str, content: bytes, mime_type: str) -> None:
+        """Write a blob at the EXACT ``raw`` key — NO uuid mint (plan sprint-4/10
+        D2). ``save`` mints a fresh uuid, which is wrong for a path-preserving
+        COPY (storage migration): a later ``fetch(raw)`` / ``resolve(raw)`` must
+        return exactly these bytes at exactly this key."""
+        ...
+
     def resolve(self, key: str) -> Tuple[str, str]:
         """Storage key → ('path', local file path), ('url', STABLE remote
         URL — safe to cache immutably) or ('presigned', EXPIRING URL — never
@@ -87,6 +94,12 @@ class LocalDiskStorage:
 
     def save(self, key_hint: str, content: bytes, mime_type: str) -> str:
         return self._write(key_hint, content, mime_type)
+
+    def put_raw(self, raw: str, content: bytes, mime_type: str) -> None:
+        # Path-preserving write (no uuid mint) — sprint-4/10 D2.
+        path = self.root / raw
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
 
     def resolve(self, key: str) -> Tuple[str, str]:
         return ("path", str(self.root / key))

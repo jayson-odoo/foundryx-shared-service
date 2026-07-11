@@ -49,6 +49,17 @@ from app.models.user import User, UserStatus
 from app.models.view_preference import UserViewPreference
 from app.models.terminology import TerminologyOverride
 from app.models.import_job import ImportJob, ImportSettings
+from app.models.background_job import (
+    JOB_ABORTED,
+    JOB_DONE,
+    JOB_FAILED,
+    JOB_NEEDS_REVIEW,
+    JOB_PENDING,
+    JOB_RUNNING,
+    JOB_STATUSES,
+    JOB_TERMINAL_STATUSES,
+    BackgroundJob,
+)
 from app.models.invite_token import InviteToken
 from app.models.email_change_request import (
     CHANGE_CANCELLED,
@@ -202,6 +213,15 @@ __all__ = [
     "TerminologyOverride",
     "ImportJob",
     "ImportSettings",
+    "BackgroundJob",
+    "JOB_PENDING",
+    "JOB_RUNNING",
+    "JOB_NEEDS_REVIEW",
+    "JOB_DONE",
+    "JOB_FAILED",
+    "JOB_ABORTED",
+    "JOB_STATUSES",
+    "JOB_TERMINAL_STATUSES",
     "InviteToken",
     "EmailChangeRequest",
     "CHANGE_PENDING_OLD",

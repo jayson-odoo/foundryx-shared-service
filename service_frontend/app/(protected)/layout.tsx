@@ -13,6 +13,7 @@ import {
 } from '@/components/platform/document-drive';
 import { useSessionSync } from '@/hooks/use-session-sync';
 import { ImportActivityProvider } from '@/providers/import-activity-provider';
+import { JobsActivityProvider } from '@/providers/jobs-activity-provider';
 import { Demo1Layout } from '../components/layouts/demo1/layout';
 
 export default function ProtectedLayout({
@@ -45,10 +46,12 @@ export default function ProtectedLayout({
     <UploadManagerProvider>
       <DownloadsProvider>
         <ImportActivityProvider>
-          <ImpersonationBanner />
-          <Demo1Layout>{children}</Demo1Layout>
-          <UploadActivityDrawer />
-          <MyDownloadsDrawer />
+          <JobsActivityProvider>
+            <ImpersonationBanner />
+            <Demo1Layout>{children}</Demo1Layout>
+            <UploadActivityDrawer />
+            <MyDownloadsDrawer />
+          </JobsActivityProvider>
         </ImportActivityProvider>
       </DownloadsProvider>
     </UploadManagerProvider>
