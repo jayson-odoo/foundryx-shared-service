@@ -417,6 +417,11 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/omnichannel/settings/quick-replies',
         permission: 'workspaces.manage',
       },
+      {
+        title: 'Embed access',
+        path: '/omnichannel/settings/embed',
+        permission: 'workspaces.manage',
+      },
     ],
   },
 ];
@@ -745,6 +750,10 @@ export const MENU_SIDEBAR_COMPACT: MenuConfig = [
       {
         title: 'Quick replies',
         path: '/omnichannel/settings/quick-replies',
+      },
+      {
+        title: 'Embed access',
+        path: '/omnichannel/settings/embed',
       },
     ],
   },

@@ -54,6 +54,13 @@ export interface ConversationDrawerProps {
   contactId: string | null;
   /** Empty-state copy when no thread is selected. */
   emptyHint?: string;
+  /**
+   * Messages-only chrome: hide the header (contact identity, Messages/Activities
+   * tabs, in-thread search, assign + lifecycle controls) and render just the
+   * scrollable thread + composer. Used by the embed thread widget so it drops
+   * into a narrow lead-page side panel. Default false (full drawer).
+   */
+  compact?: boolean;
 }
 
 function initials(name: string): string {
@@ -94,7 +101,7 @@ export function dayLabel(
   }
 }
 
-export function ConversationDrawer({ contactId, emptyHint = 'Select a conversation' }: ConversationDrawerProps) {
+export function ConversationDrawer({ contactId, emptyHint = 'Select a conversation', compact = false }: ConversationDrawerProps) {
   const {
     thread,
     messages,
@@ -251,7 +258,8 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
 
   return (
     <div className="flex h-full flex-col" data-testid="conversation-drawer">
-      {/* Header */}
+      {/* Header — hidden in compact (messages-only) mode. */}
+      {!compact && (
       <div className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
         <Avatar className="size-9">
           <AvatarFallback>{initials(thread.name)}</AvatarFallback>
@@ -366,6 +374,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
           </div>
         )}
       </div>
+      )}
 
       {/* Thread */}
       <ScrollArea className="min-h-0 flex-1">

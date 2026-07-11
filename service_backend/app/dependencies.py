@@ -58,6 +58,13 @@ def _resolve_user(token: str, db: Session) -> User:
     if payload.get("kind") == "profile":
         raise _CREDENTIALS_EXC
 
+    # An omnichannel embed access token (typ="embed", plan 11H) authenticates ONLY
+    # the embed principal on the omnichannel conversation API/WS — it must never
+    # authenticate a staff endpoint (defense-in-depth: the boundary can't rely on
+    # id-space disjointness alone; its `sub` is an external-agent id).
+    if payload.get("typ") == "embed":
+        raise _CREDENTIALS_EXC
+
     tenant_id: str = payload.get("tenant_id") or DEFAULT_TENANT_ID
     user = UserRepository(db).get_by_id(user_id, tenant_id)
     if user is None:

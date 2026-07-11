@@ -146,6 +146,19 @@ def create_schema_and_tables(engine: Engine) -> None:
                         f"ADD COLUMN IF NOT EXISTS {col} {coltype}"
                     )
                 )
+            # Federated-attribution columns (plan 11H Slice 1) — idempotent add.
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".conversation_messages '
+                    "ADD COLUMN IF NOT EXISTS sender_external_agent_id VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".contacts '
+                    "ADD COLUMN IF NOT EXISTS assigned_external_agent_id VARCHAR"
+                )
+            )
             # Template management columns (plan 07 §8) — idempotent add.
             _template_cols = [
                 ("meta_template_id", "VARCHAR"),

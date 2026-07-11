@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # login bucket. Window-throttle like IP (no permanent lock).
     throttle_portal_max_fails: int = 20
     throttle_portal_window_minutes: int = 15
+    # Omnichannel embed session exchange per IP (plan sprint-4/11H, AC-11H-08) —
+    # own bucket so assertion-exchange spam never locks the staff login bucket.
+    # Window-throttle like IP (no permanent lock).
+    throttle_embed_max_fails: int = 30
+    throttle_embed_window_minutes: int = 15
     # Profile Portal email one-time-code TTL (short — emailed login fallback).
     profile_otp_ttl_minutes: int = 10
     # Form upload caps (D12). Per-file hard ceiling (DoS guard — capped reads

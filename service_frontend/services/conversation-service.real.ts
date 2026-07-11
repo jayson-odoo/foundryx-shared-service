@@ -9,6 +9,7 @@
 import { getSession } from 'next-auth/react';
 
 import { apiFetch } from '@/lib/api-client';
+import { embedAuthStore } from '@/lib/embed-auth-store';
 import type {
   ConversationMessage,
   ConversationSocketEvent,
@@ -168,6 +169,10 @@ export const realConversationService: ConversationService = {
   },
 
   async assignToMe(contactId) {
+    // Embed runtime: the actor is the external agent — self-claim to its id
+    // (the backend embed principal attributes assignment to the external agent).
+    const embed = embedAuthStore.getState();
+    if (embed) return this.assign(contactId, embed.agentId);
     const session = await getSession();
     const myId = session?.user?.id;
     if (!myId) throw new Error('Not signed in');
@@ -207,8 +212,12 @@ export const realConversationService: ConversationService = {
     const MAX_AUTH_RETRIES = 3;
 
     const connect = async () => {
-      const session = await getSession();
-      const token = session?.accessToken;
+      // Embed runtime authenticates the WS with the in-memory embed access
+      // token (read fresh each connect so a refreshed token is picked up on
+      // reconnect); otherwise the NextAuth JWT. Browsers can't set WS headers,
+      // so it rides the `token` query param either way.
+      const embed = embedAuthStore.getState();
+      const token = embed?.accessToken ?? (await getSession())?.accessToken;
       if (stopped || !token) return;
 
       socket = new WebSocket(

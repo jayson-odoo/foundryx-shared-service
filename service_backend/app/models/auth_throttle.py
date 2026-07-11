@@ -25,6 +25,10 @@ THROTTLE_SCOPE_DOC_SHARE = "doc_share"
 # login/OTP/forgot/set-password spam never locks the staff login bucket and
 # vice versa (AC-06-16). Distinct from THROTTLE_SCOPE_IP.
 THROTTLE_SCOPE_PORTAL = "portal"
+# Omnichannel embed session exchange (plan sprint-4/11H, AC-11H-08) — own per-IP
+# bucket so embed assertion-exchange spam never locks the staff login bucket and
+# vice versa. Window-throttle (no permanent lock).
+THROTTLE_SCOPE_EMBED = "embed_session"
 
 
 class AuthThrottle(Base):

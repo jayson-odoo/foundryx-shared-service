@@ -64,6 +64,7 @@ The **access token embeds `workspaceId`, `scope`, `caps`, and the external-agent
   - `GET /embed/omnichannel/thread` — single conversation pane (scope `thread:<contactId>`).
   - `GET /embed/omnichannel/inbox` — full workspace inbox (scope `inbox`).
   - Both reuse the existing inbox React components; both **boot bare** and obtain the assertion via the postMessage handshake (§5) — the assertion is **never** placed in the URL.
+  - **`?c=<connectionId>` on the iframe src (required):** the consumer mounts the iframe with the **non-secret connection id** (= the assertion's `iss`) as the `c` query param. The shared service's `middleware.ts` resolves that connection's `allowedOrigins` (via public `GET /embed/frame-policy?c=`) and emits `Content-Security-Policy: frame-ancestors <origins>` on the embed page response (§8.5). Absent/unknown `c` → `frame-ancestors 'none'` (the page cannot be framed). Only the connection id — never the assertion — appears in the URL.
 
 ## 5. postMessage protocol (v1)
 
@@ -85,6 +86,8 @@ Envelope: `{ "v": 1, "type": "<type>", "payload": { ... } }`. **Every handler va
 | `activity` | `{ kind, contactId }` | coarse "something happened" (message sent/received/assigned) so EMS can refresh the lead's last-contacted; NOT message content |
 
 `theme` = the whitelisted brand primitives (`{ primary, surface, text, bubbleIn, bubbleOut, radius, ... }`); `colorScheme` = `"light" | "dark"`. Business deep-links (create-X-from-conversation) are **deferred to v2** via the same `type` seam.
+
+**Assertions are single-use — mint a FRESH one per handshake cycle (MUST).** The parent mints a new, single-use assertion (unique `jti`) in response to **every** `ready` AND **every** `needToken` — it must NEVER cache/reuse an assertion across handshake cycles. The shared service consumes each `jti` exactly once (§8.1), so a replayed assertion is rejected `401 replayed`. A widget can legitimately re-`ready` on a genuine remount (recovery); if the parent replied to two `ready`s with the SAME assertion the second would `replayed`-fail and could brick the widget. The widget side minimises spurious remounts, but correctness rests on the parent honouring the mint-fresh-per-`ready` rule.
 
 ## 6. `message.received` webhook (the react bridge)
 

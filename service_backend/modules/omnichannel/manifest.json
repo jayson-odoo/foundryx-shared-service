@@ -35,11 +35,26 @@
     },
     {
       "name": "conversations",
-      "prefix": "/omnichannel/contacts"
+      "prefix": "/omnichannel/contacts",
+      "public": true
+    },
+    {
+      "name": "embed",
+      "prefix": "/embed",
+      "public": true
+    },
+    {
+      "name": "embed_reads",
+      "prefix": "",
+      "public": true
     },
     {
       "name": "settings",
       "prefix": "/omnichannel/settings"
+    },
+    {
+      "name": "embed_config",
+      "prefix": "/omnichannel/embed-config"
     },
     {
       "name": "api_keys",

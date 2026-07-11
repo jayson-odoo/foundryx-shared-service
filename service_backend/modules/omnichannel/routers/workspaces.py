@@ -22,7 +22,6 @@ from ..schemas import (
     WorkspaceCreate,
     WorkspaceItem,
     WorkspaceListResponse,
-    WorkspaceMemberItem,
     WorkspaceNeighborResponse,
     WorkspaceUpdate,
 )
@@ -161,17 +160,10 @@ def update_workspace(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.")
 
 
-@router.get("/{ws_id}/members", response_model=list[WorkspaceMemberItem])
-def list_members(
-    ws_id: str,
-    current_user: User = Depends(require_permission("workspaces.read")),
-    db: Session = Depends(get_db),
-    search: Optional[str] = None,
-) -> list[WorkspaceMemberItem]:
-    try:
-        return WorkspaceService(db).members(ws_id, current_user.tenant_id, search)
-    except WorkspaceNotFound:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.")
+# NOTE: ``GET /{ws_id}/members`` (assignee picker) moved to the PUBLIC
+# ``embed_reads`` router so BOTH the native session AND an embed access token
+# reach it (workspace-scoped for embed). Native perm ``workspaces.read`` is
+# preserved there. The write paths (assign/remove) stay native-only below.
 
 
 @router.get("/{ws_id}/assignable", response_model=list[MemberCandidateItem])
@@ -215,16 +207,10 @@ def remove_member(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/{ws_id}/quick-replies")
-def list_quick_replies(
-    ws_id: str,
-    current_user: User = Depends(require_permission("conversations.read")),
-    db: Session = Depends(get_db),
-):
-    """Canned responses for the composer's ★ picker."""
-    from ..services.message_service import MessageService
-
-    return MessageService(db).list_quick_replies(ws_id, current_user.tenant_id)
+# NOTE: ``GET /{ws_id}/quick-replies`` (composer ★ picker) moved to the PUBLIC
+# ``embed_reads`` router so an embed access token reaches it (workspace-scoped).
+# Native perm ``conversations.read`` is preserved there. Create/update/delete
+# stay native-only below.
 
 
 @router.post(

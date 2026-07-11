@@ -58,6 +58,16 @@ class ConversationService:
         rows = self.db.query(User).filter(User.id.in_(ids)).all()
         return {u.id: (u.name or u.email) for u in rows}
 
+    def _external_agents(self, agent_ids: List[str], tenant_id: str):
+        """Tenant-scoped id → ExternalAgent for federated-attribution display
+        (plan 11H Slice 1). Batched; returns {} when there are no embed ids."""
+        from .external_agent_service import ExternalAgentService
+
+        ids = [a for a in set(agent_ids) if a]
+        if not ids:
+            return {}
+        return ExternalAgentService(self.db).names(ids, tenant_id)
+
     def _channel_types(self, channel_ids: List[str]) -> Dict[str, str]:
         ids = [c for c in set(channel_ids) if c]
         if not ids:
@@ -74,6 +84,9 @@ class ConversationService:
         unread = self.repo.unread_counts_for(contacts, tenant_id)
         status_keys = self._status_keys(tenant_id)
         names = self._user_names([c.assigned_user_id for c in contacts])
+        agents = self._external_agents(
+            [c.assigned_external_agent_id for c in contacts], tenant_id
+        )
         channel_types = self._channel_types(
             [previews[c.id].channel_id for c in contacts if c.id in previews]
         )
@@ -82,6 +95,15 @@ class ConversationService:
         for c in contacts:
             preview = previews.get(c.id)
             channel_id = preview.channel_id if preview else None
+            # Assignee display resolves from whichever assignee column is set —
+            # native user OR federated external agent (they are mutually exclusive).
+            agent = agents.get(c.assigned_external_agent_id) if c.assigned_external_agent_id else None
+            if agent is not None:
+                assigned_name = agent.name
+                assigned_avatar = agent.avatar_url
+            else:
+                assigned_name = names.get(c.assigned_user_id) if c.assigned_user_id else None
+                assigned_avatar = None
             items.append(
                 ThreadItem(
                     id=c.id,
@@ -91,7 +113,9 @@ class ConversationService:
                     phone=c.phone,
                     avatarUrl=c.avatar_url,
                     assignedUserId=c.assigned_user_id,
-                    assignedUserName=names.get(c.assigned_user_id) if c.assigned_user_id else None,
+                    assignedUserName=assigned_name,
+                    assignedExternalAgentId=c.assigned_external_agent_id,
+                    assignedAvatarUrl=assigned_avatar,
                     status=status_keys.get(c.status_id, "OPEN"),
                     priority=c.priority or "MEDIUM",
                     channelId=channel_id,
@@ -111,15 +135,29 @@ class ConversationService:
 
     def message_items(self, messages: List[ConversationMessage]) -> List[MessageItem]:
         names = self._user_names([m.sender_id for m in messages if m.sender_id])
+        tenant_id = messages[0].tenant_id if messages else ""
+        agents = self._external_agents(
+            [m.sender_external_agent_id for m in messages if m.sender_external_agent_id],
+            tenant_id,
+        )
         # Batched reaction chips (plan 12 Slice 3) — one query for the whole page.
         reactions_by_msg = self.repo.reactions_for(
             [m.id for m in messages],
-            messages[0].tenant_id if messages else "",
+            tenant_id,
         )
         items: List[MessageItem] = []
         for m in messages:
             meta = m.metadata_json or {}
             reply = meta.get("reply_to")
+            # Sender display resolves from whichever sender column is set — native
+            # user OR federated external agent.
+            agent = agents.get(m.sender_external_agent_id) if m.sender_external_agent_id else None
+            if agent is not None:
+                sender_name = agent.name
+                sender_avatar = agent.avatar_url
+            else:
+                sender_name = names.get(m.sender_id) if m.sender_id else None
+                sender_avatar = None
             items.append(
                 MessageItem(
                     reactions=reactions_by_msg.get(m.id, []),
@@ -128,7 +166,9 @@ class ConversationService:
                     channelId=m.channel_id,
                     senderType=m.sender_type,
                     senderId=m.sender_id,
-                    senderName=names.get(m.sender_id) if m.sender_id else None,
+                    senderName=sender_name,
+                    senderExternalAgentId=m.sender_external_agent_id,
+                    senderAvatarUrl=sender_avatar,
                     messageType=m.message_type,
                     body=m.body,
                     mediaUrl=m.media_url_wire,
@@ -180,21 +220,39 @@ class ConversationService:
         first_name: Optional[str] = ...,
         last_name: Optional[str] = ...,
         custom_fields: Optional[dict] = ...,
+        external_connection_id: Optional[str] = None,
     ) -> ThreadItem:
         c = self.repo.get_by_id(contact_id, tenant_id)
         if c is None:
             raise ThreadNotFound()
 
         if assigned_user_id is not ...:
-            if assigned_user_id is not None:
-                user = (
-                    self.db.query(User)
-                    .filter(User.id == assigned_user_id, User.tenant_id == tenant_id)
-                    .first()
-                )
-                if user is None:
-                    raise InvalidPatch("Assignee not found in this tenant.")
-            c.assigned_user_id = assigned_user_id
+            if external_connection_id is not None:
+                # Embed principal: the assignee id is an EXTERNAL agent id — it
+                # must belong to the token's connection (a token can only assign
+                # to its own consumer's agents; cross-consumer is impossible).
+                if assigned_user_id is not None:
+                    from .external_agent_service import ExternalAgentService
+
+                    agent = ExternalAgentService(self.db).get_for_connection(
+                        assigned_user_id, external_connection_id, tenant_id
+                    )
+                    if agent is None:
+                        raise InvalidPatch("Assignee not found for this consumer.")
+                # Federated + native assignees are mutually exclusive.
+                c.assigned_external_agent_id = assigned_user_id
+                c.assigned_user_id = None
+            else:
+                if assigned_user_id is not None:
+                    user = (
+                        self.db.query(User)
+                        .filter(User.id == assigned_user_id, User.tenant_id == tenant_id)
+                        .first()
+                    )
+                    if user is None:
+                        raise InvalidPatch("Assignee not found in this tenant.")
+                c.assigned_user_id = assigned_user_id
+                c.assigned_external_agent_id = None
 
         if status is not None:
             if status not in VALID_THREAD_STATUS:

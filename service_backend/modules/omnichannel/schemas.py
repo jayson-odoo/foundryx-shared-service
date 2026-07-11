@@ -202,6 +202,10 @@ class MessageItem(ApiModel):
     senderType: str  # AGENT | CONTACT | SYSTEM
     senderId: Optional[str] = None
     senderName: Optional[str] = None
+    # Set when the sender is a federated (embed) external agent, else None
+    # (plan 11H Slice 1) — the bubble renders the agent's avatar either way.
+    senderExternalAgentId: Optional[str] = None
+    senderAvatarUrl: Optional[str] = None
     messageType: str
     body: Optional[str] = None
     mediaUrl: Optional[str] = None
@@ -231,6 +235,11 @@ class ThreadItem(ApiModel):
     avatarUrl: Optional[str] = None
     assignedUserId: Optional[str] = None
     assignedUserName: Optional[str] = None
+    # Federated (embed) assignee — set instead of assignedUserId when an external
+    # agent owns the thread (plan 11H Slice 1). The list resolves the display
+    # name/avatar from whichever assignee column is set.
+    assignedExternalAgentId: Optional[str] = None
+    assignedAvatarUrl: Optional[str] = None
     status: str  # OPEN | SNOOZED | CLOSED
     priority: str
     channelId: Optional[str] = None
@@ -665,3 +674,34 @@ class TemplateDetail(TemplateManageItem):
 
     doc: dict
     components: List[dict]
+
+
+# ── Embed access config (plan 11H — tenant-level embed connection admin) ──────
+class EmbedWorkspaceOption(ApiModel):
+    """A (id, name) workspace pick for the iframe-snippet workspace selector."""
+
+    id: str
+    name: str
+
+
+class EmbedConfigResponse(ApiModel):
+    """The tenant's embed-access state. The ``embedSecret`` is NEVER included —
+    ``hasSecret`` only reports whether one is set (write-only, echoed once at
+    rotate)."""
+
+    connectionId: Optional[str] = None
+    allowedOrigins: List[str]
+    hasSecret: bool
+    # Public backend origin the consumer frames the iframe against.
+    host: str
+    workspaces: List[EmbedWorkspaceOption]
+
+
+class EmbedRotateSecretResponse(ApiModel):
+    """The freshly-minted secret — returned EXACTLY ONCE (write-only after)."""
+
+    embedSecret: str
+
+
+class EmbedOriginsUpdate(ApiModel):
+    allowedOrigins: List[str]
