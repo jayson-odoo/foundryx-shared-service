@@ -684,14 +684,17 @@ It is a `connections` row with provider **`omnichannel_shared`** carrying two fi
 | `embedSecret` | the HMAC secret you sign assertions with (per connection) | **Fernet-encrypted, write-only** — set once, never echoed back |
 | `allowedOrigins` | the exact parent origins allowed to embed + postMessage (e.g. `https://crm.acme.com`) | plain (drives `frame-ancestors` + the origin check) |
 
-You receive back the **connection id** (a non-secret string) and agree on the
-`embedSecret` (the operator generates it and shares it once, out-of-band). That's it —
-no per-agent accounts on FoundryX; your agents never log in here.
+This is all done in the FoundryX dashboard at **Omnichannel ▸ Settings ▸ Embed access**
+(a shared-service login with `workspaces.manage` — e.g. your system admin):
 
-> **v1 provisioning note.** A dedicated dashboard screen for creating/rotating the embed
-> connection is a follow-up (BL-SS-021); today the FoundryX operator provisions the
-> `omnichannel_shared` connection (connection id + `embedSecret` + `allowedOrigins`)
-> directly (API/DB). Rotating `embedSecret` = updating that row.
+- **Connection id** — copy it; it's the non-secret `?c=` / `iss` value (§12.2–12.3).
+- **Embed secret** — click **Generate / Rotate**; the plaintext is shown **once** — copy it
+  into your backend's secret store. Rotating instantly invalidates outstanding assertions.
+- **Allowed origins** — add each parent origin permitted to embed (e.g. `https://crm.acme.com`).
+- **Iframe snippet** — pick a workspace + thread/inbox and copy the ready-to-paste `<iframe>`.
+
+That's it — no per-agent accounts on FoundryX; your *agents* never log in here (only the
+admin who configures this once). Your agents are federated via the assertion's `sub` (§12.2).
 
 > **One embed connection = one consumer.** The `embedSecret` is per connection; a leak
 > forges agents for that one connection only. Rotating `embedSecret` instantly
