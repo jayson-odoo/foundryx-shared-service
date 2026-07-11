@@ -49,6 +49,17 @@ Two directions:
 Media (images, documents, voice notes, etc.) is served from a single authed
 endpoint that accepts your API key.
 
+### Two ways to integrate — pick either or both
+
+| | **A · Consumer Gateway API** (§2–§11) | **B · Embed the UI** (§12) |
+|---|---|---|
+| What | You call our REST API + receive webhooks, and **build your own chat UI** | You mount **our conversation UI** in an `<iframe>` on your page — no UI to build |
+| Credential | Workspace **API key** (`fxw_live_…`), server-to-server | Short-lived **embed access token**, minted per-agent in the browser from a signed assertion (the API key never touches the browser) |
+| Best for | Full control, custom UX, bots/automation | Drop a live WhatsApp thread onto a record page (e.g. a CRM lead) in minutes |
+| You build | Outbound client + webhook receiver + your own UI | A server-side **assertion minter** + a small **postMessage** handshake |
+
+The two are independent and combine freely — many consumers automate sends via the API **and** embed the UI for their agents. §2–§11 cover Option A. **§12 covers Option B (the iframe).**
+
 ---
 
 ## 2. Onboarding — what has to happen before you can send
@@ -649,6 +660,228 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 
 ---
 
+## 12. Embedding the conversation UI (iframe widget)
+
+Instead of building your own chat UI (Option A), you can embed **our** conversation
+UI as a **chromeless, token-authed `<iframe>`** on any page of your app — e.g. the
+right-hand column of a CRM lead page. The iframe is the SAME inbox UI FoundryX runs
+internally (rich message types, media, templates, quick replies, live updates), with
+no app shell (no sidebar/header/login).
+
+**Security model in one line:** the browser never holds the API key. Your **server**
+signs a short-lived **assertion** naming exactly one workspace + one contact (or the
+whole inbox) + a set of capabilities; FoundryX verifies it, mints a 15-minute access
+token scoped to that, and **re-checks the scope + caps on every API/WS call server-side**
+— the widget can never widen beyond what you signed. (Full rationale: §12.7.)
+
+### 12.1 One-time setup — FoundryX side (operator)
+
+Ask your FoundryX operator to create an **embed connection** for you on the workspace.
+It is a `connections` row with provider **`omnichannel_shared`** carrying two fields:
+
+| Field | Meaning | Stored |
+|---|---|---|
+| `embedSecret` | the HMAC secret you sign assertions with (per connection) | **Fernet-encrypted, write-only** — set once, never echoed back |
+| `allowedOrigins` | the exact parent origins allowed to embed + postMessage (e.g. `https://crm.acme.com`) | plain (drives `frame-ancestors` + the origin check) |
+
+You receive back the **connection id** (a non-secret string) and agree on the
+`embedSecret` (the operator generates it and shares it once, out-of-band). That's it —
+no per-agent accounts on FoundryX; your agents never log in here.
+
+> **v1 provisioning note.** A dedicated dashboard screen for creating/rotating the embed
+> connection is a follow-up (BL-SS-021); today the FoundryX operator provisions the
+> `omnichannel_shared` connection (connection id + `embedSecret` + `allowedOrigins`)
+> directly (API/DB). Rotating `embedSecret` = updating that row.
+
+> **One embed connection = one consumer.** The `embedSecret` is per connection; a leak
+> forges agents for that one connection only. Rotating `embedSecret` instantly
+> invalidates every outstanding assertion.
+
+### 12.2 The assertion (what your server mints)
+
+A short-lived **JWT, `HS256`, signed with `embedSecret`** — minted **server-side only,
+never in the browser**.
+
+| Claim | Type | Meaning |
+|---|---|---|
+| `iss` | string | the **connection id** from §12.1 |
+| `aud` | string | **`"omnichannel-embed"`** (exact; anything else is rejected) |
+| `sub` | string | your agent's stable user id — `(iss, sub)` is the federated identity FoundryX attributes replies to |
+| `workspaceId` | string | the target workspace |
+| `scope` | string | **`"inbox"`** (whole workspace) or **`"thread:<contactId>"`** (one thread) |
+| `name` | string | agent display name (shown as "sent by") |
+| `email` / `avatarUrl` | string? | optional agent profile |
+| `caps` | string[] | subset of `["reply","assign","close","note","send_template"]`, or `["read_only"]` |
+| `allowedOrigins` | string[] | your parent origins (mirrors the connection's `allowedOrigins`) |
+| `iat` | number | issued-at (epoch seconds) |
+| `exp` | number | `iat + 900` (15 min) |
+| `jti` | string | unique id — **single-use**; mint a FRESH one for every handshake (see §12.4) |
+
+`contactId` = the FoundryX contact id you already store per record (from the
+`message.inbound` webhook's `data.contact.id`, or a `GET /contacts` lookup). This is
+the only mapping you own: "this lead ↔ this FoundryX contact." FoundryX enforces the rest.
+
+**Server-side mint (Node example):**
+```js
+import jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
+
+// Called by YOUR backend when the browser asks for an assertion (never in the browser).
+function mintEmbedAssertion({ contactId, agent }) {
+  const now = Math.floor(Date.now() / 1000);
+  return jwt.sign({
+    iss: process.env.FX_EMBED_CONNECTION_ID,      // the connection id
+    aud: 'omnichannel-embed',
+    sub: agent.id,
+    workspaceId: process.env.FX_WORKSPACE_ID,
+    scope: `thread:${contactId}`,                 // or 'inbox'
+    name: agent.name,
+    email: agent.email,
+    caps: agent.canReply ? ['reply','send_template','note'] : ['read_only'],
+    allowedOrigins: ['https://crm.acme.com'],
+    iat: now,
+    exp: now + 900,
+    jti: randomUUID(),
+  }, process.env.FX_EMBED_SECRET, { algorithm: 'HS256' });
+}
+```
+Expose it as an endpoint on **your** app (e.g. `GET /internal/fx-embed-assertion?leadId=…`)
+that maps the lead → contactId, checks the agent's own RBAC to decide `caps`, and returns
+`{ assertion }`. **Never ship `embedSecret` to the browser.**
+
+### 12.3 Mount the iframe
+
+```html
+<iframe
+  src="https://YOUR-FOUNDRYX-HOST/embed/omnichannel/thread?c=<connectionId>"
+  style="width:100%; height:100%; border:0;"
+  allow="clipboard-write">
+</iframe>
+```
+- `?c=<connectionId>` — the **non-secret connection id** (= `iss`). It drives the
+  `frame-ancestors` CSP (§12.7). The **assertion is NEVER in the URL** — it arrives
+  via postMessage.
+- **Sizing (your box, our fill):** the widget fills 100% of the iframe and reflows
+  with no horizontal scroll down to ~375px. The message list **scrolls internally**
+  and the composer pins to the bottom, so a long thread never stretches the iframe —
+  just give the `<iframe>` an explicit height (your column's height, or `100vh`).
+- **Routes:** `/embed/omnichannel/thread` (scope `thread:<contactId>`, messages-only
+  side-panel by default) · `/embed/omnichannel/inbox` (scope `inbox`, full workspace
+  inbox — this one also posts `resize {height}` so you can auto-size it).
+
+### 12.4 The postMessage handshake
+
+Envelope for every message: `{ v: 1, type, payload }`. **Validate `event.origin` on
+every message** (accept only the FoundryX embed origin) — never `*`.
+
+```js
+const FX_ORIGIN = 'https://YOUR-FOUNDRYX-HOST';
+const iframe = document.getElementById('fx');
+
+window.addEventListener('message', async (e) => {
+  if (e.origin !== FX_ORIGIN) return;                 // trust only the widget origin
+  const msg = e.data;
+  if (!msg || msg.v !== 1) return;
+
+  if (msg.type === 'ready' || msg.type === 'needToken') {
+    // Mint a FRESH assertion from YOUR server for EACH ready/needToken (single-use).
+    const { assertion } = await fetch(`/internal/fx-embed-assertion?leadId=${leadId}`).then(r => r.json());
+    iframe.contentWindow.postMessage(
+      { v: 1, type: msg.type === 'ready' ? 'init' : 'token',
+        payload: { assertion, theme: { primary: '#7c3aed' }, colorScheme: 'light' } },
+      FX_ORIGIN,                                       // origin-pinned, never '*'
+    );
+  }
+  if (msg.type === 'activity') { /* {kind, contactId} — refresh "last contacted", NO content */ }
+  if (msg.type === 'resize')   { /* {height} — inbox mode: size the iframe */ }
+});
+```
+
+Message types:
+
+| Direction | type | payload | when |
+|---|---|---|---|
+| widget → you | `ready` | `{}` | mounted; asking for `init` |
+| widget → you | `needToken` | `{}` | token near expiry; mint a fresh assertion |
+| widget → you | `resize` | `{ height }` | content height changed (inbox mode) |
+| widget → you | `activity` | `{ kind, contactId }` | coarse "message sent/received/assigned" — refresh your record's last-contacted. **No message content crosses the boundary.** |
+| you → widget | `init` | `{ assertion, theme, colorScheme }` | reply to `ready` — starts the session + first paint |
+| you → widget | `token` | `{ assertion }` | reply to `needToken` — silent refresh |
+| you → widget | `theme` | `{ theme, colorScheme }` | live re-skin (dark toggle / rebrand) |
+
+> **MUST — one fresh assertion per handshake.** Assertions are single-use (`jti`). Mint a
+> new one for **every** `ready` and **every** `needToken`; never cache/reuse. Reusing one
+> → `401 replayed` on the second use. (The widget minimises re-`ready`, but correctness
+> rests on you minting fresh.)
+
+`theme` = whitelisted brand primitives (`{ primary, surface, text, bubbleIn, bubbleOut,
+radius, … }`); `colorScheme` = `"light" | "dark"`.
+
+### 12.5 Scopes — the widget only ever sees what you signed
+
+- **`thread:<contactId>`** — the widget can read/act on **only that contact**. Any
+  attempt (via the UI or a hand-crafted API call with the token) to read another
+  contact's thread, or to list the workspace, returns **`403`**. The live WebSocket is
+  filtered server-side too — it only receives that contact's events.
+- **`inbox`** — the token can list + open every thread in the workspace.
+- **Cross-workspace is impossible:** the token is bound to one `workspaceId`; a query for
+  another workspace's data is refused. A token minted by connection A can never touch
+  connection B's data.
+
+### 12.6 Capabilities — writes are enforced server-side
+
+Put the agent's real permissions in `caps`. FoundryX rejects (`403`) any write whose cap
+is absent, **regardless of what the widget shows** (hiding a button is UX only):
+
+| cap | unlocks |
+|---|---|
+| `reply` | send free-form / media / interactive / location / contacts |
+| `send_template` | send an approved template (outside the 24h window) |
+| `assign` | assign / reassign the thread |
+| `close` | snooze / close / reopen |
+| `note` | add an internal note |
+| `read_only` | read only — every write `403`s |
+
+### 12.7 Security recap (all enforced by FoundryX, not the widget)
+
+1. **Replay** — `jti` single-use, 15-min assertion TTL.
+2. **Scope** — thread-scoped tokens cannot widen (server-checked every request, incl. WS).
+3. **Caps** — every write cap re-checked server-side.
+4. **Blast radius = one connection** — `embedSecret` per connection, rotatable.
+5. **Clickjacking** — the embed page emits `Content-Security-Policy: frame-ancestors
+   <your allowedOrigins>` (resolved from `?c=<connectionId>`), so no other site can frame
+   it. Absent/unknown `?c=` → `frame-ancestors 'none'`.
+6. **postMessage** — origin-validated both directions; never `*`.
+7. **Throttled** — `/embed/session` rides the platform IP throttle.
+
+### 12.8 Endpoints (embed)
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/embed/omnichannel/thread?c=<connectionId>` | none (boots bare) | chromeless single-thread widget page |
+| GET | `/embed/omnichannel/inbox?c=<connectionId>` | none (boots bare) | chromeless full-inbox widget page |
+| POST | `/embed/session` | the assertion IS the credential | widget exchanges assertion → access token (called by the widget, not you) |
+| GET | `/embed/frame-policy?c=<connectionId>` | none | `frame-ancestors` source (used by the platform middleware) |
+
+Everything else (conversation reads/sends, templates, quick-replies, members, WebSocket)
+is the **same** omnichannel API the internal inbox uses — the widget calls it with the
+embed access token as `Authorization: Bearer …`; you don't call those directly in Option B.
+
+### 12.9 Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| Widget spins forever | It never got `init`. Your parent must reply to `ready` with `init { assertion }`. Opening the embed URL directly (no parent) always spins — by design. |
+| `401 invalid_assertion` | Bad signature (wrong `embedSecret`), wrong `aud`, malformed JWT, or unknown `iss`. |
+| `401 replayed` | You reused an assertion. Mint a fresh one per `ready`/`needToken` (§12.4). |
+| `401 expired` | Assertion older than 15 min, or clocks skewed >60s. |
+| `403 origin_not_allowed` | The parent origin you're embedding from isn't in the connection's `allowedOrigins`. |
+| Browser refuses to frame it ("refused to display / frame-ancestors") | Your origin isn't in `allowedOrigins`, or you didn't pass `?c=<connectionId>`. |
+| `403` on a reply/assign | The token's `caps` don't include that action (or it's `read_only`). |
+| Empty / wrong thread | Wrong `contactId` in the `scope`, or wrong `workspaceId`. |
+
+---
+
 ## Appendix — quick endpoint index
 
 **Consumer Gateway (API key):**
@@ -675,3 +908,17 @@ register/rotate/enable/disable + delivery log, template authoring/submission.
 
 **Webhooks (FoundryX → your https URL):** `message.inbound`, `message.status`,
 `message.reaction`, `contact.updated` — signed with `X-Fx-Signature`.
+
+**Embed the UI (Option B, §12) — assertion signed with `embedSecret`:**
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/embed/omnichannel/thread?c=<connectionId>` | chromeless single-thread widget |
+| GET | `/embed/omnichannel/inbox?c=<connectionId>` | chromeless full-inbox widget |
+| POST | `/embed/session` | widget exchanges assertion → 15-min access token (widget-called) |
+| GET | `/embed/frame-policy?c=<connectionId>` | `frame-ancestors` origin source |
+
+**Managed for you in the FoundryX dashboard (session-authed) for embedding:** the
+operator creates the **`omnichannel_shared` connection** carrying your `embedSecret`
+(write-only) + `allowedOrigins`, and gives you the **connection id**. You mint assertions
+server-side (§12.2) and run the postMessage handshake (§12.4).
