@@ -140,3 +140,11 @@ def run_workflow_task(run_id: str) -> dict:
         return {"runId": run_id, "status": RUN_FAILED}
     finally:
         db.close()
+
+
+# ── Cross-package task + handler registration (worker has no FastAPI lifespan) ─
+# `-A app.workflow_engine.worker` only sees tasks/handlers whose module is
+# imported. Without these the worker DISCARDS `jobs.run` as an unregistered task
+# (silent stall — the storage-migration job hangs Pending forever).
+import app.jobs.worker  # noqa: E402,F401 — registers the `jobs.run` Celery task
+import app.storage_migration.service  # noqa: E402,F401 — module-level register_storage_migration_handler()

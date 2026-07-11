@@ -249,3 +249,34 @@ def test_prune_removes_only_old_terminal_jobs(db):
         for r in db.query(BackgroundJob).filter(BackgroundJob.id.in_(ids)).all()
     }
     assert survivors == {recent_done.id, running.id, pending.id}
+
+
+# ── Worker registration (prod-hang regression) ───────────────────────────────
+# The workflow Celery worker (`celery -A app.workflow_engine.worker`) runs no
+# FastAPI lifespan, so any task/handler in another package must be imported by
+# the worker module itself. When it wasn't, the worker received `jobs.run`,
+# found it UNREGISTERED, and DISCARDED the message (KeyError: 'jobs.run') —
+# storage migrations hung Pending forever with no error. These pin the wiring so
+# the next background-job type added can't silently reintroduce the stall.
+
+
+def test_workflow_worker_registers_jobs_run_task():
+    """The `jobs.run` Celery task must be registered on the workflow worker app,
+    else Celery discards the message (silent Pending stall in prod)."""
+    import app.workflow_engine.worker as worker
+
+    assert "jobs.run" in worker.celery_app.tasks
+
+
+def test_workflow_worker_registers_storage_migration_handler():
+    """Importing the workflow worker entrypoint must register the
+    storage_migration job handler — else `jobs.run` runs but `handler_for`
+    raises and the job flips to failed."""
+    import importlib
+
+    import app.workflow_engine.worker  # noqa: F401 — triggers cross-package imports
+
+    registry = importlib.import_module("app.jobs.registry")
+    handler_def = registry.handler_for("storage_migration")
+    assert handler_def.type == "storage_migration"
+    assert callable(handler_def.handler)
