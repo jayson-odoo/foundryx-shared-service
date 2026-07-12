@@ -3,6 +3,16 @@ set -e
 
 export PATH=/home/appuser/.local/bin:$PATH
 
+# Make the app root importable regardless of launch method. The API starts via
+# `python -m …` which puts the CWD (/app) on sys.path, so `import app` AND
+# `import modules.*` both work. The Celery workers/beat, however, run as a
+# console-script (`exec celery …` below) which does NOT add the CWD — so
+# `import modules.omnichannel.*` raised `ModuleNotFoundError: No module named
+# 'modules'` in the worker, breaking module bootstrap + the storage-migration
+# location registration (silently on old code; loudly since sprint-4/12). Pin it
+# here so every container — API and workers — resolves both packages.
+export PYTHONPATH="/app${PYTHONPATH:+:$PYTHONPATH}"
+
 # ── Wait for Postgres ──────────────────────────────────────────────────────
 # Parse host:port out of DATABASE_URL (postgresql://user:pass@host:port/db).
 DB_HOST_PORT=$(echo "${DATABASE_URL}" | sed -n 's|.*@\([^/]*\)/.*|\1|p')
