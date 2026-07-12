@@ -313,6 +313,74 @@ def test_zero_keys_holds_for_review_not_silent_done(db, only_avatar_location, fa
     assert done.status == JOB_DONE
 
 
+def test_missing_declared_location_modules_detects_undercount(db):
+    """Completeness detector (sprint-4/12 round 3): a module that DECLARES
+    storage locations in its manifest but has fewer registered than declared is
+    reported — the signal the migration uses to HOLD instead of stranding. Keyed
+    by the ``module`` tag on registered locations, so it fires even when the
+    module's models import failed entirely (nothing registered)."""
+    from app.storage_migration.core_locations import (
+        ensure_all_storage_locations,
+        missing_declared_location_modules,
+    )
+
+    ensure_all_storage_locations()
+    assert missing_declared_location_modules() == []  # fully registered
+
+    saved = dict(reg._LOCATIONS)
+    for sig in [s for s, loc in reg._LOCATIONS.items() if loc.module == "omnichannel"]:
+        del reg._LOCATIONS[sig]  # simulate a stale worker that skipped omnichannel
+    try:
+        assert "omnichannel" in missing_declared_location_modules()
+    finally:
+        reg._LOCATIONS.clear()
+        reg._LOCATIONS.update(saved)
+
+
+def test_incomplete_registration_holds_without_cutover(db, fakes, stub_probe, monkeypatch):
+    """THE data-safety guard (sprint-4/12 round 3). When a declaring module's
+    locations fail to register (the prod stale-worker bug: omnichannel's
+    ``media_key`` silently absent → "Registered 13 not 15"), the migration must
+    HOLD at needs_review BEFORE cutover — never enumerate a subset, retire the
+    source, and strand the rest. Proven by a CORE key that stays on A."""
+    from app.storage_migration import core_locations
+
+    ensure_all_storage_locations = core_locations.ensure_all_storage_locations
+    ensure_all_storage_locations()  # populate core (lazy_once) before we clear omni
+
+    a = _storage_conn(db)
+    a_fake = fakes.setdefault(a.id, FakeAdapter())
+    a_fake.store["raw1"] = (b"one", "image/png")
+    _point_avatar(db, DEFAULT_TENANT_ID, [f"conn:{a.id}:raw1"])  # a core key on A
+
+    # Simulate the stale worker: omnichannel's declared locations fail to register
+    # (its models import blows up in that process) — the handler's ensure_all
+    # records the failure and leaves omnichannel undercounted.
+    real = core_locations.register_module_declared_locations
+
+    def flaky(manifest):
+        if manifest["module_name"] == "omnichannel":
+            raise ModuleNotFoundError("modules.omnichannel.models")
+        return real(manifest)
+
+    monkeypatch.setattr(core_locations, "register_module_declared_locations", flaky)
+    for sig in [s for s, loc in reg._LOCATIONS.items() if loc.module == "omnichannel"]:
+        del reg._LOCATIONS[sig]
+
+    job = _start(db)
+    db.refresh(job)
+
+    assert job.status == JOB_NEEDS_REVIEW  # held, not "done"
+    assert job.logs_json and any(
+        "Incomplete storage-key registration" in e["message"] for e in job.logs_json
+    )
+    # CRITICAL: the core avatar key was NOT rewritten — no cutover, nothing
+    # stranded. A still owns it (A is retired but serves by key).
+    db.expire_all()
+    key = db.query(User.avatar_key).filter(User.avatar_key.isnot(None)).scalar()
+    assert key == f"conn:{a.id}:raw1"
+
+
 def test_clean_migration_copies_and_cutovers(db, only_avatar_location, fakes, stub_probe):
     a = _storage_conn(db)
     a_fake = fakes.setdefault(a.id, FakeAdapter())

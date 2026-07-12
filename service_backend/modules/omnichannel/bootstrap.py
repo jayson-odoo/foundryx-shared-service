@@ -56,31 +56,18 @@ def register_engine_entities() -> None:
     generic storage migration automatically (sprint-4/10 AC-10-20):
     ``conversation_messages.media_key`` (inbound/outbound chat media) and
     ``whatsapp_templates.media_sample_key`` (a draft template's media-header
-    sample). Both are scalar ``conn:<id>:`` key columns.
+    sample). The declaration is the ``"storage_locations"`` block in
+    ``manifest.json`` — the SINGLE source of truth shared with the migration's
+    own registration path (``ensure_all_storage_locations``), so the two can
+    never drift. Registering the same signatures at app boot is idempotent.
     """
-    from app.storage_migration.registry import (
-        StorageKeyLoc,
-        register_storage_key_location,
-    )
+    from app.module_loader import discover_manifests
+    from app.storage_migration.core_locations import register_module_declared_locations
 
-    from .models import ConversationMessage, WhatsappTemplate
-
-    register_storage_key_location(
-        StorageKeyLoc(
-            model=ConversationMessage,
-            column="media_key",
-            tenant_column="tenant_id",
-            module=MODULE_NAME,
-        )
-    )
-    register_storage_key_location(
-        StorageKeyLoc(
-            model=WhatsappTemplate,
-            column="media_sample_key",
-            tenant_column="tenant_id",
-            module=MODULE_NAME,
-        )
-    )
+    for manifest in discover_manifests():
+        if manifest["module_name"] == MODULE_NAME:
+            register_module_declared_locations(manifest)
+            break
 
 
 def create_schema_and_tables(engine: Engine) -> None:

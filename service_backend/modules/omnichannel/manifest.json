@@ -16,6 +16,18 @@
       "version": 1
     }
   ],
+  "storage_locations": [
+    {
+      "model": "ConversationMessage",
+      "column": "media_key",
+      "tenantColumn": "tenant_id"
+    },
+    {
+      "model": "WhatsappTemplate",
+      "column": "media_sample_key",
+      "tenantColumn": "tenant_id"
+    }
+  ],
   "routers": [
     {
       "name": "workspaces",
