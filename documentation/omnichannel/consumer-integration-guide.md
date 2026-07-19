@@ -60,6 +60,11 @@ endpoint that accepts your API key.
 
 The two are independent and combine freely — many consumers automate sends via the API **and** embed the UI for their agents. §2–§11 cover Option A. **§12 covers Option B (the iframe).**
 
+> **Troubleshooting.** Whichever option(s) you use, every consumption is captured in the
+> dashboard **Developers ▸ Logs** console — inbound API calls, embed sessions, outbound
+> Meta calls, and webhook deliveries in one trace-correlated feed. When a send doesn't
+> arrive or a token is rejected, that's where your engineer looks. See **§13**.
+
 ---
 
 ## 2. Onboarding — what has to happen before you can send
@@ -885,6 +890,81 @@ embed access token as `Authorization: Bearer …`; you don't call those directly
 
 ---
 
+## 13. Developer Logs Console — troubleshooting your integration
+
+Both integration paths (the API in §2–§11 and the embed in §12) used to be
+fire-and-forget: if a send didn't arrive or an embed token was rejected, there was
+nowhere to look. The **Developers ▸ Logs** console fixes that — it's a single,
+source-tagged activity feed of **everything your integration does**, with
+**trace-id correlation** so one consumption is visible end-to-end.
+
+> **Where it lives.** In the FoundryX **dashboard** (session login), under
+> **Developers ▸ Logs**. It is **not** a consumer API — your engineer views it in the
+> UI. Access needs a shared-service login with the `integration_logs.read` permission
+> (your system admin, or ask your FoundryX operator to open it for you). Data is
+> **tenant-scoped** — you see only your own tenant's activity.
+
+### 13.1 What gets logged (four sources, one feed)
+
+| Source | Captures | Example `operation` |
+|---|---|---|
+| **`inbound_api`** | Every call you make to `/api/v1/omnichannel/*` (§2–§11) — latency + status, incl. failures | `POST /messages`, `GET /contacts` |
+| **`outbound_meta`** | FoundryX's resulting call to the Meta/WhatsApp Graph API (send, template submit, sync) | `graph:send` |
+| **`webhook_delivery`** | Each attempt to POST an event to **your** callback URL (§7) — merged in from the per-channel delivery log | `webhook:message.status` |
+| **`embed_session`** | Each embed assertion → access-token exchange (§12) — success or the typed rejection | `embed:session` |
+
+Each row carries: **source**, **operation**, **status** (`success` / `error` /
+`pending`), the **HTTP / Meta status code**, an **error code** (e.g.
+`csw_window_closed`, `invalid_api_key`, `expired`), **latency (ms)**, the
+**workspace**, which **API key** made the call, an **external ref** (the Meta
+`wamid` or webhook event id), and the **timestamp**.
+
+### 13.2 Trace correlation — one consumption, end-to-end
+
+The console mints a **trace id** on each inbound gateway call and threads it through
+the work that call triggers. So a single "send a message" fans out to correlated legs:
+
+```
+trace 7f3c…  ┌─ inbound_api      POST /messages            202  18ms
+             ├─ outbound_meta    graph:send                200  240ms   wamid=wamid.HBg…
+             └─ webhook_delivery  webhook:message.status    200  95ms    (DELIVERED → your URL)
+```
+
+Open any row → the **trace timeline** shows every leg with its status and latency.
+The async `message.status` delivery (which only knows the `wamid`) is joined back to
+the originating trace by that external ref — so you can follow **your API call → the
+Meta send → the delivery receipt back to you** in one view. This is the fastest way
+to answer "where did my message stop?":
+
+- error on the **`inbound_api`** leg → your request was rejected (bad body, closed
+  24h window, unknown template) — the `error_code` says which (cross-ref §10).
+- `inbound_api` OK but **`outbound_meta`** errored → Meta rejected the send (the leg
+  carries the Graph status + reason).
+- both OK but the **`webhook_delivery`** leg is failing/retrying → your callback URL
+  is down or slow (see the response code + §7 retry/auto-disable rules).
+
+### 13.3 Redaction & retention
+
+- **Redaction.** Request/response bodies are stored **redacted** — any
+  `Authorization`, API key, token, secret, `assertion`, `embedSecret`, or password
+  field is masked to `***`. WhatsApp **message text is preserved** (it's content, not
+  a credential), so you can still see what was sent.
+- **Retention.** Rows are pruned per tenant — default **30 days**. An admin with
+  `integration_logs.manage` can change the window in **Developers ▸ Logs ▸ Settings**.
+
+### 13.4 Finding things
+
+Filter by **source**, **status**, **time**, or **workspace**; search by request
+**path**, **trace id**, or **external ref** (paste a `wamid` or a webhook event id to
+jump straight to the consumption it belongs to). The console is generic and core —
+as FoundryX adds more consumable services, they log to this **same** feed.
+
+> This complements, and now unifies, the older per-channel **webhook Deliveries**
+> dialog (§7) — webhook attempts appear here too, correlated to the send that caused
+> them.
+
+---
+
 ## Appendix — quick endpoint index
 
 **Consumer Gateway (API key):**
@@ -908,6 +988,11 @@ embed access token as `Authorization: Bearer …`; you don't call those directly
 **Managed for you in the FoundryX dashboard (session-authed):** workspace +
 channel onboarding (Embedded Signup), API-key mint/revoke, webhook
 register/rotate/enable/disable + delivery log, template authoring/submission.
+
+**Troubleshooting in the FoundryX dashboard (session-authed, `integration_logs.read`):**
+**Developers ▸ Logs** — one trace-correlated activity feed across inbound API calls,
+outbound Meta calls, webhook deliveries, and embed sessions; redacted bodies;
+per-tenant retention (default 30 days). See §13.
 
 **Webhooks (FoundryX → your https URL):** `message.inbound`, `message.status`,
 `message.reaction`, `contact.updated` — signed with `X-Fx-Signature`.

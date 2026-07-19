@@ -6,6 +6,9 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
+      // tsconfig maps `@/*` to both `./*` and `./app/components/*`; a vite alias is
+      // a single prefix replace, so name the app/components-only prefix first.
+      '@/partials': resolve(__dirname, 'app/components/partials'),
       '@': resolve(__dirname, '.'),
     },
   },

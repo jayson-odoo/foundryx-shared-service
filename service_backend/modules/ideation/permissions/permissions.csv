@@ -1,0 +1,8 @@
+resource,resource_label,action,action_label,description
+ideation.products,Ideation Products,manage,Manage,Manage software products' delivery config, adapters & bindings (Maintainer)
+ideation.ideas,Ideas,view,View,View ideas & idea detail
+ideation.ideas,Ideas,submit,Submit,Submit ideas via the conversational intake (Submitter)
+ideation.ideas,Ideas,upvote,Upvote,Upvote an existing idea (Submitter)
+ideation.triage,Idea Triage,manage,Manage,Triage board, status transitions & clustering (Triager)
+ideation.clusters,Idea Clusters,manage,Manage,Accept/reject suggested idea clusters (Triager)
+ideation.bindings,Workspace Bindings,manage,Manage,Bind respond.io workspaces to products (Maintainer)

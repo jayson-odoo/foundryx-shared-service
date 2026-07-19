@@ -1,0 +1,35 @@
+{
+  "module_name": "ideation",
+  "version": "0.1.0",
+  "author": "FoundryX",
+  "title": "Ideation",
+  "description": "Capture raw ideas from WhatsApp into structured, deduped, triageable Ideas against a Product — the Capture spine of the Ideation → Delivery program.",
+  "icon": "lightbulb",
+  "required_core_version": ">=1.0.0",
+  "schema": "app_ideation",
+  "alembic_version_table": "alembic_version_ideation",
+  "requires": [{"name": "omnichannel"}],
+  "optional": [],
+  "provides": [],
+  "routers": [
+    {
+      "name": "products",
+      "prefix": "/ideation/products"
+    },
+    {
+      "name": "ideas",
+      "prefix": "/ideation/ideas"
+    },
+    {
+      "name": "intake",
+      "prefix": "/ideation/intake",
+      "public": true
+    },
+    {
+      "name": "intake_reads",
+      "prefix": "/ideation/intake",
+      "public": true
+    }
+  ],
+  "permissions_csv": "permissions/permissions.csv"
+}

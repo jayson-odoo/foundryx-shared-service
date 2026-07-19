@@ -1,0 +1,148 @@
+"""Ideation API schemas — camelCase out to the frontend (mirrors
+service_frontend/types/ideation.ts + services/ideation-service.ts).
+
+The ``create_idea`` intake contract (§5.1) is the exception: it is a
+server-to-server contract with the sorento brain and uses **snake_case**
+field names byte-for-byte (input schema below; the output is a plain dict
+built in ``services/intake.py`` so optional keys are omitted, not null)."""
+from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional
+
+from app.schemas.base import ApiModel
+
+
+class IdeaAttachmentOut(ApiModel):
+    """An idea attachment (voice note, image, video, file). Empty until the
+    create_idea / attachment slice lands — the detail section renders empty."""
+
+    id: str
+    kind: str
+    name: str
+    url: str = ""
+    sizeBytes: Optional[int] = None
+    durationSec: Optional[int] = None
+
+
+class IdeaOut(ApiModel):
+    """One Idea, matching the FE ``Idea`` shape (types/ideation.ts). ``status`` is
+    the lifecycle KEY (e.g. ``captured``); ``productName``/``submitterName`` are
+    human-readable (never a raw UUID — cursor rule). ``downvotes``/``myVote`` are
+    surfaced for the FE contract but Phase A tracks upvotes only (D10)."""
+
+    id: str
+    productId: str
+    productName: str
+    status: str
+    problem: str
+    proposedSolution: Optional[str] = None
+    impact: Optional[str] = None
+    department: Optional[str] = None
+    rawText: str
+    source: str
+    submitterName: str
+    upvotes: int
+    downvotes: int = 0
+    myVote: Optional[Literal["up", "down"]] = None
+    priority: int
+    attachments: List[IdeaAttachmentOut] = []
+    createdAt: datetime
+
+
+class BoardColumnOut(ApiModel):
+    """One triage-board column — a lifecycle status + the ideas parked in it.
+    ``ideas`` are ordered by priority ascending (top = highest priority)."""
+
+    key: str
+    title: str
+    ideas: List[IdeaOut] = []
+
+
+class BoardOut(ApiModel):
+    """The triage board (AC-A-33) — ideas grouped into the board lifecycle
+    columns (captured → triaged → linked → building → delivered), in order.
+    Archived / terminal ideas are off the board."""
+
+    columns: List[BoardColumnOut] = []
+
+
+class DeliveryConfigOut(ApiModel):
+    """A software Product's delivery config (AC-A-06). ``productDomainBase`` is
+    null until a Maintainer sets it."""
+
+    productId: str
+    productDomainBase: Optional[str] = None
+    createdAt: Optional[datetime] = None
+    updatedAt: Optional[datetime] = None
+
+
+class DeliveryConfigIn(ApiModel):
+    productDomainBase: str
+
+
+class VoteIn(ApiModel):
+    """Toggle the caller's vote on an idea (one per voter). Re-sending the same
+    ``dir`` cancels it; the other ``dir`` switches it."""
+
+    dir: Literal["up", "down"]
+
+
+class ReorderIn(ApiModel):
+    """Manual priority ranking — ``orderedIds`` top-to-bottom (index = priority,
+    ascending = top)."""
+
+    orderedIds: List[str]
+
+
+class StatusIn(ApiModel):
+    """Move an idea to a lifecycle status by KEY (e.g. ``triaged``, ``archived``,
+    ``captured``). Server-authoritative — an illegal move is refused."""
+
+    status: str
+
+
+class IdeaCreateIn(ApiModel):
+    """Operator-facing in-app idea create — **camelCase**, mirroring the FE
+    ``IdeaCreateInput`` (services/ideation-service.ts). Distinct from the
+    conversational ``CreateIdeaIn`` intake (snake_case, server-to-server): an
+    operator typing an idea IS deliberate, so there is no draft/collect/confirm
+    gate — it is created straight into ``captured``. ``productId`` is validated
+    against the tenant catalog; ``source`` defaults to ``manual``."""
+
+    productId: str
+    problem: str
+    proposedSolution: Optional[str] = None
+    impact: Optional[str] = None
+    department: Optional[str] = None
+    rawText: str = ""
+    source: str = "manual"
+
+
+class IdeaUpdateIn(ApiModel):
+    """Operator-facing in-app idea edit — partial update of the mutable fields.
+    Status moves ride ``POST /ideation/ideas/{id}/status`` (server-authoritative),
+    NOT this route, so ``status`` is intentionally absent."""
+
+    productId: Optional[str] = None
+    problem: Optional[str] = None
+    proposedSolution: Optional[str] = None
+    impact: Optional[str] = None
+    department: Optional[str] = None
+    rawText: Optional[str] = None
+
+
+class CreateIdeaIn(ApiModel):
+    """``create_idea`` intake input (§5.1, AC-A-17) — **snake_case, byte-for-byte**.
+
+    ``product_id`` is validated against the workspace's catalog; ``fields`` are the
+    sorento-brain-extracted answer updates; ``remove`` clears answer keys;
+    ``confirm`` is the explicit user confirmation (D-CONFIRM — shared-service never
+    infers it). ``draft_id`` is absent on turn 1, present on continuation."""
+
+    product_id: str
+    submitter_contact_id: Optional[str] = None
+    message_text: str = ""
+    audio_attachment_ref: Optional[str] = None
+    draft_id: Optional[str] = None
+    fields: Optional[Dict[str, Any]] = None
+    remove: Optional[List[str]] = None
+    confirm: bool = False

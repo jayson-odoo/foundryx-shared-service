@@ -90,7 +90,7 @@ export function ActionMenu<T>({
                 }}
               >
                 {Icon && <Icon />}
-                {action.label}
+                {typeof action.label === 'function' ? action.label(rows) : action.label}
               </DropdownMenuItem>
             );
           })}

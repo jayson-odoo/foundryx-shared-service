@@ -16,8 +16,10 @@ import {
   Key,
   LayoutGrid,
   LifeBuoy,
+  Lightbulb,
   MessageSquare,
   Network,
+  Package,
   Plug,
   Settings,
   Share2,
@@ -405,6 +407,25 @@ export const MENU_SIDEBAR: MenuConfig = [
       // Metronic demo residue, the routes never existed (404 on click).
     ],
   },
+  // Products catalog (CORE master-data). Top-level, not under Ideation — the
+  // Product is a core system entity Ideation extends, not an Ideation artifact.
+  {
+    title: 'Products',
+    icon: Package,
+    path: '/products',
+    permission: 'products.read',
+  },
+  // Ideation module (plan: documentation/plans/ideation/, Phase A). Ungated for
+  // the Phase-1 prototype; TODO(Phase 2): add `module: 'ideation'` + per-child
+  // `permission` once the ideation App-Store module + permissions are seeded.
+  {
+    title: 'Ideation',
+    icon: Lightbulb,
+    children: [
+      { title: 'Ideas', path: '/ideation/ideas' },
+      { title: 'Triage board', path: '/ideation/board' },
+    ],
+  },
   // Module menu block — visible only while the module is ACTIVE for the
   // tenant (plan 08 §8, lands BL-014 for module items).
   {
@@ -745,6 +766,21 @@ export const MENU_SIDEBAR_COMPACT: MenuConfig = [
       },
       // Permissions/Account/Logs/Settings entries removed in sprint-2/06 —
       // Metronic demo residue, the routes never existed (404 on click).
+    ],
+  },
+  // Products catalog (CORE master-data) — top-level, not under Ideation.
+  {
+    title: 'Products',
+    icon: Package,
+    path: '/products',
+    permission: 'products.read',
+  },
+  {
+    title: 'Ideation',
+    icon: Lightbulb,
+    children: [
+      { title: 'Ideas', path: '/ideation/ideas' },
+      { title: 'Triage board', path: '/ideation/board' },
     ],
   },
   {

@@ -41,7 +41,12 @@ export interface ResourceActionRuntime {
  */
 export interface ResourceAction<T> {
   id: string;
-  label: string;
+  /**
+   * Menu label. A function receives the target rows so the label can be derived
+   * from state — e.g. a status_engine "advance" action reads the row's allowed
+   * next transition and renders "Move to Triaged" instead of a static verb.
+   */
+  label: string | ((rows: T[]) => string);
   icon?: LucideIcon;
   tone?: 'default' | 'destructive';
   surfaces: { row?: boolean; bulk?: boolean; form?: boolean };
@@ -86,6 +91,13 @@ export interface ResourceListConfig<T extends object> {
   /** Initial view when `cardRender` is set (default 'list'). */
   defaultView?: 'card' | 'list';
   getRowId: (row: T) => string;
+  /**
+   * Opt-in drag-to-reorder ROWS (order = the entity's manual priority). When set,
+   * the table renders a left grip handle per row and persists the new id order via
+   * `onReorder`. Row order should be the fetcher's default order (disable column
+   * sorting so drag order is meaningful). Mutually exclusive with column-drag.
+   */
+  rowReorder?: { onReorder: (orderedIds: string[]) => void | Promise<void> };
   /** Base form path for a row; the shell appends ctx + index for record-nav. */
   rowHref: (row: T) => string;
   /**

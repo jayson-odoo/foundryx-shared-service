@@ -149,6 +149,84 @@ def session_factory():
 
 
 @pytest.fixture
+def ideation_session_factory():
+    """SQLite session factory with BOTH omnichannel and ideation modules mounted.
+
+    Mirrors ``session_factory`` but also schema-translates the ideation module's
+    ``app_ideation`` schema onto its own attached in-memory db and installs
+    ideation (which ``requires:["omnichannel"]``) for the default tenant via the
+    App Store. Ideation tests get a session where the module is bootstrapped +
+    installed exactly like production.
+    """
+    from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
+    from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    ).execution_options(
+        # Each module schema maps onto its own attached in-memory db (distinct
+        # table names; no collisions) — module tables stay isolated from core's.
+        schema_translate_map={OMNI_SCHEMA: "omni", IDEATION_SCHEMA: "ideation"}
+    )
+    with engine.connect() as conn:
+        conn.exec_driver_sql("ATTACH ':memory:' AS omni")
+        conn.exec_driver_sql("ATTACH ':memory:' AS ideation")
+        conn.commit()
+    Base.metadata.create_all(bind=engine)
+    OmniBase.metadata.create_all(bind=engine)
+    IdeationBase.metadata.create_all(bind=engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    db = TestingSessionLocal()
+    seed_statuses(db)
+    seed_tenant_transitions(db)
+    seed_default_tenant(db)
+    seed_platform_tenant(db)
+    seed_permissions(db)
+    seed_platform_admin(db)
+    from app.template_engine.seed_templates import seed_platform_templates
+
+    seed_platform_templates(db)
+
+    admin_role = Role(
+        tenant_id=DEFAULT_TENANT_ID,
+        name="Admin",
+        description="Full system access",
+        is_system=True,
+    )
+    admin_role.permissions = tenant_admin_grant(db, DEFAULT_TENANT_ID)
+    db.add(admin_role)
+    db.flush()
+
+    demo = User(
+        tenant_id=DEFAULT_TENANT_ID,
+        email=ACTIVE_EMAIL,
+        password=hash_password(ACTIVE_PASSWORD),
+        name="Demo User",
+        status=UserStatus.ACTIVE.value,
+        email_verified_at=func.now(),
+    )
+    demo.roles = [admin_role]
+    db.add(demo)
+    db.commit()
+
+    # Real module wiring: catalog sync + global install for every module, then
+    # install omnichannel (dependency) + ideation for the default tenant.
+    from app.module_loader import bootstrap_modules
+    from app.services.app_store_service import AppStoreService
+
+    bootstrap_modules(engine=engine, db=db)
+    store = AppStoreService(db)
+    store.install(DEFAULT_TENANT_ID, "omnichannel")
+    store.install(DEFAULT_TENANT_ID, "ideation")
+    db.close()
+
+    yield TestingSessionLocal
+
+
+@pytest.fixture
 def client(session_factory):
     def override_get_db():
         db = session_factory()

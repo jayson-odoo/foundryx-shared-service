@@ -5,13 +5,14 @@ import { useRouter } from 'next/navigation';
 import {
   getCoreRowModel,
   useReactTable,
+  type ColumnDef,
   type PaginationState,
   type RowSelectionState,
   type SortingState,
 } from '@tanstack/react-table';
 import type { DragEndEvent } from '@dnd-kit/core';
-import { arrayMove } from '@dnd-kit/sortable';
-import { Columns3, Download, Filter, Info, LayoutGrid, List, Plus, Search, Upload, X } from 'lucide-react';
+import { arrayMove, useSortable } from '@dnd-kit/sortable';
+import { Columns3, Download, Filter, GripVertical, Info, LayoutGrid, List, Plus, Search, Upload, X } from 'lucide-react';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
 import { cn } from '@/lib/utils';
 import { encodeListQuery } from '@/lib/list-context';
@@ -34,6 +35,7 @@ import { DataGrid } from '@/components/ui/data-grid';
 import { DataGridColumnVisibility } from '@/components/ui/data-grid-column-visibility';
 import { DataGridPagination } from '@/components/ui/data-grid-pagination';
 import { DataGridTableDnd } from '@/components/ui/data-grid-table-dnd';
+import { DataGridTableDndRows } from '@/components/ui/data-grid-table-dnd-rows';
 import { Input } from '@/components/ui/input';
 import { SearchSelect } from '@/components/platform/search-select';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -45,6 +47,28 @@ import { FilterBuilder } from './filter-builder';
 import { ExportDialog } from './export-dialog';
 import type { ResourceListConfig } from './types';
 import { useImportActivity } from '@/providers/import-activity-provider';
+
+/**
+ * Row drag handle — a plain muted GripVertical (matches the triage board's card
+ * grip so the two surfaces read consistently, per UX feedback). Grabs the same
+ * `useSortable(id)` listeners the DndRows body wires up.
+ */
+function RowDragGrip({ rowId }: { rowId: string }) {
+  const { attributes, listeners, setActivatorNodeRef } = useSortable({ id: rowId });
+  return (
+    <button
+      type="button"
+      ref={setActivatorNodeRef}
+      aria-label="Drag to reorder"
+      onClick={(e) => e.stopPropagation()}
+      className="flex cursor-grab touch-none items-center text-muted-foreground/60 hover:text-foreground active:cursor-grabbing"
+      {...attributes}
+      {...listeners}
+    >
+      <GripVertical className="size-4" />
+    </button>
+  );
+}
 
 function countConditions(group: { rules: unknown[] } | null | undefined): number {
   if (!group) return 0;
@@ -110,20 +134,51 @@ export function ResourceList<T extends object>({ config }: ResourceListProps<T>)
   // N-way segments replace the binary status views when configured.
   const showStatusViews = config.enableStatusViews !== false && !config.segments;
 
+  // Opt-in row drag-to-reorder: prepend a fixed left grip column and swap the
+  // table body renderer (below). Existing lists (no rowReorder) are unaffected.
+  const effectiveColumns = useMemo<ColumnDef<T>[]>(() => {
+    if (!config.rowReorder) return config.columns;
+    const grip: ColumnDef<T> = {
+      id: '__drag',
+      header: () => null,
+      cell: ({ row }) => (
+        <div className="flex justify-center">
+          <RowDragGrip rowId={row.id} />
+        </div>
+      ),
+      size: 44,
+      enableSorting: false,
+      enableResizing: false,
+      enableHiding: false,
+      meta: { reorderable: false },
+    };
+    return [grip, ...config.columns];
+  }, [config.rowReorder, config.columns]);
+
+  function handleRowDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id || !config.rowReorder) return;
+    const ids = list.data.map((r) => config.getRowId(r));
+    const from = ids.indexOf(String(active.id));
+    const to = ids.indexOf(String(over.id));
+    if (from < 0 || to < 0) return;
+    void config.rowReorder.onReorder(arrayMove(ids, from, to));
+  }
+
   // Column order: saved prefs, else the config's declared order. Required for
   // both drag-reorder and the header "move" actions to have a baseline.
   const defaultColumnOrder = useMemo(
-    () => config.columns.map((c) => c.id).filter((id): id is string => Boolean(id)),
-    [config.columns],
+    () => effectiveColumns.map((c) => c.id).filter((id): id is string => Boolean(id)),
+    [effectiveColumns],
   );
   // Columns that can't be reordered (e.g. select, actions) stay pinned at their
   // default slot regardless of drags.
   const fixedIds = useMemo(
     () =>
       new Set(
-        config.columns.filter((c) => c.meta?.reorderable === false).map((c) => c.id as string),
+        effectiveColumns.filter((c) => c.meta?.reorderable === false).map((c) => c.id as string),
       ),
-    [config.columns],
+    [effectiveColumns],
   );
   // Normalize: fixed columns always sit at their default slots; movable columns
   // follow the saved order (new columns appended). Self-heals any stale prefs
@@ -158,7 +213,7 @@ export function ResourceList<T extends object>({ config }: ResourceListProps<T>)
 
   const table = useReactTable<T>({
     data: list.data,
-    columns: config.columns,
+    columns: effectiveColumns,
     getRowId: (row) => config.getRowId(row),
     pageCount: Math.max(1, Math.ceil(list.total / list.pageSize)),
     state: {
@@ -517,7 +572,14 @@ export function ResourceList<T extends object>({ config }: ResourceListProps<T>)
         ) : (
           <CardTable>
             <ScrollArea>
-              <DataGridTableDnd handleDragEnd={handleColumnDragEnd} />
+              {config.rowReorder ? (
+                <DataGridTableDndRows
+                  handleDragEnd={handleRowDragEnd}
+                  dataIds={list.data.map((r) => config.getRowId(r))}
+                />
+              ) : (
+                <DataGridTableDnd handleDragEnd={handleColumnDragEnd} />
+              )}
               <ScrollBar orientation="horizontal" />
             </ScrollArea>
           </CardTable>
