@@ -12,7 +12,6 @@ Revision ID: 0003_ideation_idea_submitter_name
 Revises: 0002_ideation_dedup_trgm
 Create Date: 2026-07-19
 """
-import sqlalchemy as sa
 from alembic import op
 
 revision = "0003_ideation_idea_submitter_name"
@@ -27,10 +26,13 @@ def upgrade() -> None:
         return
     from modules.ideation.db import IDEATION_SCHEMA
 
-    op.add_column(
-        "ideas",
-        sa.Column("submitter_name", sa.String(), nullable=True),
-        schema=IDEATION_SCHEMA,
+    # Idempotent: the live app_ideation.ideas may predate module Alembic (built by
+    # create_all, stamped at baseline) and already carry this column — an ADD would
+    # crash the upgrade chain. IF NOT EXISTS makes the stamp/upgrade paths converge
+    # (matches 0004's guard).
+    op.execute(
+        f'ALTER TABLE {IDEATION_SCHEMA}.ideas '
+        f'ADD COLUMN IF NOT EXISTS submitter_name VARCHAR'
     )
 
 
