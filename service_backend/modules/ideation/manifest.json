@@ -29,6 +29,15 @@
       "name": "intake_reads",
       "prefix": "/ideation/intake",
       "public": true
+    },
+    {
+      "name": "embed",
+      "prefix": "/embed",
+      "public": true
+    },
+    {
+      "name": "embed_admin",
+      "prefix": "/ideation/embed-connections"
     }
   ],
   "permissions_csv": "permissions/permissions.csv"

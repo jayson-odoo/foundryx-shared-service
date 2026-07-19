@@ -12,7 +12,15 @@ Every tenant-scoped table carries ``tenant_id``. Datetimes are tz-aware UTC.
 """
 import uuid
 
-from sqlalchemy import Column, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Column,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.sql import func
 from sqlalchemy.types import JSON
 
@@ -174,4 +182,41 @@ class IdeaVote(IdeationBase):
 
     __table_args__ = (
         UniqueConstraint("idea_id", "voter_id", name="uq_idea_vote_voter"),
+    )
+
+
+class EmbedConnection(IdeationBase):
+    """Ideation iframe-embed SSO connection registry (PLAN-ideation-embed-sso §7,
+    AC-E-5/12). One row per host application (e.g. sorento) authorised to embed a
+    tenant's Ideas workspace. The ``connection_id`` is the shared, non-secret
+    handle the host puts in its ``POST /embed/session`` body; ``signing_secret``
+    is the HS256 secret BOTH sides hold — stored Fernet-encrypted at rest
+    (``signing_secret_ciphertext``, via ``app.secrets.encrypt_secret``), never
+    returned plaintext, never logged.
+
+    ``allowed_origins`` is the parent-origin allow-list (the browser origins
+    permitted to iframe the page). ``product_id`` optionally scopes the connection
+    to a single core Product (nullable = all the tenant's ideas). ``is_active``
+    disables a connection without deleting it (rotation / off-boarding).
+
+    Verification (``services/embed.py``) resolves the connection by
+    ``connection_id`` from the request body, decrypts the secret, and checks the
+    assertion signature + ``aud="ideation-embed"`` + ``iss="sorento"`` + expiry
+    against it — a rotated secret invalidates every outstanding assertion for that
+    connection (blast radius = one connection)."""
+
+    __tablename__ = "embed_connections"
+
+    # The connection_id IS the primary key (unique handle the host sends).
+    connection_id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    signing_secret_ciphertext = Column(Text, nullable=False)
+    allowed_origins = Column(JSON, nullable=False, default=list)
+    # Optional scope to one core public.products row; plain nullable id (no FK) so
+    # a connection can be registered before any product exists.
+    product_id = Column(String, nullable=True, index=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
     )
