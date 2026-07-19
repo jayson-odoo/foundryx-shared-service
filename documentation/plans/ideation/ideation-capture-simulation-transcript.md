@@ -1,6 +1,14 @@
 # Ideation Capture — end-to-end simulation transcript
 
-Deterministic Conversational-Intake (NO LLM). Product **Sorento CRM** (`b6f06925-dcdb-493a-9dd4-080193e15f40`), domain base `https://fe-sorento.foundryx.my`. The brain extracts structured `fields`/`remove`/`confirm`; this module merges them against the schema, computes captured/missing and echoes a templated reply. Required fields: **problem, module, who, impact**.
+> **STALE FIELD SET.** This transcript was captured against the earlier
+> `problem / module / who / impact` intake schema. The required fields were
+> since revised to **problem statement, proposed solution, impact, department**
+> (module/who dropped — business submitters don't know the module; the submitter
+> identifies who). The state-machine behaviour shown (collecting → review →
+> confirm → complete, dedup, revise/remove) is unchanged; only the field names
+> differ. Re-run `scripts/simulate_ideation_capture.py` to regenerate.
+
+Deterministic Conversational-Intake (NO LLM). Product **Sorento CRM** (`b6f06925-dcdb-493a-9dd4-080193e15f40`), domain base `https://fe-sorento.foundryx.my`. The brain extracts structured `fields`/`remove`/`confirm`; this module merges them against the schema, computes captured/missing and echoes a templated reply. Required fields: **problem, proposed_solution, impact, department**.
 
 ---
 

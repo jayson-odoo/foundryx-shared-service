@@ -97,7 +97,7 @@ Ideas ──▶ BR (AI draft, human refine)
 
 ### 5.2 `session_vars.ideation` (sorento owns the blob; shape is the contract)
 ```json
-{ "ideation": { "draft_id": "<uuid>", "status": "collecting|review", "missing": ["module","who"], "updated_at": "<iso>" } }
+{ "ideation": { "draft_id": "<uuid>", "status": "collecting|review", "missing": ["impact","department"], "updated_at": "<iso>" } }
 ```
 - Written by sorento after each `create_idea` call; **cleared** on `status=complete`/`duplicate`.
 - `status` tells the sorento brain the draft is in **`review`** so the next turn is interpreted as *confirm vs revise* (produce `confirm`/`fields`/`remove`), not as fresh collection (D-CONFIRM).

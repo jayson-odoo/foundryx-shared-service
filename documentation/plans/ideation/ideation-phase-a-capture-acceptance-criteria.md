@@ -132,7 +132,10 @@ on the Mac Mini. Any AC below is written against that constraint.
 ### AC-A-14 — target_schema is a valid form_engine document [BE][T]
 - **Given** the ideation `target_schema`, **when** validated, **then** it passes
   `app.form_engine.schemas.validate_form_doc` (Page→Section→Field, stable answer keys), and its input
-  fields are the intake's captured/missing surface (e.g. `problem`, `module`, `who`, `impact`).
+  fields are the intake's captured/missing surface: `problem` (problem statement),
+  `proposed_solution`, `impact`, `department` (all required). (Revised from the earlier
+  `problem/module/who/impact` set — business submitters don't know the module, and the
+  submitter identifies who.)
 
 ### AC-A-15 — completion_rule computes captured/missing [BE][T]
 - **Given** a partial answer set, **when** the completion rule is evaluated, **then** it returns
