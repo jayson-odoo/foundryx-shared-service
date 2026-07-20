@@ -21,9 +21,10 @@ from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
 from app.models.catalog import Product
+from app.services import status_machine
 from modules.omnichannel.models import Contact, Workspace
 
-from ..models import Idea, IdeaVote
+from ..models import Idea, IdeaAttachment, IdeaVote
 from .dedup import DedupService
 from .intake_definitions import (
     IDEATION_FIELD_LABELS,
@@ -31,7 +32,7 @@ from .intake_definitions import (
     get_intake_definition,
 )
 from .sinks import mint_idea_link, sync_idea_columns_from_captured
-from .statuses import initial_idea_status_id
+from .statuses import IDEA_ENTITY, idea_status_id, initial_idea_status_id
 
 
 class IntakeService:
@@ -51,8 +52,9 @@ class IntakeService:
         submitter_name: Optional[str] = None,
         message_text: str,
         raw_transcript: Optional[str] = None,
-        audio_attachment_ref: Optional[str] = None,
+        attachments: Optional[List[Dict[str, object]]] = None,
         draft_id: Optional[str] = None,
+        discard_draft_id: Optional[str] = None,
         fields: Optional[Dict[str, object]] = None,
         remove: Optional[List[str]] = None,
         confirm: bool = False,
@@ -60,6 +62,12 @@ class IntakeService:
         definition = get_intake_definition(IDEATION_INTAKE_KEY)
         if definition is None:  # pragma: no cover — registered at boot
             raise ApiError(500, "intake_unavailable", "Intake definition not registered.")
+
+        # is_new_idea restart (DC-10): the host opened a fresh draft (no draft_id)
+        # and named the abandoned one — reject it so it does not linger as a phantom.
+        # Best-effort: an unknown / already-terminal draft is a no-op, never a 500.
+        if discard_draft_id:
+            self._discard_draft(tenant_id, discard_draft_id)
 
         # product_id is validated against the tenant's catalog (binding-derivation
         # spoof-refusal is the respond.io slice; here we reject unknown/foreign).
@@ -82,6 +90,11 @@ class IntakeService:
             tenant_id, product_id, submitter_contact_id, message_text, draft_id,
             raw_transcript=raw_transcript,
         )
+
+        # Persist media pointers idempotently on every turn (DC-9) — before the
+        # draft-status branching so attachments land on collecting/review/complete
+        # alike. Sorento has already durably stored + captioned them.
+        self._persist_attachments(tenant_id, idea, attachments)
 
         # An already-promoted draft is immutable via intake: any call returns the
         # idempotent complete result (AC-A-20 / AC-A-16 re-fire no-op).
@@ -156,6 +169,73 @@ class IntakeService:
     # ── internals ─────────────────────────────────────────────────────────────
     def _is_draft(self, idea: Idea) -> bool:
         return idea.status_id == initial_idea_status_id(self.db, idea.tenant_id)
+
+    def _discard_draft(self, tenant_id: str, discard_draft_id: str) -> None:
+        """Reject an abandoned draft on an is_new_idea restart (DC-10). Best-effort:
+        an unknown, cross-tenant, or already-non-draft id is a silent no-op — the
+        new idea proceeds regardless (never a 500 that breaks the turn)."""
+        idea = (
+            self.db.query(Idea)
+            .filter(Idea.id == discard_draft_id, Idea.tenant_id == tenant_id)
+            .first()
+        )
+        if idea is None or not self._is_draft(idea):
+            return
+        rejected_id = idea_status_id(self.db, "rejected", tenant_id)
+        if rejected_id is None:  # pragma: no cover — seeded at boot
+            return
+        try:
+            status_machine.transition(
+                self.db, IDEA_ENTITY, idea, rejected_id,
+                tenant_id=tenant_id, commit=False,
+            )
+        except Exception:  # noqa: BLE001 — a blocked edge must not fail the turn
+            return
+
+    def _persist_attachments(
+        self, tenant_id: str, idea: Idea, attachments: Optional[List[Dict[str, object]]]
+    ) -> None:
+        """Upsert media pointers on the idea, keyed by ``(idea_id, source_msg_id)``
+        so the same media re-sent across turns updates one row, never duplicates
+        (DC-9 idempotency). ``type`` maps to the model's ``kind``. Mutable metadata
+        (url / filename / caption) is refreshed on re-send (e.g. a better vision
+        caption on a retried turn). Rows without a ``source_msg_id`` or ``url`` are
+        skipped defensively."""
+        if not attachments:
+            return
+        existing = {
+            a.source_msg_id: a
+            for a in self.db.query(IdeaAttachment)
+            .filter(IdeaAttachment.idea_id == idea.id)
+            .all()
+        }
+        for att in attachments:
+            source_msg_id = str(att.get("source_msg_id") or "").strip()
+            url = str(att.get("url") or "").strip()
+            if not source_msg_id or not url:
+                continue
+            kind = str(att.get("type") or "").strip() or "file"
+            filename = att.get("filename") or None
+            caption = att.get("caption") or None
+            row = existing.get(source_msg_id)
+            if row is None:
+                self.db.add(
+                    IdeaAttachment(
+                        tenant_id=tenant_id,
+                        idea_id=idea.id,
+                        source_msg_id=source_msg_id,
+                        kind=kind,
+                        url=url,
+                        filename=filename,
+                        caption=caption,
+                    )
+                )
+            else:
+                row.kind = kind
+                row.url = url
+                row.filename = filename
+                row.caption = caption
+        self.db.flush()
 
     def _register_submitter_upvote(
         self, tenant_id: str, idea_id: str, submitter_contact_id: Optional[str]

@@ -607,3 +607,127 @@ def test_message_text_still_used_when_no_transcript(setup):
     )
     draft_id = r1.json()["draft_id"]
     assert _idea_field(s["factory"], draft_id, "raw_text") == "just the one message"
+
+
+# ── §5.1 attachments[] + discard_draft_id (DC-9 / DC-10) ──────────────────────
+# Multi-modal capture: sorento durably stores the Respond CDN bytes and passes a
+# resolved ``attachments[]``; shared-service persists the pointers idempotently on
+# ``source_msg_id`` and surfaces them in the read. ``discard_draft_id`` rejects an
+# abandoned draft when the user starts a genuinely new idea (is_new_idea, DC-10).
+
+_ATT = {
+    "source_msg_id": "wamid.ABC123",
+    "url": "https://cdn.sorento.my/ideas/att/mockup.jpg",
+    "type": "image",
+    "filename": "mockup.jpg",
+    "caption": "a hand-drawn export button on the orders grid",
+}
+
+
+def _attachments(factory, idea_id):
+    from modules.ideation.models import IdeaAttachment
+
+    db = factory()
+    try:
+        return (
+            db.query(IdeaAttachment)
+            .filter(IdeaAttachment.idea_id == idea_id)
+            .all()
+        )
+    finally:
+        db.close()
+
+
+def test_create_idea_persists_attachments(setup):
+    s = setup
+    res = _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"], attachments=[_ATT]
+    )
+    assert res.status_code == 200, res.text
+    draft_id = res.json()["draft_id"]
+    rows = _attachments(s["factory"], draft_id)
+    assert len(rows) == 1
+    a = rows[0]
+    assert a.source_msg_id == _ATT["source_msg_id"]
+    assert a.kind == "image"
+    assert a.url == _ATT["url"]
+    assert a.filename == "mockup.jpg"
+    assert a.caption == _ATT["caption"]
+
+
+def test_attachments_surface_in_read(setup):
+    s = setup
+    res = _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"], attachments=[_ATT]
+    )
+    draft_id = res.json()["draft_id"]
+    got = s["client"].get(f"/ideation/ideas/{draft_id}", headers=_auth(s["client"]))
+    assert got.status_code == 200, got.text
+    atts = got.json()["attachments"]
+    assert len(atts) == 1
+    assert atts[0]["kind"] == "image"
+    assert atts[0]["url"] == _ATT["url"]
+    assert atts[0]["name"] == "mockup.jpg"
+
+
+def test_attachments_idempotent_on_source_msg_id(setup):
+    s = setup
+    r1 = _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"], attachments=[_ATT]
+    )
+    draft_id = r1.json()["draft_id"]
+    # Continuation turn re-sends the SAME media (same source_msg_id) → no dup.
+    r2 = _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"],
+        draft_id=draft_id, attachments=[_ATT],
+    )
+    assert r2.status_code == 200, r2.text
+    rows = _attachments(s["factory"], draft_id)
+    assert len(rows) == 1
+
+
+def test_attachments_caption_can_update_on_reprocess(setup):
+    """Idempotent upsert refreshes mutable metadata (caption/url) for the same
+    source_msg_id — a re-run with a better vision caption updates in place."""
+    s = setup
+    r1 = _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"], attachments=[_ATT]
+    )
+    draft_id = r1.json()["draft_id"]
+    better = {**_ATT, "caption": "sketch: Export-to-Excel button, top-right of orders grid"}
+    _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"],
+        draft_id=draft_id, attachments=[better],
+    )
+    rows = _attachments(s["factory"], draft_id)
+    assert len(rows) == 1
+    assert rows[0].caption == better["caption"]
+
+
+def test_discard_draft_id_rejects_old_draft(setup):
+    s = setup
+    r1 = _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"],
+        message_text="idea about exporting orders",
+    )
+    old = r1.json()["draft_id"]
+    # New, unrelated idea; discard the abandoned draft (DC-10 is_new_idea restart).
+    r2 = _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"],
+        message_text="different idea: a dark mode toggle",
+        discard_draft_id=old,
+    )
+    assert r2.status_code == 200, r2.text
+    new = r2.json()["draft_id"]
+    assert new != old
+    assert _idea_status_key(s["factory"], old) == "rejected"
+
+
+def test_discard_unknown_draft_is_noop(setup):
+    """A discard_draft_id that doesn't resolve must not 500 — just proceed."""
+    s = setup
+    res = _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"],
+        message_text="fresh idea", discard_draft_id="does-not-exist",
+    )
+    assert res.status_code == 200, res.text

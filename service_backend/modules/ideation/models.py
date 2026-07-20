@@ -185,6 +185,42 @@ class IdeaVote(IdeationBase):
     )
 
 
+class IdeaAttachment(IdeationBase):
+    """A media attachment on an Idea — voice note / image / video / file captured
+    over WhatsApp (§5.1 ``attachments[]``, DC-9). Written by the ``create_idea``
+    intake when the sorento brain has resolved + durably stored the media (sorento
+    snapshots the Respond CDN bytes to R2/S3 and passes a durable ``url``); this
+    table only persists the resolved pointer + metadata — shared-service fetches
+    nothing.
+
+    ``source_msg_id`` is the originating Respond.io message id; it is the
+    **idempotency key** — the same media re-sent across turns (or a retried turn)
+    upserts the one row, never duplicates (``UNIQUE(idea_id, source_msg_id)``).
+    ``kind`` ∈ ``image|video|file|audio``. ``caption`` is the host-side vision
+    description (image) or STT transcript note (audio), stored for the detail UI;
+    the idea's textual content already carries it (sorento folds the caption into
+    ``message_text``), so this column is display-only."""
+
+    __tablename__ = "idea_attachments"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    idea_id = Column(String, ForeignKey(_IDEA_FK), nullable=False, index=True)
+    # Respond.io message id — idempotency key (see UniqueConstraint below).
+    source_msg_id = Column(String, nullable=False)
+    kind = Column(String, nullable=False)  # image | video | file | audio
+    url = Column(Text, nullable=False)  # durable sorento-stored URL (R2/S3)
+    filename = Column(String, nullable=True)
+    caption = Column(Text, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "idea_id", "source_msg_id", name="uq_idea_attachment_source_msg"
+        ),
+    )
+
+
 class EmbedConnection(IdeationBase):
     """Ideation iframe-embed SSO connection registry (PLAN-ideation-embed-sso §7,
     AC-E-5/12). One row per host application (e.g. sorento) authorised to embed a

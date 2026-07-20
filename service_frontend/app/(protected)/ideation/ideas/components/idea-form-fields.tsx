@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import type { UseFormReturn } from 'react-hook-form';
 import {
   ChevronDown,
@@ -24,6 +25,7 @@ import {
 } from '@/components/ui/select';
 import { SearchSelect } from '@/components/platform/search-select';
 import { FormRow } from '@/components/platform/resource-form';
+import { IdeaAttachmentPreviewDialog } from './idea-attachment-preview-dialog';
 import {
   IDEA_SOURCE_LABEL,
   IDEA_STATUS_LABEL,
@@ -270,6 +272,8 @@ function formatSize(bytes?: number): string {
 }
 
 export function AttachmentsTab({ attachments }: { attachments: IdeaAttachment[] }) {
+  const [preview, setPreview] = useState<IdeaAttachment | null>(null);
+
   if (attachments.length === 0) {
     return (
       <Card>
@@ -297,22 +301,30 @@ export function AttachmentsTab({ attachments }: { attachments: IdeaAttachment[] 
               .filter(Boolean)
               .join(' · ');
             return (
-              <li key={a.id} className="flex items-center gap-3 py-3">
-                <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted">
-                  <Icon className="size-4 text-muted-foreground" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{a.name}</p>
-                  {meta && <p className="text-xs text-muted-foreground">{meta}</p>}
-                </div>
-                <Badge variant="outline" appearance="light" className="capitalize">
-                  {a.kind}
-                </Badge>
+              <li key={a.id} className="py-1.5">
+                <button
+                  type="button"
+                  onClick={() => setPreview(a)}
+                  className="flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  title={`Preview ${a.name}`}
+                >
+                  <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted">
+                    <Icon className="size-4 text-muted-foreground" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{a.name}</p>
+                    {meta && <p className="text-xs text-muted-foreground">{meta}</p>}
+                  </div>
+                  <Badge variant="outline" appearance="light" className="capitalize">
+                    {a.kind}
+                  </Badge>
+                </button>
               </li>
             );
           })}
         </ul>
       </CardContent>
+      <IdeaAttachmentPreviewDialog attachment={preview} onClose={() => setPreview(null)} />
     </Card>
   );
 }

@@ -77,14 +77,16 @@ Ideas ──▶ BR (AI draft, human refine)
 
 ### 5.1 `create_idea` — shared-service HTTP endpoint (server-to-server; sorento brain calls per turn)
 > **Transport (reconciled §8-R3):** an authenticated **HTTP endpoint** on shared-service, called server-to-server by the sorento brain with an API key — NOT an MCP tool (shared-service has no MCP write server; `sorento_crm_mcp` is read-only). "create_idea" is the endpoint name; the sorento side wraps it behind its own `POST /api/v1/external/ideation/turn`.
-- **Input:** `{ product_id, submitter_contact_id, message_text, audio_attachment_ref?, draft_id?, fields?, remove?, confirm? }`
+- **Input:** `{ product_id, submitter_contact_id, message_text, attachments?, draft_id?, discard_draft_id?, fields?, remove?, confirm? }`
   - `product_id` **derived sorento-side** from its `respond_workspaces.ideation_product_id` binding and passed in (reconciled §8-R2); shared-service validates it exists. Never from the human.
   - `submitter` passed as **phone (E.164)**; shared-service **matches** it to its own cron-synced respond.io contact copy (D21) — it does not trust a sorento row id. Unmatched phone → shared-service creates/enriches its contact copy from the respond.io API.
   - `create_idea` runs **no LLM** (D20): deterministic merge-into-schema + `pg_trgm` dedup + persist + **deterministic echo composition**. All NLU — field-extraction from `message_text`, and on a `review` turn deciding *confirm* vs *revise* vs *new info* — happens in **sorento's brain** and is passed structured (D-CONFIRM):
     - `fields` = `{answer_key: value, ...}` the brain extracted this turn (adds/overwrites captured answers).
     - `remove` = `[answer_key, ...]` the brain resolved from a "remove/clear X" instruction.
     - `confirm` = `true` ONLY when the user **explicitly** confirmed the echoed summary. shared-service never infers confirmation from silence or from `message_text`.
-  - `message_text` still passed (raw, for audit + the dedup text); `audio_attachment_ref` = a storage key/URL string, stored as an Idea attachment.
+  - `message_text` still passed (raw, for audit + the dedup text).
+  - **`attachments[]` (multi-modal capture, DC-9)** — replaces the retired singular `audio_attachment_ref`. Unified media array `[{ source_msg_id, url, type: "image"|"video"|"file"|"audio", filename?, caption? }]`. The **sorento brain** has already resolved these: pulled recent media from the Respond List Messages API, had the human confirm-gate pick which relate (backward lookback), **durably stored** the bytes to its own R2/S3 (Respond CDN URLs expire), and, for images, run a **vision caption**. shared-service persists the pointers only (fetches nothing) on `app_ideation.idea_attachments`, **idempotent on `(idea_id, source_msg_id)`** — the same media re-sent across turns upserts one row. `caption` is display-only (the idea's text already carries it — sorento folds the caption into `message_text`). Voice: n8n transcribes (Whisper) into `message_text`; the audio file rides here as `type=audio`.
+  - **`discard_draft_id?` (is_new_idea restart, DC-10)** — when the user starts a genuinely new idea while an old draft is still open, the sorento brain (parser `is_new_idea` flag, semantic, not keyword) opens a **fresh** draft (no `draft_id`) and names the abandoned one here; shared-service transitions it `draft → rejected` (best-effort: unknown / already-terminal id is a silent no-op, never a 500). There is **no time-based draft TTL** — topic, not time, is the discriminator; default is always-resume.
   - `draft_id` absent on the first `ideate` turn; present on continuation.
 - **Behaviour (deterministic state machine):** if no `draft_id` → create a **draft Idea** (status `draft`). Merge `fields`/`remove` into the draft's `captured_json` against the `form_engine` schema, run dup-check on the problem text, recompute captured/missing per the `completion_rule`, then pick the status:
   - **`duplicate`** — problem text is a high `pg_trgm` match to an existing Idea → upvote it, return `duplicate_of`. (Checked before review; short-circuits.)
@@ -144,7 +146,7 @@ Resolved during authoring — the per-repo plans already reflect these; recorded
 - **R3 — `create_idea` transport = HTTP endpoint**, server-to-server (not MCP). See §5.1.
 - **R4 — Dedup (REVISED per D10/D20).** No LLM/embedding in shared-service → dedup uses **`pg_trgm` text-similarity**, not pgvector. Semantic dedup later = delegate embedding to Claude Code/sorento.
 - **R5 — Embed generalization = core-primitive extraction** (`provider="ideation_shared"`, audience `"ideation-embed"`), with per-module copy-pattern as documented fallback. `/embed/session` reuses the existing omnichannel `embed_session_service` shape.
-- **R6 — audio ref** = storage key/URL string (§5.1).
+- **R6 — media (multi-modal capture, DC-9)** = unified `attachments[]` of durable sorento-stored URLs (retires the singular `audio_attachment_ref`); idempotent on `source_msg_id`; sorento owns lookback + snapshot + vision, n8n owns Whisper STT + reference-position + `is_new_idea` extraction (§5.1).
 
 ## 9. Open decisions — RESOLVED 2026-07-18 (owner directive)
 

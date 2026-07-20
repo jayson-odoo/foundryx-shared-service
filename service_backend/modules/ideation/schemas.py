@@ -130,6 +130,25 @@ class IdeaUpdateIn(ApiModel):
     rawText: Optional[str] = None
 
 
+class CreateIdeaAttachmentIn(ApiModel):
+    """One resolved media attachment on a ``create_idea`` turn (§5.1 ``attachments[]``,
+    DC-9) — **snake_case, server-to-server**. Sorento has already snapshotted the
+    Respond CDN bytes to durable storage (R2/S3) and, for images, run a vision
+    caption; shared-service persists this pointer as-is and fetches nothing.
+
+    ``source_msg_id`` (the originating Respond.io message id) is the **idempotency
+    key** — the same media re-sent across turns upserts one row. ``type`` ∈
+    ``image|video|file|audio`` (stored as the model's ``kind``). ``caption`` is the
+    vision description / transcript note for the detail UI (the idea's text already
+    carries it — sorento folds it into ``message_text``)."""
+
+    source_msg_id: str
+    url: str
+    type: Literal["image", "video", "file", "audio"]
+    filename: Optional[str] = None
+    caption: Optional[str] = None
+
+
 class CreateIdeaIn(ApiModel):
     """``create_idea`` intake input (§5.1, AC-A-17) — **snake_case, byte-for-byte**.
 
@@ -151,8 +170,14 @@ class CreateIdeaIn(ApiModel):
     # ``raw_text`` (the whole convo, not just the last "okay i confirm" turn);
     # ``message_text`` stays the current turn for extraction/dedup. WS-B / AC-CAP-5..7.
     raw_transcript: Optional[str] = None
-    audio_attachment_ref: Optional[str] = None
+    # Unified media array (DC-9) — voice/image/video/file, each already durably
+    # stored + captioned host-side. Retires the singular ``audio_attachment_ref``.
+    attachments: Optional[List[CreateIdeaAttachmentIn]] = None
     draft_id: Optional[str] = None
+    # An abandoned draft to reject on an ``is_new_idea`` restart (DC-10): the host
+    # detected the user starting a genuinely new idea while an old draft was open,
+    # so it opens a fresh draft (no ``draft_id``) and names the stale one here.
+    discard_draft_id: Optional[str] = None
     fields: Optional[Dict[str, Any]] = None
     remove: Optional[List[str]] = None
     confirm: bool = False
