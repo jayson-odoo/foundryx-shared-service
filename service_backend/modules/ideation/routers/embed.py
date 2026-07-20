@@ -152,9 +152,16 @@ def require_embed_principal(
 
 
 def _embed_voter_id(principal: EmbedTokenPrincipal) -> str:
-    """Synthetic voter identity for embed writes — one per connection (no operator
-    user in the iframe). Never a real ``users.id``; keeps vote attribution clean
-    and audit-legible (WS-C, G1)."""
+    """Voter identity for embed writes = the HOST (sorento) USER, taken from the
+    assertion ``sub`` the host minted (``mint_embed_assertion`` sets it to the
+    logged-in user id). This makes voting per-sorento-user: two different users
+    each cast a distinct up/down vote on the same idea (1 up + 1 down), instead of
+    one shared vote per connection. Namespaced ``embed-user:`` so it never collides
+    with a shared-service operator ``users.id``. Falls back to the connection only
+    when no user is present in the token (e.g. a service assertion)."""
+    sub = (principal.sub or "").strip()
+    if sub:
+        return f"embed-user:{sub}"
     return f"embed:{principal.connection_id}"
 
 

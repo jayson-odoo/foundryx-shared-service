@@ -69,13 +69,13 @@ def _seed_connection(
         db.close()
 
 
-def _assertion(*, secret=SIGNING_SECRET, connection_id=CONNECTION_ID, exp=None, iat=None):
+def _assertion(*, secret=SIGNING_SECRET, connection_id=CONNECTION_ID, exp=None, iat=None, sub="user-1"):
     now = datetime.now(timezone.utc)
     payload = {
         "typ": "assertion",
         "aud": AUD,
         "iss": "sorento",
-        "sub": "user-1",
+        "sub": sub,
         "email": "a@sorento.my",
         "name": "Alice",
         "connection_id": connection_id,
@@ -85,12 +85,12 @@ def _assertion(*, secret=SIGNING_SECRET, connection_id=CONNECTION_ID, exp=None, 
     return jwt.encode(payload, secret, algorithm=settings.jwt_algorithm)
 
 
-def _mint(client, *, connection_id=CONNECTION_ID, secret=SIGNING_SECRET):
+def _mint(client, *, connection_id=CONNECTION_ID, secret=SIGNING_SECRET, sub="user-1"):
     res = client.post(
         "/embed/session",
         json={
             "connection_id": connection_id,
-            "assertion": _assertion(connection_id=connection_id, secret=secret),
+            "assertion": _assertion(connection_id=connection_id, secret=secret, sub=sub),
         },
     )
     assert res.status_code == 200, res.text
@@ -302,6 +302,22 @@ def test_embed_vote_happy(scoped):
     )
     assert res.status_code == 200, res.text
     assert res.json()["upvotes"] == 1
+
+
+def test_embed_votes_are_per_sorento_user(scoped):
+    """Votes are per HOST (sorento) user, taken from the assertion ``sub`` — NOT one
+    shared vote per connection. One user upvotes, a DIFFERENT user downvotes the
+    same idea → 1 up + 1 down (distinct entries)."""
+    client = scoped["client"]
+    idea = scoped["in_scope"]
+    r1 = client.post(f"/embed/ideas/{idea}/vote", headers=scoped["bearer"], json={"dir": "up"})
+    assert r1.status_code == 200, r1.text
+    # A different sorento user (distinct assertion sub) votes the other way.
+    other = _bearer(_mint(client, sub="user-2"))
+    r2 = client.post(f"/embed/ideas/{idea}/vote", headers=other, json={"dir": "down"})
+    assert r2.status_code == 200, r2.text
+    body = r2.json()
+    assert body["upvotes"] == 1 and body["downvotes"] == 1
 
 
 def test_embed_vote_cross_product_denied(scoped):

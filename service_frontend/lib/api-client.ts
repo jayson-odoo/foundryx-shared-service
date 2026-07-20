@@ -1,5 +1,6 @@
 import { getSession } from 'next-auth/react';
 import { embedAuthStore } from '@/lib/embed-auth-store';
+import { requestEmbedTokenRefresh } from '@/lib/embed-token-refresh';
 import { impersonationStore } from '@/lib/impersonation-store';
 import { deriveTenantSlug } from '@/lib/tenant';
 
@@ -66,10 +67,6 @@ async function endSessionOn401(hadToken: boolean, status: number): Promise<void>
 // `{type:'ideation-embed:token', token}` back to the iframe. That companion
 // change ships separately (NOT in this repo). Until it lands, a refresh times
 // out and the embed degrades to the clean "session expired" state.
-const EMBED_TOKEN_REFRESH_REQUEST = 'ideation-embed:token-refresh-request';
-const EMBED_TOKEN_MESSAGE = 'ideation-embed:token';
-const EMBED_REFRESH_TIMEOUT_MS = 8000;
-
 /** True for embed data calls that may re-mint on 401 — never the token gate
  * (`/embed/validate`) or the SSO exchange (`/embed/session`) themselves. */
 function isRemintableEmbedPath(path: string): boolean {
@@ -78,39 +75,6 @@ function isRemintableEmbedPath(path: string): boolean {
     !path.startsWith('/embed/validate') &&
     !path.startsWith('/embed/session')
   );
-}
-
-/**
- * Ask the host to silently re-mint the embed token. Resolves with the fresh
- * token from the parent's reply, or null on timeout / no parent. The request
- * carries NO secret; the token flows parent→child (we RECEIVE it), so the
- * outbound `postMessage` uses `'*'` while the host validates the child origin
- * before replying. Secrets/tokens are never logged.
- */
-function requestEmbedTokenRefresh(): Promise<string | null> {
-  if (typeof window === 'undefined' || window.parent === window) {
-    return Promise.resolve(null);
-  }
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (token: string | null) => {
-      if (settled) return;
-      settled = true;
-      window.removeEventListener('message', onMessage);
-      clearTimeout(timer);
-      resolve(token);
-    };
-    const onMessage = (event: MessageEvent) => {
-      const data = event.data as { type?: unknown; token?: unknown } | null;
-      if (data && typeof data === 'object' && data.type === EMBED_TOKEN_MESSAGE) {
-        const token = typeof data.token === 'string' ? data.token.trim() : '';
-        finish(token || null);
-      }
-    };
-    const timer = setTimeout(() => finish(null), EMBED_REFRESH_TIMEOUT_MS);
-    window.addEventListener('message', onMessage);
-    window.parent.postMessage({ type: EMBED_TOKEN_REFRESH_REQUEST }, '*');
-  });
 }
 
 /**
