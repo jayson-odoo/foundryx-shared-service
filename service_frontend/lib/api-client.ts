@@ -1,5 +1,6 @@
 import { getSession } from 'next-auth/react';
 import { embedAuthStore } from '@/lib/embed-auth-store';
+import { requestEmbedTokenRefresh } from '@/lib/embed-token-refresh';
 import { impersonationStore } from '@/lib/impersonation-store';
 import { deriveTenantSlug } from '@/lib/tenant';
 
@@ -54,6 +55,28 @@ async function endSessionOn401(hadToken: boolean, status: number): Promise<void>
   await signOut({ callbackUrl: '/signin' });
 }
 
+// ── Ideation embed silent re-mint (WS-C3 / AC-CAP-12) ────────────────────────
+// The embed token is short-lived (5 min); an interactive grid outlives it. On a
+// 401 for an `/embed/*` data call in the embed runtime, ask the HOST (parent
+// frame) to re-mint via its `/embed/session` handshake, then retry ONCE. Gated
+// to retry a single time so a persistently-failing token can't infinite-loop.
+//
+// TODO(cross-repo, sorento host — IdeationEmbed.tsx): the host iframe wrapper
+// MUST listen for `{type:'ideation-embed:token-refresh-request'}` from this
+// child, re-run its `POST /embed/session` handshake, and post
+// `{type:'ideation-embed:token', token}` back to the iframe. That companion
+// change ships separately (NOT in this repo). Until it lands, a refresh times
+// out and the embed degrades to the clean "session expired" state.
+/** True for embed data calls that may re-mint on 401 — never the token gate
+ * (`/embed/validate`) or the SSO exchange (`/embed/session`) themselves. */
+function isRemintableEmbedPath(path: string): boolean {
+  return (
+    path.startsWith('/embed/') &&
+    !path.startsWith('/embed/validate') &&
+    !path.startsWith('/embed/session')
+  );
+}
+
 /**
  * Attach the request's auth + tenant headers and report how the request should
  * handle a 401. In the omnichannel EMBED runtime (an in-memory
@@ -92,6 +115,14 @@ export async function apiFetch<T = unknown>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
+  return apiFetchOnce<T>(path, init, true);
+}
+
+async function apiFetchOnce<T>(
+  path: string,
+  init: RequestInit,
+  allowEmbedRefresh: boolean,
+): Promise<T> {
   const headers = new Headers(init.headers);
   if (!headers.has('Content-Type') && !(init.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
@@ -101,6 +132,20 @@ export async function apiFetch<T = unknown>(
   const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
 
   if (!res.ok) {
+    // WS-C3: silent embed re-mint on expiry — a 401 on an /embed/* data call in
+    // the embed runtime asks the host for a fresh token and retries ONCE.
+    if (
+      res.status === 401 &&
+      allowEmbedRefresh &&
+      embedAuthStore.getState() !== null &&
+      isRemintableEmbedPath(path)
+    ) {
+      const fresh = await requestEmbedTokenRefresh();
+      if (fresh) {
+        embedAuthStore.setToken(fresh);
+        return apiFetchOnce<T>(path, init, false); // retry once, no further re-mint
+      }
+    }
     let message = res.statusText || 'Request failed';
     let detail: unknown;
     try {

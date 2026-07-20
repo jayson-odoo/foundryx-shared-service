@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { ideationService, type IdeaCreateInput } from '@/services/ideation-service';
+import { type IdeaCreateInput } from '@/services/ideation-service';
+import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import type { Idea, IdeaStatus, Product } from '@/types/ideation';
 
 export interface UseIdeas {
@@ -24,6 +25,7 @@ export interface UseIdeas {
  * capture modal's product picker).
  */
 export function useIdeas(): UseIdeas {
+  const { service: ideationService } = useIdeationRuntime();
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
@@ -44,7 +46,7 @@ export function useIdeas(): UseIdeas {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [ideationService]);
 
   useEffect(() => {
     void reload();
@@ -56,7 +58,7 @@ export function useIdeas(): UseIdeas {
       await reload();
       return created;
     },
-    [reload],
+    [reload, ideationService],
   );
 
   const setStatus = useCallback(
@@ -65,7 +67,7 @@ export function useIdeas(): UseIdeas {
       await reload();
       return updated;
     },
-    [reload],
+    [reload, ideationService],
   );
 
   const vote = useCallback(
@@ -74,7 +76,7 @@ export function useIdeas(): UseIdeas {
       await reload();
       return updated;
     },
-    [reload],
+    [reload, ideationService],
   );
 
   const reorderPriority = useCallback(
@@ -82,7 +84,7 @@ export function useIdeas(): UseIdeas {
       await ideationService.reorderPriority(orderedIds);
       await reload();
     },
-    [reload],
+    [reload, ideationService],
   );
 
   const remove = useCallback(
@@ -90,7 +92,7 @@ export function useIdeas(): UseIdeas {
       await ideationService.remove(id);
       await reload();
     },
-    [reload],
+    [reload, ideationService],
   );
 
   return { ideas, products, loading, error, reload, create, setStatus, vote, reorderPriority, remove };

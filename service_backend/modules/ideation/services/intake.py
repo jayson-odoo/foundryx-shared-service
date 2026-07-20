@@ -48,7 +48,9 @@ class IntakeService:
         *,
         product_id: str,
         submitter_contact_id: Optional[str],
+        submitter_name: Optional[str] = None,
         message_text: str,
+        raw_transcript: Optional[str] = None,
         audio_attachment_ref: Optional[str] = None,
         draft_id: Optional[str] = None,
         fields: Optional[Dict[str, object]] = None,
@@ -77,7 +79,8 @@ class IntakeService:
         submitter_contact_id = self._resolve_submitter(tenant_id, submitter_contact_id)
 
         idea = self._load_or_create_draft(
-            tenant_id, product_id, submitter_contact_id, message_text, draft_id
+            tenant_id, product_id, submitter_contact_id, message_text, draft_id,
+            raw_transcript=raw_transcript,
         )
 
         # An already-promoted draft is immutable via intake: any call returns the
@@ -86,7 +89,12 @@ class IntakeService:
             self.db.commit()
             return self._complete_output(definition, idea)
 
-        self._merge(idea, definition, message_text, fields, remove)
+        # Stamp the submitter display name on the draft (WS-A). Latest non-blank
+        # wins across turns; a blank/absent name never clobbers a set one.
+        if submitter_name and submitter_name.strip():
+            idea.submitter_name = submitter_name.strip()
+
+        self._merge(idea, definition, message_text, fields, remove, raw_transcript=raw_transcript)
 
         captured, missing = definition.completion_rule(idea.captured_json or {})
 
@@ -239,6 +247,7 @@ class IntakeService:
         submitter_contact_id: Optional[str],
         message_text: str,
         draft_id: Optional[str],
+        raw_transcript: Optional[str] = None,
     ) -> Idea:
         if draft_id:
             idea = (
@@ -252,14 +261,17 @@ class IntakeService:
 
         # Turn 1 — a brand-new draft Idea (AC-A-19). Seed ``problem`` from the raw
         # message so the draft is valid + dedup has text; ``fields`` still win.
+        # ``raw_text`` prefers the cumulative transcript (WS-B) when the host sends
+        # it, else the single message; ``problem`` always seeds from the message.
         raw = (message_text or "").strip()
+        transcript = (raw_transcript or "").strip()
         idea = Idea(
             tenant_id=tenant_id,
             product_id=product_id,
             status_id=initial_idea_status_id(self.db, tenant_id),
             intake_definition_key=IDEATION_INTAKE_KEY,
             problem=raw,
-            raw_text=raw,
+            raw_text=transcript or raw,
             source="whatsapp",
             submitter_contact_id=submitter_contact_id,
             captured_json={"problem": raw} if raw else {},
@@ -275,6 +287,7 @@ class IntakeService:
         message_text: Optional[str],
         fields: Optional[Dict[str, object]],
         remove: Optional[List[str]],
+        raw_transcript: Optional[str] = None,
     ) -> None:
         """Merge ``fields`` (add/change) and ``remove`` (clear) into the draft's
         ``captured_json`` against the schema. ``fields`` win over the message seed;
@@ -282,9 +295,14 @@ class IntakeService:
         captured_json: Dict[str, object] = dict(idea.captured_json or {})
         schema_keys = {f.key for f in definition.target_schema.input_fields() if f.key}
 
-        # message_text always refreshes the verbatim raw text (D9 transcript path).
+        # raw_text = the CUMULATIVE transcript when the host sends it (WS-B — the
+        # whole convo, not just the finalizing turn). Legacy fallback: when no
+        # transcript is supplied, refresh with the latest message (old D9 behaviour).
+        transcript = (raw_transcript or "").strip()
         raw = (message_text or "").strip()
-        if raw:
+        if transcript:
+            idea.raw_text = transcript
+        elif raw:
             idea.raw_text = raw
 
         for key, value in (fields or {}).items():

@@ -129,12 +129,19 @@ class IdeaReadService:
         *,
         search: Optional[str] = None,
         filter: str = "active",
+        product_id: Optional[str] = None,
         voter_id: Optional[str] = None,
     ) -> List[IdeaOut]:
         """Ideas for a tenant, newest first. ``search`` matches problem/raw_text
         (case-insensitive); ``filter`` = ``active`` (non-archived statuses) |
-        ``archived`` | ``all``."""
+        ``archived`` | ``all``. ``product_id`` (optional) additionally scopes to a
+        single product — the canonical ideation scope (an idea belongs to a
+        product, which belongs to a tenant). ``None`` = every product in the
+        tenant (today's behaviour, unchanged). Always tenant-scoped first: the
+        product filter never widens visibility across tenants."""
         q = self.db.query(Idea).filter(Idea.tenant_id == tenant_id)
+        if product_id:
+            q = q.filter(Idea.product_id == product_id)
         if search:
             like = f"%{search.strip()}%"
             q = q.filter(Idea.problem.ilike(like) | Idea.raw_text.ilike(like))
@@ -156,11 +163,18 @@ class IdeaReadService:
         ideas = q.order_by(Idea.created_at.desc(), Idea.id.desc()).all()
         return self.serialize_many(ideas, voter_id)
 
-    def board(self, tenant_id: str, voter_id: Optional[str] = None) -> BoardOut:
+    def board(
+        self,
+        tenant_id: str,
+        voter_id: Optional[str] = None,
+        product_id: Optional[str] = None,
+    ) -> BoardOut:
         """The triage board (AC-A-33): ideas grouped into the board lifecycle
         columns in order, cards within a column ordered by priority ascending.
         Only board-lifecycle statuses appear — archived / terminal ideas are
-        off-board."""
+        off-board. ``product_id`` (optional) additionally scopes to a single
+        product (the canonical ideation scope); ``None`` = every product in the
+        tenant (unchanged). Always tenant-scoped first."""
         board_keys = [k for k, _ in BOARD_COLUMNS]
         status_ids = {
             s.id: s.key
@@ -168,13 +182,14 @@ class IdeaReadService:
             .filter(Status.entity_type == "idea", Status.key.in_(board_keys))
             .all()
         }
+        q = self.db.query(Idea).filter(
+            Idea.tenant_id == tenant_id,
+            Idea.status_id.in_(list(status_ids.keys())) if status_ids else False,
+        )
+        if product_id:
+            q = q.filter(Idea.product_id == product_id)
         ideas = (
-            self.db.query(Idea)
-            .filter(
-                Idea.tenant_id == tenant_id,
-                Idea.status_id.in_(list(status_ids.keys())) if status_ids else False,
-            )
-            .order_by(Idea.priority.asc(), Idea.created_at.desc(), Idea.id.desc())
+            q.order_by(Idea.priority.asc(), Idea.created_at.desc(), Idea.id.desc())
             .all()
         )
         serialized = self.serialize_many(ideas, voter_id)

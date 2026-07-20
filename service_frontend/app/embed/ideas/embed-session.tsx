@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { embedAuthStore } from '@/lib/embed-auth-store';
+import { requestEmbedTokenRefresh } from '@/lib/embed-token-refresh';
 import { ideationEmbedService } from '@/services/ideation-embed-service';
 
 /**
@@ -36,27 +37,43 @@ export function useEmbedSession(): { status: EmbedSessionStatus; tenantId: strin
 
   useEffect(() => {
     let cancelled = false;
-    const token = readFragmentToken();
-    if (!token) {
-      setStatus('expired');
-      return;
-    }
-    // In-memory only (never localStorage) — api-client reads it as the Bearer.
-    embedAuthStore.set({ accessToken: token, workspaceId: '', agentId: '' });
-    ideationEmbedService
-      .validateToken(token)
-      .then((scope) => {
-        if (cancelled) return;
+
+    // Validate a token against the tenant scope; on success wire the store +
+    // status. Returns false so the caller can fall through to a re-mint.
+    const tryToken = async (token: string): Promise<boolean> => {
+      // In-memory only (never localStorage) — api-client reads it as the Bearer.
+      embedAuthStore.set({ accessToken: token, workspaceId: '', agentId: '' });
+      try {
+        const scope = await ideationEmbedService.validateToken(token);
+        if (cancelled) return true;
         setTenantId(scope.tenant_id);
         setStatus('ready');
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setStatus('expired');
-      });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    (async () => {
+      // The token arrives ONCE in the fragment (initial iframe load). In-iframe
+      // navigation does NOT carry it (it would collide with the DataGrid's
+      // `?ctx=` query and corrupt the token), so subsequent routes read the token
+      // persisted in the in-memory store. Order: fragment (fresh load) → store
+      // (later navs) → host re-mint (expired/missing, WS-C3/AC-CAP-12) before
+      // degrading to "session expired".
+      const initial = readFragmentToken() || embedAuthStore.getState()?.accessToken || null;
+      if (initial && (await tryToken(initial))) return;
+      const fresh = await requestEmbedTokenRefresh();
+      if (cancelled) return;
+      if (fresh && (await tryToken(fresh))) return;
+      setStatus('expired');
+    })();
+
+    // NOTE: the store is intentionally NOT cleared on unmount — the token must
+    // survive in-iframe navigation (list → detail). It lives in memory only and
+    // dies when the iframe unloads; the 5-min TTL bounds its lifetime.
     return () => {
       cancelled = true;
-      embedAuthStore.clear();
     };
   }, []);
 
