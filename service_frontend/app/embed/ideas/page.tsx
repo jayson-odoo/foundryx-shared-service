@@ -12,7 +12,7 @@ import { EmbedIdeationShell } from './embed-app';
 export default function EmbedIdeasPage() {
   return (
     <EmbedIdeationShell>
-      <div className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-4 p-4 sm:p-6">
+      <div className="flex min-h-screen w-full flex-col gap-4 p-4 sm:p-6">
         <div className="flex flex-col gap-1">
           <h1 className="text-lg font-semibold text-foreground">Ideas</h1>
           <p className="text-sm text-muted-foreground">
