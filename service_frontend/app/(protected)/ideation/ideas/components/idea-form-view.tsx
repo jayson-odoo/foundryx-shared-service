@@ -6,8 +6,8 @@ import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
 import { Form } from '@/components/ui/form';
 import { ResourceForm } from '@/components/platform/resource-form';
+import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import { useIdeaForm } from './use-idea-form';
-import { ideasListPath } from './paths';
 
 export interface IdeaFormViewProps {
   ideaId?: string;
@@ -16,6 +16,7 @@ export interface IdeaFormViewProps {
 
 /** Loads + renders an idea form (create when ideaId is absent). */
 export function IdeaFormView({ ideaId, initialEditing }: IdeaFormViewProps) {
+  const { paths } = useIdeationRuntime();
   const { config, form, isLoading, notFound } = useIdeaForm(ideaId, initialEditing);
 
   if (isLoading) {
@@ -34,7 +35,7 @@ export function IdeaFormView({ ideaId, initialEditing }: IdeaFormViewProps) {
         <div className="flex flex-col items-center gap-3 py-24 text-center">
           <p className="text-sm font-medium">Idea not found.</p>
           <Button variant="outline" size="sm" asChild>
-            <Link href={ideasListPath}>Back to ideas</Link>
+            <Link href={paths.listHref}>Back to ideas</Link>
           </Button>
         </div>
       </Container>

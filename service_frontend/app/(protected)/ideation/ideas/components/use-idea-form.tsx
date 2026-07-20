@@ -8,10 +8,9 @@ import { Archive, ArchiveRestore, ArrowRight, FileText, Lightbulb } from 'lucide
 import { toast } from 'sonner';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ResourceAction } from '@/components/platform/resource-list';
-import { ideationService } from '@/services/ideation-service';
+import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import { IDEA_NEXT_STATUS, IDEA_STATUS_LABEL, type Idea, type Product } from '@/types/ideation';
 import { DetailsTab, AttachmentsTab } from './idea-form-fields';
-import { ideaFormPath, ideasListPath } from './paths';
 import { ideaFormSchema, type IdeaFormValues } from './idea-schema';
 
 function toFormValues(idea: Idea | null): IdeaFormValues {
@@ -46,6 +45,7 @@ export interface UseIdeaFormResult {
 /** Loads the idea + products, wires RHF, and assembles the form config. */
 export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean): UseIdeaFormResult {
   const router = useRouter();
+  const { service: ideationService, paths, mode } = useIdeationRuntime();
   const creating = !ideaId;
 
   const [idea, setIdea] = useState<Idea | null>(null);
@@ -60,7 +60,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
 
   useEffect(() => {
     ideationService.listProducts().then(setProducts).catch(() => setProducts([]));
-  }, []);
+  }, [ideationService]);
 
   useEffect(() => {
     let active = true;
@@ -159,7 +159,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
         run: async (rows) => {
           await ideationService.remove(rows[0].id);
           toast.success('Idea deleted.');
-          router.push(ideasListPath);
+          router.push(paths.listHref);
         },
       },
     ];
@@ -177,7 +177,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             rawText: values.rawText ?? '',
           });
           toast.success('Idea captured.');
-          router.push(ideaFormPath(created.id));
+          router.push(paths.formHref(created.id));
         } else {
           const updated = await ideationService.updateIdea(ideaId, {
             problem: values.problem,
@@ -198,18 +198,24 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
     };
 
     const onCancel = () => {
-      if (creating) router.push(ideasListPath);
+      if (creating) router.push(paths.listHref);
       else form.reset(toFormValues(idea));
     };
 
     return {
-      breadcrumb: [
-        { label: 'Home', href: '/' },
-        { label: 'Ideation', href: ideasListPath },
-        { label: 'Ideas', href: ideasListPath },
-        { label: creating ? 'New idea' : (idea?.problem ?? 'Idea') },
-      ],
-      backHref: ideasListPath,
+      breadcrumb:
+        mode === 'embed'
+          ? [
+              { label: 'Ideas', href: paths.listHref },
+              { label: creating ? 'New idea' : (idea?.problem ?? 'Idea') },
+            ]
+          : [
+              { label: 'Home', href: '/' },
+              { label: 'Ideation', href: paths.listHref },
+              { label: 'Ideas', href: paths.listHref },
+              { label: creating ? 'New idea' : (idea?.problem ?? 'Idea') },
+            ],
+      backHref: paths.listHref,
       backLabel: 'Back to ideas',
       title: creating ? 'New idea' : (idea?.problem ?? 'Idea'),
       subtitle: creating
@@ -246,7 +252,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       onSave,
       onCancel,
     };
-  }, [isLoading, notFound, creating, idea, products, form, initialEditing, ideaId, router]);
+  }, [isLoading, notFound, creating, idea, products, form, initialEditing, ideaId, router, paths, mode, ideationService]);
 
   return { config, form, isLoading, notFound };
 }

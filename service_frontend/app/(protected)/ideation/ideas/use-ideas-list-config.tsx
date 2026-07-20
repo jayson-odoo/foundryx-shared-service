@@ -23,7 +23,7 @@ import {
   type Idea,
 } from '@/types/ideation';
 import { toCsv } from '@/lib/csv';
-import { ideaFormPath } from './components/paths';
+import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -87,6 +87,7 @@ export function useIdeasListConfig(
   },
 ): ResourceListConfig<Idea> {
   const { onCreate, onVote, onAdvance, onArchive, onRestore, onDelete, onReorder } = handlers;
+  const { paths, mode } = useIdeationRuntime();
 
   return useMemo<ResourceListConfig<Idea>>(() => {
     const actions: ResourceAction<Idea>[] = [
@@ -248,10 +249,12 @@ export function useIdeasListConfig(
     };
 
     return {
-      viewKey: 'ideation.ideas',
+      // Operator personalises columns per view; the embed iframe has no operator
+      // user, so it uses a distinct key (its best-effort save 401s harmlessly).
+      viewKey: mode === 'embed' ? 'ideation.ideas.embed' : 'ideation.ideas',
       getRowId: (row) => row.id,
       rowReorder: { onReorder },
-      rowHref: (row) => ideaFormPath(row.id),
+      rowHref: (row) => paths.formHref(row.id),
       fetcher,
       exporter,
       searchPlaceholder: 'Search ideas…',
@@ -269,5 +272,5 @@ export function useIdeasListConfig(
       ],
       actions,
     };
-  }, [ideas, onCreate, onVote, onAdvance, onArchive, onRestore, onDelete, onReorder]);
+  }, [ideas, onCreate, onVote, onAdvance, onArchive, onRestore, onDelete, onReorder, paths, mode]);
 }
