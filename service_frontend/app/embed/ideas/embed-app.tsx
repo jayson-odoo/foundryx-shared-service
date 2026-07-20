@@ -7,21 +7,22 @@ import { useEmbedSession, EmbedExpired, EmbedLoading } from './embed-session';
 
 /**
  * Build the EMBED ideation runtime (WS-C1). Same shape as the operator default,
- * but wired to the `/embed/*` service + embed URLs. In-iframe navigation MUST
- * carry the `#token=…` fragment (the credential lives there, never a query/log —
- * AC-E-10), so every URL appends the current fragment.
+ * but wired to the `/embed/*` service. The embed token arrives ONCE in the URL
+ * fragment (`#token=…`, AC-E-10) and is held in-memory by the session gate; it is
+ * DELIBERATELY NOT appended to in-iframe navigation URLs — the DataGrid appends
+ * its own `?ctx=…` list-context to `formHref`, which would land AFTER the `#`
+ * fragment and corrupt the token. Navigation uses plain paths; the session gate
+ * reads the persisted token (store-first) on each route mount.
  */
 function buildEmbedRuntime(): IdeationRuntime {
-  const hash = typeof window !== 'undefined' ? window.location.hash : '';
-  const withHash = (p: string) => `${p}${hash}`;
   return {
     mode: 'embed',
     service: ideationEmbedService,
     paths: {
-      listHref: withHash('/embed/ideas'),
+      listHref: '/embed/ideas',
       formHref: (id, opts) =>
-        withHash(`/embed/ideas/${encodeURIComponent(id)}${opts?.edit ? '?edit=1' : ''}`),
-      newHref: withHash('/embed/ideas/new'),
+        `/embed/ideas/${encodeURIComponent(id)}${opts?.edit ? '?edit=1' : ''}`,
+      newHref: '/embed/ideas/new',
     },
   };
 }

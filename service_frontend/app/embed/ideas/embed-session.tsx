@@ -55,22 +55,25 @@ export function useEmbedSession(): { status: EmbedSessionStatus; tenantId: strin
     };
 
     (async () => {
-      // The fragment token is short-lived (5 min) and the SAME token rides every
-      // in-iframe navigation — so on a later route mount it may be missing or
-      // expired. Try it, then ask the host to silently re-mint ONCE (WS-C3 /
-      // AC-CAP-12) before degrading to "session expired". This makes navigating
-      // into an idea detail after the token ages still work.
-      const fragmentToken = readFragmentToken();
-      if (fragmentToken && (await tryToken(fragmentToken))) return;
+      // The token arrives ONCE in the fragment (initial iframe load). In-iframe
+      // navigation does NOT carry it (it would collide with the DataGrid's
+      // `?ctx=` query and corrupt the token), so subsequent routes read the token
+      // persisted in the in-memory store. Order: fragment (fresh load) → store
+      // (later navs) → host re-mint (expired/missing, WS-C3/AC-CAP-12) before
+      // degrading to "session expired".
+      const initial = readFragmentToken() || embedAuthStore.getState()?.accessToken || null;
+      if (initial && (await tryToken(initial))) return;
       const fresh = await requestEmbedTokenRefresh();
       if (cancelled) return;
       if (fresh && (await tryToken(fresh))) return;
       setStatus('expired');
     })();
 
+    // NOTE: the store is intentionally NOT cleared on unmount — the token must
+    // survive in-iframe navigation (list → detail). It lives in memory only and
+    // dies when the iframe unloads; the 5-min TTL bounds its lifetime.
     return () => {
       cancelled = true;
-      embedAuthStore.clear();
     };
   }, []);
 
