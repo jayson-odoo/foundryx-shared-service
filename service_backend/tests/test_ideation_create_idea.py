@@ -534,3 +534,76 @@ def test_reply_text_deterministic(setup):
         draft_id=draft_id, confirm=True,
     )
     assert f"https://fe-sorento.foundryx.my/ideas/{draft_id}" in r3.json()["reply_text"]
+
+
+# ── WS-A / AC-CAP-1..3 — submitter_name stored verbatim ───────────────────────
+
+
+def _idea_field(factory, idea_id, attr):
+    from modules.ideation.models import Idea
+
+    db = factory()
+    try:
+        idea = db.query(Idea).filter(Idea.id == idea_id).first()
+        assert idea is not None
+        return getattr(idea, attr)
+    finally:
+        db.close()
+
+
+def test_submitter_name_stored_on_idea(setup):
+    """A submitter_name from the host is persisted on the Idea (shown instead of
+    'Unknown'); a later blank name never clobbers it."""
+    s = setup
+    r1 = _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"],
+        submitter_name="Aisha Rahman", fields=_FULL_FIELDS,
+    )
+    draft_id = r1.json()["draft_id"]
+    assert _idea_field(s["factory"], draft_id, "submitter_name") == "Aisha Rahman"
+
+    # A continuation WITHOUT a name must not wipe the stored one.
+    _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"],
+        draft_id=draft_id, fields={"impact": "Saves an hour"},
+    )
+    assert _idea_field(s["factory"], draft_id, "submitter_name") == "Aisha Rahman"
+
+
+# ── WS-B / AC-CAP-5..7 — raw_transcript becomes the Idea's raw_text ───────────
+
+
+def test_raw_transcript_stored_as_raw_text(setup):
+    """When the host sends the cumulative transcript it becomes raw_text (the whole
+    convo), refreshed each turn — NOT just the last message."""
+    s = setup
+    r1 = _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"],
+        message_text="I want AI to update contractors",
+        raw_transcript="I want AI to update contractors",
+    )
+    draft_id = r1.json()["draft_id"]
+    assert _idea_field(s["factory"], draft_id, "raw_text") == "I want AI to update contractors"
+
+    # Turn 2 — transcript grows; raw_text reflects the WHOLE convo, not "okay i confirm".
+    _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"],
+        draft_id=draft_id,
+        message_text="okay i confirm",
+        raw_transcript="I want AI to update contractors\nimpact is high ROI\nokay i confirm",
+        fields=_FULL_FIELDS,
+    )
+    assert _idea_field(s["factory"], draft_id, "raw_text") == (
+        "I want AI to update contractors\nimpact is high ROI\nokay i confirm"
+    )
+
+
+def test_message_text_still_used_when_no_transcript(setup):
+    """Back-compat: no raw_transcript → raw_text falls back to message_text."""
+    s = setup
+    r1 = _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"],
+        message_text="just the one message",
+    )
+    draft_id = r1.json()["draft_id"]
+    assert _idea_field(s["factory"], draft_id, "raw_text") == "just the one message"

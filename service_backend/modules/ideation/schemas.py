@@ -140,7 +140,17 @@ class CreateIdeaIn(ApiModel):
 
     product_id: str
     submitter_contact_id: Optional[str] = None
+    # Human display name of the sender, resolved host-side (sorento respond_contacts
+    # → n8n Respond.io-profile fallback). Stored verbatim on the Idea so the UI
+    # shows a name, not "Unknown". Shared-service NEVER queries respond_contacts
+    # (D20 — it just persists the string). WS-A / AC-CAP-1..3.
+    submitter_name: Optional[str] = None
     message_text: str = ""
+    # The CUMULATIVE conversation transcript that produced the idea (host-owned;
+    # sorento accumulates across turns). When present it is stored as the Idea's
+    # ``raw_text`` (the whole convo, not just the last "okay i confirm" turn);
+    # ``message_text`` stays the current turn for extraction/dedup. WS-B / AC-CAP-5..7.
+    raw_transcript: Optional[str] = None
     audio_attachment_ref: Optional[str] = None
     draft_id: Optional[str] = None
     fields: Optional[Dict[str, Any]] = None
