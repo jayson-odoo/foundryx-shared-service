@@ -33,16 +33,20 @@ router = APIRouter()
 def list_ideas(
     search: Optional[str] = Query(None),
     filter: str = Query("active", pattern="^(active|archived|all)$"),
+    product_id: Optional[str] = Query(None, alias="productId"),
     current_user: User = Depends(require_permission("ideation.ideas.view")),
     db: Session = Depends(get_db),
 ) -> List[IdeaOut]:
     """All ideas for the tenant, newest first. ``search`` matches problem/raw
-    text; ``filter`` selects active (default) / archived / all. ``myVote`` is
-    resolved for the calling user."""
+    text; ``filter`` selects active (default) / archived / all; optional
+    ``productId`` scopes to a single product (the canonical ideation scope —
+    omitted = every product in the tenant). ``myVote`` is resolved for the
+    calling user. Always tenant-scoped: the product filter never crosses tenants."""
     return IdeaReadService(db).list(
         current_user.tenant_id,
         search=search,
         filter=filter,
+        product_id=product_id,
         voter_id=current_user.id,
     )
 
@@ -75,14 +79,19 @@ def create_idea(
 
 @router.get("/board", response_model=BoardOut)
 def get_board(
+    product_id: Optional[str] = Query(None, alias="productId"),
     current_user: User = Depends(require_permission("ideation.triage.manage")),
     db: Session = Depends(get_db),
 ) -> BoardOut:
     """Triage board (AC-A-33) — ideas grouped by lifecycle status column, in the
-    board order, cards ordered by priority within a column. Triager surface —
-    gated by ``ideation.triage.manage`` (403 without it, AC-A-37). Dragging a card
-    across columns / within a column uses POST ``/{id}/status`` + PUT ``/reorder``."""
-    return IdeaReadService(db).board(current_user.tenant_id, voter_id=current_user.id)
+    board order, cards ordered by priority within a column. Optional ``productId``
+    scopes to a single product (omitted = every product in the tenant). Triager
+    surface — gated by ``ideation.triage.manage`` (403 without it, AC-A-37).
+    Dragging a card across columns / within a column uses POST ``/{id}/status`` +
+    PUT ``/reorder``."""
+    return IdeaReadService(db).board(
+        current_user.tenant_id, voter_id=current_user.id, product_id=product_id
+    )
 
 
 @router.put("/reorder", response_model=List[IdeaOut])
