@@ -63,11 +63,18 @@ class IdeationEmbedError(Exception):
 
 @dataclass
 class EmbedTokenPrincipal:
-    """Resolved from a valid embed token — the tenant scope the data reads use."""
+    """Resolved from a valid embed token — the tenant scope the data reads use.
+
+    ``product_id`` (from the connection, WS-C) is the canonical embed scope: when
+    set, every embed read/write is additionally scoped to that one product — a
+    write targeting an idea in the same tenant but a different product is denied
+    (404). ``None`` = the connection is not product-scoped (tenant-only, today's
+    behaviour)."""
 
     tenant_id: str
     connection_id: str
     idea_id: Optional[str] = None
+    product_id: Optional[str] = None
     sub: Optional[str] = None
     scope: str = "ideation"
 
@@ -288,6 +295,11 @@ def verify_and_mint(
             "typ": EMBED_TOKEN_TYP,
             "tenant_id": conn.tenant_id,
             "connection_id": conn.connection_id,
+            # Canonical embed scope (WS-C): the connection's product. Carried in
+            # the token so every embed read/write is tenant+product scoped without
+            # re-reading the connection. ``None`` when the connection is not
+            # product-scoped (tenant-only).
+            "product_id": conn.product_id,
             "idea_id": idea_id,
             "email": claims.get("email"),
             "name": claims.get("name"),
@@ -329,6 +341,7 @@ def resolve_embed_token(db: Session, token: str) -> EmbedTokenPrincipal:
         tenant_id=tenant_id,
         connection_id=connection_id,
         idea_id=payload.get("idea_id"),
+        product_id=payload.get("product_id"),
         sub=payload.get("sub"),
         scope=payload.get("scope") or "ideation",
     )
