@@ -15,8 +15,8 @@ from app.models.catalog import Product
 from app.models.status import Status
 from modules.omnichannel.models import Contact
 
-from ..models import Idea, IdeaVote
-from ..schemas import BoardColumnOut, BoardOut, IdeaOut
+from ..models import Idea, IdeaAttachment, IdeaVote
+from ..schemas import BoardColumnOut, BoardOut, IdeaAttachmentOut, IdeaOut
 
 # Idea lifecycle keys whose statuses are "archived" (terminal off-ramps + closed).
 # The active board shows non-archived ideas; the archived filter shows the rest.
@@ -52,6 +52,7 @@ class IdeaReadService:
         statuses: Dict[str, Status],
         contacts: Dict[str, Contact],
         my_votes: Optional[Dict[str, str]] = None,
+        attachments: Optional[Dict[str, List[IdeaAttachmentOut]]] = None,
     ) -> IdeaOut:
         product = products.get(idea.product_id)
         status = statuses.get(idea.status_id)
@@ -60,6 +61,7 @@ class IdeaReadService:
         # otherwise derive it from the linked contact (D-A4).
         submitter = (idea.submitter_name or "").strip() or _submitter_name(contact)
         my_vote = (my_votes or {}).get(idea.id)
+        idea_attachments = (attachments or {}).get(idea.id, [])
         return IdeaOut(
             id=idea.id,
             productId=idea.product_id,
@@ -76,7 +78,7 @@ class IdeaReadService:
             downvotes=idea.downvotes or 0,
             myVote=my_vote if my_vote in ("up", "down") else None,
             priority=idea.priority or 0,
-            attachments=[],
+            attachments=idea_attachments,
             createdAt=idea.created_at,
         )
 
@@ -94,12 +96,42 @@ class IdeaReadService:
         )
         return {r.idea_id: r.dir for r in rows}
 
+    def _attachments_by_idea(
+        self, ideas: List[Idea]
+    ) -> Dict[str, List[IdeaAttachmentOut]]:
+        """``{idea_id: [IdeaAttachmentOut, …]}`` for a set of ideas (no N+1),
+        oldest-first. ``name`` prefers the filename, falling back to the kind."""
+        if not ideas:
+            return {}
+        idea_ids = [i.id for i in ideas]
+        rows = (
+            self.db.query(IdeaAttachment)
+            .filter(IdeaAttachment.idea_id.in_(idea_ids))
+            .order_by(IdeaAttachment.created_at.asc(), IdeaAttachment.id.asc())
+            .all()
+        )
+        out: Dict[str, List[IdeaAttachmentOut]] = {}
+        for r in rows:
+            out.setdefault(r.idea_id, []).append(
+                IdeaAttachmentOut(
+                    id=r.id,
+                    kind=r.kind,
+                    name=(r.filename or "").strip() or r.kind,
+                    url=r.url or "",
+                )
+            )
+        return out
+
     def serialize_many(
         self, ideas: List[Idea], voter_id: Optional[str] = None
     ) -> List[IdeaOut]:
         products, statuses, contacts = self._resolve_maps(ideas)
         my_votes = self._my_votes(ideas, voter_id)
-        return [self._serialize(i, products, statuses, contacts, my_votes) for i in ideas]
+        attachments = self._attachments_by_idea(ideas)
+        return [
+            self._serialize(i, products, statuses, contacts, my_votes, attachments)
+            for i in ideas
+        ]
 
     def serialize_one(self, idea: Idea, voter_id: Optional[str] = None) -> IdeaOut:
         return self.serialize_many([idea], voter_id)[0]
