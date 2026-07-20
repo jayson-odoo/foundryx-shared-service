@@ -326,6 +326,107 @@ def test_admin_create_and_list_never_returns_secret(ideation_client):
     listed = ideation_client.get("/ideation/embed-connections", headers=h)
     assert listed.status_code == 200
     assert any(r["connection_id"] == "admin-made" for r in listed.json())
+    # created/updated timestamps are surfaced for the list (never the secret).
+    row = next(r for r in listed.json() if r["connection_id"] == "admin-made")
+    assert row["created_at"] and row["updated_at"]
+
+
+def _admin_create(client, h, connection_id="admin-made", secret="a-freshly-set-secret-value"):
+    return client.post(
+        "/ideation/embed-connections",
+        headers=h,
+        json={
+            "connection_id": connection_id,
+            "signing_secret": secret,
+            "allowed_origins": [ORIGIN],
+        },
+    )
+
+
+def test_admin_patch_toggles_active_without_secret(ideation_client):
+    """PATCH enables/disables + re-scopes WITHOUT re-supplying the secret, and the
+    secret survives the toggle."""
+    h = _auth(ideation_client)
+    assert _admin_create(ideation_client, h).status_code == 201
+
+    off = ideation_client.patch(
+        "/ideation/embed-connections/admin-made", headers=h, json={"is_active": False}
+    )
+    assert off.status_code == 200, off.text
+    assert off.json()["is_active"] is False
+    assert "signing_secret" not in off.json()
+
+    on = ideation_client.patch(
+        "/ideation/embed-connections/admin-made",
+        headers=h,
+        json={"is_active": True, "allowed_origins": ["https://new.example.com"]},
+    )
+    assert on.status_code == 200
+    assert on.json()["is_active"] is True
+    assert on.json()["allowed_origins"] == ["https://new.example.com"]
+    assert on.json()["has_secret"] is True
+
+
+def test_admin_rotate_changes_secret_and_never_returns_it(ideation_client):
+    """Rotate accepts a new secret, never echoes it, and the OLD secret stops
+    verifying while the NEW one works (blast radius = one connection)."""
+    h = _auth(ideation_client)
+    assert (
+        _admin_create(
+            ideation_client, h, connection_id=CONNECTION_ID, secret=SIGNING_SECRET
+        ).status_code
+        == 201
+    )
+    # The original secret verifies.
+    assert _session(ideation_client).status_code == 200
+
+    new_secret = "a-rotated-brand-new-secret-value-9876"
+    rot = ideation_client.post(
+        f"/ideation/embed-connections/{CONNECTION_ID}/rotate",
+        headers=h,
+        json={"signing_secret": new_secret},
+    )
+    assert rot.status_code == 200, rot.text
+    assert "signing_secret" not in rot.json() and "signing_secret_ciphertext" not in rot.json()
+    assert rot.json()["has_secret"] is True
+
+    # Old assertion (old secret) now fails; a new assertion (new secret) works.
+    assert _session(ideation_client).status_code == 401
+    new_assertion = _assertion(secret=new_secret)
+    assert _session(ideation_client, assertion=new_assertion).status_code == 200
+
+
+def test_admin_delete_removes_connection(ideation_client):
+    h = _auth(ideation_client)
+    assert _admin_create(ideation_client, h).status_code == 201
+    dele = ideation_client.delete("/ideation/embed-connections/admin-made", headers=h)
+    assert dele.status_code == 204
+    listed = ideation_client.get("/ideation/embed-connections", headers=h).json()
+    assert all(r["connection_id"] != "admin-made" for r in listed)
+
+
+def test_admin_mutations_404_on_unknown_connection(ideation_client):
+    h = _auth(ideation_client)
+    assert (
+        ideation_client.patch(
+            "/ideation/embed-connections/nope", headers=h, json={"is_active": False}
+        ).status_code
+        == 404
+    )
+    assert (
+        ideation_client.post(
+            "/ideation/embed-connections/nope/rotate",
+            headers=h,
+            json={"signing_secret": "some-secret-value-1234"},
+        ).status_code
+        == 404
+    )
+    assert (
+        ideation_client.delete(
+            "/ideation/embed-connections/nope", headers=h
+        ).status_code
+        == 404
+    )
 
 
 # ── dispatcher: omnichannel widget embed still works ──────────────────────────

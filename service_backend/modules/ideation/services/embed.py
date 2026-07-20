@@ -120,6 +120,86 @@ def upsert_connection(
     return row
 
 
+# Sentinel for "field not supplied" in a partial update (so ``product_id=None``
+# meaning "clear the scope" is distinguishable from "leave it unchanged").
+_UNSET: Any = object()
+
+
+def get_connection(
+    db: Session, *, connection_id: str, tenant_id: str
+) -> Optional[EmbedConnection]:
+    """Fetch one embed connection scoped to the caller's tenant (admin CRUD). A
+    connection registered for another tenant is invisible (returns ``None``)."""
+    return (
+        db.query(EmbedConnection)
+        .filter(
+            EmbedConnection.connection_id == connection_id,
+            EmbedConnection.tenant_id == tenant_id,
+        )
+        .first()
+    )
+
+
+def rotate_secret(
+    db: Session, *, connection_id: str, tenant_id: str, signing_secret: str
+) -> Optional[EmbedConnection]:
+    """Replace the connection's signing secret (rotation, AC-E-6). The new secret
+    is Fernet-encrypted at rest; it is NEVER returned here — the caller (which
+    supplied the plaintext) is the only side that reveals it. Rotating
+    invalidates every outstanding assertion signed with the old secret. Returns
+    ``None`` when the connection is not in the caller's tenant."""
+    if not signing_secret:
+        raise ValueError("signing_secret is required")
+    row = get_connection(db, connection_id=connection_id, tenant_id=tenant_id)
+    if row is None:
+        return None
+    row.signing_secret_ciphertext = encrypt_secret({"signingSecret": signing_secret})
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def update_connection_fields(
+    db: Session,
+    *,
+    connection_id: str,
+    tenant_id: str,
+    allowed_origins: Any = _UNSET,
+    product_id: Any = _UNSET,
+    is_active: Any = _UNSET,
+) -> Optional[EmbedConnection]:
+    """Partial update of the non-secret fields (enable/disable, re-scope, edit the
+    origin allow-list) WITHOUT touching the signing secret. Only the fields
+    explicitly supplied are written. Returns ``None`` when the connection is not
+    in the caller's tenant."""
+    row = get_connection(db, connection_id=connection_id, tenant_id=tenant_id)
+    if row is None:
+        return None
+    if allowed_origins is not _UNSET:
+        row.allowed_origins = [
+            o for o in (allowed_origins or []) if isinstance(o, str) and o
+        ]
+    if product_id is not _UNSET:
+        row.product_id = product_id or None
+    if is_active is not _UNSET:
+        row.is_active = bool(is_active)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def delete_connection(db: Session, *, connection_id: str, tenant_id: str) -> bool:
+    """Hard-delete an embed connection (off-boarding). Any live embed token for it
+    stops resolving on its next request. Returns ``False`` when the connection is
+    not in the caller's tenant."""
+    row = get_connection(db, connection_id=connection_id, tenant_id=tenant_id)
+    if row is None:
+        return False
+    db.delete(row)
+    db.commit()
+    return True
+
+
 def _decrypt_signing_secret(conn: EmbedConnection) -> str:
     try:
         creds = decrypt_secret(conn.signing_secret_ciphertext or "")

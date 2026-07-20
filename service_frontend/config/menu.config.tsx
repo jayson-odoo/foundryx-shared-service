@@ -424,6 +424,11 @@ export const MENU_SIDEBAR: MenuConfig = [
     children: [
       { title: 'Ideas', path: '/ideation/ideas' },
       { title: 'Triage board', path: '/ideation/board' },
+      {
+        title: 'Embed connections',
+        path: '/ideation/embed-connections',
+        permission: 'ideation.triage.manage',
+      },
     ],
   },
   // Module menu block — visible only while the module is ACTIVE for the
