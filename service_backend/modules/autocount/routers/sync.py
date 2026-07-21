@@ -25,6 +25,7 @@ from ..services import (
     EntityNotConfigured,
     JobNotFound,
     NotAwaitingApproval,
+    PushFailed,
     SyncService,
 )
 
@@ -36,6 +37,13 @@ def _raise(exc: AutocountServiceError) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
     if isinstance(exc, NotAwaitingApproval):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message)
+    if isinstance(exc, PushFailed):
+        # An UPSTREAM fault, not bad client input — 422 would tell the operator
+        # they sent something wrong when in fact the sink broke. The batch is
+        # back in review and re-approvable, which the message says.
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
+        )
     if isinstance(exc, EntityNotConfigured):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message

@@ -35,7 +35,7 @@ Company is DISCOVERED, never configured: login returns ``DatabaseName`` and
 from the ``AppId`` header, so **AppId IS the company selector** (D16).
 """
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -317,7 +317,10 @@ class AutoCountClient:
         except ValueError as exc:
             raise AutoCountRelayError(
                 "AutoCount returned a response that was not JSON.",
-                detail=f"HTTP {response.status_code}: {response.text[:1000]}",
+                # Through ``_safe`` like every other detail in this file: a relay
+                # fault can echo the REQUEST back, and the request to
+                # ``/api/Server/Login`` is ``{UserID, Password}``.
+                detail=_safe(f"HTTP {response.status_code}: {response.text[:1000]}"),
             ) from exc
 
     @classmethod
@@ -326,19 +329,40 @@ class AutoCountClient:
 
         The .NET ``StackTraceString`` NEVER reaches an operator (AC-13-04) — it
         goes to ``detail`` for the log only.
+
+            !!  ``detail`` IS INTENDED TO BE LOGGED, SO IT IS MASKED.  !!
+
+        A .NET relay fault routinely echoes the REQUEST inside its exception
+        text, and the request to ``/api/Server/Login`` is literally
+        ``{"UserID": ..., "Password": ...}`` under an ``AppId`` header. So every
+        path out of here goes through ``_safe`` (``mask_payload`` + length cap),
+        exactly like the other seven ``detail=`` sites in this file.
+
+        Where the body PARSES, it is masked STRUCTURALLY first — that redacts a
+        ``Password``/``AppId`` key anywhere in the .NET object graph, which
+        masking the composed string could not do. Residual limitation, stated
+        rather than hidden: a credential embedded in free-form trace TEXT
+        (``"...Login failed for AppId=xyz..."``) is not key-addressable and
+        survives; the structural pass is the defence that scales.
         """
         raw_message = ""
-        detail = f"HTTP {response.status_code}: {response.text[:2000]}"
+        detail = _safe(f"HTTP {response.status_code}: {response.text[:2000]}")
         try:
             body = response.json()
         except ValueError:
             body = None
         if isinstance(body, dict):
-            raw_message = str(body.get("Message") or "")
-            class_name = str(body.get("ClassName") or "")
-            detail = (
+            # Mask the object graph FIRST, then compose out of the masked copy —
+            # so a ``Password``/``AppId`` key nested anywhere in the .NET
+            # exception is already redacted by the time it reaches a string, in
+            # the OPERATOR-facing ``friendly``/``raw_message`` as well as in
+            # ``detail``.
+            masked = mask_payload(body)
+            raw_message = str(masked.get("Message") or "")
+            class_name = str(masked.get("ClassName") or "")
+            detail = _safe(
                 f"HTTP {response.status_code} {class_name}: {raw_message}\n"
-                f"{str(body.get('StackTraceString') or '')[:2000]}"
+                f"{str(masked.get('StackTraceString') or '')[:2000]}"
             )
         friendly = (
             f"AutoCount returned an internal error (HTTP {response.status_code})"
@@ -538,29 +562,3 @@ def build_read_filter(
         payload["LastModifiedTo"] = last_modified_to.strftime(FILTER_DATE_FORMAT)
     validate_read_filter(payload)
     return payload
-
-
-@dataclass
-class ClientConfig:
-    """Connection ``config_json`` + decrypted ``credentials_json`` → client args."""
-
-    base_url: str
-    app_id: str
-    user_id: str
-    password: str
-    verify_tls: bool = True
-    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
-    token_max_age_seconds: float = DEFAULT_TOKEN_MAX_AGE_SECONDS
-    _unused: Dict[str, Any] = field(default_factory=dict)
-
-    def client(self, *, transport: Optional[httpx.Client] = None) -> AutoCountClient:
-        return AutoCountClient(
-            base_url=self.base_url,
-            app_id=self.app_id,
-            user_id=self.user_id,
-            password=self.password,
-            verify_tls=self.verify_tls,
-            timeout_seconds=self.timeout_seconds,
-            token_max_age_seconds=self.token_max_age_seconds,
-            transport=transport,
-        )

@@ -17,6 +17,8 @@ from typing import List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.models.connection import Connection
+
 from ..models import (
     STAGED,
     AcCompany,
@@ -26,6 +28,37 @@ from ..models import (
     AcSyncRun,
     AcWatermark,
 )
+
+
+class ConnectionRepository:
+    """READ-ONLY access to core ``public.connections`` for AutoCount rows.
+
+    A module never ALTERS a core table; it may read one it owns rows in, and
+    ``connections`` is where the provider's own config/credentials live. Kept in
+    the repository layer rather than inline in the service so the enforced
+    Router → Service → Repository split holds for core tables too, not just the
+    module's own.
+    """
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_for_provider(
+        self, tenant_id: str, connection_id: str, provider: str
+    ) -> Optional[Connection]:
+        """Tenant- AND provider-scoped. NEVER a bare ``get(id)``: a connection id
+        is a STORED reference, and resolving one unscoped is the polymorphic-
+        target_id leak class (a planted id would read another tenant's
+        credentials)."""
+        return (
+            self.db.query(Connection)
+            .filter(
+                Connection.tenant_id == tenant_id,
+                Connection.id == connection_id,
+                Connection.provider == provider,
+            )
+            .first()
+        )
 
 
 class CompanyRepository:

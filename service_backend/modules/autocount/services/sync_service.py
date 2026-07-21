@@ -65,6 +65,11 @@ class NotAwaitingApproval(AutocountServiceError):
     pass
 
 
+class PushFailed(AutocountServiceError):
+    """The push raised part-way through. The batch is back in ``needs_review``
+    and is re-approvable — it is NOT stranded and NOT silently half-delivered."""
+
+
 class SyncService:
     def __init__(self, db: Session):
         self.db = db
@@ -148,6 +153,57 @@ class SyncService:
         self.db.commit()
         return claimed
 
+    def _release_claim(
+        self,
+        job: BackgroundJob,
+        pushed: List[AcStagedRecord],
+        exc: BaseException,
+    ) -> None:
+        """The push raised mid-loop. Do NOT leave the job in ``running``.
+
+        ``_claim_review`` moved ``needs_review`` → ``running``; a raise between
+        that and ``finish`` would strand the job forever — non-terminal so the
+        pruner never reaps it, and no longer ``needs_review`` so ``_claim_review``
+        can never succeed again. No re-approve, no retry, an approved batch dead
+        in the water. Today only ``model(**row.canonical_json)`` can raise, but
+        the moment a real network sink lands, ONE timeout does this.
+
+        **Returned to ``needs_review``, not finished ``failed``** — because the
+        approval genuinely did not complete, and ``needs_review`` is precisely
+        "a human must act on this". Finishing ``failed`` would be the stranding
+        bug in different clothes: a terminal job whose staged rows sit ``STAGED``
+        forever with no path to push them.
+
+        Rows already accepted by the sink are committed ``PUSHED`` FIRST, so the
+        retry's ``list_pending_for_job`` (``status == STAGED``) skips them and
+        nothing is delivered twice.
+        """
+        self.db.rollback()
+        if pushed:
+            # Re-attach by id — the rollback expired the objects held above.
+            ids = {row.id for row in pushed}
+            fresh = [
+                row
+                for row in self.staged.list_pending_for_job(
+                    job.tenant_id, self._company_id_for(job), job.id
+                )
+                if row.id in ids
+            ]
+            self.staged.mark(
+                fresh, status=STAGED_PUSHED, pushed_at=datetime.now(timezone.utc)
+            )
+        BackgroundJobRepository(self.db).release(
+            job.id, from_status=JOB_RUNNING, to_status=JOB_NEEDS_REVIEW
+        )
+        self.db.commit()
+        logger.error(
+            "autocount push failed for job %s; %d record(s) already pushed, batch "
+            "returned to review.",
+            job.id,
+            len(pushed),
+            exc_info=exc,
+        )
+
     def approve(
         self, tenant_id: str, job_id: str, *, actor_user_id: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -174,22 +230,35 @@ class SyncService:
         pushed: List[AcStagedRecord] = []
         failures: List[Dict[str, Any]] = []
 
-        for row in pending:
-            model = CANONICAL_MODELS.get(row.entity_type)
-            if model is None or not row.canonical_json:
-                # A FAILED row has no canonical payload by design (D13); it can
-                # never be pushed, and reaching here means it was mis-selected.
-                failures.append({"sourceRef": row.source_ref, "error": "not pushable"})
-                continue
-            record = model(**row.canonical_json)
-            # Deterministic request id from (job, staged row) — a replay at a
-            # lower layer maps to the SAME id, which is what a real sink needs
-            # to deduplicate on its side.
-            result: WriteResult = sink.write(record, request_id=f"{job.id}:{row.id}")
-            if result.ok:
-                pushed.append(row)
-            else:
-                failures.append({"sourceRef": row.source_ref, "error": result.message})
+        try:
+            for row in pending:
+                model = CANONICAL_MODELS.get(row.entity_type)
+                if model is None or not row.canonical_json:
+                    # A FAILED row has no canonical payload by design (D13); it
+                    # can never be pushed, and reaching here means it was
+                    # mis-selected.
+                    failures.append(
+                        {"sourceRef": row.source_ref, "error": "not pushable"}
+                    )
+                    continue
+                record = model(**row.canonical_json)
+                # Deterministic request id from (job, staged row) — a replay at a
+                # lower layer maps to the SAME id, which is what a real sink needs
+                # to deduplicate on its side.
+                result: WriteResult = sink.write(record, request_id=f"{job.id}:{row.id}")
+                if result.ok:
+                    pushed.append(row)
+                else:
+                    failures.append(
+                        {"sourceRef": row.source_ref, "error": result.message}
+                    )
+        except Exception as exc:  # noqa: BLE001
+            self._release_claim(job, pushed, exc)
+            raise PushFailed(
+                "The push failed part-way through, so this batch was returned to "
+                "review. Records already delivered will not be sent again — "
+                "approve it again to push the rest."
+            ) from exc
 
         now = datetime.now(timezone.utc)
         self.staged.mark(pushed, status=STAGED_PUSHED, pushed_at=now)

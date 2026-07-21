@@ -55,6 +55,21 @@ def _indexes(table: str) -> set:
     return {ix["name"] for ix in inspector.get_indexes(table, schema=SCHEMA)}
 
 
+#     !!  THESE GUARDS ARE NOT COVERED BY pytest — AND STRUCTURALLY CANNOT BE.  !!
+#
+# conftest builds the schema with ``create_all`` and module Alembic is a
+# Postgres-only NO-OP, so NOTHING in the test suite ever executes this file.
+# A green suite therefore says exactly nothing about it: an unguarded
+# ``op.create_table`` here passes every test and then dies with
+# ``DuplicateTable`` on the first real deploy already stamped at 0001 (where
+# ``bootstrap_modules`` ran ``install()``/``create_all`` BEFORE the migration).
+#
+# So the ONLY gate on this file is CODE REVIEW plus a manual
+# ``alembic upgrade head`` against live Postgres. Every create in this revision
+# must go through ``make_table``/``make_index`` — a reviewer seeing a bare
+# ``op.create_table``/``op.create_index`` below should reject it on sight.
+
+
 def make_table(name: str, *columns: Any) -> None:
     if name not in _tables():
         op.create_table(name, *columns, schema=SCHEMA)

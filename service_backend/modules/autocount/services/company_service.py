@@ -35,6 +35,7 @@ from ..models import (
 from ..provider import PROVIDER_KEY, client_from_connection
 from ..repositories import (
     CompanyRepository,
+    ConnectionRepository,
     EntityConfigRepository,
     FieldMappingRepository,
 )
@@ -76,6 +77,7 @@ class CompanyService:
         self.companies = CompanyRepository(db)
         self.configs = EntityConfigRepository(db)
         self.mappings = FieldMappingRepository(db)
+        self.connections = ConnectionRepository(db)
 
     # ── reads ────────────────────────────────────────────────────────────────
 
@@ -98,15 +100,10 @@ class CompanyService:
 
     def _connection(self, tenant_id: str, connection_id: str) -> Connection:
         """Tenant-scoped connection lookup. NEVER a bare ``get(id)`` — a stored
-        id resolved unscoped is the polymorphic-target_id leak class."""
-        conn = (
-            self.db.query(Connection)
-            .filter(
-                Connection.tenant_id == tenant_id,
-                Connection.id == connection_id,
-                Connection.provider == PROVIDER_KEY,
-            )
-            .first()
+        id resolved unscoped is the polymorphic-target_id leak class. The query
+        itself lives in the repository layer (Router → Service → Repository)."""
+        conn = self.connections.get_for_provider(
+            tenant_id, connection_id, PROVIDER_KEY
         )
         if conn is None:
             raise ConnectionNotFound("That AutoCount connection was not found.")

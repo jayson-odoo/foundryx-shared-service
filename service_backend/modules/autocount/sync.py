@@ -312,20 +312,33 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         return
 
     # ── watermark: advance ONLY on a clean batch ─────────────────────────────
+    #
+    # ``last_success_at`` and ``consecutive_failures`` are the STALE-SYNC SIGNAL
+    # (AC-13-19, plan §7 "a blocked sync is always visible"). Stamping success
+    # unconditionally would make a permanently-stalled entity — watermark held,
+    # every document failing to map, forever — present as perfectly healthy:
+    # fresh success timestamp, zero consecutive failures. The monitor would then
+    # never fire on the one case it exists for. So a batch with ANY failed
+    # document counts as a FAILURE here, exactly as a fetch fault does in
+    # ``_fail``.
     advanced_to: Optional[datetime] = None
-    if failed_count == 0 and result.max_last_modified is not None:
-        advanced_to = result.max_last_modified
-        watermark_row.last_modified_at = advanced_to
+    if failed_count == 0:
+        if result.max_last_modified is not None:
+            advanced_to = result.max_last_modified
+            watermark_row.last_modified_at = advanced_to
         watermark_row.consecutive_failures = 0
         watermark_row.last_error = None
-    elif failed_count:
+        watermark_row.last_success_at = datetime.now(timezone.utc)
+    else:
         # D18: a failed document HOLDS the watermark for the entity, so the next
         # run re-reads the same window and the document gets another chance
         # after the mapping is fixed — no manual re-drive, no lost document.
+        watermark_row.consecutive_failures = (
+            watermark_row.consecutive_failures or 0
+        ) + 1
         watermark_row.last_error = (
             f"{failed_count} document(s) failed to map; watermark held."
         )
-    watermark_row.last_success_at = datetime.now(timezone.utc)
 
     run.outcome = RUN_SUCCESS
     run.truncated = False
@@ -472,6 +485,15 @@ def _fail(
     watermark_row.consecutive_failures = (watermark_row.consecutive_failures or 0) + 1
     watermark_row.last_error = message[:4000]
     db.commit()
+    # Same cooperative-abort rule as ``_abort``: an operator's committed
+    # ``JOB_ABORTED`` MUST stand. An abort landing while a fetch was in flight
+    # (the fetch then errors, because the abort raced a real fault) would
+    # otherwise be overwritten with ``failed`` here, erasing the fact that a
+    # human stopped this. The run's own bookkeeping above is kept either way —
+    # the fetch genuinely did fail, and that is why the run stopped.
+    if _aborted(db, job.id):
+        logger.info("autocount sync failed after an abort was committed; abort stands.")
+        return
     service.finish(job, status=JOB_FAILED, error=message)
 
 

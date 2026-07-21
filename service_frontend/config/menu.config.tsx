@@ -959,6 +959,26 @@ export const MENU_MEGA: MenuConfig = [
           },
         ],
       },
+      // AutoCount ESB (sprint-4/13) — the DESKTOP mega menu. demo1 renders
+      // MENU_SIDEBAR, MENU_MEGA and MENU_MEGA_MOBILE, so an entry present in
+      // the mobile mega but absent here is visible on a phone and missing on a
+      // desktop. Same module + permission tags, so `filterMenu` prunes it
+      // identically in all three copies.
+      {
+        title: 'AutoCount',
+        module: 'autocount',
+        children: [
+          {
+            children: [
+              {
+                title: 'Companies',
+                path: '/autocount/companies',
+                permission: 'autocount.companies.read',
+              },
+            ],
+          },
+        ],
+      },
     ],
   },
 ];

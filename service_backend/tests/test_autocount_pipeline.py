@@ -1266,3 +1266,246 @@ def test_the_new_migration_chains_onto_the_baseline():
     ).read_text()
     assert 'revision: str = "0002_autocount_grn"' in text
     assert '"0001_autocount_baseline"' in text
+
+
+# ── code-review regressions (sprint-4/13 slice 1) ─────────────────────────────
+#
+# Each test below pins a defect the pre-existing suite structurally could not
+# catch. They are grouped here so the "why" stays attached to the "what".
+
+
+def test_a_mapping_row_pydantic_rejects_fails_one_document_not_the_batch(
+    db, transports
+):
+    """FIX 1. ``transform`` is OPERATOR-EDITABLE DATA, so a mapping row can hand
+    the canonical model a value pydantic rejects — here ``qty`` mapped
+    ``string``, so a UOM lands in a ``Decimal`` field.
+
+    Header construction was guarded; LINE construction was not. The resulting
+    ValidationError escaped ``map_document`` → ``_stage_documents`` →
+    ``run_autocount_sync`` and killed the WHOLE batch, taking every sibling GRN
+    with it — precisely what AC-13-10 forbids.
+    """
+    company = _company(db, transports)
+    # An operator EDITS the seeded ``qty`` row (the D5 "mapping is data" path)
+    # to point at a text field with a ``string`` transform — a plausible
+    # mis-edit, and one no code change is required to make. It only bites lines
+    # that actually carry ``BatchNo``, which is just the one document below.
+    qty_row = (
+        db.query(AcFieldMapping)
+        .filter(
+            AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+            AcFieldMapping.company_id == company.id,
+            AcFieldMapping.scope == "line",
+            AcFieldMapping.canonical_field == "qty",
+        )
+        .one()
+    )
+    qty_row.source_path = "BatchNo"
+    qty_row.transform = "string"
+    db.commit()
+
+    bad = _grn(
+        "2",
+        "GRN-0002",
+        lines=[{"DtlKey": "9", "Qty": "1.0", "BatchNo": "BATCH-A"}],
+    )
+    _queue(db, transports, company, [_grn("1"), bad, _grn("3")])
+    job = _run_sync(db, company)
+
+    rows = {
+        row.source_ref: row
+        for row in StagedRecordRepository(db).list_for_job(
+            DEFAULT_TENANT_ID, company.id, job.id
+        )
+    }
+    # The siblings survived — the whole point.
+    assert rows["1"].status == STAGED
+    assert rows["3"].status == STAGED
+    failed = rows["2"]
+    assert failed.status == STAGED_FAILED
+    assert failed.canonical_json is None  # no half-record exists
+    # …and the failure NAMES the line (AC-13-10), rather than being an opaque
+    # crash somewhere above the document loop.
+    assert "line 1" in failed.error
+    assert job.status == JOB_NEEDS_REVIEW  # the run itself completed cleanly
+
+
+def test_a_stale_sync_is_visible_when_documents_keep_failing(db, transports):
+    """FIX 2. ``last_success_at`` was stamped unconditionally and
+    ``consecutive_failures`` only ever moved in ``_fail`` (fetch faults), so a
+    permanently-BLOCKED entity presented as perfectly healthy: watermark held
+    (right), fresh success timestamp, zero failures. AC-13-19's stale-sync
+    monitor would never fire on the one case it exists for (plan §7 — "a
+    blocked sync is always visible").
+    """
+    company = _company(db, transports)
+    watermarks = WatermarkRepository(db)
+
+    # Two consecutive runs in which every document fails to map.
+    for _ in range(2):
+        _queue(db, transports, company, [_grn("1", lines=[{"DtlKey": "1", "Qty": "oops"}])])
+        _run_sync(db, company)
+
+    watermark = watermarks.get(DEFAULT_TENANT_ID, company.id, ENTITY_GOODS_RECEIVED_NOTE)
+    assert watermark.last_modified_at is None  # HELD, as before
+    assert watermark.consecutive_failures == 2, "a blocked sync must be countable"
+    assert watermark.last_success_at is None, "a failing batch is not a success"
+
+    # …and the other branch: a clean batch clears the count and stamps success.
+    _queue(db, transports, company, [_grn("2")])
+    _run_sync(db, company)
+
+    watermark = watermarks.get(DEFAULT_TENANT_ID, company.id, ENTITY_GOODS_RECEIVED_NOTE)
+    assert watermark.consecutive_failures == 0
+    assert watermark.last_success_at is not None
+    assert watermark.last_success_at.tzinfo is not None  # aware-UTC discipline
+    assert watermark.last_error is None
+
+
+def test_a_raising_sink_leaves_the_batch_re_approvable_not_stranded(
+    db, transports, monkeypatch
+):
+    """FIX 3. ``_claim_review`` atomically moves ``needs_review`` → ``running``.
+    A raise between that and ``finish`` stranded the job in ``running`` FOREVER:
+    non-terminal so the pruner never reaps it, and no longer ``needs_review`` so
+    the claim could never succeed again — no re-approve, no retry. One network
+    error would have permanently killed an approved batch the moment a real sink
+    landed.
+    """
+    from modules.autocount.services.sync_service import PushFailed
+    from modules.autocount import sinks as sinks_module
+
+    company = _company(db, transports, reads=[[_grn("1"), _grn("2")]])
+    job = _run_sync(db, company)
+    assert job.status == JOB_NEEDS_REVIEW
+
+    calls = {"n": 0}
+    real_write = sinks_module.LoggingSink.write
+
+    def flaky(self, record, *, request_id):
+        calls["n"] += 1
+        if calls["n"] == 2:  # the FIRST record pushed, the second blew up
+            raise RuntimeError("sink connection reset")
+        return real_write(self, record, request_id=request_id)
+
+    monkeypatch.setattr(sinks_module.LoggingSink, "write", flaky)
+
+    with pytest.raises(PushFailed):
+        SyncService(db).approve(DEFAULT_TENANT_ID, job.id)
+
+    fresh = db.query(BackgroundJob).filter(BackgroundJob.id == job.id).first()
+    assert fresh.status == JOB_NEEDS_REVIEW, "the batch was stranded in `running`"
+
+    # The record that DID reach the sink is committed PUSHED, so the retry does
+    # not deliver it twice.
+    statuses = sorted(
+        r.status
+        for r in StagedRecordRepository(db).list_for_job(
+            DEFAULT_TENANT_ID, company.id, job.id
+        )
+    )
+    assert statuses == [STAGED_PUSHED, STAGED]  # exactly one of each
+
+    # And it really is re-approvable — the sink recovers, the remainder goes.
+    monkeypatch.setattr(sinks_module.LoggingSink, "write", real_write)
+    result = SyncService(db).approve(DEFAULT_TENANT_ID, job.id)
+    assert result["pushed"] == 1  # only the one still outstanding
+    statuses = {
+        r.source_ref: r.status
+        for r in StagedRecordRepository(db).list_for_job(
+            DEFAULT_TENANT_ID, company.id, job.id
+        )
+    }
+    assert statuses == {"1": STAGED_PUSHED, "2": STAGED_PUSHED}
+    assert (
+        db.query(BackgroundJob).filter(BackgroundJob.id == job.id).first().status
+        == JOB_DONE
+    )
+
+
+def test_a_fetch_fault_after_a_committed_abort_does_not_overwrite_it(
+    db, session_factory, transports
+):
+    """FIX 4. ``_abort`` already refuses to touch the operator's status; ``_fail``
+    called ``finish(JOB_FAILED)`` with no fresh re-read, so an abort committed on
+    ANOTHER session while a fetch was in flight got overwritten the instant that
+    fetch then errored — erasing the fact that a human stopped this.
+
+    Driven with a REAL interleave, as the pre-existing abort test is: eager mode
+    runs the handler inline with no natural interleave, so this class of bug is
+    invisible to an inline no-op.
+    """
+    company = _company(db, transports)
+    job = SyncService(db).jobs.create(
+        type=AUTOCOUNT_SYNC,
+        tenant_id=DEFAULT_TENANT_ID,
+        payload={"companyId": company.id, "entityType": ENTITY_GOODS_RECEIVED_NOTE},
+    )
+
+    aborting = session_factory()
+    transport = transports[company.connection_id]
+    original_post = transport.post
+
+    def post_then_abort(url, **kwargs):
+        if url.endswith("GetGoodsReceivedNote"):
+            # The operator hits Abort while the read is in flight; the read then
+            # faults for its own unrelated reason. BOTH things really happened.
+            aborting.query(BackgroundJob).filter(BackgroundJob.id == job.id).update(
+                {BackgroundJob.status: JOB_ABORTED}, synchronize_session=False
+            )
+            aborting.commit()
+        return original_post(url, **kwargs)
+
+    transport.post = post_then_abort
+    transport.reads.append(
+        httpx.Response(200, json={"Status": "Fail", "Message": "Bad filter", "ResultTable": []})
+    )
+
+    run_autocount_sync(db, job)
+    aborting.close()
+
+    fresh = db.query(BackgroundJob).filter(BackgroundJob.id == job.id).first()
+    assert fresh.status == JOB_ABORTED, "the operator's abort was overwritten"
+    # The run still records WHY it stopped — the fetch genuinely did fail.
+    run = SyncRunRepository(db).get_for_job(DEFAULT_TENANT_ID, company.id, job.id)
+    assert run.outcome == RUN_FAILED
+    assert "Bad filter" in (run.error or "")
+    # Watermark held either way.
+    assert (
+        WatermarkRepository(db)
+        .get(DEFAULT_TENANT_ID, company.id, ENTITY_GOODS_RECEIVED_NOTE)
+        .last_modified_at
+        is None
+    )
+
+
+def test_the_connection_lookup_lives_in_the_repository_layer(db, transports):
+    """FIX 7. Router → Service → Repository is enforced; the connection query
+    ran inline in ``CompanyService``. Behaviour is pinned here (still tenant-
+    AND provider-scoped) as well as the placement, so the move cannot silently
+    drop a filter."""
+    import inspect
+
+    from modules.autocount.repositories import ConnectionRepository
+    from modules.autocount.services import company_service as module
+
+    # No raw query left in the service layer.
+    source = inspect.getsource(module)
+    assert "self.db.query(Connection)" not in source
+
+    company = _company(db, transports)
+    repo = ConnectionRepository(db)
+    assert (
+        repo.get_for_provider(DEFAULT_TENANT_ID, company.connection_id, "autocount")
+        is not None
+    )
+    # Another tenant cannot resolve it, and neither can another provider.
+    assert (
+        repo.get_for_provider(OTHER_TENANT_ID, company.connection_id, "autocount")
+        is None
+    )
+    assert (
+        repo.get_for_provider(DEFAULT_TENANT_ID, company.connection_id, "stripe")
+        is None
+    )

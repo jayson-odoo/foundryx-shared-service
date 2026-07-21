@@ -617,3 +617,124 @@ def test_module_permission_keys_are_namespaced_and_installed(client):
     assert "autocount.companies.read" in granted
     assert "autocount.sync.run" in granted
     assert all(key.startswith("autocount.") for key in granted if "autocount" in key)
+
+
+# ── relay detail is MASKED (code review, sprint-4/13) ─────────────────────
+#
+# ``detail`` is explicitly intended to be LOGGED (the class docstring says so),
+# and a .NET relay fault echoes the REQUEST — whose body on
+# ``POST /api/Server/Login`` is ``{"UserID", "Password"}`` under an ``AppId``
+# header. Before this fix ``_raise_relay``/``_json`` were the only ``detail=``
+# sites in client.py that did NOT go through ``_safe``.
+
+
+def test_the_relay_raw_text_detail_branch_is_masked_and_capped():
+    """The exact line the review flagged: when the 500's body is NOT a dict,
+    ``_raise_relay`` falls back to interpolating ``response.text`` raw. That
+    branch now goes through ``_safe`` like every other ``detail=`` in the file.
+
+    Note the honest limit, stated in the method docstring: ``_safe`` on free
+    TEXT masks PAN-shaped runs and caps length — it cannot key-redact a
+    ``Password=`` embedded in prose. The structural pass (below) is the
+    defence that actually scales; this is the floor.
+    """
+    recorder = Recorder(
+        [
+            _login_response(),
+            # A JSON *list* body — parses, but is not a dict, so the composer is
+            # skipped and the raw-text detail stands.
+            httpx.Response(500, json=["relay down, card 4111111111111111 " + "y" * 5000]),
+        ]
+    )
+    with _client(recorder) as ac:
+        with pytest.raises(AutoCountRelayError) as excinfo:
+            ac.read("GoodsReceivedNote", build_read_filter(record_count=5))
+
+    detail = excinfo.value.detail or ""
+    assert "4111111111111111" not in detail
+    assert "***1111" in detail
+    assert len(detail) <= 2000
+
+
+def test_a_relay_detail_masks_an_echoed_credential_structurally():
+    """The dict branch composes out of a ``mask_payload``-ed COPY of the .NET
+    object, so a credential key nested anywhere in it is redacted before it can
+    reach a string — including the operator-facing ``message``/``raw_message``.
+    """
+    relay = httpx.Response(
+        500,
+        json={
+            "ClassName": "System.InvalidOperationException",
+            # The .NET message itself carrying the echoed request object.
+            "Message": "Login failed.",
+            "StackTraceString": "   at AutoCount.Relay.Handler.Read()",
+            "Request": {
+                "AppId": "app-123",
+                "UserID": "ADMIN",
+                "Password": "s3cret",
+                "Token": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+            },
+        },
+    )
+    recorder = Recorder([_login_response(), relay])
+    with _client(recorder) as ac:
+        with pytest.raises(AutoCountRelayError) as excinfo:
+            ac.read("GoodsReceivedNote", build_read_filter(record_count=5))
+
+    err = excinfo.value
+    blob = f"{err.message} {err.detail} {err.raw_message}"
+    for credential in ("s3cret", "app-123", "3f2504e0"):
+        assert credential not in blob
+    # Masking must not blank the diagnostics it exists to protect.
+    assert "Login failed." in (err.detail or "")
+    assert "AutoCount.Relay.Handler" in (err.detail or "")
+
+
+def test_a_non_json_relay_body_detail_is_masked_and_capped():
+    """The ``_json`` branch: the body did not parse, so there is no object graph
+    to mask structurally — it must at minimum go through ``_safe`` (PAN masking
+    + the 2000-char cap) rather than being interpolated raw."""
+    recorder = Recorder(
+        [
+            _login_response(),
+            # 200 + non-JSON: taken by ``_json``, not ``_raise_relay``.
+            httpx.Response(
+                200,
+                text="<html>gateway error card 4111111111111111 " + "x" * 5000,
+                headers={"content-type": "text/html"},
+            ),
+        ]
+    )
+    with _client(recorder) as ac:
+        with pytest.raises(AutoCountRelayError) as excinfo:
+            ac.read("GoodsReceivedNote", build_read_filter(record_count=5))
+
+    detail = excinfo.value.detail or ""
+    assert "4111111111111111" not in detail
+    assert "***1111" in detail
+    assert len(detail) <= 2000
+
+
+# ── AppId is a credential to the masker (code review, sprint-4/13) ────────
+
+
+def test_the_masker_treats_appid_as_a_credential():
+    """AC-13-42 rested on "no call site logs AppId today", which is a defence
+    that does not survive the next slice. The masker must redact it by KEY."""
+    from app.integrations.masking import mask_payload
+
+    masked = mask_payload(
+        {
+            "AppId": "app-123",
+            "appId": "app-123",
+            "app_id": "app-123",
+            "nested": [{"APPID": "app-123"}],
+            # Not a credential — must survive, or the log becomes useless.
+            "DatabaseName": "AED_VSOFT",
+        }
+    )
+    assert masked["AppId"] == "***"
+    assert masked["appId"] == "***"
+    assert masked["app_id"] == "***"
+    assert masked["nested"][0]["APPID"] == "***"
+    assert masked["DatabaseName"] == "AED_VSOFT"

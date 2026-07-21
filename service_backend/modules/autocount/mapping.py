@@ -376,7 +376,27 @@ class MappingEngine:
             )
             values.setdefault("line_no", index)
             values["extras"] = extras
-            lines.append(CanonicalGrnLine(**values))
+            try:
+                lines.append(CanonicalGrnLine(**values))
+            except Exception as exc:  # noqa: BLE001 — a model reject is a field error
+                # Same guard as the header below, and for the same reason: a
+                # mapping row is OPERATOR-EDITABLE DATA, so a row can hand the
+                # model a value pydantic rejects (``qty`` mapped ``string``, a
+                # UOM landing in a Decimal field). Unguarded, that ValidationError
+                # escapes map_document → _stage_documents → run_autocount_sync
+                # and kills the WHOLE batch, losing every sibling GRN — exactly
+                # what AC-13-10 forbids. Named, line-scoped, document-local.
+                errors.append(
+                    FieldError(
+                        field="line",
+                        source_path=f"{self.detail_key}[{index}]",
+                        reason=f"canonical line rejected the mapped values: {exc}",
+                        line_no=index,
+                        doc_key=doc_key,
+                        doc_no=doc_no,
+                    )
+                )
+                continue
 
         if not doc_key:
             # Without DocKey there is no stable correlation handle at all — the
