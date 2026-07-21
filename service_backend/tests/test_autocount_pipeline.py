@@ -1186,8 +1186,9 @@ def test_every_autocount_route_requires_authentication(client):
         ("get", "/autocount/jobs/x/staged"),
         ("post", "/autocount/jobs/x/approve"),
         ("post", "/autocount/jobs/x/discard"),
+        ("patch", "/autocount/companies/x/entities/goods_received_note"),
     ):
-        kwargs = {"json": {}} if method == "post" else {}
+        kwargs = {"json": {}} if method in ("post", "patch") else {}
         response = getattr(client, method)(path, **kwargs)
         assert response.status_code in (401, 403), f"{method} {path} was reachable"
 
@@ -1236,6 +1237,74 @@ def test_an_unknown_company_is_a_clean_404_not_a_500(client):
 
 def test_approving_an_unknown_job_is_a_clean_404(client):
     response = client.post("/autocount/jobs/nope/approve", headers=_auth(client))
+    assert response.status_code == 404
+
+
+def test_the_entity_wire_carries_the_delta_state(client, session_factory, transports):
+    """The Entities tab needs the watermark half on the wire, camelCase and
+    Z-suffixed like everything else."""
+    setup = session_factory()
+    company_id = _company(setup, transports, database_name="AED_STATE").id
+    setup.close()
+
+    body = client.get(
+        f"/autocount/companies/{company_id}", headers=_auth(client)
+    ).json()
+    entity = body["entities"][0]
+    assert entity["entityType"] == ENTITY_GOODS_RECEIVED_NOTE
+    assert entity["initialLookbackDays"] == 30
+    for key in (
+        "lastSuccessAt",
+        "lastAttemptAt",
+        "watermarkAt",
+        "consecutiveFailures",
+        "lastError",
+    ):
+        assert key in entity, f"{key} missing from the entity wire shape"
+    assert entity["consecutiveFailures"] == 0
+    assert entity["watermarkAt"] is None  # never synced
+
+
+def test_the_lookback_patch_persists_and_rejects_nonsense(
+    client, session_factory, transports
+):
+    setup = session_factory()
+    company_id = _company(setup, transports, database_name="AED_PATCH").id
+    setup.close()
+
+    path = f"/autocount/companies/{company_id}/entities/{ENTITY_GOODS_RECEIVED_NOTE}"
+    ok = client.patch(path, json={"initialLookbackDays": 180}, headers=_auth(client))
+    assert ok.status_code == 200
+    assert ok.json()["initialLookbackDays"] == 180
+
+    # Persisted, not just echoed.
+    detail = client.get(
+        f"/autocount/companies/{company_id}", headers=_auth(client)
+    ).json()
+    assert detail["entities"][0]["initialLookbackDays"] == 180
+
+    # Nonsense is REJECTED, never coerced — a coerced value would silently sync
+    # a window the operator did not ask for.
+    for bad in (0, -5, 99_999):
+        rejected = client.patch(
+            path, json={"initialLookbackDays": bad}, headers=_auth(client)
+        )
+        assert rejected.status_code == 422, bad
+        assert "between" in rejected.json()["detail"]
+
+
+def test_patching_an_unconfigured_entity_is_a_clean_404(
+    client, session_factory, transports
+):
+    setup = session_factory()
+    company_id = _company(setup, transports, database_name="AED_404").id
+    setup.close()
+
+    response = client.patch(
+        f"/autocount/companies/{company_id}/entities/not_an_entity",
+        json={"initialLookbackDays": 90},
+        headers=_auth(client),
+    )
     assert response.status_code == 404
 
 
@@ -1508,4 +1577,431 @@ def test_the_connection_lookup_lives_in_the_repository_layer(db, transports):
     assert (
         repo.get_for_provider(DEFAULT_TENANT_ID, company.connection_id, "stripe")
         is None
+    )
+
+
+# ── activity logging: real masked payloads (plan §11, AC-13-42/46) ────────────
+#
+# The defect these pin: for 113 real rows, ``request_summary_json`` held only
+# ``{"window":…, "recordCap":200}`` (and only on 48 of them), ``status_code``
+# ``latency_ms`` and ``trace_id`` were NULL on every one, and the failure paths
+# logged no request at all. A customer's mapping failure could not be diagnosed
+# without the actual vendor payload, and the Developer Logs console — which is
+# built around status/latency/trace — rendered blank columns for this source.
+
+
+def _activity(db, tenant_id: str = DEFAULT_TENANT_ID) -> List[IntegrationActivity]:
+    return (
+        db.query(IntegrationActivity)
+        .filter(
+            IntegrationActivity.tenant_id == tenant_id,
+            IntegrationActivity.source == "autocount",
+        )
+        .all()
+    )
+
+
+def _http_rows(rows: List[IntegrationActivity]) -> List[IntegrationActivity]:
+    """The rows representing a real HTTP leg (as opposed to a domain summary)."""
+    return [r for r in rows if r.operation.startswith("POST /api/")]
+
+
+def test_the_real_request_and_response_are_stored_not_a_summary(db, transports):
+    company = _company(db, transports, reads=[[_grn("1")]])
+    _run_sync(db, company)
+
+    legs = _http_rows(_activity(db))
+    paths = {row.operation for row in legs}
+    assert "POST /api/Server/Login" in paths
+    assert "POST /api/GoodsReceivedNote/GetGoodsReceivedNote" in paths
+
+    read = next(r for r in legs if r.operation.endswith("GetGoodsReceivedNote"))
+    # The ACTUAL request: method, url, headers and the real filter body — not
+    # a hand-built {"window": …} summary.
+    assert read.request_summary_json["method"] == "POST"
+    assert read.request_summary_json["url"].endswith(
+        "/api/GoodsReceivedNote/GetGoodsReceivedNote"
+    )
+    assert "RecordCount" in read.request_summary_json["body"]
+    assert "LastModifiedFrom" in read.request_summary_json["body"]
+    # The ACTUAL response envelope, with the vendor's own Status field.
+    assert read.response_summary_json["body"]["Status"] == "Success"
+
+
+def test_status_code_latency_and_trace_are_populated_on_success(db, transports):
+    """The Developer Logs console renders these columns; they were NULL on all
+    113 real autocount rows."""
+    company = _company(db, transports, reads=[[_grn("1")]])
+    job = _run_sync(db, company)
+
+    legs = _http_rows(_activity(db))
+    assert legs, "no HTTP leg was logged"
+    for row in legs:
+        assert row.status_code == 200
+        assert row.latency_ms is not None and row.latency_ms >= 0
+        assert row.method == "POST"
+        assert row.trace_id
+
+    # Every leg of ONE run shares ONE trace, derived from the job id so an
+    # operator holding a job id can find the calls without a lookup table. The
+    # company-discovery login carries its own (earlier, separate) trace.
+    sync_traces = {
+        row.trace_id for row in _activity(db) if row.trace_id.startswith("acsync-")
+    }
+    assert sync_traces == {f"acsync-{job.id}"}
+    # …and the run summary shares it with the HTTP legs, so the console shows
+    # ONE interaction rather than three unrelated rows.
+    summary = next(
+        r for r in _activity(db) if r.operation == f"sync {ENTITY_GOODS_RECEIVED_NOTE}"
+    )
+    assert summary.trace_id == f"acsync-{job.id}"
+    assert summary.latency_ms is not None
+
+
+def test_a_failed_call_is_logged_with_its_request(db, transports):
+    """The failure paths were the ones missing ``request_summary_json``."""
+    company = _company(db, transports)
+    _queue(
+        db,
+        transports,
+        company,
+        httpx.Response(500, json={"ClassName": "X", "Message": "boom"}),
+    )
+    _run_sync(db, company)
+
+    read = next(
+        r
+        for r in _http_rows(_activity(db))
+        if r.operation.endswith("GetGoodsReceivedNote")
+    )
+    assert read.status == "error"
+    assert read.status_code == 500
+    assert read.latency_ms is not None
+    # The request that produced the failure is stored — that is the whole point.
+    assert read.request_summary_json["body"]["RecordCount"] > 0
+    assert read.response_summary_json["body"]["Message"] == "boom"
+
+
+def test_an_http_200_business_failure_is_logged_as_an_error(db, transports):
+    """Success is ``Status == "Success"``, not the HTTP code. A log that badges
+    an HTTP-200 ``Status:"Fail"`` green is a log nobody can diagnose from."""
+    company = _company(db, transports)
+    _queue(
+        db,
+        transports,
+        company,
+        httpx.Response(200, json={"Status": "Fail", "Message": "nope", "ResultTable": []}),
+    )
+    _run_sync(db, company)
+
+    read = next(
+        r
+        for r in _http_rows(_activity(db))
+        if r.operation.endswith("GetGoodsReceivedNote")
+    )
+    assert read.status_code == 200
+    assert read.status == "error"
+
+
+def test_the_authorization_header_never_lands_unmasked(db, transports):
+    """BL-131 — the vendor JWT base64-decodes to the user's PASSWORD, so an
+    unmasked ``Authorization`` header is a credential leak, not a nuisance.
+    Asserted against the SERIALIZED row, not a field-by-field peek."""
+    import json
+
+    company = _company(db, transports, reads=[[_grn("1")]])
+    _run_sync(db, company)
+
+    rows = _activity(db)
+    assert rows
+    blob = json.dumps(
+        [
+            {
+                "request": r.request_summary_json,
+                "response": r.response_summary_json,
+                "error": r.error_message,
+            }
+            for r in rows
+        ],
+        default=str,
+    )
+    # The JWT itself, the password, and the AppId — none may appear anywhere.
+    assert JWT not in blob
+    assert "secret" not in blob
+    assert "app-1" not in blob
+
+    # And the header key IS present (so the assertion above is meaningful —
+    # it passes because the value was redacted, not because we stopped logging
+    # headers at all).
+    read = next(
+        r
+        for r in _http_rows(rows)
+        if r.operation.endswith("GetGoodsReceivedNote")
+    )
+    headers = read.request_summary_json["headers"]
+    assert headers["Authorization"] == "***"
+    assert headers["AppId"] == "***"
+
+    login = next(r for r in _http_rows(rows) if r.operation.endswith("Login"))
+    assert login.request_summary_json["body"]["Password"] == "***"
+    assert login.response_summary_json["body"][0]["JWTToken"] == "***"
+
+
+def test_a_large_response_is_truncated_and_says_so(db, transports):
+    """AC-13-46 — a truncated log must never read as a complete one. These
+    responses reach 161 documents; storing megabytes per row is not an option,
+    and silently dropping the tail sends a diagnostician after the wrong bug."""
+    from modules.autocount.payloads import MAX_LIST_ITEMS, TRUNCATED_KEY
+
+    many = [_grn(str(i), DocNo=f"GRN-{i}") for i in range(1, 12)]
+    company = _company(db, transports, reads=[many])
+    _run_sync(db, company)
+
+    read = next(
+        r
+        for r in _http_rows(_activity(db))
+        if r.operation.endswith("GetGoodsReceivedNote")
+    )
+    assert read.response_summary_json[TRUNCATED_KEY] is True
+    table = read.response_summary_json["body"]["ResultTable"]
+    # The SHAPE changed — a list became a marker object — so it cannot be
+    # mistaken for a complete array, and the real total is recorded.
+    assert table[TRUNCATED_KEY] is True
+    assert table["totalItems"] == 11
+    assert table["keptItems"] == MAX_LIST_ITEMS
+    assert len(table["items"]) == MAX_LIST_ITEMS
+
+
+def test_a_complete_payload_carries_no_truncation_marker(db, transports):
+    """Absence of the marker is the positive statement "this is complete" — so
+    it must not be stamped on every row."""
+    from modules.autocount.payloads import TRUNCATED_KEY
+
+    company = _company(db, transports, reads=[[_grn("1")]])
+    _run_sync(db, company)
+
+    read = next(
+        r
+        for r in _http_rows(_activity(db))
+        if r.operation.endswith("GetGoodsReceivedNote")
+    )
+    assert TRUNCATED_KEY not in read.response_summary_json
+    assert TRUNCATED_KEY not in read.request_summary_json
+
+
+def test_company_discovery_logs_its_login_leg(db, transports):
+    company = _company(db, transports)
+    legs = _http_rows(_activity(db))
+    assert any(r.operation == "POST /api/Server/Login" for r in legs)
+    login = next(r for r in legs if r.operation.endswith("Login"))
+    assert login.status_code == 200
+    assert login.latency_ms is not None
+    assert login.trace_id and login.trace_id.startswith("acdiscover-")
+    assert company.database_name
+
+
+def test_draining_twice_never_duplicates_a_row(db, transports):
+    """The buffer is DRAINED, not read — so a caller that logs twice (a retry, a
+    future call site) cannot write the same interaction twice."""
+    from modules.autocount.activity import record_client_calls
+
+    company = _company(db, transports, reads=[[_grn("1")]])
+    _run_sync(db, company)
+    before = len(_activity(db))
+
+    client = CompanyService(db).client_for(DEFAULT_TENANT_ID, company)
+    client.login()
+    assert record_client_calls(db, client, tenant_id=DEFAULT_TENANT_ID) == 1
+    assert record_client_calls(db, client, tenant_id=DEFAULT_TENANT_ID) == 0
+    assert len(_activity(db)) == before + 1
+
+
+def test_a_logging_failure_never_breaks_a_sync(db, transports, monkeypatch):
+    """AC-13-43 — observability is never load-bearing."""
+    import modules.autocount.activity as activity_module
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("activity store is down")
+
+    monkeypatch.setattr(activity_module.ActivityLogService, "record", boom)
+
+    company = _company(db, transports, reads=[[_grn("1")]])
+    job = _run_sync(db, company)
+    assert job.status == JOB_NEEDS_REVIEW
+
+
+# ── entity state on the wire (Fix 2 — a zero-record sync must be explicable) ──
+
+
+def test_entity_states_carry_the_watermark_so_a_zero_sync_is_explicable(
+    db, transports
+):
+    """``last_success_at``/``last_modified_at``/``consecutive_failures``/
+    ``last_error`` were recorded by every run and shown to nobody — which is
+    exactly why a legitimate zero-record sync read as silence."""
+    company = _company(db, transports, reads=[[_grn("1")]])
+
+    # Before any sync: configured, but never run.
+    fresh = CompanyService(db).entity_states(DEFAULT_TENANT_ID, company.id)
+    assert len(fresh) == 1
+    assert fresh[0].entity_type == ENTITY_GOODS_RECEIVED_NOTE
+    assert fresh[0].last_success_at is None
+    assert fresh[0].watermark_at is None
+    assert fresh[0].consecutive_failures == 0
+    # The first-run trap is visible rather than implicit.
+    assert fresh[0].initial_lookback_days == 30
+
+    _run_sync(db, company)
+    synced = CompanyService(db).entity_states(DEFAULT_TENANT_ID, company.id)[0]
+    assert synced.last_success_at is not None
+    assert synced.watermark_at is not None
+    assert synced.last_error is None
+
+
+def test_a_failed_sync_surfaces_its_failure_count_and_error(db, transports):
+    company = _company(db, transports)
+    _queue(db, transports, company, httpx.Response(500, json={"Message": "boom"}))
+    _run_sync(db, company)
+
+    state = CompanyService(db).entity_states(DEFAULT_TENANT_ID, company.id)[0]
+    assert state.consecutive_failures == 1
+    assert state.last_error
+    # The watermark held — the run failed, so nothing was accepted.
+    assert state.watermark_at is None
+
+
+def test_entity_states_are_scoped_to_their_own_company(db, transports):
+    a = _company(db, transports, database_name="AED_A", reads=[[_grn("1")]])
+    b = _company(db, transports, database_name="AED_B", reads=[[_grn("2")]])
+    _run_sync(db, a)
+
+    assert CompanyService(db).entity_states(DEFAULT_TENANT_ID, a.id)[0].last_success_at
+    assert (
+        CompanyService(db).entity_states(DEFAULT_TENANT_ID, b.id)[0].last_success_at
+        is None
+    )
+
+
+def test_the_initial_lookback_is_editable_and_bounded(db, transports):
+    from modules.autocount.services import AutocountServiceError, CompanyService
+
+    company = _company(db, transports)
+    service = CompanyService(db)
+
+    updated = service.update_entity_config(
+        DEFAULT_TENANT_ID,
+        company.id,
+        ENTITY_GOODS_RECEIVED_NOTE,
+        initial_lookback_days=365,
+    )
+    assert updated.initial_lookback_days == 365
+
+    for bad in (0, -1, 100_000):
+        with pytest.raises(AutocountServiceError):
+            service.update_entity_config(
+                DEFAULT_TENANT_ID,
+                company.id,
+                ENTITY_GOODS_RECEIVED_NOTE,
+                initial_lookback_days=bad,
+            )
+
+
+def test_another_tenants_entity_config_cannot_be_edited(db, transports):
+    from modules.autocount.services import CompanyNotFound, CompanyService
+
+    company = _company(db, transports)
+    with pytest.raises(CompanyNotFound):
+        CompanyService(db).update_entity_config(
+            OTHER_TENANT_ID,
+            company.id,
+            ENTITY_GOODS_RECEIVED_NOTE,
+            initial_lookback_days=90,
+        )
+
+
+def test_the_new_lookback_governs_the_next_first_run_window(db, transports):
+    """The value is not decoration: it is the window a company with no watermark
+    actually fetches over."""
+    from modules.autocount.services import CompanyService
+    from modules.autocount.sources import Watermark
+
+    company = _company(db, transports)
+    CompanyService(db).update_entity_config(
+        DEFAULT_TENANT_ID,
+        company.id,
+        ENTITY_GOODS_RECEIVED_NOTE,
+        initial_lookback_days=400,
+    )
+    config = CompanyService(db).entity_configs(DEFAULT_TENANT_ID, company.id)[0]
+
+    now = datetime(2026, 7, 21, tzinfo=timezone.utc)
+    start = Watermark().start(lookback_days=config.initial_lookback_days, now=now)
+    assert (now - start).days == 400
+
+
+def test_widening_the_lookback_never_re_widens_an_established_window(db, transports):
+    """THE case that must not regress.
+
+    Once a watermark exists it WINS: widening the first-run window must not
+    reach back past it. If it did, the next sync would silently re-fetch history
+    and re-stage documents the operator has already reviewed and approved —
+    duplicate work presented as new work, which is worse than the gap it was
+    meant to close.
+    """
+    from modules.autocount.services import CompanyService
+
+    company = _company(db, transports, reads=[[_grn("1")]])
+    _run_sync(db, company)
+
+    mark = WatermarkRepository(db).get(
+        DEFAULT_TENANT_ID, company.id, ENTITY_GOODS_RECEIVED_NOTE
+    )
+    established = mark.last_modified_at
+    assert established is not None
+
+    CompanyService(db).update_entity_config(
+        DEFAULT_TENANT_ID,
+        company.id,
+        ENTITY_GOODS_RECEIVED_NOTE,
+        initial_lookback_days=3650,
+    )
+
+    # The next fetch starts AT the watermark, not 10 years back.
+    _queue(db, transports, company, [])
+    job = _run_sync(db, company)
+    run = SyncRunRepository(db).get_for_job(DEFAULT_TENANT_ID, company.id, job.id)
+    assert run.window_from == established
+
+    # And the wire says the same thing, so the UI can show it as state.
+    state = CompanyService(db).entity_states(DEFAULT_TENANT_ID, company.id)[0]
+    assert state.initial_lookback_days == 3650
+    assert state.watermark_at == established
+
+
+def test_a_zero_record_sync_succeeds_and_holds_the_watermark(db, transports):
+    """The reported symptom: a second Sync now "did nothing". It was CORRECT —
+    the vendor had no changes since the watermark, and an empty batch must not
+    advance it. Pinned so the summary the UI reads stays honest."""
+    company = _company(db, transports, reads=[[_grn("1")]])
+    _run_sync(db, company)
+    before = WatermarkRepository(db).get(
+        DEFAULT_TENANT_ID, company.id, ENTITY_GOODS_RECEIVED_NOTE
+    ).last_modified_at
+
+    _queue(db, transports, company, [])
+    job = _run_sync(db, company)
+
+    # A successful no-op: the job CLOSES (never needs_review with nothing in it,
+    # which would strand a batch nobody can act on).
+    assert job.status == JOB_DONE
+    assert job.result_json["fetched"] == 0
+    assert job.result_json["staged"] == 0
+    assert job.result_json["failed"] == 0
+    assert job.result_json["awaitingApproval"] is False
+    # …and the watermark did NOT move, because nothing was seen.
+    assert (
+        WatermarkRepository(db)
+        .get(DEFAULT_TENANT_ID, company.id, ENTITY_GOODS_RECEIVED_NOTE)
+        .last_modified_at
+        == before
     )

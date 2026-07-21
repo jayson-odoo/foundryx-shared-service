@@ -168,6 +168,18 @@ class WatermarkRepository:
             .first()
         )
 
+    def list_for_company(self, tenant_id: str, company_id: str) -> List[AcWatermark]:
+        """Every entity's delta state for one company — ONE query, so the
+        Entities surface never fans out per row."""
+        return (
+            self.db.query(AcWatermark)
+            .filter(
+                AcWatermark.tenant_id == tenant_id,
+                AcWatermark.company_id == company_id,
+            )
+            .all()
+        )
+
     def get_or_create(
         self, tenant_id: str, company_id: str, entity_type: str
     ) -> AcWatermark:

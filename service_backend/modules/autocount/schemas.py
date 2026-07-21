@@ -36,6 +36,14 @@ class CompanyCreate(ApiModel):
 
 
 class EntityConfigItem(ApiModel):
+    """One configured entity plus its live delta state (``EntityState``).
+
+    The watermark half is not decoration: without ``lastSuccessAt``/
+    ``watermarkAt`` on the wire, a sync that legitimately finds nothing is
+    indistinguishable from a broken one, and ``consecutiveFailures``/
+    ``lastError`` were recorded by every run and shown to nobody.
+    """
+
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: str
@@ -43,8 +51,35 @@ class EntityConfigItem(ApiModel):
     syncMode: str = Field(validation_alias="sync_mode")
     sourceImpl: str = Field(validation_alias="source_impl")
     recordCap: int = Field(validation_alias="record_cap")
+    # The window the FIRST sync reaches back over when no watermark exists.
+    # Default 30 — anything older is invisible until the supervised full initial
+    # load (D20), so it is surfaced and editable rather than hidden in a column.
     initialLookbackDays: int = Field(validation_alias="initial_lookback_days")
     enabled: bool
+
+    # ── delta state (absent until the entity has been synced at least once) ──
+    lastSuccessAt: Optional[datetime] = Field(
+        default=None, validation_alias="last_success_at"
+    )
+    lastAttemptAt: Optional[datetime] = Field(
+        default=None, validation_alias="last_attempt_at"
+    )
+    # The high-water mark itself — "we have everything modified up to here".
+    watermarkAt: Optional[datetime] = Field(default=None, validation_alias="watermark_at")
+    consecutiveFailures: int = Field(default=0, validation_alias="consecutive_failures")
+    lastError: Optional[str] = Field(default=None, validation_alias="last_error")
+
+
+class EntityConfigUpdate(ApiModel):
+    """Editable slice of an entity's sync configuration.
+
+    Deliberately narrow. Changing the lookback does NOT re-fetch history — it
+    only governs the window used when no watermark exists yet.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    initialLookbackDays: Optional[int] = None
 
 
 class CompanyItem(ApiModel):

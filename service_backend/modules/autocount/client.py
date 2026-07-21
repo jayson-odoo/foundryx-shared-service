@@ -35,13 +35,17 @@ Company is DISCOVERED, never configured: login returns ``DatabaseName`` and
 from the ``AppId`` header, so **AppId IS the company selector** (D16).
 """
 import logging
-from dataclasses import dataclass
+import time
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Deque, Dict, List, Optional, Sequence
 
 import httpx
 
 from app.integrations.masking import mask_payload
+
+from .payloads import bound_payload, mark_truncated
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +119,41 @@ class AutoCountFilterError(AutoCountError):
 class AutoCountWindowError(AutoCountError):
     """The returned set is inconsistent with the requested window — evidence the
     filter was ignored server-side. Fails loudly (AC-13-04a)."""
+
+
+@dataclass
+class CallRecord:
+    """ONE observed HTTP interaction, already MASKED and BOUNDED for storage
+    (plan §11, AC-13-42/46).
+
+        !!  ``request``/``response`` ARE SAFE TO PERSIST AS-IS.  !!
+
+    They are built in ``_record_call`` by running the real headers and bodies
+    through ``mask_payload`` and then ``bound_payload``. That ordering is not
+    cosmetic: the vendor JWT **base64-decodes to the user's password** (BL-131),
+    so an ``Authorization`` header reaching storage unmasked would leak the
+    credential outright. Masking first also guarantees a truncation PREVIEW
+    string can never carry a secret the mask would have caught.
+
+    ``ok`` is the vendor's own notion of success, not the HTTP code: a business
+    failure comes back ``HTTP 200`` with ``Status:"Fail"`` (rule 2 above), and a
+    log that badges those green is a log nobody can diagnose from.
+    """
+
+    method: str
+    path: str
+    status_code: Optional[int]
+    latency_ms: int
+    ok: bool
+    request: Dict[str, Any] = field(default_factory=dict)
+    response: Any = None
+    error_message: Optional[str] = None
+
+
+# Bound the in-memory buffer. A slice-1 sync makes two calls; a pathological
+# retry loop must not grow this without limit. Oldest are evicted (a deque with
+# maxlen), because the most RECENT calls are the ones a diagnostician wants.
+MAX_BUFFERED_CALLS = 100
 
 
 @dataclass
@@ -268,6 +307,13 @@ class AutoCountClient:
         self.verify_tls = verify_tls
         self._transport = transport
         self.session: Optional[Session] = None
+        # Observability buffer (plan §11). The client has no DB session and no
+        # tenant, so it cannot WRITE an activity row itself — it records what
+        # happened and the caller drains it at a transaction boundary
+        # (``activity.record_client_calls``). That split is deliberate:
+        # ``ActivityLogService.record`` COMMITS the session it is given, so
+        # logging from inside a fetch would commit the caller's uncommitted work.
+        self._calls: Deque[CallRecord] = deque(maxlen=MAX_BUFFERED_CALLS)
 
     # ── transport ──────────────────────────────────────────────────────────
 
@@ -290,23 +336,121 @@ class AutoCountClient:
     def __exit__(self, *_exc: Any) -> None:
         self.close()
 
+    # ── observability buffer ───────────────────────────────────────────────
+
+    def drain_calls(self) -> List[CallRecord]:
+        """Take and clear the buffered call records.
+
+        Draining (rather than reading) means a caller that logs twice cannot
+        write the same interaction twice — the log's own idempotency.
+        """
+        drained = list(self._calls)
+        self._calls.clear()
+        return drained
+
+    def _record_call(
+        self,
+        path: str,
+        headers: Dict[str, str],
+        json_body: Any,
+        response: Optional[httpx.Response],
+        started: float,
+        *,
+        error: Optional[str] = None,
+    ) -> None:
+        """Buffer ONE masked, bounded record of a call. Never raises.
+
+        Called on BOTH the success and the transport-failure path — a failed
+        call is precisely the one a diagnostician needs, and it used to be the
+        one that logged nothing at all.
+        """
+        try:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            status_code = response.status_code if response is not None else None
+
+            body: Any = None
+            if response is not None:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = response.text
+
+            ok = status_code is not None and 200 <= status_code < 300
+            if ok and isinstance(body, dict):
+                # Success is ``Status == "Success"``, not the HTTP code — a
+                # business failure arrives as HTTP 200 (rule 2).
+                declared = body.get("Status")
+                if declared is not None and str(declared).lower() != "success":
+                    ok = False
+                    error = error or str(body.get("Message") or "").strip() or None
+
+            # MASK first, BOUND second — so nothing a preview keeps can be a
+            # secret, and the Authorization header (a JWT that decodes to the
+            # password, BL-131) is redacted before it is ever stored.
+            request_payload, request_truncated = bound_payload(
+                {
+                    "method": "POST",
+                    "url": f"{self.base_url}{path}",
+                    "headers": mask_payload(dict(headers or {})),
+                    "body": mask_payload(json_body),
+                }
+            )
+            response_body, response_truncated = bound_payload(mask_payload(body))
+
+            self._calls.append(
+                CallRecord(
+                    method="POST",
+                    path=path,
+                    status_code=status_code,
+                    latency_ms=latency_ms,
+                    ok=ok,
+                    request=mark_truncated(
+                        request_payload
+                        if isinstance(request_payload, dict)
+                        else {"body": request_payload},
+                        request_truncated,
+                    ),
+                    response=mark_truncated(
+                        {"statusCode": status_code, "body": response_body},
+                        response_truncated,
+                    ),
+                    error_message=(str(mask_payload(error))[:1000] if error else None),
+                )
+            )
+        except Exception:  # noqa: BLE001 — observability NEVER breaks a call
+            logger.exception("failed to buffer an AutoCount call record for %s", path)
+
     def _post(self, path: str, *, headers: Dict[str, str], json_body: Any) -> httpx.Response:
         url = f"{self.base_url}{path}"
+        started = time.monotonic()
         try:
-            return self._client.post(url, headers=headers, json=json_body)
+            response = self._client.post(url, headers=headers, json=json_body)
         except httpx.TimeoutException as exc:
+            self._record_call(
+                path, headers, json_body, None, started, error=f"timeout: {exc}"
+            )
             raise AutoCountTransportError(
                 f"AutoCount at {self.base_url} did not respond within "
                 f"{self.timeout_seconds:g}s.",
                 detail=str(exc),
             ) from exc
         except httpx.HTTPError as exc:
+            self._record_call(
+                path,
+                headers,
+                json_body,
+                None,
+                started,
+                error=f"{type(exc).__name__}: {exc}",
+            )
             raise AutoCountTransportError(
                 f"Could not reach AutoCount at {self.base_url} ({type(exc).__name__}). "
                 f"Check the base URL, that the host is running, and that our egress "
                 f"IP is whitelisted.",
                 detail=str(exc),
             ) from exc
+        self._record_call(path, headers, json_body, response, started)
+        return response
 
     # ── envelope handling ──────────────────────────────────────────────────
 

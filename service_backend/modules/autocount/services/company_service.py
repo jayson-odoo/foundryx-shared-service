@@ -15,7 +15,10 @@ Company identity is therefore ``database_name``, enforced UNIQUE per tenant by
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Tuple
+import uuid
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
 from cryptography.fernet import InvalidToken
 from sqlalchemy.orm import Session
@@ -23,7 +26,12 @@ from sqlalchemy.orm import Session
 from app.models.connection import Connection
 from app.secrets import decrypt_secret
 
-from ..activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS, record_activity
+from ..activity import (
+    ACTIVITY_ERROR,
+    ACTIVITY_SUCCESS,
+    record_activity,
+    record_client_calls,
+)
 from ..client import AutoCountClient, AutoCountError
 from ..mapping import DEFAULT_MAPPINGS, MappingRow
 from ..models import (
@@ -38,6 +46,7 @@ from ..repositories import (
     ConnectionRepository,
     EntityConfigRepository,
     FieldMappingRepository,
+    WatermarkRepository,
 )
 
 logger = logging.getLogger("foundryx.autocount")
@@ -71,6 +80,47 @@ class CompanyAlreadyExists(AutocountServiceError):
     pass
 
 
+class EntityConfigNotFound(AutocountServiceError):
+    pass
+
+
+# The first sync of a brand-new company reaches back exactly this far
+# (``AcEntityConfig.initial_lookback_days``, default 30). Anything older is
+# INVISIBLE until the supervised full initial load lands (D20, slice 3) — which
+# is precisely why the value has to be shown to an operator and be adjustable,
+# rather than sitting silently in a column nobody can see.
+MIN_LOOKBACK_DAYS = 1
+MAX_LOOKBACK_DAYS = 3650
+
+
+@dataclass
+class EntityState:
+    """One configured entity PLUS its live delta state.
+
+    Flat and snake_cased on purpose: ``EntityConfigItem.model_validate`` maps it
+    straight through ``from_attributes``, so no hand-written wire mapping can
+    drift from the schema.
+
+    The watermark half is what makes a zero-record sync explicable. Without
+    ``last_success_at``/``watermark_at`` on the surface, "0 records" is
+    indistinguishable from "broken", and ``consecutive_failures``/``last_error``
+    were already being recorded and shown to nobody.
+    """
+
+    id: str
+    entity_type: str
+    sync_mode: str
+    source_impl: str
+    record_cap: int
+    initial_lookback_days: int
+    enabled: bool
+    last_success_at: Optional[datetime] = None
+    last_attempt_at: Optional[datetime] = None
+    watermark_at: Optional[datetime] = None
+    consecutive_failures: int = 0
+    last_error: Optional[str] = None
+
+
 class CompanyService:
     def __init__(self, db: Session):
         self.db = db
@@ -78,6 +128,7 @@ class CompanyService:
         self.configs = EntityConfigRepository(db)
         self.mappings = FieldMappingRepository(db)
         self.connections = ConnectionRepository(db)
+        self.watermarks = WatermarkRepository(db)
 
     # ── reads ────────────────────────────────────────────────────────────────
 
@@ -95,6 +146,81 @@ class CompanyService:
     def entity_configs(self, tenant_id: str, company_id: str) -> List[AcEntityConfig]:
         self.get(tenant_id, company_id)  # tenant-scope guard before any read
         return self.configs.list_for_company(tenant_id, company_id)
+
+    def entity_states(self, tenant_id: str, company_id: str) -> List[EntityState]:
+        """Configured entities joined with their watermarks — TWO queries total,
+        never one per entity (the catalogue is heading for nine-plus rows).
+
+        A missing watermark row is normal: it means this entity has never been
+        synced, and the surface must show that as "never", not as an error.
+        """
+        self.get(tenant_id, company_id)  # tenant-scope guard before any read
+        marks = {
+            row.entity_type: row
+            for row in self.watermarks.list_for_company(tenant_id, company_id)
+        }
+        states: List[EntityState] = []
+        for config in self.configs.list_for_company(tenant_id, company_id):
+            mark = marks.get(config.entity_type)
+            states.append(
+                EntityState(
+                    id=config.id,
+                    entity_type=config.entity_type,
+                    sync_mode=config.sync_mode,
+                    source_impl=config.source_impl,
+                    record_cap=config.record_cap,
+                    initial_lookback_days=config.initial_lookback_days,
+                    enabled=config.enabled,
+                    last_success_at=mark.last_success_at if mark else None,
+                    last_attempt_at=mark.last_attempt_at if mark else None,
+                    watermark_at=mark.last_modified_at if mark else None,
+                    consecutive_failures=(mark.consecutive_failures or 0) if mark else 0,
+                    last_error=mark.last_error if mark else None,
+                )
+            )
+        return states
+
+    # ── entity config edits ──────────────────────────────────────────────────
+
+    def update_entity_config(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        *,
+        initial_lookback_days: Optional[int] = None,
+    ) -> EntityState:
+        """Adjust one entity's sync configuration.
+
+        Only ``initial_lookback_days`` is writable today, and only because the
+        default of 30 days silently hides a customer's whole back-catalogue on a
+        newly connected company. Changing it does NOT re-fetch anything: it only
+        governs the window used when no watermark exists yet, which is why the
+        surface must say so rather than implying a backfill. The supervised full
+        initial load is D20 / slice 3.
+        """
+        self.get(tenant_id, company_id)  # tenant-scope guard before any write
+        config = self.configs.get(tenant_id, company_id, entity_type)
+        if config is None:
+            raise EntityConfigNotFound(
+                f"'{entity_type}' is not configured for sync on this company."
+            )
+        if initial_lookback_days is not None:
+            if not (MIN_LOOKBACK_DAYS <= initial_lookback_days <= MAX_LOOKBACK_DAYS):
+                raise AutocountServiceError(
+                    f"The initial lookback must be between {MIN_LOOKBACK_DAYS} and "
+                    f"{MAX_LOOKBACK_DAYS} days."
+                )
+            config.initial_lookback_days = initial_lookback_days
+        self.db.commit()
+
+        states = self.entity_states(tenant_id, company_id)
+        for state in states:
+            if state.entity_type == entity_type:
+                return state
+        raise EntityConfigNotFound(
+            f"'{entity_type}' is not configured for sync on this company."
+        )
 
     # ── connection resolution ────────────────────────────────────────────────
 
@@ -160,20 +286,41 @@ class CompanyService:
         client = client_from_connection(
             conn.config_json or {}, self.credentials(conn), transport=transport
         )
+        # ONE trace for the discovery interaction — the HTTP leg and the
+        # domain-level outcome below share it.
+        trace_id = f"acdiscover-{uuid.uuid4()}"
         try:
             session = client.login()
         except AutoCountError as exc:
+            # The real (masked) request/response of the failed login — the leg
+            # that previously logged nothing but a message.
+            record_client_calls(
+                self.db,
+                client,
+                tenant_id=tenant_id,
+                trace_id=trace_id,
+                external_ref=connection_id,
+            )
             record_activity(
                 self.db,
                 tenant_id=tenant_id,
-                operation="POST /api/Server/Login",
+                operation="discover company",
                 status=ACTIVITY_ERROR,
+                trace_id=trace_id,
                 error_message=exc.message,
                 external_ref=connection_id,
             )
             raise AutocountServiceError(exc.message) from exc
         finally:
             client.close()
+
+        record_client_calls(
+            self.db,
+            client,
+            tenant_id=tenant_id,
+            trace_id=trace_id,
+            external_ref=connection_id,
+        )
 
         database_name = (session.database_name or "").strip()
         if not database_name:
@@ -185,8 +332,9 @@ class CompanyService:
         record_activity(
             self.db,
             tenant_id=tenant_id,
-            operation="POST /api/Server/Login",
+            operation="discover company",
             status=ACTIVITY_SUCCESS,
+            trace_id=trace_id,
             external_ref=database_name,
             response={"databaseName": database_name, "companyName": session.company_name},
         )

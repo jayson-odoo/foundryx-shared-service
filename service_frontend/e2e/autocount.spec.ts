@@ -366,12 +366,32 @@ function jobIdFromUrl(page: Page): string {
 }
 
 /**
- * Click "Sync now" on the GRN row. Eager dev runs the job inline, so the app
- * itself navigates to the review batch — a click-driven navigation, not a URL
+ * Open the company's Entities tab. Entities moved off the Overview tab onto
+ * their own Resource-shell list — the catalogue is heading for nine-plus
+ * entities, each with its own sync mode, cap and watermark.
+ */
+async function openEntitiesTab(page: Page) {
+  await page.getByRole('tab', { name: 'Entities' }).click();
+  await expect(page.getByText('Goods received note').first()).toBeVisible({
+    timeout: 15_000,
+  });
+}
+
+/**
+ * Run the GRN entity's "Sync now" from its row action menu (the Resource-shell
+ * action registry — the same registry that surfaces in the bulk menu). Eager
+ * dev runs the job inline, so when the batch has records the app itself
+ * navigates to the review surface — a click-driven navigation, not a URL
  * shortcut.
  */
+async function clickSyncNow(page: Page) {
+  await openEntitiesTab(page);
+  await page.getByRole('button', { name: 'Actions' }).first().click();
+  await page.getByRole('menuitem', { name: 'Sync now' }).click();
+}
+
 async function syncNow(page: Page) {
-  await page.getByTestId('sync-goods_received_note').click();
+  await clickSyncNow(page);
   await page.waitForURL(/\/autocount\/review\/[\w-]+/, { timeout: 30_000 });
   await expect(page.getByText('Needs review')).toBeVisible();
 }
@@ -597,7 +617,25 @@ test.describe('AutoCount ESB — slice 1 read pipeline', () => {
       await expect(page.getByText('Goods received note').first()).toBeVisible();
       await assertResponsive(page, 'company runs', page.getByRole('tab', { name: 'Runs' }));
 
-      expect(vendor.reads(), 'exactly two delta fetches ran').toBe(2);
+      // ── 9. A sync that legitimately finds nothing SAYS so ────────────────
+      // The reported defect: clicking Sync now a second time produced silence.
+      // The behaviour was correct (the vendor had no changes since the
+      // watermark, and an empty batch must not advance it) — only the UI was
+      // mute. An empty run must read as a successful no-op: no navigation to a
+      // review surface that has nothing in it, and no failure badge.
+      vendor.queueRead([]);
+      await clickSyncNow(page);
+      const outcome = page.getByTestId('sync-outcome');
+      await expect(outcome).toBeVisible({ timeout: 30_000 });
+      await expect(outcome).toContainText(/no changes since last sync/i);
+      // Still on the company — an empty batch never pretends to be reviewable.
+      expect(new URL(page.url()).pathname).toBe(`/autocount/companies/${companyId}`);
+
+      // …and the state that makes the zero explicable is on the row itself.
+      await expect(page.getByText('Synced up to').first()).toBeVisible();
+      await assertResponsive(page, 'company entities', outcome);
+
+      expect(vendor.reads(), 'exactly three delta fetches ran').toBe(3);
     } finally {
       await vendor.close();
     }

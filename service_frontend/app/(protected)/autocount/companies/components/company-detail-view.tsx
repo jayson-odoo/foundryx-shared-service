@@ -3,30 +3,41 @@
 import { useCallback, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { History, Info, LoaderCircleIcon, RefreshCw } from 'lucide-react';
+import {
+  CircleCheck,
+  History,
+  Info,
+  Layers,
+  LoaderCircleIcon,
+  TriangleAlert,
+} from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
+import { Alert, AlertDescription, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Form } from '@/components/ui/form';
 import { ResourceForm, type ResourceFormConfig } from '@/components/platform/resource-form';
 import { ResourceList } from '@/components/platform/resource-list';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { ApiError } from '@/lib/api-client';
-import { useCan } from '@/hooks/use-can';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useAutocountCompany } from '@/hooks/use-autocount-company';
 import { autocountService } from '@/services/autocount-service';
-import type { AutocountCompany, AutocountEntityConfig } from '@/types/autocount';
+import {
+  parseSyncSummary,
+  type AutocountCompany,
+  type AutocountEntityConfig,
+} from '@/types/autocount';
 import {
   AC_COMPANIES_PATH,
-  AC_SYNC_RUN,
   acCompanyHref,
   acReviewHref,
   entityLabel,
-  syncModeLabel,
 } from '../../components/autocount-meta';
+import { EntityLookbackDialog } from './entity-lookback-dialog';
+import { useAutocountEntitiesListConfig } from './use-entities-list-config';
 import { useAutocountRunsListConfig } from './use-runs-list-config';
 
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
@@ -38,85 +49,72 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
   );
 }
 
-interface EntityRowProps {
-  entity: AutocountEntityConfig;
-  companyActive: boolean;
-  canRun: boolean;
-  isSyncing: boolean;
-  onSync: (entityType: string) => void;
-}
-
 /**
- * One configured entity + its Sync now control. The button is disabled with a
- * stated reason whenever a sync cannot succeed — never offered and then failed
- * (foolproof-UI).
+ * The outcome of the sync the operator just ran, stated where they are looking.
+ *
+ * A run that fetched nothing is a SUCCESSFUL no-op — the vendor genuinely had
+ * no changes since the watermark — and it previously produced silence, which
+ * reads as a broken button. Short empty-state status copy like this is
+ * explicitly allowed by the foolproof-UI rule; procedural how-to copy is not.
  */
-function EntityRow({ entity, companyActive, canRun, isSyncing, onSync }: EntityRowProps) {
-  let blocked: string | null = null;
-  if (!companyActive) blocked = 'This company is inactive.';
-  else if (!entity.enabled) blocked = 'This entity is not enabled for sync.';
-
-  return (
-    <div className="flex flex-col gap-2 border-b border-border py-3 last:border-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <span className="text-sm font-medium text-foreground">
-          {entityLabel(entity.entityType)}
-        </span>
-        <span className="text-xs text-muted-foreground">
-          {syncModeLabel(entity.syncMode)} · up to {entity.recordCap} records per run
-        </span>
-      </div>
-      <div className="flex shrink-0 flex-wrap items-center gap-2">
-        {blocked && (
-          <span className="text-xs text-muted-foreground">{blocked}</span>
-        )}
-        {canRun && (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={Boolean(blocked) || isSyncing}
-            onClick={() => onSync(entity.entityType)}
-            data-testid={`sync-${entity.entityType}`}
-          >
-            {isSyncing ? (
-              <LoaderCircleIcon className="size-4 animate-spin" />
-            ) : (
-              <RefreshCw className="size-4" />
-            )}
-            Sync now
-          </Button>
-        )}
-      </div>
-    </div>
-  );
-}
+type SyncOutcome = { tone: 'success' | 'warning'; title: string; detail?: string };
 
 export function AutocountCompanyDetailView({ companyId }: { companyId: string }) {
   const { detail, isLoading, notFound, reload } = useAutocountCompany(companyId);
   const { formatDateTime } = useDatetime();
-  const { can } = useCan();
   const router = useRouter();
   const form = useForm();
   const runsConfig = useAutocountRunsListConfig(companyId);
   const [syncing, setSyncing] = useState<string | null>(null);
   const [runsKey, setRunsKey] = useState(0);
-
-  const canRun = can(AC_SYNC_RUN);
+  const [outcome, setOutcome] = useState<SyncOutcome | null>(null);
+  const [editing, setEditing] = useState<AutocountEntityConfig | null>(null);
 
   const onSync = useCallback(
     async (entityType: string) => {
       setSyncing(entityType);
+      setOutcome(null);
       try {
         const job = await autocountService.syncNow(companyId, entityType);
-        // Eager (dev) runs inline, so a batch can already be awaiting approval;
-        // under a real worker it is still pending and the Runs tab is the place
-        // to watch it.
+        // A batch to review routes the operator to the review surface. A batch
+        // with nothing in it must NOT pretend there is something to review.
         if (job.status === 'needs_review') {
           toast.success('Sync finished — the batch is awaiting approval.');
           router.push(acReviewHref(job.id, acCompanyHref(companyId)));
           return;
         }
-        toast.success('Sync started.');
+
+        const summary = parseSyncSummary(job.result);
+        const label = entityLabel(entityType);
+        if (job.status === 'failed') {
+          setOutcome({
+            tone: 'warning',
+            title: `${label} sync failed.`,
+            detail: job.error ?? undefined,
+          });
+        } else if (summary && summary.failed > 0) {
+          setOutcome({
+            tone: 'warning',
+            title: `${label}: ${summary.failed} document(s) could not be mapped.`,
+            detail: 'Nothing was staged and the sync position was held.',
+          });
+        } else if (summary && summary.fetched === 0) {
+          // The honest reading of the real case that prompted this: the window
+          // was queried, the vendor returned nothing, and the watermark rightly
+          // did not move.
+          setOutcome({
+            tone: 'success',
+            title: `${label}: no changes since last sync.`,
+          });
+        } else if (summary) {
+          setOutcome({
+            tone: 'success',
+            title: `${label}: ${summary.fetched} record(s) fetched.`,
+          });
+        } else {
+          // No result yet — a real worker has the job queued.
+          setOutcome({ tone: 'success', title: `${label} sync started.` });
+        }
         setRunsKey((k) => k + 1);
         reload();
       } catch (error) {
@@ -130,9 +128,40 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     [companyId, reload, router],
   );
 
+  const onEditLookback = useCallback((entity: AutocountEntityConfig) => {
+    setEditing(entity);
+  }, []);
+
+  const onSaveLookback = useCallback(
+    async (entityType: string, days: number) => {
+      try {
+        await autocountService.updateEntityConfig(companyId, entityType, {
+          initialLookbackDays: days,
+        });
+        toast.success('First-run window updated.');
+        setEditing(null);
+        reload();
+      } catch (error) {
+        toast.error(
+          error instanceof ApiError
+            ? error.message
+            : 'That first-run window could not be saved.',
+        );
+      }
+    },
+    [companyId, reload],
+  );
+
+  const entitiesConfig = useAutocountEntitiesListConfig({
+    entities: detail?.entities ?? [],
+    companyActive: detail?.company.isActive ?? false,
+    onSync,
+    onEditLookback,
+  });
+
   const config = useMemo<ResourceFormConfig<AutocountCompany> | null>(() => {
     if (!detail) return null;
-    const { company, entities } = detail;
+    const { company } = detail;
 
     return {
       breadcrumb: [
@@ -149,56 +178,69 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
           label: 'Overview',
           icon: Info,
           render: () => (
-            <div className="flex flex-col gap-8 py-2">
-              <div className="flex flex-col">
-                <DetailRow label="Company name">
-                  <ClampedText text={company.companyName || '—'} lines={2} />
-                </DetailRow>
-                <DetailRow label="Company database">
-                  <code className="text-xs">{company.databaseName}</code>
-                </DetailRow>
-                <DetailRow label="Status">
-                  <Badge
-                    variant={company.isActive ? 'success' : 'secondary'}
-                    appearance="light"
-                  >
-                    {company.isActive ? 'Active' : 'Inactive'}
-                  </Badge>
-                </DetailRow>
-                <DetailRow label="Integration">
-                  <Link
-                    href={`/settings/integrations/${company.connectionId}`}
-                    className="text-primary hover:underline"
-                  >
-                    Open connection
-                  </Link>
-                </DetailRow>
-                <DetailRow label="Connected">
-                  {company.createdAt ? formatDateTime(company.createdAt) : '—'}
-                </DetailRow>
-              </div>
-
-              <div className="flex flex-col gap-2">
-                <h3 className="text-sm font-semibold text-foreground">Entities</h3>
-                <div className="flex flex-col">
-                  {entities.length === 0 ? (
-                    <p className="py-3 text-sm text-muted-foreground">
-                      No entities are configured.
-                    </p>
-                  ) : (
-                    entities.map((entity) => (
-                      <EntityRow
-                        key={entity.id}
-                        entity={entity}
-                        companyActive={company.isActive}
-                        canRun={canRun}
-                        isSyncing={syncing === entity.entityType}
-                        onSync={onSync}
-                      />
-                    ))
-                  )}
+            <div className="flex flex-col py-2">
+              <DetailRow label="Company name">
+                <ClampedText text={company.companyName || '—'} lines={2} />
+              </DetailRow>
+              <DetailRow label="Company database">
+                <code className="text-xs">{company.databaseName}</code>
+              </DetailRow>
+              <DetailRow label="Status">
+                <Badge
+                  variant={company.isActive ? 'success' : 'secondary'}
+                  appearance="light"
+                >
+                  {company.isActive ? 'Active' : 'Inactive'}
+                </Badge>
+              </DetailRow>
+              <DetailRow label="Integration">
+                <Link
+                  href={`/settings/integrations/${company.connectionId}`}
+                  className="text-primary hover:underline"
+                >
+                  Open connection
+                </Link>
+              </DetailRow>
+              <DetailRow label="Connected">
+                {company.createdAt ? formatDateTime(company.createdAt) : '—'}
+              </DetailRow>
+            </div>
+          ),
+        },
+        {
+          id: 'entities',
+          label: 'Entities',
+          icon: Layers,
+          render: () => (
+            <div className="flex flex-col gap-4 py-2">
+              {!company.isActive && (
+                <Alert variant="warning" appearance="light">
+                  <AlertIcon>
+                    <TriangleAlert />
+                  </AlertIcon>
+                  <AlertTitle>This company is inactive, so it cannot sync.</AlertTitle>
+                </Alert>
+              )}
+              {outcome && (
+                <Alert
+                  variant={outcome.tone === 'success' ? 'success' : 'warning'}
+                  appearance="light"
+                  data-testid="sync-outcome"
+                >
+                  <AlertIcon>
+                    {outcome.tone === 'success' ? <CircleCheck /> : <TriangleAlert />}
+                  </AlertIcon>
+                  <AlertTitle>{outcome.title}</AlertTitle>
+                  {outcome.detail && <AlertDescription>{outcome.detail}</AlertDescription>}
+                </Alert>
+              )}
+              {syncing && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <LoaderCircleIcon className="size-4 animate-spin" />
+                  Syncing {entityLabel(syncing)}…
                 </div>
-              </div>
+              )}
+              <ResourceList config={entitiesConfig} />
             </div>
           ),
         },
@@ -224,9 +266,22 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
       onSave: () => true,
       onCancel: reload,
     };
-  }, [canRun, detail, formatDateTime, onSync, reload, runsConfig, runsKey, syncing]);
+  }, [
+    detail,
+    entitiesConfig,
+    formatDateTime,
+    outcome,
+    reload,
+    runsConfig,
+    runsKey,
+    syncing,
+  ]);
 
-  if (isLoading) {
+  // FIRST load only. A background refetch (after a sync, after a config edit)
+  // must NOT swap the page for a spinner: that unmounts `ResourceForm`, whose
+  // active tab is local state, so the operator gets thrown back to Overview and
+  // never sees the outcome banner they just triggered on the Entities tab.
+  if (isLoading && !detail) {
     return (
       <Container width="fluid">
         <div className="flex items-center justify-center py-24 text-muted-foreground">
@@ -254,6 +309,11 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
       <Form {...form}>
         <ResourceForm config={config} />
       </Form>
+      <EntityLookbackDialog
+        entity={editing}
+        onClose={() => setEditing(null)}
+        onSave={onSaveLookback}
+      />
     </Container>
   );
 }

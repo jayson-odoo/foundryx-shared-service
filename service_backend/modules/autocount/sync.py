@@ -43,7 +43,13 @@ from app.models.background_job import (
     BackgroundJob,
 )
 
-from .activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS, record_activity
+from .activity import (
+    ACTIVITY_ERROR,
+    ACTIVITY_SUCCESS,
+    record_activity,
+    record_client_calls,
+    trace_id_for_job,
+)
 from .canonical.grn import (
     ENTITY_GOODS_RECEIVED_NOTE,
     VENDOR_DETAIL_KEY,
@@ -169,6 +175,10 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     company_id = str(payload.get("companyId") or "")
     entity_type = str(payload.get("entityType") or ENTITY_GOODS_RECEIVED_NOTE)
     started = time.monotonic()
+    # ONE trace ties every leg of this run together — the login, the read, and
+    # the run summary — so the Developer Logs console can show the whole
+    # interaction rather than three unrelated rows.
+    trace_id = trace_id_for_job(job.id)
 
     # ── resolve config (tenant- AND company-scoped, AC-13-41) ────────────────
     company = CompanyRepository(db).get(tenant_id, company_id)
@@ -233,12 +243,24 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         # The ``truncated`` FLAG is set only for an actual truncation: an
         # operator reads it to decide whether to narrow the window, so marking
         # every vendor error truncated would make the signal meaningless.
+        # The HTTP legs FIRST: a failed call is exactly the one a diagnostician
+        # needs, and it is the path that used to store no request payload at
+        # all. Safe here — the last write committed above, nothing is pending.
+        record_client_calls(
+            db,
+            client,
+            tenant_id=tenant_id,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+        )
         record_activity(
             db,
             tenant_id=tenant_id,
-            operation=f"read {entity_type}",
+            operation=f"sync {entity_type}",
             status=ACTIVITY_ERROR,
+            trace_id=trace_id,
             external_ref=company.database_name,
+            latency_ms=int((time.monotonic() - started) * 1000),
             error_message=exc.message,
         )
         _fail(
@@ -254,23 +276,44 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         return
     except Exception as exc:  # noqa: BLE001
         logger.exception("autocount sync fetch failed for job %s", job.id)
+        record_client_calls(
+            db,
+            client,
+            tenant_id=tenant_id,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+        )
         _fail(db, service, job, run, watermark_row, f"Fetch failed: {exc}", started)
         return
     finally:
         client.close()
 
+    # The real request/response of every HTTP leg (masked + bounded).
+    record_client_calls(
+        db,
+        client,
+        tenant_id=tenant_id,
+        trace_id=trace_id,
+        external_ref=company.database_name,
+    )
+    # …and the domain-level summary of the run, sharing the trace. The two are
+    # complementary, not duplicates: the legs say what went over the wire, this
+    # says what the window and the record count meant.
     record_activity(
         db,
         tenant_id=tenant_id,
-        operation=f"read {entity_type}",
+        operation=f"sync {entity_type}",
         status=ACTIVITY_SUCCESS,
+        trace_id=trace_id,
         external_ref=company.database_name,
+        latency_ms=int((time.monotonic() - started) * 1000),
         request={
             "window": [
                 result.window_from.isoformat() if result.window_from else None,
                 result.window_to.isoformat() if result.window_to else None,
             ],
             "recordCap": config.record_cap,
+            "initialLookbackDays": config.initial_lookback_days,
         },
         response={"records": len(result.records)},
     )

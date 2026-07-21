@@ -15,6 +15,8 @@ import type {
   AutocountCompany,
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
+  AutocountEntityConfig,
+  AutocountEntityConfigUpdate,
   AutocountStagedList,
   AutocountSyncJob,
   AutocountSyncRun,
@@ -38,6 +40,17 @@ export interface AutocountService {
    * name back — there is deliberately no company field to supply.
    */
   createCompany(input: AutocountCompanyCreateInput): Promise<AutocountCompany>;
+  /**
+   * Adjust one entity's sync configuration
+   * (`PATCH /autocount/companies/{id}/entities/{entityType}`). Narrow by
+   * design — the initial lookback window only, and changing it re-fetches
+   * nothing.
+   */
+  updateEntityConfig(
+    companyId: string,
+    entityType: string,
+    input: AutocountEntityConfigUpdate,
+  ): Promise<AutocountEntityConfig>;
   /** Trigger a manual sync (`POST /autocount/companies/{id}/sync`). */
   syncNow(companyId: string, entityType: string): Promise<AutocountSyncJob>;
   /** Run history for a company (`GET /autocount/companies/{id}/runs`). */

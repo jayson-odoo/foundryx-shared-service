@@ -9,6 +9,7 @@ import type {
   AutocountCompany,
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
+  AutocountEntityConfig,
   AutocountStagedList,
   AutocountSyncJob,
   AutocountSyncRun,
@@ -41,6 +42,13 @@ export const realAutocountService: AutocountService = {
       method: 'POST',
       body: JSON.stringify({ connectionId: input.connectionId, name: input.name ?? '' }),
     });
+  },
+
+  updateEntityConfig(companyId, entityType, input) {
+    return apiFetch<AutocountEntityConfig>(
+      `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}`,
+      { method: 'PATCH', body: JSON.stringify(input) },
+    );
   },
 
   syncNow(companyId, entityType) {

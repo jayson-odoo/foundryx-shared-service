@@ -28,7 +28,7 @@ event drain uses) rather than moving the boundary.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy.orm import Session
 
@@ -40,9 +40,28 @@ from app.models.integration_activity import (
     SOURCE_AUTOCOUNT,
 )
 
+if TYPE_CHECKING:  # pragma: no cover — import cycle avoidance only
+    from .client import AutoCountClient
+
 logger = logging.getLogger("foundryx.autocount")
 
-__all__ = ["record_activity", "ACTIVITY_SUCCESS", "ACTIVITY_ERROR"]
+__all__ = [
+    "record_activity",
+    "record_client_calls",
+    "trace_id_for_job",
+    "ACTIVITY_SUCCESS",
+    "ACTIVITY_ERROR",
+]
+
+
+def trace_id_for_job(job_id: str) -> str:
+    """The trace every leg of ONE sync run shares.
+
+    Derived from the job id rather than minted at random so an operator holding
+    a job id (from the Runs tab, a job row, or a support ticket) can find its
+    calls in the Developer Logs console without a lookup table.
+    """
+    return f"acsync-{job_id}"
 
 
 def record_activity(
@@ -53,6 +72,8 @@ def record_activity(
     status: str,
     external_ref: Optional[str] = None,
     trace_id: Optional[str] = None,
+    method: Optional[str] = None,
+    status_code: Optional[int] = None,
     latency_ms: Optional[int] = None,
     error_code: Optional[str] = None,
     error_message: Optional[str] = None,
@@ -68,6 +89,8 @@ def record_activity(
             status=status,
             trace_id=trace_id,
             external_ref=external_ref,
+            method=method,
+            status_code=status_code,
             latency_ms=latency_ms,
             error_code=error_code,
             # Even an error MESSAGE can carry a credential (a vendor echo of the
@@ -80,3 +103,53 @@ def record_activity(
         )
     except Exception:  # noqa: BLE001 — observability NEVER breaks the caller
         logger.exception("failed to record autocount activity for %s", operation)
+
+
+def record_client_calls(
+    db: Session,
+    client: "AutoCountClient",
+    *,
+    tenant_id: str,
+    trace_id: Optional[str] = None,
+    external_ref: Optional[str] = None,
+) -> int:
+    """Drain a client's buffered HTTP calls into activity rows. Never raises.
+
+    ONE row per real request/response, carrying the ACTUAL masked payloads plus
+    ``status_code``, ``latency_ms`` and the run's ``trace_id`` — which is what
+    the Developer Logs console is built to render, and what a customer's mapping
+    failure cannot be diagnosed without.
+
+        !!  CALL THIS AT A TRANSACTION BOUNDARY.  !!
+
+    ``record_activity`` commits (see the module docstring), so a call placed in
+    the middle of uncommitted work will commit or discard it. Every call site
+    sits immediately after a ``commit()``.
+
+    ``client.drain_calls()`` clears the buffer, so calling this twice cannot
+    duplicate a row. Returns the number of rows attempted.
+    """
+    try:
+        calls = client.drain_calls()
+    except Exception:  # noqa: BLE001
+        logger.exception("failed to drain autocount client calls")
+        return 0
+
+    for call in calls:
+        record_activity(
+            db,
+            tenant_id=tenant_id,
+            operation=f"{call.method} {call.path}",
+            status=ACTIVITY_SUCCESS if call.ok else ACTIVITY_ERROR,
+            trace_id=trace_id,
+            external_ref=external_ref,
+            method=call.method,
+            status_code=call.status_code,
+            latency_ms=call.latency_ms,
+            error_message=call.error_message,
+            # Already masked AND bounded by the client; ``record_activity``
+            # masks again (belt and braces — the two use different key lists).
+            request=call.request,
+            response=call.response,
+        )
+    return len(calls)

@@ -13,15 +13,42 @@
 /** Sync mode of one entity on one company. */
 export type AutocountSyncMode = 'AUTO' | 'SCHEDULED_REVIEW' | 'MANUAL';
 
-/** Per-entity sync configuration seeded when a company is registered. */
+/**
+ * Per-entity sync configuration seeded when a company is registered, PLUS the
+ * entity's live delta state.
+ *
+ * The watermark half is what makes a zero-record sync explicable: without
+ * `lastSuccessAt`/`watermarkAt` on the surface, "0 records" is
+ * indistinguishable from "broken", and `consecutiveFailures`/`lastError` were
+ * recorded by every run and displayed nowhere.
+ */
 export interface AutocountEntityConfig {
   id: string;
   entityType: string;
   syncMode: AutocountSyncMode | string;
   sourceImpl: string;
   recordCap: number;
+  /**
+   * How far back the FIRST sync reaches when no watermark exists yet
+   * (default 30). Anything older is invisible until the supervised full initial
+   * load (D20, slice 3) — so this is shown, and editable, rather than hidden.
+   */
   initialLookbackDays: number;
   enabled: boolean;
+  /** Last run that completed cleanly. Null until the entity has ever synced. */
+  lastSuccessAt: string | null; // ISO Z
+  /** Last run attempted, successful or not. */
+  lastAttemptAt: string | null; // ISO Z
+  /** The high-water mark: "we hold everything modified up to here". */
+  watermarkAt: string | null; // ISO Z
+  /** Consecutive failed runs — the stale-sync signal (AC-13-19). */
+  consecutiveFailures: number;
+  lastError: string | null;
+}
+
+/** `PATCH /autocount/companies/{id}/entities/{entityType}` — narrow by design. */
+export interface AutocountEntityConfigUpdate {
+  initialLookbackDays?: number;
 }
 
 /**
@@ -75,6 +102,41 @@ export interface AutocountSyncJob {
   result: Record<string, unknown> | null;
   error: string | null;
   createdAt: string | null; // ISO Z
+}
+
+/**
+ * The `result` a finished `autocount_sync` job carries (`sync.py`'s summary).
+ * Parsed rather than read blind so the UI can state the outcome — a run that
+ * fetched nothing is a SUCCESSFUL no-op, not silence and not a failure.
+ */
+export interface AutocountSyncSummary {
+  entityType: string | null;
+  fetched: number;
+  staged: number;
+  failed: number;
+  watermarkAdvancedTo: string | null;
+  awaitingApproval: boolean;
+}
+
+function asCount(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+/** Read a job's `result` bag into the typed summary. Null when absent (a job
+ * still pending under a real worker has no result yet). */
+export function parseSyncSummary(
+  result: Record<string, unknown> | null | undefined,
+): AutocountSyncSummary | null {
+  if (!result) return null;
+  const advanced = result.watermarkAdvancedTo;
+  return {
+    entityType: typeof result.entityType === 'string' ? result.entityType : null,
+    fetched: asCount(result.fetched),
+    staged: asCount(result.staged),
+    failed: asCount(result.failed),
+    watermarkAdvancedTo: typeof advanced === 'string' ? advanced : null,
+    awaitingApproval: result.awaitingApproval === true,
+  };
 }
 
 /** Terminal state of one sync run. */
