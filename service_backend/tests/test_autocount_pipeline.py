@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 import pytest
+import sqlalchemy as sa
 
 from app.models import DEFAULT_TENANT_ID
 from app.models.background_job import (
@@ -219,12 +220,46 @@ def _queue(db, transports, company: AcCompany, records: List[Any]) -> None:
     transports[company.connection_id].reads.append(records)
 
 
-def _run_sync(db, company: AcCompany, tenant_id: str = DEFAULT_TENANT_ID) -> BackgroundJob:
+def _run_sync(
+    db,
+    company: AcCompany,
+    tenant_id: str = DEFAULT_TENANT_ID,
+    entity_type: str = ENTITY_GOODS_RECEIVED_NOTE,
+) -> BackgroundJob:
     job = SyncService(db).sync_now(
-        tenant_id, company.id, ENTITY_GOODS_RECEIVED_NOTE, actor_user_id=None
+        tenant_id, company.id, entity_type, actor_user_id=None
     )
     db.refresh(job)
     return job
+
+
+# A company is seeded for SEVERAL entities since slice 2 (GRN + the two masters),
+# so a positional ``[0]`` no longer means "the GRN one" — it means "whichever
+# entity sorts first", which is a silent mis-target. Always name the entity.
+
+
+def _config_for(db, company, entity_type: str, tenant_id: str = DEFAULT_TENANT_ID):
+    return next(
+        c
+        for c in CompanyService(db).entity_configs(tenant_id, company.id)
+        if c.entity_type == entity_type
+    )
+
+
+def _state_for(db, company, entity_type: str, tenant_id: str = DEFAULT_TENANT_ID):
+    return next(
+        s
+        for s in CompanyService(db).entity_states(tenant_id, company.id)
+        if s.entity_type == entity_type
+    )
+
+
+def _grn_config(db, company, tenant_id: str = DEFAULT_TENANT_ID):
+    return _config_for(db, company, ENTITY_GOODS_RECEIVED_NOTE, tenant_id)
+
+
+def _grn_state(db, company, tenant_id: str = DEFAULT_TENANT_ID):
+    return _state_for(db, company, ENTITY_GOODS_RECEIVED_NOTE, tenant_id)
 
 
 # ── mapping: coercion matrix (AC-13-09) ───────────────────────────────────────
@@ -764,7 +799,7 @@ def test_the_watermark_holds_when_the_fetch_fails(db, transports):
 def test_a_truncated_fetch_fails_the_run_and_holds_the_watermark(db, transports):
     """AC-13-46 — a truncated sync must never read as a complete one."""
     company = _company(db, transports)
-    config = CompanyService(db).entity_configs(DEFAULT_TENANT_ID, company.id)[0]
+    config = _grn_config(db, company)
     config.record_cap = 2
     db.commit()
     _queue(db, transports, company, [_grn("1"), _grn("2")])
@@ -991,7 +1026,7 @@ def test_an_unregistered_sink_is_a_loud_error_not_a_fallback(db):
 
 def test_an_unregistered_source_impl_is_a_loud_error(db, transports):
     company = _company(db, transports, reads=[[_grn("1")]])
-    config = CompanyService(db).entity_configs(DEFAULT_TENANT_ID, company.id)[0]
+    config = _grn_config(db, company)
     config.source_impl = "does_not_exist"
     db.commit()
 
@@ -1250,7 +1285,9 @@ def test_the_entity_wire_carries_the_delta_state(client, session_factory, transp
     body = client.get(
         f"/autocount/companies/{company_id}", headers=_auth(client)
     ).json()
-    entity = body["entities"][0]
+    entity = next(
+        e for e in body["entities"] if e["entityType"] == ENTITY_GOODS_RECEIVED_NOTE
+    )
     assert entity["entityType"] == ENTITY_GOODS_RECEIVED_NOTE
     assert entity["initialLookbackDays"] == 30
     for key in (
@@ -1281,7 +1318,10 @@ def test_the_lookback_patch_persists_and_rejects_nonsense(
     detail = client.get(
         f"/autocount/companies/{company_id}", headers=_auth(client)
     ).json()
-    assert detail["entities"][0]["initialLookbackDays"] == 180
+    grn = next(
+        e for e in detail["entities"] if e["entityType"] == ENTITY_GOODS_RECEIVED_NOTE
+    )
+    assert grn["initialLookbackDays"] == 180
 
     # Nonsense is REJECTED, never coerced — a coerced value would silently sync
     # a window the operator did not ask for.
@@ -1842,17 +1882,16 @@ def test_entity_states_carry_the_watermark_so_a_zero_sync_is_explicable(
     company = _company(db, transports, reads=[[_grn("1")]])
 
     # Before any sync: configured, but never run.
-    fresh = CompanyService(db).entity_states(DEFAULT_TENANT_ID, company.id)
-    assert len(fresh) == 1
-    assert fresh[0].entity_type == ENTITY_GOODS_RECEIVED_NOTE
-    assert fresh[0].last_success_at is None
-    assert fresh[0].watermark_at is None
-    assert fresh[0].consecutive_failures == 0
+    fresh = _grn_state(db, company)
+    assert fresh.entity_type == ENTITY_GOODS_RECEIVED_NOTE
+    assert fresh.last_success_at is None
+    assert fresh.watermark_at is None
+    assert fresh.consecutive_failures == 0
     # The first-run trap is visible rather than implicit.
-    assert fresh[0].initial_lookback_days == 30
+    assert fresh.initial_lookback_days == 30
 
     _run_sync(db, company)
-    synced = CompanyService(db).entity_states(DEFAULT_TENANT_ID, company.id)[0]
+    synced = _grn_state(db, company)
     assert synced.last_success_at is not None
     assert synced.watermark_at is not None
     assert synced.last_error is None
@@ -1863,7 +1902,7 @@ def test_a_failed_sync_surfaces_its_failure_count_and_error(db, transports):
     _queue(db, transports, company, httpx.Response(500, json={"Message": "boom"}))
     _run_sync(db, company)
 
-    state = CompanyService(db).entity_states(DEFAULT_TENANT_ID, company.id)[0]
+    state = _grn_state(db, company)
     assert state.consecutive_failures == 1
     assert state.last_error
     # The watermark held — the run failed, so nothing was accepted.
@@ -1875,9 +1914,9 @@ def test_entity_states_are_scoped_to_their_own_company(db, transports):
     b = _company(db, transports, database_name="AED_B", reads=[[_grn("2")]])
     _run_sync(db, a)
 
-    assert CompanyService(db).entity_states(DEFAULT_TENANT_ID, a.id)[0].last_success_at
+    assert _grn_state(db, a).last_success_at
     assert (
-        CompanyService(db).entity_states(DEFAULT_TENANT_ID, b.id)[0].last_success_at
+        _grn_state(db, b).last_success_at
         is None
     )
 
@@ -1932,7 +1971,7 @@ def test_the_new_lookback_governs_the_next_first_run_window(db, transports):
         ENTITY_GOODS_RECEIVED_NOTE,
         initial_lookback_days=400,
     )
-    config = CompanyService(db).entity_configs(DEFAULT_TENANT_ID, company.id)[0]
+    config = _grn_config(db, company)
 
     now = datetime(2026, 7, 21, tzinfo=timezone.utc)
     start = Watermark().start(lookback_days=config.initial_lookback_days, now=now)
@@ -1973,7 +2012,7 @@ def test_widening_the_lookback_never_re_widens_an_established_window(db, transpo
     assert run.window_from == established
 
     # And the wire says the same thing, so the UI can show it as state.
-    state = CompanyService(db).entity_states(DEFAULT_TENANT_ID, company.id)[0]
+    state = _grn_state(db, company)
     assert state.initial_lookback_days == 3650
     assert state.watermark_at == established
 
@@ -2040,3 +2079,877 @@ def test_a_200_body_with_no_status_key_is_logged_as_a_failure():
     # mis-badge it.
     login_leg = [c for c in legs if c.path.endswith("/Login")][0]
     assert login_leg.ok is True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Slice 2 — masters (AC-14-01..05, 14-10/11, 14-25/26)
+#
+# The failures these pin are the quiet ones: a master response read through the
+# GRN unwrap, a company-unqualified ref that collides on the SECOND company
+# connected, a 30-day window that imports 1 of 106 suppliers and reports success,
+# and an active-flag that silently defaults to False and deactivates a live
+# supplier in the consumer.
+# ══════════════════════════════════════════════════════════════════════════════
+
+from modules.autocount.backfill import backfill_entity_config_defaults  # noqa: E402
+from modules.autocount.canonical.masters import (  # noqa: E402
+    ENTITY_CUSTOMER,
+    ENTITY_SUPPLIER,
+    CanonicalCustomer,
+    CanonicalSupplier,
+)
+from modules.autocount.envelopes import (  # noqa: E402
+    ENVELOPE_ROW_ARRAY,
+    ENVELOPE_STATUS_DICT,
+    ROW_ARRAY,
+    STATUS_DICT,
+    UnknownEnvelope,
+    envelope_for,
+)
+from modules.autocount.mapping import (  # noqa: E402
+    DEFAULT_CUSTOMER_MAPPING,
+    DEFAULT_SUPPLIER_MAPPING,
+    IdentityError,
+    company_qualified_identity,
+    slash_datetime,
+    t_f_bool,
+)
+from modules.autocount.models import AcEntityConfig  # noqa: E402
+from modules.autocount.sources import (  # noqa: E402
+    INITIAL_LOAD_FULL,
+    INITIAL_LOAD_WINDOWED,
+    UnknownInitialLoad,
+)
+
+
+def _creditor(
+    auto_key: str = "1",
+    acc_no: str = "400-J001",
+    *,
+    last_modified: str = "2026/03/18 16:03:21",
+    is_active: str = "T",
+    record_count: Any = "1 of 106",
+    status: str = "Success",
+    **overrides: Any,
+) -> Dict[str, Any]:
+    """ONE element of a master response, in the shape the live instance returns.
+
+    Note what is where: the row carries its OWN ``Status``/``Message``/
+    ``RecordCount`` (there is no top-level envelope at all), some fields sit flat
+    at this level, and the REAL DB row is nested under ``Data[0]`` — including
+    ``AutoKey`` and ``LastModified``. Both levels carry ``AccNo``/``CompanyName``/
+    ``IsActive``, which is exactly why the two are not flattened together.
+    """
+    record = {
+        "Status": status,
+        "Message": "",
+        "RecordCount": record_count,
+        "AccNo": acc_no,
+        "CompanyName": "Jaya Trading Sdn Bhd",
+        "EmailAddress": "ap@jaya.example",
+        "RegisterNo": "199801000123",
+        "TaxRegistrationNo": "",
+        "IsActive": is_active,
+        "UDF": [],
+        "Data": [
+            {
+                "AutoKey": auto_key,
+                "AccNo": acc_no,
+                "CompanyName": "Jaya Trading Sdn Bhd",
+                "IsActive": is_active,
+                "CreditLimit": "50000.00000000",
+                "LastModified": last_modified,
+            }
+        ],
+    }
+    record.update(overrides)
+    return record
+
+
+def _debtor(auto_key: str = "1", acc_no: str = "300-C001", **overrides: Any) -> Dict[str, Any]:
+    record = _creditor(auto_key, acc_no)
+    record.update(
+        {
+            "Mobile": "+60123456789",
+            "TIN": "IG12345678900",
+            "CreditLimit": "25000.00000000",
+            # Debtor rows carry a Guid; Creditor rows do NOT — which is why the
+            # ref is minted from AutoKey and not from Guid.
+            "Guid": "b6c1f2e0-1111-2222-3333-444455556666",
+        }
+    )
+    record.update(overrides)
+    return record
+
+
+def _rows(records: List[Dict[str, Any]]) -> httpx.Response:
+    """A master response: a BARE ARRAY, not a Status dict."""
+    return httpx.Response(200, json=records)
+
+
+# ── AC-14-02: list-index path resolution ──────────────────────────────────────
+
+
+def test_a_numeric_path_segment_indexes_a_list():
+    """``Data.0.AutoKey`` — masters nest their real DB row one level down."""
+    record = _creditor(auto_key="42")
+    assert resolve_path(record, "Data.0.AutoKey") == "42"
+    assert resolve_path(record, "Data.0.LastModified") == "2026/03/18 16:03:21"
+
+
+def test_both_nesting_levels_stay_addressable():
+    """The reason ``Data[0]`` is NOT flattened into its parent: unique fields on
+    both levels, plus OVERLAPPING ones that a flatten would have to silently
+    pick a winner for."""
+    record = _creditor(acc_no="400-J001")
+    record["CompanyName"] = "Top Level Name"
+    record["Data"][0]["CompanyName"] = "Nested Name"
+
+    assert resolve_path(record, "EmailAddress") == "ap@jaya.example"  # top only
+    assert resolve_path(record, "Data.0.AutoKey") == "1"  # nested only
+    assert resolve_path(record, "CompanyName") == "Top Level Name"
+    assert resolve_path(record, "Data.0.CompanyName") == "Nested Name"
+
+
+def test_an_out_of_range_index_is_missing_never_an_exception():
+    """A wrong path is an operator's mapping-row mistake. It must surface as that
+    row's named error (or a skipped optional), never as an exception that kills
+    the whole batch."""
+    from modules.autocount.mapping import _MISSING
+
+    record = _creditor()
+    assert resolve_path(record, "Data.5.AutoKey") is _MISSING
+    assert resolve_path(record, "Data.0.Nope") is _MISSING
+    # A numeric segment against a dict, and a named segment against a list.
+    assert resolve_path(record, "0.AutoKey") is _MISSING
+    assert resolve_path(record, "Data.AutoKey") is _MISSING
+    # Negative indices are refused deliberately: "-1" reads as a typo and would
+    # silently point at a different record as the list grows.
+    assert resolve_path(record, "Data.-1.AutoKey") is _MISSING
+    # A scalar with path left to walk.
+    assert resolve_path(record, "AccNo.0") is _MISSING
+
+
+def test_the_udf_special_case_is_untouched_by_list_indexing():
+    """The UDF grammar is matched BEFORE the dotted walk and must stay so — a
+    per-customer UDF array is the reason mapping is data at all."""
+    from modules.autocount.mapping import _MISSING
+
+    record = {
+        "UDF": [
+            {"FieldName": "DriverName", "FieldName2": None, "Value": "Ah Meng"},
+            {"FieldName": None, "FieldName2": "TruckNo", "Value": "WXY 1234"},
+        ]
+    }
+    assert resolve_path(record, "UDF[UDF].DriverName") == "Ah Meng"
+    assert resolve_path(record, "UDF[UDF].TruckNo") == "WXY 1234"  # FieldName2
+    assert resolve_path(record, "UDF[UDF].Absent") is _MISSING
+    assert resolve_path({"UDF": "not-a-list"}, "UDF[UDF].DriverName") is _MISSING
+
+
+# ── AC-14-03: two envelopes, one client ───────────────────────────────────────
+
+
+def test_the_row_array_envelope_treats_each_element_as_a_record():
+    unwrapped = ROW_ARRAY.unwrap([_creditor("1"), _creditor("2")])
+    assert [r["Data"][0]["AutoKey"] for r in unwrapped.records] == ["1", "2"]
+
+
+def test_a_master_response_through_the_grn_envelope_is_a_failure_not_a_crash():
+    """AC-14-03: a bare array has no top-level ``Status``. The GRN rule must
+    REJECT it — reading it as an empty success would be silent data loss."""
+    verdict = STATUS_DICT.verdict([_creditor()])
+    assert verdict.ok is False
+
+
+def test_each_envelope_owns_both_success_rules_so_they_cannot_drift():
+    """The regression 6d3e21c fixed, now structural.
+
+    The client had TWO success rules — one deciding whether the call RAISES, one
+    deciding how it is BADGED in the activity log — and they disagreed on a
+    reachable input. The run failed while the log showed a green call with no
+    error: the log at its least trustworthy exactly when it is being relied on.
+
+    There is now ONE ``verdict`` per envelope, consumed by both. This asserts the
+    two OBSERVABLE consequences agree for every envelope and every input, which
+    is the property that actually matters.
+    """
+    cases = [
+        # (envelope, body, expected_ok)
+        (STATUS_DICT, {"Status": "Success", "ResultTable": []}, True),
+        (STATUS_DICT, {"Status": "Fail", "Message": "nope"}, False),
+        # The absent-key case the two old rules disagreed on.
+        (STATUS_DICT, {"Message": "only a message"}, False),
+        (STATUS_DICT, [], False),
+        (ROW_ARRAY, [_creditor()], True),
+        (ROW_ARRAY, [], True),  # zero masters is a legitimate empty result
+        (ROW_ARRAY, [_creditor(status="Fail", **{"Message": "bad"})], False),
+        (ROW_ARRAY, {"Message": "an error envelope"}, False),
+    ]
+    for envelope, body, expected in cases:
+        # 1. the raise rule
+        response = httpx.Response(200, json=body)
+        raised = False
+        try:
+            AutoCountClient._unwrap(response, envelope)
+        except AutoCountError:
+            raised = True
+        assert raised is (not expected), (envelope.key, body)
+        # 2. the badge rule, from the SAME verdict
+        assert envelope.verdict(body).ok is expected, (envelope.key, body)
+
+
+def test_a_failing_master_row_is_badged_red_in_the_activity_log():
+    """End to end through the real client: the vendor reports a per-row failure,
+    the read raises, AND the leg logs ``ok=False`` carrying the vendor's own
+    message. A green badge on a failed leg is the bug this prevents."""
+    client = AutoCountClient(
+        base_url="https://ac.example.com",
+        app_id="app-1",
+        user_id="ADMIN",
+        password="secret",
+        transport=MockTransport(
+            [_rows([{"Status": "Fail", "Message": "Creditor read denied."}])]
+        ),
+    )
+    with pytest.raises(AutoCountError) as exc:
+        client.read("Creditor", {"AccNo": [], "RecordCount": 10}, envelope=ROW_ARRAY)
+    assert "denied" in str(exc.value)
+
+    legs = client.drain_calls()
+    read_leg = [c for c in legs if c.path.endswith("/GetCreditor")][0]
+    assert read_leg.ok is False
+    assert "denied" in (read_leg.error_message or "")
+    # …and the login leg beside it stays green under its OWN envelope: a bare
+    # array is a SUCCESSFUL login and must not be badged red by a dict rule.
+    assert [c for c in legs if c.path.endswith("/Login")][0].ok is True
+
+
+def test_adding_an_envelope_needs_no_change_to_read_or_its_callers():
+    """AC-14-03: the strategy is a registry lookup, not a branch."""
+    from modules.autocount.envelopes import ResponseEnvelope, Unwrapped, Verdict, register_envelope
+
+    class _Wrapped(ResponseEnvelope):
+        key = "test_wrapped"
+
+        def verdict(self, body):
+            return Verdict(isinstance(body, dict) and "Payload" in body, "no payload")
+
+        def unwrap(self, body):
+            return Unwrapped(records=list(body["Payload"]), reported_total=7)
+
+    register_envelope(_Wrapped())
+    client = AutoCountClient(
+        base_url="https://ac.example.com",
+        app_id="app-1",
+        user_id="ADMIN",
+        password="secret",
+        transport=MockTransport([httpx.Response(200, json={"Payload": [{"a": 1}]})]),
+    )
+    # Same signature, same call site.
+    result = client.read(
+        "Whatever", {"RecordCount": 5}, envelope=envelope_for("test_wrapped")
+    )
+    assert result.records == [{"a": 1}]
+    assert result.reported_total == 7
+
+
+def test_an_unregistered_envelope_is_a_loud_error():
+    """A silent fallback would read masters through the GRN unwrap and fail every
+    row with a misleading message."""
+    with pytest.raises(UnknownEnvelope):
+        envelope_for("does_not_exist")
+
+
+# ── AC-14-05: the two master coercions ────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "value,expected", [("T", True), ("F", False), ("t", True), ("f", False), (True, True)]
+)
+def test_the_active_flag_becomes_a_real_bool(value, expected):
+    assert t_f_bool(value) is expected
+
+
+@pytest.mark.parametrize("value", ["Y", "1", "yes", "TRUE", "active", 1, 0, "X"])
+def test_an_unrecognised_active_flag_fails_loudly_and_never_defaults(value):
+    """AC-14-05. A silent ``False`` here would DEACTIVATE A LIVE SUPPLIER in the
+    consumer, and nothing in either system would report a problem — so this
+    transform is deliberately narrower than the lenient ``t_bool``."""
+    with pytest.raises(TransformError) as exc:
+        t_f_bool(value)
+    assert "'T' or 'F'" in str(exc.value)
+
+
+def test_the_slash_timestamp_parses_to_aware_utc():
+    parsed = slash_datetime("2026/03/18 16:03:21")
+    assert parsed == datetime(2026, 3, 18, 16, 3, 21, tzinfo=timezone.utc)
+    assert parsed.tzinfo is timezone.utc  # house rule: never naive
+
+
+def test_an_unparseable_timestamp_fails_that_field_by_name():
+    with pytest.raises(TransformError) as exc:
+        slash_datetime("18-03-2026")
+    assert "2026/03/18 16:03:21" in str(exc.value)
+
+
+def test_a_bad_active_flag_fails_only_its_own_record():
+    """The named per-field error, and the sibling record entirely unaffected."""
+    engine = MappingEngine(
+        DEFAULT_SUPPLIER_MAPPING,
+        entity_type=ENTITY_SUPPLIER,
+        database_name="AED_VSOFT",
+    )
+    good, bad = engine.map_batch(
+        [_creditor("1", "400-A"), _creditor("2", "400-B", is_active="MAYBE")]
+    )
+    assert good.ok is True
+    assert bad.ok is False
+    assert bad.record is None  # never a partial record
+    problem = [e for e in bad.errors if e.field == "is_active"][0]
+    assert problem.source_path == "IsActive"
+    assert "400-B" in problem.message()
+
+
+def test_a_blank_active_flag_fails_rather_than_reaching_the_consumer_as_true():
+    """The strict transform + the required flag, working as a pair: blank is
+    'absent' to the transform, and the seeded row's ``is_required`` is what stops
+    it falling through to the consumer's ``is_active: bool = True`` default."""
+    engine = MappingEngine(
+        DEFAULT_SUPPLIER_MAPPING,
+        entity_type=ENTITY_SUPPLIER,
+        database_name="AED_VSOFT",
+    )
+    mapped = engine.map_document(_creditor(is_active=""))
+    assert mapped.ok is False
+    assert [e for e in mapped.errors if e.field == "is_active"]
+
+
+# ── AC-14-10/11: company-qualified identity ───────────────────────────────────
+
+
+def test_the_source_ref_is_company_qualified():
+    assert company_qualified_identity(_creditor("1"), "AED_VSOFT") == "AED_VSOFT:1"
+
+
+def test_the_same_autokey_in_two_companies_does_not_collide():
+    """AC-14-10, the whole reason for the prefix.
+
+    ``AutoKey`` is a PER-COMPANY primary key, so ``AutoKey=1`` exists in every
+    AutoCount company — while the consumer's uniqueness is
+    ``(source_system, entity_type, source_ref)`` with NO company dimension. An
+    unqualified ref means company B's first supplier silently overwrites
+    company A's.
+    """
+    a = MappingEngine(
+        DEFAULT_SUPPLIER_MAPPING, entity_type=ENTITY_SUPPLIER, database_name="AED_A"
+    ).map_document(_creditor("1", "400-A"))
+    b = MappingEngine(
+        DEFAULT_SUPPLIER_MAPPING, entity_type=ENTITY_SUPPLIER, database_name="AED_B"
+    ).map_document(_creditor("1", "400-B"))
+
+    assert a.record.source_ref == "AED_A:1"
+    assert b.record.source_ref == "AED_B:1"
+    assert a.record.source_ref != b.record.source_ref
+    assert a.record.identity() != b.record.identity()
+
+
+def test_identity_survives_a_business_code_renumber():
+    """AC-14-11: the ref is stable across an AccNo change, so the consumer row is
+    UPDATED rather than duplicated — and ``source_doc_no`` shows the new code."""
+    engine = MappingEngine(
+        DEFAULT_SUPPLIER_MAPPING, entity_type=ENTITY_SUPPLIER, database_name="AED_VSOFT"
+    )
+    before = engine.map_document(_creditor("7", "400-J001")).record
+    after = engine.map_document(_creditor("7", "400-Z999")).record
+
+    assert before.source_ref == after.source_ref == "AED_VSOFT:7"
+    assert before.source_doc_no == "400-J001"
+    assert after.source_doc_no == "400-Z999"
+
+
+def test_a_record_without_an_autokey_fails_by_name_rather_than_minting_a_bad_ref():
+    engine = MappingEngine(
+        DEFAULT_SUPPLIER_MAPPING, entity_type=ENTITY_SUPPLIER, database_name="AED_VSOFT"
+    )
+    mapped = engine.map_document(_creditor(**{"Data": []}))
+    assert mapped.ok is False
+    problem = [e for e in mapped.errors if e.field == "source_ref"][0]
+    assert problem.source_path == "Data.0.AutoKey"
+
+
+def test_an_unknown_company_name_refuses_to_mint_an_unqualified_ref():
+    """Failing closed is the point: an unqualified ref would look fine and
+    collide with another company later."""
+    with pytest.raises(IdentityError):
+        company_qualified_identity(_creditor("1"), "")
+
+
+# ── AC-14-13/14: only fields the consumer persists ────────────────────────────
+
+
+def test_the_canonical_supplier_claims_only_what_sorento_persists():
+    """AC-14-13. Sorento ACCEPTS seven address fields on ``CanonicalSupplier``
+    and ``_supplier_columns`` writes none of them, so sending them would have us
+    report a sync that did not happen."""
+    payload = CanonicalSupplier(source_ref="AED:1", code="400-A", name="A").sink_payload()
+    assert set(payload) == {
+        "source_ref",
+        "source_doc_no",
+        "code",
+        "name",
+        "email",
+        "is_active",
+    }
+
+
+def test_no_payment_terms_field_exists_on_either_master():
+    """AC-14-12: ``payment_terms_code`` is an UNCONDITIONAL permanent-retryable
+    in the consumer, so any value would build a queue that can never drain."""
+    for model in (CanonicalSupplier, CanonicalCustomer):
+        assert "payment_terms_code" not in model.model_fields
+        assert "payment_terms_days" not in model.model_fields
+        assert "payment_terms_code" not in model.SINK_FIELDS
+        assert "payment_terms_days" not in model.SINK_FIELDS
+
+
+def test_every_field_we_send_is_one_sorento_defines():
+    """AC-14-14: caught by OUR validation, not by a round-trip. Sorento sets
+    ``extra="forbid"``, so an invented key is a hard per-record rejection."""
+    sorento_supplier = {
+        "source_ref", "source_doc_no", "code", "name", "contact_name", "email",
+        "phone_number", "address_line1", "address_line2", "city", "state",
+        "postal_code", "country", "payment_terms_days", "payment_terms_code",
+        "is_active",
+    }
+    sorento_customer = {
+        "source_ref", "source_doc_no", "code", "name", "email", "phone_number",
+        "registration_number", "tax_id", "credit_limit", "payment_terms_days",
+        "payment_terms_code", "country", "is_active",
+    }
+    assert set(CanonicalSupplier.SINK_FIELDS) <= sorento_supplier
+    assert set(CanonicalCustomer.SINK_FIELDS) <= sorento_customer
+
+
+def test_the_sink_payload_strips_our_own_provenance_and_local_fields():
+    record = CanonicalCustomer(
+        source_ref="AED:1",
+        code="300-C",
+        name="C",
+        last_modified=datetime(2026, 3, 18, tzinfo=timezone.utc),
+        extras={"anything": 1},
+    )
+    payload = record.sink_payload()
+    for ours in ("source_system", "entity_type", "last_modified", "extras"):
+        assert ours not in payload
+
+
+# ── AC-14-05 end to end: a real master row through the real mapping ───────────
+
+
+def test_a_creditor_row_maps_to_a_canonical_supplier():
+    engine = MappingEngine(
+        DEFAULT_SUPPLIER_MAPPING, entity_type=ENTITY_SUPPLIER, database_name="AED_VSOFT"
+    )
+    record = engine.map_document(_creditor("1", "400-J001")).record
+
+    assert isinstance(record, CanonicalSupplier)
+    assert record.source_ref == "AED_VSOFT:1"
+    assert record.code == "400-J001"
+    assert record.name == "Jaya Trading Sdn Bhd"
+    assert record.email == "ap@jaya.example"
+    assert record.is_active is True  # a real bool, from "T"
+    assert record.last_modified == datetime(2026, 3, 18, 16, 3, 21, tzinfo=timezone.utc)
+
+
+def test_a_debtor_row_maps_to_a_canonical_customer_with_its_extra_fields():
+    engine = MappingEngine(
+        DEFAULT_CUSTOMER_MAPPING, entity_type=ENTITY_CUSTOMER, database_name="AED_VSOFT"
+    )
+    record = engine.map_document(_debtor("9", "300-C001")).record
+
+    assert isinstance(record, CanonicalCustomer)
+    assert record.source_ref == "AED_VSOFT:9"
+    assert record.phone_number == "+60123456789"
+    assert record.tax_id == "IG12345678900"
+    assert record.credit_limit == Decimal("25000.00000000")
+
+
+def test_a_master_record_has_no_lines_attribute_to_half_fill():
+    """Masters are flat. The profile carries no line model, so there is no empty
+    ``lines`` bag for a later step to misread as "a document with no lines"."""
+    record = MappingEngine(
+        DEFAULT_SUPPLIER_MAPPING, entity_type=ENTITY_SUPPLIER, database_name="AED_VSOFT"
+    ).map_document(_creditor()).record
+    assert isinstance(record, CanonicalSupplier)
+    assert "lines" not in CanonicalSupplier.model_fields
+
+
+# ── AC-14-25: the unbounded initial load ──────────────────────────────────────
+
+
+def _master_source(reads, *, initial_load=INITIAL_LOAD_FULL, record_cap=5000):
+    client = AutoCountClient(
+        base_url="https://ac.example.com",
+        app_id="app-1",
+        user_id="ADMIN",
+        password="secret",
+        transport=MockTransport(reads),
+    )
+    return AutoCountReadSource(
+        client,
+        entity_type=ENTITY_SUPPLIER,
+        vendor_entity="Creditor",
+        record_cap=record_cap,
+        envelope=ENVELOPE_ROW_ARRAY,
+        initial_load=initial_load,
+        identifier_key="AccNo",
+        last_modified_path="Data.0.LastModified",
+    )
+
+
+def test_the_first_master_fetch_sends_no_lower_bound_at_all():
+    """AC-14-25 — the measured failure this prevents.
+
+    Against slice 1's 30-day default, a live probe returned **1 of 106**
+    Creditors and **2 of 172** Debtors; even 365 days missed 4 and 15. A master
+    list is a standing set to be mirrored, not a document stream to be windowed,
+    so the first pull must be unbounded. A lookback here imports ~1% and reports
+    success — the most dangerous failure available, because nothing looks wrong.
+    """
+    source = _master_source([_rows([_creditor("1")])])
+    start, _end = source.window(Watermark())
+    assert start is None
+
+    source.fetch_changes(Watermark())
+    sent = source.client._transport.requests[-1]["json"]
+    assert "LastModifiedFrom" not in sent
+    assert "LastModifiedTo" not in sent
+    assert isinstance(sent["AccNo"], list)  # a scalar is the silent-full-scan trap
+
+
+def test_the_initial_lookback_does_not_apply_to_a_full_entity():
+    source = _master_source([_rows([])])
+    source.lookback_days = 30
+    assert source.window(Watermark())[0] is None
+
+
+def test_once_a_watermark_exists_a_full_entity_deltas_exactly_as_before():
+    """The handover: ``full`` costs ONE unbounded read, not a permanent one."""
+    source = _master_source([_rows([_creditor("1")])])
+    mark = Watermark(last_modified_at=datetime(2026, 3, 1, tzinfo=timezone.utc))
+    start, _end = source.window(mark)
+    assert start == datetime(2026, 3, 1, tzinfo=timezone.utc)
+
+    source.fetch_changes(mark)
+    sent = source.client._transport.requests[-1]["json"]
+    assert sent["LastModifiedFrom"] == "2026/03/01"
+    assert "LastModifiedTo" in sent
+
+
+def test_a_windowed_entity_is_unchanged_by_the_new_policy():
+    """The GRN path must not move: a document stream IS naturally time-bounded
+    and its lookback is correct."""
+    source = _source([[_grn()]])
+    assert source.initial_load == INITIAL_LOAD_WINDOWED
+    start, end = source.window(Watermark())
+    assert start is not None
+    assert timedelta(days=29) < (end - start) < timedelta(days=31)
+
+
+def test_an_unknown_initial_load_policy_is_a_loud_error():
+    """Silently defaulting to ``windowed`` would give a master a 30-day first
+    read and report the 1-of-106 result as a clean success."""
+    with pytest.raises(UnknownInitialLoad):
+        _master_source([], initial_load="whatever")
+
+
+def test_the_master_watermark_reads_last_modified_from_the_nested_row():
+    """AC-14-02. Reading the top level finds nothing, which would fail the window
+    assertion on every row AND leave the watermark stuck at None forever — so
+    every sync would be a full load and no delta would ever happen."""
+    result = _master_source(
+        [_rows([_creditor("1", last_modified="2026/03/18 16:03:21"),
+                _creditor("2", last_modified="2026/05/02 08:00:00")])]
+    ).fetch_changes(Watermark())
+    assert result.max_last_modified == datetime(2026, 5, 2, 8, 0, tzinfo=timezone.utc)
+    assert result.window_from is None  # unbounded, and honestly reported as such
+
+
+def test_the_delta_window_is_still_asserted_for_masters():
+    """AC-13-04a survives the nesting: a filter the server IGNORED still fails
+    loudly, now reading the stamp from ``Data[0]``."""
+    source = _master_source([_rows([_creditor("1", last_modified="2020/01/01 00:00:00")])])
+    with pytest.raises(AutoCountError):
+        source.fetch_changes(
+            Watermark(last_modified_at=datetime(2026, 3, 1, tzinfo=timezone.utc))
+        )
+
+
+# ── AC-14-26: a count is never reported without its denominator ───────────────
+
+
+def test_the_fetch_reports_what_the_vendor_says_is_available():
+    result = _master_source(
+        [_rows([_creditor("1", record_count="1 of 106")])]
+    ).fetch_changes(Watermark())
+    assert len(result.records) == 1
+    assert result.reported_total == 106
+
+
+def test_a_plain_integer_marker_is_read_too_and_an_absent_one_is_not_invented():
+    from modules.autocount.envelopes import _reported_total
+
+    assert _reported_total(106) == 106
+    assert _reported_total("106") == 106
+    assert _reported_total("1 of 106") == 106
+    # Absent must read as "the vendor did not say", NEVER as zero.
+    assert _reported_total(None) is None
+    assert _reported_total("") is None
+    assert _reported_total("lots") is None
+
+
+def test_the_sync_result_states_the_fetched_count_beside_the_reported_total(db, transports):
+    """AC-14-26: "2 records" alone cannot be told apart from "nothing changed"
+    and "the window excluded 170 of 172" — and the second looks exactly like
+    success while being near-total data loss."""
+    company = _company(db, transports)
+    _queue(db, transports, company, _rows([_creditor("1"), _creditor("2")]))
+    job = _run_sync(db, company, entity_type=ENTITY_SUPPLIER)
+
+    assert job.status == JOB_NEEDS_REVIEW
+    assert job.result_json["fetched"] == 2
+    assert job.result_json["vendorReportedTotal"] == 106
+    assert job.result_json["initialLoad"] == INITIAL_LOAD_FULL
+    assert job.result_json["unboundedInitialLoad"] is True
+
+
+# ── the wiring: a master sync end to end through the real handler ─────────────
+
+
+def test_a_company_is_seeded_for_the_two_master_entities(db, transports):
+    """AC-14-01: only entities with a CONFIRMED vendor payload are offered.
+    Stock/Item/UOM return HTTP 500 with an empty Message on this wrapper build,
+    so they are ABSENT from the picker rather than shown-and-disabled."""
+    company = _company(db, transports)
+    configured = {c.entity_type for c in CompanyService(db).entity_configs(DEFAULT_TENANT_ID, company.id)}
+    assert configured == {ENTITY_GOODS_RECEIVED_NOTE, ENTITY_SUPPLIER, ENTITY_CUSTOMER}
+    for absent in ("product", "stock_item", "unit_of_measure", "warehouse"):
+        assert absent not in configured
+
+
+def test_the_master_entities_are_seeded_with_the_right_envelope_and_policy(db, transports):
+    company = _company(db, transports)
+    supplier = _config_for(db, company, ENTITY_SUPPLIER)
+    grn = _grn_config(db, company)
+
+    assert supplier.envelope == ENVELOPE_ROW_ARRAY
+    assert supplier.initial_load == INITIAL_LOAD_FULL
+    # The GRN row is untouched by any of this.
+    assert grn.envelope == ENVELOPE_STATUS_DICT
+    assert grn.initial_load == INITIAL_LOAD_WINDOWED
+
+
+def test_a_master_sync_stages_company_qualified_records(db, transports):
+    company = _company(db, transports, database_name="AED_VSOFT")
+    _queue(db, transports, company, _rows([_creditor("1", "400-J001"), _creditor("2", "400-K002")]))
+    job = _run_sync(db, company, entity_type=ENTITY_SUPPLIER)
+
+    assert job.status == JOB_NEEDS_REVIEW
+    staged = StagedRecordRepository(db).list_for_job(DEFAULT_TENANT_ID, company.id, job.id)
+    assert sorted(r.source_ref for r in staged) == ["AED_VSOFT:1", "AED_VSOFT:2"]
+    # ``doc_no`` shows the ACCOUNT number, so the row is recognisable to a human
+    # (AC-14-10) — read from the mapped result, since a master's attribute is
+    # ``source_doc_no`` and reaching for ``record.doc_no`` would silently be None.
+    assert sorted(r.doc_no for r in staged) == ["400-J001", "400-K002"]
+    assert staged[0].canonical_json["entity_type"] == ENTITY_SUPPLIER
+
+
+def test_two_companies_stage_the_same_autokey_without_colliding(db, transports):
+    """The end-to-end form of AC-14-10, through the real handler."""
+    a = _company(db, transports, database_name="AED_A")
+    b = _company(db, transports, database_name="AED_B")
+    _queue(db, transports, a, _rows([_creditor("1", "400-A")]))
+    _queue(db, transports, b, _rows([_creditor("1", "400-B")]))
+
+    job_a = _run_sync(db, a, entity_type=ENTITY_SUPPLIER)
+    job_b = _run_sync(db, b, entity_type=ENTITY_SUPPLIER)
+
+    refs_a = [r.source_ref for r in StagedRecordRepository(db).list_for_job(DEFAULT_TENANT_ID, a.id, job_a.id)]
+    refs_b = [r.source_ref for r in StagedRecordRepository(db).list_for_job(DEFAULT_TENANT_ID, b.id, job_b.id)]
+    assert refs_a == ["AED_A:1"]
+    assert refs_b == ["AED_B:1"]
+
+
+def test_the_second_master_sync_is_a_delta_off_the_advanced_watermark(db, transports):
+    """The handover, through the handler: run one is unbounded, run two carries
+    the watermark the first run established from ``Data[0].LastModified``."""
+    company = _company(db, transports)
+    _queue(db, transports, company, _rows([_creditor("1", last_modified="2026/05/02 08:00:00")]))
+    _run_sync(db, company, entity_type=ENTITY_SUPPLIER)
+
+    mark = WatermarkRepository(db).get_or_create(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER)
+    assert mark.last_modified_at == datetime(2026, 5, 2, 8, 0, tzinfo=timezone.utc)
+
+    _queue(db, transports, company, _rows([]))
+    _run_sync(db, company, entity_type=ENTITY_SUPPLIER)
+    sent = transports[company.connection_id].requests[-1]["json"]
+    assert sent["LastModifiedFrom"] == "2026/05/02"
+
+
+# ── the backfill (module Alembic never runs under pytest) ─────────────────────
+
+
+def test_the_migration_adds_both_columns_with_a_default_that_fills_existing_rows():
+    """Where the backfill of pre-existing rows ACTUALLY happens.
+
+        !!  THE ``server_default`` ON THE ADD IS THE BACKFILL.  !!
+
+    On the only ordering where these columns are genuinely absent — a host
+    already stamped at 0002, where ``create_all`` cannot ALTER an existing table
+    — ``ADD COLUMN ... NOT NULL DEFAULT 'status_dict'`` is what gives every
+    existing GRN row its value, atomically, in the same statement. Dropping the
+    default in a later "tidy-up" would leave those rows stranded against a NOT
+    NULL column, so it is asserted rather than trusted.
+
+    Asserted by READING the revision, because pytest cannot run it: conftest
+    builds the schema with ``create_all`` and ``run_module_migrations`` is a
+    Postgres-only no-op, so nothing in this suite executes the file. The DDL
+    itself is gated by review plus a real ``alembic upgrade head``.
+    """
+    import importlib.util
+    import pathlib
+    import types
+
+    # A module name cannot start with a digit, so load the revision by path.
+    spec = importlib.util.spec_from_file_location(
+        "_ac_rev_0003",
+        pathlib.Path(__file__).resolve().parents[1]
+        / "modules/autocount/alembic/versions/0003_autocount_masters.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert len(module.revision) <= 32  # alembic_version.version_num is VARCHAR(32)
+    assert module.down_revision == "0002_autocount_grn"
+
+    # Drive the real ``upgrade()`` with the DB-touching seams stubbed, so what is
+    # asserted is what the revision actually declares.
+    added: Dict[str, Any] = {}
+    module.add_column = lambda name, column: added.__setitem__(name, column)
+    module.op = types.SimpleNamespace(get_bind=lambda: None)
+    module.backfill_entity_config_defaults = lambda bind, schema=None: 0
+    module.upgrade()
+
+    assert set(added) == {"envelope", "initial_load"}
+    assert added["envelope"].server_default.arg == ENVELOPE_STATUS_DICT
+    assert added["initial_load"].server_default.arg == INITIAL_LOAD_WINDOWED
+    # NOT NULL matters as much as the default: together they are what makes the
+    # fill atomic on the ADD.
+    assert added["envelope"].nullable is False
+    assert added["initial_load"].nullable is False
+
+
+def test_the_backfill_repairs_a_row_left_without_a_value(db, transports):
+    """The belt-and-braces half, for the orderings the ADD's default cannot cover
+    (a column added nullable out of band, or a row written empty).
+
+        !!  A TRULY ``NULL`` ROW IS UNREACHABLE HERE, AND THAT IS THE POINT.  !!
+
+    Both columns are NOT NULL in the model AND in the migration, so SQLite
+    refuses a NULL and Postgres never produces one. The reachable empty state is
+    ``''`` — which is why the backfill's WHERE covers both rather than just
+    ``IS NULL``.
+    """
+    company = _company(db, transports)
+    stranded = AcEntityConfig(
+        tenant_id=DEFAULT_TENANT_ID,
+        company_id=company.id,
+        entity_type="legacy_entity",
+    )
+    db.add(stranded)
+    db.commit()
+    # Emptied at the SQL level. Passing ``''`` through the ORM would work too,
+    # but going via SQL is the honest simulation: a row that predates the column
+    # was never touched by the model's python-side ``default=``.
+    db.execute(
+        sa.text(
+            "UPDATE ac_entity_config SET envelope = '', initial_load = '' "
+            "WHERE id = :id"
+        ),
+        {"id": stranded.id},
+    )
+    db.commit()
+
+    touched = backfill_entity_config_defaults(db, schema=None)
+    db.expire_all()
+    assert touched >= 2  # one per column on the stranded row
+
+    repaired = db.get(AcEntityConfig, stranded.id)
+    # A pre-0.2.0 row is always a GRN one — those were the only semantics that
+    # existed — so these are the values it must end up with.
+    assert repaired.envelope == ENVELOPE_STATUS_DICT
+    assert repaired.initial_load == INITIAL_LOAD_WINDOWED
+
+
+def test_the_backfill_never_overwrites_a_row_that_already_has_a_value(db, transports):
+    """It must be safe to run in either bootstrap order, and repeatedly — a
+    master row already seeded ``row_array``/``full`` must survive untouched."""
+    company = _company(db, transports)
+    supplier = _config_for(db, company, ENTITY_SUPPLIER)
+
+    backfill_entity_config_defaults(db, schema=None)
+    backfill_entity_config_defaults(db, schema=None)
+    db.expire_all()
+
+    fresh = db.get(AcEntityConfig, supplier.id)
+    assert fresh.envelope == ENVELOPE_ROW_ARRAY
+    assert fresh.initial_load == INITIAL_LOAD_FULL
+
+
+def test_the_version_upgrade_seeds_masters_onto_a_company_that_already_exists(db, transports):
+    """The backfill that matters for EXISTING tenants: ``seed_company_defaults``
+    runs once, when a company is registered, so a company registered under 0.1.0
+    was seeded GRN-only. Without this pass the two master entities are silently
+    invisible to exactly the tenants already using the module."""
+    from modules.autocount.bootstrap import update_tenant
+    from modules.autocount.repositories import EntityConfigRepository, FieldMappingRepository
+
+    company = _company(db, transports)
+    # Simulate the 0.1.0 world: masters were never seeded for this company.
+    for entity_type in (ENTITY_SUPPLIER, ENTITY_CUSTOMER):
+        config = EntityConfigRepository(db).get(DEFAULT_TENANT_ID, company.id, entity_type)
+        db.delete(config)
+        for row in FieldMappingRepository(db).list(DEFAULT_TENANT_ID, company.id, entity_type):
+            db.delete(row)
+    db.commit()
+    assert {c.entity_type for c in CompanyService(db).entity_configs(DEFAULT_TENANT_ID, company.id)} == {
+        ENTITY_GOODS_RECEIVED_NOTE
+    }
+
+    update_tenant(db, DEFAULT_TENANT_ID, "0.1.0")
+    db.commit()
+
+    configured = {c.entity_type for c in CompanyService(db).entity_configs(DEFAULT_TENANT_ID, company.id)}
+    assert configured == {ENTITY_GOODS_RECEIVED_NOTE, ENTITY_SUPPLIER, ENTITY_CUSTOMER}
+    assert FieldMappingRepository(db).count(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER) == len(
+        DEFAULT_SUPPLIER_MAPPING
+    )
+
+
+def test_the_version_upgrade_leaves_an_operators_edited_mapping_alone(db, transports):
+    """Re-running the seed must never revert an operator's edits — every branch
+    in it is seed-if-absent, and this is the assertion that keeps it that way."""
+    from modules.autocount.bootstrap import update_tenant
+    from modules.autocount.repositories import FieldMappingRepository
+
+    company = _company(db, transports)
+    row = FieldMappingRepository(db).list(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER)[0]
+    row.source_path = "SomeCustomField"
+    db.commit()
+
+    update_tenant(db, DEFAULT_TENANT_ID, "0.1.0")
+    db.commit()
+    db.expire_all()
+
+    assert db.get(AcFieldMapping, row.id).source_path == "SomeCustomField"
