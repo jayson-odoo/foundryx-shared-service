@@ -35,6 +35,8 @@ from sqlalchemy.types import JSON as GenericJSON
 from app.models.utc_datetime import UTCDateTime
 
 from .db import AutocountBase
+from .envelopes import ENVELOPE_STATUS_DICT
+from .sources import INITIAL_LOAD_WINDOWED
 
 _JSON = GenericJSON(none_as_null=True)
 
@@ -124,11 +126,23 @@ class AcEntityConfig(AutocountBase):
 
     sync_mode = Column(String, nullable=False, default=SYNC_MODE_MANUAL)
     source_impl = Column(String, nullable=False, default="autocount_read")
+    # The OUTER response shape this entity returns (AC-14-03). GRN is a dict
+    # carrying ``Status``; masters are a bare ARRAY whose rows carry their own.
+    # Neither is derivable from the other, and reading a master response through
+    # the GRN unwrap fails every row — so it is configured, never guessed.
+    envelope = Column(String, nullable=False, default=ENVELOPE_STATUS_DICT)
+    # Whether the FIRST sync (no watermark yet) is unbounded or lookback-windowed
+    # (AC-14-25). A document stream is naturally time-bounded; a master list is a
+    # standing set that must be mirrored whole. Getting this wrong on masters
+    # imports ~1% of the data and reports success.
+    initial_load = Column(String, nullable=False, default=INITIAL_LOAD_WINDOWED)
     # The vendor's ``RecordCount`` cap. Hitting it is the ONLY truncation signal
     # available (the response's "N of TOTAL" marker is computed POST-cap and is
     # not a total) — and hitting it is logged and fails loudly (AC-13-46).
     record_cap = Column(Integer, nullable=False, default=200)
     # How far back the FIRST sync reaches when no watermark exists yet.
+    # **Applies to ``initial_load='windowed'`` entities ONLY** — a ``full``
+    # entity ignores it entirely.
     initial_lookback_days = Column(Integer, nullable=False, default=30)
     enabled = Column(Boolean, nullable=False, default=True)
 

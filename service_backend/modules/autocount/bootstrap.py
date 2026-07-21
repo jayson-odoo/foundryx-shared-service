@@ -101,16 +101,46 @@ def install_tenant(db: Session, tenant_id: str) -> None:
 def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     """Per-tenant data migration between provisioned versions (plan 08 D3).
 
-    All of autocount is 0.1.0 and every table in it is NEW in this slice, so
-    there is genuinely nothing to backfill — no tenant holds a row that predates
-    these columns.
+    **0.1.0 → 0.2.0 (masters).** Two things existing tenants need, and neither is
+    delivered by seeding new rows:
 
-    NOTE for the next slice that touches an EXISTING table: adding a column or
-    an engine adoption needs a REAL BACKFILL here (and in module Alembic), not
-    seed-if-absent. ``install_tenant``-style seeding does not repair rows that
-    already exist — that is exactly how rows end up stranded with a NULL in a
-    column the code assumes is populated."""
-    return None
+    1. **Entity configs + mapping rows for the two master entities on every
+       company that ALREADY EXISTS.** ``seed_company_defaults`` runs once, when a
+       company is registered — a company registered under 0.1.0 was seeded with
+       GRN only, so without this pass the operator sees no Supplier/Customer
+       entity at all and the feature is silently invisible to exactly the tenants
+       who already use the module. Re-running the seed is safe: every branch in
+       it is seed-if-absent, so a company's existing config and any operator
+       edits to its mapping rows are untouched.
+
+    2. **Envelope / initial-load values on pre-existing ``ac_entity_config``
+       rows.** Module Alembic fills these, but a host built with ``init_db``
+       (``create_all`` + seed) never runs module Alembic — and ``create_all``
+       cannot ALTER an existing table, so those rows can sit empty against
+       columns the code assumes are populated. Cheap, idempotent, and the
+       difference between a working sync and an ``UnknownEnvelope`` at fetch
+       time.
+    """
+    from .backfill import backfill_entity_config_defaults, default_schema
+    from .repositories import CompanyRepository
+    from .services.company_service import CompanyService
+
+    backfill_entity_config_defaults(
+        db, schema=default_schema(db.get_bind())
+    )
+
+    service = CompanyService(db)
+    page = 0
+    while True:
+        companies, total = CompanyRepository(db).list(tenant_id, page=page, page_size=50)
+        if not companies:
+            break
+        for company in companies:
+            service.seed_company_defaults(tenant_id, company.id)
+        page += 1
+        if (page * 50) >= total:
+            break
+    db.flush()
 
 
 def uninstall_tenant(db: Session, tenant_id: str) -> None:
