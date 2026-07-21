@@ -12,6 +12,7 @@ from app.models.user import User
 
 from ..schemas import (
     ApprovalResponse,
+    PreviewResponse,
     StagedListResponse,
     StagedRecordItem,
     SyncJobItem,
@@ -25,6 +26,7 @@ from ..services import (
     EntityNotConfigured,
     JobNotFound,
     NotAwaitingApproval,
+    PreviewFailed,
     PushFailed,
     SyncService,
 )
@@ -37,10 +39,11 @@ def _raise(exc: AutocountServiceError) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
     if isinstance(exc, NotAwaitingApproval):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message)
-    if isinstance(exc, PushFailed):
+    if isinstance(exc, (PushFailed, PreviewFailed)):
         # An UPSTREAM fault, not bad client input — 422 would tell the operator
-        # they sent something wrong when in fact the sink broke. The batch is
-        # back in review and re-approvable, which the message says.
+        # they sent something wrong when in fact the consumer broke. A push is
+        # back in review and re-approvable; a preview failure just means the
+        # gate cannot offer approval yet. Both say so in the message.
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
         )
@@ -119,6 +122,23 @@ def list_staged(
         data=[StagedRecordItem.model_validate(row) for row in rows],
         total=len(rows),
     )
+
+
+@router.post("/jobs/{job_id}/preview", response_model=PreviewResponse)
+def preview(
+    job_id: str,
+    current_user: User = Depends(require_permission("autocount.sync.run")),
+    db: Session = Depends(get_db),
+) -> PreviewResponse:
+    """Dry-run the staged batch against the consumer and return its prediction
+    (AC-14-20/21). Writes NOTHING — the prediction is Sorento's own rolled-back
+    resolution, never a local reconstruction. Gated by the run permission
+    because it is the step immediately before approval."""
+    try:
+        result = SyncService(db).preview(current_user.tenant_id, job_id)
+    except AutocountServiceError as exc:
+        _raise(exc)
+    return PreviewResponse(jobId=job_id, preview=result)
 
 
 @router.post("/jobs/{job_id}/approve", response_model=ApprovalResponse)

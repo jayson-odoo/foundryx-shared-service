@@ -16,6 +16,7 @@ from ..schemas import (
     CompanyDetailResponse,
     CompanyItem,
     CompanyListResponse,
+    CompanySinkUpdate,
     EntityConfigItem,
     EntityConfigUpdate,
 )
@@ -92,6 +93,31 @@ def get_company(
         company=CompanyItem.model_validate(company),
         entities=[EntityConfigItem.model_validate(row) for row in entities],
     )
+
+
+@router.patch("/{company_id}/sink-target", response_model=CompanyItem)
+def set_sink_target(
+    company_id: str,
+    body: CompanySinkUpdate,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+) -> CompanyItem:
+    """Point a company at its consumer push target (hop 2).
+
+    ``logging`` keeps the no-op default; ``sorento`` requires a Sorento
+    ``consumer`` connection id, validated to belong to this tenant. Reuses
+    ``autocount.companies.manage`` — the same "configure the company" authority —
+    so no new permission needs a grant sweep for existing tenants."""
+    try:
+        company = CompanyService(db).set_sink_target(
+            current_user.tenant_id,
+            company_id,
+            sink_impl=body.sinkImpl,
+            sink_connection_id=body.sinkConnectionId,
+        )
+    except AutocountServiceError as exc:
+        _raise(exc)
+    return CompanyItem.model_validate(company)
 
 
 @router.patch(

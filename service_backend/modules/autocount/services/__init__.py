@@ -15,6 +15,7 @@ from .sync_service import (
     EntityNotConfigured,
     JobNotFound,
     NotAwaitingApproval,
+    PreviewFailed,
     PushFailed,
     SyncService,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "EntityNotConfigured",
     "JobNotFound",
     "NotAwaitingApproval",
+    "PreviewFailed",
     "PushFailed",
     "SyncService",
 ]

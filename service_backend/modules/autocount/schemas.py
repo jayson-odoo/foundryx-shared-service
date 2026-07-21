@@ -97,7 +97,27 @@ class CompanyItem(ApiModel):
     companyName: str = Field(validation_alias="company_name")
     name: str
     isActive: bool = Field(validation_alias="is_active")
+    # The consumer push target (hop 2). ``logging`` = the no-op default (nothing
+    # leaves the ESB); ``sorento`` + ``sinkConnectionId`` = a real Sorento push.
+    sinkImpl: str = Field(default="logging", validation_alias="sink_impl")
+    sinkConnectionId: Optional[str] = Field(
+        default=None, validation_alias="sink_connection_id"
+    )
     createdAt: Optional[datetime] = Field(default=None, validation_alias="created_at")
+
+
+class CompanySinkUpdate(ApiModel):
+    """Point a company at a push target (plan 14 hop 2 — operator wiring).
+
+    ``sinkImpl='logging'`` clears the target (the no-op default);
+    ``sinkImpl='sorento'`` requires a ``sinkConnectionId`` naming a Sorento
+    ``consumer`` connection for this tenant.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    sinkImpl: str
+    sinkConnectionId: Optional[str] = None
 
 
 class CompanyListResponse(ApiModel):
@@ -195,3 +215,12 @@ class SyncRunListResponse(ApiModel):
 class ApprovalResponse(ApiModel):
     jobId: str
     result: Dict[str, Any]
+
+
+class PreviewResponse(ApiModel):
+    """The dry-run verdict shown at the approval gate (AC-14-20). ``preview``
+    carries either the per-record predictions + summary, or a "nothing to
+    preview" shape for a logging-sink company — the service owns the shape."""
+
+    jobId: str
+    preview: Dict[str, Any]

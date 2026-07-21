@@ -35,6 +35,8 @@ from ..activity import (
 from ..client import AutoCountClient, AutoCountError
 from ..mapping import DEFAULT_MAPPINGS, MappingRow
 from ..models import (
+    SINK_IMPL_LOGGING,
+    SINK_IMPL_SORENTO,
     SYNC_MODE_SCHEDULED_REVIEW,
     AcCompany,
     AcEntityConfig,
@@ -48,6 +50,9 @@ from ..repositories import (
     FieldMappingRepository,
     WatermarkRepository,
 )
+from ..sinks import EntitySink, UnknownSinkImpl, sink_for
+from ..sinks_sorento import sorento_sink_from_connection
+from ..sorento_provider import SORENTO_PROVIDER_KEY
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -294,6 +299,93 @@ class CompanyService:
         if conn is None:
             raise ConnectionNotFound("That AutoCount connection was not found.")
         return conn
+
+    def _consumer_connection(self, tenant_id: str, connection_id: str) -> Connection:
+        """Tenant- AND provider-scoped lookup of the outbound Sorento connection.
+
+        Mirrors ``_connection`` exactly (never a bare ``get(id)`` — a stored
+        connection id resolved unscoped is the polymorphic-target_id leak class),
+        but pins ``provider='sorento'`` so a company can never be pointed at
+        another provider's connection by id."""
+        conn = self.connections.get_for_provider(
+            tenant_id, connection_id, SORENTO_PROVIDER_KEY
+        )
+        if conn is None:
+            raise ConnectionNotFound("That Sorento connection was not found.")
+        return conn
+
+    def sink_for_company(
+        self, tenant_id: str, company: AcCompany, entity_type: str
+    ) -> EntitySink:
+        """Resolve the consumer sink a company delivers to, per entity.
+
+        ``'logging'`` keeps the slice-1 no-op (a legitimate configured default,
+        NOT a mock). ``'sorento'`` resolves the company's ``consumer`` connection,
+        decrypts its ``apiKey`` (a wrong/rotated ``FERNET_KEY`` yields a CLEAN
+        rejection via ``credentials``, never a 500) and builds a per-entity
+        ``SorentoSink``. An unknown ``sink_impl`` is a LOUD error — a silent
+        fallback to the logging sink would stop delivering to a real consumer
+        without anyone noticing.
+        """
+        impl = company.sink_impl or SINK_IMPL_LOGGING
+        if impl == SINK_IMPL_LOGGING:
+            # Via the registry (not ``LoggingSink()`` directly) so the sink is
+            # swappable the same way the Sorento sink is chosen — one seam.
+            return sink_for(SINK_IMPL_LOGGING)
+        if impl == SINK_IMPL_SORENTO:
+            if not company.sink_connection_id:
+                raise AutocountServiceError(
+                    "This company is set to push to Sorento but has no Sorento "
+                    "connection configured. Choose a target connection first."
+                )
+            conn = self._consumer_connection(tenant_id, company.sink_connection_id)
+            return sorento_sink_from_connection(
+                conn.config_json or {},
+                self.credentials(conn),  # clean InvalidToken reject, never 500
+                entity_type=entity_type,
+            )
+        raise UnknownSinkImpl(
+            f"Company '{company.database_name}' is configured with an unknown "
+            f"push sink '{impl}'."
+        )
+
+    def set_sink_target(
+        self,
+        tenant_id: str,
+        company_id: str,
+        *,
+        sink_impl: str,
+        sink_connection_id: Optional[str] = None,
+    ) -> AcCompany:
+        """Point a company at a push target (plan 14 hop 2 — the operator wiring).
+
+        Validates the impl against the known set and, for ``'sorento'``, that the
+        connection exists and is genuinely a Sorento ``consumer`` connection for
+        THIS tenant (tenant- and provider-scoped, never a bare id). Switching to
+        ``'logging'`` clears any stale connection id so a later switch back can't
+        resurrect a wrong target.
+        """
+        company = self.get(tenant_id, company_id)  # tenant-scope guard
+        if sink_impl == SINK_IMPL_LOGGING:
+            company.sink_impl = SINK_IMPL_LOGGING
+            company.sink_connection_id = None
+        elif sink_impl == SINK_IMPL_SORENTO:
+            if not sink_connection_id:
+                raise AutocountServiceError(
+                    "Choose a Sorento connection to push to."
+                )
+            # Proves the connection exists AND is a Sorento consumer for this
+            # tenant — 404 otherwise, never a silently-stored dangling id.
+            self._consumer_connection(tenant_id, sink_connection_id)
+            company.sink_impl = SINK_IMPL_SORENTO
+            company.sink_connection_id = sink_connection_id
+        else:
+            raise AutocountServiceError(
+                f"Unknown push target '{sink_impl}'. Choose 'logging' or 'sorento'."
+            )
+        self.db.commit()
+        self.db.refresh(company)
+        return company
 
     def credentials(self, connection: Connection) -> Dict[str, Any]:
         """Decrypt a connection's credentials. A wrong/rotated ``FERNET_KEY``
