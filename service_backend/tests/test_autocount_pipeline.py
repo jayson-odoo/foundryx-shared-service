@@ -1219,9 +1219,11 @@ def test_every_autocount_route_requires_authentication(client):
         ("post", "/autocount/companies"),
         ("get", "/autocount/companies/x/runs"),
         ("get", "/autocount/jobs/x/staged"),
+        ("post", "/autocount/jobs/x/preview"),
         ("post", "/autocount/jobs/x/approve"),
         ("post", "/autocount/jobs/x/discard"),
         ("patch", "/autocount/companies/x/entities/goods_received_note"),
+        ("patch", "/autocount/companies/x/sink-target"),
     ):
         kwargs = {"json": {}} if method in ("post", "patch") else {}
         response = getattr(client, method)(path, **kwargs)
@@ -3001,3 +3003,417 @@ def test_row_array_failure_names_the_status_when_no_message_is_given():
     verdict = ROW_ARRAY.verdict([_creditor(status="Fail")])
     assert verdict.ok is False
     assert "Fail" in (verdict.message or "")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Hop 2 — the Sorento push target wiring (plan 14 Tasks A–E)
+#
+# Slice 1 hardcoded the logging no-op. These pin the wiring that makes an
+# operator able to configure a Sorento target and approve a REAL push: the sink
+# resolver, the dry-run preview (writes nothing), the batch approve path, and
+# the backfill for existing companies.
+# ══════════════════════════════════════════════════════════════════════════════
+
+import json as _json  # noqa: E402
+
+from modules.autocount.backfill import (  # noqa: E402
+    backfill_sink_impl_defaults,
+    default_schema,
+)
+from modules.autocount.models import (  # noqa: E402
+    SINK_IMPL_LOGGING,
+    SINK_IMPL_SORENTO,
+)
+from modules.autocount.services import (  # noqa: E402
+    AutocountServiceError,
+    ConnectionNotFound,
+    PreviewFailed,
+    PushFailed,
+)
+from modules.autocount.sinks import UnknownSinkImpl  # noqa: E402
+from modules.autocount.sinks_sorento import SorentoSink  # noqa: E402
+from modules.autocount.sorento_provider import SORENTO_PROVIDER_KEY  # noqa: E402
+
+
+def _sorento_connection(
+    db, *, tenant_id: str = DEFAULT_TENANT_ID, api_key: str = "sk_test",
+    base_url: str = "http://sorento.test",
+) -> Connection:
+    conn = Connection(
+        tenant_id=tenant_id,
+        provider=SORENTO_PROVIDER_KEY,
+        type="consumer",
+        name="Sorento",
+        config_json={"baseUrl": base_url},
+        credentials_json=encrypt_secret({"apiKey": api_key}),
+    )
+    db.add(conn)
+    db.commit()
+    db.refresh(conn)
+    return conn
+
+
+def _point_at_sorento(db, company, conn) -> None:
+    CompanyService(db).set_sink_target(
+        company.tenant_id, company.id,
+        sink_impl=SINK_IMPL_SORENTO, sink_connection_id=conn.id,
+    )
+    db.refresh(company)
+
+
+def _staged_supplier_job(
+    db, company, *, refs=("AED_VSOFT:1",), tenant_id: str = DEFAULT_TENANT_ID
+) -> BackgroundJob:
+    """A needs_review autocount_sync job for suppliers, with STAGED canonical
+    supplier rows — the exact state an operator approves from."""
+    job = BackgroundJob(
+        tenant_id=tenant_id,
+        type=AUTOCOUNT_SYNC,
+        status=JOB_NEEDS_REVIEW,
+        payload_json={"companyId": company.id, "entityType": ENTITY_SUPPLIER},
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    repo = StagedRecordRepository(db)
+    for i, ref in enumerate(refs, start=1):
+        record = CanonicalSupplier(
+            source_ref=ref, source_doc_no=f"400-{i}", code=f"400-{i}",
+            name=f"NAME{i}", email=None, is_active=True,
+        )
+        repo.add(
+            AcStagedRecord(
+                tenant_id=tenant_id, company_id=company.id,
+                entity_type=ENTITY_SUPPLIER, job_id=job.id, source_ref=ref,
+                canonical_json=record.comparable(), status=STAGED,
+            )
+        )
+    db.commit()
+    return job
+
+
+class _SorentoRecorder:
+    """Records every request the resolved SorentoSink makes and serves a scripted
+    response, so a test asserts on exactly what crossed the wire — and that a
+    preview never carried a real (non-dry-run) write."""
+
+    def __init__(self) -> None:
+        self.requests: List[httpx.Request] = []
+        self.responder = lambda r: httpx.Response(
+            200, json={"summary": {}, "records": []}
+        )
+        self._transport = httpx.MockTransport(self._handle)
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return self.responder(request)
+
+
+@pytest.fixture
+def sorento_sink(monkeypatch):
+    """Inject ONE recording MockTransport into every SorentoSink the resolver
+    builds — no socket ever opens, and the request log is inspectable."""
+    import modules.autocount.services.company_service as company_module
+    from modules.autocount.sinks_sorento import sorento_sink_from_connection as real
+
+    rec = _SorentoRecorder()
+
+    def fake(config, credentials, *, entity_type, transport=None):
+        return real(config, credentials, entity_type=entity_type, transport=rec._transport)
+
+    monkeypatch.setattr(company_module, "sorento_sink_from_connection", fake)
+    return rec
+
+
+def _created(request: httpx.Request, outcome: str = "created") -> httpx.Response:
+    body = _json.loads(request.content)
+    recs = [
+        {"source_ref": r["source_ref"], "outcome": outcome,
+         "entity_id": f"id-{r['source_ref']}"}
+        for r in body["records"]
+    ]
+    n = len(recs)
+    return httpx.Response(200, json={
+        "summary": {"total": n, "created": n if outcome == "created" else 0,
+                    "updated": n if outcome == "updated" else 0,
+                    "failed": 0, "retryable": 0},
+        "records": recs,
+    })
+
+
+# ── sink resolution (Task C) ──────────────────────────────────────────────────
+
+
+def test_a_new_company_defaults_to_the_logging_sink(db, transports):
+    company = _company(db, transports)
+    assert company.sink_impl == SINK_IMPL_LOGGING
+    assert company.sink_connection_id is None
+
+
+def test_the_resolver_returns_the_logging_sink_by_default(db, transports):
+    company = _company(db, transports)
+    sink = CompanyService(db).sink_for_company(DEFAULT_TENANT_ID, company, ENTITY_SUPPLIER)
+    assert sink.name == SINK_IMPL_LOGGING
+
+
+def test_the_resolver_builds_a_sorento_sink_when_configured(db, transports):
+    company = _company(db, transports)
+    conn = _sorento_connection(db)
+    _point_at_sorento(db, company, conn)
+    sink = CompanyService(db).sink_for_company(DEFAULT_TENANT_ID, company, ENTITY_SUPPLIER)
+    assert isinstance(sink, SorentoSink)
+    assert sink.name == SINK_IMPL_SORENTO
+    assert sink.entity_type == ENTITY_SUPPLIER
+
+
+def test_sorento_without_a_connection_is_a_clean_error(db, transports):
+    company = _company(db, transports)
+    company.sink_impl = SINK_IMPL_SORENTO
+    company.sink_connection_id = None
+    db.commit()
+    with pytest.raises(AutocountServiceError):
+        CompanyService(db).sink_for_company(DEFAULT_TENANT_ID, company, ENTITY_SUPPLIER)
+
+
+def test_an_unknown_sink_impl_is_a_loud_error_never_a_silent_fallback(db, transports):
+    company = _company(db, transports)
+    company.sink_impl = "martians"
+    db.commit()
+    with pytest.raises(UnknownSinkImpl):
+        CompanyService(db).sink_for_company(DEFAULT_TENANT_ID, company, ENTITY_SUPPLIER)
+
+
+def test_an_undecryptable_sorento_key_is_a_clean_error_not_a_500(db, transports):
+    from cryptography.fernet import Fernet
+
+    company = _company(db, transports)
+    conn = _sorento_connection(db)
+    _point_at_sorento(db, company, conn)
+    # A valid Fernet token minted under a FOREIGN key — the process key cannot
+    # read it, so decrypt raises InvalidToken, which must surface CLEAN.
+    conn.credentials_json = Fernet(Fernet.generate_key()).encrypt(b'{"apiKey":"x"}').decode()
+    db.commit()
+    with pytest.raises(AutocountServiceError):
+        CompanyService(db).sink_for_company(DEFAULT_TENANT_ID, company, ENTITY_SUPPLIER)
+
+
+def test_set_sink_target_rejects_a_foreign_connection(db, transports):
+    company = _company(db, transports)
+    foreign = _sorento_connection(db, tenant_id=OTHER_TENANT_ID)
+    with pytest.raises(ConnectionNotFound):
+        CompanyService(db).set_sink_target(
+            DEFAULT_TENANT_ID, company.id,
+            sink_impl=SINK_IMPL_SORENTO, sink_connection_id=foreign.id,
+        )
+
+
+def test_switching_back_to_logging_clears_the_connection(db, transports):
+    company = _company(db, transports)
+    conn = _sorento_connection(db)
+    _point_at_sorento(db, company, conn)
+    assert company.sink_connection_id == conn.id
+    CompanyService(db).set_sink_target(
+        DEFAULT_TENANT_ID, company.id, sink_impl=SINK_IMPL_LOGGING
+    )
+    db.refresh(company)
+    assert company.sink_impl == SINK_IMPL_LOGGING
+    assert company.sink_connection_id is None
+
+
+# ── dry-run preview (Task D, AC-14-20/21) ─────────────────────────────────────
+
+
+def test_preview_returns_predictions_and_writes_nothing(db, transports, sorento_sink):
+    company = _company(db, transports)
+    _point_at_sorento(db, company, _sorento_connection(db))
+    job = _staged_supplier_job(db, company, refs=("AED_VSOFT:1",))
+
+    def responder(request):
+        # AC-14-21: the prediction is Sorento's OWN dry run — and it must be a
+        # dry run, never a real write.
+        assert request.url.params.get("dry_run") == "true"
+        body = _json.loads(request.content)
+        recs = [
+            {"source_ref": r["source_ref"], "outcome": "updated", "entity_id": "s1",
+             "diff": {"name": {"current": "OLD", "incoming": "NAME1"}}}
+            for r in body["records"]
+        ]
+        return httpx.Response(200, json={
+            "summary": {"total": 1, "created": 0, "updated": 1, "failed": 0, "retryable": 0},
+            "records": recs,
+        })
+
+    sorento_sink.responder = responder
+
+    result = SyncService(db).preview(DEFAULT_TENANT_ID, job.id)
+
+    assert result["previewable"] is True
+    assert result["summary"]["updated"] == 1
+    [pred] = result["predictions"]
+    assert pred["outcome"] == "updated"
+    assert pred["changesLiveData"] is True
+    # Exactly one call, and it carried ?dry_run=true (writes nothing).
+    assert len(sorento_sink.requests) == 1
+    assert sorento_sink.requests[0].url.params.get("dry_run") == "true"
+    # The staged rows and the job are untouched by a preview.
+    rows = StagedRecordRepository(db).list_for_job(DEFAULT_TENANT_ID, company.id, job.id)
+    assert {r.status for r in rows} == {STAGED}
+    fresh = db.query(BackgroundJob).filter(BackgroundJob.id == job.id).first()
+    assert fresh.status == JOB_NEEDS_REVIEW
+
+
+def test_preview_on_a_logging_company_offers_nothing_to_preview(db, transports):
+    company = _company(db, transports)  # logging default
+    job = _staged_supplier_job(db, company)
+    result = SyncService(db).preview(DEFAULT_TENANT_ID, job.id)
+    assert result["previewable"] is False
+    assert "nothing to preview" in result["reason"].lower()
+
+
+def test_a_failing_dry_run_refuses_to_offer_approval(db, transports, sorento_sink):
+    company = _company(db, transports)
+    _point_at_sorento(db, company, _sorento_connection(db))
+    job = _staged_supplier_job(db, company)
+    sorento_sink.responder = lambda r: httpx.Response(500, json={"message": "boom"})
+    with pytest.raises(PreviewFailed):
+        SyncService(db).preview(DEFAULT_TENANT_ID, job.id)
+    # Nothing was written, and the job stays reviewable.
+    fresh = db.query(BackgroundJob).filter(BackgroundJob.id == job.id).first()
+    assert fresh.status == JOB_NEEDS_REVIEW
+
+
+# ── approve via the real sink (Task E, AC-14-16/40/41) ────────────────────────
+
+
+def test_approve_via_sorento_delivers_and_marks_pushed(db, transports, sorento_sink):
+    company = _company(db, transports)
+    _point_at_sorento(db, company, _sorento_connection(db))
+    job = _staged_supplier_job(db, company, refs=("AED_VSOFT:1", "AED_VSOFT:2"))
+
+    def responder(request):
+        # A real push, never a dry run.
+        assert request.url.params.get("dry_run") is None
+        return _created(request)
+
+    sorento_sink.responder = responder
+
+    result = SyncService(db).approve(DEFAULT_TENANT_ID, job.id, actor_user_id="u1")
+
+    assert result["pushed"] == 2
+    assert result["sink"] == SINK_IMPL_SORENTO
+    assert result["delivered"] is True  # honest: really delivered (AC-14-41)
+    assert "sinkNote" not in result  # no slice-1 no-op disclaimer on a real push
+    rows = StagedRecordRepository(db).list_for_job(DEFAULT_TENANT_ID, company.id, job.id)
+    assert {r.status for r in rows} == {STAGED_PUSHED}
+    assert all(r.pushed_at is not None for r in rows)
+    # ONE batch HTTP call for two records — not two per-record calls.
+    assert len(sorento_sink.requests) == 1
+    fresh = db.query(BackgroundJob).filter(BackgroundJob.id == job.id).first()
+    assert fresh.status == JOB_DONE
+
+
+def test_a_batch_error_releases_to_review_and_pushes_nothing(db, transports, sorento_sink):
+    company = _company(db, transports)
+    _point_at_sorento(db, company, _sorento_connection(db))
+    job = _staged_supplier_job(db, company, refs=("AED_VSOFT:1", "AED_VSOFT:2"))
+    # A batch-level 500 (a guard-rail error before their fix lands) — nothing
+    # resolved, so nothing may be marked pushed.
+    sorento_sink.responder = lambda r: httpx.Response(500, json={"message": "guardrail"})
+
+    with pytest.raises(PushFailed):
+        SyncService(db).approve(DEFAULT_TENANT_ID, job.id)
+
+    fresh = db.query(BackgroundJob).filter(BackgroundJob.id == job.id).first()
+    assert fresh.status == JOB_NEEDS_REVIEW  # re-approvable, never stranded
+    rows = StagedRecordRepository(db).list_for_job(DEFAULT_TENANT_ID, company.id, job.id)
+    assert {r.status for r in rows} == {STAGED}  # nothing pushed
+
+
+def test_a_rate_limit_beyond_the_budget_releases_to_review(db, transports, sorento_sink, monkeypatch):
+    monkeypatch.setattr("modules.autocount.sinks_sorento.time.sleep", lambda *_: None)
+    company = _company(db, transports)
+    _point_at_sorento(db, company, _sorento_connection(db))
+    job = _staged_supplier_job(db, company)
+    sorento_sink.responder = lambda r: httpx.Response(429, headers={"Retry-After": "1"}, json={})
+
+    with pytest.raises(PushFailed):
+        SyncService(db).approve(DEFAULT_TENANT_ID, job.id)
+    fresh = db.query(BackgroundJob).filter(BackgroundJob.id == job.id).first()
+    assert fresh.status == JOB_NEEDS_REVIEW
+
+
+def test_a_per_record_rejection_is_not_reported_as_delivered(db, transports, sorento_sink):
+    company = _company(db, transports)
+    _point_at_sorento(db, company, _sorento_connection(db))
+    job = _staged_supplier_job(db, company, refs=("AED_VSOFT:1", "AED_VSOFT:2"))
+
+    # Keyed by source_ref, NOT position — the two staged rows share a timestamp
+    # and carry random-uuid ids, so their request order is nondeterministic.
+    rejected_ref = "AED_VSOFT:2"
+
+    def responder(request):
+        body = _json.loads(request.content)
+        recs = []
+        for r in body["records"]:
+            ref = r["source_ref"]
+            if ref == rejected_ref:
+                recs.append({"source_ref": ref, "outcome": "failed",
+                             "entity_id": None, "errors": {"name": "bad"}})
+            else:
+                recs.append({"source_ref": ref, "outcome": "created",
+                             "entity_id": f"id-{ref}"})
+        return httpx.Response(200, json={
+            "summary": {"total": 2, "created": 1, "updated": 0, "failed": 1, "retryable": 0},
+            "records": recs,
+        })
+
+    sorento_sink.responder = responder
+    result = SyncService(db).approve(DEFAULT_TENANT_ID, job.id)
+
+    assert result["pushed"] == 1
+    assert len(result["pushFailures"]) == 1
+    # The delivered one is PUSHED; the rejected one stays STAGED (never faked).
+    statuses = {
+        r.source_ref: r.status
+        for r in StagedRecordRepository(db).list_for_job(DEFAULT_TENANT_ID, company.id, job.id)
+    }
+    assert statuses == {"AED_VSOFT:1": STAGED_PUSHED, "AED_VSOFT:2": STAGED}
+
+
+def test_double_click_approve_via_sorento_pushes_exactly_once(db, transports, sorento_sink):
+    company = _company(db, transports)
+    _point_at_sorento(db, company, _sorento_connection(db))
+    job = _staged_supplier_job(db, company, refs=("AED_VSOFT:1",))
+    sorento_sink.responder = _created
+
+    service = SyncService(db)
+    first = service.approve(DEFAULT_TENANT_ID, job.id)
+    second = service.approve(DEFAULT_TENANT_ID, job.id)
+
+    assert first["pushed"] == 1
+    assert second == first  # the second click is a no-op returning the original
+    # And only ONE batch actually reached Sorento.
+    assert len(sorento_sink.requests) == 1
+
+
+# ── backfill for existing companies (Task B) ──────────────────────────────────
+
+
+def test_the_sink_impl_backfill_fills_blank_rows(db, transports):
+    company = _company(db, transports)
+    # Simulate a company that predates the sink columns (blank, not NULL — the
+    # column is NOT NULL, so a legacy create_all-first host lands it blank).
+    db.execute(
+        sa.text("UPDATE ac_company SET sink_impl = '' WHERE id = :id"),
+        {"id": company.id},
+    )
+    db.commit()
+
+    # Runs on the SESSION (the schema-translated bind), exactly as
+    # ``update_tenant`` invokes it — never on a bare engine.
+    touched = backfill_sink_impl_defaults(db, schema=default_schema(db.get_bind()))
+    db.commit()
+    db.refresh(company)
+
+    assert touched >= 1
+    assert company.sink_impl == SINK_IMPL_LOGGING
