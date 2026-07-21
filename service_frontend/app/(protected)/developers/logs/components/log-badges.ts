@@ -7,6 +7,7 @@ export const LOG_SOURCE_REGISTRY: StatusRegistry<IntegrationLogSource> = {
   embed_session: { label: 'Embed', tone: 'primary' },
   outbound_meta: { label: 'Outbound', tone: 'secondary' },
   webhook_delivery: { label: 'Webhook', tone: 'warning' },
+  autocount: { label: 'AutoCount', tone: 'success' },
 };
 
 /** Outcome badge registry. */
