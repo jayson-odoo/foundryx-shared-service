@@ -1,5 +1,15 @@
 # PLAN — Ideation Phase B: Structure + Grill
 
+> ## ⚠️ SUPERSEDED (2026-07-21) — historical reference only
+>
+> This plan was written under program decision **D20** ("shared-service runs NO LLM"), which has been **amended to D20-A**: the AI cut line is **code-awareness, not location**. Grilling is now a shared-service LLM capability; only `reuse_analysis` and the build stay on the Mac Mini.
+>
+> **What that invalidates here:** the **B1–B6 slice map (§5)**, the claim that the grill brain is Claude Code (**B-D6/B-D11**), the "no LLM in shared-service" framing throughout, and the **Mac Mini bridge dependency (§7)** for Idea→BR.
+>
+> **What survives and is still authoritative:** the reuse table (§2), the entity shapes (§3), and decisions **B-D1** (BR/FR are form_engine documents), **B-D2** (immutable template versions + movable label), **B-D3** (unscoped tenant-owned status entities), **B-D4** (promote is an explicit role-gated transition), **B-D10** (pure issue-payload serializer), **B-D12** (clustering suggests, human decides).
+>
+> **Active successor:** `PLAN-ideation-phase-b-idea-to-br.md` + `ideation-phase-b-idea-to-br-acceptance-criteria.md` (Phase B-i). Phase B-ii (BR→FR + reuse-analysis) is not yet planned.
+
 **Status:** Planning (UAC-first written 2026-07-18; no code). Keys back to `PLAN-ideation-to-delivery-program.md` (the spine) and `ideation-phase-b-structure-acceptance-criteria.md`.
 **Classification:** MODULE / Service on foundryx-shared-service (D1). Own schema `app_ideation`, normal cross-schema FKs into `public` (users/tenants) and into the module's own Phase-A tables (products/ideas). App-Store module contract per `modules/omnichannel/` (bootstrap install hooks, `manifest.json`, per-module Alembic).
 **Repos in scope:** `foundryx-shared-service` only. (No sorento/n8n/GitHub work in Phase B; the FR issue-payload is *shaped* here, *shipped* in Phase C.)
