@@ -209,7 +209,9 @@ def test_empty_result_table_with_status_success_is_a_valid_empty_read():
     """The mirror of the above: a genuinely empty delta is success, not failure."""
     recorder = Recorder([_login_response(), _ok([])])
     with _client(recorder) as ac:
-        assert ac.read("GoodsReceivedNote", build_read_filter(record_count=5)) == []
+        # ``read`` returns an ``Unwrapped`` since the per-entity envelope
+        # landed: records PLUS what the vendor says is available (AC-14-26).
+        assert ac.read("GoodsReceivedNote", build_read_filter(record_count=5)).records == []
 
 
 def test_relay_500_is_classified_separately_and_hides_the_stack_trace():
@@ -268,7 +270,7 @@ def test_stream_not_readable_triggers_exactly_one_relogin_and_retry():
     with _client(recorder) as ac:
         records = ac.read("GoodsReceivedNote", build_read_filter(record_count=5))
 
-    assert records == [{"DocNo": "GRN-1"}]
+    assert records.records == [{"DocNo": "GRN-1"}]
     assert recorder.paths == [
         "/api/Server/Login",
         "/api/GoodsReceivedNote/GetGoodsReceivedNote",
@@ -302,8 +304,8 @@ def test_the_retry_budget_is_per_call_not_global():
         first = ac.read("GoodsReceivedNote", build_read_filter(record_count=5))
         second = ac.read("GoodsReceivedNote", build_read_filter(record_count=5))
 
-    assert first == [{"DocNo": "A"}]
-    assert second == [{"DocNo": "B"}]
+    assert first.records == [{"DocNo": "A"}]
+    assert second.records == [{"DocNo": "B"}]
 
 
 def test_a_non_expiry_relay_error_is_not_retried():
