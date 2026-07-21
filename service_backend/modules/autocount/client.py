@@ -45,6 +45,13 @@ import httpx
 
 from app.integrations.masking import mask_payload
 
+from .envelopes import (
+    LOGIN,
+    STATUS_DICT,
+    ResponseEnvelope,
+    Unwrapped,
+)
+from .mapping import read_path
 from .payloads import bound_payload, mark_truncated
 
 logger = logging.getLogger(__name__)
@@ -238,6 +245,7 @@ def assert_window(
     start: datetime,
     end: datetime,
     field_name: str = "LastModified",
+    path: Optional[str] = None,
 ) -> None:
     """Assert every record falls inside the requested window (AC-13-04a).
 
@@ -253,7 +261,14 @@ def assert_window(
     reject correct data — a false alarm on the very first real sync. The
     comparison must model what the SERVER was actually asked, not what the caller
     had in mind.
+
+    ``path`` overrides ``field_name`` for entities that do not carry the stamp at
+    the top level: a MASTER record nests its real DB row under ``Data[0]``, so
+    the stamp lives at ``Data.0.LastModified``. Reading the top level there finds
+    nothing and would raise "no parseable LastModified" on EVERY row — turning a
+    perfectly good master fetch into a hard failure.
     """
+    lookup = path or field_name
     start = start.astimezone(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
@@ -261,11 +276,11 @@ def assert_window(
         hour=23, minute=59, second=59, microsecond=999999
     )
     for record in records:
-        raw = record.get(field_name)
+        raw = read_path(record, lookup)
         stamp = parse_last_modified(raw)
         if stamp is None:
             raise AutoCountWindowError(
-                f"A returned record has no parseable '{field_name}' "
+                f"A returned record has no parseable '{lookup}' "
                 f"({_safe(raw)}) — the requested window cannot be verified."
             )
         if stamp < start or stamp > end:
@@ -357,6 +372,7 @@ class AutoCountClient:
         started: float,
         *,
         error: Optional[str] = None,
+        envelope: ResponseEnvelope = STATUS_DICT,
     ) -> None:
         """Buffer ONE masked, bounded record of a call. Never raises.
 
@@ -376,26 +392,24 @@ class AutoCountClient:
                     body = response.text
 
             ok = status_code is not None and 200 <= status_code < 300
-            if ok and isinstance(body, dict):
-                # Success is ``Status == "Success"``, not the HTTP code — a
-                # business failure arrives as HTTP 200 (rule 2).
+            if ok:
+                # Success is the ENVELOPE's rule, not the HTTP code — a business
+                # failure arrives as HTTP 200 (rule 2).
                 #
-                # This MUST mirror ``_unwrap`` exactly, including the absent-key
-                # case. ``_unwrap`` reads ``str(body.get("Status") or "")``, so a
-                # dict body with NO ``Status`` key ("" != "success") is a
-                # failure there and raises. Treating absent as success here
-                # would badge that very leg green in the log while the run
-                # failed — the diagnostician opens the leg the summary points at
-                # and sees no problem. A vendor error envelope carrying only
-                # ``Message`` (and the login error envelope, which ``login``
-                # only reads ``Message`` from) is exactly that shape.
+                #   !!  THE SAME ``verdict`` DECIDES WHETHER ``_unwrap`` RAISES.  !!
                 #
-                # A successful login is a BARE ARRAY, not a dict, so it never
-                # reaches this branch and is unaffected.
-                declared = str(body.get("Status") or "")
-                if declared.lower() != "success":
+                # These were two separate rules once, and they disagreed on one
+                # reachable input (a 200 body with no ``Status`` key — the
+                # vendor's own error envelope, which carries only ``Message``):
+                # the call raised and the log badged the leg GREEN. The run
+                # failed, the operator opened the exact leg the failure pointed
+                # at, and saw no problem. Fixed in 6d3e21c by making the two
+                # mirror each other; kept fixed by there now being only ONE rule,
+                # owned by the envelope. Do not reintroduce a success check here.
+                verdict = envelope.verdict(body)
+                if not verdict.ok:
                     ok = False
-                    error = error or str(body.get("Message") or "").strip() or None
+                    error = error or verdict.message
 
             # MASK first, BOUND second — so nothing a preview keeps can be a
             # secret, and the Authorization header (a JWT that decodes to the
@@ -433,14 +447,27 @@ class AutoCountClient:
         except Exception:  # noqa: BLE001 — observability NEVER breaks a call
             logger.exception("failed to buffer an AutoCount call record for %s", path)
 
-    def _post(self, path: str, *, headers: Dict[str, str], json_body: Any) -> httpx.Response:
+    def _post(
+        self,
+        path: str,
+        *,
+        headers: Dict[str, str],
+        json_body: Any,
+        envelope: ResponseEnvelope = STATUS_DICT,
+    ) -> httpx.Response:
         url = f"{self.base_url}{path}"
         started = time.monotonic()
         try:
             response = self._client.post(url, headers=headers, json=json_body)
         except httpx.TimeoutException as exc:
             self._record_call(
-                path, headers, json_body, None, started, error=f"timeout: {exc}"
+                path,
+                headers,
+                json_body,
+                None,
+                started,
+                error=f"timeout: {exc}",
+                envelope=envelope,
             )
             raise AutoCountTransportError(
                 f"AutoCount at {self.base_url} did not respond within "
@@ -455,6 +482,7 @@ class AutoCountClient:
                 None,
                 started,
                 error=f"{type(exc).__name__}: {exc}",
+                envelope=envelope,
             )
             raise AutoCountTransportError(
                 f"Could not reach AutoCount at {self.base_url} ({type(exc).__name__}). "
@@ -462,7 +490,7 @@ class AutoCountClient:
                 f"IP is whitelisted.",
                 detail=str(exc),
             ) from exc
-        self._record_call(path, headers, json_body, response, started)
+        self._record_call(path, headers, json_body, response, started, envelope=envelope)
         return response
 
     # ── envelope handling ──────────────────────────────────────────────────
@@ -528,27 +556,25 @@ class AutoCountClient:
         raise AutoCountRelayError(friendly, detail=detail, raw_message=raw_message)
 
     @classmethod
-    def _unwrap(cls, response: httpx.Response) -> Dict[str, Any]:
-        """HTTP response → the success envelope, or the right exception.
+    def _unwrap(
+        cls, response: httpx.Response, envelope: ResponseEnvelope = STATUS_DICT
+    ) -> Any:
+        """HTTP response → the successful body, or the right exception.
 
-        Success is ``Status == "Success"`` — NEVER the HTTP code, NEVER the
-        presence of ``ResultTable`` (present-but-empty on failure).
+        Success is the ENVELOPE's ``verdict`` — NEVER the HTTP code, NEVER the
+        presence of ``ResultTable`` (present-but-empty on failure). That same
+        verdict badges the call in the activity log (see ``_record_call``), so
+        the two can no longer disagree.
         """
         if response.status_code >= 500:
             cls._raise_relay(response)
 
         body = cls._json(response)
-        if not isinstance(body, dict):
+        verdict = envelope.verdict(body)
+        if not verdict.ok:
             raise AutoCountAppError(
-                "AutoCount returned an unexpected response shape.",
-                detail=_safe(body),
-            )
-
-        status = str(body.get("Status") or "")
-        if status.lower() != "success":
-            message = str(body.get("Message") or "").strip()
-            raise AutoCountAppError(
-                message or "AutoCount rejected the request without giving a reason.",
+                verdict.message
+                or "AutoCount rejected the request without giving a reason.",
                 detail=_safe(body),
             )
         return body
@@ -566,6 +592,11 @@ class AutoCountClient:
             headers={"AppId": self.app_id, "Content-Type": "application/json"},
             # Password is in the body — never log this dict unmasked.
             json_body={"UserID": self._user_id, "Password": self._password},
+            # Login has its OWN shape, so it has its own envelope: under the GRN
+            # rule a SUCCESSFUL login (a bare array, no ``Status``) would badge
+            # red in the log, and under no rule at all a FAILED one (a dict
+            # carrying only ``Message``) badged green.
+            envelope=LOGIN,
         )
 
         if response.status_code >= 500:
@@ -637,7 +668,13 @@ class AutoCountClient:
 
     # ── calls ──────────────────────────────────────────────────────────────
 
-    def call(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def call(
+        self,
+        path: str,
+        payload: Dict[str, Any],
+        *,
+        envelope: ResponseEnvelope = STATUS_DICT,
+    ) -> Any:
         """One authenticated POST, with EXACTLY ONE re-login-and-retry on the
         ambiguous ``"Stream was not readable."`` relay error.
 
@@ -647,9 +684,14 @@ class AutoCountClient:
         """
         attempted_relogin = False
         while True:
-            response = self._post(path, headers=self.auth_headers(), json_body=payload)
+            response = self._post(
+                path,
+                headers=self.auth_headers(),
+                json_body=payload,
+                envelope=envelope,
+            )
             try:
-                return self._unwrap(response)
+                return self._unwrap(response, envelope)
             except AutoCountRelayError as exc:
                 is_probably_expired = STREAM_NOT_READABLE in exc.raw_message.lower()
                 if not is_probably_expired or attempted_relogin:
@@ -672,29 +714,40 @@ class AutoCountClient:
         payload: Dict[str, Any],
         *,
         window: Optional["tuple[datetime, datetime]"] = None,
-    ) -> List[Dict[str, Any]]:
+        envelope: ResponseEnvelope = STATUS_DICT,
+        last_modified_path: str = "LastModified",
+    ) -> Unwrapped:
         """``POST /api/{Entity}/Get{Entity}`` — the uniform read.
 
         Validates the filter BEFORE sending (a malformed one is silently ignored
         and returns the whole table) and, when a window is given, asserts every
         returned record falls inside it. Both halves of AC-13-04a.
+
+            !!  ONE SIGNATURE, N ENVELOPES (AC-14-03 / D1).  !!
+
+        The vendor returns two different OUTER shapes — GRN a dict carrying
+        ``Status``, masters a bare ARRAY whose rows carry their own — and neither
+        is derivable from the other. The strategy is chosen per entity from
+        ``ac_entity_config.envelope`` and passed in; there is deliberately NO
+        branch here. Adding a third envelope is a class plus a registry line:
+        this signature and its callers do not change.
         """
         validate_read_filter(payload)
-        body = self.call(f"/api/{entity}/Get{entity}", payload)
+        body = self.call(f"/api/{entity}/Get{entity}", payload, envelope=envelope)
 
-        result = body.get("ResultTable")
-        if result is None:
-            result = []
-        if not isinstance(result, list):
-            raise AutoCountAppError(
-                "AutoCount returned a ResultTable that was not a list.",
-                detail=_safe(result),
-            )
-        records = [row for row in result if isinstance(row, dict)]
+        try:
+            unwrapped = envelope.unwrap(body)
+        except ValueError as exc:
+            raise AutoCountAppError(str(exc), detail=_safe(body)) from exc
 
         if window is not None:
-            assert_window(records, start=window[0], end=window[1])
-        return records
+            assert_window(
+                unwrapped.records,
+                start=window[0],
+                end=window[1],
+                path=last_modified_path,
+            )
+        return unwrapped
 
 
 def build_read_filter(
@@ -703,14 +756,25 @@ def build_read_filter(
     last_modified_from: Optional[datetime] = None,
     last_modified_to: Optional[datetime] = None,
     doc_numbers: Optional[Sequence[str]] = None,
+    identifier_key: str = "DocNo",
 ) -> Dict[str, Any]:
     """Build a well-formed read filter (the shape ``validate_read_filter`` accepts).
 
     Callers should prefer this over hand-building a dict — the identifier keys
     MUST be lists, and that is precisely the mistake AutoCount does not report.
+
+    ``identifier_key`` is the entity's natural identifier: ``DocNo`` for
+    documents, ``AccNo`` for masters. An empty list is a no-op filter (verified
+    live for ``DocNo`` in slice 1); it is sent rather than omitted so the shape
+    matches what the wrapper expects per entity.
+
+    ``last_modified_from=None`` sends **no lower bound at all** — that is the
+    unbounded initial master load (AC-14-25), not an oversight. A master list is
+    a standing set whose purpose is to mirror current state, so any lookback
+    window imports a fraction of it and reports success.
     """
     payload: Dict[str, Any] = {
-        "DocNo": list(doc_numbers or []),
+        identifier_key: list(doc_numbers or []),
         "RecordCount": record_count,
     }
     if last_modified_from is not None:
