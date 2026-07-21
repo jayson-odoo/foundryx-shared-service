@@ -51,12 +51,68 @@ from ..repositories import (
 
 logger = logging.getLogger("foundryx.autocount")
 
-# Entities a new company is configured for. GRN only in slice 1 — a config row
-# for an entity with no pipeline behind it would offer an operator a sync that
-# silently does nothing.
+# Entities a new company is configured for.
+#
+#     !!  ONLY ENTITIES WITH A CONFIRMED, OBSERVED VENDOR PAYLOAD (AC-14-01).  !!
+#
+# A config row for an entity with no working vendor route offers an operator a
+# sync that silently does nothing. Probed live 2026-07-21: ``Stock``,
+# ``StockItem``, ``Item``, ``UOM``, ``StockGroup``, ``StockCategory``,
+# ``StockLocation`` and ``StockUOM`` all return HTTP 500 with an EMPTY
+# ``Message`` — distinct from the wrong-credential signature ("Stream was not
+# readable."), and consistent with the route being absent from this wrapper
+# build. They are therefore ABSENT here, not present-and-disabled.
+#
+# This is a STANDING guard, not a one-off: an entity is added only after its real
+# payload has been captured, never designed from inference.
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE  # noqa: E402
+from ..canonical.masters import ENTITY_CUSTOMER, ENTITY_SUPPLIER  # noqa: E402
+from ..envelopes import ENVELOPE_ROW_ARRAY, ENVELOPE_STATUS_DICT  # noqa: E402
+from ..sources import INITIAL_LOAD_FULL, INITIAL_LOAD_WINDOWED  # noqa: E402
 
-SEEDED_ENTITIES = (ENTITY_GOODS_RECEIVED_NOTE,)
+SEEDED_ENTITIES = (ENTITY_GOODS_RECEIVED_NOTE, ENTITY_SUPPLIER, ENTITY_CUSTOMER)
+
+
+@dataclass(frozen=True)
+class EntityDefaults:
+    """The per-entity seed. Grouped so the three settings that MUST agree
+    (envelope, initial-load policy and the cap that policy implies) are chosen
+    together rather than defaulted independently."""
+
+    envelope: str
+    initial_load: str
+    record_cap: int
+
+
+# A master's first read is UNBOUNDED (AC-14-25), so its cap must cover the whole
+# standing set rather than a day's changes. 5000 is a deliberate over-provision:
+# hitting the cap fails the run loudly (AC-13-46) rather than truncating, so the
+# cost of being too low is a blocked sync and the cost of being too high is one
+# larger response.
+#
+#     !!  UNVERIFIED AGAINST A LARGE DATASET.  !!
+# The live demo holds 106 Creditors and 172 Debtors, so nothing here has been
+# exercised anywhere near 5000. Whether the wrapper honours a RecordCount that
+# large is untested.
+MASTER_RECORD_CAP = 5000
+
+ENTITY_DEFAULTS: Dict[str, EntityDefaults] = {
+    ENTITY_GOODS_RECEIVED_NOTE: EntityDefaults(
+        envelope=ENVELOPE_STATUS_DICT,
+        initial_load=INITIAL_LOAD_WINDOWED,
+        record_cap=200,
+    ),
+    ENTITY_SUPPLIER: EntityDefaults(
+        envelope=ENVELOPE_ROW_ARRAY,
+        initial_load=INITIAL_LOAD_FULL,
+        record_cap=MASTER_RECORD_CAP,
+    ),
+    ENTITY_CUSTOMER: EntityDefaults(
+        envelope=ENVELOPE_ROW_ARRAY,
+        initial_load=INITIAL_LOAD_FULL,
+        record_cap=MASTER_RECORD_CAP,
+    ),
+}
 
 
 class AutocountServiceError(Exception):
@@ -111,6 +167,8 @@ class EntityState:
     entity_type: str
     sync_mode: str
     source_impl: str
+    envelope: str
+    initial_load: str
     record_cap: int
     initial_lookback_days: int
     enabled: bool
@@ -168,6 +226,8 @@ class CompanyService:
                     entity_type=config.entity_type,
                     sync_mode=config.sync_mode,
                     source_impl=config.source_impl,
+                    envelope=config.envelope,
+                    initial_load=config.initial_load,
                     record_cap=config.record_cap,
                     initial_lookback_days=config.initial_lookback_days,
                     enabled=config.enabled,
@@ -370,16 +430,21 @@ class CompanyService:
         edits are never silently reverted by a deploy.
         """
         for entity_type in SEEDED_ENTITIES:
+            defaults = ENTITY_DEFAULTS[entity_type]
             if self.configs.get(tenant_id, company_id, entity_type) is None:
                 self.configs.add(
                     AcEntityConfig(
                         tenant_id=tenant_id,
                         company_id=company_id,
                         entity_type=entity_type,
-                        # GRN starts gated: a human sees the first batches before
-                        # anything reaches a consumer (plan §9).
+                        # Every entity starts gated: a human sees the first
+                        # batches before anything reaches a consumer (plan §9).
+                        # Masters especially — they OVERWRITE live data.
                         sync_mode=SYNC_MODE_SCHEDULED_REVIEW,
                         source_impl="autocount_read",
+                        envelope=defaults.envelope,
+                        initial_load=defaults.initial_load,
+                        record_cap=defaults.record_cap,
                     )
                 )
             if self.mappings.count(tenant_id, company_id, entity_type) == 0:

@@ -50,6 +50,12 @@ class EntityConfigItem(ApiModel):
     entityType: str = Field(validation_alias="entity_type")
     syncMode: str = Field(validation_alias="sync_mode")
     sourceImpl: str = Field(validation_alias="source_impl")
+    # The vendor's outer response shape for this entity (AC-14-03).
+    envelope: str = "status_dict"
+    # ``full`` = the first sync is UNBOUNDED (masters must mirror a standing
+    # set); ``windowed`` = it reaches back ``initialLookbackDays`` (documents).
+    # Surfaced so ``initialLookbackDays`` can be shown only where it applies.
+    initialLoad: str = Field(default="windowed", validation_alias="initial_load")
     recordCap: int = Field(validation_alias="record_cap")
     # The window the FIRST sync reaches back over when no watermark exists.
     # Default 30 — anything older is invisible until the supervised full initial
