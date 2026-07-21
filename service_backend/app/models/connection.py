@@ -40,13 +40,22 @@ class Connection(Base):
         # block creating B. Two ACTIVE same-provider connections stay blocked
         # (the payment invariant: two active Stripe rows forbidden; Stripe +
         # Billplz still fine — different providers).
+        # RELAXED for ``type='erp'`` (sprint-4/13 D16/D17, AC-13-02): the TYPE
+        # carve-out below is NOT sufficient on its own. Every AutoCount company
+        # is ``provider='autocount'``, so a tenant's second company is the SAME
+        # provider a second time and this index would reject it. The payment
+        # carve-out never hit this because Stripe + Billplz are DIFFERENT
+        # providers. Real company-identity uniqueness is enforced by the module
+        # on ``ac_company (tenant_id, database_name)`` — ``DatabaseName`` is the
+        # true company identity, discovered from the login response — so core
+        # keeps zero knowledge of AutoCount. Non-erp providers are unaffected.
         Index(
             "uq_connection_tenant_provider",
             "tenant_id",
             "provider",
             unique=True,
-            postgresql_where=Column("is_active"),
-            sqlite_where=Column("is_active"),
+            postgresql_where=and_(Column("type") != "erp", Column("is_active")),
+            sqlite_where=and_(Column("type") != "erp", Column("is_active")),
         ),
         # ONE connection per TYPE per tenant (plan 06 D7) — StorageService /
         # EmailService resolution must be deterministic. RELAXED for
@@ -58,13 +67,22 @@ class Connection(Base):
         # and its ACTIVE successor (B) coexist during a bucket migration
         # WITHOUT violating one-per-type. Only the single active row is the
         # write-target; ``resolve_for_type`` filters on ``is_active`` to pick it.
+        # RELAXED for ``type='erp'`` (sprint-4/13 D16/D17, AC-13-02): AutoCount
+        # is multi-company and the vendor API resolves the company server-side
+        # from the ``AppId`` header — so ONE CONNECTION PER COMPANY is the model,
+        # and a tenant legitimately holds several active ``erp`` rows. Storage /
+        # email keep the one-active-per-type invariant unchanged.
         Index(
             "uq_connection_tenant_type",
             "tenant_id",
             "type",
             unique=True,
-            postgresql_where=and_(Column("type") != "payment", Column("is_active")),
-            sqlite_where=and_(Column("type") != "payment", Column("is_active")),
+            postgresql_where=and_(
+                Column("type").notin_(("payment", "erp")), Column("is_active")
+            ),
+            sqlite_where=and_(
+                Column("type").notin_(("payment", "erp")), Column("is_active")
+            ),
         ),
     )
 

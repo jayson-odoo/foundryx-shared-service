@@ -7,12 +7,18 @@
  * `app/schemas/integration_activity.py`).
  */
 
-/** Where the activity came from (Slice 1 writes `inbound_api`; others reserved). */
+/**
+ * Where the activity came from (Slice 1 writes `inbound_api`; others reserved).
+ * MIRRORS the backend's closed `ACTIVITY_SOURCES` tuple
+ * (`app/models/integration_activity.py`) — add a value to BOTH or the console
+ * type-mismatches the wire.
+ */
 export type IntegrationLogSource =
   | 'inbound_api'
   | 'embed_session'
   | 'outbound_meta'
-  | 'webhook_delivery';
+  | 'webhook_delivery'
+  | 'autocount';
 
 /** Outcome of the interaction. */
 export type IntegrationLogStatus = 'success' | 'error' | 'pending';
