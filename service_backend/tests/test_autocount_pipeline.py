@@ -27,7 +27,7 @@ from app.models.connection import Connection
 from app.models.integration_activity import IntegrationActivity
 from app.secrets import encrypt_secret
 from modules.autocount.canonical.grn import ENTITY_GOODS_RECEIVED_NOTE, CanonicalGrn
-from modules.autocount.client import AutoCountClient
+from modules.autocount.client import AutoCountClient, AutoCountError
 from modules.autocount.mapping import (
     DEFAULT_GRN_MAPPING,
     MappingEngine,
@@ -2005,3 +2005,38 @@ def test_a_zero_record_sync_succeeds_and_holds_the_watermark(db, transports):
         .last_modified_at
         == before
     )
+
+
+def test_a_200_body_with_no_status_key_is_logged_as_a_failure():
+    """The client's ``_unwrap`` treats an ABSENT ``Status`` as failure
+    (``str(None or "")`` -> ``""`` != ``"success"``) and raises. The activity
+    log must agree.
+
+    Divergence here is exactly the bug the CallRecord exists to prevent: the run
+    fails, the diagnostician opens the very leg the run summary points at, and
+    the log badges it green with no error. A vendor error envelope carrying only
+    ``Message`` -- including the login one, which ``login()`` only reads
+    ``Message`` from -- is precisely this shape.
+    """
+    client = AutoCountClient(
+        base_url="https://ac.example.com",
+        app_id="app-1",
+        user_id="ADMIN",
+        password="secret",
+        transport=MockTransport([httpx.Response(200, json={"Message": "Invalid AppId"})]),
+    )
+
+    with pytest.raises(AutoCountError):
+        client.read("GoodsReceivedNote", {"DocNo": [], "RecordCount": 1})
+
+    legs = client.drain_calls()
+    assert legs, "the failing leg must still be recorded"
+    read_leg = [c for c in legs if c.path.endswith("GetGoodsReceivedNote")][-1]
+    assert read_leg.ok is False, "a 200 body with no Status key must log as a failure"
+    assert read_leg.error_message and "Invalid AppId" in read_leg.error_message
+
+    # And the successful login leg alongside it is still green -- a bare ARRAY
+    # body never reaches the dict branch, so the stricter rule cannot
+    # mis-badge it.
+    login_leg = [c for c in legs if c.path.endswith("/Login")][0]
+    assert login_leg.ok is True

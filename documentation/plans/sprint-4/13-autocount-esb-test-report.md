@@ -261,3 +261,69 @@ npx playwright test e2e/autocount.spec.ts --reporter=list
 
 No external service, cloud credential or network access is needed: the spec starts and stops its own
 scripted AutoCount on an ephemeral loopback port.
+
+---
+
+## Delta pass — `a3f4f42` and the log-fidelity fix
+
+The body above was written against `544429c`. Three things landed after it, and the report is only a
+Definition-of-Done artifact if it says what was verified **after** the last change, not before it.
+This section covers only the delta; every claim above still holds unless contradicted here.
+
+### Why the earlier AC-13-42/46 evidence was superseded
+
+The original PASS for AC-13-42 (masked payload capture) and AC-13-46 (activity log carries the call)
+was recorded when the log stored a *summary* of each call, not the call. `a3f4f42` replaced that with
+the real masked request/response plus `status_code`, `latency_ms` and `trace_id`. The earlier evidence
+therefore attested to a surface that no longer exists — it was not wrong, it was aimed at different
+code. Re-verified below against what actually ships.
+
+| AC | Verdict | Evidence (post-`a3f4f42`) |
+|----|---------|---------------------------|
+| AC-13-42 | **PASS** | `test_autocount_pipeline.py` masking cases + live smoke: the stored `request.headers.Authorization` reads `***`. This is load-bearing, not cosmetic — BL-131: the vendor JWT base64-decodes to the user's cleartext password, so an unmasked header **is** a credential leak. |
+| AC-13-46 | **PASS** | Operator opens a run's activity entry and sees the actual outbound body, the vendor's reply, the HTTP code and the latency. This is what makes the "no records on second sync" class of question answerable without a debugger. |
+| AC-13-04 | **PASS (re-verified)** | Extended: a `200` body with **no** `Status` key now logs `ok=False`. See below. |
+
+### The log-fidelity defect this pass fixed
+
+`client.py` had two success rules that disagreed on one input. `_unwrap` (which decides whether the
+call *raises*) computes `str(body.get("Status") or "")` — an absent key collapses to `""`, which is
+not `"success"`, so it raises. `_record_call` (which decides how the call is *badged*) skipped the
+check entirely when the key was absent, and logged the leg green.
+
+The consequence is specific and bad: the run fails, the operator opens the exact leg the failure
+points at, and the log shows a green call with no error. The log is at its least trustworthy precisely
+when it is being relied on. AutoCount's own error envelope — including the login one, which `login()`
+reads only `Message` from — is that shape, so this was reachable, not theoretical.
+
+`_record_call` now mirrors `_unwrap` verbatim, with a comment at both sites saying they must stay in
+lockstep. A successful login returns a bare JSON *array*, so it never enters the dict branch and
+cannot be mis-badged by the stricter rule — asserted explicitly rather than left as a reasoning step.
+
+- **New test**: `test_a_200_body_with_no_status_key_is_logged_as_a_failure` — drives the real client
+  through `MockTransport`, asserts the read raises, the leg logs `ok=False` carrying the vendor's
+  `Message`, and the login leg beside it stays green.
+
+### Surfaces added in `a3f4f42` with no prior AC row
+
+Both came from operator review of the running UI, so neither existed when the UAC was written. Recorded
+here against the AC they serve rather than inventing new ids.
+
+| Surface | Serves | Verdict | Evidence |
+|---------|--------|---------|----------|
+| **Entities as its own tab** (split out of Overview) | AC-13-40 (operator can see per-entity state) | **PASS** | E2E journey navigates via the tab. Driven by the operator's own point that the entity count only grows — a list nested in Overview does not survive that. Fixed a real bug found while building it: `reload()` flipped `isLoading`, unmounting `ResourceForm` and silently throwing the operator back to Overview; guarded with `isLoading && !detail`. |
+| **`initialLookbackDays` editable per company** | AC-13-16 (first-run window is operator-controlled) | **PASS** | `test_the_lookback_patch_persists_and_rejects_nonsense`. Closes a genuine design gap surfaced by the operator's "why no records on the second sync": the second sync was *correct* (watermark past all data), but a hardcoded 30-day first window made the back-catalogue permanently unreachable with no way to widen it. |
+
+### Suite state at the end of this pass
+
+```
+tests/test_autocount_pipeline.py .......... 105 passed
+```
+
+### Known-imperfect, deliberately not fixed in slice 1
+
+- `PATCH` with `initialLookbackDays` absent returns `200` having changed nothing. Harmless, but a
+  silent no-op is a poor contract; worth an explicit shape in slice 2.
+- "Edit first-run window" is offered on superseded rows, where it has no effect.
+- `provider.test()` buffers the HTTP leg and discards it, so a connection test that fails is thinner to
+  diagnose than a sync that fails. Backlogged.

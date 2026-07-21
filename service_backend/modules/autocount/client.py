@@ -379,8 +379,21 @@ class AutoCountClient:
             if ok and isinstance(body, dict):
                 # Success is ``Status == "Success"``, not the HTTP code — a
                 # business failure arrives as HTTP 200 (rule 2).
-                declared = body.get("Status")
-                if declared is not None and str(declared).lower() != "success":
+                #
+                # This MUST mirror ``_unwrap`` exactly, including the absent-key
+                # case. ``_unwrap`` reads ``str(body.get("Status") or "")``, so a
+                # dict body with NO ``Status`` key ("" != "success") is a
+                # failure there and raises. Treating absent as success here
+                # would badge that very leg green in the log while the run
+                # failed — the diagnostician opens the leg the summary points at
+                # and sees no problem. A vendor error envelope carrying only
+                # ``Message`` (and the login error envelope, which ``login``
+                # only reads ``Message`` from) is exactly that shape.
+                #
+                # A successful login is a BARE ARRAY, not a dict, so it never
+                # reaches this branch and is unaffected.
+                declared = str(body.get("Status") or "")
+                if declared.lower() != "success":
                     ok = False
                     error = error or str(body.get("Message") or "").strip() or None
 
