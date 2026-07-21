@@ -187,8 +187,13 @@ call after a timeout re-runs the whole batch).
 **When** the first sync runs
 **Then** it executes as a **dry run** and writes nothing
 **And** the operator sees per record the outcome it would receive
-**And** for every record that would be **adopted**, the field-level before/after is shown
+**And** for every record whose values would **change** — whether newly **adopted** or already
+linked and re-synced — the field-level before/after is shown
 **And** nothing is written until the operator explicitly approves.
+> Broadened from "adopted only" during build. An already-linked record overwrites live values just
+> as destructively as an adoption, and it is the **commoner** case — restricting the diff to
+> adoptions would show an operator nothing at all on a routine sync, which is when they are most
+> likely to approve without looking.
 > This is the AC that makes ERP-as-source-of-truth safe against a populated target. Without it the
 > first sync silently overwrites work people typed in, and reports it as a routine `updated`.
 

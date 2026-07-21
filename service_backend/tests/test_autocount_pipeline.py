@@ -2129,7 +2129,14 @@ def _creditor(
     last_modified: str = "2026/03/18 16:03:21",
     is_active: str = "T",
     record_count: Any = "1 of 106",
-    status: str = "Success",
+    # EMPTY, not "Success" -- this is what the live instance actually returns on
+    # every healthy master row (verified 2026-07-21: all 106 Creditor and all 172
+    # Debtor rows carry Status: '' / Message: ''). This default previously read
+    # "Success", mirroring GRN's dict envelope, and that single wrong character
+    # sequence let the whole master pipeline pass 205 mocked tests while failing
+    # against the real vendor on the first live call. A fixture that encodes a
+    # guess validates the guess.
+    status: str = "",
     **overrides: Any,
 ) -> Dict[str, Any]:
     """ONE element of a master response, in the shape the live instance returns.
@@ -2953,3 +2960,44 @@ def test_the_version_upgrade_leaves_an_operators_edited_mapping_alone(db, transp
     db.expire_all()
 
     assert db.get(AcFieldMapping, row.id).source_path == "SomeCustomField"
+
+
+# ── the empty-Status contract (live-verified 2026-07-21) ─────────────────────
+
+
+@pytest.mark.parametrize(
+    "status, expect_ok",
+    [
+        ("", True),        # what every healthy live master row actually carries
+        ("   ", True),     # whitespace is still silence
+        ("Success", True), # tolerated, though the live instance never sends it
+        ("Fail", False),   # an affirmative failure
+        ("Error", False),
+    ],
+)
+def test_row_array_treats_empty_status_as_success(status, expect_ok):
+    """Masters do NOT use GRN's ``Status: "Success"`` convention.
+
+    Verified against the live demo instance: **all 106 Creditor rows and all 172
+    Debtor rows return ``Status: ''`` with ``Message: ''``**. Empty IS healthy.
+
+    This test exists because the opposite rule shipped first. ``RowArrayEnvelope``
+    mirrored ``StatusDictEnvelope``'s ``!= "success" -> fail``, which rejects every
+    valid row the vendor sends. It survived 205 mocked tests because the fixture
+    ALSO defaulted to ``"Success"`` -- the mock and the code shared one wrong
+    assumption, so they agreed with each other and not with reality.
+
+    The lesson the parametrisation encodes: only an AFFIRMATIVE non-success token
+    is a failure. Silence means fine.
+    """
+    verdict = ROW_ARRAY.verdict([_creditor(status=status)])
+    assert verdict.ok is expect_ok
+
+
+def test_row_array_failure_names_the_status_when_no_message_is_given():
+    """A failing row with no ``Message`` must still say WHAT the vendor reported,
+    otherwise the operator gets a generic sentence and has to go read the raw
+    payload to learn anything."""
+    verdict = ROW_ARRAY.verdict([_creditor(status="Fail")])
+    assert verdict.ok is False
+    assert "Fail" in (verdict.message or "")

@@ -163,10 +163,27 @@ class RowArrayEnvelope(ResponseEnvelope):
     is the record — mapping rows address both levels explicitly
     (``EmailAddress`` vs ``Data.0.AutoKey``).
 
-    A row whose ``Status`` is not ``Success`` fails the WHOLE call, carrying that
-    row's ``Message``. Accepting the good rows and dropping the bad ones would
-    advance a watermark over records the vendor told us it could not give us —
-    the silent-partial-sync failure AC-14-26 exists to prevent.
+    A row that DECLARES a failure fails the WHOLE call, carrying that row's
+    ``Message``. Accepting the good rows and dropping the bad ones would advance
+    a watermark over records the vendor told us it could not give us — the
+    silent-partial-sync failure AC-14-26 exists to prevent.
+
+        !!  EMPTY ``Status`` IS SUCCESS ON THIS ROUTE. DO NOT "FIX" IT.  !!
+
+    Masters do NOT use GRN's ``Status: "Success"`` convention. Verified live
+    2026-07-21 against the demo instance: **all 106 Creditor rows and all 172
+    Debtor rows return ``Status: ''`` with ``Message: ''``** — the empty string
+    is what a healthy master row looks like. Only the GRN *dict* envelope
+    declares ``"Success"``.
+
+    So this must NOT mirror ``StatusDictEnvelope``'s ``!= "success" → fail``
+    rule. Doing so rejects every valid row while the unit tests (which mock the
+    payload) stay green — the whole master pipeline reads as broken against the
+    real vendor. That is precisely the bug the first live smoke of this slice
+    caught, after 205 mocked tests passed.
+
+    The rule is therefore: a row fails only when it AFFIRMATIVELY says so — a
+    non-empty ``Status`` that is not a success token. Silence means fine.
     """
 
     key = ENVELOPE_ROW_ARRAY
@@ -185,12 +202,14 @@ class RowArrayEnvelope(ResponseEnvelope):
         for row in body:
             if not isinstance(row, dict):
                 continue
-            declared = str(row.get("Status") or "")
-            if declared.lower() != _SUCCESS:
+            declared = str(row.get("Status") or "").strip()
+            # Empty == healthy on this route (see the class docstring). Only an
+            # affirmative non-success token is a failure.
+            if declared and declared.lower() != _SUCCESS:
                 return Verdict(
                     False,
                     str(row.get("Message") or "").strip()
-                    or "AutoCount reported a failure on one of the returned records.",
+                    or f"AutoCount reported '{declared}' on one of the returned records.",
                 )
         return Verdict(True)
 
