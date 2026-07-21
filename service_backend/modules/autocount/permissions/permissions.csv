@@ -1,0 +1,5 @@
+resource,resource_label,action,action_label,description
+autocount.companies,AutoCount Companies,read,View,View connected AutoCount companies and their sync configuration
+autocount.companies,AutoCount Companies,manage,Manage,Configure AutoCount companies — entity sync modes, schedules and field mappings
+autocount.sync,AutoCount Sync,read,View,View sync runs, watermarks and their outcomes
+autocount.sync,AutoCount Sync,run,Run,Trigger, abort and resume an AutoCount sync run

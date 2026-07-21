@@ -157,3 +157,4 @@ def run_workflow_task(run_id: str) -> dict:
 # (silent stall — the storage-migration job hangs Pending forever).
 import app.jobs.worker  # noqa: E402,F401 — registers the `jobs.run` Celery task
 import app.storage_migration.service  # noqa: E402,F401 — module-level register_storage_migration_handler()
+import modules.autocount.sync  # noqa: E402,F401 — registers the `autocount_sync` job handler

@@ -29,12 +29,17 @@ SOURCE_INBOUND_API = "inbound_api"
 SOURCE_EMBED_SESSION = "embed_session"
 SOURCE_OUTBOUND_META = "outbound_meta"
 SOURCE_WEBHOOK_DELIVERY = "webhook_delivery"
+# Outbound calls the ``autocount`` module makes to a customer's on-prem
+# AutoCount instance (sprint-4/13). ``ACTIVITY_SOURCES`` is a CLOSED tuple —
+# without this value the ESB's calls never render in the Developer Logs console.
+SOURCE_AUTOCOUNT = "autocount"
 
 ACTIVITY_SOURCES = (
     SOURCE_INBOUND_API,
     SOURCE_EMBED_SESSION,
     SOURCE_OUTBOUND_META,
     SOURCE_WEBHOOK_DELIVERY,
+    SOURCE_AUTOCOUNT,
 )
 
 # Outcome — code branches on these; the console filters/segments by them.
