@@ -46,6 +46,29 @@ def default_schema(bind: Any) -> Optional[str]:
     return AUTOCOUNT_SCHEMA if dialect == "postgresql" else None
 
 
+def backfill_sink_impl_defaults(
+    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
+) -> int:
+    """Give every pre-existing ``ac_company`` row a ``sink_impl``. Returns the
+    number of rows touched.
+
+    Same two-order safety as ``backfill_entity_config_defaults``: a company that
+    predates the sink columns must end up on the ``'logging'`` no-op (its
+    behaviour before the column existed), stated as a backfill rather than left
+    to a column default a create_all-first host would never apply. Fills only
+    rows that lack a value and is safe to run repeatedly. Does **not** commit —
+    the caller (Alembic's own connection, or ``update_tenant``) owns that.
+    """
+    prefix = f'"{schema}".' if schema else ""
+    result = bind.execute(
+        sa.text(
+            f"UPDATE {prefix}ac_company SET sink_impl = 'logging' "
+            f"WHERE sink_impl IS NULL OR sink_impl = ''"
+        )
+    )
+    return result.rowcount or 0
+
+
 def backfill_entity_config_defaults(
     bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
 ) -> int:

@@ -58,6 +58,13 @@ SYNC_MODES = (SYNC_MODE_MANUAL, SYNC_MODE_SCHEDULED_REVIEW, SYNC_MODE_AUTO)
 # rather than a silent straight-through push nobody reviewed.
 GATED_SYNC_MODES = (SYNC_MODE_MANUAL, SYNC_MODE_SCHEDULED_REVIEW)
 
+# ── push-target sink impls (hop 2, plan 14) ───────────────────────────────────
+# The name of the consumer sink a company delivers to. Kept as a literal here
+# (matching ``sinks.SINK_LOGGING`` / ``sinks_sorento.SINK_SORENTO``) so the model
+# layer never imports the sink layer — ``models`` is loaded first at bootstrap.
+SINK_IMPL_LOGGING = "logging"
+SINK_IMPL_SORENTO = "sorento"
+
 # ── staged-record lifecycle ───────────────────────────────────────────────────
 STAGED = "STAGED"  # mapped cleanly, awaiting approval
 STAGED_FAILED = "FAILED"  # mapping failed; NEVER pushable (D13)
@@ -98,6 +105,21 @@ class AcCompany(AutocountBase):
     company_name = Column(String, nullable=False, default="")  # discovered
     name = Column(String, nullable=False, default="")  # operator's own label
     is_active = Column(Boolean, nullable=False, default=True)
+
+    # ── push target (hop 2, plan 14) ─────────────────────────────────────────
+    # Which consumer sink this company delivers ALL its entities to. Default
+    # ``'logging'`` keeps the slice-1 no-op — a company that has not configured
+    # a target changes nothing. ``'sorento'`` + a ``sink_connection_id`` selects
+    # the real Sorento sink. A ``server_default`` is REQUIRED (not just the
+    # Python ``default``): on a create_all-first host the ADD carries it to
+    # existing rows, and on a stamped host the migration's ADD does — either way
+    # no ``ac_company`` row is ever left NULL against this NOT NULL column.
+    sink_impl = Column(
+        String, nullable=False, default=SINK_IMPL_LOGGING, server_default="logging"
+    )
+    # Core ``connections.id`` of the ``consumer`` connection to push to — plain
+    # indexed column, not an FK (BL-030). NULL when ``sink_impl='logging'``.
+    sink_connection_id = Column(String, nullable=True, index=True)
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())

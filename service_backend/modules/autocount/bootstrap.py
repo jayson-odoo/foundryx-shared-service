@@ -63,9 +63,14 @@ def register_engine_entities() -> None:
     from app.integrations import register_provider
 
     from .provider import AutoCountProvider
+    from .sorento_provider import SorentoProvider
     from .sync import register_autocount_sync_handler
 
     register_provider(AutoCountProvider())
+    # The OUTBOUND consumer target (hop 2). Registered beside the inbound ``erp``
+    # provider so the Sorento connection is configured from the same
+    # `/settings/integrations` surface (AC-14-15).
+    register_provider(SorentoProvider())
     register_autocount_sync_handler()
 
 
@@ -121,13 +126,20 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
        difference between a working sync and an ``UnknownEnvelope`` at fetch
        time.
     """
-    from .backfill import backfill_entity_config_defaults, default_schema
+    from .backfill import (
+        backfill_entity_config_defaults,
+        backfill_sink_impl_defaults,
+        default_schema,
+    )
     from .repositories import CompanyRepository
     from .services.company_service import CompanyService
 
-    backfill_entity_config_defaults(
-        db, schema=default_schema(db.get_bind())
-    )
+    schema = default_schema(db.get_bind())
+    backfill_entity_config_defaults(db, schema=schema)
+    # A company registered before the sink columns existed must land on the
+    # ``'logging'`` no-op (its pre-hop-2 behaviour), not sit NULL against a
+    # NOT NULL column on a create_all-first host.
+    backfill_sink_impl_defaults(db, schema=schema)
 
     service = CompanyService(db)
     page = 0
