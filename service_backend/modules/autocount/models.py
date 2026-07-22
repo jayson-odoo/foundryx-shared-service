@@ -234,6 +234,13 @@ class AcFieldMapping(AutocountBase):
     source_path = Column(String, nullable=False)  # LITERAL vendor casing
     canonical_field = Column(String, nullable=False)
     transform = Column(String, nullable=False, default="string")
+    # Optional safe transform FORMULA (slice 16, AC-16-01). NULL ⇒ the named
+    # ``transform`` above is authoritative (today's behaviour, back-compat).
+    # Set ⇒ the formula produces the field's value (evaluated by ``formula.py``)
+    # and the ``transform`` is retained only as the display preset. A ``Text``
+    # column (never migrated to a JSON/None-sensitive type) so a NULL is a true
+    # SQL NULL, distinct from an empty-string formula.
+    formula = Column(Text, nullable=True)
     is_required = Column(Boolean, nullable=False, default=False)
     is_enabled = Column(Boolean, nullable=False, default=True)
     # Per-field ownership (D8) — consumed by slice 3's masters merge. Carried

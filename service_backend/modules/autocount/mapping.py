@@ -32,6 +32,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type
 
 from .canonical.base import CanonicalLine, CanonicalRecord
+from .formula import FormulaDate, FormulaError, evaluate_formula
 from .canonical.grn import (
     ENTITY_GOODS_RECEIVED_NOTE,
     VENDOR_DETAIL_KEY,
@@ -247,6 +248,100 @@ TRANSFORMS = {
 }
 
 
+# ── output-type coercion for FORMULA rows (slice 16, AC-16-04) ─────────────────
+# A formula produces a language value (str/number/bool/None/FormulaDate). The
+# target Sorento/canonical field has a declared type, and the formula's output
+# is coerced/validated to it — a mismatch (a formula feeding a boolean field that
+# yields a string) is a NAMED per-field error, never a wrong value sent onward.
+# Named transforms are NOT run through this: they already return the right type.
+
+# Simple type tokens the engine reasons about.
+TYPE_STRING = "string"
+TYPE_BOOLEAN = "boolean"
+TYPE_DECIMAL = "decimal"
+TYPE_INTEGER = "integer"
+TYPE_DATETIME = "datetime"
+TYPE_DATE = "date"
+
+
+def _annotation_type_token(annotation: Any) -> Optional[str]:
+    """Map a pydantic field annotation → a simple type token, unwrapping
+    ``Optional[...]``. Returns None for a shape we don't coerce (list/dict/etc.)."""
+    import typing
+
+    origin = typing.get_origin(annotation)
+    if origin is typing.Union:  # Optional[X] == Union[X, None]
+        inner = [a for a in typing.get_args(annotation) if a is not type(None)]
+        if len(inner) == 1:
+            return _annotation_type_token(inner[0])
+        return None
+    if annotation is bool:
+        return TYPE_BOOLEAN
+    if annotation is int:
+        return TYPE_INTEGER
+    if annotation is Decimal:
+        return TYPE_DECIMAL
+    if annotation is datetime:
+        return TYPE_DATETIME
+    if annotation is date:
+        return TYPE_DATE
+    if annotation is str:
+        return TYPE_STRING
+    return None
+
+
+def _field_type_tokens(model: Optional[Type[Any]]) -> Dict[str, Optional[str]]:
+    """A canonical field name → type token map derived from a pydantic model,
+    used to coerce a formula's output to its target field's type."""
+    if model is None:
+        return {}
+    tokens: Dict[str, Optional[str]] = {}
+    for name, info in model.model_fields.items():
+        tokens[name] = _annotation_type_token(info.annotation)
+    return tokens
+
+
+def coerce_output(value: Any, type_token: Optional[str]) -> Any:
+    """Coerce a FORMULA result to the target field's declared type (AC-16-04).
+
+    A ``FormulaDate`` is materialised to an aware-UTC datetime/date. Numeric and
+    datetime targets reuse the module's own transforms (``t_decimal``/``t_int``/
+    ``t_datetime``/``t_date``), so a formula and a named transform land the SAME
+    Python type in the canonical record. A boolean target demands a real boolean
+    — anything else is a ``TransformError`` naming the mismatch.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, FormulaDate):
+        aware = datetime(
+            value.year, value.month, value.day,
+            value.hour, value.minute, value.second, tzinfo=timezone.utc,
+        )
+        if type_token == TYPE_DATE:
+            return aware.date()
+        return aware
+
+    if type_token == TYPE_BOOLEAN:
+        if isinstance(value, bool):
+            return value
+        raise TransformError(
+            f"this formula feeds a true/false field but produced {value!r}"
+        )
+    if type_token == TYPE_DECIMAL:
+        return t_decimal(value)
+    if type_token == TYPE_INTEGER:
+        return t_int(value)
+    if type_token == TYPE_DATETIME:
+        return t_datetime(value)
+    if type_token == TYPE_DATE:
+        return t_date(value)
+    # string / unknown target — stringify (a bool/number feeding a text field).
+    if type_token == TYPE_STRING:
+        return t_string(value)
+    return value
+
+
 # ── source paths ──────────────────────────────────────────────────────────────
 # Grammar, deliberately tiny (a mapping row is edited by an operator, not a
 # programmer):
@@ -347,8 +442,27 @@ class MappingRow:
     scope: str = SCOPE_HEADER
     is_required: bool = False
     is_enabled: bool = True
+    # Optional safe transform formula (slice 16). NULL ⇒ the named ``transform``
+    # runs (byte-identical to before this slice). Set ⇒ the formula is
+    # authoritative and the named transform is ignored for value production.
+    formula: Optional[str] = None
 
     def coerce(self, value: Any) -> Any:
+        if self.formula:
+            # A BLANK source value short-circuits to None WITHOUT evaluating —
+            # exactly as every named transform treats blank (``_blank`` → None).
+            # This keeps "absent is not unconvertible" and lets the row's
+            # ``is_required`` flag catch a required-but-empty field, so a formula
+            # preset (e.g. the Boolean ``if(value=="T",…)``) can never silently
+            # turn a blank ``is_active`` into False.
+            if _blank(value):
+                return None
+            try:
+                return evaluate_formula(self.formula, value)
+            except FormulaError as exc:
+                # A runtime formula fault becomes a NAMED per-field error via the
+                # engine's existing ``except TransformError`` path (AC-16-03).
+                raise TransformError(str(exc)) from exc
         fn = TRANSFORMS.get(self.transform)
         if fn is None:
             raise TransformError(f"unknown transform '{self.transform}'")
@@ -571,6 +685,9 @@ class MappingEngine:
         self.database_name = database_name
         self._record_fields = self.profile.record_fields()
         self._line_fields = self.profile.line_fields()
+        # Declared field types, for coercing a FORMULA row's output (AC-16-04).
+        self._record_field_types = _field_type_tokens(self.profile.record_model)
+        self._line_field_types = _field_type_tokens(self.profile.line_model)
 
     # ── one document ──────────────────────────────────────────────────────
 
@@ -606,6 +723,7 @@ class MappingEngine:
             doc_key=doc_key,
             doc_no=doc_no,
             line_no=None,
+            field_types=self._record_field_types,
         )
 
         lines: List[CanonicalLine] = []
@@ -647,6 +765,7 @@ class MappingEngine:
                 doc_key=doc_key,
                 doc_no=doc_no,
                 line_no=index,
+                field_types=self._line_field_types,
             )
             values.setdefault("line_no", index)
             values["extras"] = extras
@@ -708,6 +827,104 @@ class MappingEngine:
         a sibling (AC-13-10)."""
         return [self.map_document(raw) for raw in records]
 
+    # ── whole-mapping SIMULATION (slice 16, AC-16-30) ─────────────────────────
+
+    def project_document(self, raw: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the REAL mapping over a mock record and return a LEGIBLE
+        per-field projection PLUS the authoritative all-or-nothing verdict.
+
+        Unlike ``map_document`` (which discards partial values when any field
+        fails), this evaluates each row INDEPENDENTLY so the operator sees every
+        field's value or its error side-by-side (record-in → record-out,
+        AC-16-30/31). It WRITES NOTHING — pure preview.
+        """
+        doc_no = t_string(read_path(raw, self.profile.display_path))
+        try:
+            source_ref: Optional[str] = self.profile.identity(raw, self.database_name)
+        except IdentityError:
+            source_ref = None
+
+        header_fields = self._project_rows(
+            self.header_rows, raw, self._record_fields, self._record_field_types,
+            SCOPE_HEADER,
+        )
+        line_projections: List[List[Dict[str, Any]]] = []
+        if self.detail_key is not None:
+            details = raw.get(self.detail_key)
+            if isinstance(details, list):
+                for detail in details:
+                    if isinstance(detail, dict):
+                        line_projections.append(
+                            self._project_rows(
+                                self.line_rows, detail, self._line_fields,
+                                self._line_field_types, SCOPE_LINE,
+                            )
+                        )
+
+        # The authoritative verdict (the exact record a real sync would push,
+        # or None + the per-field errors it would reject on).
+        mapped = self.map_document(raw)
+        record_payload: Optional[Dict[str, Any]] = None
+        if mapped.record is not None:
+            sink_payload = getattr(mapped.record, "sink_payload", None)
+            record_payload = sink_payload() if callable(sink_payload) else mapped.record.comparable()
+
+        return {
+            "ok": mapped.ok,
+            "sourceRef": source_ref or "",
+            "docNo": doc_no,
+            "record": record_payload,
+            "headerFields": header_fields,
+            "lineFields": line_projections,
+            "errors": [e.as_dict() for e in mapped.errors],
+        }
+
+    def _project_rows(
+        self,
+        rows: Sequence[MappingRow],
+        source: Dict[str, Any],
+        fields: set,
+        field_types: Dict[str, Optional[str]],
+        scope: str,
+    ) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        types = field_types or {}
+        for row in rows:
+            raw_value = resolve_path(source, row.source_path)
+            present = raw_value is not _MISSING
+            entry: Dict[str, Any] = {
+                "scope": scope,
+                "sourcePath": row.source_path,
+                "canonicalField": row.canonical_field,
+                "present": present,
+                "ok": True,
+                "value": None,
+                "error": None,
+            }
+            if not present:
+                if row.is_required:
+                    entry["ok"] = False
+                    entry["error"] = "required by its mapping row but absent"
+                out.append(entry)
+                continue
+            try:
+                coerced = row.coerce(raw_value)
+                if row.formula and row.canonical_field in fields:
+                    coerced = coerce_output(coerced, types.get(row.canonical_field))
+            except TransformError as exc:
+                entry["ok"] = False
+                entry["error"] = str(exc)
+                out.append(entry)
+                continue
+            if coerced is None and row.is_required:
+                entry["ok"] = False
+                entry["error"] = "required by its mapping row but the value was empty"
+                out.append(entry)
+                continue
+            entry["value"] = _json_safe(coerced)
+            out.append(entry)
+        return out
+
     # ── internals ─────────────────────────────────────────────────────────
 
     def _apply(
@@ -720,9 +937,11 @@ class MappingEngine:
         doc_key: str,
         doc_no: Optional[str],
         line_no: Optional[int],
+        field_types: Optional[Dict[str, Optional[str]]] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         values: Dict[str, Any] = {}
         extras: Dict[str, Any] = {}
+        types = field_types or {}
         for row in rows:
             raw_value = resolve_path(source, row.source_path)
             missing = raw_value is _MISSING
@@ -744,8 +963,14 @@ class MappingEngine:
 
             try:
                 coerced = row.coerce(raw_value)
+                # A FORMULA row's output is coerced/validated to the target
+                # field's declared type (AC-16-04). Named-transform rows already
+                # return the right type, so they skip this. Extras (undeclared
+                # target) have no declared type — the raw value is kept.
+                if row.formula and row.canonical_field in fields:
+                    coerced = coerce_output(coerced, types.get(row.canonical_field))
             except TransformError as exc:
-                # NAMED per-field error — never a silent null (AC-13-09).
+                # NAMED per-field error — never a silent null (AC-13-09/16-03).
                 errors.append(
                     FieldError(
                         field=row.canonical_field,
