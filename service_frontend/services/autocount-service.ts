@@ -71,9 +71,6 @@ export interface AutocountService {
    * deliberate, confirmed act that re-widens a spent window (AC-15-30) — the
    * next sync re-reads from `initialLookbackDays` again. Distinct from editing
    * the window, which is a no-op once superseded.
-   *
-   * BACKEND NEEDED: this endpoint is not yet implemented. The `.real` binding
-   * targets the intended path; verify/adjust when the route lands.
    */
   refetchHistory(
     companyId: string,
