@@ -24,6 +24,8 @@ import type {
   AutocountPreviewResult,
   AutocountSinkTargetInput,
   AutocountStagedList,
+  AutocountStagedQuery,
+  AutocountStagedRecord,
   AutocountSyncJob,
   AutocountSyncRun,
 } from '@/types/autocount';
@@ -98,6 +100,77 @@ function previewablePayload(jobId: string): AutocountPreviewResult {
   };
 }
 
+function mockName(record: AutocountStagedRecord): string {
+  const name = record.canonical?.name;
+  return typeof name === 'string' ? name : '';
+}
+
+/**
+ * A batch with BOTH kinds of staged row — a handful the operator must see
+ * (field changes / a failure) and a wall of no-field-change re-fetches — so the
+ * paginate + no-change-collapse behaviour (AC-15-10/11) is reachable with no
+ * backend.
+ */
+function mockStagedRecords(): AutocountStagedRecord[] {
+  const changed: AutocountStagedRecord[] = [
+    {
+      id: 'staged-3',
+      entityType: 'supplier',
+      sourceRef: 'AED_VSOFT:3',
+      docNo: '400-J001',
+      status: 'STAGED',
+      diff: { name: { from: 'ONE STOP HOME DESIGN', to: 'OW PIN BOON' } },
+      canonical: { code: '400-J001', name: 'OW PIN BOON', is_active: true },
+      errors: null,
+      error: null,
+      hasChanges: true,
+      sourceLastModified: '2026-03-18T08:03:21Z',
+    },
+    {
+      id: 'staged-7',
+      entityType: 'supplier',
+      sourceRef: 'AED_VSOFT:7',
+      docNo: '400-J007',
+      status: 'STAGED',
+      diff: { email: { from: 'old@acme.test', to: 'billing@acme.test' } },
+      canonical: { code: '400-J007', name: 'ACME TRADING', is_active: true },
+      errors: null,
+      error: null,
+      hasChanges: true,
+      sourceLastModified: '2026-03-19T02:11:00Z',
+    },
+    {
+      id: 'staged-9',
+      entityType: 'supplier',
+      sourceRef: 'AED_VSOFT:9',
+      docNo: '400-J009',
+      status: 'FAILED',
+      diff: null,
+      canonical: { code: '400-J009', name: 'NO CODE SUPPLIER' },
+      errors: [{ field: 'code', message: 'Required field is empty.' }],
+      error: null,
+      hasChanges: true,
+      sourceLastModified: '2026-03-19T04:00:00Z',
+    },
+  ];
+  // 24 legitimate no-op re-fetches — LastModified advanced, no mapped field
+  // differs. These must collapse, never bury the three above.
+  const noChange: AutocountStagedRecord[] = Array.from({ length: 24 }, (_, i) => ({
+    id: `staged-nc-${i}`,
+    entityType: 'supplier',
+    sourceRef: `AED_VSOFT:${100 + i}`,
+    docNo: `400-N${String(i).padStart(3, '0')}`,
+    status: 'STAGED' as const,
+    diff: {},
+    canonical: { code: `400-N${String(i).padStart(3, '0')}`, name: `SUPPLIER ${i}` },
+    errors: null,
+    error: null,
+    hasChanges: false,
+    sourceLastModified: '2026-03-20T00:00:00Z',
+  }));
+  return [...changed, ...noChange];
+}
+
 const NOT_IMPLEMENTED = 'Not implemented in the AutoCount mock.';
 
 export const mockAutocountService: AutocountService = {
@@ -134,33 +207,54 @@ export const mockAutocountService: AutocountService = {
     return Promise.resolve({ data: [], total: 0, page: 0 });
   },
 
-  listStaged(jobId: string): Promise<AutocountStagedList> {
+  listStaged(jobId: string, query: AutocountStagedQuery = {}): Promise<AutocountStagedList> {
+    const all = mockStagedRecords();
+    const term = (query.search ?? '').trim().toLowerCase();
+    let matched = all;
+    if (query.changed === true) matched = matched.filter((r) => r.hasChanges);
+    else if (query.changed === false) matched = matched.filter((r) => !r.hasChanges);
+    if (query.status) matched = matched.filter((r) => r.status === query.status);
+    if (term) {
+      matched = matched.filter((r) =>
+        [r.sourceRef, r.docNo, mockName(r)]
+          .filter(Boolean)
+          .some((v) => String(v).toLowerCase().includes(term)),
+      );
+    }
+    const page = query.page ?? 0;
+    const pageSize = query.pageSize ?? 25;
+    const start = page * pageSize;
     return Promise.resolve({
       job: {
         id: jobId,
         status: 'needs_review',
-        progressTotal: 172,
-        progressDone: 172,
-        progressFailed: 0,
+        progressTotal: all.length,
+        progressDone: all.length,
+        progressFailed: all.filter((r) => r.status === 'FAILED').length,
         result: null,
         error: null,
         createdAt: '2026-07-21T09:00:00Z',
       },
-      data: [
-        {
-          id: 'staged-3',
-          entityType: 'supplier',
-          sourceRef: 'AED_VSOFT:3',
-          docNo: '400-J001',
-          status: 'STAGED',
-          diff: { name: { from: 'ONE STOP HOME DESIGN', to: 'OW PIN BOON' } },
-          canonical: { code: '400-J001', name: 'OW PIN BOON', is_active: true },
-          errors: null,
-          error: null,
-          sourceLastModified: '2026-03-18T08:03:21Z',
-        },
-      ],
-      total: 1,
+      data: matched.slice(start, start + pageSize),
+      total: matched.length,
+      noChangeCount: all.filter((r) => !r.hasChanges).length,
+    });
+  },
+
+  refetchHistory(_companyId, entityType): Promise<AutocountEntityConfig> {
+    return Promise.resolve({
+      id: 'e-mock',
+      entityType,
+      syncMode: 'SCHEDULED_REVIEW',
+      sourceImpl: 'autocount_read',
+      recordCap: 200,
+      initialLookbackDays: 30,
+      enabled: true,
+      lastSuccessAt: null,
+      lastAttemptAt: null,
+      watermarkAt: null, // the reset — the first-run window is live again
+      consecutiveFailures: 0,
+      lastError: null,
     });
   },
 

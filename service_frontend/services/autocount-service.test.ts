@@ -78,10 +78,38 @@ describe('autocount service (real boundary)', () => {
     );
   });
 
-  it('reads staged records for a job', async () => {
-    apiFetch.mockResolvedValue({ job: {}, data: [], total: 0 });
+  it('reads staged records server-paginated (never an all-rows fetch)', async () => {
+    apiFetch.mockResolvedValue({ job: {}, data: [], total: 0, noChangeCount: 0 });
     await realAutocountService.listStaged('job-1');
-    expect(apiFetch).toHaveBeenCalledWith('/autocount/jobs/job-1/staged', undefined);
+    expect(apiFetch).toHaveBeenCalledWith(
+      '/autocount/jobs/job-1/staged?page=0&page_size=25',
+      undefined,
+    );
+  });
+
+  it('passes the changed filter, search and status params through', async () => {
+    apiFetch.mockResolvedValue({ job: {}, data: [], total: 0, noChangeCount: 0 });
+    await realAutocountService.listStaged('job-1', {
+      page: 1,
+      pageSize: 50,
+      search: 'acme',
+      changed: true,
+      status: 'FAILED',
+    });
+    const url = apiFetch.mock.calls[0][0] as string;
+    expect(url).toContain('page=1');
+    expect(url).toContain('page_size=50');
+    expect(url).toContain('search=acme');
+    expect(url).toContain('changed=true');
+    expect(url).toContain('status=FAILED');
+  });
+
+  it('re-fetches history by resetting an entity watermark (POST)', async () => {
+    apiFetch.mockResolvedValue({ id: 'e1' });
+    await realAutocountService.refetchHistory('c1', 'goods_received_note');
+    const [path, init] = apiFetch.mock.calls[0];
+    expect(path).toBe('/autocount/companies/c1/entities/goods_received_note/refetch');
+    expect(init.method).toBe('POST');
   });
 
   it('approves and discards by job id', async () => {
@@ -153,5 +181,30 @@ describe('autocount mock service (frontend-first scaffolding)', () => {
     await expect(mockAutocountService.preview('job-fail')).rejects.toMatchObject({
       status: 502,
     });
+  });
+
+  it('paginates staged records + reports the no-change count for the collapse', async () => {
+    const { mockAutocountService } = await import('./autocount-service.mock');
+    const changed = await mockAutocountService.listStaged('job-1', {
+      page: 0,
+      pageSize: 2,
+      changed: true,
+    });
+    // Only records the operator must see, capped to the page size.
+    expect(changed.data).toHaveLength(2);
+    expect(changed.data.every((r) => r.hasChanges)).toBe(true);
+    // The collapsed no-change count is constant regardless of page.
+    expect(changed.noChangeCount).toBeGreaterThan(0);
+
+    const noChange = await mockAutocountService.listStaged('job-1', { changed: false });
+    expect(noChange.data.every((r) => !r.hasChanges)).toBe(true);
+    expect(noChange.total).toBe(changed.noChangeCount);
+  });
+
+  it('re-fetch history resets the entity watermark (mock)', async () => {
+    const { mockAutocountService } = await import('./autocount-service.mock');
+    const res = await mockAutocountService.refetchHistory('c1', 'goods_received_note');
+    expect(res.watermarkAt).toBeNull();
+    expect(res.entityType).toBe('goods_received_note');
   });
 });

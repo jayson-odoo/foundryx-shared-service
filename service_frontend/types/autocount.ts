@@ -210,14 +210,46 @@ export interface AutocountStagedRecord {
   canonical: Record<string, unknown> | null;
   errors: AutocountStagedError[] | null;
   error: string | null;
+  /**
+   * Whether any MAPPED field actually changed (or the record is a first-seen /
+   * failed one the operator must see). A delta re-fetch whose only movement was
+   * AutoCount's `LastModified` has `hasChanges: false` and is collapsed into a
+   * count rather than shown as a full card (AC-15-11). Backend-computed off the
+   * same `compute_diff` that fills `diff`.
+   */
+  hasChanges: boolean;
   sourceLastModified: string | null; // ISO Z
+}
+
+/**
+ * `GET /autocount/jobs/{id}/staged` query. The staged list is server-paginated
+ * (AC-15-10) — an all-rows fetch is never issued. `changed` narrows the page to
+ * records the operator must act on (`true`) or the collapsed no-change set
+ * (`false`); omitted = the whole batch.
+ */
+export interface AutocountStagedQuery {
+  page?: number; // 0-based
+  pageSize?: number;
+  /** Matches source ref / doc no / name. */
+  search?: string;
+  /** true = changed + failed rows; false = no-field-change rows; omit = all. */
+  changed?: boolean;
+  /** One staged status (`STAGED`/`FAILED`/…) — the list's Filters control. */
+  status?: AutocountStagedStatus | string;
 }
 
 /** `GET /autocount/jobs/{id}/staged` — the review surface's payload. */
 export interface AutocountStagedList {
   job: AutocountSyncJob;
   data: AutocountStagedRecord[];
+  /** Rows matching THIS query (drives pagination). */
   total: number;
+  /**
+   * Count of no-field-change records in the whole batch (constant across
+   * pages) — lets the FE render the collapsed "N with no field changes" line
+   * without fetching them (AC-15-11).
+   */
+  noChangeCount: number;
 }
 
 /** `POST /autocount/jobs/{id}/{approve,discard}` — idempotent (AC-13-13). */

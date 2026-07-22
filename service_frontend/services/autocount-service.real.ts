@@ -16,6 +16,7 @@ import type {
   AutocountSyncRun,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
+import type { AutocountStagedQuery } from '@/types/autocount';
 import type { AutocountListQuery, AutocountService } from './autocount-service';
 
 function pageParams(query: AutocountListQuery = {}): URLSearchParams {
@@ -24,6 +25,14 @@ function pageParams(query: AutocountListQuery = {}): URLSearchParams {
   // The backend caps page_size at 200 — asking for more is a 422, not a bigger
   // page, so never send an uncapped "give me everything" size.
   p.set('page_size', String(Math.min(query.pageSize ?? 25, 200)));
+  return p;
+}
+
+function stagedParams(query: AutocountStagedQuery = {}): URLSearchParams {
+  const p = pageParams(query);
+  if (query.search) p.set('search', query.search);
+  if (query.changed !== undefined) p.set('changed', String(query.changed));
+  if (query.status) p.set('status', query.status);
   return p;
 }
 
@@ -59,6 +68,14 @@ export const realAutocountService: AutocountService = {
     });
   },
 
+  refetchHistory(companyId, entityType) {
+    // BACKEND NEEDED: endpoint not yet implemented (flagged in the interface).
+    return apiFetch<AutocountEntityConfig>(
+      `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/refetch`,
+      { method: 'POST' },
+    );
+  },
+
   listRuns(companyId, query = {}) {
     const p = pageParams(query);
     if (query.entityType) p.set('entity_type', query.entityType);
@@ -67,8 +84,10 @@ export const realAutocountService: AutocountService = {
     );
   },
 
-  listStaged(jobId) {
-    return apiFetch<AutocountStagedList>(`/autocount/jobs/${jobId}/staged`);
+  listStaged(jobId, query = {}) {
+    return apiFetch<AutocountStagedList>(
+      `/autocount/jobs/${jobId}/staged?${stagedParams(query).toString()}`,
+    );
   },
 
   preview(jobId) {

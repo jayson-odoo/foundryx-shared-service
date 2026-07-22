@@ -22,6 +22,7 @@ import type {
   AutocountPreviewResult,
   AutocountSinkTargetInput,
   AutocountStagedList,
+  AutocountStagedQuery,
   AutocountSyncJob,
   AutocountSyncRun,
 } from '@/types/autocount';
@@ -57,13 +58,34 @@ export interface AutocountService {
   ): Promise<AutocountEntityConfig>;
   /** Trigger a manual sync (`POST /autocount/companies/{id}/sync`). */
   syncNow(companyId: string, entityType: string): Promise<AutocountSyncJob>;
+  /**
+   * Re-open an entity's first-run window by RESETTING its watermark
+   * (`POST /autocount/companies/{id}/entities/{entityType}/refetch`). The
+   * deliberate, confirmed act that re-widens a spent window (AC-15-30) — the
+   * next sync re-reads from `initialLookbackDays` again. Distinct from editing
+   * the window, which is a no-op once superseded.
+   *
+   * BACKEND NEEDED: this endpoint is not yet implemented. The `.real` binding
+   * targets the intended path; verify/adjust when the route lands.
+   */
+  refetchHistory(
+    companyId: string,
+    entityType: string,
+  ): Promise<AutocountEntityConfig>;
   /** Run history for a company (`GET /autocount/companies/{id}/runs`). */
   listRuns(
     companyId: string,
     query?: AutocountListQuery & { entityType?: string },
   ): Promise<ListResult<AutocountSyncRun>>;
-  /** Staged records + per-record diffs (`GET /autocount/jobs/{id}/staged`). */
-  listStaged(jobId: string): Promise<AutocountStagedList>;
+  /**
+   * Staged records + per-record diffs (`GET /autocount/jobs/{id}/staged`).
+   * Server-paginated + searchable + `changed`-filtered (AC-15-10) — never an
+   * all-rows fetch. Omitting the query returns the first page.
+   */
+  listStaged(
+    jobId: string,
+    query?: AutocountStagedQuery,
+  ): Promise<AutocountStagedList>;
   /**
    * Dry-run the batch against the consumer, writing nothing
    * (`POST /autocount/jobs/{id}/preview`). Returns the consumer's own
