@@ -13,15 +13,15 @@ the columns may already have been added out-of-band before this revision runs.
 Postgres-only DDL; a no-op on the SQLite test engine (per-module Alembic runs
 only on Postgres — see ``app/module_platform/migrations.run_module_migrations``).
 
-Revision ID: 0004_ideation_idea_segregated_fields
-Revises: 0003_ideation_idea_submitter_name
+Revision ID: 0004_ideation_segregated
+Revises: 0003_ideation_submitter
 Create Date: 2026-07-19
 """
 from alembic import op
 from sqlalchemy import text
 
-revision = "0004_ideation_idea_segregated_fields"
-down_revision = "0003_ideation_idea_submitter_name"
+revision = "0004_ideation_segregated"
+down_revision = "0003_ideation_submitter"
 branch_labels = None
 depends_on = None
 

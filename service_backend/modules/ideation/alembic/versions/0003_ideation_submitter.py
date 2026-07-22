@@ -8,13 +8,13 @@ derives the name from the linked contact.
 Postgres-only DDL; a no-op on the SQLite test engine (per-module Alembic runs
 only on Postgres — see ``app/module_platform/migrations.run_module_migrations``).
 
-Revision ID: 0003_ideation_idea_submitter_name
+Revision ID: 0003_ideation_submitter
 Revises: 0002_ideation_dedup_trgm
 Create Date: 2026-07-19
 """
 from alembic import op
 
-revision = "0003_ideation_idea_submitter_name"
+revision = "0003_ideation_submitter"
 down_revision = "0002_ideation_dedup_trgm"
 branch_labels = None
 depends_on = None
