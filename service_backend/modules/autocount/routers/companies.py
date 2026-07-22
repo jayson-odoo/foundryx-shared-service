@@ -19,9 +19,13 @@ from ..schemas import (
     CompanySinkUpdate,
     EntityConfigItem,
     EntityConfigUpdate,
+    FormulaTestRequest,
+    FormulaTestResponse,
     MappingRowOut,
     MappingUpdateRequest,
     MappingViewResponse,
+    SimulateRequest,
+    SimulateResponse,
     SorentoFieldOut,
 )
 from ..services import (
@@ -242,6 +246,7 @@ def replace_entity_mapping(
                     source_path=row.sourcePath,
                     transform=row.transform,
                     sorento_field=row.sorentoField,
+                    formula=row.formula,
                 )
                 for row in body.rows
             ],
@@ -249,3 +254,87 @@ def replace_entity_mapping(
     except AutocountServiceError as exc:
         _raise(exc)
     return _mapping_response(view)
+
+
+@router.get(
+    "/{company_id}/entities/{entity_type}/mapping/functions",
+)
+def get_formula_catalog(
+    company_id: str,
+    entity_type: str,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+) -> dict:
+    """The formula function/operator/preset/date-token catalog the builder needs
+    (AC-16-13/15). Entity-agnostic; gated behind the company/entity guard so it
+    shares the mapping editor's auth. Reuses ``autocount.companies.manage``.
+    """
+    try:
+        catalog = CompanyService(db).function_catalog(
+            current_user.tenant_id, company_id, entity_type
+        )
+    except AutocountServiceError as exc:
+        _raise(exc)
+    return catalog
+
+
+@router.post(
+    "/{company_id}/entities/{entity_type}/mapping/test-formula",
+    response_model=FormulaTestResponse,
+)
+def test_formula(
+    company_id: str,
+    entity_type: str,
+    body: FormulaTestRequest,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+) -> FormulaTestResponse:
+    """Server-authoritative single-formula eval (AC-16-21) — the parity check for
+    the builder's live client preview. Writes NOTHING. A bad formula/value comes
+    back as ``{ok: false, error}``, never a 500. Reuses ``autocount.companies.manage``.
+    """
+    try:
+        result = CompanyService(db).test_formula(
+            current_user.tenant_id, company_id, entity_type, body.formula, body.value
+        )
+    except AutocountServiceError as exc:
+        _raise(exc)
+    return FormulaTestResponse(**result)
+
+
+@router.post(
+    "/{company_id}/entities/{entity_type}/mapping/simulate",
+    response_model=SimulateResponse,
+)
+def simulate_mapping(
+    company_id: str,
+    entity_type: str,
+    body: SimulateRequest,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+) -> SimulateResponse:
+    """Run the REAL MappingEngine over a MOCK AutoCount record → the projected
+    Sorento record + per-field results (AC-16-30). Writes NOTHING — pure transform
+    preview, distinct from the slice-14 Sorento dry-run. ``rows`` (optional) lets
+    the operator simulate UNSAVED edits. Reuses ``autocount.companies.manage``.
+    """
+    try:
+        draft = (
+            [
+                MappingWriteRow(
+                    source_path=row.sourcePath,
+                    transform=row.transform,
+                    sorento_field=row.sorentoField,
+                    formula=row.formula,
+                )
+                for row in body.rows
+            ]
+            if body.rows is not None
+            else None
+        )
+        result = CompanyService(db).simulate_mapping(
+            current_user.tenant_id, company_id, entity_type, body.record, draft
+        )
+    except AutocountServiceError as exc:
+        _raise(exc)
+    return SimulateResponse(**result)

@@ -33,7 +33,21 @@ from ..activity import (
     record_client_calls,
 )
 from ..client import AutoCountClient, AutoCountError
-from ..mapping import DEFAULT_MAPPINGS, SCOPE_HEADER, TRANSFORMS, MappingRow
+from ..mapping import (
+    DEFAULT_MAPPINGS,
+    SCOPE_HEADER,
+    TRANSFORMS,
+    MappingEngine,
+    MappingRow,
+)
+from ..formula import (
+    FormulaError,
+    FormulaParseError,
+    catalog_payload,
+    evaluate_formula,
+    parse_formula,
+    result_to_json,
+)
 from ..mapping_catalog import (
     SorentoFieldDef,
     accepted_fields,
@@ -206,6 +220,9 @@ class MappingWriteRow:
     source_path: str
     transform: str
     sorento_field: str
+    # Optional safe transform formula (slice 16). NULL/blank ⇒ the named
+    # ``transform`` runs unchanged. Set ⇒ the formula is authoritative.
+    formula: Optional[str] = None
 
 
 @dataclass
@@ -225,6 +242,9 @@ class MappingRowView:
     scope: str
     is_required: bool
     is_enabled: bool
+    # The row's safe transform formula, if any (slice 16). None ⇒ the named
+    # transform is authoritative.
+    formula: Optional[str] = None
 
 
 @dataclass
@@ -668,6 +688,7 @@ class CompanyService:
                 scope=row.scope,
                 is_required=row.is_required,
                 is_enabled=row.is_enabled,
+                formula=row.formula,
             )
             for row in self.mappings.list(tenant_id, company_id, entity_type)
         ]
@@ -696,6 +717,7 @@ class CompanyService:
                 scope=row.scope,
                 is_required=row.is_required,
                 is_enabled=row.is_enabled,
+                formula=row.formula,
             )
             for row in self.mappings.list(tenant_id, company_id, entity_type)
         ]
@@ -724,12 +746,16 @@ class CompanyService:
         """Replace the DELIVERABLE mapping rows for one (company, entity) in ONE
         transaction (AC-15-41).
 
-        Foolproof guard (AC-15-42/43), enforced server-side — never advisory:
+        Foolproof guard (AC-15-42/43 + AC-16-03), enforced server-side — never
+        advisory:
           * every ``sorento_field`` must be in the accepted set (else 422 naming
             the field) — a target Sorento would reject (``extra="forbid"``) can
             never be stored;
           * each accepted field maps once (no duplicate target);
-          * ``source_path`` is non-blank; ``transform`` is a known transform.
+          * ``source_path`` is non-blank; ``transform`` is a known transform;
+          * a row's ``formula``, if present, PARSES — an unknown name/function or
+            bad arity is a 422 naming the problem, so a broken formula can never
+            reach a sync (AC-16-03).
 
         Only rows whose canonical field is in the accepted set are replaced —
         provenance/watermark rows (``last_modified``) are PRESERVED, so a re-map
@@ -764,7 +790,17 @@ class CompanyService:
                     f"The Sorento field '{target}' is mapped more than once."
                 )
             seen.add(target)
-            clean.append(MappingWriteRow(source_path, row.transform, target))
+            formula = (row.formula or "").strip() or None
+            if formula is not None:
+                try:
+                    parse_formula(formula)  # save-gate: unknown fn/name → 422
+                except FormulaParseError as exc:
+                    raise AutocountServiceError(
+                        f"The formula for '{target}' is invalid: {exc}"
+                    ) from exc
+            clean.append(
+                MappingWriteRow(source_path, row.transform, target, formula=formula)
+            )
 
         # Replace only the deliverable rows; provenance rows survive.
         self.mappings.delete_by_canonical(tenant_id, company_id, entity_type, accepted)
@@ -778,6 +814,7 @@ class CompanyService:
                     source_path=row.source_path,
                     canonical_field=row.sorento_field,
                     transform=row.transform,
+                    formula=row.formula,
                     is_required=row.sorento_field in required,
                     is_enabled=True,
                     sort_order=order,
@@ -785,3 +822,132 @@ class CompanyService:
             )
         self.db.commit()
         return self._mapping_view(tenant_id, company_id, entity_type)
+
+    # ── formula catalog + simulators (slice 16, AC-16-13/21/30) ───────────────
+
+    def function_catalog(
+        self, tenant_id: str, company_id: str, entity_type: str
+    ) -> Dict[str, Any]:
+        """The formula function/operator/preset/date-token catalog the builder
+        consumes (AC-16-13/15). Entity-agnostic content, but tenant/company/entity
+        guarded so it shares the mapping editor's auth boundary."""
+        self._require_entity(tenant_id, company_id, entity_type)
+        return catalog_payload()
+
+    def test_formula(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        formula: str,
+        value: Any,
+    ) -> Dict[str, Any]:
+        """Server-authoritative single-formula eval (AC-16-21) — the parity check
+        behind the builder's live client preview. Writes nothing.
+
+        A parse or runtime fault is returned as ``{ok: False, error}`` (named),
+        never raised, so the builder shows the failure inline. ``value`` is fed
+        RAW (the operator's mock), NOT short-circuited on blank, so the operator
+        sees exactly what the evaluator does with their input.
+        """
+        self._require_entity(tenant_id, company_id, entity_type)
+        try:
+            output = result_to_json(evaluate_formula(formula, value))
+            return {"ok": True, "output": output, "error": None}
+        except FormulaError as exc:
+            return {"ok": False, "output": None, "error": str(exc)}
+
+    def simulate_mapping(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        record: Dict[str, Any],
+        draft_rows: Optional[List[MappingWriteRow]] = None,
+    ) -> Dict[str, Any]:
+        """Run the REAL MappingEngine over a MOCK AutoCount record → the projected
+        Sorento record + per-field results (AC-16-30). Writes NOTHING.
+
+        ``draft_rows`` (optional) lets the operator simulate UNSAVED edits: when
+        given, they REPLACE the saved deliverable rows for this run only (parsed
+        + guarded exactly like ``replace_mapping``, but never persisted), while
+        the saved provenance rows (``last_modified``, identity source) are kept so
+        identity still mints. When absent, the saved rows are used as-is.
+        """
+        self._require_entity(tenant_id, company_id, entity_type)
+        company = self.get(tenant_id, company_id)
+
+        if draft_rows is None:
+            rows = self.mapping_rows(tenant_id, company_id, entity_type)
+        else:
+            rows = self._draft_engine_rows(tenant_id, company_id, entity_type, draft_rows)
+
+        engine = MappingEngine(
+            rows,
+            entity_type=entity_type,
+            database_name=company.database_name,
+        )
+        return engine.project_document(record)
+
+    def _draft_engine_rows(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        draft_rows: List[MappingWriteRow],
+    ) -> List[MappingRow]:
+        """Build in-memory engine rows from UNSAVED editor rows for a simulate.
+
+        The deliverable rows come from the draft (guarded + formula-parsed, never
+        persisted); the saved NON-deliverable rows (provenance/identity, e.g.
+        ``last_modified``) are appended so the simulation mints identity and
+        advances nothing it shouldn't. Mirrors ``replace_mapping``'s guards so a
+        simulate can't preview a mapping the save-gate would reject.
+        """
+        accepted = accepted_field_names(entity_type)
+        required = required_field_names(entity_type)
+        seen: set = set()
+        engine_rows: List[MappingRow] = []
+        for row in draft_rows:
+            source_path = (row.source_path or "").strip()
+            if not source_path:
+                raise AutocountServiceError(
+                    "A mapping row is missing its AutoCount source field."
+                )
+            if row.transform not in TRANSFORMS:
+                raise AutocountServiceError(f"'{row.transform}' is not a known transform.")
+            target = row.sorento_field
+            if target not in accepted:
+                raise AutocountServiceError(
+                    f"'{target}' is not a Sorento field accepted for {entity_type}."
+                )
+            if target in seen:
+                raise AutocountServiceError(
+                    f"The Sorento field '{target}' is mapped more than once."
+                )
+            seen.add(target)
+            formula = (row.formula or "").strip() or None
+            if formula is not None:
+                try:
+                    parse_formula(formula)
+                except FormulaParseError as exc:
+                    raise AutocountServiceError(
+                        f"The formula for '{target}' is invalid: {exc}"
+                    ) from exc
+            engine_rows.append(
+                MappingRow(
+                    source_path=source_path,
+                    canonical_field=target,
+                    transform=row.transform,
+                    scope=SCOPE_HEADER,
+                    is_required=target in required,
+                    is_enabled=True,
+                    formula=formula,
+                )
+            )
+        # Keep the saved NON-deliverable rows (identity/provenance) so the
+        # simulated record still correlates and stamps its watermark source.
+        for saved in self.mapping_rows(tenant_id, company_id, entity_type):
+            if saved.canonical_field not in accepted:
+                engine_rows.append(saved)
+        return engine_rows

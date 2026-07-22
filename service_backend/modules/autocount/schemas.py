@@ -238,6 +238,9 @@ class MappingRowOut(ApiModel):
 
     sourcePath: str = Field(validation_alias="source_path")
     transform: str
+    # The row's safe transform formula, if any (slice 16). None ⇒ the named
+    # transform is authoritative.
+    formula: Optional[str] = None
     # None when the stored canonical field is not delivered to Sorento (identity /
     # watermark provenance, or an extras key) — shown non-delivered (AC-15-40).
     sorentoField: Optional[str] = Field(validation_alias="sorento_field")
@@ -271,12 +274,71 @@ class MappingUpdateRow(ApiModel):
     sourcePath: str
     transform: str = "string"
     sorentoField: str
+    # Optional safe transform formula (slice 16). NULL/blank ⇒ the named
+    # transform runs. Validated (parsed) server-side at save (AC-16-03).
+    formula: Optional[str] = None
 
 
 class MappingUpdateRequest(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
     rows: List[MappingUpdateRow]
+
+
+# ── formula catalog + simulators (plan 16 §3, AC-16-13/21/30) ─────────────────
+
+
+class FormulaTestRequest(ApiModel):
+    """A single-formula parity check (AC-16-21): a mock ``value`` + a formula."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    formula: str
+    # The mock input value — the vendor sends strings, but a number/bool/null is
+    # accepted too (the evaluator coerces).
+    value: Any = None
+
+
+class FormulaTestResponse(ApiModel):
+    ok: bool
+    output: Any = None
+    error: Optional[str] = None
+
+
+class SimulateRequest(ApiModel):
+    """A whole-mapping simulation (AC-16-30): a mock AutoCount record, optionally
+    with DRAFT (unsaved) rows to preview an in-progress edit."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    record: Dict[str, Any]
+    rows: Optional[List[MappingUpdateRow]] = None
+
+
+class SimulateFieldResult(ApiModel):
+    """One field's simulated outcome — value or a named error, side by side."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    scope: str
+    sourcePath: str
+    canonicalField: str
+    present: bool
+    ok: bool
+    value: Any = None
+    error: Optional[str] = None
+
+
+class SimulateResponse(ApiModel):
+    ok: bool
+    sourceRef: str = ""
+    docNo: Optional[str] = None
+    # The projected Sorento record (every mapped field), or None when the record
+    # would be REJECTED (all-or-nothing per document).
+    record: Optional[Dict[str, Any]] = None
+    headerFields: List[SimulateFieldResult] = []
+    lineFields: List[List[SimulateFieldResult]] = []
+    errors: List[Dict[str, Any]] = []
 
 
 class SyncRunItem(ApiModel):
