@@ -139,7 +139,14 @@ def upgrade() -> None:
             f'CREATE TABLE IF NOT EXISTS "{s}".idea_business_requirements ('
             "  id VARCHAR PRIMARY KEY,"
             "  tenant_id VARCHAR NOT NULL,"
-            f'  idea_id VARCHAR NOT NULL REFERENCES "{s}".ideas(id),'
+            # ``idea_id`` is a plain indexed column, NOT a FK (BL-030): a FK to the
+            # hot, pre-existing ``ideas`` table takes a SHARE ROW EXCLUSIVE lock that
+            # HANGS the blue/green deploy behind any live connection on ``ideas``
+            # (backend_green never healthy). ``business_requirement_id`` keeps its FK
+            # — that table is created just above in this same migration (no lock
+            # contention). Integrity for idea_id is enforced tenant-scoped in the
+            # service layer.
+            "  idea_id VARCHAR NOT NULL,"
             f'  business_requirement_id VARCHAR NOT NULL REFERENCES "{s}".business_requirements(id),'
             "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
             "  CONSTRAINT uq_idea_business_requirement UNIQUE (idea_id, business_requirement_id)"
