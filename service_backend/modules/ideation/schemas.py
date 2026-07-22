@@ -149,6 +149,75 @@ class CreateIdeaAttachmentIn(ApiModel):
     caption: Optional[str] = None
 
 
+class BusinessRequirementOut(ApiModel):
+    """One Business Requirement (list row / detail base), camelCase to the FE.
+    ``status`` is the lifecycle KEY; ``statusLabel``/``statusColor`` are the
+    server-rendered display (never branch on the label). ``templateVersion`` is
+    the STAMPED version this BR renders against (AC-BI-16)."""
+
+    id: str
+    productId: str
+    productName: str
+    status: str
+    statusLabel: str
+    statusColor: str
+    templateKey: str
+    templateVersion: int
+    title: str
+    ideaCount: int = 0
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class BusinessRequirementDetailOut(BusinessRequirementOut):
+    """The BR detail — adds ``answers`` (the form_engine answer map) and
+    ``templateDoc`` (the STAMPED template version's block document, for the
+    form-engine renderer on the Details tab)."""
+
+    answers: Dict[str, Any] = {}
+    templateDoc: Dict[str, Any] = {}
+
+
+class BrTemplateVersionOut(ApiModel):
+    """One BR-template version (Versions tab). ``isStamped`` marks the version
+    THIS BR renders against; ``isActive`` marks the template's current label."""
+
+    version: int
+    isStamped: bool
+    isActive: bool
+    createdAt: datetime
+
+
+class BusinessRequirementCreateIn(ApiModel):
+    """Create a draft BR against a product. ``answers`` are validated against the
+    stamped template version; ``ideaIds`` optionally links ideas (same product)."""
+
+    productId: str
+    title: str = ""
+    answers: Optional[Dict[str, Any]] = None
+    ideaIds: Optional[List[str]] = None
+
+
+class BusinessRequirementUpdateIn(ApiModel):
+    """Partial edit of a BR's ``title`` / ``answers`` (validated against the
+    STAMPED version). Status moves ride ``POST /{id}/status``, not this route."""
+
+    title: Optional[str] = None
+    answers: Optional[Dict[str, Any]] = None
+
+
+class BrLinkIdeasIn(ApiModel):
+    """Link ideas to a BR (tenant-scoped + same-product, AC-BI-17)."""
+
+    ideaIds: List[str]
+
+
+class BrStatusIn(ApiModel):
+    """Move a BR to a lifecycle status by KEY — server-authoritative."""
+
+    status: str
+
+
 class CreateIdeaIn(ApiModel):
     """``create_idea`` intake input (§5.1, AC-A-17) — **snake_case, byte-for-byte**.
 

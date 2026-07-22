@@ -443,6 +443,11 @@ export const MENU_SIDEBAR: MenuConfig = [
     icon: Lightbulb,
     children: [
       { title: 'Ideas', path: '/ideation/ideas' },
+      {
+        title: 'Business requirements',
+        path: '/ideation/business-requirements',
+        permission: 'ideation.business_requirements.read',
+      },
       { title: 'Triage board', path: '/ideation/board' },
       {
         title: 'Embed connections',
@@ -820,6 +825,11 @@ export const MENU_SIDEBAR_COMPACT: MenuConfig = [
     icon: Lightbulb,
     children: [
       { title: 'Ideas', path: '/ideation/ideas' },
+      {
+        title: 'Business requirements',
+        path: '/ideation/business-requirements',
+        permission: 'ideation.business_requirements.read',
+      },
       { title: 'Triage board', path: '/ideation/board' },
     ],
   },

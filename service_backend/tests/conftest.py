@@ -170,6 +170,7 @@ def ideation_session_factory():
     App Store. Ideation tests get a session where the module is bootstrapped +
     installed exactly like production.
     """
+    from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
 
@@ -180,7 +181,13 @@ def ideation_session_factory():
     ).execution_options(
         # Each module schema maps onto its own attached in-memory db (distinct
         # table names; no collisions) — module tables stay isolated from core's.
-        schema_translate_map={OMNI_SCHEMA: "omni", IDEATION_SCHEMA: "ideation"}
+        # autocount (sprint-4/13, merged from main) maps onto the `omni` db like
+        # the core session_factory does so bootstrap_modules can install it here.
+        schema_translate_map={
+            OMNI_SCHEMA: "omni",
+            AUTOCOUNT_SCHEMA: "omni",
+            IDEATION_SCHEMA: "ideation",
+        }
     )
     with engine.connect() as conn:
         conn.exec_driver_sql("ATTACH ':memory:' AS omni")
@@ -188,6 +195,7 @@ def ideation_session_factory():
         conn.commit()
     Base.metadata.create_all(bind=engine)
     OmniBase.metadata.create_all(bind=engine)
+    AutocountBase.metadata.create_all(bind=engine)
     IdeationBase.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 

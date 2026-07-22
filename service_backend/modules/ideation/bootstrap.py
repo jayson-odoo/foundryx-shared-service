@@ -55,7 +55,10 @@ def register_engine_entities() -> None:
 
     from .adapters import registered_adapter_kinds
     from .services.statuses import (
+        BR_ENTITY,
         IDEA_ENTITY,
+        br_count_records,
+        br_migrate_records,
         idea_count_records,
         idea_migrate_records,
     )
@@ -74,6 +77,20 @@ def register_engine_entities() -> None:
             migrate_records=idea_migrate_records,
             record_label_attr="problem",
             required_flags=["is_initial", "is_terminal", "is_archived"],
+        )
+    )
+    # Business Requirement rides the core status engine too — tenant-owned,
+    # unscoped (Bi-D3, slice 2). draft → grilling → ready → in-FR → delivered →
+    # archived; the draft → ready edge is the S4 promote gate.
+    register_status_entity(
+        StatusEntity(
+            entity_type=BR_ENTITY,
+            label="Business Requirement",
+            module=MODULE_NAME,
+            count_records=br_count_records,
+            migrate_records=br_migrate_records,
+            record_label_attr="title",
+            required_flags=["is_initial", "is_archived"],
         )
     )
     # Conversational-Intake engine (D18, AC-A-13): register the single ``ideation``
@@ -101,9 +118,14 @@ def install(engine: Engine, db: Session) -> None:
     PermissionRepository(db).sync(MODULE_NAME, load_csv(MODULE_CSV))
     # Idea status set + transition graph as platform defaults (AC-A-10, D-A3).
     # Two-tier: every tenant uses these until it forks the set. Idempotent.
-    from .services.statuses import seed_idea_statuses
+    from .services.br_templates import seed_br_template
+    from .services.statuses import seed_br_statuses, seed_idea_statuses
 
     seed_idea_statuses(db)
+    # Business Requirement status set + graph + the platform-tier BR template
+    # (Phase B-i slice 2, AC-BI-15/16). Idempotent + insert-if-missing.
+    seed_br_statuses(db)
+    seed_br_template(db)
 
 
 def install_tenant(db: Session, tenant_id: str) -> None:

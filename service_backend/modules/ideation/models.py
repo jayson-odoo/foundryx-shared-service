@@ -16,6 +16,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -255,4 +256,155 @@ class EmbedConnection(IdeationBase):
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+# ── Business Requirement entity (Phase B-i slice 2, AC-BI-15..19) ─────────────
+
+
+class IdeationArtifactTemplate(IdeationBase):
+    """A versioned artifact template keyed by ``template_key`` (Bi-D1/Bi-D2) —
+    modelled EXACTLY on core's ``ai_skills`` shape: a movable ``active_version_id``
+    label over immutable ``ideation_artifact_template_versions`` rows. A template
+    body is a ``form_engine`` ``FormDocument`` (block-doc, not a wide column set).
+
+    ``tenant_id IS NULL`` = the platform tier (the only tier S2 seeds — no
+    per-tenant fork yet; tenant customization is deferred). No FK on
+    ``active_version_id`` — the version rows FK back to the template, and a mutual
+    FK pair deadlocks insert ordering (the ai_skills lesson)."""
+
+    __tablename__ = "ideation_artifact_templates"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    # Plain nullable id (no FK): NULL = platform tier. Cross-schema to core is
+    # BL-030 (plain indexed column) anyway, and the platform tier has no tenant.
+    tenant_id = Column(String, nullable=True, index=True)
+    template_key = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=False, default="")
+    # The movable ``active`` label (no FK — see class docstring).
+    active_version_id = Column(String, nullable=True, index=True)
+    is_system = Column(Boolean, nullable=False, default=False)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        # Two-tier uniqueness needs PARTIAL indexes per tier (the ai_skills /
+        # BL-065 lesson): a plain unique over a nullable column doesn't constrain
+        # the platform (NULL) tier on Postgres.
+        Index(
+            "uq_ideation_artifact_tmpl_tenant_key",
+            "tenant_id",
+            "template_key",
+            unique=True,
+            postgresql_where=Column("tenant_id").isnot(None),
+            sqlite_where=Column("tenant_id").isnot(None),
+        ),
+        Index(
+            "uq_ideation_artifact_tmpl_platform_key",
+            "template_key",
+            unique=True,
+            postgresql_where=Column("tenant_id").is_(None),
+            sqlite_where=Column("tenant_id").is_(None),
+        ),
+    )
+
+
+# Same-schema FK target = the artifact-template above.
+_TEMPLATE_FK = IdeationArtifactTemplate.__table__.c.id
+
+
+class IdeationArtifactTemplateVersion(IdeationBase):
+    """IMMUTABLE template body (a ``form_engine`` ``FormDocument`` in ``doc_json``).
+    Never updated in place — an edit inserts the next version and the template's
+    ``active_version_id`` label moves (Bi-D2). A BR STAMPS ``(template_key,
+    version)`` at create so historical BRs render against their own version even
+    after the template is edited (AC-BI-16)."""
+
+    __tablename__ = "ideation_artifact_template_versions"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    # Intra-schema FK to the owning template (same schema — real FK kept).
+    template_id = Column(String, ForeignKey(_TEMPLATE_FK), nullable=False, index=True)
+    # Denormalised so version reads stay tenant-scoped without a join (NULL =
+    # platform tier, mirrors the parent).
+    tenant_id = Column(String, nullable=True, index=True)
+    version = Column(Integer, nullable=False)
+    # The form_engine block document (validate_form_doc-valid).
+    doc_json = Column(JSON(none_as_null=True), nullable=False)
+    created_by = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index(
+            "uq_ideation_artifact_tmpl_ver",
+            "template_id",
+            "version",
+            unique=True,
+        ),
+    )
+
+
+class BusinessRequirement(IdeationBase):
+    """A Business Requirement (Idea → BR → FR → delivery, AC-BI-15). Rides the
+    core status engine as an UNSCOPED, tenant-owned entity
+    (``register_status_entity("ideation_business_requirement", …)``, Bi-D3):
+    lifecycle ``draft → grilling → ready → in-FR → delivered → archived``,
+    initial ``draft``.
+
+    ``answers_json`` holds the ``form_engine`` answers, validated at write against
+    the STAMPED template version (``template_key`` + ``template_version``), never
+    the current active one (AC-BI-16). Refs to core (``tenant_id`` /
+    ``product_id`` / ``status_id`` / ``created_by`` / ``updated_by``) are PLAIN
+    INDEXED columns — NO DB ForeignKey (BL-030)."""
+
+    __tablename__ = "business_requirements"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    # Plain indexed cross-schema refs to core (BL-030) — no DB FK.
+    product_id = Column(String, nullable=False, index=True)
+    status_id = Column(String, nullable=False, index=True)
+    # The stamped template identity (AC-BI-16). answers_json is validated against
+    # THIS version, resolved by (template_key, template_version).
+    template_key = Column(String, nullable=False)
+    template_version = Column(Integer, nullable=False)
+    title = Column(String, nullable=False, default="")
+    answers_json = Column(JSON(none_as_null=True), nullable=True)
+    created_by = Column(String, nullable=True, index=True)
+    updated_by = Column(String, nullable=True, index=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+# Same-schema FK target = the BR above.
+_BR_FK = BusinessRequirement.__table__.c.id
+
+
+class IdeaBusinessRequirement(IdeationBase):
+    """Idea ↔ BR many-many join (D4, AC-BI-17). An Idea may feed several BRs and a
+    BR may absorb many Ideas. Both sides are intra-``app_ideation`` FKs (real FKs
+    kept). ``tenant_id`` is derived from the pair at insert (never a static
+    default) and the link is validated tenant-scoped + same-product on write."""
+
+    __tablename__ = "idea_business_requirements"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    idea_id = Column(String, ForeignKey(_IDEA_FK), nullable=False, index=True)
+    business_requirement_id = Column(
+        String, ForeignKey(_BR_FK), nullable=False, index=True
+    )
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "idea_id",
+            "business_requirement_id",
+            name="uq_idea_business_requirement",
+        ),
     )

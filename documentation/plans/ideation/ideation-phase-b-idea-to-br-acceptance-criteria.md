@@ -126,7 +126,7 @@ Format: each AC is independently verifiable (Given / When / Then). Grouped by sl
 ### AC-BI-19 — BR permissions + promote gate [BE][T]
 - **Given** the ideation module CSV, **then** it declares `business_requirements.read`, `.manage`, and **separately** `.promote` (Submitter / Triager / Maintainer, D16).
 - **Given** a user with `.manage` but not `.promote`, **when** they open a `draft` BR, **then** they can grill and edit `answers_json` but the promote action is **absent** (frontend) and **refused 403** (backend — the real boundary).
-- **Given** the promote transition, **then** it is enforced through the **status engine's edge-role authorization** (`transition_roles`), not a hand-rolled check.
+- **Given** the promote transition, **then** it is enforced by **`require_permission("ideation.business_requirements.promote")` on the promote edge** (`br-tr-promote`). *(Revised 2026-07-22 after the S2 review: the BR status graph is **platform-tier** (`tenant_id=NULL`, shared across all tenants), so a platform-tier edge **cannot** carry per-tenant `transition_roles` ids — edge-role auth is architecturally unavailable until a tenant forks the graph. Gating the specific edge id `br-tr-promote` on the `.promote` permission is the equivalent real backend boundary, and the edge id is a **code contract**, not a tenant-editable status key, so it does not fall into the hardcoded-key trap. `transition_roles` stays available for any future tenant-forked graph.)*
 - **Given** these are new permissions, **then** a **grant sweep** re-runs `tenant_admin_grant` for **existing** tenants — the feature must not silently 403 for tenants provisioned earlier (Definition-of-Done #4).
 
 ---
@@ -208,7 +208,7 @@ Format: each AC is independently verifiable (Given / When / Then). Grouped by sl
 ### AC-BI-34 — the promote gate (Gate 0) [BE][FE][T]
 - **Given** a `draft` BR with `answers_json` complete per the stamped template, **when** a user holding `business_requirements.promote` fires it, **then** it transitions `draft → ready`.
 - **Given** required fields are missing, **then** promotion is **refused** with a "missing: …" message — and the same check is enforced **server-side**, not only in the UI.
-- **Given** promotion, **then** it is an explicit human action through the status engine (B-D4) with the actor recorded.
+- **Given** promotion, **then** it is an explicit human action through the status engine (B-D4) with the actor recorded, gated by `ideation.business_requirements.promote` on the `br-tr-promote` edge (see AC-BI-19's revised note) — no AI/import/timer path can reach `ready`.
 
 ### AC-BI-35 — traceability [BE][T]
 - **Given** a BR, **then** a lineage query resolves **BR → linked ideas → submitter contacts**, so every requirement traces back to the raw WhatsApp ideas that produced it.
