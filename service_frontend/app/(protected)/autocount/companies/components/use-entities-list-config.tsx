@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { CalendarRange, RefreshCw, RotateCcw } from 'lucide-react';
+import { CalendarRange, RefreshCw, RotateCcw, SlidersHorizontal } from 'lucide-react';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { Badge } from '@/components/ui/badge';
 import { ClampedText } from '@/components/platform/clamped-text';
@@ -71,6 +71,8 @@ export interface EntitiesListConfigOptions {
   onEditLookback: (entity: AutocountEntityConfig) => void;
   /** Reset a superseded entity's watermark to re-open its first-run window. */
   onRefetch: (entity: AutocountEntityConfig) => void | Promise<void>;
+  /** Open the entity's field-mapping editor (AC-15-40). */
+  onConfigureMapping: (entity: AutocountEntityConfig) => void;
 }
 
 export function useAutocountEntitiesListConfig({
@@ -79,6 +81,7 @@ export function useAutocountEntitiesListConfig({
   onSync,
   onEditLookback,
   onRefetch,
+  onConfigureMapping,
 }: EntitiesListConfigOptions): ResourceListConfig<AutocountEntityConfig> {
   const { formatDateTime } = useDatetime();
 
@@ -133,6 +136,17 @@ export function useAutocountEntitiesListConfig({
         run: (rows) => {
           const row = rows[0];
           if (row) return onRefetch(row);
+        },
+      },
+      {
+        id: 'configure-mapping',
+        label: 'Configure mapping',
+        icon: SlidersHorizontal,
+        surfaces: { row: true },
+        permission: AC_COMPANIES_MANAGE,
+        run: (rows) => {
+          const row = rows[0];
+          if (row) onConfigureMapping(row);
         },
       },
     ];
@@ -325,5 +339,13 @@ export function useAutocountEntitiesListConfig({
       }),
       enableStatusViews: false,
     };
-  }, [companyActive, entities, formatDateTime, onEditLookback, onRefetch, onSync]);
+  }, [
+    companyActive,
+    entities,
+    formatDateTime,
+    onConfigureMapping,
+    onEditLookback,
+    onRefetch,
+    onSync,
+  ]);
 }

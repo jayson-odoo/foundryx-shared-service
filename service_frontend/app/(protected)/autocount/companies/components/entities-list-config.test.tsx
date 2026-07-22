@@ -37,6 +37,7 @@ function entity(over: Partial<AutocountEntityConfig> = {}): AutocountEntityConfi
 const onSync = vi.fn();
 const onEditLookback = vi.fn();
 const onRefetch = vi.fn();
+const onConfigureMapping = vi.fn();
 
 function config(entities: AutocountEntityConfig[], companyActive = true) {
   return renderHook(() =>
@@ -46,6 +47,7 @@ function config(entities: AutocountEntityConfig[], companyActive = true) {
       onSync,
       onEditLookback,
       onRefetch,
+      onConfigureMapping,
     }),
   ).result.current;
 }
@@ -54,6 +56,7 @@ beforeEach(() => {
   onSync.mockReset();
   onEditLookback.mockReset();
   onRefetch.mockReset();
+  onConfigureMapping.mockReset();
 });
 
 describe('entities list config', () => {
@@ -149,6 +152,16 @@ describe('entities actions', () => {
     const row = entity({ watermarkAt: '2026-07-12T00:00:00Z' });
     refetch.run([row], { reload: vi.fn() });
     expect(onRefetch).toHaveBeenCalledWith(row);
+  });
+
+  it('offers "Configure mapping" gated on manage, opening the editor for its row', () => {
+    const c = config([entity()]);
+    const mapping = c.actions.find((a) => a.id === 'configure-mapping')!;
+    expect(mapping).toBeDefined();
+    expect(mapping.permission).toBe('autocount.companies.manage');
+    const row = entity();
+    mapping.run([row], { reload: vi.fn() });
+    expect(onConfigureMapping).toHaveBeenCalledWith(row);
   });
 });
 

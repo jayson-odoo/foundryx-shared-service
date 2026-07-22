@@ -36,6 +36,7 @@ import {
   AC_COMPANIES_MANAGE,
   AC_COMPANIES_PATH,
   acCompanyHref,
+  acMappingHref,
   acReviewHref,
   entityLabel,
 } from '../../components/autocount-meta';
@@ -185,6 +186,13 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     setEditing(entity);
   }, []);
 
+  const onConfigureMapping = useCallback(
+    (entity: AutocountEntityConfig) => {
+      router.push(acMappingHref(companyId, entity.entityType));
+    },
+    [companyId, router],
+  );
+
   const onRefetch = useCallback(
     async (entity: AutocountEntityConfig) => {
       try {
@@ -228,6 +236,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     onSync,
     onEditLookback,
     onRefetch,
+    onConfigureMapping,
   });
 
   const config = useMemo<ResourceFormConfig<AutocountCompany> | null>(() => {
