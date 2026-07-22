@@ -113,17 +113,19 @@ def list_jobs(
     db: Session = Depends(get_db),
     status_filter: str = Query("all", alias="status"),
     entity_type: str = Query(None, alias="entityType"),
+    search: str = Query(None),
     page: int = Query(0, ge=0),
     page_size: int = Query(25, ge=1, le=200),
 ) -> SyncJobListResponse:
     """The Review list — sync batches for the caller's tenant, newest first
-    (AC-15-02). Server-paginated + status/entity filtered; NEVER an unbounded
-    fetch."""
+    (AC-15-02). Server-paginated + status/entity/label filtered; NEVER an
+    unbounded fetch."""
     try:
         batches, total = SyncService(db).list_jobs(
             current_user.tenant_id,
             status=status_filter,
             entity_type=entity_type,
+            search=search,
             page=page,
             page_size=page_size,
         )

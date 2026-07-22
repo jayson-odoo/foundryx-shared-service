@@ -3755,3 +3755,25 @@ def test_refetch_history_is_tenant_scoped(db, transports):
         CompanyService(db).refetch_entity(
             "some-other-tenant", company.id, ENTITY_GOODS_RECEIVED_NOTE
         )
+
+
+def test_jobs_list_search_matches_company_label(db, transports):
+    """The Review-list search resolves a company-label match to an id set, then
+    filters jobs by payload companyId — a paginated total that stays honest
+    (AC-15-02 searchable list; foolproof-UI: the box must actually filter)."""
+    acme = _company(db, transports, database_name="ACME_CO", reads=[[_grn("1")]])
+    other = _company(db, transports, database_name="ZED_CO", reads=[[_grn("2")]])
+    _run_sync(db, acme)
+    _run_sync(db, other)
+
+    hits, total = SyncService(db).list_jobs(DEFAULT_TENANT_ID, search="acme")
+    assert total == 1
+    assert hits[0].company_id == acme.id
+
+    # A term matching nothing returns an empty page with total 0 (not everything).
+    none, none_total = SyncService(db).list_jobs(DEFAULT_TENANT_ID, search="nomatch")
+    assert none_total == 0 and none == []
+
+    # No search → both jobs.
+    _all, all_total = SyncService(db).list_jobs(DEFAULT_TENANT_ID)
+    assert all_total == 2

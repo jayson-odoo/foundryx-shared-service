@@ -227,6 +227,7 @@ class SyncService:
         *,
         status: str = "all",
         entity_type: Optional[str] = None,
+        search: Optional[str] = None,
         page: int = 0,
         page_size: int = 25,
     ) -> Tuple[List[JobBatch], int]:
@@ -242,11 +243,20 @@ class SyncService:
                 f"Unknown status filter '{status}'. Choose "
                 f"{', '.join(JOB_STATUS_FILTERS)}."
             )
+        # A label search resolves to a company-id set here (the jobs table holds
+        # only a companyId); an empty set → no rows, in SQL, so the total stays
+        # honest. None = no search filter at all.
+        company_ids = (
+            self.company_repo.search_ids(tenant_id, search)
+            if search and search.strip()
+            else None
+        )
         jobs, total = self.sync_jobs.list(
             tenant_id,
             AUTOCOUNT_SYNC,
             status=JOB_STATUS_FILTERS[status],
             entity_type=entity_type,
+            company_ids=company_ids,
             page=page,
             page_size=page_size,
         )

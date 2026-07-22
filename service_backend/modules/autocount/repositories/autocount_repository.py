@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Sequence, Tuple
 
-from sqlalchemy import Text, cast
+from sqlalchemy import Text, cast, or_
 from sqlalchemy.orm import Session
 
 from app.models.background_job import BackgroundJob
@@ -78,6 +78,27 @@ class CompanyRepository:
             .filter(AcCompany.tenant_id == tenant_id, AcCompany.id == company_id)
             .first()
         )
+
+    def search_ids(self, tenant_id: str, term: str) -> List[str]:
+        """Company ids whose label or database name contains ``term`` (case-
+        insensitive), for the Review-list search. Tenant-scoped. The jobs table
+        holds only a ``companyId``, so a company-name search resolves to an id
+        set here first, then the jobs query filters ``payload.companyId IN`` it —
+        the only way to keep the paginated total correct in one SQL pass."""
+        like = f"%{term.strip()}%"
+        rows = (
+            self.db.query(AcCompany.id)
+            .filter(
+                AcCompany.tenant_id == tenant_id,
+                or_(
+                    AcCompany.name.ilike(like),
+                    AcCompany.database_name.ilike(like),
+                    AcCompany.company_name.ilike(like),
+                ),
+            )
+            .all()
+        )
+        return [r[0] for r in rows]
 
     def get_by_database_name(
         self, tenant_id: str, database_name: str
@@ -475,6 +496,7 @@ class SyncJobRepository:
         *,
         status: Optional[str] = None,
         entity_type: Optional[str] = None,
+        company_ids: Optional[Sequence[str]] = None,
         page: int = 0,
         page_size: int = 25,
     ) -> Tuple[List[BackgroundJob], int]:
@@ -484,6 +506,13 @@ class SyncJobRepository:
         )
         if status:
             q = q.filter(BackgroundJob.status == status)
+        if company_ids is not None:
+            # The Review-list search resolved to this id set (company label match);
+            # an empty set means "no company matched" → no rows, in SQL, so the
+            # paginated total is honest.
+            q = q.filter(
+                BackgroundJob.payload_json["companyId"].as_string().in_(company_ids)
+            )
         if entity_type:
             # ``payload_json ->> 'entityType'`` — the generic-JSON string
             # comparator compiles per dialect (``json_extract`` on SQLite, ``->>``
