@@ -65,6 +65,13 @@ export interface AutocountCompany {
   /** Operator's display label (defaults to the discovered company name). */
   name: string;
   isActive: boolean;
+  /**
+   * The consumer push target (hop 2). `logging` = the no-op default (nothing
+   * leaves the ESB); `sorento` + `sinkConnectionId` = a real Sorento push.
+   */
+  sinkImpl: AutocountSinkImpl | string;
+  /** Core `connections.id` of the `consumer` connection; null for `logging`. */
+  sinkConnectionId: string | null;
   createdAt: string | null; // ISO Z
 }
 
@@ -72,6 +79,19 @@ export interface AutocountCompany {
 export interface AutocountCompanyDetail {
   company: AutocountCompany;
   entities: AutocountEntityConfig[];
+}
+
+/** Which consumer sink a company delivers to (`CompanyItem.sinkImpl`). */
+export type AutocountSinkImpl = 'logging' | 'sorento';
+
+/**
+ * `PATCH /autocount/companies/{id}/sink-target`. `logging` = the no-op default
+ * (nothing leaves the ESB); `sorento` requires `sinkConnectionId` naming a
+ * Sorento `consumer` connection for this tenant.
+ */
+export interface AutocountSinkTargetInput {
+  sinkImpl: AutocountSinkImpl;
+  sinkConnectionId?: string | null;
 }
 
 /** `POST /autocount/companies` — the operator supplies ONLY a connection. */
@@ -204,6 +224,109 @@ export interface AutocountStagedList {
 export interface AutocountApprovalResult {
   jobId: string;
   result: Record<string, unknown>;
+}
+
+// ── dry-run preview (hop 2, AC-14-20/21/22/26) ───────────────────────────────
+
+/**
+ * The consumer's dry-run counts, mirrored from Sorento (AC-14-26). `total` is
+ * stated alongside so a partial preview is never mistaken for a clean success.
+ * Extra keys the vendor may add are tolerated (the summary is a plain int bag
+ * server-side).
+ */
+export interface AutocountPreviewSummary {
+  total: number;
+  created: number;
+  updated: number;
+  failed: number;
+  retryable: number;
+  [key: string]: number;
+}
+
+/** One field's before → after in a prediction. `incoming: null` = a BLANKING. */
+export interface AutocountPreviewFieldDiff {
+  current: unknown;
+  incoming: unknown;
+}
+
+/**
+ * One record's dry-run verdict (AC-14-20/22). Authoritative — it is Sorento's
+ * own `?dry_run=true` resolution rolled back, never a local reconstruction.
+ * `changesLiveData` marks the rows that would OVERWRITE live values.
+ */
+export interface AutocountPrediction {
+  sourceRef: string;
+  /** `created` | `updated` (adoption reports `updated`) | `failed`. */
+  outcome: string;
+  entityId: string | null;
+  changesLiveData: boolean;
+  /** `column → {current, incoming}`. Empty for a create. */
+  diff: Record<string, AutocountPreviewFieldDiff>;
+  errors: Record<string, unknown>;
+}
+
+/** A previewable dry-run result (a company pushing to the Sorento sink). */
+export interface AutocountPreviewOk {
+  previewable: true;
+  sink: string;
+  summary: AutocountPreviewSummary;
+  predictions: AutocountPrediction[];
+}
+
+/** No consumer to ask (logging sink) — a clear "nothing to preview", not an error. */
+export interface AutocountPreviewUnavailable {
+  previewable: false;
+  sink: string;
+  reason: string;
+}
+
+/** Either shape the `preview` block carries (the service owns which). */
+export type AutocountPreview = AutocountPreviewOk | AutocountPreviewUnavailable;
+
+/** `POST /autocount/jobs/{id}/preview`. */
+export interface AutocountPreviewResult {
+  jobId: string;
+  preview: AutocountPreview;
+}
+
+/**
+ * Split a previewable result's predictions into the rows an operator must see
+ * (they overwrite live data) and the rest (creates / no-change updates), so the
+ * overwrites are never buried under a wall of creates (AC-14-20).
+ */
+export interface AutocountPreviewPartition {
+  overwrites: AutocountPrediction[];
+  created: AutocountPrediction[];
+  otherUpdates: AutocountPrediction[];
+  failed: AutocountPrediction[];
+}
+
+export function partitionPredictions(
+  predictions: AutocountPrediction[],
+): AutocountPreviewPartition {
+  const overwrites: AutocountPrediction[] = [];
+  const created: AutocountPrediction[] = [];
+  const otherUpdates: AutocountPrediction[] = [];
+  const failed: AutocountPrediction[] = [];
+  for (const p of predictions) {
+    if (p.outcome === 'failed') failed.push(p);
+    else if (p.changesLiveData) overwrites.push(p);
+    else if (p.outcome === 'created') created.push(p);
+    else otherUpdates.push(p);
+  }
+  return { overwrites, created, otherUpdates, failed };
+}
+
+/**
+ * True when this field's incoming value BLANKS an existing one — the
+ * destructive case (AC-14-22): a live value replaced by nothing.
+ */
+export function isBlanking(change: AutocountPreviewFieldDiff): boolean {
+  const emptyIncoming =
+    change.incoming === null || change.incoming === undefined || change.incoming === '';
+  const hadValue =
+    change.current !== null && change.current !== undefined && change.current !== '';
+  return emptyIncoming && hadValue;
 }
 
 // ── diff view model (AC-13-12) ───────────────────────────────────────────────

@@ -2,8 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiFetch = vi.fn();
 
+class MockApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 vi.mock('@/lib/api-client', () => ({
   apiFetch: (path: string, init?: RequestInit) => apiFetch(path, init),
+  ApiError: MockApiError,
 }));
 
 // Imported after the mock so the real api-client is never reached.
@@ -84,5 +93,65 @@ describe('autocount service (real boundary)', () => {
     await realAutocountService.discard('job-1');
     expect(apiFetch.mock.calls[1][0]).toBe('/autocount/jobs/job-1/discard');
     expect(apiFetch.mock.calls[1][1].method).toBe('POST');
+  });
+
+  it('POSTs the dry-run preview by job id', async () => {
+    apiFetch.mockResolvedValue({ jobId: 'job-1', preview: { previewable: false } });
+    await realAutocountService.preview('job-1');
+    const [path, init] = apiFetch.mock.calls[0];
+    expect(path).toBe('/autocount/jobs/job-1/preview');
+    expect(init.method).toBe('POST');
+  });
+
+  it('PATCHes the sink target with the impl and connection', async () => {
+    apiFetch.mockResolvedValue({ id: 'c1' });
+    await realAutocountService.updateSinkTarget('c1', {
+      sinkImpl: 'sorento',
+      sinkConnectionId: 'conn-9',
+    });
+    const [path, init] = apiFetch.mock.calls[0];
+    expect(path).toBe('/autocount/companies/c1/sink-target');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body as string)).toEqual({
+      sinkImpl: 'sorento',
+      sinkConnectionId: 'conn-9',
+    });
+  });
+
+  it('clears the connection id when switching to the logging sink', async () => {
+    apiFetch.mockResolvedValue({ id: 'c1' });
+    await realAutocountService.updateSinkTarget('c1', { sinkImpl: 'logging' });
+    expect(JSON.parse(apiFetch.mock.calls[0][1].body as string)).toEqual({
+      sinkImpl: 'logging',
+      sinkConnectionId: null,
+    });
+  });
+});
+
+describe('autocount mock service (frontend-first scaffolding)', () => {
+  it('drives a previewable payload with a blanking overwrite and creates', async () => {
+    const { mockAutocountService } = await import('./autocount-service.mock');
+    const res = await mockAutocountService.preview('job-preview');
+    expect(res.preview.previewable).toBe(true);
+    if (!res.preview.previewable) throw new Error('expected previewable');
+    expect(res.preview.summary.total).toBe(172);
+    const overwrite = res.preview.predictions.find((p) => p.changesLiveData);
+    expect(overwrite?.diff.payment_terms_days).toEqual({ current: 30, incoming: null });
+    expect(res.preview.predictions.some((p) => p.outcome === 'created')).toBe(true);
+  });
+
+  it('drives the not-previewable (logging) state by job-id sentinel', async () => {
+    const { mockAutocountService } = await import('./autocount-service.mock');
+    const res = await mockAutocountService.preview('job-logging');
+    expect(res.preview.previewable).toBe(false);
+    if (res.preview.previewable) throw new Error('expected not previewable');
+    expect(res.preview.reason).toMatch(/nothing to preview/i);
+  });
+
+  it('drives the dry-run failure state by job-id sentinel', async () => {
+    const { mockAutocountService } = await import('./autocount-service.mock');
+    await expect(mockAutocountService.preview('job-fail')).rejects.toMatchObject({
+      status: 502,
+    });
   });
 });

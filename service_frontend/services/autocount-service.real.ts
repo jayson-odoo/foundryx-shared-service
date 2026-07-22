@@ -10,6 +10,7 @@ import type {
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
   AutocountEntityConfig,
+  AutocountPreviewResult,
   AutocountStagedList,
   AutocountSyncJob,
   AutocountSyncRun,
@@ -70,6 +71,12 @@ export const realAutocountService: AutocountService = {
     return apiFetch<AutocountStagedList>(`/autocount/jobs/${jobId}/staged`);
   },
 
+  preview(jobId) {
+    return apiFetch<AutocountPreviewResult>(`/autocount/jobs/${jobId}/preview`, {
+      method: 'POST',
+    });
+  },
+
   approve(jobId) {
     return apiFetch<AutocountApprovalResult>(`/autocount/jobs/${jobId}/approve`, {
       method: 'POST',
@@ -80,5 +87,18 @@ export const realAutocountService: AutocountService = {
     return apiFetch<AutocountApprovalResult>(`/autocount/jobs/${jobId}/discard`, {
       method: 'POST',
     });
+  },
+
+  updateSinkTarget(companyId, input) {
+    return apiFetch<AutocountCompany>(
+      `/autocount/companies/${companyId}/sink-target`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          sinkImpl: input.sinkImpl,
+          sinkConnectionId: input.sinkConnectionId ?? null,
+        }),
+      },
+    );
   },
 };

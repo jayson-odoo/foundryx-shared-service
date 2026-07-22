@@ -3,9 +3,11 @@
  * `/autocount/*` surfaces talk to via hooks. The interface IS the backend
  * contract: `modules/autocount/routers/{companies,sync}.py`.
  *
- * There is NO mock behind this boundary. The module's backend landed with this
- * slice, so the UI was built straight against it — a phase-1 mock here would be
- * debt with nothing to buy.
+ * The shipped binding is `.real` — the backend is live. A `.mock` sibling
+ * exists ONLY as frontend-first scaffolding for the dry-run review states
+ * (previewable / not-previewable / failure) and the Vitest suite; flip the
+ * export at the bottom to `mockAutocountService` to build against it, back to
+ * `.real` to ship (the house service-trio pattern).
  *
  * Permission gates (module CSV, granted to tenant Admin by `AppStoreService`
  * on install): `autocount.companies.read/manage`, `autocount.sync.read/run`.
@@ -17,6 +19,8 @@ import type {
   AutocountCompanyDetail,
   AutocountEntityConfig,
   AutocountEntityConfigUpdate,
+  AutocountPreviewResult,
+  AutocountSinkTargetInput,
   AutocountStagedList,
   AutocountSyncJob,
   AutocountSyncRun,
@@ -60,10 +64,26 @@ export interface AutocountService {
   ): Promise<ListResult<AutocountSyncRun>>;
   /** Staged records + per-record diffs (`GET /autocount/jobs/{id}/staged`). */
   listStaged(jobId: string): Promise<AutocountStagedList>;
+  /**
+   * Dry-run the batch against the consumer, writing nothing
+   * (`POST /autocount/jobs/{id}/preview`). Returns the consumer's own
+   * prediction — the overwrite gate (AC-14-20/21). A logging-sink company
+   * yields a "not previewable" shape; an unreachable consumer throws (HTTP 502).
+   */
+  preview(jobId: string): Promise<AutocountPreviewResult>;
   /** Push the batch (`POST /autocount/jobs/{id}/approve`) — idempotent. */
   approve(jobId: string): Promise<AutocountApprovalResult>;
   /** Close without pushing (`POST /autocount/jobs/{id}/discard`). */
   discard(jobId: string): Promise<AutocountApprovalResult>;
+  /**
+   * Point a company at a push target
+   * (`PATCH /autocount/companies/{id}/sink-target`). `logging` clears the
+   * target; `sorento` requires a `sinkConnectionId`.
+   */
+  updateSinkTarget(
+    companyId: string,
+    input: AutocountSinkTargetInput,
+  ): Promise<AutocountCompany>;
 }
 
 export const autocountService: AutocountService = realAutocountService;

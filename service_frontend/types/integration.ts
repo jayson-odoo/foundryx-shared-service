@@ -6,7 +6,13 @@
  */
 
 /** Integration category — drives grouping/iconography, not behavior. */
-export type IntegrationType = 'email' | 'storage' | 'llm' | 'erp' | 'payment';
+export type IntegrationType =
+  | 'email'
+  | 'storage'
+  | 'llm'
+  | 'erp'
+  | 'payment'
+  | 'consumer';
 
 /** Connection health — UNVERIFIED until a test passes, ERROR on failures. */
 export type ConnectionStatus = 'ACTIVE' | 'UNVERIFIED' | 'ERROR';
