@@ -3777,3 +3777,392 @@ def test_jobs_list_search_matches_company_label(db, transports):
     # No search → both jobs.
     _all, all_total = SyncService(db).list_jobs(DEFAULT_TENANT_ID)
     assert all_total == 2
+
+
+# ── slice 16: transform formulas + simulators (AC-16-*) ───────────────────────
+import json as _json_std  # noqa: E402
+import pathlib as _pathlib  # noqa: E402
+
+from modules.autocount.formula import (  # noqa: E402
+    FUNCTION_CATALOG,
+    FormulaParseError,
+    FormulaRuntimeError,
+    catalog_payload,
+    evaluate_formula,
+    parse_formula,
+    result_to_json,
+)
+from modules.autocount.mapping import (  # noqa: E402
+    SCOPE_HEADER,
+    MappingEngine,
+    TransformError,
+    coerce_output,
+)
+from modules.autocount.mapping import MappingRow as _MappingRow  # noqa: E402
+
+_PARITY_MATRIX = (
+    _pathlib.Path(__file__).resolve().parents[1]
+    / "modules/autocount/formula_parity.json"
+)
+
+
+def _supplier(**overrides):
+    """A Creditor master in the live shape: top-level fields + a nested ``Data``
+    row carrying the AutoKey identity + slash-datetime watermark."""
+    rec = {
+        "AccNo": "300-A001",
+        "CompanyName": "Acme Supplies",
+        "EmailAddress": "a@b.com",
+        "IsActive": "T",
+        "Data": [{"AutoKey": "1", "LastModified": "2026/03/18 16:03:21"}],
+    }
+    rec.update(overrides)
+    return rec
+
+
+def _customer(**overrides):
+    rec = _supplier()
+    rec.update({"Mobile": "0123", "CreditLimit": "30000.00000000", "TIN": "T-1"})
+    rec.update(overrides)
+    return rec
+
+
+def _matrix_equal(expected, got) -> bool:
+    if isinstance(expected, bool) or isinstance(got, bool):
+        return expected is got
+    if isinstance(expected, (int, float)) and isinstance(got, (int, float)):
+        return abs(float(expected) - float(got)) < 1e-9
+    return expected == got
+
+
+def test_formula_parity_matrix_python_side():
+    """The Python evaluator agrees with the SHARED golden matrix (AC-16-01). The
+    TS twin runs the SAME file in vitest — a divergence fails one side."""
+    matrix = _json_std.loads(_PARITY_MATRIX.read_text())
+    for case in matrix["cases"]:
+        formula, value = case["formula"], case["value"]
+        if case.get("parseError"):
+            with pytest.raises(FormulaParseError):
+                parse_formula(formula)
+            continue
+        if case.get("error"):
+            with pytest.raises(FormulaRuntimeError):
+                evaluate_formula(formula, value)
+            continue
+        got = result_to_json(evaluate_formula(formula, value))
+        assert _matrix_equal(case["expected"], got), (
+            f"{formula!r} on {value!r}: expected {case['expected']!r}, got {got!r}"
+        )
+
+
+def test_formula_the_vendor_date_format_maps_to_iso():
+    """The anchor parity case (AC-16-14): the known vendor timestamp → ISO Z via
+    the hand-rolled fixed-token parse/format, no date library."""
+    out = evaluate_formula(
+        'formatDate(parseDate(value, "yyyy/MM/dd HH:mm:ss"), "yyyy-MM-ddTHH:mm:ssZ")',
+        "2026/03/18 16:03:21",
+    )
+    assert out == "2026-03-18T16:03:21Z"
+
+
+def test_formula_fails_closed_at_parse_for_unknown_names():
+    """AC-16-03: unknown name / unknown function / bad arity is a NAMED parse
+    error (the 422 save-gate), before any data touches it."""
+    for bad in ("foo + 1", "teleport(value)", "upper()", "round(value)"):
+        with pytest.raises(FormulaParseError):
+            parse_formula(bad)
+
+
+def test_formula_fails_closed_at_runtime_never_a_silent_null():
+    """AC-16-03: a runtime fault raises a typed error the caller names — never a
+    silent null."""
+    with pytest.raises(FormulaRuntimeError):
+        evaluate_formula("number(value)", "not-a-number")
+    with pytest.raises(FormulaRuntimeError):
+        evaluate_formula("10 / value", "0")
+
+
+# ── back-compat: a NULL-formula row is byte-identical to today (AC-16 DoD #3) ──
+
+
+def test_a_null_formula_row_behaves_exactly_as_the_named_transform():
+    """A row with a named transform and NO formula runs the named transform,
+    unchanged — the whole back-compat guarantee in one assertion."""
+    row = _MappingRow("IsActive", "is_active", "t_f_bool", SCOPE_HEADER, formula=None)
+    assert row.coerce("T") is True
+    assert row.coerce("F") is False
+    assert row.coerce("") is None  # blank → None (absent is not unconvertible)
+    with pytest.raises(TransformError):
+        row.coerce("maybe")  # strict — same named-transform failure as before
+
+    # And end-to-end: the seeded (formula-NULL) supplier mapping still maps clean.
+    from modules.autocount.mapping import DEFAULT_SUPPLIER_MAPPING
+
+    engine = MappingEngine(
+        list(DEFAULT_SUPPLIER_MAPPING),
+        entity_type=ENTITY_SUPPLIER,
+        database_name="AED_VSOFT",
+    )
+    mapped = engine.map_document(_supplier())
+    assert mapped.ok
+    assert mapped.record.is_active is True
+
+
+# ── formula rows in the engine (AC-16-02/03/04) ───────────────────────────────
+
+
+def test_a_formula_row_produces_the_field_value():
+    """The Boolean preset formula turns the vendor 'T'/'F' into a real bool."""
+    rows = [
+        _MappingRow("AccNo", "code", "string", SCOPE_HEADER, is_required=True),
+        _MappingRow("CompanyName", "name", "string", SCOPE_HEADER, is_required=True),
+        _MappingRow(
+            "IsActive", "is_active", "string", SCOPE_HEADER,
+            is_required=True, formula='if(value == "T", true, false)',
+        ),
+    ]
+    engine = MappingEngine(rows, entity_type=ENTITY_SUPPLIER, database_name="AED_VSOFT")
+    assert engine.map_document(_supplier(IsActive="T")).record.is_active is True
+    assert engine.map_document(_supplier(IsActive="F")).record.is_active is False
+
+
+def test_a_blank_source_still_short_circuits_under_a_formula():
+    """A formula row treats blank exactly as the named transforms do (None), so a
+    required-but-blank field fails by the row's flag, never becomes a wrong bool."""
+    row = _MappingRow(
+        "IsActive", "is_active", "string", SCOPE_HEADER,
+        is_required=True, formula='if(value == "T", true, false)',
+    )
+    engine = MappingEngine([row], entity_type=ENTITY_SUPPLIER, database_name="AED_VSOFT")
+    mapped = engine.map_document(_supplier(IsActive=""))
+    assert mapped.record is None
+    assert any(e.field == "is_active" for e in mapped.errors)
+
+
+def test_a_formula_output_is_coerced_to_the_target_type():
+    """AC-16-04: a formula feeding a boolean field that yields a STRING is a
+    per-field error, not a wrong value sent onward."""
+    rows = [
+        _MappingRow("AccNo", "code", "string", SCOPE_HEADER, is_required=True),
+        _MappingRow("CompanyName", "name", "string", SCOPE_HEADER, is_required=True),
+        # 'value' returns the raw string "T" — NOT a boolean — into is_active.
+        _MappingRow("IsActive", "is_active", "string", SCOPE_HEADER, formula="value"),
+    ]
+    engine = MappingEngine(rows, entity_type=ENTITY_SUPPLIER, database_name="AED_VSOFT")
+    mapped = engine.map_document(_supplier())
+    assert mapped.record is None
+    assert any(e.field == "is_active" for e in mapped.errors)
+
+
+def test_a_formula_decimal_output_reaches_a_decimal_field():
+    """A number-producing formula lands as a Decimal on the customer credit
+    limit (coerce_output routes it through t_decimal)."""
+    from decimal import Decimal
+
+    rows = [
+        _MappingRow("AccNo", "code", "string", SCOPE_HEADER, is_required=True),
+        _MappingRow("CompanyName", "name", "string", SCOPE_HEADER, is_required=True),
+        _MappingRow(
+            "CreditLimit", "credit_limit", "string", SCOPE_HEADER,
+            formula="number(value)",
+        ),
+    ]
+    engine = MappingEngine(rows, entity_type=ENTITY_CUSTOMER, database_name="AED_VSOFT")
+    mapped = engine.map_document(_customer(CreditLimit="30000.0"))
+    assert mapped.ok
+    assert mapped.record.credit_limit == Decimal("30000")
+
+
+def test_a_runtime_formula_error_names_the_field():
+    """AC-16-03: number('Acme') on a name field fails THAT field, named."""
+    rows = [
+        _MappingRow("AccNo", "code", "string", SCOPE_HEADER, is_required=True),
+        _MappingRow(
+            "CompanyName", "name", "string", SCOPE_HEADER, formula="number(value)",
+        ),
+    ]
+    engine = MappingEngine(rows, entity_type=ENTITY_SUPPLIER, database_name="AED_VSOFT")
+    mapped = engine.map_document(_supplier(CompanyName="Acme"))
+    assert mapped.record is None
+    assert [e.field for e in mapped.errors] == ["name"]
+
+
+def test_coerce_output_boolean_demands_a_real_bool():
+    assert coerce_output(True, "boolean") is True
+    with pytest.raises(TransformError):
+        coerce_output("T", "boolean")
+    assert coerce_output(None, "boolean") is None  # blank/None passes through
+
+
+# ── PUT formula validation (AC-16-03) + persistence ───────────────────────────
+
+
+def test_replace_mapping_rejects_an_invalid_formula(db, transports):
+    company = _company(db, transports)
+    rows = [
+        MappingWriteRow(
+            source_path="IsActive", transform="string", sorento_field="is_active",
+            formula="teleport(value)",
+        ),
+    ]
+    with pytest.raises(AutocountServiceError) as exc:
+        CompanyService(db).replace_mapping(
+            DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, rows
+        )
+    assert "is_active" in str(exc.value)
+
+
+def test_replace_mapping_persists_and_projects_a_formula(db, transports):
+    company = _company(db, transports)
+    svc = CompanyService(db)
+    rows = [
+        MappingWriteRow(source_path="AccNo", transform="string", sorento_field="code"),
+        MappingWriteRow(source_path="CompanyName", transform="string", sorento_field="name"),
+        MappingWriteRow(
+            source_path="IsActive", transform="string", sorento_field="is_active",
+            formula='if(value == "T", true, false)',
+        ),
+    ]
+    view = svc.replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, rows)
+    by_field = {r.sorento_field: r for r in view.rows if r.sorento_field}
+    assert by_field["is_active"].formula == 'if(value == "T", true, false)'
+    # A code-only row carries no formula.
+    assert by_field["code"].formula is None
+
+
+# ── test-formula endpoint parity (AC-16-21) ───────────────────────────────────
+
+
+def test_test_formula_matches_the_client_evaluator(db, transports):
+    company = _company(db, transports)
+    svc = CompanyService(db)
+    result = svc.test_formula(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER,
+        'if(value == "T", true, false)', "T",
+    )
+    assert result == {"ok": True, "output": True, "error": None}
+    # A runtime fault comes back named, not raised.
+    bad = svc.test_formula(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, "number(value)", "abc"
+    )
+    assert bad["ok"] is False and bad["output"] is None and bad["error"]
+
+
+# ── whole-mapping simulate (AC-16-30/31) ──────────────────────────────────────
+
+
+def test_simulate_maps_a_mock_record_and_writes_nothing(db, transports):
+    company = _company(db, transports)
+    svc = CompanyService(db)
+    before = svc.mapping_rows(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER)
+
+    result = svc.simulate_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, _supplier()
+    )
+    assert result["ok"] is True
+    assert result["record"]["code"] == "300-A001"
+    assert result["record"]["is_active"] is True
+    assert result["errors"] == []
+    # Per-field legibility.
+    fields = {f["canonicalField"]: f for f in result["headerFields"]}
+    assert fields["is_active"]["ok"] is True
+
+    # Writes NOTHING — the saved mapping is untouched.
+    after = svc.mapping_rows(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER)
+    assert len(after) == len(before)
+
+
+def test_simulate_reports_a_per_field_error_without_omitting_it(db, transports):
+    """A record with an unreadable active flag simulates as a per-field error +
+    a rejected (None) record — never a silent drop (AC-16-30)."""
+    company = _company(db, transports)
+    result = CompanyService(db).simulate_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, _supplier(IsActive="maybe")
+    )
+    assert result["ok"] is False
+    assert result["record"] is None
+    active = next(f for f in result["headerFields"] if f["canonicalField"] == "is_active")
+    assert active["ok"] is False and active["error"]
+
+
+def test_simulate_with_draft_rows_previews_unsaved_edits(db, transports):
+    """Draft rows let the operator simulate an in-progress edit without saving —
+    the saved mapping stays put."""
+    company = _company(db, transports)
+    svc = CompanyService(db)
+    draft = [
+        MappingWriteRow(source_path="AccNo", transform="string", sorento_field="code"),
+        MappingWriteRow(source_path="CompanyName", transform="string", sorento_field="name"),
+        MappingWriteRow(
+            source_path="IsActive", transform="string", sorento_field="is_active",
+            formula='if(value == "F", true, false)',  # deliberately inverted
+        ),
+    ]
+    result = svc.simulate_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, _supplier(IsActive="T"), draft
+    )
+    # The inverted draft formula turns 'T' into False.
+    assert result["record"]["is_active"] is False
+    # The SAVED rows are unchanged (still the seeded t_f_bool behaviour).
+    saved = {r.canonical_field: r for r in svc.mapping_rows(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER)}
+    assert saved["is_active"].formula is None
+
+
+def test_simulate_with_a_bad_draft_formula_is_a_clean_422(db, transports):
+    company = _company(db, transports)
+    draft = [
+        MappingWriteRow(
+            source_path="IsActive", transform="string", sorento_field="is_active",
+            formula="nope(value)",
+        ),
+    ]
+    with pytest.raises(AutocountServiceError):
+        CompanyService(db).simulate_mapping(
+            DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, _supplier(), draft
+        )
+
+
+# ── catalog + migration ───────────────────────────────────────────────────────
+
+
+def test_function_catalog_lists_functions_presets_and_date_tokens():
+    payload = catalog_payload()
+    names = {f["name"] for f in payload["functions"]}
+    assert {"upper", "number", "if", "parseDate", "formatDate", "bool"} <= names
+    assert len(payload["functions"]) == len(FUNCTION_CATALOG)
+    preset_keys = {p["key"] for p in payload["presets"]}
+    assert {"text", "boolean", "decimal", "integer", "date", "custom"} <= preset_keys
+    boolean_preset = next(p for p in payload["presets"] if p["key"] == "boolean")
+    assert boolean_preset["formula"] == 'if(value == "T", true, false)'
+    tokens = {t["token"] for t in payload["dateTokens"]}
+    assert {"yyyy", "MM", "dd", "HH", "mm", "ss"} == tokens
+
+
+def test_the_formula_migration_adds_a_nullable_text_column():
+    """Read-asserted like the other module revisions (conftest never runs module
+    Alembic): revision id ≤32, correct parent, and the ADD is existence-checked +
+    NULLABLE (formula-NULL rows are the back-compat default, no backfill)."""
+    import importlib.util
+    import types
+
+    spec = importlib.util.spec_from_file_location(
+        "_ac_rev_0005",
+        _pathlib.Path(__file__).resolve().parents[1]
+        / "modules/autocount/alembic/versions/0005_autocount_mapping_formula.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert len(module.revision) <= 32
+    assert module.down_revision == "0004_autocount_sink"
+
+    added = {}
+    module._columns = lambda: set()  # column genuinely absent → ADD runs
+    module.op = types.SimpleNamespace(
+        add_column=lambda table, column, schema=None: added.__setitem__(
+            column.name, column
+        )
+    )
+    module.upgrade()
+    assert "formula" in added
+    assert added["formula"].nullable is True
