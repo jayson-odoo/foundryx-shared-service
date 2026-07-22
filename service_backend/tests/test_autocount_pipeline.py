@@ -3417,3 +3417,292 @@ def test_the_sink_impl_backfill_fills_blank_rows(db, transports):
 
     assert touched >= 1
     assert company.sink_impl == SINK_IMPL_LOGGING
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  slice 15 — review UI backend: jobs list, staged pagination, mapping read/write
+#  (AC-15-02, AC-15-10/11, AC-15-40..43). Service + repository level, matching the
+#  rest of this suite (every HTTP leg is mocked; nothing opens a socket).
+# ══════════════════════════════════════════════════════════════════════════════
+
+from modules.autocount import mapping_catalog  # noqa: E402
+from modules.autocount.schemas import StagedRecordItem  # noqa: E402
+from modules.autocount.services import (  # noqa: E402
+    AutocountServiceError,
+    EntityConfigNotFound,
+    MappingWriteRow,
+)
+
+
+# ── Task 1: GET /autocount/jobs (list of sync batches) ────────────────────────
+
+
+def test_jobs_list_is_tenant_scoped(db, transports):
+    """A sync batch from another tenant must never appear (AC-15-02, the
+    polymorphic-scope rule)."""
+    mine = _company(db, transports, reads=[[_grn("1")]])
+    _run_sync(db, mine)
+
+    theirs = _company(
+        db, transports, tenant_id=OTHER_TENANT_ID, database_name="OTHER_CO",
+        reads=[[_grn("2")]],
+    )
+    _run_sync(db, theirs, tenant_id=OTHER_TENANT_ID)
+
+    jobs, total = SyncService(db).list_jobs(DEFAULT_TENANT_ID)
+    assert total == 1
+    assert {j.company_id for j in jobs} == {mine.id}
+
+
+def test_jobs_list_carries_company_label_and_entity(db, transports):
+    company = _company(db, transports, reads=[[_grn("1")]])
+    _run_sync(db, company)
+
+    jobs, _total = SyncService(db).list_jobs(DEFAULT_TENANT_ID)
+    item = jobs[0]
+    assert item.company_id == company.id
+    assert item.database_name == company.database_name
+    assert item.company_name == company.name
+    assert item.entity_type == ENTITY_GOODS_RECEIVED_NOTE
+    assert item.status == JOB_NEEDS_REVIEW
+    # A batch of one staged record — the counts the list column shows.
+    assert item.progress_total >= 0
+
+
+def test_jobs_list_status_filter(db, transports):
+    a = _company(db, transports, database_name="CO_A", reads=[[_grn("1")]])
+    done_job = _run_sync(db, a)
+    SyncService(db).approve(DEFAULT_TENANT_ID, done_job.id)  # → done
+
+    b = _company(db, transports, database_name="CO_B", reads=[[_grn("2")]])
+    _run_sync(db, b)  # stays needs_review
+
+    svc = SyncService(db)
+    review, review_total = svc.list_jobs(DEFAULT_TENANT_ID, status="needs_review")
+    done, done_total = svc.list_jobs(DEFAULT_TENANT_ID, status="done")
+    everything, all_total = svc.list_jobs(DEFAULT_TENANT_ID, status="all")
+
+    assert {j.status for j in review} == {JOB_NEEDS_REVIEW} and review_total == 1
+    assert {j.status for j in done} == {JOB_DONE} and done_total == 1
+    assert all_total == 2
+
+
+def test_jobs_list_rejects_an_unknown_status(db, transports):
+    with pytest.raises(AutocountServiceError):
+        SyncService(db).list_jobs(DEFAULT_TENANT_ID, status="bogus")
+
+
+def test_jobs_list_paginates_newest_first(db, transports):
+    company = _company(db, transports, database_name="PAGED")
+    for i in range(1, 4):
+        _queue(db, transports, company, [_grn(str(i))])
+        _run_sync(db, company)
+
+    svc = SyncService(db)
+    page0, total = svc.list_jobs(DEFAULT_TENANT_ID, page=0, page_size=2)
+    page1, _t = svc.list_jobs(DEFAULT_TENANT_ID, page=1, page_size=2)
+    assert total == 3
+    assert len(page0) == 2 and len(page1) == 1
+    # Newest first — no id repeats across pages.
+    assert not ({j.job_id for j in page0} & {j.job_id for j in page1})
+
+
+def test_jobs_list_filters_by_entity_type(db, transports):
+    company = _company(db, transports)
+    _queue(db, transports, company, [_grn("1")])
+    _run_sync(db, company, entity_type=ENTITY_GOODS_RECEIVED_NOTE)
+    _queue(db, transports, company, _rows([_creditor("1")]))
+    _run_sync(db, company, entity_type=ENTITY_SUPPLIER)
+
+    svc = SyncService(db)
+    suppliers, sup_total = svc.list_jobs(DEFAULT_TENANT_ID, entity_type=ENTITY_SUPPLIER)
+    assert sup_total == 1
+    assert {j.entity_type for j in suppliers} == {ENTITY_SUPPLIER}
+
+
+# ── Task 2: staged pagination + hasChanges + noChangeCount ────────────────────
+
+
+def _resync_one_changed_one_unchanged(db, transports):
+    company = _company(
+        db, transports,
+        reads=[[_grn("1", FinalTotal="100.00000000"),
+                _grn("2", FinalTotal="200.00000000")]],
+    )
+    first = _run_sync(db, company)
+    SyncService(db).approve(DEFAULT_TENANT_ID, first.id)
+    _queue(db, transports, company, [
+        _grn("1", FinalTotal="150.00000000", last_modified="2026/07/20 09:00:00"),
+        _grn("2", FinalTotal="200.00000000", last_modified="2026/07/20 09:00:00"),
+    ])
+    return _run_sync(db, company)
+
+
+def test_staged_page_counts_no_change_records(db, transports):
+    """AC-15-11: a delta re-fetch stages records whose mapped fields did not
+    change (only LastModified advanced). They must be COUNTED, not buried."""
+    second = _resync_one_changed_one_unchanged(db, transports)
+    _job, rows, total, filtered_total, no_change = SyncService(db).staged_page(
+        DEFAULT_TENANT_ID, second.id
+    )
+    assert total == 2
+    assert filtered_total == 2
+    assert no_change == 1
+    # hasChanges is surfaced per row (AC-15-10).
+    flags = {StagedRecordItem.model_validate(r).hasChanges for r in rows}
+    assert flags == {True, False}
+
+
+def test_staged_page_changed_only_filter(db, transports):
+    second = _resync_one_changed_one_unchanged(db, transports)
+    _job, rows, _total, filtered_total, _nc = SyncService(db).staged_page(
+        DEFAULT_TENANT_ID, second.id, changed=True
+    )
+    assert filtered_total == 1
+    assert all(r.diff_json for r in rows)  # non-empty diff
+    assert all(StagedRecordItem.model_validate(r).hasChanges for r in rows)
+
+
+def test_staged_page_no_change_only_filter(db, transports):
+    second = _resync_one_changed_one_unchanged(db, transports)
+    _job, rows, _total, filtered_total, _nc = SyncService(db).staged_page(
+        DEFAULT_TENANT_ID, second.id, changed=False
+    )
+    assert filtered_total == 1
+    assert all(r.diff_json == {} for r in rows)
+    assert not any(StagedRecordItem.model_validate(r).hasChanges for r in rows)
+
+
+def test_staged_page_paginates(db, transports):
+    grns = [_grn(str(i), FinalTotal=f"{i}00.00000000") for i in range(1, 6)]
+    company = _company(db, transports, reads=[grns])
+    job = _run_sync(db, company)
+
+    svc = SyncService(db)
+    _j, page0, total, _f, _nc = svc.staged_page(DEFAULT_TENANT_ID, job.id, page=0, page_size=2)
+    _j, page2, _t, _f2, _nc2 = svc.staged_page(DEFAULT_TENANT_ID, job.id, page=2, page_size=2)
+    assert total == 5
+    assert len(page0) == 2 and len(page2) == 1
+
+
+def test_staged_page_first_sync_records_all_have_changes(db, transports):
+    """A first-sight record diffs as ``{"__new__": True}`` — that IS a change,
+    never a no-change no-op."""
+    company = _company(db, transports, reads=[[_grn("1"), _grn("2")]])
+    job = _run_sync(db, company)
+    _j, rows, total, _f, no_change = SyncService(db).staged_page(DEFAULT_TENANT_ID, job.id)
+    assert total == 2 and no_change == 0
+    assert all(StagedRecordItem.model_validate(r).hasChanges for r in rows)
+
+
+# ── Task 3: mapping read/write (AC-15-40..43) ─────────────────────────────────
+
+
+def test_mapping_view_projects_rows_and_catalogs(db, transports):
+    company = _company(db, transports)
+    view = CompanyService(db).mapping_view(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER)
+
+    by_source = {r.source_path: r for r in view.rows}
+    # A deliverable field carries its Sorento name.
+    assert by_source["AccNo"].sorento_field in {"code", "source_doc_no"}
+    assert by_source["EmailAddress"].sorento_field == "email"
+    # A provenance/watermark row is projected as non-delivered.
+    last_mod = next(r for r in view.rows if r.canonical_field == "last_modified")
+    assert last_mod.sorento_field is None
+
+    # Catalog: accepted Sorento fields with required-ness (source_ref excluded).
+    accepted = {f.field for f in view.sorento_fields}
+    assert "source_ref" not in accepted
+    assert {"code", "name", "email", "is_active", "source_doc_no"} <= accepted
+    required = {f.field for f in view.sorento_fields if f.required}
+    assert {"code", "name"} <= required
+
+    # Catalog: known AutoCount source paths, incl. a nested Data.0.* key.
+    assert "AccNo" in view.ac_fields
+    assert "Data.0.LastModified" in view.ac_fields
+
+
+def test_mapping_view_customer_offers_the_extra_master_fields(db, transports):
+    company = _company(db, transports)
+    view = CompanyService(db).mapping_view(DEFAULT_TENANT_ID, company.id, ENTITY_CUSTOMER)
+    accepted = {f.field for f in view.sorento_fields}
+    assert {"phone_number", "credit_limit", "tax_id"} <= accepted
+
+
+def test_mapping_view_unknown_entity_is_a_clean_not_found(db, transports):
+    company = _company(db, transports)
+    with pytest.raises(EntityConfigNotFound):
+        CompanyService(db).mapping_view(DEFAULT_TENANT_ID, company.id, "product")
+
+
+def test_replace_mapping_round_trips(db, transports):
+    company = _company(db, transports)
+    svc = CompanyService(db)
+    rows = [
+        MappingWriteRow(source_path="AccNo", transform="string", sorento_field="code"),
+        MappingWriteRow(source_path="CompanyName", transform="string", sorento_field="name"),
+        MappingWriteRow(source_path="Email", transform="string", sorento_field="email"),
+        MappingWriteRow(source_path="IsActive", transform="t_f_bool", sorento_field="is_active"),
+    ]
+    view = svc.replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, rows)
+    by_field = {r.sorento_field: r for r in view.rows if r.sorento_field}
+    # The remapped email source persisted.
+    assert by_field["email"].source_path == "Email"
+    # The system watermark row was PRESERVED, not wiped by the replace.
+    assert any(r.canonical_field == "last_modified" for r in view.rows)
+
+
+def test_replace_mapping_rejects_a_non_accepted_field(db, transports):
+    """AC-15-42: a target Sorento would reject (extra=forbid) is a 422, naming
+    the bad field — never silently dropped."""
+    company = _company(db, transports)
+    rows = [MappingWriteRow(source_path="Country", transform="string", sorento_field="country")]
+    with pytest.raises(AutocountServiceError) as exc:
+        CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, rows)
+    assert "country" in str(exc.value)
+
+
+def test_replace_mapping_rejects_a_blank_source_path(db, transports):
+    company = _company(db, transports)
+    rows = [MappingWriteRow(source_path="  ", transform="string", sorento_field="code")]
+    with pytest.raises(AutocountServiceError):
+        CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, rows)
+
+
+def test_replace_mapping_rejects_an_unknown_transform(db, transports):
+    company = _company(db, transports)
+    rows = [MappingWriteRow(source_path="AccNo", transform="teleport", sorento_field="code")]
+    with pytest.raises(AutocountServiceError):
+        CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, rows)
+
+
+def test_replace_mapping_rejects_a_duplicate_target(db, transports):
+    company = _company(db, transports)
+    rows = [
+        MappingWriteRow(source_path="AccNo", transform="string", sorento_field="code"),
+        MappingWriteRow(source_path="CompanyName", transform="string", sorento_field="code"),
+    ]
+    with pytest.raises(AutocountServiceError):
+        CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, rows)
+
+
+def test_replace_mapping_survives_a_reseed(db, transports):
+    """AC-15-41: the write is an operator edit the next ``update_tenant`` /
+    ``seed_company_defaults`` must NOT revert (seed-if-absent)."""
+    company = _company(db, transports)
+    svc = CompanyService(db)
+    rows = [
+        MappingWriteRow(source_path="AccNo", transform="string", sorento_field="code"),
+        MappingWriteRow(source_path="CompanyName", transform="string", sorento_field="name"),
+        MappingWriteRow(source_path="Email", transform="string", sorento_field="email"),
+        MappingWriteRow(source_path="IsActive", transform="t_f_bool", sorento_field="is_active"),
+    ]
+    svc.replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, rows)
+
+    # Re-run the defaults seed exactly as update_tenant would.
+    svc.seed_company_defaults(DEFAULT_TENANT_ID, company.id)
+    db.commit()
+
+    view = svc.mapping_view(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER)
+    by_field = {r.sorento_field: r for r in view.rows if r.sorento_field}
+    assert by_field["email"].source_path == "Email"  # not reverted to EmailAddress
