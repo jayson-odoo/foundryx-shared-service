@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Check, LoaderCircleIcon, Trash2 } from 'lucide-react';
+import { ArrowLeft, Check, Eye, LoaderCircleIcon, Trash2 } from 'lucide-react';
 import {
   Toolbar,
   ToolbarActions,
@@ -32,9 +32,11 @@ import {
 import { StatusBadge } from '@/components/platform/status-badge';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { RecordDiff } from '@/components/platform/autocount/record-diff';
+import { PreviewPanel } from '@/components/platform/autocount/preview-panel';
 import { diffForDisplay } from '@/lib/autocount-diff';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useAutocountReview } from '@/hooks/use-autocount-review';
+import { useAutocountPreview } from '@/hooks/use-autocount-preview';
 import type {
   AutocountJobStatus,
   AutocountStagedRecord,
@@ -130,6 +132,7 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
     approve,
     discard,
   } = useAutocountReview(jobId);
+  const preview = useAutocountPreview(jobId);
   const { formatDateTime } = useDatetime();
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const backHref = from || AC_COMPANIES_PATH;
@@ -183,6 +186,25 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
               {blockedReason && (
                 <span className="text-xs text-muted-foreground">{blockedReason}</span>
               )}
+              {preview.failed && (
+                <span className="text-xs text-destructive" data-testid="approve-blocked">
+                  Resolve the dry run first
+                </span>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canDecide || isSubmitting || preview.isLoading}
+                onClick={() => void preview.run()}
+                data-testid="preview-push"
+              >
+                {preview.isLoading ? (
+                  <LoaderCircleIcon className="size-4 animate-spin" />
+                ) : (
+                  <Eye className="size-4" />
+                )}
+                Preview push
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
@@ -195,7 +217,7 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
               </Button>
               <Button
                 size="sm"
-                disabled={!canDecide || isSubmitting}
+                disabled={!canDecide || isSubmitting || preview.failed}
                 onClick={() => void approve()}
                 data-testid="approve-batch"
               >
@@ -219,6 +241,24 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
             </span>
             {job.createdAt && <span>{formatDateTime(job.createdAt)}</span>}
           </div>
+
+          {(preview.hasRun || preview.isLoading) && (
+            <Card>
+              <CardHeader>
+                <CardHeading>
+                  <CardTitle>Dry-run preview</CardTitle>
+                </CardHeading>
+              </CardHeader>
+              <CardContent>
+                <PreviewPanel
+                  preview={preview.preview}
+                  isLoading={preview.isLoading}
+                  error={preview.error}
+                  hasRun={preview.hasRun}
+                />
+              </CardContent>
+            </Card>
+          )}
 
           {records.length === 0 ? (
             <p className="py-16 text-center text-sm text-muted-foreground">
