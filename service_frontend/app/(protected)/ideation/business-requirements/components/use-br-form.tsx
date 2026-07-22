@@ -6,15 +6,29 @@ import { FileText, GitBranch, History, Lightbulb, MessageSquare, Trash2 } from '
 import { toast } from 'sonner';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ResourceAction } from '@/components/platform/resource-list';
+import { ApiError } from '@/lib/api-client';
 import { businessRequirementService } from '@/services/business-requirement-service';
 import type { BusinessRequirementDetail } from '@/types/business-requirement';
-import type { FormAnswers } from '@/types/forms';
+import type { FormAnswers, FormFieldErrors } from '@/types/forms';
 import { BR_PATH, brFormHref } from './paths';
 import { BrDetailsTab } from './br-details-tab';
 import { BrGrillTab } from './br-grill-tab';
 import { BrIdeasTab } from './br-ideas-tab';
 import { BrVersionsTab } from './br-versions-tab';
 import { BrPlaceholderTab } from './br-placeholder-tab';
+import { useBrActions } from './use-br-actions';
+
+interface Detail422 {
+  fieldErrors?: Record<string, string>;
+  message?: string;
+}
+
+function detail422(e: unknown): Detail422 | null {
+  if (e instanceof ApiError && e.status === 422 && typeof e.detail === 'object' && e.detail) {
+    return e.detail as Detail422;
+  }
+  return null;
+}
 
 export interface UseBrFormResult {
   config: ResourceFormConfig<BusinessRequirementDetail> | null;
@@ -32,7 +46,11 @@ function answersEqual(a: FormAnswers, b: FormAnswers): boolean {
  * S3, Trace = S4 render empty placeholders). The Details tab renders answers
  * through the form-engine renderer against the BR's STAMPED template doc.
  */
-export function useBrForm(brId: string, initialEditing: boolean): UseBrFormResult {
+export function useBrForm(
+  brId: string,
+  initialEditing: boolean,
+  initialTab?: string,
+): UseBrFormResult {
   const router = useRouter();
   const [br, setBr] = useState<BusinessRequirementDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -42,8 +60,18 @@ export function useBrForm(brId: string, initialEditing: boolean): UseBrFormResul
   // not used here). Dirty = drift vs the loaded record.
   const [title, setTitle] = useState('');
   const [answers, setAnswers] = useState<FormAnswers>({});
-  // Reserved for S3/S4 link mutations to force the Ideas tab to reload.
-  const [ideasToken] = useState(0);
+  // Server 422 per-field map from a failed save / promote (AC-BI-34b) — rendered
+  // inline on the Details tab; cleared when the user edits an answer.
+  const [serverFieldErrors, setServerFieldErrors] = useState<FormFieldErrors>({});
+  // Bumped by link/unlink on the Ideas tab so the grill re-seeds from fresh
+  // source ideas next turn (AC-BI-33) and the Ideas list reloads.
+  const [ideasToken, setIdeasToken] = useState(0);
+
+  const onAnswersChange = useCallback((next: FormAnswers) => {
+    setAnswers(next);
+    // Editing clears the stale server error map (the user is fixing it).
+    setServerFieldErrors((prev) => (Object.keys(prev).length ? {} : prev));
+  }, []);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -81,11 +109,20 @@ export function useBrForm(brId: string, initialEditing: boolean): UseBrFormResul
       setBr(updated);
       setTitle(updated.title);
       setAnswers(updated.answers ?? {});
+      setServerFieldErrors({});
       toast.success('Business requirement saved.');
       return true;
     } catch (e) {
-      // 422 field errors surface as a toast (the form-engine renderer would show
-      // inline errors on a submit path; here Save is the boundary).
+      // A 422 (type/format error on a draft save) → inline per-field highlights
+      // on the Details tab AND a readable toast — never the raw HTTP status text
+      // "Unprocessable Content" (AC-BI-34b). (Required is NOT enforced on save —
+      // a draft holds partial answers.)
+      const detail = detail422(e);
+      if (detail) {
+        if (detail.fieldErrors) setServerFieldErrors(detail.fieldErrors);
+        toast.error(detail.message ?? 'Some fields need attention before saving.');
+        return false;
+      }
       toast.error(e instanceof Error ? e.message : 'Save failed.');
       return false;
     }
@@ -107,10 +144,29 @@ export function useBrForm(brId: string, initialEditing: boolean): UseBrFormResul
     toast.success('Requirement generated from the grill.');
   }, []);
 
+  // A lifecycle/promote move refreshed the BR (status, and possibly answers).
+  const onBrChanged = useCallback((updated: BusinessRequirementDetail) => {
+    setBr(updated);
+    setTitle(updated.title);
+    setAnswers(updated.answers ?? {});
+  }, []);
+
+  // Linking/unlinking an idea mid-session re-seeds the grill's source context
+  // next turn (AC-BI-33) — bump the token so the Ideas list + grill state reload.
+  const onIdeasChanged = useCallback(() => setIdeasToken((t) => t + 1), []);
+
+  // Graph-driven lifecycle + promote actions (AC-BI-34). The promote edge is
+  // gated by the separate .promote permission; a refused promote surfaces inline.
+  const lifecycleActions = useBrActions(br, {
+    onChanged: onBrChanged,
+    onFieldErrors: setServerFieldErrors,
+  });
+
   const config = useMemo<ResourceFormConfig<BusinessRequirementDetail> | null>(() => {
     if (!br) return null;
 
     const actions: ResourceAction<BusinessRequirementDetail>[] = [
+      ...lifecycleActions,
       {
         id: 'delete',
         label: 'Delete',
@@ -151,7 +207,8 @@ export function useBrForm(brId: string, initialEditing: boolean): UseBrFormResul
               onTitleChange={setTitle}
               doc={br.templateDoc}
               answers={answers}
-              onAnswersChange={setAnswers}
+              onAnswersChange={onAnswersChange}
+              serverErrors={serverFieldErrors}
             />
           ),
         },
@@ -165,7 +222,14 @@ export function useBrForm(brId: string, initialEditing: boolean): UseBrFormResul
           id: 'ideas',
           label: 'Ideas',
           icon: Lightbulb,
-          render: () => <BrIdeasTab brId={brId} reloadToken={ideasToken} />,
+          render: () => (
+            <BrIdeasTab
+              brId={brId}
+              productId={br.productId}
+              reloadToken={ideasToken}
+              onChanged={onIdeasChanged}
+            />
+          ),
         },
         {
           id: 'trace',
@@ -180,7 +244,7 @@ export function useBrForm(brId: string, initialEditing: boolean): UseBrFormResul
           render: () => <BrVersionsTab brId={brId} />,
         },
       ],
-      initialTabId: 'details',
+      initialTabId: initialTab ?? 'details',
       actions,
       actionRows: [br],
       editable: true,
@@ -207,11 +271,16 @@ export function useBrForm(brId: string, initialEditing: boolean): UseBrFormResul
     brId,
     ideasToken,
     initialEditing,
+    initialTab,
     isDirty,
+    lifecycleActions,
+    onAnswersChange,
     onCancel,
     onGrillGenerated,
+    onIdeasChanged,
     onSave,
     router,
+    serverFieldErrors,
     title,
   ]);
 

@@ -14,6 +14,7 @@
  */
 import { apiFetch } from '@/lib/api-client';
 import type { Idea } from '@/types/ideation';
+import type { StatusGraph } from '@/types/status-engine';
 import type {
   BrTemplateVersion,
   BusinessRequirement,
@@ -61,6 +62,10 @@ export const realBusinessRequirementService: BusinessRequirementService = {
       method: 'POST',
       body: JSON.stringify({ status }),
     });
+  },
+
+  statusGraph() {
+    return apiFetch<StatusGraph>(`${base}/status-graph`);
   },
 
   listIdeas(id) {

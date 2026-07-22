@@ -218,6 +218,29 @@ class BrStatusIn(ApiModel):
     status: str
 
 
+# ── clustering (Phase B-i slice 4, AC-BI-30/31) ──────────────────────────────
+
+
+class ClusterSuggestionOut(ApiModel):
+    """One suggested idea cluster (AC-BI-30). ``ideas`` carries the resolved rows
+    so the board can render + edit the selection before promotion. A cluster is
+    ALWAYS a suggestion — nothing auto-promotes (AC-BI-31)."""
+
+    label: str
+    productId: str
+    ideaIds: List[str] = []
+    ideas: List[IdeaOut] = []
+
+
+class ClusterSuggestionsOut(ApiModel):
+    """Cluster suggestions for a product / the whole tenant. ``degraded`` = the
+    LLM grouping was unavailable so trigram candidates are returned ungrouped
+    (AC-BI-30) — clustering degrades, never blocks the board."""
+
+    clusters: List[ClusterSuggestionOut] = []
+    degraded: bool = False
+
+
 # ── Grill (Phase B-i slice 3, AC-BI-20..29) ──────────────────────────────────
 
 

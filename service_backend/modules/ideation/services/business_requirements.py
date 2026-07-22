@@ -35,6 +35,16 @@ from app.services.status_machine import (
 
 BR_PROMOTE_PERMISSION = "ideation.business_requirements.promote"
 
+
+def _field_labels(doc: Dict) -> Dict[str, str]:
+    """``{answer_key: display label}`` from a stamped template doc — used to turn
+    the promote gate's per-field error map into a human-facing missing-fields
+    message (AC-BI-34b)."""
+    from app.form_engine.schemas import FormDocument
+
+    form = FormDocument.model_validate(doc)
+    return {f.key: (f.label or f.key) for f in form.input_fields() if f.key}
+
 from ..models import (
     BusinessRequirement,
     Idea,
@@ -93,11 +103,21 @@ class BusinessRequirementService:
         return product
 
     def _validate_answers(
-        self, br: BusinessRequirement, answers: Optional[Dict]
+        self,
+        br: BusinessRequirement,
+        answers: Optional[Dict],
+        *,
+        enforce_required: bool = False,
     ) -> Dict:
         """Validate ``answers`` against the BR's STAMPED template version (never
         the active one) via ``form_engine``. 422 on any per-field error;
-        persists the cleaned payload."""
+        persists the cleaned payload.
+
+        ``enforce_required`` defaults to ``False`` (AC-BI-34b): a DRAFT BR holds
+        PARTIAL answers — a blank required field is not a 422 on save (consistent
+        with the grill's ``enforce_required=False`` partial emit). Type / format /
+        choice-membership are always validated. ``required`` completeness is
+        enforced ONLY at the promote gate (:meth:`_enforce_promote_completeness`)."""
         doc = get_stamped_doc(
             self.db, br.template_key, br.template_version, br.tenant_id
         )
@@ -106,7 +126,9 @@ class BusinessRequirementService:
                 422,
                 "The stamped template version could not be resolved.",
             )
-        clean, errors = validate_submission(doc, answers or {})
+        clean, errors = validate_submission(
+            doc, answers or {}, enforce_required=enforce_required
+        )
         if errors:
             raise HTTPException(422, detail={"fieldErrors": errors})
         return clean
@@ -434,6 +456,44 @@ class BusinessRequirementService:
                 403,
                 "You are not allowed to promote a business requirement to ready.",
             )
+        # Completeness is enforced ONLY here (AC-BI-34/34b) — a draft saves
+        # partial, but promote requires every required field present.
+        self._enforce_promote_completeness(br)
+
+    def _enforce_promote_completeness(self, br: BusinessRequirement) -> None:
+        """Re-validate the BR's ``answers_json`` against its STAMPED template with
+        ``required`` ENFORCED (AC-BI-34). A promote with missing required fields is
+        refused with a friendly, specific message naming the blank field LABELS
+        (AC-BI-34b) plus the per-field ``fieldErrors`` map (inline highlight)."""
+        doc = get_stamped_doc(
+            self.db, br.template_key, br.template_version, br.tenant_id
+        )
+        if doc is None:
+            raise HTTPException(
+                422, "The stamped template version could not be resolved."
+            )
+        _clean, errors = validate_submission(
+            doc, br.answers_json or {}, enforce_required=True
+        )
+        if not errors:
+            return
+        labels = _field_labels(doc)
+        # Preserve document order + de-dup for the human-facing list.
+        missing: List[str] = []
+        for key in errors:
+            label = labels.get(key, key)
+            if label not in missing:
+                missing.append(label)
+        raise HTTPException(
+            422,
+            detail={
+                "fieldErrors": errors,
+                "message": (
+                    "Add the required fields before promoting: "
+                    + ", ".join(missing)
+                ),
+            },
+        )
 
     def set_status(
         self,

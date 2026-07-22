@@ -16,6 +16,7 @@ from app.models.user import User
 
 from ..schemas import (
     BoardOut,
+    ClusterSuggestionsOut,
     IdeaCreateIn,
     IdeaOut,
     IdeaUpdateIn,
@@ -24,6 +25,7 @@ from ..schemas import (
     VoteIn,
 )
 from ..services.actions import IdeaActionService
+from ..services.clustering import ClusteringService
 from ..services.ideas import IdeaReadService
 
 router = APIRouter()
@@ -103,6 +105,22 @@ def reorder_ideas(
     """Set manual priority from the given id order (index = priority, top first)."""
     return IdeaActionService(db).reorder(
         current_user.tenant_id, body.orderedIds, voter_id=current_user.id
+    )
+
+
+@router.get("/clusters", response_model=ClusterSuggestionsOut)
+def suggest_clusters(
+    product_id: Optional[str] = Query(None, alias="productId"),
+    current_user: User = Depends(require_permission("ideation.clusters.manage")),
+    db: Session = Depends(get_db),
+) -> ClusterSuggestionsOut:
+    """Suggested idea clusters (AC-BI-30/31) — ``pg_trgm`` candidates grouped +
+    named by ONE LLM call, degrading to ungrouped trigram candidates if the LLM
+    is unavailable. Optional ``productId`` scopes to a single product (omitted =
+    every product with candidates in the tenant). Suggestions only — nothing
+    auto-promotes. Gated by ``ideation.clusters.manage`` (Triager)."""
+    return ClusteringService(db).suggest(
+        current_user.tenant_id, product_id=product_id, voter_id=current_user.id
     )
 
 

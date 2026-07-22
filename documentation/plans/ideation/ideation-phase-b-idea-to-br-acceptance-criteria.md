@@ -223,6 +223,12 @@ Format: each AC is independently verifiable (Given / When / Then). Grouped by sl
 - **Given** required fields are missing, **then** promotion is **refused** with a "missing: …" message — and the same check is enforced **server-side**, not only in the UI.
 - **Given** promotion, **then** it is an explicit human action through the status engine (B-D4) with the actor recorded, gated by `ideation.business_requirements.promote` on the `br-tr-promote` edge (see AC-BI-19's revised note) — no AI/import/timer path can reach `ready`.
 
+### AC-BI-34b — a draft saves incomplete; only promote enforces completeness; errors are friendly [BE][FE][T]
+*(Added 2026-07-22 from live user feedback — a draft Details-tab Save 422'd on blank required fields and surfaced a raw "Unprocessable Content" toast.)*
+- **Given** a `draft` BR is saved from the Details tab with required fields left blank, **then** it **saves successfully** — a draft holds partial answers (consistent with the grill's `enforce_required=False` partial-emit). The BR `update()` path validates type/format/choice-membership only, NOT `required`, while the BR is not being promoted.
+- **Given** the promote transition (`draft→ready`, AC-BI-34), **then** THAT is where `required` completeness is enforced — a promote with missing required fields is refused with a **friendly, specific** message ("Add the required fields before promoting: Problem statement, Business goal, Success metric").
+- **Given** ANY 422 from a BR save/promote (type/format error, or the promote completeness refusal), **then** the frontend maps the per-field `fieldErrors` to **inline field highlights** (reusing the form-engine `fieldErrors` surfacing the form renderer already has) AND a readable toast — **never** the raw HTTP status text "Unprocessable Content".
+
 ### AC-BI-35 — traceability [BE][T]
 - **Given** a BR, **then** a lineage query resolves **BR → linked ideas → submitter contacts**, so every requirement traces back to the raw WhatsApp ideas that produced it.
 - **Given** the BR detail **Ideas** tab, **then** it lists the linked ideas with a link to each.

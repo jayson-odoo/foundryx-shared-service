@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { Archive, ArchiveRestore, ArrowRight, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
+import { Archive, ArchiveRestore, ArrowRight, ChevronDown, ChevronUp, FileText, Trash2 } from 'lucide-react';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { ClampedText } from '@/components/platform/clamped-text';
 import {
@@ -84,13 +84,31 @@ export function useIdeasListConfig(
     onRestore: (idea: Idea) => Promise<void>;
     onDelete: (idea: Idea) => Promise<void>;
     onReorder: (orderedIds: string[]) => void | Promise<void>;
+    onPromote: (ideas: Idea[]) => Promise<void>;
   },
 ): ResourceListConfig<Idea> {
-  const { onCreate, onVote, onAdvance, onArchive, onRestore, onDelete, onReorder } = handlers;
+  const { onCreate, onVote, onAdvance, onArchive, onRestore, onDelete, onReorder, onPromote } =
+    handlers;
   const { paths, mode } = useIdeationRuntime();
 
   return useMemo<ResourceListConfig<Idea>>(() => {
     const actions: ResourceAction<Idea>[] = [
+      {
+        id: 'promote-br',
+        label: 'Promote to BR',
+        icon: FileText,
+        // Gated by the BR write perm — the destination is a new draft BR.
+        permission: 'ideation.business_requirements.manage',
+        surfaces: { row: true, form: true, bulk: true },
+        // Only non-archived ideas that all share ONE product (a BR links
+        // same-product ideas, AC-BI-17). A mixed-product selection is disabled
+        // (foolproof-UI — never offer a move that will 422).
+        isVisible: (rows) => rows.length > 0 && rows.every((r) => r.status !== 'archived'),
+        isDisabled: (rows) => new Set(rows.map((r) => r.productId)).size > 1,
+        run: async (rows) => {
+          await onPromote(rows);
+        },
+      },
       {
         id: 'advance',
         // Label auto-derived from the status_engine transition target (prototype:
@@ -272,5 +290,5 @@ export function useIdeasListConfig(
       ],
       actions,
     };
-  }, [ideas, onCreate, onVote, onAdvance, onArchive, onRestore, onDelete, onReorder, paths, mode]);
+  }, [ideas, onCreate, onVote, onAdvance, onArchive, onRestore, onDelete, onReorder, onPromote, paths, mode]);
 }

@@ -8,6 +8,7 @@
  * below (the ONE line). The mock is retained only for tests.
  */
 import type { Idea } from '@/types/ideation';
+import type { StatusGraph } from '@/types/status-engine';
 import type {
   BrTemplateVersion,
   BusinessRequirement,
@@ -41,6 +42,9 @@ export interface BusinessRequirementService {
     id: string,
     status: BusinessRequirementStatus,
   ): Promise<BusinessRequirementDetail>;
+  /** The BR entity's status graph — backs the detail form's lifecycle/promote
+   * action registry (AC-BI-34). Gated ideation.business_requirements.read. */
+  statusGraph(): Promise<StatusGraph>;
   /** The Ideas feeding this BR (lineage). */
   listIdeas(id: string): Promise<Idea[]>;
   /** Link ideas to the BR (same product). Returns the new linked set. */

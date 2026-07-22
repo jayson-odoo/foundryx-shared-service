@@ -4,7 +4,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { FormRow } from '@/components/platform/resource-form';
 import { FormRenderer } from '@/components/platform/form-renderer';
-import type { FormAnswers, FormDocument } from '@/types/forms';
+import type { FormAnswers, FormDocument, FormFieldErrors } from '@/types/forms';
 
 export interface BrDetailsTabProps {
   editing: boolean;
@@ -14,6 +14,9 @@ export interface BrDetailsTabProps {
   doc: FormDocument;
   answers: FormAnswers;
   onAnswersChange: (answers: FormAnswers) => void;
+  /** Server 422 per-field map from a failed save / promote (AC-BI-34b) — merged
+   * into the renderer's inline field errors. */
+  serverErrors?: FormFieldErrors;
 }
 
 /**
@@ -28,6 +31,7 @@ export function BrDetailsTab({
   doc,
   answers,
   onAnswersChange,
+  serverErrors,
 }: BrDetailsTabProps) {
   const hasDoc = Boolean(doc?.pages?.length);
   return (
@@ -51,6 +55,7 @@ export function BrDetailsTab({
             mode={editing ? 'fill' : 'read'}
             answers={answers}
             onChange={onAnswersChange}
+            errors={serverErrors}
           />
         ) : (
           <p className="text-sm text-muted-foreground">

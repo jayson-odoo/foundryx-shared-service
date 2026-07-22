@@ -120,8 +120,10 @@ def test_create_br_stamps_active_template_and_starts_draft(ideation_client):
     assert br["productName"] == "Sorento CRM"
 
 
-def test_create_br_validates_answers_against_stamped_version(ideation_client):
-    """A missing required field (success_metric) 422s per-field, not 500."""
+def test_create_br_with_partial_answers_saves_draft(ideation_client):
+    """AC-BI-34b: a DRAFT BR created with a required field left blank
+    (success_metric) SUCCEEDS — a draft holds partial answers; required is only
+    enforced at the promote gate, not on create/save."""
     h = _auth(ideation_client)
     pid = _product(ideation_client, h)
     res = ideation_client.post(
@@ -132,8 +134,11 @@ def test_create_br_validates_answers_against_stamped_version(ideation_client):
             "answers": {"problem_statement": "x", "business_goal": "y"},
         },
     )
-    assert res.status_code == 422, res.text
-    assert "success_metric" in res.json()["detail"]["fieldErrors"]
+    assert res.status_code == 201, res.text
+    br = res.json()
+    assert br["status"] == "draft"
+    # The blank required field is simply absent — never invented.
+    assert not br["answers"].get("success_metric")
 
 
 def test_historical_br_renders_against_its_stamped_version(
@@ -352,6 +357,131 @@ def test_promote_edge_seam_exists(ideation_client, ideation_session_factory):
         assert edge.to_status_id == "br-status-ready"
     finally:
         db.close()
+
+
+# ── promote gate (AC-BI-34 / AC-BI-34b, S4) ───────────────────────────────────
+
+
+def test_promote_complete_br_reaches_ready(ideation_client):
+    """AC-BI-34: an Admin (holds .promote) with COMPLETE answers promotes
+    draft → ready via the br-tr-promote edge."""
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    br = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid, "answers": _FULL_ANSWERS},
+    ).json()
+    res = ideation_client.post(
+        f"/ideation/business-requirements/{br['id']}/status",
+        headers=h,
+        json={"status": "ready"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "ready"
+
+
+def test_promote_incomplete_br_refused_with_friendly_message(ideation_client):
+    """AC-BI-34b: promoting a draft whose required fields are blank is refused
+    422 with a friendly, specific missing-fields message + per-field errors."""
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    # Draft saves with only problem_statement (partial — AC-BI-34b).
+    br = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid, "answers": {"problem_statement": "x"}},
+    ).json()
+    assert br["status"] == "draft"
+
+    res = ideation_client.post(
+        f"/ideation/business-requirements/{br['id']}/status",
+        headers=h,
+        json={"status": "ready"},
+    )
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert "business_goal" in detail["fieldErrors"]
+    assert "success_metric" in detail["fieldErrors"]
+    # Friendly, label-named message (not raw "Unprocessable Content").
+    assert "Add the required fields before promoting" in detail["message"]
+    assert "Business goal" in detail["message"]
+    assert "Success metric" in detail["message"]
+    # Still draft — the refused promote never moved it.
+    assert (
+        ideation_client.get(
+            f"/ideation/business-requirements/{br['id']}", headers=h
+        ).json()["status"]
+        == "draft"
+    )
+
+
+def test_promote_gate_403_for_manage_not_promote(
+    ideation_client, ideation_session_factory
+):
+    """AC-BI-19/34: a .manage user WITHOUT .promote can grill/edit but the promote
+    edge (draft → ready) is refused 403 — the server is the real boundary. The
+    completeness check never runs (permission fails first)."""
+    _make_user(
+        ideation_session_factory,
+        "brmanager@example.com",
+        "Manager123!",
+        {"ideation.business_requirements.manage"},
+    )
+    h_admin = _auth(ideation_client)
+    pid = _product(ideation_client, h_admin)
+    br = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h_admin,
+        json={"productId": pid, "answers": _FULL_ANSWERS},
+    ).json()
+
+    h = _auth(ideation_client, email="brmanager@example.com", password="Manager123!")
+    res = ideation_client.post(
+        f"/ideation/business-requirements/{br['id']}/status",
+        headers=h,
+        json={"status": "ready"},
+    )
+    assert res.status_code == 403, res.text
+    # The non-promote sibling edge (draft → grilling) stays open to .manage.
+    ok = ideation_client.post(
+        f"/ideation/business-requirements/{br['id']}/status",
+        headers=h,
+        json={"status": "grilling"},
+    )
+    assert ok.status_code == 200, ok.text
+
+
+def test_draft_update_with_blank_required_saves(ideation_client):
+    """AC-BI-34b: editing a draft's answers with a required field blank SUCCEEDS
+    (a draft holds partial answers); type/format is still validated."""
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    br = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid, "answers": _FULL_ANSWERS},
+    ).json()
+    res = ideation_client.patch(
+        f"/ideation/business-requirements/{br['id']}",
+        headers=h,
+        json={"answers": {"problem_statement": "only this"}},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["answers"]["problem_statement"] == "only this"
+
+
+def test_br_status_graph_endpoint(ideation_client):
+    """AC-BI-34: the BR status-graph shim backs the detail form's action registry
+    — gated ideation.business_requirements.read; carries the br-tr-promote edge."""
+    h = _auth(ideation_client)
+    res = ideation_client.get(
+        "/ideation/business-requirements/status-graph", headers=h
+    )
+    assert res.status_code == 200, res.text
+    graph = res.json()
+    edge_ids = {t["id"] for t in graph["transitions"]}
+    assert "br-tr-promote" in edge_ids
 
 
 # ── versions tab (AC-BI-16) ───────────────────────────────────────────────────

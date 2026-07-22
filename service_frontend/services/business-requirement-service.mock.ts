@@ -138,6 +138,10 @@ export const mockBusinessRequirementService: BusinessRequirementService = {
     return { ...br };
   },
 
+  async statusGraph() {
+    return { entityType: 'ideation_business_requirement', source: 'platform', statuses: [], transitions: [] };
+  },
+
   async listIdeas() {
     return MOCK_IDEAS;
   },

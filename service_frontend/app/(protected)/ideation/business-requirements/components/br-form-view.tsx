@@ -11,11 +11,13 @@ import { BR_PATH } from './paths';
 export interface BrFormViewProps {
   brId: string;
   initialEditing: boolean;
+  /** Deep-link a starting tab (e.g. `grill` — Promote-to-BR lands here). */
+  initialTab?: string;
 }
 
 /** Loads + renders a Business Requirement detail form (tabbed ResourceForm). */
-export function BrFormView({ brId, initialEditing }: BrFormViewProps) {
-  const { config, isLoading, notFound } = useBrForm(brId, initialEditing);
+export function BrFormView({ brId, initialEditing, initialTab }: BrFormViewProps) {
+  const { config, isLoading, notFound } = useBrForm(brId, initialEditing, initialTab);
 
   if (isLoading) {
     return (

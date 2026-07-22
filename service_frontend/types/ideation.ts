@@ -95,6 +95,23 @@ export interface Idea {
   createdAt: string; // ISO
 }
 
+/** One suggested idea cluster (AC-BI-30/31). A cluster is ALWAYS a suggestion —
+ * fully editable before promotion; nothing auto-promotes. */
+export interface IdeaCluster {
+  label: string;
+  productId: string;
+  ideaIds: string[];
+  ideas: Idea[];
+}
+
+/** Cluster suggestions envelope. `degraded` = the LLM grouping was unavailable
+ * so trigram candidates are returned ungrouped (clustering degrades, never
+ * blocks the board). */
+export interface IdeaClusterSuggestions {
+  clusters: IdeaCluster[];
+  degraded: boolean;
+}
+
 /** Board columns = the triage-relevant statuses, left→right flow. */
 export const IDEA_BOARD_COLUMNS: { key: IdeaStatus; title: string }[] = [
   { key: 'captured', title: 'New' },

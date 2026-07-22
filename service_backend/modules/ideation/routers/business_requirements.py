@@ -70,6 +70,32 @@ def create_business_requirement(
     )
 
 
+# Registered BEFORE /{br_id} so the literal path wins the match (mirrors the
+# console's tenant status-graph shim).
+@router.get("/status-graph")
+def br_status_graph(
+    current_user: User = Depends(
+        require_permission("ideation.business_requirements.read")
+    ),
+    db: Session = Depends(get_db),
+):
+    """The BR entity's status graph for the detail form's action registry
+    (AC-BI-34) — gated by ``ideation.business_requirements.read`` so promote/
+    lifecycle buttons never depend on the user also holding ``statuses.read``.
+    Delegates to the core status-graph reader (the ``.promote`` boundary is the
+    server-side gate on the ``br-tr-promote`` edge)."""
+    from app.api.v1.statuses import get_status_graph
+
+    from ..services.statuses import BR_ENTITY
+
+    # Keyword args — get_status_graph has a ``scope_id`` param between
+    # entity_type and current_user (scoped machines), so a positional call would
+    # misplace current_user.
+    return get_status_graph(
+        entity_type=BR_ENTITY, current_user=current_user, db=db
+    )
+
+
 @router.get("/{br_id}", response_model=BusinessRequirementDetailOut)
 def get_business_requirement(
     br_id: str,

@@ -13,6 +13,7 @@ export default function BusinessRequirementDetailPage() {
       <BrFormView
         brId={String(params.id)}
         initialEditing={searchParams.get('edit') === '1'}
+        initialTab={searchParams.get('tab') ?? undefined}
       />
     </RequirePermission>
   );
