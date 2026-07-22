@@ -85,10 +85,45 @@ form-engine `formula-builder` shell where it fits)
 **And** it live-validates (parse errors shown inline) and never lets an invalid formula be saved
 (front gate + the AC-16-03 server gate).
 
-### AC-16-12 `[FE]` Foolproof — only valid, no instructional prose
+### AC-16-12 `[FE]` Foolproof — only valid, contextual function reference (not screen clutter)
 **Given** the builder
-**Then** dropdowns are searchable `SearchSelect`s, it is read-only until Edit, and it carries no
-teaching copy — the controls and a live preview teach by themselves.
+**Then** dropdowns are searchable `SearchSelect`s and it is read-only until Edit
+**And** it carries no procedural how-to copy on the main surface — BUT per-function **reference**
+(signature, arguments, description) is allowed and required (AC-16-15): that is contextual API
+documentation for the selected function, the sanctioned "one-line description" kind, not sprinkled
+instructional prose.
+
+### AC-16-13 `[FE]` Functions are grouped by data type + searchable (Qrvey model)
+**Given** the formula builder's function catalog
+**When** the operator browses it
+**Then** functions are grouped by data type — **String**, **Number**, **Boolean**, **Date**, **Logical**
+— selectable by a category picker (like Qrvey's "All ▾") AND searchable by name
+**And** each function is inserted at the caret (an "Insert"/"Add to formula" action), never hand-typed
+from memory
+**And** the `value` input and any available columns are listed with their type, so the operator sees
+what they can reference.
+
+### AC-16-14 `[FE][BE]` A dedicated DATE-FORMAT tool: explicit input + output format
+**Given** a date transform
+**When** the operator configures it
+**Then** the builder offers a **date-format tool** where they specify the **input date format**
+(how AutoCount sends it, e.g. `yyyy/MM/dd HH:mm:ss`) AND the **output date format** (what Sorento
+should receive, e.g. ISO `yyyy-MM-ddTHH:mm:ssZ`) — chosen from a **fixed, documented token
+vocabulary**, not a free-form string
+**And** the SAME token vocabulary is parsed identically client and server (this is how the client/
+server date parity is guaranteed — a fixed token set, not a general date library)
+**And** the tool previews a sample date through the chosen input→output formats live.
+> This supersedes a free-form `date(x, "format")` string — the structured tool is both more usable and
+> the thing that makes date parity (AC-16-01) provable.
+
+### AC-16-15 `[FE]` The builder explains each function (arguments, description)
+**Given** the operator selects a function in the catalog
+**When** it is shown
+**Then** a reference panel shows its **signature**, each **argument** (name + what it expects), a
+one-line **description**, and an example (e.g. `if(condition, then, else)` — "returns `then` when
+`condition` is true, else `else`")
+**And** the header states the accepted value formats concisely (like Qrvey's "Date values use
+`yyyy/MM/dd`…"), so the operator can author a correct formula without leaving the builder.
 
 ---
 

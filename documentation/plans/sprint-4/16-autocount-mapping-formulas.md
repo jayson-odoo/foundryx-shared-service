@@ -28,9 +28,19 @@ primary := NUMBER | STRING | "true" | "false" | "null" | "value" | "(" expr ")"
 ```
 - Input variable: **`value`** (the raw AutoCount source value — usually a string; the vendor sends
   `"T"`, `"30000.0"`, `"2026/03/18 16:03:21"`).
-- Functions (the floor — small + safe): `if(cond, then, else)`, `upper/lower/trim(x)`,
-  `contains(x, sub)`, `number(x)`, `round(x, n)`, `default(x, fb)`, `date(x, "format")`,
-  `bool(x)`/`==` comparisons. String concat via `&` (or `+` on strings).
+- Functions (the floor — small + safe), **catalogued by data type** (AC-16-13):
+  - **String**: `upper(x)`, `lower(x)`, `trim(x)`, `contains(x, sub)`, `replace(x, a, b)`, `concat(...)`
+  - **Number**: `number(x)`, `round(x, n)`, `abs(x)`
+  - **Boolean**: `bool(x)`, the comparisons `== != < <= > >=`
+  - **Date**: `parseDate(x, inFmt)`, `formatDate(x, outFmt)` — driven by the date-format tool below
+  - **Logical**: `if(cond, then, else)`, `and`/`or`/`not`, `default(x, fb)`
+  Each function carries metadata (signature, arg names, description, example) so the builder can show
+  reference (AC-16-15). String concat via `&`.
+- **Dates use a FIXED token vocabulary, not a general date library** (AC-16-14, and the resolution of
+  the parity risk): a small documented token set (`yyyy MM dd HH mm ss`, ISO `yyyy-MM-ddTHH:mm:ssZ`)
+  parsed by the SAME hand-written formatter in `formula.py` and `lib/autocount-formula.ts`. The
+  operator picks an **input format** and an **output format** in the date-format tool; there is no
+  free-form date string to drift between client and server. This is why date parity is provable.
 - Depth/length capped (reuse `MAX_GROUP_DEPTH` convention); a parse error is a named failure.
 - **Fail closed** (AC-16-03): unknown name/function → parse-time 422; runtime error (`number("abc")`)
   → per-field error naming the field, never a silent null.
@@ -76,9 +86,20 @@ working unchanged** (back-compat: a row with a named transform and no formula be
   gains a **Build** affordance (opens the formula builder) when the transform is a formula; a
   passthrough row stays visually simple (AC-16-10).
 - **Formula builder** (`components/platform/autocount/formula-builder` or reuse/generalize the
-  form-engine `formula-builder.tsx`): `value` variable chip, operator/function buttons inserting at
-  caret, live parse/validate, **a mock-value input with live output** (AC-16-20) using
-  `lib/autocount-formula.ts`, and a "check on server" (AC-16-21).
+  form-engine `formula-builder.tsx`) — modelled on the Qrvey layout the operator referenced:
+  - a formula text area with **Formula | Testing** tabs;
+  - a **function catalog grouped by data type** (category picker String/Number/Boolean/Date/Logical +
+    search), each inserted at the caret (AC-16-13); the `value` input + available columns listed with
+    their type;
+  - a **function reference panel** (AC-16-15): selecting a function shows its signature, arguments,
+    one-line description + example; the header states accepted value/date formats concisely;
+  - the **Testing** tab = the per-formula simulator: a mock-value input with **live output**
+    (AC-16-20) via `lib/autocount-formula.ts`, and a "check on server" parity call (AC-16-21);
+  - live parse/validate, cannot save invalid.
+- **Date-format tool** (AC-16-14): for a Date transform, a structured sub-panel — **input format**
+  picker + **output format** picker over the fixed token vocabulary, with a live sample preview
+  (sample date → parsed → reformatted). It writes `parseDate`/`formatDate` into the formula; the
+  operator never hand-types a date pattern that could drift client/server.
 - **Whole-mapping simulator** (a panel/dialog on the mapping editor): a mock AutoCount record input
   (JSON editor, or "Load a sample" via GET sample), Run → shows **input record beside the output
   Sorento record** + per-field errors (AC-16-30/31). Pure preview, writes nothing; wording keeps it
@@ -109,9 +130,11 @@ working unchanged** (back-compat: a row with a named transform and no formula be
 ## 7. Notes / risks
 
 - Keep the function set SMALL — every function is surface to secure and to mirror. Add on demand.
-- `date(x, "format")`: pick ONE format grammar and mirror it exactly client/server (a date lib
-  mismatch is the likeliest parity break) — or restrict v1 to parsing the known vendor format +
-  emitting ISO, and expand later.
+- **Date parity RESOLVED via the structured tool** (was the open risk): a FIXED token vocabulary
+  (`yyyy MM dd HH mm ss`, ISO) with one hand-written formatter mirrored client/server, driven by the
+  input/output format pickers — no general date library, no free-form pattern to drift. Keep the token
+  set minimal in v1 (the known vendor format + ISO out) and expand tokens on demand; every added token
+  is mirrored + parity-tested.
 - The whole-mapping simulator running the real MappingEngine is the high-value bit — it turns "will
   this mapping work?" into a testable question BEFORE a sync stages a broken batch (the null-record
   failure class from slice 15's live verify).
