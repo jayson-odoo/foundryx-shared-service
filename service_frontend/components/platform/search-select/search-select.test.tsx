@@ -32,4 +32,20 @@ describe('SearchSelect', () => {
     fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: 'zzz' } });
     expect(screen.getByText('No matches.')).toBeInTheDocument();
   });
+
+  it('commits a typed custom value when allowCustom is set', () => {
+    const onChange = vi.fn();
+    render(<SearchSelect options={OPTIONS} value={null} onChange={onChange} allowCustom />);
+    fireEvent.click(screen.getByRole('combobox'));
+    fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: 'Data.0.X' } });
+    // The create item is offered instead of the empty state.
+    expect(screen.queryByText('No matches.')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Use "Data.0.X"'));
+    expect(onChange).toHaveBeenCalledWith('Data.0.X');
+  });
+
+  it('renders a custom (unlisted) value verbatim on the trigger', () => {
+    render(<SearchSelect options={OPTIONS} value="Data.0.X" onChange={vi.fn()} allowCustom />);
+    expect(screen.getByRole('combobox')).toHaveTextContent('Data.0.X');
+  });
 });
