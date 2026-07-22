@@ -90,9 +90,37 @@ beforeEach(() => {
 });
 
 describe('ReviewView preview gate (AC-14-20)', () => {
-  it('enables Approve when the batch is decidable and no dry run failed', () => {
+  it('DISABLES Approve until a dry run has been previewed (never approve blind)', () => {
+    // AC-14-20 / grill G4: the whole point is the operator SEES the prediction
+    // before committing. A decidable batch that has not been previewed must not
+    // be approvable.
     reviewState.mockReturnValue(baseReview());
-    previewState.mockReturnValue(basePreview());
+    previewState.mockReturnValue(basePreview()); // hasRun: false
+    render(<ReviewView jobId="job-1" />);
+    expect(screen.getByTestId('approve-batch')).toBeDisabled();
+    expect(screen.getByTestId('approve-blocked')).toHaveTextContent('Preview before approving');
+  });
+
+  it('enables Approve once a dry run has run successfully', () => {
+    reviewState.mockReturnValue(baseReview());
+    previewState.mockReturnValue(
+      basePreview({
+        hasRun: true,
+        preview: { previewable: true, sink: 'sorento', summary: { total: 1, created: 1, updated: 0, failed: 0, retryable: 0 }, predictions: [] },
+      }),
+    );
+    render(<ReviewView jobId="job-1" />);
+    expect(screen.getByTestId('approve-batch')).not.toBeDisabled();
+  });
+
+  it('enables Approve after a not-previewable dry run (logging sink — nothing to overwrite)', () => {
+    reviewState.mockReturnValue(baseReview());
+    previewState.mockReturnValue(
+      basePreview({
+        hasRun: true,
+        preview: { previewable: false, sink: 'logging', reason: 'No consumer is configured.' },
+      }),
+    );
     render(<ReviewView jobId="job-1" />);
     expect(screen.getByTestId('approve-batch')).not.toBeDisabled();
   });

@@ -186,11 +186,15 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
               {blockedReason && (
                 <span className="text-xs text-muted-foreground">{blockedReason}</span>
               )}
-              {preview.failed && (
+              {preview.failed ? (
                 <span className="text-xs text-destructive" data-testid="approve-blocked">
                   Resolve the dry run first
                 </span>
-              )}
+              ) : !preview.hasRun ? (
+                <span className="text-xs text-muted-foreground" data-testid="approve-blocked">
+                  Preview before approving
+                </span>
+              ) : null}
               <Button
                 variant="outline"
                 size="sm"
@@ -217,7 +221,9 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
               </Button>
               <Button
                 size="sm"
-                disabled={!canDecide || isSubmitting || preview.failed}
+                disabled={
+                  !canDecide || isSubmitting || preview.isLoading || !preview.hasRun || preview.failed
+                }
                 onClick={() => void approve()}
                 data-testid="approve-batch"
               >
