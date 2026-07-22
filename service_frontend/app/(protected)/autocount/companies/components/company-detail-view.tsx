@@ -22,6 +22,7 @@ import { ResourceForm, type ResourceFormConfig } from '@/components/platform/res
 import { ResourceList } from '@/components/platform/resource-list';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { ApiError } from '@/lib/api-client';
+import { useCan } from '@/hooks/use-can';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useAutocountCompany } from '@/hooks/use-autocount-company';
 import { autocountService } from '@/services/autocount-service';
@@ -31,12 +32,14 @@ import {
   type AutocountEntityConfig,
 } from '@/types/autocount';
 import {
+  AC_COMPANIES_MANAGE,
   AC_COMPANIES_PATH,
   acCompanyHref,
   acReviewHref,
   entityLabel,
 } from '../../components/autocount-meta';
 import { EntityLookbackDialog } from './entity-lookback-dialog';
+import { SinkTargetCard } from './sink-target-card';
 import { useAutocountEntitiesListConfig } from './use-entities-list-config';
 import { useAutocountRunsListConfig } from './use-runs-list-config';
 
@@ -61,6 +64,7 @@ type SyncOutcome = { tone: 'success' | 'warning'; title: string; detail?: string
 
 export function AutocountCompanyDetailView({ companyId }: { companyId: string }) {
   const { detail, isLoading, notFound, reload } = useAutocountCompany(companyId);
+  const { can } = useCan();
   const { formatDateTime } = useDatetime();
   const router = useRouter();
   const form = useForm();
@@ -178,7 +182,8 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
           label: 'Overview',
           icon: Info,
           render: () => (
-            <div className="flex flex-col py-2">
+            <div className="flex flex-col gap-4 py-2">
+              <div className="flex flex-col">
               <DetailRow label="Company name">
                 <ClampedText text={company.companyName || '—'} lines={2} />
               </DetailRow>
@@ -204,6 +209,12 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
               <DetailRow label="Connected">
                 {company.createdAt ? formatDateTime(company.createdAt) : '—'}
               </DetailRow>
+              </div>
+              <SinkTargetCard
+                company={company}
+                canManage={can(AC_COMPANIES_MANAGE)}
+                onSaved={reload}
+              />
             </div>
           ),
         },
@@ -267,6 +278,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
       onCancel: reload,
     };
   }, [
+    can,
     detail,
     entitiesConfig,
     formatDateTime,
