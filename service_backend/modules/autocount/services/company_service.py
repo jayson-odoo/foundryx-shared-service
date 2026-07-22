@@ -33,7 +33,15 @@ from ..activity import (
     record_client_calls,
 )
 from ..client import AutoCountClient, AutoCountError
-from ..mapping import DEFAULT_MAPPINGS, MappingRow
+from ..mapping import DEFAULT_MAPPINGS, SCOPE_HEADER, TRANSFORMS, MappingRow
+from ..mapping_catalog import (
+    SorentoFieldDef,
+    accepted_fields,
+    accepted_field_names,
+    ac_source_fields,
+    required_field_names,
+    sorento_field_for,
+)
 from ..models import (
     SINK_IMPL_LOGGING,
     SINK_IMPL_SORENTO,
@@ -182,6 +190,52 @@ class EntityState:
     watermark_at: Optional[datetime] = None
     consecutive_failures: int = 0
     last_error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class MappingWriteRow:
+    """One row of a mapping-editor save (plan 15 §2, AC-15-41).
+
+    ``sorento_field`` is the Sorento-facing target the operator picked; the
+    service maps it back to the stored ``canonical_field`` (they are equal for
+    master sink fields). Only these three are operator-authored — ``scope`` and
+    the required/enabled flags are derived server-side so the editor cannot
+    invent them.
+    """
+
+    source_path: str
+    transform: str
+    sorento_field: str
+
+
+@dataclass
+class MappingRowView:
+    """One projected mapping row (AC-15-40). ``sorento_field`` is ``None`` when
+    the stored ``canonical_field`` is not delivered to Sorento (identity /
+    watermark provenance like ``last_modified``, or an ``extras`` key) — shown as
+    non-delivered rather than hidden.
+
+    Flat + snake_cased so ``MappingRowOut.model_validate`` maps it straight
+    through ``from_attributes``."""
+
+    source_path: str
+    transform: str
+    sorento_field: Optional[str]
+    canonical_field: str
+    scope: str
+    is_required: bool
+    is_enabled: bool
+
+
+@dataclass
+class MappingView:
+    """The mapping-editor payload: the current rows + the two catalogs the
+    editor's pickers need (AC-15-40..43)."""
+
+    entity_type: str
+    rows: List[MappingRowView]
+    sorento_fields: List[SorentoFieldDef]
+    ac_fields: List[str]
 
 
 class CompanyService:
@@ -581,3 +635,117 @@ class CompanyService:
             )
             for row in self.mappings.list(tenant_id, company_id, entity_type)
         ]
+
+    # ── mapping editor: read + write (plan 15 §2, AC-15-40..43) ───────────────
+
+    def _require_entity(self, tenant_id: str, company_id: str, entity_type: str):
+        """Tenant-scope the company, then confirm the entity is one this company
+        is configured for — a 404 otherwise, never a mapping surface for an
+        entity that does not exist here."""
+        self.get(tenant_id, company_id)  # tenant-scope guard (CompanyNotFound)
+        config = self.configs.get(tenant_id, company_id, entity_type)
+        if config is None:
+            raise EntityConfigNotFound(
+                f"'{entity_type}' is not configured for sync on this company."
+            )
+        return config
+
+    def _mapping_view(self, tenant_id: str, company_id: str, entity_type: str) -> MappingView:
+        rows = [
+            MappingRowView(
+                source_path=row.source_path,
+                transform=row.transform,
+                sorento_field=sorento_field_for(entity_type, row.canonical_field),
+                canonical_field=row.canonical_field,
+                scope=row.scope,
+                is_required=row.is_required,
+                is_enabled=row.is_enabled,
+            )
+            for row in self.mappings.list(tenant_id, company_id, entity_type)
+        ]
+        return MappingView(
+            entity_type=entity_type,
+            rows=rows,
+            sorento_fields=list(accepted_fields(entity_type)),
+            ac_fields=list(ac_source_fields(entity_type)),
+        )
+
+    def mapping_view(
+        self, tenant_id: str, company_id: str, entity_type: str
+    ) -> MappingView:
+        """The current mapping rows projected AutoCount→Sorento, plus the source
+        and target catalogs the editor's pickers need (AC-15-40)."""
+        self._require_entity(tenant_id, company_id, entity_type)
+        return self._mapping_view(tenant_id, company_id, entity_type)
+
+    def replace_mapping(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        rows: List[MappingWriteRow],
+    ) -> MappingView:
+        """Replace the DELIVERABLE mapping rows for one (company, entity) in ONE
+        transaction (AC-15-41).
+
+        Foolproof guard (AC-15-42/43), enforced server-side — never advisory:
+          * every ``sorento_field`` must be in the accepted set (else 422 naming
+            the field) — a target Sorento would reject (``extra="forbid"``) can
+            never be stored;
+          * each accepted field maps once (no duplicate target);
+          * ``source_path`` is non-blank; ``transform`` is a known transform.
+
+        Only rows whose canonical field is in the accepted set are replaced —
+        provenance/watermark rows (``last_modified``) are PRESERVED, so a re-map
+        can never silently break delta sync. This persists to ``ac_field_mapping``
+        and is seed-if-absent-safe: ``seed_company_defaults`` only seeds when the
+        entity has ZERO rows, so a later ``update_tenant`` never reverts it.
+        """
+        self._require_entity(tenant_id, company_id, entity_type)
+
+        accepted = accepted_field_names(entity_type)
+        required = required_field_names(entity_type)
+        seen: set = set()
+        clean: List[MappingWriteRow] = []
+        for row in rows:
+            source_path = (row.source_path or "").strip()
+            if not source_path:
+                raise AutocountServiceError(
+                    "A mapping row is missing its AutoCount source field."
+                )
+            if row.transform not in TRANSFORMS:
+                raise AutocountServiceError(
+                    f"'{row.transform}' is not a known transform."
+                )
+            target = row.sorento_field
+            if target not in accepted:
+                raise AutocountServiceError(
+                    f"'{target}' is not a Sorento field accepted for "
+                    f"{entity_type}. Choose one of: {', '.join(sorted(accepted))}."
+                )
+            if target in seen:
+                raise AutocountServiceError(
+                    f"The Sorento field '{target}' is mapped more than once."
+                )
+            seen.add(target)
+            clean.append(MappingWriteRow(source_path, row.transform, target))
+
+        # Replace only the deliverable rows; provenance rows survive.
+        self.mappings.delete_by_canonical(tenant_id, company_id, entity_type, accepted)
+        for order, row in enumerate(clean):
+            self.mappings.add(
+                AcFieldMapping(
+                    tenant_id=tenant_id,
+                    company_id=company_id,
+                    entity_type=entity_type,
+                    scope=SCOPE_HEADER,  # masters are header-only (plan 15 §2)
+                    source_path=row.source_path,
+                    canonical_field=row.sorento_field,
+                    transform=row.transform,
+                    is_required=row.sorento_field in required,
+                    is_enabled=True,
+                    sort_order=order,
+                )
+            )
+        self.db.commit()
+        return self._mapping_view(tenant_id, company_id, entity_type)

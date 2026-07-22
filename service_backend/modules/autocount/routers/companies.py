@@ -19,6 +19,10 @@ from ..schemas import (
     CompanySinkUpdate,
     EntityConfigItem,
     EntityConfigUpdate,
+    MappingRowOut,
+    MappingUpdateRequest,
+    MappingViewResponse,
+    SorentoFieldOut,
 )
 from ..services import (
     AutocountServiceError,
@@ -27,6 +31,8 @@ from ..services import (
     CompanyService,
     ConnectionNotFound,
     EntityConfigNotFound,
+    MappingView,
+    MappingWriteRow,
 )
 
 router = APIRouter()
@@ -146,3 +152,75 @@ def update_entity_config(
     except AutocountServiceError as exc:
         _raise(exc)
     return EntityConfigItem.model_validate(state)
+
+
+def _mapping_response(view: MappingView) -> MappingViewResponse:
+    return MappingViewResponse(
+        entityType=view.entity_type,
+        rows=[MappingRowOut.model_validate(row) for row in view.rows],
+        sorentoFields=[SorentoFieldOut.model_validate(f) for f in view.sorento_fields],
+        acFields=list(view.ac_fields),
+    )
+
+
+@router.get(
+    "/{company_id}/entities/{entity_type}/mapping",
+    response_model=MappingViewResponse,
+)
+def get_entity_mapping(
+    company_id: str,
+    entity_type: str,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+) -> MappingViewResponse:
+    """The entity's current field mappings projected AutoCount→Sorento, plus the
+    source/target catalogs the editor's pickers need (AC-15-40).
+
+    Reuses ``autocount.companies.manage`` — the same "configure the company"
+    authority — so no new permission needs a grant sweep for existing tenants.
+    """
+    try:
+        view = CompanyService(db).mapping_view(
+            current_user.tenant_id, company_id, entity_type
+        )
+    except AutocountServiceError as exc:
+        _raise(exc)
+    return _mapping_response(view)
+
+
+@router.put(
+    "/{company_id}/entities/{entity_type}/mapping",
+    response_model=MappingViewResponse,
+)
+def replace_entity_mapping(
+    company_id: str,
+    entity_type: str,
+    body: MappingUpdateRequest,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+) -> MappingViewResponse:
+    """Replace the entity's deliverable field mappings (AC-15-41/42/43).
+
+    The server GUARDS every row: the Sorento target must be an accepted field
+    (else 422 naming it — a target Sorento would reject can never be stored), the
+    source path is non-blank and the transform is known. Provenance/watermark
+    rows are preserved; the write is seed-if-absent-safe (``update_tenant`` never
+    reverts an operator edit).
+    """
+    try:
+        view = CompanyService(db).replace_mapping(
+            current_user.tenant_id,
+            company_id,
+            entity_type,
+            [
+                MappingWriteRow(
+                    source_path=row.sourcePath,
+                    transform=row.transform,
+                    sorento_field=row.sorentoField,
+                )
+                for row in body.rows
+            ],
+        )
+    except AutocountServiceError as exc:
+        _raise(exc)
+    return _mapping_response(view)

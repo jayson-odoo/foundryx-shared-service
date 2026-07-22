@@ -13,7 +13,7 @@ never appear in any response (AC-13-42).
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from app.schemas.base import ApiModel
 
@@ -174,12 +174,109 @@ class StagedRecordItem(ApiModel):
     sourceLastModified: Optional[datetime] = Field(
         default=None, validation_alias="source_last_modified"
     )
+    # True when this record's diff has ANY changed field (AC-15-10). A first-sight
+    # record (``{"__new__": True}``) HAS changes; a no-op re-fetch (``{}``, only
+    # LastModified advanced) does not; a FAILED row (no diff) does not.
+    hasChanges: bool = False
+
+    @model_validator(mode="after")
+    def _derive_has_changes(self) -> "StagedRecordItem":
+        self.hasChanges = bool(self.diff)
+        return self
 
 
 class StagedListResponse(ApiModel):
+    """The staged-record review page (AC-15-10/11).
+
+    ``total`` is the WHOLE batch (every staged row), preserving its existing
+    meaning for the current review page; ``filteredTotal`` is the count matching
+    the ``changed`` filter (== ``total`` when unfiltered) for page math; and
+    ``noChangeCount`` lets the FE render the collapsed "N records with no field
+    changes" summary WITHOUT fetching those rows.
+    """
+
     job: SyncJobItem
     data: List[StagedRecordItem]
     total: int
+    page: int = 0
+    filteredTotal: int = 0
+    noChangeCount: int = 0
+
+
+# ── jobs / review list (plan 15 §2, AC-15-02) ─────────────────────────────────
+
+
+class SyncJobBatchItem(ApiModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    jobId: str = Field(validation_alias="job_id")
+    companyId: str = Field(validation_alias="company_id")
+    companyName: str = Field(validation_alias="company_name")
+    databaseName: str = Field(validation_alias="database_name")
+    entityType: str = Field(validation_alias="entity_type")
+    status: str
+    progressTotal: int = Field(default=0, validation_alias="progress_total")
+    progressDone: int = Field(default=0, validation_alias="progress_done")
+    progressFailed: int = Field(default=0, validation_alias="progress_failed")
+    createdAt: Optional[datetime] = Field(default=None, validation_alias="created_at")
+    startedAt: Optional[datetime] = Field(default=None, validation_alias="started_at")
+    finishedAt: Optional[datetime] = Field(default=None, validation_alias="finished_at")
+    updatedAt: Optional[datetime] = Field(default=None, validation_alias="updated_at")
+
+
+class SyncJobListResponse(ApiModel):
+    data: List[SyncJobBatchItem]
+    total: int
+    page: int = 0
+
+
+# ── field-mapping editor (plan 15 §2, AC-15-40..43) ───────────────────────────
+
+
+class MappingRowOut(ApiModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    sourcePath: str = Field(validation_alias="source_path")
+    transform: str
+    # None when the stored canonical field is not delivered to Sorento (identity /
+    # watermark provenance, or an extras key) — shown non-delivered (AC-15-40).
+    sorentoField: Optional[str] = Field(validation_alias="sorento_field")
+    canonicalField: str = Field(validation_alias="canonical_field")
+    scope: str
+    isRequired: bool = Field(validation_alias="is_required")
+    isEnabled: bool = Field(validation_alias="is_enabled")
+
+
+class SorentoFieldOut(ApiModel):
+    """One accepted Sorento target for the picker (AC-15-42) — offered set only."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    field: str
+    required: bool
+
+
+class MappingViewResponse(ApiModel):
+    entityType: str
+    rows: List[MappingRowOut]
+    # The accepted Sorento targets (the picker offers ONLY these) + known
+    # AutoCount source paths (discovery; a free dotted path is still allowed).
+    sorentoFields: List[SorentoFieldOut]
+    acFields: List[str]
+
+
+class MappingUpdateRow(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    sourcePath: str
+    transform: str = "string"
+    sorentoField: str
+
+
+class MappingUpdateRequest(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    rows: List[MappingUpdateRow]
 
 
 class SyncRunItem(ApiModel):

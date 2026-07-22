@@ -16,6 +16,7 @@ kind of bug.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -46,8 +47,10 @@ from ..models import (
     AcSyncRun,
 )
 from ..repositories import (
+    CompanyRepository,
     EntityConfigRepository,
     StagedRecordRepository,
+    SyncJobRepository,
     SyncRunRepository,
 )
 from ..sinks import EntitySink, WriteResult
@@ -90,13 +93,46 @@ class PreviewFailed(AutocountServiceError):
     must never approve blind (plan §D4). Nothing was written either way."""
 
 
+# The Review list's status segments (plan 15 §2, AC-15-02) → the job status they
+# filter on. ``all`` = no status filter. Anything else is a clean 422, never a
+# silent empty list.
+JOB_STATUS_FILTERS: Dict[str, Optional[str]] = {
+    "all": None,
+    "needs_review": JOB_NEEDS_REVIEW,
+    "done": JOB_DONE,
+}
+
+
+@dataclass
+class JobBatch:
+    """One sync batch for the Review list (AC-15-02). Flat + snake_cased so
+    ``SyncJobBatchItem.model_validate`` maps it straight through
+    ``from_attributes``."""
+
+    job_id: str
+    company_id: str
+    company_name: str
+    database_name: str
+    entity_type: str
+    status: str
+    progress_total: int
+    progress_done: int
+    progress_failed: int
+    created_at: Optional[datetime]
+    started_at: Optional[datetime]
+    finished_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+
 class SyncService:
     def __init__(self, db: Session):
         self.db = db
         self.companies = CompanyService(db)
+        self.company_repo = CompanyRepository(db)
         self.configs = EntityConfigRepository(db)
         self.staged = StagedRecordRepository(db)
         self.runs = SyncRunRepository(db)
+        self.sync_jobs = SyncJobRepository(db)
         self.jobs = JobService(db)
 
     # ── trigger ──────────────────────────────────────────────────────────────
@@ -184,6 +220,95 @@ class SyncService:
         return self.runs.list(
             tenant_id, company_id, entity_type=entity_type, page=page, page_size=page_size
         )
+
+    def list_jobs(
+        self,
+        tenant_id: str,
+        *,
+        status: str = "all",
+        entity_type: Optional[str] = None,
+        page: int = 0,
+        page_size: int = 25,
+    ) -> Tuple[List[JobBatch], int]:
+        """The Review list — sync batches for THIS tenant, newest first (AC-15-02).
+
+        Reads core ``background_jobs`` filtered to ``type='autocount_sync'`` and
+        the caller's tenant (never client input), paginated at the DB level (no
+        unbounded fetch). Company labels are batch-joined from ``ac_company`` in
+        ONE tenant-scoped query, so a page never fans out per row.
+        """
+        if status not in JOB_STATUS_FILTERS:
+            raise AutocountServiceError(
+                f"Unknown status filter '{status}'. Choose "
+                f"{', '.join(JOB_STATUS_FILTERS)}."
+            )
+        jobs, total = self.sync_jobs.list(
+            tenant_id,
+            AUTOCOUNT_SYNC,
+            status=JOB_STATUS_FILTERS[status],
+            entity_type=entity_type,
+            page=page,
+            page_size=page_size,
+        )
+        company_ids = [self._company_id_for(job) for job in jobs]
+        companies = self.company_repo.get_map(tenant_id, company_ids)
+
+        batches: List[JobBatch] = []
+        for job in jobs:
+            company_id = self._company_id_for(job)
+            company = companies.get(company_id)
+            batches.append(
+                JobBatch(
+                    job_id=job.id,
+                    company_id=company_id,
+                    # A company hard-deleted after its job ran leaves the label
+                    # blank rather than 500-ing the whole list.
+                    company_name=(company.name if company else ""),
+                    database_name=(company.database_name if company else ""),
+                    entity_type=self._entity_type_for(job),
+                    status=job.status,
+                    progress_total=job.progress_total or 0,
+                    progress_done=job.progress_done or 0,
+                    progress_failed=job.progress_failed or 0,
+                    created_at=job.created_at,
+                    started_at=job.started_at,
+                    finished_at=job.finished_at,
+                    # There is no ``updated_at`` column on ``background_jobs``;
+                    # the most-recent activity is the last lifecycle stamp.
+                    updated_at=job.finished_at or job.started_at or job.created_at,
+                )
+            )
+        return batches, total
+
+    def staged_page(
+        self,
+        tenant_id: str,
+        job_id: str,
+        *,
+        changed: Optional[bool] = None,
+        page: int = 0,
+        page_size: int = 25,
+    ) -> Tuple[BackgroundJob, List[AcStagedRecord], int, int, int]:
+        """A PAGE of a job's staged records + counts (AC-15-10/11).
+
+        Returns ``(job, rows, batch_total, filtered_total, no_change_count)``.
+        Company scope comes from the JOB's payload, never from client input (a
+        caller cannot ask for another company's staged rows). ``changed`` filters
+        to the records whose mapped fields did (``True``) or did not (``False``)
+        change; the counts let the FE render the collapsed "N records with no
+        field changes" summary without fetching them all.
+        """
+        job = self._job(tenant_id, job_id)
+        company_id = self._company_id_for(job)
+        rows, batch_total, filtered_total, no_change = self.staged.page_for_job(
+            tenant_id,
+            company_id,
+            job_id,
+            changed=changed,
+            page=page,
+            page_size=page_size,
+        )
+        return job, rows, batch_total, filtered_total, no_change
 
     # ── approve / discard ────────────────────────────────────────────────────
 
