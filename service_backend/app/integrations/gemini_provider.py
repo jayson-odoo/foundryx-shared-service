@@ -115,6 +115,14 @@ class GeminiProvider(LLMProviderBase):
         if output_schema is not None:
             generation["responseMimeType"] = "application/json"
             generation["responseSchema"] = to_gemini_schema(output_schema)
+            # CRITICAL (live-verified): gemini-2.5-flash with thinking ON runs
+            # away on structured extraction — it restates the transcript as
+            # "thoughts" until it hits maxOutputTokens, returns finishReason=
+            # MAX_TOKENS and a TRUNCATED JSON fragment. Disabling thinking on
+            # structured calls yields a clean STOP + valid JSON in ~a hundred
+            # tokens. Non-2.5 models simply ignore thinkingConfig, so this is
+            # safe to always send on a structured call.
+            generation["thinkingConfig"] = {"thinkingBudget": 0}
 
         body: Dict[str, Any] = {
             "contents": [
@@ -149,6 +157,15 @@ class GeminiProvider(LLMProviderBase):
         finish_reason = candidates[0].get("finishReason")
 
         if output_schema is not None:
+            # A truncated response is NEVER valid structured output — refuse it
+            # cleanly rather than blind-`json.loads`-ing a fragment (which would
+            # 500 on a parse crash or, worse, parse a partial object). The grill's
+            # `_complete_traced` turns this LLMError into an `error` trace.
+            if finish_reason == "MAX_TOKENS":
+                raise LLMError(
+                    "The model's structured response was cut off at the token "
+                    "limit — try again."
+                )
             try:
                 structured = json.loads(content)
             except ValueError as exc:

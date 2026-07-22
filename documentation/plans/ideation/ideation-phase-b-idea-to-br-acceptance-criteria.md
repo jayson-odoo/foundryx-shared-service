@@ -138,6 +138,13 @@ Format: each AC is independently verifiable (Given / When / Then). Grouped by sl
 - **Given** the definition, **then** the target template's field list is **injected into the prompt at runtime** (AC-BI-08), so ONE `grill-me-business` skill serves every target.
 - **Given** the engine, **then** it mirrors Phase A's `IntakeDefinition` (D18) one layer up — same registry-driven shape.
 
+### AC-BI-20b — a default grill agent is auto-seeded per tenant [BE][T]
+*(Added 2026-07-22 — resolves the deferred "which agent runs the grill?" question. Zero-config is the requirement.)*
+- **Given** the ideation module installs for a tenant, **then** a default agent **"Ideation grill"** is seeded (insert-if-missing), bound to the resolved LLM connection (`resolve_for_type(tenant,'llm')` → tenant's own, else the platform connection) + the seeded `grill-me-business` skill, pinned to model **`gemini-2.5-flash`**.
+- **Given** no LLM connection exists anywhere at install time, **then** the agent is still seeded but its connection is unresolved, and the Grill tab shows the **"no AI connection configured"** prerequisite warning (AC-BI-11) — grilling lights up the moment a platform (or tenant) LLM key is added, no re-seed needed.
+- **Given** the `GrillDefinition` for Idea→BR, **then** it points at this seeded agent by default; the tenant may edit or swap the agent on the agents surface afterward (the seed is a starting point, not a lock).
+- **Given** re-install / re-seed, **then** it is insert-if-missing — an operator's edits to the agent survive.
+
 ### AC-BI-21 — transcript store [BE][T]
 - **Given** a grill session, **then** `ai_conversations` binds `(tenant_id, source_type, source_ids[], target_type, target_id)` and `ai_messages` records role, content, timestamp.
 - **Given** a completed turn, **then** the conversation stamps the `(prompt_version, template_version)` it ran under, so a poor BR is attributable to a specific prompt version.
@@ -157,6 +164,12 @@ Format: each AC is independently verifiable (Given / When / Then). Grouped by sl
 - **Given** **Generate**, **then** a **second, distinct** call runs with the **whole transcript + source ideas** as input and provider-native **structured output** shaped by the target template's fields.
 - **Given** extraction output, **then** it is validated by **`form_engine`** before persistence.
 - **Given** extraction sees the full conversation at once, **then** a later answer correctly **revises** an earlier one (this is why extraction is not incremental per-turn).
+
+### AC-BI-24b — extraction validation ignores `required`; the turn is one structured call [BE][T]
+*(Added 2026-07-22 during the S3 audit — two forced clarifications so AC-BI-24/25/26 are mutually consistent.)*
+- **Given** extraction re-validates the structured output, **then** it runs `validate_submission` for **type / format / choice-membership only** and does **NOT** enforce `required` — a legitimately-blank required field (e.g. `success_metric`) is left blank, never a 422 (AC-BI-26's partial-emit contract). `required` is enforced **only** at the promote completeness gate (AC-BI-34), which is a separate check. Implement via an `enforce_required=False` path (or a wrapper that filters required-only errors) — do not weaken the promote gate.
+- **Given** a grill turn, **then** it is **one structured LLM call** whose output schema is `{replyText: string, coveredFields: string[]}` — the prose reply and the coverage map come back together in a single call per turn (not a separate extraction pass), so "N of M captured" is accurate and cheap. `coveredFields` are answer-keys of the target template the transcript has grounded so far.
+- **Given** the trace/observability contract, **then** each `AiClient.complete` call inside the grill (turn AND extraction) is wrapped so the trace+spans are **committed even on the error path** — the caller catches `LLMError`, commits (to persist the flushed trace), then surfaces a clean error. A failed run MUST leave an `error` trace behind (AC-BI-09); it must never be rolled back by the request teardown.
 
 ### AC-BI-25 — validation failure → one retry, then human [BE][T]
 - **Given** extraction output that fails `form_engine` validation, **then** exactly **one** retry runs with the validation errors fed back.

@@ -122,6 +122,14 @@ class OpenAIProvider(LLMProviderBase):
         resolved_model = str(payload.get("model") or model)
 
         if output_schema is not None:
+            # A truncated response ("length" = hit max_completion_tokens) is
+            # never valid structured output — refuse cleanly, never blind-parse a
+            # fragment (defense: a runaway model must produce an LLMError).
+            if finish_reason == "length":
+                raise LLMError(
+                    "The model's structured response was cut off at the token "
+                    "limit — try again."
+                )
             try:
                 structured = json.loads(content)
             except ValueError as exc:

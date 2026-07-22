@@ -9,6 +9,18 @@ The public surface every consumer uses:
 - `stub_fixtures(...)` — script the deterministic stub adapter in a test.
 """
 from app.ai.client import AiClient, ResolvedConnection, any_llm_connection, resolve_for_agent
+from app.ai.grill import (
+    GrillContext,
+    GrillDefinition,
+    GrillEngine,
+    GrillError,
+    GrillState,
+    GenerateResult,
+    TurnResult,
+    get_grill_definition,
+    register_grill_definition,
+    set_definition_target_type,
+)
 from app.ai.prompt import compose, field_schema
 from app.ai.retention import prune_traces
 from app.ai.stub import (
@@ -28,6 +40,16 @@ __all__ = [
     "ResolvedConnection",
     "any_llm_connection",
     "resolve_for_agent",
+    "GrillContext",
+    "GrillDefinition",
+    "GrillEngine",
+    "GrillError",
+    "GrillState",
+    "GenerateResult",
+    "TurnResult",
+    "get_grill_definition",
+    "register_grill_definition",
+    "set_definition_target_type",
     "compose",
     "field_schema",
     "prune_traces",

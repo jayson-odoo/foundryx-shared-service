@@ -113,6 +113,14 @@ class AnthropicProvider(LLMProviderBase):
         blocks = payload.get("content") or []
 
         if output_schema is not None:
+            # A truncated response ("max_tokens") means the tool_use input JSON
+            # was cut off — refuse cleanly rather than accept a partial object
+            # (defense: a runaway model must produce an LLMError, not bad data).
+            if payload.get("stop_reason") == "max_tokens":
+                raise LLMError(
+                    "The model's structured response was cut off at the token "
+                    "limit — try again."
+                )
             for block in blocks:
                 if block.get("type") == "tool_use" and block.get("name") == _EMIT_TOOL:
                     structured = block.get("input")

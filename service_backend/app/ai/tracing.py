@@ -185,6 +185,52 @@ class TraceWriter:
         return trace
 
 
+def append_span(
+    db: Session,
+    trace: AiTrace,
+    *,
+    span_kind: str,
+    name: str = "",
+    input_json: Optional[Any] = None,
+    output_json: Optional[Any] = None,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
+    latency_ms: int = 0,
+    status: str = TRACE_STATUS_OK,
+    error: Optional[str] = None,
+) -> AiSpan:
+    """Append ONE step to an already-written trace (the grill's ``validate`` /
+    ``retry`` spans, AC-BI-25).
+
+    ``AiClient.complete`` owns the ``llm_call`` span; the grill engine adds the
+    validate/retry steps around it onto the SAME trace so the flat step list is
+    the full run. Flush only — the caller owns the commit (the grill runs the
+    whole turn/extract in one transaction). ``span_count`` is bumped so the trace
+    total never drifts from its spans.
+    """
+    order = str((trace.span_count or 0) + 1)
+    span = AiSpan(
+        tenant_id=trace.tenant_id,
+        trace_id=trace.id,
+        parent_id=None,
+        dotted_order=order,
+        span_kind=span_kind,
+        name=name or span_kind,
+        input_json=cap_payload(input_json),
+        output_json=cap_payload(output_json),
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        latency_ms=latency_ms,
+        status=status,
+        error=error,
+        started_at=_now(),
+    )
+    db.add(span)
+    trace.span_count = (trace.span_count or 0) + 1
+    db.flush()
+    return span
+
+
 def llm_span_payload(
     *, system: str, messages: List[Dict[str, str]], output_schema: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
@@ -198,6 +244,7 @@ def llm_span_payload(
 
 __all__ = [
     "TraceWriter",
+    "append_span",
     "cap_payload",
     "llm_span_payload",
     "MAX_PAYLOAD_CHARS",

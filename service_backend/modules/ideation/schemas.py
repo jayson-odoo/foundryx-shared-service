@@ -218,6 +218,64 @@ class BrStatusIn(ApiModel):
     status: str
 
 
+# ── Grill (Phase B-i slice 3, AC-BI-20..29) ──────────────────────────────────
+
+
+class GrillFieldOut(ApiModel):
+    """One target field the grill drives toward (key + display label)."""
+
+    key: str
+    label: str
+
+
+class GrillMessageOut(ApiModel):
+    """One transcript turn (AC-BI-21). ``coveredFields`` is the assistant turn's
+    coverage map (empty for user turns)."""
+
+    id: str
+    role: str
+    content: str
+    coveredFields: List[str] = []
+    createdAt: datetime
+
+
+class GrillStateOut(ApiModel):
+    """The Grill tab's snapshot: readiness + fields + transcript + coverage.
+    ``ready``/``warning`` carry the prerequisite state (AC-BI-11)."""
+
+    ready: bool
+    warning: Optional[str] = None
+    agentName: str
+    fields: List[GrillFieldOut] = []
+    messages: List[GrillMessageOut] = []
+    coveredFields: List[str] = []
+
+
+class GrillTurnIn(ApiModel):
+    """One human turn."""
+
+    message: str
+
+
+class GrillTurnOut(ApiModel):
+    """The turn response (AC-BI-22/24b): prose reply + the coverage map, from ONE
+    structured call."""
+
+    replyText: str
+    coveredFields: List[str] = []
+
+
+class GrillGenerateOut(ApiModel):
+    """The Generate result. ``status='ok'`` → ``br`` carries the updated detail
+    (Details tab refreshes); ``status='needs_review'`` → ``fieldErrors`` after a
+    failed extraction + one retry (AC-BI-25), the BR is left unchanged."""
+
+    status: Literal["ok", "needs_review"]
+    br: Optional[BusinessRequirementDetailOut] = None
+    answers: Dict[str, Any] = {}
+    fieldErrors: Dict[str, str] = {}
+
+
 class CreateIdeaIn(ApiModel):
     """``create_idea`` intake input (§5.1, AC-A-17) — **snake_case, byte-for-byte**.
 

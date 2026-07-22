@@ -11,6 +11,7 @@ import type { BusinessRequirementDetail } from '@/types/business-requirement';
 import type { FormAnswers } from '@/types/forms';
 import { BR_PATH, brFormHref } from './paths';
 import { BrDetailsTab } from './br-details-tab';
+import { BrGrillTab } from './br-grill-tab';
 import { BrIdeasTab } from './br-ideas-tab';
 import { BrVersionsTab } from './br-versions-tab';
 import { BrPlaceholderTab } from './br-placeholder-tab';
@@ -97,6 +98,15 @@ export function useBrForm(brId: string, initialEditing: boolean): UseBrFormResul
     }
   }, [br]);
 
+  // After a grill Generate the BR's answers are freshly persisted — reflect them
+  // in the Details tab (the load/setAnswers seam). The BR stays draft (AC-BI-27).
+  const onGrillGenerated = useCallback((updated: BusinessRequirementDetail) => {
+    setBr(updated);
+    setTitle(updated.title);
+    setAnswers(updated.answers ?? {});
+    toast.success('Requirement generated from the grill.');
+  }, []);
+
   const config = useMemo<ResourceFormConfig<BusinessRequirementDetail> | null>(() => {
     if (!br) return null;
 
@@ -149,7 +159,7 @@ export function useBrForm(brId: string, initialEditing: boolean): UseBrFormResul
           id: 'grill',
           label: 'Grill',
           icon: MessageSquare,
-          render: () => <BrPlaceholderTab label="Available after grilling." />,
+          render: () => <BrGrillTab brId={brId} onGenerated={onGrillGenerated} />,
         },
         {
           id: 'ideas',
@@ -191,7 +201,19 @@ export function useBrForm(brId: string, initialEditing: boolean): UseBrFormResul
         buildHref: (recordId, ctx, index) => brFormHref(recordId, { ctx, index }),
       },
     };
-  }, [answers, br, brId, ideasToken, initialEditing, isDirty, onCancel, onSave, router, title]);
+  }, [
+    answers,
+    br,
+    brId,
+    ideasToken,
+    initialEditing,
+    isDirty,
+    onCancel,
+    onGrillGenerated,
+    onSave,
+    router,
+    title,
+  ]);
 
   return { config, isLoading, notFound };
 }

@@ -99,6 +99,13 @@ def register_engine_entities() -> None:
 
     register_ideation_intake()
 
+    # Grill engine (Phase B-i slice 3, AC-BI-20): register the Idea → BR
+    # GrillDefinition (instance one). Adding BR → FR later is a new definition
+    # row, not new engine code.
+    from .services.grill import register_idea_to_br_grill
+
+    register_idea_to_br_grill()
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""
@@ -126,6 +133,11 @@ def install(engine: Engine, db: Session) -> None:
     # (Phase B-i slice 2, AC-BI-15/16). Idempotent + insert-if-missing.
     seed_br_statuses(db)
     seed_br_template(db)
+    # The platform-tier grill-me-business skill (Phase B-i slice 3, AC-BI-28).
+    # Insert-if-missing — an operator's edits survive a reseed.
+    from .services.grill_seed import seed_grill_skill
+
+    seed_grill_skill(db)
 
 
 def install_tenant(db: Session, tenant_id: str) -> None:
@@ -133,8 +145,14 @@ def install_tenant(db: Session, tenant_id: str) -> None:
 
     Later slices seed the tenant's Idea status set + the ``ideation``
     IntakeDefinition binding + register the ``software`` product-kind here
-    (AC-A-03). The scaffold slice has no per-tenant artifacts to seed."""
-    return None
+    (AC-A-03). The scaffold slice has no per-tenant artifacts to seed.
+
+    Phase B-i slice 3 (AC-BI-20b): auto-seed the default ``Ideation grill`` agent
+    (insert-if-missing) so grilling is zero-config. If no LLM connection resolves
+    yet it is seeded connectionless and lights up when a key is later added."""
+    from .services.grill_seed import seed_grill_agent
+
+    seed_grill_agent(db, tenant_id)
 
 
 def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:

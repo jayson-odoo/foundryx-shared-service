@@ -327,6 +327,14 @@ class AgentService:
 
     def delete(self, tenant_id: str, agent_id: str) -> None:
         agent = self._get_or_404(tenant_id, agent_id)
+        # System-seeded agents (e.g. the grill's "ideation-grill") are delete-
+        # locked — a consumer binds to them by key (mirrors AiSkill.is_system).
+        # Name/model/skills stay editable (AC-BI-20b).
+        if agent.is_system:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "This is a system agent and cannot be deleted.",
+            )
         self.repo.delete(agent)
         self.db.commit()
 

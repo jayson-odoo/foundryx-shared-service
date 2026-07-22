@@ -163,6 +163,86 @@ def test_gemini_schema_downconversion_strips_unsupported_keys():
     assert converted["required"] == ["a"]
 
 
+def test_gemini_disables_thinking_on_structured_calls(monkeypatch):
+    """CRITICAL (S3 live bug): gemini-2.5-flash runs away on structured
+    extraction with thinking ON. The adapter must send
+    `generationConfig.thinkingConfig.thinkingBudget=0` on any structured call."""
+    import app.integrations.gemini_provider as gp
+
+    captured = {}
+
+    def fake_http(method, url, *, headers=None, json_body=None, timeout=None):
+        captured["body"] = json_body
+        return {
+            "candidates": [
+                {"content": {"parts": [{"text": '{"summary": "x"}'}]}, "finishReason": "STOP"}
+            ],
+            "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 4},
+        }
+
+    monkeypatch.setattr(gp, "_http_json", fake_http)
+    gp.GeminiProvider().complete(
+        {},
+        {"apiKey": "x"},
+        model="gemini-2.5-flash",
+        system="s",
+        messages=[{"role": "user", "content": "hi"}],
+        output_schema={"type": "object", "properties": {"summary": {"type": "string"}}},
+    )
+    thinking = captured["body"]["generationConfig"].get("thinkingConfig")
+    assert thinking == {"thinkingBudget": 0}
+
+
+@pytest.mark.parametrize(
+    "provider_key, provider_module, payload",
+    [
+        (
+            "gemini",
+            "app.integrations.gemini_provider",
+            {
+                "candidates": [
+                    {"content": {"parts": [{"text": '{"summary": "partia'}]}, "finishReason": "MAX_TOKENS"}
+                ],
+                "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 4096},
+            },
+        ),
+        (
+            "openai",
+            "app.integrations.openai_provider",
+            {
+                "choices": [{"message": {"content": '{"summary": "partia'}, "finish_reason": "length"}],
+                "usage": {},
+                "model": "gpt-4o",
+            },
+        ),
+        (
+            "anthropic",
+            "app.integrations.anthropic_provider",
+            {"content": [], "stop_reason": "max_tokens", "usage": {}},
+        ),
+    ],
+)
+def test_truncated_structured_response_raises_clean_llmerror(
+    provider_key, provider_module, payload, monkeypatch
+):
+    """A runaway/truncated structured body → a clean LLMError, NEVER a raw
+    json.loads crash on a fragment (defense; the grill turns this into an error
+    trace). Covers all three adapters."""
+    import importlib
+
+    module = importlib.import_module(provider_module)
+    monkeypatch.setattr(module, "_http_json", lambda *a, **k: payload)
+    with pytest.raises(LLMError):
+        get_provider(provider_key).complete(
+            {},
+            {"apiKey": "x"},
+            model="m",
+            system="s",
+            messages=[{"role": "user", "content": "hi"}],
+            output_schema={"type": "object", "properties": {"summary": {"type": "string"}}},
+        )
+
+
 # ── AC-BI-03b: the `llm` one-per-type carve-out ──────────────────────────
 
 

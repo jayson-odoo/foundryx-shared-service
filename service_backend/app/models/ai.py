@@ -109,14 +109,33 @@ class AiAgent(Base):
     __tablename__ = "ai_agents"
     __table_args__ = (
         Index("ix_ai_agents_tenant_name", "tenant_id", "name"),
+        # One agent per (tenant, key) — only where a key is set (system agents).
+        Index(
+            "uq_ai_agents_tenant_key",
+            "tenant_id",
+            "key",
+            unique=True,
+            postgresql_where=Column("key").isnot(None),
+            sqlite_where=Column("key").isnot(None),
+        ),
     )
 
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(
         String, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # A STABLE code key for system-seeded agents (mirrors AiSkill.key/is_system).
+    # The display `name` is freely editable (AC-BI-20b); a consumer that must
+    # resolve a specific seeded agent (the grill's "ideation-grill") binds by
+    # THIS key, never by the mutable name (the hardcode-a-tenant-editable-value
+    # trap). NULL for user-created agents; a partial unique index scopes it per
+    # tenant only when set.
+    key = Column(String, nullable=True, index=True)
     name = Column(String, nullable=False)
     description = Column(Text, nullable=False, default="")
+    # Seeded system agents: `key` is locked + delete-blocked (name/model/skills
+    # stay editable, AC-BI-20b). Mirrors AiSkill.is_system.
+    is_system = Column(Boolean, nullable=False, default=False)
     # The LLM credential (Bi-D1/Bi-D3). RESTRICT would strand the UI, so the
     # column nulls out on delete and the agent then surfaces the missing-
     # prerequisite warning (AC-BI-06) instead of failing silently at run time.

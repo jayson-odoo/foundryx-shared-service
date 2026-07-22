@@ -4,12 +4,21 @@ Skills are TWO-TIER (the template-engine pattern): a platform-tier row carries
 `tenant_id IS NULL` and is visible to every tenant; a tenant's own row wins over
 a platform row with the same key.
 """
+from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.models.ai import AiAgent, AiSkill, AiSkillVersion, AiSpan, AiTrace
+from app.models.ai import (
+    AiAgent,
+    AiConversation,
+    AiMessage,
+    AiSkill,
+    AiSkillVersion,
+    AiSpan,
+    AiTrace,
+)
 
 _AGENT_SORT_COLUMNS = {
     "name": AiAgent.name,
@@ -80,6 +89,15 @@ class AgentRepository:
         return (
             self.db.query(AiAgent)
             .filter(AiAgent.tenant_id == tenant_id, AiAgent.name == name)
+            .first()
+        )
+
+    def get_by_key(self, tenant_id: str, key: str) -> Optional[AiAgent]:
+        """Resolve a system-seeded agent by its STABLE key (AC-BI-20b) — survives
+        a display-name rename, unlike ``get_by_name``."""
+        return (
+            self.db.query(AiAgent)
+            .filter(AiAgent.tenant_id == tenant_id, AiAgent.key == key)
             .first()
         )
 
@@ -200,6 +218,117 @@ class SkillRepository:
         self.db.add(version)
         self.db.flush()
         return version
+
+
+class ConversationRepository:
+    """The grill transcript store (AC-BI-21). Pure SQLAlchemy, tenant-scoped,
+    FLUSH-ONLY — the grill engine owns the single commit that keeps a turn atomic
+    (user message + assistant message + trace land together; a provider error
+    never leaves a half-written turn, AC-BI-23)."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_for_target(
+        self,
+        tenant_id: str,
+        *,
+        target_type: str,
+        target_id: str,
+        grill_definition_key: str,
+    ) -> Optional[AiConversation]:
+        return (
+            self.db.query(AiConversation)
+            .filter(
+                AiConversation.tenant_id == tenant_id,
+                AiConversation.target_type == target_type,
+                AiConversation.target_id == target_id,
+                AiConversation.grill_definition_key == grill_definition_key,
+            )
+            .order_by(AiConversation.created_at.asc(), AiConversation.id.asc())
+            .first()
+        )
+
+    def get_or_create_for_target(
+        self,
+        tenant_id: str,
+        *,
+        target_type: str,
+        target_id: str,
+        grill_definition_key: str,
+        source_type: Optional[str] = None,
+        source_ids: Optional[List[str]] = None,
+        prompt_version: Optional[int] = None,
+        template_version: Optional[int] = None,
+    ) -> AiConversation:
+        """The durable grill anchor: one conversation per (tenant, target,
+        definition). Returns the existing row (a resumed session, AC-BI-21) or
+        creates it. ``source_ids`` are refreshed each call so ideas linked
+        mid-session re-seed the context on the NEXT turn (AC-BI-33)."""
+        convo = self.get_for_target(
+            tenant_id,
+            target_type=target_type,
+            target_id=target_id,
+            grill_definition_key=grill_definition_key,
+        )
+        if convo is None:
+            convo = AiConversation(
+                tenant_id=tenant_id,
+                source_type=source_type,
+                source_ids_json=list(source_ids or []),
+                target_type=target_type,
+                target_id=target_id,
+                grill_definition_key=grill_definition_key,
+                prompt_version=prompt_version,
+                template_version=template_version,
+            )
+            self.db.add(convo)
+            self.db.flush()
+            return convo
+        # Refresh the source set + the (prompt, template) stamp it last ran under.
+        if source_ids is not None:
+            convo.source_ids_json = list(source_ids)
+        if source_type is not None:
+            convo.source_type = source_type
+        if prompt_version is not None:
+            convo.prompt_version = prompt_version
+        if template_version is not None:
+            convo.template_version = template_version
+        self.db.flush()
+        return convo
+
+    def messages(self, conversation_id: str) -> List[AiMessage]:
+        return (
+            self.db.query(AiMessage)
+            .filter(AiMessage.conversation_id == conversation_id)
+            .order_by(AiMessage.created_at.asc(), AiMessage.id.asc())
+            .all()
+        )
+
+    def add_message(
+        self,
+        *,
+        conversation_id: str,
+        tenant_id: str,
+        role: str,
+        content: str,
+        covered_fields: Optional[List[str]] = None,
+    ) -> AiMessage:
+        message = AiMessage(
+            conversation_id=conversation_id,
+            tenant_id=tenant_id,
+            role=role,
+            content=content or "",
+            covered_fields_json=list(covered_fields) if covered_fields is not None else None,
+            # Stamp wall-clock microsecond time — NOT ``func.now()`` (transaction
+            # time in Postgres, identical for both turns of one grill turn, which
+            # would make transcript order ambiguous). Successive appends get
+            # distinct timestamps so ``ORDER BY created_at`` is insert order.
+            created_at=datetime.now(timezone.utc),
+        )
+        self.db.add(message)
+        self.db.flush()
+        return message
 
 
 class TraceRepository:
