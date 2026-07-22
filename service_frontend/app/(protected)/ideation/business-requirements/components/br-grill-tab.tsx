@@ -11,6 +11,9 @@ export interface BrGrillTabProps {
   /** Called after a successful Generate so the Details tab reflects the new
    * answers (the use-br-form load/setAnswers seam). */
   onGenerated?: (br: BusinessRequirementDetail) => void;
+  /** True when the BR has ≥1 linked idea → auto-open the grill once (AC-BI-29b).
+   * A BR with no linked idea never auto-opens. */
+  hasLinkedIdeas?: boolean;
 }
 
 /**
@@ -18,8 +21,8 @@ export interface BrGrillTabProps {
  * shell's breadcrumb / record-nav / permissions. Shows the prerequisite warning
  * when no AI connection is configured (AC-BI-11); otherwise the conversation.
  */
-export function BrGrillTab({ brId, onGenerated }: BrGrillTabProps) {
-  const grill = useGrill(brId, { onGenerated });
+export function BrGrillTab({ brId, onGenerated, hasLinkedIdeas = false }: BrGrillTabProps) {
+  const grill = useGrill(brId, { onGenerated, autoOpen: hasLinkedIdeas });
 
   if (grill.isLoading) {
     return (

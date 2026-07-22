@@ -264,6 +264,72 @@ def test_link_ideas_many_many_and_lineage(ideation_client):
     assert counts[br1["id"]] == 2
 
 
+def test_promote_absorbs_single_idea_warm_start(ideation_client):
+    """AC-BI-32b: promoting one idea derives the BR title from the idea's problem
+    and pre-fills problem_statement (coverage opens at 1/6), never "Untitled BR"
+    at 0/6. The fuzzier idea fields are NOT hardcode-mapped."""
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    idea = _idea(
+        ideation_client, h, pid, "CSV export times out for large accounts"
+    )
+    res = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid, "ideaIds": [idea]},
+    )
+    assert res.status_code == 201, res.text
+    br = res.json()
+    assert br["title"] == "CSV export times out for large accounts"
+    assert br["title"] != "Untitled BR"
+    assert br["answers"]["problem_statement"] == (
+        "CSV export times out for large accounts"
+    )
+    # Only problem_statement pre-fills — the other fields stay blank for the grill.
+    assert "business_goal" not in br["answers"]
+    assert "success_metric" not in br["answers"]
+
+
+def test_promote_cluster_label_becomes_title(ideation_client):
+    """AC-BI-32b: an explicit title (the cluster label) wins over the derived one,
+    and problem_statement still pre-fills from the ideas' problems."""
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    idea_a = _idea(ideation_client, h, pid, "checkout is slow")
+    idea_b = _idea(ideation_client, h, pid, "payment page takes forever")
+    res = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={
+            "productId": pid,
+            "title": "Slow checkout & payment",
+            "ideaIds": [idea_a, idea_b],
+        },
+    )
+    assert res.status_code == 201, res.text
+    br = res.json()
+    assert br["title"] == "Slow checkout & payment"
+    # Multiple ideas → the joined problem text.
+    ps = br["answers"]["problem_statement"]
+    assert "checkout is slow" in ps and "payment page takes forever" in ps
+
+
+def test_manual_create_without_ideas_unchanged(ideation_client):
+    """AC-BI-32b: the manual-dialog path (no ideaIds) is untouched — a blank title
+    stays blank, no problem_statement is invented."""
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    res = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid},
+    )
+    assert res.status_code == 201, res.text
+    br = res.json()
+    assert br["title"] == ""
+    assert br["answers"] == {}
+
+
 def test_link_cross_product_idea_refused(ideation_client):
     h = _auth(ideation_client)
     pid1 = _product(ideation_client, h, "Product One")

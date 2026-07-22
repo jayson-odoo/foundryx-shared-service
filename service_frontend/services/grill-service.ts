@@ -12,6 +12,11 @@ import { realGrillService } from './grill-service.real';
 export interface GrillService {
   /** The transcript + coverage + readiness for a BR's grill (AC-BI-29). */
   state(brId: string): Promise<GrillState>;
+  /** Fire the opening turn on a fresh promoted BR (AC-BI-29b): the agent greets +
+   * summarizes the absorbed idea(s) + asks its first question, with NO user
+   * message. Idempotent on the server (an opened transcript returns its latest
+   * reply). */
+  open(brId: string): Promise<GrillTurn>;
   /** Send one human turn → prose reply + coverage map (AC-BI-24b). Synchronous. */
   turn(brId: string, message: string): Promise<GrillTurn>;
   /** Extract answers from the whole transcript → persist (BR stays draft). */

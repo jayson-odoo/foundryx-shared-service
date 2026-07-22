@@ -14,7 +14,7 @@ Load-bearing rules enforced here:
 - **Lifecycle rides the status engine (Bi-D3):** every status move goes through
   ``status_machine.transition`` (no hardcoded status-key branch).
 """
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -34,6 +34,20 @@ from app.services.status_machine import (
 )
 
 BR_PROMOTE_PERMISSION = "ideation.business_requirements.promote"
+
+# Warm-start title cap (AC-BI-32b) — a derived title truncates on a word
+# boundary so a promoted BR never carries a runaway problem string as its name.
+_TITLE_MAX = 80
+
+
+def _truncate_title(text: str) -> str:
+    """Collapse whitespace + truncate to a sensible title length on a word
+    boundary (AC-BI-32b) — never "Untitled BR" when an idea's problem exists."""
+    text = " ".join((text or "").split())
+    if len(text) <= _TITLE_MAX:
+        return text
+    cut = text[:_TITLE_MAX].rsplit(" ", 1)[0].rstrip()
+    return (cut or text[:_TITLE_MAX]) + "…"
 
 
 def _field_labels(doc: Dict) -> Dict[str, str]:
@@ -326,19 +340,36 @@ class BusinessRequirementService:
         if initial_id is None:
             raise HTTPException(422, "Business Requirement statuses are not seeded.")
 
+        # Warm start (AC-BI-32b): a promote (idea_ids present) ABSORBS the idea —
+        # derive a real title + pre-fill problem_statement so the BR opens titled
+        # at 1/6 coverage, not "Untitled BR" at 0/6. The manual-dialog path (no
+        # idea_ids) is unchanged: an explicit or blank title, no pre-fill.
+        resolved_title = (title or "").strip()
+        resolved_answers: Dict = dict(answers or {})
+        if idea_ids:
+            derived_title, derived_problem = self._absorb_ideas(tenant_id, idea_ids)
+            if not resolved_title:
+                resolved_title = derived_title
+            existing_problem = str(resolved_answers.get("problem_statement") or "").strip()
+            if derived_problem and not existing_problem:
+                resolved_answers["problem_statement"] = derived_problem
+
         br = BusinessRequirement(
             tenant_id=tenant_id,
             product_id=product_id,
             status_id=initial_id,
             template_key=BR_TEMPLATE_KEY,
             template_version=version,
-            title=(title or "").strip(),
+            title=resolved_title,
             answers_json=None,
             created_by=actor.id if actor else None,
             updated_by=actor.id if actor else None,
         )
-        # Validate answers against the just-stamped version before persisting.
-        br.answers_json = self._validate_answers(br, answers) if answers else {}
+        # Validate answers against the just-stamped version (partial answers are
+        # valid on a draft — enforce_required=False by default, AC-BI-34b).
+        br.answers_json = (
+            self._validate_answers(br, resolved_answers) if resolved_answers else {}
+        )
         self.db.add(br)
         self.db.flush()
 
@@ -370,6 +401,33 @@ class BusinessRequirementService:
         self.db.commit()
         self.db.refresh(br)
         return self.get(tenant_id, br.id)
+
+    def _absorb_ideas(self, tenant_id: str, idea_ids: List[str]) -> Tuple[str, str]:
+        """Derive ``(title, problem_statement)`` from the ideas a promote absorbs
+        (AC-BI-32b). Tenant-scoped. Title = the representative idea's problem
+        (truncated); problem_statement = that problem, or all problems joined when
+        several ideas are promoted together. The fuzzier idea fields
+        (proposed_solution / impact / department / raw text) are DELIBERATELY not
+        mapped here — they ride the grill's source context so the grill extracts
+        them (avoids a wrong-guess mapping the user must correct)."""
+        ordered = [i for i in dict.fromkeys(idea_ids) if i]
+        if not ordered:
+            return "", ""
+        rows = {
+            i.id: i
+            for i in self.db.query(Idea)
+            .filter(Idea.id.in_(ordered), Idea.tenant_id == tenant_id)
+            .all()
+        }
+        problems = [
+            p
+            for i in ordered
+            if i in rows and (p := (rows[i].problem or "").strip())
+        ]
+        if not problems:
+            return "", ""
+        problem_statement = problems[0] if len(problems) == 1 else "\n\n".join(problems)
+        return _truncate_title(problems[0]), problem_statement
 
     def _link_ideas(
         self, tenant_id: str, br: BusinessRequirement, idea_ids: List[str]

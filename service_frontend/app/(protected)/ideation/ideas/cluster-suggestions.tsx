@@ -13,8 +13,10 @@ import { ideationService } from '@/services/ideation-service';
 import type { Idea, IdeaCluster } from '@/types/ideation';
 
 export interface IdeaClusterSuggestionsProps {
-  /** Promote the (edited) selection of a cluster to a new draft BR. */
-  onPromote: (ideas: Idea[]) => Promise<void>;
+  /** Promote the (edited) selection of a cluster to a new draft BR. `meta.title`
+   * carries the cluster label so the new BR is named after the cluster
+   * (AC-BI-32b). */
+  onPromote: (ideas: Idea[], meta?: { title?: string }) => Promise<void>;
 }
 
 /**
@@ -93,7 +95,7 @@ function ClusterCard({
   onPromote,
 }: {
   cluster: IdeaCluster;
-  onPromote: (ideas: Idea[]) => Promise<void>;
+  onPromote: (ideas: Idea[], meta?: { title?: string }) => Promise<void>;
 }) {
   const [selected, setSelected] = useState<Set<string>>(
     () => new Set(cluster.ideaIds),
@@ -113,7 +115,7 @@ function ClusterCard({
     if (chosen.length === 0) return;
     setBusy(true);
     try {
-      await onPromote(chosen);
+      await onPromote(chosen, { title: cluster.label });
     } finally {
       setBusy(false);
     }

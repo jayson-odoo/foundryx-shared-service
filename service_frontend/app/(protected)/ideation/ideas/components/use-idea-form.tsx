@@ -4,12 +4,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { Archive, ArchiveRestore, ArrowRight, FileText, Lightbulb } from 'lucide-react';
+import { Archive, ArchiveRestore, ArrowRight, FileText, Lightbulb, Rocket } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import { IDEA_NEXT_STATUS, IDEA_STATUS_LABEL, type Idea, type Product } from '@/types/ideation';
+import { promoteIdeasToBr } from '../promote-to-br';
 import { DetailsTab, AttachmentsTab } from './idea-form-fields';
 import { ideaFormSchema, type IdeaFormValues } from './idea-schema';
 
@@ -99,6 +100,22 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
     };
 
     const actions: ResourceAction<Idea>[] = [
+      {
+        id: 'promote-br',
+        label: 'Promote to BR',
+        icon: Rocket,
+        // The destination is a new draft BR — gated by the BR write perm
+        // (hidden in embed, which has no operator user / BR surface).
+        permission: 'ideation.business_requirements.manage',
+        surfaces: { row: false, form: true, bulk: false },
+        // Foolproof-UI: an archived idea can't be promoted.
+        isVisible: (rows) => rows.every((r) => r.status !== 'archived'),
+        run: async (rows) => {
+          // Single current idea → the backend derives the title + pre-fills
+          // problem_statement (AC-BI-32b); lands on the new BR's Grill tab.
+          await promoteIdeasToBr(rows, router);
+        },
+      },
       {
         id: 'advance',
         // Label auto-derived from the status_engine transition target (prototype:

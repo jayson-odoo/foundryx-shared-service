@@ -144,6 +144,12 @@ def _source_artifacts(db: Session, tenant_id: str, br: BusinessRequirement) -> T
             parts.append(f"Impact: {idea.impact}")
         if idea.department:
             parts.append(f"Department: {idea.department}")
+        # The raw captured text (WhatsApp/voice/manual) grounds the grill in the
+        # submitter's own words (AC-BI-32b) — included only when it adds signal
+        # beyond the already-listed problem headline.
+        raw = (idea.raw_text or "").strip()
+        if raw and raw != (idea.problem or "").strip():
+            parts.append(f"Original message: {raw}")
         artifacts.append("\n".join(parts))
     return artifacts, [i.id for i in ideas]
 
@@ -275,6 +281,22 @@ class IdeationGrillService:
             ],
             coveredFields=state.covered_fields,
         )
+
+    def open_grill(self, tenant_id: str, br_id: str, actor) -> GrillTurnOut:
+        """Fire the opening turn on a fresh promoted BR (AC-BI-29b): the agent
+        greets + summarizes the absorbed idea(s) + asks its first question, with
+        NO user message. Idempotent at the engine (an already-opened transcript
+        returns its latest reply, no new LLM call). 409 if the grill is not ready
+        (never auto-fire without a resolved connection)."""
+        self.br._br_or_404(tenant_id, br_id)
+        ready, warning = grill_readiness(self.db, tenant_id)
+        if not ready:
+            raise HTTPException(409, warning or "The grill is not available yet.")
+        try:
+            result = self.engine.open(self._definition(), tenant_id, br_id, actor)
+        except GrillError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        return GrillTurnOut(replyText=result.reply_text, coveredFields=result.covered_fields)
 
     def turn(self, tenant_id: str, br_id: str, message: str, actor) -> GrillTurnOut:
         self.br._br_or_404(tenant_id, br_id)

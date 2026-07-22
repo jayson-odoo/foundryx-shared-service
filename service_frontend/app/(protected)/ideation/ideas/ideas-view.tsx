@@ -6,12 +6,11 @@ import { toast } from 'sonner';
 import { ResourceList } from '@/components/platform/resource-list';
 import { useIdeas } from '@/hooks/use-ideas';
 import type { IdeaCreateInput } from '@/services/ideation-service';
-import { businessRequirementService } from '@/services/business-requirement-service';
-import { brFormHref } from '@/app/(protected)/ideation/business-requirements/components/paths';
 import { IDEA_NEXT_STATUS, type Idea } from '@/types/ideation';
 import { useIdeasListConfig } from './use-ideas-list-config';
 import { IdeaClusterSuggestions } from './cluster-suggestions';
 import { IdeaCaptureDialog } from './idea-capture-dialog';
+import { promoteIdeasToBr } from './promote-to-br';
 
 /**
  * The Ideas repository grid — the SINGLE list/grid component used by BOTH the
@@ -21,30 +20,6 @@ import { IdeaCaptureDialog } from './idea-capture-dialog';
  * opt-in row drag-reorder (row order = priority), per-user vote toggle, and the
  * capture dialog for create.
  */
-/** Create a draft BR from a set of ideas and land on its Grill tab (AC-BI-32).
- * All ideas must share ONE product (a BR links same-product ideas, AC-BI-17). */
-async function promoteIdeasToBr(
-  ideas: Idea[],
-  router: ReturnType<typeof useRouter>,
-): Promise<void> {
-  if (ideas.length === 0) return;
-  const productIds = new Set(ideas.map((i) => i.productId));
-  if (productIds.size > 1) {
-    toast.error('Select ideas from a single product to promote them together.');
-    return;
-  }
-  try {
-    const created = await businessRequirementService.create({
-      productId: ideas[0].productId,
-      ideaIds: ideas.map((i) => i.id),
-    });
-    toast.success('Draft requirement created — start grilling.');
-    router.push(brFormHref(created.id, { tab: 'grill' }));
-  } catch (e) {
-    toast.error(e instanceof Error ? e.message : 'Could not promote to a business requirement.');
-  }
-}
-
 export function IdeasView() {
   const router = useRouter();
   const { ideas, products, loading, error, create, vote, setStatus, reorderPriority, remove } =
@@ -135,7 +110,7 @@ export function IdeasView() {
   return (
     <Fragment>
       <IdeaClusterSuggestions
-        onPromote={(cluster) => promoteIdeasToBr(cluster, router)}
+        onPromote={(cluster, meta) => promoteIdeasToBr(cluster, router, meta)}
       />
       <ResourceList key={version} config={config} />
       {dialogOpen && (

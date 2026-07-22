@@ -216,7 +216,13 @@ export function useBrForm(
           id: 'grill',
           label: 'Grill',
           icon: MessageSquare,
-          render: () => <BrGrillTab brId={brId} onGenerated={onGrillGenerated} />,
+          render: () => (
+            <BrGrillTab
+              brId={brId}
+              onGenerated={onGrillGenerated}
+              hasLinkedIdeas={br.ideaCount > 0}
+            />
+          ),
         },
         {
           id: 'ideas',

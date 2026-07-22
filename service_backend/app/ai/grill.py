@@ -251,6 +251,67 @@ class GrillEngine:
         self.db.commit()
         return TurnResult(reply_text=reply_text, covered_fields=covered)
 
+    # -- opening turn (no user message) ----------------------------------------
+    def open(
+        self, definition: GrillDefinition, tenant_id: str, target_id: str, actor
+    ) -> TurnResult:
+        """Produce the FIRST assistant message with NO user message (AC-BI-29b):
+        the grill greets, summarizes the absorbed source artifact(s) and asks its
+        first clarifying question, grounded in the linked ideas.
+
+        Idempotent — if the transcript is already non-empty this returns the latest
+        assistant reply WITHOUT another LLM call, so a double-fire (a re-render /
+        two racing requests) never produces two opening messages or a wasted call.
+        Like every completion here, an ``LLMError`` commits the flushed trace
+        first, then surfaces ``GrillError`` (decision 1 / AC-BI-24b)."""
+        ctx = definition.resolve_context(self.db, tenant_id, target_id)
+        convo = self.convos.get_or_create_for_target(
+            tenant_id,
+            target_type=_target_type(definition),
+            target_id=target_id,
+            grill_definition_key=definition.key,
+            source_type=ctx.source_type,
+            source_ids=ctx.source_ids,
+            prompt_version=ctx.prompt_version,
+            template_version=ctx.template_version,
+        )
+        valid_keys = _valid_keys(ctx)
+        prior = self.convos.messages(convo.id)
+        if prior:
+            last = next(
+                (m for m in reversed(prior) if m.role == ROLE_ASSISTANT), None
+            )
+            if last is not None:
+                return TurnResult(
+                    reply_text=last.content or "",
+                    covered_fields=_clean_covered(last.covered_fields_json, valid_keys),
+                )
+
+        system = _compose_system(ctx)
+        schema = _turn_schema(ctx)
+        # A synthetic, NON-persisted user directive drives the opening — the model
+        # needs something to respond to, but the transcript starts with only the
+        # assistant greeting (no user turn is stored).
+        opening = [{"role": ROLE_USER, "content": _opening_instruction()}]
+        result = self._complete(
+            ctx,
+            conversation_id=convo.id,
+            system=system,
+            messages=opening,
+            output_schema=schema,
+            actor=actor,
+        )
+        reply_text, covered = _parse_turn(result, valid_keys)
+        self.convos.add_message(
+            conversation_id=convo.id,
+            tenant_id=tenant_id,
+            role=ROLE_ASSISTANT,
+            content=reply_text,
+            covered_fields=covered,
+        )
+        self.db.commit()
+        return TurnResult(reply_text=reply_text, covered_fields=covered)
+
     # -- generate (extraction) -------------------------------------------------
     def generate(
         self, definition: GrillDefinition, tenant_id: str, target_id: str, actor
@@ -512,6 +573,22 @@ def _parse_turn(result: LLMResult, valid_keys: set):
         reply = result.text or "Could you tell me more?"
     covered = _clean_covered(structured.get("coveredFields"), valid_keys)
     return reply, covered
+
+
+def _opening_instruction() -> str:
+    """The synthetic directive that drives the opening turn (AC-BI-29b) — greet,
+    summarize the grounded source artifacts, ask ONE first clarifying question.
+    Substitution-only content already rode the system prompt; this is a fixed
+    instruction, never tenant input."""
+    return (
+        "Begin the session now. In a warm, brief greeting: (1) summarize in one or "
+        "two sentences what you understand from the linked source artifacts above, "
+        "then (2) ask your FIRST clarifying question to start filling the target "
+        "fields. Ask only ONE question. Do not invent details the artifacts do not "
+        "contain. In coveredFields, include any target field the linked source "
+        "artifacts ALREADY establish (do not leave a field the artifacts clearly "
+        "answer marked as uncovered)."
+    )
 
 
 def _retry_instruction(errors: Dict[str, str]) -> str:

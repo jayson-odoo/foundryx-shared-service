@@ -52,6 +52,26 @@ export function createMockGrillService(
       };
     },
 
+    async open(brId): Promise<GrillTurn> {
+      const r = run(brId);
+      // Idempotent: an already-opened transcript returns its latest reply.
+      if (r.messages.length > 0) {
+        const last = [...r.messages].reverse().find((m) => m.role === 'assistant');
+        return { replyText: last?.content ?? '', coveredFields: r.covered };
+      }
+      const reply =
+        "Thanks — I've read the linked idea. To turn it into a requirement, what business goal should it achieve?";
+      r.covered = [FIELDS[0].key];
+      r.messages.push({
+        id: `a-${r.messages.length}`,
+        role: 'assistant',
+        content: reply,
+        coveredFields: r.covered,
+        createdAt: new Date().toISOString(),
+      });
+      return { replyText: reply, coveredFields: r.covered };
+    },
+
     async turn(brId, message): Promise<GrillTurn> {
       const r = run(brId);
       const now = new Date().toISOString();

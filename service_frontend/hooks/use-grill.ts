@@ -10,7 +10,7 @@
  * via `onGenerated`). The human always ends the grill — Generate is always
  * enabled (AC-BI-22).
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { grillService } from '@/services/grill-service';
 import type { BusinessRequirementDetail } from '@/types/business-requirement';
 import type { GrillField, GrillMessage } from '@/types/grill';
@@ -19,6 +19,10 @@ export interface UseGrillOptions {
   /** Called with the refreshed BR after a successful Generate so the Details
    * tab reflects the new answers. */
   onGenerated?: (br: BusinessRequirementDetail) => void;
+  /** When true, fire the opening turn EXACTLY ONCE on a fresh BR with an empty
+   * transcript once the grill is ready (AC-BI-29b). Pass `true` only when the BR
+   * has ≥1 linked idea; a BR that already has messages never re-opens. */
+  autoOpen?: boolean;
 }
 
 export interface UseGrillResult {
@@ -42,7 +46,7 @@ export interface UseGrillResult {
 }
 
 export function useGrill(brId: string, options: UseGrillOptions = {}): UseGrillResult {
-  const { onGenerated } = options;
+  const { onGenerated, autoOpen = false } = options;
   const [isLoading, setIsLoading] = useState(true);
   const [ready, setReady] = useState(false);
   const [warning, setWarning] = useState<string | null>(null);
@@ -76,6 +80,33 @@ export function useGrill(brId: string, options: UseGrillOptions = {}): UseGrillR
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // Auto-open on a fresh promoted BR (AC-BI-29b): fire the opening turn EXACTLY
+  // ONCE once loaded + ready + the transcript is still empty. The guard tracks
+  // the BR the open was fired for (not a boolean) so it survives a re-render /
+  // StrictMode double-invoke AND re-arms cleanly on record-nav to another BR — a
+  // double-fire would mean two opening messages + a wasted LLM call.
+  const openedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!autoOpen || isLoading || !ready) return;
+    if (messages.length > 0) return;
+    if (openedForRef.current === brId) return;
+    openedForRef.current = brId;
+    void (async () => {
+      setSending(true);
+      setError(null);
+      try {
+        await grillService.open(brId);
+        const s = await grillService.state(brId);
+        setMessages(s.messages);
+        setCoveredFields(s.coveredFields);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'The grill could not start.');
+      } finally {
+        setSending(false);
+      }
+    })();
+  }, [autoOpen, isLoading, ready, messages.length, brId]);
 
   const sendTurn = useCallback(
     async (message: string) => {

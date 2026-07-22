@@ -293,6 +293,72 @@ def test_validation_failure_twice_surfaces_field_errors(engine_fixture):
     assert "answers" not in sink  # nothing persisted
 
 
+def test_open_produces_assistant_message_on_empty_transcript(engine_fixture):
+    """AC-BI-29b: open() yields the FIRST assistant message with NO user message —
+    the transcript starts with a single assistant greeting."""
+    db, definition, _ = engine_fixture
+    actor = _demo_user(db)
+    with stub_fixtures(
+        StubResponse(
+            structured={
+                "replyText": "I read your idea about slow exports. What business goal should it hit?",
+                "coveredFields": ["summary"],
+            }
+        )
+    ):
+        result = GrillEngine(db).open(definition, DEFAULT_TENANT_ID, "br-open", actor)
+    assert "slow exports" in result.reply_text
+    assert result.covered_fields == ["summary"]
+
+    convo = (
+        db.query(AiConversation).filter(AiConversation.target_id == "br-open").first()
+    )
+    assert convo is not None
+    msgs = (
+        db.query(AiMessage)
+        .filter(AiMessage.conversation_id == convo.id)
+        .order_by(AiMessage.created_at.asc())
+        .all()
+    )
+    # ONLY the assistant greeting — no synthetic user turn is persisted.
+    assert [m.role for m in msgs] == [ROLE_ASSISTANT]
+    assert msgs[0].covered_fields_json == ["summary"]
+
+
+def test_open_is_idempotent_no_second_llm_call(engine_fixture):
+    """AC-BI-29b: a second open() on an already-opened transcript returns the
+    latest assistant reply WITHOUT another LLM call (a double-fire never produces
+    two opening messages or a wasted call). Only ONE stub response is queued."""
+    db, definition, _ = engine_fixture
+    actor = _demo_user(db)
+    with stub_fixtures(
+        StubResponse(structured={"replyText": "First question?", "coveredFields": []})
+    ):
+        first = GrillEngine(db).open(definition, DEFAULT_TENANT_ID, "br-idem", actor)
+    # No stub queued for the second call — if open() called the model it would
+    # raise (empty queue); idempotency means it doesn't.
+    second = GrillEngine(db).open(definition, DEFAULT_TENANT_ID, "br-idem", actor)
+    assert second.reply_text == first.reply_text
+
+    convo = (
+        db.query(AiConversation).filter(AiConversation.target_id == "br-idem").first()
+    )
+    msgs = db.query(AiMessage).filter(AiMessage.conversation_id == convo.id).all()
+    assert len(msgs) == 1  # still just the one opening message
+
+
+def test_open_error_writes_error_trace(engine_fixture):
+    """AC-BI-29b: an LLMError on the opening turn commits the flushed trace inside
+    the except (the S3 load-bearing rule), then surfaces GrillError."""
+    db, definition, _ = engine_fixture
+    with stub_fixtures(StubResponse(error="opening exploded")):
+        with pytest.raises(GrillError):
+            GrillEngine(db).open(definition, DEFAULT_TENANT_ID, "br-err", _demo_user(db))
+    trace = db.query(AiTrace).filter(AiTrace.status == TRACE_STATUS_ERROR).first()
+    assert trace is not None
+    assert "opening exploded" in (trace.error or "")
+
+
 def test_failed_completion_still_writes_an_error_trace(engine_fixture):
     """Decision 1 / AC-BI-24b: an LLMError commits the flushed trace inside the
     except, then surfaces GrillError — the error trace MUST survive."""
@@ -510,6 +576,46 @@ def test_turn_error_surfaces_502_and_writes_error_trace(ideation_client):
         assert "provider down" in (trace.error or "")
     finally:
         db2.close()
+
+
+def test_source_context_includes_all_idea_fields(ideation_client):
+    """AC-BI-32b: the grill's source artifacts are grounded in the FULL idea —
+    problem, proposed_solution, impact, department AND the raw captured text — not
+    just the problem headline."""
+    from modules.ideation.services.grill import resolve_idea_to_br_context
+
+    _seed_connection(ideation_client)
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    idea = ideation_client.post(
+        "/ideation/ideas",
+        headers=h,
+        json={
+            "productId": pid,
+            "problem": "Exports time out",
+            "proposedSolution": "Stream the CSV in chunks",
+            "impact": "Enterprise accounts blocked at month-end",
+            "department": "Customer Success",
+            "rawText": "hey the export just spins forever on big accounts pls fix",
+        },
+    ).json()
+    br_id = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid, "ideaIds": [idea["id"]]},
+    ).json()["id"]
+
+    db = ideation_client._factory()
+    try:
+        ctx = resolve_idea_to_br_context(db, DEFAULT_TENANT_ID, br_id)
+    finally:
+        db.close()
+    blob = "\n".join(ctx.source_artifacts)
+    assert "Exports time out" in blob
+    assert "Stream the CSV in chunks" in blob
+    assert "Enterprise accounts blocked at month-end" in blob
+    assert "Customer Success" in blob
+    assert "spins forever on big accounts" in blob
 
 
 def test_grill_is_tenant_scoped(ideation_client):

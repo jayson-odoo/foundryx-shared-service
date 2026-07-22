@@ -2,6 +2,7 @@
  * Real grill service — talks to FastAPI shared-service via the shared
  * api-client (Phase B-i slice 3). Endpoint map:
  * - state    → GET  /ideation/business-requirements/{id}/grill
+ * - open     → POST /ideation/business-requirements/{id}/grill/open
  * - turn     → POST /ideation/business-requirements/{id}/grill/turn     {message}
  * - generate → POST /ideation/business-requirements/{id}/grill/generate
  */
@@ -15,6 +16,12 @@ const one = (id: string) =>
 export const realGrillService: GrillService = {
   state(brId) {
     return apiFetch<GrillState>(one(brId));
+  },
+
+  open(brId) {
+    return apiFetch<GrillTurn>(`${one(brId)}/open`, {
+      method: 'POST',
+    });
   },
 
   turn(brId, message) {

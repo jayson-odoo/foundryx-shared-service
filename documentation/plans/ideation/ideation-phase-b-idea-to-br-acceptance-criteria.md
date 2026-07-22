@@ -215,6 +215,19 @@ Format: each AC is independently verifiable (Given / When / Then). Grouped by sl
 - **Given** the BR row exists from turn zero, **then** the grill has a durable anchor and an interrupted session is resumable (AC-BI-21).
 - **Given** promotion, **then** the created BR stamps the active template version (AC-BI-16).
 
+### AC-BI-32b — promote ABSORBS the idea (warm start, not a blank BR) [BE][FE][T]
+*(Added 2026-07-22 from live user feedback — promote created an "Untitled BR" at 0/6 with "No messages yet", wasting the idea's content.)*
+- **Given** Promote to BR from a cluster, **then** the new BR's **title** is the cluster **label** (e.g. "CSV export timeout for large accounts"); promoting selected ideas without a cluster derives the title from the representative idea's `problem` (truncated) — never "Untitled BR".
+- **Given** promote, **then** the BR's `answers_json.problem_statement` is **pre-filled from the idea's `problem`** (a clean 1:1 — coverage opens at **1/6**, not 0/6). Multiple ideas → the representative/joined problem. This rides the `enforce_required=False` create path (partial answers are valid on a draft).
+- **Given** the fuzzier idea fields (`proposed_solution`, `impact`, `department`, raw text), **then** they are **NOT** hardcode-mapped into BR fields — they are fed to the grill as rich source context so the grill extracts them (avoids a wrong-guess mapping the user must correct).
+- **Given** the Promote action, **then** it appears on the ideas list **row `…`, the bulk menu, AND the idea form/detail view** (`surfaces:{row,form,bulk}`) — not only the row menu.
+
+### AC-BI-29b — the grill auto-opens on a fresh promoted BR [BE][FE][T]
+*(Added 2026-07-22 — replaces the cold "No messages yet" with a proactive first turn.)*
+- **Given** the Grill tab opens on a BR with an **empty transcript AND ≥1 linked idea**, **then** it auto-fires **exactly one** opening turn: the agent greets, summarizes what it absorbed from the linked idea(s), and asks its first clarifying question — grounded in the idea content. The LLM call happens at **grill-tab-open** (promote stays instant).
+- **Given** the auto-open, **then** it fires **once** (guarded on empty transcript; a re-render/revisit with existing messages never re-fires) and returns `{replyText, coveredFields[]}` like any turn — no user message is required to produce the opening assistant message.
+- **Given** the agent has **no resolved LLM connection**, **then** the tab shows the "no AI connection" prerequisite warning (AC-BI-11) and does NOT auto-fire / does NOT error.
+
 ### AC-BI-33 — ideas added mid-session [BE][FE]
 - **Given** an idea linked to the BR **after** grilling started, **then** the **next turn** re-seeds source context to include it — the conversation is **not** restarted.
 

@@ -32,6 +32,21 @@ def get_grill_state(
     return IdeationGrillService(db).state(current_user.tenant_id, br_id)
 
 
+@router.post("/{br_id}/grill/open", response_model=GrillTurnOut)
+def post_grill_open(
+    br_id: str,
+    current_user: User = Depends(require_permission(_MANAGE)),
+    db: Session = Depends(get_db),
+) -> GrillTurnOut:
+    """Fire the opening grill turn on a fresh promoted BR (AC-BI-29b) — the agent
+    greets + summarizes the absorbed idea(s) + asks its first question, with NO
+    user message. Idempotent (a BR that already has messages returns its latest
+    reply, no new LLM call)."""
+    return IdeationGrillService(db).open_grill(
+        current_user.tenant_id, br_id, actor=current_user
+    )
+
+
 @router.post("/{br_id}/grill/turn", response_model=GrillTurnOut)
 def post_grill_turn(
     br_id: str,
