@@ -249,6 +249,15 @@ Format: each AC is independently verifiable (Given / When / Then). Grouped by sl
 - **Given** the promote transition (`draft→ready`, AC-BI-34), **then** THAT is where `required` completeness is enforced — a promote with missing required fields is refused with a **friendly, specific** message ("Add the required fields before promoting: Problem statement, Business goal, Success metric").
 - **Given** ANY 422 from a BR save/promote (type/format error, or the promote completeness refusal), **then** the frontend maps the per-field `fieldErrors` to **inline field highlights** (reusing the form-engine `fieldErrors` surfacing the form renderer already has) AND a readable toast — **never** the raw HTTP status text "Unprocessable Content".
 
+### AC-BI-29c — grill layout, cumulative summary, generate-by-prompt, flat BR details [BE][FE][T]
+*(Added 2026-07-22 from live user feedback — 6 UX/bug items.)*
+- **Given** the Grill tab, **then** it fits ONE viewport with the message input **pinned at the bottom** (no page scroll to reach it) — a bounded fixed-height scroll-shell: the captured-summary + transcript scroll internally, the input stays visible. Reuse the omnichannel-inbox scroll-shell discipline (`grid-rows-[minmax(0,1fr)]`, `lg:h-[calc(100vh-…)] overflow-y-auto`, no `flex-1` on an unbounded parent). Responsive 375 + 1280.
+- **BUG — Given** successive grill turns, **then** the captured summary + coverage **ACCUMULATE** — a field captured on an earlier turn is NEVER lost when a later turn reports a different field. The running summary is a **merge** (latest value wins per field), not a replace. (Live bug: "2 of 6" → "1 of 6" as earlier fields vanished.)
+- **Given** the generate flow, **then** the explicit **Generate button is removed** — generation fires from the natural-language signal ("generate it" / confirming the agent's "generate now?"). The agent's intent detection (`generateSignal`) must be robust; at 6/6 the agent proactively offers to generate. (Model signals, app acts — D22-A preserved; generate still never promotes.)
+- **Given** the **idea** detail, **then** it has a **Business Requirements tab** listing the BRs this idea is linked to, on the **Resource shell** (`ResourceList`), each row navigating to the BR detail.
+- **Given** the **BR** detail **Ideas tab**, **then** it is rebuilt on the **Resource shell** (`ResourceList`) — not a hand-rolled list — each row navigating to the idea detail (link/unlink still available).
+- **Given** the **BR** Details tab, **then** it renders the answer fields **flat** — no "Business Requirement" page heading, no "Requirement" section heading, no "Title" row — starting straight at Problem statement. (Flatten via a renderer "no section chrome" mode so it applies to every BR regardless of stamped template version.)
+
 ### AC-BI-35 — traceability [BE][T]
 - **Given** a BR, **then** a lineage query resolves **BR → linked ideas → submitter contacts**, so every requirement traces back to the raw WhatsApp ideas that produced it.
 - **Given** the BR detail **Ideas** tab, **then** it lists the linked ideas with a link to each.

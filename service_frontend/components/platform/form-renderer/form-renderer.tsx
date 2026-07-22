@@ -54,6 +54,11 @@ export interface FormRendererProps {
   onSubmit?: (visible: FormAnswers) => void | Promise<void>;
   submitting?: boolean;
   submitLabel?: string;
+  /** Flatten the layout: omit PAGE titles and SECTION titles/descriptions so the
+   * fields render straight, with no structural chrome (AC-BI-29c). Defaults to
+   * `false` (chrome shown) — fill / preview / submission surfaces are unaffected.
+   * Field labels, display heading blocks and dividers are still rendered. */
+  flat?: boolean;
   /** Read-mode only — lets uploaded-file chips fetch the authed serve route. */
   submissionId?: string;
   /** Session-bound blob fetcher for uploaded-file chips (staff = apiFetchBlob,
@@ -72,6 +77,7 @@ export function FormRenderer({
   onSubmit,
   submitting = false,
   submitLabel = 'Submit',
+  flat = false,
   submissionId,
   fileFetcher,
 }: FormRendererProps) {
@@ -158,7 +164,7 @@ export function FormRenderer({
 
       {renderedPages.map((page) => (
         <div key={page.id} className="space-y-6">
-          {page.title && !isWizard && (
+          {page.title && !isWizard && !flat && (
             <h2 className="font-heading text-lg font-semibold text-foreground">{page.title}</h2>
           )}
           {page.sections.map((section) =>
@@ -171,6 +177,7 @@ export function FormRenderer({
                 answers={answers}
                 errors={mergedErrors}
                 onChange={setAnswer}
+                flat={flat}
               />
             ) : null,
           )}
@@ -277,17 +284,22 @@ interface SectionBlockProps {
   answers: FormAnswers;
   errors: FormFieldErrors;
   onChange: (key: string, value: FormAnswerValue) => void;
+  /** Flat mode omits the section title/description chrome (AC-BI-29c). */
+  flat?: boolean;
 }
 
-function SectionBlock({ section, facts, mode, answers, errors, onChange }: SectionBlockProps) {
+function SectionBlock({ section, facts, mode, answers, errors, onChange, flat = false }: SectionBlockProps) {
   const visibleFields = section.fields.filter(
     (field) => isDisplayField(field) || fieldVisible(field, section, facts),
   );
-  if (visibleFields.length === 0 && !section.title && !section.description) return null;
+  // In flat mode a section with only a title/description (no fields) collapses to
+  // nothing — there is no chrome to render.
+  if (visibleFields.length === 0 && (flat || (!section.title && !section.description)))
+    return null;
 
   return (
     <section className="space-y-4">
-      {(section.title || section.description) && (
+      {!flat && (section.title || section.description) && (
         <div className="space-y-1">
           {section.title && (
             <h3 className="font-heading text-base font-semibold text-foreground">{section.title}</h3>

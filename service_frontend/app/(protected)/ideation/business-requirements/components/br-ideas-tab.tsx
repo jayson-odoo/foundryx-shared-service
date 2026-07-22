@@ -1,18 +1,30 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
 import { LoaderCircleIcon, Plus, X } from 'lucide-react';
 import { toast } from 'sonner';
+import type { ColumnDef } from '@tanstack/react-table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
+import { ClampedText } from '@/components/platform/clamped-text';
 import { MultiSelect } from '@/components/platform/multi-select';
+import {
+  ResourceList,
+  type ResourceAction,
+  type ResourceListConfig,
+} from '@/components/platform/resource-list';
+import { toCsv } from '@/lib/csv';
 import { useCan } from '@/hooks/use-can';
 import { useBrIdeas } from '@/hooks/use-br-ideas';
 import { businessRequirementService } from '@/services/business-requirement-service';
 import { ideationService } from '@/services/ideation-service';
+import { ideaFormHref } from '@/app/(protected)/ideation/ideas/components/paths';
+import type { ListQuery, ListResult } from '@/types/resource';
 import type { Idea } from '@/types/ideation';
+
+const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 export interface BrIdeasTabProps {
   brId: string;
@@ -24,102 +36,161 @@ export interface BrIdeasTabProps {
   onChanged: () => void;
 }
 
-/** Ideas tab — the linked ideas feeding this BR (lineage, AC-BI-35) + link/unlink
- * (AC-BI-33: an idea linked mid-session re-seeds the grill's source context next
- * turn — the conversation is NOT restarted). Data via `useBrIdeas`
- * (UI → hook → service). Linking is gated by `.manage`. */
+/** Ideas tab — the linked ideas feeding this BR (lineage, AC-BI-35) on the shared
+ * ResourceList (NOT a hand-rolled list, AC-BI-29c). Each row navigates to the
+ * idea detail. Link (the "Link ideas from this product" picker) + unlink (a row/
+ * bulk action) are preserved and gated by `.manage`; linking an idea mid-session
+ * re-seeds the grill's source context next turn (AC-BI-33). Data via `useBrIdeas`
+ * (UI → hook → service). */
 export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasTabProps) {
   const { ideas } = useBrIdeas(brId, reloadToken);
   const { can } = useCan();
   const canManage = can('ideation.business_requirements.manage');
 
-  if (ideas === null) {
-    return (
-      <div className="flex items-center justify-center py-12 text-muted-foreground">
-        <LoaderCircleIcon className="size-5 animate-spin" />
-      </div>
-    );
-  }
+  const config = useMemo<ResourceListConfig<Idea>>(() => {
+    const rows = ideas ?? [];
+
+    const actions: ResourceAction<Idea>[] = canManage
+      ? [
+          {
+            id: 'unlink',
+            label: 'Unlink',
+            icon: X,
+            tone: 'destructive',
+            surfaces: { row: true, bulk: true },
+            confirm: {
+              title: 'Unlink idea',
+              description:
+                'This removes the idea from this business requirement. The idea itself is kept.',
+              confirmLabel: 'Unlink',
+            },
+            run: async (selected) => {
+              for (const r of selected) {
+                await businessRequirementService.unlinkIdea(brId, r.id);
+              }
+              toast.success(selected.length === 1 ? 'Idea unlinked.' : 'Ideas unlinked.');
+              onChanged();
+            },
+          },
+        ]
+      : [];
+
+    const columns: ColumnDef<Idea>[] = [
+      {
+        id: 'problem',
+        header: () => 'Idea',
+        cell: ({ row }) => <ClampedText text={row.original.problem} lines={2} />,
+        size: 360,
+        enableSorting: false,
+      },
+      {
+        id: 'submitter',
+        header: () => 'Submitter',
+        cell: ({ row }) => (
+          <span className="text-muted-foreground">{row.original.submitterName}</span>
+        ),
+        size: 150,
+        enableSorting: false,
+      },
+      {
+        id: 'product',
+        header: () => 'Product',
+        cell: ({ row }) => <Badge variant="secondary">{row.original.productName}</Badge>,
+        size: 150,
+        enableSorting: false,
+      },
+    ];
+
+    if (canManage) {
+      columns.push({
+        id: 'actions',
+        meta: { reorderable: false },
+        header: () => null,
+        cell: ({ row, table }) => (
+          <div onClick={stop} className="flex justify-end">
+            <ActionMenu
+              actions={actions}
+              rows={[row.original]}
+              runtime={{ reload: table.options.meta?.reload ?? (() => {}) }}
+              surface="row"
+            />
+          </div>
+        ),
+        size: 56,
+        enableSorting: false,
+        enableHiding: false,
+        enableResizing: false,
+      });
+    }
+
+    const fetcher = async (query: ListQuery): Promise<ListResult<Idea>> => {
+      let data = rows;
+      if (query.search) {
+        const s = query.search.toLowerCase();
+        data = data.filter(
+          (r) =>
+            r.problem.toLowerCase().includes(s) ||
+            r.submitterName.toLowerCase().includes(s) ||
+            r.productName.toLowerCase().includes(s),
+        );
+      }
+      const total = data.length;
+      const start = query.page * query.pageSize;
+      return { data: data.slice(start, start + query.pageSize), total, page: query.page };
+    };
+
+    const exporter = async (query: ListQuery): Promise<string> => {
+      const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
+      return toCsv(
+        ['Idea', 'Submitter', 'Product'],
+        data.map((r) => [r.problem, r.submitterName, r.productName]),
+      );
+    };
+
+    return {
+      viewKey: 'ideation.br.ideas',
+      getRowId: (row) => row.id,
+      rowHref: (row) => ideaFormHref(row.id),
+      fetcher,
+      exporter,
+      searchPlaceholder: 'Search linked ideas…',
+      searchHints: ['Idea', 'Submitter'],
+      // Lineage list — no Active/Trashed segmentation (there is no trashed view).
+      enableStatusViews: false,
+      columns,
+      filterFields: [],
+      exportColumns: [
+        { id: 'problem', label: 'Idea' },
+        { id: 'submitter', label: 'Submitter' },
+      ],
+      actions,
+    };
+  }, [ideas, canManage, brId, onChanged]);
 
   return (
     <Card>
-      <CardContent className="py-4 space-y-4">
+      <CardContent className="space-y-4 py-4">
         {canManage && (
           <LinkIdeas
             brId={brId}
             productId={productId}
-            linked={ideas}
+            linked={ideas ?? []}
             onLinked={onChanged}
           />
         )}
 
-        {ideas.length === 0 ? (
+        {ideas === null ? (
+          <div className="flex items-center justify-center py-12 text-muted-foreground">
+            <LoaderCircleIcon className="size-5 animate-spin" />
+          </div>
+        ) : ideas.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">No linked ideas.</p>
         ) : (
-          <div className="divide-y divide-border">
-            {ideas.map((idea) => (
-              <LinkedRow
-                key={idea.id}
-                brId={brId}
-                idea={idea}
-                canManage={canManage}
-                onUnlinked={onChanged}
-              />
-            ))}
-          </div>
+          // Remount on reload so the freshly-fetched linked set drives the list.
+          <ResourceList key={reloadToken} config={config} />
         )}
       </CardContent>
     </Card>
-  );
-}
-
-function LinkedRow({
-  brId,
-  idea,
-  canManage,
-  onUnlinked,
-}: {
-  brId: string;
-  idea: Idea;
-  canManage: boolean;
-  onUnlinked: () => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const unlink = async () => {
-    setBusy(true);
-    try {
-      await businessRequirementService.unlinkIdea(brId, idea.id);
-      toast.success('Idea unlinked.');
-      onUnlinked();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Could not unlink the idea.');
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="flex items-center justify-between gap-3 py-3">
-      <Link
-        href={`/ideation/ideas/${idea.id}`}
-        className="min-w-0 flex-1 text-sm text-foreground line-clamp-2 hover:underline"
-      >
-        {idea.problem}
-      </Link>
-      <div className="flex shrink-0 items-center gap-2">
-        <span className="text-xs text-muted-foreground">{idea.submitterName}</span>
-        <Badge variant="secondary">{idea.productName}</Badge>
-        {canManage && (
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={busy}
-            onClick={unlink}
-            aria-label="Unlink idea"
-          >
-            <X className="size-4" />
-          </Button>
-        )}
-      </div>
-    </div>
   );
 }
 

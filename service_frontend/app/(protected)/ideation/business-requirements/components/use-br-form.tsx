@@ -203,8 +203,6 @@ export function useBrForm(
           render: ({ editing }) => (
             <BrDetailsTab
               editing={editing}
-              title={title}
-              onTitleChange={setTitle}
               doc={br.templateDoc}
               answers={answers}
               onAnswersChange={onAnswersChange}
@@ -287,7 +285,6 @@ export function useBrForm(
     onSave,
     router,
     serverFieldErrors,
-    title,
   ]);
 
   return { config, isLoading, notFound };

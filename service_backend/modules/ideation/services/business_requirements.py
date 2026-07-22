@@ -290,6 +290,45 @@ class BusinessRequirementService:
         )
         return self._reader.serialize_many(ideas)
 
+    def linked_business_requirements(
+        self, tenant_id: str, idea_id: str
+    ) -> List[BusinessRequirementOut]:
+        """The BRs an idea feeds (AC-BI-29c, the reverse of :meth:`linked_ideas`)
+        — tenant-scoped both ways (the idea must belong to the caller AND every
+        linked BR is filtered to the tenant; the polymorphic-target rule). Newest
+        BR first."""
+        idea = (
+            self.db.query(Idea)
+            .filter(Idea.id == idea_id, Idea.tenant_id == tenant_id)
+            .first()
+        )
+        if idea is None:
+            raise HTTPException(404, "Idea not found.")
+        br_ids = [
+            r.business_requirement_id
+            for r in self.db.query(
+                IdeaBusinessRequirement.business_requirement_id
+            ).filter(
+                IdeaBusinessRequirement.idea_id == idea_id,
+                IdeaBusinessRequirement.tenant_id == tenant_id,
+            )
+        ]
+        if not br_ids:
+            return []
+        brs = (
+            self.db.query(BusinessRequirement)
+            .filter(
+                BusinessRequirement.id.in_(br_ids),
+                BusinessRequirement.tenant_id == tenant_id,
+            )
+            .order_by(
+                BusinessRequirement.created_at.desc(),
+                BusinessRequirement.id.desc(),
+            )
+            .all()
+        )
+        return self.serialize_many(brs)
+
     def template_versions(
         self, tenant_id: str, br_id: str
     ) -> List[BrTemplateVersionOut]:

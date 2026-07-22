@@ -199,9 +199,17 @@ class GrillEngine:
                     }
                 )
                 if m.role == ROLE_ASSISTANT:
-                    covered = covered_fields
-                    # The latest assistant turn's summary is the running state.
-                    summary = _clean_summary(m.captured_summary_json, valid_keys)
+                    # ACCUMULATE across ALL assistant turns (AC-BI-29c): a later
+                    # turn that reports only the field it just discussed must NEVER
+                    # drop an earlier-captured field. Fold every turn's map onto the
+                    # running state (latest value wins per field) so a reload / a
+                    # returned-to-later session shows the FULL captured set — never
+                    # just the last turn's. Robust even against legacy rows that
+                    # stored a single turn's partial map.
+                    covered = _merge_covered(covered, covered_fields)
+                    summary = _merge_summary(
+                        summary, _clean_summary(m.captured_summary_json, valid_keys)
+                    )
         return GrillState(
             fields=ctx.target_fields,
             messages=messages,
@@ -249,6 +257,16 @@ class GrillEngine:
 
         valid_keys = _valid_keys(ctx)
         reply_text, covered, summary, generate_signal = _parse_turn(result, valid_keys)
+        # ACCUMULATE (AC-BI-29c): merge this turn's coverage/summary onto the
+        # cumulative state folded from every prior assistant turn (latest value
+        # wins per field), and STORE the cumulative on the new assistant row so a
+        # reload is correct too. A turn that only mentions the field it just
+        # discussed can never make an earlier-captured field vanish
+        # ("2 of 6" → "1 of 6"). ``prior`` was read before the new turns were
+        # added, so it holds exactly the transcript up to now.
+        prior_summary, prior_covered = _accumulate(prior, valid_keys)
+        covered = _merge_covered(prior_covered, covered)
+        summary = _merge_summary(prior_summary, summary)
         # Persist BOTH turns atomically only after a successful completion.
         self.convos.add_message(
             conversation_id=convo.id,
@@ -522,6 +540,43 @@ def _clean_covered(raw: Any, valid_keys: set) -> List[str]:
             seen.add(item)
             out.append(item)
     return out
+
+
+def _merge_covered(base: List[str], incoming: List[str]) -> List[str]:
+    """Union two covered-field lists preserving order (AC-BI-29c) — coverage is
+    monotonic: a field once grounded stays grounded."""
+    out = list(base)
+    seen = set(base)
+    for key in incoming:
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
+def _merge_summary(base: Dict[str, str], incoming: Dict[str, str]) -> Dict[str, str]:
+    """Merge two captured-summary maps, latest non-blank value winning per field
+    (AC-BI-29c). A field absent from ``incoming`` keeps its prior value — never
+    dropped just because a later turn didn't mention it. ``incoming`` is already
+    ``_clean_summary``-coerced (str, non-blank), but re-guard defensively."""
+    out = dict(base)
+    for key, value in incoming.items():
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()
+    return out
+
+
+def _accumulate(messages, valid_keys: set):
+    """Fold the running (summary, covered) cumulative state over every ASSISTANT
+    turn in ``messages`` (AC-BI-29c) — the authoritative merged capture the panel
+    renders, independent of whether individual rows stored a partial map."""
+    covered: List[str] = []
+    summary: Dict[str, str] = {}
+    for m in messages:
+        if m.role == ROLE_ASSISTANT:
+            covered = _merge_covered(covered, _clean_covered(m.covered_fields_json, valid_keys))
+            summary = _merge_summary(summary, _clean_summary(m.captured_summary_json, valid_keys))
+    return summary, covered
 
 
 def _field_lines(ctx: GrillContext) -> List[str]:

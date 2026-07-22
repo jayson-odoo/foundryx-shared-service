@@ -15,6 +15,32 @@ import { grillService } from '@/services/grill-service';
 import type { BusinessRequirementDetail } from '@/types/business-requirement';
 import type { GrillField, GrillMessage } from '@/types/grill';
 
+/** Union two covered lists preserving order (coverage is monotonic, AC-BI-29c). */
+function mergeCovered(base: string[], incoming: string[]): string[] {
+  const seen = new Set(base);
+  const out = [...base];
+  for (const key of incoming) {
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(key);
+    }
+  }
+  return out;
+}
+
+/** Merge captured-summary maps, latest non-blank value winning per field
+ * (AC-BI-29c) — a field absent from `incoming` keeps its prior value. */
+function mergeSummary(
+  base: Record<string, string>,
+  incoming: Record<string, string>,
+): Record<string, string> {
+  const out = { ...base };
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value && value.trim()) out[key] = value;
+  }
+  return out;
+}
+
 export interface UseGrillOptions {
   /** Called with the refreshed BR after a successful Generate so the Details
    * tab reflects the new answers. */
@@ -163,8 +189,13 @@ export function useGrill(brId: string, options: UseGrillOptions = {}): UseGrillR
         // half-written turn on the client either, AC-BI-23).
         const s = await grillService.state(brId);
         setMessages(s.messages);
-        setCoveredFields(turn.coveredFields);
-        setCapturedSummary(turn.capturedSummary ?? {});
+        // ACCUMULATE (AC-BI-29c): merge this turn onto the running state so an
+        // earlier-captured field is never dropped when a later turn reports a
+        // different one. The backend already returns cumulative coverage/summary,
+        // so this is idempotent there AND a defense if a single turn's map ever
+        // came back partial.
+        setCoveredFields((prev) => mergeCovered(prev, turn.coveredFields));
+        setCapturedSummary((prev) => mergeSummary(prev, turn.capturedSummary ?? {}));
         signalled = turn.generateSignal === true;
       } catch (e) {
         // Roll back the optimistic turn — keep the transcript consistent.

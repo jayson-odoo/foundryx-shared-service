@@ -333,6 +333,82 @@ def test_captured_summary_persists_and_state_returns_it(engine_fixture):
     assert msgs[1].captured_summary_json == {"summary": "Speed up exports"}
 
 
+def test_captured_summary_and_coverage_accumulate_across_turns(engine_fixture):
+    """AC-BI-29c (BUG fix): successive turns ACCUMULATE — a field captured on an
+    earlier turn is NEVER lost when a LATER turn reports a DIFFERENT field. Turn A
+    grounds ``summary``; turn B reports only ``priority`` (omitting summary); the
+    merged state carries BOTH (no "2 of 6" → "1 of 6" regression). The merge is
+    latest-wins per field, coverage is monotonic."""
+    db, definition, _ = engine_fixture
+    actor = _demo_user(db)
+    # Turn A: captures summary only.
+    with stub_fixtures(
+        StubResponse(
+            structured={
+                "replyText": "Got the summary. What priority?",
+                "coveredFields": ["summary"],
+                "capturedSummary": {"summary": "Speed up exports"},
+                "generateSignal": False,
+            }
+        )
+    ):
+        a = GrillEngine(db).turn(definition, DEFAULT_TENANT_ID, "br-acc", "exports slow", actor)
+    assert a.covered_fields == ["summary"]
+    assert a.captured_summary == {"summary": "Speed up exports"}
+
+    # Turn B: reports ONLY priority — must NOT drop the earlier summary.
+    with stub_fixtures(
+        StubResponse(
+            structured={
+                "replyText": "Noted the priority.",
+                "coveredFields": ["priority"],
+                "capturedSummary": {"priority": "high"},
+                "generateSignal": False,
+            }
+        )
+    ):
+        b = GrillEngine(db).turn(definition, DEFAULT_TENANT_ID, "br-acc", "make it high", actor)
+    # Merged: BOTH fields present, coverage 2/2 (never dropped to 1).
+    assert set(b.covered_fields) == {"summary", "priority"}
+    assert b.captured_summary == {"summary": "Speed up exports", "priority": "high"}
+
+    # A fresh state read (a page reload) is ALSO cumulative — not the last turn's.
+    state = GrillEngine(db).state(definition, DEFAULT_TENANT_ID, "br-acc")
+    assert set(state.covered_fields) == {"summary", "priority"}
+    assert state.captured_summary == {"summary": "Speed up exports", "priority": "high"}
+
+
+def test_captured_summary_latest_value_wins_on_revision(engine_fixture):
+    """AC-BI-29c: when a later turn REVISES a field the newest value wins (the
+    merge is not additive-only) — coverage stays monotonic."""
+    db, definition, _ = engine_fixture
+    actor = _demo_user(db)
+    with stub_fixtures(
+        StubResponse(
+            structured={
+                "replyText": "ok",
+                "coveredFields": ["summary"],
+                "capturedSummary": {"summary": "Speed up exports"},
+                "generateSignal": False,
+            }
+        )
+    ):
+        GrillEngine(db).turn(definition, DEFAULT_TENANT_ID, "br-rev", "x", actor)
+    with stub_fixtures(
+        StubResponse(
+            structured={
+                "replyText": "ok",
+                "coveredFields": ["summary"],
+                "capturedSummary": {"summary": "Speed up bulk CSV exports 10x"},
+                "generateSignal": False,
+            }
+        )
+    ):
+        b = GrillEngine(db).turn(definition, DEFAULT_TENANT_ID, "br-rev", "y", actor)
+    assert b.captured_summary == {"summary": "Speed up bulk CSV exports 10x"}
+    assert b.covered_fields == ["summary"]
+
+
 def test_turn_schema_carries_summary_and_signal(engine_fixture):
     """AC-BI-24c parity: the turn's ONE output schema includes capturedSummary +
     generateSignal (kept in sync with the FE GrillTurn type)."""

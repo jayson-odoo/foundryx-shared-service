@@ -4,14 +4,16 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { Archive, ArchiveRestore, ArrowRight, FileText, Lightbulb, Rocket } from 'lucide-react';
+import { Archive, ArchiveRestore, ArrowRight, ClipboardList, FileText, Lightbulb, Rocket } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ResourceAction } from '@/components/platform/resource-list';
+import { useCan } from '@/hooks/use-can';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import { IDEA_NEXT_STATUS, IDEA_STATUS_LABEL, type Idea, type Product } from '@/types/ideation';
 import { promoteIdeasToBr } from '../promote-to-br';
 import { DetailsTab, AttachmentsTab } from './idea-form-fields';
+import { IdeaBrsTab } from './idea-brs-tab';
 import { ideaFormSchema, type IdeaFormValues } from './idea-schema';
 
 function toFormValues(idea: Idea | null): IdeaFormValues {
@@ -47,7 +49,12 @@ export interface UseIdeaFormResult {
 export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean): UseIdeaFormResult {
   const router = useRouter();
   const { service: ideationService, paths, mode } = useIdeationRuntime();
+  const { can } = useCan();
   const creating = !ideaId;
+  // The Business Requirements tab only makes sense on the OPERATOR surface (the
+  // embed iframe has no BR surface) and for a user who can read BRs.
+  const showBrsTab =
+    mode === 'operator' && can('ideation.business_requirements.read');
 
   const [idea, setIdea] = useState<Idea | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
@@ -260,6 +267,18 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           icon: FileText,
           render: () => <AttachmentsTab attachments={idea?.attachments ?? []} />,
         },
+        // Business Requirements this idea feeds (reverse lineage, AC-BI-29c) —
+        // operator surface only, and only once the idea exists (not on create).
+        ...(showBrsTab && !creating && idea
+          ? [
+              {
+                id: 'business-requirements',
+                label: 'Business Requirements',
+                icon: ClipboardList,
+                render: () => <IdeaBrsTab ideaId={idea.id} />,
+              },
+            ]
+          : []),
       ],
       actions,
       actionRows: idea ? [idea] : [],
@@ -269,7 +288,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       onSave,
       onCancel,
     };
-  }, [isLoading, notFound, creating, idea, products, form, initialEditing, ideaId, router, paths, mode, ideationService]);
+  }, [isLoading, notFound, creating, idea, products, form, initialEditing, ideaId, router, paths, mode, ideationService, showBrsTab]);
 
   return { config, form, isLoading, notFound };
 }

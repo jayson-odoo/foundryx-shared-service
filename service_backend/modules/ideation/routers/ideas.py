@@ -16,6 +16,7 @@ from app.models.user import User
 
 from ..schemas import (
     BoardOut,
+    BusinessRequirementOut,
     ClusterSuggestionsOut,
     IdeaCreateIn,
     IdeaOut,
@@ -25,6 +26,7 @@ from ..schemas import (
     VoteIn,
 )
 from ..services.actions import IdeaActionService
+from ..services.business_requirements import BusinessRequirementService
 from ..services.clustering import ClusteringService
 from ..services.ideas import IdeaReadService
 
@@ -134,6 +136,23 @@ def get_idea(
     human-readable (never a raw UUID). 404 if not found in the tenant."""
     return IdeaReadService(db).get(
         current_user.tenant_id, idea_id, voter_id=current_user.id
+    )
+
+
+@router.get("/{idea_id}/business-requirements", response_model=List[BusinessRequirementOut])
+def list_idea_business_requirements(
+    idea_id: str,
+    current_user: User = Depends(
+        require_permission("ideation.business_requirements.read")
+    ),
+    db: Session = Depends(get_db),
+) -> List[BusinessRequirementOut]:
+    """The Business Requirements this idea feeds (AC-BI-29c) — the reverse of the
+    BR's Ideas tab, for the idea detail's Business Requirements tab. Tenant-scoped,
+    newest BR first. Gated by ``ideation.business_requirements.read`` (viewing BRs
+    is the BR read boundary, not the idea's)."""
+    return BusinessRequirementService(db).linked_business_requirements(
+        current_user.tenant_id, idea_id
     )
 
 

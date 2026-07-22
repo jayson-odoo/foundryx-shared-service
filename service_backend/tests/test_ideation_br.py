@@ -264,6 +264,49 @@ def test_link_ideas_many_many_and_lineage(ideation_client):
     assert counts[br1["id"]] == 2
 
 
+def test_idea_lists_linked_business_requirements_reverse(ideation_client):
+    """AC-BI-29c: the reverse of the BR's Ideas tab — an idea lists the BRs it
+    feeds via ``GET /ideation/ideas/{id}/business-requirements``, tenant-scoped,
+    newest BR first."""
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    idea_a = _idea(ideation_client, h, pid, "idea A")
+    idea_b = _idea(ideation_client, h, pid, "idea B")
+    br1 = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid, "answers": _FULL_ANSWERS, "ideaIds": [idea_a]},
+    ).json()
+    br2 = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid, "answers": _FULL_ANSWERS, "ideaIds": [idea_a]},
+    ).json()
+    # idea_b feeds nothing yet.
+
+    res = ideation_client.get(
+        f"/ideation/ideas/{idea_a}/business-requirements", headers=h
+    )
+    assert res.status_code == 200, res.text
+    ids = {b["id"] for b in res.json()}
+    assert ids == {br1["id"], br2["id"]}
+    # A BR row carries the fields the tab renders (title/status/product).
+    assert all("statusLabel" in b and "productName" in b for b in res.json())
+
+    # An idea with no linked BRs → empty list (not a 404).
+    empty = ideation_client.get(
+        f"/ideation/ideas/{idea_b}/business-requirements", headers=h
+    )
+    assert empty.status_code == 200
+    assert empty.json() == []
+
+    # Unknown idea → 404.
+    missing = ideation_client.get(
+        "/ideation/ideas/nope/business-requirements", headers=h
+    )
+    assert missing.status_code == 404
+
+
 def test_promote_absorbs_single_idea_warm_start(ideation_client):
     """AC-BI-32b: promoting one idea derives the BR title from the idea's problem
     and pre-fills problem_statement (coverage opens at 1/6), never "Untitled BR"

@@ -12,7 +12,6 @@ const FIELDS: GrillField[] = [
 
 function renderChat(overrides: Partial<React.ComponentProps<typeof GrillChat>> = {}) {
   const onSend = vi.fn();
-  const onGenerate = vi.fn();
   const props: React.ComponentProps<typeof GrillChat> = {
     messages: [],
     fields: FIELDS,
@@ -24,11 +23,10 @@ function renderChat(overrides: Partial<React.ComponentProps<typeof GrillChat>> =
     disabled: false,
     error: null,
     onSend,
-    onGenerate,
     ...overrides,
   };
   render(<GrillChat {...props} />);
-  return { onSend, onGenerate };
+  return { onSend };
 }
 
 describe('GrillChat (AC-BI-29)', () => {
@@ -63,12 +61,16 @@ describe('GrillChat (AC-BI-29)', () => {
     expect(onSend).toHaveBeenCalledWith('It is about exports');
   });
 
-  it('keeps Generate enabled even with coverage incomplete (AC-BI-22)', () => {
-    const { onGenerate } = renderChat({ coveredFields: [], missingFields: FIELDS });
-    const generate = screen.getByRole('button', { name: /generate/i });
-    expect(generate).not.toBeDisabled();
-    fireEvent.click(generate);
-    expect(onGenerate).toHaveBeenCalled();
+  it('has NO explicit Generate button (AC-BI-29c — generation fires from the signal)', () => {
+    renderChat({ coveredFields: [], missingFields: FIELDS });
+    expect(screen.queryByRole('button', { name: /generate/i })).not.toBeInTheDocument();
+    // Only the Send action is offered in the composer.
+    expect(screen.getByRole('button', { name: /send/i })).toBeInTheDocument();
+  });
+
+  it('shows a generating status while a Generate is in flight (AC-BI-29c)', () => {
+    renderChat({ generating: true });
+    expect(screen.getByText(/Generating the requirement/i)).toBeInTheDocument();
   });
 
   it('shows a thinking indicator while a turn is in flight', () => {

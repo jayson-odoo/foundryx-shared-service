@@ -72,6 +72,12 @@ export const realBusinessRequirementService: BusinessRequirementService = {
     return apiFetch<Idea[]>(`${one(id)}/ideas`);
   },
 
+  listForIdea(ideaId) {
+    return apiFetch<BusinessRequirement[]>(
+      `/ideation/ideas/${encodeURIComponent(ideaId)}/business-requirements`,
+    );
+  },
+
   linkIdeas(id, ideaIds) {
     return apiFetch<Idea[]>(`${one(id)}/ideas`, {
       method: 'POST',

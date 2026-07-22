@@ -47,6 +47,9 @@ export interface BusinessRequirementService {
   statusGraph(): Promise<StatusGraph>;
   /** The Ideas feeding this BR (lineage). */
   listIdeas(id: string): Promise<Idea[]>;
+  /** The BRs an idea feeds (reverse lineage) — backs the idea detail's Business
+   * Requirements tab (AC-BI-29c). */
+  listForIdea(ideaId: string): Promise<BusinessRequirement[]>;
   /** Link ideas to the BR (same product). Returns the new linked set. */
   linkIdeas(id: string, ideaIds: string[]): Promise<Idea[]>;
   /** Unlink one idea. Returns the remaining linked set. */

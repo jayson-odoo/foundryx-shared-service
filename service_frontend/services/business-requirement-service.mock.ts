@@ -146,6 +146,10 @@ export const mockBusinessRequirementService: BusinessRequirementService = {
     return MOCK_IDEAS;
   },
 
+  async listForIdea() {
+    return Array.from(store.values());
+  },
+
   async linkIdeas() {
     return MOCK_IDEAS;
   },

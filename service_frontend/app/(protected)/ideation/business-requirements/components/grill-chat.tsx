@@ -21,15 +21,21 @@ export interface GrillChatProps {
   disabled: boolean;
   error: string | null;
   onSend: (message: string) => void;
-  onGenerate: () => void;
 }
 
 /**
- * The grill conversation surface (AC-BI-29) — built from ui primitives (NOT the
- * omnichannel ConversationDrawer, which is WhatsApp-coupled). User turns are
- * right-aligned, assistant turns left-aligned; a thinking indicator shows while a
- * turn is in flight. The coverage bar + Generate button let the human end the
- * grill at any time (AC-BI-22). Single column — stacks cleanly at 375px.
+ * The grill conversation surface (AC-BI-29 / AC-BI-29c) — a bounded fixed-height
+ * scroll-shell that fits ONE viewport: the captured-summary strip is pinned at
+ * the top, the transcript scrolls internally, and the message input is pinned at
+ * the bottom (no page scroll to reach it). Built from ui primitives (NOT the
+ * omnichannel ConversationDrawer, which is WhatsApp-coupled).
+ *
+ * The shell reuses the omnichannel-inbox scroll discipline: a CSS grid whose
+ * transcript row is `minmax(0,1fr)` (so it bounds instead of ballooning to
+ * content), the whole grid is height-bounded to the viewport, and NO `flex-1`
+ * sits on an unbounded parent. Generation fires ONLY from the natural-language
+ * signal (AC-BI-29c) — there is no explicit Generate button; the app acts on the
+ * model's `generateSignal` (D22-A). Single column — stacks cleanly at 375px.
  */
 export function GrillChat({
   messages,
@@ -42,7 +48,6 @@ export function GrillChat({
   disabled,
   error,
   onSend,
-  onGenerate,
 }: GrillChatProps) {
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -65,8 +70,18 @@ export function GrillChat({
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      {/* Coverage indicator (AC-BI-22): N of M captured · missing … */}
+    <div
+      className={cn(
+        // Bounded scroll-shell: transcript row = minmax(0,1fr) so it bounds and
+        // scrolls internally; summary + composer keep their natural height. The
+        // whole grid is height-bounded to the viewport so the input is always in
+        // view without page scroll (verified at 375 + 1280).
+        'grid min-h-[420px] gap-3',
+        'h-[calc(100dvh-21rem)] lg:h-[calc(100vh-19rem)]',
+        'grid-rows-[auto_auto_minmax(0,1fr)_auto]',
+      )}
+    >
+      {/* Coverage indicator (AC-BI-22): N of M captured · missing … — pinned. */}
       <div className="flex flex-col gap-1 rounded-lg border bg-muted/30 px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between">
         <span className="font-medium">
           {captured} of {total} captured
@@ -81,8 +96,9 @@ export function GrillChat({
       </div>
 
       {/* Running captured summary (AC-BI-24c): each target field + its current
-          understood value. Values only — no how-to copy (foolproof-UI). */}
-      <dl className="grid gap-x-4 gap-y-2 rounded-lg border px-3 py-2.5 text-sm sm:grid-cols-2">
+          understood value. Capped so it never pushes the input off-screen on
+          mobile — it scrolls within its own bound (values only — no how-to copy). */}
+      <dl className="grid max-h-[26vh] gap-x-4 gap-y-2 overflow-y-auto rounded-lg border px-3 py-2.5 text-sm sm:grid-cols-2">
         {fields.map((f) => {
           const value = capturedSummary[f.key]?.trim();
           return (
@@ -101,10 +117,8 @@ export function GrillChat({
         })}
       </dl>
 
-      <ScrollArea
-        ref={scrollRef}
-        className="h-[46vh] min-h-[240px] rounded-lg border lg:h-[calc(100vh-26rem)]"
-      >
+      {/* Transcript — the ONLY row that scrolls internally (bounded by 1fr). */}
+      <ScrollArea ref={scrollRef} className="h-full min-h-0 rounded-lg border">
         <div className="flex flex-col gap-4 p-4">
           {messages.length === 0 && !sending ? (
             <p className="py-10 text-center text-sm text-muted-foreground">
@@ -132,52 +146,44 @@ export function GrillChat({
         </div>
       </ScrollArea>
 
-      {error ? (
-        <p className="flex items-start gap-1.5 text-sm text-destructive">
-          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-          <span>{error}</span>
-        </p>
-      ) : null}
+      {/* Composer (pinned) + any error / generating status stacked above it. */}
+      <div className="flex flex-col gap-2">
+        {error ? (
+          <p className="flex items-start gap-1.5 text-sm text-destructive">
+            <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+            <span>{error}</span>
+          </p>
+        ) : null}
+        {generating ? (
+          <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+            <Sparkles className="size-3.5 shrink-0 text-primary" />
+            Generating the requirement…
+          </p>
+        ) : null}
 
-      {/* Composer + Generate (always enabled — the human ends the grill). */}
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-        <Textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-          placeholder="Message the grill"
-          disabled={disabled || sending}
-          rows={2}
-          className="flex-1 resize-none"
-        />
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+          <Textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+            placeholder="Message the grill"
+            disabled={disabled || sending}
+            rows={2}
+            className="flex-1 resize-none"
+          />
           <Button
             type="button"
-            variant="outline"
             onClick={submit}
             disabled={disabled || sending || !draft.trim()}
-            className="flex-1 sm:flex-none"
+            className="sm:self-stretch"
           >
             <Send className="size-4" />
             Send
-          </Button>
-          <Button
-            type="button"
-            onClick={onGenerate}
-            disabled={generating}
-            className="flex-1 sm:flex-none"
-          >
-            {generating ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Sparkles className="size-4" />
-            )}
-            Generate
           </Button>
         </div>
       </div>

@@ -123,6 +123,41 @@ describe('useGrill (AC-BI-22/29)', () => {
     });
   });
 
+  it('ACCUMULATES the captured summary + coverage across turns — never drops a field (AC-BI-29c)', async () => {
+    const { result } = renderHook(() => useGrill('br-1'));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    // Turn A: grounds problem_statement.
+    svc.turn.mockResolvedValueOnce({
+      replyText: 'And the goal?',
+      coveredFields: ['problem_statement'],
+      capturedSummary: { problem_statement: 'Exports are slow' },
+      generateSignal: false,
+    });
+    await act(async () => {
+      await result.current.sendTurn('exports slow');
+    });
+
+    // Turn B: reports ONLY business_goal (omits problem_statement) — the earlier
+    // field must NOT vanish (the "2 of 6" → "1 of 6" bug).
+    svc.turn.mockResolvedValueOnce({
+      replyText: 'Great.',
+      coveredFields: ['business_goal'],
+      capturedSummary: { business_goal: 'Cut manual work' },
+      generateSignal: false,
+    });
+    await act(async () => {
+      await result.current.sendTurn('cut manual work');
+    });
+
+    expect(result.current.coveredFields).toEqual(['problem_statement', 'business_goal']);
+    expect(result.current.capturedSummary).toEqual({
+      problem_statement: 'Exports are slow',
+      business_goal: 'Cut manual work',
+    });
+    expect(result.current.missingFields).toHaveLength(0);
+  });
+
   it('fires Generate exactly once when the turn carries generateSignal (AC-BI-24c)', async () => {
     svc.turn.mockResolvedValue({
       replyText: 'On it.',

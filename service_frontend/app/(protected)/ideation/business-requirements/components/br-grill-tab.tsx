@@ -61,7 +61,6 @@ export function BrGrillTab({ brId, onGenerated, hasLinkedIdeas = false }: BrGril
           disabled={!grill.ready}
           error={grill.error}
           onSend={grill.sendTurn}
-          onGenerate={grill.generate}
         />
       </CardContent>
     </Card>
