@@ -17,6 +17,7 @@ function renderChat(overrides: Partial<React.ComponentProps<typeof GrillChat>> =
     messages: [],
     fields: FIELDS,
     coveredFields: [],
+    capturedSummary: {},
     missingFields: FIELDS,
     sending: false,
     generating: false,
@@ -73,5 +74,18 @@ describe('GrillChat (AC-BI-29)', () => {
   it('shows a thinking indicator while a turn is in flight', () => {
     renderChat({ sending: true });
     expect(screen.getByText('Thinking…')).toBeInTheDocument();
+  });
+
+  it('renders the running captured summary values per field (AC-BI-24c)', () => {
+    renderChat({
+      coveredFields: ['problem_statement'],
+      capturedSummary: { problem_statement: 'Exports time out on big accounts' },
+    });
+    // Each target field appears as a summary label (labels also head the panel).
+    expect(screen.getAllByText('Problem statement').length).toBeGreaterThan(0);
+    // The captured value is shown for the grounded field…
+    expect(screen.getByText('Exports time out on big accounts')).toBeInTheDocument();
+    // …and an em-dash placeholder for the two not-yet-captured fields.
+    expect(screen.getAllByText('—')).toHaveLength(2);
   });
 });

@@ -26,7 +26,8 @@ export interface GrillMessage {
 }
 
 /** The Grill tab snapshot: readiness + fields + transcript + coverage.
- * `ready`/`warning` carry the prerequisite state (AC-BI-11). */
+ * `ready`/`warning` carry the prerequisite state (AC-BI-11). `capturedSummary`
+ * is the latest turn's per-field understood values (AC-BI-24c). */
 export interface GrillState {
   ready: boolean;
   warning: string | null;
@@ -34,13 +35,18 @@ export interface GrillState {
   fields: GrillField[];
   messages: GrillMessage[];
   coveredFields: string[];
+  capturedSummary: Record<string, string>;
 }
 
-/** The turn response (AC-BI-22/24b): prose reply + the coverage map, from ONE
- * structured call. */
+/** The turn response (AC-BI-22/24b/24c): prose reply + the coverage map + the
+ * running captured summary + the generate signal, all from ONE structured call.
+ * `generateSignal` true = the user asked to finalize; the APP fires Generate
+ * (the model has no side-effect tool, D22-A). */
 export interface GrillTurn {
   replyText: string;
   coveredFields: string[];
+  capturedSummary: Record<string, string>;
+  generateSignal: boolean;
 }
 
 /** The Generate result. `ok` → `br` carries the refreshed detail (Details tab

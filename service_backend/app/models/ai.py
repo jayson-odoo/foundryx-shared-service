@@ -278,6 +278,10 @@ class AiMessage(Base):
     content = Column(Text, nullable=False, default="")
     # The cheap coverage map a grill turn reports (slice 3, AC-BI-22).
     covered_fields_json = Column(JSON(none_as_null=True), nullable=True)
+    # The running per-field captured summary a grill turn reports (AC-BI-24c) —
+    # a {fieldKey: shortValue} map. Persisted on the assistant turn so the panel
+    # survives a reload / resumed session (durable draft, AC-BI-21).
+    captured_summary_json = Column(JSON(none_as_null=True), nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
 

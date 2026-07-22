@@ -264,7 +264,9 @@ class GrillMessageOut(ApiModel):
 
 class GrillStateOut(ApiModel):
     """The Grill tab's snapshot: readiness + fields + transcript + coverage.
-    ``ready``/``warning`` carry the prerequisite state (AC-BI-11)."""
+    ``ready``/``warning`` carry the prerequisite state (AC-BI-11).
+    ``capturedSummary`` is the latest turn's per-field understood values
+    (AC-BI-24c) — the running summary the panel renders."""
 
     ready: bool
     warning: Optional[str] = None
@@ -272,6 +274,7 @@ class GrillStateOut(ApiModel):
     fields: List[GrillFieldOut] = []
     messages: List[GrillMessageOut] = []
     coveredFields: List[str] = []
+    capturedSummary: Dict[str, str] = {}
 
 
 class GrillTurnIn(ApiModel):
@@ -281,11 +284,15 @@ class GrillTurnIn(ApiModel):
 
 
 class GrillTurnOut(ApiModel):
-    """The turn response (AC-BI-22/24b): prose reply + the coverage map, from ONE
-    structured call."""
+    """The turn response (AC-BI-22/24b/24c): prose reply + the coverage map + the
+    running captured summary + the generate signal, all from ONE structured call.
+    ``generateSignal`` TRUE = the user asked to finalize; the APP fires Generate
+    (the model has no side-effect tool, D22-A)."""
 
     replyText: str
     coveredFields: List[str] = []
+    capturedSummary: Dict[str, str] = {}
+    generateSignal: bool = False
 
 
 class GrillGenerateOut(ApiModel):

@@ -135,6 +135,10 @@ def get_grill_definition(key: str) -> Optional[GrillDefinition]:
 class TurnResult:
     reply_text: str
     covered_fields: List[str]
+    # The running per-field captured summary the panel renders (AC-BI-24c).
+    captured_summary: Dict[str, str]
+    # The model's finalize-intent signal; the APP fires Generate on it (AC-BI-24c).
+    generate_signal: bool
 
 
 @dataclass
@@ -151,6 +155,9 @@ class GrillState:
     fields: List[Dict[str, str]]
     messages: List[Dict[str, Any]]
     covered_fields: List[str]
+    # The latest assistant turn's captured summary (AC-BI-24c) — carried so the
+    # panel survives a reload / a returned-to-later session (durable draft).
+    captured_summary: Dict[str, str]
 
 
 # ── the engine ────────────────────────────────────────────────────────────────
@@ -177,6 +184,7 @@ class GrillEngine:
         )
         messages: List[Dict[str, Any]] = []
         covered: List[str] = []
+        summary: Dict[str, str] = {}
         valid_keys = _valid_keys(ctx)
         if convo is not None:
             for m in self.convos.messages(convo.id):
@@ -192,7 +200,14 @@ class GrillEngine:
                 )
                 if m.role == ROLE_ASSISTANT:
                     covered = covered_fields
-        return GrillState(fields=ctx.target_fields, messages=messages, covered_fields=covered)
+                    # The latest assistant turn's summary is the running state.
+                    summary = _clean_summary(m.captured_summary_json, valid_keys)
+        return GrillState(
+            fields=ctx.target_fields,
+            messages=messages,
+            covered_fields=covered,
+            captured_summary=summary,
+        )
 
     # -- one turn --------------------------------------------------------------
     def turn(
@@ -233,7 +248,7 @@ class GrillEngine:
         )
 
         valid_keys = _valid_keys(ctx)
-        reply_text, covered = _parse_turn(result, valid_keys)
+        reply_text, covered, summary, generate_signal = _parse_turn(result, valid_keys)
         # Persist BOTH turns atomically only after a successful completion.
         self.convos.add_message(
             conversation_id=convo.id,
@@ -247,9 +262,15 @@ class GrillEngine:
             role=ROLE_ASSISTANT,
             content=reply_text,
             covered_fields=covered,
+            captured_summary=summary,
         )
         self.db.commit()
-        return TurnResult(reply_text=reply_text, covered_fields=covered)
+        return TurnResult(
+            reply_text=reply_text,
+            covered_fields=covered,
+            captured_summary=summary,
+            generate_signal=generate_signal,
+        )
 
     # -- opening turn (no user message) ----------------------------------------
     def open(
@@ -285,6 +306,8 @@ class GrillEngine:
                 return TurnResult(
                     reply_text=last.content or "",
                     covered_fields=_clean_covered(last.covered_fields_json, valid_keys),
+                    captured_summary=_clean_summary(last.captured_summary_json, valid_keys),
+                    generate_signal=False,
                 )
 
         system = _compose_system(ctx)
@@ -301,16 +324,22 @@ class GrillEngine:
             output_schema=schema,
             actor=actor,
         )
-        reply_text, covered = _parse_turn(result, valid_keys)
+        reply_text, covered, summary, generate_signal = _parse_turn(result, valid_keys)
         self.convos.add_message(
             conversation_id=convo.id,
             tenant_id=tenant_id,
             role=ROLE_ASSISTANT,
             content=reply_text,
             covered_fields=covered,
+            captured_summary=summary,
         )
         self.db.commit()
-        return TurnResult(reply_text=reply_text, covered_fields=covered)
+        return TurnResult(
+            reply_text=reply_text,
+            covered_fields=covered,
+            captured_summary=summary,
+            generate_signal=generate_signal,
+        )
 
     # -- generate (extraction) -------------------------------------------------
     def generate(
@@ -335,7 +364,11 @@ class GrillEngine:
 
         system = _compose_extraction_system(ctx)
         base_messages = _extraction_messages(ctx, transcript)
-        schema = field_schema(ctx.target_fields)
+        # required=True (AC-BI-24c): mark EVERY target key required so the model
+        # returns a value for each field — including one synthesized across turns
+        # or a negative answer. The paired directive keeps genuinely-ungrounded
+        # fields blank (never invented) and validate stays enforce_required=False.
+        schema = field_schema(ctx.target_fields, required=True)
 
         # Attempt 1.
         result, trace = self._complete_traced(
@@ -514,10 +547,13 @@ def _compose_extraction_system(ctx: GrillContext) -> str:
     base = _compose_system(ctx)
     directive = (
         "\n\n---\nEXTRACTION TASK: Read the ENTIRE conversation above and the "
-        "linked source artifacts, then return ONLY structured output filling each "
-        "target field with what the conversation actually established. A later "
-        "answer overrides an earlier one. If a field was never grounded, leave it "
-        "an EMPTY string — never invent a value. Do not add commentary."
+        "linked source artifacts, then return ONLY structured output. Return a "
+        "value for EVERY field in the schema. For a field discussed across "
+        "several turns, SYNTHESIZE the final agreed answer from the whole "
+        "conversation. A negative answer (e.g. 'no constraints', 'none') is still "
+        "a value — state it plainly. A later answer overrides an earlier one. "
+        "Only leave a field an EMPTY string if it was GENUINELY never discussed — "
+        "NEVER invent a value to fill a field. Do not add commentary."
     )
     return base + directive
 
@@ -538,8 +574,17 @@ def _extraction_messages(ctx: GrillContext, transcript) -> List[Dict[str, str]]:
 
 
 def _turn_schema(ctx: GrillContext) -> Dict[str, Any]:
-    """The turn's ONE structured output (AC-BI-24b): prose reply + the coverage
-    map (answer-keys grounded so far), returned together in a single call."""
+    """The turn's ONE structured output (AC-BI-24b + 24c): prose reply + the
+    coverage map + a running captured summary + a generate signal, returned
+    together in a single call so the panel updates each turn with NO extra
+    extraction pass (AC-BI-24c).
+
+    - ``capturedSummary`` = a ``{fieldKey: shortValue}`` map of what the
+      conversation has understood so far (values only — the panel renders them).
+    - ``generateSignal`` = TRUE only when the user's LATEST message clearly asks
+      to finalize/generate ("generate it", "that's enough"). The MODEL signals;
+      the APP fires Generate (D22-A: the model gains no side-effect tool).
+    """
     keys = [f["key"] for f in ctx.target_fields if f.get("key")]
     return {
         "type": "object",
@@ -553,8 +598,39 @@ def _turn_schema(ctx: GrillContext) -> Dict[str, Any]:
                 "items": {"type": "string", "enum": keys},
                 "description": "Target field keys the conversation has grounded SO FAR.",
             },
+            # A LIST of {key, value} — NOT a nested object with per-field
+            # properties. gemini-2.5-flash runs away to MAX_TOKENS on a nested
+            # object property here even with thinking off (live-verified, the S3
+            # runaway class); the enum-keyed array shape (like coveredFields)
+            # decodes cleanly. `_clean_summary` folds it back to a {key: value}
+            # map for the wire.
+            "capturedSummary": {
+                "type": "array",
+                "description": (
+                    "The target fields established so far, each with a concise "
+                    "current value. Omit a field not yet discussed. Values only — "
+                    "no commentary."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string", "enum": keys},
+                        "value": {"type": "string"},
+                    },
+                    "required": ["key", "value"],
+                },
+            },
+            "generateSignal": {
+                "type": "boolean",
+                "description": (
+                    "TRUE only if the user's latest message clearly asks to "
+                    "finalize or generate the requirement now (e.g. 'generate it', "
+                    "'create the BR', 'that's enough', 'looks good, make it'). "
+                    "FALSE for a normal answer or question."
+                ),
+            },
         },
-        "required": ["replyText", "coveredFields"],
+        "required": ["replyText", "coveredFields", "capturedSummary", "generateSignal"],
     }
 
 
@@ -566,13 +642,44 @@ def _structured(result: LLMResult) -> Dict[str, Any]:
     return {}
 
 
+def _clean_summary(raw: Any, valid_keys: set) -> Dict[str, str]:
+    """Coerce the model's ``capturedSummary`` to a ``{validKey: str}`` map — drop
+    unknown keys (defense, like ``coveredFields``) and non-string / blank values
+    so the panel only ever renders grounded target fields.
+
+    Accepts BOTH shapes: the wire/model list-of-``{key, value}`` (the enum-keyed
+    array the turn schema requests — a nested object property runs Gemini away,
+    the S3 runaway class) AND a plain ``{key: value}`` dict (a persisted map, or a
+    stub/other-provider fallback)."""
+
+    def _put(out: Dict[str, str], key: Any, value: Any) -> None:
+        if not isinstance(key, str) or key not in valid_keys:
+            return
+        text = value if isinstance(value, str) else ("" if value is None else str(value))
+        text = text.strip()
+        if text:
+            out[key] = text
+
+    out: Dict[str, str] = {}
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                _put(out, item.get("key"), item.get("value"))
+    elif isinstance(raw, dict):
+        for key, value in raw.items():
+            _put(out, key, value)
+    return out
+
+
 def _parse_turn(result: LLMResult, valid_keys: set):
     structured = _structured(result)
     reply = structured.get("replyText")
     if not isinstance(reply, str) or not reply.strip():
         reply = result.text or "Could you tell me more?"
     covered = _clean_covered(structured.get("coveredFields"), valid_keys)
-    return reply, covered
+    summary = _clean_summary(structured.get("capturedSummary"), valid_keys)
+    generate_signal = structured.get("generateSignal") is True
+    return reply, covered, summary, generate_signal
 
 
 def _opening_instruction() -> str:
@@ -587,7 +694,8 @@ def _opening_instruction() -> str:
         "fields. Ask only ONE question. Do not invent details the artifacts do not "
         "contain. In coveredFields, include any target field the linked source "
         "artifacts ALREADY establish (do not leave a field the artifacts clearly "
-        "answer marked as uncovered)."
+        "answer marked as uncovered), and give its value in capturedSummary. Set "
+        "generateSignal to false — the interview is only beginning."
     )
 
 

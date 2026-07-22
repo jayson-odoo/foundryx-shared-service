@@ -313,6 +313,7 @@ class ConversationRepository:
         role: str,
         content: str,
         covered_fields: Optional[List[str]] = None,
+        captured_summary: Optional[dict] = None,
     ) -> AiMessage:
         message = AiMessage(
             conversation_id=conversation_id,
@@ -320,6 +321,7 @@ class ConversationRepository:
             role=role,
             content=content or "",
             covered_fields_json=list(covered_fields) if covered_fields is not None else None,
+            captured_summary_json=dict(captured_summary) if captured_summary else None,
             # Stamp wall-clock microsecond time — NOT ``func.now()`` (transaction
             # time in Postgres, identical for both turns of one grill turn, which
             # would make transcript order ambiguous). Successive appends get

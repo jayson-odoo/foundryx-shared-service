@@ -33,6 +33,9 @@ export interface UseGrillResult {
   fields: GrillField[];
   messages: GrillMessage[];
   coveredFields: string[];
+  /** The running per-field captured summary (AC-BI-24c) — values understood so
+   * far, keyed by field key; updates each turn. */
+  capturedSummary: Record<string, string>;
   /** Fields with no coverage yet (for the "missing: …" indicator). */
   missingFields: GrillField[];
   sending: boolean;
@@ -54,6 +57,7 @@ export function useGrill(brId: string, options: UseGrillOptions = {}): UseGrillR
   const [fields, setFields] = useState<GrillField[]>([]);
   const [messages, setMessages] = useState<GrillMessage[]>([]);
   const [coveredFields, setCoveredFields] = useState<string[]>([]);
+  const [capturedSummary, setCapturedSummary] = useState<Record<string, string>>({});
   const [sending, setSending] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,6 +73,7 @@ export function useGrill(brId: string, options: UseGrillOptions = {}): UseGrillR
       setFields(s.fields);
       setMessages(s.messages);
       setCoveredFields(s.coveredFields);
+      setCapturedSummary(s.capturedSummary ?? {});
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load the grill.');
@@ -100,6 +105,7 @@ export function useGrill(brId: string, options: UseGrillOptions = {}): UseGrillR
         const s = await grillService.state(brId);
         setMessages(s.messages);
         setCoveredFields(s.coveredFields);
+        setCapturedSummary(s.capturedSummary ?? {});
       } catch (e) {
         setError(e instanceof Error ? e.message : 'The grill could not start.');
       } finally {
@@ -107,6 +113,33 @@ export function useGrill(brId: string, options: UseGrillOptions = {}): UseGrillR
       }
     })();
   }, [autoOpen, isLoading, ready, messages.length, brId]);
+
+  // `generatingRef` lets `sendTurn` skip an auto-fire while a Generate is already
+  // in flight WITHOUT taking `generate` as a dependency (which would re-create
+  // `sendTurn` each render) — the prompt-to-generate path fires at most once.
+  const generatingRef = useRef(false);
+
+  const generate = useCallback(async () => {
+    if (generatingRef.current) return;
+    generatingRef.current = true;
+    setGenerating(true);
+    setError(null);
+    setFieldErrors({});
+    try {
+      const result = await grillService.generate(brId);
+      if (result.status === 'needs_review') {
+        setFieldErrors(result.fieldErrors);
+        setError('The generated requirement needs review — some fields could not be filled.');
+        return;
+      }
+      if (result.br) onGenerated?.(result.br);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Generate failed.');
+    } finally {
+      generatingRef.current = false;
+      setGenerating(false);
+    }
+  }, [brId, onGenerated]);
 
   const sendTurn = useCallback(
     async (message: string) => {
@@ -123,6 +156,7 @@ export function useGrill(brId: string, options: UseGrillOptions = {}): UseGrillR
         createdAt: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, optimistic]);
+      let signalled = false;
       try {
         const turn = await grillService.turn(brId, text);
         // Re-sync from the server so the transcript is authoritative (no
@@ -130,6 +164,8 @@ export function useGrill(brId: string, options: UseGrillOptions = {}): UseGrillR
         const s = await grillService.state(brId);
         setMessages(s.messages);
         setCoveredFields(turn.coveredFields);
+        setCapturedSummary(turn.capturedSummary ?? {});
+        signalled = turn.generateSignal === true;
       } catch (e) {
         // Roll back the optimistic turn — keep the transcript consistent.
         setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
@@ -137,29 +173,13 @@ export function useGrill(brId: string, options: UseGrillOptions = {}): UseGrillR
       } finally {
         setSending(false);
       }
+      // Prompt-to-generate (AC-BI-24c): the MODEL signalled finalize intent → the
+      // APP fires the existing Generate call (once per intent — a normal turn with
+      // generateSignal=false does nothing new; `generate` guards against overlap).
+      if (signalled) void generate();
     },
-    [brId, sending],
+    [brId, sending, generate],
   );
-
-  const generate = useCallback(async () => {
-    if (generating) return;
-    setGenerating(true);
-    setError(null);
-    setFieldErrors({});
-    try {
-      const result = await grillService.generate(brId);
-      if (result.status === 'needs_review') {
-        setFieldErrors(result.fieldErrors);
-        setError('The generated requirement needs review — some fields could not be filled.');
-        return;
-      }
-      if (result.br) onGenerated?.(result.br);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Generate failed.');
-    } finally {
-      setGenerating(false);
-    }
-  }, [brId, generating, onGenerated]);
 
   const missingFields = useMemo(
     () => fields.filter((f) => !coveredFields.includes(f.key)),
@@ -174,6 +194,7 @@ export function useGrill(brId: string, options: UseGrillOptions = {}): UseGrillR
     fields,
     messages,
     coveredFields,
+    capturedSummary,
     missingFields,
     sending,
     generating,

@@ -245,6 +245,130 @@ def test_generate_persists_answers_via_the_definition(engine_fixture):
     assert sink["answers"] == {"summary": "Export orders faster.", "priority": "high"}
 
 
+def test_generate_requests_a_required_extraction_schema(engine_fixture, monkeypatch):
+    """AC-BI-24c (FIX 1): the EXTRACTION call marks EVERY target key required so a
+    (thinking-off) shallow pass can't silently omit a synthesized field. Asserted
+    at the request level — the schema Generate builds carries required=[all keys]."""
+    import app.ai.grill as grill_mod
+
+    captured: dict = {}
+    real = grill_mod.field_schema
+
+    def spy(fields, *, required=False):
+        captured["required"] = required
+        schema = real(fields, required=required)
+        captured["schema"] = schema
+        return schema
+
+    monkeypatch.setattr(grill_mod, "field_schema", spy)
+    db, definition, _ = engine_fixture
+    with stub_fixtures(StubResponse(structured={"summary": "x", "priority": "low"})):
+        GrillEngine(db).generate(definition, DEFAULT_TENANT_ID, "br-x", _demo_user(db))
+    assert captured["required"] is True
+    # Every target key is required in the extraction schema.
+    assert set(captured["schema"]["required"]) == {"summary", "priority"}
+
+
+def test_generate_completeness_emits_all_fields(engine_fixture):
+    """AC-BI-24c: when the model returns a value for every field (the completeness
+    directive's goal), ALL of them persist — none silently dropped."""
+    db, definition, sink = engine_fixture
+    actor = _demo_user(db)
+    with stub_fixtures(
+        StubResponse(structured={"summary": "Export orders faster.", "priority": "high"})
+    ):
+        result = GrillEngine(db).generate(definition, DEFAULT_TENANT_ID, "br-all", actor)
+    assert result.ok is True
+    assert set(sink["answers"].keys()) == {"summary", "priority"}
+
+
+def test_turn_returns_captured_summary_and_generate_signal(engine_fixture):
+    """AC-BI-24c (FIX 2/3): the ONE turn call also returns a running
+    capturedSummary + a generateSignal; both are parsed, and the summary is
+    filtered to valid keys (like coveredFields)."""
+    db, definition, _ = engine_fixture
+    actor = _demo_user(db)
+    with stub_fixtures(
+        StubResponse(
+            structured={
+                "replyText": "Noted. What is the priority?",
+                "coveredFields": ["summary"],
+                "capturedSummary": {"summary": "Speed up exports", "bogus": "x"},
+                "generateSignal": True,
+            }
+        )
+    ):
+        result = GrillEngine(db).turn(definition, DEFAULT_TENANT_ID, "br-cs", "It is about exports.", actor)
+    assert result.captured_summary == {"summary": "Speed up exports"}  # 'bogus' filtered
+    assert result.generate_signal is True
+
+
+def test_captured_summary_persists_and_state_returns_it(engine_fixture):
+    """AC-BI-24c: the summary is persisted on the assistant turn and the state read
+    returns the LATEST turn's summary (durable draft — survives a reload)."""
+    db, definition, _ = engine_fixture
+    actor = _demo_user(db)
+    with stub_fixtures(
+        StubResponse(
+            structured={
+                "replyText": "And the goal?",
+                "coveredFields": ["summary"],
+                "capturedSummary": {"summary": "Speed up exports"},
+                "generateSignal": False,
+            }
+        )
+    ):
+        GrillEngine(db).turn(definition, DEFAULT_TENANT_ID, "br-persist", "exports", actor)
+    # A fresh state read (as the Grill tab would do on reload) carries the summary.
+    state = GrillEngine(db).state(definition, DEFAULT_TENANT_ID, "br-persist")
+    assert state.captured_summary == {"summary": "Speed up exports"}
+    # And it landed on the assistant message row.
+    convo = db.query(AiConversation).filter(AiConversation.target_id == "br-persist").first()
+    msgs = (
+        db.query(AiMessage)
+        .filter(AiMessage.conversation_id == convo.id)
+        .order_by(AiMessage.created_at.asc())
+        .all()
+    )
+    assert msgs[1].captured_summary_json == {"summary": "Speed up exports"}
+
+
+def test_turn_schema_carries_summary_and_signal(engine_fixture):
+    """AC-BI-24c parity: the turn's ONE output schema includes capturedSummary +
+    generateSignal (kept in sync with the FE GrillTurn type)."""
+    from app.ai.grill import GrillContext, _turn_schema
+
+    ctx = GrillContext(
+        tenant_id="t",
+        target_id="br",
+        target_fields=list(_TEST_FIELDS),
+        target_doc=_TEST_DOC,
+        source_artifacts=[],
+        source_type="idea",
+        source_ids=[],
+        template_version=1,
+        agent=None,
+        skill_body="",
+        skill_key="grill-me-business",
+        prompt_version=1,
+    )
+    schema = _turn_schema(ctx)
+    assert "capturedSummary" in schema["properties"]
+    # An enum-keyed ARRAY of {key,value} — NOT a nested object (which runs Gemini
+    # away to MAX_TOKENS, the S3 runaway class; live-verified).
+    summary = schema["properties"]["capturedSummary"]
+    assert summary["type"] == "array"
+    assert summary["items"]["properties"]["key"]["enum"] == ["summary", "priority"]
+    assert set(summary["items"]["required"]) == {"key", "value"}
+    assert schema["properties"]["generateSignal"]["type"] == "boolean"
+    assert set(schema["required"]) == {
+        "replyText",
+        "coveredFields",
+        "capturedSummary",
+        "generateSignal",
+    }
+
+
 def test_partial_extraction_leaves_missing_required_blank_no_422(engine_fixture):
     """A partial extraction (summary REQUIRED but omitted) is SUCCESS — the field
     is left blank, nothing 422s (AC-BI-26/24b)."""

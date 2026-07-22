@@ -54,6 +54,7 @@ export function BrGrillTab({ brId, onGenerated, hasLinkedIdeas = false }: BrGril
           messages={grill.messages}
           fields={grill.fields}
           coveredFields={grill.coveredFields}
+          capturedSummary={grill.capturedSummary}
           missingFields={grill.missingFields}
           sending={grill.sending}
           generating={grill.generating}

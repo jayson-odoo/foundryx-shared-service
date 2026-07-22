@@ -30,6 +30,7 @@ function state(overrides: Partial<GrillState> = {}): GrillState {
     fields: FIELDS,
     messages: [],
     coveredFields: [],
+    capturedSummary: {},
     ...overrides,
   };
 }
@@ -37,7 +38,12 @@ function state(overrides: Partial<GrillState> = {}): GrillState {
 beforeEach(() => {
   vi.clearAllMocks();
   svc.state.mockResolvedValue(state());
-  svc.open.mockResolvedValue({ replyText: 'Greeting?', coveredFields: ['problem_statement'] });
+  svc.open.mockResolvedValue({
+    replyText: 'Greeting?',
+    coveredFields: ['problem_statement'],
+    capturedSummary: { problem_statement: 'Exports are slow' },
+    generateSignal: false,
+  });
 });
 
 describe('useGrill (AC-BI-22/29)', () => {
@@ -61,7 +67,12 @@ describe('useGrill (AC-BI-22/29)', () => {
   });
 
   it('sends a turn and re-syncs the transcript + coverage', async () => {
-    svc.turn.mockResolvedValue({ replyText: 'Next?', coveredFields: ['problem_statement'] });
+    svc.turn.mockResolvedValue({
+      replyText: 'Next?',
+      coveredFields: ['problem_statement'],
+      capturedSummary: { problem_statement: 'Exports are slow' },
+      generateSignal: false,
+    });
     svc.state
       .mockResolvedValueOnce(state())
       .mockResolvedValueOnce(
@@ -88,6 +99,64 @@ describe('useGrill (AC-BI-22/29)', () => {
     expect(svc.turn).toHaveBeenCalledWith('br-1', 'hi');
     expect(result.current.coveredFields).toEqual(['problem_statement']);
     expect(result.current.missingFields.map((f) => f.key)).toEqual(['business_goal']);
+  });
+
+  it('updates the running captured summary from a turn (AC-BI-24c)', async () => {
+    svc.turn.mockResolvedValue({
+      replyText: 'Next?',
+      coveredFields: ['problem_statement', 'business_goal'],
+      capturedSummary: {
+        problem_statement: 'Exports time out on big accounts',
+        business_goal: 'Cut month-end manual work',
+      },
+      generateSignal: false,
+    });
+    const { result } = renderHook(() => useGrill('br-1'));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    await act(async () => {
+      await result.current.sendTurn('CS cannot export');
+    });
+    expect(result.current.capturedSummary).toEqual({
+      problem_statement: 'Exports time out on big accounts',
+      business_goal: 'Cut month-end manual work',
+    });
+  });
+
+  it('fires Generate exactly once when the turn carries generateSignal (AC-BI-24c)', async () => {
+    svc.turn.mockResolvedValue({
+      replyText: 'On it.',
+      coveredFields: ['problem_statement'],
+      capturedSummary: { problem_statement: 'Exports are slow' },
+      generateSignal: true,
+    });
+    const onGenerated = vi.fn();
+    const br = { id: 'br-1', status: 'draft', answers: {} };
+    svc.generate.mockResolvedValue({ status: 'ok', br, answers: {}, fieldErrors: {} });
+    const { result } = renderHook(() => useGrill('br-1', { onGenerated }));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    await act(async () => {
+      await result.current.sendTurn('generate it');
+    });
+    await waitFor(() => expect(svc.generate).toHaveBeenCalledTimes(1));
+    expect(onGenerated).toHaveBeenCalledWith(br);
+  });
+
+  it('does NOT fire Generate on a normal turn (generateSignal false)', async () => {
+    svc.turn.mockResolvedValue({
+      replyText: 'What is the success metric?',
+      coveredFields: ['problem_statement'],
+      capturedSummary: { problem_statement: 'Exports are slow' },
+      generateSignal: false,
+    });
+    const { result } = renderHook(() => useGrill('br-1'));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    await act(async () => {
+      await result.current.sendTurn('It is about exports');
+    });
+    expect(svc.generate).not.toHaveBeenCalled();
   });
 
   it('rolls the optimistic turn back on a provider error, keeping the transcript consistent (AC-BI-23)', async () => {

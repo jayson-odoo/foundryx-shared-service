@@ -241,6 +241,16 @@ def register_idea_to_br_grill() -> None:
     )
 
 
+def _turn_out(result) -> GrillTurnOut:
+    """Map a core ``TurnResult`` to the wire schema (AC-BI-24b/24c)."""
+    return GrillTurnOut(
+        replyText=result.reply_text,
+        coveredFields=result.covered_fields,
+        capturedSummary=result.captured_summary,
+        generateSignal=result.generate_signal,
+    )
+
+
 # ── the ideation grill service (the router stays HTTP-only) ───────────────────
 
 
@@ -280,6 +290,7 @@ class IdeationGrillService:
                 for m in state.messages
             ],
             coveredFields=state.covered_fields,
+            capturedSummary=state.captured_summary,
         )
 
     def open_grill(self, tenant_id: str, br_id: str, actor) -> GrillTurnOut:
@@ -296,7 +307,7 @@ class IdeationGrillService:
             result = self.engine.open(self._definition(), tenant_id, br_id, actor)
         except GrillError as exc:
             raise HTTPException(502, str(exc)) from exc
-        return GrillTurnOut(replyText=result.reply_text, coveredFields=result.covered_fields)
+        return _turn_out(result)
 
     def turn(self, tenant_id: str, br_id: str, message: str, actor) -> GrillTurnOut:
         self.br._br_or_404(tenant_id, br_id)
@@ -310,7 +321,7 @@ class IdeationGrillService:
             result = self.engine.turn(self._definition(), tenant_id, br_id, text, actor)
         except GrillError as exc:
             raise HTTPException(502, str(exc)) from exc
-        return GrillTurnOut(replyText=result.reply_text, coveredFields=result.covered_fields)
+        return _turn_out(result)
 
     def generate(self, tenant_id: str, br_id: str, actor) -> GrillGenerateOut:
         self.br._br_or_404(tenant_id, br_id)

@@ -13,6 +13,8 @@ export interface GrillChatProps {
   messages: GrillMessage[];
   fields: GrillField[];
   coveredFields: string[];
+  /** The running per-field understood values (AC-BI-24c). */
+  capturedSummary: Record<string, string>;
   missingFields: GrillField[];
   sending: boolean;
   generating: boolean;
@@ -33,6 +35,7 @@ export function GrillChat({
   messages,
   fields,
   coveredFields,
+  capturedSummary,
   missingFields,
   sending,
   generating,
@@ -76,6 +79,27 @@ export function GrillChat({
           <span className="text-green-600">All fields captured</span>
         )}
       </div>
+
+      {/* Running captured summary (AC-BI-24c): each target field + its current
+          understood value. Values only — no how-to copy (foolproof-UI). */}
+      <dl className="grid gap-x-4 gap-y-2 rounded-lg border px-3 py-2.5 text-sm sm:grid-cols-2">
+        {fields.map((f) => {
+          const value = capturedSummary[f.key]?.trim();
+          return (
+            <div key={f.key} className="flex flex-col gap-0.5">
+              <dt className="text-xs font-medium text-muted-foreground">{f.label}</dt>
+              <dd
+                className={cn(
+                  'whitespace-pre-wrap break-words',
+                  value ? 'text-foreground' : 'text-muted-foreground/60',
+                )}
+              >
+                {value || '—'}
+              </dd>
+            </div>
+          );
+        })}
+      </dl>
 
       <ScrollArea
         ref={scrollRef}

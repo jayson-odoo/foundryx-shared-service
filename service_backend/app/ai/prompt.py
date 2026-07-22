@@ -41,14 +41,25 @@ def _stringify(value: Any) -> str:
     return str(value)
 
 
-def field_schema(fields: List[Dict[str, str]]) -> Dict[str, Any]:
+def field_schema(fields: List[Dict[str, str]], *, required: bool = False) -> Dict[str, Any]:
     """A JSON Schema object shaped by a target template's field list.
 
-    Every field is a plain string and NOTHING is marked required: the extraction
-    contract explicitly permits a partial emit (Bi-D13) — a field the transcript
-    can't ground must come back blank, not invented to satisfy a schema.
+    Every field is a plain string. ``required`` controls schema pressure:
+
+    - ``required=False`` (the TURN default) marks nothing required — coverage is
+      incremental and a field the transcript hasn't reached yet is simply absent.
+    - ``required=True`` (the EXTRACTION contract, AC-BI-24c) marks EVERY key
+      required so the model returns a value for each field — including one it must
+      synthesize across turns, or a negative answer like "no constraints". Without
+      this pressure a shallow (thinking-off) pass silently omits synthesized
+      fields (the live bug). This is NOT invention: the paired directive tells the
+      model to emit an EMPTY string for a genuinely-ungrounded field, and our
+      ``validate_submission(..., enforce_required=False)`` accepts those blanks —
+      partial emit stays success (AC-BI-26). ``required`` here is only schema
+      pressure toward completeness, never the promote-gate completeness check.
     """
-    return {
+    keys = [f["key"] for f in fields if f.get("key")]
+    schema: Dict[str, Any] = {
         "type": "object",
         "properties": {
             f["key"]: {
@@ -59,3 +70,6 @@ def field_schema(fields: List[Dict[str, str]]) -> Dict[str, Any]:
             if f.get("key")
         },
     }
+    if required and keys:
+        schema["required"] = keys
+    return schema

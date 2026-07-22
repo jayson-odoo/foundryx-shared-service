@@ -455,12 +455,53 @@ def test_compose_missing_token_collapses_to_empty():
 
 
 def test_field_schema_marks_nothing_required():
-    """Bi-D13 — partial emit is success. A required[] would force the model to
-    invent values it cannot ground."""
+    """Bi-D13 — the TURN default marks nothing required: coverage is incremental
+    and an unreached field is simply absent."""
     schema = field_schema([{"key": "problem_statement", "label": "Problem"}])
     assert schema["type"] == "object"
     assert "problem_statement" in schema["properties"]
     assert "required" not in schema
+
+
+def test_field_schema_required_marks_every_key():
+    """AC-BI-24c — the EXTRACTION schema marks EVERY key required so the model
+    returns a value for each field (including one synthesized across turns), never
+    silently omitting synthesized fields. Partial emit still holds — the paired
+    directive + enforce_required=False keep a genuinely-blank field blank."""
+    fields = [
+        {"key": "problem_statement", "label": "Problem"},
+        {"key": "business_goal", "label": "Goal"},
+        {"key": "constraints", "label": "Constraints"},
+    ]
+    schema = field_schema(fields, required=True)
+    assert schema["required"] == ["problem_statement", "business_goal", "constraints"]
+    # An empty field list must not emit an empty required[] (a degenerate schema).
+    assert "required" not in field_schema([], required=True)
+
+
+def test_extraction_directive_demands_a_value_for_every_field():
+    """AC-BI-24c — the extraction directive tells the model to return a value for
+    EVERY field and to SYNTHESIZE across turns, while still never inventing."""
+    from app.ai.grill import GrillContext, _compose_extraction_system
+
+    ctx = GrillContext(
+        tenant_id="t",
+        target_id="br",
+        target_fields=[{"key": "business_goal", "label": "Goal"}],
+        target_doc={},
+        source_artifacts=["Problem: exports are slow"],
+        source_type="idea",
+        source_ids=["idea-1"],
+        template_version=1,
+        agent=None,
+        skill_body="Grill about {{ target_fields }} using {{ source_artifacts }}.",
+        skill_key="grill-me-business",
+        prompt_version=1,
+    )
+    directive = _compose_extraction_system(ctx)
+    assert "value for EVERY field" in directive
+    assert "SYNTHESIZE" in directive
+    assert "NEVER invent" in directive
 
 
 # ── AC-BI-09/10: traces, spans, payload caps ─────────────────────────────
