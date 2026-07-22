@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en" data-theme="luxury">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ideation — Capture Quality + Embed Parity</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css">
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    :where(.grid, .flex) > * { min-width: 0; }
+    :where(p, h1, h2, h3, h4, li, dd, td, th, .badge) { overflow-wrap: anywhere; }
+    :where(img, svg) { max-width: 100%; height: auto; }
+    .mermaid { display: flex; justify-content: center; }
+    .mermaid svg { max-width: 100%; height: auto; }
+  </style>
+</head>
+<body class="bg-base-200 text-base-content">
+<main class="mx-auto max-w-6xl p-5 lg:p-10 space-y-10">
+
+  <!-- ── HEADER ─────────────────────────────────────────────────────────── -->
+  <header class="space-y-3">
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="badge badge-primary badge-lg">PLAN</span>
+      <span class="badge badge-soft badge-warning">grilled · pre-build</span>
+      <span class="badge badge-soft">cross-repo: sorento · shared-service · n8n</span>
+    </div>
+    <h1 class="text-3xl lg:text-4xl font-bold">Ideation — Capture Quality + Embed Parity</h1>
+    <p class="text-base-content/70 max-w-3xl">
+      Three defects surfaced when eyeballing the live embed on <code>fe-sorento.foundryx.my</code>.
+      This plan fixes capture identity + raw notes, and collapses the duplicated iframe UI onto the
+      operator grid. Decisions below are already grilled &amp; locked — annotate anything you want changed.
+    </p>
+  </header>
+
+  <!-- ── GOAL / CURRENT STATE ───────────────────────────────────────────── -->
+  <section class="space-y-4">
+    <h2 class="text-2xl font-semibold">What's broken today</h2>
+    <div class="grid gap-4 md:grid-cols-3">
+      <div class="card card-border bg-base-100">
+        <div class="card-body">
+          <h3 class="card-title text-lg">1 · Submitter "Unknown"</h3>
+          <p class="text-sm text-base-content/70">Every captured idea shows <b>Unknown</b> as submitter.
+          The sender's name is never carried into the idea.</p>
+        </div>
+      </div>
+      <div class="card card-border bg-base-100">
+        <div class="card-body">
+          <h3 class="card-title text-lg">2 · Raw notes = last line</h3>
+          <p class="text-sm text-base-content/70">Raw notes store only the final message —
+          usually <i>"okay i confirm"</i>. The actual conversation is lost.</p>
+        </div>
+      </div>
+      <div class="card card-border bg-base-100">
+        <div class="card-body">
+          <h3 class="card-title text-lg">3 · Duplicated iframe UI</h3>
+          <p class="text-sm text-base-content/70">The iframe renders a bespoke simple list/detail,
+          separate from the operator grid → two UIs to maintain.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── DIAGRAM: capture pipeline ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-2xl font-semibold">Where the fixes land — capture pipeline</h2>
+    <p class="text-base-content/70 text-sm">No new WhatsApp channel. Identity + transcript ride the
+      existing Respond.io → n8n → turn flow. Shared-service stays a no-LLM sink (D20).</p>
+    <div class="card card-border bg-base-100"><div class="card-body">
+      <pre class="mermaid">
+flowchart TD
+  WA["WhatsApp sender"] --> RIO["Respond.io<br/>owns number · has profile name"]
+  RIO --> N8N["n8n<br/>routes the ideate turn"]
+  N8N --> TURN["sorento turn endpoint<br/>ideation_turn_service"]
+  TURN -->|"WS-A: read respond_contacts name<br/>WS-B: accumulate transcript in session_vars"| PAY["create_idea payload<br/>submitter · <b>submitter_name</b> · message_text · <b>raw_transcript</b>"]
+  PAY --> CI["shared-service create_idea<br/>stores idea.submitter_name<br/>raw_text = full transcript"]
+  CI --> DB[("app_ideation.ideas")]
+  RIO -.->|"fallback name if DB blank"| N8N
+      </pre>
+    </div></div>
+  </section>
+
+  <!-- ── DIAGRAM: embed handshake ───────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-2xl font-semibold">Where the fixes land — embed (full grid parity)</h2>
+    <div class="card card-border bg-base-100"><div class="card-body">
+      <pre class="mermaid">
+flowchart TD
+  U["sorento user opens Ideas iframe"] --> HS["sorento /embed/session<br/>mint signed assertion"]
+  HS --> SS["shared-service verify_and_mint<br/>embed token = tenant + <b>product_id</b>"]
+  SS --> IFR["iframe: FULL operator grid<br/>ONE component, embed mode, chrome-less"]
+  IFR -->|"WS-C: /embed/* writes scoped to tenant+product · audited"| SVC["operator services<br/>list · board · create · status · reorder · vote · delete · bulk · export"]
+  IFR -.->|"G5: on 401/expiry, silent re-mint via host"| HS
+      </pre>
+    </div></div>
+  </section>
+
+  <!-- ── WORKSTREAMS ────────────────────────────────────────────────────── -->
+  <section class="space-y-4">
+    <h2 class="text-2xl font-semibold">The three workstreams</h2>
+
+    <div class="collapse collapse-arrow bg-base-100 card-border">
+      <input type="checkbox" checked>
+      <div class="collapse-title text-lg font-medium flex items-center gap-2">
+        <span class="badge badge-success">WS-A</span> Submitter name <span class="badge badge-soft badge-sm">small · sorento-only</span>
+      </div>
+      <div class="collapse-content text-sm space-y-2">
+        <ul class="list-disc ml-5 space-y-1">
+          <li><b>Sorento</b> turn service: extend <code>_get_contact_row</code> SELECT to include name/first_name/last_name; send <code>submitter_name</code> (DB name → n8n fallback → None).</li>
+          <li><b>Shared-service</b> <code>create_idea</code>: accept the string, store <code>idea.submitter_name</code> directly (not the Contact copy — G4).</li>
+          <li>Serializer already prefers <code>idea.submitter_name</code> (<code>ideas.py:61</code>).</li>
+        </ul>
+        <div class="text-base-content/60">AC-CAP-1..4</div>
+      </div>
+    </div>
+
+    <div class="collapse collapse-arrow bg-base-100 card-border">
+      <input type="checkbox" checked>
+      <div class="collapse-title text-lg font-medium flex items-center gap-2">
+        <span class="badge badge-success">WS-B</span> Cumulative raw notes <span class="badge badge-soft badge-sm">small · cross-repo</span>
+      </div>
+      <div class="collapse-content text-sm space-y-2">
+        <ul class="list-disc ml-5 space-y-1">
+          <li><b>Sorento</b> accumulates each turn in <code>session_vars.ideation</code> (length-capped); sends full <code>raw_transcript</code>.</li>
+          <li><b>Shared-service</b> stores <code>raw_transcript</code> → <code>raw_text</code>; stops overwriting with the last message (<code>intake.py:288</code>). Falls back to <code>message_text</code> when absent.</li>
+          <li><code>message_text</code> stays current-turn → extraction + trigram dedup unchanged.</li>
+        </ul>
+        <div class="text-base-content/60">AC-CAP-5..8</div>
+      </div>
+    </div>
+
+    <div class="collapse collapse-arrow bg-base-100 card-border">
+      <input type="checkbox" checked>
+      <div class="collapse-title text-lg font-medium flex items-center gap-2">
+        <span class="badge badge-warning">WS-C</span> Embed = operator grid parity <span class="badge badge-soft badge-sm badge-error">big · security</span>
+      </div>
+      <div class="collapse-content text-sm space-y-3">
+        <div>
+          <div class="font-semibold">C1 · One component, two modes (FE)</div>
+          <p class="text-base-content/70">Refactor the operator list/grid + detail to take <code>mode: operator | embed</code>. Delete <code>embed-ideas-board.tsx</code> / <code>embed-idea-detail.tsx</code>; the iframe mounts the shared component chrome-less.</p>
+        </div>
+        <div>
+          <div class="font-semibold">C2 · Embed-authed operator writes (BE)</div>
+          <p class="text-base-content/70">Dedicated <code>/embed/*</code> write routes reusing the operator services, each asserting <code>principal.tenant_id</code> AND <code>principal.product_id</code>. Prereq: put <code>connection.product_id</code> in the token + pass to <code>list/board(product_id=)</code>.</p>
+        </div>
+        <div>
+          <div class="font-semibold">C3 · Session longevity</div>
+          <p class="text-base-content/70">Keep the 5-min token; iframe silently re-mints via the host handshake on 401 (G5).</p>
+        </div>
+        <div class="text-base-content/60">AC-CAP-9..13</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── DECISIONS (RESOLVED) ───────────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-2xl font-semibold">Grilled decisions <span class="text-base-content/50 text-base font-normal">— locked, with cost</span></h2>
+    <div class="overflow-x-auto rounded-box border border-base-content/10 bg-base-100">
+      <table class="table table-zebra">
+        <thead><tr><th>#</th><th>Decision</th><th>Chosen</th><th>Cost / note</th></tr></thead>
+        <tbody>
+          <tr><td>D1</td><td>Submitter source</td><td><span class="badge badge-success badge-sm">respond_contacts → n8n fallback</span></td><td>Name resolved sorento-side; shared-service just stores a string.</td></tr>
+          <tr><td>D2</td><td>Transcript owner</td><td><span class="badge badge-success badge-sm">sorento accumulates</span></td><td>Shared-service stays a dumb sink; sorento owns conversation state.</td></tr>
+          <tr><td>D3 / G1</td><td>Embed write scope</td><td><span class="badge badge-error badge-sm">truly everything (incl. delete/bulk)</span></td><td class="text-warning">Destructive ops reachable in-iframe → guarded by tenant+product scope, host-gated minting, allow-listed origin, short token, audit.</td></tr>
+          <tr><td>G2</td><td>Auth model</td><td><span class="badge badge-info badge-sm">dedicated /embed/* routes</span></td><td>Explicit scope per route (auditable) over a dual-auth dependency.</td></tr>
+          <tr><td>G3</td><td>Transcript PII</td><td><span class="badge badge-soft badge-sm">cap length, existing retention</span></td><td>raw_text now holds full convo — same visibility operators already have.</td></tr>
+          <tr><td>G4</td><td>Name storage</td><td><span class="badge badge-soft badge-sm">idea.submitter_name only</span></td><td>Not stamped on the Contact copy → vote attribution stays clean.</td></tr>
+          <tr><td>G5</td><td>Token TTL</td><td><span class="badge badge-success badge-sm">5-min + silent re-mint</span></td><td>Host stays the gate; no long-lived embed token.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── PHASING + RISKS ────────────────────────────────────────────────── -->
+  <section class="grid gap-6 lg:grid-cols-2">
+    <div class="space-y-3">
+      <h2 class="text-2xl font-semibold">Phasing</h2>
+      <ul class="steps steps-vertical">
+        <li class="step step-primary">Consolidate 3 branches onto clean base</li>
+        <li class="step step-primary">WS-A + WS-B (test-first, small)</li>
+        <li class="step">WS-C1 FE prototype (component + mode, mocks)</li>
+        <li class="step">WS-C2/C3 embed-authed writes + re-mint (test-first)</li>
+        <li class="step">Phase 3 review → local prod build for eyeball</li>
+      </ul>
+      <div role="alert" class="alert alert-warning">
+        <span>No deploy without explicit per-deploy permission. "Prod build" = local <code>build &amp;&amp; start</code>.</span>
+      </div>
+    </div>
+    <div class="space-y-3">
+      <h2 class="text-2xl font-semibold">Risks / watch</h2>
+      <ul class="list-disc ml-5 text-sm space-y-2">
+        <li><b>Branch pile.</b> 3 unpushed branches + a worktree (embed-admin + migration 0006, ideas-list product_id, sorento embed-sso). Consolidate before stacking WS-A/B/C.</li>
+        <li><b>Write surface.</b> Full-parity embed = every mutation reachable via the iframe token. Scope + audit are load-bearing.</li>
+        <li><b>Product prereq.</b> WS-C depends on <code>product_id</code> in the token + the list/board param (already added on a branch).</li>
+        <li><b>create_all vs migrations.</b> New embed write paths need no table, but verify prod parity like the VARCHAR(32) truncation lesson.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer class="text-xs text-base-content/50 border-t border-base-content/10 pt-4">
+    Design: Lavish CDN (Tailwind v4 + DaisyUI · luxury) — plan-review surface, not a product-UI mock.
+    Source: <code>documentation/plans/ideation/PLAN-ideation-capture-and-embed-parity.md</code> + UAC (AC-CAP-1..15).
+  </footer>
+
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.esm.min.mjs";
+  const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  const paint = document.createElement("canvas").getContext("2d");
+  function toRgba(color){paint.clearRect(0,0,1,1);paint.fillStyle="#000";paint.fillStyle=color;paint.fillRect(0,0,1,1);return paint.getImageData(0,0,1,1).data;}
+  function compositeRgba(f,b){const fa=f[3]/255,ba=b[3]/255,a=fa+ba*(1-fa);if(a===0)return[0,0,0,0];return[(f[0]*fa+b[0]*ba*(1-fa))/a,(f[1]*fa+b[1]*ba*(1-fa))/a,(f[2]*fa+b[2]*ba*(1-fa))/a,a*255];}
+  function pageIsDark(){const root=document.documentElement;const rb=toRgba(getComputedStyle(root).backgroundColor);const bb=document.body?toRgba(getComputedStyle(document.body).backgroundColor):[0,0,0,0];const[r,g,b,a]=compositeRgba(bb,rb);if(a>0)return(0.2126*r+0.7152*g+0.0722*b)/255<0.5;return darkQuery.matches;}
+  const diagrams=[...document.querySelectorAll(".mermaid")].map(el=>({el,src:el.textContent}));
+  let applied,rendering=false,queued=false;
+  function queueRender(){queued=true;if(rendering)return;void render();}
+  async function render(){rendering=true;try{while(queued){queued=false;const theme=pageIsDark()?"dark":"default";if(theme===applied)continue;mermaid.initialize({startOnLoad:false,theme,securityLevel:"loose"});for(const{el,src}of diagrams){el.removeAttribute("data-processed");el.innerHTML=src;}try{await mermaid.run({nodes:diagrams.map(d=>d.el)});}catch(e){console.error(e);return;}applied=theme;}}finally{rendering=false;if(queued)queueRender();}}
+  if(document.readyState==="complete")queueRender();else window.addEventListener("load",queueRender,{once:true});
+  const obs=new MutationObserver(queueRender);
+  for(const el of[document.documentElement,document.body]){if(el)obs.observe(el,{attributes:true,attributeFilter:["data-theme","class","style"]});}
+  darkQuery.addEventListener("change",queueRender);
+</script>
+</body>
+</html>

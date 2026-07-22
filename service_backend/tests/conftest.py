@@ -72,6 +72,7 @@ def session_factory():
     # native schemas, so ATTACH an in-memory database as `omni` and translate
     # the module schema onto it — keeps module tables isolated from core (the
     # module's `statuses` must not collide with the core `statuses`, plan 07).
+    from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
 
     engine = create_engine(
@@ -81,13 +82,16 @@ def session_factory():
     ).execution_options(
         # The module schema maps onto one attached in-memory db (distinct table
         # names; no collisions) — module tables stay isolated from core's.
-        schema_translate_map={OMNI_SCHEMA: "omni"}
+        # autocount (sprint-4/13) maps onto the same attached db: its tables are
+        # ``ac_``-prefixed, so they cannot collide with omnichannel's.
+        schema_translate_map={OMNI_SCHEMA: "omni", AUTOCOUNT_SCHEMA: "omni"}
     )
     with engine.connect() as conn:
         conn.exec_driver_sql("ATTACH ':memory:' AS omni")
         conn.commit()
     Base.metadata.create_all(bind=engine)
     OmniBase.metadata.create_all(bind=engine)
+    AutocountBase.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(
         bind=engine, autoflush=False, autocommit=False
     )
@@ -148,6 +152,9 @@ def session_factory():
 
     bootstrap_modules(engine=engine, db=db)
     AppStoreService(db).install(DEFAULT_TENANT_ID, "omnichannel")
+    # AutoCount ESB (sprint-4/13) — installed the same real store path, so its
+    # permission keys land on the default tenant's Admin role like production.
+    AppStoreService(db).install(DEFAULT_TENANT_ID, "autocount")
     db.close()
 
     yield TestingSessionLocal

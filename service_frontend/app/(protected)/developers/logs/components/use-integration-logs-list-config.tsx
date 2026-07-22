@@ -35,6 +35,7 @@ export function useIntegrationLogsListConfig(): ResourceListConfig<IntegrationLo
           { label: 'Embed', value: 'embed_session' },
           { label: 'Outbound', value: 'outbound_meta' },
           { label: 'Webhook', value: 'webhook_delivery' },
+          { label: 'AutoCount', value: 'autocount' },
         ],
       },
       {

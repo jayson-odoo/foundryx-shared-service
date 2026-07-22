@@ -21,6 +21,7 @@ import {
   Network,
   Package,
   Plug,
+  RefreshCw,
   Settings,
   Share2,
   Shield,
@@ -489,6 +490,21 @@ export const MENU_SIDEBAR: MenuConfig = [
       },
     ],
   },
+  // AutoCount ESB (sprint-4/13) — module menu block, visible only while the
+  // `autocount` module is ACTIVE for the tenant AND the user holds the key its
+  // page gates on (filterMenu prunes at every level).
+  {
+    title: 'AutoCount',
+    icon: RefreshCw,
+    module: 'autocount',
+    children: [
+      {
+        title: 'Companies',
+        path: '/autocount/companies',
+        permission: 'autocount.companies.read',
+      },
+    ],
+  },
 ];
 
 export const MENU_SIDEBAR_CUSTOM: MenuConfig = [
@@ -837,6 +853,21 @@ export const MENU_SIDEBAR_COMPACT: MenuConfig = [
       },
     ],
   },
+  // AutoCount ESB (sprint-4/13) — tagged so the mega menu prunes it exactly
+  // like the sidebar (the mega menus are SEPARATE copies; an untagged entry
+  // here would leak a gated path).
+  {
+    title: 'AutoCount',
+    icon: RefreshCw,
+    module: 'autocount',
+    children: [
+      {
+        title: 'Companies',
+        path: '/autocount/companies',
+        permission: 'autocount.companies.read',
+      },
+    ],
+  },
   {
     title: 'Authentication',
     icon: Shield,
@@ -988,6 +1019,26 @@ export const MENU_MEGA: MenuConfig = [
           },
         ],
       },
+      // AutoCount ESB (sprint-4/13) — the DESKTOP mega menu. demo1 renders
+      // MENU_SIDEBAR, MENU_MEGA and MENU_MEGA_MOBILE, so an entry present in
+      // the mobile mega but absent here is visible on a phone and missing on a
+      // desktop. Same module + permission tags, so `filterMenu` prunes it
+      // identically in all three copies.
+      {
+        title: 'AutoCount',
+        module: 'autocount',
+        children: [
+          {
+            children: [
+              {
+                title: 'Companies',
+                path: '/autocount/companies',
+                permission: 'autocount.companies.read',
+              },
+            ],
+          },
+        ],
+      },
     ],
   },
 ];
@@ -1103,6 +1154,20 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Log settings',
         path: '/developers/logs/settings',
         permission: 'integration_logs.manage',
+      },
+    ],
+  },
+  // AutoCount ESB (sprint-4/13) — third menu copy; same module + permission
+  // tags so the mobile mega menu prunes identically.
+  {
+    title: 'AutoCount',
+    icon: RefreshCw,
+    module: 'autocount',
+    children: [
+      {
+        title: 'Companies',
+        path: '/autocount/companies',
+        permission: 'autocount.companies.read',
       },
     ],
   },
