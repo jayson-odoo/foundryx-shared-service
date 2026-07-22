@@ -24,6 +24,7 @@ const PROVENANCE: AutocountMappingRow[] = [
   {
     sourcePath: 'Data.0.LastModified',
     transform: 'slash_datetime',
+    formula: null,
     sorentoField: null,
     canonicalField: 'last_modified',
     scope: 'header',
@@ -34,8 +35,8 @@ const PROVENANCE: AutocountMappingRow[] = [
 
 function rows(): MappingEditableRow[] {
   return [
-    { sourcePath: 'AccNo', transform: 'string', sorentoField: 'code' },
-    { sourcePath: 'CompanyName', transform: 'string', sorentoField: 'name' },
+    { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code' },
+    { sourcePath: 'CompanyName', transform: 'string', formula: null, sorentoField: 'name' },
   ];
 }
 
@@ -50,6 +51,7 @@ function renderTable(editing: boolean, over: Partial<React.ComponentProps<typeof
       onChangeRow={vi.fn()}
       onAddRow={vi.fn()}
       onRemoveRow={vi.fn()}
+      onBuildRow={vi.fn()}
       {...over}
     />,
   );
@@ -62,7 +64,10 @@ describe('unmappedRequiredFields', () => {
   });
 
   it('is empty when every required field is mapped', () => {
-    const full = [...rows(), { sourcePath: 'IsActive', transform: 't_f_bool', sorentoField: 'is_active' }];
+    const full = [
+      ...rows(),
+      { sourcePath: 'IsActive', transform: 't_f_bool', formula: null, sorentoField: 'is_active' },
+    ];
     expect(unmappedRequiredFields(full, SORENTO)).toEqual([]);
   });
 
@@ -113,11 +118,11 @@ describe('MappingTable edit mode', () => {
 
   it('disables Add field once every accepted target is used', () => {
     const full = [
-      { sourcePath: 'AccNo', transform: 'string', sorentoField: 'code' },
-      { sourcePath: 'CompanyName', transform: 'string', sorentoField: 'name' },
-      { sourcePath: 'IsActive', transform: 't_f_bool', sorentoField: 'is_active' },
-      { sourcePath: 'EmailAddress', transform: 'string', sorentoField: 'email' },
-      { sourcePath: 'Mobile', transform: 'string', sorentoField: 'phone_number' },
+      { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code' },
+      { sourcePath: 'CompanyName', transform: 'string', formula: null, sorentoField: 'name' },
+      { sourcePath: 'IsActive', transform: 't_f_bool', formula: null, sorentoField: 'is_active' },
+      { sourcePath: 'EmailAddress', transform: 'string', formula: null, sorentoField: 'email' },
+      { sourcePath: 'Mobile', transform: 'string', formula: null, sorentoField: 'phone_number' },
     ];
     renderTable(true, { rows: full });
     expect(screen.getByRole('button', { name: /add field/i })).toBeDisabled();
@@ -131,5 +136,36 @@ describe('MappingTable edit mode', () => {
     expect(onAddRow).toHaveBeenCalled();
     fireEvent.click(screen.getAllByRole('button', { name: /remove row/i })[0]);
     expect(onRemoveRow).toHaveBeenCalledWith(0);
+  });
+
+  it('opens the formula builder for a row (AC-16-11)', () => {
+    const onBuildRow = vi.fn();
+    renderTable(true, { onBuildRow });
+    fireEvent.click(screen.getAllByRole('button', { name: /build formula for row/i })[1]);
+    expect(onBuildRow).toHaveBeenCalledWith(1);
+  });
+});
+
+describe('MappingTable formula display (AC-16-10)', () => {
+  it('shows an authored formula under its preset in read mode', () => {
+    renderTable(false, {
+      rows: [
+        {
+          sourcePath: 'IsActive',
+          transform: 't_f_bool',
+          formula: 'if(value == "T", true, false)',
+          sorentoField: 'is_active',
+        },
+      ],
+    });
+    expect(screen.getByText('Boolean')).toBeInTheDocument();
+    expect(screen.getByText('if(value == "T", true, false)')).toBeInTheDocument();
+  });
+
+  it('keeps a passthrough row simple — preset label, no formula clutter', () => {
+    renderTable(false, {
+      rows: [{ sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code' }],
+    });
+    expect(screen.getByText('Text')).toBeInTheDocument();
   });
 });

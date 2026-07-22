@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Info, LoaderCircleIcon, TriangleAlert } from 'lucide-react';
+import { FlaskConical, Info, LoaderCircleIcon, TriangleAlert } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { Container } from '@/components/common/container';
@@ -15,6 +15,8 @@ import {
   AlertTitle,
 } from '@/components/ui/alert';
 import { ResourceForm, type ResourceFormConfig } from '@/components/platform/resource-form';
+import { AutocountFormulaBuilder } from '@/components/platform/autocount/formula-builder';
+import { MappingSimulator } from '@/components/platform/autocount/mapping-simulator';
 import { useCan } from '@/hooks/use-can';
 import { useAutocountCompany } from '@/hooks/use-autocount-company';
 import { useAutocountMapping } from '@/hooks/use-autocount-mapping';
@@ -24,6 +26,8 @@ import {
   AC_COMPANIES_PATH,
   acCompanyHref,
   entityLabel,
+  presetFormula,
+  presetForRow,
 } from '../../../../../../components/autocount-meta';
 import {
   MappingTable,
@@ -44,6 +48,7 @@ function splitRows(rows: AutocountMappingRow[]): {
       deliverable.push({
         sourcePath: row.sourcePath,
         transform: row.transform,
+        formula: row.formula ?? null,
         sorentoField: row.sorentoField,
       });
     } else {
@@ -68,12 +73,13 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
   const { can } = useCan();
   const form = useForm();
   const { detail } = useAutocountCompany(companyId);
-  const { view, isLoading, notFound, saveError, save } = useAutocountMapping(
-    companyId,
-    entityType,
-  );
+  const { view, isLoading, notFound, saveError, save, testFormula, simulate } =
+    useAutocountMapping(companyId, entityType);
 
   const [rows, setRows] = useState<MappingEditableRow[]>([]);
+  // Which row's formula builder is open (null = closed), and the simulator.
+  const [builderIndex, setBuilderIndex] = useState<number | null>(null);
+  const [simulatorOpen, setSimulatorOpen] = useState(false);
 
   // Seed the working rows from the loaded/saved view. Keyed on the deliverable
   // signature so a background reload with identical rows never wipes an edit.
@@ -118,7 +124,7 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
       const nextTarget = sorentoFields.find((f) => !used.has(f.field));
       return [
         ...prev,
-        { sourcePath: '', transform: 'string', sorentoField: nextTarget?.field ?? '' },
+        { sourcePath: '', transform: 'string', formula: null, sorentoField: nextTarget?.field ?? '' },
       ];
     });
   }, [sorentoFields]);
@@ -126,6 +132,17 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
   const onRemoveRow = useCallback((index: number) => {
     setRows((prev) => prev.filter((_, i) => i !== index));
   }, []);
+
+  const onBuildRow = useCallback((index: number) => setBuilderIndex(index), []);
+
+  const onApplyFormula = useCallback(
+    (formula: string) => {
+      if (builderIndex === null) return;
+      // Empty ⇒ the row falls back to its named transform (formula NULL).
+      onChangeRow(builderIndex, { formula: formula.trim() ? formula.trim() : null });
+    },
+    [builderIndex, onChangeRow],
+  );
 
   const onSave = useCallback(async (): Promise<boolean> => {
     // Foolproof: every row needs a source + a target before it can be sent.
@@ -137,6 +154,7 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
       rows.map((r) => ({
         sourcePath: r.sourcePath.trim(),
         transform: r.transform,
+        formula: r.formula,
         sorentoField: r.sorentoField,
       })),
     );
@@ -168,6 +186,17 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
           icon: Info,
           render: ({ editing }) => (
             <div className="flex flex-col gap-4 py-2">
+              <div className="flex justify-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setSimulatorOpen(true)}
+                >
+                  <FlaskConical className="size-4" />
+                  Simulate mapping
+                </Button>
+              </div>
               {unmappedRequired.length > 0 && (
                 <Alert
                   variant="warning"
@@ -206,6 +235,7 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
                 onChangeRow={onChangeRow}
                 onAddRow={onAddRow}
                 onRemoveRow={onRemoveRow}
+                onBuildRow={onBuildRow}
               />
             </div>
           ),
@@ -228,6 +258,7 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
     dirty,
     entityType,
     onAddRow,
+    onBuildRow,
     onCancel,
     onChangeRow,
     onRemoveRow,
@@ -263,11 +294,50 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
     );
   }
 
+  const builderRow = builderIndex !== null ? rows[builderIndex] : null;
+  const builderPreset = builderRow
+    ? presetForRow(builderRow.transform, builderRow.formula)
+    : 'custom';
+
   return (
     <Container width="fluid">
       <Form {...form}>
         <ResourceForm config={config} />
       </Form>
+
+      {builderRow && (
+        <AutocountFormulaBuilder
+          open={builderIndex !== null}
+          onOpenChange={(open) => {
+            if (!open) setBuilderIndex(null);
+          }}
+          // Pre-fill from the row's formula, else the preset's canonical formula
+          // so a Date/Boolean row opens showing its expression to edit (AC-16-10).
+          value={builderRow.formula ?? presetFormula(builderPreset)}
+          onApply={onApplyFormula}
+          onServerTest={testFormula}
+          fieldLabel={sorentoFieldLabel(builderRow.sorentoField)}
+          initialCategory={builderPreset === 'date' ? 'Date' : 'All'}
+          note={
+            builderPreset === 'decimal'
+              ? 'The Decimal preset keeps exact money precision; a number(value) formula routes through floating point.'
+              : undefined
+          }
+        />
+      )}
+
+      <MappingSimulator
+        open={simulatorOpen}
+        onOpenChange={setSimulatorOpen}
+        rows={rows.map((r) => ({
+          sourcePath: r.sourcePath.trim(),
+          transform: r.transform,
+          formula: r.formula,
+          sorentoField: r.sorentoField,
+        }))}
+        onSimulate={(record, draftRows) => simulate(record, draftRows)}
+        entityLabel={entityLabel(entityType)}
+      />
     </Container>
   );
 }

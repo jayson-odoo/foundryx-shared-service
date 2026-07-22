@@ -1,21 +1,35 @@
 'use client';
 
-import { ArrowRight, Plus, Trash2 } from 'lucide-react';
+import { ArrowRight, FunctionSquare, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { SearchSelect } from '@/components/platform/search-select';
+import { ClampedText } from '@/components/platform/clamped-text';
 import { humanizeFieldKey } from '@/lib/autocount-diff';
 import type {
   AutocountMappingRow,
   AutocountSorentoField,
 } from '@/types/autocount';
-import { AC_TRANSFORMS, transformLabel } from '../../../../../../components/autocount-meta';
+import {
+  AC_PRESET_OPTIONS,
+  applyPreset,
+  presetForRow,
+} from '../../../../../../components/autocount-meta';
 
 /** One deliverable mapping row in the editor's working state. */
 export interface MappingEditableRow {
   sourcePath: string;
   transform: string;
+  /** The row's safe transform formula (slice 16). NULL ⇒ the named `transform`
+   *  runs (exact); a non-empty formula is authoritative. */
+  formula: string | null;
   sorentoField: string;
+}
+
+/** The preset label a row currently reflects (read-mode display). */
+function presetLabel(row: MappingEditableRow): string {
+  const key = presetForRow(row.transform, row.formula);
+  return AC_PRESET_OPTIONS.find((o) => o.value === key)?.label ?? key;
 }
 
 /** The Sorento field shown by its human label; the stored name stays the key. */
@@ -50,6 +64,8 @@ export interface MappingTableProps {
   onChangeRow: (index: number, patch: Partial<MappingEditableRow>) => void;
   onAddRow: () => void;
   onRemoveRow: (index: number) => void;
+  /** Open the formula builder for a row (AC-16-11). */
+  onBuildRow: (index: number) => void;
 }
 
 /**
@@ -68,9 +84,9 @@ export function MappingTable({
   onChangeRow,
   onAddRow,
   onRemoveRow,
+  onBuildRow,
 }: MappingTableProps) {
   const sourceOptions = acFields.map((f) => ({ label: f, value: f }));
-  const transformOptions = AC_TRANSFORMS;
   const usedTargets = new Set(rows.map((r) => r.sorentoField).filter(Boolean));
   const allTargetsUsed = sorentoFields.every((f) => usedTargets.has(f.field));
 
@@ -126,16 +142,38 @@ export function MappingTable({
                   </td>
                   <td className="px-2 py-2">
                     {editing ? (
-                      <SearchSelect
-                        options={transformOptions}
-                        value={row.transform}
-                        onChange={(value) => onChangeRow(index, { transform: value })}
-                        ariaLabel={`Transform for row ${index + 1}`}
-                      />
+                      <div className="flex items-center gap-1">
+                        <div className="min-w-28 flex-1">
+                          <SearchSelect
+                            options={AC_PRESET_OPTIONS}
+                            value={presetForRow(row.transform, row.formula)}
+                            onChange={(key) => onChangeRow(index, applyPreset(key))}
+                            ariaLabel={`Transform for row ${index + 1}`}
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          mode="icon"
+                          onClick={() => onBuildRow(index)}
+                          aria-label={`Build formula for row ${index + 1}`}
+                          title="Edit as a formula"
+                        >
+                          <FunctionSquare className="size-4" />
+                        </Button>
+                      </div>
                     ) : (
-                      <span className="text-muted-foreground">
-                        {transformLabel(row.transform)}
-                      </span>
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-muted-foreground">{presetLabel(row)}</span>
+                        {row.formula && (
+                          <ClampedText
+                            text={row.formula}
+                            lines={2}
+                            className="font-mono text-[11px] text-muted-foreground/80"
+                          />
+                        )}
+                      </div>
                     )}
                   </td>
                   <td className="px-2 py-3 text-muted-foreground">
