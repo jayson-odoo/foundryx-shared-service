@@ -13,6 +13,13 @@ vi.mock('@/hooks/use-autocount-review', () => ({
 vi.mock('@/hooks/use-autocount-preview', () => ({
   useAutocountPreview: () => previewState(),
 }));
+// The staged records render through their own server-paginated Resource list;
+// stub it so this suite stays focused on the approve gate + toolbar.
+vi.mock('./staged-records-list', () => ({
+  StagedRecordsList: ({ jobId }: { jobId: string }) => (
+    <div data-testid="staged-records-list">{jobId}</div>
+  ),
+}));
 vi.mock('@/hooks/use-datetime', () => ({
   useDatetime: () => ({
     timeZone: 'UTC',
@@ -45,21 +52,8 @@ function baseReview(over: Partial<UseAutocountReviewResult> = {}): UseAutocountR
       error: null,
       createdAt: '2026-07-21T09:00:00Z',
     },
-    records: [
-      {
-        id: 'staged-1',
-        entityType: 'supplier',
-        sourceRef: 'AED_VSOFT:3',
-        docNo: '400-J001',
-        status: 'STAGED',
-        diff: { name: { from: 'A', to: 'B' } },
-        canonical: null,
-        errors: null,
-        error: null,
-        sourceLastModified: null,
-      },
-    ],
     total: 1,
+    noChangeCount: 0,
     isLoading: false,
     notFound: false,
     isSubmitting: false,

@@ -11,7 +11,6 @@ import {
 } from '@/partials/common/toolbar';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import {
   Card,
   CardContent,
@@ -30,82 +29,16 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { StatusBadge } from '@/components/platform/status-badge';
-import { ClampedText } from '@/components/platform/clamped-text';
-import { RecordDiff } from '@/components/platform/autocount/record-diff';
 import { PreviewPanel } from '@/components/platform/autocount/preview-panel';
-import { diffForDisplay } from '@/lib/autocount-diff';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useAutocountReview } from '@/hooks/use-autocount-review';
 import { useAutocountPreview } from '@/hooks/use-autocount-preview';
-import type {
-  AutocountJobStatus,
-  AutocountStagedRecord,
-  AutocountStagedStatus,
-} from '@/types/autocount';
+import type { AutocountJobStatus } from '@/types/autocount';
 import {
   AC_COMPANIES_PATH,
   AC_JOB_STATUS_REGISTRY,
-  AC_STAGED_STATUS_REGISTRY,
-  entityLabel,
 } from '../../../components/autocount-meta';
-
-function StagedRecordCard({ record }: { record: AutocountStagedRecord }) {
-  const view = diffForDisplay(record.diff, record.canonical);
-  const failed = record.status === 'FAILED';
-
-  return (
-    <Card data-testid={`staged-${record.id}`}>
-      <CardHeader className="flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <CardHeading className="min-w-0">
-          <CardTitle className="min-w-0">
-            <ClampedText
-              text={record.docNo || record.sourceRef}
-              lines={1}
-              className="text-sm font-semibold text-foreground"
-            />
-          </CardTitle>
-          <span className="text-xs text-muted-foreground">
-            {entityLabel(record.entityType)}
-          </span>
-        </CardHeading>
-        <div className="flex flex-wrap items-center gap-2">
-          {view.isNew && (
-            <Badge variant="info" appearance="light" size="sm">
-              New record
-            </Badge>
-          )}
-          <StatusBadge
-            status={record.status as AutocountStagedStatus}
-            registry={AC_STAGED_STATUS_REGISTRY}
-            size="sm"
-          />
-        </div>
-      </CardHeader>
-      <CardContent>
-        {failed ? (
-          <div className="flex flex-col gap-2">
-            {record.error && (
-              <p className="text-sm text-destructive">{record.error}</p>
-            )}
-            {(record.errors ?? []).map((err, i) => (
-              <p key={i} className="text-sm text-destructive">
-                {[
-                  err.field ? `Field ${err.field}` : null,
-                  err.line !== undefined && err.line !== null ? `line ${err.line}` : null,
-                  err.message ?? null,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </p>
-            ))}
-          </div>
-        ) : (
-          <RecordDiff diff={record.diff} canonical={record.canonical} />
-        )}
-      </CardContent>
-    </Card>
-  );
-}
+import { StagedRecordsList } from './staged-records-list';
 
 export interface ReviewViewProps {
   jobId: string;
@@ -122,8 +55,8 @@ export interface ReviewViewProps {
 export function ReviewView({ jobId, from }: ReviewViewProps) {
   const {
     job,
-    records,
     total,
+    noChangeCount,
     isLoading,
     notFound,
     isSubmitting,
@@ -160,7 +93,7 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
     );
   }
 
-  const pending = records.filter((r) => r.status === 'STAGED');
+  const changedCount = Math.max(total - noChangeCount, 0);
 
   return (
     <>
@@ -243,7 +176,7 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
             <span>
-              {total} record{total === 1 ? '' : 's'} · {pending.length} awaiting approval
+              {total} record{total === 1 ? '' : 's'} · {changedCount} changed
             </span>
             {job.createdAt && <span>{formatDateTime(job.createdAt)}</span>}
           </div>
@@ -266,14 +199,12 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
             </Card>
           )}
 
-          {records.length === 0 ? (
+          {total === 0 ? (
             <p className="py-16 text-center text-sm text-muted-foreground">
               No records awaiting review.
             </p>
           ) : (
-            records.map((record) => (
-              <StagedRecordCard key={record.id} record={record} />
-            ))
+            <StagedRecordsList jobId={jobId} noChangeCount={noChangeCount} />
           )}
         </div>
       </Container>

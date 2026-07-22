@@ -4,10 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { ApiError } from '@/lib/api-client';
 import { autocountService } from '@/services/autocount-service';
-import type {
-  AutocountStagedRecord,
-  AutocountSyncJob,
-} from '@/types/autocount';
+import type { AutocountSyncJob } from '@/types/autocount';
 
 /**
  * Why a decision is unavailable, phrased as a fact about the batch. Foolproof-UI:
@@ -24,8 +21,10 @@ const BLOCKED_REASON: Record<string, string> = {
 
 export interface UseAutocountReviewResult {
   job: AutocountSyncJob | null;
-  records: AutocountStagedRecord[];
+  /** Records in the batch (all statuses). */
   total: number;
+  /** No-field-change records — collapsed in the staged list (AC-15-11). */
+  noChangeCount: number;
   isLoading: boolean;
   notFound: boolean;
   isSubmitting: boolean;
@@ -39,14 +38,18 @@ export interface UseAutocountReviewResult {
 }
 
 /**
- * The review surface's data + decisions (AC-13-12). Approve pushes the batch;
- * Discard closes it without pushing. Both are idempotent server-side, and both
- * are only offered while the job is awaiting approval.
+ * The review surface's JOB-LEVEL data + decisions (AC-13-12). Approve pushes the
+ * batch; Discard closes it without pushing. Both are idempotent server-side, and
+ * both are only offered while the job is awaiting approval.
+ *
+ * The staged RECORDS are NOT loaded here — they render through their own
+ * server-paginated Resource list (AC-15-10); this hook fetches only the job +
+ * the batch counts (one small page).
  */
 export function useAutocountReview(jobId: string): UseAutocountReviewResult {
   const [job, setJob] = useState<AutocountSyncJob | null>(null);
-  const [records, setRecords] = useState<AutocountStagedRecord[]>([]);
   const [total, setTotal] = useState(0);
+  const [noChangeCount, setNoChangeCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -57,13 +60,14 @@ export function useAutocountReview(jobId: string): UseAutocountReviewResult {
   useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
+    // One-record page: we need the job + counts, never the whole batch.
     autocountService
-      .listStaged(jobId)
+      .listStaged(jobId, { page: 0, pageSize: 1 })
       .then((res) => {
         if (cancelled) return;
         setJob(res.job);
-        setRecords(res.data);
         setTotal(res.total);
+        setNoChangeCount(res.noChangeCount);
         setNotFound(false);
       })
       .catch(() => {
@@ -114,8 +118,8 @@ export function useAutocountReview(jobId: string): UseAutocountReviewResult {
 
   return {
     job,
-    records,
     total,
+    noChangeCount,
     isLoading,
     notFound,
     isSubmitting,
