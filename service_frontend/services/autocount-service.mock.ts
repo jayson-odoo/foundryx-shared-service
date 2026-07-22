@@ -21,12 +21,16 @@ import type {
   AutocountCompany,
   AutocountCompanyDetail,
   AutocountEntityConfig,
+  AutocountJobListQuery,
+  AutocountMappingUpdate,
+  AutocountMappingView,
   AutocountPreviewResult,
   AutocountSinkTargetInput,
   AutocountStagedList,
   AutocountStagedQuery,
   AutocountStagedRecord,
   AutocountSyncJob,
+  AutocountSyncJobBatch,
   AutocountSyncRun,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
@@ -207,6 +211,50 @@ export const mockAutocountService: AutocountService = {
     return Promise.resolve({ data: [], total: 0, page: 0 });
   },
 
+  listJobs(query: AutocountJobListQuery = {}): Promise<ListResult<AutocountSyncJobBatch>> {
+    const all: AutocountSyncJobBatch[] = [
+      {
+        jobId: 'job-1',
+        companyId: 'company-1',
+        companyName: 'AED VSoft',
+        databaseName: 'AED_VSOFT',
+        entityType: 'supplier',
+        status: 'needs_review',
+        progressTotal: 172,
+        progressDone: 172,
+        progressFailed: 0,
+        createdAt: '2026-07-21T09:00:00Z',
+        startedAt: '2026-07-21T09:00:01Z',
+        finishedAt: '2026-07-21T09:00:12Z',
+        updatedAt: '2026-07-21T09:00:12Z',
+      },
+      {
+        jobId: 'job-2',
+        companyId: 'company-1',
+        companyName: 'AED VSoft',
+        databaseName: 'AED_VSOFT',
+        entityType: 'customer',
+        status: 'done',
+        progressTotal: 40,
+        progressDone: 40,
+        progressFailed: 0,
+        createdAt: '2026-07-20T09:00:00Z',
+        startedAt: '2026-07-20T09:00:01Z',
+        finishedAt: '2026-07-20T09:00:08Z',
+        updatedAt: '2026-07-20T09:00:08Z',
+      },
+    ];
+    const status = query.status ?? 'needs_review';
+    const matched = status === 'all' ? all : all.filter((j) => j.status === status);
+    const page = query.page ?? 0;
+    const pageSize = query.pageSize ?? 25;
+    return Promise.resolve({
+      data: matched.slice(page * pageSize, page * pageSize + pageSize),
+      total: matched.length,
+      page,
+    });
+  },
+
   listStaged(jobId: string, query: AutocountStagedQuery = {}): Promise<AutocountStagedList> {
     const all = mockStagedRecords();
     const term = (query.search ?? '').trim().toLowerCase();
@@ -301,4 +349,115 @@ export const mockAutocountService: AutocountService = {
       }),
     );
   },
+
+  getMapping(_companyId: string, entityType: string): Promise<AutocountMappingView> {
+    return Promise.resolve(mockMappingView(entityType));
+  },
+
+  updateMapping(
+    _companyId: string,
+    entityType: string,
+    input: AutocountMappingUpdate,
+  ): Promise<AutocountMappingView> {
+    // A required Sorento target left unmapped is the real failure the editor
+    // guards; a target outside the accepted set is a 422 server-side. The mock
+    // rejects an unknown target so the surfaced-error path is testable.
+    const view = mockMappingView(entityType);
+    const accepted = new Set(view.sorentoFields.map((f) => f.field));
+    for (const row of input.rows) {
+      if (!accepted.has(row.sorentoField)) {
+        return Promise.reject(
+          new ApiError(
+            `'${row.sorentoField}' is not a Sorento field accepted for ${entityType}.`,
+            422,
+          ),
+        );
+      }
+    }
+    return Promise.resolve({
+      ...view,
+      rows: input.rows.map((row) => ({
+        sourcePath: row.sourcePath,
+        transform: row.transform,
+        sorentoField: row.sorentoField,
+        canonicalField: row.sorentoField,
+        scope: 'header',
+        isRequired: view.sorentoFields.find((f) => f.field === row.sorentoField)?.required ?? false,
+        isEnabled: true,
+      })),
+    });
+  },
 };
+
+/** A realistic supplier/customer mapping view for the editor's tunable states. */
+function mockMappingView(entityType: string): AutocountMappingView {
+  return {
+    entityType,
+    rows: [
+      {
+        sourcePath: 'AccNo',
+        transform: 'string',
+        sorentoField: 'code',
+        canonicalField: 'code',
+        scope: 'header',
+        isRequired: true,
+        isEnabled: true,
+      },
+      {
+        sourcePath: 'CompanyName',
+        transform: 'string',
+        sorentoField: 'name',
+        canonicalField: 'name',
+        scope: 'header',
+        isRequired: true,
+        isEnabled: true,
+      },
+      {
+        sourcePath: 'IsActive',
+        transform: 't_f_bool',
+        sorentoField: 'is_active',
+        canonicalField: 'is_active',
+        scope: 'header',
+        isRequired: true,
+        isEnabled: true,
+      },
+      {
+        sourcePath: 'EmailAddress',
+        transform: 'string',
+        sorentoField: 'email',
+        canonicalField: 'email',
+        scope: 'header',
+        isRequired: false,
+        isEnabled: true,
+      },
+      // A provenance row — stored canonically, never delivered to Sorento.
+      {
+        sourcePath: 'Data.0.LastModified',
+        transform: 'slash_datetime',
+        sorentoField: null,
+        canonicalField: 'last_modified',
+        scope: 'header',
+        isRequired: false,
+        isEnabled: true,
+      },
+    ],
+    sorentoFields: [
+      { field: 'code', required: true },
+      { field: 'name', required: true },
+      { field: 'is_active', required: true },
+      { field: 'email', required: false },
+      { field: 'phone_number', required: false },
+      { field: 'tax_id', required: false },
+    ],
+    acFields: [
+      'AccNo',
+      'CompanyName',
+      'EmailAddress',
+      'IsActive',
+      'Mobile',
+      'TIN',
+      'Data.0.AutoKey',
+      'Data.0.LastModified',
+    ],
+  };
+}

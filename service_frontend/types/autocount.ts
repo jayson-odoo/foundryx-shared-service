@@ -258,6 +258,86 @@ export interface AutocountApprovalResult {
   result: Record<string, unknown>;
 }
 
+// ── review jobs list (plan 15 §2, AC-15-02) ──────────────────────────────────
+
+/**
+ * One sync batch (job) row on the Review list (`GET /autocount/jobs`). Denormal-
+ * ised with the owning company + entity so the list is scannable without a
+ * per-row company fetch. Newest first; tenant-scoped server-side.
+ */
+export interface AutocountSyncJobBatch {
+  jobId: string;
+  companyId: string;
+  companyName: string;
+  databaseName: string;
+  entityType: string;
+  status: AutocountJobStatus | string;
+  progressTotal: number;
+  progressDone: number;
+  progressFailed: number;
+  createdAt: string | null; // ISO Z
+  startedAt: string | null; // ISO Z
+  finishedAt: string | null; // ISO Z
+  updatedAt: string | null; // ISO Z
+}
+
+/**
+ * `GET /autocount/jobs` query. `status` is the review segment
+ * (`needs_review|done|all`) — server-filtered, never an unbounded fetch.
+ */
+export interface AutocountJobListQuery {
+  page?: number; // 0-based
+  pageSize?: number;
+  status?: 'needs_review' | 'done' | 'all' | string;
+  entityType?: string;
+}
+
+// ── field-mapping editor (plan 15 §2, AC-15-40..44) ──────────────────────────
+
+/**
+ * One mapping row as the editor sees it: an AutoCount source path → (transform)
+ * → Sorento field. `sorentoField` is null for a PROVENANCE/identity row (e.g.
+ * `last_modified`) that is stored canonically but never delivered to Sorento —
+ * shown non-deliverable, never offered for edit (AC-15-40).
+ */
+export interface AutocountMappingRow {
+  sourcePath: string;
+  transform: string;
+  sorentoField: string | null;
+  canonicalField: string;
+  scope: string;
+  isRequired: boolean;
+  isEnabled: boolean;
+}
+
+/** One accepted Sorento target for the picker (AC-15-42) — the offered set. */
+export interface AutocountSorentoField {
+  field: string;
+  required: boolean;
+}
+
+/** `GET .../mapping` — current rows + the source/target catalogs the pickers need. */
+export interface AutocountMappingView {
+  entityType: string;
+  rows: AutocountMappingRow[];
+  /** The ONLY Sorento targets the picker offers (foolproof, AC-15-42). */
+  sorentoFields: AutocountSorentoField[];
+  /** Known AutoCount source paths (discoverability; a free dotted path is allowed). */
+  acFields: string[];
+}
+
+/** One deliverable row on write. `sorentoField` must be an accepted target. */
+export interface AutocountMappingWriteRow {
+  sourcePath: string;
+  transform: string;
+  sorentoField: string;
+}
+
+/** `PUT .../mapping` body — replaces the entity's deliverable rows transactionally. */
+export interface AutocountMappingUpdate {
+  rows: AutocountMappingWriteRow[];
+}
+
 // ── dry-run preview (hop 2, AC-14-20/21/22/26) ───────────────────────────────
 
 /**

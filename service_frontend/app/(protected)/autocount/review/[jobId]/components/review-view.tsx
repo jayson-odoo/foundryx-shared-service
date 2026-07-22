@@ -35,8 +35,8 @@ import { useAutocountReview } from '@/hooks/use-autocount-review';
 import { useAutocountPreview } from '@/hooks/use-autocount-preview';
 import type { AutocountJobStatus } from '@/types/autocount';
 import {
-  AC_COMPANIES_PATH,
   AC_JOB_STATUS_REGISTRY,
+  AC_REVIEW_PATH,
 } from '../../../components/autocount-meta';
 import { StagedRecordsList } from './staged-records-list';
 
@@ -68,7 +68,9 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
   const preview = useAutocountPreview(jobId);
   const { formatDateTime } = useDatetime();
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const backHref = from || AC_COMPANIES_PATH;
+  // Back returns to wherever the operator came from — the originating company
+  // when a sync routed them here, otherwise the Review list (its real parent).
+  const backHref = from || AC_REVIEW_PATH;
 
   if (isLoading) {
     return (

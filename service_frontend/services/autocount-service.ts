@@ -19,11 +19,15 @@ import type {
   AutocountCompanyDetail,
   AutocountEntityConfig,
   AutocountEntityConfigUpdate,
+  AutocountJobListQuery,
+  AutocountMappingUpdate,
+  AutocountMappingView,
   AutocountPreviewResult,
   AutocountSinkTargetInput,
   AutocountStagedList,
   AutocountStagedQuery,
   AutocountSyncJob,
+  AutocountSyncJobBatch,
   AutocountSyncRun,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
@@ -72,6 +76,12 @@ export interface AutocountService {
     companyId: string,
     entityType: string,
   ): Promise<AutocountEntityConfig>;
+  /**
+   * The Review list — sync batches for the tenant, newest first
+   * (`GET /autocount/jobs`, AC-15-02). Server-paginated + status-segment
+   * filtered; NEVER an unbounded fetch.
+   */
+  listJobs(query?: AutocountJobListQuery): Promise<ListResult<AutocountSyncJobBatch>>;
   /** Run history for a company (`GET /autocount/companies/{id}/runs`). */
   listRuns(
     companyId: string,
@@ -106,6 +116,23 @@ export interface AutocountService {
     companyId: string,
     input: AutocountSinkTargetInput,
   ): Promise<AutocountCompany>;
+  /**
+   * One entity's current field mappings + the source/target catalogs the
+   * editor's pickers need (`GET /autocount/companies/{id}/entities/{entityType}/mapping`,
+   * AC-15-40).
+   */
+  getMapping(companyId: string, entityType: string): Promise<AutocountMappingView>;
+  /**
+   * Replace the entity's deliverable field mappings
+   * (`PUT .../entities/{entityType}/mapping`, AC-15-41). The server GUARDS every
+   * row (accepted Sorento target, non-blank source, known transform, no
+   * duplicate target) — a rejected row is a 422, never a silent drop.
+   */
+  updateMapping(
+    companyId: string,
+    entityType: string,
+    input: AutocountMappingUpdate,
+  ): Promise<AutocountMappingView>;
 }
 
 export const autocountService: AutocountService = realAutocountService;

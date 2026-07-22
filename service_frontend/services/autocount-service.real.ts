@@ -10,9 +10,13 @@ import type {
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
   AutocountEntityConfig,
+  AutocountJobListQuery,
+  AutocountMappingUpdate,
+  AutocountMappingView,
   AutocountPreviewResult,
   AutocountStagedList,
   AutocountSyncJob,
+  AutocountSyncJobBatch,
   AutocountSyncRun,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
@@ -76,6 +80,16 @@ export const realAutocountService: AutocountService = {
     );
   },
 
+  listJobs(query: AutocountJobListQuery = {}) {
+    const p = pageParams(query);
+    // Default segment = the batches awaiting attention; `all` widens it.
+    p.set('status', query.status ?? 'needs_review');
+    if (query.entityType) p.set('entityType', query.entityType);
+    return apiFetch<ListResult<AutocountSyncJobBatch>>(
+      `/autocount/jobs?${p.toString()}`,
+    );
+  },
+
   listRuns(companyId, query = {}) {
     const p = pageParams(query);
     if (query.entityType) p.set('entity_type', query.entityType);
@@ -116,6 +130,28 @@ export const realAutocountService: AutocountService = {
         body: JSON.stringify({
           sinkImpl: input.sinkImpl,
           sinkConnectionId: input.sinkConnectionId ?? null,
+        }),
+      },
+    );
+  },
+
+  getMapping(companyId, entityType) {
+    return apiFetch<AutocountMappingView>(
+      `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/mapping`,
+    );
+  },
+
+  updateMapping(companyId, entityType, input: AutocountMappingUpdate) {
+    return apiFetch<AutocountMappingView>(
+      `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/mapping`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          rows: input.rows.map((row) => ({
+            sourcePath: row.sourcePath,
+            transform: row.transform,
+            sorentoField: row.sorentoField,
+          })),
         }),
       },
     );

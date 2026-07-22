@@ -15,6 +15,7 @@ export const AC_SYNC_RUN = 'autocount.sync.run';
 // ── routes ───────────────────────────────────────────────────────────────────
 export const AC_COMPANIES_PATH = '/autocount/companies';
 export const AC_COMPANY_NEW_PATH = '/autocount/companies/new';
+export const AC_REVIEW_PATH = '/autocount/review';
 
 export function acCompanyHref(id: string): string {
   return `${AC_COMPANIES_PATH}/${id}`;
@@ -22,7 +23,34 @@ export function acCompanyHref(id: string): string {
 
 export function acReviewHref(jobId: string, from?: string): string {
   const suffix = from ? `?from=${encodeURIComponent(from)}` : '';
-  return `/autocount/review/${jobId}${suffix}`;
+  return `${AC_REVIEW_PATH}/${jobId}${suffix}`;
+}
+
+/** The per-(company, entity) field-mapping editor (AC-15-40). */
+export function acMappingHref(companyId: string, entityType: string): string {
+  return `${AC_COMPANIES_PATH}/${companyId}/entities/${encodeURIComponent(entityType)}/mapping`;
+}
+
+// ── transforms (mapping editor picker; mirrors backend mapping.py TRANSFORMS) ──
+
+/**
+ * The known field transforms an operator may pick in the mapping editor. Mirror
+ * of the backend `TRANSFORMS` registry (`modules/autocount/mapping.py`) — the
+ * PUT guard rejects an unknown transform, so only these are offered (foolproof).
+ */
+export const AC_TRANSFORMS: { value: string; label: string }[] = [
+  { value: 'string', label: 'Text' },
+  { value: 'bool', label: 'Boolean' },
+  { value: 't_f_bool', label: 'T / F flag → Boolean' },
+  { value: 'int', label: 'Whole number' },
+  { value: 'decimal', label: 'Decimal' },
+  { value: 'date', label: 'Date' },
+  { value: 'datetime', label: 'Date & time' },
+  { value: 'slash_datetime', label: 'Slash date/time' },
+];
+
+export function transformLabel(transform: string): string {
+  return AC_TRANSFORMS.find((t) => t.value === transform)?.label ?? humanizeFieldKey(transform);
 }
 
 // ── labels ───────────────────────────────────────────────────────────────────
