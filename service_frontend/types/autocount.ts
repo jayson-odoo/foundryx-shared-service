@@ -303,6 +303,12 @@ export interface AutocountJobListQuery {
 export interface AutocountMappingRow {
   sourcePath: string;
   transform: string;
+  /**
+   * The row's safe transform formula (slice 16). NULL ⇒ the named `transform`
+   * runs (today's behavior, exact); a non-empty formula is authoritative and
+   * evaluated by the mirrored engine (`lib/autocount-formula.ts`).
+   */
+  formula: string | null;
   sorentoField: string | null;
   canonicalField: string;
   scope: string;
@@ -331,11 +337,57 @@ export interface AutocountMappingWriteRow {
   sourcePath: string;
   transform: string;
   sorentoField: string;
+  /**
+   * Optional safe transform formula (slice 16). NULL/blank ⇒ the named
+   * `transform` runs; a non-empty formula is validated server-side (parse
+   * 422, AC-16-03) and becomes authoritative.
+   */
+  formula?: string | null;
 }
 
 /** `PUT .../mapping` body — replaces the entity's deliverable rows transactionally. */
 export interface AutocountMappingUpdate {
   rows: AutocountMappingWriteRow[];
+}
+
+// ── formula catalog + simulators (plan 16 §3, AC-16-13/21/30) ─────────────────
+
+/**
+ * `POST .../mapping/test-formula` result (AC-16-21) — the server-authoritative
+ * single-formula eval, the parity check behind the builder's live client
+ * preview. Same shape as `lib/autocount-formula.ts testFormula`.
+ */
+export interface AutocountFormulaTestResult {
+  ok: boolean;
+  output: unknown;
+  error: string | null;
+}
+
+/** One field's simulated outcome in the whole-mapping preview — value or error. */
+export interface AutocountSimulateFieldResult {
+  scope: string;
+  sourcePath: string;
+  canonicalField: string;
+  present: boolean;
+  ok: boolean;
+  value: unknown;
+  error: string | null;
+}
+
+/**
+ * `POST .../mapping/simulate` result (AC-16-30/31) — the REAL MappingEngine run
+ * over a mock AutoCount record. `record` is the projected Sorento payload (every
+ * mapped field), or null when the record would be REJECTED (all-or-nothing per
+ * document). Writes NOTHING — pure transform preview.
+ */
+export interface AutocountSimulateResult {
+  ok: boolean;
+  sourceRef: string;
+  docNo: string | null;
+  record: Record<string, unknown> | null;
+  headerFields: AutocountSimulateFieldResult[];
+  lineFields: AutocountSimulateFieldResult[][];
+  errors: Array<Record<string, unknown>>;
 }
 
 // ── dry-run preview (hop 2, AC-14-20/21/22/26) ───────────────────────────────

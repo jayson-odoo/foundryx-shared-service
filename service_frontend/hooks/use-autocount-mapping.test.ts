@@ -20,6 +20,7 @@ const VIEW: AutocountMappingView = {
     {
       sourcePath: 'AccNo',
       transform: 'string',
+      formula: null,
       sorentoField: 'code',
       canonicalField: 'code',
       scope: 'header',

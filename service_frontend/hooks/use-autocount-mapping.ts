@@ -4,8 +4,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { ApiError } from '@/lib/api-client';
 import { autocountService } from '@/services/autocount-service';
 import type {
+  AutocountFormulaTestResult,
   AutocountMappingView,
   AutocountMappingWriteRow,
+  AutocountSimulateResult,
 } from '@/types/autocount';
 
 export interface UseAutocountMappingResult {
@@ -21,6 +23,21 @@ export interface UseAutocountMappingResult {
    * `saveError` — the shell stays in edit mode so the operator can fix it.
    */
   save: (rows: AutocountMappingWriteRow[]) => Promise<boolean>;
+  /**
+   * Server-authoritative single-formula eval (AC-16-21) — the parity check the
+   * builder's Testing tab calls on demand. Never throws for a bad formula/value
+   * (returns `{ ok: false, error }`).
+   */
+  testFormula: (formula: string, value: unknown) => Promise<AutocountFormulaTestResult>;
+  /**
+   * Run the whole mapping over a mock AutoCount record (AC-16-30). `rows` = the
+   * CURRENT draft so unsaved edits preview; omit to simulate the saved rows.
+   * Writes nothing.
+   */
+  simulate: (
+    record: Record<string, unknown>,
+    rows?: AutocountMappingWriteRow[],
+  ) => Promise<AutocountSimulateResult>;
   reload: () => void;
 }
 
@@ -84,5 +101,27 @@ export function useAutocountMapping(
     [companyId, entityType],
   );
 
-  return { view, isLoading, notFound, saveError, isSaving, save, reload };
+  const testFormula = useCallback(
+    (formula: string, value: unknown) =>
+      autocountService.testFormula(companyId, entityType, formula, value),
+    [companyId, entityType],
+  );
+
+  const simulate = useCallback(
+    (record: Record<string, unknown>, rows?: AutocountMappingWriteRow[]) =>
+      autocountService.simulateMapping(companyId, entityType, record, rows),
+    [companyId, entityType],
+  );
+
+  return {
+    view,
+    isLoading,
+    notFound,
+    saveError,
+    isSaving,
+    save,
+    testFormula,
+    simulate,
+    reload,
+  };
 }

@@ -19,10 +19,13 @@ import type {
   AutocountCompanyDetail,
   AutocountEntityConfig,
   AutocountEntityConfigUpdate,
+  AutocountFormulaTestResult,
   AutocountJobListQuery,
   AutocountMappingUpdate,
   AutocountMappingView,
+  AutocountMappingWriteRow,
   AutocountPreviewResult,
+  AutocountSimulateResult,
   AutocountSinkTargetInput,
   AutocountStagedList,
   AutocountStagedQuery,
@@ -133,6 +136,30 @@ export interface AutocountService {
     entityType: string,
     input: AutocountMappingUpdate,
   ): Promise<AutocountMappingView>;
+  /**
+   * Server-authoritative single-formula eval
+   * (`POST .../mapping/test-formula`, AC-16-21) — the parity check behind the
+   * builder's live client preview. A bad formula/value comes back as
+   * `{ ok: false, error }`, never a throw. Writes nothing.
+   */
+  testFormula(
+    companyId: string,
+    entityType: string,
+    formula: string,
+    value: unknown,
+  ): Promise<AutocountFormulaTestResult>;
+  /**
+   * Run the REAL MappingEngine over a MOCK AutoCount record
+   * (`POST .../mapping/simulate`, AC-16-30) → the projected Sorento record +
+   * per-field results. `rows` (optional) previews UNSAVED draft edits. Writes
+   * NOTHING — pure transform preview, distinct from the slice-14 Sorento dry-run.
+   */
+  simulateMapping(
+    companyId: string,
+    entityType: string,
+    record: Record<string, unknown>,
+    rows?: AutocountMappingWriteRow[],
+  ): Promise<AutocountSimulateResult>;
 }
 
 export const autocountService: AutocountService = realAutocountService;

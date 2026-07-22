@@ -16,15 +16,20 @@
  *   - anything else                → a realistic previewable payload
  */
 import { ApiError } from '@/lib/api-client';
+import { testFormula as evalFormula } from '@/lib/autocount-formula';
 import type {
   AutocountApprovalResult,
   AutocountCompany,
   AutocountCompanyDetail,
   AutocountEntityConfig,
+  AutocountFormulaTestResult,
   AutocountJobListQuery,
   AutocountMappingUpdate,
   AutocountMappingView,
+  AutocountMappingWriteRow,
   AutocountPreviewResult,
+  AutocountSimulateFieldResult,
+  AutocountSimulateResult,
   AutocountSinkTargetInput,
   AutocountStagedList,
   AutocountStagedQuery,
@@ -379,12 +384,84 @@ export const mockAutocountService: AutocountService = {
       rows: input.rows.map((row) => ({
         sourcePath: row.sourcePath,
         transform: row.transform,
+        formula: row.formula?.trim() ? row.formula.trim() : null,
         sorentoField: row.sorentoField,
         canonicalField: row.sorentoField,
         scope: 'header',
         isRequired: view.sorentoFields.find((f) => f.field === row.sorentoField)?.required ?? false,
         isEnabled: true,
       })),
+    });
+  },
+
+  testFormula(
+    _companyId: string,
+    _entityType: string,
+    formula: string,
+    value: unknown,
+  ): Promise<AutocountFormulaTestResult> {
+    // Mirrors the server: the same safe evaluator, a named error, never a throw.
+    return Promise.resolve(evalFormula(formula, value));
+  },
+
+  simulateMapping(
+    _companyId: string,
+    entityType: string,
+    record: Record<string, unknown>,
+    rows?: AutocountMappingWriteRow[],
+  ): Promise<AutocountSimulateResult> {
+    // A light stand-in for the real MappingEngine: evaluate each draft (or saved)
+    // deliverable row's formula/passthrough over the flat mock record so the
+    // record-in → record-out preview + per-field errors are tunable with no
+    // backend. The real engine is authoritative; this only drives the UI states.
+    const view = mockMappingView(entityType);
+    const source = rows
+      ? rows.map((r) => ({
+          sourcePath: r.sourcePath,
+          formula: r.formula ?? null,
+          canonicalField: r.sorentoField,
+        }))
+      : view.rows
+          .filter((r) => r.sorentoField)
+          .map((r) => ({
+            sourcePath: r.sourcePath,
+            formula: r.formula,
+            canonicalField: r.sorentoField as string,
+          }));
+
+    const headerFields: AutocountSimulateFieldResult[] = [];
+    const out: Record<string, unknown> = {};
+    let ok = true;
+    for (const r of source) {
+      const raw = record[r.sourcePath];
+      const present = raw !== undefined;
+      const formula = r.formula?.trim() ? r.formula.trim() : 'value';
+      const evaluated = present
+        ? evalFormula(formula, raw)
+        : { ok: true, output: null, error: null };
+      if (!evaluated.ok) ok = false;
+      if (evaluated.ok && present) out[r.canonicalField] = evaluated.output;
+      headerFields.push({
+        scope: 'header',
+        sourcePath: r.sourcePath,
+        canonicalField: r.canonicalField,
+        present,
+        ok: evaluated.ok,
+        value: evaluated.output,
+        error: evaluated.error,
+      });
+    }
+
+    return Promise.resolve({
+      ok,
+      sourceRef: String(record.AccNo ?? record.DocNo ?? ''),
+      docNo: (record.DocNo as string | undefined) ?? null,
+      record: ok ? out : null,
+      headerFields,
+      lineFields: [],
+      errors: ok
+        ? []
+        : headerFields.filter((f) => !f.ok).map((f) => ({ field: f.canonicalField, message: f.error })),
     });
   },
 };
@@ -397,6 +474,7 @@ function mockMappingView(entityType: string): AutocountMappingView {
       {
         sourcePath: 'AccNo',
         transform: 'string',
+        formula: null,
         sorentoField: 'code',
         canonicalField: 'code',
         scope: 'header',
@@ -406,6 +484,7 @@ function mockMappingView(entityType: string): AutocountMappingView {
       {
         sourcePath: 'CompanyName',
         transform: 'string',
+        formula: null,
         sorentoField: 'name',
         canonicalField: 'name',
         scope: 'header',
@@ -415,6 +494,7 @@ function mockMappingView(entityType: string): AutocountMappingView {
       {
         sourcePath: 'IsActive',
         transform: 't_f_bool',
+        formula: 'if(value == "T", true, false)',
         sorentoField: 'is_active',
         canonicalField: 'is_active',
         scope: 'header',
@@ -424,6 +504,7 @@ function mockMappingView(entityType: string): AutocountMappingView {
       {
         sourcePath: 'EmailAddress',
         transform: 'string',
+        formula: null,
         sorentoField: 'email',
         canonicalField: 'email',
         scope: 'header',
@@ -434,6 +515,7 @@ function mockMappingView(entityType: string): AutocountMappingView {
       {
         sourcePath: 'Data.0.LastModified',
         transform: 'slash_datetime',
+        formula: null,
         sorentoField: null,
         canonicalField: 'last_modified',
         scope: 'header',

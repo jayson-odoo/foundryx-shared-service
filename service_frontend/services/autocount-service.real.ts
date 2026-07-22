@@ -10,10 +10,13 @@ import type {
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
   AutocountEntityConfig,
+  AutocountFormulaTestResult,
   AutocountJobListQuery,
   AutocountMappingUpdate,
   AutocountMappingView,
+  AutocountMappingWriteRow,
   AutocountPreviewResult,
+  AutocountSimulateResult,
   AutocountStagedList,
   AutocountSyncJob,
   AutocountSyncJobBatch,
@@ -146,14 +149,38 @@ export const realAutocountService: AutocountService = {
       `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/mapping`,
       {
         method: 'PUT',
-        body: JSON.stringify({
-          rows: input.rows.map((row) => ({
-            sourcePath: row.sourcePath,
-            transform: row.transform,
-            sorentoField: row.sorentoField,
-          })),
-        }),
+        body: JSON.stringify({ rows: input.rows.map(writeRow) }),
       },
     );
   },
+
+  testFormula(companyId, entityType, formula, value) {
+    return apiFetch<AutocountFormulaTestResult>(
+      `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/mapping/test-formula`,
+      { method: 'POST', body: JSON.stringify({ formula, value }) },
+    );
+  },
+
+  simulateMapping(companyId, entityType, record, rows) {
+    const body: { record: Record<string, unknown>; rows?: ReturnType<typeof writeRow>[] } = {
+      record,
+    };
+    // Only send `rows` when previewing DRAFT edits; omit to simulate saved rows.
+    if (rows) body.rows = rows.map(writeRow);
+    return apiFetch<AutocountSimulateResult>(
+      `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/mapping/simulate`,
+      { method: 'POST', body: JSON.stringify(body) },
+    );
+  },
 };
+
+/** The wire shape of one mapping row on write (a blank formula → null). */
+function writeRow(row: AutocountMappingWriteRow) {
+  const formula = row.formula?.trim();
+  return {
+    sourcePath: row.sourcePath,
+    transform: row.transform,
+    sorentoField: row.sorentoField,
+    formula: formula ? formula : null,
+  };
+}

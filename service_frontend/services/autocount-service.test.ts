@@ -154,6 +154,57 @@ describe('autocount service (real boundary)', () => {
       sinkConnectionId: null,
     });
   });
+
+  it('sends the row formula on save (blank ⇒ null so the named transform runs)', async () => {
+    apiFetch.mockResolvedValue({ entityType: 'supplier', rows: [], sorentoFields: [], acFields: [] });
+    await realAutocountService.updateMapping('c1', 'supplier', {
+      rows: [
+        { sourcePath: 'IsActive', transform: 't_f_bool', sorentoField: 'is_active', formula: 'if(value == "T", true, false)' },
+        { sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: '  ' },
+      ],
+    });
+    const [path, init] = apiFetch.mock.calls[0];
+    expect(path).toBe('/autocount/companies/c1/entities/supplier/mapping');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body as string).rows).toEqual([
+      { sourcePath: 'IsActive', transform: 't_f_bool', sorentoField: 'is_active', formula: 'if(value == "T", true, false)' },
+      { sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: null },
+    ]);
+  });
+
+  it('tests a single formula server-side (AC-16-21)', async () => {
+    apiFetch.mockResolvedValue({ ok: true, output: true, error: null });
+    await realAutocountService.testFormula('c1', 'supplier', 'if(value == "T", true, false)', 'T');
+    const [path, init] = apiFetch.mock.calls[0];
+    expect(path).toBe('/autocount/companies/c1/entities/supplier/mapping/test-formula');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      formula: 'if(value == "T", true, false)',
+      value: 'T',
+    });
+  });
+
+  it('simulates the whole mapping, sending draft rows for an unsaved preview (AC-16-30)', async () => {
+    apiFetch.mockResolvedValue({ ok: true, sourceRef: '', docNo: null, record: {}, headerFields: [], lineFields: [], errors: [] });
+    await realAutocountService.simulateMapping('c1', 'supplier', { AccNo: 'A1' }, [
+      { sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: null },
+    ]);
+    const [path, init] = apiFetch.mock.calls[0];
+    expect(path).toBe('/autocount/companies/c1/entities/supplier/mapping/simulate');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      record: { AccNo: 'A1' },
+      rows: [{ sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: null }],
+    });
+  });
+
+  it('omits rows when simulating the SAVED mapping', async () => {
+    apiFetch.mockResolvedValue({ ok: true, sourceRef: '', docNo: null, record: {}, headerFields: [], lineFields: [], errors: [] });
+    await realAutocountService.simulateMapping('c1', 'supplier', { AccNo: 'A1' });
+    const body = JSON.parse(apiFetch.mock.calls[0][1].body as string);
+    expect(body).toEqual({ record: { AccNo: 'A1' } });
+    expect(body).not.toHaveProperty('rows');
+  });
 });
 
 describe('autocount mock service (frontend-first scaffolding)', () => {
