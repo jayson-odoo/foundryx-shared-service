@@ -18,14 +18,14 @@ only on Postgres — see ``app/module_platform/migrations.run_module_migrations`
 the test suite creates the table via ``create_all``).
 
 Revision ID: 0005_ideation_embed_connections
-Revises: 0004_ideation_idea_segregated_fields
+Revises: 0004_ideation_segregated
 Create Date: 2026-07-20
 """
 from alembic import op
 from sqlalchemy import text
 
 revision = "0005_ideation_embed_connections"
-down_revision = "0004_ideation_idea_segregated_fields"
+down_revision = "0004_ideation_segregated"
 branch_labels = None
 depends_on = None
 
