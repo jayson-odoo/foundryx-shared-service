@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { CalendarRange, RefreshCw } from 'lucide-react';
+import { CalendarRange, RefreshCw, RotateCcw } from 'lucide-react';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { Badge } from '@/components/ui/badge';
 import { ClampedText } from '@/components/platform/clamped-text';
@@ -69,6 +69,8 @@ export interface EntitiesListConfigOptions {
   companyActive: boolean;
   onSync: (entityType: string) => void | Promise<void>;
   onEditLookback: (entity: AutocountEntityConfig) => void;
+  /** Reset a superseded entity's watermark to re-open its first-run window. */
+  onRefetch: (entity: AutocountEntityConfig) => void | Promise<void>;
 }
 
 export function useAutocountEntitiesListConfig({
@@ -76,6 +78,7 @@ export function useAutocountEntitiesListConfig({
   companyActive,
   onSync,
   onEditLookback,
+  onRefetch,
 }: EntitiesListConfigOptions): ResourceListConfig<AutocountEntityConfig> {
   const { formatDateTime } = useDatetime();
 
@@ -101,9 +104,35 @@ export function useAutocountEntitiesListConfig({
         icon: CalendarRange,
         surfaces: { row: true },
         permission: AC_COMPANIES_MANAGE,
+        // Only offered BEFORE the first sync. Once a watermark exists the window
+        // is spent and editing it is a guaranteed no-op — offering a dialog that
+        // cannot take effect is the dead-control violation (AC-15-30). The
+        // superseded state is shown read-only in the "Synced up to" column.
+        isVisible: (rows) => !rows[0]?.watermarkAt,
         run: (rows) => {
           const row = rows[0];
           if (row) onEditLookback(row);
+        },
+      },
+      {
+        id: 'refetch-history',
+        label: 'Re-fetch history',
+        icon: RotateCcw,
+        surfaces: { row: true },
+        permission: AC_COMPANIES_MANAGE,
+        // The deliberate counterpart: for an already-synced entity, re-widening
+        // the window is a distinct, confirmed act that RESETS the watermark, not
+        // a Days box that silently does nothing (AC-15-30).
+        isVisible: (rows) => Boolean(rows[0]?.watermarkAt),
+        confirm: {
+          title: 'Re-fetch history?',
+          description:
+            'The next sync re-reads from the first-run window instead of the current sync position. Records already pushed may be re-staged for review.',
+          confirmLabel: 'Re-fetch',
+        },
+        run: (rows) => {
+          const row = rows[0];
+          if (row) return onRefetch(row);
         },
       },
     ];
@@ -296,5 +325,5 @@ export function useAutocountEntitiesListConfig({
       }),
       enableStatusViews: false,
     };
-  }, [companyActive, entities, formatDateTime, onEditLookback, onSync]);
+  }, [companyActive, entities, formatDateTime, onEditLookback, onRefetch, onSync]);
 }

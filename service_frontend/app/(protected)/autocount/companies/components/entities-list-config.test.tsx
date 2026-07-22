@@ -36,6 +36,7 @@ function entity(over: Partial<AutocountEntityConfig> = {}): AutocountEntityConfi
 
 const onSync = vi.fn();
 const onEditLookback = vi.fn();
+const onRefetch = vi.fn();
 
 function config(entities: AutocountEntityConfig[], companyActive = true) {
   return renderHook(() =>
@@ -44,6 +45,7 @@ function config(entities: AutocountEntityConfig[], companyActive = true) {
       companyActive,
       onSync,
       onEditLookback,
+      onRefetch,
     }),
   ).result.current;
 }
@@ -51,6 +53,7 @@ function config(entities: AutocountEntityConfig[], companyActive = true) {
 beforeEach(() => {
   onSync.mockReset();
   onEditLookback.mockReset();
+  onRefetch.mockReset();
 });
 
 describe('entities list config', () => {
@@ -123,6 +126,29 @@ describe('entities actions', () => {
     const row = entity();
     edit.run([row], { reload: vi.fn() });
     expect(onEditLookback).toHaveBeenCalledWith(row);
+  });
+
+  it('offers "Edit first-run window" ONLY before the first sync (no dead dialog)', () => {
+    // AC-15-30: once a watermark exists, editing the window is a guaranteed
+    // no-op — the action must not be offered (it opened a disabled dialog).
+    const c = config([entity()]);
+    const edit = c.actions.find((a) => a.id === 'edit-lookback')!;
+    expect(edit.isVisible?.([entity({ watermarkAt: null })])).toBe(true);
+    expect(edit.isVisible?.([entity({ watermarkAt: '2026-07-12T00:00:00Z' })])).toBe(false);
+  });
+
+  it('offers "Re-fetch history" ONLY once superseded, as a confirmed reset', () => {
+    const c = config([entity({ watermarkAt: '2026-07-12T00:00:00Z' })]);
+    const refetch = c.actions.find((a) => a.id === 'refetch-history')!;
+    expect(refetch.permission).toBe('autocount.companies.manage');
+    // The mirror image of edit-lookback — visible only when the window is spent.
+    expect(refetch.isVisible?.([entity({ watermarkAt: '2026-07-12T00:00:00Z' })])).toBe(true);
+    expect(refetch.isVisible?.([entity({ watermarkAt: null })])).toBe(false);
+    // Explicit + confirmed, never a silent Days box.
+    expect(refetch.confirm).toBeDefined();
+    const row = entity({ watermarkAt: '2026-07-12T00:00:00Z' });
+    refetch.run([row], { reload: vi.fn() });
+    expect(onRefetch).toHaveBeenCalledWith(row);
   });
 });
 
