@@ -387,15 +387,22 @@ _BR_FK = BusinessRequirement.__table__.c.id
 
 class IdeaBusinessRequirement(IdeationBase):
     """Idea ↔ BR many-many join (D4, AC-BI-17). An Idea may feed several BRs and a
-    BR may absorb many Ideas. Both sides are intra-``app_ideation`` FKs (real FKs
-    kept). ``tenant_id`` is derived from the pair at insert (never a static
-    default) and the link is validated tenant-scoped + same-product on write."""
+    BR may absorb many Ideas. ``business_requirement_id`` keeps its intra-schema FK
+    (``business_requirements`` is created in the same migration — no contention),
+    but ``idea_id`` is a **plain indexed column, NOT a DB FK**: ``ideas`` is a hot,
+    pre-existing table, and adding a FK to it in the 0008 migration takes a
+    ``SHARE ROW EXCLUSIVE`` lock that HANGS a blue/green deploy behind any live
+    connection touching ``ideas`` (observed: backend_green never healthy). The
+    BL-030 rule — references to hot/pre-existing tables are plain indexed columns —
+    applies exactly here. ``tenant_id`` is derived from the pair at insert (never a
+    static default) and the link is validated tenant-scoped + same-product on
+    write, so integrity is enforced in the service layer regardless."""
 
     __tablename__ = "idea_business_requirements"
 
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String, nullable=False, index=True)
-    idea_id = Column(String, ForeignKey(_IDEA_FK), nullable=False, index=True)
+    idea_id = Column(String, nullable=False, index=True)
     business_requirement_id = Column(
         String, ForeignKey(_BR_FK), nullable=False, index=True
     )
