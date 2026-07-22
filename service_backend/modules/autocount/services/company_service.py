@@ -333,8 +333,44 @@ class CompanyService:
             config.initial_lookback_days = initial_lookback_days
         self.db.commit()
 
-        states = self.entity_states(tenant_id, company_id)
-        for state in states:
+        return self._entity_state(tenant_id, company_id, entity_type)
+
+    def refetch_entity(
+        self, tenant_id: str, company_id: str, entity_type: str
+    ) -> EntityState:
+        """Re-open the first-run window: RESET the entity's watermark so the next
+        sync fetches from scratch again (a full/windowed initial load rather than
+        a delta from the last high-water mark).
+
+        This is the explicit, deliberate act behind the "Re-fetch history" action
+        (AC-15-30): once an entity has synced, its first-run window is spent and
+        the lookback box is inert — the ONLY way to widen history again is to drop
+        the watermark. Distinct from ``update_entity_config`` precisely so a
+        window edit never silently re-fetches and a re-fetch is never mistaken for
+        a config tweak.
+        """
+        self.get(tenant_id, company_id)  # tenant-scope guard before any write
+        config = self.configs.get(tenant_id, company_id, entity_type)
+        if config is None:
+            raise EntityConfigNotFound(
+                f"'{entity_type}' is not configured for sync on this company."
+            )
+        mark = self.watermarks.get(tenant_id, company_id, entity_type)
+        if mark is not None:
+            # Clear the delta position and the failure bookkeeping — the next run
+            # starts clean. cursor_json (a mid-window resume point) goes too.
+            mark.last_modified_at = None
+            mark.last_success_at = None
+            mark.cursor_json = None
+            mark.consecutive_failures = 0
+            mark.last_error = None
+        self.db.commit()
+        return self._entity_state(tenant_id, company_id, entity_type)
+
+    def _entity_state(
+        self, tenant_id: str, company_id: str, entity_type: str
+    ) -> EntityState:
+        for state in self.entity_states(tenant_id, company_id):
             if state.entity_type == entity_type:
                 return state
         raise EntityConfigNotFound(

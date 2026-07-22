@@ -3706,3 +3706,52 @@ def test_replace_mapping_survives_a_reseed(db, transports):
     view = svc.mapping_view(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER)
     by_field = {r.sorento_field: r for r in view.rows if r.sorento_field}
     assert by_field["email"].source_path == "Email"  # not reverted to EmailAddress
+
+
+# ── re-fetch history (AC-15-30) ───────────────────────────────────────────────
+
+
+def test_refetch_history_resets_the_watermark(db, transports):
+    """Once an entity has synced, its watermark holds the delta position and the
+    first-run window is spent. Re-fetch must DROP that position so the next sync
+    starts from scratch again — the explicit act behind the 'Re-fetch history'
+    action, distinct from a lookback edit which never re-fetches."""
+    from modules.autocount.services.company_service import CompanyService
+
+    company = _company(
+        db, transports,
+        reads=[[_grn("1", last_modified="2026/07/12 11:00:00")]],
+    )
+    _run_sync(db, company)
+    mark = WatermarkRepository(db).get(
+        DEFAULT_TENANT_ID, company.id, ENTITY_GOODS_RECEIVED_NOTE
+    )
+    assert mark.last_modified_at is not None  # a delta position exists
+
+    state = CompanyService(db).refetch_entity(
+        DEFAULT_TENANT_ID, company.id, ENTITY_GOODS_RECEIVED_NOTE
+    )
+
+    mark = WatermarkRepository(db).get(
+        DEFAULT_TENANT_ID, company.id, ENTITY_GOODS_RECEIVED_NOTE
+    )
+    assert mark.last_modified_at is None  # reset — next sync is a full load
+    assert mark.last_success_at is None
+    assert mark.consecutive_failures == 0
+    # the surface reflects it: no watermark => not superseded
+    assert state.watermark_at is None
+
+
+def test_refetch_history_is_tenant_scoped(db, transports):
+    """A refetch for a company id the caller's tenant does not own must not
+    touch another tenant's watermark."""
+    from modules.autocount.services.company_service import (
+        AutocountServiceError,
+        CompanyService,
+    )
+
+    company = _company(db, transports, reads=[[_grn("1")]])
+    with pytest.raises(AutocountServiceError):
+        CompanyService(db).refetch_entity(
+            "some-other-tenant", company.id, ENTITY_GOODS_RECEIVED_NOTE
+        )

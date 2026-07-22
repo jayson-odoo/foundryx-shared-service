@@ -154,6 +154,31 @@ def update_entity_config(
     return EntityConfigItem.model_validate(state)
 
 
+@router.post(
+    "/{company_id}/entities/{entity_type}/refetch", response_model=EntityConfigItem
+)
+def refetch_entity(
+    company_id: str,
+    entity_type: str,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+) -> EntityConfigItem:
+    """Re-open the first-run window by resetting the entity's watermark, so the
+    next sync re-fetches history from scratch (AC-15-30).
+
+    Deliberately a POST (a state change, not idempotent config) and distinct from
+    the entity PATCH: a lookback edit must never silently re-fetch, and this must
+    never be mistaken for one. Reuses ``autocount.companies.manage``.
+    """
+    try:
+        state = CompanyService(db).refetch_entity(
+            current_user.tenant_id, company_id, entity_type
+        )
+    except AutocountServiceError as exc:
+        _raise(exc)
+    return EntityConfigItem.model_validate(state)
+
+
 def _mapping_response(view: MappingView) -> MappingViewResponse:
     return MappingViewResponse(
         entityType=view.entity_type,
