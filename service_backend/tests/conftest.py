@@ -37,6 +37,11 @@ settings.meta_app_secret = ""
 settings.email_dispatcher_enabled = False
 # Tests must not pick up a platform SMTP connection from the local .env.
 settings.platform_smtp_host = ""
+# Nor a real LLM key: with no platform LLM connection seeded, the deterministic
+# stub adapter answers (AC-BI-12) — the routine suite stays offline and free
+# even on a machine whose .env carries a live provider key.
+settings.platform_llm_api_key = ""
+settings.grill_api_key = ""
 # Workflow runs execute inline under tests (no Celery worker / Redis broker).
 settings.celery_task_always_eager = True
 
@@ -165,6 +170,7 @@ def ideation_session_factory():
     App Store. Ideation tests get a session where the module is bootstrapped +
     installed exactly like production.
     """
+    from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
 
@@ -175,7 +181,13 @@ def ideation_session_factory():
     ).execution_options(
         # Each module schema maps onto its own attached in-memory db (distinct
         # table names; no collisions) — module tables stay isolated from core's.
-        schema_translate_map={OMNI_SCHEMA: "omni", IDEATION_SCHEMA: "ideation"}
+        # autocount (sprint-4/13, merged from main) maps onto the `omni` db like
+        # the core session_factory does so bootstrap_modules can install it here.
+        schema_translate_map={
+            OMNI_SCHEMA: "omni",
+            AUTOCOUNT_SCHEMA: "omni",
+            IDEATION_SCHEMA: "ideation",
+        }
     )
     with engine.connect() as conn:
         conn.exec_driver_sql("ATTACH ':memory:' AS omni")
@@ -183,6 +195,7 @@ def ideation_session_factory():
         conn.commit()
     Base.metadata.create_all(bind=engine)
     OmniBase.metadata.create_all(bind=engine)
+    AutocountBase.metadata.create_all(bind=engine)
     IdeationBase.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 

@@ -263,3 +263,43 @@ describe('table block (sprint-3/02)', () => {
     expect(screen.getByText('26')).toBeInTheDocument(); // footer total
   });
 });
+
+describe('flat mode (AC-BI-29c)', () => {
+  const doc: FormDocument = {
+    schemaVersion: FORM_SCHEMA_VERSION,
+    pages: [
+      {
+        id: 'p0',
+        title: 'Business Requirement',
+        sections: [
+          {
+            id: 's0',
+            title: 'Requirement',
+            description: 'Fill this in',
+            fields: [field({ type: 'textarea', key: 'problem_statement', label: 'Problem statement' })],
+          },
+        ],
+      },
+    ],
+  };
+
+  it('shows page + section chrome by DEFAULT', () => {
+    render(<Harness definition={doc} />);
+    expect(screen.getByText('Business Requirement')).toBeInTheDocument();
+    expect(screen.getByText('Requirement')).toBeInTheDocument();
+    expect(screen.getByText('Fill this in')).toBeInTheDocument();
+    expect(screen.getByText('Problem statement')).toBeInTheDocument();
+  });
+
+  it('OMITS page title + section title/description when flat, keeping the fields', () => {
+    render(
+      <FormRenderer definition={doc} mode="read" answers={{ problem_statement: 'Exports break' }} flat />,
+    );
+    expect(screen.queryByText('Business Requirement')).not.toBeInTheDocument();
+    expect(screen.queryByText('Requirement')).not.toBeInTheDocument();
+    expect(screen.queryByText('Fill this in')).not.toBeInTheDocument();
+    // The field label + value still render — only the structural chrome is gone.
+    expect(screen.getByText('Problem statement')).toBeInTheDocument();
+    expect(screen.getByText('Exports break')).toBeInTheDocument();
+  });
+});

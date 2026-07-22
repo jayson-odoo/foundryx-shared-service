@@ -14,7 +14,12 @@
  * Enforced layering: UI → hooks → this service → lib/api-client → FastAPI.
  */
 import { apiFetch } from '@/lib/api-client';
-import type { Idea, IdeaStatus, Product } from '@/types/ideation';
+import type {
+  Idea,
+  IdeaClusterSuggestions,
+  IdeaStatus,
+  Product,
+} from '@/types/ideation';
 import type { IdeaCreateInput, IdeaService } from './ideation-service';
 
 export interface EmbedTokenScope {
@@ -150,6 +155,13 @@ export const ideationEmbedService: IdeaService & {
       method: 'PUT',
       body: JSON.stringify({ orderedIds }),
     });
+  },
+
+  /** The chrome-less embed never offers clustering (operator-only, gated by
+   * `ideation.clusters.manage`) — a no-op keeps the shared `IdeaService`
+   * contract satisfied. */
+  async suggestClusters(): Promise<IdeaClusterSuggestions> {
+    return { clusters: [], degraded: false };
   },
 
   async remove(id: string): Promise<void> {

@@ -388,6 +388,25 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/settings/imports',
         permission: 'imports.read_all',
       },
+      // Core AI subsystem (Phase B-i slice 1). Agents + skills share
+      // `ai_agents.read`; traces carry their OWN key so raw prompts/completions
+      // can be granted separately (AC-BI-14). LLM connections live under
+      // Integrations — they ride `integrations.read/manage`, no new permission.
+      {
+        title: 'AI agents',
+        path: '/settings/ai/agents',
+        permission: 'ai_agents.read',
+      },
+      {
+        title: 'AI skills',
+        path: '/settings/ai/skills',
+        permission: 'ai_agents.read',
+      },
+      {
+        title: 'AI traces',
+        path: '/settings/ai/traces',
+        permission: 'ai_traces.read',
+      },
     ],
   },
   {
@@ -424,6 +443,11 @@ export const MENU_SIDEBAR: MenuConfig = [
     icon: Lightbulb,
     children: [
       { title: 'Ideas', path: '/ideation/ideas' },
+      {
+        title: 'Business requirements',
+        path: '/ideation/business-requirements',
+        permission: 'ideation.business_requirements.read',
+      },
       { title: 'Triage board', path: '/ideation/board' },
       {
         title: 'Embed connections',
@@ -801,6 +825,11 @@ export const MENU_SIDEBAR_COMPACT: MenuConfig = [
     icon: Lightbulb,
     children: [
       { title: 'Ideas', path: '/ideation/ideas' },
+      {
+        title: 'Business requirements',
+        path: '/ideation/business-requirements',
+        permission: 'ideation.business_requirements.read',
+      },
       { title: 'Triage board', path: '/ideation/board' },
     ],
   },

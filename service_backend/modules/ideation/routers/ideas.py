@@ -16,6 +16,8 @@ from app.models.user import User
 
 from ..schemas import (
     BoardOut,
+    BusinessRequirementOut,
+    ClusterSuggestionsOut,
     IdeaCreateIn,
     IdeaOut,
     IdeaUpdateIn,
@@ -24,6 +26,8 @@ from ..schemas import (
     VoteIn,
 )
 from ..services.actions import IdeaActionService
+from ..services.business_requirements import BusinessRequirementService
+from ..services.clustering import ClusteringService
 from ..services.ideas import IdeaReadService
 
 router = APIRouter()
@@ -106,6 +110,22 @@ def reorder_ideas(
     )
 
 
+@router.get("/clusters", response_model=ClusterSuggestionsOut)
+def suggest_clusters(
+    product_id: Optional[str] = Query(None, alias="productId"),
+    current_user: User = Depends(require_permission("ideation.clusters.manage")),
+    db: Session = Depends(get_db),
+) -> ClusterSuggestionsOut:
+    """Suggested idea clusters (AC-BI-30/31) — ``pg_trgm`` candidates grouped +
+    named by ONE LLM call, degrading to ungrouped trigram candidates if the LLM
+    is unavailable. Optional ``productId`` scopes to a single product (omitted =
+    every product with candidates in the tenant). Suggestions only — nothing
+    auto-promotes. Gated by ``ideation.clusters.manage`` (Triager)."""
+    return ClusteringService(db).suggest(
+        current_user.tenant_id, product_id=product_id, voter_id=current_user.id
+    )
+
+
 @router.get("/{idea_id}", response_model=IdeaOut)
 def get_idea(
     idea_id: str,
@@ -116,6 +136,23 @@ def get_idea(
     human-readable (never a raw UUID). 404 if not found in the tenant."""
     return IdeaReadService(db).get(
         current_user.tenant_id, idea_id, voter_id=current_user.id
+    )
+
+
+@router.get("/{idea_id}/business-requirements", response_model=List[BusinessRequirementOut])
+def list_idea_business_requirements(
+    idea_id: str,
+    current_user: User = Depends(
+        require_permission("ideation.business_requirements.read")
+    ),
+    db: Session = Depends(get_db),
+) -> List[BusinessRequirementOut]:
+    """The Business Requirements this idea feeds (AC-BI-29c) — the reverse of the
+    BR's Ideas tab, for the idea detail's Business Requirements tab. Tenant-scoped,
+    newest BR first. Gated by ``ideation.business_requirements.read`` (viewing BRs
+    is the BR read boundary, not the idea's)."""
+    return BusinessRequirementService(db).linked_business_requirements(
+        current_user.tenant_id, idea_id
     )
 
 

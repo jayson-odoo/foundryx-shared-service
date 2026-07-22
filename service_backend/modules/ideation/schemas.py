@@ -149,6 +149,163 @@ class CreateIdeaAttachmentIn(ApiModel):
     caption: Optional[str] = None
 
 
+class BusinessRequirementOut(ApiModel):
+    """One Business Requirement (list row / detail base), camelCase to the FE.
+    ``status`` is the lifecycle KEY; ``statusLabel``/``statusColor`` are the
+    server-rendered display (never branch on the label). ``templateVersion`` is
+    the STAMPED version this BR renders against (AC-BI-16)."""
+
+    id: str
+    productId: str
+    productName: str
+    status: str
+    statusLabel: str
+    statusColor: str
+    templateKey: str
+    templateVersion: int
+    title: str
+    ideaCount: int = 0
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class BusinessRequirementDetailOut(BusinessRequirementOut):
+    """The BR detail — adds ``answers`` (the form_engine answer map) and
+    ``templateDoc`` (the STAMPED template version's block document, for the
+    form-engine renderer on the Details tab)."""
+
+    answers: Dict[str, Any] = {}
+    templateDoc: Dict[str, Any] = {}
+
+
+class BrTemplateVersionOut(ApiModel):
+    """One BR-template version (Versions tab). ``isStamped`` marks the version
+    THIS BR renders against; ``isActive`` marks the template's current label."""
+
+    version: int
+    isStamped: bool
+    isActive: bool
+    createdAt: datetime
+
+
+class BusinessRequirementCreateIn(ApiModel):
+    """Create a draft BR against a product. ``answers`` are validated against the
+    stamped template version; ``ideaIds`` optionally links ideas (same product)."""
+
+    productId: str
+    title: str = ""
+    answers: Optional[Dict[str, Any]] = None
+    ideaIds: Optional[List[str]] = None
+
+
+class BusinessRequirementUpdateIn(ApiModel):
+    """Partial edit of a BR's ``title`` / ``answers`` (validated against the
+    STAMPED version). Status moves ride ``POST /{id}/status``, not this route."""
+
+    title: Optional[str] = None
+    answers: Optional[Dict[str, Any]] = None
+
+
+class BrLinkIdeasIn(ApiModel):
+    """Link ideas to a BR (tenant-scoped + same-product, AC-BI-17)."""
+
+    ideaIds: List[str]
+
+
+class BrStatusIn(ApiModel):
+    """Move a BR to a lifecycle status by KEY — server-authoritative."""
+
+    status: str
+
+
+# ── clustering (Phase B-i slice 4, AC-BI-30/31) ──────────────────────────────
+
+
+class ClusterSuggestionOut(ApiModel):
+    """One suggested idea cluster (AC-BI-30). ``ideas`` carries the resolved rows
+    so the board can render + edit the selection before promotion. A cluster is
+    ALWAYS a suggestion — nothing auto-promotes (AC-BI-31)."""
+
+    label: str
+    productId: str
+    ideaIds: List[str] = []
+    ideas: List[IdeaOut] = []
+
+
+class ClusterSuggestionsOut(ApiModel):
+    """Cluster suggestions for a product / the whole tenant. ``degraded`` = the
+    LLM grouping was unavailable so trigram candidates are returned ungrouped
+    (AC-BI-30) — clustering degrades, never blocks the board."""
+
+    clusters: List[ClusterSuggestionOut] = []
+    degraded: bool = False
+
+
+# ── Grill (Phase B-i slice 3, AC-BI-20..29) ──────────────────────────────────
+
+
+class GrillFieldOut(ApiModel):
+    """One target field the grill drives toward (key + display label)."""
+
+    key: str
+    label: str
+
+
+class GrillMessageOut(ApiModel):
+    """One transcript turn (AC-BI-21). ``coveredFields`` is the assistant turn's
+    coverage map (empty for user turns)."""
+
+    id: str
+    role: str
+    content: str
+    coveredFields: List[str] = []
+    createdAt: datetime
+
+
+class GrillStateOut(ApiModel):
+    """The Grill tab's snapshot: readiness + fields + transcript + coverage.
+    ``ready``/``warning`` carry the prerequisite state (AC-BI-11).
+    ``capturedSummary`` is the latest turn's per-field understood values
+    (AC-BI-24c) — the running summary the panel renders."""
+
+    ready: bool
+    warning: Optional[str] = None
+    agentName: str
+    fields: List[GrillFieldOut] = []
+    messages: List[GrillMessageOut] = []
+    coveredFields: List[str] = []
+    capturedSummary: Dict[str, str] = {}
+
+
+class GrillTurnIn(ApiModel):
+    """One human turn."""
+
+    message: str
+
+
+class GrillTurnOut(ApiModel):
+    """The turn response (AC-BI-22/24b/24c): prose reply + the coverage map + the
+    running captured summary + the generate signal, all from ONE structured call.
+    ``generateSignal`` TRUE = the user asked to finalize; the APP fires Generate
+    (the model has no side-effect tool, D22-A)."""
+
+    replyText: str
+    coveredFields: List[str] = []
+    capturedSummary: Dict[str, str] = {}
+    generateSignal: bool = False
+
+
+class GrillGenerateOut(ApiModel):
+    """The Generate result. ``status='ok'`` → ``br`` carries the updated detail
+    (Details tab refreshes); ``status='needs_review'`` → ``fieldErrors`` after a
+    failed extraction + one retry (AC-BI-25), the BR is left unchanged."""
+
+    status: Literal["ok", "needs_review"]
+    br: Optional[BusinessRequirementDetailOut] = None
+    answers: Dict[str, Any] = {}
+    fieldErrors: Dict[str, str] = {}
+
+
 class CreateIdeaIn(ApiModel):
     """``create_idea`` intake input (§5.1, AC-A-17) — **snake_case, byte-for-byte**.
 

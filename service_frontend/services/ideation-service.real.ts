@@ -31,7 +31,12 @@
  *   later slice); the field is accepted by the FE input but dropped here.
  */
 import { apiFetch } from '@/lib/api-client';
-import type { Idea, IdeaStatus, Product } from '@/types/ideation';
+import type {
+  Idea,
+  IdeaClusterSuggestions,
+  IdeaStatus,
+  Product,
+} from '@/types/ideation';
 import type { IdeaCreateInput, IdeaService } from './ideation-service';
 
 /** Core catalog list envelope (app/schemas/catalog.py → ListResponse). */
@@ -135,6 +140,11 @@ export const realIdeationService: IdeaService = {
       method: 'PUT',
       body: JSON.stringify({ orderedIds }),
     });
+  },
+
+  suggestClusters(productId?: string): Promise<IdeaClusterSuggestions> {
+    const q = productId ? `?productId=${encodeURIComponent(productId)}` : '';
+    return apiFetch<IdeaClusterSuggestions>(`/ideation/ideas/clusters${q}`);
   },
 
   async remove(id: string): Promise<void> {

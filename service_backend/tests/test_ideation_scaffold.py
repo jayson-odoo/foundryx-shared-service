@@ -18,6 +18,9 @@ IDEATION_PERMISSION_KEYS = {
     "ideation.triage.manage",
     "ideation.clusters.manage",
     "ideation.bindings.manage",
+    "ideation.business_requirements.read",
+    "ideation.business_requirements.manage",
+    "ideation.business_requirements.promote",
 }
 
 

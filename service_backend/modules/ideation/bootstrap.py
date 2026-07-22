@@ -55,7 +55,10 @@ def register_engine_entities() -> None:
 
     from .adapters import registered_adapter_kinds
     from .services.statuses import (
+        BR_ENTITY,
         IDEA_ENTITY,
+        br_count_records,
+        br_migrate_records,
         idea_count_records,
         idea_migrate_records,
     )
@@ -76,11 +79,32 @@ def register_engine_entities() -> None:
             required_flags=["is_initial", "is_terminal", "is_archived"],
         )
     )
+    # Business Requirement rides the core status engine too — tenant-owned,
+    # unscoped (Bi-D3, slice 2). draft → grilling → ready → in-FR → delivered →
+    # archived; the draft → ready edge is the S4 promote gate.
+    register_status_entity(
+        StatusEntity(
+            entity_type=BR_ENTITY,
+            label="Business Requirement",
+            module=MODULE_NAME,
+            count_records=br_count_records,
+            migrate_records=br_migrate_records,
+            record_label_attr="title",
+            required_flags=["is_initial", "is_archived"],
+        )
+    )
     # Conversational-Intake engine (D18, AC-A-13): register the single ``ideation``
     # IntakeDefinition (form_engine target_schema + completion_rule + sink).
     from .services.intake_definitions import register_ideation_intake
 
     register_ideation_intake()
+
+    # Grill engine (Phase B-i slice 3, AC-BI-20): register the Idea → BR
+    # GrillDefinition (instance one). Adding BR → FR later is a new definition
+    # row, not new engine code.
+    from .services.grill import register_idea_to_br_grill
+
+    register_idea_to_br_grill()
 
 
 def create_schema_and_tables(engine: Engine) -> None:
@@ -101,9 +125,19 @@ def install(engine: Engine, db: Session) -> None:
     PermissionRepository(db).sync(MODULE_NAME, load_csv(MODULE_CSV))
     # Idea status set + transition graph as platform defaults (AC-A-10, D-A3).
     # Two-tier: every tenant uses these until it forks the set. Idempotent.
-    from .services.statuses import seed_idea_statuses
+    from .services.br_templates import seed_br_template
+    from .services.statuses import seed_br_statuses, seed_idea_statuses
 
     seed_idea_statuses(db)
+    # Business Requirement status set + graph + the platform-tier BR template
+    # (Phase B-i slice 2, AC-BI-15/16). Idempotent + insert-if-missing.
+    seed_br_statuses(db)
+    seed_br_template(db)
+    # The platform-tier grill-me-business skill (Phase B-i slice 3, AC-BI-28).
+    # Insert-if-missing — an operator's edits survive a reseed.
+    from .services.grill_seed import seed_grill_skill
+
+    seed_grill_skill(db)
 
 
 def install_tenant(db: Session, tenant_id: str) -> None:
@@ -111,8 +145,14 @@ def install_tenant(db: Session, tenant_id: str) -> None:
 
     Later slices seed the tenant's Idea status set + the ``ideation``
     IntakeDefinition binding + register the ``software`` product-kind here
-    (AC-A-03). The scaffold slice has no per-tenant artifacts to seed."""
-    return None
+    (AC-A-03). The scaffold slice has no per-tenant artifacts to seed.
+
+    Phase B-i slice 3 (AC-BI-20b): auto-seed the default ``Ideation grill`` agent
+    (insert-if-missing) so grilling is zero-config. If no LLM connection resolves
+    yet it is seeded connectionless and lights up when a key is later added."""
+    from .services.grill_seed import seed_grill_agent
+
+    seed_grill_agent(db, tenant_id)
 
 
 def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:

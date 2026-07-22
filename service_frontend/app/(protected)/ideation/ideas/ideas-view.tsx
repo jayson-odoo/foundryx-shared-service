@@ -1,13 +1,16 @@
 'use client';
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { ResourceList } from '@/components/platform/resource-list';
 import { useIdeas } from '@/hooks/use-ideas';
 import type { IdeaCreateInput } from '@/services/ideation-service';
 import { IDEA_NEXT_STATUS, type Idea } from '@/types/ideation';
 import { useIdeasListConfig } from './use-ideas-list-config';
+import { IdeaClusterSuggestions } from './cluster-suggestions';
 import { IdeaCaptureDialog } from './idea-capture-dialog';
+import { promoteIdeasToBr } from './promote-to-br';
 
 /**
  * The Ideas repository grid — the SINGLE list/grid component used by BOTH the
@@ -18,6 +21,7 @@ import { IdeaCaptureDialog } from './idea-capture-dialog';
  * capture dialog for create.
  */
 export function IdeasView() {
+  const router = useRouter();
   const { ideas, products, loading, error, create, vote, setStatus, reorderPriority, remove } =
     useIdeas();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -84,8 +88,9 @@ export function IdeasView() {
           toast.error(e instanceof Error ? e.message : 'Could not reorder.');
         }
       },
+      onPromote: (selected: Idea[]) => promoteIdeasToBr(selected, router),
     }),
-    [vote, setStatus, remove, reorderPriority],
+    [vote, setStatus, remove, reorderPriority, router],
   );
 
   const config = useIdeasListConfig(ideas, handlers);
@@ -104,6 +109,9 @@ export function IdeasView() {
 
   return (
     <Fragment>
+      <IdeaClusterSuggestions
+        onPromote={(cluster, meta) => promoteIdeasToBr(cluster, router, meta)}
+      />
       <ResourceList key={version} config={config} />
       {dialogOpen && (
         <IdeaCaptureDialog

@@ -142,6 +142,37 @@ class Settings(BaseSettings):
     # pending and needs_review jobs are never pruned.
     background_job_retention_days: int = 30
 
+    # ── Platform LLM default (Phase B-i slice 1) ───────────────────────────
+    # Env-seeds the PLATFORM tenant's LLM connection, exactly like
+    # PLATFORM_SMTP_* / PLATFORM_STORAGE_*: the platform row is the deployment
+    # default a tenant without its own key falls back to (Bi-D18).
+    #
+    # This is a BOOTSTRAP CONVENIENCE ONLY. It is not an alternative runtime
+    # credential path — resolution always reads `connections.credentials_json`
+    # (Fernet, write-only). Keys entered through the UI behave identically.
+    #
+    # `GRILL_API_KEY` is accepted as a fallback alias so an existing .env keeps
+    # working unchanged; the canonical name is PLATFORM_LLM_API_KEY, because
+    # `app/ai/` is core and will serve workflows/forms/omnichannel too, not
+    # just grilling.
+    platform_llm_provider: str = "gemini"
+    platform_llm_model: str = "gemini-2.5-flash"
+    platform_llm_api_key: str = ""
+    grill_api_key: str = ""  # deprecated alias for platform_llm_api_key
+
+    @property
+    def resolved_platform_llm_api_key(self) -> str:
+        """Canonical name wins; the legacy alias is the fallback."""
+        return (self.platform_llm_api_key or self.grill_api_key or "").strip()
+
+    # ── Core AI subsystem (Phase B-i slice 1, AC-BI-10) ────────────────────
+    # Trace retention, swept by the beat task. `ok` traces are noise once the
+    # feature works, so they go early; `error`/`flagged` traces are the reason
+    # traces exist (attributing a bad result to a prompt version) and keep a
+    # deliberately longer window.
+    ai_trace_retention_days: int = 14
+    ai_trace_error_retention_days: int = 90
+
     # ── Developer Logs / Integration Activity (plan sprint-4/12) ────────────
     # Global default retention for integration_activity rows (a per-tenant
     # integration_log_settings.retention_days NULL falls back to this). The beat

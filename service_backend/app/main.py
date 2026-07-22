@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import (
+    ai,
     app_store,
     auth,
     avatars,
@@ -127,6 +128,13 @@ app.include_router(workflows.router, prefix="/workflows", tags=["workflows"])
 # Terminology (plan sprint-3/08, F10): per-tenant entity relabeling. Read is
 # authenticated-only (the client-cache source); edits gated terminology.manage.
 app.include_router(terminology.router, prefix="/terminology", tags=["terminology"])
+
+# Core AI subsystem (Phase B-i slice 1). Agents + skills ride ai_agents.read/
+# .manage; traces ride a SEPARATE ai_traces.read (raw prompts/completions).
+# LLM connections need no new permission — they ride integrations.read/.manage.
+app.include_router(ai.agents_router, prefix="/ai/agents", tags=["ai"])
+app.include_router(ai.skills_router, prefix="/ai/skills", tags=["ai"])
+app.include_router(ai.traces_router, prefix="/ai/traces", tags=["ai"])
 
 # Numbering engine (sprint-4/07, Cluster F) — read numbering.read, edit .manage.
 app.include_router(numbering.router, prefix="/numbering", tags=["numbering"])

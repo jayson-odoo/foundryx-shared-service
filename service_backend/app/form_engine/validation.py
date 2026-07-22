@@ -44,12 +44,29 @@ _ADDRESS_REQUIRED = ("line1", "city", "country")
 
 _REQUIRED_MSG = "This field is required."
 
+# The full set of "this was left blank" messages every validator emits. Used to
+# strip required-only errors when ``enforce_required=False`` (AC-BI-24b): AI
+# extraction is allowed a PARTIAL emit — a legitimately-blank field is left blank
+# for the human, never a 422 — while type/format/choice errors still surface.
+# ``required`` is enforced ONLY at the promote completeness gate, a separate check.
+_REQUIRED_MESSAGES = frozenset(
+    {
+        _REQUIRED_MSG,
+        "Address line 1 is required.",
+        "City is required.",
+        "Country is required.",
+    }
+)
+
 
 # ---- public entry ----
 
 
 def validate_submission(
-    doc: "FormDocument | Dict[str, Any]", answers: Dict[str, Any]
+    doc: "FormDocument | Dict[str, Any]",
+    answers: Dict[str, Any],
+    *,
+    enforce_required: bool = True,
 ) -> Tuple[Dict[str, Any], Dict[str, str]]:
     """Validate a raw answer map against the form doc.
 
@@ -58,6 +75,12 @@ def validate_submission(
       dropped, unknown keys dropped, computed fields recomputed.
     - ``errors`` — per-field ``{fieldKey: message}`` (repeater rows keyed
       ``<key>.<rowIndex>.<subKey>``). Empty ⇒ valid.
+
+    ``enforce_required`` (default ``True``) keeps the submit-boundary contract
+    unchanged. Passing ``False`` (AI extraction, AC-BI-24b) validates
+    type/format/choice-membership ONLY and drops required-only errors — a
+    partial emit is success (a blank field is left for the human, never a 422);
+    ``required`` is enforced separately at the promote completeness gate.
     """
     form = doc if isinstance(doc, FormDocument) else FormDocument.model_validate(doc)
     answers = answers or {}
@@ -97,6 +120,11 @@ def validate_submission(
                 # optional field round-trips as the user left it.
                 if field.key in answers:
                     clean[field.key] = _clean_value(field, value)
+
+    if not enforce_required:
+        errors = {
+            k: v for k, v in errors.items() if v not in _REQUIRED_MESSAGES
+        }
 
     return clean, errors
 

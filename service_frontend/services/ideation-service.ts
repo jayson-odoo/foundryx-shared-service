@@ -7,7 +7,7 @@
  *
  * Enforced layering: UI → hooks → this service → lib/api-client → FastAPI.
  */
-import type { Idea, IdeaStatus, Product } from '@/types/ideation';
+import type { Idea, IdeaClusterSuggestions, IdeaStatus, Product } from '@/types/ideation';
 import { realIdeationService } from './ideation-service.real';
 
 /** Manual capture payload (the WhatsApp path fills the same fields via the tool). */
@@ -45,6 +45,9 @@ export interface IdeaService {
   vote(id: string, dir: 'up' | 'down'): Promise<Idea>;
   /** Re-rank ideas by the given id order (drag-to-reorder priority). */
   reorderPriority(orderedIds: string[]): Promise<Idea[]>;
+  /** Suggested idea clusters (trigram + LLM grouping, degrades to ungrouped).
+   * Optional productId scopes to one product. Suggestions only — never promotes. */
+  suggestClusters(productId?: string): Promise<IdeaClusterSuggestions>;
   /** Hard-delete an idea. */
   remove(id: string): Promise<void>;
 }

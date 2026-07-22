@@ -21,6 +21,14 @@
       "prefix": "/ideation/ideas"
     },
     {
+      "name": "business_requirements",
+      "prefix": "/ideation/business-requirements"
+    },
+    {
+      "name": "grill",
+      "prefix": "/ideation/business-requirements"
+    },
+    {
       "name": "intake",
       "prefix": "/ideation/intake",
       "public": true

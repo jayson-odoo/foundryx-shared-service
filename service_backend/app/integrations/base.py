@@ -70,6 +70,46 @@ class IntegrationProvider(Protocol):
         ...
 
 
+@dataclass
+class ModelOption:
+    """One selectable chat model (AC-BI-05). ``created`` (epoch seconds, when the
+    provider reports it) drives newest-first ordering in the picker."""
+
+    id: str
+    label: str
+    created: Optional[int] = None
+
+
+@dataclass
+class LLMResult:
+    """One completion (AC-BI-01).
+
+    ``text`` XOR ``structured`` — a call made WITHOUT an ``output_schema``
+    returns prose in ``text``; a call made WITH one returns the parsed object in
+    ``structured`` (and leaves ``text`` None). ``usage`` is NORMALIZED across
+    vendors (``tokens_in``/``tokens_out``) so cost tracking never branches on
+    provider.
+    """
+
+    text: Optional[str] = None
+    structured: Optional[Dict[str, Any]] = None
+    tokens_in: int = 0
+    tokens_out: int = 0
+    model: str = ""
+    # Provider's own stop reason, kept verbatim for traces (not branched on).
+    finish_reason: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if (self.text is None) == (self.structured is None):
+            raise ValueError("LLMResult carries exactly one of text | structured.")
+
+
+class LLMError(Exception):
+    """An LLM provider call failed (bad key, retired model, transport, unparsable
+    structured output). Callers map this to a clean message — never a raw vendor
+    traceback and never the API key (AC-BI-04)."""
+
+
 class PaymentError(Exception):
     """A gateway API call failed (create_checkout / refund). The caller maps this
     to a clean HTTP error and leaves local state untouched (atomicity)."""
@@ -124,6 +164,40 @@ class PaymentProvider(IntegrationProvider, Protocol):
         currency: str,
     ) -> RefundResult:
         """Issue a gateway refund against a prior charge (AC-07-37)."""
+        ...
+
+
+class LLMProvider(IntegrationProvider, Protocol):
+    """An ``IntegrationProvider`` of ``type == 'llm'`` (anthropic/openai/gemini).
+
+    The adapter owns EVERY provider-specific detail of structured output
+    (Anthropic tool-use · OpenAI ``json_schema`` response format · Gemini
+    ``responseSchema``) — no caller ever branches on provider (AC-BI-01).
+    """
+
+    def complete(
+        self,
+        config: Dict[str, Any],
+        credentials: Dict[str, Any],
+        *,
+        model: str,
+        system: str,
+        messages: List[Dict[str, str]],
+        output_schema: Optional[Dict[str, Any]] = None,
+        temperature: float = 0,
+    ) -> LLMResult:
+        """One completion. ``messages`` = ``[{"role": "user"|"assistant",
+        "content": str}, …]``. With ``output_schema`` (a JSON Schema object) the
+        adapter forces the vendor's structured-output mode and returns the parsed
+        object in ``LLMResult.structured``. Raises ``LLMError`` on any failure —
+        including a model id the provider has retired, which must fail LOUDLY
+        rather than silently substituting another model (AC-BI-05)."""
+        ...
+
+    def models(self, config: Dict[str, Any], credentials: Dict[str, Any]) -> List[ModelOption]:
+        """The provider's live chat-capable model list, newest first. Raises
+        ``LLMError`` when the catalog can't be fetched — the caller falls back to
+        the curated static list so the picker still renders (AC-BI-05)."""
         ...
 
 

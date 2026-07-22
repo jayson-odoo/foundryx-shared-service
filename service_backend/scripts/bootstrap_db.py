@@ -106,6 +106,23 @@ def main() -> None:
     finally:
         db.close()
 
+    # Seed the ideation grill skill + per-tenant "Ideation grill" agent for every
+    # tenant with ideation ACTIVE (Phase B-i S3, AC-BI-20b). Like the grant sweep
+    # above, this reaches tenants that got ideation via the backfill path (which
+    # doesn't run install_tenant) — e.g. the demo tenant on a fresh bootstrap.
+    # Idempotent (insert-if-missing). Best-effort: never fail bootstrap.
+    try:
+        from scripts.seed_ideation_grill_agent import seed_all_grill_agents
+
+        db = SessionLocal()
+        try:
+            count = seed_all_grill_agents(db)
+            print(f"ideation: grill agent seeded for {count} tenant(s)")
+        finally:
+            db.close()
+    except Exception as exc:  # noqa: BLE001 — ideation may be absent/errored
+        print(f"ideation grill seed skipped: {exc}")
+
     # DEV-only demo inbox (plan 05) — never seeds in prod.
     if settings.environment == "development":
         from app.models.tenant import DEFAULT_TENANT_ID
