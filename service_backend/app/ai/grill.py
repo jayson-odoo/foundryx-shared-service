@@ -745,12 +745,16 @@ def _opening_instruction() -> str:
     return (
         "Begin the session now. In a warm, brief greeting: (1) summarize in one or "
         "two sentences what you understand from the linked source artifacts above, "
-        "then (2) ask your FIRST clarifying question to start filling the target "
-        "fields. Ask only ONE question. Do not invent details the artifacts do not "
-        "contain. In coveredFields, include any target field the linked source "
-        "artifacts ALREADY establish (do not leave a field the artifacts clearly "
-        "answer marked as uncovered), and give its value in capturedSummary. Set "
-        "generateSignal to false — the interview is only beginning."
+        "then (2) ask your FIRST clarifying question about a target field the source "
+        "artifacts do NOT already establish. NEVER re-ask a field you are about to "
+        "mark covered — if the artifacts already give the problem statement, "
+        "acknowledge it and move on to the first still-missing field (e.g. the "
+        "business goal), do not ask the respondent to restate it. Ask only ONE "
+        "question. Do not invent details the artifacts do not contain. In "
+        "coveredFields, include EVERY target field the linked source artifacts "
+        "already establish (do not leave a field the artifacts clearly answer marked "
+        "as uncovered), and give its value in capturedSummary. Set generateSignal to "
+        "false — the interview is only beginning."
     )
 
 
