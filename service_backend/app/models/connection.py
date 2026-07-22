@@ -24,6 +24,14 @@ from app.models.utc_datetime import UTCDateTime
 
 from app.database import Base
 
+# Connection types exempt from the ONE-active-per-type rule. ``payment``
+# (sprint-4/07 AC-07-24 — Stripe + Billplz resolve per-project) and ``llm``
+# (Phase B-i Bi-D21 / AC-BI-03b — agents resolve by connection_id, so several
+# providers coexist). Everything else — notably ``storage`` and ``email``, whose
+# resolution MUST stay deterministic — is still one active row per tenant.
+# Keep this list and the migration's index predicate in step.
+EXEMPT_FROM_ONE_PER_TYPE = ("payment", "llm")
+
 # Connection health — code branches only on these.
 CONNECTION_STATUS_ACTIVE = "ACTIVE"
 CONNECTION_STATUS_UNVERIFIED = "UNVERIFIED"
@@ -58,13 +66,24 @@ class Connection(Base):
         # and its ACTIVE successor (B) coexist during a bucket migration
         # WITHOUT violating one-per-type. Only the single active row is the
         # write-target; ``resolve_for_type`` filters on ``is_active`` to pick it.
+        # RELAXED for ``type='llm'`` (Phase B-i, Bi-D21 / AC-BI-03b): a tenant
+        # may hold SEVERAL active LLM connections (Anthropic + Gemini + OpenAI)
+        # so different agents can use different providers — a cheap model for
+        # clustering, a strong one for grilling. An agent therefore resolves by
+        # its own ``connection_id``, never by type; type-resolution survives
+        # only as the "is any LLM configured?" prerequisite probe (AC-BI-11).
+        # Storage and email keep their one-active-per-type invariant untouched.
         Index(
             "uq_connection_tenant_type",
             "tenant_id",
             "type",
             unique=True,
-            postgresql_where=and_(Column("type") != "payment", Column("is_active")),
-            sqlite_where=and_(Column("type") != "payment", Column("is_active")),
+            postgresql_where=and_(
+                Column("type").notin_(EXEMPT_FROM_ONE_PER_TYPE), Column("is_active")
+            ),
+            sqlite_where=and_(
+                Column("type").notin_(EXEMPT_FROM_ONE_PER_TYPE), Column("is_active")
+            ),
         ),
     )
 

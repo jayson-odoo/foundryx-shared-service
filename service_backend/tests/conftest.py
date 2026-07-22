@@ -37,6 +37,11 @@ settings.meta_app_secret = ""
 settings.email_dispatcher_enabled = False
 # Tests must not pick up a platform SMTP connection from the local .env.
 settings.platform_smtp_host = ""
+# Nor a real LLM key: with no platform LLM connection seeded, the deterministic
+# stub adapter answers (AC-BI-12) — the routine suite stays offline and free
+# even on a machine whose .env carries a live provider key.
+settings.platform_llm_api_key = ""
+settings.grill_api_key = ""
 # Workflow runs execute inline under tests (no Celery worker / Redis broker).
 settings.celery_task_always_eager = True
 

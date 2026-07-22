@@ -402,6 +402,69 @@ def seed_platform_storage_connection(db: Session) -> None:
     )
 
 
+def seed_platform_llm_connection(db: Session) -> None:
+    """Env-seed the PLATFORM tenant's default LLM connection (Phase B-i, Bi-D18).
+
+    Mirrors `seed_platform_smtp_connection` / `seed_platform_storage_connection`:
+    set PLATFORM_LLM_API_KEY (or the legacy `GRILL_API_KEY` alias) and bootstrap
+    upserts the row a tenant without its own key falls back to. Unset = no row =
+    the deterministic stub adapter answers (AC-BI-12), so dev stays zero-config.
+
+    Idempotent: matched on (platform tenant, provider), credentials refreshed
+    from env each bootstrap. This is a bootstrap convenience only — at run time
+    credentials always come from `connections.credentials_json`.
+    """
+    from app.config import settings
+    from app.integrations import get_provider
+    from app.models.connection import CONNECTION_STATUS_UNVERIFIED, Connection
+    from app.secrets import encrypt_secret
+
+    api_key = settings.resolved_platform_llm_api_key
+    if not api_key:
+        return
+
+    provider_key = (settings.platform_llm_provider or "").strip().lower()
+    provider = get_provider(provider_key)
+    if provider is None or getattr(provider, "type", "") != "llm":
+        print(
+            f"WARNING: PLATFORM_LLM_PROVIDER={provider_key!r} is not a registered "
+            "LLM provider (anthropic|openai|gemini) — skipping the platform LLM seed."
+        )
+        return
+    if not settings.fernet_key:
+        # Same rule as the SMTP/storage seeds: seeding would encrypt with THIS
+        # process's ephemeral key, which the API process could never decrypt.
+        # Refuse loudly rather than write an unreadable secret.
+        print(
+            "WARNING: PLATFORM_LLM_API_KEY is set but FERNET_KEY is not — "
+            "skipping the platform LLM seed (the encrypted key would be "
+            "unreadable by the API process). Set a stable FERNET_KEY and re-run."
+        )
+        return
+
+    row = (
+        db.query(Connection)
+        .filter(
+            Connection.tenant_id == PLATFORM_TENANT_ID,
+            Connection.provider == provider_key,
+        )
+        .first()
+    )
+    if row is None:
+        row = Connection(
+            tenant_id=PLATFORM_TENANT_ID,
+            provider=provider_key,
+            type="llm",
+            name=f"Platform {provider.title}",
+            status=CONNECTION_STATUS_UNVERIFIED,
+        )
+        db.add(row)
+    # `defaultModel` is config, not a credential — it seeds the agent form's
+    # model picker; the pinned model still lives on each agent row.
+    row.config_json = {"defaultModel": (settings.platform_llm_model or "").strip()}
+    row.credentials_json = encrypt_secret({"apiKey": api_key})
+
+
 def seed_all(db: Session) -> None:
     seed_statuses(db)
     seed_tenant_transitions(db)
@@ -415,6 +478,8 @@ def seed_all(db: Session) -> None:
     sweep_tenant_admin_grants(db)
     seed_platform_smtp_connection(db)
     seed_platform_storage_connection(db)
+    # Phase B-i: the deployment-default LLM key (env → platform tenant row).
+    seed_platform_llm_connection(db)
     # Template engine (plan 07 D7): platform-tier system email templates.
     from app.template_engine.seed_templates import seed_platform_templates
 

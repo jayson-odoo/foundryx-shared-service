@@ -155,6 +155,25 @@ from app.models.document import (
     FileVersion,
     Folder,
 )
+from app.models.ai import (
+    MESSAGE_ROLES,
+    ROLE_ASSISTANT,
+    ROLE_USER,
+    SPAN_KIND_LLM_CALL,
+    SPAN_KIND_RETRY,
+    SPAN_KIND_VALIDATE,
+    SPAN_KINDS,
+    TRACE_STATUS_ERROR,
+    TRACE_STATUS_OK,
+    AiAgent,
+    AiConversation,
+    AiMessage,
+    AiSkill,
+    AiSkillVersion,
+    AiSpan,
+    AiTrace,
+    ai_agent_skills,
+)
 from app.models.catalog import Product, ProductCategory
 from app.models.numbering import NumberCounter, NumberFormat
 from app.models.tenant_settings import DEFAULT_CURRENCY, TenantSettings
@@ -299,4 +318,22 @@ __all__ = [
     "TRIGGER_SCHEDULE",
     "TRIGGER_EVENT",
     "MAX_RUN_DEPTH",
+    # Core AI subsystem (Phase B-i slice 1).
+    "AiAgent",
+    "ai_agent_skills",
+    "AiSkill",
+    "AiSkillVersion",
+    "AiConversation",
+    "AiMessage",
+    "AiTrace",
+    "AiSpan",
+    "TRACE_STATUS_OK",
+    "TRACE_STATUS_ERROR",
+    "SPAN_KIND_LLM_CALL",
+    "SPAN_KIND_VALIDATE",
+    "SPAN_KIND_RETRY",
+    "SPAN_KINDS",
+    "ROLE_USER",
+    "ROLE_ASSISTANT",
+    "MESSAGE_ROLES",
 ]

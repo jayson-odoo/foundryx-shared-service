@@ -31,6 +31,14 @@ Format: each AC is independently verifiable (Given / When / Then). Grouped by sl
 - **Given** `FERNET_KEY` is unset, **then** the failure is loud at startup/seed — never a silent per-process ephemeral key.
 - **Given** a config PATCH with a subset of fields, **then** it **merges**, never wipes.
 
+### AC-BI-03b — multiple concurrent LLM connections per tenant [BE][T]
+*(Added 2026-07-21 during the S1 audit — the grill assumed this and the schema forbade it.)*
+- **Given** `uq_connection_tenant_type` enforces ONE active connection per type, **then** `type='llm'` is **carved out** of that index exactly as `payment` and `erp` already are — a tenant may hold several active LLM connections at once.
+- **Given** three providers, **then** a tenant can run an Anthropic connection **and** a Gemini connection simultaneously, so different agents may use different providers (e.g. a cheap model for clustering, a strong one for grilling).
+- **Given** `uq_connection_tenant_provider`, **then** it still applies — **one active connection per provider** per tenant (no two active Anthropic rows).
+- **Given** the type carve-out, **then** `resolve_for_type(tenant, 'llm')` is **no longer meaningful for picking an agent's connection** — an agent resolves **by its own `connection_id`**. Type-resolution remains only for the "is any LLM configured at all?" prerequisite check (AC-BI-11), which must therefore tolerate multiple rows and pick deterministically (tenant rows before platform, then oldest-active).
+- **Given** storage and email, **then** their one-active-per-type invariant is **unchanged**.
+
 ### AC-BI-04 — `test()` doubles as the model-list probe [BE][T]
 - **Given** a saved LLM connection and the **Test** action, **when** it runs, **then** it calls the provider's list-models endpoint; success ⇒ `ACTIVE` + `TestResult.ok`, bad key ⇒ `ERROR` with a clean message (never a raw provider traceback, never the key echoed).
 - **Given** a connection that has never passed a test, **then** it displays `UNVERIFIED` until the first passing test.
@@ -44,6 +52,13 @@ Format: each AC is independently verifiable (Given / When / Then). Grouped by sl
 - **Given** the core `ai_agents` table, **then** a row carries `tenant_id`, `name`, `connection_id`, `model`, `temperature`, `is_enabled`, audit columns — and holds **no API key of its own** (credentials live only on the connection).
 - **Given** the agents surface, **then** it is built on the **config-driven Resource shell** (list + detail form), not a hand-rolled table.
 - **Given** an agent whose connection is deleted or deactivated, **then** the agent surfaces a **warning** (missing prerequisite) rather than failing silently at run time.
+
+### AC-BI-06b — an agent equips MULTIPLE skills (MultiSelect) [BE][FE][T]
+*(Revised 2026-07-22 after live review — an agent is equipped with a SET of skills, like a Claude agent, not one.)*
+- **Given** the agent↔skill relationship, **then** it is **many-many** via an `ai_agent_skills` join (tenant-scoped, derived tenant_id), **not** a single `skill_id` column on the agent.
+- **Given** the agent form's Skill field, **then** it is the shared **`MultiSelect`** widget (search + select-all + pills), never a single `SearchSelect`.
+- **Given** agent create/update, **then** it accepts `skillIds[]`; each id is validated to belong to the tenant's own tier **or** the platform tier (a foreign-tenant skill id is refused — the polymorphic-target rule).
+- **Given** the grill (slice 3), **then** the `GrillDefinition` selects WHICH of the agent's equipped skills runs for a given target; equipping is "available to this agent", firing is the definition's choice. *(Wiring lands in S3; S1 only stores the set.)*
 
 ### AC-BI-07 — skill registry = versioned prompt artifact [BE][FE][T]
 - **Given** the skill model, **then** a skill has `name`, `description`, and a **body**, modelled on a Claude skill — browsable and selectable, never an anonymous text blob on the agent row.

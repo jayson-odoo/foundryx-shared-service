@@ -76,6 +76,16 @@ def run_due_workflows_task() -> dict:
         except Exception:  # noqa: BLE001
             logger.exception("integration-activity prune failed")
             db.rollback()
+        # AI trace retention (Phase B-i, AC-BI-10) — `ok` traces prune on a
+        # short window, `error`/`flagged` on a longer one. Same beat tick,
+        # isolated so a prune failure never breaks the beat.
+        try:
+            from app.ai.retention import prune_traces
+
+            prune_traces(db)
+        except Exception:  # noqa: BLE001
+            logger.exception("AI trace prune failed")
+            db.rollback()
         return {"fired": fired, "pruned": pruned}
     except Exception:  # noqa: BLE001 — a bad tick never kills the beat loop
         logger.exception("scheduled-workflow tick failed")

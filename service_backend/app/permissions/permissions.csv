@@ -81,3 +81,6 @@ numbering,Numbering,read,View document numbering,Can view the document-numbering
 numbering,Numbering,manage,Manage document numbering,Can edit document-numbering prefixes / formats / reset cadence / next values
 integration_logs,Developer Logs,read,View developer logs,Can view the integration activity console (inbound API / embed / outbound / webhook logs)
 integration_logs,Developer Logs,manage,Manage developer logs,Can configure log retention and manage the integration activity console
+ai_agents,AI Agents,read,View AI agents,Can view AI agents and skills
+ai_agents,AI Agents,manage,Manage AI agents,Can create / edit AI agents and skill prompts
+ai_traces,AI Traces,read,View AI traces,Can view AI run traces including raw prompts and completions

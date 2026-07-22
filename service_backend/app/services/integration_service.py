@@ -17,6 +17,7 @@ from app.models.connection import (
     CONNECTION_STATUS_ACTIVE,
     CONNECTION_STATUS_ERROR,
     CONNECTION_STATUS_UNVERIFIED,
+    EXEMPT_FROM_ONE_PER_TYPE,
     Connection,
 )
 from app.repositories.connection_repository import ConnectionRepository
@@ -228,7 +229,10 @@ class IntegrationService:
         # RELAXED for ``payment`` (AC-07-24): a tenant may hold several payment
         # connections (Stripe + Billplz) for per-project resolution; only a
         # SAME-PROVIDER duplicate is rejected (the (tenant, provider) unique).
-        if provider.type == "payment":
+        # RELAXED for ``llm`` too (Bi-D21 / AC-BI-03b) — agents resolve by
+        # connection_id, so Anthropic + OpenAI + Gemini coexist. The exempt set
+        # is shared with the DB index so the 409 and the constraint agree.
+        if provider.type in EXEMPT_FROM_ONE_PER_TYPE:
             dup = self.repo.get_by_provider(tenant_id, provider.provider)
             if dup is not None:
                 raise HTTPException(
