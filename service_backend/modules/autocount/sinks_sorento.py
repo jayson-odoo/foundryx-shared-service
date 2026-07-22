@@ -71,6 +71,20 @@ _ENTITY_PATH: Dict[str, str] = {
 _OUTCOME_DELIVERED = {"created", "updated"}
 
 
+def sorento_supports_entity(entity_type: str) -> bool:
+    """Whether Sorento's ingest API accepts this canonical entity yet.
+
+    Sorento ingests MASTERS only (suppliers, customers). Documents (GRN, PO, …)
+    have no ingest endpoint on the consumer yet, so a document entity is absent
+    from ``_ENTITY_PATH``. A company set to push to Sorento falls back to the
+    logging sink for such an entity (it stages + logs, delivering nothing) rather
+    than erroring on a missing path — this is *deliverability*, an expected
+    not-yet-built state, not a misconfiguration. Delivering documents end-to-end
+    is a separate cross-repo cluster (Sorento has no document ingest today).
+    """
+    return entity_type in _ENTITY_PATH
+
+
 class SorentoSinkError(Exception):
     """A transport- or contract-level failure that is not per-record. The whole
     batch is unresolved; the caller returns it to review rather than marking any

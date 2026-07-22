@@ -73,7 +73,7 @@ from ..repositories import (
     WatermarkRepository,
 )
 from ..sinks import EntitySink, UnknownSinkImpl, sink_for
-from ..sinks_sorento import sorento_sink_from_connection
+from ..sinks_sorento import sorento_sink_from_connection, sorento_supports_entity
 from ..sorento_provider import SORENTO_PROVIDER_KEY
 
 logger = logging.getLogger("foundryx.autocount")
@@ -443,6 +443,13 @@ class CompanyService:
             # swappable the same way the Sorento sink is chosen — one seam.
             return sink_for(SINK_IMPL_LOGGING)
         if impl == SINK_IMPL_SORENTO:
+            if not sorento_supports_entity(entity_type):
+                # Sorento ingests masters only; a document entity (GRN, PO, …)
+                # has no ingest endpoint yet. Route it to the logging sink so it
+                # stages + logs cleanly instead of raising on a missing ingest
+                # path — deliverability, an expected not-yet-built state, not a
+                # misconfiguration. (The unknown-impl case below stays LOUD.)
+                return sink_for(SINK_IMPL_LOGGING)
             if not company.sink_connection_id:
                 raise AutocountServiceError(
                     "This company is set to push to Sorento but has no Sorento "

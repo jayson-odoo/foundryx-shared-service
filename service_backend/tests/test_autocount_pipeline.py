@@ -3183,6 +3183,29 @@ def test_an_unknown_sink_impl_is_a_loud_error_never_a_silent_fallback(db, transp
         CompanyService(db).sink_for_company(DEFAULT_TENANT_ID, company, ENTITY_SUPPLIER)
 
 
+def test_a_non_deliverable_entity_falls_back_to_logging_not_a_missing_path_error(
+    db, transports
+):
+    """A Sorento-configured company + a document entity Sorento cannot ingest yet
+    (GRN) resolves to the LOGGING sink, never a ``SorentoSinkError`` on a missing
+    ingest path. Deliverability is a known not-yet-built state, not a
+    misconfiguration — the stopgap the transactional-documents cluster builds on.
+    """
+    company = _company(db, transports)
+    conn = _sorento_connection(db)
+    _point_at_sorento(db, company, conn)
+    sink = CompanyService(db).sink_for_company(
+        DEFAULT_TENANT_ID, company, ENTITY_GOODS_RECEIVED_NOTE
+    )
+    assert sink.name == SINK_IMPL_LOGGING
+    # A MASTER on the SAME company still resolves to the real Sorento sink — the
+    # fallback is per-entity, it does not disable delivery wholesale.
+    master_sink = CompanyService(db).sink_for_company(
+        DEFAULT_TENANT_ID, company, ENTITY_SUPPLIER
+    )
+    assert master_sink.name == SINK_IMPL_SORENTO
+
+
 def test_an_undecryptable_sorento_key_is_a_clean_error_not_a_500(db, transports):
     from cryptography.fernet import Fernet
 
@@ -3268,6 +3291,36 @@ def test_preview_on_a_logging_company_offers_nothing_to_preview(db, transports):
     result = SyncService(db).preview(DEFAULT_TENANT_ID, job.id)
     assert result["previewable"] is False
     assert "nothing to preview" in result["reason"].lower()
+
+
+def test_preview_of_a_non_deliverable_entity_explains_it_is_not_ingested(
+    db, transports
+):
+    """A Sorento-configured company previewing a document entity Sorento cannot
+    ingest yet (GRN) gets a clean ``previewable: false`` with an HONEST reason
+    (Sorento takes masters only) — never the misleading "no consumer configured"
+    and never a 500 on a missing ingest path. This is the stopgap: the batch
+    stages + logs, and the operator is told exactly why it is not delivered."""
+    company = _company(db, transports)
+    _point_at_sorento(db, company, _sorento_connection(db))
+    job = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID,
+        type=AUTOCOUNT_SYNC,
+        status=JOB_NEEDS_REVIEW,
+        payload_json={
+            "companyId": company.id, "entityType": ENTITY_GOODS_RECEIVED_NOTE,
+        },
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    result = SyncService(db).preview(DEFAULT_TENANT_ID, job.id)
+    assert result["previewable"] is False
+    assert result["sink"] == SINK_IMPL_LOGGING
+    reason = result["reason"].lower()
+    assert "does not yet ingest" in reason
+    assert "suppliers and customers" in reason
+    assert "no consumer is configured" not in reason
 
 
 def test_a_failing_dry_run_refuses_to_offer_approval(db, transports, sorento_sink):

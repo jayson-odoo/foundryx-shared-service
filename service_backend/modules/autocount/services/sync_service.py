@@ -41,6 +41,7 @@ from ..canonical.masters import (
 )
 from ..models import (
     SINK_IMPL_LOGGING,
+    SINK_IMPL_SORENTO,
     STAGED_DISCARDED,
     STAGED_PUSHED,
     AcStagedRecord,
@@ -54,7 +55,7 @@ from ..repositories import (
     SyncRunRepository,
 )
 from ..sinks import EntitySink, WriteResult
-from ..sinks_sorento import SorentoSinkError
+from ..sinks_sorento import SorentoSinkError, sorento_supports_entity
 from ..sync import AUTOCOUNT_SYNC
 from .company_service import AutocountServiceError, CompanyService
 
@@ -485,14 +486,26 @@ class SyncService:
         sink = self.companies.sink_for_company(tenant_id, company, entity_type)
 
         if not hasattr(sink, "dry_run"):
-            return {
-                "previewable": False,
-                "sink": sink.name,
-                "reason": (
+            # Two ways to land on a dry-run-less sink: the company is genuinely
+            # configured to log, OR it targets Sorento but Sorento does not
+            # ingest THIS entity yet (a document — GRN/PO/…). The second is not a
+            # misconfiguration, so it gets its own honest explanation instead of
+            # the misleading "no consumer configured".
+            if company.sink_impl == SINK_IMPL_SORENTO and not sorento_supports_entity(
+                entity_type
+            ):
+                reason = (
+                    f"Sorento does not yet ingest '{entity_type}' records — it "
+                    "currently accepts suppliers and customers only. There is "
+                    "nothing to dry-run; these records are staged and logged, "
+                    "not delivered to Sorento."
+                )
+            else:
+                reason = (
                     "No consumer is configured for this company, so there is "
                     "nothing to preview."
-                ),
-            }
+                )
+            return {"previewable": False, "sink": sink.name, "reason": reason}
 
         pending = self.staged.list_pending_for_job(tenant_id, company_id, job_id)
         _rows, records, _failures = self._rehydrate_pushable(pending)
