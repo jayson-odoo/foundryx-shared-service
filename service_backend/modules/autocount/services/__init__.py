@@ -10,11 +10,16 @@ from .company_service import (
     ConnectionNotFound,
     EntityConfigNotFound,
     EntityState,
+    MappingRowView,
+    MappingView,
+    MappingWriteRow,
 )
 from .sync_service import (
     EntityNotConfigured,
+    JobBatch,
     JobNotFound,
     NotAwaitingApproval,
+    PreviewFailed,
     PushFailed,
     SyncService,
 )
@@ -29,9 +34,14 @@ __all__ = [
     "ConnectionNotFound",
     "EntityConfigNotFound",
     "EntityState",
+    "MappingRowView",
+    "MappingView",
+    "MappingWriteRow",
     "EntityNotConfigured",
+    "JobBatch",
     "JobNotFound",
     "NotAwaitingApproval",
+    "PreviewFailed",
     "PushFailed",
     "SyncService",
 ]

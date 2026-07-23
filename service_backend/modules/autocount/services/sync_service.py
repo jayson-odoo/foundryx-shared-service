@@ -16,6 +16,7 @@ kind of bug.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -32,25 +33,42 @@ from app.models.background_job import (
 
 from ..activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS, record_activity
 from ..canonical.grn import CanonicalGrn, ENTITY_GOODS_RECEIVED_NOTE
+from ..canonical.masters import (
+    ENTITY_CUSTOMER,
+    ENTITY_SUPPLIER,
+    CanonicalCustomer,
+    CanonicalSupplier,
+)
 from ..models import (
+    SINK_IMPL_LOGGING,
+    SINK_IMPL_SORENTO,
     STAGED_DISCARDED,
     STAGED_PUSHED,
     AcStagedRecord,
     AcSyncRun,
 )
 from ..repositories import (
+    CompanyRepository,
     EntityConfigRepository,
     StagedRecordRepository,
+    SyncJobRepository,
     SyncRunRepository,
 )
-from ..sinks import SINK_LOGGING, WriteResult, sink_for
+from ..sinks import EntitySink, WriteResult
+from ..sinks_sorento import SorentoSinkError, sorento_supports_entity
 from ..sync import AUTOCOUNT_SYNC
 from .company_service import AutocountServiceError, CompanyService
 
 logger = logging.getLogger("foundryx.autocount")
 
-# Canonical entity → its canonical model. Slice 1 is GRN only.
-CANONICAL_MODELS = {ENTITY_GOODS_RECEIVED_NOTE: CanonicalGrn}
+# Canonical entity → its canonical model, so a staged record's ``canonical_json``
+# can be rehydrated into the typed shape the sink needs (``sink_payload`` /
+# ``source_ref``). Hop 2 adds the two master shapes beside slice 1's GRN.
+CANONICAL_MODELS = {
+    ENTITY_GOODS_RECEIVED_NOTE: CanonicalGrn,
+    ENTITY_SUPPLIER: CanonicalSupplier,
+    ENTITY_CUSTOMER: CanonicalCustomer,
+}
 
 
 class EntityNotConfigured(AutocountServiceError):
@@ -70,13 +88,52 @@ class PushFailed(AutocountServiceError):
     and is re-approvable — it is NOT stranded and NOT silently half-delivered."""
 
 
+class PreviewFailed(AutocountServiceError):
+    """The dry run itself failed (a transport / contract fault talking to the
+    consumer). The gate must SHOW this and refuse to offer approval — an operator
+    must never approve blind (plan §D4). Nothing was written either way."""
+
+
+# The Review list's status segments (plan 15 §2, AC-15-02) → the job status they
+# filter on. ``all`` = no status filter. Anything else is a clean 422, never a
+# silent empty list.
+JOB_STATUS_FILTERS: Dict[str, Optional[str]] = {
+    "all": None,
+    "needs_review": JOB_NEEDS_REVIEW,
+    "done": JOB_DONE,
+}
+
+
+@dataclass
+class JobBatch:
+    """One sync batch for the Review list (AC-15-02). Flat + snake_cased so
+    ``SyncJobBatchItem.model_validate`` maps it straight through
+    ``from_attributes``."""
+
+    job_id: str
+    company_id: str
+    company_name: str
+    database_name: str
+    entity_type: str
+    status: str
+    progress_total: int
+    progress_done: int
+    progress_failed: int
+    created_at: Optional[datetime]
+    started_at: Optional[datetime]
+    finished_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+
 class SyncService:
     def __init__(self, db: Session):
         self.db = db
         self.companies = CompanyService(db)
+        self.company_repo = CompanyRepository(db)
         self.configs = EntityConfigRepository(db)
         self.staged = StagedRecordRepository(db)
         self.runs = SyncRunRepository(db)
+        self.sync_jobs = SyncJobRepository(db)
         self.jobs = JobService(db)
 
     # ── trigger ──────────────────────────────────────────────────────────────
@@ -116,6 +173,32 @@ class SyncService:
     def _company_id_for(self, job: BackgroundJob) -> str:
         return str((job.payload_json or {}).get("companyId") or "")
 
+    def _entity_type_for(self, job: BackgroundJob) -> str:
+        # A job syncs exactly ONE entity, so all its staged rows share this type
+        # — read it from the job's own payload, never from client input.
+        return str((job.payload_json or {}).get("entityType") or "")
+
+    def _rehydrate_pushable(
+        self, pending: List[AcStagedRecord]
+    ) -> Tuple[List[AcStagedRecord], List[Any], List[Dict[str, Any]]]:
+        """Split staged rows into (pushable rows, rehydrated records, failures).
+
+        A FAILED row has no canonical payload by design (D13) and can never be
+        pushed; reaching here with one means it was mis-selected, so it is a
+        named failure rather than a silent drop.
+        """
+        rows: List[AcStagedRecord] = []
+        records: List[Any] = []
+        failures: List[Dict[str, Any]] = []
+        for row in pending:
+            model = CANONICAL_MODELS.get(row.entity_type)
+            if model is None or not row.canonical_json:
+                failures.append({"sourceRef": row.source_ref, "error": "not pushable"})
+                continue
+            rows.append(row)
+            records.append(model(**row.canonical_json))
+        return rows, records, failures
+
     def staged_records(
         self, tenant_id: str, job_id: str
     ) -> Tuple[BackgroundJob, List[AcStagedRecord]]:
@@ -138,6 +221,105 @@ class SyncService:
         return self.runs.list(
             tenant_id, company_id, entity_type=entity_type, page=page, page_size=page_size
         )
+
+    def list_jobs(
+        self,
+        tenant_id: str,
+        *,
+        status: str = "all",
+        entity_type: Optional[str] = None,
+        search: Optional[str] = None,
+        page: int = 0,
+        page_size: int = 25,
+    ) -> Tuple[List[JobBatch], int]:
+        """The Review list — sync batches for THIS tenant, newest first (AC-15-02).
+
+        Reads core ``background_jobs`` filtered to ``type='autocount_sync'`` and
+        the caller's tenant (never client input), paginated at the DB level (no
+        unbounded fetch). Company labels are batch-joined from ``ac_company`` in
+        ONE tenant-scoped query, so a page never fans out per row.
+        """
+        if status not in JOB_STATUS_FILTERS:
+            raise AutocountServiceError(
+                f"Unknown status filter '{status}'. Choose "
+                f"{', '.join(JOB_STATUS_FILTERS)}."
+            )
+        # A label search resolves to a company-id set here (the jobs table holds
+        # only a companyId); an empty set → no rows, in SQL, so the total stays
+        # honest. None = no search filter at all.
+        company_ids = (
+            self.company_repo.search_ids(tenant_id, search)
+            if search and search.strip()
+            else None
+        )
+        jobs, total = self.sync_jobs.list(
+            tenant_id,
+            AUTOCOUNT_SYNC,
+            status=JOB_STATUS_FILTERS[status],
+            entity_type=entity_type,
+            company_ids=company_ids,
+            page=page,
+            page_size=page_size,
+        )
+        company_ids = [self._company_id_for(job) for job in jobs]
+        companies = self.company_repo.get_map(tenant_id, company_ids)
+
+        batches: List[JobBatch] = []
+        for job in jobs:
+            company_id = self._company_id_for(job)
+            company = companies.get(company_id)
+            batches.append(
+                JobBatch(
+                    job_id=job.id,
+                    company_id=company_id,
+                    # A company hard-deleted after its job ran leaves the label
+                    # blank rather than 500-ing the whole list.
+                    company_name=(company.name if company else ""),
+                    database_name=(company.database_name if company else ""),
+                    entity_type=self._entity_type_for(job),
+                    status=job.status,
+                    progress_total=job.progress_total or 0,
+                    progress_done=job.progress_done or 0,
+                    progress_failed=job.progress_failed or 0,
+                    created_at=job.created_at,
+                    started_at=job.started_at,
+                    finished_at=job.finished_at,
+                    # There is no ``updated_at`` column on ``background_jobs``;
+                    # the most-recent activity is the last lifecycle stamp.
+                    updated_at=job.finished_at or job.started_at or job.created_at,
+                )
+            )
+        return batches, total
+
+    def staged_page(
+        self,
+        tenant_id: str,
+        job_id: str,
+        *,
+        changed: Optional[bool] = None,
+        page: int = 0,
+        page_size: int = 25,
+    ) -> Tuple[BackgroundJob, List[AcStagedRecord], int, int, int]:
+        """A PAGE of a job's staged records + counts (AC-15-10/11).
+
+        Returns ``(job, rows, batch_total, filtered_total, no_change_count)``.
+        Company scope comes from the JOB's payload, never from client input (a
+        caller cannot ask for another company's staged rows). ``changed`` filters
+        to the records whose mapped fields did (``True``) or did not (``False``)
+        change; the counts let the FE render the collapsed "N records with no
+        field changes" summary without fetching them all.
+        """
+        job = self._job(tenant_id, job_id)
+        company_id = self._company_id_for(job)
+        rows, batch_total, filtered_total, no_change = self.staged.page_for_job(
+            tenant_id,
+            company_id,
+            job_id,
+            changed=changed,
+            page=page,
+            page_size=page_size,
+        )
+        return job, rows, batch_total, filtered_total, no_change
 
     # ── approve / discard ────────────────────────────────────────────────────
 
@@ -204,6 +386,157 @@ class SyncService:
             exc_info=exc,
         )
 
+    def _push_per_record(
+        self, job: BackgroundJob, sink: EntitySink, pending: List[AcStagedRecord]
+    ) -> Tuple[List[AcStagedRecord], List[Dict[str, Any]], bool]:
+        """Per-record push (the logging no-op path). Preserves slice 1's exact
+        partial-failure recovery: a raise mid-loop commits the rows already
+        accepted as PUSHED and returns the batch to review, re-approvable."""
+        pushed: List[AcStagedRecord] = []
+        failures: List[Dict[str, Any]] = []
+        delivered = False
+        try:
+            for row in pending:
+                model = CANONICAL_MODELS.get(row.entity_type)
+                if model is None or not row.canonical_json:
+                    failures.append(
+                        {"sourceRef": row.source_ref, "error": "not pushable"}
+                    )
+                    continue
+                record = model(**row.canonical_json)
+                # Deterministic request id from (job, staged row) — a lower-layer
+                # replay maps to the SAME id for the sink to dedupe on.
+                result: WriteResult = sink.write(
+                    record, request_id=f"{job.id}:{row.id}"
+                )
+                if result.ok:
+                    pushed.append(row)
+                    delivered = delivered or result.delivered
+                else:
+                    failures.append(
+                        {"sourceRef": row.source_ref, "error": result.message}
+                    )
+        except Exception as exc:  # noqa: BLE001
+            self._release_claim(job, pushed, exc)
+            raise PushFailed(
+                "The push failed part-way through, so this batch was returned to "
+                "review. Records already delivered will not be sent again — "
+                "approve it again to push the rest."
+            ) from exc
+        return pushed, failures, delivered
+
+    def _push_batch(
+        self, job: BackgroundJob, sink: EntitySink, pending: List[AcStagedRecord]
+    ) -> Tuple[List[AcStagedRecord], List[Dict[str, Any]], bool]:
+        """Batch push (the Sorento path). ONE ingest call (chunked below the
+        vendor ceiling) rather than N HTTP calls sharing one rate-limit bucket.
+
+        Per-record success/failure is preserved from the sink's per-record
+        verdicts. A BATCH-level fault (``SorentoSinkError`` / ``SorentoRateLimited``)
+        means NOTHING resolved — the whole batch returns to review with nothing
+        marked pushed, exactly like any push failure. It is never stranded in
+        ``running`` and never half-delivered.
+        """
+        pushed: List[AcStagedRecord] = []
+        try:
+            rows, records, failures = self._rehydrate_pushable(pending)
+            results = (
+                sink.write_batch(records, request_id=str(job.id)) if records else []
+            )
+            delivered = False
+            for row, result in zip(rows, results):
+                if result.ok:
+                    pushed.append(row)
+                    delivered = delivered or result.delivered
+                else:
+                    failures.append(
+                        {"sourceRef": row.source_ref, "error": result.message}
+                    )
+        except SorentoSinkError as exc:
+            # Batch-level: unresolved. Nothing delivered → release with pushed=[].
+            self._release_claim(job, [], exc)
+            raise PushFailed(
+                "The consumer rejected the whole batch, so it was returned to "
+                "review. Nothing was delivered — resolve the error and approve "
+                "again."
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            self._release_claim(job, [], exc)
+            raise PushFailed(
+                "The push failed before the consumer resolved it, so the batch "
+                "was returned to review. Nothing was delivered — approve again."
+            ) from exc
+        return pushed, failures, delivered
+
+    def preview(self, tenant_id: str, job_id: str) -> Dict[str, Any]:
+        """Ask the consumer what approving WOULD do, writing nothing (AC-14-20/21).
+
+        The prediction is Sorento's own ``?dry_run=true`` resolution rolled back
+        — adoption matching included — NEVER a local reconstruction (AC-14-21).
+        This never claims the job or mutates any row: it is a read plus one
+        dry-run call, so it is safe to call repeatedly before approval.
+
+        For a logging-sink company there is no consumer to ask, so it returns a
+        clear "nothing to preview" shape rather than erroring.
+        """
+        job = self._job(tenant_id, job_id)
+        company_id = self._company_id_for(job)
+        company = self.companies.get(tenant_id, company_id)
+        entity_type = self._entity_type_for(job)
+        sink = self.companies.sink_for_company(tenant_id, company, entity_type)
+
+        if not hasattr(sink, "dry_run"):
+            # Two ways to land on a dry-run-less sink: the company is genuinely
+            # configured to log, OR it targets Sorento but Sorento does not
+            # ingest THIS entity yet (a document — GRN/PO/…). The second is not a
+            # misconfiguration, so it gets its own honest explanation instead of
+            # the misleading "no consumer configured".
+            if company.sink_impl == SINK_IMPL_SORENTO and not sorento_supports_entity(
+                entity_type
+            ):
+                reason = (
+                    f"Sorento does not yet ingest '{entity_type}' records — it "
+                    "currently accepts suppliers and customers only. There is "
+                    "nothing to dry-run; these records are staged and logged, "
+                    "not delivered to Sorento."
+                )
+            else:
+                reason = (
+                    "No consumer is configured for this company, so there is "
+                    "nothing to preview."
+                )
+            return {"previewable": False, "sink": sink.name, "reason": reason}
+
+        pending = self.staged.list_pending_for_job(tenant_id, company_id, job_id)
+        _rows, records, _failures = self._rehydrate_pushable(pending)
+        try:
+            result = sink.dry_run(records)
+        except SorentoSinkError as exc:
+            # The gate must SHOW this and refuse to offer approval (plan §D4) —
+            # an operator must never approve blind. Nothing was written.
+            raise PreviewFailed(
+                "The dry run against the consumer failed, so no prediction is "
+                "available and this batch cannot be approved yet. Nothing was "
+                "written — resolve the consumer error first."
+            ) from exc
+
+        return {
+            "previewable": True,
+            "sink": sink.name,
+            "summary": result.summary,
+            "predictions": [
+                {
+                    "sourceRef": p.source_ref,
+                    "outcome": p.outcome,
+                    "entityId": p.entity_id,
+                    "diff": p.diff,
+                    "errors": p.errors,
+                    "changesLiveData": p.changes_live_data,
+                }
+                for p in result.predictions
+            ],
+        }
+
     def approve(
         self, tenant_id: str, job_id: str, *, actor_user_id: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -225,40 +558,28 @@ class SyncService:
                 "This sync is not awaiting approval, so there is nothing to approve."
             )
 
-        pending = self.staged.list_pending_for_job(tenant_id, company_id, job_id)
-        sink = sink_for(SINK_LOGGING)
-        pushed: List[AcStagedRecord] = []
-        failures: List[Dict[str, Any]] = []
-
+        # The claim moved needs_review → running. From here ANY failure must
+        # return the job to needs_review, or it strands in ``running`` forever
+        # (non-terminal so the pruner never reaps it, no longer ``needs_review``
+        # so the claim can never win again). Sink RESOLUTION runs AFTER the claim
+        # — deliberately, so the double-click no-op above returns the cached
+        # result WITHOUT touching a connection that may since have been deleted —
+        # so a resolution failure (no target, undecryptable creds, unknown impl)
+        # must release the claim, then propagate its own clean error.
         try:
-            for row in pending:
-                model = CANONICAL_MODELS.get(row.entity_type)
-                if model is None or not row.canonical_json:
-                    # A FAILED row has no canonical payload by design (D13); it
-                    # can never be pushed, and reaching here means it was
-                    # mis-selected.
-                    failures.append(
-                        {"sourceRef": row.source_ref, "error": "not pushable"}
-                    )
-                    continue
-                record = model(**row.canonical_json)
-                # Deterministic request id from (job, staged row) — a replay at a
-                # lower layer maps to the SAME id, which is what a real sink needs
-                # to deduplicate on its side.
-                result: WriteResult = sink.write(record, request_id=f"{job.id}:{row.id}")
-                if result.ok:
-                    pushed.append(row)
-                else:
-                    failures.append(
-                        {"sourceRef": row.source_ref, "error": result.message}
-                    )
+            company = self.companies.get(tenant_id, company_id)
+            entity_type = self._entity_type_for(job)
+            sink = self.companies.sink_for_company(tenant_id, company, entity_type)
         except Exception as exc:  # noqa: BLE001
-            self._release_claim(job, pushed, exc)
-            raise PushFailed(
-                "The push failed part-way through, so this batch was returned to "
-                "review. Records already delivered will not be sent again — "
-                "approve it again to push the rest."
-            ) from exc
+            self._release_claim(job, [], exc)
+            raise
+
+        pending = self.staged.list_pending_for_job(tenant_id, company_id, job_id)
+
+        if hasattr(sink, "write_batch"):
+            pushed, failures, delivered = self._push_batch(job, sink, pending)
+        else:
+            pushed, failures, delivered = self._push_per_record(job, sink, pending)
 
         now = datetime.now(timezone.utc)
         self.staged.mark(pushed, status=STAGED_PUSHED, pushed_at=now)
@@ -276,15 +597,18 @@ class SyncService:
                 "pushed": len(pushed),
                 "pushFailures": failures,
                 "sink": sink.name,
-                # The slice-1 sink DELIVERS NOTHING. Saying so explicitly is the
-                # difference between a tagged seam and a mock pretending to work.
-                "delivered": False,
-                "sinkNote": (
-                    "Records were accepted by the slice-1 logging sink; no consumer "
-                    "is wired yet, so nothing left the ESB."
-                ),
+                # Honest per sink (AC-14-41): the logging sink DELIVERS NOTHING,
+                # a real consumer sink reports actual delivery. Never inferred
+                # from ``ok`` alone.
+                "delivered": delivered,
             }
         )
+        if sink.name == SINK_IMPL_LOGGING:
+            # The slice-1 sink is a tagged seam, not a consumer — say so.
+            summary["sinkNote"] = (
+                "Records were accepted by the slice-1 logging sink; no consumer "
+                "is wired for this company, so nothing left the ESB."
+            )
         self.jobs.finish(job, status=JOB_DONE, result=summary)
         self.db.commit()
 

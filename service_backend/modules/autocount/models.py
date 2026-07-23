@@ -35,6 +35,8 @@ from sqlalchemy.types import JSON as GenericJSON
 from app.models.utc_datetime import UTCDateTime
 
 from .db import AutocountBase
+from .envelopes import ENVELOPE_STATUS_DICT
+from .sources import INITIAL_LOAD_WINDOWED
 
 _JSON = GenericJSON(none_as_null=True)
 
@@ -55,6 +57,13 @@ SYNC_MODES = (SYNC_MODE_MANUAL, SYNC_MODE_SCHEDULED_REVIEW, SYNC_MODE_AUTO)
 # slice 1 — it is validated against this set, so selecting it is a clean 422
 # rather than a silent straight-through push nobody reviewed.
 GATED_SYNC_MODES = (SYNC_MODE_MANUAL, SYNC_MODE_SCHEDULED_REVIEW)
+
+# ── push-target sink impls (hop 2, plan 14) ───────────────────────────────────
+# The name of the consumer sink a company delivers to. Kept as a literal here
+# (matching ``sinks.SINK_LOGGING`` / ``sinks_sorento.SINK_SORENTO``) so the model
+# layer never imports the sink layer — ``models`` is loaded first at bootstrap.
+SINK_IMPL_LOGGING = "logging"
+SINK_IMPL_SORENTO = "sorento"
 
 # ── staged-record lifecycle ───────────────────────────────────────────────────
 STAGED = "STAGED"  # mapped cleanly, awaiting approval
@@ -97,6 +106,21 @@ class AcCompany(AutocountBase):
     name = Column(String, nullable=False, default="")  # operator's own label
     is_active = Column(Boolean, nullable=False, default=True)
 
+    # ── push target (hop 2, plan 14) ─────────────────────────────────────────
+    # Which consumer sink this company delivers ALL its entities to. Default
+    # ``'logging'`` keeps the slice-1 no-op — a company that has not configured
+    # a target changes nothing. ``'sorento'`` + a ``sink_connection_id`` selects
+    # the real Sorento sink. A ``server_default`` is REQUIRED (not just the
+    # Python ``default``): on a create_all-first host the ADD carries it to
+    # existing rows, and on a stamped host the migration's ADD does — either way
+    # no ``ac_company`` row is ever left NULL against this NOT NULL column.
+    sink_impl = Column(
+        String, nullable=False, default=SINK_IMPL_LOGGING, server_default="logging"
+    )
+    # Core ``connections.id`` of the ``consumer`` connection to push to — plain
+    # indexed column, not an FK (BL-030). NULL when ``sink_impl='logging'``.
+    sink_connection_id = Column(String, nullable=True, index=True)
+
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
 
@@ -124,11 +148,23 @@ class AcEntityConfig(AutocountBase):
 
     sync_mode = Column(String, nullable=False, default=SYNC_MODE_MANUAL)
     source_impl = Column(String, nullable=False, default="autocount_read")
+    # The OUTER response shape this entity returns (AC-14-03). GRN is a dict
+    # carrying ``Status``; masters are a bare ARRAY whose rows carry their own.
+    # Neither is derivable from the other, and reading a master response through
+    # the GRN unwrap fails every row — so it is configured, never guessed.
+    envelope = Column(String, nullable=False, default=ENVELOPE_STATUS_DICT)
+    # Whether the FIRST sync (no watermark yet) is unbounded or lookback-windowed
+    # (AC-14-25). A document stream is naturally time-bounded; a master list is a
+    # standing set that must be mirrored whole. Getting this wrong on masters
+    # imports ~1% of the data and reports success.
+    initial_load = Column(String, nullable=False, default=INITIAL_LOAD_WINDOWED)
     # The vendor's ``RecordCount`` cap. Hitting it is the ONLY truncation signal
     # available (the response's "N of TOTAL" marker is computed POST-cap and is
     # not a total) — and hitting it is logged and fails loudly (AC-13-46).
     record_cap = Column(Integer, nullable=False, default=200)
     # How far back the FIRST sync reaches when no watermark exists yet.
+    # **Applies to ``initial_load='windowed'`` entities ONLY** — a ``full``
+    # entity ignores it entirely.
     initial_lookback_days = Column(Integer, nullable=False, default=30)
     enabled = Column(Boolean, nullable=False, default=True)
 
@@ -198,6 +234,13 @@ class AcFieldMapping(AutocountBase):
     source_path = Column(String, nullable=False)  # LITERAL vendor casing
     canonical_field = Column(String, nullable=False)
     transform = Column(String, nullable=False, default="string")
+    # Optional safe transform FORMULA (slice 16, AC-16-01). NULL ⇒ the named
+    # ``transform`` above is authoritative (today's behaviour, back-compat).
+    # Set ⇒ the formula produces the field's value (evaluated by ``formula.py``)
+    # and the ``transform`` is retained only as the display preset. A ``Text``
+    # column (never migrated to a JSON/None-sensitive type) so a NULL is a true
+    # SQL NULL, distinct from an empty-string formula.
+    formula = Column(Text, nullable=True)
     is_required = Column(Boolean, nullable=False, default=False)
     is_enabled = Column(Boolean, nullable=False, default=True)
     # Per-field ownership (D8) — consumed by slice 3's masters merge. Carried

@@ -15,8 +15,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Sequence, Tuple
 
+from sqlalchemy import Text, cast, or_
 from sqlalchemy.orm import Session
 
+from app.models.background_job import BackgroundJob
 from app.models.connection import Connection
 
 from ..models import (
@@ -77,6 +79,27 @@ class CompanyRepository:
             .first()
         )
 
+    def search_ids(self, tenant_id: str, term: str) -> List[str]:
+        """Company ids whose label or database name contains ``term`` (case-
+        insensitive), for the Review-list search. Tenant-scoped. The jobs table
+        holds only a ``companyId``, so a company-name search resolves to an id
+        set here first, then the jobs query filters ``payload.companyId IN`` it —
+        the only way to keep the paginated total correct in one SQL pass."""
+        like = f"%{term.strip()}%"
+        rows = (
+            self.db.query(AcCompany.id)
+            .filter(
+                AcCompany.tenant_id == tenant_id,
+                or_(
+                    AcCompany.name.ilike(like),
+                    AcCompany.database_name.ilike(like),
+                    AcCompany.company_name.ilike(like),
+                ),
+            )
+            .all()
+        )
+        return [r[0] for r in rows]
+
     def get_by_database_name(
         self, tenant_id: str, database_name: str
     ) -> Optional[AcCompany]:
@@ -102,6 +125,22 @@ class CompanyRepository:
             )
             .first()
         )
+
+    def get_map(
+        self, tenant_id: str, company_ids: Sequence[str]
+    ) -> dict[str, AcCompany]:
+        """Batch, TENANT-scoped id→company lookup (for a jobs page's labels) —
+        ONE query, never one per row. A company id resolved here is filtered by
+        tenant, so a job payload's id can never reach another tenant's row."""
+        ids = list({cid for cid in company_ids if cid})
+        if not ids:
+            return {}
+        rows = (
+            self.db.query(AcCompany)
+            .filter(AcCompany.tenant_id == tenant_id, AcCompany.id.in_(ids))
+            .all()
+        )
+        return {row.id: row for row in rows}
 
     def list(
         self, tenant_id: str, *, page: int = 0, page_size: int = 25
@@ -234,6 +273,34 @@ class FieldMappingRepository:
             .count()
         )
 
+    def delete_by_canonical(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        canonical_fields: Sequence[str],
+    ) -> int:
+        """Delete the mapping rows whose ``canonical_field`` is in the given set —
+        the DELIVERABLE rows the operator is replacing (plan 15 §2). Rows whose
+        canonical field is NOT listed (identity/watermark provenance like
+        ``last_modified``) are left untouched, so a full re-map can never wipe the
+        watermark mapping and silently break delta sync."""
+        fields = list(canonical_fields)
+        if not fields:
+            return 0
+        deleted = (
+            self.db.query(AcFieldMapping)
+            .filter(
+                AcFieldMapping.tenant_id == tenant_id,
+                AcFieldMapping.company_id == company_id,
+                AcFieldMapping.entity_type == entity_type,
+                AcFieldMapping.canonical_field.in_(fields),
+            )
+            .delete(synchronize_session=False)
+        )
+        self.db.flush()
+        return deleted
+
 
 class StagedRecordRepository:
     def __init__(self, db: Session):
@@ -257,6 +324,57 @@ class StagedRecordRepository:
             .order_by(AcStagedRecord.created_at.asc(), AcStagedRecord.id.asc())
             .all()
         )
+
+    def page_for_job(
+        self,
+        tenant_id: str,
+        company_id: str,
+        job_id: str,
+        *,
+        changed: Optional[bool] = None,
+        page: int = 0,
+        page_size: int = 25,
+    ) -> Tuple[List[AcStagedRecord], int, int, int]:
+        """A PAGE of a job's staged records + counts (plan 15 §2, AC-15-10/11).
+
+        Returns ``(rows, batch_total, filtered_total, no_change_count)``:
+          * ``batch_total``    — every staged row for the job (unfiltered).
+          * ``filtered_total`` — rows matching the ``changed`` filter (== total
+            when unfiltered), for the caller's page math.
+          * ``no_change_count`` — rows whose per-record diff is an EMPTY object
+            (a legitimate no-op re-fetch — LastModified advanced but no mapped
+            field differs), so the FE can render the collapsed summary WITHOUT
+            fetching them all.
+
+        The "no field changes" predicate is ``diff_json`` serialising to the
+        empty-object literal ``'{}'``. It is expressed as a TEXT cast compared to
+        that one literal — NEVER a JSON ``=`` (the Postgres ``json`` type has no
+        equality operator; a JSON ``==`` would pass the SQLite suite and 500 in
+        production). Only ever compared to ``'{}'``, so key ordering / whitespace
+        of non-empty diffs is irrelevant.
+        """
+        base = self.db.query(AcStagedRecord).filter(
+            AcStagedRecord.tenant_id == tenant_id,
+            AcStagedRecord.company_id == company_id,
+            AcStagedRecord.job_id == job_id,
+        )
+        empty_diff = cast(AcStagedRecord.diff_json, Text) == "{}"
+        batch_total = base.count()
+        no_change_count = base.filter(empty_diff).count()
+
+        q = base
+        if changed is True:
+            q = q.filter(AcStagedRecord.diff_json.isnot(None), ~empty_diff)
+        elif changed is False:
+            q = q.filter(empty_diff)
+        filtered_total = q.count()
+        rows = (
+            q.order_by(AcStagedRecord.created_at.asc(), AcStagedRecord.id.asc())
+            .offset(page * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return rows, batch_total, filtered_total, no_change_count
 
     def list_pending_for_job(
         self, tenant_id: str, company_id: str, job_id: str
@@ -349,6 +467,63 @@ class SyncRunRepository:
         total = q.count()
         rows = (
             q.order_by(AcSyncRun.started_at.desc(), AcSyncRun.id.desc())
+            .offset(page * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return rows, total
+
+
+class SyncJobRepository:
+    """READ-ONLY, TENANT-scoped access to core ``public.background_jobs``, pinned
+    to this module's job ``type`` (``autocount_sync``).
+
+    A module never ALTERS a core table; it may read one it owns rows in.
+    ``background_jobs`` is generic machinery, but AutoCount's sync-job knowledge
+    (the ``type`` tag and the ``entityType`` payload key) is module-specific, so
+    the JSON-payload filter belongs here rather than in the generic core
+    ``JobService``. Every query filters ``tenant_id`` — a job from another tenant
+    can never surface (the polymorphic-scope rule).
+    """
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def list(
+        self,
+        tenant_id: str,
+        job_type: str,
+        *,
+        status: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        company_ids: Optional[Sequence[str]] = None,
+        page: int = 0,
+        page_size: int = 25,
+    ) -> Tuple[List[BackgroundJob], int]:
+        q = self.db.query(BackgroundJob).filter(
+            BackgroundJob.tenant_id == tenant_id,
+            BackgroundJob.type == job_type,
+        )
+        if status:
+            q = q.filter(BackgroundJob.status == status)
+        if company_ids is not None:
+            # The Review-list search resolved to this id set (company label match);
+            # an empty set means "no company matched" → no rows, in SQL, so the
+            # paginated total is honest.
+            q = q.filter(
+                BackgroundJob.payload_json["companyId"].as_string().in_(company_ids)
+            )
+        if entity_type:
+            # ``payload_json ->> 'entityType'`` — the generic-JSON string
+            # comparator compiles per dialect (``json_extract`` on SQLite, ``->>``
+            # on Postgres, both valid for the ``json`` type) so the filter runs
+            # in SQL and pagination totals stay correct.
+            q = q.filter(
+                BackgroundJob.payload_json["entityType"].as_string() == entity_type
+            )
+        total = q.count()
+        rows = (
+            q.order_by(BackgroundJob.created_at.desc(), BackgroundJob.id.desc())
             .offset(page * page_size)
             .limit(page_size)
             .all()

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -22,6 +22,7 @@ import { ResourceForm, type ResourceFormConfig } from '@/components/platform/res
 import { ResourceList } from '@/components/platform/resource-list';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { ApiError } from '@/lib/api-client';
+import { useCan } from '@/hooks/use-can';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useAutocountCompany } from '@/hooks/use-autocount-company';
 import { autocountService } from '@/services/autocount-service';
@@ -29,25 +30,21 @@ import {
   parseSyncSummary,
   type AutocountCompany,
   type AutocountEntityConfig,
+  type AutocountSinkImpl,
 } from '@/types/autocount';
 import {
+  AC_COMPANIES_MANAGE,
   AC_COMPANIES_PATH,
   acCompanyHref,
+  acMappingHref,
   acReviewHref,
   entityLabel,
 } from '../../components/autocount-meta';
+import { DetailRow } from './detail-row';
 import { EntityLookbackDialog } from './entity-lookback-dialog';
+import { SinkTargetSection } from './sink-target-section';
 import { useAutocountEntitiesListConfig } from './use-entities-list-config';
 import { useAutocountRunsListConfig } from './use-runs-list-config';
-
-function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="grid grid-cols-1 gap-1 border-b border-border py-3 last:border-0 sm:grid-cols-[220px_1fr] sm:items-center sm:gap-4">
-      <span className="text-sm text-muted-foreground">{label}</span>
-      <div className="min-w-0 text-sm text-foreground">{children}</div>
-    </div>
-  );
-}
 
 /**
  * The outcome of the sync the operator just ran, stated where they are looking.
@@ -61,6 +58,7 @@ type SyncOutcome = { tone: 'success' | 'warning'; title: string; detail?: string
 
 export function AutocountCompanyDetailView({ companyId }: { companyId: string }) {
   const { detail, isLoading, notFound, reload } = useAutocountCompany(companyId);
+  const { can } = useCan();
   const { formatDateTime } = useDatetime();
   const router = useRouter();
   const form = useForm();
@@ -69,6 +67,62 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   const [runsKey, setRunsKey] = useState(0);
   const [outcome, setOutcome] = useState<SyncOutcome | null>(null);
   const [editing, setEditing] = useState<AutocountEntityConfig | null>(null);
+
+  // Push-target working state — lifted here so the ONE Overview Resource form
+  // owns its dirty flag + single save (AC-15-20), not a detached card button.
+  const loadedCompany = detail?.company;
+  const persistedSink: AutocountSinkImpl =
+    loadedCompany?.sinkImpl === 'sorento' ? 'sorento' : 'logging';
+  const persistedConnectionId = loadedCompany?.sinkConnectionId ?? null;
+  const [sinkImpl, setSinkImpl] = useState<AutocountSinkImpl>('logging');
+  const [sinkConnectionId, setSinkConnectionId] = useState<string | null>(null);
+
+  // Re-seed from the persisted values whenever THEY change (after a save/reload).
+  // Keyed on the persisted fields, not the whole `detail` object, so a
+  // background refetch that returns identical values never wipes an in-progress
+  // edit.
+  useEffect(() => {
+    setSinkImpl(persistedSink);
+    setSinkConnectionId(persistedConnectionId);
+  }, [persistedSink, persistedConnectionId]);
+
+  const onSinkChange = useCallback((impl: AutocountSinkImpl) => {
+    setSinkImpl(impl);
+    // Switching back to logging clears the target — a stale connection id must
+    // not linger on a no-delivery company.
+    if (impl === 'logging') setSinkConnectionId(null);
+  }, []);
+
+  const sinkDirty =
+    sinkImpl !== persistedSink ||
+    (sinkImpl === 'sorento' && sinkConnectionId !== persistedConnectionId);
+
+  const onSavePushTarget = useCallback(async (): Promise<boolean> => {
+    // Foolproof-UI: a Sorento delivery cannot be saved without a connection.
+    if (sinkImpl === 'sorento' && !sinkConnectionId) {
+      toast.error('Choose a Sorento connection before saving.');
+      return false;
+    }
+    try {
+      await autocountService.updateSinkTarget(companyId, {
+        sinkImpl,
+        sinkConnectionId: sinkImpl === 'sorento' ? sinkConnectionId : null,
+      });
+      toast.success('Push target updated.');
+      reload();
+      return true;
+    } catch (error) {
+      toast.error(
+        error instanceof ApiError ? error.message : 'That push target could not be saved.',
+      );
+      return false;
+    }
+  }, [companyId, sinkConnectionId, sinkImpl, reload]);
+
+  const onCancelPushTarget = useCallback(() => {
+    setSinkImpl(persistedSink);
+    setSinkConnectionId(persistedConnectionId);
+  }, [persistedSink, persistedConnectionId]);
 
   const onSync = useCallback(
     async (entityType: string) => {
@@ -132,6 +186,30 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     setEditing(entity);
   }, []);
 
+  const onConfigureMapping = useCallback(
+    (entity: AutocountEntityConfig) => {
+      router.push(acMappingHref(companyId, entity.entityType));
+    },
+    [companyId, router],
+  );
+
+  const onRefetch = useCallback(
+    async (entity: AutocountEntityConfig) => {
+      try {
+        await autocountService.refetchHistory(companyId, entity.entityType);
+        toast.success('History re-fetch scheduled — the next sync re-reads the window.');
+        reload();
+      } catch (error) {
+        toast.error(
+          error instanceof ApiError
+            ? error.message
+            : 'That history re-fetch could not be started.',
+        );
+      }
+    },
+    [companyId, reload],
+  );
+
   const onSaveLookback = useCallback(
     async (entityType: string, days: number) => {
       try {
@@ -157,11 +235,14 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     companyActive: detail?.company.isActive ?? false,
     onSync,
     onEditLookback,
+    onRefetch,
+    onConfigureMapping,
   });
 
   const config = useMemo<ResourceFormConfig<AutocountCompany> | null>(() => {
     if (!detail) return null;
     const { company } = detail;
+    const canManage = can(AC_COMPANIES_MANAGE);
 
     return {
       breadcrumb: [
@@ -177,8 +258,9 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
           id: 'overview',
           label: 'Overview',
           icon: Info,
-          render: () => (
+          render: ({ editing }) => (
             <div className="flex flex-col py-2">
+              {/* Identity is DISCOVERED and read-only in either mode (AC-13-01). */}
               <DetailRow label="Company name">
                 <ClampedText text={company.companyName || '—'} lines={2} />
               </DetailRow>
@@ -204,6 +286,15 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
               <DetailRow label="Connected">
                 {company.createdAt ? formatDateTime(company.createdAt) : '—'}
               </DetailRow>
+              {/* Push target — read-only until the form's Edit toggle. */}
+              <SinkTargetSection
+                company={company}
+                editing={editing && canManage}
+                sinkImpl={sinkImpl}
+                connectionId={sinkConnectionId}
+                onSinkChange={onSinkChange}
+                onConnectionChange={setSinkConnectionId}
+              />
             </div>
           ),
         },
@@ -259,21 +350,30 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
       actions: [],
       actionRows: [company],
       onReload: reload,
-      // Company identity is DISCOVERED and read-only — there is nothing here an
-      // operator may edit, so no Edit toggle is offered (AC-13-01).
-      editable: false,
-      isDirty: false,
-      onSave: () => true,
-      onCancel: reload,
+      // Company identity stays read-only, but the push target is editable — so
+      // the form offers the global Edit toggle (gated on manage) and saves the
+      // push target through its single, dirty-guarded save (AC-15-20).
+      editable: true,
+      editPermission: AC_COMPANIES_MANAGE,
+      isDirty: sinkDirty,
+      onSave: onSavePushTarget,
+      onCancel: onCancelPushTarget,
     };
   }, [
+    can,
     detail,
     entitiesConfig,
     formatDateTime,
+    onCancelPushTarget,
+    onSavePushTarget,
+    onSinkChange,
     outcome,
     reload,
     runsConfig,
     runsKey,
+    sinkConnectionId,
+    sinkDirty,
+    sinkImpl,
     syncing,
   ]);
 

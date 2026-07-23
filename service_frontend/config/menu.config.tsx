@@ -508,6 +508,11 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/autocount/companies',
         permission: 'autocount.companies.read',
       },
+      {
+        title: 'Review',
+        path: '/autocount/review',
+        permission: 'autocount.sync.read',
+      },
     ],
   },
 ];
@@ -876,6 +881,11 @@ export const MENU_SIDEBAR_COMPACT: MenuConfig = [
         path: '/autocount/companies',
         permission: 'autocount.companies.read',
       },
+      {
+        title: 'Review',
+        path: '/autocount/review',
+        permission: 'autocount.sync.read',
+      },
     ],
   },
   {
@@ -1045,6 +1055,11 @@ export const MENU_MEGA: MenuConfig = [
                 path: '/autocount/companies',
                 permission: 'autocount.companies.read',
               },
+              {
+                title: 'Review',
+                path: '/autocount/review',
+                permission: 'autocount.sync.read',
+              },
             ],
           },
         ],
@@ -1178,6 +1193,11 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Companies',
         path: '/autocount/companies',
         permission: 'autocount.companies.read',
+      },
+      {
+        title: 'Review',
+        path: '/autocount/review',
+        permission: 'autocount.sync.read',
       },
     ],
   },

@@ -55,6 +55,13 @@ from .canonical.grn import (
     VENDOR_DETAIL_KEY,
     VENDOR_ENTITY,
 )
+from .canonical.masters import (
+    ENTITY_CUSTOMER,
+    ENTITY_SUPPLIER,
+    VENDOR_ENTITY_CUSTOMER,
+    VENDOR_ENTITY_SUPPLIER,
+    VENDOR_LAST_MODIFIED_PATH,
+)
 from .client import AutoCountError
 from .mapping import MappedDocument, MappingEngine
 from .models import (
@@ -88,13 +95,34 @@ AUTOCOUNT_SYNC = "autocount_sync"
 
 # Vendor entity per canonical entity — the URL grammar is uniform
 # (``POST /api/{Entity}/Get{Entity}``), only the name varies.
-VENDOR_ENTITIES = {ENTITY_GOODS_RECEIVED_NOTE: VENDOR_ENTITY}
+VENDOR_ENTITIES = {
+    ENTITY_GOODS_RECEIVED_NOTE: VENDOR_ENTITY,
+    ENTITY_SUPPLIER: VENDOR_ENTITY_SUPPLIER,  # Creditor
+    ENTITY_CUSTOMER: VENDOR_ENTITY_CUSTOMER,  # Debtor
+}
 
 # The nested detail-array key PER ENTITY. It is not derivable from the entity
 # name — GRN's is ``GRDTL``, NOT ``GRNDTL`` (plan §4a hazard table) — so it is
 # looked up, never constructed. Getting it wrong yields a header with zero lines
 # and NO error at all, which is the worst possible shape of failure.
+# Masters are FLAT and are deliberately ABSENT here: ``None`` means "no detail
+# array", which the mapping engine reads off the entity profile.
 VENDOR_DETAIL_KEYS = {ENTITY_GOODS_RECEIVED_NOTE: VENDOR_DETAIL_KEY}
+
+# The entity's natural list-valued identifier in a read filter. Masters key on
+# ``AccNo``, documents on ``DocNo``.
+VENDOR_IDENTIFIER_KEYS = {
+    ENTITY_SUPPLIER: "AccNo",
+    ENTITY_CUSTOMER: "AccNo",
+}
+
+# Where ``LastModified`` actually LIVES per entity. Masters nest their real DB
+# row under ``Data[0]`` (AC-14-02), so the top-level lookup finds nothing — which
+# would fail the window assertion on every row AND leave the watermark stuck.
+VENDOR_LAST_MODIFIED_PATHS = {
+    ENTITY_SUPPLIER: VENDOR_LAST_MODIFIED_PATH,
+    ENTITY_CUSTOMER: VENDOR_LAST_MODIFIED_PATH,
+}
 
 
 class SyncConfigError(Exception):
@@ -235,6 +263,13 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             vendor_entity=VENDOR_ENTITIES.get(entity_type, VENDOR_ENTITY),
             record_cap=config.record_cap,
             lookback_days=config.initial_lookback_days,
+            # Per-entity from CONFIG (AC-14-03/14-25), never branched on here.
+            envelope=config.envelope,
+            initial_load=config.initial_load,
+            identifier_key=VENDOR_IDENTIFIER_KEYS.get(entity_type, "DocNo"),
+            last_modified_path=VENDOR_LAST_MODIFIED_PATHS.get(
+                entity_type, "LastModified"
+            ),
         )
         result: FetchResult = source.fetch_changes(watermark)
     except AutoCountError as exc:
@@ -309,13 +344,23 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         latency_ms=int((time.monotonic() - started) * 1000),
         request={
             "window": [
+                # ``None`` here is meaningful, not missing: an unbounded initial
+                # master load deliberately sends no lower bound (AC-14-25).
                 result.window_from.isoformat() if result.window_from else None,
                 result.window_to.isoformat() if result.window_to else None,
             ],
             "recordCap": config.record_cap,
             "initialLookbackDays": config.initial_lookback_days,
+            "initialLoad": config.initial_load,
+            "envelope": config.envelope,
         },
-        response={"records": len(result.records)},
+        response={
+            "records": len(result.records),
+            # What the vendor says exists, beside what we actually got
+            # (AC-14-26). Advisory — it is computed AFTER the record cap, so it
+            # is never used to decide truncation.
+            "vendorReportedTotal": result.reported_total,
+        },
     )
 
     run.window_from = result.window_from
@@ -331,8 +376,13 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     # ── map + stage, ONE DOCUMENT AT A TIME ──────────────────────────────────
     engine = MappingEngine(
         companies.mapping_rows(tenant_id, company_id, entity_type),
-        detail_key=VENDOR_DETAIL_KEYS.get(entity_type, VENDOR_DETAIL_KEY),
+        # ``None`` = the entity profile's own key (masters have none, being flat).
+        detail_key=VENDOR_DETAIL_KEYS.get(entity_type),
         entity_type=entity_type,
+        # Masters mint a COMPANY-QUALIFIED ``source_ref`` (AC-14-10). The name
+        # comes from the discovered company, never from operator input — and it
+        # is what stops company B's ``AutoKey=1`` overwriting company A's.
+        database_name=company.database_name,
     )
     staged_count, failed_count = _stage_documents(
         db,
@@ -397,14 +447,29 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         "failed": failed_count,
         "watermarkAdvancedTo": advanced_to.isoformat() if advanced_to else None,
         "awaitingApproval": staged_count > 0,
+        #     !!  A COUNT WITHOUT ITS DENOMINATOR IS NOT A RESULT (AC-14-26).  !!
+        # "2 records" alone cannot be told apart from "nothing changed" and
+        # "the window excluded 170 of 172 records" — and the second one looks
+        # exactly like success while being near-total data loss. So the vendor's
+        # own availability marker travels beside the fetched count, and the
+        # policy that produced the window travels with both.
+        "vendorReportedTotal": result.reported_total,
+        "initialLoad": config.initial_load,
+        "unboundedInitialLoad": result.window_from is None,
     }
     service.log(
         job,
-        f"Staged {staged_count} document(s), {failed_count} failed. "
+        f"Staged {staged_count} document(s), {failed_count} failed"
         + (
-            "Awaiting approval — nothing has been pushed."
+            f" (fetched {run.fetched_count} of {result.reported_total} the vendor "
+            f"reports available)."
+            if result.reported_total is not None
+            else "."
+        )
+        + (
+            " Awaiting approval — nothing has been pushed."
             if staged_count
-            else "Nothing to review."
+            else " Nothing to review."
         ),
     )
     # needs_review with zero staged rows would strand a job nobody can act on
@@ -493,7 +558,10 @@ def _stage_documents(
                 entity_type=entity_type,
                 job_id=job.id,
                 source_ref=record.source_ref,
-                doc_no=record.doc_no,
+                # From the MAPPED result, not ``record.doc_no``: the attribute
+                # name differs per entity (a master's is ``source_doc_no``), and
+                # reaching for the document one on a master silently yields None.
+                doc_no=mapped.doc_no,
                 source_last_modified=source_record.last_modified,
                 raw_json=raw_json,
                 canonical_json=canonical,

@@ -209,7 +209,9 @@ def test_empty_result_table_with_status_success_is_a_valid_empty_read():
     """The mirror of the above: a genuinely empty delta is success, not failure."""
     recorder = Recorder([_login_response(), _ok([])])
     with _client(recorder) as ac:
-        assert ac.read("GoodsReceivedNote", build_read_filter(record_count=5)) == []
+        # ``read`` returns an ``Unwrapped`` since the per-entity envelope
+        # landed: records PLUS what the vendor says is available (AC-14-26).
+        assert ac.read("GoodsReceivedNote", build_read_filter(record_count=5)).records == []
 
 
 def test_relay_500_is_classified_separately_and_hides_the_stack_trace():
@@ -268,7 +270,7 @@ def test_stream_not_readable_triggers_exactly_one_relogin_and_retry():
     with _client(recorder) as ac:
         records = ac.read("GoodsReceivedNote", build_read_filter(record_count=5))
 
-    assert records == [{"DocNo": "GRN-1"}]
+    assert records.records == [{"DocNo": "GRN-1"}]
     assert recorder.paths == [
         "/api/Server/Login",
         "/api/GoodsReceivedNote/GetGoodsReceivedNote",
@@ -302,8 +304,8 @@ def test_the_retry_budget_is_per_call_not_global():
         first = ac.read("GoodsReceivedNote", build_read_filter(record_count=5))
         second = ac.read("GoodsReceivedNote", build_read_filter(record_count=5))
 
-    assert first == [{"DocNo": "A"}]
-    assert second == [{"DocNo": "B"}]
+    assert first.records == [{"DocNo": "A"}]
+    assert second.records == [{"DocNo": "B"}]
 
 
 def test_a_non_expiry_relay_error_is_not_retried():
@@ -491,6 +493,86 @@ def test_test_rejects_a_missing_or_non_http_base_url():
     result = provider.test({"baseUrl": "autocount.example.com"}, {})
     assert result.ok is False
     assert "http://" in result.message
+
+
+# ── the Sorento consumer provider (plan 14 Task A, AC-14-15) ──────────────
+
+
+def test_sorento_provider_registers_as_a_consumer_provider(client):
+    """The boot hook puts Sorento in the core provider registry, so its outbound
+    connection is configured from the same /settings/integrations surface."""
+    from app.integrations import all_providers, get_provider
+
+    provider = get_provider("sorento")
+    assert provider is not None
+    assert provider.type == "consumer"
+    assert "sorento" in {p.provider for p in all_providers()}
+
+
+def test_sorento_provider_fields_are_base_url_and_a_secret_key():
+    from modules.autocount.sorento_provider import SorentoProvider
+
+    fields = SorentoProvider().fields()
+    keys = [f["key"] for f in fields]
+    assert keys == ["baseUrl", "apiKey"]
+    by_key = {f["key"]: f for f in fields}
+    assert by_key["apiKey"]["secret"] is True
+    assert by_key["baseUrl"].get("secret") is not True
+
+
+def test_sorento_test_rejects_missing_url_and_key():
+    from modules.autocount.sorento_provider import SorentoProvider
+
+    provider = SorentoProvider()
+    assert provider.test({"baseUrl": ""}, {"apiKey": "k"}).ok is False
+    non_http = provider.test({"baseUrl": "sorento.example.com"}, {"apiKey": "k"})
+    assert non_http.ok is False and "http://" in non_http.message
+    no_key = provider.test({"baseUrl": "http://sorento.test"}, {"apiKey": ""})
+    assert no_key.ok is False
+
+
+def test_sorento_test_names_a_rejected_api_key():
+    from modules.autocount.sorento_provider import SorentoProvider
+
+    transport = httpx.MockTransport(lambda r: httpx.Response(401, json={"detail": "no"}))
+    result = SorentoProvider().test(
+        {"baseUrl": "http://sorento.test"}, {"apiKey": "bad"}, transport=transport
+    )
+    assert result.ok is False
+    assert "rejected the API key" in result.message
+
+
+def test_sorento_test_names_an_unreachable_host():
+    from modules.autocount.sorento_provider import SorentoProvider
+
+    def _boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no route", request=request)
+
+    transport = httpx.MockTransport(_boom)
+    result = SorentoProvider().test(
+        {"baseUrl": "http://sorento.test"}, {"apiKey": "k"}, transport=transport
+    )
+    assert result.ok is False
+    assert "could not reach" in result.message.lower()
+
+
+def test_sorento_test_uses_x_api_key_and_succeeds_on_a_2xx_probe():
+    from modules.autocount.sorento_provider import SorentoProvider
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["x_api_key"] = request.headers.get("X-API-Key")
+        seen["authorization"] = "authorization" in {k.lower() for k in request.headers}
+        return httpx.Response(200, json={"items": []})
+
+    result = SorentoProvider().test(
+        {"baseUrl": "http://sorento.test"}, {"apiKey": "sk_live"},
+        transport=httpx.MockTransport(handler),
+    )
+    assert result.ok is True
+    assert seen["x_api_key"] == "sk_live"  # AC-14-15
+    assert seen["authorization"] is False  # never Bearer
 
 
 # ── the erp carve-out (AC-13-02) ──────────────────────────────────────────

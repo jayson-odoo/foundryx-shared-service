@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Check, LoaderCircleIcon, Trash2 } from 'lucide-react';
+import { ArrowLeft, Check, Eye, LoaderCircleIcon, Trash2 } from 'lucide-react';
 import {
   Toolbar,
   ToolbarActions,
@@ -11,7 +11,6 @@ import {
 } from '@/partials/common/toolbar';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import {
   Card,
   CardContent,
@@ -30,80 +29,16 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { StatusBadge } from '@/components/platform/status-badge';
-import { ClampedText } from '@/components/platform/clamped-text';
-import { RecordDiff } from '@/components/platform/autocount/record-diff';
-import { diffForDisplay } from '@/lib/autocount-diff';
+import { PreviewPanel } from '@/components/platform/autocount/preview-panel';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useAutocountReview } from '@/hooks/use-autocount-review';
-import type {
-  AutocountJobStatus,
-  AutocountStagedRecord,
-  AutocountStagedStatus,
-} from '@/types/autocount';
+import { useAutocountPreview } from '@/hooks/use-autocount-preview';
+import type { AutocountJobStatus } from '@/types/autocount';
 import {
-  AC_COMPANIES_PATH,
   AC_JOB_STATUS_REGISTRY,
-  AC_STAGED_STATUS_REGISTRY,
-  entityLabel,
+  AC_REVIEW_PATH,
 } from '../../../components/autocount-meta';
-
-function StagedRecordCard({ record }: { record: AutocountStagedRecord }) {
-  const view = diffForDisplay(record.diff, record.canonical);
-  const failed = record.status === 'FAILED';
-
-  return (
-    <Card data-testid={`staged-${record.id}`}>
-      <CardHeader className="flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <CardHeading className="min-w-0">
-          <CardTitle className="min-w-0">
-            <ClampedText
-              text={record.docNo || record.sourceRef}
-              lines={1}
-              className="text-sm font-semibold text-foreground"
-            />
-          </CardTitle>
-          <span className="text-xs text-muted-foreground">
-            {entityLabel(record.entityType)}
-          </span>
-        </CardHeading>
-        <div className="flex flex-wrap items-center gap-2">
-          {view.isNew && (
-            <Badge variant="info" appearance="light" size="sm">
-              New record
-            </Badge>
-          )}
-          <StatusBadge
-            status={record.status as AutocountStagedStatus}
-            registry={AC_STAGED_STATUS_REGISTRY}
-            size="sm"
-          />
-        </div>
-      </CardHeader>
-      <CardContent>
-        {failed ? (
-          <div className="flex flex-col gap-2">
-            {record.error && (
-              <p className="text-sm text-destructive">{record.error}</p>
-            )}
-            {(record.errors ?? []).map((err, i) => (
-              <p key={i} className="text-sm text-destructive">
-                {[
-                  err.field ? `Field ${err.field}` : null,
-                  err.line !== undefined && err.line !== null ? `line ${err.line}` : null,
-                  err.message ?? null,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </p>
-            ))}
-          </div>
-        ) : (
-          <RecordDiff diff={record.diff} canonical={record.canonical} />
-        )}
-      </CardContent>
-    </Card>
-  );
-}
+import { StagedRecordsList } from './staged-records-list';
 
 export interface ReviewViewProps {
   jobId: string;
@@ -120,8 +55,8 @@ export interface ReviewViewProps {
 export function ReviewView({ jobId, from }: ReviewViewProps) {
   const {
     job,
-    records,
     total,
+    noChangeCount,
     isLoading,
     notFound,
     isSubmitting,
@@ -130,9 +65,12 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
     approve,
     discard,
   } = useAutocountReview(jobId);
+  const preview = useAutocountPreview(jobId);
   const { formatDateTime } = useDatetime();
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const backHref = from || AC_COMPANIES_PATH;
+  // Back returns to wherever the operator came from — the originating company
+  // when a sync routed them here, otherwise the Review list (its real parent).
+  const backHref = from || AC_REVIEW_PATH;
 
   if (isLoading) {
     return (
@@ -157,7 +95,7 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
     );
   }
 
-  const pending = records.filter((r) => r.status === 'STAGED');
+  const changedCount = Math.max(total - noChangeCount, 0);
 
   return (
     <>
@@ -183,6 +121,29 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
               {blockedReason && (
                 <span className="text-xs text-muted-foreground">{blockedReason}</span>
               )}
+              {preview.failed ? (
+                <span className="text-xs text-destructive" data-testid="approve-blocked">
+                  Resolve the dry run first
+                </span>
+              ) : !preview.hasRun ? (
+                <span className="text-xs text-muted-foreground" data-testid="approve-blocked">
+                  Preview before approving
+                </span>
+              ) : null}
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canDecide || isSubmitting || preview.isLoading}
+                onClick={() => void preview.run()}
+                data-testid="preview-push"
+              >
+                {preview.isLoading ? (
+                  <LoaderCircleIcon className="size-4 animate-spin" />
+                ) : (
+                  <Eye className="size-4" />
+                )}
+                Preview push
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
@@ -195,7 +156,9 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
               </Button>
               <Button
                 size="sm"
-                disabled={!canDecide || isSubmitting}
+                disabled={
+                  !canDecide || isSubmitting || preview.isLoading || !preview.hasRun || preview.failed
+                }
                 onClick={() => void approve()}
                 data-testid="approve-batch"
               >
@@ -215,19 +178,35 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
             <span>
-              {total} record{total === 1 ? '' : 's'} · {pending.length} awaiting approval
+              {total} record{total === 1 ? '' : 's'} · {changedCount} changed
             </span>
             {job.createdAt && <span>{formatDateTime(job.createdAt)}</span>}
           </div>
 
-          {records.length === 0 ? (
+          {(preview.hasRun || preview.isLoading) && (
+            <Card>
+              <CardHeader>
+                <CardHeading>
+                  <CardTitle>Dry-run preview</CardTitle>
+                </CardHeading>
+              </CardHeader>
+              <CardContent>
+                <PreviewPanel
+                  preview={preview.preview}
+                  isLoading={preview.isLoading}
+                  error={preview.error}
+                  hasRun={preview.hasRun}
+                />
+              </CardContent>
+            </Card>
+          )}
+
+          {total === 0 ? (
             <p className="py-16 text-center text-sm text-muted-foreground">
               No records awaiting review.
             </p>
           ) : (
-            records.map((record) => (
-              <StagedRecordCard key={record.id} record={record} />
-            ))
+            <StagedRecordsList jobId={jobId} noChangeCount={noChangeCount} />
           )}
         </div>
       </Container>

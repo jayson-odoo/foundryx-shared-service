@@ -53,6 +53,8 @@ describe('companies list config', () => {
         companyName: 'V Soft',
         name: 'V Soft',
         isActive: true,
+        sinkImpl: 'logging',
+        sinkConnectionId: null,
         createdAt: null,
       }),
     ).toBe('/autocount/companies/c1');

@@ -5,6 +5,7 @@ from .autocount_repository import (
     EntityConfigRepository,
     FieldMappingRepository,
     StagedRecordRepository,
+    SyncJobRepository,
     SyncRunRepository,
     WatermarkRepository,
 )
@@ -15,6 +16,7 @@ __all__ = [
     "EntityConfigRepository",
     "FieldMappingRepository",
     "StagedRecordRepository",
+    "SyncJobRepository",
     "SyncRunRepository",
     "WatermarkRepository",
 ]
