@@ -45,7 +45,25 @@ fi
 # bypasses for manual expand-contract rollouts.
 if [ "${SKIP_MIGRATIONS:-0}" != "1" ]; then
   echo "Running DB bootstrap (migrations + seed + modules)..."
-  python -m scripts.bootstrap_db
+  # bootstrap_db sets a lock_timeout (see _apply_bootstrap_lock_timeout) so a
+  # lock held by the still-live (blue) color makes a migration/seed FAIL FAST
+  # instead of hanging the whole ~300s healthcheck window and aborting the swap.
+  # Retry a few times: a TRANSIENT lock (a live query that finishes) clears
+  # between attempts and the deploy still goes green. A PERSISTENT lock exhausts
+  # the retries → container start aborts (the old color keeps serving) with a
+  # NAMED lock_timeout error in the log — diagnosable, not a silent hang.
+  BOOTSTRAP_ATTEMPTS="${BOOTSTRAP_ATTEMPTS:-5}"
+  BOOTSTRAP_RETRY_DELAY="${BOOTSTRAP_RETRY_DELAY:-8}"
+  n=1
+  until python -m scripts.bootstrap_db; do
+    if [ "$n" -ge "$BOOTSTRAP_ATTEMPTS" ]; then
+      echo "ERROR: bootstrap_db failed after ${n} attempts (a lock held by the live color, or a real error above). Aborting start so the current color keeps serving." >&2
+      exit 1
+    fi
+    echo "bootstrap_db attempt ${n}/${BOOTSTRAP_ATTEMPTS} failed; retrying in ${BOOTSTRAP_RETRY_DELAY}s..." >&2
+    n=$((n + 1))
+    sleep "$BOOTSTRAP_RETRY_DELAY"
+  done
 else
   echo "SKIP_MIGRATIONS=1; skipping bootstrap_db"
 fi
