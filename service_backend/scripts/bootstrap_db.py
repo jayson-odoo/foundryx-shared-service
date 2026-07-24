@@ -65,7 +65,34 @@ def run_migrations() -> None:
     command.upgrade(Config("alembic.ini"), "head")
 
 
+def _apply_bootstrap_lock_timeout() -> None:
+    """Make every bootstrap DB connection FAIL FAST on a blocked lock instead of
+    hanging the whole deploy.
+
+    bootstrap_db runs inside the green API container's startup, gated by the
+    blue/green healthcheck, while the OLD (blue) color still serves live traffic
+    on the SAME database. A migration or seed that needs a lock a live query
+    holds would otherwise wait indefinitely — the green container never reports
+    healthy, the deploy times out ("backend_green not healthy after 300s") and
+    the swap is aborted. ``lock_timeout`` (libpq ``PGOPTIONS``, read per-
+    connection at connect time) turns that silent hang into a fast, NAMED error;
+    ``start.sh`` retries so a TRANSIENT lock clears between attempts. It only
+    aborts a statement WAITING for a lock — a slow-but-progressing migration is
+    untouched. Postgres-only; the app process (gunicorn) is a SEPARATE ``exec``
+    and never sees this env.
+    """
+    if not settings.database_url.startswith("postgresql"):
+        return
+    lock_timeout = os.environ.get("BOOTSTRAP_LOCK_TIMEOUT", "20s")
+    opt = f"-c lock_timeout={lock_timeout}"
+    existing = os.environ.get("PGOPTIONS", "").strip()
+    os.environ["PGOPTIONS"] = f"{existing} {opt}".strip() if existing else opt
+
+
 def main() -> None:
+    # First thing: bound how long any bootstrap statement will WAIT for a lock,
+    # so a lock held by the still-live blue color can't hang the deploy (300s).
+    _apply_bootstrap_lock_timeout()
     if settings.database_url.startswith("postgresql"):
         ensure_role_and_db()
     run_migrations()
