@@ -134,7 +134,7 @@ class InboundService:
             if quoted is not None:
                 sender_name = None
                 if quoted.sender_id:
-                    names = self.conversations._user_names([quoted.sender_id])
+                    names = self.conversations._user_names([quoted.sender_id], channel.tenant_id)
                     sender_name = names.get(quoted.sender_id)
                 metadata = {
                     "reply_to": {

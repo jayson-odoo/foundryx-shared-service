@@ -7,7 +7,7 @@ translate rejections into the structured `/api/v1/*` error envelope. Idempotency
 dedup is workspace-scoped with a 24h TTL.
 """
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import httpx
 from sqlalchemy.orm import Session
@@ -42,7 +42,19 @@ from .message_service import (
 )
 from . import idempotency, statuses
 
+if TYPE_CHECKING:  # forward ref used in a signature below
+    from ..schemas import ThreadItem
+
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
+
+# Wire-format switch on the read endpoints (`?format=`). GUIDE is the DEFAULT
+# and the documented contract (`MessageItem`/`ThreadItem`, the richer flat
+# shape); RIO is the opt-in respond.io-parity shape for consumers migrating
+# from respond.io. Both are derived from the same internal objects, so they
+# cannot drift apart.
+FORMAT_GUIDE = "guide"
+FORMAT_RIO = "rio"
+WIRE_FORMATS = (FORMAT_GUIDE, FORMAT_RIO)
 
 
 def _digits(value: str) -> str:
@@ -140,7 +152,16 @@ class PublicGatewayService:
         )
         return {u.id: u for u in rows}
 
-    def _rio_contact(self, contact: Contact, *, status_str: str, users: dict) -> RioContactItem:
+    def _rio_contact(
+        self, contact: Contact, *, thread: "ThreadItem", users: dict
+    ) -> RioContactItem:
+        """Map the internal ThreadItem (+ the ORM row, which carries `email` and
+        custom fields the ThreadItem omits) to the respond.io shape.
+
+        Anything ThreadItem carries that respond.io has no field for is kept as
+        an explicit FoundryX extension rather than dropped — a gateway consumer
+        has no other read source for `unreadCount`/`lastMessagePreview`, and an
+        inbox list cannot be built without them (BL-SS-026)."""
         cf = contact.custom_fields_json or {}
         custom = [RioCustomField(name=str(k), value=None if v is None else str(v)) for k, v in cf.items()]
         assignee = None
@@ -157,13 +178,20 @@ class PublicGatewayService:
             profilePic=contact.avatar_url,
             countryCode=None,       # not modeled
             custom_fields=custom,
-            status=(status_str or "OPEN").lower(),
+            status=(thread.status or "OPEN").lower(),
             tags=[],                # not modeled
             assignee=assignee,
             lifecycle=None,         # not modeled
             created_at=_epoch(contact.created_at),
             isBlocked=False,        # not modeled
-            cswExpiresAt=_iso_z(contact.csw_expires_at),
+            cswExpiresAt=_iso_z(thread.cswExpiresAt),
+            priority=thread.priority,
+            channelId=thread.channelId,
+            channelType=thread.channelType,
+            unreadCount=thread.unreadCount,
+            lastMessageAt=_iso_z(thread.lastMessageAt),
+            lastIncomingMessageAt=_iso_z(thread.lastIncomingMessageAt),
+            lastMessagePreview=thread.lastMessagePreview,
         )
 
     def _rio_message(self, m, *, reactions: Optional[list] = None) -> RioMessageItem:
@@ -245,13 +273,20 @@ class PublicGatewayService:
         )
 
     # ── Contact read ─────────────────────────────────────────────────────────
-    def get_contact(self, tenant_id: str, workspace_id: str, identifier: str) -> RioContactItem:
+    def get_contact(
+        self, tenant_id: str, workspace_id: str, identifier: str, *, fmt: str = FORMAT_GUIDE
+    ):
+        """``ThreadItem`` (default, the documented shape) or ``RioContactItem``
+        when ``fmt='rio'``. ThreadItem is the superset — Rio is derived from it,
+        so the two can never drift apart."""
         from .conversation_service import ConversationService
 
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
-        status_str = ConversationService(self.db).thread_item(contact).status
+        thread = ConversationService(self.db).thread_item(contact)
+        if fmt != FORMAT_RIO:
+            return thread
         users = self._users_by_id(tenant_id, [contact.assigned_user_id])
-        return self._rio_contact(contact, status_str=status_str, users=users)
+        return self._rio_contact(contact, thread=thread, users=users)
 
     def list_contacts(
         self,
@@ -264,10 +299,11 @@ class PublicGatewayService:
         search: Optional[str] = None,
         page: int = 0,
         page_size: int = 50,
+        fmt: str = FORMAT_GUIDE,
     ):
-        """Returns ``(rio_items, total)``. Filtering/pagination reuse the inbox's
-        ``list_threads`` (offset-based); the router turns page/total into the
-        respond.io ``{next, previous}`` cursor URLs."""
+        """Returns ``(items, total)`` — ``ThreadItem``s by default, ``RioContactItem``s
+        when ``fmt='rio'``. Filtering/pagination reuse the inbox's ``list_threads``
+        (offset-based); the router turns page/total into the documented envelope."""
         from .conversation_service import ConversationService
 
         items, total = ConversationService(self.db).list_threads(
@@ -280,7 +316,9 @@ class PublicGatewayService:
             page=page,
             page_size=page_size,
         )
-        # Full-fidelity Contact rows for the page (thread items omit email/custom).
+        if fmt != FORMAT_RIO:
+            return items, total
+        # Rio needs the ORM rows too — ThreadItem omits email + custom fields.
         ids = [t.id for t in items]
         contacts = (
             self.db.query(Contact)
@@ -290,10 +328,9 @@ class PublicGatewayService:
             else []
         )
         by_id = {c.id: c for c in contacts}
-        status_by_id = {t.id: t.status for t in items}
         users = self._users_by_id(tenant_id, [c.assigned_user_id for c in contacts])
         rio = [
-            self._rio_contact(by_id[t.id], status_str=status_by_id.get(t.id, "OPEN"), users=users)
+            self._rio_contact(by_id[t.id], thread=t, users=users)
             for t in items
             if t.id in by_id
         ]
@@ -308,26 +345,39 @@ class PublicGatewayService:
         limit: int,
         before_id: Optional[str] = None,
         after_id: Optional[str] = None,
+        fmt: str = FORMAT_GUIDE,
     ):
-        """Read-only message history for a contact — ALL message types, mapped to
-        the respond.io shape. Two-way keyset paging (``before_id`` older /
-        ``after_id`` newer); always returned oldest→newest. Workspace-scoped and
+        """Read-only message history for a contact — ALL message types. Returns
+        ``(contact_id, items)``: ``MessageItem``s by default, ``RioMessageItem``s
+        when ``fmt='rio'``. Two-way keyset paging (``before_id`` older /
+        ``after_id`` newer); always oldest→newest. Workspace-scoped and
         side-effect-free (a consumer read never marks the thread read)."""
+        from .conversation_service import ConversationService
+
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
         rows = self.contacts.list_messages_recent(
             contact.id, tenant_id, limit=limit, before_id=before_id, after_id=after_id
         )
+        if fmt != FORMAT_RIO:
+            return contact.id, ConversationService(self.db).message_items(rows)
         # Reaction chips: ONE batched query for the whole page (never per-row).
         reactions = self.contacts.reactions_for([m.id for m in rows], tenant_id)
         return contact.id, [
             self._rio_message(m, reactions=reactions.get(m.id)) for m in rows
         ]
 
-    def get_contact_message(self, tenant_id: str, workspace_id: str, identifier: str, message_id: str) -> RioMessageItem:
+    def get_contact_message(
+        self, tenant_id: str, workspace_id: str, identifier: str, message_id: str,
+        *, fmt: str = FORMAT_GUIDE,
+    ):
+        from .conversation_service import ConversationService
+
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
         msg = self.contacts.get_message(message_id, tenant_id)
         if msg is None or msg.contact_id != contact.id:
             raise ApiError(404, "message_not_found", "Message not found for this contact.")
+        if fmt != FORMAT_RIO:
+            return ConversationService(self.db).message_items([msg])[0]
         reactions = self.contacts.reactions_for([msg.id], tenant_id)
         return self._rio_message(msg, reactions=reactions.get(msg.id))
 
@@ -343,6 +393,7 @@ class PublicGatewayService:
         priority: Optional[str] = None,
         assigned_user_id=...,
         custom_fields=...,
+        fmt: str = FORMAT_GUIDE,
     ):
         from .conversation_service import ConversationService, InvalidPatch
 
@@ -359,9 +410,12 @@ class PublicGatewayService:
             )
         except InvalidPatch as exc:
             raise ApiError(422, "invalid_request", str(exc)) from exc
-        return self._rio_after_patch(tenant_id, contact.id, thread)
+        return self._after_patch(tenant_id, contact.id, thread, fmt=fmt)
 
-    def set_conversation_state(self, tenant_id: str, workspace_id: str, identifier: str, *, open_: bool):
+    def set_conversation_state(
+        self, tenant_id: str, workspace_id: str, identifier: str, *, open_: bool,
+        fmt: str = FORMAT_GUIDE,
+    ):
         from .conversation_service import ConversationService, InvalidPatch
 
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
@@ -371,14 +425,16 @@ class PublicGatewayService:
             )
         except InvalidPatch as exc:
             raise ApiError(422, "invalid_request", str(exc)) from exc
-        return self._rio_after_patch(tenant_id, contact.id, thread)
+        return self._after_patch(tenant_id, contact.id, thread, fmt=fmt)
 
-    def _rio_after_patch(self, tenant_id: str, contact_id: str, thread) -> RioContactItem:
-        """Re-read the mutated contact + map to the respond.io shape (parity with
-        GET). ``thread`` carries the resolved status string."""
+    def _after_patch(self, tenant_id: str, contact_id: str, thread, *, fmt: str = FORMAT_GUIDE):
+        """Re-read the mutated contact and render it in the requested shape, so
+        a write echoes exactly what the matching GET would return."""
+        if fmt != FORMAT_RIO:
+            return thread
         contact = self.contacts.get_by_id(contact_id, tenant_id)
         users = self._users_by_id(tenant_id, [contact.assigned_user_id])
-        return self._rio_contact(contact, status_str=thread.status, users=users)
+        return self._rio_contact(contact, thread=thread, users=users)
 
     def add_comment(self, tenant_id: str, workspace_id: str, identifier: str, body: str):
         """Add an internal note (comment) to a contact's thread — SYSTEM bubble,

@@ -28,22 +28,11 @@ router = APIRouter()
 
 
 def _to_item(row: WebhookEndpoint) -> WebhookEndpointItem:
-    return WebhookEndpointItem(
-        id=row.id,
-        tenantId=row.tenant_id,
-        workspaceId=row.workspace_id,
-        channelId=row.channel_id,
-        name=row.name,
-        url=row.url,
-        events=list(row.events_json or []),
-        status=row.status,
-        consecutiveFailures=row.consecutive_failures,
-        lastSuccessAt=row.last_success_at,
-        disabledAt=row.disabled_at,
-        disabledReason=row.disabled_reason,
-        createdAt=row.created_at,
-        updatedAt=row.updated_at,
-    )
+    """Shared mapper — defined in the service layer so the public gateway and
+    this operator router cannot drift (and don't import each other)."""
+    from ..services.webhook_service import webhook_endpoint_item
+
+    return webhook_endpoint_item(row)
 
 
 def _to_delivery(row: WebhookDelivery) -> WebhookDeliveryItem:

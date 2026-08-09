@@ -159,7 +159,7 @@ class MessageService:
             raise SendRejected("The message you are replying to was not found.")
         sender_name = None
         if quoted.sender_id:
-            names = self.conversations._user_names([quoted.sender_id])
+            names = self.conversations._user_names([quoted.sender_id], tenant_id)
             sender_name = names.get(quoted.sender_id)
         elif quoted.sender_external_agent_id:
             agents = self.conversations._external_agents(

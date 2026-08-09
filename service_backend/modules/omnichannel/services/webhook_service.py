@@ -29,6 +29,11 @@ EVENT_TYPES = ("message.inbound", "message.status", "contact.updated", "message.
 # Auto-disable after this many consecutive dead-lettered deliveries.
 AUTO_DISABLE_THRESHOLD = 10
 
+# Max endpoints per channel. Every inbound message and status receipt fans out
+# to ALL of them, so an unbounded count is self-inflicted worker amplification
+# — and, on the key-authed public surface, an outbound-request amplifier.
+MAX_ENDPOINTS_PER_CHANNEL = 10
+
 
 class WebhookError(Exception):
     """Validation failure (bad URL, unknown event, channel not found)."""
@@ -53,12 +58,16 @@ def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
     )
 
 
-def validate_callback_url(url: str) -> str:
+def validate_callback_url(url: str, *, strict_dns: bool = False) -> str:
     """HTTPS-only + block SSRF targets. Rejects private/loopback/link-local/
     reserved IPs whether given as a literal, a numeric/hex-encoded IP, OR a
     hostname that RESOLVES to one (e.g. an A record pointing at 169.254.169.254).
-    DNS-rebinding between validate and delivery time is out of scope (BL follow-up
-    — a delivery-time re-check)."""
+    ``strict_dns`` also rejects a host we cannot resolve. REGISTRATION stays
+    lenient on purpose — a transient DNS failure must not reject a legitimate
+    callback, and making registration depend on live resolution breaks offline
+    CI. The authoritative guard is `assert_deliverable`, which runs with
+    ``strict_dns=True`` before EVERY delivery attempt, so an unresolvable or
+    internally-resolving host is simply never POSTed to."""
     url = (url or "").strip()
     parsed = urlparse(url)
     if parsed.scheme != "https":
@@ -81,11 +90,12 @@ def validate_callback_url(url: str) -> str:
         pass
 
     # Hostname (incl. numeric/hex forms): resolve + block if ANY address is
-    # internal. Resolution failure is allowed (transient DNS) — the delivery just
-    # fails + retries; the block is best-effort at create time.
+    # internal.
     try:
         infos = socket.getaddrinfo(host, None)
     except (socket.gaierror, UnicodeError):
+        if strict_dns:
+            raise WebhookError("Could not resolve the callback host.")
         return url
     for info in infos:
         addr = info[4][0]
@@ -95,6 +105,46 @@ def validate_callback_url(url: str) -> str:
         except ValueError:
             continue
     return url
+
+
+def assert_deliverable(url: str) -> None:
+    """Re-check the target IMMEDIATELY before POSTing to it.
+
+    Registration-time validation is not sufficient alone: DNS can be re-pointed
+    afterwards (rebinding), and the callback URL is now settable by any
+    workspace-API-key holder — so a fail-open registration would otherwise let
+    an external caller aim the delivery worker at a link-local or RFC1918
+    address (a blind SSRF pivot into the deployment's network). Raises
+    `WebhookError`; the caller records a failed attempt and never sends.
+
+    NOT strict on resolution failure. Blocking an UNRESOLVABLE host buys no
+    security — there is nothing to connect to, and httpx fails on its own — but
+    it does turn every transient DNS blip into a refused delivery. What matters
+    is that a host resolving to an internal address is never POSTed to."""
+    validate_callback_url(url, strict_dns=False)
+
+
+def webhook_endpoint_item(row: "WebhookEndpoint"):
+    """Row → wire item. Lives in the service layer so the operator router and
+    the public gateway map identically, and neither imports the other."""
+    from ..schemas import WebhookEndpointItem
+
+    return WebhookEndpointItem(
+        id=row.id,
+        tenantId=row.tenant_id,
+        workspaceId=row.workspace_id,
+        channelId=row.channel_id,
+        name=row.name,
+        url=row.url,
+        events=list(row.events_json or []),
+        status=row.status,
+        consecutiveFailures=row.consecutive_failures,
+        lastSuccessAt=row.last_success_at,
+        disabledAt=row.disabled_at,
+        disabledReason=row.disabled_reason,
+        createdAt=row.created_at,
+        updatedAt=row.updated_at,
+    )
 
 
 def _validate_events(events: List[str]) -> List[str]:
@@ -147,11 +197,25 @@ class WebhookService:
         url: str,
         events: List[str],
         created_by: Optional[str],
+        strict_dns: bool = False,
     ) -> Tuple[WebhookEndpoint, str]:
         """Register an endpoint. Returns (row, plaintext_secret) — the secret is
         shown ONCE for the consumer to configure signature verification."""
         channel = self._channel(tenant_id, channel_id)
-        clean_url = validate_callback_url(url)
+        existing = (
+            self.db.query(WebhookEndpoint)
+            .filter(
+                WebhookEndpoint.tenant_id == tenant_id,
+                WebhookEndpoint.channel_id == channel.id,
+            )
+            .count()
+        )
+        if existing >= MAX_ENDPOINTS_PER_CHANNEL:
+            raise WebhookError(
+                f"This channel already has the maximum of {MAX_ENDPOINTS_PER_CHANNEL} "
+                "webhook endpoints. Delete one before adding another."
+            )
+        clean_url = validate_callback_url(url, strict_dns=strict_dns)
         clean_events = _validate_events(events)
         secret = _new_secret()
         row = WebhookEndpoint(
@@ -169,6 +233,36 @@ class WebhookService:
         self.db.commit()
         self.db.refresh(row)
         return row, secret
+
+    def get_for_workspace(
+        self, tenant_id: str, workspace_id: str, endpoint_id: str
+    ) -> WebhookEndpoint:
+        """Tenant + WORKSPACE scoped fetch — the authorization invariant for any
+        caller scoped to one workspace (the gateway's API key).
+
+        `_get` is tenant-scoped only, so a tenant with several workspaces could
+        otherwise reach across. This lives in the SERVICE so the guard travels
+        with the data access — a future non-HTTP caller inherits it instead of
+        re-implementing it. Mismatch raises the SAME `WebhookNotFound` as a
+        genuine miss, so the two are indistinguishable (no enumeration)."""
+        row = self._get(tenant_id, endpoint_id)
+        if row.workspace_id != workspace_id:
+            raise WebhookNotFound("Webhook endpoint not found.")
+        return row
+
+    def list_for_workspace(self, tenant_id: str, workspace_id: str) -> List[WebhookEndpoint]:
+        """Every endpoint in the workspace, across ALL its channels — matching
+        what `get_for_workspace` can mutate. Listing by the workspace's active
+        channel would hide an endpoint that the per-id routes still reach."""
+        return (
+            self.db.query(WebhookEndpoint)
+            .filter(
+                WebhookEndpoint.tenant_id == tenant_id,
+                WebhookEndpoint.workspace_id == workspace_id,
+            )
+            .order_by(WebhookEndpoint.created_at.desc())
+            .all()
+        )
 
     def list_for_channel(self, tenant_id: str, channel_id: str) -> List[WebhookEndpoint]:
         self._channel(tenant_id, channel_id)
@@ -192,12 +286,13 @@ class WebhookService:
         name: Optional[str] = None,
         url: Optional[str] = None,
         events: Optional[List[str]] = None,
+        strict_dns: bool = False,
     ) -> WebhookEndpoint:
         row = self._get(tenant_id, endpoint_id)
         if name is not None:
             row.name = name.strip() or row.name
         if url is not None:
-            row.url = validate_callback_url(url)
+            row.url = validate_callback_url(url, strict_dns=strict_dns)
         if events is not None:
             row.events_json = _validate_events(events)
         self.db.commit()
