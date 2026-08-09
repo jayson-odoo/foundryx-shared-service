@@ -715,7 +715,19 @@ def test_incoming_message_carries_a_timestamp(client, session_factory):
 
     inbound = [m for m in items if m["traffic"] == "incoming"]
     assert inbound and all(m["status"] == [] for m in inbound), "inbound has no receipt"
-    assert all(isinstance(m["timestamp"], int) for m in inbound), "…so timestamp must carry it"
+    # Pin the VALUE, not just truthiness — `int(now())` would satisfy a truthy
+    # check while carrying the read time instead of the message time.
+    from modules.omnichannel.models import ConversationMessage
+
+    db = session_factory()
+    created = {
+        r.id: int(r.created_at.timestamp())
+        for r in db.query(ConversationMessage).filter(
+            ConversationMessage.contact_id == cid
+        )
+    }
+    db.close()
+    assert all(m["timestamp"] == created[m["messageId"]] for m in items), "timestamp is created_at"
 
 
 def test_contact_exposes_csw_expiry(client, session_factory):
@@ -762,6 +774,49 @@ def test_media_caption_is_not_duplicated_into_text(client, session_factory):
     assert msg["caption"] == "Your receipt"
     assert msg["text"] is None, "must not duplicate the body into text"
     assert msg["size"] == 1234 and msg["url"], "size + signed URL exposed"
+
+
+def test_text_caption_split_keys_off_message_type_not_media_presence(client, session_factory):
+    """The split MUST key off the message TYPE. Keying off `url` presence (the
+    first attempt) broke two real shapes:
+
+    * a TEMPLATE/INTERACTIVE row carrying a HEADER IMAGE stores `media_key`, so
+      `url` is set — but its body is body text, not a caption, and nulling
+      `text` renders a blank bubble on the consumer side;
+    * an inbound media row whose blob failed to store (dev creds / Graph
+      hiccup — `_store_media` returns None by design) has NO `url`, but is
+      still media, so its body is still a caption.
+    """
+    hdr, cid = _seeded(client, session_factory, phone="+60555222777")
+
+    # TEMPLATE with a header image: url IS set, but text must survive.
+    tpl = _insert_message(
+        session_factory, cid, sender_type="AGENT", message_type="TEMPLATE",
+        body="Hi Jayson, your booking is confirmed.",
+        media_key="conn:x:header.png", media_mime="image/png", media_size=99,
+    )
+    got = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{tpl}", headers=hdr).json()["message"]
+    assert got["url"], "header image still exposed"
+    assert got["text"] == "Hi Jayson, your booking is confirmed.", "template body is TEXT, not a caption"
+    assert got["caption"] is None
+
+    # Media WITHOUT a stored blob: no url, but it is still a caption.
+    img = _insert_message(
+        session_factory, cid, sender_type="CONTACT", message_type="IMAGE",
+        body="Here is my receipt",
+    )
+    got = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{img}", headers=hdr).json()["message"]
+    assert got["url"] is None
+    assert got["caption"] == "Here is my receipt", "media body is a caption even with no blob"
+    assert got["text"] is None
+
+
+def test_plain_text_still_returns_text(client, session_factory):
+    """The other half of the split — the caption fix must not null TEXT bodies."""
+    hdr, cid = _seeded(client, session_factory, phone="+60555222888")
+    mid = _insert_message(session_factory, cid, body="just a plain message")
+    msg = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}", headers=hdr).json()["message"]
+    assert msg["text"] == "just a plain message" and msg["caption"] is None
 
 
 def test_reactions_and_reply_are_exposed(client, session_factory):

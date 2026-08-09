@@ -555,8 +555,14 @@ class RioContactListResponse(BaseModel):
 
 class RioMessageStatus(BaseModel):
     value: str                        # pending | sent | delivered | read | failed
-    timestamp: Optional[int] = None   # epoch seconds
+    # Epoch seconds. NOTE: we do not record per-receipt times, so this is the
+    # message's creation time (== the item's top-level `timestamp`), not the
+    # moment the receipt landed. Don't compute send→delivered latency from it.
+    timestamp: Optional[int] = None
     message: Optional[str] = None     # failure reason, when failed
+    # Meta's numeric error code (e.g. "131047" re-engagement required) — stable
+    # and branchable, unlike `message`, which is free text and localised.
+    code: Optional[str] = None
 
 
 class RioMessageSender(BaseModel):

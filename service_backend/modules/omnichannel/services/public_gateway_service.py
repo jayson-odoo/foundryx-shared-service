@@ -60,6 +60,12 @@ def _iso_z(dt) -> Optional[str]:
     than respond.io's epoch ints."""
     if not dt:
         return None
+    # SQLite can hand back a naive datetime (and an in-session assignment may be
+    # read off the identity map before refresh) — treat naive as UTC, never as
+    # local, or the CSW deadline shifts by the host offset. Mirrors
+    # `message_service._window_open`.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
@@ -170,19 +176,27 @@ class PublicGatewayService:
             url = signed_media_url(m.id)
         elif getattr(m, "media_url", None):
             url = m.media_url
+        # The text/caption split keys off the MESSAGE TYPE, never off `url`
+        # presence. A TEMPLATE or INTERACTIVE row can carry a header image in
+        # `media_key` (so `url` is set) while its body still belongs in `text`;
+        # conversely an inbound media row whose blob failed to store has no
+        # `url` but is still media, and its body is still a caption.
+        is_media = (m.message_type or "").upper() in MEDIA_MESSAGE_TYPES
         payload = RioMessagePayload(
             type=(m.message_type or "text").lower(),
             # A media message's body IS its caption — expose it once, in
             # `caption`, never duplicated into `text`.
-            text=None if url else m.body,
+            text=None if is_media else m.body,
             url=url,
-            caption=m.body if url else None,
+            caption=m.body if is_media else None,
             filename=m.media_filename,
             mimeType=m.media_mime,
             size=m.media_size,
             # interactive buttons / location coordinates / contact cards /
             # template binding — flattening these into `text` loses them.
-            payload=m.payload_json,
+            # `payload_json` is free-form JSON: guard the stored shape (same
+            # treatment as `reply_to` below) so a rogue row can't 500 a read.
+            payload=m.payload_json if isinstance(m.payload_json, dict) else None,
             messageTag=meta.get("message_tag"),
         )
         # `metadata_json` is free-form: never assume the stored shape (a legacy
@@ -206,6 +220,7 @@ class PublicGatewayService:
                     value=_RIO_STATUS.get(m.delivery_status, m.delivery_status.lower()),
                     timestamp=_epoch(m.created_at),
                     message=m.error_message,
+                    code=m.error_code,
                 )
             )
         sender = RioMessageSender(
