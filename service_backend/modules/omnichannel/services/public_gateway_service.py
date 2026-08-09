@@ -7,7 +7,7 @@ translate rejections into the structured `/api/v1/*` error envelope. Idempotency
 dedup is workspace-scoped with a 24h TTL.
 """
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import httpx
 from sqlalchemy.orm import Session
@@ -41,6 +41,9 @@ from .message_service import (
     template_variable_count,
 )
 from . import idempotency, statuses
+
+if TYPE_CHECKING:  # forward ref used in a signature below
+    from ..schemas import ThreadItem
 
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
 

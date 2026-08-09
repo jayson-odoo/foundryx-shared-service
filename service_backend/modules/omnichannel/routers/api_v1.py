@@ -7,7 +7,7 @@ Bearer key. Errors use the structured `{error:{code,message}}` envelope
 JWT `require_module` gate — service-active is re-checked inside the dependency.
 """
 import json
-from typing import Optional
+from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, Header, Query, Request, status
 from sqlalchemy.orm import Session
@@ -147,7 +147,11 @@ def list_templates(
 
 
 # ── Contacts (respond.io-style: {identifier} = phone:+60… | id:<uuid> | <uuid>) ──
-@router.get("/contacts", response_model=None)
+@router.get(
+    "/contacts",
+    response_model=None,  # two shapes; documented via `responses` so OpenAPI keeps both
+    responses={200: {"model": Union[PublicContactListResponse, RioContactListResponse]}},
+)
 def list_contacts(
     request: Request,
     status: Optional[str] = Query(default=None, description="OPEN|SNOOZED|CLOSED"),
@@ -183,7 +187,11 @@ def list_contacts(
     return RioContactListResponse(items=items, pagination=pagination)
 
 
-@router.get("/contacts/{identifier}", response_model=None)
+@router.get(
+    "/contacts/{identifier}",
+    response_model=None,
+    responses={200: {"model": Union[ThreadItem, RioContactItem]}},
+)
 def get_contact(
     identifier: str,
     fmt: str = Depends(wire_format),
@@ -197,7 +205,11 @@ def get_contact(
     )
 
 
-@router.patch("/contacts/{identifier}", response_model=None)
+@router.patch(
+    "/contacts/{identifier}",
+    response_model=None,
+    responses={200: {"model": Union[ThreadItem, RioContactItem]}},
+)
 def update_contact(
     identifier: str,
     payload: PublicContactUpdateRequest,
@@ -220,7 +232,11 @@ def update_contact(
     )
 
 
-@router.get("/contacts/{identifier}/messages", response_model=None)
+@router.get(
+    "/contacts/{identifier}/messages",
+    response_model=None,
+    responses={200: {"model": Union[PublicMessageListResponse, RioMessageListResponse]}},
+)
 def list_contact_messages(
     request: Request,
     identifier: str,
@@ -232,7 +248,9 @@ def list_contact_messages(
     db: Session = Depends(get_db),
 ):
     """A contact's message history — ALL types, always oldest→newest, read-only
-    (never marks the thread read). Media URLs are absolute, signed and clickable.
+    (never marks the thread read). Media: the default shape returns a RELATIVE,
+    Bearer-authed `mediaUrl`; `?format=rio` returns an absolute pre-signed
+    `message.url` that opens without a header (see §8).
 
     Default (`?format=guide`) → `{contactId, data: MessageItem[], nextBefore}`;
     page deeper by passing `nextBefore` back as `?before=`.
@@ -245,7 +263,14 @@ def list_contact_messages(
     if fmt != FORMAT_RIO:
         # A full page implies more history behind it; the oldest row is the
         # cursor. Short page = we reached the beginning, so null.
-        next_before = items[0].id if len(items) == limit else None
+        #
+        # `after=` pages FORWARD, so items[0] is the row just past the caller's
+        # own anchor — emitting it as `nextBefore` would send them backwards
+        # over ground they already have. The guide documents `before` only for
+        # this shape, so the honest answer is "no older-direction cursor".
+        next_before = (
+            items[0].id if (after is None and len(items) == limit) else None
+        )
         return PublicMessageListResponse(
             contactId=contact_id, data=items, nextBefore=next_before
         )
@@ -258,7 +283,11 @@ def list_contact_messages(
     )
 
 
-@router.get("/contacts/{identifier}/messages/{message_id}", response_model=None)
+@router.get(
+    "/contacts/{identifier}/messages/{message_id}",
+    response_model=None,
+    responses={200: {"model": Union[MessageItem, RioMessageItem]}},
+)
 def get_contact_message(
     identifier: str,
     message_id: str,
@@ -274,7 +303,11 @@ def get_contact_message(
 
 
 # ── Conversation lifecycle ───────────────────────────────────────────────────
-@router.post("/contacts/{identifier}/conversation/open", response_model=None)
+@router.post(
+    "/contacts/{identifier}/conversation/open",
+    response_model=None,
+    responses={200: {"model": Union[ThreadItem, RioContactItem]}},
+)
 def open_conversation(
     identifier: str,
     fmt: str = Depends(wire_format),
@@ -287,7 +320,11 @@ def open_conversation(
     )
 
 
-@router.post("/contacts/{identifier}/conversation/close", response_model=None)
+@router.post(
+    "/contacts/{identifier}/conversation/close",
+    response_model=None,
+    responses={200: {"model": Union[ThreadItem, RioContactItem]}},
+)
 def close_conversation(
     identifier: str,
     fmt: str = Depends(wire_format),
@@ -327,9 +364,9 @@ def _webhook_service(db: Session):
 
 
 def _wh_item(row) -> WebhookEndpointItem:
-    from ..routers.webhooks_subs import _to_item
+    from ..services.webhook_service import webhook_endpoint_item
 
-    return _to_item(row)
+    return webhook_endpoint_item(row)
 
 
 def _wh_guard(exc: Exception):
@@ -343,10 +380,11 @@ def list_webhooks(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ) -> WebhookEndpointListResponse:
-    """Your workspace's registered callbacks (secrets are never echoed)."""
-    svc = PublicGatewayService(db)
-    channel = svc._workspace_channel(api_ws.tenant_id, api_ws.workspace_id)
-    rows = _webhook_service(db).list_for_channel(api_ws.tenant_id, channel.id)
+    """Your workspace's registered callbacks (secrets are never echoed).
+
+    Workspace-scoped, matching what the per-id routes can mutate — listing by
+    active channel would hide an endpoint that `PATCH`/`DELETE` still reach."""
+    rows = _webhook_service(db).list_for_workspace(api_ws.tenant_id, api_ws.workspace_id)
     return WebhookEndpointListResponse(data=[_wh_item(r) for r in rows])
 
 
@@ -365,7 +403,10 @@ def create_webhook(
     try:
         row, secret = _webhook_service(db).create(
             api_ws.tenant_id, channel.id, payload.name, payload.url, payload.events,
-            created_by=None,  # minted by an API key, not a user
+            # No user behind an API key — record WHICH key, matching the
+            # `apikey:<id>` actor convention used elsewhere in this service.
+            # The activity log is pruned per tenant; this row is permanent.
+            created_by=f"apikey:{api_ws.key_id}",
         )
     except WebhookError as exc:
         raise _wh_guard(exc) from exc
@@ -373,20 +414,17 @@ def create_webhook(
 
 
 def _own_endpoint(db: Session, api_ws: ApiWorkspace, endpoint_id: str):
-    """Fetch an endpoint and PROVE it belongs to the caller's workspace.
-
-    `WebhookService._get` is tenant-scoped only — a tenant with several
-    workspaces could otherwise reach another workspace's endpoint with its own
-    key. Mismatch is the same uniform 404 as a genuine miss (no enumeration)."""
+    """Workspace-scoped fetch, translated to the gateway's 404 envelope. The
+    scoping RULE lives in `WebhookService.get_for_workspace` so it travels with
+    the data access; this only maps the exception."""
     from ..services.webhook_service import WebhookNotFound
 
     try:
-        row = _webhook_service(db).get(api_ws.tenant_id, endpoint_id)
+        return _webhook_service(db).get_for_workspace(
+            api_ws.tenant_id, api_ws.workspace_id, endpoint_id
+        )
     except WebhookNotFound as exc:
         raise ApiError(404, "not_found", "Webhook endpoint not found.") from exc
-    if row.workspace_id != api_ws.workspace_id:
-        raise ApiError(404, "not_found", "Webhook endpoint not found.")
-    return row
 
 
 @router.patch("/webhooks/{endpoint_id}", response_model=WebhookEndpointItem)

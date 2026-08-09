@@ -51,11 +51,23 @@ class ConversationService:
         )
         return {s.id: s.key for s in rows}
 
-    def _user_names(self, user_ids: List[str]) -> Dict[str, str]:
+    def _user_names(self, user_ids: List[str], tenant_id: str) -> Dict[str, str]:
+        """Batched id → display name, TENANT-SCOPED.
+
+        The polymorphic-target_id house rule: a STORED user id must be resolved
+        scoped, never by bare id. `assigned_user_id` is validated on write by
+        `patch_thread`, but it is not the only writer and `sender_id` is never
+        validated — and this resolves to a name/EMAIL that is rendered to the
+        caller, including on the key-authed public gateway. An id belonging to
+        another tenant must resolve to nothing, not to their user's address."""
         ids = [u for u in set(user_ids) if u]
         if not ids:
             return {}
-        rows = self.db.query(User).filter(User.id.in_(ids)).all()
+        rows = (
+            self.db.query(User)
+            .filter(User.tenant_id == tenant_id, User.id.in_(ids))
+            .all()
+        )
         return {u.id: (u.name or u.email) for u in rows}
 
     def _external_agents(self, agent_ids: List[str], tenant_id: str):
@@ -68,11 +80,17 @@ class ConversationService:
             return {}
         return ExternalAgentService(self.db).names(ids, tenant_id)
 
-    def _channel_types(self, channel_ids: List[str]) -> Dict[str, str]:
+    def _channel_types(self, channel_ids: List[str], tenant_id: str) -> Dict[str, str]:
+        """Tenant-scoped for the same reason as `_user_names` (lower impact —
+        leaks only a channel_type — but the same stored-id resolution rule)."""
         ids = [c for c in set(channel_ids) if c]
         if not ids:
             return {}
-        rows = self.db.query(Channel).filter(Channel.id.in_(ids)).all()
+        rows = (
+            self.db.query(Channel)
+            .filter(Channel.tenant_id == tenant_id, Channel.id.in_(ids))
+            .all()
+        )
         return {c.id: c.channel_type for c in rows}
 
     # ── Mapping ──────────────────────────────────────────────────────────────
@@ -83,12 +101,12 @@ class ConversationService:
         previews = self.repo.previews_for(ids, tenant_id)
         unread = self.repo.unread_counts_for(contacts, tenant_id)
         status_keys = self._status_keys(tenant_id)
-        names = self._user_names([c.assigned_user_id for c in contacts])
+        names = self._user_names([c.assigned_user_id for c in contacts], tenant_id)
         agents = self._external_agents(
             [c.assigned_external_agent_id for c in contacts], tenant_id
         )
         channel_types = self._channel_types(
-            [previews[c.id].channel_id for c in contacts if c.id in previews]
+            [previews[c.id].channel_id for c in contacts if c.id in previews], tenant_id
         )
 
         items: List[ThreadItem] = []
@@ -134,8 +152,8 @@ class ConversationService:
         return self._thread_items([contact], contact.tenant_id)[0]
 
     def message_items(self, messages: List[ConversationMessage]) -> List[MessageItem]:
-        names = self._user_names([m.sender_id for m in messages if m.sender_id])
         tenant_id = messages[0].tenant_id if messages else ""
+        names = self._user_names([m.sender_id for m in messages if m.sender_id], tenant_id)
         agents = self._external_agents(
             [m.sender_external_agent_id for m in messages if m.sender_external_agent_id],
             tenant_id,

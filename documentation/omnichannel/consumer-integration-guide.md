@@ -611,16 +611,20 @@ curl -L https://YOUR-FOUNDRYX-HOST/omnichannel/media/8dbc5265-… \
 
 ### Two ways in: Bearer, or a signed link
 
-| | `message.mediaUrl` (webhook, §9.2) | `message.url` (read endpoints, §9.1) |
+Which one you get depends on the shape you asked for:
+
+| | `mediaUrl` — **default** shape (§9.1) and webhooks | `message.url` — **`?format=rio`** only (§9.2) |
 |----|----|----|
-| Form | `…/omnichannel/media/{id}` | `…/omnichannel/media/{id}?exp=…&sig=…` |
-| Auth | your API key in `Authorization` | **the signature IS the auth** — no header |
+| Form | `/omnichannel/media/{id}` — **relative** path (absolute in webhooks) | `https://…/omnichannel/media/{id}?exp=…&sig=…` |
+| Auth | **your API key in `Authorization`** | the signature IS the auth — no header |
 | Lifetime | as long as the key is valid | **expires** (`media_signed_url_ttl_seconds`, default **1 hour**) |
+| Clickable in a browser? | **No** — a bare `<img src>` will fail | Yes |
 
-The signed form exists so a media link is clickable — it opens in a plain browser tab with no header, which a Bearer URL cannot do. The HMAC binds the exact message id, so a link can't be re-pointed at another message.
+> **Default shape: you must fetch the bytes yourself with the Bearer.** `mediaUrl` is a path to join onto your FoundryX origin, and an `<img src="…">` cannot carry an `Authorization` header — fetch it and render a blob/data URL. In a `message.inbound` **webhook** the same field is already absolute (still Bearer-authed).
+>
+> **`?format=rio` only: `message.url` is pre-signed and clickable.** Use it when you want a link that opens in a plain browser tab. The HMAC binds the exact message id, so it can't be re-pointed.
 
-> **⚠️ Never persist `message.url`.** It is a **capability URL with an expiry**, not a stable address. Store the `messageId` and re-read the message when you need a fresh link. A consumer that saves the URL into its own record will render a working image today and a wall of `401 "Invalid or expired media link."` tomorrow. Anyone holding an unexpired link can fetch that one blob without a key — treat it as a short-lived secret and keep it out of logs and client-side caches.
-
+> **⚠️ Never persist `message.url`.** It is a **capability URL with an expiry**, not a stable address. Store the message id and re-read when you need a fresh link. Saving it renders fine today and returns `401 "Invalid or expired media link."` tomorrow. Anyone holding an unexpired link can fetch that one blob without a key — treat it as a short-lived secret, keep it out of logs and client caches.
 
 ---
 
@@ -688,7 +692,7 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
 }
 ```
 
-`cswExpiresAt` tells you whether free-form is currently allowed — if it's in the past, you must send a template to re-engage. It is on the read shape too (§9.1 `ContactObject`).
+`cswExpiresAt` tells you whether free-form is currently allowed — if it's in the past, you must send a template to re-engage. It is on the `?format=rio` shape too (§9.2 `ContactObject`).
 
 ---
 
@@ -790,7 +794,7 @@ Only needed if you use `?format=rio`, or are porting a respond.io integration on
 | `messageType` (UPPER) | `message.type` (lower) |
 | `body` (text) | `message.text` |
 | `body` (media caption) | `message.caption` |
-| `mediaUrl` | `message.url` — now absolute + signed (§8), no `Authorization` header needed |
+| `mediaUrl` (relative, Bearer) | `message.url` — absolute + pre-signed, no header, **expires in 1h** (§8) |
 | `mediaMime` / `mediaFilename` / `mediaSize` | `message.mimeType` / `message.filename` / `message.size` |
 | `voice: true` | `message.type === "voice"` |
 | `payload` | `message.payload` |
@@ -1130,7 +1134,7 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | DELETE | `/api/v1/omnichannel/webhooks/{id}` | Remove | `204` |
 | GET | `/omnichannel/media/{messageId}` | Fetch media bytes | binary |
 
-Every **read** endpoint above also accepts `?format=rio` for the respond.io shape (§6b).
+The **contact and message** read endpoints above also accept `?format=rio` for the respond.io shape (§6b). `/templates` and the send/webhook routes have a single shape.
 
 `{identifier}` = `phone:+60…` | `id:<uuid>` | bare `<uuid>`.
 

@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Channel, WebhookDelivery, WebhookEndpoint
 from ..security import decrypt_secret
-from .webhook_service import AUTO_DISABLE_THRESHOLD
+from .webhook_service import AUTO_DISABLE_THRESHOLD, WebhookError, assert_deliverable
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +173,11 @@ def dispatch(db: Session, delivery_id: str) -> str:
     status_code: Optional[int] = None
     error: Optional[str] = None
     try:
+        # SSRF guard, re-run per attempt: the URL passed validation at
+        # registration, but DNS may have been re-pointed since (and the URL is
+        # externally supplied on the API-key surface). Never POST to a target
+        # that resolves internally NOW.
+        assert_deliverable(endpoint.url)
         resp = httpx.post(
             endpoint.url, content=body, headers=headers, timeout=DELIVERY_TIMEOUT
         )
@@ -180,6 +185,9 @@ def dispatch(db: Session, delivery_id: str) -> str:
         ok = 200 <= resp.status_code < 300
         if not ok:
             error = f"Consumer returned {resp.status_code}."
+    except WebhookError as exc:
+        # Blocked target — a real failure, but never a network call.
+        error = f"Delivery refused: {exc}"
     except httpx.HTTPError as exc:
         error = f"Delivery failed: {exc}"
 

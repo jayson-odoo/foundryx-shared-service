@@ -5,6 +5,7 @@ Covers: key mint (once/hashed/live-only/revoke), Bearer resolution + constant-ti
 CSW-on-API, idempotency dedup (same/other workspace), read-only templates,
 phone_number_id UNIQUE guard, tenant/workspace isolation, structured errors.
 """
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -961,3 +962,207 @@ def test_key_cannot_touch_another_workspaces_webhook(client, session_factory):
     # ...and A's endpoint is untouched.
     still = client.get("/api/v1/omnichannel/webhooks", headers=hdr_a).json()["data"]
     assert [e["id"] for e in still] == [eid_a] and still[0]["name"] == "A"
+
+
+# ── Pagination + SSRF regressions (review round 3) ───────────────────────────
+def test_guide_shape_next_before_paging(client, session_factory):
+    """`nextBefore` is the documented paging mechanism and had NO test.
+    Walk the whole thread with it: pages must not overlap, must cover every
+    message exactly once, and the walk must terminate."""
+    hdr, cid = _seeded(client, session_factory, phone="+60555444111")
+    base = _now()
+    for i in range(5):
+        _insert_message(session_factory, cid, body=f"m{i}",
+                        created_at=base + timedelta(minutes=i))
+
+    seen, cursor, pages = [], None, 0
+    while True:
+        url = f"/api/v1/omnichannel/contacts/{cid}/messages?limit=2"
+        if cursor:
+            url += f"&before={cursor}"
+        body = client.get(url, headers=hdr).json()
+        ids = [m["id"] for m in body["data"]]
+        assert not (set(ids) & set(seen)), "pages must not overlap"
+        seen += ids
+        pages += 1
+        if body["nextBefore"] is None:
+            break
+        assert body["nextBefore"] == ids[0], "cursor is the OLDEST row on the page"
+        cursor = body["nextBefore"]
+        assert pages < 10, "paging did not terminate"
+
+    total = client.get(
+        f"/api/v1/omnichannel/contacts/{cid}/messages?limit=200", headers=hdr
+    ).json()["data"]
+    assert len(seen) == len(total) == 6, "every message reached exactly once"
+
+
+def test_after_paging_does_not_emit_a_backwards_cursor(client, session_factory):
+    """`after=` pages FORWARD, so items[0] is the row just past the caller's own
+    anchor. Emitting it as `nextBefore` walked them back over ground they had."""
+    hdr, cid = _seeded(client, session_factory, phone="+60555444222")
+    base = _now()
+    ids = [_insert_message(session_factory, cid, body=f"m{i}",
+                           created_at=base + timedelta(minutes=i)) for i in range(5)]
+
+    page = client.get(
+        f"/api/v1/omnichannel/contacts/{cid}/messages?limit=3&after={ids[0]}", headers=hdr
+    ).json()
+    assert len(page["data"]) == 3
+    assert page["nextBefore"] is None, "no older-direction cursor when paging forward"
+
+
+def test_rio_pagination_url_is_followable_verbatim(client, session_factory):
+    """§6b promises `format=rio` is carried in the cursor URL — following it
+    must not silently hand back the guide shape."""
+    hdr, cid = _seeded(client, session_factory, phone="+60555444333")
+    base = _now()
+    for i in range(5):
+        _insert_message(session_factory, cid, body=f"m{i}",
+                        created_at=base + timedelta(minutes=i))
+
+    p1 = client.get(
+        f"/api/v1/omnichannel/contacts/{cid}/messages?limit=3&format=rio", headers=hdr
+    ).json()
+    nxt = p1["pagination"]["next"]
+    assert nxt and "format=rio" in nxt
+
+    p2 = client.get(_relativize(nxt), headers=hdr).json()
+    assert "items" in p2, "following the cursor verbatim must keep the rio shape"
+
+
+def test_format_switch_is_enforced_on_every_read_route(client, session_factory):
+    """A typo must 422 everywhere, not silently return the other shape on the
+    routes that forgot the dependency."""
+    hdr, cid = _seeded(client, session_factory, phone="+60555444444")
+    mid = client.get(
+        f"/api/v1/omnichannel/contacts/{cid}/messages", headers=hdr
+    ).json()["data"][0]["id"]
+    for path in (
+        "/api/v1/omnichannel/contacts?format=nope",
+        f"/api/v1/omnichannel/contacts/{cid}?format=nope",
+        f"/api/v1/omnichannel/contacts/{cid}/messages?format=nope",
+        f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}?format=nope",
+    ):
+        r = client.get(path, headers=hdr)
+        assert r.status_code == 422, path
+        assert r.json()["error"]["code"] == "invalid_request"
+
+
+def test_delivery_refuses_a_target_that_resolves_internally(monkeypatch):
+    """The SSRF guard that actually closes the pivot: registration validated the
+    URL, but DNS can be re-pointed afterwards — and the URL is now settable by
+    any API-key holder. Every attempt re-checks before the POST."""
+    import modules.omnichannel.services.webhook_service as ws
+
+    monkeypatch.setattr(ws.socket, "getaddrinfo",
+                        lambda host, port: [(None, None, None, "", ("169.254.169.254", 0))])
+    with pytest.raises(ws.WebhookError):
+        ws.assert_deliverable("https://rebound.example.com/hook")
+
+    monkeypatch.setattr(ws.socket, "getaddrinfo",
+                        lambda host, port: [(None, None, None, "", ("93.184.216.34", 0))])
+    ws.assert_deliverable("https://ok.example.com/hook")  # public → allowed
+
+
+def test_webhook_endpoint_cap_per_channel(client, session_factory):
+    """Every inbound event fans out to ALL endpoints — unbounded registration is
+    worker amplification, and an outbound amplifier on a key-authed surface."""
+    from modules.omnichannel.services.webhook_service import MAX_ENDPOINTS_PER_CHANNEL
+
+    hdr, _cid = _seeded(client, session_factory, phone="+60555444555")
+    for i in range(MAX_ENDPOINTS_PER_CHANNEL):
+        r = client.post(
+            "/api/v1/omnichannel/webhooks",
+            json={"name": f"w{i}", "url": f"https://hooks.example.com/{i}",
+                  "events": ["message.inbound"]},
+            headers=hdr,
+        )
+        assert r.status_code == 201, r.text
+    over = client.post(
+        "/api/v1/omnichannel/webhooks",
+        json={"name": "over", "url": "https://hooks.example.com/over",
+              "events": ["message.inbound"]},
+        headers=hdr,
+    )
+    assert over.status_code == 422 and over.json()["error"]["code"] == "invalid_request"
+
+
+def test_assignee_from_another_tenant_is_never_resolved(client, session_factory):
+    """Cross-tenant leak guard. `_user_names` resolves a STORED user id to a
+    name/EMAIL that is rendered to the caller — on the key-authed public
+    gateway. An id belonging to another tenant must resolve to nothing.
+
+    `patch_thread` validates the assignee on write, but it is not the only
+    writer (legacy rows, restores, `sender_id` which is never validated), so
+    the read path cannot assume the stored id is in-tenant."""
+    from app.models.user import User
+    from modules.omnichannel.models import Contact
+
+    hdr, cid = _seeded(client, session_factory, phone="+60555555111")
+
+    db = session_factory()
+    intruder = User(
+        tenant_id="tenant-somebody-else", email="ceo@othercompany.example",
+        name="Other Tenant CEO", password="x",
+    )
+    db.add(intruder)
+    db.flush()
+    intruder_id, intruder_email = intruder.id, intruder.email
+    # Plant the foreign id directly, bypassing the validating writer.
+    db.query(Contact).filter(Contact.id == cid).update({"assigned_user_id": intruder_id})
+    db.commit()
+    db.close()
+
+    body = client.get(f"/api/v1/omnichannel/contacts/{cid}", headers=hdr).json()
+    assert body["assignedUserName"] is None, "must not resolve another tenant's user"
+    assert intruder_email not in json.dumps(body)
+
+    rio = client.get(f"/api/v1/omnichannel/contacts/{cid}?format=rio", headers=hdr).json()
+    assert rio["assignee"] is None
+    assert intruder_email not in json.dumps(rio)
+
+    listed = client.get("/api/v1/omnichannel/contacts?pageSize=50", headers=hdr).json()
+    assert intruder_email not in json.dumps(listed)
+    assert "Other Tenant CEO" not in json.dumps(listed)
+
+
+def test_delivery_path_calls_the_ssrf_guard(client, session_factory, monkeypatch):
+    """Pins the WIRING, not just the helper: `dispatch` must refuse before the
+    POST. Testing `assert_deliverable` alone let the call site be deleted."""
+    import modules.omnichannel.services.webhook_delivery as wd
+    import modules.omnichannel.services.webhook_service as ws
+    from modules.omnichannel.models import WebhookDelivery
+
+    hdr, _cid = _seeded(client, session_factory, phone="+60555555222")
+    client.post(
+        "/api/v1/omnichannel/webhooks",
+        json={"name": "rebind", "url": "https://rebind.example.com/hook",
+              "events": ["message.inbound"]},
+        headers=hdr,
+    )
+
+    posted = []
+    monkeypatch.setattr(wd.httpx, "post", lambda *a, **k: posted.append(a) or (_ for _ in ()).throw(AssertionError("POSTed to a blocked target")))
+    # DNS now answers with a link-local address (rebinding after registration).
+    monkeypatch.setattr(ws.socket, "getaddrinfo",
+                        lambda host, port: [(None, None, None, "", ("169.254.169.254", 0))])
+
+    db = session_factory()
+    ep = db.query(__import__("modules.omnichannel.models", fromlist=["WebhookEndpoint"]).WebhookEndpoint).first()
+    delivery = WebhookDelivery(
+        tenant_id=DEFAULT_TENANT_ID, endpoint_id=ep.id, event_id="evt-ssrf",
+        event_type="message.inbound", payload_json={"hello": "world"}, status="PENDING",
+    )
+    db.add(delivery)
+    db.commit()
+    did = delivery.id
+    db.close()
+
+    wd.dispatch(session_factory(), did)
+    assert posted == [], "no network call may be made to a blocked target"
+
+    db = session_factory()
+    row = db.query(WebhookDelivery).filter(WebhookDelivery.id == did).first()
+    assert row.status != "SUCCESS" and "refused" in (row.error or "").lower()
+    db.close()
