@@ -10,7 +10,8 @@
 >
 > | Date | Change |
 > |----|----|
-> | **2026-08-09** | **§6 / §6a / §9 corrected to the deployed contract.** The read endpoints have returned respond.io-shaped objects since 2026-07-11; this guide still described the pre-2026-07-11 shape. §9 now documents both families and §9.3 is an old→new field map. Same release restored `timestamp` on every message and added `cswExpiresAt`, `message.payload`, `message.size`, `reactions[]` and `replyTo` to the read shapes. Webhooks (§7) are unchanged throughout. |
+> | **2026-08-09 (b)** | **The documented shape is the DEFAULT again.** `/api/v1` read endpoints return `MessageItem`/`ThreadItem` in the envelopes this guide always described; the respond.io shape moved behind **`?format=rio`** (§6b). If you built to this guide before 2026-07-11, **you need no change at all** — your original code is correct again. Same release: self-serve **webhook registration on `/api/v1`** (§7), and the Rio contact shape gained the fields it was missing (`priority`, `unreadCount`, `lastMessagePreview`, …). |
+> | **2026-08-09 (a)** | **§6 / §6a / §9 corrected to the deployed contract.** The read endpoints have returned respond.io-shaped objects since 2026-07-11; this guide still described the pre-2026-07-11 shape. §9 now documents both families and §9.3 is an old→new field map. Same release restored `timestamp` on every message and added `cswExpiresAt`, `message.payload`, `message.size`, `reactions[]` and `replyTo` to the read shapes. Webhooks (§7) are unchanged throughout. |
 > | 2026-07-11 | Read endpoints reshaped for respond.io parity (**breaking**; undocumented at the time — see the row above). |
 
 
@@ -301,7 +302,7 @@ Full-fidelity history for one contact — **every message type** (text, media, i
 
 A **reaction is never its own message** — don't page history looking for one. It appears as `reactions[]` on the message it targets (§9.1).
 
-> **⚠️ Changed 2026-07-11 — read this if you integrated before that date.** These read endpoints return **respond.io-shaped** objects (`MessageObject`, §9), not the `MessageItem`/`ThreadItem` shape earlier revisions of this guide described. The envelope changed from `{contactId, data, nextBefore}` to `{items, pagination}`, and fields were renamed (`id`→`messageId`, `body`→`message.text`, `senderType`→`traffic` + `sender.source`, `createdAt`→`timestamp`). **Webhooks (§7) were NOT changed** — they still carry the shapes in §9.2. See §9.3 for the full old→new field map.
+> **Shape history — read if you integrated between 2026-07-11 and 2026-08-09.** For that window these endpoints returned respond.io-shaped objects instead of the shapes below, which broke consumers built to this guide. **The documented shape is the default again.** The respond.io shape is still available, deliberately, via **`?format=rio`** (§6b) — nothing that adopted it is stranded. §9.3 maps the two field-by-field.
 
 **Query params**
 
@@ -309,21 +310,19 @@ A **reaction is never its own message** — don't page history looking for one. 
 |----|----|----|
 | `limit` | 50 | 1–200 |
 | `before` | — | a message id; page further **back** into history |
-| `after` | — | a message id; page **forward** toward the present |
+| `format` | `guide` | `guide` (this shape) or `rio` (respond.io — §6b) |
 
-**Response** — always **oldest → newest**, whichever direction you paged:
+**Response** — `MessageItem[]` (§9.1), always **oldest → newest**:
 
 ```json
 {
-  "items": [ /* MessageObject — see §9 */ ],
-  "pagination": {
-    "next":     "https://YOUR-FOUNDRYX-HOST/api/v1/…?limit=50&before=7a3693ed-…",
-    "previous": "https://YOUR-FOUNDRYX-HOST/api/v1/…?limit=50&after=99fb3926-…"
-  }
+  "contactId": "b2ad5218-…",
+  "data": [ /* MessageItem — see §9.1 */ ],
+  "nextBefore": "0a0d673d-…"   // pass back as ?before= to page deeper; null at the oldest page
 }
 ```
 
-Both cursors are **absolute URLs** — follow them verbatim, don't rebuild them. `next` pages **into older history** and is `null` once a page comes back short (fewer rows than `limit`). `previous` pages **toward newer messages** and is present whenever the page has any rows — poll it to pick up what arrived since.
+`nextBefore` is the oldest id on the page, and is `null` once a page comes back short (fewer rows than `limit`) — that's the beginning of the thread.
 
 Contact not in your workspace → `404 contact_not_found`.
 
@@ -331,8 +330,9 @@ Contact not in your workspace → `404 contact_not_found`.
 
 ### Ordering a merged history
 
-Every message carries `timestamp` (epoch seconds), **inbound and outbound alike** — it is the only key that orders a history merged across several of a contact's numbers. Do not order on `status[].timestamp`: that array is populated from delivery receipts, and **inbound messages never receive one**, so it is always empty for them.
+Every message carries `createdAt` (ISO-8601 Z), inbound and outbound alike — order on it when merging history across several of a contact's numbers. (In the `rio` shape the equivalent is the epoch-second `timestamp`; **don't** order on `status[].timestamp`, which is receipt-driven and always empty for inbound.)
 
+---
 
 ---
 
@@ -356,20 +356,15 @@ A miss (or a contact in another workspace) → `404 contact_not_found`.
 
 Query params: `status` (`OPEN|SNOOZED|CLOSED`), `assignee` (`all|unassigned`), `priority` (`LOW|MEDIUM|HIGH|URGENT`), `search` (name / phone / message body), `page` (0-based), `pageSize` (1–200).
 
-Filter values go in **uppercase** (as above); the `status` echoed back in the response is **lowercase** (`"open"`) — respond.io's convention, and the one asymmetry worth remembering.
-
 ```json
-{
-  "items": [ /* ContactObject — see §9 */ ],
-  "pagination": { "next": "…&page=1", "previous": null }
-}
+{ "data": [ /* ThreadItem — see §9.1 */ ], "total": 42, "page": 0, "pageSize": 50 }
 ```
 
-Page cursors are absolute URLs, same as §6. There is no `total` — page until `next` is `null`.
+Filter values and the returned `status` are both **uppercase** here. (Under `?format=rio` the envelope is `{items, pagination}` and the echoed `status` is lowercase — respond.io's convention. See §6b.)
 
 ### Get a contact — `GET /api/v1/omnichannel/contacts/{identifier}`
 
-Returns one `ContactObject` (§9). `GET …/contacts/phone:+60123456789` works too.
+Returns one `ThreadItem` (§9.1). `GET …/contacts/phone:+60123456789` works too.
 
 ### Update a contact — `PATCH /api/v1/omnichannel/contacts/{identifier}`
 
@@ -382,18 +377,18 @@ Partial — only fields you send change. Send `assignedUserId`/`customFields` as
 
 Assign a conversation to an agent by setting `assignedUserId`; unassign by sending it as `null`. Unknown assignee → `422 invalid_request`.
 
-The **request** body uses the field names above; the **response** is a `ContactObject` (§9), which is a different shape — `priority`, for example, is written server-side but has no respond.io field, so it is not echoed back. Read it from your own record, not from the response.
+The **request** body uses the field names above; the **response** is the updated `ThreadItem` (§9.1), so a write echoes exactly what the matching `GET` returns.
 
 ### Get a single message — `GET /api/v1/omnichannel/contacts/{identifier}/messages/{messageId}`
 
-Returns one `MessageObject` (§9), full fidelity. Not on this contact → `404 message_not_found`.
+Returns one `MessageItem` (§9.1), full fidelity. Not on this contact → `404 message_not_found`.
 
 ### Open / close a conversation
 
 * `POST /api/v1/omnichannel/contacts/{identifier}/conversation/open`  → status `OPEN`
 * `POST /api/v1/omnichannel/contacts/{identifier}/conversation/close` → status `CLOSED`
 
-Both return the updated `ContactObject`.
+Both return the updated `ThreadItem`.
 
 ### Add an internal comment (note) — `POST /api/v1/omnichannel/contacts/{identifier}/comments`
 
@@ -405,10 +400,38 @@ An internal note on the thread — **never sent to the customer** (visible to yo
 
 Returns `201` with the created note.
 
-> **Two shapes on one route family — mind this one.** The comment **response** is a `MessageItem` (§9.2, the webhook/internal shape: `id`, `senderType`, `createdAt`) — *not* the `MessageObject` the read endpoints return. The `id` you get back is the same message that later appears in §6 history as `messageId`. Map it when you correlate.
->
-> **And when you read history back, an internal note looks like an outbound message:** it comes through with `traffic: "outgoing"` (it did originate from your side). The discriminator is **`sender.source === "system"`** — check it before rendering anything as "sent to the customer", or your agents will see internal notes presented as delivered WhatsApp messages.
+Returns the created `MessageItem` with `senderType: "SYSTEM"`.
 
+> **A note looks like an outbound message when you read history back.** In the default shape check **`senderType === "SYSTEM"`**; under `?format=rio` it arrives as `traffic: "outgoing"` with **`sender.source === "system"`** (respond.io has no third traffic value). Either way, check it before rendering anything as "sent to the customer", or your agents will see internal notes presented as delivered WhatsApp messages.
+
+
+---
+
+## 6b. `?format=rio` — the respond.io-shaped alternative
+
+Every read endpoint in §6 and §6a accepts **`?format=rio`**, which returns respond.io-parity objects (`MessageObject` / `ContactObject`, §9.2) instead of the shapes above.
+
+**Use it if** you are migrating an existing respond.io integration and want to keep your current wire types. **Ignore it otherwise** — the default is the richer shape and needs no query param.
+
+| | default (`guide`) | `?format=rio` |
+|----|----|----|
+| History envelope | `{contactId, data, nextBefore}` | `{items, pagination:{next, previous}}` |
+| Contact list envelope | `{data, total, page, pageSize}` | `{items, pagination}` |
+| Message id | `id` | `messageId` |
+| Time | `createdAt` (ISO-8601 Z) | `timestamp` (epoch seconds) |
+| Direction | `senderType` (`AGENT`/`CONTACT`/`SYSTEM`) | `traffic` + `sender.source` |
+| Body | `body` | `message.text` / `message.caption` |
+| Contact status | `OPEN` (uppercase) | `open` (lowercase) |
+| Paging | `?before=` only | two-way: `?before=` older, `?after=` newer |
+
+Both shapes are built from the same internal objects, so they carry the same information and cannot drift apart. An unrecognised value is a **`422 invalid_request`**, never a silent fallback to the other shape — a typo must not hand you a payload you'll mis-parse.
+
+```bash
+curl -s -H "Authorization: Bearer $FX_WORKSPACE_KEY" \
+  "https://YOUR-FOUNDRYX-HOST/api/v1/omnichannel/contacts/phone:+60123456789/messages?format=rio"
+```
+
+When you follow a `pagination.next`/`previous` URL, `format=rio` is already carried in it — just follow it verbatim.
 
 ---
 
@@ -416,7 +439,7 @@ Returns `201` with the created note.
 
 FoundryX POSTs a **signed JSON envelope** to each callback URL you registered for the channel, for each event type you subscribed to.
 
-> Webhook payloads use the **§9.2** shapes (`MessageItem`, `ThreadItem`) and were **not** affected by the 2026-07-11 read-endpoint change. They are also the richest surface: `senderName`, `priority`, `unreadCount`, `lastMessagePreview` and `channelType` arrive here and are not on the §9.1 read shapes.
+> Webhook payloads use the **§9.1** shapes (`MessageItem`, `ThreadItem`) — the same shapes the read endpoints return by default, so one internal type covers both surfaces.
 
 ### Subscribable event types
 
@@ -537,10 +560,37 @@ async def receive(request: Request):
 * Webhook delivery is fully isolated — a slow/broken consumer never blocks an inbound WhatsApp message.
 * A **delivery log** is available in the dashboard (per-attempt status, response code, latency, error) for debugging.
 
-### Registering / rotating (dashboard, per channel)
+### Registering your callbacks — `/api/v1/omnichannel/webhooks`
 
-Webhook endpoints are created in the FoundryX dashboard against a **channel**: you supply `name`, `url` (https), and the `events` list; you receive the `whsec_…` **signing secret once**. You can rotate the secret (returns a new one), enable/disable, and delete. The URL is validated at registration (https-only, no private hosts).
+**You can manage your own endpoints with just your API key.** They are scoped to your workspace's active channel; you can never see or touch another workspace's.
 
+| Method | Path | Purpose |
+|----|----|----|
+| GET | `/api/v1/omnichannel/webhooks` | List your endpoints (secrets never echoed) |
+| POST | `/api/v1/omnichannel/webhooks` | Register one → returns the signing secret **once** |
+| PATCH | `/api/v1/omnichannel/webhooks/{id}` | Change name / url / events |
+| POST | `/api/v1/omnichannel/webhooks/{id}/rotate` | New signing secret (returned once) |
+| POST | `/api/v1/omnichannel/webhooks/{id}/enable` \| `/disable` | Pause / resume delivery |
+| DELETE | `/api/v1/omnichannel/webhooks/{id}` | Remove it |
+
+```bash
+curl -X POST https://YOUR-FOUNDRYX-HOST/api/v1/omnichannel/webhooks \
+  -H "Authorization: Bearer fxw_live_…" -H "Content-Type: application/json" \
+  -d '{"name":"prod","url":"https://api.acme.com/webhooks/foundryx",
+       "events":["message.inbound","message.status","message.reaction","contact.updated"]}'
+```
+
+```json
+{ "endpoint": { "id": "…", "url": "https://api.acme.com/webhooks/foundryx",
+                "events": ["message.inbound","…"], "status": "ACTIVE", … },
+  "signingSecret": "whsec_…" }
+```
+
+> **`signingSecret` is shown once.** Store it before you close the response — there is no endpoint that returns it again, only `/rotate`, which invalidates the old one immediately. Deploy the new secret **before** rotating or you will reject your own deliveries.
+
+The URL is validated at registration: **https only**, no `localhost`, no private/reserved IPs (including anything a hostname resolves to). A rejection is `422 invalid_request` with the reason. Unknown event names are rejected the same way.
+
+An operator can also manage these from the FoundryX dashboard, where a per-attempt **delivery log** is available for debugging.
 
 ---
 
@@ -580,18 +630,73 @@ The signed form exists so a media link is clickable — it opens in a plain brow
 
 | Family | Where it appears | Style |
 |----|----|----|
-| **§9.1 `MessageObject` / `ContactObject`** | the `/api/v1/*` **read** endpoints (§6, §6a) | respond.io-shaped — `messageId`, `traffic`, nested `message{}`, epoch ints, a few snake_case keys |
-| **§9.2 `MessageItem` / `ThreadItem`** | **webhook** payloads (§7) and the comment-create response (§6a) | FoundryX-shaped — `id`, `senderType`, flat fields, ISO-8601 `Z` datetimes |
+| **§9.1 `MessageItem` / `ThreadItem`** | the **default** everywhere — read endpoints (§6, §6a), **webhook** payloads (§7), comment-create | FoundryX-shaped — `id`, `senderType`, flat fields, ISO-8601 `Z` datetimes |
+| **§9.2 `MessageObject` / `ContactObject`** | **only** under `?format=rio` (§6b) | respond.io-shaped — `messageId`, `traffic`, nested `message{}`, epoch ints, a few snake_case keys |
 
-This split is historical, not by design (§9.1 was introduced 2026-07-11 for respond.io parity). Both are stable and neither is going away without notice. If you consume both surfaces, normalise to one internal type at your boundary — §9.3 is the map.
+**If you are not using `?format=rio`, you only need §9.1** — it is the shape on every surface, so one internal type covers reads and webhooks alike. §9.2 exists for respond.io migrations; §9.3 maps the two.
 
 ---
 
-### 9.1 Read-endpoint shapes (`/api/v1/*`)
+### 9.1 Default shapes (reads + webhooks)
 
-#### `MessageObject`
+#### `MessageItem`
 
-Returned by `GET /contacts/{identifier}/messages` (inside `items[]`) and `GET …/messages/{messageId}`.
+The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]`), `GET …/messages/{messageId}`, the comment-create route (§6a), and `message.inbound` webhooks as `data.message`.
+
+```jsonc
+{
+  "id": "…",                    // FoundryX durable id (use for reactions / correlation)
+  "contactId": "…",
+  "channelId": "…",
+  "senderType": "CONTACT",      // AGENT | CONTACT | SYSTEM
+  "senderId": null,
+  "senderName": null,
+  "messageType": "IMAGE",       // TEXT|TEMPLATE|IMAGE|VIDEO|AUDIO|VOICE|DOCUMENT|
+                                //   STICKER|INTERACTIVE|LOCATION|CONTACTS|UNSUPPORTED
+  "body": "caption or text",
+  "mediaUrl": "/omnichannel/media/…",  // absolute + authed in the inbound webhook
+  "mediaMime": "image/png",     // webhook renames → mimeType
+  "mediaFilename": "receipt.png", // webhook renames → filename
+  "mediaSize": 20345,           // webhook renames → size
+  "voice": false,
+  "payload": { … },             // structured def for interactive/location/contacts/template
+  "reactions": [ { "emoji":"❤️", "reactorType":"CONTACT", "reactor":"+6012…" } ],
+  "externalMessageId": "wamid…",// Meta wamid
+  "deliveryStatus": "DELIVERED",// QUEUED|SENT|DELIVERED|READ|FAILED
+  "errorCode": null,
+  "errorMessage": null,
+  "replyTo": { "id":"…", "body":"…", "senderType":"…", "senderName":"…" },
+  "createdAt": "2026-07-09T11:02:43Z"
+}
+```
+
+#### `ThreadItem` (the default contact shape; also the `contact` in webhooks)
+
+```jsonc
+{
+  "id": "b2ad5218-…",           // this is the contactId
+  "workspaceId": "…", "tenantId": "…",
+  "name": "Jayson", "phone": "+60166753328", "avatarUrl": null,
+  "assignedUserId": null, "assignedUserName": null,
+  "status": "OPEN",             // OPEN | SNOOZED | CLOSED
+  "priority": "MEDIUM",
+  "channelId": "…", "channelType": "WHATSAPP",
+  "cswExpiresAt": "2026-07-10T11:02:43Z",   // when the 24h free-form window closes
+  "lastIncomingMessageAt": "…", "lastMessageAt": "…", "lastMessagePreview": "yeah",
+  "unreadCount": 2,
+  "createdAt": "…"
+}
+```
+
+`cswExpiresAt` tells you whether free-form is currently allowed — if it's in the past, you must send a template to re-engage. It is on the read shape too (§9.1 `ContactObject`).
+
+---
+
+### 9.2 respond.io shapes (`?format=rio` only)
+
+#### `MessageObject` — `?format=rio`
+
+Returned by `GET /contacts/{identifier}/messages?format=rio` (inside `items[]`) and `GET …/messages/{messageId}?format=rio`.
 
 ```jsonc
 {
@@ -642,9 +747,9 @@ Notes that bite if you miss them:
 * **`sender.source: "system"`** = an internal note (§6a), never delivered to the customer, even though `traffic` reads `"outgoing"`.
 * Ids are **UUID strings**, not respond.io's int64 — the one unavoidable deviation from parity.
 
-#### `ContactObject`
+#### `ContactObject` — `?format=rio`
 
-Returned by `GET /contacts` (inside `items[]`), `GET`/`PATCH /contacts/{identifier}`, and the conversation open/close routes. "The contact IS the thread."
+The `?format=rio` rendering of a contact. "The contact IS the thread."
 
 ```jsonc
 {
@@ -665,72 +770,17 @@ Returned by `GET /contacts` (inside `items[]`), `GET`/`PATCH /contacts/{identifi
 * **`cswExpiresAt` decides free-form vs template** — if it is in the past or `null`, a free-form send will be refused with `409 csw_window_closed` and only an approved template re-engages. This is a FoundryX field with no respond.io equivalent, so it follows the house ISO-8601 `Z` convention rather than the epoch ints beside it.
 * `custom_fields` and `created_at` are **snake_case on purpose** — respond.io spells them that way and this object mirrors respond.io exactly. Everything else is camelCase.
 * `language`, `countryCode`, `tags`, `lifecycle`, `isBlocked` are parity placeholders we do not model — always `null`/`[]`/`false`.
-* Not carried here: `priority`, `channelId`, `unreadCount`, `lastMessageAt`, `lastMessagePreview`. They exist on `ThreadItem` (§9.2), so **webhooks give you them** — `contact.updated` fires on assignment/status/priority changes.
+* `priority`, `channelId`, `channelType`, `unreadCount`, `lastMessageAt`, `lastIncomingMessageAt` and `lastMessagePreview` are **FoundryX extensions** on this shape (respond.io has no equivalent). They are carried so `?format=rio` loses nothing versus the default — an inbox list needs `unreadCount` and `lastMessagePreview`.
 
 ---
 
-### 9.2 Webhook shapes (§7) — unchanged
+### 9.3 Field map — default (§9.1) ⇄ `?format=rio` (§9.2)
 
-#### `MessageItem`
-
-Embedded in `message.inbound` as `data.message`, and returned by the comment-create route (§6a).
-
-```jsonc
-{
-  "id": "…",                    // FoundryX durable id (use for reactions / correlation)
-  "contactId": "…",
-  "channelId": "…",
-  "senderType": "CONTACT",      // AGENT | CONTACT | SYSTEM
-  "senderId": null,
-  "senderName": null,
-  "messageType": "IMAGE",       // TEXT|TEMPLATE|IMAGE|VIDEO|AUDIO|VOICE|DOCUMENT|
-                                //   STICKER|INTERACTIVE|LOCATION|CONTACTS|UNSUPPORTED
-  "body": "caption or text",
-  "mediaUrl": "/omnichannel/media/…",  // absolute + authed in the inbound webhook
-  "mediaMime": "image/png",     // webhook renames → mimeType
-  "mediaFilename": "receipt.png", // webhook renames → filename
-  "mediaSize": 20345,           // webhook renames → size
-  "voice": false,
-  "payload": { … },             // structured def for interactive/location/contacts/template
-  "reactions": [ { "emoji":"❤️", "reactorType":"CONTACT", "reactor":"+6012…" } ],
-  "externalMessageId": "wamid…",// Meta wamid
-  "deliveryStatus": "DELIVERED",// QUEUED|SENT|DELIVERED|READ|FAILED
-  "errorCode": null,
-  "errorMessage": null,
-  "replyTo": { "id":"…", "body":"…", "senderType":"…", "senderName":"…" },
-  "createdAt": "2026-07-09T11:02:43Z"
-}
-```
-
-#### `ThreadItem` (the `contact` in webhooks; "the contact IS the thread")
-
-```jsonc
-{
-  "id": "b2ad5218-…",           // this is the contactId
-  "workspaceId": "…", "tenantId": "…",
-  "name": "Jayson", "phone": "+60166753328", "avatarUrl": null,
-  "assignedUserId": null, "assignedUserName": null,
-  "status": "OPEN",             // OPEN | SNOOZED | CLOSED
-  "priority": "MEDIUM",
-  "channelId": "…", "channelType": "WHATSAPP",
-  "cswExpiresAt": "2026-07-10T11:02:43Z",   // when the 24h free-form window closes
-  "lastIncomingMessageAt": "…", "lastMessageAt": "…", "lastMessagePreview": "yeah",
-  "unreadCount": 2,
-  "createdAt": "…"
-}
-```
-
-`cswExpiresAt` tells you whether free-form is currently allowed — if it's in the past, you must send a template to re-engage. It is on the read shape too (§9.1 `ContactObject`).
-
----
-
-### 9.3 Migration map — §9.2 (webhook) ⇄ §9.1 (read)
-
-If you built against an earlier revision of this guide, your wire types are §9.2. This is what to change to read `/api/v1` history and contacts.
+Only needed if you use `?format=rio`, or are porting a respond.io integration onto the default shape.
 
 **Message**
 
-| §9.2 `MessageItem` | §9.1 `MessageObject` |
+| default `MessageItem` | `?format=rio` `MessageObject` |
 |----|----|
 | `id` | `messageId` |
 | `createdAt` (ISO) | `timestamp` (epoch **seconds**) |
@@ -752,7 +802,7 @@ If you built against an earlier revision of this guide, your wire types are §9.
 
 **Contact**
 
-| §9.2 `ThreadItem` | §9.1 `ContactObject` |
+| default `ThreadItem` | `?format=rio` `ContactObject` |
 |----|----|
 | `id`, `phone` | same |
 | `name` | `firstName` + `lastName` |
@@ -1064,21 +1114,27 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 |----|----|----|----|
 | POST | `/api/v1/omnichannel/messages` | Send a message (all types) | `202 {id, status, idempotencyReplay}` |
 | GET | `/api/v1/omnichannel/templates` | List approved templates | `{data[]}` |
-| GET | `/api/v1/omnichannel/contacts` | List contacts (filters + paging) | `{items[], pagination}` of `ContactObject` §9.1 |
-| GET | `/api/v1/omnichannel/contacts/{identifier}` | Get a contact | `ContactObject` §9.1 |
-| PATCH | `/api/v1/omnichannel/contacts/{identifier}` | Update contact (name/priority/assignee/fields) | `ContactObject` §9.1 |
-| GET | `/api/v1/omnichannel/contacts/{identifier}/messages` | Message history | `{items[], pagination}` of `MessageObject` §9.1 |
-| GET | `/api/v1/omnichannel/contacts/{identifier}/messages/{messageId}` | Get one message | `MessageObject` §9.1 |
-| POST | `/api/v1/omnichannel/contacts/{identifier}/conversation/open` | Open conversation | `ContactObject` §9.1 |
-| POST | `/api/v1/omnichannel/contacts/{identifier}/conversation/close` | Close conversation | `ContactObject` §9.1 |
-| POST | `/api/v1/omnichannel/contacts/{identifier}/comments` | Add internal note | `201` `MessageItem` **§9.2** |
+| GET | `/api/v1/omnichannel/contacts` | List contacts (filters + paging) | `{data[], total, page, pageSize}` of `ThreadItem` |
+| GET | `/api/v1/omnichannel/contacts/{identifier}` | Get a contact | `ThreadItem` |
+| PATCH | `/api/v1/omnichannel/contacts/{identifier}` | Update contact (name/priority/assignee/fields) | `ThreadItem` |
+| GET | `/api/v1/omnichannel/contacts/{identifier}/messages` | Message history | `{contactId, data[], nextBefore}` of `MessageItem` |
+| GET | `/api/v1/omnichannel/contacts/{identifier}/messages/{messageId}` | Get one message | `MessageItem` |
+| POST | `/api/v1/omnichannel/contacts/{identifier}/conversation/open` | Open conversation | `ThreadItem` |
+| POST | `/api/v1/omnichannel/contacts/{identifier}/conversation/close` | Close conversation | `ThreadItem` |
+| POST | `/api/v1/omnichannel/contacts/{identifier}/comments` | Add internal note | `201` `MessageItem` |
+| GET | `/api/v1/omnichannel/webhooks` | List your webhook endpoints | `{data[]}` |
+| POST | `/api/v1/omnichannel/webhooks` | Register one (secret shown once) | `201 {endpoint, signingSecret}` |
+| PATCH | `/api/v1/omnichannel/webhooks/{id}` | Update name/url/events | `WebhookEndpoint` |
+| POST | `/api/v1/omnichannel/webhooks/{id}/rotate` | New signing secret | `{signingSecret}` |
+| POST | `/api/v1/omnichannel/webhooks/{id}/enable` \| `/disable` | Pause / resume | `WebhookEndpoint` |
+| DELETE | `/api/v1/omnichannel/webhooks/{id}` | Remove | `204` |
 | GET | `/omnichannel/media/{messageId}` | Fetch media bytes | binary |
+
+Every **read** endpoint above also accepts `?format=rio` for the respond.io shape (§6b).
 
 `{identifier}` = `phone:+60…` | `id:<uuid>` | bare `<uuid>`.
 
-Note the odd one out: **comment-create returns the §9.2 shape**, every other row returns §9.1.
-
-**Managed for you in the FoundryX dashboard (session-authed):** workspace + channel onboarding (Embedded Signup), API-key mint/revoke, webhook register/rotate/enable/disable + delivery log, template authoring/submission.
+**Managed for you in the FoundryX dashboard (session-authed):** workspace + channel onboarding (Embedded Signup), API-key mint/revoke, template authoring/submission, and the per-attempt webhook delivery log. (Webhook registration itself is now self-serve — see §7.)
 
 **Troubleshooting in the FoundryX dashboard (session-authed,** `**integration_logs.read**`**):** **Developers ▸ Logs** — one trace-correlated activity feed across inbound API calls, outbound Meta calls, webhook deliveries, and embed sessions; redacted bodies; per-tenant retention (default 30 days). See §13.
 

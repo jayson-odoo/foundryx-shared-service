@@ -18,6 +18,8 @@ from app.database import get_db
 from ..api_auth import ApiWorkspace, get_api_workspace
 from ..schemas import (
     MessageItem,
+    PublicContactListResponse,
+    PublicMessageListResponse,
     PublicCommentRequest,
     PublicContactUpdateRequest,
     PublicSendRequest,
@@ -28,13 +30,47 @@ from ..schemas import (
     RioCursorPagination,
     RioMessageItem,
     RioMessageListResponse,
+    ThreadItem,
+    WebhookEndpointCreateRequest,
+    WebhookEndpointItem,
+    WebhookEndpointListResponse,
+    WebhookEndpointMintResponse,
+    WebhookEndpointUpdateRequest,
+    WebhookSecretResponse,
 )
 from ..services.media_pipeline import META_CEILINGS
-from ..services.public_gateway_service import PublicGatewayService
+from ..services.public_gateway_service import (
+    FORMAT_GUIDE,
+    FORMAT_RIO,
+    WIRE_FORMATS,
+    PublicGatewayService,
+)
 
 router = APIRouter()
 
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
+
+
+def wire_format(
+    format: str = Query(
+        default=FORMAT_GUIDE,
+        description=(
+            "Response shape. `guide` (default) = the documented MessageItem/"
+            "ThreadItem contract. `rio` = respond.io-parity shape, for consumers "
+            "migrating from respond.io."
+        ),
+    ),
+) -> str:
+    """`?format=` switch for the read endpoints. Unknown value is a typed 422
+    rather than a silent fallback — a consumer that typos the format must not
+    quietly receive the other shape and mis-parse it."""
+    fmt = (format or FORMAT_GUIDE).strip().lower()
+    if fmt not in WIRE_FORMATS:
+        raise ApiError(
+            422, "invalid_request",
+            f"Unknown format '{format}'. Use one of: {', '.join(WIRE_FORMATS)}.",
+        )
+    return fmt
 
 
 def _page_url(request: Request, **params) -> str:
@@ -111,7 +147,7 @@ def list_templates(
 
 
 # ── Contacts (respond.io-style: {identifier} = phone:+60… | id:<uuid> | <uuid>) ──
-@router.get("/contacts", response_model=RioContactListResponse)
+@router.get("/contacts", response_model=None)
 def list_contacts(
     request: Request,
     status: Optional[str] = Query(default=None, description="OPEN|SNOOZED|CLOSED"),
@@ -120,17 +156,25 @@ def list_contacts(
     search: Optional[str] = Query(default=None),
     page: int = Query(0, ge=0),
     page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
+    fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
-) -> RioContactListResponse:
-    """List contacts (threads) in the workspace, filterable. respond.io-shaped
-    ``{items, pagination}`` with ``{next, previous}`` page-cursor URLs."""
+):
+    """List contacts (threads) in the workspace, filterable.
+
+    Default (`?format=guide`) → `{data: ThreadItem[], total, page, pageSize}`.
+    `?format=rio` → respond.io `{items, pagination}` with cursor URLs."""
     items, total = PublicGatewayService(db).list_contacts(
         api_ws.tenant_id, api_ws.workspace_id,
         status=status, assignee=assignee, priority=priority, search=search,
-        page=page, page_size=page_size,
+        page=page, page_size=page_size, fmt=fmt,
     )
-    base = dict(status=status, assignee=assignee, priority=priority, search=search, pageSize=page_size)
+    if fmt != FORMAT_RIO:
+        return PublicContactListResponse(
+            data=items, total=total, page=page, pageSize=page_size
+        )
+    base = dict(status=status, assignee=assignee, priority=priority, search=search,
+                pageSize=page_size, format=FORMAT_RIO)
     has_next = (page + 1) * page_size < total
     pagination = RioCursorPagination(
         next=_page_url(request, **base, page=page + 1) if has_next else None,
@@ -139,23 +183,28 @@ def list_contacts(
     return RioContactListResponse(items=items, pagination=pagination)
 
 
-@router.get("/contacts/{identifier}", response_model=RioContactItem)
+@router.get("/contacts/{identifier}", response_model=None)
 def get_contact(
     identifier: str,
+    fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
-) -> RioContactItem:
-    """Get one contact by ``phone:+60…``, ``id:<uuid>`` or a bare id."""
-    return PublicGatewayService(db).get_contact(api_ws.tenant_id, api_ws.workspace_id, identifier)
+):
+    """Get one contact by ``phone:+60…``, ``id:<uuid>`` or a bare id.
+    `ThreadItem` by default; `RioContactItem` with `?format=rio`."""
+    return PublicGatewayService(db).get_contact(
+        api_ws.tenant_id, api_ws.workspace_id, identifier, fmt=fmt
+    )
 
 
-@router.patch("/contacts/{identifier}", response_model=RioContactItem)
+@router.patch("/contacts/{identifier}", response_model=None)
 def update_contact(
     identifier: str,
     payload: PublicContactUpdateRequest,
+    fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
-) -> RioContactItem:
+):
     """Partial update — only sent fields change. Send ``assignedUserId``/
     ``customFields`` as null to clear; omit to leave unchanged."""
     sent = payload.model_fields_set
@@ -167,71 +216,87 @@ def update_contact(
         priority=payload.priority if "priority" in sent else None,
         assigned_user_id=payload.assignedUserId if "assignedUserId" in sent else _S,
         custom_fields=payload.customFields if "customFields" in sent else _S,
+        fmt=fmt,
     )
 
 
-@router.get("/contacts/{identifier}/messages", response_model=RioMessageListResponse)
+@router.get("/contacts/{identifier}/messages", response_model=None)
 def list_contact_messages(
     request: Request,
     identifier: str,
     limit: int = Query(50, ge=1, le=200),
     before: Optional[str] = Query(default=None, description="Message id — page into OLDER history"),
     after: Optional[str] = Query(default=None, description="Message id — page toward NEWER messages"),
+    fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
-) -> RioMessageListResponse:
-    """A contact's message history — ALL types, respond.io-shaped, always
-    oldest→newest. Two-way cursor: follow ``pagination.next`` for OLDER history,
-    ``pagination.previous`` for NEWER messages. Workspace-scoped + read-only
-    (never marks the thread read). Media URLs are absolute, signed and clickable."""
-    _contact_id, items = PublicGatewayService(db).list_contact_messages(
+):
+    """A contact's message history — ALL types, always oldest→newest, read-only
+    (never marks the thread read). Media URLs are absolute, signed and clickable.
+
+    Default (`?format=guide`) → `{contactId, data: MessageItem[], nextBefore}`;
+    page deeper by passing `nextBefore` back as `?before=`.
+    `?format=rio` → respond.io `{items, pagination}` with a two-way cursor:
+    `pagination.next` for OLDER history, `pagination.previous` for NEWER."""
+    contact_id, items = PublicGatewayService(db).list_contact_messages(
         api_ws.tenant_id, api_ws.workspace_id, identifier,
-        limit=limit, before_id=before, after_id=after,
+        limit=limit, before_id=before, after_id=after, fmt=fmt,
     )
+    if fmt != FORMAT_RIO:
+        # A full page implies more history behind it; the oldest row is the
+        # cursor. Short page = we reached the beginning, so null.
+        next_before = items[0].id if len(items) == limit else None
+        return PublicMessageListResponse(
+            contactId=contact_id, data=items, nextBefore=next_before
+        )
     oldest = items[0].messageId if items else None
     newest = items[-1].messageId if items else None
-    # next = further into history (older); only when the page was full (more likely).
-    next_url = _page_url(request, limit=limit, before=oldest) if len(items) == limit else None
-    # previous = toward the present (newer); offered whenever we have an anchor.
-    prev_url = _page_url(request, limit=limit, after=newest) if items else None
+    next_url = _page_url(request, limit=limit, before=oldest, format=FORMAT_RIO) if len(items) == limit else None
+    prev_url = _page_url(request, limit=limit, after=newest, format=FORMAT_RIO) if items else None
     return RioMessageListResponse(
         items=items, pagination=RioCursorPagination(next=next_url, previous=prev_url)
     )
 
 
-@router.get("/contacts/{identifier}/messages/{message_id}", response_model=RioMessageItem)
+@router.get("/contacts/{identifier}/messages/{message_id}", response_model=None)
 def get_contact_message(
     identifier: str,
     message_id: str,
+    fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
-) -> RioMessageItem:
-    """Get one message on a contact's thread (full fidelity, any type)."""
+):
+    """Get one message on a contact's thread (full fidelity, any type).
+    `MessageItem` by default; `RioMessageItem` with `?format=rio`."""
     return PublicGatewayService(db).get_contact_message(
-        api_ws.tenant_id, api_ws.workspace_id, identifier, message_id
+        api_ws.tenant_id, api_ws.workspace_id, identifier, message_id, fmt=fmt
     )
 
 
 # ── Conversation lifecycle ───────────────────────────────────────────────────
-@router.post("/contacts/{identifier}/conversation/open", response_model=RioContactItem)
+@router.post("/contacts/{identifier}/conversation/open", response_model=None)
 def open_conversation(
     identifier: str,
+    fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
-) -> RioContactItem:
+):
+    """Reopen the conversation. Echoes the contact in the requested shape."""
     return PublicGatewayService(db).set_conversation_state(
-        api_ws.tenant_id, api_ws.workspace_id, identifier, open_=True
+        api_ws.tenant_id, api_ws.workspace_id, identifier, open_=True, fmt=fmt
     )
 
 
-@router.post("/contacts/{identifier}/conversation/close", response_model=RioContactItem)
+@router.post("/contacts/{identifier}/conversation/close", response_model=None)
 def close_conversation(
     identifier: str,
+    fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
-) -> RioContactItem:
+):
+    """Close the conversation. Echoes the contact in the requested shape."""
     return PublicGatewayService(db).set_conversation_state(
-        api_ws.tenant_id, api_ws.workspace_id, identifier, open_=False
+        api_ws.tenant_id, api_ws.workspace_id, identifier, open_=False, fmt=fmt
     )
 
 
@@ -246,3 +311,143 @@ def add_comment(
     return PublicGatewayService(db).add_comment(
         api_ws.tenant_id, api_ws.workspace_id, identifier, payload.body
     )
+
+
+# ── Webhook endpoints (self-serve; BL-SS-025) ────────────────────────────────
+# A consumer holding only a workspace API key must be able to manage its OWN
+# callbacks: webhooks are the intended inbound path, and until now registration
+# was dashboard-only (session JWT + `webhooks.manage`), so a key-holder could
+# neither create nor even LIST its endpoints. These mirror the operator routes
+# but are scoped to the key's workspace and its active channel — a consumer can
+# never see or touch another workspace's endpoints.
+def _webhook_service(db: Session):
+    from ..services.webhook_service import WebhookService
+
+    return WebhookService(db)
+
+
+def _wh_item(row) -> WebhookEndpointItem:
+    from ..routers.webhooks_subs import _to_item
+
+    return _to_item(row)
+
+
+def _wh_guard(exc: Exception):
+    """WebhookError → typed 422 in the gateway's error envelope (the operator
+    router raises a bare 400; `/api/v1/*` speaks {error:{code,message}})."""
+    return ApiError(422, "invalid_request", str(exc))
+
+
+@router.get("/webhooks", response_model=WebhookEndpointListResponse)
+def list_webhooks(
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> WebhookEndpointListResponse:
+    """Your workspace's registered callbacks (secrets are never echoed)."""
+    svc = PublicGatewayService(db)
+    channel = svc._workspace_channel(api_ws.tenant_id, api_ws.workspace_id)
+    rows = _webhook_service(db).list_for_channel(api_ws.tenant_id, channel.id)
+    return WebhookEndpointListResponse(data=[_wh_item(r) for r in rows])
+
+
+@router.post("/webhooks", response_model=WebhookEndpointMintResponse, status_code=201)
+def create_webhook(
+    payload: WebhookEndpointCreateRequest,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> WebhookEndpointMintResponse:
+    """Register a callback on your workspace's active channel. The signing
+    secret is returned ONCE — store it; it is never shown again."""
+    from ..services.webhook_service import WebhookError
+
+    svc = PublicGatewayService(db)
+    channel = svc._workspace_channel(api_ws.tenant_id, api_ws.workspace_id)
+    try:
+        row, secret = _webhook_service(db).create(
+            api_ws.tenant_id, channel.id, payload.name, payload.url, payload.events,
+            created_by=None,  # minted by an API key, not a user
+        )
+    except WebhookError as exc:
+        raise _wh_guard(exc) from exc
+    return WebhookEndpointMintResponse(endpoint=_wh_item(row), signingSecret=secret)
+
+
+def _own_endpoint(db: Session, api_ws: ApiWorkspace, endpoint_id: str):
+    """Fetch an endpoint and PROVE it belongs to the caller's workspace.
+
+    `WebhookService._get` is tenant-scoped only — a tenant with several
+    workspaces could otherwise reach another workspace's endpoint with its own
+    key. Mismatch is the same uniform 404 as a genuine miss (no enumeration)."""
+    from ..services.webhook_service import WebhookNotFound
+
+    try:
+        row = _webhook_service(db).get(api_ws.tenant_id, endpoint_id)
+    except WebhookNotFound as exc:
+        raise ApiError(404, "not_found", "Webhook endpoint not found.") from exc
+    if row.workspace_id != api_ws.workspace_id:
+        raise ApiError(404, "not_found", "Webhook endpoint not found.")
+    return row
+
+
+@router.patch("/webhooks/{endpoint_id}", response_model=WebhookEndpointItem)
+def update_webhook(
+    endpoint_id: str,
+    payload: WebhookEndpointUpdateRequest,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> WebhookEndpointItem:
+    from ..services.webhook_service import WebhookError
+
+    _own_endpoint(db, api_ws, endpoint_id)
+    try:
+        row = _webhook_service(db).update(
+            api_ws.tenant_id, endpoint_id,
+            name=payload.name, url=payload.url, events=payload.events,
+        )
+    except WebhookError as exc:
+        raise _wh_guard(exc) from exc
+    return _wh_item(row)
+
+
+@router.post("/webhooks/{endpoint_id}/rotate", response_model=WebhookSecretResponse)
+def rotate_webhook_secret(
+    endpoint_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> WebhookSecretResponse:
+    """New signing secret, returned ONCE. The old one stops verifying at once —
+    deploy the new secret before rotating."""
+    _own_endpoint(db, api_ws, endpoint_id)
+    _row, secret = _webhook_service(db).rotate_secret(api_ws.tenant_id, endpoint_id)
+    return WebhookSecretResponse(signingSecret=secret)
+
+
+@router.post("/webhooks/{endpoint_id}/enable", response_model=WebhookEndpointItem)
+def enable_webhook(
+    endpoint_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> WebhookEndpointItem:
+    """Re-enable a disabled endpoint (also clears an AUTO_DISABLED strike count)."""
+    _own_endpoint(db, api_ws, endpoint_id)
+    return _wh_item(_webhook_service(db).set_status(api_ws.tenant_id, endpoint_id, True))
+
+
+@router.post("/webhooks/{endpoint_id}/disable", response_model=WebhookEndpointItem)
+def disable_webhook(
+    endpoint_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> WebhookEndpointItem:
+    _own_endpoint(db, api_ws, endpoint_id)
+    return _wh_item(_webhook_service(db).set_status(api_ws.tenant_id, endpoint_id, False))
+
+
+@router.delete("/webhooks/{endpoint_id}", status_code=204)
+def delete_webhook(
+    endpoint_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> None:
+    _own_endpoint(db, api_ws, endpoint_id)
+    _webhook_service(db).delete(api_ws.tenant_id, endpoint_id)

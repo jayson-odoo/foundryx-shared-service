@@ -540,12 +540,23 @@ class RioContactItem(BaseModel):
     lifecycle: Optional[str] = None
     created_at: Optional[int] = None  # epoch seconds
     isBlocked: bool = False
-    # FoundryX extension (no respond.io equivalent): when the WhatsApp 24-hour
-    # customer-service window closes. Past/None ⇒ free-form sends are refused
-    # (409 csw_window_closed) and only an approved template re-engages. ISO-8601
-    # Z (the house datetime convention) — not epoch like `created_at`, which
-    # mirrors respond.io.
+    # ── FoundryX extensions (no respond.io equivalent) ──────────────────────
+    # Kept so this shape is LOSSLESS vs the internal ThreadItem: a consumer has
+    # no other read source for them, and an inbox list needs unreadCount +
+    # lastMessagePreview. ISO-8601 Z (house convention) rather than the epoch
+    # ints beside them, which exist only to mirror respond.io.
+    #
+    # When the WhatsApp 24-hour customer-service window closes. Past/None ⇒
+    # free-form sends are refused (409 csw_window_closed); only an approved
+    # template re-engages.
     cswExpiresAt: Optional[str] = None
+    priority: Optional[str] = None            # LOW | MEDIUM | HIGH | URGENT
+    channelId: Optional[str] = None
+    channelType: Optional[str] = None         # WHATSAPP
+    unreadCount: int = 0
+    lastMessageAt: Optional[str] = None
+    lastIncomingMessageAt: Optional[str] = None
+    lastMessagePreview: Optional[str] = None
 
 
 class RioContactListResponse(BaseModel):

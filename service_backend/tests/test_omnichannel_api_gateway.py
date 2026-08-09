@@ -245,10 +245,21 @@ def test_public_list_contact_messages(client, session_factory):
     r = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages", headers=hdr)
     assert r.status_code == 200
     body = r.json()
-    # respond.io shape: {items:[{messageId, contactId, traffic, message:{type,text}, ...}], pagination}
-    assert all(m["contactId"] == cid for m in body["items"])
-    assert "Hi there" in [m["message"]["text"] for m in body["items"]]
-    assert "pagination" in body and set(body["pagination"]) == {"next", "previous"}
+    # DEFAULT is the documented guide shape: {contactId, data:[MessageItem], nextBefore}.
+    assert set(body) == {"contactId", "data", "nextBefore"}
+    assert body["contactId"] == cid
+    assert all(m["contactId"] == cid for m in body["data"])
+    assert "Hi there" in [m["body"] for m in body["data"]]
+    assert all({"id", "senderType", "body", "createdAt"} <= set(m) for m in body["data"])
+
+    # ...and the respond.io shape is one query param away.
+    rio = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages?format=rio", headers=hdr).json()
+    assert set(rio) == {"items", "pagination"}
+    assert "Hi there" in [m["message"]["text"] for m in rio["items"]]
+
+    # An unknown format is a typed 422, never a silent fallback to the other shape.
+    bad = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages?format=nope", headers=hdr)
+    assert bad.status_code == 422 and bad.json()["error"]["code"] == "invalid_request"
 
 
 def test_public_list_messages_unknown_contact_404(client, session_factory):
@@ -288,8 +299,13 @@ def test_public_list_contacts(client, session_factory):
     r = client.get("/api/v1/omnichannel/contacts?pageSize=10", headers=hdr)
     assert r.status_code == 200
     body = r.json()
-    assert any(c["id"] == cid for c in body["items"])
-    assert "pagination" in body and set(body["pagination"]) == {"next", "previous"}
+    # DEFAULT = documented guide envelope.
+    assert set(body) == {"data", "total", "page", "pageSize"}
+    assert any(c["id"] == cid for c in body["data"])
+
+    rio = client.get("/api/v1/omnichannel/contacts?pageSize=10&format=rio", headers=hdr).json()
+    assert any(c["id"] == cid for c in rio["items"])
+    assert set(rio["pagination"]) == {"next", "previous"}
 
 
 def test_public_get_contact_by_id_and_phone(client, session_factory):
@@ -302,9 +318,9 @@ def test_public_get_contact_by_id_and_phone(client, session_factory):
 
 def test_public_get_single_message(client, session_factory):
     hdr, cid = _seeded(client, session_factory, phone="+60555111333")
-    msgs = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages", headers=hdr).json()["items"]
+    msgs = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages?format=rio", headers=hdr).json()["items"]
     mid = msgs[0]["messageId"]
-    r = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}", headers=hdr)
+    r = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}?format=rio", headers=hdr)
     assert r.status_code == 200 and r.json()["messageId"] == mid
 
 
@@ -316,17 +332,30 @@ def test_public_update_contact_priority(client, session_factory):
         headers=hdr,
     )
     assert r.status_code == 200
-    # RioContactItem shape: firstName reflects the write (priority isn't in the
-    # respond.io contact schema, so it's set server-side but not echoed).
-    assert r.json()["firstName"] == "Kay"
+    # DEFAULT echoes a ThreadItem — which, unlike the Rio shape, carries priority.
+    body = r.json()
+    assert body["name"] == "Kay" and body["priority"] == "HIGH"
+
+    # Rio echo: firstName reflects the write; priority rides the FoundryX
+    # extension fields (BL-SS-026) rather than being dropped.
+    rio = client.get(
+        f"/api/v1/omnichannel/contacts/{cid}?format=rio", headers=hdr
+    ).json()
+    assert rio["firstName"] == "Kay" and rio["priority"] == "HIGH"
 
 
 def test_public_open_close_conversation(client, session_factory):
     hdr, cid = _seeded(client, session_factory, phone="+60555111555")
+    # Guide shape uses the documented UPPERCASE enum...
     closed = client.post(f"/api/v1/omnichannel/contacts/{cid}/conversation/close", headers=hdr)
-    assert closed.status_code == 200 and closed.json()["status"] == "closed"
+    assert closed.status_code == 200 and closed.json()["status"] == "CLOSED"
     opened = client.post(f"/api/v1/omnichannel/contacts/{cid}/conversation/open", headers=hdr)
-    assert opened.status_code == 200 and opened.json()["status"] == "open"
+    assert opened.status_code == 200 and opened.json()["status"] == "OPEN"
+    # ...respond.io's is lowercase. Both are correct for their own contract.
+    rio = client.post(
+        f"/api/v1/omnichannel/contacts/{cid}/conversation/close?format=rio", headers=hdr
+    )
+    assert rio.status_code == 200 and rio.json()["status"] == "closed"
 
 
 def test_public_add_comment(client, session_factory):
@@ -594,7 +623,7 @@ def test_public_media_signed_url_serves_without_auth(client, session_factory):
     hdr, cid = _seeded(client, session_factory, phone="+60555222111")
     mid = _seed_media_message(session_factory, cid)
 
-    r = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages", headers=hdr)
+    r = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages?format=rio", headers=hdr)
     item = [m for m in r.json()["items"] if m["messageId"] == mid][0]
     url = item["message"]["url"]
     assert url.startswith("http") and "exp=" in url and "sig=" in url
@@ -618,7 +647,7 @@ def test_public_messages_two_way_cursor(client, session_factory):
             json={"to": "+60555333111", "type": "text", "text": {"body": f"m{i}"}},
             headers=hdr,
         )
-    page = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages?limit=2", headers=hdr).json()
+    page = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages?limit=2&format=rio", headers=hdr).json()
     assert len(page["items"]) == 2
     # Full page ⇒ older history exists ⇒ a next cursor is offered; previous too.
     assert page["pagination"]["next"] and page["pagination"]["previous"]
@@ -627,12 +656,12 @@ def test_public_messages_two_way_cursor(client, session_factory):
     newest_id = page["items"][-1]["messageId"]
     # before = OLDER than the page's oldest → distinct, non-empty.
     older = client.get(
-        f"/api/v1/omnichannel/contacts/{cid}/messages?limit=10&before={oldest_id}", headers=hdr
+        f"/api/v1/omnichannel/contacts/{cid}/messages?limit=10&before={oldest_id}&format=rio", headers=hdr
     ).json()
     assert older["items"] and all(m["messageId"] != oldest_id for m in older["items"])
     # after = NEWER than the newest returned → nothing newer.
     newer = client.get(
-        f"/api/v1/omnichannel/contacts/{cid}/messages?limit=10&after={newest_id}", headers=hdr
+        f"/api/v1/omnichannel/contacts/{cid}/messages?limit=10&after={newest_id}&format=rio", headers=hdr
     ).json()
     assert newer["items"] == []
 
@@ -709,7 +738,7 @@ def test_incoming_message_carries_a_timestamp(client, session_factory):
     hdr, cid = _seeded(client, session_factory, phone="+60555222111")
     _insert_message(session_factory, cid, body="customer said hi")
 
-    items = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages", headers=hdr).json()["items"]
+    items = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages?format=rio", headers=hdr).json()["items"]
     assert items, "expected history"
     assert all(m["timestamp"] for m in items), "every message needs a timestamp"
 
@@ -734,7 +763,7 @@ def test_contact_exposes_csw_expiry(client, session_factory):
     """`cswExpiresAt` gates free-form vs template sending. Without it a consumer
     must either always send templates or provoke a 409."""
     hdr, cid = _seeded(client, session_factory, phone="+60555222222")
-    body = client.get(f"/api/v1/omnichannel/contacts/{cid}", headers=hdr).json()
+    body = client.get(f"/api/v1/omnichannel/contacts/{cid}?format=rio", headers=hdr).json()
     assert body["cswExpiresAt"], "open window must be exposed"
     assert body["cswExpiresAt"].endswith("Z"), "ISO-8601 Z, per the house convention"
 
@@ -744,7 +773,7 @@ def test_contact_csw_expiry_null_when_never_messaged_in(client, session_factory)
     _seed_channel(session_factory, ws)
     cid = _seed_open_contact(session_factory, ws, phone="+60555222333", open_window=False)
     hdr = {"Authorization": f"Bearer {_mint(client, ws).json()['fullKey']}"}
-    body = client.get(f"/api/v1/omnichannel/contacts/{cid}", headers=hdr).json()
+    body = client.get(f"/api/v1/omnichannel/contacts/{cid}?format=rio", headers=hdr).json()
     assert body["cswExpiresAt"] is None
 
 
@@ -757,7 +786,7 @@ def test_structured_payload_survives_the_rio_shape(client, session_factory):
         session_factory, cid, sender_type="AGENT", message_type="INTERACTIVE",
         body="Pick one", payload_json=buttons,
     )
-    got = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}", headers=hdr).json()
+    got = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}?format=rio", headers=hdr).json()
     assert got["message"]["type"] == "interactive"
     assert got["message"]["payload"] == buttons
 
@@ -770,7 +799,7 @@ def test_media_caption_is_not_duplicated_into_text(client, session_factory):
         media_key="conn:x:receipt.png", media_mime="image/png",
         media_filename="receipt.png", media_size=1234,
     )
-    msg = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}", headers=hdr).json()["message"]
+    msg = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}?format=rio", headers=hdr).json()["message"]
     assert msg["caption"] == "Your receipt"
     assert msg["text"] is None, "must not duplicate the body into text"
     assert msg["size"] == 1234 and msg["url"], "size + signed URL exposed"
@@ -795,7 +824,7 @@ def test_text_caption_split_keys_off_message_type_not_media_presence(client, ses
         body="Hi Jayson, your booking is confirmed.",
         media_key="conn:x:header.png", media_mime="image/png", media_size=99,
     )
-    got = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{tpl}", headers=hdr).json()["message"]
+    got = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{tpl}?format=rio", headers=hdr).json()["message"]
     assert got["url"], "header image still exposed"
     assert got["text"] == "Hi Jayson, your booking is confirmed.", "template body is TEXT, not a caption"
     assert got["caption"] is None
@@ -805,7 +834,7 @@ def test_text_caption_split_keys_off_message_type_not_media_presence(client, ses
         session_factory, cid, sender_type="CONTACT", message_type="IMAGE",
         body="Here is my receipt",
     )
-    got = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{img}", headers=hdr).json()["message"]
+    got = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{img}?format=rio", headers=hdr).json()["message"]
     assert got["url"] is None
     assert got["caption"] == "Here is my receipt", "media body is a caption even with no blob"
     assert got["text"] is None
@@ -815,7 +844,7 @@ def test_plain_text_still_returns_text(client, session_factory):
     """The other half of the split — the caption fix must not null TEXT bodies."""
     hdr, cid = _seeded(client, session_factory, phone="+60555222888")
     mid = _insert_message(session_factory, cid, body="just a plain message")
-    msg = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}", headers=hdr).json()["message"]
+    msg = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}?format=rio", headers=hdr).json()["message"]
     assert msg["text"] == "just a plain message" and msg["caption"] is None
 
 
@@ -837,10 +866,98 @@ def test_reactions_and_reply_are_exposed(client, session_factory):
     db.commit()
     db.close()
 
-    items = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages", headers=hdr).json()["items"]
+    items = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages?format=rio", headers=hdr).json()["items"]
     by_id = {m["messageId"]: m for m in items}
     assert by_id[target]["reactions"] == [
         {"emoji": "👍", "reactorType": "AGENT", "reactor": "agent-1"}
     ]
     replies = [m for m in items if m["replyTo"]]
     assert replies and replies[0]["replyTo"]["messageId"] == target
+
+
+# ── Self-serve webhook registration on /api/v1 (BL-SS-025) ───────────────────
+def test_consumer_can_register_and_manage_its_own_webhooks(client, session_factory):
+    """A workspace API key must be able to register its OWN callbacks: webhooks
+    are the intended inbound path, and registration used to be dashboard-only
+    (session JWT), so a key-holder could not even LIST its endpoints."""
+    hdr, _cid = _seeded(client, session_factory, phone="+60555333111")
+
+    created = client.post(
+        "/api/v1/omnichannel/webhooks",
+        json={"name": "Ecohub", "url": "https://hooks.example.com/fx",
+              "events": ["message.inbound", "message.status"]},
+        headers=hdr,
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    secret = body["signingSecret"]
+    assert secret.startswith("whsec_"), "signing secret returned ONCE at create"
+    eid = body["endpoint"]["id"]
+    assert set(body["endpoint"]["events"]) == {"message.inbound", "message.status"}
+
+    listed = client.get("/api/v1/omnichannel/webhooks", headers=hdr).json()["data"]
+    assert [e["id"] for e in listed] == [eid]
+    assert "signingSecret" not in listed[0] and "secret" not in listed[0], "never echo the secret"
+
+    rotated = client.post(f"/api/v1/omnichannel/webhooks/{eid}/rotate", headers=hdr)
+    assert rotated.status_code == 200 and rotated.json()["signingSecret"] != secret
+
+    off = client.post(f"/api/v1/omnichannel/webhooks/{eid}/disable", headers=hdr)
+    assert off.status_code == 200 and off.json()["status"] == "DISABLED"
+    on = client.post(f"/api/v1/omnichannel/webhooks/{eid}/enable", headers=hdr)
+    assert on.status_code == 200 and on.json()["status"] == "ACTIVE"
+
+    assert client.delete(f"/api/v1/omnichannel/webhooks/{eid}", headers=hdr).status_code == 204
+    assert client.get("/api/v1/omnichannel/webhooks", headers=hdr).json()["data"] == []
+
+
+def test_webhook_url_validation_is_a_typed_422(client, session_factory):
+    """SSRF guard still applies on the public surface, in the gateway's error
+    envelope (the operator router raises a bare 400)."""
+    hdr, _cid = _seeded(client, session_factory, phone="+60555333222")
+    for bad_url in ("http://hooks.example.com/fx", "https://localhost/fx"):
+        r = client.post(
+            "/api/v1/omnichannel/webhooks",
+            json={"name": "bad", "url": bad_url, "events": ["message.inbound"]},
+            headers=hdr,
+        )
+        assert r.status_code == 422, bad_url
+        assert r.json()["error"]["code"] == "invalid_request"
+
+
+def test_key_cannot_touch_another_workspaces_webhook(client, session_factory):
+    """`WebhookService._get` is tenant-scoped only, so a tenant with two
+    workspaces could otherwise reach across with its own key. Must be the same
+    uniform 404 as a genuine miss — no enumeration."""
+    from modules.omnichannel.models import Workspace
+
+    hdr_a, _ = _seeded(client, session_factory, phone="+60555333333")
+    created = client.post(
+        "/api/v1/omnichannel/webhooks",
+        json={"name": "A", "url": "https://a.example.com/fx", "events": ["message.inbound"]},
+        headers=hdr_a,
+    ).json()
+    eid_a = created["endpoint"]["id"]
+
+    # A second workspace in the SAME tenant, with its own channel + key.
+    db = session_factory()
+    ws_b = Workspace(tenant_id=DEFAULT_TENANT_ID, name="WS B")
+    db.add(ws_b)
+    db.commit()
+    ws_b_id = ws_b.id
+    db.close()
+    _seed_channel(session_factory, ws_b_id, phone_number_id="pn-ws-b")
+    hdr_b = {"Authorization": f"Bearer {_mint(client, ws_b_id).json()['fullKey']}"}
+
+    assert client.get("/api/v1/omnichannel/webhooks", headers=hdr_b).json()["data"] == []
+    for call in (
+        lambda: client.patch(f"/api/v1/omnichannel/webhooks/{eid_a}", json={"name": "hijack"}, headers=hdr_b),
+        lambda: client.post(f"/api/v1/omnichannel/webhooks/{eid_a}/rotate", headers=hdr_b),
+        lambda: client.post(f"/api/v1/omnichannel/webhooks/{eid_a}/disable", headers=hdr_b),
+        lambda: client.delete(f"/api/v1/omnichannel/webhooks/{eid_a}", headers=hdr_b),
+    ):
+        assert call().status_code == 404
+
+    # ...and A's endpoint is untouched.
+    still = client.get("/api/v1/omnichannel/webhooks", headers=hdr_a).json()["data"]
+    assert [e["id"] for e in still] == [eid_a] and still[0]["name"] == "A"
