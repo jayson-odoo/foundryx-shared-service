@@ -24,6 +24,8 @@ from ..schemas import (
     RioCustomField,
     RioMessageItem,
     RioMessagePayload,
+    RioMessageReaction,
+    RioMessageReplyTo,
     RioMessageSender,
     RioMessageStatus,
     SendMessageRequest,
@@ -50,6 +52,15 @@ def _digits(value: str) -> str:
 def _epoch(dt) -> Optional[int]:
     """Aware-UTC datetime → epoch seconds (respond.io wire format)."""
     return int(dt.timestamp()) if dt else None
+
+
+def _iso_z(dt) -> Optional[str]:
+    """Aware-UTC datetime → ISO-8601 Z. Used for FoundryX-extension fields on
+    the Rio shapes (`cswExpiresAt`), which follow the house convention rather
+    than respond.io's epoch ints."""
+    if not dt:
+        return None
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 # ConversationMessage.delivery_status → respond.io status vocabulary.
@@ -146,9 +157,10 @@ class PublicGatewayService:
             lifecycle=None,         # not modeled
             created_at=_epoch(contact.created_at),
             isBlocked=False,        # not modeled
+            cswExpiresAt=_iso_z(contact.csw_expires_at),
         )
 
-    def _rio_message(self, m) -> RioMessageItem:
+    def _rio_message(self, m, *, reactions: Optional[list] = None) -> RioMessageItem:
         meta = m.metadata_json or {}
         traffic = "incoming" if m.sender_type == "CONTACT" else "outgoing"
         # Media URL: a stored blob becomes an absolute, signed, clickable link;
@@ -160,12 +172,32 @@ class PublicGatewayService:
             url = m.media_url
         payload = RioMessagePayload(
             type=(m.message_type or "text").lower(),
-            text=m.body,
+            # A media message's body IS its caption — expose it once, in
+            # `caption`, never duplicated into `text`.
+            text=None if url else m.body,
             url=url,
             caption=m.body if url else None,
             filename=m.media_filename,
             mimeType=m.media_mime,
+            size=m.media_size,
+            # interactive buttons / location coordinates / contact cards /
+            # template binding — flattening these into `text` loses them.
+            payload=m.payload_json,
             messageTag=meta.get("message_tag"),
+        )
+        # `metadata_json` is free-form: never assume the stored shape (a legacy
+        # or hand-written row must not 500 a read).
+        reply = meta.get("reply_to")
+        reply = reply if isinstance(reply, dict) else {}
+        reply_to = (
+            RioMessageReplyTo(
+                messageId=reply.get("id"),
+                text=reply.get("body"),
+                senderType=reply.get("senderType"),
+                senderName=reply.get("senderName"),
+            )
+            if reply.get("id")
+            else None
         )
         status: list = []
         if m.delivery_status:
@@ -187,9 +219,14 @@ class PublicGatewayService:
             contactId=m.contact_id,
             channelId=m.channel_id,
             traffic=traffic,
+            # Inbound messages never carry a delivery receipt, so `status[]` is
+            # empty for them — this is the ONE time key present on every message.
+            timestamp=_epoch(m.created_at),
             message=payload,
             status=status,
             sender=sender,
+            reactions=[RioMessageReaction(**r) for r in (reactions or [])],
+            replyTo=reply_to,
         )
 
     # ── Contact read ─────────────────────────────────────────────────────────
@@ -265,14 +302,19 @@ class PublicGatewayService:
         rows = self.contacts.list_messages_recent(
             contact.id, tenant_id, limit=limit, before_id=before_id, after_id=after_id
         )
-        return contact.id, [self._rio_message(m) for m in rows]
+        # Reaction chips: ONE batched query for the whole page (never per-row).
+        reactions = self.contacts.reactions_for([m.id for m in rows], tenant_id)
+        return contact.id, [
+            self._rio_message(m, reactions=reactions.get(m.id)) for m in rows
+        ]
 
     def get_contact_message(self, tenant_id: str, workspace_id: str, identifier: str, message_id: str) -> RioMessageItem:
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
         msg = self.contacts.get_message(message_id, tenant_id)
         if msg is None or msg.contact_id != contact.id:
             raise ApiError(404, "message_not_found", "Message not found for this contact.")
-        return self._rio_message(msg)
+        reactions = self.contacts.reactions_for([msg.id], tenant_id)
+        return self._rio_message(msg, reactions=reactions.get(msg.id))
 
     # ── Contact / conversation mutation ──────────────────────────────────────
     def update_contact(

@@ -540,6 +540,12 @@ class RioContactItem(BaseModel):
     lifecycle: Optional[str] = None
     created_at: Optional[int] = None  # epoch seconds
     isBlocked: bool = False
+    # FoundryX extension (no respond.io equivalent): when the WhatsApp 24-hour
+    # customer-service window closes. Past/None ⇒ free-form sends are refused
+    # (409 csw_window_closed) and only an approved template re-engages. ISO-8601
+    # Z (the house datetime convention) — not epoch like `created_at`, which
+    # mirrors respond.io.
+    cswExpiresAt: Optional[str] = None
 
 
 class RioContactListResponse(BaseModel):
@@ -560,13 +566,36 @@ class RioMessageSender(BaseModel):
 
 
 class RioMessagePayload(BaseModel):
-    type: str                         # text | image | video | audio | document | ...
+    type: str                         # text | image | video | audio | voice | document | ...
+    # `text` carries the body of a TEXT-family message; a media message puts its
+    # caption in `caption` and leaves `text` null (respond.io's split — do NOT
+    # populate both, it reads as a duplicated body).
     text: Optional[str] = None
     url: Optional[str] = None         # signed, clickable media URL
     caption: Optional[str] = None
     filename: Optional[str] = None
     mimeType: Optional[str] = None
+    size: Optional[int] = None        # media bytes, when known
+    # Structured definition for interactive / location / contacts / template —
+    # the buttons, coordinates, cards or template binding that cannot survive
+    # flattening into `text`. Same object the internal API exposes.
+    payload: Optional[dict] = None
     messageTag: Optional[str] = None
+
+
+class RioMessageReaction(BaseModel):
+    emoji: str
+    reactorType: str                  # AGENT | CONTACT
+    reactor: Optional[str] = None
+
+
+class RioMessageReplyTo(BaseModel):
+    """The message this one replies to (WhatsApp quote)."""
+
+    messageId: str
+    text: Optional[str] = None
+    senderType: Optional[str] = None  # AGENT | CONTACT | SYSTEM
+    senderName: Optional[str] = None
 
 
 class RioMessageItem(BaseModel):
@@ -575,9 +604,15 @@ class RioMessageItem(BaseModel):
     contactId: str
     channelId: Optional[str] = None
     traffic: str                      # incoming | outgoing
+    # Epoch seconds the message was created — populated for INCOMING as well as
+    # outgoing. `status[].timestamp` only exists once a delivery receipt lands
+    # (never for inbound), so this is the only orderable key on a merged history.
+    timestamp: Optional[int] = None
     message: RioMessagePayload
     status: List[RioMessageStatus] = []
     sender: RioMessageSender
+    reactions: List[RioMessageReaction] = []
+    replyTo: Optional[RioMessageReplyTo] = None
 
 
 class RioMessageListResponse(BaseModel):
