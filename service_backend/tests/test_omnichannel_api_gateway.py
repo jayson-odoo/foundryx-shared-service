@@ -672,3 +672,175 @@ def test_public_templates_channel_and_filters(client, session_factory):
 
     bad = client.get("/api/v1/omnichannel/templates?channelId=does-not-exist", headers=hdr)
     assert bad.status_code == 404 and bad.json()["error"]["code"] == "channel_not_found"
+
+
+# ── Contract-drift regressions (consumer integration guide §6/§6a/§9) ────────
+# A consumer built to the published guide found the gateway had dropped fields
+# it documents. These pin the restored ones so the shape can't silently regress
+# again: every message carries a `timestamp` (INBOUND included — inbound never
+# gets a delivery receipt, so `status[]` is empty and cannot carry the time),
+# a contact exposes `cswExpiresAt` (the whole free-form-vs-template decision),
+# structured payloads survive, and a media body is not duplicated into `text`.
+def _insert_message(session_factory, contact_id, channel_id=None, **kw):
+    from modules.omnichannel.models import ConversationMessage
+
+    db = session_factory()
+    m = ConversationMessage(
+        tenant_id=DEFAULT_TENANT_ID,
+        contact_id=contact_id,
+        channel_id=channel_id,
+        sender_type=kw.pop("sender_type", "CONTACT"),
+        message_type=kw.pop("message_type", "TEXT"),
+        body=kw.pop("body", "hello"),
+        created_at=kw.pop("created_at", _now()),
+        **kw,
+    )
+    db.add(m)
+    db.commit()
+    mid = m.id
+    db.close()
+    return mid
+
+
+def test_incoming_message_carries_a_timestamp(client, session_factory):
+    """An INBOUND message has no delivery receipt, so `status[]` is empty — the
+    top-level `timestamp` is the only time key and MUST be populated, else a
+    consumer cannot order or render a received message at all."""
+    hdr, cid = _seeded(client, session_factory, phone="+60555222111")
+    _insert_message(session_factory, cid, body="customer said hi")
+
+    items = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages", headers=hdr).json()["items"]
+    assert items, "expected history"
+    assert all(m["timestamp"] for m in items), "every message needs a timestamp"
+
+    inbound = [m for m in items if m["traffic"] == "incoming"]
+    assert inbound and all(m["status"] == [] for m in inbound), "inbound has no receipt"
+    # Pin the VALUE, not just truthiness — `int(now())` would satisfy a truthy
+    # check while carrying the read time instead of the message time.
+    from modules.omnichannel.models import ConversationMessage
+
+    db = session_factory()
+    created = {
+        r.id: int(r.created_at.timestamp())
+        for r in db.query(ConversationMessage).filter(
+            ConversationMessage.contact_id == cid
+        )
+    }
+    db.close()
+    assert all(m["timestamp"] == created[m["messageId"]] for m in items), "timestamp is created_at"
+
+
+def test_contact_exposes_csw_expiry(client, session_factory):
+    """`cswExpiresAt` gates free-form vs template sending. Without it a consumer
+    must either always send templates or provoke a 409."""
+    hdr, cid = _seeded(client, session_factory, phone="+60555222222")
+    body = client.get(f"/api/v1/omnichannel/contacts/{cid}", headers=hdr).json()
+    assert body["cswExpiresAt"], "open window must be exposed"
+    assert body["cswExpiresAt"].endswith("Z"), "ISO-8601 Z, per the house convention"
+
+
+def test_contact_csw_expiry_null_when_never_messaged_in(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_open_contact(session_factory, ws, phone="+60555222333", open_window=False)
+    hdr = {"Authorization": f"Bearer {_mint(client, ws).json()['fullKey']}"}
+    body = client.get(f"/api/v1/omnichannel/contacts/{cid}", headers=hdr).json()
+    assert body["cswExpiresAt"] is None
+
+
+def test_structured_payload_survives_the_rio_shape(client, session_factory):
+    """Interactive buttons / location coordinates cannot be flattened into
+    `text` — a consumer would silently lose the buttons with no error."""
+    hdr, cid = _seeded(client, session_factory, phone="+60555222444")
+    buttons = {"kind": "buttons", "body": "Pick one", "buttons": [{"id": "a", "title": "Morning"}]}
+    mid = _insert_message(
+        session_factory, cid, sender_type="AGENT", message_type="INTERACTIVE",
+        body="Pick one", payload_json=buttons,
+    )
+    got = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}", headers=hdr).json()
+    assert got["message"]["type"] == "interactive"
+    assert got["message"]["payload"] == buttons
+
+
+def test_media_caption_is_not_duplicated_into_text(client, session_factory):
+    """A media message's body IS its caption: expose it once, in `caption`."""
+    hdr, cid = _seeded(client, session_factory, phone="+60555222555")
+    mid = _insert_message(
+        session_factory, cid, sender_type="AGENT", message_type="IMAGE", body="Your receipt",
+        media_key="conn:x:receipt.png", media_mime="image/png",
+        media_filename="receipt.png", media_size=1234,
+    )
+    msg = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}", headers=hdr).json()["message"]
+    assert msg["caption"] == "Your receipt"
+    assert msg["text"] is None, "must not duplicate the body into text"
+    assert msg["size"] == 1234 and msg["url"], "size + signed URL exposed"
+
+
+def test_text_caption_split_keys_off_message_type_not_media_presence(client, session_factory):
+    """The split MUST key off the message TYPE. Keying off `url` presence (the
+    first attempt) broke two real shapes:
+
+    * a TEMPLATE/INTERACTIVE row carrying a HEADER IMAGE stores `media_key`, so
+      `url` is set — but its body is body text, not a caption, and nulling
+      `text` renders a blank bubble on the consumer side;
+    * an inbound media row whose blob failed to store (dev creds / Graph
+      hiccup — `_store_media` returns None by design) has NO `url`, but is
+      still media, so its body is still a caption.
+    """
+    hdr, cid = _seeded(client, session_factory, phone="+60555222777")
+
+    # TEMPLATE with a header image: url IS set, but text must survive.
+    tpl = _insert_message(
+        session_factory, cid, sender_type="AGENT", message_type="TEMPLATE",
+        body="Hi Jayson, your booking is confirmed.",
+        media_key="conn:x:header.png", media_mime="image/png", media_size=99,
+    )
+    got = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{tpl}", headers=hdr).json()["message"]
+    assert got["url"], "header image still exposed"
+    assert got["text"] == "Hi Jayson, your booking is confirmed.", "template body is TEXT, not a caption"
+    assert got["caption"] is None
+
+    # Media WITHOUT a stored blob: no url, but it is still a caption.
+    img = _insert_message(
+        session_factory, cid, sender_type="CONTACT", message_type="IMAGE",
+        body="Here is my receipt",
+    )
+    got = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{img}", headers=hdr).json()["message"]
+    assert got["url"] is None
+    assert got["caption"] == "Here is my receipt", "media body is a caption even with no blob"
+    assert got["text"] is None
+
+
+def test_plain_text_still_returns_text(client, session_factory):
+    """The other half of the split — the caption fix must not null TEXT bodies."""
+    hdr, cid = _seeded(client, session_factory, phone="+60555222888")
+    mid = _insert_message(session_factory, cid, body="just a plain message")
+    msg = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}", headers=hdr).json()["message"]
+    assert msg["text"] == "just a plain message" and msg["caption"] is None
+
+
+def test_reactions_and_reply_are_exposed(client, session_factory):
+    from modules.omnichannel.models import MessageReaction
+
+    hdr, cid = _seeded(client, session_factory, phone="+60555222666")
+    target = _insert_message(session_factory, cid, body="Is the venue accessible?")
+    _insert_message(
+        session_factory, cid, sender_type="AGENT", body="Yes it is",
+        metadata_json={"reply_to": {"id": target, "body": "Is the venue accessible?",
+                                    "senderType": "CONTACT", "senderName": None}},
+    )
+    db = session_factory()
+    db.add(MessageReaction(
+        tenant_id=DEFAULT_TENANT_ID, target_message_id=target,
+        reactor_type="AGENT", reactor="agent-1", emoji="👍",
+    ))
+    db.commit()
+    db.close()
+
+    items = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages", headers=hdr).json()["items"]
+    by_id = {m["messageId"]: m for m in items}
+    assert by_id[target]["reactions"] == [
+        {"emoji": "👍", "reactorType": "AGENT", "reactor": "agent-1"}
+    ]
+    replies = [m for m in items if m["replyTo"]]
+    assert replies and replies[0]["replyTo"]["messageId"] == target
