@@ -72,6 +72,19 @@ def _ctx_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         ctx["trigger.submissionId"] = payload["submissionId"]
     for key, value in (payload.get("answers") or {}).items():
         ctx[f"trigger.answers.{key}"] = value
+    # Omnichannel inbound-message context (sprint-4/17).
+    oc = payload.get("omnichannel")
+    if oc:
+        ctx["trigger.message.id"] = oc.get("messageId")
+        ctx["trigger.message.text"] = oc.get("messageText")
+        ctx["trigger.message.type"] = oc.get("messageType")
+        ctx["trigger.message.mediaUrl"] = oc.get("mediaUrl")
+        ctx["trigger.contact.id"] = oc.get("contactId")
+        ctx["trigger.contact.name"] = oc.get("contactName")
+        ctx["trigger.contact.phone"] = oc.get("contactPhone")
+        ctx["trigger.channel.id"] = oc.get("channelId")
+        ctx["trigger.channel.name"] = oc.get("channelName")
+        ctx["trigger.conversationId"] = oc.get("conversationId")
     return ctx
 
 

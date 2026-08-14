@@ -304,6 +304,10 @@ class WorkflowService:
         # dispatch (sprint-3/02). The formId itself stays in the version config.
         if trigger and trigger.type == "form.submitted":
             wf.trigger_entity_type = "form_submission"
+        # Omnichannel inbound message (sprint-4/17) - same denormalization
+        # shape as form.submitted (per-channel selectivity stays in config).
+        if trigger and trigger.type == "omnichannel.message_received":
+            wf.trigger_entity_type = "omnichannel_message"
         # Scheduled trigger: arm the next fire (cron interpreted in its tz → UTC).
         wf.next_run_at = None
         if trigger and trigger.type == "schedule.cron":
@@ -492,7 +496,41 @@ class WorkflowService:
             "entities": entities,
             "connections": connections,
             "forms": self._form_options(tenant_id),
+            "omnichannelChannels": self._omnichannel_channel_options(tenant_id),
+            "aiAgents": self._ai_agent_options(tenant_id),
         }
+
+    def _omnichannel_channel_options(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Backs the omnichannel trigger's channel picker (sprint-4/17). A
+        guarded import - core stays functional if the module isn't present in
+        a given build (manifest-driven module set)."""
+        try:
+            from modules.omnichannel.models import Channel
+        except ImportError:
+            return []
+        rows = (
+            self.db.query(Channel.id, Channel.name)
+            .filter(
+                Channel.tenant_id == tenant_id,
+                Channel.is_trashed.is_(False),
+                Channel.is_active.is_(True),
+            )
+            .order_by(Channel.name)
+            .all()
+        )
+        return [{"id": r.id, "name": r.name} for r in rows]
+
+    def _ai_agent_options(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Backs the AI Agent node's agent picker (sprint-4/17)."""
+        from app.models.ai import AiAgent
+
+        rows = (
+            self.db.query(AiAgent.id, AiAgent.name, AiAgent.model)
+            .filter(AiAgent.tenant_id == tenant_id, AiAgent.is_enabled.is_(True))
+            .order_by(AiAgent.name)
+            .all()
+        )
+        return [{"id": r.id, "name": r.name, "model": r.model} for r in rows]
 
     def _form_options(self, tenant_id: str) -> List[Dict[str, Any]]:
         """Published forms + their published-version answer keys — backs the

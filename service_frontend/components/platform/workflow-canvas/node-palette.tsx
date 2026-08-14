@@ -15,8 +15,19 @@ import { ChevronDown, Search, Zap } from 'lucide-react';
 import { ACTION_CATALOG, IF_CATALOG, TRIGGER_CATALOG } from '@/lib/workflow-catalog';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
+import { useInstalledModules } from '@/hooks/use-app-store';
 import type { NodeCatalogEntry } from '@/types/workflows';
 import { WORKFLOW_NODE_ICONS } from './workflow-icons';
+
+/** A `module`-tagged entry is visible only while that module is ACTIVE for the
+ * tenant (plan sprint-4/17) - `'core'`/absent is always visible. Mirrors the
+ * backend `app/module_platform/active.py` `is_visible` predicate. */
+function visibleEntries<T extends { module?: string }>(
+  entries: T[],
+  isActive: (name: string) => boolean,
+): T[] {
+  return entries.filter((e) => !e.module || e.module === 'core' || isActive(e.module));
+}
 
 const ICONS = WORKFLOW_NODE_ICONS;
 
@@ -87,14 +98,15 @@ export function NodePalette({ hasTrigger, disabled, onAdd }: NodePaletteProps) {
   const [query, setQuery] = useState('');
   // Sections collapsed by default — the catalog is long; expand on click/search.
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const { isActive } = useInstalledModules();
 
   const sections: PaletteSection[] = useMemo(
     () => [
-      { title: 'Triggers', entries: TRIGGER_CATALOG, itemsDisabled: hasTrigger },
+      { title: 'Triggers', entries: visibleEntries(TRIGGER_CATALOG, isActive), itemsDisabled: hasTrigger },
       { title: 'Logic', entries: IF_CATALOG },
-      { title: 'Actions', entries: ACTION_CATALOG },
+      { title: 'Actions', entries: visibleEntries(ACTION_CATALOG, isActive) },
     ],
-    [hasTrigger],
+    [hasTrigger, isActive],
   );
 
   const q = query.trim().toLowerCase();

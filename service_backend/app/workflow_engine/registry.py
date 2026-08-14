@@ -355,5 +355,45 @@ def _register_core() -> None:
 
     register_review_actions()
 
+    # ---- AI Agent action (sprint-4/17) ----
+    from app.workflow_engine.actions.ai_agent_actions import ai_agent_run
+
+    register_action(
+        ActionDef(
+            key="ai_agent.run",
+            label="AI Agent",
+            description="Send content to an AI agent and capture structured output.",
+            icon="Sparkles",
+            category="Actions",
+            executor=ai_agent_run,
+            fields=[
+                NodeField(key="agentId", label="Agent", type="aiAgent", required=True),
+                NodeField(
+                    key="instructions",
+                    label="Instructions",
+                    type="textarea",
+                    mergeable=True,
+                    required=True,
+                ),
+                NodeField(
+                    key="inputText",
+                    label="Message",
+                    type="textarea",
+                    mergeable=True,
+                    required=True,
+                ),
+                NodeField(
+                    key="outputParams",
+                    label="Output parameters",
+                    type="outputSchema",
+                    required=True,
+                ),
+            ],
+            # Dynamic - the frontend lists config.outputParams as nodes.<id>.<key>
+            # (mirrors how entity/form triggers already inject dynamic outputs).
+            outputs=[],
+        )
+    )
+
 
 _ensure_core = lazy_once(_register_core)

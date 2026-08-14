@@ -36,6 +36,12 @@ function defaultConfig(type: string): WorkflowNodeConfig {
   if (type === 'form.submitted') return { formId: '' };
   if (type === 'schedule.cron') return { cron: '0 9 * * *', timezone: '' };
   if (type === 'if') return { conditions: null };
+  // Omnichannel + AI Agent nodes (plan sprint-4/17).
+  if (type === 'omnichannel.message_received') return { channelId: null };
+  if (type === 'omnichannel.get_contact') return { contactId: '' };
+  if (type === 'omnichannel.send_message') return { contactId: '', message: '' };
+  if (type === 'ai_agent.run')
+    return { agentId: '', instructions: '', inputText: '', outputParams: [] };
   return {};
 }
 

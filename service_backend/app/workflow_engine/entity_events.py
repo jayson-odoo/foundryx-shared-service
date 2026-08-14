@@ -200,12 +200,13 @@ def notify_entity_event(
     actor: Optional[Any] = None,
     actor_id: Optional[str] = None,
     changes: Optional[Dict[str, Dict[str, Any]]] = None,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> None:
     """emit + drain — for services whose repository commits internally (call
     AFTER the successful write)."""
     emit_entity_event(
         db, entity_type, action, record,
-        tenant_id=tenant_id, actor=actor, actor_id=actor_id, changes=changes,
+        tenant_id=tenant_id, actor=actor, actor_id=actor_id, changes=changes, extra=extra,
     )
     dispatch_pending(db)
 
@@ -258,6 +259,11 @@ def _trigger_types_for(action: str) -> List[str]:
         # trigger_entity_type is the constant "form_submission"; per-form
         # selectivity is refined by formId below.
         return ["form.submitted"]
+    if action == "received":
+        # Omnichannel inbound message (plan sprint-4/17, module omnichannel).
+        # The denormalized trigger_entity_type is the constant
+        # "omnichannel_message"; per-channel selectivity is refined below.
+        return ["omnichannel.message_received"]
     return []
 
 
@@ -295,6 +301,10 @@ def _passes_refine(config: Dict[str, Any], ev: Dict[str, Any], trigger_type: str
         # Per-form selectivity: the picked formId must match the submitted form.
         wanted = config.get("formId")
         return bool(wanted) and wanted == (ev.get("extra") or {}).get("formId")
+    if trigger_type == "omnichannel.message_received":
+        # Per-channel selectivity: unset config = fires for any channel.
+        wanted = config.get("channelId")
+        return not wanted or wanted == (ev.get("extra") or {}).get("channelId")
     return True
 
 
@@ -377,6 +387,10 @@ def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: in
         payload["formId"] = extra.get("formId")
         payload["submissionId"] = extra.get("submissionId")
         payload["answers"] = extra.get("answers") or {}
+    if ev["action"] == "received":
+        # Omnichannel inbound message (sprint-4/17) - the executor flattens
+        # this into trigger.message.*/trigger.contact.*/trigger.channel.*.
+        payload["omnichannel"] = extra
     source = ev.get("source") or {}
     run = WorkflowRun(
         tenant_id=wf.tenant_id,
