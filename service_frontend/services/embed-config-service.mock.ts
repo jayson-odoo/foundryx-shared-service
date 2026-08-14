@@ -1,5 +1,5 @@
 /**
- * PHASE 1 MOCK — in-memory embed-access config (plan 11H). Retained for Vitest +
+ * PHASE 1 MOCK - in-memory embed-access config (plan 11H). Retained for Vitest +
  * tunable frontend states; the shipped screen binds the REAL service. Mirrors
  * the backend origin validation so the builder feels real without a backend.
  */
@@ -68,7 +68,7 @@ export const mockEmbedConfigService: EmbedConfigService = {
   },
 };
 
-/** Test hook — reset the in-memory state between cases. */
+/** Test hook - reset the in-memory state between cases. */
 export function __resetMockEmbedConfig(): void {
   state = makeState();
 }

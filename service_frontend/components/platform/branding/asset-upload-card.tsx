@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
-/** Client-side mirror of the backend caps (plan 03) — server re-validates. */
+/** Client-side mirror of the backend caps (plan 03) - server re-validates. */
 export const ASSET_CONSTRAINTS: Record<
   BrandingAssetKind,
   { accept: string[]; maxBytes: number; hint: string }
@@ -27,7 +27,7 @@ export const ASSET_CONSTRAINTS: Record<
       'image/vnd.microsoft.icon',
     ],
     maxBytes: 512 * 1024,
-    hint: 'Square image (PNG/ICO recommended) · max 512 KB. Falls back to the logo when empty — wordmark logos read poorly at 16 px, so a dedicated icon is recommended.',
+    hint: 'Square image (PNG/ICO recommended) · max 512 KB. Falls back to the logo when empty - wordmark logos read poorly at 16 px, so a dedicated icon is recommended.',
   },
   illustration: {
     accept: ['image/png', 'image/jpeg', 'image/svg+xml', 'image/webp'],
@@ -48,7 +48,7 @@ export interface AssetUploadCardProps {
   onRemove: () => Promise<unknown>;
 }
 
-/** One branding asset slot — preview + upload/replace/remove. Uploads apply immediately. */
+/** One branding asset slot - preview + upload/replace/remove. Uploads apply immediately. */
 export function AssetUploadCard({
   kind,
   title,
@@ -72,7 +72,7 @@ export function AssetUploadCard({
     }
     if (file.size > constraints.maxBytes) {
       toast.error(
-        `File too large — max ${Math.round(constraints.maxBytes / 1024)} KB.`,
+        `File too large - max ${Math.round(constraints.maxBytes / 1024)} KB.`,
       );
       return;
     }
@@ -113,7 +113,7 @@ export function AssetUploadCard({
           )}
         >
           {url ? (
-            // Plain <img> on purpose — data-URLs (mock) and backend asset URLs alike.
+            // Plain <img> on purpose - data-URLs (mock) and backend asset URLs alike.
              
             <img
               src={url}

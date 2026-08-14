@@ -1,4 +1,4 @@
-"""Static status lookup helpers (no transition engine yet — plan 04 decision).
+"""Static status lookup helpers (no transition engine yet - plan 04 decision).
 
 The ``statuses`` table is seeded per tenant; services resolve ``status_id`` ↔
 ``key`` through these helpers so API payloads stay string-keyed.

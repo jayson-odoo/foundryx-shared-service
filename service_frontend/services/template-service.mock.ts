@@ -33,7 +33,7 @@ function delay<T>(value: T): Promise<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Contexts (mirrors the Phase-B code-side registry — D11)
+// Contexts (mirrors the Phase-B code-side registry - D11)
 // ---------------------------------------------------------------------------
 
 const CONTEXTS: TemplateContext[] = [
@@ -108,7 +108,7 @@ const CONTEXTS: TemplateContext[] = [
     ],
     requiredFacts: [],
   },
-  // Document surface (F2 D9) — sample invoice context exercising list facts.
+  // Document surface (F2 D9) - sample invoice context exercising list facts.
   {
     key: 'document.invoice_preview',
     label: 'Document · Invoice (preview)',
@@ -248,7 +248,7 @@ function seedTemplates(): Template[] {
     ),
     make(
       'account.email_change_approve',
-      'Email change — approve (old mailbox)',
+      'Email change - approve (old mailbox)',
       'account.email_change_approve',
       'Approve your email change request',
       systemDoc({
@@ -260,7 +260,7 @@ function seedTemplates(): Template[] {
     ),
     make(
       'account.email_change_verify',
-      'Email change — verify (new mailbox)',
+      'Email change - verify (new mailbox)',
       'account.email_change_verify',
       'Verify your new email address',
       systemDoc({
@@ -282,7 +282,7 @@ function seedTemplates(): Template[] {
         buttonHref: '{{signinLink}}',
       }),
     ),
-    // Document surface (F2 D9) — starter platform invoice (PDF render target).
+    // Document surface (F2 D9) - starter platform invoice (PDF render target).
     makeTyped(
       'document.invoice',
       'Invoice',
@@ -345,7 +345,7 @@ function validateRequiredFacts(input: TemplateInput): void {
   const context = CONTEXTS.find((c) => c.key === input.context);
   if (!context) throw new Error(`Unknown template context "${input.context}".`);
   // Canvas (badge) docs validate through validateCanvasDoc (lib/canvas-doc), not
-  // the block-doc token collector — skip here.
+  // the block-doc token collector - skip here.
   if (isCanvasDoc(input.doc)) return;
   const used = collectMergeTokens(input.doc, input.subject);
   const missing = context.requiredFacts.filter((f) => !used.has(f));
@@ -464,7 +464,7 @@ export const mockTemplateEngineService: TemplateEngineService = {
   },
 
   previewDocumentPdf(): Promise<Blob> {
-    // A minimal but VALID single-page PDF — enough for the embedded <iframe>
+    // A minimal but VALID single-page PDF - enough for the embedded <iframe>
     // viewer + vitest. The real backend returns WeasyPrint bytes.
     const pdf =
       '%PDF-1.4\n' +
@@ -511,7 +511,7 @@ export const mockTemplateEngineService: TemplateEngineService = {
   },
 };
 
-/** Test hook — reset the in-memory store between Vitest cases. */
+/** Test hook - reset the in-memory store between Vitest cases. */
 export function __resetMockTemplates(): void {
   templates = seedTemplates();
 }

@@ -7,7 +7,7 @@ import { MappingEditorView } from './components/mapping-editor-view';
 
 /**
  * The per-(company, entity) field-mapping editor (plan 15, AC-15-40..44). Gated
- * `autocount.companies.manage` — the same "configure the company" authority the
+ * `autocount.companies.manage` - the same "configure the company" authority the
  * read/write endpoints reuse (no new permission, no grant sweep).
  */
 export default function AutocountMappingPage({

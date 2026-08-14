@@ -1,5 +1,5 @@
 /**
- * Real embed-connection service — talks to the FastAPI shared-service via the
+ * Real embed-connection service - talks to the FastAPI shared-service via the
  * shared api-client. Bound by the `embed-connection-service.ts` barrel.
  *
  * Endpoint map (modules/ideation/routers/embed_admin.py, gated
@@ -11,7 +11,7 @@
  * - remove    → DELETE /ideation/embed-connections/{id}         (204)
  *
  * The admin router returns snake_case JSON (plain pydantic BaseModel), so we map
- * it to the camelCase `EmbedConnectionItem` here — the UI never sees the wire
+ * it to the camelCase `EmbedConnectionItem` here - the UI never sees the wire
  * shape. The signing secret is write-only: it rides create/rotate payloads and
  * is never present in any response.
  */

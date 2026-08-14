@@ -1,7 +1,7 @@
 import type { TemplateDocument } from '@/types/templates';
 
 /**
- * Flatten a template block-document to plain text + merge tokens — used when a
+ * Flatten a template block-document to plain text + merge tokens - used when a
  * template is loaded as a STARTING POINT into an inline subject/body editor
  * (BL-081 "copy" behavior). Rich blocks (brand header/footer, images, social)
  * have no plain-text form and are dropped; headings/paragraphs/buttons keep

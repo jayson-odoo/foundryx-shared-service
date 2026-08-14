@@ -130,7 +130,7 @@ export function LogDetailView({ logId }: { logId: string }) {
                 </div>
               </OverviewRow>
               <OverviewRow label="Latency">
-                {log.latencyMs != null ? `${log.latencyMs} ms` : '—'}
+                {log.latencyMs != null ? `${log.latencyMs} ms` : '-'}
               </OverviewRow>
               <OverviewRow label="Workspace">
                 {log.workspaceId ? (
@@ -141,17 +141,17 @@ export function LogDetailView({ logId }: { logId: string }) {
                     {workspaceName ?? log.workspaceId}
                   </Link>
                 ) : (
-                  '—'
+                  '-'
                 )}
               </OverviewRow>
               <OverviewRow label="API key">
-                {log.apiKeyId ? <code className="text-xs">{log.apiKeyId}</code> : '—'}
+                {log.apiKeyId ? <code className="text-xs">{log.apiKeyId}</code> : '-'}
               </OverviewRow>
               <OverviewRow label="Trace id">
-                {log.traceId ? <TraceLink label={log.traceId} onClick={goToTrace} /> : '—'}
+                {log.traceId ? <TraceLink label={log.traceId} onClick={goToTrace} /> : '-'}
               </OverviewRow>
               <OverviewRow label="External ref">
-                {log.externalRef ? <code className="text-xs">{log.externalRef}</code> : '—'}
+                {log.externalRef ? <code className="text-xs">{log.externalRef}</code> : '-'}
               </OverviewRow>
               <OverviewRow label="Time">{formatDateTime(log.createdAt)}</OverviewRow>
               {log.status === 'error' && log.errorCode && (
@@ -203,7 +203,7 @@ export function LogDetailView({ logId }: { logId: string }) {
         },
       ],
       initialTabId: forcedTab,
-      // Circular record-nav (‹ N / M ›) top-right near Back — reuses the shell's
+      // Circular record-nav (‹ N / M ›) top-right near Back - reuses the shell's
       // built-in inlineNav pager rather than a hand-rolled one.
       inlineNav:
         nav.total > 1 && nav.index >= 0
@@ -216,7 +216,7 @@ export function LogDetailView({ logId }: { logId: string }) {
           : undefined,
       actions: [],
       actionRows: [log],
-      // Read-only surface — log rows are historical facts (no Edit toggle).
+      // Read-only surface - log rows are historical facts (no Edit toggle).
       editable: false,
       isDirty: false,
       onSave: () => true,

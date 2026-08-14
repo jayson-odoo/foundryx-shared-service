@@ -25,7 +25,7 @@ export interface MintApiKeyDialogProps {
 }
 
 /**
- * Mint dialog — name the key, then reveal the full plaintext ONCE. The reveal
+ * Mint dialog - name the key, then reveal the full plaintext ONCE. The reveal
  * step is the only time the plaintext exists client-side; closing clears it.
  */
 export function MintApiKeyDialog({
@@ -130,7 +130,7 @@ export function MintApiKeyDialog({
                 </Button>
               </div>
               <p className="text-sm font-medium text-destructive">
-                Copy this key now — it won&apos;t be shown again.
+                Copy this key now - it won&apos;t be shown again.
               </p>
             </DialogBody>
             <DialogFooter>

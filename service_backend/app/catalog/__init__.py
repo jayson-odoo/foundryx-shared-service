@@ -1,4 +1,4 @@
-"""Core catalog (sprint-4/08) — horizontal product + category master data.
+"""Core catalog (sprint-4/08) - horizontal product + category master data.
 
 Products/categories live in core ``public`` (consumed by CRM quotations, EMS
 ticketing, future commerce), NOT in any one module. ``kind`` is an extensible

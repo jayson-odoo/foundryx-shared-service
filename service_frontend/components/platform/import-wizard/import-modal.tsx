@@ -28,9 +28,9 @@ const MODE_LABELS: Record<ImportMode, string> = {
 };
 
 /**
- * Import wizard step 1 (sprint-3/09 D3/D4) — pick a mode + options, drop the
+ * Import wizard step 1 (sprint-3/09 D3/D4) - pick a mode + options, drop the
  * filled file → routes to the mapping page. Template options (format + which
- * columns) live in a SEPARATE dialog opened from "Download template" — the main
+ * columns) live in a SEPARATE dialog opened from "Download template" - the main
  * modal stays focused on the import itself.
  */
 export function ImportModal({
@@ -164,9 +164,9 @@ export function ImportModal({
 }
 
 /**
- * Template options (plan sprint-3/09 D3) — shown ONLY when downloading a
+ * Template options (plan sprint-3/09 D3) - shown ONLY when downloading a
  * template: choose the format + which columns to include. Required columns are
- * always in (checked + locked). Searchable, scrollable list — scales to many
+ * always in (checked + locked). Searchable, scrollable list - scales to many
  * columns (no pills).
  */
 function TemplateDialog({
@@ -266,7 +266,7 @@ function TemplateDialog({
               onChange={(e) => setSearch(e.target.value)}
             />
             <div className="max-h-60 space-y-0.5 overflow-y-auto rounded-md border p-1">
-              {/* Required — always included, locked. */}
+              {/* Required - always included, locked. */}
               {required.map((c) => (
                 <label
                   key={c.key}

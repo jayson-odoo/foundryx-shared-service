@@ -119,7 +119,7 @@ export function TemplateBuilderView({ channelId, templateId }: TemplateBuilderVi
           return null;
         }
       }
-      toast.error('Could not save. Your input is kept — please retry.');
+      toast.error('Could not save. Your input is kept - please retry.');
       return null;
     }
   };
@@ -147,7 +147,7 @@ export function TemplateBuilderView({ channelId, templateId }: TemplateBuilderVi
       router.push(channelPath);
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : 'Submit failed.';
-      toast.error(`${msg} Your draft is saved — please retry.`);
+      toast.error(`${msg} Your draft is saved - please retry.`);
       router.replace(`${channelPath}/templates/${id}`);
     } finally {
       setSubmitting(false);

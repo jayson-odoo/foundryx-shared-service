@@ -13,14 +13,14 @@ import type {
 import type { FormFieldErrors } from '@/types/forms';
 import { businessRequirementService } from '@/services/business-requirement-service';
 
-/** The BR promote edge id (Gate 0, AC-BI-34) — the ONE edge gated by the
+/** The BR promote edge id (Gate 0, AC-BI-34) - the ONE edge gated by the
  * separate `.promote` permission. A code contract, not a tenant-editable key. */
 const PROMOTE_EDGE_ID = 'br-tr-promote';
 
 export interface UseBrActionsHandlers {
   /** Refresh the form with the moved BR (status + answers). */
   onChanged: (br: BusinessRequirementDetail) => void;
-  /** A promote refused for missing required fields (AC-BI-34b) — surface the
+  /** A promote refused for missing required fields (AC-BI-34b) - surface the
    * per-field map inline on the Details tab. */
   onFieldErrors: (errors: FormFieldErrors) => void;
 }
@@ -35,10 +35,10 @@ function is422Detail(detail: unknown): detail is Detail422 {
 }
 
 /**
- * BR lifecycle + promote action registry (AC-BI-34) — GRAPH-DRIVEN, cloning the
+ * BR lifecycle + promote action registry (AC-BI-34) - GRAPH-DRIVEN, cloning the
  * tenant-console pattern one record at a time. Each outgoing edge from the BR's
  * current status becomes a form action whose label is the bare TARGET status
- * name (EMS per-row-state-move mandate — no "Move to" prefix). The `br-tr-promote`
+ * name (EMS per-row-state-move mandate - no "Move to" prefix). The `br-tr-promote`
  * edge additionally carries the `.promote` permission (the shell hides it for a
  * `.manage`-only user; the server 403 is the real boundary). Firing posts the
  * explicit status move; a promote refused for incomplete answers (AC-BI-34b)
@@ -51,7 +51,7 @@ export function useBrActions(
   const { onChanged, onFieldErrors } = handlers;
   const [graph, setGraph] = useState<StatusGraph | null>(null);
 
-  // The BR entity's edge graph drives the buttons. Fail quiet — Delete stays.
+  // The BR entity's edge graph drives the buttons. Fail quiet - Delete stays.
   useEffect(() => {
     let cancelled = false;
     businessRequirementService
@@ -79,7 +79,7 @@ export function useBrActions(
       const isPromote = edge.id === PROMOTE_EDGE_ID;
       return {
         id: `transition-${edge.id}`,
-        // Bare target status name (user mandate — no "Move to" prefix).
+        // Bare target status name (user mandate - no "Move to" prefix).
         label: target?.label ?? edge.label,
         icon: ArrowRight,
         surfaces: { form: true },

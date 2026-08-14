@@ -1,6 +1,6 @@
 """Secret/PAN masking for the integration log (sprint-4/07 Cluster F slice 3,
 AC-07-28). The webhook request/response we persist must NEVER carry raw secrets
-or card data — mask before it touches ``integration_logs``.
+or card data - mask before it touches ``integration_logs``.
 """
 import re
 from typing import Any
@@ -13,11 +13,11 @@ _SENSITIVE_KEY_PARTS = (
     # AutoCount's AppId is a CREDENTIAL, not an identifier: it authenticates the
     # request AND selects the company database. The provider already declares it
     # ``"type": "password", "secret": True``, so the system treats it as one
-    # everywhere except here. Both spellings — substring matching is literal, so
+    # everywhere except here. Both spellings - substring matching is literal, so
     # "appid" does not cover "app_id".
     "appid", "app_id",
 )
-# A 13–19 digit run = a probable PAN; mask all but the last 4.
+# A 13-19 digit run = a probable PAN; mask all but the last 4.
 _PAN_RE = re.compile(r"\b(\d{13,19})\b")
 _MASK = "***"
 

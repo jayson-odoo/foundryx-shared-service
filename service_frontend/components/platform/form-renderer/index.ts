@@ -1,6 +1,6 @@
 /**
  * Form runtime renderer public API (plan sprint-3/01). Pinned surface another
- * session compiles against — the renderer plus its file-staging escape hatch
+ * session compiles against - the renderer plus its file-staging escape hatch
  * (Phase B upload wiring resolves `local:` answer keys via `stagedFile`).
  */
 export { FormRenderer } from './form-renderer';

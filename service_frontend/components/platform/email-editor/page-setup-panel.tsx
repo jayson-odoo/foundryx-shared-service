@@ -8,7 +8,7 @@ import { DEFAULT_PAGE_SETUP } from '@/lib/template-doc';
 import type { PageSetup } from '@/types/templates';
 
 /**
- * Document page-setup panel (F2 D3) — edits `doc.pageSetup` (size / orientation
+ * Document page-setup panel (F2 D3) - edits `doc.pageSetup` (size / orientation
  * / margins in mm). Only mounted on the document surface.
  */
 

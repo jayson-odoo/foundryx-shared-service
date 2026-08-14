@@ -3,7 +3,7 @@ import { expect, request as pwRequest, test, type APIRequestContext, type Page }
 const API = process.env.NEXT_PUBLIC_BACKEND_API_URL ?? 'http://localhost:8001';
 
 /**
- * Cluster D (sprint-4/05) admin/check-in E2E — the NEW front-end surfaces added
+ * Cluster D (sprint-4/05) admin/check-in E2E - the NEW front-end surfaces added
  * on the `sprint-4/05-cluster-d-admin-addone` branch, exercised with REAL clicks
  * against the live stack (Next :3001 → FastAPI :8001 → Postgres), default tenant.
  *
@@ -83,7 +83,7 @@ test.beforeAll(async () => {
   gaOfferingId = off.id;
 
   // a confirmed ticket (find-or-create profile → participant → ticket) for the
-  // QR/scan specs — set up via the public cart, the flow itself stays clicks.
+  // QR/scan specs - set up via the public cart, the flow itself stays clicks.
   const cart = await (await ctx.post(`${API}/public/register/default/${projectId}/cart`)).json();
   await ctx.post(`${API}/public/register/default/${projectId}/cart/${cart.cartId}/ga`, {
     data: { offeringId: gaOfferingId, qty: 1 },
@@ -98,7 +98,7 @@ test.beforeAll(async () => {
   await ctx.dispose();
 });
 
-test('① Admin add-one — Tickets tab → Add attendee → ticket appears', async ({ page }) => {
+test('① Admin add-one - Tickets tab → Add attendee → ticket appears', async ({ page }) => {
   await login(page);
   await page.goto(`/ems/events/${projectId}`);
   await page.getByRole('tab', { name: /^tickets$/i }).click();
@@ -122,7 +122,7 @@ test('① Admin add-one — Tickets tab → Add attendee → ticket appears', as
   await expect(page.getByText(ADD_EMAIL)).toBeVisible();
 });
 
-test('② QR render + ③ Void — Tickets detail QR + form "…" Void flips status', async ({ page }) => {
+test('② QR render + ③ Void - Tickets detail QR + form "…" Void flips status', async ({ page }) => {
   await login(page);
   await page.goto(`/ems/events/${projectId}`);
   await page.getByRole('tab', { name: /^tickets$/i }).click();
@@ -136,7 +136,7 @@ test('② QR render + ③ Void — Tickets detail QR + form "…" Void flips sta
 
   // open the added attendee's ticket detail → Void via the embedded ticket
   // detail "…" Actions menu (void/refund live on the detail form surface). Scope
-  // to the Tickets tabpanel — the parent event form also has an "Actions" menu.
+  // to the Tickets tabpanel - the parent event form also has an "Actions" menu.
   const ticketsPanel = page.getByRole('tabpanel', { name: 'Tickets' });
   const addedRow = page.getByRole('row').filter({ hasText: ADD_EMAIL });
   await expect(addedRow).toBeVisible();
@@ -154,7 +154,7 @@ test('② QR render + ③ Void — Tickets detail QR + form "…" Void flips sta
   await expect(ticketsPanel.getByRole('button', { name: 'Actions' })).toHaveCount(0);
 });
 
-test('④ Check-in — create checkpoint, scan a ticket, admit lands in the feed', async ({ page }) => {
+test('④ Check-in - create checkpoint, scan a ticket, admit lands in the feed', async ({ page }) => {
   await login(page);
   await page.goto(`/ems/events/${projectId}`);
   await page.getByRole('tab', { name: /check-in/i }).click();
@@ -183,7 +183,7 @@ test('④ Check-in — create checkpoint, scan a ticket, admit lands in the feed
   await (await cpSelect.count() ? cpSelect : cpSelectFallback).click();
   await page.getByRole('option', { name: cpName }).click();
   const tokenInput = page.getByLabel('QR token');
-  // Type the token (a long Fernet string — fill alone doesn't reliably drive the
+  // Type the token (a long Fernet string - fill alone doesn't reliably drive the
   // controlled input's onChange here) and submit with Enter (the input handles it).
   const scan = async (tok: string) => {
     await tokenInput.click();
@@ -192,7 +192,7 @@ test('④ Check-in — create checkpoint, scan a ticket, admit lands in the feed
   };
   await scan(seededQr);
   // The admit lands in the PERSISTENT recent-scans feed (the result banner is
-  // transient — see the BUG note below). AC-05-CHK-01.
+  // transient - see the BUG note below). AC-05-CHK-01.
   await expect(page.getByText(/recent scans/i)).toBeVisible();
   await expect(
     page.locator('li', { hasText: new RegExp(`Seeded Reg ${STAMP}`) }).filter({ hasText: 'Admitted' }),
@@ -204,10 +204,10 @@ test('④ Check-in — create checkpoint, scan a ticket, admit lands in the feed
   // _clean_rejection) + a manual API repro (admit/already_in/denied all correct).
   // The UI result banner is unreliable because ScanPanel's result-clearing effect
   // lists the unstable `state` object in its deps and fires setResult(null) +
-  // loadLogs on nearly every render (BUG — flagged for the coder).
+  // loadLogs on nearly every render (BUG - flagged for the coder).
 });
 
-test('⑤ Import ticket mode — control + conditional Offering/Client pickers', async ({ page }) => {
+test('⑤ Import ticket mode - control + conditional Offering/Client pickers', async ({ page }) => {
   await login(page);
   await page.goto(`/ems/events/${projectId}`);
   await page.getByRole('tab', { name: /participants/i }).click();
@@ -227,7 +227,7 @@ test('⑤ Import ticket mode — control + conditional Offering/Client pickers',
   await modal.getByRole('button', { name: /upload & map/i }).click();
   await page.waitForURL(/\/imports\/[0-9a-f-]+/);
 
-  // AC-05-IMP-01 — the Ticket-mode control renders (project context)
+  // AC-05-IMP-01 - the Ticket-mode control renders (project context)
   await expect(page.getByLabel('Ticket mode')).toBeVisible();
 
   // default = Participants-only → no Offering picker (AC-05-IMP-02)
@@ -248,7 +248,7 @@ test('⑤ Import ticket mode — control + conditional Offering/Client pickers',
   await expect(page.getByLabel('Bill-to client')).toBeVisible();
 });
 
-test('⑥ Mobile — event Tickets tab has no horizontal overflow', async ({ page }) => {
+test('⑥ Mobile - event Tickets tab has no horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 800 });
   await login(page);
   await page.goto(`/ems/events/${projectId}`);

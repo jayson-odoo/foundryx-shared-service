@@ -1,4 +1,4 @@
-# Sprint 3 · Plan 12 — EMS Cluster B (CRM → Catalog → Quotation) · User Acceptance Criteria
+# Sprint 3 · Plan 12 - EMS Cluster B (CRM → Catalog → Quotation) · User Acceptance Criteria
 
 **Plan:** `02-ems-cluster-b-crm-catalog-quotation.md` (Plan 12) · **Advances:** F4 Cluster B (first commercial vertical on `ems`)
 **Design record:** `01-ems-commercial-domain-grill-decisions.md` (grilled 2026-06-18).
@@ -6,11 +6,11 @@
 Order is dependency-driven: client/lead referenced by quotation; products referenced by lines.
 
 Format: **Given / When / Then**, traced to a locked decision (Dn, the plan's §"Locked design
-decisions" 1–7) + pillars 🟢📈🧭✅. MET = named test green (UI at 375/1280 where it renders).
+decisions" 1-7) + pillars 🟢📈🧭✅. MET = named test green (UI at 375/1280 where it renders).
 
 ---
 
-## 1. Functional commercial vertical — works end-to-end 🟢
+## 1. Functional commercial vertical - works end-to-end 🟢
 
 - **AC-12-01 (demo) Full Cluster B net-demo passes.**
   *Given* a tenant with `ems` installed, *when* the operator creates Client "Acme Corp" (Active),
@@ -63,7 +63,7 @@ decisions" 1–7) + pillars 🟢📈🧭✅. MET = named test green (UI at 375/1
 
 ## 2. Scalable architecture / multi-tenant 📈
 
-- **AC-12-09 (D6) Pure engine registration — no new engine code.**
+- **AC-12-09 (D6) Pure engine registration - no new engine code.**
   *Given* the Cluster B entities, *then* each registers into existing engines via
   `register_engine_entities`: status entities (client/lead/quotation graphs), workflow triggerable
   (`client`/`lead`/`quotation` → created/updated/status_changed + the Won→create-Project handler), rule
@@ -95,13 +95,13 @@ decisions" 1–7) + pillars 🟢📈🧭✅. MET = named test green (UI at 375/1
 
 - **AC-12-14 (D7) Inline quick-create Client from the Lead form.**
   *Given* the Lead form's Client field (a `SearchSelect`), *when* the desired client is absent, *then* a
-  "+ New" action opens a create-dialog, creates the Client, and re-selects it inline — no navigation
+  "+ New" action opens a create-dialog, creates the Client, and re-selects it inline - no navigation
   away from the lead.
 
 - **AC-12-15 (D7) Won is a graph-driven action, not a hardcoded button.**
   *Given* a Lead, *then* the convert action surfaces from the status graph's Won edge (mirrors the
   tenant-console graph-driven action pattern); the button label is the bare target status name (house
-  mandate — no "Move to" prefix).
+  mandate - no "Move to" prefix).
 
 - **AC-12-16 Quotation line-item editor reuses RepeaterField.**
   *Given* the quotation form, *then* lines are edited via `RepeaterField`: a product `SearchSelect`
@@ -109,7 +109,7 @@ decisions" 1–7) + pillars 🟢📈🧭✅. MET = named test green (UI at 375/1
 
 - **AC-12-17 Category tree editor reuses the Drive tree pattern.**
   *Given* the catalog, *then* the category tree is edited via the Drive `FolderTree`/`tree.tsx` pattern
-  (no dnd v1 — add/rename/reparent/delete), not a hand-rolled tree.
+  (no dnd v1 - add/rename/reparent/delete), not a hand-rolled tree.
 
 - **AC-12-18 (D6/F10) Terminology relabel follows everywhere.**
   *Given* seeded labels (Client/Account, Lead, Product, Category, Quotation), *when* a tenant relabels
@@ -134,12 +134,12 @@ decisions" 1–7) + pillars 🟢📈🧭✅. MET = named test green (UI at 375/1
 - **AC-12-22 Frontend tests green** (per slice): Resource list/form configs, line-item repeater derivation,
   category tree ops, inline quick-create, attach panel states (loading/empty/error/success).
 
-- **AC-12-23 E2E green** (real clicks, both viewports, dedicated tenant): the net-demo journey — create
+- **AC-12-23 E2E green** (real clicks, both viewports, dedicated tenant): the net-demo journey - create
   client → lead → inline quick-create client → Won→create event → catalog → quotation + lines + attach +
   revise → transitions → Terminology relabel. Per-slice test-report filed.
 
 - **AC-12-24 (governance) Module governance honored:** new module perms in the EMS permissions CSV (grep
-  core first — no collisions: core owns `templates`/`emails`/`forms`/`workflows`, not these), granted to
+  core first - no collisions: core owns `templates`/`emails`/`forms`/`workflows`, not these), granted to
   tenant Admin on `install_tenant`; no core-table alteration; no cross-schema FK into another module. The
   one new core surface (`/documents/links`) rides existing `documents.*` or a new `attachments.*` perm
   (confirmed in Phase B).
@@ -154,22 +154,22 @@ decisions" 1–7) + pillars 🟢📈🧭✅. MET = named test green (UI at 375/1
 375px) → backend (Service-Repository, tenant-scoped) → TDD → E2E real-clicks → independent code
 review with all blockers/majors/actionable-minors fixed.
 - **Backend:** full suite **845 passed** (0 regressions). New: `test_ems_cluster_b.py` (12),
-  `test_ems_catalog.py` (10), `test_ems_quotations.py` (9). Per-module Alembic 0002–0004.
+  `test_ems_catalog.py` (10), `test_ems_quotations.py` (9). Per-module Alembic 0002-0004.
 - **Frontend:** eslint clean across `app/(protected)/ems`. E2E `e2e/ems-cluster-b.spec.ts` (6 specs).
 - **Net demo verified:** Client → Lead (inline quick-create Client) → Won→Create-event (links +
   scoped graph copy) → category tree + product catalog → Quotation + lines + derived total + revise
   + document attach (Drive FileLink seam) → status transitions.
 - **Notable:** core already owns `products.*` → product perms namespaced **`ems_products.*`** (the
   plan's "no collision" note missed this). The **FileLink API already existed**
-  (`/documents/file-links`, ShareService, tenant-scoped) — **consumed, not rebuilt**. See test report.
+  (`/documents/file-links`, ShareService, tenant-scoped) - **consumed, not rebuilt**. See test report.
 - **Pending (operator action):** merge `sprint-3/12-ems-cluster-b` → `main` after final review (held
-  back — two other developers are active on the shared checkout).
+  back - two other developers are active on the shared checkout).
 
 ## Definition of Done (plan 12 / Cluster B)
 All AC-12-* MET across the 3 slices · suites green (incl. unchanged status-engine suite) · E2E reports
 filed per slice · reviewer approved · merged to `main`. Cluster B is the first commercial vertical
 (Lead→Client→Project→Quotation) and reserves the forward contract for clusters D/E/F (Tickets, Review,
-Invoice/Payment/Settlement) — designed-for, not built here.
+Invoice/Payment/Settlement) - designed-for, not built here.
 
 ## Out-of-scope guard (NOT acceptance criteria for this plan)
 Offerings/capacity_units/Tickets/nomination (Cluster D) · Invoice/Payment/gateway/Settlement (Cluster F) ·

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 /**
- * Forgot/change-password E2E (plan 10 §3, Phase A) — real user clicks.
+ * Forgot/change-password E2E (plan 10 §3, Phase A) - real user clicks.
  * The request flow is reached by clicking "Forgot Password?" on signin (real
  * users don't know URLs); the redeem page is entered via a tokened URL because
  * that IS the real entry path (the link in the reset email).
@@ -93,7 +93,7 @@ test.describe('Change password (redeem)', () => {
 
 test.describe('Parked signup (plan 10 D3)', () => {
   // notFound() from a client component renders the not-found boundary (the
-  // HTTP status of the prerendered shell stays 200) — assert the UI.
+  // HTTP status of the prerendered shell stays 200) - assert the UI.
   test('/signup renders not-found while signup is disabled', async ({
     page,
   }) => {

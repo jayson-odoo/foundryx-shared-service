@@ -1,5 +1,5 @@
 /**
- * PHASE 1 MOCK — in-memory Business Requirement service (Phase B-i slice 2).
+ * PHASE 1 MOCK - in-memory Business Requirement service (Phase B-i slice 2).
  *
  * Frontend-first scaffolding: drives every UI state (loading/error/success) with
  * no backend. The shipped app binds `.real` (see business-requirement-service.ts);

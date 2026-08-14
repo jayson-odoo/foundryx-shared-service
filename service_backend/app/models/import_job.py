@@ -23,7 +23,7 @@ def _uuid() -> str:
     return str(uuid.uuid4())
 
 
-# Modes (D5) — chosen in the modal, never guessed.
+# Modes (D5) - chosen in the modal, never guessed.
 MODE_CREATE_ONLY = "create_only"
 MODE_UPDATE_ONLY = "update_only"
 MODE_UPSERT = "upsert"
@@ -50,7 +50,7 @@ class ImportJob(Base):
     abort_on_invalid = Column(Boolean, nullable=False, default=False)
     # Embedded-list parent scope, e.g. {"project_id": "..."} (D17).
     context_json = Column(_JSON, nullable=True)
-    # Default OFF — a backfill must not fire 10k workflow events (D13).
+    # Default OFF - a backfill must not fire 10k workflow events (D13).
     trigger_automations = Column(Boolean, nullable=False, default=False)
     # tz assumed for naive datetimes (D6 transparency).
     assumed_tz = Column(String, nullable=True)

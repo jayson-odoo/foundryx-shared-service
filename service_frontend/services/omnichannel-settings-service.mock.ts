@@ -1,5 +1,5 @@
 /**
- * PHASE 1 MOCK — in-memory omnichannel media-caps settings (plan 12 Slice 3).
+ * PHASE 1 MOCK - in-memory omnichannel media-caps settings (plan 12 Slice 3).
  * Deterministic ceilings/mimes mirror the backend (`media_pipeline` META_CEILINGS
  * / ACCEPTED_MIMES). Retained for tests + tunable frontend states; the shipped
  * page binds the REAL service. Delete once no longer referenced.

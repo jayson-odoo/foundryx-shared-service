@@ -157,7 +157,7 @@ describe('realIdeationService', () => {
   it('updateIdea skips setStatus when the status is unchanged (no self-transition)', async () => {
     apiFetch.mockResolvedValue(anIdea({ status: 'captured', problem: 'y' }));
     await svc.updateIdea('idea-1', { problem: 'y', status: 'captured' });
-    // Only the PATCH — no follow-up POST /status.
+    // Only the PATCH - no follow-up POST /status.
     expect(apiFetch).toHaveBeenCalledTimes(1);
     expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas/idea-1', {
       method: 'PATCH',

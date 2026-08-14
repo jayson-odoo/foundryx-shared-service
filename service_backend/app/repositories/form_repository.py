@@ -1,8 +1,8 @@
-"""Form + FormVersion persistence (plan sprint-3/01) — pure SQLAlchemy, ALWAYS
+"""Form + FormVersion persistence (plan sprint-3/01) - pure SQLAlchemy, ALWAYS
 tenant-scoped. Every query filters ``tenant_id``; the tenant comes from the
 authed context, never client input (multi-tenancy invariant). Versions are
 reached only THROUGH their owning form (a join to ``forms`` enforces the tenant
-boundary — a stored ``version_id`` is never resolved unscoped, the polymorphic
+boundary - a stored ``version_id`` is never resolved unscoped, the polymorphic
 target_id rule).
 """
 from typing import Dict, List, Optional, Tuple
@@ -46,7 +46,7 @@ class FormRepository:
         if filter_clause is not None:
             query = query.filter(filter_clause)
         total = query.count()
-        # submissionCount sort skipped (D — awkward over a grouped subquery; the
+        # submissionCount sort skipped (D - awkward over a grouped subquery; the
         # column still sorts client-falls-back on the page set).
         sort_map = {
             "name": Form.name,
@@ -98,7 +98,7 @@ class FormRepository:
             .filter(
                 FormSubmission.tenant_id == tenant_id,
                 FormSubmission.form_id.in_(form_ids),
-                # Count logical submissions — one per revision group (R3).
+                # Count logical submissions - one per revision group (R3).
                 FormSubmission.is_current.is_(True),
             )
             .group_by(FormSubmission.form_id)
@@ -125,7 +125,7 @@ class FormRepository:
         return version
 
     def get_version(self, tenant_id: str, version_id: str) -> Optional[FormVersion]:
-        """Tenant-scoped via the join to the owning form — a version id from
+        """Tenant-scoped via the join to the owning form - a version id from
         another tenant resolves to None (never trust a stored id unscoped)."""
         return (
             self.db.query(FormVersion)

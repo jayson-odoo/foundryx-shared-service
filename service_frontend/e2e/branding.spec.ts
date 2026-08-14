@@ -7,18 +7,18 @@ import {
 } from '@playwright/test';
 
 /**
- * Tenant Branding E2E (plan sprint-2/03 Phase C) — real user clicks against
+ * Tenant Branding E2E (plan sprint-2/03 Phase C) - real user clicks against
  * the LIVE stack (Next :3001 → FastAPI :8001 → Postgres). Backend must be up +
  * bootstrapped (`python -m scripts.bootstrap_db`).
  *
  * Each test provisions a DEDICATED timestamped tenant via the operator API
- * (suite runs fullyParallel — branding the default tenant would restyle every
+ * (suite runs fullyParallel - branding the default tenant would restyle every
  * concurrent spec's UI mid-run). The flows themselves are all real clicks.
  */
 
 const API = 'http://localhost:8001';
 
-// 1×1 transparent PNG — real magic bytes (the backend sniffs content).
+// 1×1 transparent PNG - real magic bytes (the backend sniffs content).
 const PNG = Buffer.from(
   '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489' +
     '0000000d49444154789c6260000000060001a2c1a1bd0000000049454e44ae426082',
@@ -138,7 +138,7 @@ test.describe('Tenant Branding (live stack)', () => {
     // Draft preview reflects the pick before saving (scoped vars, app untouched).
     await expect(
       page.getByText(
-        'Soft primary surface — banners, selected rows, highlights.',
+        'Soft primary surface - banners, selected rows, highlights.',
       ),
     ).toBeVisible();
 
@@ -165,7 +165,7 @@ test.describe('Tenant Branding (live stack)', () => {
     const template = JSON.parse(fs.readFileSync(path!, 'utf8'));
     expect(template.light.primary).toBe(PURPLE);
 
-    // Pre-auth sign-in page: tenant logo + slogan + themed button, no FoundryX leak.
+    // Pre-auth sign-in page: tenant logo + slogan + themed button, no Foundryx leak.
     await page.goto(`${tenantHost(tenant.slug)}/signin`);
     await expect(page).toHaveTitle(tenant.name);
     const panelLogo = page.getByRole('img', { name: 'Logo' }).first();
@@ -183,17 +183,17 @@ test.describe('Tenant Branding (live stack)', () => {
       .toBe(PURPLE_RGB);
   });
 
-  test('unbranded tenant gets stock FoundryX branding on its sign-in page', async ({
+  test('unbranded tenant gets stock Foundryx branding on its sign-in page', async ({
     page,
     request,
   }) => {
-    // A fresh tenant with NO branding row — the default-fallback contract.
+    // A fresh tenant with NO branding row - the default-fallback contract.
     // (Deliberately not the `default` tenant: local manual testing may have
     // branded it, and this suite must stay residue-proof.)
     const tenant = await provisionTenant(request, 'stock');
     await page.goto(`${tenantHost(tenant.slug)}/signin`);
     await expect(page.getByText('One platform, every conversation.')).toBeVisible();
-    await expect(page).toHaveTitle(/FoundryX EMS/);
+    await expect(page).toHaveTitle(/Foundryx EMS/);
   });
 
   test('operator edits a tenant’s branding from the console Branding tab', async ({
@@ -222,7 +222,7 @@ test.describe('Tenant Branding (live stack)', () => {
     await expect(row).toBeVisible();
     // Outlast the trailing debounced refetch (row detaches mid-click otherwise).
     await page.waitForTimeout(800);
-    // Rows navigate via router.push on click (no anchor) — click the name cell.
+    // Rows navigate via router.push on click (no anchor) - click the name cell.
     await row.getByText(tenant.name).click();
     await expect(page).toHaveURL(/\/platform\/tenants\/.+/);
 
@@ -232,8 +232,8 @@ test.describe('Tenant Branding (live stack)', () => {
     await expect(page.getByText('Branding saved.')).toBeVisible();
 
     // The edit is live on the tenant's own pre-auth sign-in page; the
-    // operator's console keeps stock FoundryX theming (edit targeted the OTHER
-    // tenant — no cross-restyle).
+    // operator's console keeps stock Foundryx theming (edit targeted the OTHER
+    // tenant - no cross-restyle).
     expect(
       await page.evaluate(() =>
         document.documentElement.style.getPropertyValue('--foundryx-primary'),

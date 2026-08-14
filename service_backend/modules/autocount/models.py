@@ -1,21 +1,21 @@
-"""AutoCount module tables (plan §7) — schema ``app_autocount``.
+"""AutoCount module tables (plan §7) - schema ``app_autocount``.
 
 **Every table carries ``tenant_id`` AND ``company_id``, and every query filters
 BOTH (AC-13-41).** Cross-tenant *or* cross-company leakage is a critical defect:
 one tenant may run several AutoCount companies, so tenant-scoping alone would
 let company A's staged purchase documents surface under company B.
-(``ac_company`` is the one exception in form only — its own ``id`` IS the
+(``ac_company`` is the one exception in form only - its own ``id`` IS the
 company id.)
 
 House rules honoured here:
-  * ``UTCDateTime`` columns only — never a plain ``DateTime``.
-  * ``JSON(none_as_null=True)`` — the default stores Python ``None`` as JSON
+  * ``UTCDateTime`` columns only - never a plain ``DateTime``.
+  * ``JSON(none_as_null=True)`` - the default stores Python ``None`` as JSON
     ``null``, which passes ``IS NOT NULL`` and ghosts as a present value.
   * Cross-schema references to core (``connections.id``, ``background_jobs.id``)
     are plain INDEXED String columns, never DB-level FKs (BL-030).
 
 Slice-1 scope. ``ac_quarantine`` (masters, slice 3) and ``ac_write_queue``
-(writes, slice 4) are deliberately absent — an unused table invites code that
+(writes, slice 4) are deliberately absent - an unused table invites code that
 half-implements it.
 """
 import uuid
@@ -54,14 +54,14 @@ SYNC_MODE_SCHEDULED_REVIEW = "SCHEDULED_REVIEW"
 SYNC_MODE_AUTO = "AUTO"
 SYNC_MODES = (SYNC_MODE_MANUAL, SYNC_MODE_SCHEDULED_REVIEW, SYNC_MODE_AUTO)
 # Modes that stop at the approval gate. AUTO is declared but NOT reachable in
-# slice 1 — it is validated against this set, so selecting it is a clean 422
+# slice 1 - it is validated against this set, so selecting it is a clean 422
 # rather than a silent straight-through push nobody reviewed.
 GATED_SYNC_MODES = (SYNC_MODE_MANUAL, SYNC_MODE_SCHEDULED_REVIEW)
 
 # ── push-target sink impls (hop 2, plan 14) ───────────────────────────────────
 # The name of the consumer sink a company delivers to. Kept as a literal here
 # (matching ``sinks.SINK_LOGGING`` / ``sinks_sorento.SINK_SORENTO``) so the model
-# layer never imports the sink layer — ``models`` is loaded first at bootstrap.
+# layer never imports the sink layer - ``models`` is loaded first at bootstrap.
 SINK_IMPL_LOGGING = "logging"
 SINK_IMPL_SORENTO = "sorento"
 
@@ -98,7 +98,7 @@ class AcCompany(AutocountBase):
 
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String, nullable=False, index=True)
-    # Core ``connections.id`` — plain indexed column, not an FK (BL-030).
+    # Core ``connections.id`` - plain indexed column, not an FK (BL-030).
     connection_id = Column(String, nullable=False, index=True)
 
     database_name = Column(String, nullable=False)  # discovered (AC-13-01)
@@ -108,16 +108,16 @@ class AcCompany(AutocountBase):
 
     # ── push target (hop 2, plan 14) ─────────────────────────────────────────
     # Which consumer sink this company delivers ALL its entities to. Default
-    # ``'logging'`` keeps the slice-1 no-op — a company that has not configured
+    # ``'logging'`` keeps the slice-1 no-op - a company that has not configured
     # a target changes nothing. ``'sorento'`` + a ``sink_connection_id`` selects
     # the real Sorento sink. A ``server_default`` is REQUIRED (not just the
     # Python ``default``): on a create_all-first host the ADD carries it to
-    # existing rows, and on a stamped host the migration's ADD does — either way
+    # existing rows, and on a stamped host the migration's ADD does - either way
     # no ``ac_company`` row is ever left NULL against this NOT NULL column.
     sink_impl = Column(
         String, nullable=False, default=SINK_IMPL_LOGGING, server_default="logging"
     )
-    # Core ``connections.id`` of the ``consumer`` connection to push to — plain
+    # Core ``connections.id`` of the ``consumer`` connection to push to - plain
     # indexed column, not an FK (BL-030). NULL when ``sink_impl='logging'``.
     sink_connection_id = Column(String, nullable=True, index=True)
 
@@ -128,7 +128,7 @@ class AcCompany(AutocountBase):
 class AcEntityConfig(AutocountBase):
     """Per (company, entity): sync mode, source implementation, record cap.
 
-    ``source_impl`` is the D6 pluggability axis — which fetch strategy this
+    ``source_impl`` is the D6 pluggability axis - which fetch strategy this
     entity uses. Uncertainty lives in HOW data is fetched, not in endpoint
     topology (which is a fixed uniform grammar), so that is where the seam is.
     """
@@ -151,7 +151,7 @@ class AcEntityConfig(AutocountBase):
     # The OUTER response shape this entity returns (AC-14-03). GRN is a dict
     # carrying ``Status``; masters are a bare ARRAY whose rows carry their own.
     # Neither is derivable from the other, and reading a master response through
-    # the GRN unwrap fails every row — so it is configured, never guessed.
+    # the GRN unwrap fails every row - so it is configured, never guessed.
     envelope = Column(String, nullable=False, default=ENVELOPE_STATUS_DICT)
     # Whether the FIRST sync (no watermark yet) is unbounded or lookback-windowed
     # (AC-14-25). A document stream is naturally time-bounded; a master list is a
@@ -160,10 +160,10 @@ class AcEntityConfig(AutocountBase):
     initial_load = Column(String, nullable=False, default=INITIAL_LOAD_WINDOWED)
     # The vendor's ``RecordCount`` cap. Hitting it is the ONLY truncation signal
     # available (the response's "N of TOTAL" marker is computed POST-cap and is
-    # not a total) — and hitting it is logged and fails loudly (AC-13-46).
+    # not a total) - and hitting it is logged and fails loudly (AC-13-46).
     record_cap = Column(Integer, nullable=False, default=200)
     # How far back the FIRST sync reaches when no watermark exists yet.
-    # **Applies to ``initial_load='windowed'`` entities ONLY** — a ``full``
+    # **Applies to ``initial_load='windowed'`` entities ONLY** - a ``full``
     # entity ignores it entirely.
     initial_lookback_days = Column(Integer, nullable=False, default=30)
     enabled = Column(Boolean, nullable=False, default=True)
@@ -176,7 +176,7 @@ class AcWatermark(AutocountBase):
     """Per (company, entity) delta high-water mark.
 
     Advances **only on batch success**, to the max ``LastModified`` observed
-    (AC-13-05). A failed document holds it for that entity (D18) — re-reading a
+    (AC-13-05). A failed document holds it for that entity (D18) - re-reading a
     window is cheap and idempotent; skipping a window loses data silently.
     """
 
@@ -205,7 +205,7 @@ class AcWatermark(AutocountBase):
 
 
 class AcFieldMapping(AutocountBase):
-    """ONE mapping instruction (D5, AC-13-08) — the row an operator adds or
+    """ONE mapping instruction (D5, AC-13-08) - the row an operator adds or
     removes to change behaviour with no code change.
 
     Per (company, entity) because per-customer UDF arrays are exactly what
@@ -243,7 +243,7 @@ class AcFieldMapping(AutocountBase):
     formula = Column(Text, nullable=True)
     is_required = Column(Boolean, nullable=False, default=False)
     is_enabled = Column(Boolean, nullable=False, default=True)
-    # Per-field ownership (D8) — consumed by slice 3's masters merge. Carried
+    # Per-field ownership (D8) - consumed by slice 3's masters merge. Carried
     # now so a mapping row never needs a migration to gain it later.
     is_source_owned = Column(Boolean, nullable=False, default=True)
     sort_order = Column(Integer, nullable=False, default=0)
@@ -256,7 +256,7 @@ class AcStagedRecord(AutocountBase):
     """A canonical record awaiting approval, plus its RAW source payload.
 
     ``raw_json`` is retained deliberately (AC-13-07): a field discovered later
-    can be mapped retroactively without re-fetching history — and once a window
+    can be mapped retroactively without re-fetching history - and once a window
     has passed, re-fetching history is exactly what the vendor API makes hard.
     """
 
@@ -271,10 +271,10 @@ class AcStagedRecord(AutocountBase):
     tenant_id = Column(String, nullable=False, index=True)
     company_id = Column(String, nullable=False, index=True)
     entity_type = Column(String, nullable=False)
-    # Core ``background_jobs.id`` — plain indexed column, not an FK (BL-030).
+    # Core ``background_jobs.id`` - plain indexed column, not an FK (BL-030).
     job_id = Column(String, nullable=False, index=True)
 
-    source_ref = Column(String, nullable=False)  # DocKey — stable correlation
+    source_ref = Column(String, nullable=False)  # DocKey - stable correlation
     doc_no = Column(String, nullable=True)  # display only; MUTABLE at source
     source_last_modified = Column(UTCDateTime(), nullable=True)
 
@@ -295,7 +295,7 @@ class AcSyncRun(AutocountBase):
 
     Separate from ``background_jobs`` on purpose: the job row is generic
     machinery (claim / progress / abort), this is the integration-domain record
-    an operator reads — which window, how many, why it stopped.
+    an operator reads - which window, how many, why it stopped.
     """
 
     __tablename__ = "ac_sync_run"
@@ -320,7 +320,7 @@ class AcSyncRun(AutocountBase):
 
     outcome = Column(String, nullable=True)  # one of RUN_OUTCOMES
     error = Column(Text, nullable=True)
-    # True when the record cap was hit — a truncated sync must NEVER read as a
+    # True when the record cap was hit - a truncated sync must NEVER read as a
     # complete one (AC-13-46).
     truncated = Column(Boolean, nullable=False, default=False)
     watermark_advanced_to = Column(UTCDateTime(), nullable=True)

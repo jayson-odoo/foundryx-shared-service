@@ -2,7 +2,7 @@
 
 /**
  * Status node for the flow canvas (sprint-2/01). Shows the status color,
- * label and trait-flag badges. A TERMINAL status renders no source handle —
+ * label and trait-flag badges. A TERMINAL status renders no source handle -
  * outgoing edges are impossible at the UI layer too (strict graph, D4).
  */
 import { Handle, Position, type NodeProps } from '@xyflow/react';

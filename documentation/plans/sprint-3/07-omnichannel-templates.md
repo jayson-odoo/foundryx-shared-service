@@ -1,6 +1,6 @@
-# Sprint 3 · Plan 07 — Omnichannel WhatsApp Templates: Manage / Submit / Sync (Slice B1)
+# Sprint 3 · Plan 07 - Omnichannel WhatsApp Templates: Manage / Submit / Sync (Slice B1)
 
-> **Feature:** Full WhatsApp message-template management on the omnichannel **channel form → Templates tab** — build, submit, edit, delete templates, with Meta-driven status/quality sync. The headline of the WABA-management work.
+> **Feature:** Full WhatsApp message-template management on the omnichannel **channel form → Templates tab** - build, submit, edit, delete templates, with Meta-driven status/quality sync. The headline of the WABA-management work.
 >
 > **This plan = Slice B1** (text + media-header + standard-button templates, categories Marketing/Utility). Configuration + Profile = plan 06 (Slice A). **Authentication** templates = plan 08 (Slice B2, distinct shape, grilled separately).
 >
@@ -8,7 +8,7 @@
 
 ---
 
-## 0. Locked decisions (grilled — see plan 06 §0/§9)
+## 0. Locked decisions (grilled - see plan 06 §0/§9)
 
 | # | Decision | Resolution |
 |---|----------|------------|
@@ -42,7 +42,7 @@ The **Templates tab** (plan-06 channel form) goes live:
 ```
 
 - **List:** embedded `ResourceList`, server sort/filter/search/paginate, columns Status (StatusBadge) · Name · Category · Quality · Language · ⋮. Rejected rows show `rejected_reason` inline. Toolbar: Search + Status/Category/Language filters + **Sync** + **Submit Template**.
-- **Builder route** (`…/channels/[id]/templates/new` + `/[templateId]`): full-page, two-pane — component editor left, live WhatsApp-bubble preview right (mirror plan 06's preview style / the email-editor two-pane). **View payload** = read-only raw Meta JSON.
+- **Builder route** (`…/channels/[id]/templates/new` + `/[templateId]`): full-page, two-pane - component editor left, live WhatsApp-bubble preview right (mirror plan 06's preview style / the email-editor two-pane). **View payload** = read-only raw Meta JSON.
 - **Row actions (⋮):** Edit (status-gated), Delete, View payload, (Submit if `LOCAL_DRAFT`).
 
 ---
@@ -61,9 +61,9 @@ New columns:
 | `last_synced_at` | `UTCDateTime` nullable | stamped on Sync |
 | `media_sample_key` | `String` nullable | `storage_for_tenant` key for a draft media-header sample (pre-submit) |
 
-`status` value set widens to: `LOCAL_DRAFT, PENDING, APPROVED, REJECTED, PAUSED, DISABLED`. `components_json` = **Meta component-array shape** (canonical, single store — T5). `name`+`language` stay the natural key for the send-picker; `meta_template_id` is the reliable sync key.
+`status` value set widens to: `LOCAL_DRAFT, PENDING, APPROVED, REJECTED, PAUSED, DISABLED`. `components_json` = **Meta component-array shape** (canonical, single store - T5). `name`+`language` stay the natural key for the send-picker; `meta_template_id` is the reliable sync key.
 
-> **No `WhatsappTemplate` deletion is soft** — delete removes the row (T7).
+> **No `WhatsappTemplate` deletion is soft** - delete removes the row (T7).
 
 ---
 
@@ -86,7 +86,7 @@ interface WaTemplateDoc {
 }
 ```
 
-`lib/whatsapp-template.ts` exports `toMetaComponents(doc)` / `fromMetaComponents(components, meta)` — used FE (builder ⇄ preview, submit payload) and mirrored BE (validation + submit + sync parse). One transform, no drift.
+`lib/whatsapp-template.ts` exports `toMetaComponents(doc)` / `fromMetaComponents(components, meta)` - used FE (builder ⇄ preview, submit payload) and mirrored BE (validation + submit + sync parse). One transform, no drift.
 
 **Variable rule:** `body.examples.length` MUST equal the count of distinct `{{n}}` in `body.text`; header TEXT allows ≤1 var with one example. Enforced both layers → `422 {fieldErrors}`.
 
@@ -94,32 +94,32 @@ interface WaTemplateDoc {
 
 ## 4. Backend
 
-**Adapter** (`adapters/whatsapp_cloud.py`) — new methods (dev-stubbed):
+**Adapter** (`adapters/whatsapp_cloud.py`) - new methods (dev-stubbed):
 - `create_template(credentials, waba_id, components_payload) -> {meta_template_id, status}` → `POST /{waba_id}/message_templates`. Dev: fake id + `PENDING`.
 - `edit_template(credentials, meta_template_id, components_payload) -> None` → `POST /{meta_template_id}`. Dev: no-op.
 - `delete_template(credentials, waba_id, name, meta_template_id|None) -> None` → `DELETE /{waba_id}/message_templates?name=&hsm_id=`. Dev: no-op.
-- `upload_resumable(credentials, app_id, file_bytes, mime) -> handle` → Meta `/{app_id}/uploads` session → upload → file handle. Dev: fake handle. **(T10 — heaviest; shared helper, reused by BL-108 profile photo.)**
+- `upload_resumable(credentials, app_id, file_bytes, mime) -> handle` → Meta `/{app_id}/uploads` session → upload → file handle. Dev: fake handle. **(T10 - heaviest; shared helper, reused by BL-108 profile photo.)**
 - `parse_inbound` extended: recognise `message_template_status_update` / `message_template_quality_update` / `message_template_category_update` change payloads → events `{kind: 'template_status'|'template_quality'|'template_category', message_template_id, name, language, status?, reason?, quality?, category?}`.
-- `list_templates` already returns name/language/category/status/components — reuse for pull-sync; add `quality_score` + `id` to the field set.
+- `list_templates` already returns name/language/category/status/components - reuse for pull-sync; add `quality_score` + `id` to the field set.
 
-**Service** — new `TemplateManagementService`:
-- `list(channel_id, tenant_id, filters, page)` — all statuses, paginated, tenant-scoped.
-- `save_draft(channel_id, tenant_id, doc)` — validate → upsert `LOCAL_DRAFT` row (`components_json` = `toMetaComponents`); media sample → `storage_for_tenant` key into `media_sample_key`.
-- `submit(channel_id, tenant_id, template_id)` — validate → (media-header: fetch sample bytes → `upload_resumable` → handle into example) → `adapter.create_template` → set `meta_template_id` + `PENDING`. Dev: PENDING+fake id.
-- `edit(channel_id, tenant_id, template_id, doc)` — status gate (T7); draft=local; synced=`adapter.edit_template`→`PENDING`.
-- `delete(channel_id, tenant_id, template_id)` — draft=local row delete; synced=`adapter.delete_template`→hard-delete row.
-- `sync(channel_id, tenant_id)` — pull `list_templates` → reconcile by `meta_template_id` (fallback name+language): update status/quality/category, stamp `last_synced_at`. Dev: promote local `PENDING`→`APPROVED`.
-- `apply_webhook_event(channel_id, event)` — called from the inbound pipeline; match row → update status/quality/category/`rejected_reason`. **Emit-ready** `template.status_changed` (logged seam, trigger deferred BL-109).
+**Service** - new `TemplateManagementService`:
+- `list(channel_id, tenant_id, filters, page)` - all statuses, paginated, tenant-scoped.
+- `save_draft(channel_id, tenant_id, doc)` - validate → upsert `LOCAL_DRAFT` row (`components_json` = `toMetaComponents`); media sample → `storage_for_tenant` key into `media_sample_key`.
+- `submit(channel_id, tenant_id, template_id)` - validate → (media-header: fetch sample bytes → `upload_resumable` → handle into example) → `adapter.create_template` → set `meta_template_id` + `PENDING`. Dev: PENDING+fake id.
+- `edit(channel_id, tenant_id, template_id, doc)` - status gate (T7); draft=local; synced=`adapter.edit_template`→`PENDING`.
+- `delete(channel_id, tenant_id, template_id)` - draft=local row delete; synced=`adapter.delete_template`→hard-delete row.
+- `sync(channel_id, tenant_id)` - pull `list_templates` → reconcile by `meta_template_id` (fallback name+language): update status/quality/category, stamp `last_synced_at`. Dev: promote local `PENDING`→`APPROVED`.
+- `apply_webhook_event(channel_id, event)` - called from the inbound pipeline; match row → update status/quality/category/`rejected_reason`. **Emit-ready** `template.status_changed` (logged seam, trigger deferred BL-109).
 
 **Server validation** (`template_schemas.py validate_doc`): name snake_case ≤512 + unique per channel, category in {MARKETING,UTILITY}, language in Meta set, body required non-empty, sample-count == `{{n}}` count, buttons ≤10 quick-reply / URL+phone shape / copy-code rules, header constraints → `422 {fieldErrors}`.
 
-**Router** — new `routers/templates.py`, mounted under the omnichannel prefix:
-- `GET  /channels/{id}/templates/manage` (gated `templates.read`) — list all statuses. *(distinct path from the existing `conversations.reply` send-picker `GET /channels/{id}/templates`.)*
-- `POST /channels/{id}/templates` (`templates.manage`) — save draft.
-- `PATCH /channels/{id}/templates/{tid}` (`templates.manage`) — edit.
-- `POST /channels/{id}/templates/{tid}/submit` (`templates.manage`) — submit.
-- `DELETE /channels/{id}/templates/{tid}` (`templates.manage`) — delete.
-- `POST /channels/{id}/templates/sync` (`templates.manage`) — Sync.
+**Router** - new `routers/templates.py`, mounted under the omnichannel prefix:
+- `GET  /channels/{id}/templates/manage` (gated `templates.read`) - list all statuses. *(distinct path from the existing `conversations.reply` send-picker `GET /channels/{id}/templates`.)*
+- `POST /channels/{id}/templates` (`templates.manage`) - save draft.
+- `PATCH /channels/{id}/templates/{tid}` (`templates.manage`) - edit.
+- `POST /channels/{id}/templates/{tid}/submit` (`templates.manage`) - submit.
+- `DELETE /channels/{id}/templates/{tid}` (`templates.manage`) - delete.
+- `POST /channels/{id}/templates/sync` (`templates.manage`) - Sync.
 
 **Inbound pipeline** (`services/inbound_service.py`): after message/status handling, route `template_*` events → `TemplateManagementService.apply_webhook_event`. **Idempotent** (status update may repeat).
 
@@ -134,14 +134,14 @@ Granted to tenant Admin in the module's `install_tenant` grant (mirror the exist
 
 ## 5. Frontend
 
-- **Templates tab** in the channel form (`app/(protected)/omnichannel/settings/channels/[id]/components/`): embedded `ResourceList` config (`use-template-list-config.ts`) — columns, filters, fetcher → `templateService.listManage`, row actions registry. **Submit Template** → routes to the builder.
+- **Templates tab** in the channel form (`app/(protected)/omnichannel/settings/channels/[id]/components/`): embedded `ResourceList` config (`use-template-list-config.ts`) - columns, filters, fetcher → `templateService.listManage`, row actions registry. **Submit Template** → routes to the builder.
 - **Builder route** (`.../templates/new` + `[templateId]/page.tsx`): two-pane.
-  - Left: `WaTemplateBuilder` — name/category/language (SearchSelect), header type toggle (None/Text/Media → media = file input with sniff-gated upload to draft storage), body rich-ish textarea with `{{n}}` insert + per-variable sample inputs, footer, button repeater (type SearchSelect → conditional fields). Validation mirror via `lib/form-validate`-style per-field errors.
-  - Right: `WaBubblePreview` — renders `WaTemplateDoc` as a WhatsApp message bubble live. **View payload** dialog = `toMetaComponents(doc)` pretty-printed read-only.
+  - Left: `WaTemplateBuilder` - name/category/language (SearchSelect), header type toggle (None/Text/Media → media = file input with sniff-gated upload to draft storage), body rich-ish textarea with `{{n}}` insert + per-variable sample inputs, footer, button repeater (type SearchSelect → conditional fields). Validation mirror via `lib/form-validate`-style per-field errors.
+  - Right: `WaBubblePreview` - renders `WaTemplateDoc` as a WhatsApp message bubble live. **View payload** dialog = `toMetaComponents(doc)` pretty-printed read-only.
   - Actions: **Save draft**, **Submit** (validates then submits), dirty-guard via the shell's AlertDialog.
-- **StatusBadge registry** for template statuses (Approved=green, Rejected=red, Pending=amber, Paused=grey, Disabled=grey, Local draft=neutral) — frontend-only, per the no-status-engine decision.
+- **StatusBadge registry** for template statuses (Approved=green, Rejected=red, Pending=amber, Paused=grey, Disabled=grey, Local draft=neutral) - frontend-only, per the no-status-engine decision.
 - Layering: UI → hooks (`use-template-list`, `use-template-builder`) → `template-service.{ts,mock,real}` → `api-client`. **Frontend-first** with the mock returning canned templates across all statuses so the builder + list states tune offline.
-- Dropdowns = `SearchSelect`; truncated cells = `ClampedText`. Mobile + desktop verified (two-pane builder stacks `flex-col lg:flex-row`, preview below editor on mobile — same responsive rule as the email/form builders).
+- Dropdowns = `SearchSelect`; truncated cells = `ClampedText`. Mobile + desktop verified (two-pane builder stacks `flex-col lg:flex-row`, preview below editor on mobile - same responsive rule as the email/form builders).
 
 ---
 
@@ -149,7 +149,7 @@ Granted to tenant Admin in the module's `install_tenant` grant (mirror the exist
 
 Service-layer shortcuts (T9), gated by the `credentials.dev` flag:
 - Submit → `PENDING` + fake `meta_template_id` (no Meta call); media `upload_resumable` → fake handle.
-- Sync → promote local `PENDING` → `APPROVED` (simulates review completing — the visible pull path without webhooks).
+- Sync → promote local `PENDING` → `APPROVED` (simulates review completing - the visible pull path without webhooks).
 - Edit → `PENDING`; Delete → local row delete.
 
 A tester completes draft → submit → Sync(→approved) → edit → delete entirely offline. Real mode drives live Graph + the webhook updates the row asynchronously.
@@ -159,7 +159,7 @@ A tester completes draft → submit → Sync(→approved) → edit → delete en
 ## 7. Tests (TDD)
 
 **Backend** (`tests/test_omni_templates.py`):
-- transform round-trip `toMetaComponents`/`fromMetaComponents` (text, media header, all button types) — parity goldens.
+- transform round-trip `toMetaComponents`/`fromMetaComponents` (text, media header, all button types) - parity goldens.
 - `validate_doc` matrix: bad name, dup name, bad category/lang, empty body, sample-count mismatch, button-limit, bad URL/phone → 422.
 - `save_draft` → LOCAL_DRAFT row; `submit` (dev) → PENDING + meta id; media submit → upload called, handle in payload.
 - `edit` status gate (draft free / approved components-only→PENDING / pending hidden→409); `delete` (draft local / synced calls Meta + removes row).
@@ -185,8 +185,8 @@ A tester completes draft → submit → Sync(→approved) → edit → delete en
 
 | BL | Item |
 |----|------|
-| BL-108 | Profile photo upload — reuses the `upload_resumable` helper built here |
-| BL-109 | `template.status_changed` workflow trigger — webhook handler is emit-ready; wire the trigger + per-channel selectivity |
-| BL-110 | Flow / Catalog / Carousel buttons + product templates — need WhatsApp Flows / Meta catalog we don't manage (foolproof-gated) |
+| BL-108 | Profile photo upload - reuses the `upload_resumable` helper built here |
+| BL-109 | `template.status_changed` workflow trigger - webhook handler is emit-ready; wire the trigger + per-channel selectivity |
+| BL-110 | Flow / Catalog / Carousel buttons + product templates - need WhatsApp Flows / Meta catalog we don't manage (foolproof-gated) |
 | BL-111 | Named variables (`{{order_id}}`) + multi-language template sets |
-| (plan 08) | **Authentication** templates (Slice B2) — OTP / copy-code / one-tap, Meta-auto-generated body, `code_expiration_minutes`, security recommendation. Grill separately. |
+| (plan 08) | **Authentication** templates (Slice B2) - OTP / copy-code / one-tap, Meta-auto-generated body, `code_expiration_minutes`, security recommendation. Grill separately. |

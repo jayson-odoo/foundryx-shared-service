@@ -13,7 +13,7 @@ from app.schemas.base import ApiModel
 
 class NumberCatalogItem(ApiModel):
     """One registered NumberSequenceDef + its current override + live next-val
-    (for the current period) — drives the settings list."""
+    (for the current period) - drives the settings list."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -55,7 +55,7 @@ class NumberFormatSetRequest(ApiModel):
     @classmethod
     def _format_has_running(cls, v: str) -> str:
         # The format MUST contain the running counter token {N…} or every
-        # generated number collides — foolproof-UI guard at the boundary.
+        # generated number collides - foolproof-UI guard at the boundary.
         if "{N" not in v:
             raise ValueError("format must contain a running-number token like {NNNN}")
         return v

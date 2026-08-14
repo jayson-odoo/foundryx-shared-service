@@ -2,7 +2,7 @@
 
 Mirrors the ``app/jobs/`` package shape. ``ActivityLogService.record(...)`` is
 the ONE write seam every instrumentation point (gateway middleware, outbound
-Meta, embed session) calls — it redacts, writes one ``integration_activity``
+Meta, embed session) calls - it redacts, writes one ``integration_activity``
 row on its own commit, and swallows any exception so logging can NEVER break,
 slow, or 500 the request it observes.
 """

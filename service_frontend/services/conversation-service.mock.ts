@@ -1,11 +1,11 @@
 /**
- * Mock conversation service (Phase A — plan 05).
+ * Mock conversation service (Phase A - plan 05).
  *
  * In-memory threads + messages with a timer-driven emitter that simulates the
  * realtime pipeline: inbound `message.created`, delivery-receipt
  * `message.status` ticks (SENT→DELIVERED→READ), and `contact.updated`.
  * CSW enforcement mirrors the backend rule: free-form rejected once
- * `cswExpiresAt` has passed — template-only.
+ * `cswExpiresAt` has passed - template-only.
  *
  * Seeds are Date.now()-relative (NOT a fixed epoch) because the CSW lock is a
  * comparison against the real clock in the UI.
@@ -26,7 +26,7 @@ import type {
   ThreadStatus,
   WhatsAppTemplate,
 } from '@/types/omnichannel';
-// Type-only circular import (conversation-service binds this mock) — safe in TS.
+// Type-only circular import (conversation-service binds this mock) - safe in TS.
 import type { ConversationService } from './conversation-service';
 import { delay } from './mock-query';
 
@@ -49,7 +49,7 @@ const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
 const isoIn = (msAhead: number) => new Date(Date.now() + msAhead).toISOString();
 
 // ---------------------------------------------------------------------------
-// Seed data — one thread per UI state we need to tune (plan 05 Phase A).
+// Seed data - one thread per UI state we need to tune (plan 05 Phase A).
 // ---------------------------------------------------------------------------
 
 type ThreadRow = ConversationThread;
@@ -57,7 +57,7 @@ type ThreadRow = ConversationThread;
 function seedThreads(): ThreadRow[] {
   return [
     {
-      // Open CSW window, assigned to me — the happy free-form path.
+      // Open CSW window, assigned to me - the happy free-form path.
       id: 'cnt-001', tenantId: TENANT, workspaceId: 'wsp-001',
       name: 'Sarah Chen', phone: '+60 12-345 6789', avatarUrl: null,
       assignedUserId: 'usr-demo', assignedUserName: 'Demo User',
@@ -68,7 +68,7 @@ function seedThreads(): ThreadRow[] {
       unreadCount: 2, createdAt: iso(72 * HOUR),
     },
     {
-      // CSW EXPIRED — composer must lock, template-only.
+      // CSW EXPIRED - composer must lock, template-only.
       id: 'cnt-002', tenantId: TENANT, workspaceId: 'wsp-001',
       name: 'Marcus Wong', phone: '+60 16-888 2211', avatarUrl: null,
       assignedUserId: 'usr-demo', assignedUserName: 'Demo User',
@@ -79,7 +79,7 @@ function seedThreads(): ThreadRow[] {
       unreadCount: 0, createdAt: iso(9 * 24 * HOUR),
     },
     {
-      // Unassigned bucket — self-claim path.
+      // Unassigned bucket - self-claim path.
       id: 'cnt-003', tenantId: TENANT, workspaceId: 'wsp-001',
       name: 'Priya Raj', phone: '+60 17-202 0303', avatarUrl: null,
       assignedUserId: null, assignedUserName: null,
@@ -90,14 +90,14 @@ function seedThreads(): ThreadRow[] {
       unreadCount: 1, createdAt: iso(30 * MIN),
     },
     {
-      // Assigned to a colleague — reassign path.
+      // Assigned to a colleague - reassign path.
       id: 'cnt-004', tenantId: TENANT, workspaceId: 'wsp-001',
       name: 'Daniel Lee', phone: '+60 11-555 7788', avatarUrl: null,
       assignedUserId: 'usr-amira', assignedUserName: 'Amira Tan',
       status: 'SNOOZED', priority: 'LOW',
       channelId: 'chn-001', channelType: 'WHATSAPP',
       cswExpiresAt: isoIn(2 * HOUR), lastIncomingMessageAt: iso(22 * HOUR),
-      lastMessageAt: iso(21 * HOUR), lastMessagePreview: 'No rush — next week is fine.',
+      lastMessageAt: iso(21 * HOUR), lastMessagePreview: 'No rush - next week is fine.',
       unreadCount: 0, createdAt: iso(6 * 24 * HOUR),
     },
     {
@@ -142,35 +142,35 @@ function seedMessages(): ConversationMessage[] {
   });
 
   return [
-    // cnt-001 — live thread: ticks in every state + an internal note.
+    // cnt-001 - live thread: ticks in every state + an internal note.
     msg('cnt-001', 'CONTACT', 'Hi! I booked the Grand Ballroom for Friday.', 4 * HOUR + 40 * MIN),
-    msg('cnt-001', 'AGENT', 'Hi Sarah! Yes, I can see your booking — Friday 7pm, 120 pax.', 4 * HOUR + 30 * MIN, { deliveryStatus: 'READ', externalMessageId: nextId('wamid') }),
-    msg('cnt-001', 'SYSTEM', 'VIP client — handle with priority. Decision maker is Sarah.', 4 * HOUR + 25 * MIN),
-    msg('cnt-001', 'CONTACT', 'Great. One more thing —', 4 * HOUR),
+    msg('cnt-001', 'AGENT', 'Hi Sarah! Yes, I can see your booking - Friday 7pm, 120 pax.', 4 * HOUR + 30 * MIN, { deliveryStatus: 'READ', externalMessageId: nextId('wamid') }),
+    msg('cnt-001', 'SYSTEM', 'VIP client - handle with priority. Decision maker is Sarah.', 4 * HOUR + 25 * MIN),
+    msg('cnt-001', 'CONTACT', 'Great. One more thing -', 4 * HOUR),
     msg('cnt-001', 'CONTACT', 'Can I change my booking to Saturday?', 10 * MIN),
     msg('cnt-001', 'AGENT', 'Checking availability now, give me a minute 🙏', 8 * MIN, { deliveryStatus: 'DELIVERED', externalMessageId: nextId('wamid') }),
-    msg('cnt-001', 'AGENT', 'Saturday 7pm is free — shall I move it?', 6 * MIN, { deliveryStatus: 'SENT', externalMessageId: nextId('wamid') }),
+    msg('cnt-001', 'AGENT', 'Saturday 7pm is free - shall I move it?', 6 * MIN, { deliveryStatus: 'SENT', externalMessageId: nextId('wamid') }),
 
-    // cnt-002 — expired window + a FAILED outbound.
+    // cnt-002 - expired window + a FAILED outbound.
     msg('cnt-002', 'CONTACT', 'Confirming Friday 3pm site visit.', 28 * HOUR),
     msg('cnt-002', 'AGENT', 'Confirmed! See you at the lobby.', 27 * HOUR + 30 * MIN, { deliveryStatus: 'READ', externalMessageId: nextId('wamid') }),
     msg('cnt-002', 'CONTACT', 'Thanks, see you then!', 27 * HOUR),
     msg('cnt-002', 'AGENT', 'Quick update on parking…', 90 * MIN, {
       deliveryStatus: 'FAILED', externalMessageId: nextId('wamid'),
-      errorCode: '131047', errorMessage: 'Re-engagement message — 24h window has passed.',
+      errorCode: '131047', errorMessage: 'Re-engagement message - 24h window has passed.',
     }),
 
-    // cnt-003 — single unanswered inbound (unassigned).
+    // cnt-003 - single unanswered inbound (unassigned).
     msg('cnt-003', 'CONTACT', 'Is the venue wheelchair accessible?', 30 * MIN),
 
-    // cnt-004 — snoozed thread.
+    // cnt-004 - snoozed thread.
     msg('cnt-004', 'CONTACT', 'Any update on the quotation?', 22 * HOUR),
-    msg('cnt-004', 'AGENT', 'Finance is reviewing — I will revert by Thursday.', 21 * HOUR + 30 * MIN, { senderId: 'usr-amira', senderName: 'Amira Tan', deliveryStatus: 'READ', externalMessageId: nextId('wamid') }),
-    msg('cnt-004', 'CONTACT', 'No rush — next week is fine.', 21 * HOUR),
+    msg('cnt-004', 'AGENT', 'Finance is reviewing - I will revert by Thursday.', 21 * HOUR + 30 * MIN, { senderId: 'usr-amira', senderName: 'Amira Tan', deliveryStatus: 'READ', externalMessageId: nextId('wamid') }),
+    msg('cnt-004', 'CONTACT', 'No rush - next week is fine.', 21 * HOUR),
 
-    // cnt-005 — closed thread.
+    // cnt-005 - closed thread.
     msg('cnt-005', 'CONTACT', 'Received the invoice, paying today.', 64 * HOUR),
-    msg('cnt-005', 'AGENT', 'Payment received — booking confirmed! 🎉', 63 * HOUR + 30 * MIN, { senderId: 'usr-jon', senderName: 'Jon Lim', deliveryStatus: 'READ', externalMessageId: nextId('wamid') }),
+    msg('cnt-005', 'AGENT', 'Payment received - booking confirmed! 🎉', 63 * HOUR + 30 * MIN, { senderId: 'usr-jon', senderName: 'Jon Lim', deliveryStatus: 'READ', externalMessageId: nextId('wamid') }),
     msg('cnt-005', 'CONTACT', 'Perfect, thank you so much!', 63 * HOUR),
   ];
 }
@@ -204,23 +204,23 @@ const TEMPLATES: WhatsAppTemplate[] = [
   },
   {
     id: 'tpl-003', channelId: 'chn-001', name: 'promo_blast', language: 'en',
-    category: 'MARKETING', status: 'PENDING', // not approved — must NOT be sendable
+    category: 'MARKETING', status: 'PENDING', // not approved - must NOT be sendable
     bodyText: 'Big news {{1}}! Our new venue is open.',
     variableCount: 1, headerFormat: null, headerVariableCount: 0, buttonVariableCount: 0,
   },
 ];
 
 const QUICK_REPLIES: QuickReply[] = [
-  { id: 'qr-001', workspaceId: 'wsp-001', shortcut: '/hi', body: 'Hi! Thanks for reaching out to FoundryX Events — how can I help?' },
-  { id: 'qr-002', workspaceId: 'wsp-001', shortcut: '/hours', body: 'Our office hours are Mon–Fri 9am–6pm (MYT).' },
-  { id: 'qr-003', workspaceId: 'wsp-001', shortcut: '/payment', body: 'You can pay via bank transfer or card — the link is in your invoice email.' },
+  { id: 'qr-001', workspaceId: 'wsp-001', shortcut: '/hi', body: 'Hi! Thanks for reaching out to Foundryx Events - how can I help?' },
+  { id: 'qr-002', workspaceId: 'wsp-001', shortcut: '/hours', body: 'Our office hours are Mon-Fri 9am-6pm (MYT).' },
+  { id: 'qr-003', workspaceId: 'wsp-001', shortcut: '/payment', body: 'You can pay via bank transfer or card - the link is in your invoice email.' },
 ];
 
 let threads: ThreadRow[] = seedThreads();
 let messages: ConversationMessage[] = seedMessages();
 
 // ---------------------------------------------------------------------------
-// Emitter — fan-out to subscribers + the inbound/receipt simulator.
+// Emitter - fan-out to subscribers + the inbound/receipt simulator.
 // ---------------------------------------------------------------------------
 
 type Handler = (event: ConversationSocketEvent) => void;
@@ -265,7 +265,7 @@ function simulateReceipts(message: ConversationMessage): void {
 
 const INBOUND_LINES = [
   'Sounds good 👍',
-  'One more question — is outside catering allowed?',
+  'One more question - is outside catering allowed?',
   'Could you send me the floor plan?',
   'What time can vendors start setting up?',
 ];
@@ -334,7 +334,7 @@ function mockStructured(
   const t = threadOf(contactId);
   const windowOpen = !!t.cswExpiresAt && Date.parse(t.cswExpiresAt) > Date.now();
   if (!windowOpen) {
-    throw new Error('The 24-hour window has closed — send an approved template to re-engage.');
+    throw new Error('The 24-hour window has closed - send an approved template to re-engage.');
   }
   const message: ConversationMessage = {
     id: nextId('msg'), contactId, channelId: t.channelId,
@@ -391,7 +391,7 @@ export const mockConversationService: ConversationService = {
     } else {
       // Backend rule (plan 05 §5, decision 14): free-form only inside the CSW.
       if (!windowOpen) {
-        throw new Error('The 24-hour window has closed — send an approved template to re-engage.');
+        throw new Error('The 24-hour window has closed - send an approved template to re-engage.');
       }
       if (!input.body?.trim()) throw new Error('Message body is required');
       body = input.body.trim();
@@ -434,7 +434,7 @@ export const mockConversationService: ConversationService = {
     const bodyVars = input.templateVariables ?? [];
     const buttonVars = input.templateButtonVariables ?? [];
     if (tpl.headerFormat && tpl.headerFormat !== 'TEXT' && !input.headerFile) {
-      throw new Error('This template has a media header — attach an image, video or document.');
+      throw new Error('This template has a media header - attach an image, video or document.');
     }
     if (headerVars.length !== tpl.headerVariableCount) {
       throw new Error(`This template's header needs ${tpl.headerVariableCount} variable(s); ${headerVars.length} provided.`);
@@ -472,7 +472,7 @@ export const mockConversationService: ConversationService = {
     const t = threadOf(contactId);
     const windowOpen = !!t.cswExpiresAt && Date.parse(t.cswExpiresAt) > Date.now();
     if (!windowOpen) {
-      throw new Error('The 24-hour window has closed — send an approved template to re-engage.');
+      throw new Error('The 24-hour window has closed - send an approved template to re-engage.');
     }
     const messageType = input.kind.toUpperCase() as ConversationMessage['messageType'];
     const message: ConversationMessage = {
@@ -583,7 +583,7 @@ export const mockConversationService: ConversationService = {
     return delay(TEMPLATES.filter((x) => x.channelId === channelId && x.status === 'APPROVED'), 150);
   },
 
-  // Single-workspace mock — the workspaceId param is unused (same reasoning as listThreads).
+  // Single-workspace mock - the workspaceId param is unused (same reasoning as listThreads).
   async listQuickReplies() {
     return delay([...QUICK_REPLIES], 150);
   },

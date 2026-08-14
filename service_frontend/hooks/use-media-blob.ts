@@ -30,7 +30,7 @@ export function useMediaBlob(path: string | null | undefined): UseMediaBlobResul
     setUrl(null);
     setError(false);
     if (!path) return;
-    // Optimistic previews already hold a local object/data URL — use it directly
+    // Optimistic previews already hold a local object/data URL - use it directly
     // (the backend relative path is fetched with the Bearer; a blob: is not).
     if (path.startsWith('blob:') || path.startsWith('data:')) {
       setUrl(path);

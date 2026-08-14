@@ -1,4 +1,4 @@
-"""AutoCount ESB — stage 2: the GRN read pipeline (AC-13-05..13, 41/42/43/46).
+"""AutoCount ESB - stage 2: the GRN read pipeline (AC-13-05..13, 41/42/43/46).
 
 Every HTTP interaction is MOCKED. These tests never touch the live demo box.
 
@@ -121,7 +121,7 @@ def _grn(
         "LastModifiedUserID": "ADMIN",
         "CreatedTimeStamp": "2026/07/09 08:00:00",
         "CreatedUserID": "ADMIN",
-        # GRN's detail key is GRDTL, NOT GRNDTL — and its detail casing is
+        # GRN's detail key is GRDTL, NOT GRNDTL - and its detail casing is
         # ``DtlKey`` (DO's is ``Dtlkey``).
         "GRDTL": lines
         if lines is not None
@@ -132,7 +132,7 @@ def _grn(
                 "Description": "Widget",
                 "Qty": "120.00000000",
                 "UOM": "PCS",
-                "UnitPrice": 10,  # int — the vendor mixes types for one field
+                "UnitPrice": 10,  # int - the vendor mixes types for one field
                 "SubTotal": "1200.00000000",
                 "Tax": "72.00000000",
                 "TaxRate": "6%",
@@ -234,7 +234,7 @@ def _run_sync(
 
 
 # A company is seeded for SEVERAL entities since slice 2 (GRN + the two masters),
-# so a positional ``[0]`` no longer means "the GRN one" — it means "whichever
+# so a positional ``[0]`` no longer means "the GRN one" - it means "whichever
 # entity sorts first", which is a silent mis-target. Always name the entity.
 
 
@@ -310,7 +310,7 @@ def test_an_unconvertible_value_raises_rather_than_returning_none(fn, value):
 
 
 def test_a_blank_value_is_none_not_an_error():
-    """Absent is not unconvertible — a required-but-blank field is caught by the
+    """Absent is not unconvertible - a required-but-blank field is caught by the
     mapping row's flag, so blanks must not raise here."""
     assert t_decimal("") is None
     assert t_bool(None) is None
@@ -418,7 +418,7 @@ def test_adding_a_mapping_row_makes_a_udf_flow_with_no_code_change(db, transport
     before = MappingEngine(rows).map_document(record)
     assert "driverName" not in before.record.lines[0].extras
 
-    # A ROW — this is the entire change. No Python was edited.
+    # A ROW - this is the entire change. No Python was edited.
     db.add(
         AcFieldMapping(
             tenant_id=DEFAULT_TENANT_ID,
@@ -474,7 +474,7 @@ def test_a_required_mapping_row_turns_an_absent_field_into_a_named_error():
 
 
 def test_seeded_mapping_rows_are_the_db_not_the_constant(db, transports):
-    """After seeding, the DATABASE is the source of truth (D5) — there is no
+    """After seeding, the DATABASE is the source of truth (D5) - there is no
     fallback to DEFAULT_MAPPINGS, so deleting every row maps nothing rather than
     quietly resuming built-in behaviour the operator removed."""
     company = _company(db, transports)
@@ -507,7 +507,7 @@ def test_a_second_company_for_the_same_tenant_is_accepted(db, transports):
 
 
 def test_the_same_company_cannot_be_connected_twice(db, transports):
-    """``ac_company (tenant_id, database_name)`` is the real identity guard —
+    """``ac_company (tenant_id, database_name)`` is the real identity guard -
     two rows for one company would each hold a watermark and double-deliver."""
     from modules.autocount.services import CompanyAlreadyExists
 
@@ -519,7 +519,7 @@ def test_the_same_company_cannot_be_connected_twice(db, transports):
 
 
 def test_another_tenants_company_is_invisible(db, transports):
-    """AC-13-41 — cross-tenant leakage is a critical defect."""
+    """AC-13-41 - cross-tenant leakage is a critical defect."""
     mine = _company(db, transports, database_name="AED_MINE")
     theirs = AcCompany(
         tenant_id=OTHER_TENANT_ID,
@@ -588,7 +588,7 @@ def _source(reads, *, record_cap: int = 200) -> AutoCountReadSource:
 
 
 def test_the_fetch_sends_last_modified_from_and_to(db):
-    """AC-13-05 — the delta driver, verified live to genuinely filter."""
+    """AC-13-05 - the delta driver, verified live to genuinely filter."""
     source = _source([[_grn()]])
     source.fetch_changes(Watermark(last_modified_at=datetime(2026, 7, 1, tzinfo=timezone.utc)))
 
@@ -617,7 +617,7 @@ def test_the_max_last_modified_is_reported_for_the_watermark(db):
 
 
 def test_hitting_the_record_cap_fails_loudly(db, caplog):
-    """AC-13-46 / AC-13-17: ``len == cap`` is the ONLY truncation signal — the
+    """AC-13-46 / AC-13-17: ``len == cap`` is the ONLY truncation signal - the
     response's "N of TOTAL" marker is computed POST-cap and is not a total.
     Silent truncation is the failure mode this exists to prevent."""
     records = [_grn(str(i)) for i in range(5)]
@@ -651,7 +651,7 @@ def test_a_sync_stages_records_and_holds_for_review(db, transports):
 
 def test_a_needs_review_job_is_never_pruned(db, transports):
     """The gate only works because the pruner treats ``needs_review`` as
-    non-terminal (plan §5 — reuse, don't rebuild)."""
+    non-terminal (plan §5 - reuse, don't rebuild)."""
     from app.jobs.service import JobService
 
     company = _company(db, transports, reads=[[_grn("1")]])
@@ -665,7 +665,7 @@ def test_a_needs_review_job_is_never_pruned(db, transports):
 
 def test_the_raw_payload_is_retained_with_the_canonical_record(db, transports):
     """AC-13-07: retained so a field discovered later can be mapped
-    retroactively — re-fetching history is exactly what this API makes hard."""
+    retroactively - re-fetching history is exactly what this API makes hard."""
     company = _company(db, transports, reads=[[_grn("1")]])
     job = _run_sync(db, company)
 
@@ -797,7 +797,7 @@ def test_the_watermark_holds_when_the_fetch_fails(db, transports):
 
 
 def test_a_truncated_fetch_fails_the_run_and_holds_the_watermark(db, transports):
-    """AC-13-46 — a truncated sync must never read as a complete one."""
+    """AC-13-46 - a truncated sync must never read as a complete one."""
     company = _company(db, transports)
     config = _grn_config(db, company)
     config.record_cap = 2
@@ -853,7 +853,7 @@ def test_a_first_sight_record_is_marked_new_not_diffed_field_by_field():
 
 def test_the_diff_hides_the_timestamp_that_changes_on_every_fetch():
     """``last_modified`` moving is the REASON the record came back, so listing
-    it as a change is tautological noise in every single diff — and noise is
+    it as a change is tautological noise in every single diff - and noise is
     what turns review into rubber-stamping."""
     before = {"total": "100", "last_modified": "2026-07-10T09:15:00Z"}
     after = {"total": "100", "last_modified": "2026-07-15T09:00:00Z"}
@@ -897,7 +897,7 @@ def test_approval_pushes_the_staged_records_once(db, transports):
 
 def test_approving_twice_pushes_exactly_once(db, transports):
     """AC-13-13: double-click / retry / replay. The second call is a NO-OP that
-    returns the original result — an error on the second click of a successful
+    returns the original result - an error on the second click of a successful
     action is its own kind of bug."""
     company = _company(db, transports, reads=[[_grn("1"), _grn("2")]])
     job = _run_sync(db, company)
@@ -965,13 +965,13 @@ def test_discard_closes_the_job_without_pushing(db, transports):
     assert result["pushed"] == 0 and result["discarded"] == 2
     assert job.status == JOB_DONE
     rows = StagedRecordRepository(db).list_for_job(DEFAULT_TENANT_ID, company.id, job.id)
-    # Marked, never deleted — the raw payloads stay for audit (AC-13-07).
+    # Marked, never deleted - the raw payloads stay for audit (AC-13-07).
     assert {row.status for row in rows} == {STAGED_DISCARDED}
     assert all(row.raw_json for row in rows)
 
 
 def test_a_job_from_another_tenant_is_not_reachable(db, transports):
-    """AC-13-41 — the job id alone must not be a capability."""
+    """AC-13-41 - the job id alone must not be a capability."""
     from modules.autocount.services import JobNotFound
 
     company = _company(db, transports, reads=[[_grn("1")]])
@@ -1017,7 +1017,7 @@ def test_the_sink_write_result_is_explicit_about_not_delivering():
 
 def test_an_unregistered_sink_is_a_loud_error_not_a_fallback(db):
     """Falling back to the logging sink would silently stop delivering to a real
-    consumer — the worst possible failure for an integration."""
+    consumer - the worst possible failure for an integration."""
     from modules.autocount.sinks import UnknownSinkImpl
 
     with pytest.raises(UnknownSinkImpl):
@@ -1059,7 +1059,7 @@ def test_abort_committed_mid_run_is_not_overwritten(db, session_factory, transpo
     def post_then_abort(url, **kwargs):
         response = original_post(url, **kwargs)
         if url.endswith("GetGoodsReceivedNote"):
-            # The operator hits Abort while the (slow) fetch is in flight — a
+            # The operator hits Abort while the (slow) fetch is in flight - a
             # DIFFERENT session commits the terminal status.
             aborting.query(BackgroundJob).filter(BackgroundJob.id == job.id).update(
                 {BackgroundJob.status: JOB_ABORTED}, synchronize_session=False
@@ -1077,7 +1077,7 @@ def test_abort_committed_mid_run_is_not_overwritten(db, session_factory, transpo
     assert fresh.status == JOB_ABORTED  # never overwritten to needs_review/done
     run = SyncRunRepository(db).get_for_job(DEFAULT_TENANT_ID, company.id, job.id)
     assert run.outcome == RUN_ABORTED
-    # Nothing staged and the watermark held — only fully-committed work counts.
+    # Nothing staged and the watermark held - only fully-committed work counts.
     assert StagedRecordRepository(db).list_for_job(DEFAULT_TENANT_ID, company.id, job.id) == []
     assert (
         WatermarkRepository(db)
@@ -1108,7 +1108,7 @@ def test_a_sync_writes_masked_activity_under_the_autocount_source(db, transports
 
 
 def test_no_stored_row_or_result_ever_carries_a_credential(db, transports):
-    """AC-13-42 — AppId, Password and Token never appear in plaintext anywhere."""
+    """AC-13-42 - AppId, Password and Token never appear in plaintext anywhere."""
     company = _company(db, transports, reads=[[_grn("1")]])
     job = _run_sync(db, company)
     result = SyncService(db).approve(DEFAULT_TENANT_ID, job.id)
@@ -1127,7 +1127,7 @@ def test_no_stored_row_or_result_ever_carries_a_credential(db, transports):
 
 
 def test_a_handler_crash_never_propagates_to_the_caller(db, transports, monkeypatch):
-    """AC-13-43 — a sync failure must never break the triggering request."""
+    """AC-13-43 - a sync failure must never break the triggering request."""
     from app.jobs.service import run_job
 
     company = _company(db, transports)
@@ -1186,7 +1186,7 @@ def test_uninstall_wipes_only_this_tenants_rows(db, transports):
 
 def test_the_sync_job_handler_is_registered(db):
     """Omitting the registration leaves every sync job Pending forever with NO
-    error — the nastiest footgun in this codebase."""
+    error - the nastiest footgun in this codebase."""
     from app.jobs.registry import handler_for
 
     assert handler_for(AUTOCOUNT_SYNC).handler is run_autocount_sync
@@ -1213,7 +1213,7 @@ def _auth(client) -> Dict[str, str]:
 
 
 def test_every_autocount_route_requires_authentication(client):
-    """Gated by ``require_permission`` (and ``require_module``) — never open."""
+    """Gated by ``require_permission`` (and ``require_module``) - never open."""
     for method, path in (
         ("get", "/autocount/companies"),
         ("post", "/autocount/companies"),
@@ -1325,7 +1325,7 @@ def test_the_lookback_patch_persists_and_rejects_nonsense(
     )
     assert grn["initialLookbackDays"] == 180
 
-    # Nonsense is REJECTED, never coerced — a coerced value would silently sync
+    # Nonsense is REJECTED, never coerced - a coerced value would silently sync
     # a window the operator did not ask for.
     for bad in (0, -5, 99_999):
         rejected = client.patch(
@@ -1351,7 +1351,7 @@ def test_patching_an_unconfigured_entity_is_a_clean_404(
 
 
 def test_every_migration_revision_id_fits_the_version_column():
-    """``alembic_version.version_num`` is VARCHAR(32) — a longer id passes the
+    """``alembic_version.version_num`` is VARCHAR(32) - a longer id passes the
     create_all suite (conftest never runs module Alembic) and then breaks every
     real Postgres deploy. This is the only place that catches it."""
     import re
@@ -1369,7 +1369,7 @@ def test_every_migration_revision_id_fits_the_version_column():
 
 def test_the_new_migration_chains_onto_the_baseline():
     """A dangling down_revision splits the history into two heads and the
-    upgrade fails on a live deploy — invisible to pytest."""
+    upgrade fails on a live deploy - invisible to pytest."""
     from pathlib import Path
 
     text = Path(
@@ -1389,17 +1389,17 @@ def test_a_mapping_row_pydantic_rejects_fails_one_document_not_the_batch(
     db, transports
 ):
     """FIX 1. ``transform`` is OPERATOR-EDITABLE DATA, so a mapping row can hand
-    the canonical model a value pydantic rejects — here ``qty`` mapped
+    the canonical model a value pydantic rejects - here ``qty`` mapped
     ``string``, so a UOM lands in a ``Decimal`` field.
 
     Header construction was guarded; LINE construction was not. The resulting
     ValidationError escaped ``map_document`` → ``_stage_documents`` →
     ``run_autocount_sync`` and killed the WHOLE batch, taking every sibling GRN
-    with it — precisely what AC-13-10 forbids.
+    with it - precisely what AC-13-10 forbids.
     """
     company = _company(db, transports)
     # An operator EDITS the seeded ``qty`` row (the D5 "mapping is data" path)
-    # to point at a text field with a ``string`` transform — a plausible
+    # to point at a text field with a ``string`` transform - a plausible
     # mis-edit, and one no code change is required to make. It only bites lines
     # that actually carry ``BatchNo``, which is just the one document below.
     qty_row = (
@@ -1430,7 +1430,7 @@ def test_a_mapping_row_pydantic_rejects_fails_one_document_not_the_batch(
             DEFAULT_TENANT_ID, company.id, job.id
         )
     }
-    # The siblings survived — the whole point.
+    # The siblings survived - the whole point.
     assert rows["1"].status == STAGED
     assert rows["3"].status == STAGED
     failed = rows["2"]
@@ -1447,7 +1447,7 @@ def test_a_stale_sync_is_visible_when_documents_keep_failing(db, transports):
     ``consecutive_failures`` only ever moved in ``_fail`` (fetch faults), so a
     permanently-BLOCKED entity presented as perfectly healthy: watermark held
     (right), fresh success timestamp, zero failures. AC-13-19's stale-sync
-    monitor would never fire on the one case it exists for (plan §7 — "a
+    monitor would never fire on the one case it exists for (plan §7 - "a
     blocked sync is always visible").
     """
     company = _company(db, transports)
@@ -1480,7 +1480,7 @@ def test_a_raising_sink_leaves_the_batch_re_approvable_not_stranded(
     """FIX 3. ``_claim_review`` atomically moves ``needs_review`` → ``running``.
     A raise between that and ``finish`` stranded the job in ``running`` FOREVER:
     non-terminal so the pruner never reaps it, and no longer ``needs_review`` so
-    the claim could never succeed again — no re-approve, no retry. One network
+    the claim could never succeed again - no re-approve, no retry. One network
     error would have permanently killed an approved batch the moment a real sink
     landed.
     """
@@ -1518,7 +1518,7 @@ def test_a_raising_sink_leaves_the_batch_re_approvable_not_stranded(
     )
     assert statuses == [STAGED_PUSHED, STAGED]  # exactly one of each
 
-    # And it really is re-approvable — the sink recovers, the remainder goes.
+    # And it really is re-approvable - the sink recovers, the remainder goes.
     monkeypatch.setattr(sinks_module.LoggingSink, "write", real_write)
     result = SyncService(db).approve(DEFAULT_TENANT_ID, job.id)
     assert result["pushed"] == 1  # only the one still outstanding
@@ -1541,7 +1541,7 @@ def test_a_fetch_fault_after_a_committed_abort_does_not_overwrite_it(
     """FIX 4. ``_abort`` already refuses to touch the operator's status; ``_fail``
     called ``finish(JOB_FAILED)`` with no fresh re-read, so an abort committed on
     ANOTHER session while a fetch was in flight got overwritten the instant that
-    fetch then errored — erasing the fact that a human stopped this.
+    fetch then errored - erasing the fact that a human stopped this.
 
     Driven with a REAL interleave, as the pre-existing abort test is: eager mode
     runs the handler inline with no natural interleave, so this class of bug is
@@ -1578,7 +1578,7 @@ def test_a_fetch_fault_after_a_committed_abort_does_not_overwrite_it(
 
     fresh = db.query(BackgroundJob).filter(BackgroundJob.id == job.id).first()
     assert fresh.status == JOB_ABORTED, "the operator's abort was overwritten"
-    # The run still records WHY it stopped — the fetch genuinely did fail.
+    # The run still records WHY it stopped - the fetch genuinely did fail.
     run = SyncRunRepository(db).get_for_job(DEFAULT_TENANT_ID, company.id, job.id)
     assert run.outcome == RUN_FAILED
     assert "Bad filter" in (run.error or "")
@@ -1628,8 +1628,8 @@ def test_the_connection_lookup_lives_in_the_repository_layer(db, transports):
 # ``{"window":…, "recordCap":200}`` (and only on 48 of them), ``status_code``
 # ``latency_ms`` and ``trace_id`` were NULL on every one, and the failure paths
 # logged no request at all. A customer's mapping failure could not be diagnosed
-# without the actual vendor payload, and the Developer Logs console — which is
-# built around status/latency/trace — rendered blank columns for this source.
+# without the actual vendor payload, and the Developer Logs console - which is
+# built around status/latency/trace - rendered blank columns for this source.
 
 
 def _activity(db, tenant_id: str = DEFAULT_TENANT_ID) -> List[IntegrationActivity]:
@@ -1658,7 +1658,7 @@ def test_the_real_request_and_response_are_stored_not_a_summary(db, transports):
     assert "POST /api/GoodsReceivedNote/GetGoodsReceivedNote" in paths
 
     read = next(r for r in legs if r.operation.endswith("GetGoodsReceivedNote"))
-    # The ACTUAL request: method, url, headers and the real filter body — not
+    # The ACTUAL request: method, url, headers and the real filter body - not
     # a hand-built {"window": …} summary.
     assert read.request_summary_json["method"] == "POST"
     assert read.request_summary_json["url"].endswith(
@@ -1719,7 +1719,7 @@ def test_a_failed_call_is_logged_with_its_request(db, transports):
     assert read.status == "error"
     assert read.status_code == 500
     assert read.latency_ms is not None
-    # The request that produced the failure is stored — that is the whole point.
+    # The request that produced the failure is stored - that is the whole point.
     assert read.request_summary_json["body"]["RecordCount"] > 0
     assert read.response_summary_json["body"]["Message"] == "boom"
 
@@ -1746,7 +1746,7 @@ def test_an_http_200_business_failure_is_logged_as_an_error(db, transports):
 
 
 def test_the_authorization_header_never_lands_unmasked(db, transports):
-    """BL-131 — the vendor JWT base64-decodes to the user's PASSWORD, so an
+    """BL-131 - the vendor JWT base64-decodes to the user's PASSWORD, so an
     unmasked ``Authorization`` header is a credential leak, not a nuisance.
     Asserted against the SERIALIZED row, not a field-by-field peek."""
     import json
@@ -1767,12 +1767,12 @@ def test_the_authorization_header_never_lands_unmasked(db, transports):
         ],
         default=str,
     )
-    # The JWT itself, the password, and the AppId — none may appear anywhere.
+    # The JWT itself, the password, and the AppId - none may appear anywhere.
     assert JWT not in blob
     assert "secret" not in blob
     assert "app-1" not in blob
 
-    # And the header key IS present (so the assertion above is meaningful —
+    # And the header key IS present (so the assertion above is meaningful -
     # it passes because the value was redacted, not because we stopped logging
     # headers at all).
     read = next(
@@ -1790,7 +1790,7 @@ def test_the_authorization_header_never_lands_unmasked(db, transports):
 
 
 def test_a_large_response_is_truncated_and_says_so(db, transports):
-    """AC-13-46 — a truncated log must never read as a complete one. These
+    """AC-13-46 - a truncated log must never read as a complete one. These
     responses reach 161 documents; storing megabytes per row is not an option,
     and silently dropping the tail sends a diagnostician after the wrong bug."""
     from modules.autocount.payloads import MAX_LIST_ITEMS, TRUNCATED_KEY
@@ -1806,7 +1806,7 @@ def test_a_large_response_is_truncated_and_says_so(db, transports):
     )
     assert read.response_summary_json[TRUNCATED_KEY] is True
     table = read.response_summary_json["body"]["ResultTable"]
-    # The SHAPE changed — a list became a marker object — so it cannot be
+    # The SHAPE changed - a list became a marker object - so it cannot be
     # mistaken for a complete array, and the real total is recorded.
     assert table[TRUNCATED_KEY] is True
     assert table["totalItems"] == 11
@@ -1815,7 +1815,7 @@ def test_a_large_response_is_truncated_and_says_so(db, transports):
 
 
 def test_a_complete_payload_carries_no_truncation_marker(db, transports):
-    """Absence of the marker is the positive statement "this is complete" — so
+    """Absence of the marker is the positive statement "this is complete" - so
     it must not be stamped on every row."""
     from modules.autocount.payloads import TRUNCATED_KEY
 
@@ -1843,7 +1843,7 @@ def test_company_discovery_logs_its_login_leg(db, transports):
 
 
 def test_draining_twice_never_duplicates_a_row(db, transports):
-    """The buffer is DRAINED, not read — so a caller that logs twice (a retry, a
+    """The buffer is DRAINED, not read - so a caller that logs twice (a retry, a
     future call site) cannot write the same interaction twice."""
     from modules.autocount.activity import record_client_calls
 
@@ -1859,7 +1859,7 @@ def test_draining_twice_never_duplicates_a_row(db, transports):
 
 
 def test_a_logging_failure_never_breaks_a_sync(db, transports, monkeypatch):
-    """AC-13-43 — observability is never load-bearing."""
+    """AC-13-43 - observability is never load-bearing."""
     import modules.autocount.activity as activity_module
 
     def boom(*_a, **_kw):
@@ -1872,14 +1872,14 @@ def test_a_logging_failure_never_breaks_a_sync(db, transports, monkeypatch):
     assert job.status == JOB_NEEDS_REVIEW
 
 
-# ── entity state on the wire (Fix 2 — a zero-record sync must be explicable) ──
+# ── entity state on the wire (Fix 2 - a zero-record sync must be explicable) ──
 
 
 def test_entity_states_carry_the_watermark_so_a_zero_sync_is_explicable(
     db, transports
 ):
     """``last_success_at``/``last_modified_at``/``consecutive_failures``/
-    ``last_error`` were recorded by every run and shown to nobody — which is
+    ``last_error`` were recorded by every run and shown to nobody - which is
     exactly why a legitimate zero-record sync read as silence."""
     company = _company(db, transports, reads=[[_grn("1")]])
 
@@ -1907,7 +1907,7 @@ def test_a_failed_sync_surfaces_its_failure_count_and_error(db, transports):
     state = _grn_state(db, company)
     assert state.consecutive_failures == 1
     assert state.last_error
-    # The watermark held — the run failed, so nothing was accepted.
+    # The watermark held - the run failed, so nothing was accepted.
     assert state.watermark_at is None
 
 
@@ -1985,7 +1985,7 @@ def test_widening_the_lookback_never_re_widens_an_established_window(db, transpo
 
     Once a watermark exists it WINS: widening the first-run window must not
     reach back past it. If it did, the next sync would silently re-fetch history
-    and re-stage documents the operator has already reviewed and approved —
+    and re-stage documents the operator has already reviewed and approved -
     duplicate work presented as new work, which is worse than the gap it was
     meant to close.
     """
@@ -2020,7 +2020,7 @@ def test_widening_the_lookback_never_re_widens_an_established_window(db, transpo
 
 
 def test_a_zero_record_sync_succeeds_and_holds_the_watermark(db, transports):
-    """The reported symptom: a second Sync now "did nothing". It was CORRECT —
+    """The reported symptom: a second Sync now "did nothing". It was CORRECT -
     the vendor had no changes since the watermark, and an empty batch must not
     advance it. Pinned so the summary the UI reads stays honest."""
     company = _company(db, transports, reads=[[_grn("1")]])
@@ -2084,7 +2084,7 @@ def test_a_200_body_with_no_status_key_is_logged_as_a_failure():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Slice 2 — masters (AC-14-01..05, 14-10/11, 14-25/26)
+# Slice 2 - masters (AC-14-01..05, 14-10/11, 14-25/26)
 #
 # The failures these pin are the quiet ones: a master response read through the
 # GRN unwrap, a company-unqualified ref that collides on the SECOND company
@@ -2145,7 +2145,7 @@ def _creditor(
 
     Note what is where: the row carries its OWN ``Status``/``Message``/
     ``RecordCount`` (there is no top-level envelope at all), some fields sit flat
-    at this level, and the REAL DB row is nested under ``Data[0]`` — including
+    at this level, and the REAL DB row is nested under ``Data[0]`` - including
     ``AutoKey`` and ``LastModified``. Both levels carry ``AccNo``/``CompanyName``/
     ``IsActive``, which is exactly why the two are not flattened together.
     """
@@ -2182,7 +2182,7 @@ def _debtor(auto_key: str = "1", acc_no: str = "300-C001", **overrides: Any) -> 
             "Mobile": "+60123456789",
             "TIN": "IG12345678900",
             "CreditLimit": "25000.00000000",
-            # Debtor rows carry a Guid; Creditor rows do NOT — which is why the
+            # Debtor rows carry a Guid; Creditor rows do NOT - which is why the
             # ref is minted from AutoKey and not from Guid.
             "Guid": "b6c1f2e0-1111-2222-3333-444455556666",
         }
@@ -2200,7 +2200,7 @@ def _rows(records: List[Dict[str, Any]]) -> httpx.Response:
 
 
 def test_a_numeric_path_segment_indexes_a_list():
-    """``Data.0.AutoKey`` — masters nest their real DB row one level down."""
+    """``Data.0.AutoKey`` - masters nest their real DB row one level down."""
     record = _creditor(auto_key="42")
     assert resolve_path(record, "Data.0.AutoKey") == "42"
     assert resolve_path(record, "Data.0.LastModified") == "2026/03/18 16:03:21"
@@ -2240,7 +2240,7 @@ def test_an_out_of_range_index_is_missing_never_an_exception():
 
 
 def test_the_udf_special_case_is_untouched_by_list_indexing():
-    """The UDF grammar is matched BEFORE the dotted walk and must stay so — a
+    """The UDF grammar is matched BEFORE the dotted walk and must stay so - a
     per-customer UDF array is the reason mapping is data at all."""
     from modules.autocount.mapping import _MISSING
 
@@ -2266,7 +2266,7 @@ def test_the_row_array_envelope_treats_each_element_as_a_record():
 
 def test_a_master_response_through_the_grn_envelope_is_a_failure_not_a_crash():
     """AC-14-03: a bare array has no top-level ``Status``. The GRN rule must
-    REJECT it — reading it as an empty success would be silent data loss."""
+    REJECT it - reading it as an empty success would be silent data loss."""
     verdict = STATUS_DICT.verdict([_creditor()])
     assert verdict.ok is False
 
@@ -2274,8 +2274,8 @@ def test_a_master_response_through_the_grn_envelope_is_a_failure_not_a_crash():
 def test_each_envelope_owns_both_success_rules_so_they_cannot_drift():
     """The regression 6d3e21c fixed, now structural.
 
-    The client had TWO success rules — one deciding whether the call RAISES, one
-    deciding how it is BADGED in the activity log — and they disagreed on a
+    The client had TWO success rules - one deciding whether the call RAISES, one
+    deciding how it is BADGED in the activity log - and they disagreed on a
     reachable input. The run failed while the log showed a green call with no
     error: the log at its least trustworthy exactly when it is being relied on.
 
@@ -2383,7 +2383,7 @@ def test_the_active_flag_becomes_a_real_bool(value, expected):
 @pytest.mark.parametrize("value", ["Y", "1", "yes", "TRUE", "active", 1, 0, "X"])
 def test_an_unrecognised_active_flag_fails_loudly_and_never_defaults(value):
     """AC-14-05. A silent ``False`` here would DEACTIVATE A LIVE SUPPLIER in the
-    consumer, and nothing in either system would report a problem — so this
+    consumer, and nothing in either system would report a problem - so this
     transform is deliberately narrower than the lenient ``t_bool``."""
     with pytest.raises(TransformError) as exc:
         t_f_bool(value)
@@ -2445,7 +2445,7 @@ def test_the_same_autokey_in_two_companies_does_not_collide():
     """AC-14-10, the whole reason for the prefix.
 
     ``AutoKey`` is a PER-COMPANY primary key, so ``AutoKey=1`` exists in every
-    AutoCount company — while the consumer's uniqueness is
+    AutoCount company - while the consumer's uniqueness is
     ``(source_system, entity_type, source_ref)`` with NO company dimension. An
     unqualified ref means company B's first supplier silently overwrites
     company A's.
@@ -2465,7 +2465,7 @@ def test_the_same_autokey_in_two_companies_does_not_collide():
 
 def test_identity_survives_a_business_code_renumber():
     """AC-14-11: the ref is stable across an AccNo change, so the consumer row is
-    UPDATED rather than duplicated — and ``source_doc_no`` shows the new code."""
+    UPDATED rather than duplicated - and ``source_doc_no`` shows the new code."""
     engine = MappingEngine(
         DEFAULT_SUPPLIER_MAPPING, entity_type=ENTITY_SUPPLIER, database_name="AED_VSOFT"
     )
@@ -2618,13 +2618,13 @@ def _master_source(reads, *, initial_load=INITIAL_LOAD_FULL, record_cap=5000):
 
 
 def test_the_first_master_fetch_sends_no_lower_bound_at_all():
-    """AC-14-25 — the measured failure this prevents.
+    """AC-14-25 - the measured failure this prevents.
 
     Against slice 1's 30-day default, a live probe returned **1 of 106**
     Creditors and **2 of 172** Debtors; even 365 days missed 4 and 15. A master
     list is a standing set to be mirrored, not a document stream to be windowed,
     so the first pull must be unbounded. A lookback here imports ~1% and reports
-    success — the most dangerous failure available, because nothing looks wrong.
+    success - the most dangerous failure available, because nothing looks wrong.
     """
     source = _master_source([_rows([_creditor("1")])])
     start, _end = source.window(Watermark())
@@ -2675,7 +2675,7 @@ def test_an_unknown_initial_load_policy_is_a_loud_error():
 
 def test_the_master_watermark_reads_last_modified_from_the_nested_row():
     """AC-14-02. Reading the top level finds nothing, which would fail the window
-    assertion on every row AND leave the watermark stuck at None forever — so
+    assertion on every row AND leave the watermark stuck at None forever - so
     every sync would be a full load and no delta would ever happen."""
     result = _master_source(
         [_rows([_creditor("1", last_modified="2026/03/18 16:03:21"),
@@ -2720,7 +2720,7 @@ def test_a_plain_integer_marker_is_read_too_and_an_absent_one_is_not_invented():
 
 def test_the_sync_result_states_the_fetched_count_beside_the_reported_total(db, transports):
     """AC-14-26: "2 records" alone cannot be told apart from "nothing changed"
-    and "the window excluded 170 of 172" — and the second looks exactly like
+    and "the window excluded 170 of 172" - and the second looks exactly like
     success while being near-total data loss."""
     company = _company(db, transports)
     _queue(db, transports, company, _rows([_creditor("1"), _creditor("2")]))
@@ -2768,7 +2768,7 @@ def test_a_master_sync_stages_company_qualified_records(db, transports):
     staged = StagedRecordRepository(db).list_for_job(DEFAULT_TENANT_ID, company.id, job.id)
     assert sorted(r.source_ref for r in staged) == ["AED_VSOFT:1", "AED_VSOFT:2"]
     # ``doc_no`` shows the ACCOUNT number, so the row is recognisable to a human
-    # (AC-14-10) — read from the mapped result, since a master's attribute is
+    # (AC-14-10) - read from the mapped result, since a master's attribute is
     # ``source_doc_no`` and reaching for ``record.doc_no`` would silently be None.
     assert sorted(r.doc_no for r in staged) == ["400-J001", "400-K002"]
     assert staged[0].canonical_json["entity_type"] == ENTITY_SUPPLIER
@@ -2814,9 +2814,9 @@ def test_the_migration_adds_both_columns_with_a_default_that_fills_existing_rows
 
         !!  THE ``server_default`` ON THE ADD IS THE BACKFILL.  !!
 
-    On the only ordering where these columns are genuinely absent — a host
+    On the only ordering where these columns are genuinely absent - a host
     already stamped at 0002, where ``create_all`` cannot ALTER an existing table
-    — ``ADD COLUMN ... NOT NULL DEFAULT 'status_dict'`` is what gives every
+    - ``ADD COLUMN ... NOT NULL DEFAULT 'status_dict'`` is what gives every
     existing GRN row its value, atomically, in the same statement. Dropping the
     default in a later "tidy-up" would leave those rows stranded against a NOT
     NULL column, so it is asserted rather than trusted.
@@ -2867,7 +2867,7 @@ def test_the_backfill_repairs_a_row_left_without_a_value(db, transports):
 
     Both columns are NOT NULL in the model AND in the migration, so SQLite
     refuses a NULL and Postgres never produces one. The reachable empty state is
-    ``''`` — which is why the backfill's WHERE covers both rather than just
+    ``''`` - which is why the backfill's WHERE covers both rather than just
     ``IS NULL``.
     """
     company = _company(db, transports)
@@ -2895,14 +2895,14 @@ def test_the_backfill_repairs_a_row_left_without_a_value(db, transports):
     assert touched >= 2  # one per column on the stranded row
 
     repaired = db.get(AcEntityConfig, stranded.id)
-    # A pre-0.2.0 row is always a GRN one — those were the only semantics that
-    # existed — so these are the values it must end up with.
+    # A pre-0.2.0 row is always a GRN one - those were the only semantics that
+    # existed - so these are the values it must end up with.
     assert repaired.envelope == ENVELOPE_STATUS_DICT
     assert repaired.initial_load == INITIAL_LOAD_WINDOWED
 
 
 def test_the_backfill_never_overwrites_a_row_that_already_has_a_value(db, transports):
-    """It must be safe to run in either bootstrap order, and repeatedly — a
+    """It must be safe to run in either bootstrap order, and repeatedly - a
     master row already seeded ``row_array``/``full`` must survive untouched."""
     company = _company(db, transports)
     supplier = _config_for(db, company, ENTITY_SUPPLIER)
@@ -2947,7 +2947,7 @@ def test_the_version_upgrade_seeds_masters_onto_a_company_that_already_exists(db
 
 
 def test_the_version_upgrade_leaves_an_operators_edited_mapping_alone(db, transports):
-    """Re-running the seed must never revert an operator's edits — every branch
+    """Re-running the seed must never revert an operator's edits - every branch
     in it is seed-if-absent, and this is the assertion that keeps it that way."""
     from modules.autocount.bootstrap import update_tenant
     from modules.autocount.repositories import FieldMappingRepository
@@ -3006,7 +3006,7 @@ def test_row_array_failure_names_the_status_when_no_message_is_given():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Hop 2 — the Sorento push target wiring (plan 14 Tasks A–E)
+# Hop 2 - the Sorento push target wiring (plan 14 Tasks A-E)
 #
 # Slice 1 hardcoded the logging no-op. These pin the wiring that makes an
 # operator able to configure a Sorento target and approve a REAL push: the sink
@@ -3065,7 +3065,7 @@ def _staged_supplier_job(
     db, company, *, refs=("AED_VSOFT:1",), tenant_id: str = DEFAULT_TENANT_ID
 ) -> BackgroundJob:
     """A needs_review autocount_sync job for suppliers, with STAGED canonical
-    supplier rows — the exact state an operator approves from."""
+    supplier rows - the exact state an operator approves from."""
     job = BackgroundJob(
         tenant_id=tenant_id,
         type=AUTOCOUNT_SYNC,
@@ -3094,7 +3094,7 @@ def _staged_supplier_job(
 
 class _SorentoRecorder:
     """Records every request the resolved SorentoSink makes and serves a scripted
-    response, so a test asserts on exactly what crossed the wire — and that a
+    response, so a test asserts on exactly what crossed the wire - and that a
     preview never carried a real (non-dry-run) write."""
 
     def __init__(self) -> None:
@@ -3112,7 +3112,7 @@ class _SorentoRecorder:
 @pytest.fixture
 def sorento_sink(monkeypatch):
     """Inject ONE recording MockTransport into every SorentoSink the resolver
-    builds — no socket ever opens, and the request log is inspectable."""
+    builds - no socket ever opens, and the request log is inspectable."""
     import modules.autocount.services.company_service as company_module
     from modules.autocount.sinks_sorento import sorento_sink_from_connection as real
 
@@ -3189,7 +3189,7 @@ def test_a_non_deliverable_entity_falls_back_to_logging_not_a_missing_path_error
     """A Sorento-configured company + a document entity Sorento cannot ingest yet
     (GRN) resolves to the LOGGING sink, never a ``SorentoSinkError`` on a missing
     ingest path. Deliverability is a known not-yet-built state, not a
-    misconfiguration — the stopgap the transactional-documents cluster builds on.
+    misconfiguration - the stopgap the transactional-documents cluster builds on.
     """
     company = _company(db, transports)
     conn = _sorento_connection(db)
@@ -3198,7 +3198,7 @@ def test_a_non_deliverable_entity_falls_back_to_logging_not_a_missing_path_error
         DEFAULT_TENANT_ID, company, ENTITY_GOODS_RECEIVED_NOTE
     )
     assert sink.name == SINK_IMPL_LOGGING
-    # A MASTER on the SAME company still resolves to the real Sorento sink — the
+    # A MASTER on the SAME company still resolves to the real Sorento sink - the
     # fallback is per-entity, it does not disable delivery wholesale.
     master_sink = CompanyService(db).sink_for_company(
         DEFAULT_TENANT_ID, company, ENTITY_SUPPLIER
@@ -3212,7 +3212,7 @@ def test_an_undecryptable_sorento_key_is_a_clean_error_not_a_500(db, transports)
     company = _company(db, transports)
     conn = _sorento_connection(db)
     _point_at_sorento(db, company, conn)
-    # A valid Fernet token minted under a FOREIGN key — the process key cannot
+    # A valid Fernet token minted under a FOREIGN key - the process key cannot
     # read it, so decrypt raises InvalidToken, which must surface CLEAN.
     conn.credentials_json = Fernet(Fernet.generate_key()).encrypt(b'{"apiKey":"x"}').decode()
     db.commit()
@@ -3252,7 +3252,7 @@ def test_preview_returns_predictions_and_writes_nothing(db, transports, sorento_
     job = _staged_supplier_job(db, company, refs=("AED_VSOFT:1",))
 
     def responder(request):
-        # AC-14-21: the prediction is Sorento's OWN dry run — and it must be a
+        # AC-14-21: the prediction is Sorento's OWN dry run - and it must be a
         # dry run, never a real write.
         assert request.url.params.get("dry_run") == "true"
         body = _json.loads(request.content)
@@ -3298,7 +3298,7 @@ def test_preview_of_a_non_deliverable_entity_explains_it_is_not_ingested(
 ):
     """A Sorento-configured company previewing a document entity Sorento cannot
     ingest yet (GRN) gets a clean ``previewable: false`` with an HONEST reason
-    (Sorento takes masters only) — never the misleading "no consumer configured"
+    (Sorento takes masters only) - never the misleading "no consumer configured"
     and never a 500 on a missing ingest path. This is the stopgap: the batch
     stages + logs, and the operator is told exactly why it is not delivered."""
     company = _company(db, transports)
@@ -3359,7 +3359,7 @@ def test_approve_via_sorento_delivers_and_marks_pushed(db, transports, sorento_s
     rows = StagedRecordRepository(db).list_for_job(DEFAULT_TENANT_ID, company.id, job.id)
     assert {r.status for r in rows} == {STAGED_PUSHED}
     assert all(r.pushed_at is not None for r in rows)
-    # ONE batch HTTP call for two records — not two per-record calls.
+    # ONE batch HTTP call for two records - not two per-record calls.
     assert len(sorento_sink.requests) == 1
     fresh = db.query(BackgroundJob).filter(BackgroundJob.id == job.id).first()
     assert fresh.status == JOB_DONE
@@ -3369,7 +3369,7 @@ def test_a_batch_error_releases_to_review_and_pushes_nothing(db, transports, sor
     company = _company(db, transports)
     _point_at_sorento(db, company, _sorento_connection(db))
     job = _staged_supplier_job(db, company, refs=("AED_VSOFT:1", "AED_VSOFT:2"))
-    # A batch-level 500 (a guard-rail error before their fix lands) — nothing
+    # A batch-level 500 (a guard-rail error before their fix lands) - nothing
     # resolved, so nothing may be marked pushed.
     sorento_sink.responder = lambda r: httpx.Response(500, json={"message": "guardrail"})
 
@@ -3400,7 +3400,7 @@ def test_a_per_record_rejection_is_not_reported_as_delivered(db, transports, sor
     _point_at_sorento(db, company, _sorento_connection(db))
     job = _staged_supplier_job(db, company, refs=("AED_VSOFT:1", "AED_VSOFT:2"))
 
-    # Keyed by source_ref, NOT position — the two staged rows share a timestamp
+    # Keyed by source_ref, NOT position - the two staged rows share a timestamp
     # and carry random-uuid ids, so their request order is nondeterministic.
     rejected_ref = "AED_VSOFT:2"
 
@@ -3454,7 +3454,7 @@ def test_double_click_approve_via_sorento_pushes_exactly_once(db, transports, so
 
 def test_the_sink_impl_backfill_fills_blank_rows(db, transports):
     company = _company(db, transports)
-    # Simulate a company that predates the sink columns (blank, not NULL — the
+    # Simulate a company that predates the sink columns (blank, not NULL - the
     # column is NOT NULL, so a legacy create_all-first host lands it blank).
     db.execute(
         sa.text("UPDATE ac_company SET sink_impl = '' WHERE id = :id"),
@@ -3463,7 +3463,7 @@ def test_the_sink_impl_backfill_fills_blank_rows(db, transports):
     db.commit()
 
     # Runs on the SESSION (the schema-translated bind), exactly as
-    # ``update_tenant`` invokes it — never on a bare engine.
+    # ``update_tenant`` invokes it - never on a bare engine.
     touched = backfill_sink_impl_defaults(db, schema=default_schema(db.get_bind()))
     db.commit()
     db.refresh(company)
@@ -3473,7 +3473,7 @@ def test_the_sink_impl_backfill_fills_blank_rows(db, transports):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  slice 15 — review UI backend: jobs list, staged pagination, mapping read/write
+#  slice 15 - review UI backend: jobs list, staged pagination, mapping read/write
 #  (AC-15-02, AC-15-10/11, AC-15-40..43). Service + repository level, matching the
 #  rest of this suite (every HTTP leg is mocked; nothing opens a socket).
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3518,7 +3518,7 @@ def test_jobs_list_carries_company_label_and_entity(db, transports):
     assert item.company_name == company.name
     assert item.entity_type == ENTITY_GOODS_RECEIVED_NOTE
     assert item.status == JOB_NEEDS_REVIEW
-    # A batch of one staged record — the counts the list column shows.
+    # A batch of one staged record - the counts the list column shows.
     assert item.progress_total >= 0
 
 
@@ -3556,7 +3556,7 @@ def test_jobs_list_paginates_newest_first(db, transports):
     page1, _t = svc.list_jobs(DEFAULT_TENANT_ID, page=1, page_size=2)
     assert total == 3
     assert len(page0) == 2 and len(page1) == 1
-    # Newest first — no id repeats across pages.
+    # Newest first - no id repeats across pages.
     assert not ({j.job_id for j in page0} & {j.job_id for j in page1})
 
 
@@ -3639,7 +3639,7 @@ def test_staged_page_paginates(db, transports):
 
 
 def test_staged_page_first_sync_records_all_have_changes(db, transports):
-    """A first-sight record diffs as ``{"__new__": True}`` — that IS a change,
+    """A first-sight record diffs as ``{"__new__": True}`` - that IS a change,
     never a no-change no-op."""
     company = _company(db, transports, reads=[[_grn("1"), _grn("2")]])
     job = _run_sync(db, company)
@@ -3707,7 +3707,7 @@ def test_replace_mapping_round_trips(db, transports):
 
 def test_replace_mapping_rejects_a_non_accepted_field(db, transports):
     """AC-15-42: a target Sorento would reject (extra=forbid) is a 422, naming
-    the bad field — never silently dropped."""
+    the bad field - never silently dropped."""
     company = _company(db, transports)
     rows = [MappingWriteRow(source_path="Country", transform="string", sorento_field="country")]
     with pytest.raises(AutocountServiceError) as exc:
@@ -3767,7 +3767,7 @@ def test_replace_mapping_survives_a_reseed(db, transports):
 def test_refetch_history_resets_the_watermark(db, transports):
     """Once an entity has synced, its watermark holds the delta position and the
     first-run window is spent. Re-fetch must DROP that position so the next sync
-    starts from scratch again — the explicit act behind the 'Re-fetch history'
+    starts from scratch again - the explicit act behind the 'Re-fetch history'
     action, distinct from a lookback edit which never re-fetches."""
     from modules.autocount.services.company_service import CompanyService
 
@@ -3788,7 +3788,7 @@ def test_refetch_history_resets_the_watermark(db, transports):
     mark = WatermarkRepository(db).get(
         DEFAULT_TENANT_ID, company.id, ENTITY_GOODS_RECEIVED_NOTE
     )
-    assert mark.last_modified_at is None  # reset — next sync is a full load
+    assert mark.last_modified_at is None  # reset - next sync is a full load
     assert mark.last_success_at is None
     assert mark.consecutive_failures == 0
     # the surface reflects it: no watermark => not superseded
@@ -3812,7 +3812,7 @@ def test_refetch_history_is_tenant_scoped(db, transports):
 
 def test_jobs_list_search_matches_company_label(db, transports):
     """The Review-list search resolves a company-label match to an id set, then
-    filters jobs by payload companyId — a paginated total that stays honest
+    filters jobs by payload companyId - a paginated total that stays honest
     (AC-15-02 searchable list; foolproof-UI: the box must actually filter)."""
     acme = _company(db, transports, database_name="ACME_CO", reads=[[_grn("1")]])
     other = _company(db, transports, database_name="ZED_CO", reads=[[_grn("2")]])
@@ -3890,7 +3890,7 @@ def _matrix_equal(expected, got) -> bool:
 
 def test_formula_parity_matrix_python_side():
     """The Python evaluator agrees with the SHARED golden matrix (AC-16-01). The
-    TS twin runs the SAME file in vitest — a divergence fails one side."""
+    TS twin runs the SAME file in vitest - a divergence fails one side."""
     matrix = _json_std.loads(_PARITY_MATRIX.read_text())
     for case in matrix["cases"]:
         formula, value = case["formula"], case["value"]
@@ -3927,7 +3927,7 @@ def test_formula_fails_closed_at_parse_for_unknown_names():
 
 
 def test_formula_fails_closed_at_runtime_never_a_silent_null():
-    """AC-16-03: a runtime fault raises a typed error the caller names — never a
+    """AC-16-03: a runtime fault raises a typed error the caller names - never a
     silent null."""
     with pytest.raises(FormulaRuntimeError):
         evaluate_formula("number(value)", "not-a-number")
@@ -3940,13 +3940,13 @@ def test_formula_fails_closed_at_runtime_never_a_silent_null():
 
 def test_a_null_formula_row_behaves_exactly_as_the_named_transform():
     """A row with a named transform and NO formula runs the named transform,
-    unchanged — the whole back-compat guarantee in one assertion."""
+    unchanged - the whole back-compat guarantee in one assertion."""
     row = _MappingRow("IsActive", "is_active", "t_f_bool", SCOPE_HEADER, formula=None)
     assert row.coerce("T") is True
     assert row.coerce("F") is False
     assert row.coerce("") is None  # blank → None (absent is not unconvertible)
     with pytest.raises(TransformError):
-        row.coerce("maybe")  # strict — same named-transform failure as before
+        row.coerce("maybe")  # strict - same named-transform failure as before
 
     # And end-to-end: the seeded (formula-NULL) supplier mapping still maps clean.
     from modules.autocount.mapping import DEFAULT_SUPPLIER_MAPPING
@@ -3998,7 +3998,7 @@ def test_a_formula_output_is_coerced_to_the_target_type():
     rows = [
         _MappingRow("AccNo", "code", "string", SCOPE_HEADER, is_required=True),
         _MappingRow("CompanyName", "name", "string", SCOPE_HEADER, is_required=True),
-        # 'value' returns the raw string "T" — NOT a boolean — into is_active.
+        # 'value' returns the raw string "T" - NOT a boolean - into is_active.
         _MappingRow("IsActive", "is_active", "string", SCOPE_HEADER, formula="value"),
     ]
     engine = MappingEngine(rows, entity_type=ENTITY_SUPPLIER, database_name="AED_VSOFT")
@@ -4120,14 +4120,14 @@ def test_simulate_maps_a_mock_record_and_writes_nothing(db, transports):
     fields = {f["canonicalField"]: f for f in result["headerFields"]}
     assert fields["is_active"]["ok"] is True
 
-    # Writes NOTHING — the saved mapping is untouched.
+    # Writes NOTHING - the saved mapping is untouched.
     after = svc.mapping_rows(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER)
     assert len(after) == len(before)
 
 
 def test_simulate_reports_a_per_field_error_without_omitting_it(db, transports):
     """A record with an unreadable active flag simulates as a per-field error +
-    a rejected (None) record — never a silent drop (AC-16-30)."""
+    a rejected (None) record - never a silent drop (AC-16-30)."""
     company = _company(db, transports)
     result = CompanyService(db).simulate_mapping(
         DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, _supplier(IsActive="maybe")
@@ -4139,7 +4139,7 @@ def test_simulate_reports_a_per_field_error_without_omitting_it(db, transports):
 
 
 def test_simulate_with_draft_rows_previews_unsaved_edits(db, transports):
-    """Draft rows let the operator simulate an in-progress edit without saving —
+    """Draft rows let the operator simulate an in-progress edit without saving -
     the saved mapping stays put."""
     company = _company(db, transports)
     svc = CompanyService(db)

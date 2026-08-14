@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * <ConversationDrawer> — the reusable chat panel (plan 05 §6). Self-contained:
+ * <ConversationDrawer> - the reusable chat panel (plan 05 §6). Self-contained:
  * gets everything through useMessages + conversation-service, so it can later
  * dock into CRM forms unchanged. Header (contact, assign, lifecycle,
  * Messages | Activities tabs) + thread window + CSW-aware composer.
@@ -72,7 +72,7 @@ function initials(name: string): string {
 }
 
 /** Human day label in the viewer's tz: Today / Yesterday / 4 June 2026.
- * Backend timestamps are naive-UTC by convention — `dateKey` pins the parse
+ * Backend timestamps are naive-UTC by convention - `dateKey` pins the parse
  * to UTC and resolves the calendar day in the given tz (plan sprint-2/05). */
 export function dayLabel(
   iso: string,
@@ -84,7 +84,7 @@ export function dayLabel(
   const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   if (key === dateKey(yesterday, { timeZone })) return 'Yesterday';
   const d = parseUtc(iso);
-  if (!d) return '—';
+  if (!d) return '-';
   try {
     return new Intl.DateTimeFormat(undefined, {
       day: 'numeric',
@@ -134,7 +134,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
   const [searchTerm, setSearchTerm] = useState('');
   const [matchCursor, setMatchCursor] = useState(0); // 0 = newest match
 
-  // Deep link: ?msg=<id> (the bubble menu's "Copy link to message") — scroll to
+  // Deep link: ?msg=<id> (the bubble menu's "Copy link to message") - scroll to
   // + briefly highlight that message once its thread is loaded.
   const [focusMsgId, setFocusMsgId] = useState<string | null>(null);
   useEffect(() => {
@@ -151,7 +151,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     setMatchCursor(0);
   }, [contactId]);
 
-  // CSW lock is a clock comparison — re-evaluate periodically while open.
+  // CSW lock is a clock comparison - re-evaluate periodically while open.
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
     const t = setInterval(() => setNowTick(Date.now()), 30_000);
@@ -258,7 +258,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
 
   return (
     <div className="flex h-full flex-col" data-testid="conversation-drawer">
-      {/* Header — hidden in compact (messages-only) mode. */}
+      {/* Header - hidden in compact (messages-only) mode. */}
       {!compact && (
       <div className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
         <Avatar className="size-9">
@@ -431,7 +431,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
         </div>
       </ScrollArea>
 
-      {/* Composer — note mode on the Activities tab */}
+      {/* Composer - note mode on the Activities tab */}
       <Composer
         windowOpen={windowOpen}
         templates={templates}

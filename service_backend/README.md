@@ -1,4 +1,4 @@
-# FoundryX EMS — Backend (FastAPI)
+# Foundryx EMS - Backend (FastAPI)
 
 FastAPI owns auth (bcrypt + JWT) and all domain data. The Next.js frontend's
 NextAuth `CredentialsProvider` calls `POST /auth/login` and carries the returned

@@ -66,7 +66,7 @@ function fieldName(f: ProviderField): `config.${string}` | `credentials.${string
   return f.secret ? `credentials.${f.key}` : `config.${f.key}`;
 }
 
-/** One provider-declared field — control by type, read mode shows the value. */
+/** One provider-declared field - control by type, read mode shows the value. */
 function ProviderFieldRow({
   f,
   form,
@@ -87,9 +87,9 @@ function ProviderFieldRow({
         {f.secret ? (
           <span className="text-muted-foreground">••••••••</span>
         ) : f.type === 'select' ? (
-          (f.options?.find((o) => o.value === value)?.label ?? (value || '—'))
+          (f.options?.find((o) => o.value === value)?.label ?? (value || '-'))
         ) : (
-          value || '—'
+          value || '-'
         )}
       </FormRow>
     );
@@ -206,7 +206,7 @@ export function ConfigurationTab({
                 )}
               />
             ) : (
-              (connection?.name ?? '—')
+              (connection?.name ?? '-')
             )}
           </FormRow>
         )}
@@ -267,13 +267,13 @@ export interface HealthCardProps {
 
 /**
  * Connection health + the provider's OPTIONAL targeted test (SMTP: send a
- * real email — needs an input, so it lives here rather than in the action
+ * real email - needs an input, so it lives here rather than in the action
  * registry). The plain connection check is the registry's Test action.
  */
 export function HealthCard({ connection, provider, canManage, onChanged }: HealthCardProps) {
   const [target, setTarget] = useState('');
   const [busy, setBusy] = useState(false);
-  // Session-tz formatter (plan sprint-2/05) — never the tz-blind lib/format.
+  // Session-tz formatter (plan sprint-2/05) - never the tz-blind lib/format.
   const { formatDateTime } = useDatetime();
 
   const runTargeted = async () => {

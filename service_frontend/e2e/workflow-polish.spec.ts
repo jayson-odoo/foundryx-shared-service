@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Plan sprint-2/10 Phase C — BL-064 undo/redo + non-destructive Tidy on the
+ * Plan sprint-2/10 Phase C - BL-064 undo/redo + non-destructive Tidy on the
  * workflow canvas (the shared `useHistory` hook end-to-end, real clicks).
  *
  * Preconditions: frontend :3001 + backend :8001 on the plan-10 branch, migrated
@@ -28,7 +28,7 @@ async function login(page: Page, email: string, password: string) {
   await page.waitForURL((url) => !url.pathname.startsWith('/signin'));
 }
 
-/** Palette sections are collapsed by default — search surfaces the item. */
+/** Palette sections are collapsed by default - search surfaces the item. */
 async function addNode(page: Page, term: string, type: string) {
   await page.getByTestId('palette-search').fill(term);
   await page.getByTestId(`palette-${type}`).click();
@@ -49,7 +49,7 @@ async function connect(page: Page, fromType: string, toType: string) {
 
 test.describe.configure({ mode: 'serial', timeout: 120_000 });
 
-test.describe('Workflow canvas polish — BL-064 (plan sprint-2/10 Phase C)', () => {
+test.describe('Workflow canvas polish - BL-064 (plan sprint-2/10 Phase C)', () => {
   test.beforeAll(async ({ request }) => {
     const platformLogin = await request.post(`${API}/auth/login`, {
       data: { email: 'platform@example.com', password: 'platform1234', tenantSlug: 'platform' },
@@ -77,7 +77,7 @@ test.describe('Workflow canvas polish — BL-064 (plan sprint-2/10 Phase C)', ()
     await page.getByRole('button', { name: 'New workflow' }).click();
     await expect(page.getByTestId('workflow-canvas')).toBeVisible();
 
-    // Empty timeline — nothing to undo yet.
+    // Empty timeline - nothing to undo yet.
     await expect(page.getByTestId('canvas-undo')).toBeDisabled();
 
     // Build a trigger → action graph (each op is one history entry).

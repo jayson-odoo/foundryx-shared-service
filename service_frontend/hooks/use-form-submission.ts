@@ -1,6 +1,6 @@
 'use client';
 
-/** One submission's detail state (plan sprint-3/01 D18) — the row, its
+/** One submission's detail state (plan sprint-3/01 D18) - the row, its
  * PINNED version's definition (faithful re-render forever, D9) and the
  * graph-driven transitions it can fire (D15). Plan sprint-4/04 adds the
  * revision chain, the form's `allowRevisions` flag and the Revise action. */
@@ -17,7 +17,7 @@ export interface UseFormSubmissionResult {
   allowRevisions: boolean;
   /** The full revision chain for this submission's group, newest first (R3). */
   revisions: FormSubmissionRow[];
-  /** Resolved from the graph — true while answers are still editable (Draft). */
+  /** Resolved from the graph - true while answers are still editable (Draft). */
   isActive: boolean;
   loading: boolean;
   notFound: boolean;
@@ -53,7 +53,7 @@ export function useFormSubmission(formId: string, submissionId: string): UseForm
           formService.versionDefinition(formId, row.versionId),
           formService.submissionGraph(formId),
           // allowRevisions is form-level; tolerate a perm/load miss (Revise just
-          // stays hidden — the backend is the real gate).
+          // stays hidden - the backend is the real gate).
           formService.get(formId).catch(() => null),
           formService.submissionRevisions(formId, row.submissionGroupId).catch(() => []),
         ]);
@@ -79,7 +79,7 @@ export function useFormSubmission(formId: string, submissionId: string): UseForm
       try {
         const updated = await formService.transitionSubmission(submissionId, transitionId);
         setSubmission(updated);
-        // The status moved — the chain's labels/flags may have shifted too.
+        // The status moved - the chain's labels/flags may have shifted too.
         const chain = await formService
           .submissionRevisions(formId, updated.submissionGroupId)
           .catch(() => [updated]);
@@ -98,7 +98,7 @@ export function useFormSubmission(formId: string, submissionId: string): UseForm
     setBusy(true);
     try {
       const draft = await formService.revise(submissionId);
-      toast.success('Revision started — edit and resubmit.');
+      toast.success('Revision started - edit and resubmit.');
       return draft.id;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Could not start a revision.');

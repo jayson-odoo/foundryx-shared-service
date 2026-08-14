@@ -2,7 +2,7 @@
 
 ONE place for the friendly ``payload_json`` shape (stored + rendered), its
 validation (buttons≤3, list≤10 rows, title/URL limits), and the transform to the
-Meta Cloud API object — reused by the inbox composer AND the public gateway so
+Meta Cloud API object - reused by the inbox composer AND the public gateway so
 both enforce the same rules. Pure functions (no DB/HTTP); the send task builds the
 Meta object here at send time (injecting an uploaded media-header id).
 """
@@ -23,12 +23,12 @@ MAX_CTA_DISPLAY = 20
 
 INTERACTIVE_KINDS = ("buttons", "list", "cta_url", "location_request")
 MEDIA_HEADER_TYPES = ("image", "video", "document")
-# WhatsApp contacts phone-type enum — anything else is dropped (Meta rejects it).
+# WhatsApp contacts phone-type enum - anything else is dropped (Meta rejects it).
 CONTACT_PHONE_TYPES = ("CELL", "HOME", "WORK", "MAIN", "IPHONE")
 
 
 class StructuredError(ValueError):
-    """Validation failure — carries a human message the composer/gateway surface."""
+    """Validation failure - carries a human message the composer/gateway surface."""
 
 
 def _s(v: Any) -> str:
@@ -62,7 +62,7 @@ def validate_interactive(defn: Dict[str, Any]) -> None:
     if kind == "buttons":
         buttons = defn.get("buttons") or []
         if not (1 <= len(buttons) <= MAX_BUTTONS):
-            raise StructuredError(f"Provide 1–{MAX_BUTTONS} reply buttons.")
+            raise StructuredError(f"Provide 1-{MAX_BUTTONS} reply buttons.")
         seen = set()
         for b in buttons:
             title = _s(b.get("title"))
@@ -114,7 +114,7 @@ def validate_interactive(defn: Dict[str, Any]) -> None:
             raise StructuredError("A CTA button needs display text and a URL.")
         if len(display) > MAX_CTA_DISPLAY:
             raise StructuredError(f"CTA display text must be ≤ {MAX_CTA_DISPLAY} characters.")
-        # We hand the URL to Meta (never fetch it ourselves) — still enforce a safe
+        # We hand the URL to Meta (never fetch it ourselves) - still enforce a safe
         # scheme so the recipient's tap opens a real link, not javascript:/data:.
         scheme = urlparse(url).scheme.lower()
         if scheme not in ("http", "https"):

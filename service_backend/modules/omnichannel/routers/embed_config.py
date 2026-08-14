@@ -1,9 +1,9 @@
-"""Embed-access config router — plan 11H (tenant-level embed connection admin).
+"""Embed-access config router - plan 11H (tenant-level embed connection admin).
 
-Gated (NOT public): every endpoint requires ``workspaces.manage`` (reused — no
+Gated (NOT public): every endpoint requires ``workspaces.manage`` (reused - no
 new permission, so no grant sweep) AND the omnichannel module active for the
 caller's tenant. HTTP + Pydantic only; the service owns all DB logic. The
-``embedSecret`` is write-only — GET never returns it; rotate returns it once.
+``embedSecret`` is write-only - GET never returns it; rotate returns it once.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session

@@ -1,10 +1,10 @@
 'use client';
 
 /**
- * Per-type fill input dispatcher (plan sprint-3/01, D7) — maps a `FormField`
+ * Per-type fill input dispatcher (plan sprint-3/01, D7) - maps a `FormField`
  * to its interactive control. Dropdowns use the house SearchSelect/MultiSelect
  * primitives ONLY. Computed fields are read-only (recomputed live). Every
- * control receives only the doc's own labels/placeholders/helpText — NO
+ * control receives only the doc's own labels/placeholders/helpText - NO
  * instructional copy (foolproof-UI mandate).
  */
 import { MultiSelect } from '@/components/platform/multi-select';
@@ -33,7 +33,7 @@ export interface FieldInputProps {
   field: FormField;
   value: FormAnswerValue | undefined;
   onChange: (value: FormAnswerValue) => void;
-  /** All errors — composite types read their nested `key.row.subKey` entries. */
+  /** All errors - composite types read their nested `key.row.subKey` entries. */
   errors: FormFieldErrors;
   invalid?: boolean;
   /** Computed display value (only for `computed` fields). */
@@ -301,7 +301,7 @@ export function FieldInput({
           data-slot="computed-value"
           className="flex h-9 items-center rounded-md border border-input bg-muted/50 px-3 text-sm text-foreground"
         >
-          {computed === null || computed === undefined ? '—' : computed}
+          {computed === null || computed === undefined ? '-' : computed}
         </div>
       );
 

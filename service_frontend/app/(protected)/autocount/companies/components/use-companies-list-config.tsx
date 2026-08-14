@@ -20,7 +20,7 @@ import {
 /**
  * AutoCount companies list on the Resource shell. The backend list is
  * page-based only (no server search/sort/filter), so the fetcher passes just
- * page/pageSize — the toolbar's unsupported affordances stay off rather than
+ * page/pageSize - the toolbar's unsupported affordances stay off rather than
  * silently doing nothing.
  */
 export function useAutocountCompaniesListConfig(): ResourceListConfig<AutocountCompany> {
@@ -58,7 +58,7 @@ export function useAutocountCompaniesListConfig(): ResourceListConfig<AutocountC
         header: ({ column }) => (
           <DataGridColumnHeader title="Company database" column={column} />
         ),
-        // Discovered from the login response — read-only everywhere (AC-13-01).
+        // Discovered from the login response - read-only everywhere (AC-13-01).
         cell: ({ row }) => (
           <code className="text-xs">{row.original.databaseName}</code>
         ),
@@ -88,7 +88,7 @@ export function useAutocountCompaniesListConfig(): ResourceListConfig<AutocountC
         header: ({ column }) => <DataGridColumnHeader title="Connected" column={column} />,
         cell: ({ row }) => (
           <span className="text-sm text-muted-foreground">
-            {row.original.createdAt ? formatDate(row.original.createdAt) : '—'}
+            {row.original.createdAt ? formatDate(row.original.createdAt) : '-'}
           </span>
         ),
         size: 160,

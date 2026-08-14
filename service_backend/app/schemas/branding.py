@@ -1,6 +1,6 @@
-"""Tenant branding schemas (plan sprint-2/03) — camelCase wire contracts.
+"""Tenant branding schemas (plan sprint-2/03) - camelCase wire contracts.
 
-``tokens`` is the curated theme document {"light": {...}, "dark": {...}} —
+``tokens`` is the curated theme document {"light": {...}, "dark": {...}} -
 whitelisted keys only, validated in the SERVICE (named 422 errors), not here:
 the whitelist is data, not schema shape.
 """
@@ -24,7 +24,7 @@ class BrandingResponse(BaseModel):
     faviconUrl: Optional[str] = None
     illustrationUrl: Optional[str] = None
     tokens: Optional[TokensDoc] = None
-    # Social URLs + email footer (plan 07 D4) — template-engine brand blocks.
+    # Social URLs + email footer (plan 07 D4) - template-engine brand blocks.
     socials: Optional[SocialsDoc] = None
     footer: Optional[FooterDoc] = None
     version: int = 0
@@ -32,7 +32,7 @@ class BrandingResponse(BaseModel):
 
 class BrandingUpdateRequest(BaseModel):
     slogan: Optional[str] = Field(default=None, max_length=120)
-    # Tenant product/system name — "Welcome to {appName}" on sign-in.
+    # Tenant product/system name - "Welcome to {appName}" on sign-in.
     appName: Optional[str] = Field(default=None, max_length=60)
     tokens: Optional[TokensDoc] = None
     socials: Optional[SocialsDoc] = None
@@ -41,7 +41,7 @@ class BrandingUpdateRequest(BaseModel):
 
 class PublicBrandingResponse(BaseModel):
     """Pre-auth branding for a host slug. Unknown slug = uniform defaults
-    (``isBranded`` false) — tenant existence is never enumerable here."""
+    (``isBranded`` false) - tenant existence is never enumerable here."""
 
     isBranded: bool = False
     tenantName: Optional[str] = None

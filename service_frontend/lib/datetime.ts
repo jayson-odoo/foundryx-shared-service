@@ -1,15 +1,15 @@
 /**
- * Shared datetime rendering (plan sprint-2/05, BL-012) — THE one formatter
+ * Shared datetime rendering (plan sprint-2/05, BL-012) - THE one formatter
  * family for backend timestamps.
  *
  * Contract: the DB stores UTC; the wire is ISO-8601. Until the backend
  * Z-suffixes everywhere, a tz-less string ("2026-01-01T10:00:00") is UTC BY
- * CONVENTION — `new Date()` would mis-parse it as local time, so `parseUtc`
+ * CONVENTION - `new Date()` would mis-parse it as local time, so `parseUtc`
  * pins naive strings to UTC explicitly. Rendering happens in the viewer's
  * timezone (`options.timeZone`, normally the session user's preference via
  * `useDatetime()`; omitted = browser tz).
  *
- * Null-safe: null/undefined/unparsable input renders '—'.
+ * Null-safe: null/undefined/unparsable input renders '-'.
  */
 
 export interface DatetimeFormatOptions {
@@ -47,7 +47,7 @@ const STYLE_OPTIONS: Record<FormatStyle, Intl.DateTimeFormatOptions> = {
 };
 
 // Intl.DateTimeFormat construction is expensive and list cells render in the
-// hundreds — cache one formatter per (style, tz).
+// hundreds - cache one formatter per (style, tz).
 const formatterCache = new Map<string, Intl.DateTimeFormat>();
 
 function getFormatter(style: FormatStyle, timeZone?: string | null): Intl.DateTimeFormat {
@@ -61,7 +61,7 @@ function getFormatter(style: FormatStyle, timeZone?: string | null): Intl.DateTi
         timeZone: timeZone ?? undefined,
       });
     } catch {
-      // Invalid stored tz preference must never crash rendering — fall back
+      // Invalid stored tz preference must never crash rendering - fall back
       // to the browser timezone.
       formatter = new Intl.DateTimeFormat('en-GB', STYLE_OPTIONS[style]);
     }
@@ -76,7 +76,7 @@ function format(
   options?: DatetimeFormatOptions,
 ): string {
   const d = parseUtc(iso);
-  return d ? getFormatter(style, options?.timeZone).format(d) : '—';
+  return d ? getFormatter(style, options?.timeZone).format(d) : '-';
 }
 
 /** "02 Jan 2024" in the viewer's timezone. */
@@ -105,7 +105,7 @@ export function formatTime(
 
 /**
  * Calendar-day key ("2026-06-04") of the instant AS SEEN in the viewer's
- * timezone — for day grouping/separators (inbox threads). The same instant
+ * timezone - for day grouping/separators (inbox threads). The same instant
  * lands on different days in different timezones; never key off getUTCDate.
  */
 export function dateKey(

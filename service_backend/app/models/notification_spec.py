@@ -1,7 +1,7 @@
-"""Notify-on-transition specs (sprint-2/01 D6) — generic, NOT transition-owned.
+"""Notify-on-transition specs (sprint-2/01 D6) - generic, NOT transition-owned.
 
 A spec = channel + inline merge-field template + recipient list. Transitions
-*reference* specs via the ``notification_spec_transitions`` link (N:N — a spec
+*reference* specs via the ``notification_spec_transitions`` link (N:N - a spec
 is reusable across edges). Dispatch is EMAIL via the plan-09 outbox; ``IN_APP``
 is modeled but inert (inbox UI = follow-up backlog). ``template_key`` is a
 loose string for the future Template engine (BL-024) to claim.
@@ -15,7 +15,7 @@ from app.models.utc_datetime import UTCDateTime
 
 from app.database import Base
 
-# Channels — flags-not-enums applies to statuses; channels ARE a closed set.
+# Channels - flags-not-enums applies to statuses; channels ARE a closed set.
 CHANNEL_EMAIL = "EMAIL"
 CHANNEL_IN_APP = "IN_APP"
 NOTIFICATION_CHANNELS = (CHANNEL_EMAIL, CHANNEL_IN_APP)
@@ -58,18 +58,18 @@ class NotificationSpec(Base):
     # NULL = platform-owned default spec.
     tenant_id = Column(String, nullable=True, index=True)
     channel = Column(String, nullable=False, default=CHANNEL_EMAIL)
-    # Inline merge-field templates ({{recordLabel}}, {{toStatus}}, …) — the
+    # Inline merge-field templates ({{recordLabel}}, {{toStatus}}, …) - the
     # Template engine (BL-024) swaps this renderer later via template_key.
     template_subject = Column(String, nullable=False)
     template_body = Column(Text, nullable=False)
     template_key = Column(String, nullable=True)
-    # Engine template reference (plan 07 D10) — when set, dispatch renders
+    # Engine template reference (plan 07 D10) - when set, dispatch renders
     # the referenced template instead of the inline subject/body; template
     # deletion falls the spec back to inline (SET NULL).
     template_id = Column(
         String, ForeignKey("templates.id", ondelete="SET NULL"), nullable=True
     )
-    # Per-use COPY of a template's block document (plan 10 follow-up) — the
+    # Per-use COPY of a template's block document (plan 10 follow-up) - the
     # operator picked a template and edited the wording inline. When set,
     # dispatch renders this doc branded (subject = template_subject), taking
     # precedence over template_id + the inline subject/body.

@@ -36,7 +36,7 @@ export interface WorkflowService {
   /** Clear the current version → trigger stops firing (draft + history kept). */
   unpublish(id: string): Promise<Workflow>;
 
-  /** Manual run (D12/D13) — returns the created run. */
+  /** Manual run (D12/D13) - returns the created run. */
   run(id: string, request: WorkflowRunRequest): Promise<WorkflowRunListItem>;
   listRuns(workflowId: string, query: ListQuery): Promise<ListResult<WorkflowRunListItem>>;
   getRun(runId: string): Promise<WorkflowRunDetail | null>;
@@ -49,7 +49,7 @@ export interface WorkflowService {
   /** Template picker options for the email.send action (Phase B → GET /templates). */
   listTemplateOptions(): Promise<{ value: string; label: string }[]>;
 
-  /** Tenant workflow settings — run retention (plan 10). */
+  /** Tenant workflow settings - run retention (plan 10). */
   getSettings(): Promise<WorkflowSettings>;
   updateSettings(runRetentionDays: number): Promise<WorkflowSettings>;
 

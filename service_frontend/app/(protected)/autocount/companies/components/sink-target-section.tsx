@@ -18,7 +18,7 @@ function sinkLabel(impl: AutocountSinkImpl | string): string {
 }
 
 export interface SinkTargetSectionProps {
-  /** The persisted company — read mode renders from this. */
+  /** The persisted company - read mode renders from this. */
   company: AutocountCompany;
   /** The form's global Edit toggle. Read-only until true (AC-15-20). */
   editing: boolean;
@@ -54,10 +54,10 @@ export function SinkTargetSection({
 
   const readConnectionLabel = useMemo(() => {
     const match = options.find((o) => o.value === company.sinkConnectionId);
-    return match?.label ?? company.sinkConnectionId ?? '—';
+    return match?.label ?? company.sinkConnectionId ?? '-';
   }, [company.sinkConnectionId, options]);
 
-  // Foolproof-UI: Sorento with no connection is a guaranteed sync failure — warn
+  // Foolproof-UI: Sorento with no connection is a guaranteed sync failure - warn
   // in place (the parent's save also refuses it), never fail silently later.
   const missingConnection = editing && sinkImpl === 'sorento' && !connectionId;
 

@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { expectMailTo } from './helpers/mailbox';
 
 /**
- * Plan sprint-2/07 Phase C — template engine + email log, full stack.
+ * Plan sprint-2/07 Phase C - template engine + email log, full stack.
  *
  * Preconditions:
  *   - backend :8001 on the plan-07 branch, migrated + seeded (platform-tier
@@ -13,7 +13,7 @@ import { expectMailTo } from './helpers/mailbox';
  *
  * Isolation (methodology §7): forking a system template + sending mail mutates
  * tenant state, so everything runs on a DEDICATED tenant provisioned via the
- * operator API (setup only — flows under test stay real clicks). Timestamped.
+ * operator API (setup only - flows under test stay real clicks). Timestamped.
  */
 const API = process.env.NEXT_PUBLIC_BACKEND_API_URL ?? 'http://localhost:8001';
 
@@ -42,7 +42,7 @@ async function gotoTemplates(page: Page) {
 
 test.describe.configure({ mode: 'serial', timeout: 120_000 });
 
-test.describe('Template engine — live stack (plan sprint-2/07 Phase C)', () => {
+test.describe('Template engine - live stack (plan sprint-2/07 Phase C)', () => {
   test.beforeAll(async ({ request }) => {
     const platformLogin = await request.post(`${API}/auth/login`, {
       data: { email: 'platform@example.com', password: 'platform1234', tenantSlug: 'platform' },
@@ -77,7 +77,7 @@ test.describe('Template engine — live stack (plan sprint-2/07 Phase C)', () =>
           port: '1025',
           security: 'none',
           fromEmail: 'no-reply@example.com',
-          fromName: 'FoundryX E2E',
+          fromName: 'Foundryx E2E',
         },
         credentials: {},
       },
@@ -99,7 +99,7 @@ test.describe('Template engine — live stack (plan sprint-2/07 Phase C)', () =>
     // Settings tab: name + context (create mode opens on the Design tab).
     await page.getByRole('tab', { name: 'Settings' }).click();
     await page.getByLabel('Template name').fill(CUSTOM_NAME);
-    // Context picker (SearchSelect — combobox named by its aria-label).
+    // Context picker (SearchSelect - combobox named by its aria-label).
     await page.getByRole('combobox', { name: 'Template context' }).click();
     await page.getByRole('option', { name: /Template · Test send/i }).click();
     // Confirm the selection registered before leaving the Settings tab.
@@ -107,7 +107,7 @@ test.describe('Template engine — live stack (plan sprint-2/07 Phase C)', () =>
       page.getByRole('combobox', { name: 'Template context' }),
     ).toContainText('Template · Test send');
 
-    // Design tab — the blank template seeds brand header/body/footer, valid
+    // Design tab - the blank template seeds brand header/body/footer, valid
     // to save as-is. (dnd-kit drag-drop is exercised in the editor's Vitest
     // suite; Playwright's mouse-event dragTo doesn't drive dnd-kit's pointer
     // sensors reliably.)
@@ -147,7 +147,7 @@ test.describe('Template engine — live stack (plan sprint-2/07 Phase C)', () =>
     await page.getByRole('tab', { name: 'Settings' }).click();
     const marker = `Forked ${STAMP}`;
     const subject = page.getByLabel('Subject');
-    await subject.fill(`${marker} — reset your {{tenant.name}} password`);
+    await subject.fill(`${marker} - reset your {{tenant.name}} password`);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     // First edit of a platform default forks it: the URL replaces to the new
     // (fork) template id. The list then shows the row at the Customized tier.

@@ -1,4 +1,4 @@
-"""Workflow business logic (plan sprint-2/08) — Router → THIS → Repository.
+"""Workflow business logic (plan sprint-2/08) - Router → THIS → Repository.
 
 Owns: CRUD, publish/unpublish (snapshot → version → current + denormalized
 trigger), active + archive/restore lifecycle, manual run (snapshot draft +
@@ -51,7 +51,7 @@ def _now() -> datetime:
 
 
 def _form_answer_fields(definition: Dict[str, Any]) -> List[Dict[str, str]]:
-    """Flatten a form definition to its answer fields ({key,label}) — input/
+    """Flatten a form definition to its answer fields ({key,label}) - input/
     choice/composite fields that carry a stable answer ``key`` (display blocks
     like heading/divider have none). Backs the form.submitted dynamic outputs."""
     fields: List[Dict[str, str]] = []
@@ -77,7 +77,7 @@ class WorkflowService:
         self.db = db
         self.repo = WorkflowRepository(db)
 
-    # ---- tenant settings (plan 10 — run retention) ----
+    # ---- tenant settings (plan 10 - run retention) ----
     def get_run_retention(self, tenant_id: str) -> Tuple[int, bool]:
         """Effective run-retention days for the tenant + whether it's the global
         default (no per-tenant override)."""
@@ -111,7 +111,7 @@ class WorkflowService:
         doc = parse_definition(definition)
         trigger = next((n for n in doc.nodes if n.kind == "trigger"), None)
         if trigger is None:
-            return "", "—"
+            return "", "-"
         defn = get_trigger(trigger.type)
         return trigger.type, (defn.label if defn else trigger.type)
 
@@ -203,7 +203,7 @@ class WorkflowService:
             draft_definition=wf.draft_definition_json,
             current_version_id=wf.current_version_id,
             current_version=current_summary,
-            created_by_name=self._user_name(wf.created_by) or "—",
+            created_by_name=self._user_name(wf.created_by) or "-",
             created_at=wf.created_at,
         )
 
@@ -330,7 +330,7 @@ class WorkflowService:
     # ---- runs ----
 
     def run(self, workflow_id: str, tenant_id: str, *, inputs: Dict[str, Any], is_test: bool, actor: User) -> WorkflowRun:
-        """Manual run — executes the DRAFT (no publish required, D13)."""
+        """Manual run - executes the DRAFT (no publish required, D13)."""
         wf = self.get(workflow_id, tenant_id)
         current = self.repo.get_version(wf.current_version_id) if wf.current_version_id else None
         payload = {
@@ -438,7 +438,7 @@ class WorkflowService:
         ]
 
     def metadata(self, tenant_id: str) -> Dict[str, Any]:
-        """Triggerable entities + resolved statuses + record fields — the editor's
+        """Triggerable entities + resolved statuses + record fields - the editor's
         entity/status/field pickers (swaps the frontend mock, slice 09)."""
         from app.models.status import Status
         from app.rule_engine.registry import _camel, get_facts
@@ -452,7 +452,7 @@ class WorkflowService:
                 for _, _, fact in facts
             ]
             # entity.update may only write the whitelist (camelCase to match the
-            # field keys above — see entity_actions guard).
+            # field keys above - see entity_actions guard).
             writable_fields = sorted(_camel(attr) for attr in e.writable)
             statuses: List[Dict[str, str]] = []
             if e.has_status:
@@ -480,7 +480,7 @@ class WorkflowService:
             })
 
         # Whether a usable connection exists for each connection-requiring action
-        # (tenant → platform fallback) — drives the editor's "no connection" warning.
+        # (tenant → platform fallback) - drives the editor's "no connection" warning.
         from app.repositories.connection_repository import ConnectionRepository
 
         conn_repo = ConnectionRepository(self.db)
@@ -495,7 +495,7 @@ class WorkflowService:
         }
 
     def _form_options(self, tenant_id: str) -> List[Dict[str, Any]]:
-        """Published forms + their published-version answer keys — backs the
+        """Published forms + their published-version answer keys - backs the
         `form.submitted` trigger picker + its dynamic `trigger.answers.<key>`
         outputs (sprint-3/02)."""
         from app.models.form import FORM_PUBLISHED, Form
@@ -530,7 +530,7 @@ class WorkflowService:
         from app.models.template import TEMPLATE_TYPE_EMAIL, Template
         from app.repositories.template_repository import TemplateRepository
 
-        # Only EMAIL templates can back an email.send action — document/badge
+        # Only EMAIL templates can back an email.send action - document/badge
         # (canvas) templates render to PDF, not mail (F2 slice 2).
         rows, _ = TemplateRepository(self.db).paginate(
             tenant_id, page=0, page_size=100,

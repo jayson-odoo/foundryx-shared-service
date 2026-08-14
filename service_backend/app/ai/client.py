@@ -9,7 +9,7 @@ never see an API key.
 OWN `connection_id`; the "is any LLM configured at all?" prerequisite probe
 falls back tenant → platform. Because `type='llm'` is carved out of the
 one-per-type index (Bi-D21), that probe must tolerate SEVERAL rows and pick
-DETERMINISTICALLY — tenant rows before platform, then oldest active first.
+DETERMINISTICALLY - tenant rows before platform, then oldest active first.
 """
 import logging
 from dataclasses import dataclass
@@ -59,17 +59,17 @@ def _decrypt(connection: Connection) -> Dict[str, Any]:
     try:
         return decrypt_secret(connection.credentials_json)
     except InvalidToken:
-        # A rotated FERNET_KEY must not 500 — surface it as a clean prerequisite
+        # A rotated FERNET_KEY must not 500 - surface it as a clean prerequisite
         # failure the operator can act on.
         raise LLMError(
             "Stored credentials for this AI connection can no longer be decrypted "
-            "— re-enter the API key on the connection and save."
+            "- re-enter the API key on the connection and save."
         ) from None
 
 
 def any_llm_connection(db: Session, tenant_id: str) -> Optional[Connection]:
     """The prerequisite probe (AC-BI-11): does this tenant have ANY usable LLM
-    connection — its own, else the platform's?
+    connection - its own, else the platform's?
 
     Deliberately NOT `resolve_for_type`: with the `llm` carve-out a tenant may
     hold several rows, so this orders explicitly (oldest active first) to stay
@@ -111,7 +111,7 @@ def resolve_for_agent(db: Session, tenant_id: str, agent: AiAgent) -> ResolvedCo
             db.query(Connection)
             .filter(
                 Connection.id == agent.connection_id,
-                # Tenant-scope a STORED id at USE time — the polymorphic
+                # Tenant-scope a STORED id at USE time - the polymorphic
                 # target_id rule (defense in depth even though the write path
                 # validates it). The platform tenant's row is a legal fallback
                 # target, so it is accepted explicitly.
@@ -121,11 +121,11 @@ def resolve_for_agent(db: Session, tenant_id: str, agent: AiAgent) -> ResolvedCo
         )
 
     if connection is None:
-        # No usable connection on the agent — is anything configured at all?
+        # No usable connection on the agent - is anything configured at all?
         if any_llm_connection(db, tenant_id) is None:
             return ResolvedConnection(None, {}, STUB_PROVIDER, is_stub=True)
         raise LLMError(
-            "This agent's AI connection is missing or was removed — pick another "
+            "This agent's AI connection is missing or was removed - pick another "
             "connection on the agent."
         )
 
@@ -154,7 +154,7 @@ class AiClient:
         prompt_version: Optional[int] = None,
         actor_id: Optional[str] = None,
     ) -> Tuple[LLMResult, AiTrace]:
-        """One traced completion. Raises `LLMError` on failure — but the trace
+        """One traced completion. Raises `LLMError` on failure - but the trace
         is written FIRST (status='error'), so a failed run is still observable.
         """
         if not agent.is_enabled:

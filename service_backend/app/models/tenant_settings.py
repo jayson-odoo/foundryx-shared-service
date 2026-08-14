@@ -1,4 +1,4 @@
-"""Per-tenant general settings (sprint-4/08) — ``public`` schema.
+"""Per-tenant general settings (sprint-4/08) - ``public`` schema.
 
 A general per-tenant config row (modeled on ``workflow_settings``/``import_settings``
 but cross-feature). First field = ``default_currency`` (catalog + quotation

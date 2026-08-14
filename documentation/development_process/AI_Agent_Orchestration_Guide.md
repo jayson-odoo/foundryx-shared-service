@@ -1,6 +1,6 @@
 # AI Agent Orchestration & TDD Guide
 
-This guide details how to technically set up your local multi-agent "virtual development team" using Claude, CrewAI/LangGraph, and Playwright for the FoundryX EMS project.
+This guide details how to technically set up your local multi-agent "virtual development team" using Claude, CrewAI/LangGraph, and Playwright for the Foundryx EMS project.
 
 ---
 
@@ -11,7 +11,7 @@ This guide details how to technically set up your local multi-agent "virtual dev
 
 ## 2. Technical Architecture of the AI Team
 
-### You don't use "Extensions" — You use the API
+### You don't use "Extensions" - You use the API
 The 5-hour message limit applies to the **Claude Web UI (Claude Pro)**. You cannot build a continuous, autonomous multi-agent loop using the chat interface.
 
 Instead, you use the **Anthropic API** combined with a Python framework like **CrewAI** or **LangGraph**. You run a Python script locally on your Mac, which acts as the orchestrator. This script talks directly to the Claude API. 

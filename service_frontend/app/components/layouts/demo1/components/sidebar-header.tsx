@@ -23,7 +23,7 @@ export function SidebarHeader() {
     <div className="sidebar-header hidden lg:flex items-center relative justify-between px-3 lg:px-6 shrink-0">
       <Link href="/">
         {branding.logoUrl ? (
-          // Tenant logo (sprint-2/03) on a primary chip — the same surface the
+          // Tenant logo (sprint-2/03) on a primary chip - the same surface the
           // sign-in panel gives it, so white/transparent logos stay visible.
           // Toggle classes live on a bare wrapper with NO display utilities,
           // so the demo1 collapse CSS (`.small-logo { display:none }`) wins;
@@ -38,7 +38,7 @@ export function SidebarHeader() {
                 />
               </span>
             </span>
-            {/* Collapsed slot — the square favicon fits best; wordmark logo
+            {/* Collapsed slot - the square favicon fits best; wordmark logo
                 only as a fallback. */}
             <span className="small-logo">
               <span className="inline-flex size-[32px] items-center justify-center overflow-hidden rounded-lg bg-primary">

@@ -1,15 +1,15 @@
 'use client';
 
 /**
- * Form runtime renderer (plan sprint-3/01, D6/D7/D14/D18) — the ONE component
+ * Form runtime renderer (plan sprint-3/01, D6/D7/D14/D18) - the ONE component
  * serving every fill surface: internal fill, author Preview, public fill
  * (slice 2), and read-only submission view (`mode='read'`, D18). It walks the
  * published `FormDocument` (Page → Section → Field), drives conditional
  * visibility live off the CURRENT answers, recomputes computed fields, and
  * gates wizard navigation with the client validation mirror (the SERVER stays
- * the boundary — `onSubmit` receives only the VISIBLE answers).
+ * the boundary - `onSubmit` receives only the VISIBLE answers).
  *
- * Foolproof-UI: only the doc's own labels / placeholders / helpText render —
+ * Foolproof-UI: only the doc's own labels / placeholders / helpText render -
  * never instructional copy. Mobile-first: 2-column sections collapse under
  * `md:`, inputs are full width, wizard nav stacks acceptably at 375px.
  */
@@ -46,7 +46,7 @@ export interface FormRendererProps {
   mode: 'fill' | 'read';
   answers: FormAnswers;
   onChange?: (answers: FormAnswers) => void;
-  /** Server 422 map — merged over client errors, auto-jumps to first error's page. */
+  /** Server 422 map - merged over client errors, auto-jumps to first error's page. */
   errors?: FormFieldErrors;
   /** Wizard steps (true) vs one scrolling page (false). Single-page docs render
    * no wizard chrome either way. */
@@ -56,14 +56,14 @@ export interface FormRendererProps {
   submitLabel?: string;
   /** Flatten the layout: omit PAGE titles and SECTION titles/descriptions so the
    * fields render straight, with no structural chrome (AC-BI-29c). Defaults to
-   * `false` (chrome shown) — fill / preview / submission surfaces are unaffected.
+   * `false` (chrome shown) - fill / preview / submission surfaces are unaffected.
    * Field labels, display heading blocks and dividers are still rendered. */
   flat?: boolean;
-  /** Read-mode only — lets uploaded-file chips fetch the authed serve route. */
+  /** Read-mode only - lets uploaded-file chips fetch the authed serve route. */
   submissionId?: string;
   /** Session-bound blob fetcher for uploaded-file chips (staff = apiFetchBlob,
    * portal = portalApiFetchBlob). The renderer NEVER imports the staff client
-   * itself — without a fetcher the chip is a plain label (Cluster E fix). */
+   * itself - without a fetcher the chip is a plain label (Cluster E fix). */
   fileFetcher?: FileBlobFetcher;
 }
 
@@ -89,7 +89,7 @@ export function FormRenderer({
   const [clientErrors, setClientErrors] = useState<FormFieldErrors>({});
 
   // Visibility runs off the VISIBLE-set facts (not the raw answer map) so a
-  // retained hidden value can't keep a downstream field shown — matches the
+  // retained hidden value can't keep a downstream field shown - matches the
   // server's submit-time visibility (D14).
   const facts = useMemo(() => visibleFacts(definition, answers), [definition, answers]);
   const mergedErrors = useMemo(
@@ -293,7 +293,7 @@ function SectionBlock({ section, facts, mode, answers, errors, onChange, flat = 
     (field) => isDisplayField(field) || fieldVisible(field, section, facts),
   );
   // In flat mode a section with only a title/description (no fields) collapses to
-  // nothing — there is no chrome to render.
+  // nothing - there is no chrome to render.
   if (visibleFields.length === 0 && (flat || (!section.title && !section.description)))
     return null;
 

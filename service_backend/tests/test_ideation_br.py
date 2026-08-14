@@ -1,4 +1,4 @@
-"""Ideation — Business Requirement entity (Phase B-i slice 2, AC-BI-15..19).
+"""Ideation - Business Requirement entity (Phase B-i slice 2, AC-BI-15..19).
 
 Covers: BR create stamps the active template version + validates answers against
 the STAMPED version (AC-BI-16); a template edit never reshapes an existing BR
@@ -122,7 +122,7 @@ def test_create_br_stamps_active_template_and_starts_draft(ideation_client):
 
 def test_create_br_with_partial_answers_saves_draft(ideation_client):
     """AC-BI-34b: a DRAFT BR created with a required field left blank
-    (success_metric) SUCCEEDS — a draft holds partial answers; required is only
+    (success_metric) SUCCEEDS - a draft holds partial answers; required is only
     enforced at the promote gate, not on create/save."""
     h = _auth(ideation_client)
     pid = _product(ideation_client, h)
@@ -137,7 +137,7 @@ def test_create_br_with_partial_answers_saves_draft(ideation_client):
     assert res.status_code == 201, res.text
     br = res.json()
     assert br["status"] == "draft"
-    # The blank required field is simply absent — never invented.
+    # The blank required field is simply absent - never invented.
     assert not br["answers"].get("success_metric")
 
 
@@ -265,7 +265,7 @@ def test_link_ideas_many_many_and_lineage(ideation_client):
 
 
 def test_idea_lists_linked_business_requirements_reverse(ideation_client):
-    """AC-BI-29c: the reverse of the BR's Ideas tab — an idea lists the BRs it
+    """AC-BI-29c: the reverse of the BR's Ideas tab - an idea lists the BRs it
     feeds via ``GET /ideation/ideas/{id}/business-requirements``, tenant-scoped,
     newest BR first."""
     h = _auth(ideation_client)
@@ -328,7 +328,7 @@ def test_promote_absorbs_single_idea_warm_start(ideation_client):
     assert br["answers"]["problem_statement"] == (
         "CSV export times out for large accounts"
     )
-    # Only problem_statement pre-fills — the other fields stay blank for the grill.
+    # Only problem_statement pre-fills - the other fields stay blank for the grill.
     assert "business_goal" not in br["answers"]
     assert "success_metric" not in br["answers"]
 
@@ -358,7 +358,7 @@ def test_promote_cluster_label_becomes_title(ideation_client):
 
 
 def test_manual_create_without_ideas_unchanged(ideation_client):
-    """AC-BI-32b: the manual-dialog path (no ideaIds) is untouched — a blank title
+    """AC-BI-32b: the manual-dialog path (no ideaIds) is untouched - a blank title
     stays blank, no problem_statement is invented."""
     h = _auth(ideation_client)
     pid = _product(ideation_client, h)
@@ -495,7 +495,7 @@ def test_promote_incomplete_br_refused_with_friendly_message(ideation_client):
     422 with a friendly, specific missing-fields message + per-field errors."""
     h = _auth(ideation_client)
     pid = _product(ideation_client, h)
-    # Draft saves with only problem_statement (partial — AC-BI-34b).
+    # Draft saves with only problem_statement (partial - AC-BI-34b).
     br = ideation_client.post(
         "/ideation/business-requirements",
         headers=h,
@@ -516,7 +516,7 @@ def test_promote_incomplete_br_refused_with_friendly_message(ideation_client):
     assert "Add the required fields before promoting" in detail["message"]
     assert "Business goal" in detail["message"]
     assert "Success metric" in detail["message"]
-    # Still draft — the refused promote never moved it.
+    # Still draft - the refused promote never moved it.
     assert (
         ideation_client.get(
             f"/ideation/business-requirements/{br['id']}", headers=h
@@ -529,7 +529,7 @@ def test_promote_gate_403_for_manage_not_promote(
     ideation_client, ideation_session_factory
 ):
     """AC-BI-19/34: a .manage user WITHOUT .promote can grill/edit but the promote
-    edge (draft → ready) is refused 403 — the server is the real boundary. The
+    edge (draft → ready) is refused 403 - the server is the real boundary. The
     completeness check never runs (permission fails first)."""
     _make_user(
         ideation_session_factory,
@@ -582,7 +582,7 @@ def test_draft_update_with_blank_required_saves(ideation_client):
 
 def test_br_status_graph_endpoint(ideation_client):
     """AC-BI-34: the BR status-graph shim backs the detail form's action registry
-    — gated ideation.business_requirements.read; carries the br-tr-promote edge."""
+    - gated ideation.business_requirements.read; carries the br-tr-promote edge."""
     h = _auth(ideation_client)
     res = ideation_client.get(
         "/ideation/business-requirements/status-graph", headers=h

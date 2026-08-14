@@ -1,4 +1,4 @@
-/** Mock terminology service (Phase A) — static map + simulated latency. */
+/** Mock terminology service (Phase A) - static map + simulated latency. */
 import type { TermCatalogItem, TermLabels, TerminologyMap } from '@/types/terminology';
 import type { TerminologyService } from './terminology-service';
 

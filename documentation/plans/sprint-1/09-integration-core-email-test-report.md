@@ -1,4 +1,4 @@
-# Test Execution Report — Plan 09: Integration Core & Email (SMTP)
+# Test Execution Report - Plan 09: Integration Core & Email (SMTP)
 
 **Date:** 2026-06-05 · **Branch:** `sprint-1/integration-core-email` · **Stack:** Next :3001 (prod build) → FastAPI :8001 → Postgres · debug SMTP `aiosmtpd` :1025
 
@@ -6,8 +6,8 @@
 
 | Layer | Suite | Result |
 |---|---|---|
-| Backend | `pytest` (full) — 21 new in `test_integrations.py` + `test_email_outbox.py` | **122 passed** |
-| Frontend | `vitest` (full) — 18 new across card / wizard / hook | **115 passed** |
+| Backend | `pytest` (full) - 21 new in `test_integrations.py` + `test_email_outbox.py` | **122 passed** |
+| Frontend | `vitest` (full) - 18 new across card / wizard / hook | **115 passed** |
 | E2E | `playwright e2e/integrations.spec.ts` (live stack, real SMTP) | **5/5 passed** |
 
 ## E2E scenarios (real user clicks; dedicated tenant provisioned per spec)
@@ -33,10 +33,10 @@
 - User-reported: wrong Gmail credentials showed "Connected" on the Phase A mock → re-tested on Phase B: real 535 from smtp.gmail.com surfaces on card. Resolved by design (mock → real swap).
 - UX feedback applied mid-phase: default test = **connection check** (no recipient); test-email optional behind a link; card Test = inline + toast; password fields gained an eye toggle.
 
-## Known environmental failures (full suite — not plan-09 code)
+## Known environmental failures (full suite - not plan-09 code)
 
 | Spec | Cause |
 |---|---|
 | `omnichannel.spec.ts` Embedded Signup | Documented: real `NEXT_PUBLIC_META_*` set in `.env.local` |
-| `tenants.spec.ts` ×2 | ~50 accumulated `e2e-*` tenants push seeded rows off page 1 (no tenant purge yet — BL-035) |
+| `tenants.spec.ts` ×2 | ~50 accumulated `e2e-*` tenants push seeded rows off page 1 (no tenant purge yet - BL-035) |
 | `roles-permissions.spec.ts` create/delete | Leftover `E2E Temp Role` from an interrupted run → unique-name conflict |

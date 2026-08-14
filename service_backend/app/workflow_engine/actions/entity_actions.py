@@ -1,4 +1,4 @@
-"""Entity actions (plan sprint-2/09 D8) — move a record's status through its
+"""Entity actions (plan sprint-2/09 D8) - move a record's status through its
 state machine, or patch whitelisted fields. Both act as the synthetic Workflow
 actor (authorized at publish, D10); every load is tenant-scoped. Their writes
 emit ``entity.updated`` / ``status_changed`` domain events → loop-guarded by the
@@ -13,7 +13,7 @@ from app.workflow_engine.entities import attr_for, get_workflow_entity, load_rec
 
 
 class ActionError(Exception):
-    """A node failed — halts the run (D14)."""
+    """A node failed - halts the run (D14)."""
 
 
 def _resolve_record(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[str, Any]):
@@ -57,7 +57,7 @@ def entity_update(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict
         if not isinstance(row, dict):
             continue
         # The UI sends camelCase field keys; the whitelist + the column are
-        # snake_case — normalize to the ONE canonical attr (the guard must
+        # snake_case - normalize to the ONE canonical attr (the guard must
         # compare what the producer emits, not an incidentally-equal form).
         attr = attr_for(str(row.get("field") or ""))
         if attr not in entity.writable:

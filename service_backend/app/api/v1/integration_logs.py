@@ -1,6 +1,6 @@
 """Developer Logs / Integration Activity console read API (sprint-4/12 Slice 1).
 
-Thin HTTP/Pydantic layer only — all logic lives in ``ActivityLogService`` (no DB
+Thin HTTP/Pydantic layer only - all logic lives in ``ActivityLogService`` (no DB
 access here). ``GET /integration-logs`` + ``/{id}`` are tenant-scoped and gated
 by the core ``integration_logs.read`` permission.
 """
@@ -76,7 +76,7 @@ def get_log_settings(
     current_user: User = Depends(require_permission(_MANAGE)),
     db: Session = Depends(get_db),
 ) -> IntegrationLogSettingsOut:
-    """Tenant developer-logs settings — retention window (AC-DLC-21)."""
+    """Tenant developer-logs settings - retention window (AC-DLC-21)."""
     days, is_default = ActivityLogService(db).get_retention(current_user.tenant_id)
     return IntegrationLogSettingsOut(retention_days=days, is_default=is_default)
 

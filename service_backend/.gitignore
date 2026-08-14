@@ -7,5 +7,5 @@ venv/
 *.sqlite3
 media/
 
-# bare symlink (worktree convenience) — not just the dir
+# bare symlink (worktree convenience) - not just the dir
 .venv

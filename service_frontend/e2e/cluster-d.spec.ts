@@ -3,14 +3,14 @@ import { expect, request as pwRequest, test, type Page } from '@playwright/test'
 const API = process.env.NEXT_PUBLIC_BACKEND_API_URL ?? 'http://localhost:8001';
 
 /**
- * Cluster D (sprint-4/05) slice-1 E2E — real user clicks against the live stack
+ * Cluster D (sprint-4/05) slice-1 E2E - real user clicks against the live stack
  * (Next :3001 → FastAPI :8001 → Postgres), default tenant.
  *
  * ① Venues: create venue → Edit → add zone → generate seats → counts roll up.
  * ② Offerings: on a seeded event, create a GA offering, create a RESERVED
  *    offering (venue+zone), Mint seats, View the seat-allocation map.
  * ③ Registration portal: copy-link action + the public read-only portal page.
- * ④ Mobile viewport — /ems/venues has no horizontal overflow.
+ * ④ Mobile viewport - /ems/venues has no horizontal overflow.
  *
  * Preconditions (event hierarchy + a venue with seats + a product) are seeded
  * via API; the flows under test are exercised through clicks.
@@ -69,7 +69,7 @@ test.beforeAll(async () => {
       data: { productId: (await (await ctx.get(`${API}/products?search=${encodeURIComponent(PRODUCT)}`, { headers: h })).json()).items?.[0]?.id, allocationMode: 'GA', capacity: 50, price: 40, currency: 'MYR' },
     })
   ).json();
-  // a published registration isn't required for the public cart confirm path —
+  // a published registration isn't required for the public cart confirm path -
   // create cart → GA qty 1 → confirm with the registrant's email (find-or-create
   // profile → participant → ticket). Public endpoints: tenant slug in the path.
   const cart = await (await ctx.post(`${API}/public/register/default/${nomEventId}/cart`)).json();
@@ -84,7 +84,7 @@ test.beforeAll(async () => {
   await ctx.dispose();
 });
 
-test('① Venues — create venue, add zone, generate seats', async ({ page }) => {
+test('① Venues - create venue, add zone, generate seats', async ({ page }) => {
   await login(page);
   await page.goto('/ems/venues');
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
@@ -110,11 +110,11 @@ test('① Venues — create venue, add zone, generate seats', async ({ page }) =
   await page.getByLabel('Rows').fill('2');
   await page.getByLabel('Seats / row').fill('5');
   await page.getByRole('button', { name: /generate/i }).click();
-  // the zone seat-count badge (exact — avoids matching the "Generated 10 seats." toast)
+  // the zone seat-count badge (exact - avoids matching the "Generated 10 seats." toast)
   await expect(page.getByText('10 seats', { exact: true })).toBeVisible();
 });
 
-test('② Offerings — GA + RESERVED with mint + seat map', async ({ page }) => {
+test('② Offerings - GA + RESERVED with mint + seat map', async ({ page }) => {
   await login(page);
   await page.goto(`/ems/events/${projectId}`);
   await page.getByRole('tab', { name: /offerings/i }).click();
@@ -140,7 +140,7 @@ test('② Offerings — GA + RESERVED with mint + seat map', async ({ page }) =>
   // Venue
   await dlg.getByText('Pick a venue').click();
   await page.getByRole('option', { name: SEED_VENUE }).click();
-  // Zones (MultiSelect) — pick the seeded zone
+  // Zones (MultiSelect) - pick the seeded zone
   await dlg.getByText(/pick zones/i).click();
   await page.getByRole('option', { name: /Block A/ }).click();
   await page.keyboard.press('Escape');
@@ -161,7 +161,7 @@ test('② Offerings — GA + RESERVED with mint + seat map', async ({ page }) =>
   await expect(seatDlg.getByText(/Free \(/)).toBeVisible();
 });
 
-test('③ Registration portal — copy link action + public page', async ({ page }) => {
+test('③ Registration portal - copy link action + public page', async ({ page }) => {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await login(page);
   await page.goto(`/ems/events/${projectId}`);
@@ -173,7 +173,7 @@ test('③ Registration portal — copy link action + public page', async ({ page
   await copyItem.click();
   await expect(page.getByText(/registration link copied/i)).toBeVisible();
 
-  // public portal page (anonymous) — REAL interactive checkout (live backend)
+  // public portal page (anonymous) - REAL interactive checkout (live backend)
   await page.goto(`/public/register/default/${projectId}`);
   // the event's real offerings render (GA stepper + Reserved "Select seats")
   await expect(page.getByText(PRODUCT).first()).toBeVisible();
@@ -184,7 +184,7 @@ test('③ Registration portal — copy link action + public page', async ({ page
   await expect(page.getByRole('button', { name: /continue \(1\)/i })).toBeEnabled();
 });
 
-test('⑤ Public checkout flow — seats → details → confirm (real backend)', async ({ page }) => {
+test('⑤ Public checkout flow - seats → details → confirm (real backend)', async ({ page }) => {
   await page.goto(`/public/register/default/${projectId}`);
   // reserved offering → open the seat map, pick a free seat
   await page.getByRole('button', { name: /select seats/i }).click();
@@ -205,15 +205,15 @@ test('⑤ Public checkout flow — seats → details → confirm (real backend)'
   await page.getByLabel('Expiry (MM/YY)').fill('12/27');
   await page.getByLabel('CVC').fill('123');
   await page.getByRole('button', { name: /^pay /i }).click();
-  // done — paid
+  // done - paid
   await expect(page.getByText(/you’re registered|you're registered/i)).toBeVisible();
   await expect(page.getByText(/Order/).first()).toBeVisible();
 });
 
-test('⑥ Nomination/transfer — participant "…" → Nominate → Transfer (slice 3)', async ({ page }) => {
+test('⑥ Nomination/transfer - participant "…" → Nominate → Transfer (slice 3)', async ({ page }) => {
   await login(page);
   await page.goto(`/ems/events/${nomEventId}`);
-  // Participants tab — the confirmed registrant is listed
+  // Participants tab - the confirmed registrant is listed
   await page.getByRole('tab', { name: /participants/i }).click();
   const regRow = page.getByRole('row').filter({ hasText: REGISTRANT_EMAIL });
   await expect(regRow).toBeVisible();
@@ -254,7 +254,7 @@ test('⑥ Nomination/transfer — participant "…" → Nominate → Transfer (s
   await ctx.dispose();
 });
 
-test('④ Mobile — /ems/venues no horizontal overflow', async ({ page }) => {
+test('④ Mobile - /ems/venues no horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 800 });
   await login(page);
   await page.goto('/ems/venues');

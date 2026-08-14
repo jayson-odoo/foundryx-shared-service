@@ -1,12 +1,12 @@
-"""Ideation module models — all live in the ``app_ideation`` schema.
+"""Ideation module models - all live in the ``app_ideation`` schema.
 
 Slice 2 (AC-A-05..08): the **unified Product** doctrine. There is ONE Product
 entity = the core ``public.products`` catalog; ideation does NOT own a products
-table. What only a software product needs — a delivery origin + polymorphic
-adapters — lives here as 1:N/1:1 EXTENSION tables keyed to ``public.products`` via
+table. What only a software product needs - a delivery origin + polymorphic
+adapters - lives here as 1:N/1:1 EXTENSION tables keyed to ``public.products`` via
 normal cross-schema FKs (referenced UNqualified so Postgres resolves them via
 search_path and the SQLite test engine's ``schema_translate_map`` maps the module
-schema away cleanly — see ``db.py``).
+schema away cleanly - see ``db.py``).
 
 Every tenant-scoped table carries ``tenant_id``. Datetimes are tz-aware UTC.
 """
@@ -40,9 +40,9 @@ from .db import IdeationBase
 # test engine the module schema is schema-translated onto an attached db and FK
 # enforcement is off, so create_all maps cleanly (per db.py note).
 _PRODUCT_FK = Product.__table__.c.id
-# Core ``public.statuses.id`` — the Idea rides the core status engine (D-A3).
+# Core ``public.statuses.id`` - the Idea rides the core status engine (D-A3).
 _STATUS_FK = Status.__table__.c.id
-# Omnichannel ``app_omnichannel.contacts.id`` — the submitter is a shared-service
+# Omnichannel ``app_omnichannel.contacts.id`` - the submitter is a shared-service
 # contact copy (D-A4). Column-object FK resolves across the two MetaData objects.
 _CONTACT_FK = Contact.__table__.c.id
 
@@ -78,7 +78,7 @@ class ProductDelivery(IdeationBase):
 
 class ProductAdapter(IdeationBase):
     """A polymorphic delivery adapter on a software Product (AC-A-07). ``kind`` is
-    validated against the code-side adapter-kind registry (``adapters.py``) —
+    validated against the code-side adapter-kind registry (``adapters.py``) -
     ``embed_connection`` is Phase-A-wired; ``github``/``agent_runner``/``deploy``
     are registered-but-dormant (Phase C). ``config_json`` holds kind-specific
     settings (e.g. embed ``allowedOrigins``/``product_domain_base``);
@@ -109,7 +109,7 @@ class Idea(IdeationBase):
 
     ``captured_json`` holds the form_engine answers for the ``ideation``
     IntakeDefinition; ``priority`` is the manual triage ordering. **No
-    ``embedding`` column** — dedup is ``pg_trgm`` text-similarity (D-A6);
+    ``embedding`` column** - dedup is ``pg_trgm`` text-similarity (D-A6);
     shared-service runs no embedding model (D20)."""
 
     __tablename__ = "ideas"
@@ -122,7 +122,7 @@ class Idea(IdeationBase):
     status_id = Column(String, ForeignKey(_STATUS_FK), nullable=False, index=True)
     intake_definition_key = Column(String, nullable=False, default="ideation")
     problem = Column(Text, nullable=False)
-    # First-class segregated intake fields (mirror the captured_json answer keys —
+    # First-class segregated intake fields (mirror the captured_json answer keys -
     # problem / proposed_solution / impact / department). Nullable: they fill in as
     # the intake collects them, and operator-authored ideas may omit them. The read
     # serializer returns them camelCase; ``problem`` above is the required headline.
@@ -136,7 +136,7 @@ class Idea(IdeationBase):
     submitter_contact_id = Column(
         String, ForeignKey(_CONTACT_FK), nullable=True, index=True
     )
-    # Denormalized submitter display name for operator-authored ideas — an
+    # Denormalized submitter display name for operator-authored ideas - an
     # in-app create has no contact copy (``submitter_contact_id`` stays NULL), so
     # the operator's name is stored directly here. The read serializer prefers
     # this when set, else derives the name from the linked contact (D-A4).
@@ -164,7 +164,7 @@ class IdeaVote(IdeationBase):
     """One voter's vote on an Idea (AC-A-21 idempotency substrate). At most one
     row per ``(idea_id, voter_id)`` (UNIQUE) so a vote is idempotent and can be
     toggled/switched; ``dir`` is ``up`` | ``down``. ``voter_id`` holds the acting
-    principal id — the operator ``users.id`` on the triage surface today; the
+    principal id - the operator ``users.id`` on the triage surface today; the
     conversational-intake submitter-upvote path (AC-A-21) reconciles onto the
     same table in its own slice. Idea vote tallies are recomputed from these
     rows, so this table is the source of truth for ``upvotes`` / ``downvotes``."""
@@ -187,15 +187,15 @@ class IdeaVote(IdeationBase):
 
 
 class IdeaAttachment(IdeationBase):
-    """A media attachment on an Idea — voice note / image / video / file captured
+    """A media attachment on an Idea - voice note / image / video / file captured
     over WhatsApp (§5.1 ``attachments[]``, DC-9). Written by the ``create_idea``
     intake when the sorento brain has resolved + durably stored the media (sorento
     snapshots the Respond CDN bytes to R2/S3 and passes a durable ``url``); this
-    table only persists the resolved pointer + metadata — shared-service fetches
+    table only persists the resolved pointer + metadata - shared-service fetches
     nothing.
 
     ``source_msg_id`` is the originating Respond.io message id; it is the
-    **idempotency key** — the same media re-sent across turns (or a retried turn)
+    **idempotency key** - the same media re-sent across turns (or a retried turn)
     upserts the one row, never duplicates (``UNIQUE(idea_id, source_msg_id)``).
     ``kind`` ∈ ``image|video|file|audio``. ``caption`` is the host-side vision
     description (image) or STT transcript note (audio), stored for the detail UI;
@@ -207,7 +207,7 @@ class IdeaAttachment(IdeationBase):
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String, nullable=False, index=True)
     idea_id = Column(String, ForeignKey(_IDEA_FK), nullable=False, index=True)
-    # Respond.io message id — idempotency key (see UniqueConstraint below).
+    # Respond.io message id - idempotency key (see UniqueConstraint below).
     source_msg_id = Column(String, nullable=False)
     kind = Column(String, nullable=False)  # image | video | file | audio
     url = Column(Text, nullable=False)  # durable sorento-stored URL (R2/S3)
@@ -227,7 +227,7 @@ class EmbedConnection(IdeationBase):
     AC-E-5/12). One row per host application (e.g. sorento) authorised to embed a
     tenant's Ideas workspace. The ``connection_id`` is the shared, non-secret
     handle the host puts in its ``POST /embed/session`` body; ``signing_secret``
-    is the HS256 secret BOTH sides hold — stored Fernet-encrypted at rest
+    is the HS256 secret BOTH sides hold - stored Fernet-encrypted at rest
     (``signing_secret_ciphertext``, via ``app.secrets.encrypt_secret``), never
     returned plaintext, never logged.
 
@@ -239,7 +239,7 @@ class EmbedConnection(IdeationBase):
     Verification (``services/embed.py``) resolves the connection by
     ``connection_id`` from the request body, decrypts the secret, and checks the
     assertion signature + ``aud="ideation-embed"`` + ``iss="sorento"`` + expiry
-    against it — a rotated secret invalidates every outstanding assertion for that
+    against it - a rotated secret invalidates every outstanding assertion for that
     connection (blast radius = one connection)."""
 
     __tablename__ = "embed_connections"
@@ -263,14 +263,14 @@ class EmbedConnection(IdeationBase):
 
 
 class IdeationArtifactTemplate(IdeationBase):
-    """A versioned artifact template keyed by ``template_key`` (Bi-D1/Bi-D2) —
+    """A versioned artifact template keyed by ``template_key`` (Bi-D1/Bi-D2) -
     modelled EXACTLY on core's ``ai_skills`` shape: a movable ``active_version_id``
     label over immutable ``ideation_artifact_template_versions`` rows. A template
     body is a ``form_engine`` ``FormDocument`` (block-doc, not a wide column set).
 
-    ``tenant_id IS NULL`` = the platform tier (the only tier S2 seeds — no
+    ``tenant_id IS NULL`` = the platform tier (the only tier S2 seeds - no
     per-tenant fork yet; tenant customization is deferred). No FK on
-    ``active_version_id`` — the version rows FK back to the template, and a mutual
+    ``active_version_id`` - the version rows FK back to the template, and a mutual
     FK pair deadlocks insert ordering (the ai_skills lesson)."""
 
     __tablename__ = "ideation_artifact_templates"
@@ -282,7 +282,7 @@ class IdeationArtifactTemplate(IdeationBase):
     template_key = Column(String, nullable=False, index=True)
     name = Column(String, nullable=False)
     description = Column(Text, nullable=False, default="")
-    # The movable ``active`` label (no FK — see class docstring).
+    # The movable ``active`` label (no FK - see class docstring).
     active_version_id = Column(String, nullable=True, index=True)
     is_system = Column(Boolean, nullable=False, default=False)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
@@ -318,7 +318,7 @@ _TEMPLATE_FK = IdeationArtifactTemplate.__table__.c.id
 
 class IdeationArtifactTemplateVersion(IdeationBase):
     """IMMUTABLE template body (a ``form_engine`` ``FormDocument`` in ``doc_json``).
-    Never updated in place — an edit inserts the next version and the template's
+    Never updated in place - an edit inserts the next version and the template's
     ``active_version_id`` label moves (Bi-D2). A BR STAMPS ``(template_key,
     version)`` at create so historical BRs render against their own version even
     after the template is edited (AC-BI-16)."""
@@ -326,7 +326,7 @@ class IdeationArtifactTemplateVersion(IdeationBase):
     __tablename__ = "ideation_artifact_template_versions"
 
     id = Column(String, primary_key=True, default=_uuid)
-    # Intra-schema FK to the owning template (same schema — real FK kept).
+    # Intra-schema FK to the owning template (same schema - real FK kept).
     template_id = Column(String, ForeignKey(_TEMPLATE_FK), nullable=False, index=True)
     # Denormalised so version reads stay tenant-scoped without a join (NULL =
     # platform tier, mirrors the parent).
@@ -358,13 +358,13 @@ class BusinessRequirement(IdeationBase):
     the STAMPED template version (``template_key`` + ``template_version``), never
     the current active one (AC-BI-16). Refs to core (``tenant_id`` /
     ``product_id`` / ``status_id`` / ``created_by`` / ``updated_by``) are PLAIN
-    INDEXED columns — NO DB ForeignKey (BL-030)."""
+    INDEXED columns - NO DB ForeignKey (BL-030)."""
 
     __tablename__ = "business_requirements"
 
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String, nullable=False, index=True)
-    # Plain indexed cross-schema refs to core (BL-030) — no DB FK.
+    # Plain indexed cross-schema refs to core (BL-030) - no DB FK.
     product_id = Column(String, nullable=False, index=True)
     status_id = Column(String, nullable=False, index=True)
     # The stamped template identity (AC-BI-16). answers_json is validated against
@@ -388,12 +388,12 @@ _BR_FK = BusinessRequirement.__table__.c.id
 class IdeaBusinessRequirement(IdeationBase):
     """Idea ↔ BR many-many join (D4, AC-BI-17). An Idea may feed several BRs and a
     BR may absorb many Ideas. ``business_requirement_id`` keeps its intra-schema FK
-    (``business_requirements`` is created in the same migration — no contention),
+    (``business_requirements`` is created in the same migration - no contention),
     but ``idea_id`` is a **plain indexed column, NOT a DB FK**: ``ideas`` is a hot,
     pre-existing table, and adding a FK to it in the 0008 migration takes a
     ``SHARE ROW EXCLUSIVE`` lock that HANGS a blue/green deploy behind any live
     connection touching ``ideas`` (observed: backend_green never healthy). The
-    BL-030 rule — references to hot/pre-existing tables are plain indexed columns —
+    BL-030 rule - references to hot/pre-existing tables are plain indexed columns -
     applies exactly here. ``tenant_id`` is derived from the pair at insert (never a
     static default) and the link is validated tenant-scoped + same-product on
     write, so integrity is enforced in the service layer regardless."""

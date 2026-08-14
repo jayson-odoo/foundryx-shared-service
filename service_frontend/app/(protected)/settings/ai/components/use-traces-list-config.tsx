@@ -25,7 +25,7 @@ function useTraceActions(): ResourceAction<AiTrace>[] {
     () => [
       {
         id: 'flag',
-        // Derived label — the same action reads as its effect on the row.
+        // Derived label - the same action reads as its effect on the row.
         label: (rows) => (rows.every((t) => t.flagged) ? 'Remove flag' : 'Flag for review'),
         icon: Flag,
         surfaces: { row: true, bulk: true, form: true },
@@ -74,7 +74,7 @@ export function useTracesListConfig(): ResourceListConfig<AiTrace> {
         header: ({ column }) => <DataGridColumnHeader title="When" column={column} />,
         cell: ({ row }) => (
           <span className="text-sm text-muted-foreground">
-            {row.original.createdAt ? formatDateTime(row.original.createdAt) : '—'}
+            {row.original.createdAt ? formatDateTime(row.original.createdAt) : '-'}
           </span>
         ),
         size: 170,
@@ -88,7 +88,7 @@ export function useTracesListConfig(): ResourceListConfig<AiTrace> {
         cell: ({ row }) => (
           <div className="flex flex-col">
             <span className="font-medium leading-tight text-foreground">
-              {row.original.agentName || '—'}
+              {row.original.agentName || '-'}
             </span>
             {row.original.skillKey && (
               <span className="font-mono text-xs text-muted-foreground">
@@ -108,7 +108,7 @@ export function useTracesListConfig(): ResourceListConfig<AiTrace> {
         header: ({ column }) => <DataGridColumnHeader title="Model" column={column} />,
         cell: ({ row }) => (
           <div className="flex flex-col">
-            <span className="text-sm text-foreground">{row.original.model || '—'}</span>
+            <span className="text-sm text-foreground">{row.original.model || '-'}</span>
             <span className="text-xs text-muted-foreground">{row.original.provider}</span>
           </div>
         ),
@@ -172,7 +172,7 @@ export function useTracesListConfig(): ResourceListConfig<AiTrace> {
           row.original.error ? (
             <ClampedText text={row.original.error} lines={2} className="text-xs text-destructive" />
           ) : (
-            <span className="text-xs text-muted-foreground">—</span>
+            <span className="text-xs text-muted-foreground">-</span>
           ),
         size: 220,
         enableSorting: false,
@@ -203,14 +203,14 @@ export function useTracesListConfig(): ResourceListConfig<AiTrace> {
 
     return {
       viewKey: 'ai.traces',
-      // Traces age out via the retention sweep — there is no trashed view.
+      // Traces age out via the retention sweep - there is no trashed view.
       enableStatusViews: false,
       getRowId: (row) => row.id,
       rowHref: (row) => tracePath(row.id),
       fetcher: (query) => aiService.listTraces(query),
       exporter: (query, exportColumns) => aiService.exportTraces(query, exportColumns),
       exportFilename: 'ai-traces',
-      // Metadata only — raw prompts/completions stay on the trace detail rather
+      // Metadata only - raw prompts/completions stay on the trace detail rather
       // than flowing into a spreadsheet.
       exportColumns: [
         { id: 'created', label: 'When' },
@@ -225,7 +225,7 @@ export function useTracesListConfig(): ResourceListConfig<AiTrace> {
       ],
       searchPlaceholder: 'Search traces…',
       searchHints: ['Agent', 'Model', 'Provider', 'Error'],
-      // Newest first — the useful order when debugging.
+      // Newest first - the useful order when debugging.
       defaultSort: { id: 'created', desc: true },
       columns,
       filterFields: [

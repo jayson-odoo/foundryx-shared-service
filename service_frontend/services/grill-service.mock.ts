@@ -1,5 +1,5 @@
 /**
- * Mock grill service (Phase B-i slice 3) — an in-memory grill for frontend-first
+ * Mock grill service (Phase B-i slice 3) - an in-memory grill for frontend-first
  * builds + Vitest. NOT wired into the app (the boundary in `grill-service.ts`
  * points at `.real`); retained for tests only.
  *
@@ -85,7 +85,7 @@ export function createMockGrillService(
         };
       }
       const reply =
-        "Thanks — I've read the linked idea. To turn it into a requirement, what business goal should it achieve?";
+        "Thanks - I've read the linked idea. To turn it into a requirement, what business goal should it achieve?";
       r.covered = [FIELDS[0].key];
       r.summary = summaryFor(r.covered);
       r.messages.push({
@@ -119,7 +119,7 @@ export function createMockGrillService(
       const remaining = FIELDS.filter((f) => !r.covered.includes(f.key));
       const reply = remaining.length
         ? `Got it. What about ${remaining[0].label.toLowerCase()}?`
-        : 'That covers everything — you can generate the requirement now.';
+        : 'That covers everything - you can generate the requirement now.';
       r.messages.push({
         id: `a-${r.messages.length}`,
         role: 'assistant',

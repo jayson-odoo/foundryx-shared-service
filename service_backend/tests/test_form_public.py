@@ -1,7 +1,7 @@
 """Public (pre-auth) form surface tests (plan sprint-3/02, slice 2 §TDD).
 
 Covers: open view + honeypot field · uniform 404 (unknown tenant/form,
-internal-access form, unpublished form — no enumeration) · anonymous submit
+internal-access form, unpublished form - no enumeration) · anonymous submit
 lands a row (user_id NULL) · honeypot tripped → silently dropped (no row) ·
 422 {fieldErrors} re-validated server-side · window-closed → view 'closed' +
 POST 409 · per-IP throttle 429 with Retry-After.

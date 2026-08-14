@@ -2,7 +2,7 @@
  * Mock App Store service (Phase A). In-memory per-tenant install state with the
  * same lifecycle semantics the real backend will enforce (plan 08 §5), so the
  * storefront exercises every card state with no backend: not installed, active,
- * inactive, update available — plus typed-confirm uninstall and per-tenant
+ * inactive, update available - plus typed-confirm uninstall and per-tenant
  * isolation for the console Modules tab.
  */
 import type { ModuleStatus, StoreAction, StoreModule } from '@/types/app-store';
@@ -33,14 +33,14 @@ const CATALOG: CatalogEntry[] = [
     name: 'omnichannel',
     title: 'Omnichannel',
     description:
-      'WhatsApp Business messaging — connect numbers via Meta Embedded Signup, manage workspaces and channels.',
+      'WhatsApp Business messaging - connect numbers via Meta Embedded Signup, manage workspaces and channels.',
     icon: 'message-square',
     version: '0.1.0',
   },
   {
     name: 'helpdesk',
     title: 'Helpdesk',
-    description: 'Ticketing for attendee support — queues, SLAs and canned replies.',
+    description: 'Ticketing for attendee support - queues, SLAs and canned replies.',
     icon: 'life-buoy',
     version: '1.1.0',
   },
@@ -70,7 +70,7 @@ function seedTenantState(): Map<string, InstallRecord> {
     ['omnichannel', { status: 'ACTIVE', installedVersion: '0.1.0', installedAt: at(30) }],
     // Update available: provisioned at 1.0.0, code moved to 1.1.0.
     ['helpdesk', { status: 'ACTIVE', installedVersion: '1.0.0', installedAt: at(20) }],
-    // Deactivated — data kept, routes 403, menu hidden.
+    // Deactivated - data kept, routes 403, menu hidden.
     ['forms', { status: 'INACTIVE', installedVersion: '1.0.0', installedAt: at(10) }],
     // 'commercial' absent = not installed.
   ]);
@@ -176,7 +176,7 @@ function uninstallFor(key: string, name: string, confirmName: string): void {
   const entry = catalogOrThrow(name);
   const m = tenantMap(key);
   if (!m.get(name)) throw new Error(`${entry.title} is not installed.`);
-  // Typed confirmation — the backend enforces the same equality (plan 08 §7).
+  // Typed confirmation - the backend enforces the same equality (plan 08 §7).
   if (confirmName !== name) throw new Error('Confirmation name does not match the module name.');
   m.delete(name);
 }
@@ -221,7 +221,7 @@ export const mockAppStoreService: AppStoreService = {
   },
 };
 
-/** Test helper — reset the in-memory store between specs. */
+/** Test helper - reset the in-memory store between specs. */
 export function __resetMockAppStore(): void {
   installs = buildInstalls();
 }

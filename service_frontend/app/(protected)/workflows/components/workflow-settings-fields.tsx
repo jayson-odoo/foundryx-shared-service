@@ -55,7 +55,7 @@ export function WorkflowSettingsFields({
             <span className="text-sm text-muted-foreground">
               {workflow.isActive
                 ? 'Triggers can fire this workflow (when published).'
-                : 'Disabled — triggers will not fire it.'}
+                : 'Disabled - triggers will not fire it.'}
             </span>
           </div>
         </Row>
@@ -69,7 +69,7 @@ export function WorkflowSettingsFields({
             onChange={(e) => form.setValue('name', e.target.value, { shouldDirty: true })}
           />
         ) : (
-          <span className="text-sm font-medium">{values.name || '—'}</span>
+          <span className="text-sm font-medium">{values.name || '-'}</span>
         )}
       </Row>
 
@@ -82,7 +82,7 @@ export function WorkflowSettingsFields({
             onChange={(e) => form.setValue('description', e.target.value, { shouldDirty: true })}
           />
         ) : (
-          <span className="text-sm text-muted-foreground">{values.description || '—'}</span>
+          <span className="text-sm text-muted-foreground">{values.description || '-'}</span>
         )}
       </Row>
 

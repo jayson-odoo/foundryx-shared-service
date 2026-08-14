@@ -1,7 +1,7 @@
 """S3-compatible storage providers (plan sprint-2/06 D2/D3).
 
-TWO catalog cards — Amazon S3 (`s3`, optional endpoint covers MinIO/Wasabi)
-and Cloudflare R2 (`r2`, endpoint DERIVED from the Account ID) — over ONE
+TWO catalog cards - Amazon S3 (`s3`, optional endpoint covers MinIO/Wasabi)
+and Cloudflare R2 (`r2`, endpoint DERIVED from the Account ID) - over ONE
 adapter. CDN support = the optional `cdnBaseUrl` config: public URLs become
 `{cdnBaseUrl}/{key}`; without it, reads fall back to presigned URLs.
 
@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.config import settings
 from app.integrations.base import TestResult
 
-PRESIGN_TTL_SECONDS = 3600  # resolved per request — never persisted (D4)
+PRESIGN_TTL_SECONDS = 3600  # resolved per request - never persisted (D4)
 _PROBE_TIMEOUT_SECONDS = 10
 
 
@@ -41,12 +41,12 @@ def derive_endpoint(provider: str, config: Dict[str, Any]) -> Optional[str]:
 def _http_get(url: str, timeout: float) -> bytes:
     """Probe fetch seam (tests patch this).
 
-    Sends a product User-Agent — Cloudflare's WAF (Bot Fight Mode) 403s the
+    Sends a product User-Agent - Cloudflare's WAF (Bot Fight Mode) 403s the
     default `Python-urllib/X.Y` UA, which broke the CDN probe against R2
     custom domains even when the wiring was correct.
     """
-    request = urllib.request.Request(url, headers={"User-Agent": "FoundryXEMS-StorageProbe/1.0"})
-    with urllib.request.urlopen(request, timeout=timeout) as resp:  # noqa: S310 — config-provided CDN URL
+    request = urllib.request.Request(url, headers={"User-Agent": "FoundryxEMS-StorageProbe/1.0"})
+    with urllib.request.urlopen(request, timeout=timeout) as resp:  # noqa: S310 - config-provided CDN URL
         return resp.read()
 
 
@@ -83,7 +83,7 @@ class S3CompatibleAdapter:
         return cls(
             bucket=str(config.get("bucket", "")),
             endpoint_url=derive_endpoint(provider, config),
-            # R2 ignores region — boto3 still wants one ("auto").
+            # R2 ignores region - boto3 still wants one ("auto").
             region=str(config.get("region", "")) or ("auto" if provider == "r2" else None),
             access_key_id=str(credentials.get("accessKeyId", "")),
             secret_access_key=str(credentials.get("secretAccessKey", "")),
@@ -91,7 +91,7 @@ class S3CompatibleAdapter:
         )
 
     def _build_client(self) -> Any:
-        import boto3  # noqa: PLC0415 — imported here so the stub seam works without it
+        import boto3  # noqa: PLC0415 - imported here so the stub seam works without it
 
         return boto3.client(
             "s3",
@@ -117,7 +117,7 @@ class S3CompatibleAdapter:
         return key
 
     def put_raw(self, raw: str, content: bytes, mime_type: str) -> None:
-        """Path-preserving write at the EXACT key (no uuid mint) — sprint-4/10 D2."""
+        """Path-preserving write at the EXACT key (no uuid mint) - sprint-4/10 D2."""
         self.client.put_object(
             Bucket=self.bucket, Key=raw, Body=content, ContentType=mime_type
         )
@@ -139,7 +139,7 @@ class S3CompatibleAdapter:
         FileNotFoundError."""
         try:
             obj = self.client.get_object(Bucket=self.bucket, Key=key)
-        except Exception as exc:  # noqa: BLE001 — boto3 ClientError (NoSuchKey etc.)
+        except Exception as exc:  # noqa: BLE001 - boto3 ClientError (NoSuchKey etc.)
             raise FileNotFoundError(key) from exc
         return obj["Body"].read(), obj.get("ContentType")
 
@@ -147,7 +147,7 @@ class S3CompatibleAdapter:
         self.client.delete_object(Bucket=self.bucket, Key=key)
 
     def put(self, key_hint: str, content: bytes, mime_type: str) -> str:
-        """Omnichannel contract — store + return the public URL."""
+        """Omnichannel contract - store + return the public URL."""
         return self.public_url(self.save(key_hint, content, mime_type))
 
     # ── URLs (plan 06 D3/D4) ──────────────────────────────────────────────
@@ -155,7 +155,7 @@ class S3CompatibleAdapter:
     def public_url(self, key: str) -> str:
         """CDN URL when configured (edge-cached), presigned otherwise.
 
-        Presigned URLs EXPIRE — they are computed per request and must never
+        Presigned URLs EXPIRE - they are computed per request and must never
         be persisted; the DB stores keys only (D4).
         """
         if self.cdn_base_url:
@@ -171,7 +171,7 @@ class S3CompatibleAdapter:
     def run_probe(self) -> TestResult:
         try:
             self.client.head_bucket(Bucket=self.bucket)
-        except Exception as e:  # noqa: BLE001 — boto3 raises ClientError subclasses
+        except Exception as e:  # noqa: BLE001 - boto3 raises ClientError subclasses
             return TestResult(ok=False, message=f"Could not access bucket “{self.bucket}” ({e}).")
 
         probe_body = f"foundryx-probe-{uuid.uuid4().hex}".encode()
@@ -185,20 +185,20 @@ class S3CompatibleAdapter:
                         ok=False,
                         message=(
                             "Bucket writable, but the CDN returned different content "
-                            f"for the probe object — check that {self.cdn_base_url} "
+                            f"for the probe object - check that {self.cdn_base_url} "
                             "serves this bucket."
                         ),
                     )
                 return TestResult(
                     ok=True,
-                    message=f"Bucket verified — probe object round-tripped via {self.cdn_base_url}.",
+                    message=f"Bucket verified - probe object round-tripped via {self.cdn_base_url}.",
                 )
             fetched = self.client.get_object(Bucket=self.bucket, Key=key)["Body"].read()
             if fetched != probe_body:
                 return TestResult(ok=False, message="Probe object read back different content.")
             return TestResult(
                 ok=True,
-                message="Bucket verified — probe object uploaded, fetched back and deleted.",
+                message="Bucket verified - probe object uploaded, fetched back and deleted.",
             )
         except Exception as e:  # noqa: BLE001
             return TestResult(ok=False, message=f"Probe round-trip failed ({e}).")
@@ -206,7 +206,7 @@ class S3CompatibleAdapter:
             if key:
                 try:
                     self.delete(key)
-                except Exception:  # noqa: BLE001 — best-effort cleanup
+                except Exception:  # noqa: BLE001 - best-effort cleanup
                     pass
 
 
@@ -245,7 +245,7 @@ class S3Provider(_StorageProviderBase):
     title = "Amazon S3"
     description = (
         "Store uploads (avatars, branding, media) in your own S3 bucket. Any "
-        "S3-compatible service works — AWS, MinIO, Wasabi — via the optional endpoint."
+        "S3-compatible service works - AWS, MinIO, Wasabi - via the optional endpoint."
     )
     icon = "database"
 
@@ -267,7 +267,7 @@ class R2Provider(_StorageProviderBase):
     provider = "r2"
     title = "Cloudflare R2"
     description = (
-        "Store uploads in Cloudflare R2 — S3-compatible, zero egress fees. The "
+        "Store uploads in Cloudflare R2 - S3-compatible, zero egress fees. The "
         "endpoint is derived from your Account ID; add a custom domain as the "
         "CDN base URL for fast public delivery."
     )

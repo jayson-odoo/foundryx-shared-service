@@ -20,10 +20,10 @@ export interface BrandingPreviewProps {
 const FOUNDRYX_LOGO = '/media/foundryx/foundryx-logo.png';
 
 /**
- * Live preview (sprint-2/03) — renders the two surfaces a tenant brands most:
+ * Live preview (sprint-2/03) - renders the two surfaces a tenant brands most:
  * the sign-in page and the app header, against the DRAFT values (unsaved edits
  * included) so contrast problems are visible before saving. Scoped via inline
- * CSS variables on the wrapper — the rest of the app stays untouched.
+ * CSS variables on the wrapper - the rest of the app stays untouched.
  */
 export function BrandingPreview({
   slogan,
@@ -35,7 +35,7 @@ export function BrandingPreview({
   const [theme, setTheme] = useState<ThemeName>('light');
   const t = effectiveTokens(tokens, theme);
 
-  // Draft palette as scoped vars — keys mirror what the app consumes.
+  // Draft palette as scoped vars - keys mirror what the app consumes.
   const scope: CSSProperties = {
     ['--pv-primary' as string]: t['primary'],
     ['--pv-primary-soft' as string]: t['primary-soft'],
@@ -165,7 +165,7 @@ export function BrandingPreview({
               className="flex items-center gap-2 border-b px-3 py-2"
               style={{ borderColor: 'var(--pv-border)' }}
             >
-              {/* Primary chip + logo — exactly how the sidebar header renders it. */}
+              {/* Primary chip + logo - exactly how the sidebar header renders it. */}
               <span
                 className="inline-flex h-6 items-center rounded-md px-1.5"
                 style={{ backgroundColor: 'var(--pv-primary)' }}
@@ -237,7 +237,7 @@ export function BrandingPreview({
                   color: 'var(--pv-text)',
                 }}
               >
-                Soft primary surface — banners, selected rows, highlights.
+                Soft primary surface - banners, selected rows, highlights.
               </div>
             </div>
           </div>

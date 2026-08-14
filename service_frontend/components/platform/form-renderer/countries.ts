@@ -1,5 +1,5 @@
 /**
- * ISO 3166-1 alpha-2 country list (plan sprint-3/01) — backs the `address`
+ * ISO 3166-1 alpha-2 country list (plan sprint-3/01) - backs the `address`
  * field's country SearchSelect. `code` is the stored answer (alpha-2, matching
  * `FormAddressAnswer.country`); `name` is the display label.
  */

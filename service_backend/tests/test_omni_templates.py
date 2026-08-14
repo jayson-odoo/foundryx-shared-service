@@ -243,7 +243,7 @@ def test_apply_webhook_event_idempotent(client, session_factory):
     event = {"kind": "template_status", "message_template_id": str(mid), "name": "order_update",
              "language": "en_US", "status": "REJECTED", "reason": "INVALID_FORMAT"}
     assert svc.apply_webhook_event(channel, event) is True
-    assert svc.apply_webhook_event(channel, event) is True  # idempotent — no error
+    assert svc.apply_webhook_event(channel, event) is True  # idempotent - no error
     db.close()
 
     row = client.get(f"{base}/manage/{tid}", headers=h).json()

@@ -1,7 +1,7 @@
 import type { StatusRegistry } from '@/components/platform/status-badge';
 import type { IntegrationLogSource, IntegrationLogStatus } from '@/types/integration-logs';
 
-/** Source badge registry — every log source reads the same everywhere. */
+/** Source badge registry - every log source reads the same everywhere. */
 export const LOG_SOURCE_REGISTRY: StatusRegistry<IntegrationLogSource> = {
   inbound_api: { label: 'Inbound API', tone: 'info' },
   embed_session: { label: 'Embed', tone: 'primary' },

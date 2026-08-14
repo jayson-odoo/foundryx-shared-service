@@ -1,5 +1,5 @@
 /**
- * Shared service-layer error classes (review extraction, plan sprint-2/04) —
+ * Shared service-layer error classes (review extraction, plan sprint-2/04) -
  * one class identity across services so `instanceof` checks in hooks never
  * miss because two services declared their own copies.
  */

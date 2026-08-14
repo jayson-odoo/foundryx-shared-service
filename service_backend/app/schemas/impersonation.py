@@ -22,6 +22,6 @@ class ImpersonationSessionResponse(ApiModel):
     sessionId: str
     startedAt: datetime
     targetUser: ImpersonationTargetUser
-    # The target's effective permission keys — the frontend gates the UI by these
+    # The target's effective permission keys - the frontend gates the UI by these
     # while impersonating (backend still enforces via the header).
     permissions: List[str] = []

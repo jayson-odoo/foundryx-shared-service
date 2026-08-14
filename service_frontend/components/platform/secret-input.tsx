@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 export type SecretInputProps = Omit<React.ComponentProps<typeof Input>, 'type'>;
 
 /**
- * Password-style input with the mandatory reveal toggle (user mandate — every
+ * Password-style input with the mandatory reveal toggle (user mandate - every
  * secret input gets an eye). Extracted from the integration wizard when the
  * wizard retired (plan 06 D6).
  */

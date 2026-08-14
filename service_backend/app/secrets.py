@@ -1,7 +1,7 @@
-"""Core secrets encryption (plan 09 D7) — Fernet, symmetric.
+"""Core secrets encryption (plan 09 D7) - Fernet, symmetric.
 
 `connections.credentials_json` is encrypted at rest with `settings.fernet_key`.
-Unset key = throwaway per-process key (dev only — a restart, or even just a
+Unset key = throwaway per-process key (dev only - a restart, or even just a
 SECOND process like bootstrap vs uvicorn, cannot read each other's ciphertext;
 set FERNET_KEY anywhere real). Omnichannel still uses its own
 OMNICHANNEL_FERNET_KEY until BL-042 migrates it onto this helper.

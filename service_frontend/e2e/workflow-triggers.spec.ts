@@ -1,11 +1,11 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
 /**
- * Plan sprint-2/09 Phase C — triggers/actions, full stack (real clicks).
+ * Plan sprint-2/09 Phase C - triggers/actions, full stack (real clicks).
  *
  * The flow under test is "a real domain event fires a published workflow → a
  * run appears in Logs". The WORKFLOW is built via the API (setup, like the
- * tenant provisioning); the TRIGGERING action — creating a Role in the UI — is
+ * tenant provisioning); the TRIGGERING action - creating a Role in the UI - is
  * real clicks, as is the Logs assertion.
  *
  * Preconditions: frontend :3001 + backend :8001 on the plan-09 branch, migrated
@@ -61,7 +61,7 @@ function roleWorkflowDoc() {
 
 test.describe.configure({ mode: 'serial', timeout: 120_000 });
 
-test.describe('Workflow triggers — live stack (plan sprint-2/09 Phase C)', () => {
+test.describe('Workflow triggers - live stack (plan sprint-2/09 Phase C)', () => {
   test.beforeAll(async ({ request }) => {
     // Dedicated tenant via the operator API.
     const platformToken = await token(request, 'platform@example.com', 'platform1234', 'platform');
@@ -98,7 +98,7 @@ test.describe('Workflow triggers — live stack (plan sprint-2/09 Phase C)', () 
     // Save must navigate AWAY from /new to the created role's detail.
     await page.waitForURL(/\/user-management\/roles\/(?!new)[^/]+/, { timeout: 30_000 });
 
-    // The event run executed inline — it shows in the workflow's Logs.
+    // The event run executed inline - it shows in the workflow's Logs.
     await page.goto(tenantUrl(`/workflows/${workflowId}`));
     await page.getByRole('tab', { name: 'Logs' }).click();
     await expect(page.getByTestId('workflow-runs')).toContainText('Success', { timeout: 30_000 });

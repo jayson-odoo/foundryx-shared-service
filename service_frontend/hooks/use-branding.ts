@@ -13,11 +13,11 @@ import { brandingService } from '@/services/branding-service';
 /**
  * Branding hooks (sprint-2/03).
  *
- * `useBrandingAdmin(tenantId?)` — the editor state machine. Omit `tenantId`
+ * `useBrandingAdmin(tenantId?)` - the editor state machine. Omit `tenantId`
  * for the caller's own tenant (/settings/branding); pass one to act on ANOTHER
  * tenant via the operator endpoints (console Branding tab).
  *
- * `useTenantBranding()` — the CURRENT HOST's public branding for consumption
+ * `useTenantBranding()` - the CURRENT HOST's public branding for consumption
  * surfaces (sign-in panel, sidebar logo, tab title/favicon, theme provider).
  * Module-level store so the shell doesn't refetch per render; own-tenant edits
  * call `refreshTenantBranding()` so every surface updates immediately.
@@ -38,7 +38,7 @@ const UNBRANDED: PublicBranding = {
 };
 
 type PublicState = {
-  /** null until the first fetch resolves (avoids a FoundryX→tenant flash where possible). */
+  /** null until the first fetch resolves (avoids a Foundryx→tenant flash where possible). */
   branding: PublicBranding | null;
 };
 
@@ -63,7 +63,7 @@ function fetchPublicBranding(): Promise<void> {
       publicState = { branding };
     })
     .catch(() => {
-      // Consumption surfaces degrade to FoundryX defaults — never block render.
+      // Consumption surfaces degrade to Foundryx defaults - never block render.
       publicState = { branding: publicState.branding ?? UNBRANDED };
     })
     .finally(() => {
@@ -89,7 +89,7 @@ const getSnapshot = (): PublicState => publicState;
 const getServerSnapshot = (): PublicState => ({ branding: null });
 
 export interface UseTenantBrandingResult {
-  /** Resolved branding — FoundryX defaults while loading / when unbranded. */
+  /** Resolved branding - Foundryx defaults while loading / when unbranded. */
   branding: PublicBranding;
   /** True once the first fetch resolved (gate flash-sensitive swaps on this). */
   isResolved: boolean;

@@ -122,7 +122,7 @@ export function useSkillsListConfig(): ResourceListConfig<AiSkill> {
         cell: ({ row }) => (
           <div className="flex items-center gap-1.5">
             <span className="text-sm text-foreground">
-              {row.original.activeVersionNumber ? `v${row.original.activeVersionNumber}` : '—'}
+              {row.original.activeVersionNumber ? `v${row.original.activeVersionNumber}` : '-'}
             </span>
             <span className="text-xs text-muted-foreground">
               of {row.original.versionCount}
@@ -158,7 +158,7 @@ export function useSkillsListConfig(): ResourceListConfig<AiSkill> {
         header: ({ column }) => <DataGridColumnHeader title="Updated" column={column} />,
         cell: ({ row }) => (
           <span className="text-sm text-muted-foreground">
-            {row.original.updatedAt ? formatDateTime(row.original.updatedAt) : '—'}
+            {row.original.updatedAt ? formatDateTime(row.original.updatedAt) : '-'}
           </span>
         ),
         size: 150,

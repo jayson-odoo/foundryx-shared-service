@@ -1,4 +1,4 @@
-"""Workflow Celery app (plan sprint-2/08 D1) — reuses the Redis broker. The run
+"""Workflow Celery app (plan sprint-2/08 D1) - reuses the Redis broker. The run
 service enqueues ``run_workflow_task``; a worker executes node-by-node. Dev/E2E
 set ``CELERY_TASK_ALWAYS_EAGER=true`` → inline, zero extra process.
 
@@ -21,7 +21,7 @@ celery_app.conf.update(
     task_always_eager=settings.celery_task_always_eager,
     task_eager_propagates=False,  # a failing run is recorded, not raised
     broker_connection_retry_on_startup=True,
-    # Dedicated queue — worker_workflow + beat use ONLY this (see omni worker for
+    # Dedicated queue - worker_workflow + beat use ONLY this (see omni worker for
     # why). run_workflow / run_due / status.reevaluate / webhooks.retry_due all
     # publish here; worker runs with `-Q workflow`, beat inherits this default.
     task_default_queue="workflow",
@@ -32,7 +32,7 @@ celery_app.conf.update(
 # eager dev has no beat, so trigger run_due_workflows directly there.
 celery_app.conf.beat_schedule = {
     "run-due-workflows": {"task": "workflows.run_due", "schedule": 60.0},
-    # Derived status time sweep (sprint-4/03 G4) — advance time-conditioned auto
+    # Derived status time sweep (sprint-4/03 G4) - advance time-conditioned auto
     # edges (e.g. invoice Overdue) the event bus can't catch. Same 60s tick.
     "reevaluate-derived-status": {"task": "status.reevaluate_time_based", "schedule": 60.0},
     # Reclaim consumer-webhook deliveries whose backoff elapsed but whose worker
@@ -50,7 +50,7 @@ def run_due_workflows_task() -> dict:
     db = SessionLocal()
     try:
         fired = run_due_workflows(db)
-        # Housekeeping pass (plan 10 D4) — bound run-history growth. Isolated so
+        # Housekeeping pass (plan 10 D4) - bound run-history growth. Isolated so
         # a prune failure never masks a successful fire.
         pruned = 0
         try:
@@ -58,7 +58,7 @@ def run_due_workflows_task() -> dict:
         except Exception:  # noqa: BLE001
             logger.exception("workflow run prune failed")
             db.rollback()
-        # Centralized background_jobs retention (plan sprint-4/10) — same beat
+        # Centralized background_jobs retention (plan sprint-4/10) - same beat
         # tick, isolated so a prune failure never masks a successful fire.
         try:
             from app.jobs.service import prune_jobs
@@ -67,7 +67,7 @@ def run_due_workflows_task() -> dict:
         except Exception:  # noqa: BLE001
             logger.exception("background job prune failed")
             db.rollback()
-        # Integration-activity retention (plan sprint-4/12 AC-DLC-22) — per-tenant
+        # Integration-activity retention (plan sprint-4/12 AC-DLC-22) - per-tenant
         # window, same beat tick, isolated.
         try:
             from app.activity_log.retention import prune_integration_activity
@@ -76,7 +76,7 @@ def run_due_workflows_task() -> dict:
         except Exception:  # noqa: BLE001
             logger.exception("integration-activity prune failed")
             db.rollback()
-        # AI trace retention (Phase B-i, AC-BI-10) — `ok` traces prune on a
+        # AI trace retention (Phase B-i, AC-BI-10) - `ok` traces prune on a
         # short window, `error`/`flagged` on a longer one. Same beat tick,
         # isolated so a prune failure never breaks the beat.
         try:
@@ -87,7 +87,7 @@ def run_due_workflows_task() -> dict:
             logger.exception("AI trace prune failed")
             db.rollback()
         return {"fired": fired, "pruned": pruned}
-    except Exception:  # noqa: BLE001 — a bad tick never kills the beat loop
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
         logger.exception("scheduled-workflow tick failed")
         db.rollback()
         return {"fired": 0, "pruned": 0}
@@ -109,7 +109,7 @@ def retry_due_webhooks_task() -> dict:
     db = SessionLocal()
     try:
         return {"redriven": run_due_deliveries(db)}
-    except Exception:  # noqa: BLE001 — a bad tick never kills the beat loop
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
         logger.exception("webhook retry tick failed")
         db.rollback()
         return {"redriven": 0}
@@ -123,14 +123,14 @@ def reevaluate_time_based_task() -> dict:
     from app.status_engine.derived import install_derived_status
     from app.workflow_engine.scheduler import reevaluate_time_based
 
-    # The worker process runs no FastAPI lifespan — ensure the derived-status
+    # The worker process runs no FastAPI lifespan - ensure the derived-status
     # subscriber is registered so cross-entity cascades work here too.
     install_derived_status()
     db = SessionLocal()
     try:
         advanced = reevaluate_time_based(db)
         return {"advanced": advanced}
-    except Exception:  # noqa: BLE001 — a bad tick never kills the beat loop
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
         logger.exception("derived-status time sweep failed")
         db.rollback()
         return {"advanced": 0}
@@ -148,7 +148,7 @@ def run_workflow_task(run_id: str) -> dict:
     try:
         run = run_workflow(db, run_id)
         return {"runId": run.id, "status": run.status}
-    except Exception:  # noqa: BLE001 — never let a run crash the worker silently
+    except Exception:  # noqa: BLE001 - never let a run crash the worker silently
         logger.exception("workflow run %s crashed", run_id)
         db.rollback()
         run = db.query(WorkflowRun).filter(WorkflowRun.id == run_id).first()
@@ -164,7 +164,7 @@ def run_workflow_task(run_id: str) -> dict:
 # ── Cross-package task + handler registration (worker has no FastAPI lifespan) ─
 # `-A app.workflow_engine.worker` only sees tasks/handlers whose module is
 # imported. Without these the worker DISCARDS `jobs.run` as an unregistered task
-# (silent stall — the storage-migration job hangs Pending forever).
-import app.jobs.worker  # noqa: E402,F401 — registers the `jobs.run` Celery task
-import app.storage_migration.service  # noqa: E402,F401 — module-level register_storage_migration_handler()
-import modules.autocount.sync  # noqa: E402,F401 — registers the `autocount_sync` job handler
+# (silent stall - the storage-migration job hangs Pending forever).
+import app.jobs.worker  # noqa: E402,F401 - registers the `jobs.run` Celery task
+import app.storage_migration.service  # noqa: E402,F401 - module-level register_storage_migration_handler()
+import modules.autocount.sync  # noqa: E402,F401 - registers the `autocount_sync` job handler

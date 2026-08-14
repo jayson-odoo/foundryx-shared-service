@@ -1,4 +1,4 @@
-"""Role repository — tenant-scoped role queries, grants, and user assignment.
+"""Role repository - tenant-scoped role queries, grants, and user assignment.
 
 Pure SQLAlchemy; no business rules. Every query is bounded by `tenant_id`.
 """

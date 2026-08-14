@@ -1,15 +1,15 @@
 """Form block-document schema + publish-time validation (plan sprint-3/01 D6/D7/D8/D9).
 
-The form document is the forever-contract block document — mirror of the frontend
+The form document is the forever-contract block document - mirror of the frontend
 ``types/forms.ts``: ``schemaVersion`` at the root, **Page → Section → Field** (D6).
 Stored camelCase in ``draft_definition_json`` verbatim (workflow_engine precedent:
 the JSON we accept is the JSON we persist), so the Pydantic models use camelCase
 field names / aliases and ``model_dump(by_alias=True)`` round-trips the wire exactly.
-``extra="forbid"`` everywhere — the doc is a forever-contract, so unknown keys must
+``extra="forbid"`` everywhere - the doc is a forever-contract, so unknown keys must
 422 at save rather than silently rot into the stored payload.
 
 ``validate_form_doc`` is the PUBLISH GATE (D9), the server-authoritative twin of
-the client mirror ``lib/form-doc.ts validateFormDoc`` — keep PARITY (rule-for-rule;
+the client mirror ``lib/form-doc.ts validateFormDoc`` - keep PARITY (rule-for-rule;
 the prose of each problem string need not match). It returns a list of problem
 strings; ``[]`` means publishable.
 
@@ -18,7 +18,7 @@ shaped ``{kind:'static', items:[...]}`` so an ``entity`` kind slots in later
 without a doc break.
 
 Note on condition validation: a form's visibility conditions reference
-``answers.<key>`` facts that are DYNAMIC per-document — there is no registered
+``answers.<key>`` facts that are DYNAMIC per-document - there is no registered
 ``FactSource`` for them (the rule engine's ``validate_tree``/``fact_map`` operate
 over the code-side fact registry). So we do NOT call ``rule_engine.schemas.
 validate_tree`` here; instead we use ``rule_engine.evaluator.collect_fact_keys``
@@ -44,7 +44,7 @@ from app.rule_engine.evaluator import collect_fact_keys
 
 FORM_SCHEMA_VERSION = 1
 
-# ---- field taxonomy (D7 — full v1; `payment` deferred BL-086) ----
+# ---- field taxonomy (D7 - full v1; `payment` deferred BL-086) ----
 
 # Answer-bearing field types.
 INPUT_FIELD_TYPES: Set[str] = {
@@ -71,11 +71,11 @@ INPUT_FIELD_TYPES: Set[str] = {
     "computed",
 }
 
-# Column types a Table block may carry (line items — scalar + read-only computed
+# Column types a Table block may carry (line items - scalar + read-only computed
 # + a fixed-constant column). `select`/`date` reuse the scalar inputs.
 TABLE_COLUMN_TYPES: Set[str] = {"text", "number", "integer", "select", "date", "computed", "fixed"}
 
-# Display-only field types — render, collect nothing (carry no key/required).
+# Display-only field types - render, collect nothing (carry no key/required).
 DISPLAY_FIELD_TYPES: Set[str] = {"heading", "paragraph", "divider"}
 
 ALL_FIELD_TYPES: Set[str] = INPUT_FIELD_TYPES | DISPLAY_FIELD_TYPES
@@ -103,7 +103,7 @@ SUB_FIELD_TYPES: Set[str] = {
 }
 
 # Field types usable as rule-engine condition facts (composites/uploads/display
-# excluded v1 — mirror of the frontend CONDITIONABLE_TYPES).
+# excluded v1 - mirror of the frontend CONDITIONABLE_TYPES).
 CONDITIONABLE_TYPES: Set[str] = {
     "text",
     "textarea",
@@ -123,10 +123,10 @@ CONDITIONABLE_TYPES: Set[str] = {
     "computed",
 }
 
-# Answer key grammar — letters/digits/underscores, not starting with a digit.
+# Answer key grammar - letters/digits/underscores, not starting with a digit.
 _KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# Conditions tree (rule-engine group) — shape validated by the rule engine's
+# Conditions tree (rule-engine group) - shape validated by the rule engine's
 # own grammar at evaluate time; here we only walk it for fact keys.
 Conditions = Optional[Dict[str, Any]]
 
@@ -136,12 +136,12 @@ Conditions = Optional[Dict[str, Any]]
 
 class _Base(BaseModel):
     """Strict camelCase-in/camelCase-out base. ``extra="forbid"`` rejects any
-    stray key — the stored doc is a forever-contract, garbage must 422 at save."""
+    stray key - the stored doc is a forever-contract, garbage must 422 at save."""
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
 
-# ---- choice options (D8 — static-only v1) ----
+# ---- choice options (D8 - static-only v1) ----
 
 
 class FormChoiceItem(_Base):
@@ -154,7 +154,7 @@ class FormStaticOptions(_Base):
     items: List[FormChoiceItem] = Field(default_factory=list)
 
 
-# `{kind:'entity', …}` lands additively (BL-087) — for now the union is one arm.
+# `{kind:'entity', …}` lands additively (BL-087) - for now the union is one arm.
 FormChoiceOptions = FormStaticOptions
 
 
@@ -166,10 +166,10 @@ class FormTextValidation(_Base):
 
     min_length: Optional[int] = Field(default=None, alias="minLength")
     max_length: Optional[int] = Field(default=None, alias="maxLength")
-    # ECMAScript-flavored regex source (no flags) — compiled under Python `re`
+    # ECMAScript-flavored regex source (no flags) - compiled under Python `re`
     # at the publish gate (re.error → problem).
     pattern: Optional[str] = None
-    # Shown when `pattern` rejects — required alongside it (publish-gate enforced).
+    # Shown when `pattern` rejects - required alongside it (publish-gate enforced).
     pattern_message: Optional[str] = Field(default=None, alias="patternMessage")
 
 
@@ -203,7 +203,7 @@ class FormComputedConfig(_Base):
 
 
 class FormSubField(_Base):
-    """A repeater row's sub-field — restricted type set, no conditions (BL-089)."""
+    """A repeater row's sub-field - restricted type set, no conditions (BL-089)."""
 
     id: str
     type: str
@@ -239,7 +239,7 @@ class FormTableColumn(_Base):
     summarize: Optional[Literal["sum", "avg", "count", "min", "max"]] = None
     decimals: Optional[int] = None
     integer: Optional[bool] = None
-    # `fixed` column — the constant stamped into every row (read-only).
+    # `fixed` column - the constant stamped into every row (read-only).
     fixed_value: Optional[str] = Field(default=None, alias="fixedValue")
 
 
@@ -251,10 +251,10 @@ class FormTableConfig(_Base):
 
 
 class FormField(_Base):
-    """One leaf of the form. ``key`` is the STABLE answer key — relabel never
+    """One leaf of the form. ``key`` is the STABLE answer key - relabel never
     breaks refs (workflow-node-id precedent), unique across the doc. Display
     fields carry no ``key``/``required``. Exactly one type-specific bag applies
-    per type — the publish gate enforces which."""
+    per type - the publish gate enforces which."""
 
     id: str
     type: str
@@ -263,8 +263,8 @@ class FormField(_Base):
     required: Optional[bool] = None
     placeholder: Optional[str] = None
     help_text: Optional[str] = Field(default=None, alias="helpText")
-    # Rule-engine visibility — facts namespace `answers.<fieldKey>`, EARLIER
-    # fields only (document order — publish-gate enforced, D14).
+    # Rule-engine visibility - facts namespace `answers.<fieldKey>`, EARLIER
+    # fields only (document order - publish-gate enforced, D14).
     conditions_json: Conditions = Field(default=None, alias="conditionsJson")
 
     # -- type-specific bags --
@@ -291,7 +291,7 @@ class FormSection(_Base):
 
 
 class FormPage(_Base):
-    """Wizard step — per-page client validation before advancing."""
+    """Wizard step - per-page client validation before advancing."""
 
     id: str
     title: Optional[str] = None
@@ -341,7 +341,7 @@ def _condition_fact_keys(tree: Conditions) -> List[str]:
     return keys
 
 
-# ---- publish gate (D9) — server twin of lib/form-doc.ts validateFormDoc ----
+# ---- publish gate (D9) - server twin of lib/form-doc.ts validateFormDoc ----
 
 
 def validate_form_doc(doc: "FormDocument | Dict[str, Any]") -> List[str]:
@@ -349,7 +349,7 @@ def validate_form_doc(doc: "FormDocument | Dict[str, Any]") -> List[str]:
     client mirror (rules, not message prose)."""
     try:
         form = _coerce_doc(doc)
-    except Exception as exc:  # noqa: BLE001 — a malformed doc shape is one problem
+    except Exception as exc:  # noqa: BLE001 - a malformed doc shape is one problem
         return [f"The form document is malformed: {exc}"]
 
     problems: List[str] = []
@@ -385,7 +385,7 @@ def validate_form_doc(doc: "FormDocument | Dict[str, Any]") -> List[str]:
     # section's conditions see only fields BEFORE it; a field's see all prior.
     # `earlier_keys` = every prior input key (computed-ref + general scope);
     # `earlier_conditionable` = the subset whose type can be a condition fact
-    # — the gate forbids conditioning on file/signature/address/repeater/etc.
+    # - the gate forbids conditioning on file/signature/address/repeater/etc.
     earlier_keys: Set[str] = set()
     earlier_conditionable: Set[str] = set()
     # repeaterKey → {subKey: subType} for earlier repeaters (aggregate gate).
@@ -465,7 +465,7 @@ def validate_form_doc(doc: "FormDocument | Dict[str, Any]") -> List[str]:
                                         "which is not numeric."
                                     )
                             # Aggregate refs (sum/avg/min/max/count over a
-                            # repeater column) — the repeater must be an EARLIER
+                            # repeater column) - the repeater must be an EARLIER
                             # repeater field; the column must be a numeric
                             # sub-field (count needs only the repeater).
                             for agg in aggregate_refs(expr):
@@ -510,7 +510,7 @@ def validate_form_doc(doc: "FormDocument | Dict[str, Any]") -> List[str]:
                             s.key: s.type for s in field.repeater.fields if s.key
                         }
                     if field.type == "table" and field.table:
-                        # Table columns are aggregatable too — `sum(table.col)`.
+                        # Table columns are aggregatable too - `sum(table.col)`.
                         earlier_repeaters[field.key] = {
                             c.key: c.type for c in field.table.columns if c.key
                         }

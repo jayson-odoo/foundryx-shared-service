@@ -1,4 +1,4 @@
-"""Ideation module scaffold — Slice 1 (AC-A-01, AC-A-02, AC-A-45 partial).
+"""Ideation module scaffold - Slice 1 (AC-A-01, AC-A-02, AC-A-45 partial).
 
 Manifest discovery + fields, global install idempotency (module appears once in
 the catalog), and permission-CSV sync. Mirrors the omnichannel scaffold contract.
@@ -77,7 +77,7 @@ def test_permission_csv_synced(ideation_session_factory):
 
 
 def test_install_idempotent_and_module_once(ideation_session_factory):
-    """AC-A-02: a second global bootstrap is a no-op — module + perms not duplicated."""
+    """AC-A-02: a second global bootstrap is a no-op - module + perms not duplicated."""
     from app.models.module import Module
     from app.models.permission import Permission
     from app.module_loader import bootstrap_modules

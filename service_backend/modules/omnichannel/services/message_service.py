@@ -40,7 +40,7 @@ from . import realtime
 
 
 class SendRejected(Exception):
-    """Backend CSW / validation rejection (422 — the composer shows the reason)."""
+    """Backend CSW / validation rejection (422 - the composer shows the reason)."""
 
     def __init__(self, message: str):
         super().__init__(message)
@@ -56,11 +56,11 @@ class ShortcutConflict(Exception):
 
 
 CSW_CLOSED_MESSAGE = (
-    "The 24-hour window has closed — send an approved template to re-engage."
+    "The 24-hour window has closed - send an approved template to re-engage."
 )
 
 # All agents react as the ONE business number (Meta stores one reaction per
-# direction) — a single reactor identity keeps our mirror matching Meta.
+# direction) - a single reactor identity keeps our mirror matching Meta.
 AGENT_REACTOR = "agent"
 # A WhatsApp reaction is a single emoji (possibly a ZWJ sequence); cap defensively.
 MAX_EMOJI_LEN = 32
@@ -106,7 +106,7 @@ class MessageService:
     def _sender_cols(
         actor_user_id: Optional[str], external_agent_id: Optional[str]
     ) -> Tuple[Optional[str], Optional[str]]:
-        """(sender_id, sender_external_agent_id) — a federated (embed) agent stamps
+        """(sender_id, sender_external_agent_id) - a federated (embed) agent stamps
         the external column and leaves sender_id NULL (plan 11H Slice 1); a native
         agent stamps sender_id."""
         if external_agent_id:
@@ -122,7 +122,7 @@ class MessageService:
             .join(ContactChannelIdentity, Channel.id == ContactChannelIdentity.channel_id)
             .filter(
                 ContactChannelIdentity.contact_id == contact.id,
-                # Only send on a live channel — a deactivated/trashed identity
+                # Only send on a live channel - a deactivated/trashed identity
                 # channel falls through to the workspace's active channel.
                 Channel.tenant_id == contact.tenant_id,
                 Channel.is_active.is_(True),
@@ -193,7 +193,7 @@ class MessageService:
             },
         )
         if settings.celery_task_always_eager:
-            # Same session — see send_runner docstring. A transient failure leaves
+            # Same session - see send_runner docstring. A transient failure leaves
             # the row QUEUED for a later retry; eager dev uses the stub adapter
             # (no transient failures), so this never surfaces to the caller.
             try:
@@ -256,7 +256,7 @@ class MessageService:
             header_vars = payload.templateHeaderVariables or []
             body_vars = payload.templateVariables or []
             button_vars = payload.templateButtonVariables or []
-            # Meta rejects a parameter-count mismatch on ANY of header/body/button —
+            # Meta rejects a parameter-count mismatch on ANY of header/body/button -
             # validate before queueing (extends the old body-only rule).
             try:
                 validate_template_params(
@@ -334,7 +334,7 @@ class MessageService:
             media_size=media_size,
             delivery_status="QUEUED",
             metadata_json=metadata,
-            created_at=now,  # µs precision — keeps rapid messages ordered
+            created_at=now,  # µs precision - keeps rapid messages ordered
         )
         self.db.add(row)
         contact.last_message_at = now
@@ -483,11 +483,11 @@ class MessageService:
         hkind = header_media_kind(defn)  # image | video | document | None
         if hkind:
             if not header_content:
-                raise SendRejected("This interactive message has a media header — attach a file.")
+                raise SendRejected("This interactive message has a media header - attach a file.")
             contact = self.repo.get_by_id(contact_id, tenant_id)
             if contact is None:
                 raise ThreadNotFound()
-            # Reject on a closed 24h window BEFORE sniffing/storing the header blob —
+            # Reject on a closed 24h window BEFORE sniffing/storing the header blob -
             # else a closed-window send orphans a persisted blob (never sent).
             if not _window_open(contact):
                 raise SendRejected(CSW_CLOSED_MESSAGE)
@@ -576,7 +576,7 @@ class MessageService:
             external_agent_id=external_agent_id,
         )
 
-    # ── Reactions (plan 12 Slice 3 — AC-12-19/20/21) ────────────────────────
+    # ── Reactions (plan 12 Slice 3 - AC-12-19/20/21) ────────────────────────
     def react(
         self,
         message_id: str,
@@ -604,7 +604,7 @@ class MessageService:
         if not _window_open(contact):
             raise SendRejected(CSW_CLOSED_MESSAGE)
         if not target.external_message_id:
-            raise SendRejected("This message hasn't been delivered yet — can't react to it.")
+            raise SendRejected("This message hasn't been delivered yet - can't react to it.")
 
         clean = (emoji or "").strip()
         if len(clean) > MAX_EMOJI_LEN:
@@ -628,7 +628,7 @@ class MessageService:
         except SendError as exc:
             raise SendRejected(str(exc)) from exc
 
-        # Meta stores ONE reaction per direction — every agent reacts as the same
+        # Meta stores ONE reaction per direction - every agent reacts as the same
         # business number, so a later agent's emoji OVERWRITES the earlier one at
         # Meta. Key AGENT reactions by a single business identity (not the actor)
         # so our mirror matches: agent B replaces agent A's row, one agent chip.
@@ -657,7 +657,7 @@ class MessageService:
         )
         return {"targetMessageId": target.id, "emoji": clean, "removed": removed}
 
-    # ── Internal notes (SYSTEM bubbles — never sent to the contact) ─────────
+    # ── Internal notes (SYSTEM bubbles - never sent to the contact) ─────────
     def add_internal_note(
         self,
         contact_id: str,
@@ -688,7 +688,7 @@ class MessageService:
         self.db.commit()
         self.db.refresh(row)
         item = self.conversations.message_items([row])[0]
-        # Broadcast like every other write — other agents on the thread see the
+        # Broadcast like every other write - other agents on the thread see the
         # note live (the drawer dedupes by id, so the author won't double-render).
         thread = self.conversations.thread_item(contact)
         realtime.publish(

@@ -1,4 +1,4 @@
-"""WhatsApp template management — build / submit / edit / delete / sync (plan 07).
+"""WhatsApp template management - build / submit / edit / delete / sync (plan 07).
 
 Local-draft lifecycle (NOT the status engine, T1/T2): LOCAL_DRAFT → PENDING →
 APPROVED/REJECTED/PAUSED/DISABLED, with Meta as system-of-record. Single
@@ -333,7 +333,7 @@ class TemplateManagementService:
             if row is None and name:
                 nq = q.filter(WhatsappTemplate.name == name)
                 # Only constrain by language when the webhook actually supplied
-                # one — `== None` would render IS NULL and miss real rows.
+                # one - `== None` would render IS NULL and miss real rows.
                 if language:
                     nq = nq.filter(WhatsappTemplate.language == language)
                 row = nq.first()
@@ -361,7 +361,7 @@ class TemplateManagementService:
             self.db.commit()
             logger.info("template.status_changed channel=%s template=%s kind=%s", channel.id, row.id, kind)
             return True
-        except Exception:  # webhook payloads are attacker-controllable — never crash the pipeline
+        except Exception:  # webhook payloads are attacker-controllable - never crash the pipeline
             logger.exception("apply_webhook_event failed")
             self.db.rollback()
             return False

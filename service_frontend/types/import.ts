@@ -1,4 +1,4 @@
-/** Import engine types (sprint-3/09, F8) — mirror of the backend wire schemas. */
+/** Import engine types (sprint-3/09, F8) - mirror of the backend wire schemas. */
 
 export type ImportMode = 'create_only' | 'update_only' | 'upsert';
 

@@ -12,7 +12,7 @@ import { RequirePermission } from '@/components/common/require-permission';
 import { EmbedAccessPanel } from './embed-access-panel';
 
 /**
- * Embed access (plan 11H) — a tenant admin provisions + manages the embed
+ * Embed access (plan 11H) - a tenant admin provisions + manages the embed
  * connection (connection id, write-only signing secret, allowed origins) and
  * copies the iframe snippet. Gated by workspaces.manage.
  */

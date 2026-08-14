@@ -21,7 +21,7 @@ vi.mock('@/lib/api-client', () => ({
 }));
 
 if (!('createObjectURL' in URL)) {
-  // jsdom lacks these — provide no-op stubs.
+  // jsdom lacks these - provide no-op stubs.
   // @ts-expect-error test shim
   URL.createObjectURL = () => 'blob:mock';
   // @ts-expect-error test shim
@@ -55,7 +55,7 @@ const baseComposer = {
   onSendTemplate: vi.fn(async () => true),
 };
 
-describe('Composer — attach + emoji (plan 12)', () => {
+describe('Composer - attach + emoji (plan 12)', () => {
   it('shows the attach menu with all media kinds', async () => {
     const user = userEvent.setup();
     render(<Composer {...baseComposer} onSendMedia={vi.fn(async () => true)} />);
@@ -119,7 +119,7 @@ describe('Composer — attach + emoji (plan 12)', () => {
   });
 });
 
-describe('MessageBubble — media rendering (plan 12)', () => {
+describe('MessageBubble - media rendering (plan 12)', () => {
   it('renders an image (click → lightbox)', async () => {
     render(<MessageBubble message={mediaMsg()} />);
     await waitFor(() => expect(screen.getByTestId('media-image')).toBeInTheDocument());

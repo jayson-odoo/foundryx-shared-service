@@ -1,10 +1,10 @@
 /**
  * Frontend node catalog (plan sprint-2/08 D8, fanned out in sprint-2/09 D7/D8)
- * — mirror of the backend `app/workflow_engine/registry.py` TriggerDef/
+ * - mirror of the backend `app/workflow_engine/registry.py` TriggerDef/
  * ActionDef. Drives the palette, the config drawer (field schema), and the
  * dynamic-content picker (output schema). The entity triggers expose dynamic
  * `trigger.record.*` outputs resolved from the chosen entity's metadata (the
- * drawer injects them — the catalog lists only the static seed).
+ * drawer injects them - the catalog lists only the static seed).
  */
 import type {
   ActionCatalogEntry,
@@ -303,14 +303,14 @@ export const ACTION_CATALOG: ActionCatalogEntry[] = [
   },
 ];
 
-/** The IF node (built-in — D8). One catalog row so the palette/createNode/node
+/** The IF node (built-in - D8). One catalog row so the palette/createNode/node
  * card treat it uniformly; its config (the rule tree) renders specially. */
 export const IF_CATALOG: IfCatalogEntry[] = [
   {
     kind: 'if',
     type: 'if',
     label: 'Condition',
-    description: 'Branch the flow — matching runs take the true path.',
+    description: 'Branch the flow - matching runs take the true path.',
     icon: 'GitBranch',
     category: 'Logic',
     fields: [],

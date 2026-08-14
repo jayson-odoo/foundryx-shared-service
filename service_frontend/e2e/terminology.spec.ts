@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Terminology E2E (plan sprint-3/08, F10 Phase C) — real user clicks against
+ * Terminology E2E (plan sprint-3/08, F10 Phase C) - real user clicks against
  * the LIVE stack (Next :3001 → FastAPI :8001 → Postgres).
  *
  * Each spec provisions a DEDICATED timestamped tenant (suite runs
@@ -52,7 +52,7 @@ async function login(page: Page, slug: string, email: string) {
 
 test.describe.configure({ mode: 'serial', timeout: 180_000 });
 
-test.describe('Terminology — live stack (plan sprint-3/08 Phase C)', () => {
+test.describe('Terminology - live stack (plan sprint-3/08 Phase C)', () => {
   test.beforeAll(async ({ request }) => {
     await provision(request, SLUG, ADMIN_EMAIL, `E2E Term ${STAMP}`);
     await provision(request, SLUG_B, ADMIN_EMAIL_B, `E2E Term B ${STAMP}`);
@@ -77,7 +77,7 @@ test.describe('Terminology — live stack (plan sprint-3/08 Phase C)', () => {
     // the navigation can't cancel the in-flight save.
     await expect(page.getByRole('dialog')).toBeHidden();
 
-    // /forms list title + create button read "Survey(s)" — NO reload.
+    // /forms list title + create button read "Survey(s)" - NO reload.
     await page.goto(tenantUrl(SLUG, '/forms'));
     await expect(
       page.getByRole('heading', { name: /surveys/i, level: 1 }),
@@ -90,7 +90,7 @@ test.describe('Terminology — live stack (plan sprint-3/08 Phase C)', () => {
       page.getByRole('link', { name: /surveys/i }).first(),
     ).toBeVisible();
 
-    // Mobile viewport — still coherent.
+    // Mobile viewport - still coherent.
     await page.setViewportSize({ width: 375, height: 800 });
     await expect(
       page.getByRole('button', { name: /new survey/i }),

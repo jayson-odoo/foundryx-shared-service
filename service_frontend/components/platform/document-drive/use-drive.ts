@@ -168,7 +168,7 @@ export function useDrive(): UseDrive {
 
   const deleteSelection = useCallback(
     async (items?: { folderIds: string[]; fileIds: string[] }) => {
-      // Accept explicit ids (mirrors moveTo) — a context-menu Delete must NOT
+      // Accept explicit ids (mirrors moveTo) - a context-menu Delete must NOT
       // route through selectOnly()→deleteSelection(), which reads a stale
       // `selection` closure (the setState hasn't applied yet) and deletes
       // nothing on an unselected item.

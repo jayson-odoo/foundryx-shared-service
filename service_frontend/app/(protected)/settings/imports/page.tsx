@@ -17,7 +17,7 @@ import { Label } from '@/components/ui/label';
 import { importService } from '@/services/import-service';
 
 /**
- * Import engine tenant settings (plan sprint-3/09 D11) — per-tenant caps
+ * Import engine tenant settings (plan sprint-3/09 D11) - per-tenant caps
  * enforced fail-fast at upload. Blank/0 falls back to the deployment default.
  * Gated by imports.read_all (the tenant-admin import capability).
  */

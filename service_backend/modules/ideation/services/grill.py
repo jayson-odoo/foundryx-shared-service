@@ -1,19 +1,19 @@
-"""Idea → BR grill — the FIRST ``GrillDefinition`` instance (Bi-D7, AC-BI-20).
+"""Idea → BR grill - the FIRST ``GrillDefinition`` instance (Bi-D7, AC-BI-20).
 
 The generic engine lives in core ``app/ai/grill.py``; this module supplies the
 ideation-coupled bindings for the Idea → BR pairing:
 
-- **target template resolver** — the BR's STAMPED template field list + doc,
+- **target template resolver** - the BR's STAMPED template field list + doc,
   so the prompt/extraction schema follow the version the BR was created under.
-- **source artifacts** — the linked ideas' text (grounding, AC-BI-28).
-- **agent resolver** — the per-tenant auto-seeded ``Ideation grill`` agent
+- **source artifacts** - the linked ideas' text (grounding, AC-BI-28).
+- **agent resolver** - the per-tenant auto-seeded ``Ideation grill`` agent
   (AC-BI-20b); if it has no connection yet it lazily heals to any resolvable LLM
-  connection so grilling lights up the moment a key is added — no re-seed.
-- **skill** — the platform-tier ``grill-me-business`` skill's active body.
-- **persist** — writes ``answers_json`` on the BR, which STAYS draft (AC-BI-27):
+  connection so grilling lights up the moment a key is added - no re-seed.
+- **skill** - the platform-tier ``grill-me-business`` skill's active body.
+- **persist** - writes ``answers_json`` on the BR, which STAYS draft (AC-BI-27):
   the model never writes, our code does, and it never promotes.
 
-Adding BR → FR later is a NEW ``GrillDefinition`` row + template here — the core
+Adding BR → FR later is a NEW ``GrillDefinition`` row + template here - the core
 engine is untouched (Bi-D7).
 """
 from __future__ import annotations
@@ -51,7 +51,7 @@ from .statuses import BR_ENTITY
 
 GRILL_DEFINITION_KEY = "idea_to_br"
 GRILL_SKILL_KEY = "grill-me-business"
-# The STABLE binding key (never the display name — a tenant may rename the agent,
+# The STABLE binding key (never the display name - a tenant may rename the agent,
 # AC-BI-20b). ``GRILL_AGENT_NAME`` is only the seeded display default.
 GRILL_AGENT_KEY = "ideation-grill"
 GRILL_AGENT_NAME = "Ideation grill"
@@ -67,7 +67,7 @@ def grill_readiness(db: Session, tenant_id: str) -> Tuple[bool, Optional[str]]:
 
     Ready = the auto-seeded agent exists AND an LLM connection resolves (its own
     or the agent's or the platform fallback). Otherwise a clear prerequisite
-    warning (AC-BI-11) — never a silent runtime failure. Resolves by the STABLE
+    warning (AC-BI-11) - never a silent runtime failure. Resolves by the STABLE
     key so a renamed agent (AC-BI-20b) still binds."""
     agent = AgentRepository(db).get_by_key(tenant_id, GRILL_AGENT_KEY)
     if agent is None:
@@ -80,7 +80,7 @@ def grill_readiness(db: Session, tenant_id: str) -> Tuple[bool, Optional[str]]:
     if connection_id is None:
         return (
             False,
-            "No AI connection configured — add an LLM connection under "
+            "No AI connection configured - add an LLM connection under "
             "Settings → Integrations to start grilling.",
         )
     return True, None
@@ -104,7 +104,7 @@ def _br_or_error(db: Session, tenant_id: str, br_id: str) -> BusinessRequirement
 
 
 def _target_fields(db: Session, br: BusinessRequirement) -> Tuple[List[Dict[str, str]], dict]:
-    """The BR's STAMPED template field list (key + label) + its doc — extraction
+    """The BR's STAMPED template field list (key + label) + its doc - extraction
     validates against the STAMPED version, never the active one (AC-BI-16)."""
     doc = get_stamped_doc(db, br.template_key, br.template_version, br.tenant_id)
     if not doc:
@@ -145,7 +145,7 @@ def _source_artifacts(db: Session, tenant_id: str, br: BusinessRequirement) -> T
         if idea.department:
             parts.append(f"Department: {idea.department}")
         # The raw captured text (WhatsApp/voice/manual) grounds the grill in the
-        # submitter's own words (AC-BI-32b) — included only when it adds signal
+        # submitter's own words (AC-BI-32b) - included only when it adds signal
         # beyond the already-listed problem headline.
         raw = (idea.raw_text or "").strip()
         if raw and raw != (idea.problem or "").strip():
@@ -265,7 +265,7 @@ class IdeationGrillService:
 
     def _definition(self) -> GrillDefinition:
         definition = get_grill_definition(GRILL_DEFINITION_KEY)
-        if definition is None:  # boot-registered — a missing one is a config bug
+        if definition is None:  # boot-registered - a missing one is a config bug
             raise HTTPException(500, "The idea→BR grill definition is not registered.")
         return definition
 
@@ -334,7 +334,7 @@ class IdeationGrillService:
             raise HTTPException(502, str(exc)) from exc
         if not result.ok:
             return GrillGenerateOut(status="needs_review", fieldErrors=result.field_errors)
-        # BR STAYS draft (AC-BI-27) — return the refreshed detail so the Details
+        # BR STAYS draft (AC-BI-27) - return the refreshed detail so the Details
         # tab reflects the new answers.
         detail = self.br.get(tenant_id, br_id)
         return GrillGenerateOut(status="ok", br=detail, answers=result.answers)

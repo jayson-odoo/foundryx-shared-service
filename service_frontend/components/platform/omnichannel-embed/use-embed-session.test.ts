@@ -13,7 +13,7 @@ import { useEmbedSession } from './use-embed-session';
 
 const PARENT_ORIGIN = 'https://parent.example';
 
-/** Base64url-encode a JSON object (no signature — the widget only decodes). */
+/** Base64url-encode a JSON object (no signature - the widget only decodes). */
 function b64url(obj: unknown): string {
   return btoa(JSON.stringify(obj)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
@@ -97,7 +97,7 @@ describe('useEmbedSession handshake', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain('/embed/session');
-    // The exchange sends the VALIDATED parent origin in the body (Finding 2) —
+    // The exchange sends the VALIDATED parent origin in the body (Finding 2) -
     // the shared service validates THAT against the connection's allowedOrigins,
     // not the widget's browser Origin header.
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({

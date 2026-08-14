@@ -67,13 +67,13 @@ def _epoch(dt) -> Optional[int]:
 
 
 def _iso_z(dt) -> Optional[str]:
-    """Aware-UTC datetime → ISO-8601 Z. Used for FoundryX-extension fields on
+    """Aware-UTC datetime → ISO-8601 Z. Used for Foundryx-extension fields on
     the Rio shapes (`cswExpiresAt`), which follow the house convention rather
     than respond.io's epoch ints."""
     if not dt:
         return None
     # SQLite can hand back a naive datetime (and an in-session assignment may be
-    # read off the identity map before refresh) — treat naive as UTC, never as
+    # read off the identity map before refresh) - treat naive as UTC, never as
     # local, or the CSW deadline shifts by the host offset. Mirrors
     # `message_service._window_open`.
     if dt.tzinfo is None:
@@ -120,7 +120,7 @@ class PublicGatewayService:
 
     # ── Contact identifier resolution (respond.io-style) ─────────────────────
     def _resolve_contact(self, tenant_id: str, workspace_id: str, identifier: str) -> Contact:
-        """Resolve a contact from a polymorphic identifier — ``phone:+60…``,
+        """Resolve a contact from a polymorphic identifier - ``phone:+60…``,
         ``id:<uuid>``, or a bare id. Always workspace-scoped; a miss (or a
         contact in another workspace) is a uniform ``404 contact_not_found``."""
         ident = (identifier or "").strip()
@@ -138,7 +138,7 @@ class PublicGatewayService:
     # ── respond.io-parity mappers ────────────────────────────────────────────
     def _users_by_id(self, tenant_id: str, user_ids) -> dict:
         """Batch-load core users for assignee rendering, TENANT-SCOPED (the
-        polymorphic-target_id house rule — resolve a stored user id scoped, never
+        polymorphic-target_id house rule - resolve a stored user id scoped, never
         via a bare id lookup, even though patch_thread validates on write)."""
         from app.models.user import User
 
@@ -159,7 +159,7 @@ class PublicGatewayService:
         custom fields the ThreadItem omits) to the respond.io shape.
 
         Anything ThreadItem carries that respond.io has no field for is kept as
-        an explicit FoundryX extension rather than dropped — a gateway consumer
+        an explicit Foundryx extension rather than dropped - a gateway consumer
         has no other read source for `unreadCount`/`lastMessagePreview`, and an
         inbox list cannot be built without them (BL-SS-026)."""
         cf = contact.custom_fields_json or {}
@@ -212,7 +212,7 @@ class PublicGatewayService:
         is_media = (m.message_type or "").upper() in MEDIA_MESSAGE_TYPES
         payload = RioMessagePayload(
             type=(m.message_type or "text").lower(),
-            # A media message's body IS its caption — expose it once, in
+            # A media message's body IS its caption - expose it once, in
             # `caption`, never duplicated into `text`.
             text=None if is_media else m.body,
             url=url,
@@ -221,7 +221,7 @@ class PublicGatewayService:
             mimeType=m.media_mime,
             size=m.media_size,
             # interactive buttons / location coordinates / contact cards /
-            # template binding — flattening these into `text` loses them.
+            # template binding - flattening these into `text` loses them.
             # `payload_json` is free-form JSON: guard the stored shape (same
             # treatment as `reply_to` below) so a rogue row can't 500 a read.
             payload=m.payload_json if isinstance(m.payload_json, dict) else None,
@@ -263,7 +263,7 @@ class PublicGatewayService:
             channelId=m.channel_id,
             traffic=traffic,
             # Inbound messages never carry a delivery receipt, so `status[]` is
-            # empty for them — this is the ONE time key present on every message.
+            # empty for them - this is the ONE time key present on every message.
             timestamp=_epoch(m.created_at),
             message=payload,
             status=status,
@@ -277,7 +277,7 @@ class PublicGatewayService:
         self, tenant_id: str, workspace_id: str, identifier: str, *, fmt: str = FORMAT_GUIDE
     ):
         """``ThreadItem`` (default, the documented shape) or ``RioContactItem``
-        when ``fmt='rio'``. ThreadItem is the superset — Rio is derived from it,
+        when ``fmt='rio'``. ThreadItem is the superset - Rio is derived from it,
         so the two can never drift apart."""
         from .conversation_service import ConversationService
 
@@ -301,7 +301,7 @@ class PublicGatewayService:
         page_size: int = 50,
         fmt: str = FORMAT_GUIDE,
     ):
-        """Returns ``(items, total)`` — ``ThreadItem``s by default, ``RioContactItem``s
+        """Returns ``(items, total)`` - ``ThreadItem``s by default, ``RioContactItem``s
         when ``fmt='rio'``. Filtering/pagination reuse the inbox's ``list_threads``
         (offset-based); the router turns page/total into the documented envelope."""
         from .conversation_service import ConversationService
@@ -318,7 +318,7 @@ class PublicGatewayService:
         )
         if fmt != FORMAT_RIO:
             return items, total
-        # Rio needs the ORM rows too — ThreadItem omits email + custom fields.
+        # Rio needs the ORM rows too - ThreadItem omits email + custom fields.
         ids = [t.id for t in items]
         contacts = (
             self.db.query(Contact)
@@ -347,7 +347,7 @@ class PublicGatewayService:
         after_id: Optional[str] = None,
         fmt: str = FORMAT_GUIDE,
     ):
-        """Read-only message history for a contact — ALL message types. Returns
+        """Read-only message history for a contact - ALL message types. Returns
         ``(contact_id, items)``: ``MessageItem``s by default, ``RioMessageItem``s
         when ``fmt='rio'``. Two-way keyset paging (``before_id`` older /
         ``after_id`` newer); always oldest→newest. Workspace-scoped and
@@ -437,7 +437,7 @@ class PublicGatewayService:
         return self._rio_contact(contact, thread=thread, users=users)
 
     def add_comment(self, tenant_id: str, workspace_id: str, identifier: str, body: str):
-        """Add an internal note (comment) to a contact's thread — SYSTEM bubble,
+        """Add an internal note (comment) to a contact's thread - SYSTEM bubble,
         never sent to the customer. No user actor (consumer/API-key context)."""
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
         if not (body or "").strip():
@@ -579,7 +579,7 @@ class PublicGatewayService:
         return item.id
 
     def _fetch_url(self, url: str) -> bytes:
-        """Fetch a media URL so it can be re-uploaded by id (plan 12 review — SSRF).
+        """Fetch a media URL so it can be re-uploaded by id (plan 12 review - SSRF).
 
         Reuses the consumer-webhook SSRF guard (``validate_callback_url``): https
         only, blocks private/loopback/link-local/reserved/metadata targets given
@@ -660,7 +660,7 @@ class PublicGatewayService:
                 if not req.interactive:
                     raise ApiError(422, "invalid_request", "interactive is required.")
                 defn = dict(req.interactive)
-                # Validate the definition BEFORE doing any header fetch/store work —
+                # Validate the definition BEFORE doing any header fetch/store work -
                 # a malformed interactive must 422 without a wasted SSRF fetch.
                 from .structured import StructuredError, validate_interactive
 
@@ -670,7 +670,7 @@ class PublicGatewayService:
                     raise ApiError(422, "invalid_request", str(exc)) from exc
                 header_content = None
                 header_filename = None
-                # A media header may reference a URL — fetch it (SSRF-guarded) so it
+                # A media header may reference a URL - fetch it (SSRF-guarded) so it
                 # rides the upload-by-id pipeline (never a bare Meta link).
                 header = defn.get("header") or {}
                 if str(header.get("type") or "") in ("image", "video", "document") and header.get("url"):
@@ -702,7 +702,7 @@ class PublicGatewayService:
             raise ApiError(422, "invalid_request", exc.message) from exc
         return item.id
 
-    # ── Reaction send (targets OUR durable id — AC-12-21) ─────────────────────
+    # ── Reaction send (targets OUR durable id - AC-12-21) ─────────────────────
     def _send_reaction(
         self, tenant_id: str, workspace_id: str, key_id: str, req: PublicSendRequest
     ) -> str:

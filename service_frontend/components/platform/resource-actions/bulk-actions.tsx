@@ -23,7 +23,7 @@ export interface BulkActionsProps<T> {
 }
 
 /**
- * Bulk toolbar as a single dropdown (plan 02 review) — scales as more bulk
+ * Bulk toolbar as a single dropdown (plan 02 review) - scales as more bulk
  * actions are added per list. Confirmable actions route through the shared
  * ConfirmActionDialog (typed-confirmation supported).
  */

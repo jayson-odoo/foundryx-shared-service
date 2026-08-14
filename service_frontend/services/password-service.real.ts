@@ -1,6 +1,6 @@
 /**
- * Real password service — talks to FastAPI via the shared api-client.
- * Wired in Phase B. Endpoints follow plan 10 §6 (public — apiFetch simply
+ * Real password service - talks to FastAPI via the shared api-client.
+ * Wired in Phase B. Endpoints follow plan 10 §6 (public - apiFetch simply
  * has no session token to attach on the auth pages).
  */
 import { ApiError, apiFetch } from '@/lib/api-client';

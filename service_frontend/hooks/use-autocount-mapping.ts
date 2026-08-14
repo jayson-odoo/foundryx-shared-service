@@ -20,11 +20,11 @@ export interface UseAutocountMappingResult {
   /**
    * Persist the deliverable rows (`PUT .../mapping`). Returns true on success;
    * on a server guard rejection (422) it returns false and populates
-   * `saveError` — the shell stays in edit mode so the operator can fix it.
+   * `saveError` - the shell stays in edit mode so the operator can fix it.
    */
   save: (rows: AutocountMappingWriteRow[]) => Promise<boolean>;
   /**
-   * Server-authoritative single-formula eval (AC-16-21) — the parity check the
+   * Server-authoritative single-formula eval (AC-16-21) - the parity check the
    * builder's Testing tab calls on demand. Never throws for a bad formula/value
    * (returns `{ ok: false, error }`).
    */
@@ -42,7 +42,7 @@ export interface UseAutocountMappingResult {
 }
 
 /**
- * One entity's field-mapping view + save (AC-15-40/41). Components never fetch —
+ * One entity's field-mapping view + save (AC-15-40/41). Components never fetch -
  * this is the hook boundary (`UI → hook → service → api-client`).
  */
 export function useAutocountMapping(

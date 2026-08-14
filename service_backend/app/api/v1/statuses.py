@@ -152,7 +152,7 @@ def simulate_date(
     current_user: User = Depends(require_permission("statuses.manage")),
     db: Session = Depends(get_db),
 ) -> SimulateResponse:
-    """Admin date-simulation (sprint-4/03 Slice 6) — run this entity's time sweep
+    """Admin date-simulation (sprint-4/03 Slice 6) - run this entity's time sweep
     AS-OF a date, tenant-scoped. Dry-run (default) previews the would-advance
     records without persisting; ``apply`` commits them."""
     from app.workflow_engine.scheduler import simulate_entity_sweep

@@ -14,14 +14,14 @@ import type {
 /**
  * Canvas-side visual rendering of a block (WYSIWYG approximation; the real
  * output is the backend MJML pipeline). Heading/Text support inline
- * on-canvas editing (D12) — commit on blur.
+ * on-canvas editing (D12) - commit on blur.
  */
 
 export interface BlockViewProps {
   block: TemplateBlock;
   editing: boolean;
   brand: BrandRenderValues;
-  /** List facts (document surface) — sample rows for table/repeater previews. */
+  /** List facts (document surface) - sample rows for table/repeater previews. */
   listFacts?: TemplateListFact[];
   onInlineChange?: (patch: Partial<TemplateBlock>) => void;
 }
@@ -71,7 +71,7 @@ function InlineEditable({
   }, [html, plainText]);
 
   return (
-    // NO dangerouslySetInnerHTML and NO children — React must never manage
+    // NO dangerouslySetInnerHTML and NO children - React must never manage
     // this element's content. With dSIH, any parent rerender (DndContext
     // init, click-select) re-applied the stale value and WIPED the user's
     // typing before blur could commit it (the "text resets / nothing saves"
@@ -125,7 +125,7 @@ export function BlockView({ block, editing, brand, listFacts = [], onInlineChang
       );
     case 'text':
       // Rendered display (not inline-editable): rich text is edited in the
-      // panel's WYSIWYG field — inline contentEditable let users type raw
+      // panel's WYSIWYG field - inline contentEditable let users type raw
       // tags that serialized to escaped `&lt;i&gt;`.
       return (
         <div
@@ -135,7 +135,7 @@ export function BlockView({ block, editing, brand, listFacts = [], onInlineChang
           dangerouslySetInnerHTML={{
             __html: block.html
               ? sanitizeHtml(block.html)
-              : '<span class="text-muted-foreground">Empty text — edit in the panel</span>',
+              : '<span class="text-muted-foreground">Empty text - edit in the panel</span>',
           }}
         />
       );
@@ -144,7 +144,7 @@ export function BlockView({ block, editing, brand, listFacts = [], onInlineChang
       if (!src) {
         return (
           <div className="flex items-center justify-center bg-muted px-4 py-8 text-xs text-muted-foreground">
-            Image — set a source in the panel
+            Image - set a source in the panel
           </div>
         );
       }
@@ -201,7 +201,7 @@ export function BlockView({ block, editing, brand, listFacts = [], onInlineChang
               </span>
             ))
           ) : (
-            <span>Social links — none set in branding yet</span>
+            <span>Social links - none set in branding yet</span>
           )}
         </div>
       );
@@ -225,7 +225,7 @@ export function BlockView({ block, editing, brand, listFacts = [], onInlineChang
       const showSocials = block.overrides?.showSocials ?? true;
       return (
         <div className="px-6 py-5 text-center" style={{ backgroundColor: bg }}>
-          <p className="text-xs text-zinc-400">{text || 'Footer text — set it in Branding settings'}</p>
+          <p className="text-xs text-zinc-400">{text || 'Footer text - set it in Branding settings'}</p>
           {showSocials && brand.socials.length > 0 && (
             <div className="mt-2 flex justify-center gap-2 text-[11px] text-zinc-500">
               {brand.socials.map((l) => (
@@ -239,7 +239,7 @@ export function BlockView({ block, editing, brand, listFacts = [], onInlineChang
     case 'customHtml':
       return (
         <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs text-muted-foreground">
-          {block.html || '<!-- custom HTML — edit in the panel -->'}
+          {block.html || '<!-- custom HTML - edit in the panel -->'}
         </pre>
       );
     case 'qr': {
@@ -262,7 +262,7 @@ export function BlockView({ block, editing, brand, listFacts = [], onInlineChang
 
 /**
  * Table preview (F2 D4): header from columns, ONE sample body row from the
- * bound source's item samples, footer cells. Read-only WYSIWYG approximation —
+ * bound source's item samples, footer cells. Read-only WYSIWYG approximation -
  * the backend repeats the body per real list item across page breaks.
  */
 function TablePreview({ block, listFacts }: { block: TableBlock; listFacts: TemplateListFact[] }) {
@@ -279,7 +279,7 @@ function TablePreview({ block, listFacts }: { block: TableBlock; listFacts: Temp
             {cols.length ? (
               cols.map((c, i) => (
                 <th key={i} className="px-2 py-1 font-semibold" style={{ textAlign: c.align }}>
-                  {c.header || c.key || '—'}
+                  {c.header || c.key || '-'}
                 </th>
               ))
             ) : (
@@ -292,11 +292,11 @@ function TablePreview({ block, listFacts }: { block: TableBlock; listFacts: Temp
             {cols.length ? (
               cols.map((c, i) => (
                 <td key={i} className="px-2 py-1" style={{ textAlign: c.align }}>
-                  {c.key ? (row[c.key] ?? `⟦row.${c.key}?⟧`) : '—'}
+                  {c.key ? (row[c.key] ?? `⟦row.${c.key}?⟧`) : '-'}
                 </td>
               ))
             ) : (
-              <td className="px-2 py-1 text-muted-foreground">—</td>
+              <td className="px-2 py-1 text-muted-foreground">-</td>
             )}
           </tr>
         </tbody>
@@ -385,7 +385,7 @@ function resolveRowTokens(block: TemplateBlock, rowFacts: Record<string, string>
   }
 }
 
-/** Amber chip shown on conditioned blocks (visibility rules — D8). */
+/** Amber chip shown on conditioned blocks (visibility rules - D8). */
 export function ConditionIndicator({ visible }: { visible: boolean }) {
   if (!visible) return null;
   return (

@@ -1,4 +1,4 @@
-"""AutoCount services — business logic. Routers stay HTTP-only; repositories
+"""AutoCount services - business logic. Routers stay HTTP-only; repositories
 stay SQL-only."""
 from .company_service import (
     MAX_LOOKBACK_DAYS,

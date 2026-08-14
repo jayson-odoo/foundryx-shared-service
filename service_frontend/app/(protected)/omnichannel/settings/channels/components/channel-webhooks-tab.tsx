@@ -11,7 +11,7 @@ import { WebhookSecretDialog } from './webhook-secret-dialog';
 import { WebhookDeliveriesDialog } from './webhook-deliveries-dialog';
 
 /**
- * Webhooks tab — embedded ResourceList of the channel's consumer-webhook
+ * Webhooks tab - embedded ResourceList of the channel's consumer-webhook
  * endpoints. Add/Edit ride a shared dialog (create reveals the signing secret
  * ONCE); Rotate reveals a fresh secret; View deliveries opens the read-only log.
  * Enable / disable / delete run inline from the row action menu.

@@ -3,7 +3,7 @@
 Deletes ``integration_activity`` rows older than each tenant's retention window
 (``integration_log_settings.retention_days`` override else the global default
 ``settings.integration_activity_retention_days``). Per-tenant + failure-isolated
-— mirrors ``app.workflow_engine.scheduler.prune_runs``. Wired into the Celery
+- mirrors ``app.workflow_engine.scheduler.prune_runs``. Wired into the Celery
 beat tick; eager dev has no beat, so it is directly callable from tests.
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ def prune_integration_activity(db: Session, *, now: Optional[datetime] = None) -
     window. Returns the total number of rows deleted.
 
     Per-tenant so one tenant's long window never keeps another's rows. Isolated
-    per tenant — a bad delete rolls back + logs, the loop continues. NEVER raises
+    per tenant - a bad delete rolls back + logs, the loop continues. NEVER raises
     to the beat tick."""
     from app.config import settings
     from app.models.integration_activity import IntegrationActivity
@@ -52,7 +52,7 @@ def prune_integration_activity(db: Session, *, now: Optional[datetime] = None) -
                 .delete(synchronize_session=False)
             )
             db.commit()
-        except Exception:  # noqa: BLE001 — one tenant's failure never kills the tick.
+        except Exception:  # noqa: BLE001 - one tenant's failure never kills the tick.
             logger.exception("integration-activity prune failed (tenant=%s)", tenant_id)
             db.rollback()
     return deleted

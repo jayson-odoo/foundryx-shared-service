@@ -188,7 +188,7 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
         </div>
       </div>
 
-      {/* Tabs — the strip scrolls horizontally on narrow screens (responsive
+      {/* Tabs - the strip scrolls horizontally on narrow screens (responsive
           mandate: five icon tabs exceed 375px; clipping would hide tabs). */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList variant="line" className="max-w-full overflow-x-auto">

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FoundryX EMS blue/green orchestration. Run on the server from the repo root
+# Foundryx EMS blue/green orchestration. Run on the server from the repo root
 # (the dir holding docker-compose.yml + .env + .active_color).
 #
 # Single public domain (no extra DNS): Caddy fronts everything, auto-TLS.
@@ -57,7 +57,7 @@ docker compose pull worker_workflow worker_omni beat
 
 # 1b. Ensure shared infra is up (db/redis/pgbackups are profile-less, NOT
 #     blue/green). The color is started with --no-deps below, so its depends_on
-#     does NOT auto-start these — without this the API container waits on `db`
+#     does NOT auto-start these - without this the API container waits on `db`
 #     forever ("db not ready"). Idempotent: already-running = no-op.
 echo "==> Ensuring infra (db/redis/pgbackups) is up"
 docker compose up -d db redis pgbackups
@@ -96,9 +96,9 @@ done
 echo "==> Swapping Caddy to ${NEW} (frontend:${NEW_FE_PORT} backend:${NEW_BE_PORT} under ${BACKEND_PATH})"
 TMP_CADDY=$(mktemp)
 cat > "$TMP_CADDY" <<EOF
-# Managed by blue_green_deploy.sh — do not edit by hand. Active color: ${NEW}.
+# Managed by blue_green_deploy.sh - do not edit by hand. Active color: ${NEW}.
 ${APP_DOMAIN} {
-	# Backend under ${BACKEND_PATH} — handle_path STRIPS the prefix so the
+	# Backend under ${BACKEND_PATH} - handle_path STRIPS the prefix so the
 	# backend receives root paths (/auth/login, /public/avatars/...).
 	# (Caddy already sets X-Forwarded-For/Proto/Host upstream; only Host needs
 	# overriding to the public host so tenant resolution + links are correct.)
@@ -127,18 +127,18 @@ rm -f "$TMP_CADDY"
 sudo caddy validate --config "$CADDY_CONFIG" --adapter caddyfile
 sudo caddy reload --config "$CADDY_CONFIG" --adapter caddyfile
 
-# 5. Drain — let nginx finish in-flight requests on the OLD color.
+# 5. Drain - let nginx finish in-flight requests on the OLD color.
 echo "==> Draining ${DRAIN_SECONDS}s"
 sleep "$DRAIN_SECONDS"
 
 # 6. Recreate the Celery workers + beat on the new image (brief background-job
-#    blip; safe — tasks pull atomically off Redis). Migrations already ran via
+#    blip; safe - tasks pull atomically off Redis). Migrations already ran via
 #    the API container, so these skip bootstrap (command override in start.sh).
 echo "==> Recreating Celery workers + beat on new image"
 docker compose up -d --force-recreate --no-deps worker_workflow worker_omni beat
 
 # 6b. Verify the celery containers settle (running, no crash-loop). They have no
-#     HTTP healthcheck — liveness is the process + restart policy.
+#     HTTP healthcheck - liveness is the process + restart policy.
 echo "==> Verifying Celery containers"
 for svc in worker_workflow worker_omni beat; do
   cid=$(docker compose ps -q "$svc")

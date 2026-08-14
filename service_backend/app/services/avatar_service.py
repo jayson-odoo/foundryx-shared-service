@@ -5,7 +5,7 @@ Stores the client-cropped blob behind the connection-driven StorageService
 URL is the PUBLIC route (User.avatar property), resolved per request.
 
 Gate = the SNIFFED type (declared content-type is client input): png/jpeg/webp
-only — NO SVG (avatars render in many contexts; XSS surface, plan 03 lesson) —
+only - NO SVG (avatars render in many contexts; XSS surface, plan 03 lesson) -
 and ≤ 2 MB. The client downscales to 512px, so real payloads are tiny.
 """
 import logging
@@ -24,7 +24,7 @@ AVATAR_MIMES = ("image/png", "image/jpeg", "image/webp")
 
 
 class AvatarError(Exception):
-    """422 — invalid upload; message is user-safe."""
+    """422 - invalid upload; message is user-safe."""
 
 
 class AvatarService:
@@ -33,10 +33,10 @@ class AvatarService:
 
     def set_avatar(self, user: User, content: bytes) -> User:
         if len(content) > AVATAR_MAX_BYTES:
-            raise AvatarError("File too large — max 2 MB.")
+            raise AvatarError("File too large - max 2 MB.")
         detected = detect_mime(content)
         if detected not in AVATAR_MIMES:
-            raise AvatarError("Unsupported file type — use PNG, JPG or WebP.")
+            raise AvatarError("Unsupported file type - use PNG, JPG or WebP.")
 
         storage = storage_for_tenant(self.db, user.tenant_id)
         old_key = user.avatar_key
@@ -44,7 +44,7 @@ class AvatarService:
         user.avatar_version = (user.avatar_version or 0) + 1
         self.db.commit()
         self.db.refresh(user)
-        # Old blob removed best-effort AFTER commit — a storage hiccup must
+        # Old blob removed best-effort AFTER commit - a storage hiccup must
         # not 500 a persisted write (branding convention).
         self._delete_blob(user.tenant_id, old_key)
         return user
@@ -60,7 +60,7 @@ class AvatarService:
 
     def resolve(self, user: User) -> Optional[Tuple[str, str]]:
         """Key → ('path'|'url', value) for the public route; None = no avatar
-        (or its connection vanished — serve the initials fallback, never 500)."""
+        (or its connection vanished - serve the initials fallback, never 500)."""
         if not user.avatar_key:
             return None
         try:
@@ -74,5 +74,5 @@ class AvatarService:
             return
         try:
             storage_for_tenant(self.db, tenant_id).delete(key)
-        except Exception:  # noqa: BLE001 — best-effort cleanup only
+        except Exception:  # noqa: BLE001 - best-effort cleanup only
             logger.warning("could not delete old avatar blob %s", key, exc_info=True)

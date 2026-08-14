@@ -1,11 +1,11 @@
-"""Ideation Phase B-i slice 4 — QA gap-closing tests (added by the TESTER).
+"""Ideation Phase B-i slice 4 - QA gap-closing tests (added by the TESTER).
 
 Two branches the primary S4 suites leave unexercised, keyed to the ACs:
 
 - **AC-BI-30 (clustering degrades on a DB error):** the ``pg_trgm`` retrieval is
   the ONE place clustering touches Postgres-only SQL. When that statement raises
   (extension missing, etc.) the service must roll back the poisoned transaction
-  and fall back to the in-Python ``difflib`` candidate pass — NOT 500 the board.
+  and fall back to the in-Python ``difflib`` candidate pass - NOT 500 the board.
   The routine suite runs on SQLite, which never enters the pg branch, so this
   test forces it (``_is_postgres`` True + a raising ``_candidate_pairs_pg``) to
   prove the rollback + degrade path.
@@ -13,7 +13,7 @@ Two branches the primary S4 suites leave unexercised, keyed to the ACs:
   "Promote to BR" bulk action is ``POST /business-requirements`` with
   ``ideaIds[]``. A foreign-tenant idea id passed at CREATE is refused 422 (the
   polymorphic-target rule, tenant-scoped resolve on read) and no BR is left
-  half-linked — the create-with-ideaIds sibling of the link-path cross-tenant
+  half-linked - the create-with-ideaIds sibling of the link-path cross-tenant
   test in ``test_ideation_br_coverage.py``.
 """
 import pytest
@@ -75,13 +75,13 @@ _FULL_ANSWERS = {
 }
 
 
-# ── AC-BI-30 — clustering degrades on a trigram DB error (difflib fallback) ────
+# ── AC-BI-30 - clustering degrades on a trigram DB error (difflib fallback) ────
 
 
 def test_clustering_degrades_on_db_error_falls_back_to_difflib(
     ideation_client, ideation_session_factory, monkeypatch
 ):
-    """A failing ``pg_trgm`` retrieval must NOT block the board — the service
+    """A failing ``pg_trgm`` retrieval must NOT block the board - the service
     rolls back and falls back to the difflib candidate pass, still surfacing the
     near-duplicate pair (degraded=True, no LLM). Never a 502/500 (AC-BI-30)."""
     h = _auth(ideation_client)
@@ -92,7 +92,7 @@ def test_clustering_degrades_on_db_error_falls_back_to_difflib(
     db = ideation_session_factory()
     try:
         svc = ClusteringService(db)
-        # Force the Postgres branch, then make the trigram statement raise — the
+        # Force the Postgres branch, then make the trigram statement raise - the
         # same class of failure a missing pg_trgm extension throws.
         monkeypatch.setattr(svc, "_is_postgres", lambda: True)
 
@@ -110,7 +110,7 @@ def test_clustering_degrades_on_db_error_falls_back_to_difflib(
     assert set(out.clusters[0].ideaIds) == {id1, id2}
 
 
-# ── AC-BI-17/32 — a cross-tenant idea can't be promoted into a BR ─────────────
+# ── AC-BI-17/32 - a cross-tenant idea can't be promoted into a BR ─────────────
 
 
 def test_promote_to_br_rejects_cross_tenant_idea(
@@ -152,7 +152,7 @@ def test_promote_to_br_rejects_cross_tenant_idea(
         },
     )
     assert res.status_code == 422, res.text
-    # The whole create rolled back — no orphan BR linked to the foreign idea.
+    # The whole create rolled back - no orphan BR linked to the foreign idea.
     rows = ideation_client.get(
         "/ideation/business-requirements", headers=h
     ).json()

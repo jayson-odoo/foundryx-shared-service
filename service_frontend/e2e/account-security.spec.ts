@@ -2,24 +2,24 @@ import { expect, test, type Page } from '@playwright/test';
 import { expectMailTo } from './helpers/mailbox';
 
 /**
- * Plan sprint-2/04 Phase C — change-email ceremony, full stack.
+ * Plan sprint-2/04 Phase C - change-email ceremony, full stack.
  *
  * Preconditions (the plan-10 Phase C rig):
  *   - backend :8001 on the plan-04 branch, migrated + seeded
  *   - debug SMTP with a maildir so the spec can READ both ceremony emails:
  *       python -m aiosmtpd -n -l localhost:1025 \
  *         -c aiosmtpd.handlers.Mailbox /tmp/foundryx-e2e-mailbox
- *     (pre-create tmp/new/cur subdirs — the handler doesn't)
+ *     (pre-create tmp/new/cur subdirs - the handler doesn't)
  *
  * Spec isolation (methodology §7): the ceremony MUTATES the account email, so
  * everything runs on a DEDICATED tenant provisioned via the operator API
- * (setup only — the flows under test stay real clicks). Timestamped names.
+ * (setup only - the flows under test stay real clicks). Timestamped names.
  */
 const API = process.env.NEXT_PUBLIC_BACKEND_API_URL ?? 'http://localhost:8001';
 
 const STAMP = Date.now();
 const SLUG = `e2e-acct-${STAMP}`;
-// example.com — .test/.invalid TLDs fail the backend EmailStr validation.
+// example.com - .test/.invalid TLDs fail the backend EmailStr validation.
 const ADMIN_EMAIL = `admin-${STAMP}@example.com`;
 const NEW_EMAIL = `renamed-${STAMP}@example.com`;
 const CANCEL_EMAIL = `cancelled-${STAMP}@example.com`;
@@ -42,7 +42,7 @@ async function gotoMyAccount(page: Page) {
   await page.getByRole('button', { name: 'User menu' }).click();
   await page.getByRole('menuitem', { name: 'My Account' }).click();
   await expect(page).toHaveURL(/\/account$/);
-  // Since plan 06 the page sits on the Resource form shell — the h1 is the
+  // Since plan 06 the page sits on the Resource form shell - the h1 is the
   // USER'S NAME, not "My Account"; the breadcrumb carries the page name.
   await expect(page.locator('h1')).toBeVisible();
 }
@@ -58,11 +58,11 @@ async function requestChange(page: Page, newEmail: string, password: string) {
 }
 
 // Serial: the ceremony mutates the account email across tests. The timeout
-// covers the outbox dispatcher's worst observed delivery lag (~35s) twice —
+// covers the outbox dispatcher's worst observed delivery lag (~35s) twice -
 // the default 30s test timeout loses races against a busy parallel suite.
 test.describe.configure({ mode: 'serial', timeout: 120_000 });
 
-test.describe('Change-email ceremony — live stack (plan sprint-2/04 Phase C)', () => {
+test.describe('Change-email ceremony - live stack (plan sprint-2/04 Phase C)', () => {
   test.beforeAll(async ({ request }) => {
     // Operator provisions the dedicated tenant (plan 07 §7).
     const platformLogin = await request.post(`${API}/auth/login`, {
@@ -104,7 +104,7 @@ test.describe('Change-email ceremony — live stack (plan sprint-2/04 Phase C)',
           port: '1025',
           security: 'none',
           fromEmail: 'no-reply@example.com',
-          fromName: 'FoundryX E2E',
+          fromName: 'Foundryx E2E',
         },
         credentials: {},
       },
@@ -118,7 +118,7 @@ test.describe('Change-email ceremony — live stack (plan sprint-2/04 Phase C)',
     await login(page, ADMIN_EMAIL, ADMIN_PASSWORD);
     await gotoMyAccount(page);
 
-    // Wrong password first — rejected inside the dialog, nothing pending.
+    // Wrong password first - rejected inside the dialog, nothing pending.
     await requestChange(page, CANCEL_EMAIL, 'not-the-password-1!');
     await expect(page.getByText('Incorrect password.')).toBeVisible();
 
@@ -136,7 +136,7 @@ test.describe('Change-email ceremony — live stack (plan sprint-2/04 Phase C)',
     const match = mail.match(/\/approve-email-change\?token=([A-Za-z0-9_-]+)/);
     expect(match, 'approve email must carry an /approve-email-change link').toBeTruthy();
 
-    // Cancel from the banner — the request is withdrawn…
+    // Cancel from the banner - the request is withdrawn…
     await page.getByRole('button', { name: /cancel request/i }).click();
     await expect(page.getByText(/awaits approval/i)).toHaveCount(0);
 
@@ -156,7 +156,7 @@ test.describe('Change-email ceremony — live stack (plan sprint-2/04 Phase C)',
     await expect(page.getByText(/check your current inbox/i)).toBeVisible();
     await page.getByRole('button', { name: /got it/i }).click();
 
-    // OLD-side approve — the email link IS the real entry path. The masked
+    // OLD-side approve - the email link IS the real entry path. The masked
     // target distinguishes this mail from test 1's cancelled request.
     const approveMail = await expectMailTo(ADMIN_EMAIL, 'r***@example.com');
     const approveToken = approveMail.match(
@@ -169,7 +169,7 @@ test.describe('Change-email ceremony — live stack (plan sprint-2/04 Phase C)',
     await page.getByRole('button', { name: /approve change/i }).click();
     await expect(page.getByRole('heading', { name: /change approved/i })).toBeVisible();
 
-    // NEW-side verify — this is the step that flips the email.
+    // NEW-side verify - this is the step that flips the email.
     const verifyMail = await expectMailTo(NEW_EMAIL);
     const verifyToken = verifyMail.match(
       /\/verify-email-change\?token=([A-Za-z0-9_-]+)/,
@@ -192,7 +192,7 @@ test.describe('Change-email ceremony — live stack (plan sprint-2/04 Phase C)',
     await page.getByRole('button', { name: /sign in/i }).click();
     await expect(page.getByText('Invalid email or password.')).toBeVisible();
 
-    // …the NEW email signs in (same password — only the email changed).
+    // …the NEW email signs in (same password - only the email changed).
     await page.getByPlaceholder('Your email').fill(NEW_EMAIL);
     await page.getByPlaceholder('Your password').fill(ADMIN_PASSWORD);
     await page.getByRole('button', { name: /sign in/i }).click();

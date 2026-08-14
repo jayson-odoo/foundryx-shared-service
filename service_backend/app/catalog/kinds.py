@@ -1,4 +1,4 @@
-"""Product-kind registry — extensible, metadata-only (sprint-4/08 grill Q1/Q2).
+"""Product-kind registry - extensible, metadata-only (sprint-4/08 grill Q1/Q2).
 
 A product ``kind`` is a label/filter facet, NEVER a behavior branch in core
 (cluster-b only used it as a validation tuple + an export lambda). Core seeds
@@ -25,7 +25,7 @@ _REGISTRY: dict[str, ProductKind] = {}
 
 
 def register_product_kind(kind: ProductKind) -> None:
-    """Idempotent — last registration for a key wins (boot re-runs are safe)."""
+    """Idempotent - last registration for a key wins (boot re-runs are safe)."""
     _REGISTRY[kind.key] = kind
 
 
@@ -53,7 +53,7 @@ def is_valid_kind(db, tenant_id: str, key: str) -> bool:
 
 
 def kind_label(key: str | None) -> str:
-    """Humanized fallback for an orphaned/hidden kind (module uninstalled) —
+    """Humanized fallback for an orphaned/hidden kind (module uninstalled) -
     never blank (terminology-engine house style)."""
     if not key:
         return ""

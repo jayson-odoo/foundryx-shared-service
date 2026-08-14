@@ -1,6 +1,6 @@
 """Block document → semantic HTML + print CSS (plan sprint-3/03 D2).
 
-The SECOND compiler — parallel to ``compiler.py`` (MJML/email). Documents
+The SECOND compiler - parallel to ``compiler.py`` (MJML/email). Documents
 render to paper, so the email-table-safe MJML output is wrong; this emits
 semantic HTML + ``@page``/print CSS that WeasyPrint turns into a PDF.
 
@@ -46,12 +46,12 @@ from app.template_engine.fonts import (  # noqa: E402
 )
 
 _PAGE_SIZE = {"A4": "A4", "Letter": "letter"}
-# Physical page dimensions (mm) — for the browser preview "paper sheet".
+# Physical page dimensions (mm) - for the browser preview "paper sheet".
 _PAGE_DIMS = {"A4": (210, 297), "Letter": (216, 279)}
 _HEADING_SIZES = {1: "26px", 2: "20px", 3: "16px"}
 
 # Browser-preview fonts: the real PDF resolves bundled TTFs via the url_fetcher,
-# but a browser iframe can't reach those — load every bundled family from Google
+# but a browser iframe can't reach those - load every bundled family from Google
 # Fonts (computed once from the registry).
 _GOOGLE_FONTS_LINK = google_fonts_link()
 
@@ -249,7 +249,7 @@ def _block_html(
     if isinstance(block, CustomHtmlBlock):
         # Sanitized at save (and the expand pass emits trusted table markup);
         # tokens substitute, markup passes through. escape=False keeps the
-        # table tags intact — cell VALUES were escaped where they were placed.
+        # table tags intact - cell VALUES were escaped where they were placed.
         return render_tokens(block.html, facts, mode=mode, escape=False)
 
     return ""
@@ -271,7 +271,7 @@ def compile_pdf_html(
     browser's native PDF-viewer chrome. Same compiler, same merge/brand output.
 
     Exposed for the deterministic intermediate goldens (never byte-golden the
-    PDF — font hinting/timestamps make that flaky).
+    PDF - font hinting/timestamps make that flaky).
     """
     sections: List[str] = []
     for section in doc.sections:

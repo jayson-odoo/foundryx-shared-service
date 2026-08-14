@@ -8,7 +8,7 @@ import { useApiKeyList } from './use-api-key-list';
 import { MintApiKeyDialog } from './mint-api-key-dialog';
 
 /**
- * API Keys tab — embedded ResourceList of the workspace's public-gateway keys
+ * API Keys tab - embedded ResourceList of the workspace's public-gateway keys
  * (Mint = create action → reveal dialog, Revoke = row action). Reuses the same
  * embedded-ResourceList pattern as the channel Templates tab.
  */

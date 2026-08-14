@@ -2,7 +2,7 @@
 
 `get_api_workspace` is the public-route sibling of core `get_current_user`: it
 resolves an `Authorization: Bearer fxw_live_…` key to (tenant, workspace,
-service) — never trusting the request body/query for tenancy. Uniform 401 on any
+service) - never trusting the request body/query for tenancy. Uniform 401 on any
 miss (no enumeration); 403 `service_not_enabled` if the key's service is not
 active for its tenant (the workspace→service binding, AC-01-15).
 """
@@ -53,7 +53,7 @@ def get_api_workspace(
     workspace = ApiWorkspace(
         tenant_id=row.tenant_id, workspace_id=row.workspace_id, key_id=row.id
     )
-    # Stash for the activity-log middleware (sprint-4/12) — set as soon as the
+    # Stash for the activity-log middleware (sprint-4/12) - set as soon as the
     # key resolves so even a 403 service_not_enabled below is attributable.
     request.state.api_workspace = workspace
     # Service binding (AC-01-15): the key's service must be ACTIVE for its tenant.

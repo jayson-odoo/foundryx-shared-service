@@ -3,7 +3,7 @@
 Centralized, type-dispatched background-jobs table (core public). Storage
 migration is its first ``type``; existing typed job tables are untouched.
 
-Revision id length: 19 chars (≤ 32 — alembic_version.version_num is VARCHAR(32)).
+Revision id length: 19 chars (≤ 32 - alembic_version.version_num is VARCHAR(32)).
 
 Revision ID: bgjobs_1a2b3c4d5e6f
 Revises: d6e7f8a9b0c1
@@ -15,7 +15,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.types import JSON as GenericJSON
 
-import app.models.utc_datetime  # noqa: F401 — UTCDateTime columns
+import app.models.utc_datetime  # noqa: F401 - UTCDateTime columns
 
 revision: str = "bgjobs_1a2b3c4d5e6f"
 down_revision: Union[str, Sequence[str], None] = "d6e7f8a9b0c1"

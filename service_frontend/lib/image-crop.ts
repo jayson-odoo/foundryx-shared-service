@@ -1,25 +1,25 @@
 /**
- * Avatar crop helpers (plan sprint-2/06 D5) — pure math here, canvas at the
+ * Avatar crop helpers (plan sprint-2/06 D5) - pure math here, canvas at the
  * bottom. The crop model: a square viewport over the image; the user pans
  * (offset, in *image* pixels from the centered position) and zooms (scale
  * factor ≥ 1 on top of "cover" fit). The chosen square is downscaled to
  * `AVATAR_OUTPUT_SIZE` client-side so the backend never stores originals.
  */
 
-/** Client-side mirror of the backend caps — server re-validates (sniff-first). */
+/** Client-side mirror of the backend caps - server re-validates (sniff-first). */
 export const AVATAR_ACCEPT = ['image/png', 'image/jpeg', 'image/webp'];
 export const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 export const AVATAR_OUTPUT_SIZE = 512;
 
 /** User-safe validation message, or null when the file is acceptable. */
 export function validateAvatarFile(file: Pick<File, 'type' | 'size'>): string | null {
-  // NO SVG on purpose — avatars render in many contexts and SVG is an XSS
+  // NO SVG on purpose - avatars render in many contexts and SVG is an XSS
   // surface (branding's CSP-sandbox lesson, plan 03 review).
   if (!AVATAR_ACCEPT.includes(file.type)) {
-    return 'Unsupported file type — use PNG, JPG or WebP.';
+    return 'Unsupported file type - use PNG, JPG or WebP.';
   }
   if (file.size > AVATAR_MAX_BYTES) {
-    return 'File too large — max 2 MB.';
+    return 'File too large - max 2 MB.';
   }
   return null;
 }
@@ -36,7 +36,7 @@ export interface CropRect {
  * Definitions:
  * - base selection = the largest centered square that fits the image
  *   ("cover" fit), i.e. `min(width, height)` px.
- * - `zoom` ≥ 1 shrinks the selection (`base / zoom`) — zooming IN.
+ * - `zoom` ≥ 1 shrinks the selection (`base / zoom`) - zooming IN.
  * - `offsetX/offsetY` move the selection center, in source pixels; clamped so
  *   the selection never leaves the image.
  */

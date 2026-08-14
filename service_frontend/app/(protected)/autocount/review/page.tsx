@@ -14,7 +14,7 @@ import { AC_SYNC_READ } from '../components/autocount-meta';
 import { useAutocountJobsListConfig } from './components/use-jobs-list-config';
 
 /**
- * AutoCount Review (plan 15, AC-15-02) — a Resource list of sync batches
+ * AutoCount Review (plan 15, AC-15-02) - a Resource list of sync batches
  * awaiting attention. A row opens the batch review surface. Gated
  * `autocount.sync.read`.
  */

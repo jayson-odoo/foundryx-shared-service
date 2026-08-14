@@ -1,14 +1,14 @@
-"""Module loader — the sanctioned hook for App-Store modules (plan 08 §4).
+"""Module loader - the sanctioned hook for App-Store modules (plan 08 §4).
 
 Manifest-driven: scans ``modules/*/manifest.json`` and wires each module in.
 Modules never inject into core; core pulls them in here.
 
 - ``load_modules(app)``: dynamic-import each manifest's routers and include
-  them WITH the ``require_module(<name>)`` gate injected — module code stays
+  them WITH the ``require_module(<name>)`` gate injected - module code stays
   untouched; deactivated/uninstalled tenants get 403 on every module route.
 - ``bootstrap_modules()``: sync the global ``modules`` catalog from manifests,
   run every module's global ``install()`` (idempotent schema + tables + perms
-  CSV — DDL stays ``create_all``, BL-029), then the transitional backfill:
+  CSV - DDL stays ``create_all``, BL-029), then the transitional backfill:
   tenants that already hold module data from the pre-App-Store era get an
   ACTIVE ``tenant_modules`` row at the current version (platform excluded).
 
@@ -32,7 +32,7 @@ MODULES_DIR = Path(__file__).resolve().parent.parent / "modules"
 
 logger = logging.getLogger(__name__)
 
-# Errored modules (plan sprint-3/10 D8) — a module that fails at boot (router
+# Errored modules (plan sprint-3/10 D8) - a module that fails at boot (router
 # import / registration) or migration is recorded here, skipped, and behaves
 # like inactive. Surfaced via the catalog API; the app + siblings + core survive.
 ERRORED_MODULES: Dict[str, str] = {}  # module_name → captured error message
@@ -56,7 +56,7 @@ def discover_manifests(modules_dir: Optional[Path] = None) -> List[dict]:
 def load_modules(app: FastAPI) -> None:
     """Include every discovered module's routers, gated by require_module.
 
-    A router spec may set ``"public": true`` to skip the gate — for endpoints
+    A router spec may set ``"public": true`` to skip the gate - for endpoints
     that have no authenticated user to resolve a tenant from: provider
     webhooks (Meta-signature-verified), media serving, and WebSockets (which
     authenticate in-endpoint via a token query param, incl. the module-active
@@ -67,7 +67,7 @@ def load_modules(app: FastAPI) -> None:
     for manifest in discover_manifests():
         name = manifest["module_name"]
         # Per-module failure isolation (D8): a broken module is marked errored,
-        # skipped, and logged — the app + all siblings + core continue.
+        # skipped, and logged - the app + all siblings + core continue.
         try:
             gate = Depends(require_module(name))
             for router_spec in manifest.get("routers", []):
@@ -81,7 +81,7 @@ def load_modules(app: FastAPI) -> None:
                     dependencies=[] if router_spec.get("public") else [gate],
                 )
             register_module_boot(name)
-        except Exception as exc:  # noqa: BLE001 — D8 isolation
+        except Exception as exc:  # noqa: BLE001 - D8 isolation
             ERRORED_MODULES[name] = f"{type(exc).__name__}: {exc}"
             logger.error("Module '%s' failed to load: %s", name, exc, exc_info=True)
 
@@ -89,7 +89,7 @@ def load_modules(app: FastAPI) -> None:
 def register_module_boot(name: str) -> None:
     """Call a module's boot-time registration hooks if present: capabilities
     (D5) + engine entities (status/fact/terminology/importer, plan 11 D9). Both
-    are idempotent — safe to call at every boot/bootstrap."""
+    are idempotent - safe to call at every boot/bootstrap."""
     from app.services.app_store_service import module_hooks
 
     hooks = module_hooks(name)
@@ -128,7 +128,7 @@ def sync_module_catalog(db: Session, modules_dir: Optional[Path] = None) -> None
 
 
 def _backfill_tenant_modules(db: Session) -> None:
-    """Pre-App-Store tenants already had module data seeded — mark them
+    """Pre-App-Store tenants already had module data seeded - mark them
     installed ACTIVE at the current code version (plan 08 §4). Detection is the
     module's optional ``tenant_has_data`` hook; without it nothing backfills.
     """
@@ -178,7 +178,7 @@ def bootstrap_modules(engine=None, db: Optional[Session] = None) -> None:
     try:
         sync_module_catalog(db)
         manifests = {m["module_name"]: m for m in discover_manifests()}
-        # Hard-requires topological order (D4) — a provider installs before a
+        # Hard-requires topological order (D4) - a provider installs before a
         # dependent. Cycle detection raises loudly here (boot-time).
         order = resolve_install_order(list(manifests.values()))
         for name in order:

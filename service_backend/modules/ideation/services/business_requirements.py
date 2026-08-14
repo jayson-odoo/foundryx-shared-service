@@ -1,12 +1,12 @@
 """Business Requirement service (Phase B-i slice 2, AC-BI-15..19).
 
-The ideation module has no ``repositories/`` layer — its services query the ORM
+The ideation module has no ``repositories/`` layer - its services query the ORM
 directly (module convention). Reads are tenant-scoped; the router stays HTTP-only.
 
 Load-bearing rules enforced here:
 - **Stamp at create (AC-BI-16):** a BR copies ``template_key`` + the active
   template version int, and ``answers_json`` is validated against the STAMPED
-  version's ``doc_json`` — read by ``(template_key, template_version)`` — never
+  version's ``doc_json`` - read by ``(template_key, template_version)`` - never
   the current active one.
 - **Idea↔BR link (AC-BI-17):** tenant-scoped + same-product; a cross-tenant or
   cross-product idea id is refused on write (the polymorphic-target rule), and
@@ -35,14 +35,14 @@ from app.services.status_machine import (
 
 BR_PROMOTE_PERMISSION = "ideation.business_requirements.promote"
 
-# Warm-start title cap (AC-BI-32b) — a derived title truncates on a word
+# Warm-start title cap (AC-BI-32b) - a derived title truncates on a word
 # boundary so a promoted BR never carries a runaway problem string as its name.
 _TITLE_MAX = 80
 
 
 def _truncate_title(text: str) -> str:
     """Collapse whitespace + truncate to a sensible title length on a word
-    boundary (AC-BI-32b) — never "Untitled BR" when an idea's problem exists."""
+    boundary (AC-BI-32b) - never "Untitled BR" when an idea's problem exists."""
     text = " ".join((text or "").split())
     if len(text) <= _TITLE_MAX:
         return text
@@ -51,7 +51,7 @@ def _truncate_title(text: str) -> str:
 
 
 def _field_labels(doc: Dict) -> Dict[str, str]:
-    """``{answer_key: display label}`` from a stamped template doc — used to turn
+    """``{answer_key: display label}`` from a stamped template doc - used to turn
     the promote gate's per-field error map into a human-facing missing-fields
     message (AC-BI-34b)."""
     from app.form_engine.schemas import FormDocument
@@ -128,7 +128,7 @@ class BusinessRequirementService:
         persists the cleaned payload.
 
         ``enforce_required`` defaults to ``False`` (AC-BI-34b): a DRAFT BR holds
-        PARTIAL answers — a blank required field is not a 422 on save (consistent
+        PARTIAL answers - a blank required field is not a 422 on save (consistent
         with the grill's ``enforce_required=False`` partial emit). Type / format /
         choice-membership are always validated. ``required`` completeness is
         enforced ONLY at the promote gate (:meth:`_enforce_promote_completeness`)."""
@@ -294,7 +294,7 @@ class BusinessRequirementService:
         self, tenant_id: str, idea_id: str
     ) -> List[BusinessRequirementOut]:
         """The BRs an idea feeds (AC-BI-29c, the reverse of :meth:`linked_ideas`)
-        — tenant-scoped both ways (the idea must belong to the caller AND every
+        - tenant-scoped both ways (the idea must belong to the caller AND every
         linked BR is filtered to the tenant; the polymorphic-target rule). Newest
         BR first."""
         idea = (
@@ -333,7 +333,7 @@ class BusinessRequirementService:
         self, tenant_id: str, br_id: str
     ) -> List[BrTemplateVersionOut]:
         """The BR's template version history (Versions tab). Flags the version
-        this BR STAMPED — historical BRs render against it forever (AC-BI-16)."""
+        this BR STAMPED - historical BRs render against it forever (AC-BI-16)."""
         br = self._br_or_404(tenant_id, br_id)
         template = resolve_active_template(self.db, tenant_id)
         if template is None or template.template_key != br.template_key:
@@ -379,7 +379,7 @@ class BusinessRequirementService:
         if initial_id is None:
             raise HTTPException(422, "Business Requirement statuses are not seeded.")
 
-        # Warm start (AC-BI-32b): a promote (idea_ids present) ABSORBS the idea —
+        # Warm start (AC-BI-32b): a promote (idea_ids present) ABSORBS the idea -
         # derive a real title + pre-fill problem_statement so the BR opens titled
         # at 1/6 coverage, not "Untitled BR" at 0/6. The manual-dialog path (no
         # idea_ids) is unchanged: an explicit or blank title, no pre-fill.
@@ -405,7 +405,7 @@ class BusinessRequirementService:
             updated_by=actor.id if actor else None,
         )
         # Validate answers against the just-stamped version (partial answers are
-        # valid on a draft — enforce_required=False by default, AC-BI-34b).
+        # valid on a draft - enforce_required=False by default, AC-BI-34b).
         br.answers_json = (
             self._validate_answers(br, resolved_answers) if resolved_answers else {}
         )
@@ -429,7 +429,7 @@ class BusinessRequirementService:
         actor: Optional[User] = None,
     ) -> BusinessRequirementDetailOut:
         """Edit the BR's title and/or ``answers_json`` (validated against the
-        STAMPED version — a template edit never reshapes an existing BR)."""
+        STAMPED version - a template edit never reshapes an existing BR)."""
         br = self._br_or_404(tenant_id, br_id)
         if title is not None:
             br.title = title.strip()
@@ -447,7 +447,7 @@ class BusinessRequirementService:
         (truncated); problem_statement = that problem, or all problems joined when
         several ideas are promoted together. The fuzzier idea fields
         (proposed_solution / impact / department / raw text) are DELIBERATELY not
-        mapped here — they ride the grill's source context so the grill extracts
+        mapped here - they ride the grill's source context so the grill extracts
         them (avoids a wrong-guess mapping the user must correct)."""
         ordered = [i for i in dict.fromkeys(idea_ids) if i]
         if not ordered:
@@ -473,7 +473,7 @@ class BusinessRequirementService:
     ) -> None:
         """Link ideas to a BR (AC-BI-17). Each idea must be in the caller's
         tenant AND on the SAME product as the BR (cross-tenant / cross-product =
-        422 — the polymorphic-target rule). Idempotent per pair (unique)."""
+        422 - the polymorphic-target rule). Idempotent per pair (unique)."""
         wanted = [i for i in dict.fromkeys(idea_ids) if i]
         if not wanted:
             return
@@ -538,7 +538,7 @@ class BusinessRequirementService:
         actor: Optional[User],
     ) -> None:
         """If the move about to fire is the ``br-tr-promote`` edge (draft →
-        ready), require ``.promote`` — the SEPARATE permission (AC-BI-19). Resolve
+        ready), require ``.promote`` - the SEPARATE permission (AC-BI-19). Resolve
         the edge in the BR entity's resolved tier so a future tenant fork still
         matches its own promote edge."""
         tier = StatusRepository(self.db).resolve_tier(BR_ENTITY, tenant_id)
@@ -553,7 +553,7 @@ class BusinessRequirementService:
                 403,
                 "You are not allowed to promote a business requirement to ready.",
             )
-        # Completeness is enforced ONLY here (AC-BI-34/34b) — a draft saves
+        # Completeness is enforced ONLY here (AC-BI-34/34b) - a draft saves
         # partial, but promote requires every required field present.
         self._enforce_promote_completeness(br)
 
@@ -605,9 +605,9 @@ class BusinessRequirementService:
 
         The PROMOTE gate (AC-BI-19/34): firing the ``br-tr-promote`` (draft →
         ready) edge additionally requires ``ideation.business_requirements.
-        promote`` — a ``.manage``-only actor is refused 403. Every OTHER BR edge
+        promote`` - a ``.manage``-only actor is refused 403. Every OTHER BR edge
         stays gated by ``.manage`` (the router). The gate resolves the ACTUAL
-        edge fired (by id, a code contract) — not the target status key — so a
+        edge fired (by id, a code contract) - not the target status key - so a
         tenant renaming a status can't slip the gate, and the sibling
         ``grilling → ready`` edge is NOT promote-gated."""
         br = self._br_or_404(tenant_id, br_id)

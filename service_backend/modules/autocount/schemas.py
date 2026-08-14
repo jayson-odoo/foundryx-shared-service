@@ -1,9 +1,9 @@
-"""AutoCount wire schemas — camelCase out, ``ApiModel`` for Z-suffixed UTC.
+"""AutoCount wire schemas - camelCase out, ``ApiModel`` for Z-suffixed UTC.
 
 House shape (matches every other schema in the codebase): the field NAME is
 camelCase and ``validation_alias`` names the snake_case ORM attribute, with
 ``from_attributes`` doing the mapping. Every schema carrying a datetime inherits
-``ApiModel`` — aware-UTC columns already emit ``Z``, and the base is the
+``ApiModel`` - aware-UTC columns already emit ``Z``, and the base is the
 defensive net.
 
 Nothing here echoes a credential. A company's identity is the DISCOVERED
@@ -26,7 +26,7 @@ class CompanyCreate(ApiModel):
 
     There is deliberately no company field: the vendor API resolves the company
     from the ``AppId`` header, so any value typed here would be silently
-    overridden (AC-13-01, foolproof-UI — never ask for something we determine).
+    overridden (AC-13-01, foolproof-UI - never ask for something we determine).
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -58,7 +58,7 @@ class EntityConfigItem(ApiModel):
     initialLoad: str = Field(default="windowed", validation_alias="initial_load")
     recordCap: int = Field(validation_alias="record_cap")
     # The window the FIRST sync reaches back over when no watermark exists.
-    # Default 30 — anything older is invisible until the supervised full initial
+    # Default 30 - anything older is invisible until the supervised full initial
     # load (D20), so it is surfaced and editable rather than hidden in a column.
     initialLookbackDays: int = Field(validation_alias="initial_lookback_days")
     enabled: bool
@@ -70,7 +70,7 @@ class EntityConfigItem(ApiModel):
     lastAttemptAt: Optional[datetime] = Field(
         default=None, validation_alias="last_attempt_at"
     )
-    # The high-water mark itself — "we have everything modified up to here".
+    # The high-water mark itself - "we have everything modified up to here".
     watermarkAt: Optional[datetime] = Field(default=None, validation_alias="watermark_at")
     consecutiveFailures: int = Field(default=0, validation_alias="consecutive_failures")
     lastError: Optional[str] = Field(default=None, validation_alias="last_error")
@@ -79,7 +79,7 @@ class EntityConfigItem(ApiModel):
 class EntityConfigUpdate(ApiModel):
     """Editable slice of an entity's sync configuration.
 
-    Deliberately narrow. Changing the lookback does NOT re-fetch history — it
+    Deliberately narrow. Changing the lookback does NOT re-fetch history - it
     only governs the window used when no watermark exists yet.
     """
 
@@ -107,7 +107,7 @@ class CompanyItem(ApiModel):
 
 
 class CompanySinkUpdate(ApiModel):
-    """Point a company at a push target (plan 14 hop 2 — operator wiring).
+    """Point a company at a push target (plan 14 hop 2 - operator wiring).
 
     ``sinkImpl='logging'`` clears the target (the no-op default);
     ``sinkImpl='sorento'`` requires a ``sinkConnectionId`` naming a Sorento
@@ -161,7 +161,7 @@ class StagedRecordItem(ApiModel):
     sourceRef: str = Field(validation_alias="source_ref")
     docNo: Optional[str] = Field(default=None, validation_alias="doc_no")
     status: str
-    # Changed fields ONLY — unchanged fields are never reported as changes
+    # Changed fields ONLY - unchanged fields are never reported as changes
     # (AC-13-12).
     diff: Optional[Dict[str, Any]] = Field(default=None, validation_alias="diff_json")
     canonical: Optional[Dict[str, Any]] = Field(
@@ -242,7 +242,7 @@ class MappingRowOut(ApiModel):
     # transform is authoritative.
     formula: Optional[str] = None
     # None when the stored canonical field is not delivered to Sorento (identity /
-    # watermark provenance, or an extras key) — shown non-delivered (AC-15-40).
+    # watermark provenance, or an extras key) - shown non-delivered (AC-15-40).
     sorentoField: Optional[str] = Field(validation_alias="sorento_field")
     canonicalField: str = Field(validation_alias="canonical_field")
     scope: str
@@ -251,7 +251,7 @@ class MappingRowOut(ApiModel):
 
 
 class SorentoFieldOut(ApiModel):
-    """One accepted Sorento target for the picker (AC-15-42) — offered set only."""
+    """One accepted Sorento target for the picker (AC-15-42) - offered set only."""
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -294,7 +294,7 @@ class FormulaTestRequest(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
     formula: str
-    # The mock input value — the vendor sends strings, but a number/bool/null is
+    # The mock input value - the vendor sends strings, but a number/bool/null is
     # accepted too (the evaluator coerces).
     value: Any = None
 
@@ -316,7 +316,7 @@ class SimulateRequest(ApiModel):
 
 
 class SimulateFieldResult(ApiModel):
-    """One field's simulated outcome — value or a named error, side by side."""
+    """One field's simulated outcome - value or a named error, side by side."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -355,7 +355,7 @@ class SyncRunItem(ApiModel):
     pushedCount: int = Field(default=0, validation_alias="pushed_count")
     outcome: Optional[str] = None
     error: Optional[str] = None
-    # True when the record cap was hit — a truncated sync must never read as a
+    # True when the record cap was hit - a truncated sync must never read as a
     # complete one (AC-13-46).
     truncated: bool = False
     watermarkAdvancedTo: Optional[datetime] = Field(
@@ -379,7 +379,7 @@ class ApprovalResponse(ApiModel):
 class PreviewResponse(ApiModel):
     """The dry-run verdict shown at the approval gate (AC-14-20). ``preview``
     carries either the per-record predictions + summary, or a "nothing to
-    preview" shape for a logging-sink company — the service owns the shape."""
+    preview" shape for a logging-sink company - the service owns the shape."""
 
     jobId: str
     preview: Dict[str, Any]

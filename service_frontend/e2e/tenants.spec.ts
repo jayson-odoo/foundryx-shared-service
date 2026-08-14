@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Platform Console → Tenants E2E (plan 07 Phase C) — real user clicks against
+ * Platform Console → Tenants E2E (plan 07 Phase C) - real user clicks against
  * the LIVE stack (Next :3001 → FastAPI :8001 → Postgres). Requires the backend
  * up + bootstrapped (`python -m scripts.bootstrap_db`).
  *
@@ -26,7 +26,7 @@ async function loginOperator(page: Page) {
 }
 
 async function gotoTenants(page: Page) {
-  // Scope to the sidebar — detail pages carry a second "Tenants" breadcrumb
+  // Scope to the sidebar - detail pages carry a second "Tenants" breadcrumb
   // link (strict-mode collision); expand the group if collapsed.
   const link = page
     .getByLabel('Tenant Management')
@@ -37,7 +37,7 @@ async function gotoTenants(page: Page) {
   await link.click();
   await expect(page).toHaveURL(/\/platform\/tenants$/);
   await expect(
-    page.getByText('Manage tenants on this deployment — provision, suspend and archive tenants.'),
+    page.getByText('Manage tenants on this deployment - provision, suspend and archive tenants.'),
   ).toBeVisible();
 }
 
@@ -49,14 +49,14 @@ function rowByName(page: Page, name: string) {
  *  row + its action menu don't detach mid-click as the table re-renders. */
 async function searchAndSettle(page: Page, slug: string) {
   await page.getByPlaceholder('Search tenants…').fill(slug);
-  await expect(page.getByText('FoundryX EMS')).toHaveCount(0);
+  await expect(page.getByText('Foundryx EMS')).toHaveCount(0);
   await expect(rowByName(page, slug)).toBeVisible();
-  // Outlast the trailing debounced refetch — it re-renders the rows and would
+  // Outlast the trailing debounced refetch - it re-renders the rows and would
   // detach a just-opened action menu mid-click.
   await page.waitForTimeout(800);
 }
 
-test.describe('Platform Console — Tenants (live stack)', () => {
+test.describe('Platform Console - Tenants (live stack)', () => {
   test('operator sees the console; seeded tenants listed', async ({ page }) => {
     await loginOperator(page);
 
@@ -65,12 +65,12 @@ test.describe('Platform Console — Tenants (live stack)', () => {
     await gotoTenants(page);
 
     // …listing the seeded tenants, with the platform badge on the operator
-    // row. SEARCH first — a fullyParallel run provisions sibling e2e tenants
+    // row. SEARCH first - a fullyParallel run provisions sibling e2e tenants
     // mid-suite that crowd seeded rows off page 1 (created-desc default).
-    await page.getByPlaceholder('Search tenants…').fill('FoundryX');
-    await expect(page.getByText('FoundryX EMS')).toBeVisible();
+    await page.getByPlaceholder('Search tenants…').fill('Foundryx');
+    await expect(page.getByText('Foundryx EMS')).toBeVisible();
     await expect(
-      rowByName(page, 'FoundryX Platform').getByText('Platform', { exact: true }),
+      rowByName(page, 'Foundryx Platform').getByText('Platform', { exact: true }),
     ).toBeVisible();
   });
 
@@ -86,9 +86,9 @@ test.describe('Platform Console — Tenants (live stack)', () => {
     await loginOperator(page);
     await gotoTenants(page);
 
-    // Search first — sibling specs' tenants can push this row off page 1.
-    await page.getByPlaceholder('Search tenants…').fill('FoundryX Platform');
-    const platform = rowByName(page, 'FoundryX Platform');
+    // Search first - sibling specs' tenants can push this row off page 1.
+    await page.getByPlaceholder('Search tenants…').fill('Foundryx Platform');
+    const platform = rowByName(page, 'Foundryx Platform');
     await platform.getByRole('button', { name: 'Actions' }).click();
     await expect(page.getByRole('menuitem', { name: 'Suspend' })).toHaveCount(0);
     await expect(page.getByRole('menuitem', { name: 'Archive' })).toHaveCount(0);
@@ -174,7 +174,7 @@ test.describe('Platform Console — Tenants (live stack)', () => {
     await page.getByLabel('Confirmation text').fill(slug);
     await confirmButton.click();
     await expect(page.getByText(name)).toHaveCount(0);
-    // Gone from BOTH views — the spec cleans its own residue.
+    // Gone from BOTH views - the spec cleans its own residue.
     await page.getByRole('radio', { name: 'Active' }).click();
     await page.getByPlaceholder('Search tenants…').fill(slug);
     await expect(page.getByText(name)).toHaveCount(0);
@@ -182,7 +182,7 @@ test.describe('Platform Console — Tenants (live stack)', () => {
 
   test('bulk archive works across mixed Active + Suspended selections', async ({ page }) => {
     // Same semantic action via DIFFERENT edges (active→archived vs
-    // suspended→archived) — label-grouped actions keep the bulk menu alive.
+    // suspended→archived) - label-grouped actions keep the bulk menu alive.
     const ts = Date.now();
     const slugA = `e2e-bulk-a-${ts}`;
     const slugB = `e2e-bulk-b-${ts}`;

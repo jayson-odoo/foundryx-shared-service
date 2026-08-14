@@ -42,7 +42,7 @@ function answersEqual(a: FormAnswers, b: FormAnswers): boolean {
 
 /**
  * BR detail form config (tabbed ResourceForm). Tabs: Details · Grill · Ideas ·
- * Trace · Versions — but in S2 only Details/Ideas/Versions carry content (Grill =
+ * Trace · Versions - but in S2 only Details/Ideas/Versions carry content (Grill =
  * S3, Trace = S4 render empty placeholders). The Details tab renders answers
  * through the form-engine renderer against the BR's STAMPED template doc.
  */
@@ -60,7 +60,7 @@ export function useBrForm(
   // not used here). Dirty = drift vs the loaded record.
   const [title, setTitle] = useState('');
   const [answers, setAnswers] = useState<FormAnswers>({});
-  // Server 422 per-field map from a failed save / promote (AC-BI-34b) — rendered
+  // Server 422 per-field map from a failed save / promote (AC-BI-34b) - rendered
   // inline on the Details tab; cleared when the user edits an answer.
   const [serverFieldErrors, setServerFieldErrors] = useState<FormFieldErrors>({});
   // Bumped by link/unlink on the Ideas tab so the grill re-seeds from fresh
@@ -114,8 +114,8 @@ export function useBrForm(
       return true;
     } catch (e) {
       // A 422 (type/format error on a draft save) → inline per-field highlights
-      // on the Details tab AND a readable toast — never the raw HTTP status text
-      // "Unprocessable Content" (AC-BI-34b). (Required is NOT enforced on save —
+      // on the Details tab AND a readable toast - never the raw HTTP status text
+      // "Unprocessable Content" (AC-BI-34b). (Required is NOT enforced on save -
       // a draft holds partial answers.)
       const detail = detail422(e);
       if (detail) {
@@ -135,7 +135,7 @@ export function useBrForm(
     }
   }, [br]);
 
-  // After a grill Generate the BR's answers are freshly persisted — reflect them
+  // After a grill Generate the BR's answers are freshly persisted - reflect them
   // in the Details tab (the load/setAnswers seam). The BR stays draft (AC-BI-27).
   const onGrillGenerated = useCallback((updated: BusinessRequirementDetail) => {
     setBr(updated);
@@ -152,7 +152,7 @@ export function useBrForm(
   }, []);
 
   // Linking/unlinking an idea mid-session re-seeds the grill's source context
-  // next turn (AC-BI-33) — bump the token so the Ideas list + grill state reload.
+  // next turn (AC-BI-33) - bump the token so the Ideas list + grill state reload.
   const onIdeasChanged = useCallback(() => setIdeasToken((t) => t + 1), []);
 
   // Graph-driven lifecycle + promote actions (AC-BI-34). The promote edge is

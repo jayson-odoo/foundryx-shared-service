@@ -1,18 +1,18 @@
 """Actor-pool resolver registry (plan sprint-4/06 Part 2, AC-06-30).
 
-The review engine is CORE and must never import the EMS module — but a PERSONA
+The review engine is CORE and must never import the EMS module - but a PERSONA
 role's actor pool is "every Profile holding persona X", which only EMS can
 compute. So PERSONA/STAFF_ROLE pools are resolved through an INJECTABLE hook:
 
 - core registers ``STAFF_ROLE`` (pool = the Users assigned a staff role) at
   import time below;
 - Part B (EMS) registers ``PERSONA`` (pool = Profiles holding a persona, scoped
-  to the submission's context) at module install — ``register_engine_entities``.
+  to the submission's context) at module install - ``register_engine_entities``.
 
 A resolver takes ``(db, tenant_id, role, submission)`` and returns an ordered
-list of ``(actor_kind, actor_id)`` candidates (tenant-scoped internally — the
+list of ``(actor_kind, actor_id)`` candidates (tenant-scoped internally - the
 polymorphic-target_id rule). A source with NO registered resolver resolves to
-``[]`` (fail-closed) — never a crash. This keeps the same shape as the
+``[]`` (fail-closed) - never a crash. This keeps the same shape as the
 capability registry and the status-entity registry.
 
 Mirrors the ``register_capability`` seam: a boot-time dict keyed by source.
@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
-if TYPE_CHECKING:  # pragma: no cover — avoid an ORM import cycle at runtime
+if TYPE_CHECKING:  # pragma: no cover - avoid an ORM import cycle at runtime
     from app.models.review import ReviewRole
 
 logger = logging.getLogger("foundryx.reviews.resolvers")
@@ -36,28 +36,28 @@ ActorPoolResolver = Callable[
 
 # A contact resolver: (db, tenant_id, actor_id) -> (email, name) | None. Keyed by
 # actor_kind ("user" | "profile"). Core registers "user"; EMS registers "profile"
-# at install — keeps core EMS-free (the same injectable-hook shape as the pool
+# at install - keeps core EMS-free (the same injectable-hook shape as the pool
 # resolver). allocate/escalate notify reviewers through this; a missing kind or
-# contact is a silent skip (failure-isolated — a notify hiccup never breaks
+# contact is a silent skip (failure-isolated - a notify hiccup never breaks
 # allocation).
 ActorContactResolver = Callable[[Session, str, str], Optional[Tuple[str, str]]]
 
 # A context-label resolver: (db, tenant_id, context_id) -> human label | None.
 # Keyed by a config's ``context_type`` ("project"). EMS registers "project" →
-# the event/project name at install (keeps core EMS-free — the same injectable
+# the event/project name at install (keeps core EMS-free - the same injectable
 # hook shape). A missing kind / unresolvable id yields None so the surface falls
 # back to a generic label; never raises (label resolution is cosmetic).
 ContextLabelResolver = Callable[[Session, str, str], Optional[str]]
 
 # A surface granter: (db, tenant_id, profile_id, capability, context_type,
 # context_id) -> None. The hook a PROFILE actor's portal surface key is granted
-# through when the actor is BOUND TO A REVIEW ROLE (AC-06-22 — persona
+# through when the actor is BOUND TO A REVIEW ROLE (AC-06-22 - persona
 # auto-derived "bound to a review role → reviewer"). Core stays EMS-free: it
 # never knows about personas/portal keys, it just calls the granter. EMS
 # registers one at install that maps capability → system persona key and
 # grant_persona's it (via=AUTO), scoped to the config context. ``capability`` is
 # one of {"submit", "review", "decide"}. With NO granter registered the
-# ``grant_actor_surface`` helper is a NO-OP (never raises) — a non-EMS
+# ``grant_actor_surface`` helper is a NO-OP (never raises) - a non-EMS
 # deployment has no portal surfaces to grant.
 SurfaceGranter = Callable[[Session, str, str, str, Optional[str], Optional[str]], None]
 
@@ -69,7 +69,7 @@ _SURFACE_GRANTER: Optional[SurfaceGranter] = None
 
 def register_actor_pool_resolver(source: str, fn: ActorPoolResolver) -> None:
     """Register the pool resolver for an ``actor_source`` (PERSONA / STAFF_ROLE).
-    Idempotent overwrite — re-registering the same source replaces it (a module
+    Idempotent overwrite - re-registering the same source replaces it (a module
     reinstall must not double-register)."""
     _RESOLVERS[source] = fn
 
@@ -94,7 +94,7 @@ def _staff_role_resolver(
 ) -> List[Tuple[str, str]]:
     """Core STAFF_ROLE pool = the Users assigned the bound staff role, scoped to
     the tenant, in a STABLE order (user id). The bound id is resolved
-    tenant-scoped — a foreign/planted staff-role id yields an empty pool."""
+    tenant-scoped - a foreign/planted staff-role id yields an empty pool."""
     from app.models.role import Role, user_roles
     from app.models.user import User
 
@@ -137,14 +137,14 @@ def resolve_actor_contact(
 ) -> Optional[Tuple[str, str]]:
     """(email, name) for an actor, or None when no resolver is registered for the
     kind OR the actor can't be resolved (e.g. a deleted/foreign id). Tenant-scoped
-    internally (the polymorphic-target_id rule); never raises — allocate/escalate
+    internally (the polymorphic-target_id rule); never raises - allocate/escalate
     notify best-effort."""
     fn = _CONTACT_RESOLVERS.get(kind)
     if fn is None:
         return None
     try:
         return fn(db, tenant_id, actor_id)
-    except Exception:  # noqa: BLE001 — a resolver hiccup is a silent skip
+    except Exception:  # noqa: BLE001 - a resolver hiccup is a silent skip
         return None
 
 
@@ -171,7 +171,7 @@ def _user_contact_resolver(
 register_actor_contact_resolver("user", _user_contact_resolver)
 
 
-# ── context-label resolver hook (AC-06-25 — real event names) ─────────────────
+# ── context-label resolver hook (AC-06-25 - real event names) ─────────────────
 
 
 def register_context_label_resolver(context_type: str, fn: ContextLabelResolver) -> None:
@@ -186,7 +186,7 @@ def resolve_context_label(
     """The human label for a config's bound context (e.g. the event/project name),
     or None when no resolver is registered / the id is unresolvable / either is
     unset. Tenant-scoped internally (the polymorphic-target_id rule); never raises
-    (label resolution is cosmetic — the surface falls back to a generic label)."""
+    (label resolution is cosmetic - the surface falls back to a generic label)."""
     if not context_type or not context_id:
         return None
     fn = _CONTEXT_LABEL_RESOLVERS.get(context_type)
@@ -194,16 +194,16 @@ def resolve_context_label(
         return None
     try:
         return fn(db, tenant_id, context_id)
-    except Exception:  # noqa: BLE001 — a resolver hiccup is a silent skip
+    except Exception:  # noqa: BLE001 - a resolver hiccup is a silent skip
         return None
 
 
-# ── surface granter hook (AC-06-22 — bound to a review role → persona) ─────────
+# ── surface granter hook (AC-06-22 - bound to a review role → persona) ─────────
 
 
 def register_surface_granter(fn: SurfaceGranter) -> None:
     """Register the portal-surface granter (EMS, at install). Idempotent overwrite
-    — a module reinstall must not double-register."""
+    - a module reinstall must not double-register."""
     global _SURFACE_GRANTER
     _SURFACE_GRANTER = fn
 
@@ -219,9 +219,9 @@ def grant_actor_surface(
 ) -> None:
     """Grant a PROFILE actor the portal surface for ``capability`` (one of
     "submit"/"review"/"decide") because the profile is BOUND TO A REVIEW ROLE
-    (AC-06-22 — persona auto-derived from "bound to a review role → reviewer").
+    (AC-06-22 - persona auto-derived from "bound to a review role → reviewer").
 
-    PROFILE-KIND ONLY — a user-kind actor uses the STAFF surfaces gated by core
+    PROFILE-KIND ONLY - a user-kind actor uses the STAFF surfaces gated by core
     perms and must NEVER be persona-granted; the call site is responsible for only
     passing profile actors here (this helper does not know the actor's kind).
 
@@ -233,7 +233,7 @@ def grant_actor_surface(
         return
     try:
         _SURFACE_GRANTER(db, tenant_id, profile_id, capability, context_type, context_id)
-    except Exception:  # noqa: BLE001 — a grant hiccup never breaks the caller
+    except Exception:  # noqa: BLE001 - a grant hiccup never breaks the caller
         logger.exception(
             "surface grant failed for profile %s capability %s", profile_id, capability
         )

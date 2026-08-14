@@ -30,7 +30,7 @@ export const mockPasswordService: PasswordService = {
     if (email.includes('throttled')) {
       throw new RateLimitError(THROTTLED_MESSAGE, 15 * 60);
     }
-    // Same response whether or not the account exists — the mock keeps the
+    // Same response whether or not the account exists - the mock keeps the
     // enumeration-safe posture so the UI can never depend on a difference.
     return delay({ message: RESET_REQUESTED_MESSAGE }, 500);
   },

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Repeater field (plan sprint-3/01) — a card per row of author-defined
+ * Repeater field (plan sprint-3/01) - a card per row of author-defined
  * sub-fields, with Add/Remove honouring `minRows`/`maxRows`. The answer is a
  * `Record<string, FormAnswerScalar>[]`; per-row errors arrive keyed
  * `key.rowIndex.subKey` (validation contract). Sub-fields are the restricted
@@ -31,7 +31,7 @@ export interface RepeaterFieldProps {
   maxRows?: number;
   value: Row[];
   onChange: (rows: Row[]) => void;
-  /** All form errors — this field reads its own `key.row.subKey` entries. */
+  /** All form errors - this field reads its own `key.row.subKey` entries. */
   errors: FormFieldErrors;
   fieldKey: string;
   disabled?: boolean;

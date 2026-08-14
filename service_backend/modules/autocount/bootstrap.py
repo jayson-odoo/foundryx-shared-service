@@ -1,15 +1,15 @@
-"""AutoCount bootstrap — the App-Store module contract (plan 08 §4, AC-13-45).
+"""AutoCount bootstrap - the App-Store module contract (plan 08 §4, AC-13-45).
 
 ``install`` is GLOBAL and idempotent (schema + tables + permission-catalog sync);
 the per-tenant hooks (``install_tenant`` / ``update_tenant`` / ``uninstall_tenant``)
 are driven by AppStoreService when a tenant installs/updates/uninstalls.
-Permission GRANTS are the store's concern — it grants the module keys to the
+Permission GRANTS are the store's concern - it grants the module keys to the
 tenant's Admin role at install, which is why a brand-new module needs no grant
 sweep for existing tenants (nobody has it installed yet).
 
 Stage 1 scaffold: schema + (currently empty) tables + permission CSV + the
 integration provider. Companies, watermarks, entity config, staging and the sync
-job handler are filled in by later slices — the hooks are wired now so the
+job handler are filled in by later slices - the hooks are wired now so the
 module contract is complete from day one.
 """
 from pathlib import Path
@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.repositories.permission_repository import PermissionRepository
 from app.services.permission_service import load_csv
 
-from . import models  # noqa: F401 — register module tables on AutocountBase.metadata
+from . import models  # noqa: F401 - register module tables on AutocountBase.metadata
 from .db import AUTOCOUNT_SCHEMA, AutocountBase
 
 MODULE_NAME = "autocount"
@@ -41,7 +41,7 @@ def register_capabilities() -> None:
 def register_engine_entities() -> None:
     """Boot-time registration into shared CORE registries (plan 11 D9).
 
-    Idempotent — ``register_module_boot`` calls this on every boot/bootstrap, and
+    Idempotent - ``register_module_boot`` calls this on every boot/bootstrap, and
     the provider registry is a keyed dict (re-registering replaces in place).
 
     Registers:
@@ -52,7 +52,7 @@ def register_engine_entities() -> None:
 
     The job handler must be registered in EVERY process that touches a sync job:
     the API process creates jobs (``JobService.create`` validates the type is
-    registered) and — under eager dev/test — runs them inline. The Celery worker
+    registered) and - under eager dev/test - runs them inline. The Celery worker
     boots no FastAPI lifespan, so it gets the handler from an explicit import in
     ``app/workflow_engine/worker.py`` instead. Missing EITHER path leaves jobs
     Pending forever with no error.
@@ -98,7 +98,7 @@ def install_tenant(db: Session, tenant_id: str) -> None:
     Still nothing to seed: a tenant's AutoCount footprint begins when an
     operator registers a COMPANY, and a company cannot exist before its
     connection does. Per-company entity configs + mapping rows are seeded by
-    ``CompanyService.seed_company_defaults`` at that moment — seeding them here
+    ``CompanyService.seed_company_defaults`` at that moment - seeding them here
     would mean guessing a company that has not been discovered yet."""
     return None
 
@@ -111,7 +111,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
 
     1. **Entity configs + mapping rows for the two master entities on every
        company that ALREADY EXISTS.** ``seed_company_defaults`` runs once, when a
-       company is registered — a company registered under 0.1.0 was seeded with
+       company is registered - a company registered under 0.1.0 was seeded with
        GRN only, so without this pass the operator sees no Supplier/Customer
        entity at all and the feature is silently invisible to exactly the tenants
        who already use the module. Re-running the seed is safe: every branch in
@@ -120,7 +120,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
 
     2. **Envelope / initial-load values on pre-existing ``ac_entity_config``
        rows.** Module Alembic fills these, but a host built with ``init_db``
-       (``create_all`` + seed) never runs module Alembic — and ``create_all``
+       (``create_all`` + seed) never runs module Alembic - and ``create_all``
        cannot ALTER an existing table, so those rows can sit empty against
        columns the code assumes are populated. Cheap, idempotent, and the
        difference between a working sync and an ``UnknownEnvelope`` at fetch
@@ -158,9 +158,9 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
 def uninstall_tenant(db: Session, tenant_id: str) -> None:
     """Wipe THIS tenant's rows from every module table (plan 08 §5).
 
-    The module schema and other tenants' rows are untouched — uninstall is
+    The module schema and other tenants' rows are untouched - uninstall is
     per-tenant, never global. Reverse dependency order avoids FK violations.
-    (No module tables in the scaffold slice — a safe no-op that automatically
+    (No module tables in the scaffold slice - a safe no-op that automatically
     covers every table added later.)"""
     for table in reversed(AutocountBase.metadata.sorted_tables):
         if "tenant_id" in table.c:
@@ -170,5 +170,5 @@ def uninstall_tenant(db: Session, tenant_id: str) -> None:
 
 def tenant_has_data(db: Session, tenant_id: str) -> bool:
     """Backfill detection (loader) for pre-App-Store installs. AutoCount is a
-    net-new module — no legacy data ever existed — so no tenant backfills."""
+    net-new module - no legacy data ever existed - so no tenant backfills."""
     return False

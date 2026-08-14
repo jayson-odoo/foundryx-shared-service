@@ -49,8 +49,8 @@ import { useAutocountRunsListConfig } from './use-runs-list-config';
 /**
  * The outcome of the sync the operator just ran, stated where they are looking.
  *
- * A run that fetched nothing is a SUCCESSFUL no-op — the vendor genuinely had
- * no changes since the watermark — and it previously produced silence, which
+ * A run that fetched nothing is a SUCCESSFUL no-op - the vendor genuinely had
+ * no changes since the watermark - and it previously produced silence, which
  * reads as a broken button. Short empty-state status copy like this is
  * explicitly allowed by the foolproof-UI rule; procedural how-to copy is not.
  */
@@ -68,7 +68,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   const [outcome, setOutcome] = useState<SyncOutcome | null>(null);
   const [editing, setEditing] = useState<AutocountEntityConfig | null>(null);
 
-  // Push-target working state — lifted here so the ONE Overview Resource form
+  // Push-target working state - lifted here so the ONE Overview Resource form
   // owns its dirty flag + single save (AC-15-20), not a detached card button.
   const loadedCompany = detail?.company;
   const persistedSink: AutocountSinkImpl =
@@ -88,7 +88,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
 
   const onSinkChange = useCallback((impl: AutocountSinkImpl) => {
     setSinkImpl(impl);
-    // Switching back to logging clears the target — a stale connection id must
+    // Switching back to logging clears the target - a stale connection id must
     // not linger on a no-delivery company.
     if (impl === 'logging') setSinkConnectionId(null);
   }, []);
@@ -133,7 +133,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
         // A batch to review routes the operator to the review surface. A batch
         // with nothing in it must NOT pretend there is something to review.
         if (job.status === 'needs_review') {
-          toast.success('Sync finished — the batch is awaiting approval.');
+          toast.success('Sync finished - the batch is awaiting approval.');
           router.push(acReviewHref(job.id, acCompanyHref(companyId)));
           return;
         }
@@ -166,7 +166,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
             title: `${label}: ${summary.fetched} record(s) fetched.`,
           });
         } else {
-          // No result yet — a real worker has the job queued.
+          // No result yet - a real worker has the job queued.
           setOutcome({ tone: 'success', title: `${label} sync started.` });
         }
         setRunsKey((k) => k + 1);
@@ -197,7 +197,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     async (entity: AutocountEntityConfig) => {
       try {
         await autocountService.refetchHistory(companyId, entity.entityType);
-        toast.success('History re-fetch scheduled — the next sync re-reads the window.');
+        toast.success('History re-fetch scheduled - the next sync re-reads the window.');
         reload();
       } catch (error) {
         toast.error(
@@ -262,7 +262,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
             <div className="flex flex-col py-2">
               {/* Identity is DISCOVERED and read-only in either mode (AC-13-01). */}
               <DetailRow label="Company name">
-                <ClampedText text={company.companyName || '—'} lines={2} />
+                <ClampedText text={company.companyName || '-'} lines={2} />
               </DetailRow>
               <DetailRow label="Company database">
                 <code className="text-xs">{company.databaseName}</code>
@@ -284,9 +284,9 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
                 </Link>
               </DetailRow>
               <DetailRow label="Connected">
-                {company.createdAt ? formatDateTime(company.createdAt) : '—'}
+                {company.createdAt ? formatDateTime(company.createdAt) : '-'}
               </DetailRow>
-              {/* Push target — read-only until the form's Edit toggle. */}
+              {/* Push target - read-only until the form's Edit toggle. */}
               <SinkTargetSection
                 company={company}
                 editing={editing && canManage}
@@ -350,7 +350,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
       actions: [],
       actionRows: [company],
       onReload: reload,
-      // Company identity stays read-only, but the push target is editable — so
+      // Company identity stays read-only, but the push target is editable - so
       // the form offers the global Edit toggle (gated on manage) and saves the
       // push target through its single, dirty-guarded save (AC-15-20).
       editable: true,

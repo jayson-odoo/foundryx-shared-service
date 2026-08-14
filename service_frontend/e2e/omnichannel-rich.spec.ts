@@ -1,10 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Omnichannel rich message types — plan 12 Slice 3 E2E (AC-12-28), against the
+ * Omnichannel rich message types - plan 12 Slice 3 E2E (AC-12-28), against the
  * LIVE stack (Next :3001 → FastAPI :8001 → Postgres, schema app_omnichannel).
  * Real user clicks; navigates via the UI. Requires the seeded demo inbox
- * (`seed_demo_conversations` — threads cnt-001..005 on the dev-cred channel
+ * (`seed_demo_conversations` - threads cnt-001..005 on the dev-cred channel
  * `chn-demo`, so sends never hit Graph). Bootstrap with ENVIRONMENT=development
  * so the demo data exists.
  *
@@ -28,7 +28,7 @@ async function openInbox(page: Page) {
 }
 
 async function openDemoThread(page: Page) {
-  // Open the seeded "Sarah Chen" thread (cnt-001) by its stable row testid — it
+  // Open the seeded "Sarah Chen" thread (cnt-001) by its stable row testid - it
   // carries inbound CONTACT bubbles with real wamids + an open CSW window, so a
   // reaction can send (the dev channel stubs Graph).
   const row = page.getByTestId('thread-row-cnt-001');
@@ -40,7 +40,7 @@ async function openDemoThread(page: Page) {
   await expect(page.getByTestId('bubble-contact').first()).toBeVisible({ timeout: 15_000 });
 }
 
-test.describe('Omnichannel rich messages — Slice 3', () => {
+test.describe('Omnichannel rich messages - Slice 3', () => {
   test.beforeEach(async ({ page }) => {
     await login(page);
   });
@@ -70,7 +70,7 @@ test.describe('Omnichannel rich messages — Slice 3', () => {
     await bubble.click({ button: 'right' });
     await page.getByTestId('react-❤️').click();
     await expect(page.getByTestId('reaction-chips').first()).toContainText('❤️', { timeout: 10_000 });
-    // The menu closes on react — wait for it to be gone before re-opening.
+    // The menu closes on react - wait for it to be gone before re-opening.
     await expect(page.getByTestId('react-row')).toBeHidden();
 
     // Re-open the menu → the remove control is now offered → the chip element is

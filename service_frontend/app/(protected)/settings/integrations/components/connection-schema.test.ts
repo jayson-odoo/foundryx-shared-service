@@ -39,7 +39,7 @@ const connection = {
 };
 
 describe('connection-schema (blank-to-keep contract, plan 06 D6)', () => {
-  it('prefills secrets as empty strings — undefined fails z.record with a bare "Required"', () => {
+  it('prefills secrets as empty strings - undefined fails z.record with a bare "Required"', () => {
     const values = valuesForConnection(r2, connection);
     expect(values.credentials).toEqual({ accessKeyId: '', secretAccessKey: '' });
     // The zod shape must accept the prefilled edit values as-is.

@@ -1,4 +1,4 @@
-"""Embedded Signup onboarding route — exchange code + provision channel.
+"""Embedded Signup onboarding route - exchange code + provision channel.
 Gated by `channels.manage`."""
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session

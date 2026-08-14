@@ -12,7 +12,7 @@ export const connectionFormSchema = z.object({
   name: z.string().min(1, 'Name is required.'),
   /** Non-secret provider fields (config_json). */
   config: z.record(z.string()),
-  /** Secret provider fields — write-only; blank on edit = keep existing. */
+  /** Secret provider fields - write-only; blank on edit = keep existing. */
   credentials: z.record(z.string()),
 });
 
@@ -39,7 +39,7 @@ export function valuesForConnection(
   connection: { provider: string; name: string; config: Record<string, string> },
 ): ConnectionFormValues {
   const config: Record<string, string> = {};
-  // Secrets prefill as '' (NOT absent) — a registered-but-undefined value
+  // Secrets prefill as '' (NOT absent) - a registered-but-undefined value
   // fails z.record(z.string()) with a bare "Required", breaking the
   // blank-to-keep contract on edit.
   const credentials: Record<string, string> = {};
@@ -52,7 +52,7 @@ export function valuesForConnection(
 
 /**
  * Per-provider required validation (plan 06 D6): config required-fields must
- * be non-empty always; secret required-fields only when CREATING — on edit a
+ * be non-empty always; secret required-fields only when CREATING - on edit a
  * blank secret means "keep the stored one" (write-only contract).
  */
 export function requiredFieldErrors(
@@ -74,7 +74,7 @@ export function requiredFieldErrors(
   return errors;
 }
 
-/** The write payload — only NON-EMPTY secrets travel (blank = keep). */
+/** The write payload - only NON-EMPTY secrets travel (blank = keep). */
 export function toConnectionInput(values: ConnectionFormValues): {
   provider: string;
   name: string;

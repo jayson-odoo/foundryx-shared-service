@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Sprint-4/03 Phase C — Derived / computed status, full stack (real clicks).
+ * Sprint-4/03 Phase C - Derived / computed status, full stack (real clicks).
  *
  * Journey (plan slice 3 E2E): on a form's OWN scoped status graph, open the
  * seeded Submit edge → switch its Trigger to Automatic → the role gate
@@ -61,12 +61,12 @@ async function openSubmitEdgeDrawer(page: Page) {
   // SVG edge labels need a dispatched click (Playwright hit-testing misses).
   await page.getByText(/Submit/, { exact: false }).first().dispatchEvent('click');
   await page.getByTestId('edge-toolbar').getByRole('button', { name: 'Edit' }).click();
-  await expect(page.getByText(/Transition — Draft → Submitted/)).toBeVisible();
+  await expect(page.getByText(/Transition - Draft → Submitted/)).toBeVisible();
 }
 
 test.describe.configure({ mode: 'serial', timeout: 180_000 });
 
-test.describe('Derived status — live stack (sprint-4/03 Phase C)', () => {
+test.describe('Derived status - live stack (sprint-4/03 Phase C)', () => {
   test.beforeAll(async ({ request }) => {
     const platformLogin = await request.post(`${API}/auth/login`, {
       data: { email: 'platform@example.com', password: 'platform1234', tenantSlug: 'platform' },
@@ -88,7 +88,7 @@ test.describe('Derived status — live stack (sprint-4/03 Phase C)', () => {
     const tenantId = (await provision.json()).id;
 
     // Install EMS on the dedicated tenant (operator), then build an event with a
-    // time-based auto edge for the Slice-5/6 journeys — all API setup.
+    // time-based auto edge for the Slice-5/6 journeys - all API setup.
     const op = { Authorization: `Bearer ${platformToken}` };
     const install = await request.post(
       `${API}/platform/tenants/${tenantId}/modules/ems/install`,
@@ -205,7 +205,7 @@ test.describe('Derived status — live stack (sprint-4/03 Phase C)', () => {
     await expect(page.getByRole('dialog').getByText('Who can perform it')).toBeVisible();
   });
 
-  // AC-03-44 (Slice 5) — Event Details edit round-trip: open the event, edit a
+  // AC-03-44 (Slice 5) - Event Details edit round-trip: open the event, edit a
   // field + a date, save, reload → persisted; the Events list shows the date.
   test('event Details edit: set fields/date → save → persists + list column', async ({
     page,
@@ -231,7 +231,7 @@ test.describe('Derived status — live stack (sprint-4/03 Phase C)', () => {
     await expect(page.getByRole('cell', { name: EVENT_END })).toBeVisible();
   });
 
-  // AC-03-54 (Slice 6) — admin date-simulation: fast-forward "now" past the
+  // AC-03-54 (Slice 6) - admin date-simulation: fast-forward "now" past the
   // event's end date → Preview lists the would-advance event → Apply advances it.
   test('simulate date: preview → apply advances the event as-of a future date', async ({
     page,
@@ -243,7 +243,7 @@ test.describe('Derived status — live stack (sprint-4/03 Phase C)', () => {
     await page.getByRole('menuitem', { name: 'Simulate date' }).click();
 
     const dialog = page.getByRole('dialog');
-    await expect(dialog.getByText('Simulate date — Event')).toBeVisible();
+    await expect(dialog.getByText('Simulate date - Event')).toBeVisible();
     // As-of a date AFTER the event end → "Days since End Date >= 0" becomes true.
     await dialog.getByLabel('As-of date').fill('2027-01-15');
     await dialog.getByRole('button', { name: 'Preview' }).click();

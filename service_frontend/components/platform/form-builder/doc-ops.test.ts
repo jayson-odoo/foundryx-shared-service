@@ -1,6 +1,6 @@
 /**
  * Pure-op tests for the builder's immutable doc mutations (plan sprint-3/01).
- * dnd-kit pointer-sensor drags aren't unit-testable — the reorder LOGIC is, so
+ * dnd-kit pointer-sensor drags aren't unit-testable - the reorder LOGIC is, so
  * `moveField`/`moveSection`/`movePage` are exercised directly here.
  */
 import { describe, expect, it } from 'vitest';

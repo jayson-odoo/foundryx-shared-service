@@ -42,7 +42,7 @@ describe('autocount service (real boundary)', () => {
     expect(apiFetch.mock.calls[0][0]).toContain('page_size=200');
   });
 
-  it('creates a company from a connection ONLY — never a typed company name', async () => {
+  it('creates a company from a connection ONLY - never a typed company name', async () => {
     apiFetch.mockResolvedValue({ id: 'c1' });
     await realAutocountService.createCompany({ connectionId: 'conn-1', name: 'Main' });
     const [path, init] = apiFetch.mock.calls[0];

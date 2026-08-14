@@ -1,4 +1,4 @@
-name: Build and Deploy FoundryX EMS
+name: Build and Deploy Foundryx EMS
 
 on:
   push:
@@ -12,13 +12,33 @@ on:
 env:
   # Override IMAGE_REPO / RELEASE_TAG via repo Variables if your Docker Hub
   # namespace differs. NEXT_PUBLIC_BACKEND_API_URL is a repo Variable (baked
-  # into the frontend image at build time — must be the PUBLIC api origin).
+  # into the frontend image at build time - must be the PUBLIC api origin).
   IMAGE_REPO: ${{ vars.IMAGE_REPO || 'jayson1004/foundryx-shared-service' }}
   RELEASE_TAG: ${{ vars.RELEASE_TAG || '1.0.0' }}
   # Valid throwaway Fernet keys so app.main imports cleanly in CI (NOT secrets).
   CI_FERNET_KEY: MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=
 
 jobs:
+  lint-conventions:
+    name: Lint conventions (no emdash, brand spelling)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No emdash / en-dash punctuation in tracked files
+        run: |
+          if git grep -I -n $'\xe2\x80\x94\|\xe2\x80\x93'; then
+            echo "::error::Found an em dash (U+2014) or en dash (U+2013) - use a plain hyphen instead. See PRINCIPLES.md."
+            exit 1
+          fi
+      - name: Brand spelling has no capital X after Foundry
+        run: |
+          # 'Foundry[X]' so this script never matches itself; TokensStudio
+          # filename references are a sanctioned exception (see PRINCIPLES.md).
+          if git grep -I -n 'Foundry[X]' | grep -v 'TokensStudio'; then
+            echo "::error::Found the banned brand misspelling (capital X after Foundry) - the brand is 'Foundryx'. See PRINCIPLES.md."
+            exit 1
+          fi
+
   validate-backend:
     name: Validate backend (import + pytest collect)
     runs-on: ubuntu-latest
@@ -62,7 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: Build frontend image (no push) — runs `next build`
+      - name: Build frontend image (no push) - runs `next build`
         uses: docker/build-push-action@v5
         with:
           context: ./service_frontend
@@ -119,7 +139,7 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
-      # Native ssh/scp wrapped in retries — the server's SSH dial is
+      # Native ssh/scp wrapped in retries - the server's SSH dial is
       # intermittently flaky (i/o timeout), so each remote step auto-retries
       # instead of failing the whole deploy. SSH opts skip host-key prompts
       # (StrictHostKeyChecking=no) since runner IPs rotate.
@@ -167,7 +187,7 @@ jobs:
             PLATFORM_SMTP_USERNAME=${{ secrets.PLATFORM_SMTP_USERNAME }}
             PLATFORM_SMTP_PASSWORD=${{ secrets.PLATFORM_SMTP_PASSWORD }}
             PLATFORM_SMTP_FROM_EMAIL=${{ vars.PLATFORM_SMTP_FROM_EMAIL }}
-            PLATFORM_SMTP_FROM_NAME=${{ vars.PLATFORM_SMTP_FROM_NAME || 'FoundryX EMS' }}
+            PLATFORM_SMTP_FROM_NAME=${{ vars.PLATFORM_SMTP_FROM_NAME || 'Foundryx EMS' }}
         with:
           timeout_minutes: 3
           max_attempts: 2
@@ -175,7 +195,7 @@ jobs:
           command: |
             P="${{ vars.SSH_PORT || 22 }}"; H="${{ secrets.SSH_HOST }}"; U="${{ secrets.SSH_USER }}"; D="${{ secrets.DEPLOY_PATH }}"
             O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
-            # Wait for the SSH port to accept TCP before dialing — survives a
+            # Wait for the SSH port to accept TCP before dialing - survives a
             # server reboot mid-deploy (a full ssh dial burns 20s per timeout;
             # a cheap /dev/tcp probe polls until it's back). ~5 min budget.
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
@@ -242,9 +262,9 @@ jobs:
         id: notify
         run: |
           if [ "${{ needs.build-and-deploy.result }}" = "success" ]; then
-            echo "subject=✅ FoundryX EMS deploy succeeded (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
+            echo "subject=✅ Foundryx EMS deploy succeeded (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
           else
-            echo "subject=❌ FoundryX EMS deploy failed (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
+            echo "subject=❌ Foundryx EMS deploy failed (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
           fi
       - name: Send deployment email
         if: steps.smtp.outputs.configured == 'true'
@@ -256,7 +276,7 @@ jobs:
           password: ${{ secrets.SMTP_PASSWORD }}
           subject: ${{ steps.notify.outputs.subject }}
           to: ${{ secrets.OWNER_EMAIL }}
-          from: FoundryX Deploy Bot <${{ secrets.SMTP_USERNAME }}>
+          from: Foundryx Deploy Bot <${{ secrets.SMTP_USERNAME }}>
           body: |
             https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
       - name: Warn when email secrets are missing

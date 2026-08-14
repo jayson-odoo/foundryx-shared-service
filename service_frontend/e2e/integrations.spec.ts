@@ -1,9 +1,9 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
 /**
- * Integrations on the Resource shell (plan sprint-2/06 D6) — Phase C E2E
+ * Integrations on the Resource shell (plan sprint-2/06 D6) - Phase C E2E
  * against the LIVE stack (Next :3001 → FastAPI :8001 → Postgres). Real user
- * clicks. The card grid + wizard are gone — list + full-page form like every
+ * clicks. The card grid + wizard are gone - list + full-page form like every
  * entity.
  *
  * Storage probes are kept OFFLINE-deterministic: the S3 card's advanced
@@ -11,7 +11,7 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
  * the honest transport error and never needs internet or real creds.
  *
  * Spec isolation: each test provisions a DEDICATED tenant via the operator
- * API (connections are unique per (tenant, type) since D7 — sharing the
+ * API (connections are unique per (tenant, type) since D7 - sharing the
  * default tenant would collide across parallel specs).
  */
 
@@ -72,7 +72,7 @@ async function createS3Connection(
   }
   await page.getByPlaceholder('my-company-assets').fill('e2e-bucket');
   await page.getByPlaceholder('ap-southeast-1').fill('us-east-1');
-  // FormRow labels aren't wired to inputs (no htmlFor) — target the secret
+  // FormRow labels aren't wired to inputs (no htmlFor) - target the secret
   // inputs by type; field order follows the provider schema.
   const secrets = page.locator('input[type="password"]');
   await secrets.nth(0).fill('AKIAFAKEFAKEFAKEFAKE');
@@ -88,7 +88,7 @@ async function createS3Connection(
   await page.waitForURL(/\/settings\/integrations\/(?!new)[\w-]+$/);
 }
 
-test.describe('Integrations — Resource shell (live backend)', () => {
+test.describe('Integrations - Resource shell (live backend)', () => {
   test('list page loads on the shell with the create button', async ({ page, request }) => {
     const tenant = await provisionTenant(request, 'load');
     await loginTenantAdmin(page, tenant);
@@ -108,14 +108,14 @@ test.describe('Integrations — Resource shell (live backend)', () => {
 
     await createS3Connection(page);
 
-    // Saved but never tested — UNVERIFIED shouts until the first pass (D6).
+    // Saved but never tested - UNVERIFIED shouts until the first pass (D6).
     await expect(page.getByText('Unverified')).toBeVisible();
 
     // Form "…" actions → Test connection → honest transport error, no
     // sugar-coating: head_bucket against localhost:9 cannot connect.
     await page.getByRole('button', { name: 'Actions' }).click();
     await page.getByRole('menuitem', { name: 'Test connection' }).click();
-    // Message lands in BOTH the toast and the Health card — assert the first.
+    // Message lands in BOTH the toast and the Health card - assert the first.
     await expect(page.getByText(/Could not access bucket/).first()).toBeVisible({ timeout: 15_000 });
 
     // Status flips to Error and the message lands in the Health card.
@@ -133,7 +133,7 @@ test.describe('Integrations — Resource shell (live backend)', () => {
     await createS3Connection(page, { name: 'Keep Test' });
 
     await page.getByRole('button', { name: 'Edit', exact: true }).click();
-    // Secrets render as blank-to-keep placeholders — leave them untouched.
+    // Secrets render as blank-to-keep placeholders - leave them untouched.
     await expect(
       page.getByPlaceholder('•••••••• (leave blank to keep)').first(),
     ).toBeVisible();
@@ -141,7 +141,7 @@ test.describe('Integrations — Resource shell (live backend)', () => {
     await name.fill('Keep Test Renamed');
     await page.getByRole('button', { name: 'Save', exact: true }).click();
 
-    // Saves clean — NO "Required" on the untouched secret fields.
+    // Saves clean - NO "Required" on the untouched secret fields.
     await expect(page.getByText('Connection saved.')).toBeVisible();
     await expect(page.getByText('Required', { exact: true })).toHaveCount(0);
     await expect(
@@ -149,7 +149,7 @@ test.describe('Integrations — Resource shell (live backend)', () => {
     ).toBeVisible();
   });
 
-  test('second storage connection is refused — one per type (D7, 409)', async ({
+  test('second storage connection is refused - one per type (D7, 409)', async ({
     page,
     request,
   }) => {

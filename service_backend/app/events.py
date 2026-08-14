@@ -1,7 +1,7 @@
 """Minimal in-process event seam (sprint-2/01 §backend).
 
 ``emit("StatusTransitioned", payload)`` is fired by the status machine; the
-Workflow engine (BL-025) subscribes later. Synchronous + in-process by design —
+Workflow engine (BL-025) subscribes later. Synchronous + in-process by design -
 durability/async ride the payload's own primitives (e.g. the email outbox),
 not this seam. Subscriber errors are logged, never propagated: a broken
 listener must not abort the transition that already committed.
@@ -30,5 +30,5 @@ def emit(event: str, payload: Dict[str, Any]) -> None:
     for handler in list(_subscribers[event]):
         try:
             handler(payload)
-        except Exception:  # noqa: BLE001 — listeners never break the emitter
+        except Exception:  # noqa: BLE001 - listeners never break the emitter
             logger.exception("event subscriber failed for %s", event)

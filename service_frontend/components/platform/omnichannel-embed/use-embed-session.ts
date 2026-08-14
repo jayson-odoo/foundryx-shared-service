@@ -1,15 +1,15 @@
 'use client';
 
 /**
- * useEmbedSession — the omnichannel embed handshake (sprint-4/11 §4/§5).
+ * useEmbedSession - the omnichannel embed handshake (sprint-4/11 §4/§5).
  *
  * Lifecycle (contract §5): on mount the widget posts `ready`, then waits for an
  * `init { assertion, theme, colorScheme }` from the parent. It VALIDATES
- * `event.origin` against the assertion's `allowedOrigins` (decoded client-side —
+ * `event.origin` against the assertion's `allowedOrigins` (decoded client-side -
  * server verifies the signature), exchanges the assertion at `/embed/session`
  * for a short-lived access token held IN MEMORY (embedAuthStore), applies the
  * theme, and refreshes silently via `needToken`→`token` at ~80% of the token
- * lifetime. This is the shell's bootstrap — the only place a raw fetch to
+ * lifetime. This is the shell's bootstrap - the only place a raw fetch to
  * `/embed/session` lives (it can't go through apiFetch: it MINTS the token
  * apiFetch would attach).
  */
@@ -45,7 +45,7 @@ export interface UseEmbedSessionResult {
   status: EmbedStatus;
   error: string | null;
   session: EmbedSessionResponse | null;
-  /** Resolved from `scope` when `thread:<id>` — else null (inbox scope). */
+  /** Resolved from `scope` when `thread:<id>` - else null (inbox scope). */
   contactId: string | null;
   /** Post a coarse activity signal to the parent (no message content). */
   postActivity: (kind: ActivityKind, contactId: string | null) => void;
@@ -55,7 +55,7 @@ export interface UseEmbedSessionResult {
 
 /** Apply the theme + colorScheme to the embed document (BrandingProvider idiom).
  * The embed page IS its own iframe document, so `documentElement` is the embed
- * root — no host-app pollution; a bare `.dark` class here drives Tailwind's dark
+ * root - no host-app pollution; a bare `.dark` class here drives Tailwind's dark
  * variants for the whole widget subtree. */
 function applyTheme(theme: EmbedTheme | undefined, colorScheme: EmbedColorScheme | undefined): void {
   if (typeof document === 'undefined') return;
@@ -71,7 +71,7 @@ export function useEmbedSession(): UseEmbedSessionResult {
   const [error, setError] = useState<string | null>(null);
   const [session, setSession] = useState<EmbedSessionResponse | null>(null);
 
-  // The validated parent origin (captured from the first accepted `init`) —
+  // The validated parent origin (captured from the first accepted `init`) -
   // every subsequent post targets it, every later `theme`/`token` must match it.
   const parentOriginRef = useRef<string | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -149,7 +149,7 @@ export function useEmbedSession(): UseEmbedSessionResult {
         const payload = envelope.payload as InitPayload;
         if (!payload || typeof payload.assertion !== 'string') return;
         const claims = decodeAssertionClaims(payload.assertion);
-        // Reject silently when the origin is not in the assertion's allow-list —
+        // Reject silently when the origin is not in the assertion's allow-list -
         // NO session exchange, no `'*'` ever accepted (contract §5).
         if (!claims || !claims.allowedOrigins.includes(event.origin)) return;
         // First accepted init wins; ignore repeats once a parent is established.

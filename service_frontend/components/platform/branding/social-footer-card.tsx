@@ -40,7 +40,7 @@ export interface SocialFooterCardProps {
 }
 
 /**
- * Social profiles + email footer (plan sprint-2/07 D4) — set once, every
+ * Social profiles + email footer (plan sprint-2/07 D4) - set once, every
  * email template's Brand Footer / Social Links blocks render these at send
  * time (live-follow: a rebrand updates already-saved templates).
  */
@@ -107,7 +107,7 @@ export function SocialFooterCard({
 
         <p className="text-xs text-muted-foreground">
           Used by the Brand Footer and Social Links blocks in email templates. Emails update
-          automatically — no need to re-save templates.
+          automatically - no need to re-save templates.
         </p>
       </CardContent>
     </Card>

@@ -1,4 +1,4 @@
-"""Email delivery (plan 09 §5) — outbox-backed.
+"""Email delivery (plan 09 §5) - outbox-backed.
 
 `EmailService` renders the Jinja2 template and ENQUEUES an `email_outbox` row;
 the dispatcher (email_dispatcher.py) delivers it with per-connection rate
@@ -6,7 +6,7 @@ limiting, retry/backoff and tenant→platform fallback (BL-006 closed).
 
 Dev fallback preserved: when NO smtp connection resolves for the recipient's
 tenant (nor the platform default), the link is console-logged immediately and
-the row is marked sent — local dev + tests need zero mail infra.
+the row is marked sent - local dev + tests need zero mail infra.
 """
 import logging
 from datetime import datetime, timezone
@@ -28,7 +28,7 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# Legacy Jinja key → (engine template key, link-fact name) — plan 07 D7.
+# Legacy Jinja key → (engine template key, link-fact name) - plan 07 D7.
 _ENGINE_KEYS: Dict[str, tuple] = {
     "invite": ("auth.invite", "inviteLink"),
     "password_reset": ("auth.password_reset", "resetLink"),
@@ -50,7 +50,7 @@ class OutboxEmailService:
         template_key: str,
         context: Dict[str, Any],
     ):
-        """Engine render (plan 07 D7) — None if no template resolves
+        """Engine render (plan 07 D7) - None if no template resolves
         (fresh/unseeded DB falls back to the legacy Jinja file)."""
         mapping = _ENGINE_KEYS.get(template_key)
         if mapping is None:
@@ -102,9 +102,9 @@ class OutboxEmailService:
                 rule_objects={"recipient": recipient} if recipient else {},
             )
             return rendered.subject, rendered.html, rendered.text, engine_key
-        except Exception:  # noqa: BLE001 — a broken template must NEVER block auth mail
+        except Exception:  # noqa: BLE001 - a broken template must NEVER block auth mail
             logger.exception(
-                "engine render failed for %s — falling back to legacy template", template_key
+                "engine render failed for %s - falling back to legacy template", template_key
             )
             return None
 
@@ -133,7 +133,7 @@ class OutboxEmailService:
             next_attempt_at=_now(),
         )
         if connection is None:
-            # Dev fallback — identical DX to the old DevLog adapter.
+            # Dev fallback - identical DX to the old DevLog adapter.
             link = context.get("link", "")
             logger.info("[email:%s] to=%s link=%s", template_key, to_email, link)
             print(f"[email:{template_key}] to={to_email} link={link}")
@@ -143,7 +143,7 @@ class OutboxEmailService:
             row.status = OUTBOX_PENDING
 
         db.add(row)
-        # Commit here — enqueue is the terminal action of these flows and the
+        # Commit here - enqueue is the terminal action of these flows and the
         # invite-token repo has already committed by this point; a flush-only
         # row would silently roll back when the request session closes.
         db.commit()
@@ -161,7 +161,7 @@ class OutboxEmailService:
         commit: bool = True,
     ) -> EmailOutbox:
         """Enqueue an already-rendered email (status-engine notify-on-transition,
-        sprint-2/01 — inline merge-field templates render before this point;
+        sprint-2/01 - inline merge-field templates render before this point;
         the Template engine BL-024 swaps that renderer later). Same outbox
         semantics as ``_enqueue``; ``commit=False`` lets the caller own the
         transaction (the status machine commits transition + emails atomically).
@@ -204,7 +204,7 @@ class OutboxEmailService:
     def send_email_change_approve(
         self, db: Session, to_email: str, link: str, tenant_id: str, *, new_email_masked: str
     ) -> None:
-        """OLD-side approve mail — identifies the request without disclosing
+        """OLD-side approve mail - identifies the request without disclosing
         the full target address."""
         self._enqueue(
             db,
@@ -222,7 +222,7 @@ class OutboxEmailService:
     def send_email_change_notice(
         self, db: Session, to_email: str, tenant_id: str, *, old_email: str, new_email: str
     ) -> None:
-        """Plain notification (no link) — sent to the previous address on
+        """Plain notification (no link) - sent to the previous address on
         ceremony completion, and to BOTH addresses on an admin instant change."""
         self._enqueue(
             db,
@@ -233,7 +233,7 @@ class OutboxEmailService:
         )
 
     # ---- Profile Portal (EMS, sprint-4/06 slice 0a) ----
-    # Plain (non-engine) renders via enqueue_raw — the portal-auth contexts are
+    # Plain (non-engine) renders via enqueue_raw - the portal-auth contexts are
     # out of scope for 0a; full Template-engine adoption is a later slice.
 
     def send_profile_otp(self, db: Session, to_email: str, code: str, tenant_id: str) -> None:

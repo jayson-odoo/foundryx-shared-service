@@ -1,12 +1,12 @@
-"""Core AI subsystem (Phase B-i slice 1) — CORE, not a module (Bi-D2).
+"""Core AI subsystem (Phase B-i slice 1) - CORE, not a module (Bi-D2).
 
 The public surface every consumer uses:
 
-- `AiClient.complete(...)` — the one traced completion seam (plan §7). No caller
+- `AiClient.complete(...)` - the one traced completion seam (plan §7). No caller
   ever touches a vendor SDK or branches on provider.
-- `compose(body, variables)` — substitution-only prompt composition (AC-BI-08).
-- `TraceWriter` — OTel-GenAI-shaped trace/span writer with payload caps.
-- `stub_fixtures(...)` — script the deterministic stub adapter in a test.
+- `compose(body, variables)` - substitution-only prompt composition (AC-BI-08).
+- `TraceWriter` - OTel-GenAI-shaped trace/span writer with payload caps.
+- `stub_fixtures(...)` - script the deterministic stub adapter in a test.
 """
 from app.ai.client import AiClient, ResolvedConnection, any_llm_connection, resolve_for_agent
 from app.ai.grill import (

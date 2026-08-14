@@ -1,7 +1,7 @@
 import { SECTION_LAYOUT_COLUMNS, type TemplateBlock, type TemplateDocument } from '@/types/templates';
 
 /**
- * Client-side approximation renderer — MOCK-PHASE preview + test surface only.
+ * Client-side approximation renderer - MOCK-PHASE preview + test surface only.
  * The production renderer is the backend pipeline (JSON → MJML → mrml → merge,
  * plan 07 D9); Phase B swaps the preview service to `POST /templates/preview`
  * and this module remains only as the Vitest fixture renderer.
@@ -39,7 +39,7 @@ export function escapeHtml(value: string): string {
 }
 
 /**
- * Merge substitution — {{ dotted.path }} only (D5). Values HTML-escaped.
+ * Merge substitution - {{ dotted.path }} only (D5). Values HTML-escaped.
  * Missing facts: '' in send mode, loud token in preview mode.
  */
 export function renderMergeTokens(

@@ -1,4 +1,4 @@
-"""Reaction propagation — plan 12 Slice 3 (AC-12-20).
+"""Reaction propagation - plan 12 Slice 3 (AC-12-20).
 
 ONE place that fans a reaction change to (a) the workspace WS room so open
 inboxes update the emoji chip live and (b) the consumer webhook (opt-in). Both

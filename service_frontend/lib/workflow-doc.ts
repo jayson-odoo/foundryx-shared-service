@@ -1,5 +1,5 @@
 /**
- * Pure helpers over the workflow definition doc (plan sprint-2/08 D3) — the
+ * Pure helpers over the workflow definition doc (plan sprint-2/08 D3) - the
  * editor-agnostic graph contract. All functions are immutable (return a new
  * doc) so undo/redo can keep a history of snapshots, exactly like the email
  * editor's block-doc helpers.
@@ -58,7 +58,7 @@ export function hasTrigger(doc: WorkflowDefinition): boolean {
   return doc.nodes.some((n) => n.kind === 'trigger');
 }
 
-/** A node's display name — the user-set `config.name`, else the catalog label.
+/** A node's display name - the user-set `config.name`, else the catalog label.
  * Names disambiguate two same-type nodes (n8n behavior); refs stay id-based so
  * a rename never breaks an expression. */
 export function nodeDisplayName(node: WorkflowNode, fallbackLabel: string): string {
@@ -66,7 +66,7 @@ export function nodeDisplayName(node: WorkflowNode, fallbackLabel: string): stri
   return typeof name === 'string' && name.trim() ? name.trim() : fallbackLabel;
 }
 
-/** A default node name unique within the doc — appends " 2", " 3"… on clash so
+/** A default node name unique within the doc - appends " 2", " 3"… on clash so
  * every node is identifiable in the dynamic-content picker. */
 export function uniqueNodeName(doc: WorkflowDefinition, base: string): string {
   const used = new Set(
@@ -104,7 +104,7 @@ export function updateNodeConfig(
   };
 }
 
-/** Swap a node's catalog type in place (quick replace / change trigger) —
+/** Swap a node's catalog type in place (quick replace / change trigger) -
  * resets config to the new type's defaults but keeps the node id, position,
  * name and (same-kind) edges. */
 export function replaceNodeType(
@@ -173,7 +173,7 @@ export function addEdge(
   doc: WorkflowDefinition,
   edge: Omit<WorkflowEdge, 'id'>,
 ): WorkflowDefinition {
-  // One outgoing edge per (source, port) for the linear v1 — replace any
+  // One outgoing edge per (source, port) for the linear v1 - replace any
   // existing edge on the same port (n8n reconnect behavior).
   const port = edge.sourcePort ?? 'out';
   const kept = doc.edges.filter(
@@ -187,7 +187,7 @@ export function removeEdge(doc: WorkflowDefinition, edgeId: string): WorkflowDef
 }
 
 /** Topological order from the trigger; nodes unreachable from it trail at the
- * end (the publish validator flags those — D17). */
+ * end (the publish validator flags those - D17). */
 export function topoOrder(doc: WorkflowDefinition): WorkflowNode[] {
   const indegree = new Map<string, number>(doc.nodes.map((n) => [n.id, 0]));
   for (const e of doc.edges) indegree.set(e.target, (indegree.get(e.target) ?? 0) + 1);
@@ -221,7 +221,7 @@ export interface DefinitionIssue {
   nodeId?: string;
 }
 
-/** Mirror of the backend `validate_definition` (D17) — surfaced live in the
+/** Mirror of the backend `validate_definition` (D17) - surfaced live in the
  * editor so publish failures are visible before the click. */
 export function validateDefinition(doc: WorkflowDefinition): DefinitionIssue[] {
   const issues: DefinitionIssue[] = [];
@@ -234,7 +234,7 @@ export function validateDefinition(doc: WorkflowDefinition): DefinitionIssue[] {
     issues.push({ level: 'error', message: 'The trigger cannot have an incoming connection.', nodeId: trigger.id });
   }
 
-  // Unique node names — refs are id-based but a duplicate name is ambiguous in
+  // Unique node names - refs are id-based but a duplicate name is ambiguous in
   // the dynamic-content picker (user mandate: no replicated names).
   const nameCount = new Map<string, number>();
   for (const n of doc.nodes) {
@@ -246,13 +246,13 @@ export function validateDefinition(doc: WorkflowDefinition): DefinitionIssue[] {
     const nm = nodeDisplayName(n, catalogEntry(n.type)?.label ?? n.type);
     if ((nameCount.get(nm) ?? 0) > 1) {
       if (!flagged.has(nm)) {
-        issues.push({ level: 'error', message: `Two nodes are named "${nm}" — names must be unique.`, nodeId: n.id });
+        issues.push({ level: 'error', message: `Two nodes are named "${nm}" - names must be unique.`, nodeId: n.id });
         flagged.add(nm);
       }
     }
   }
 
-  // Reachability from the trigger (orphans block — D17).
+  // Reachability from the trigger (orphans block - D17).
   if (trigger) {
     const reachable = new Set<string>([trigger.id]);
     let grew = true;
@@ -278,7 +278,7 @@ export function validateDefinition(doc: WorkflowDefinition): DefinitionIssue[] {
     if (!entry) continue;
     for (const field of entry.fields) {
       if (field.showWhen && n.config[field.showWhen.field] !== field.showWhen.value) {
-        continue; // hidden field — don't require it
+        continue; // hidden field - don't require it
       }
       if (field.required) {
         const value = n.config[field.key];
@@ -293,7 +293,7 @@ export function validateDefinition(doc: WorkflowDefinition): DefinitionIssue[] {
       }
     }
     // Connection-resolvability warning (warn-not-block, D17) needs real
-    // connection data — added in Phase B.
+    // connection data - added in Phase B.
   }
 
   return issues;

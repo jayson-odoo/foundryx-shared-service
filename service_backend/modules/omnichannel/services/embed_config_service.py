@@ -1,22 +1,22 @@
-"""Embed-access configuration — plan 11H (tenant-level embed connection admin).
+"""Embed-access configuration - plan 11H (tenant-level embed connection admin).
 
 A shared-service tenant admin provisions + manages the ONE embed connection for
 their tenant (core ``connections`` row, provider ``omnichannel_shared``,
 ``UNIQUE(tenant_id, provider)``). The connection carries:
 
-- ``embedSecret`` — the HMAC secret the consumer signs assertions with. Stored
-  Fernet-encrypted in ``credentials_json``; **write-only** — never echoed over
+- ``embedSecret`` - the HMAC secret the consumer signs assertions with. Stored
+  Fernet-encrypted in ``credentials_json``; **write-only** - never echoed over
   the API, revealed exactly once at rotate.
-- ``allowedOrigins`` — the parent origins permitted to embed (plain
+- ``allowedOrigins`` - the parent origins permitted to embed (plain
   ``config_json``; drives ``frame-ancestors`` + the ``/embed/session`` origin
   check).
 
 Both are tenant-wide; the assertion's ``workspaceId`` picks the workspace at
-mint time — so this is ONE tenant-level screen, not per-workspace.
+mint time - so this is ONE tenant-level screen, not per-workspace.
 
 Layering: this service owns the business logic; the router is HTTP-only. All DB
 access goes through the CORE ``ConnectionRepository`` (never raw SQL) and the
-module's workspace query — every read/write is tenant-scoped from the JWT.
+module's workspace query - every read/write is tenant-scoped from the JWT.
 """
 import re
 import secrets as pysecrets
@@ -39,7 +39,7 @@ EMBED_CONNECTION_NAME = "Embed access"
 # 32 bytes of entropy → ~43-char url-safe secret. Ample for HS256.
 SECRET_ENTROPY_BYTES = 32
 
-# Exact hostname (or IPv4) — dot-separated labels of letters/digits/hyphen only.
+# Exact hostname (or IPv4) - dot-separated labels of letters/digits/hyphen only.
 # Rejects wildcards (`*.acme.com`) and other special characters.
 _HOSTNAME_RE = re.compile(
     r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,62})?(\.[a-z0-9]([a-z0-9-]{0,62})?)*$"
@@ -47,7 +47,7 @@ _HOSTNAME_RE = re.compile(
 
 
 class EmbedNotEnabled(Exception):
-    """The embed connection does not exist yet — enable it first (router → 409)."""
+    """The embed connection does not exist yet - enable it first (router → 409)."""
 
 
 class InvalidOrigin(Exception):
@@ -61,7 +61,7 @@ class InvalidOrigin(Exception):
 def _validate_origin(raw: str) -> str:
     """Return the normalized origin, or raise ``InvalidOrigin``.
 
-    A valid origin is a bare ``scheme://host[:port]`` — NO path, trailing slash,
+    A valid origin is a bare ``scheme://host[:port]`` - NO path, trailing slash,
     query, fragment, or credentials. ``https://`` is required for real hosts;
     ``http://`` is allowed ONLY for ``localhost`` / ``127.0.0.1`` (dev)."""
     value = (raw or "").strip()
@@ -87,12 +87,12 @@ def _validate_origin(raw: str) -> str:
     host = (parts.hostname or "").lower()
     if not host:
         raise InvalidOrigin(f"'{value}' is missing a host.")
-    # Exact hostnames only — no wildcards / other special chars. A '*' is a legal
+    # Exact hostnames only - no wildcards / other special chars. A '*' is a legal
     # urlsplit host code point and would otherwise pass and (if fed to a CSP
     # frame-ancestors) silently broaden who may embed. Labels: letters/digits/hyphen.
     if not _HOSTNAME_RE.match(host):
         raise InvalidOrigin(
-            f"'{value}' has an invalid host — wildcards and special characters "
+            f"'{value}' has an invalid host - wildcards and special characters "
             "are not allowed (e.g. https://crm.acme.com)."
         )
     try:
@@ -107,7 +107,7 @@ def _validate_origin(raw: str) -> str:
         )
 
     # Drop the scheme's default port so the stored value matches a browser Origin
-    # header (which omits :443/:80) — keeps the origins-editor dirty flag honest.
+    # header (which omits :443/:80) - keeps the origins-editor dirty flag honest.
     default_port = 443 if parts.scheme == "https" else 80
     netloc = host if port is None or port == default_port else f"{host}:{port}"
     return f"{parts.scheme}://{netloc}"
@@ -169,7 +169,7 @@ class EmbedConfigService:
 
     # ── writes ───────────────────────────────────────────────────────────────
     def enable(self, tenant_id: str) -> Dict:
-        """Create the embed connection if absent (idempotent). No secret yet —
+        """Create the embed connection if absent (idempotent). No secret yet -
         the admin rotates one in as a separate, explicit step."""
         conn = self.connections.get_by_provider(tenant_id, EMBED_PROVIDER)
         if conn is None:
@@ -189,7 +189,7 @@ class EmbedConfigService:
     def rotate_secret(self, tenant_id: str) -> Dict:
         """Generate a strong secret, store it Fernet-encrypted, and return the
         PLAINTEXT exactly once. Rotation invalidates every outstanding assertion
-        (they fail signature against the new secret) — automatic, no ledger."""
+        (they fail signature against the new secret) - automatic, no ledger."""
         conn = self.connections.get_by_provider(tenant_id, EMBED_PROVIDER)
         if conn is None:
             raise EmbedNotEnabled()
@@ -199,7 +199,7 @@ class EmbedConfigService:
         return {"embedSecret": secret}
 
     def set_origins(self, tenant_id: str, origins: List[str]) -> Dict:
-        """Validate + dedupe + persist the allowed parent origins. Merge-safe —
+        """Validate + dedupe + persist the allowed parent origins. Merge-safe -
         other ``config_json`` keys are preserved."""
         conn = self.connections.get_by_provider(tenant_id, EMBED_PROVIDER)
         if conn is None:

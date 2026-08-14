@@ -1,4 +1,4 @@
-"""ideation baseline (sprint-3/10 D3) — adopt per-module Alembic.
+"""ideation baseline (sprint-3/10 D3) - adopt per-module Alembic.
 
 Captures the current ``app_ideation`` schema as rev 1. Existing DBs (tables
 already built by the legacy ``create_all``) are STAMPED to this rev (no DDL);
@@ -6,7 +6,7 @@ fresh DBs run ``upgrade`` which builds the schema + tables here. Future ideation
 schema changes get their own revisions chaining from this one.
 
 Postgres-only DDL; a no-op on the SQLite test engine (per-module Alembic runs
-only on Postgres — see ``app/module_platform/migrations.run_module_migrations``).
+only on Postgres - see ``app/module_platform/migrations.run_module_migrations``).
 
 Revision ID: 0001_ideation_baseline
 Revises:

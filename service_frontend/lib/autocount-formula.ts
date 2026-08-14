@@ -1,8 +1,8 @@
 /**
- * Safe transform-formula engine (slice 16) — client mirror of the authoritative
+ * Safe transform-formula engine (slice 16) - client mirror of the authoritative
  * backend `modules/autocount/formula.py`.
  *
- *   !!  NO eval / Function / new Function / template engine — a hand-written
+ *   !!  NO eval / Function / new Function / template engine - a hand-written
  *       tokenizer + recursive-descent parser + evaluator ONLY.  !!
  *
  * An operator authors a transform as an EXPRESSION over a single input `value`
@@ -27,7 +27,7 @@
  *
  * Fail closed: a parse fault (unknown name/function, bad arity, syntax) throws
  * `FormulaParseError` (the save gate); an evaluate fault (`number("abc")`,
- * div-by-zero, a type mismatch) throws `FormulaRuntimeError` — never a silent
+ * div-by-zero, a type mismatch) throws `FormulaRuntimeError` - never a silent
  * value.
  */
 
@@ -536,7 +536,7 @@ class Parser {
       this.advance();
       if (this.peek().kind !== '(') {
         throw new FormulaParseError(
-          `Unknown name '${name}' — expected the variable 'value', a literal, or a function call.`,
+          `Unknown name '${name}' - expected the variable 'value', a literal, or a function call.`,
         );
       }
       if (!(name in FUNCTION_BY_NAME)) {
@@ -582,7 +582,7 @@ function checkArity(name: string, count: number): void {
     let need: string;
     if (fn.maxArgs === null) need = `at least ${fn.minArgs}`;
     else if (fn.minArgs === fn.maxArgs) need = `exactly ${fn.minArgs}`;
-    else need = `${fn.minArgs}–${fn.maxArgs}`;
+    else need = `${fn.minArgs}-${fn.maxArgs}`;
     throw new FormulaParseError(`${name}() takes ${need} argument(s), got ${count}.`);
   }
 }
@@ -677,7 +677,7 @@ function toBool(v: FormulaValue): boolean {
 
 function roundTo(x: number, digits: number): number {
   if (!Number.isInteger(digits) || digits < 0 || digits > 12) {
-    throw new FormulaRuntimeError('round() digits must be a whole number 0–12.');
+    throw new FormulaRuntimeError('round() digits must be a whole number 0-12.');
   }
   const factor = 10 ** digits;
   const sign = x >= 0 ? 1 : -1;

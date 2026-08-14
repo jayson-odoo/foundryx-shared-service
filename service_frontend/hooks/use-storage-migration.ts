@@ -51,7 +51,7 @@ export interface UseStorageMigrationResult {
  * `fields()`-driven RHF form + schema helpers (no reinvention) for the config
  * step; the Test step is non-destructive and MUST pass before Start; the
  * confirm step is a typed-confirm on the target bucket name. Any config edit
- * invalidates a prior passing test (foolproof-UI — can't launch stale).
+ * invalidates a prior passing test (foolproof-UI - can't launch stale).
  */
 export function useStorageMigration(active: boolean): UseStorageMigrationResult {
   const [step, setStep] = useState<MigrationStep>('configure');

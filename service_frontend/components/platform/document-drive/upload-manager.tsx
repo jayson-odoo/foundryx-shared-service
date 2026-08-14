@@ -24,10 +24,10 @@ interface EnqueueOptions {
 
 interface UploadManagerValue {
   items: UploadFileItem[];
-  /** In-flight (queued/uploading/conflict) count — for the badge. */
+  /** In-flight (queued/uploading/conflict) count - for the badge. */
   activeCount: number;
   open: boolean;
-  /** Bumps whenever an upload completes successfully — Drive watches to reload. */
+  /** Bumps whenever an upload completes successfully - Drive watches to reload. */
   completedVersion: number;
   setOpen: (open: boolean) => void;
   enqueue: (files: File[], options: EnqueueOptions) => void;
@@ -46,7 +46,7 @@ export function UploadManagerProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<UploadFileItem[]>([]);
   const [open, setOpen] = useState(false);
   const [completedVersion, setCompletedVersion] = useState(0);
-  // File objects can't live in state — keep them in a ref keyed by item id.
+  // File objects can't live in state - keep them in a ref keyed by item id.
   const filesRef = useRef<Map<string, File>>(new Map());
   const optsRef = useRef<Map<string, EnqueueOptions>>(new Map());
 
@@ -90,7 +90,7 @@ export function UploadManagerProvider({ children }: { children: ReactNode }) {
       const newItems: UploadFileItem[] = files.map((file) => {
         const id = newId();
         filesRef.current.set(id, file);
-        // Defensive copy — a caller that reuses/mutates the same options object
+        // Defensive copy - a caller that reuses/mutates the same options object
         // across drops must not retarget already-queued uploads' folder/type.
         optsRef.current.set(id, { ...options });
         return {

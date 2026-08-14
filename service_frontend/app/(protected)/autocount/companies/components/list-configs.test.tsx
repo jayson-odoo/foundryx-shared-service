@@ -67,7 +67,7 @@ describe('companies list config', () => {
     expect(push).toHaveBeenCalledWith('/autocount/companies/new');
   });
 
-  it('has no Active|Trashed views — companies are not soft-trashed', () => {
+  it('has no Active|Trashed views - companies are not soft-trashed', () => {
     const { result } = renderHook(() => useAutocountCompaniesListConfig());
     expect(result.current.enableStatusViews).toBe(false);
   });

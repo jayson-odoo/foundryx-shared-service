@@ -1,10 +1,10 @@
 'use client';
 
 /**
- * Whole-mapping simulator (AC-16-30/31) — a mock AutoCount record in → the whole
+ * Whole-mapping simulator (AC-16-30/31) - a mock AutoCount record in → the whole
  * Sorento record out, run through the REAL MappingEngine on the server. It sends
  * the CURRENT (possibly unsaved) editor rows so the operator previews their DRAFT
- * before a sync stages a broken batch. It writes NOTHING — a pure transform
+ * before a sync stages a broken batch. It writes NOTHING - a pure transform
  * preview, distinct from the slice-14 Sorento dry-run (which asks Sorento what a
  * push would do). Failing fields are shown with their per-field error, never
  * silently omitted.
@@ -38,7 +38,7 @@ import type {
 export interface MappingSimulatorProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** The CURRENT draft deliverable rows — sent so unsaved edits preview. */
+  /** The CURRENT draft deliverable rows - sent so unsaved edits preview. */
   rows: AutocountMappingWriteRow[];
   /** Run the whole mapping over the mock record (writes nothing). */
   onSimulate: (
@@ -59,7 +59,7 @@ function buildSkeleton(rows: AutocountMappingWriteRow[]): string {
 }
 
 function renderValue(value: unknown): string {
-  if (value === null || value === undefined) return '—';
+  if (value === null || value === undefined) return '-';
   if (typeof value === 'string') return value === '' ? '""' : value;
   return String(value);
 }
@@ -156,7 +156,7 @@ export function MappingSimulator({
 
         <DialogBody className="flex flex-col gap-4">
           <p className="text-xs text-muted-foreground">
-            Transforms a mock record through the current mapping and writes nothing —
+            Transforms a mock record through the current mapping and writes nothing -
             a preview of what a real sync would produce, not a Sorento push.
           </p>
 

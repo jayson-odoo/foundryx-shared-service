@@ -1,4 +1,4 @@
-"""F2 slice 2 — fixed-canvas (badge) tests: validate_canvas_doc matrix, the
+"""F2 slice 2 - fixed-canvas (badge) tests: validate_canvas_doc matrix, the
 compile_canvas HTML intermediate (never byte-golden a PDF), QR generation,
 render smoke (valid PDF, N sides = N pages), the batch seam, and the API
 preview/create surface.
@@ -89,7 +89,7 @@ class TestValidateCanvas:
     def test_token_image_src_allowed(self):
         img = {"id": "i1", "type": "image", "x": 0, "y": 0, "w": 10, "h": 10,
                "rotation": 0, "src": "{{logoUrl}}", "fit": "contain"}
-        # {{token}} src is a merge placeholder — scheme-checked post-merge, never
+        # {{token}} src is a merge placeholder - scheme-checked post-merge, never
         # at save; only the unknown-field check applies.
         _doc, problems = validate_canvas_doc(_canvas_doc([img]), fact_sources=(), scalar_facts=("logoUrl",))
         assert problems == []

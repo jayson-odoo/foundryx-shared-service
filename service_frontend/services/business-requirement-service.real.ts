@@ -1,5 +1,5 @@
 /**
- * Real Business Requirement service — talks to FastAPI shared-service via the
+ * Real Business Requirement service - talks to FastAPI shared-service via the
  * shared api-client (Phase B-i slice 2). Endpoint map:
  * - list        → GET    /ideation/business-requirements?filter=&productId=&search=
  * - get         → GET    /ideation/business-requirements/{id}

@@ -1,11 +1,11 @@
 """Workspace API-key issuance + resolution (plan sprint-1/01 Slice 3).
 
 Security invariants:
-- The plaintext key is generated, returned ONCE, and never persisted — only a
+- The plaintext key is generated, returned ONCE, and never persisted - only a
   SHA-256 hash + an 8-char lookup prefix are stored.
 - Verification is constant-time (`hmac.compare_digest`) over the hash, guarded
   by an indexed prefix lookup so it stays O(1).
-- Resolution derives (tenant, workspace) FROM the key — never from client input.
+- Resolution derives (tenant, workspace) FROM the key - never from client input.
 """
 import hashlib
 import hmac
@@ -97,7 +97,7 @@ class ApiKeyService:
     # ── Resolution (public-gateway auth) ─────────────────────────────────────
     def resolve(self, presented_key: str) -> Optional[WorkspaceApiKey]:
         """Look up an active key by prefix + constant-time hash compare, stamp
-        ``last_used_at``. Returns None for any miss (unknown/revoked/malformed) —
+        ``last_used_at``. Returns None for any miss (unknown/revoked/malformed) -
         the caller maps a uniform 401 with no enumeration."""
         if not presented_key or not presented_key.startswith(KEY_SCHEME):
             return None

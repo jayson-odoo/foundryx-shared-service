@@ -21,7 +21,7 @@ import type {
 import { AC_STAGED_STATUS_REGISTRY, entityLabel } from '../../../components/autocount-meta';
 import { useStagedListConfig } from './use-staged-list-config';
 
-/** A staged record's detail body — its per-field diff, or its mapping errors
+/** A staged record's detail body - its per-field diff, or its mapping errors
  * when it failed. Shown in the row's detail drawer, not inline per row. */
 export function StagedRecordBody({ record }: { record: AutocountStagedRecord }) {
   if (record.status === 'FAILED') {
@@ -50,7 +50,7 @@ export function StagedRecordBody({ record }: { record: AutocountStagedRecord }) 
 
 export interface StagedRecordsListProps {
   jobId: string;
-  /** No-field-change record count in the batch — the collapsed line (AC-15-11). */
+  /** No-field-change record count in the batch - the collapsed line (AC-15-11). */
   noChangeCount: number;
 }
 

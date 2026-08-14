@@ -1,15 +1,15 @@
-"""Deterministic stub LLM adapter (AC-BI-12) — mirrors omnichannel's `_is_dev`.
+"""Deterministic stub LLM adapter (AC-BI-12) - mirrors omnichannel's `_is_dev`.
 
 `is_dev(connection)` is true when there is **no active LLM connection at all**
 or when the resolved connection carries `dev` credentials. Under it, pytest,
 Vitest and Playwright run with zero API key, zero cost and zero network.
 
 **Only the provider HTTP call is faked.** The grill engine, coverage tracking,
-`form_engine` validation, status transitions and RBAC all execute for real — the
+`form_engine` validation, status transitions and RBAC all execute for real - the
 stub substitutes for `LLMProvider.complete`/`models` and nothing else.
 
-**Fixture-driven.** A spec declares exactly what the "model" returns — including
-an invalid extraction or one missing a required field — so the retry path, the
+**Fixture-driven.** A spec declares exactly what the "model" returns - including
+an invalid extraction or one missing a required field - so the retry path, the
 partial-emit path and the never-auto-promote guard are all deterministically
 testable:
 
@@ -89,7 +89,7 @@ def is_dev(credentials: Optional[Dict[str, Any]], *, has_connection: bool) -> bo
 
 
 def _derive(system: str, messages: List[Dict[str, str]]) -> str:
-    """A stable, readable pseudo-reply — same input always yields the same
+    """A stable, readable pseudo-reply - same input always yields the same
     output, so snapshots and E2E assertions never flake."""
     last_user = next(
         (m["content"] for m in reversed(messages) if m.get("role") == "user"), ""
@@ -105,7 +105,7 @@ def _derive_structured(output_schema: Dict[str, Any], seed: str) -> Dict[str, An
     """A schema-shaped object filled with deterministic placeholder strings.
 
     Only STRING properties are populated; anything else is left out, which is a
-    valid partial emit — the stub must never fabricate a shape the real models
+    valid partial emit - the stub must never fabricate a shape the real models
     wouldn't (Bi-D13: partial emit is success, invention is not).
     """
     properties = output_schema.get("properties")
@@ -124,7 +124,7 @@ class StubLLMProvider:
     provider = STUB_PROVIDER
     type = "llm"
     title = "Stub (development)"
-    description = "Deterministic offline responses — no API key, no cost, no network."
+    description = "Deterministic offline responses - no API key, no cost, no network."
     icon = "flask-conical"
     test_label = "Verify key"
     test_target = None
@@ -135,9 +135,9 @@ class StubLLMProvider:
     def test(
         self, config: Dict[str, Any], credentials: Dict[str, Any], target: Optional[str] = None
     ):
-        from app.integrations.base import TestResult  # noqa: PLC0415 — avoid a cycle
+        from app.integrations.base import TestResult  # noqa: PLC0415 - avoid a cycle
 
-        return TestResult(ok=True, message="Stub adapter — no provider contacted.")
+        return TestResult(ok=True, message="Stub adapter - no provider contacted.")
 
     def models(self, config: Dict[str, Any], credentials: Dict[str, Any]) -> List[ModelOption]:
         return [ModelOption(id=STUB_MODEL, label="Stub model", created=0)]

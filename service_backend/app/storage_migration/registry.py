@@ -3,22 +3,22 @@
 Every place a ``conn:<connection_id>:<raw>`` storage key is persisted registers
 here, so a storage migration finds + rewrites ALL of them automatically:
 
-- **Scalar** ``StorageKeyLoc(model, column, tenant_column)`` — a ``*_key``
+- **Scalar** ``StorageKeyLoc(model, column, tenant_column)`` - a ``*_key``
   column. Enumerate = ``SELECT DISTINCT col WHERE col LIKE 'conn:<id>:%'``;
   rewrite = ``SET col = replace(col,'conn:<A>:','conn:<B>:') WHERE col LIKE
-  'conn:<A>:%'`` (value-checked — a row already re-pointed to B is skipped).
+  'conn:<A>:%'`` (value-checked - a row already re-pointed to B is skipped).
 - **JSON** ``StorageKeyLoc(model, json_column, tenant_column, walk=…,
-  rewrite_json=…)`` — keys embedded in a JSON document (form answers, template
+  rewrite_json=…)`` - keys embedded in a JSON document (form answers, template
   block-docs, workflow definitions). Defaults to a GENERIC recursive walker /
   rewriter that finds every ``conn:``-string anywhere in the doc. The rewrite
   **reassigns a FRESH dict** (``json.loads(json.dumps(...))``) so SQLAlchemy
-  tracks the change — an in-place mutation of the same dict object is silently
+  tracks the change - an in-place mutation of the same dict object is silently
   dropped (the documented JSON-tracking gotcha, form-engine §Slice-2).
 
 **Enumeration is connection-scoped, not tenant-scoped** (grill Q9/Q10): a
 value-checked ``conn:<id>:`` filter naturally isolates a tenant-own connection's
 keys to that tenant's rows, while the platform connection's keys span every
-fallback tenant — one rule serves both, no tenant_column needed at run time
+fallback tenant - one rule serves both, no tenant_column needed at run time
 (it's stored for documentation / future use).
 """
 from dataclasses import dataclass
@@ -99,7 +99,7 @@ _LOCATIONS: Dict[Tuple[str, str], StorageKeyLoc] = {}
 
 
 def register_storage_key_location(loc: StorageKeyLoc) -> None:
-    """Register a location. Idempotent — re-registration (module boot) overwrites
+    """Register a location. Idempotent - re-registration (module boot) overwrites
     the same (table, column) signature."""
     if not loc.is_json and not loc.column:
         raise ValueError("StorageKeyLoc needs either `column` (scalar) or `json_column`.")
@@ -111,7 +111,7 @@ def list_locations() -> List[StorageKeyLoc]:
 
 
 def registered_scalar_columns() -> Set[Tuple[str, str]]:
-    """(table_name, column_name) for every registered SCALAR location — the set
+    """(table_name, column_name) for every registered SCALAR location - the set
     the drift test checks ``all_key_columns()`` against."""
     return {loc.signature for loc in _LOCATIONS.values() if not loc.is_json}
 
@@ -124,7 +124,7 @@ def _reset_locations_for_tests() -> None:
 
 
 def _json_candidate_rows(db: Session, loc: StorageKeyLoc, connection_id: str) -> List[Any]:
-    """Rows whose serialized JSON contains ``conn:<id>:`` (a cheap prefilter —
+    """Rows whose serialized JSON contains ``conn:<id>:`` (a cheap prefilter -
     the in-Python walk then confirms the exact keys)."""
     col = getattr(loc.model, loc.json_column)
     return (
@@ -161,7 +161,7 @@ def rewrite_keys(
 ) -> int:
     """Rewrite ``conn:<from_id>:`` → ``conn:<to_id>:`` across ALL registered
     locations, value-checked (``LIKE 'conn:<from>:%'``). When ``only_keys`` is
-    given, only those exact keys are rewritten (the successfully-copied set —
+    given, only those exact keys are rewritten (the successfully-copied set -
     Slice-2 D5). Returns the number of affected columns/rows."""
     from_prefix = _prefix(from_id)
     to_prefix = _prefix(to_id)
@@ -174,7 +174,7 @@ def rewrite_keys(
                 doc = getattr(row, loc.json_column)
                 new_doc = loc.rewrite_json(doc, from_prefix, to_prefix, only_set)
                 if new_doc != doc:
-                    # Reassign a FRESH dict — an in-place mutation of the same
+                    # Reassign a FRESH dict - an in-place mutation of the same
                     # object is not tracked by SQLAlchemy on a plain JSON column.
                     import json
 
@@ -183,7 +183,7 @@ def rewrite_keys(
         else:
             col = getattr(loc.model, loc.column)
             if only_set is not None:
-                # Chunk the IN-clause — a large copied set can exceed DB bind-
+                # Chunk the IN-clause - a large copied set can exceed DB bind-
                 # param limits (SQLite ~999, Postgres ~65535).
                 for batch in _chunked(only_set, 500):
                     count += (
@@ -223,7 +223,7 @@ def _chunked(items: Set[str], size: int) -> Iterator[List[str]]:
 # Storage-key columns store ``conn:<id>:`` blobs and MUST have a registration.
 # Predicate: any column whose name ends with ``_key`` EXCEPT this explicit
 # exclude-set (documented so the drift gate is meaningful, not noisy). A NEW
-# ``*_key`` column forces a decision — register it or add it here with a reason.
+# ``*_key`` column forces a decision - register it or add it here with a reason.
 _NON_STORAGE_KEY_COLUMNS = frozenset(
     {
         "template_key",  # template-engine template key (email_outbox, notification_specs)
@@ -234,10 +234,10 @@ _NON_STORAGE_KEY_COLUMNS = frozenset(
         "score_field_key",  # review score-field reference
         # AI subsystem (Phase B-i S1). Both are LOGICAL identifiers with no blob
         # behind them, so there is nothing for a bucket migration to move:
-        "skill_key",  # ai_traces — the skill's registry key, denormalised for display
-        "grill_definition_key",  # ai_conversations — GrillDefinition registry key
+        "skill_key",  # ai_traces - the skill's registry key, denormalised for display
+        "grill_definition_key",  # ai_conversations - GrillDefinition registry key
         # NOTE: `media_sample_key` (WhatsApp draft media-header sample) IS a
-        # storage key — registered by omnichannel at install (Slice 3), so it is
+        # storage key - registered by omnichannel at install (Slice 3), so it is
         # deliberately NOT excluded here; the drift test now enforces it.
     }
 )

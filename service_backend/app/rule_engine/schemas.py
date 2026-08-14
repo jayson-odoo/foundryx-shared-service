@@ -1,4 +1,4 @@
-"""Rule-tree validation (sprint-2/02 D11) — save-time gate. Consumers call
+"""Rule-tree validation (sprint-2/02 D11) - save-time gate. Consumers call
 ``validate_tree(tree, sources)`` before persisting a condition tree into
 their JSON column; a non-empty problem list = 422. Runtime stays fail-closed
 (D5) for trees that go stale AFTER save.
@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from app.rule_engine.evaluator import _MAX_DEPTH, CROSS_FACT_OPERATORS
 from app.rule_engine.registry import FactDef, fact_map
 
-# Operators offered per fact type (D3 — mirror of the frontend table).
+# Operators offered per fact type (D3 - mirror of the frontend table).
 OPERATORS_BY_TYPE: Dict[str, List[str]] = {
     "string": ["eq", "neq", "contains", "in", "not_in"],
     "number": ["eq", "neq", "gt", "gte", "lt", "lte", "between"],
@@ -25,7 +25,7 @@ _NO_VALUE_OPERATORS = {"is_true", "is_false"}
 def validate_tree(
     tree: Optional[Dict[str, Any]], sources: Sequence[str]
 ) -> List[str]:
-    """Problems with the tree against the registered facts — empty = valid.
+    """Problems with the tree against the registered facts - empty = valid.
     ``None`` trees are the consumer's "unconditional" case; don't call."""
     facts = fact_map(sources)
     problems: List[str] = []
@@ -40,14 +40,14 @@ def _validate_group(
 ) -> None:
     if depth > _MAX_DEPTH:
         problems.append(
-            f"Maximum nesting depth of {_MAX_DEPTH} exceeded — flatten the tree."
+            f"Maximum nesting depth of {_MAX_DEPTH} exceeded - flatten the tree."
         )
         return
     if node.get("combinator") not in ("and", "or"):
         problems.append("Each group needs an and/or combinator.")
     rules = node.get("rules")
     if not isinstance(rules, list) or not rules:
-        problems.append("Empty group — add a condition or remove the group.")
+        problems.append("Empty group - add a condition or remove the group.")
         return
     for rule in rules:
         if not isinstance(rule, dict):
@@ -66,7 +66,7 @@ def _validate_condition(
     key = node.get("fact")
     fact = facts.get(key)
     if fact is None:
-        problems.append(f"Unknown field '{key}' — it may have been removed.")
+        problems.append(f"Unknown field '{key}' - it may have been removed.")
         return
 
     operator = node.get("operator")
@@ -98,7 +98,7 @@ def _validate_condition(
         return
     if operator == "between":
         # Blank/garbage bounds would save clean but fail closed forever at
-        # runtime — the edge becomes silently unfireable (code-review fix).
+        # runtime - the edge becomes silently unfireable (code-review fix).
         if (
             not isinstance(value, list)
             or len(value) != 2

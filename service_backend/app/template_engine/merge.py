@@ -1,8 +1,8 @@
-"""Merge-field micro-renderer (plan 07 D5) — ``{{ dotted.path }}`` ONLY.
+"""Merge-field micro-renderer (plan 07 D5) - ``{{ dotted.path }}`` ONLY.
 
 Substitution, nothing else: no expressions, no filters, no loops, no
 partials. Tenant-authored template content NEVER reaches Jinja2 (SSTI → RCE);
-this module is the entire templating language. Logic lives structurally —
+this module is the entire templating language. Logic lives structurally -
 block-level visibility via the rule engine, not string-spliced conditionals.
 
 ONE renderer system-wide: the status engine's inline notification templates
@@ -14,7 +14,7 @@ import re
 from typing import Dict, Set
 from urllib.parse import urlparse
 
-# Dotted identifier between double braces — same grammar as the frontend
+# Dotted identifier between double braces - same grammar as the frontend
 # merge-field-editor (lib/template-doc.ts collectMergeTokens).
 TOKEN_RE = re.compile(r"\{\{\s*([\w.]+)\s*\}\}")
 
@@ -47,7 +47,7 @@ def render_url(value: str, facts: Dict[str, str], *, mode: str = "send") -> str:
     """Merge + validate an href (D5): only http(s)/mailto survive.
 
     A merge fact or literal resolving to ``javascript:`` (or any other
-    scheme) collapses to '#' — link targets are recipient-facing.
+    scheme) collapses to '#' - link targets are recipient-facing.
     """
     merged = render_tokens(value, facts, mode=mode, escape=False)
     if not merged:

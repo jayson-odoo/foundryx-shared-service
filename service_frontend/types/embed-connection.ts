@@ -4,7 +4,7 @@
  * Mirrors the backend `app_ideation.embed_connections` admin contract
  * (`modules/ideation/routers/embed_admin.py`). One row per host application
  * (e.g. sorento) authorised to embed a tenant's Ideas workspace. The
- * `signingSecret` is WRITE-ONLY — accepted on create/rotate, never returned by
+ * `signingSecret` is WRITE-ONLY - accepted on create/rotate, never returned by
  * any read (the item only reports `hasSecret`). The admin holds the plaintext it
  * supplied and reveals it once client-side, then pastes it into the host's embed
  * config. Kept framework-agnostic so the service + UI share one source.

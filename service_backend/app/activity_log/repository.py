@@ -1,4 +1,4 @@
-"""Integration-activity repository (sprint-4/12) — pure SQLAlchemy, tenant-scoped.
+"""Integration-activity repository (sprint-4/12) - pure SQLAlchemy, tenant-scoped.
 
 Every query filters by ``tenant_id`` (the tenant comes from the authenticated
 context, never client input). The read side backs the Developers → Logs console;

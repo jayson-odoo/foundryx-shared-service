@@ -1,7 +1,7 @@
 """AutoCount session-auth HTTP client (AC-13-03 / AC-13-04 / AC-13-04a).
 
     !!  EVERY RULE HERE WAS VERIFIED AGAINST THE LIVE DEMO INSTANCE (2026-07-21). !!
-    !!  The vendor Postman collection is stale and partly WRONG — where the two   !!
+    !!  The vendor Postman collection is stale and partly WRONG - where the two   !!
     !!  disagree, this file is right and the collection is not.                   !!
 
 Four things about this API are counter-intuitive enough to cost a diagnostic
@@ -12,12 +12,12 @@ cycle each, so they are stated up front:
    The collection stores the GUID in ``{{token}}``; it is rejected by every
    endpoint with a misleading ``HTTP 500 "Stream was not readable."`` that looks
    exactly like a broken server. Send the JWT as a BARE ``Authorization:
-   <JWTToken>`` header — **no ``Bearer`` prefix, not ``X-API-Key``.**
+   <JWTToken>`` header - **no ``Bearer`` prefix, not ``X-API-Key``.**
 
 2. **Success is ``Status == "Success"``.** NOT the HTTP status code (business
    failures come back ``HTTP 200``) and NOT the presence of ``ResultTable``
    (which is present-but-EMPTY on failure). Testing for ``ResultTable`` reads a
-   failure as an empty-but-successful fetch — silent wrong data.
+   failure as an empty-but-successful fetch - silent wrong data.
 
 3. **There is no 401.** An invalid or expired token returns the same
    ``HTTP 500 "Stream was not readable."`` as any other relay fault, so expiry is
@@ -25,13 +25,13 @@ cycle each, so they are stated up front:
    (primary) plus exactly ONE re-login-and-retry on that specific error
    (backstop). Slice-1 calls are reads, so the retry is safe.
 
-4. **A malformed filter is SILENTLY IGNORED** — verified: ``{"DocNo":"not-an-array"}``
+4. **A malformed filter is SILENTLY IGNORED** - verified: ``{"DocNo":"not-an-array"}``
    returns the ENTIRE table with ``Status:"Success"``. A bad filter degrades to a
    full table scan indistinguishable from a successful delta. Hence
    ``validate_read_filter`` before send and ``assert_window`` after (AC-13-04a).
 
 Company is DISCOVERED, never configured: login returns ``DatabaseName`` and
-``CompanyName``. There is no company parameter anywhere — the server resolves it
+``CompanyName``. There is no company parameter anywhere - the server resolves it
 from the ``AppId`` header, so **AppId IS the company selector** (D16).
 """
 import logging
@@ -57,7 +57,7 @@ from .payloads import bound_payload, mark_truncated
 logger = logging.getLogger(__name__)
 
 # The relay's catch-all fault string. It is what an invalid/expired token
-# produces, and ALSO what several unrelated faults produce — it is not a
+# produces, and ALSO what several unrelated faults produce - it is not a
 # reliable expiry signal, only a "worth one re-login" signal.
 STREAM_NOT_READABLE = "stream was not readable"
 
@@ -92,12 +92,12 @@ class AutoCountError(Exception):
 
 
 class AutoCountAuthError(AutoCountError):
-    """Login was rejected — bad UserID/Password, or a bad AppId."""
+    """Login was rejected - bad UserID/Password, or a bad AppId."""
 
 
 class AutoCountAppError(AutoCountError):
     """App-level failure: ``HTTP 200`` + ``{"Status":"Fail","Message":…}``.
-    ``Message`` is the vendor's own business explanation — surface it verbatim."""
+    ``Message`` is the vendor's own business explanation - surface it verbatim."""
 
 
 class AutoCountRelayError(AutoCountError):
@@ -107,24 +107,24 @@ class AutoCountRelayError(AutoCountError):
 
     def __init__(self, message: str, *, detail: Optional[str] = None, raw_message: str = ""):
         super().__init__(message, detail=detail)
-        # The .NET exception's own Message — used to recognise the
+        # The .NET exception's own Message - used to recognise the
         # "Stream was not readable." case that warrants a re-login retry.
         self.raw_message = raw_message
 
 
 class AutoCountTransportError(AutoCountError):
-    """The host could not be reached at all — DNS, refused, TLS, or timeout.
+    """The host could not be reached at all - DNS, refused, TLS, or timeout.
     Distinct from an auth rejection (AC-13-04)."""
 
 
 class AutoCountFilterError(AutoCountError):
     """A read filter that AutoCount would silently ignore (AC-13-04a). Raised
-    BEFORE the request leaves us — never let a full table scan masquerade as a
+    BEFORE the request leaves us - never let a full table scan masquerade as a
     delta."""
 
 
 class AutoCountWindowError(AutoCountError):
-    """The returned set is inconsistent with the requested window — evidence the
+    """The returned set is inconsistent with the requested window - evidence the
     filter was ignored server-side. Fails loudly (AC-13-04a)."""
 
 
@@ -182,7 +182,7 @@ class Session:
 
 
 def _safe(value: Any) -> str:
-    """A string safe to log/surface — secrets masked, length-capped."""
+    """A string safe to log/surface - secrets masked, length-capped."""
     return str(mask_payload(value))[:2000]
 
 
@@ -221,7 +221,7 @@ def parse_last_modified(value: Any) -> Optional[datetime]:
     """Parse a vendor ``LastModified`` into an aware-UTC datetime.
 
     Three formats occur in responses (plan hazard table). Returns None when the
-    value is absent or unparseable — the CALLER decides whether that is fatal
+    value is absent or unparseable - the CALLER decides whether that is fatal
     (``assert_window`` treats it as fatal, since an unverifiable record cannot be
     confirmed inside the requested window)."""
     if not isinstance(value, str) or not value.strip():
@@ -258,14 +258,14 @@ def assert_window(
     because the vendor filter is date-only (``FILTER_DATE_FORMAT``): asking for
     ``LastModifiedTo=2026/07/21`` legitimately returns a record stamped
     ``2026/07/21 16:37:34``. Comparing against the caller's exact instant would
-    reject correct data — a false alarm on the very first real sync. The
+    reject correct data - a false alarm on the very first real sync. The
     comparison must model what the SERVER was actually asked, not what the caller
     had in mind.
 
     ``path`` overrides ``field_name`` for entities that do not carry the stamp at
     the top level: a MASTER record nests its real DB row under ``Data[0]``, so
     the stamp lives at ``Data.0.LastModified``. Reading the top level there finds
-    nothing and would raise "no parseable LastModified" on EVERY row — turning a
+    nothing and would raise "no parseable LastModified" on EVERY row - turning a
     perfectly good master fetch into a hard failure.
     """
     lookup = path or field_name
@@ -281,12 +281,12 @@ def assert_window(
         if stamp is None:
             raise AutoCountWindowError(
                 f"A returned record has no parseable '{lookup}' "
-                f"({_safe(raw)}) — the requested window cannot be verified."
+                f"({_safe(raw)}) - the requested window cannot be verified."
             )
         if stamp < start or stamp > end:
             raise AutoCountWindowError(
                 f"AutoCount returned a record modified {stamp.isoformat()}, outside "
-                f"the requested window {start.isoformat()}..{end.isoformat()} — the "
+                f"the requested window {start.isoformat()}..{end.isoformat()} - the "
                 f"filter was ignored and this is a full table scan, not a delta."
             )
 
@@ -295,7 +295,7 @@ class AutoCountClient:
     """One client per (connection, company). Holds a session; re-logs in on age
     or on the one ambiguous relay error that means "probably expired".
 
-    ``transport`` is the httpx client seam — tests inject a mock; nothing here
+    ``transport`` is the httpx client seam - tests inject a mock; nothing here
     ever touches a live instance under test.
     """
 
@@ -317,13 +317,13 @@ class AutoCountClient:
         self._password = password
         self.timeout_seconds = timeout_seconds
         self.token_max_age_seconds = token_max_age_seconds
-        # Customer endpoints may be plain HTTP or self-signed (plan §11) — the
+        # Customer endpoints may be plain HTTP or self-signed (plan §11) - the
         # policy is EXPLICIT per connection, never silently downgraded.
         self.verify_tls = verify_tls
         self._transport = transport
         self.session: Optional[Session] = None
         # Observability buffer (plan §11). The client has no DB session and no
-        # tenant, so it cannot WRITE an activity row itself — it records what
+        # tenant, so it cannot WRITE an activity row itself - it records what
         # happened and the caller drains it at a transaction boundary
         # (``activity.record_client_calls``). That split is deliberate:
         # ``ActivityLogService.record`` COMMITS the session it is given, so
@@ -357,7 +357,7 @@ class AutoCountClient:
         """Take and clear the buffered call records.
 
         Draining (rather than reading) means a caller that logs twice cannot
-        write the same interaction twice — the log's own idempotency.
+        write the same interaction twice - the log's own idempotency.
         """
         drained = list(self._calls)
         self._calls.clear()
@@ -376,7 +376,7 @@ class AutoCountClient:
     ) -> None:
         """Buffer ONE masked, bounded record of a call. Never raises.
 
-        Called on BOTH the success and the transport-failure path — a failed
+        Called on BOTH the success and the transport-failure path - a failed
         call is precisely the one a diagnostician needs, and it used to be the
         one that logged nothing at all.
         """
@@ -393,13 +393,13 @@ class AutoCountClient:
 
             ok = status_code is not None and 200 <= status_code < 300
             if ok:
-                # Success is the ENVELOPE's rule, not the HTTP code — a business
+                # Success is the ENVELOPE's rule, not the HTTP code - a business
                 # failure arrives as HTTP 200 (rule 2).
                 #
                 #   !!  THE SAME ``verdict`` DECIDES WHETHER ``_unwrap`` RAISES.  !!
                 #
                 # These were two separate rules once, and they disagreed on one
-                # reachable input (a 200 body with no ``Status`` key — the
+                # reachable input (a 200 body with no ``Status`` key - the
                 # vendor's own error envelope, which carries only ``Message``):
                 # the call raised and the log badged the leg GREEN. The run
                 # failed, the operator opened the exact leg the failure pointed
@@ -411,7 +411,7 @@ class AutoCountClient:
                     ok = False
                     error = error or verdict.message
 
-            # MASK first, BOUND second — so nothing a preview keeps can be a
+            # MASK first, BOUND second - so nothing a preview keeps can be a
             # secret, and the Authorization header (a JWT that decodes to the
             # password, BL-131) is redacted before it is ever stored.
             request_payload, request_truncated = bound_payload(
@@ -444,7 +444,7 @@ class AutoCountClient:
                     error_message=(str(mask_payload(error))[:1000] if error else None),
                 )
             )
-        except Exception:  # noqa: BLE001 — observability NEVER breaks a call
+        except Exception:  # noqa: BLE001 - observability NEVER breaks a call
             logger.exception("failed to buffer an AutoCount call record for %s", path)
 
     def _post(
@@ -512,7 +512,7 @@ class AutoCountClient:
     def _raise_relay(cls, response: httpx.Response) -> None:
         """Relay-level failure: HTTP 500 + a .NET exception object.
 
-        The .NET ``StackTraceString`` NEVER reaches an operator (AC-13-04) — it
+        The .NET ``StackTraceString`` NEVER reaches an operator (AC-13-04) - it
         goes to ``detail`` for the log only.
 
             !!  ``detail`` IS INTENDED TO BE LOGGED, SO IT IS MASKED.  !!
@@ -523,7 +523,7 @@ class AutoCountClient:
         path out of here goes through ``_safe`` (``mask_payload`` + length cap),
         exactly like the other seven ``detail=`` sites in this file.
 
-        Where the body PARSES, it is masked STRUCTURALLY first — that redacts a
+        Where the body PARSES, it is masked STRUCTURALLY first - that redacts a
         ``Password``/``AppId`` key anywhere in the .NET object graph, which
         masking the composed string could not do. Residual limitation, stated
         rather than hidden: a credential embedded in free-form trace TEXT
@@ -537,7 +537,7 @@ class AutoCountClient:
         except ValueError:
             body = None
         if isinstance(body, dict):
-            # Mask the object graph FIRST, then compose out of the masked copy —
+            # Mask the object graph FIRST, then compose out of the masked copy -
             # so a ``Password``/``AppId`` key nested anywhere in the .NET
             # exception is already redacted by the time it reaches a string, in
             # the OPERATOR-facing ``friendly``/``raw_message`` as well as in
@@ -561,7 +561,7 @@ class AutoCountClient:
     ) -> Any:
         """HTTP response → the successful body, or the right exception.
 
-        Success is the ENVELOPE's ``verdict`` — NEVER the HTTP code, NEVER the
+        Success is the ENVELOPE's ``verdict`` - NEVER the HTTP code, NEVER the
         presence of ``ResultTable`` (present-but-empty on failure). That same
         verdict badges the call in the activity log (see ``_record_call``), so
         the two can no longer disagree.
@@ -582,7 +582,7 @@ class AutoCountClient:
     # ── auth ───────────────────────────────────────────────────────────────
 
     def login(self) -> Session:
-        """``POST /api/Server/Login`` — the ONE auth step (there is no
+        """``POST /api/Server/Login`` - the ONE auth step (there is no
         ``/api/Auth/Login`` and no AppSecret).
 
         The response is a BARE JSON ARRAY; the session lives at ``[0]``.
@@ -590,7 +590,7 @@ class AutoCountClient:
         response = self._post(
             "/api/Server/Login",
             headers={"AppId": self.app_id, "Content-Type": "application/json"},
-            # Password is in the body — never log this dict unmasked.
+            # Password is in the body - never log this dict unmasked.
             json_body={"UserID": self._user_id, "Password": self._password},
             # Login has its OWN shape, so it has its own envelope: under the GRN
             # rule a SUCCESSFUL login (a bare array, no ``Status``) would badge
@@ -624,7 +624,7 @@ class AutoCountClient:
             # otherwise sail through and then 500 on every subsequent call.
             raise AutoCountAuthError(
                 "AutoCount's sign-in response carried no JWTToken. The 'Token' GUID "
-                "is NOT usable as a credential — every endpoint rejects it.",
+                "is NOT usable as a credential - every endpoint rejects it.",
                 detail=_safe({k: v for k, v in entry.items() if k != "JWTToken"}),
             )
 
@@ -647,7 +647,7 @@ class AutoCountClient:
             return self.login()
         if self.session.is_stale(self.token_max_age_seconds):
             logger.debug(
-                "AutoCount token exceeded max age (%.0fs) — re-logging in.",
+                "AutoCount token exceeded max age (%.0fs) - re-logging in.",
                 self.token_max_age_seconds,
             )
             return self.login()
@@ -678,7 +678,7 @@ class AutoCountClient:
         """One authenticated POST, with EXACTLY ONE re-login-and-retry on the
         ambiguous ``"Stream was not readable."`` relay error.
 
-        The retry counter is PER CALL (a local), never shared state — a session
+        The retry counter is PER CALL (a local), never shared state - a session
         making many calls must not exhaust one global retry budget, and one bad
         call must never loop.
         """
@@ -700,7 +700,7 @@ class AutoCountClient:
                 # no 401). One re-login + retry; reads are idempotent so it is
                 # safe. If it fails again the error propagates untouched.
                 logger.info(
-                    "AutoCount returned the ambiguous relay error on %s — "
+                    "AutoCount returned the ambiguous relay error on %s - "
                     "re-logging in and retrying once.",
                     path,
                 )
@@ -717,7 +717,7 @@ class AutoCountClient:
         envelope: ResponseEnvelope = STATUS_DICT,
         last_modified_path: str = "LastModified",
     ) -> Unwrapped:
-        """``POST /api/{Entity}/Get{Entity}`` — the uniform read.
+        """``POST /api/{Entity}/Get{Entity}`` - the uniform read.
 
         Validates the filter BEFORE sending (a malformed one is silently ignored
         and returns the whole table) and, when a window is given, asserts every
@@ -725,8 +725,8 @@ class AutoCountClient:
 
             !!  ONE SIGNATURE, N ENVELOPES (AC-14-03 / D1).  !!
 
-        The vendor returns two different OUTER shapes — GRN a dict carrying
-        ``Status``, masters a bare ARRAY whose rows carry their own — and neither
+        The vendor returns two different OUTER shapes - GRN a dict carrying
+        ``Status``, masters a bare ARRAY whose rows carry their own - and neither
         is derivable from the other. The strategy is chosen per entity from
         ``ac_entity_config.envelope`` and passed in; there is deliberately NO
         branch here. Adding a third envelope is a class plus a registry line:
@@ -760,7 +760,7 @@ def build_read_filter(
 ) -> Dict[str, Any]:
     """Build a well-formed read filter (the shape ``validate_read_filter`` accepts).
 
-    Callers should prefer this over hand-building a dict — the identifier keys
+    Callers should prefer this over hand-building a dict - the identifier keys
     MUST be lists, and that is precisely the mistake AutoCount does not report.
 
     ``identifier_key`` is the entity's natural identifier: ``DocNo`` for
@@ -768,7 +768,7 @@ def build_read_filter(
     live for ``DocNo`` in slice 1); it is sent rather than omitted so the shape
     matches what the wrapper expects per entity.
 
-    ``last_modified_from=None`` sends **no lower bound at all** — that is the
+    ``last_modified_from=None`` sends **no lower bound at all** - that is the
     unbounded initial master load (AC-14-25), not an oversight. A master list is
     a standing set whose purpose is to mirror current state, so any lookback
     window imports a fraction of it and reports success.

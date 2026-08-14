@@ -31,13 +31,13 @@ export interface ConfigurationTabProps {
 
 /** Read-only synced value with a monospace option + ClampedText for long text. */
 function SyncedValue({ value, mono }: { value: string | null | undefined; mono?: boolean }) {
-  if (!value) return <span className="text-muted-foreground">—</span>;
+  if (!value) return <span className="text-muted-foreground">-</span>;
   if (mono) return <span className="font-mono text-xs">{value}</span>;
   return <ClampedText text={value} lines={1} />;
 }
 
 /**
- * Configuration tab — merges the old General + Connection tabs. Editable: name,
+ * Configuration tab - merges the old General + Connection tabs. Editable: name,
  * workspace (link), active. Read-only synced (Meta-owned) identity block with a
  * "last synced" caption, plus Sync + Test Connection actions.
  */
@@ -103,12 +103,12 @@ export function ConfigurationTab({ form, editing, channel, onChannelSynced }: Co
               )}
             />
           ) : (
-            (channel?.name ?? '—')
+            (channel?.name ?? '-')
           )}
         </FormRow>
 
         <FormRow label="Channel type">
-          {channel ? CHANNEL_TYPE_LABELS[channel.channelType] : '—'}
+          {channel ? CHANNEL_TYPE_LABELS[channel.channelType] : '-'}
         </FormRow>
 
         <FormRow label="Workspace">
@@ -120,7 +120,7 @@ export function ConfigurationTab({ form, editing, channel, onChannelSynced }: Co
               {channel.workspaceName}
             </Link>
           ) : (
-            '—'
+            '-'
           )}
         </FormRow>
 
@@ -146,7 +146,7 @@ export function ConfigurationTab({ form, editing, channel, onChannelSynced }: Co
           )}
         </FormRow>
 
-        <FormRow label="Connected">{channel ? formatDate(channel.createdAt) : '—'}</FormRow>
+        <FormRow label="Connected">{channel ? formatDate(channel.createdAt) : '-'}</FormRow>
 
         {/* ── Meta-owned identity (synced, read-only even in Edit) ── */}
         <FormRow label="Display number">

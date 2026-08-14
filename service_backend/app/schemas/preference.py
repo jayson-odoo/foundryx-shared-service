@@ -15,7 +15,7 @@ class ViewPreferenceData(BaseModel):
 
 
 class ProfilePreferences(ApiModel):
-    """PATCH /me/preferences — user-level display preferences. `timezone` is
+    """PATCH /me/preferences - user-level display preferences. `timezone` is
     an IANA name (validated against the host tz database); null clears it
     (= render in the browser tz)."""
 

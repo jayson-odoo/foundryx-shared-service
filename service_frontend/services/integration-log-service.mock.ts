@@ -1,5 +1,5 @@
 /**
- * PHASE 1 MOCK — in-memory integration-log service (sprint-4/12).
+ * PHASE 1 MOCK - in-memory integration-log service (sprint-4/12).
  *
  * Used to build + tune the Developers → Logs console (loading / error / empty /
  * success states) BEFORE the real backend existed. The shipped boundary

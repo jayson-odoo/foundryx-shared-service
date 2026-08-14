@@ -9,7 +9,7 @@ A WhatsApp template send may fill variables in THREE places, not just the body:
 ``analyze_template`` reads the stored Meta-shape ``components_json`` and reports
 exactly which inputs a send needs (a ``TemplateShape``); ``validate_template_params``
 turns a count mismatch into a human message (the composer surfaces it as a 422);
-``build_send_components`` assembles the Meta ``components`` array. Pure functions —
+``build_send_components`` assembles the Meta ``components`` array. Pure functions -
 no DB/HTTP. The media-header id is injected at send time by ``send_runner`` (the
 media rides the SAME upload-by-id pipeline as every other outbound media).
 """
@@ -24,7 +24,7 @@ _MEDIA_PARAM_KINDS = {"IMAGE": "image", "VIDEO": "video", "DOCUMENT": "document"
 
 
 class TemplateParamError(ValueError):
-    """A template-parameter count/media mismatch — carries a human message."""
+    """A template-parameter count/media mismatch - carries a human message."""
 
 
 @dataclass
@@ -35,7 +35,7 @@ class TemplateShape:
     header_text_var_count: int = 0  # distinct {{n}} in a TEXT header (else 0)
     body_var_count: int = 0  # distinct {{n}} in the body
     button_url_var_count: int = 0  # dynamic URL buttons (one {{1}} var each)
-    # 0-based indices (in button order) of the dynamic URL buttons — used to
+    # 0-based indices (in button order) of the dynamic URL buttons - used to
     # build the per-button Meta parameters.
     button_url_indices: List[int] = field(default_factory=list)
 
@@ -88,7 +88,7 @@ def validate_template_params(
     mismatch. Messages are human ("This template's header needs 1 variable; …")."""
     if shape.has_media_header and not has_header_media:
         raise TemplateParamError(
-            "This template has a media header — attach an image, video or document."
+            "This template has a media header - attach an image, video or document."
         )
     if shape.header_format == "TEXT" and len(header_text_vars) != shape.header_text_var_count:
         raise TemplateParamError(
@@ -117,7 +117,7 @@ def build_send_components(
 ) -> List[Dict[str, Any]]:
     """Assemble the Meta ``components`` array for a template send. Empty
     components are omitted. For a media header the parameter carries
-    ``{"id": header_media_id}`` (``None`` at build time — ``send_runner`` injects
+    ``{"id": header_media_id}`` (``None`` at build time - ``send_runner`` injects
     the uploaded id before the send)."""
     shape = analyze_template(components)
     out: List[Dict[str, Any]] = []
@@ -142,7 +142,7 @@ def build_send_components(
             {"type": "body", "parameters": [{"type": "text", "text": v} for v in body_vars]}
         )
 
-    # URL buttons with a dynamic {{1}} suffix — one component each.
+    # URL buttons with a dynamic {{1}} suffix - one component each.
     for var, idx in zip(button_vars, shape.button_url_indices):
         out.append(
             {
@@ -158,7 +158,7 @@ def build_send_components(
 
 def inject_header_media_id(template: Dict[str, Any], media_id: str) -> Dict[str, Any]:
     """Set the uploaded media id on the HEADER media parameter of a built
-    template payload (in place) — used by ``send_runner`` after upload-by-id."""
+    template payload (in place) - used by ``send_runner`` after upload-by-id."""
     for comp in template.get("components") or []:
         if (comp.get("type") or "").lower() != "header":
             continue

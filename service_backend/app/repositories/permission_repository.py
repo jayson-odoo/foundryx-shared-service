@@ -1,8 +1,8 @@
-"""Permission repository — catalog reads + idempotent module sync.
+"""Permission repository - catalog reads + idempotent module sync.
 
 The catalog is global (no tenant scope). `sync` is the App-Store mechanism:
 upsert the rows a module declares (keyed by `key`) and delete that module's rows
-no longer declared — so install/update/uninstall stay clean (plan 03 §4).
+no longer declared - so install/update/uninstall stay clean (plan 03 §4).
 """
 from typing import Iterable, List
 

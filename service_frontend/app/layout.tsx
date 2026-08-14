@@ -15,7 +15,7 @@ import { Toaster } from '@/components/ui/sonner';
 import '@/css/styles.css';
 import '@/components/keenicons/assets/styles.css';
 
-// Inter = body/UI font; Poppins = FoundryX display font (headings, brand). Both exposed as CSS vars.
+// Inter = body/UI font; Poppins = Foundryx display font (headings, brand). Both exposed as CSS vars.
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
 const poppins = Poppins({
   subsets: ['latin'],
@@ -25,7 +25,7 @@ const poppins = Poppins({
 
 /**
  * Tab title + favicon by request host (sprint-2/03 Phase B). Branded tenant =
- * its name + icon; everything else = FoundryX defaults. BrandingProvider keeps
+ * its name + icon; everything else = Foundryx defaults. BrandingProvider keeps
  * these fresh client-side after in-session edits.
  */
 export async function generateMetadata(): Promise<Metadata> {
@@ -42,8 +42,8 @@ export async function generateMetadata(): Promise<Metadata> {
   }
   return {
     title: {
-      template: '%s | FoundryX',
-      default: 'FoundryX', // a default is required when creating a template
+      template: '%s | Foundryx',
+      default: 'Foundryx', // a default is required when creating a template
     },
   };
 }
@@ -54,7 +54,7 @@ export default async function RootLayout({
   children: ReactNode;
 }) {
   // First-paint theming (plan 03): the backend-generated override stylesheet
-  // loads before any content renders — no flash of FoundryX orange on branded
+  // loads before any content renders - no flash of Foundryx orange on branded
   // tenants. First in <body>: a body stylesheet blocks rendering of the
   // content AFTER it and cascades after the bundled foundryx-tokens.css, so
   // tenant values win ties. Unbranded/unreachable = harmless empty CSS.

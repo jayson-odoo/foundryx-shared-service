@@ -1,6 +1,6 @@
 """WABA configuration + WhatsApp Business Profile logic (plan 06 Slice A).
 
-Meta is system-of-record; FoundryX mirrors locally and syncs on demand. Editable
+Meta is system-of-record; Foundryx mirrors locally and syncs on demand. Editable
 profile fields are write-through: POST to Meta first, refresh the local mirror
 only on success (SEC-5 write-through atomicity). Tenant-scoped throughout.
 """
@@ -21,7 +21,7 @@ from ..security import decrypt_credentials
 from ..verticals import WHATSAPP_VERTICAL_SET
 from .channel_service import ChannelNotFound, ChannelService
 
-# Lightweight shapes — Meta does the authoritative validation; we reject the
+# Lightweight shapes - Meta does the authoritative validation; we reject the
 # obvious garbage before spending a Graph call.
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
@@ -93,7 +93,7 @@ class ChannelProfileService:
 
     # ---- profile ----
     def get_profile(self, channel_id: str, tenant_id: str = DEFAULT_TENANT_ID) -> ChannelProfileOut:
-        """Render the mirrored profile from the DB — no Meta call (instant)."""
+        """Render the mirrored profile from the DB - no Meta call (instant)."""
         return self._profile_out(self._channel(channel_id, tenant_id))
 
     def sync_profile(self, channel_id: str, tenant_id: str = DEFAULT_TENANT_ID) -> ChannelProfileOut:
@@ -155,7 +155,7 @@ class ChannelProfileService:
             return self._profile_out(c)
 
         # ── Meta write-through: build the Graph payload (websites → list) ──
-        # A cleared field (v is None) must be sent as "" so Graph CLEARS it —
+        # A cleared field (v is None) must be sent as "" so Graph CLEARS it -
         # omitting it would leave Meta's old value while we null it locally,
         # diverging the mirror (SEC-5). Websites are handled as a list below.
         meta_fields: dict = {}
@@ -173,7 +173,7 @@ class ChannelProfileService:
                 self._credentials(c), c.phone_number_id or "", meta_fields
             )
         except SendError as exc:
-            # Meta rejected — leave the local mirror untouched (SEC-5), surface
+            # Meta rejected - leave the local mirror untouched (SEC-5), surface
             # the reason as a recoverable 502 (GP-5).
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
 

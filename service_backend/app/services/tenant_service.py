@@ -2,7 +2,7 @@
 
 Owns the rules: slug validation/reservation, the platform-tenant guard, and
 provisioning (tenant + seeded roles + first admin user in ONE transaction).
-Lifecycle moves go through the STATUS MACHINE (sprint-2/01) — a transition is
+Lifecycle moves go through the STATUS MACHINE (sprint-2/01) - a transition is
 only possible along a defined edge of the tenant entity's graph; behavior
 binds to status trait flags, never to a category enum.
 Routers translate outcomes to HTTP; the repository does the SQL.
@@ -96,7 +96,7 @@ class TenantService:
     def __init__(self, db: Session):
         self.db = db
         self.repo = TenantRepository(db)
-        # Lifecycle status rows — loaded lazily; read-only paths (list/get/
+        # Lifecycle status rows - loaded lazily; read-only paths (list/get/
         # export) never need them, so they shouldn't pay the query.
         self._status_by_key: Optional[Dict[str, Status]] = None
 
@@ -110,12 +110,12 @@ class TenantService:
             }
         if key not in self._status_by_key:
             raise TenantServiceError(
-                f"Tenant lifecycle status '{key}' is not seeded — run bootstrap."
+                f"Tenant lifecycle status '{key}' is not seeded - run bootstrap."
             )
         return self._status_by_key[key]
 
     def _initial_status(self) -> Status:
-        """Where new tenants start — the set's is_default flag (D2), with the
+        """Where new tenants start - the set's is_default flag (D2), with the
         seeded "active" key as a defensive fallback."""
         row = (
             self.db.query(Status)
@@ -188,7 +188,7 @@ class TenantService:
         slug = slug.strip().lower()
         if not is_valid_tenant_slug(slug):
             raise SlugInvalid(
-                "Slug must be lowercase letters/numbers with single hyphens (3–63 chars)."
+                "Slug must be lowercase letters/numbers with single hyphens (3-63 chars)."
             )
         if slug in RESERVED_TENANT_SLUGS:
             raise SlugInvalid(f'"{slug}" is a reserved slug.')
@@ -210,7 +210,7 @@ class TenantService:
         admin_email: str,
         admin_password: str,
     ) -> Tenant:
-        """Create tenant + seeded system roles + first admin — ONE transaction.
+        """Create tenant + seeded system roles + first admin - ONE transaction.
 
         Any failure rolls back the whole provision (no half-provisioned
         tenants). Self-signup (BL-032) calls this same path later.
@@ -243,7 +243,7 @@ class TenantService:
             self.db.add(admin)
             self.db.flush()
 
-            # Tenant is platform-owned — operator workflows watching tenant
+            # Tenant is platform-owned - operator workflows watching tenant
             # creation live in the platform tenant (slice 09).
             from app.models.tenant import PLATFORM_TENANT_ID
             from app.workflow_engine.entity_events import emit_entity_event
@@ -295,7 +295,7 @@ class TenantService:
         return tenant
 
     def _transition_to(self, tenant: Tenant, to_status: Status, actor: Optional[User]) -> Tenant:
-        """One path for every lifecycle move — the strict edge graph (D4)."""
+        """One path for every lifecycle move - the strict edge graph (D4)."""
         try:
             status_machine.transition(
                 self.db, TENANT_ENTITY, tenant, to_status.id, actor=actor
@@ -343,7 +343,7 @@ class TenantService:
     def available_transition_ids(
         self, tenants: List[Tenant], actor: Optional[User]
     ) -> Optional[Dict[str, List[str]]]:
-        """Per-record fireable edge ids for list/detail rows (sprint-2/02 D6 —
+        """Per-record fireable edge ids for list/detail rows (sprint-2/02 D6 -
         rule-blocked actions hide per record). Thin wrapper over the GENERIC
         engine helper (code-review fix: batched, reusable by every adopting
         entity); only the platform-tenant exclusion is tenant-specific."""
@@ -361,11 +361,11 @@ class TenantService:
         """Hard-delete an ARCHIVED tenant + every row it owns (BL-035).
 
         Two-step safety: archive first (reversible since sprint-2/02), then
-        purge (irreversible, typed-slug confirm — module-uninstall UX).
+        purge (irreversible, typed-slug confirm - module-uninstall UX).
         Installed modules' ``uninstall_tenant`` hooks wipe their app_* schema
         rows (the certification contract); core rows cascade here. Future
         business data ("transactions") should add its own guard the same way
-        modules do — refuse in the hook, the purge aborts atomically.
+        modules do - refuse in the hook, the purge aborts atomically.
         """
         tenant = self.get(tenant_id)
         if tenant.is_platform:
@@ -374,7 +374,7 @@ class TenantService:
             raise PurgeConfirmMismatch()
         if not (tenant.status and tenant.status.is_archived):
             raise TenantNotArchived(
-                "Only archived tenants can be deleted — archive it first."
+                "Only archived tenants can be deleted - archive it first."
             )
 
         from app.models.impersonation import ImpersonationSession
@@ -394,7 +394,7 @@ class TenantService:
 
         db = self.db
 
-        # Modules first — their hooks own the app_* schema rows. ONE teardown
+        # Modules first - their hooks own the app_* schema rows. ONE teardown
         # definition lives in the store service (code-review fix).
         AppStoreService(db).remove_all_tenant_modules(tenant_id)
 

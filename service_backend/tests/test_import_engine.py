@@ -1,4 +1,4 @@
-"""Import engine tests (sprint-3/09, F8) — validates AC-09-*.
+"""Import engine tests (sprint-3/09, F8) - validates AC-09-*.
 
 Adapter sniff · header detection · coercion + cell errors · 3 modes + id-only
 matching · in-file dup · map-collision degrade · all-or-nothing commit ·
@@ -201,7 +201,7 @@ def test_existing_email_caught_at_validate_not_commit(client):
         e["column"] == "email" and "already exists" in e["message"].lower()
         for e in job["errors"]
     )
-    # commit imports only the fresh row — no DB crash.
+    # commit imports only the fresh row - no DB crash.
     client.post(f"/imports/{job_id}/commit", headers=h)
     assert client.get(f"/imports/{job_id}", headers=h).json()["status"] == STATUS_DONE
 
@@ -269,7 +269,7 @@ def test_template_download_has_dropdown(client):
 
 
 def test_drift_guard_columns_subset_of_writable():
-    """AC-09-15 — import cols ⊆ the entity's workflow writable whitelist (+ the
+    """AC-09-15 - import cols ⊆ the entity's workflow writable whitelist (+ the
     natural keys email/id which are import-specific identity columns)."""
     from app.workflow_engine.entities import get_workflow_entity
 
@@ -292,7 +292,7 @@ def test_imports_read_all_scopes_history(client, session_factory):
 
 
 def test_commit_is_set_based_not_per_row(client, session_factory):
-    """AC-09-10 — commit DML must not scale per row (one bulk insert, not N)."""
+    """AC-09-10 - commit DML must not scale per row (one bulk insert, not N)."""
     from sqlalchemy import event
 
     h = _admin(client)
@@ -320,7 +320,7 @@ def test_commit_is_set_based_not_per_row(client, session_factory):
 
 
 def test_trigger_automations_fires_events(client):
-    """AC-09-18 — trigger_automations ON dispatches per-row entity.created to the
+    """AC-09-18 - trigger_automations ON dispatches per-row entity.created to the
     event bus (so workflows fire); OFF dispatches nothing."""
     from app.workflow_engine.entity_events import (
         register_event_subscriber,
@@ -351,7 +351,7 @@ def test_trigger_automations_fires_events(client):
 
 
 def test_update_emits_field_changes(client):
-    """D13 — an import UPDATE emits entity.updated WITH a field-level `changes`
+    """D13 - an import UPDATE emits entity.updated WITH a field-level `changes`
     diff (so entity.field_changed / updated workflows fire)."""
     from app.workflow_engine.entity_events import (
         register_event_subscriber,
@@ -377,7 +377,7 @@ def test_update_emits_field_changes(client):
 
 
 def test_import_settings_get_set(client):
-    """D11 — per-tenant caps: default until set, then override + fall-back to default."""
+    """D11 - per-tenant caps: default until set, then override + fall-back to default."""
     h = _admin(client)
     res = client.get("/imports/settings", headers=h)
     assert res.status_code == 200

@@ -1,10 +1,10 @@
 """Integration endpoints (plan 09 §6; Resource-list contract since plan 06 D6)
-— tenant-scoped, RBAC-gated.
+- tenant-scoped, RBAC-gated.
 
 Credentials are write-only: requests may carry them, responses never do.
 
 Cluster F slice 3 (sprint-4/07) adds the PUBLIC payment-webhook receiver
-``POST /integrations/webhooks/{provider}/{connection_id}`` — unauthenticated,
+``POST /integrations/webhooks/{provider}/{connection_id}`` - unauthenticated,
 tenant resolved from the connection id, fast-ACK + Celery.
 """
 import base64
@@ -80,7 +80,7 @@ def list_connections(
     return ConnectionListResponse(data=rows, total=total, page=page)
 
 
-# Literal routes BEFORE /connections/{connection_id} — route order matters.
+# Literal routes BEFORE /connections/{connection_id} - route order matters.
 @router.get("/connections/at", response_model=ConnectionNeighborResponse)
 def connection_at(
     user: User = Depends(require_permission("integrations.read")),
@@ -219,7 +219,7 @@ async def receive_payment_webhook(
         try:
             return PaymentGatewayService(db).ingest_webhook(provider, connection_id, body, headers)
         except RetryableWebhook:
-            # No worker to retry in eager mode — surface 202 so the gateway
+            # No worker to retry in eager mode - surface 202 so the gateway
             # re-delivers later (idempotent ingest makes the re-delivery safe).
             return {"status": "retry"}
 

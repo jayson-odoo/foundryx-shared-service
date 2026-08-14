@@ -1,6 +1,6 @@
 """Background-jobs + storage-migration endpoints (sprint-4/10 Slice 2).
 
-Thin HTTP/Pydantic layer only — all logic lives in ``JobService`` /
+Thin HTTP/Pydantic layer only - all logic lives in ``JobService`` /
 ``StorageMigrationService`` (no DB access here). ``GET /jobs`` + ``GET
 /jobs/{id}`` are readable by any authenticated tenant user (the generic Jobs
 drawer); the storage-migration controls (start / abort / retry / complete) are
@@ -53,7 +53,7 @@ def test_storage_migration_bucket(
     user: User = Depends(require_permission(_MIGRATE_PERM)),
     db: Session = Depends(get_db),
 ) -> StorageMigrationTestResult:
-    """Non-destructive probe of a candidate new bucket (wizard Test step) —
+    """Non-destructive probe of a candidate new bucket (wizard Test step) -
     nothing is persisted; Start stays disabled until this passes."""
     ok, message = StorageMigrationService(db).test_bucket(
         provider=payload.provider,

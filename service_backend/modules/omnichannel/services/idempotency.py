@@ -10,7 +10,7 @@ from typing import Dict, Optional
 from app.config import settings
 
 _TTL_SECONDS = 24 * 60 * 60
-# Sentinel stored while a send is in-flight — a second request seeing it knows a
+# Sentinel stored while a send is in-flight - a second request seeing it knows a
 # concurrent identical send is running (returns 409 rather than double-sending).
 PENDING = "__pending__"
 
@@ -36,7 +36,7 @@ class IdempotencyStore:
             import redis
 
             return redis.Redis.from_url(settings.redis_url, decode_responses=True)
-        except Exception:  # noqa: BLE001 — any failure → memory fallback
+        except Exception:  # noqa: BLE001 - any failure → memory fallback
             return None
 
     def lookup(self, workspace_id: str, idem_key: str) -> Optional[str]:
@@ -51,7 +51,7 @@ class IdempotencyStore:
 
     def reserve(self, workspace_id: str, idem_key: str) -> Optional[str]:
         """Atomically claim the slot. Returns None if WE claimed it (caller
-        proceeds to send); otherwise the current stored value — a real message id
+        proceeds to send); otherwise the current stored value - a real message id
         (completed) or PENDING (a concurrent send is in-flight)."""
         k = _key(workspace_id, idem_key)
         client = self._client()
@@ -60,7 +60,7 @@ class IdempotencyStore:
                 if client.set(k, PENDING, ex=_TTL_SECONDS, nx=True):
                     return None
                 return client.get(k)
-            except Exception:  # noqa: BLE001 — fall through to memory
+            except Exception:  # noqa: BLE001 - fall through to memory
                 pass
         if k in self._memory:
             return self._memory[k]
@@ -80,7 +80,7 @@ class IdempotencyStore:
         self._memory[k] = message_id
 
     def release(self, workspace_id: str, idem_key: str) -> None:
-        """Drop the reservation (send failed) so a later retry can re-claim it —
+        """Drop the reservation (send failed) so a later retry can re-claim it -
         but only if it's still PENDING (never clobber a finalized id)."""
         k = _key(workspace_id, idem_key)
         client = self._client()
@@ -98,7 +98,7 @@ class IdempotencyStore:
 
 
 class MemoryIdempotencyStore(IdempotencyStore):
-    """Redis-free variant — always uses the in-memory dict (tests/CI)."""
+    """Redis-free variant - always uses the in-memory dict (tests/CI)."""
 
     def _client(self):  # noqa: ANN202
         return None
@@ -115,6 +115,6 @@ def get_store() -> IdempotencyStore:
 
 
 def set_store(store: IdempotencyStore) -> None:
-    """Test seam — inject a fresh/in-memory store."""
+    """Test seam - inject a fresh/in-memory store."""
     global _store
     _store = store

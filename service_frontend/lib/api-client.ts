@@ -18,7 +18,7 @@ export class ApiError extends Error {
   /** Seconds from the `Retry-After` header on a 429 throttle response. */
   retryAfterSeconds: number | null;
   /** Structured `detail` body when the backend sends an object (e.g. the
-   * form engine's 422 `{problems}` / `{fieldErrors}` contracts) — `message`
+   * form engine's 422 `{problems}` / `{fieldErrors}` contracts) - `message`
    * always stays a string. */
   detail: unknown;
   constructor(
@@ -45,7 +45,7 @@ function retryAfterSecondsOf(res: Response): number | null {
 
 /**
  * The backend JWT exp is the real session boundary (plan 10 D4): a 401 on a
- * request that DID carry a token means the token expired or was revoked —
+ * request that DID carry a token means the token expired or was revoked -
  * end the NextAuth session and return to signin. (Permission problems are
  * 403s; they never land here.)
  */
@@ -61,13 +61,13 @@ async function endSessionOn401(hadToken: boolean, status: number): Promise<void>
 // frame) to re-mint via its `/embed/session` handshake, then retry ONCE. Gated
 // to retry a single time so a persistently-failing token can't infinite-loop.
 //
-// TODO(cross-repo, sorento host — IdeationEmbed.tsx): the host iframe wrapper
+// TODO(cross-repo, sorento host - IdeationEmbed.tsx): the host iframe wrapper
 // MUST listen for `{type:'ideation-embed:token-refresh-request'}` from this
 // child, re-run its `POST /embed/session` handshake, and post
 // `{type:'ideation-embed:token', token}` back to the iframe. That companion
 // change ships separately (NOT in this repo). Until it lands, a refresh times
 // out and the embed degrades to the clean "session expired" state.
-/** True for embed data calls that may re-mint on 401 — never the token gate
+/** True for embed data calls that may re-mint on 401 - never the token gate
  * (`/embed/validate`) or the SSO exchange (`/embed/session`) themselves. */
 function isRemintableEmbedPath(path: string): boolean {
   return (
@@ -81,7 +81,7 @@ function isRemintableEmbedPath(path: string): boolean {
  * Attach the request's auth + tenant headers and report how the request should
  * handle a 401. In the omnichannel EMBED runtime (an in-memory
  * `embedAuthStore` session) the credential is the `/embed/session` access
- * token, NOT the NextAuth JWT — so we skip `getSession()` and, critically,
+ * token, NOT the NextAuth JWT - so we skip `getSession()` and, critically,
  * never `signOut()` on a 401 (the iframe has no NextAuth session to end; a
  * near-expiry token is refreshed via the postMessage `needToken` handshake).
  * Everywhere else this is the unchanged NextAuth Bearer path.
@@ -132,7 +132,7 @@ async function apiFetchOnce<T>(
   const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
 
   if (!res.ok) {
-    // WS-C3: silent embed re-mint on expiry — a 401 on an /embed/* data call in
+    // WS-C3: silent embed re-mint on expiry - a 401 on an /embed/* data call in
     // the embed runtime asks the host for a fresh token and retries ONCE.
     if (
       res.status === 401 &&
@@ -151,7 +151,7 @@ async function apiFetchOnce<T>(
     try {
       const data = await res.json();
       detail = data.detail;
-      // message stays a STRING — object details ride ApiError.detail.
+      // message stays a STRING - object details ride ApiError.detail.
       message =
         (typeof data.detail === 'string' ? data.detail : undefined) ?? data.message ?? message;
     } catch {
@@ -182,7 +182,7 @@ export async function apiFetchText(path: string, init: RequestInit = {}): Promis
 }
 
 /**
- * Like {@link apiFetch} but returns the raw response body as a Blob — for authed
+ * Like {@link apiFetch} but returns the raw response body as a Blob - for authed
  * binary endpoints: a file/PDF the browser must fetch with the Bearer (an
  * `<img>`/`<a href>` can't carry the JWT), e.g. a submission's uploaded file or
  * `POST /templates/preview?format=pdf`. The Content-Type/tenant/impersonation
@@ -216,7 +216,7 @@ export async function apiFetchBlob(path: string, init: RequestInit = {}): Promis
 /**
  * Unauthenticated fetch for pre-auth public surfaces (slice-2 public form fill;
  * mirrors the branding public routes). NO session lookup, NO Bearer, NO
- * sign-out-on-401 (there is no session to end) — but preserves `ApiError.detail`
+ * sign-out-on-401 (there is no session to end) - but preserves `ApiError.detail`
  * so a public submit's 422 `{fieldErrors}` still reaches the renderer. `FormData`
  * bodies skip the JSON content-type (multipart upload path).
  */

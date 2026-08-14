@@ -12,7 +12,7 @@ import type {
 import type { Product } from '@/types/ideation';
 
 /** Loads the tenant's BRs + products for the list surface, with the mutations the
- * list actions call. Client-side list (mirrors the Ideas hook) — the ResourceList
+ * list actions call. Client-side list (mirrors the Ideas hook) - the ResourceList
  * fetcher pages over the in-memory array. */
 export function useBusinessRequirements() {
   const [brs, setBrs] = useState<BusinessRequirement[]>([]);

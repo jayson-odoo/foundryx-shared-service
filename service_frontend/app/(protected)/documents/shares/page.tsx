@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Document shares oversight (plan sprint-3/05, D11 — the admin kill-switch).
+ * Document shares oversight (plan sprint-3/05, D11 - the admin kill-switch).
  * Every active link across the tenant on the Resource shell (Active|Revoked
  * segments via the status-view toggle), row + bulk Revoke (bulk is typed-confirm
  * per ConfirmActionDialog). Gated `documents.share`.
@@ -146,7 +146,7 @@ export default function DocumentSharesPage() {
         meta: { headerTitle: 'Created by' },
         header: ({ column }) => <DataGridColumnHeader title="Created by" column={column} />,
         cell: ({ row }) => (
-          <span className="text-sm text-foreground">{row.original.createdByName ?? '—'}</span>
+          <span className="text-sm text-foreground">{row.original.createdByName ?? '-'}</span>
         ),
         size: 160,
         enableSorting: false,
@@ -203,7 +203,7 @@ export default function DocumentSharesPage() {
     return {
       viewKey: 'documents.shares',
       getRowId: (row) => row.id,
-      // No per-row detail page — actions (Revoke) live in the row menu.
+      // No per-row detail page - actions (Revoke) live in the row menu.
       rowHref: () => '#',
       fetcher: (query) =>
         documentService.listShares(query, query.statusView === 'trashed' ? 'revoked' : 'active'),

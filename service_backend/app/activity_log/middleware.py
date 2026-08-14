@@ -1,16 +1,16 @@
 """Public-gateway request-logging middleware (sprint-4/12 Slice 1 + enhancement).
 
 Scoped to the ``/api/v1/omnichannel`` path prefix (a cheap string check skips
-every other request with zero overhead — the app is called directly). For each
+every other request with zero overhead - the app is called directly). For each
 gateway request it:
   1. mints a ``trace_id`` (uuid), stashes it on ``scope["state"]`` (so the
      downstream ``request.state`` sees it) + the contextvar (the outbound Meta
      call reads it);
-  2. **tees** the request + response bodies WITHOUT consuming either stream — a
+  2. **tees** the request + response bodies WITHOUT consuming either stream - a
      wrapped ``receive`` copies inbound-body chunks and a wrapped ``send`` copies
      outbound-body chunks + the ``http.response.start`` status, passing every
      chunk through UNCHANGED so the handler + client are unaffected;
-  3. records ONE ``inbound_api`` ``integration_activity`` row — attributed via
+  3. records ONE ``inbound_api`` ``integration_activity`` row - attributed via
      the ``ApiWorkspace`` the gateway auth dep stashes on ``request.state``, with
      the redacted request/response bodies in the summaries.
 
@@ -23,16 +23,16 @@ handlers). ``scope["state"]`` is a dict shared with the downstream ``Request``
 
 Capture is SAFETY-CAPPED and SAFETY-TYPED:
   * JSON bodies only (``application/json``) are buffered + parsed; ``multipart/*``
-    and any other/binary body is NEVER buffered — a small ``{"note": …}`` records
+    and any other/binary body is NEVER buffered - a small ``{"note": …}`` records
     its declared type + byte size instead (file uploads never bloat a log row);
-  * a 16KB cap stops the copy early and marks ``{"truncated": true}`` — a
+  * a 16KB cap stops the copy early and marks ``{"truncated": true}`` - a
     pathological body can never blow up memory or the row;
   * everything captured is redacted through ``redact()`` (secret KEYS masked;
     message CONTENT preserved) by ``ActivityLogService.record``.
 
 The write is failure-isolated on TWO levels: ``record`` swallows its own insert
 error, AND the whole capture+record path is wrapped in ``_safe_record`` so
-NOTHING here can propagate into — or mask the exception of — the observed
+NOTHING here can propagate into - or mask the exception of - the observed
 request. Eager mode (dev/E2E/tests) records inline on the request task
 (deterministic, no cross-thread session race); prod records off the critical
 path in a threadpool AFTER the full response is already sent (adds no client
@@ -63,7 +63,7 @@ from app.models.integration_activity import (
 logger = logging.getLogger(__name__)
 
 _GATEWAY_PREFIX = "/api/v1/omnichannel"
-# Max bytes buffered per body — beyond this the copy stops + the summary marks
+# Max bytes buffered per body - beyond this the copy stops + the summary marks
 # {"truncated": true}. A body is NEVER buffered unbounded.
 _BODY_CAP = 16 * 1024
 
@@ -108,7 +108,7 @@ def _summarize_body(
     """Turn a teed body into a JSON-storable, un-redacted summary value (the
     service redacts it). ``None`` when there is no body. A JSON body parses to its
     object; a truncated JSON body / unparseable body stores the capped raw string;
-    a non-JSON (multipart/binary) body stores a size note ONLY — never the bytes."""
+    a non-JSON (multipart/binary) body stores a size note ONLY - never the bytes."""
     if total_size <= 0:
         return None
     if not is_json:
@@ -119,7 +119,7 @@ def _summarize_body(
         return {"truncated": True, "raw": text}
     try:
         return json.loads(text)
-    except Exception:  # noqa: BLE001 — malformed JSON: keep the capped raw text.
+    except Exception:  # noqa: BLE001 - malformed JSON: keep the capped raw text.
         return {"raw": text}
 
 
@@ -151,19 +151,19 @@ class _BodyTee:
 
 
 class GatewayActivityMiddleware:
-    """Pure ASGI middleware — see the module docstring."""
+    """Pure ASGI middleware - see the module docstring."""
 
     def __init__(self, app: ASGIApp):
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        # Fast path — skip everything that isn't an HTTP gateway request.
+        # Fast path - skip everything that isn't an HTTP gateway request.
         if scope.get("type") != "http" or not scope.get("path", "").startswith(_GATEWAY_PREFIX):
             await self.app(scope, receive, send)
             return
 
         trace_id = str(uuid.uuid4())
-        # scope["state"] is the dict Starlette backs request.state with — share it
+        # scope["state"] is the dict Starlette backs request.state with - share it
         # so the downstream dep's request.state.api_workspace reaches our record.
         state = scope.setdefault("state", {})
         state["trace_id"] = trace_id
@@ -180,7 +180,7 @@ class GatewayActivityMiddleware:
             if message.get("type") == "http.request":
                 try:
                     req_tee.feed(message.get("body", b"") or b"")
-                except Exception:  # noqa: BLE001 — capture must never break receive.
+                except Exception:  # noqa: BLE001 - capture must never break receive.
                     pass
             return message
 
@@ -203,14 +203,14 @@ class GatewayActivityMiddleware:
                     tee = resp_tee_ref["tee"]
                     if tee is not None:
                         tee.feed(message.get("body", b"") or b"")
-            except Exception:  # noqa: BLE001 — capture must never break send.
+            except Exception:  # noqa: BLE001 - capture must never break send.
                 pass
             await send(message)
 
         try:
             try:
                 await self.app(scope, wrapped_receive, wrapped_send)
-            except Exception as exc:  # noqa: BLE001 — record best-effort, re-raise unchanged.
+            except Exception as exc:  # noqa: BLE001 - record best-effort, re-raise unchanged.
                 latency_ms = int((time.monotonic() - started) * 1000)
                 err_args = (
                     scope, trace_id, 500, latency_ms,
@@ -230,9 +230,9 @@ class GatewayActivityMiddleware:
                 req_tee, req_ct, resp, resp_tee_ref["tee"],
             )
             # Eager mode: record inline on THIS task/session (deterministic, no
-            # cross-thread session race — a BackgroundTask thread flaked the trace
+            # cross-thread session race - a BackgroundTask thread flaked the trace
             # test). Prod: the full response is already sent by the time self.app
-            # returns, so run the sync DB write in a threadpool — zero client
+            # returns, so run the sync DB write in a threadpool - zero client
             # latency, event loop never blocked.
             if settings.celery_task_always_eager:
                 self._safe_record(*args)
@@ -255,14 +255,14 @@ class GatewayActivityMiddleware:
         resp: dict,
         resp_tee: Optional[_BodyTee],
     ) -> None:
-        """Bare guard around ``_record`` — the logging path can NEVER propagate
+        """Bare guard around ``_record`` - the logging path can NEVER propagate
         into or mask the observed request. Any failure is swallowed + logged."""
         try:
             cls._record(
                 scope, trace_id, status_code, latency_ms, error_message,
                 occurred_at, req_tee, req_ct, resp, resp_tee,
             )
-        except Exception:  # noqa: BLE001 — logging must never break the request.
+        except Exception:  # noqa: BLE001 - logging must never break the request.
             logger.exception("integration_activity: failed to record gateway request")
 
     @staticmethod
@@ -279,7 +279,7 @@ class GatewayActivityMiddleware:
         resp_tee: Optional[_BodyTee],
     ) -> None:
         # A lightweight Request over the same scope reads state/headers/method/url
-        # (no receive needed — the body is already teed, never re-read here).
+        # (no receive needed - the body is already teed, never re-read here).
         request = Request(scope)
         # Attribution: the gateway auth dep stashes the resolved ApiWorkspace on
         # request.state as soon as the key resolves (even a 403). None ⇒
@@ -342,7 +342,7 @@ def _request_summary(request: Request, tee: _BodyTee, content_type: Optional[str
 
 
 def _response_summary(resp: dict, tee: Optional[_BodyTee]) -> Optional[dict]:
-    """The redacted response body (JSON only) — replaces the old "No payload
+    """The redacted response body (JSON only) - replaces the old "No payload
     captured" for JSON responses. Non-JSON responses record no body."""
     if tee is None:
         return None

@@ -1,5 +1,5 @@
 /**
- * Workspace service — the boundary the UI talks to (via hooks/configs). Phase A
+ * Workspace service - the boundary the UI talks to (via hooks/configs). Phase A
  * binds the MOCK implementation; Phase B swaps `workspaceService` to the real
  * api-client impl in ONE line (see bottom). The interface IS the backend contract.
  */

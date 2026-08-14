@@ -38,7 +38,7 @@ import { useJobActions } from '../use-job-actions';
 
 const POLL_MS = 3000;
 
-/** `/jobs/[id]` detail (sprint-4/10 AC-10-19) — job facts, progress, result
+/** `/jobs/[id]` detail (sprint-4/10 AC-10-19) - job facts, progress, result
  * failures (for a migration), and the state-aware Abort/Retry/Complete actions.
  * Polls while the job is in flight. */
 export default function JobDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -171,8 +171,8 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
           <CardContent className="space-y-2 text-sm">
             <Row label="Type" value={jobTypeLabel(job.type)} />
             <Row label="Status" value={JOB_STATUS_LABEL[job.status]} />
-            <Row label="Started" value={job.startedAt ? formatDateTime(job.startedAt) : '—'} />
-            <Row label="Finished" value={job.finishedAt ? formatDateTime(job.finishedAt) : '—'} />
+            <Row label="Started" value={job.startedAt ? formatDateTime(job.startedAt) : '-'} />
+            <Row label="Finished" value={job.finishedAt ? formatDateTime(job.finishedAt) : '-'} />
             {typeof payload.toConnectionId === 'string' && (
               <Row label="New connection" value={payload.toConnectionId} mono />
             )}

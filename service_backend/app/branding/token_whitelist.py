@@ -1,14 +1,14 @@
-"""Branding token whitelist (plan sprint-2/03) — THE canonical source.
+"""Branding token whitelist (plan sprint-2/03) - THE canonical source.
 
-Which theme variables a tenant may override, their FoundryX defaults, validation
+Which theme variables a tenant may override, their Foundryx defaults, validation
 and CSS generation. Mirrors the Layer-1 ``--foundryx-*`` primitives in the
 frontend's ``css/foundryx-tokens.css``; the frontend keeps a display mirror in
-``lib/branding-tokens.ts`` — keep both in sync when a primitive is added.
+``lib/branding-tokens.ts`` - keep both in sync when a primitive is added.
 
 Deliberately EXCLUDED:
-- ``-transparent`` variants — derived (base color @ 0.2 alpha), see
+- ``-transparent`` variants - derived (base color @ 0.2 alpha), see
   ``derive_transparent``;
-- ``--foundryx-white`` / ``--foundryx-black`` — true constants.
+- ``--foundryx-white`` / ``--foundryx-black`` - true constants.
 """
 import re
 from typing import Dict, List, Optional, Tuple
@@ -16,7 +16,7 @@ from typing import Dict, List, Optional, Tuple
 ThemeTokens = Dict[str, str]
 TokensDoc = Dict[str, ThemeTokens]  # {"light": {...}, "dark": {...}}
 
-# (key, group) — order drives template key order and CSS emission order.
+# (key, group) - order drives template key order and CSS emission order.
 TOKEN_DEFS: List[Tuple[str, str]] = [
     # Brand
     ("primary", "brand"),
@@ -65,7 +65,7 @@ TOKEN_KEYS = {key for key, _ in TOKEN_DEFS}
 # Bases whose `-transparent` companion is derived from the picked color.
 TRANSPARENT_BASES = {"primary", "success", "danger", "info", "warning"}
 
-# FoundryX defaults — MUST mirror css/foundryx-tokens.css Layer 1 exactly.
+# Foundryx defaults - MUST mirror css/foundryx-tokens.css Layer 1 exactly.
 FOUNDRYX_DEFAULTS: TokensDoc = {
     "light": {
         "primary": "#ff5a00",
@@ -149,12 +149,12 @@ _COLOR_RE = re.compile(r"^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$", re.IGNOREC
 
 
 def is_valid_color(value: str) -> bool:
-    """#RGB, #RRGGBB or #RRGGBBAA — the formats the template/pickers accept."""
+    """#RGB, #RRGGBB or #RRGGBBAA - the formats the template/pickers accept."""
     return bool(isinstance(value, str) and _COLOR_RE.match(value.strip()))
 
 
 def normalize_hex(value: str) -> str:
-    """Expand #RGB → #RRGGBB; lowercase — uniform comparisons + storage."""
+    """Expand #RGB → #RRGGBB; lowercase - uniform comparisons + storage."""
     v = value.strip().lower()
     if re.fullmatch(r"#[0-9a-f]{3}", v):
         return f"#{v[1]*2}{v[2]*2}{v[3]*2}"
@@ -162,7 +162,7 @@ def normalize_hex(value: str) -> str:
 
 
 def derive_transparent(hex_color: str) -> str:
-    """Base color @ 0.2 alpha — the `-transparent` companion."""
+    """Base color @ 0.2 alpha - the `-transparent` companion."""
     v = normalize_hex(hex_color)
     r, g, b = int(v[1:3], 16), int(v[3:5], 16), int(v[5:7], 16)
     return f"rgba({r}, {g}, {b}, 0.2)"
@@ -172,7 +172,7 @@ def validate_tokens(doc: object) -> Tuple[Optional[TokensDoc], List[str]]:
     """Validate an arbitrary JSON document into a stored tokens doc.
 
     Unknown keys / non-color values are reported by NAME (never silently
-    dropped). Values equal to the FoundryX default normalize away so the stored
+    dropped). Values equal to the Foundryx default normalize away so the stored
     doc stays a true diff. Returns (tokens|None, errors); tokens is None when
     invalid OR when nothing differs from the defaults.
     """
@@ -182,7 +182,7 @@ def validate_tokens(doc: object) -> Tuple[Optional[TokensDoc], List[str]]:
     for section in doc:
         if section not in ("light", "dark"):
             errors.append(
-                f'Unknown top-level section "{section}" — only "light" and "dark" are allowed.'
+                f'Unknown top-level section "{section}" - only "light" and "dark" are allowed.'
             )
     result: TokensDoc = {"light": {}, "dark": {}}
     for theme in ("light", "dark"):
@@ -212,7 +212,7 @@ def validate_tokens(doc: object) -> Tuple[Optional[TokensDoc], List[str]]:
 
 
 def build_template(tokens: Optional[TokensDoc]) -> TokensDoc:
-    """Downloadable template — every key prefilled with the effective value."""
+    """Downloadable template - every key prefilled with the effective value."""
     out: TokensDoc = {"light": {}, "dark": {}}
     for theme in ("light", "dark"):
         overrides = (tokens or {}).get(theme, {})
@@ -222,7 +222,7 @@ def build_template(tokens: Optional[TokensDoc]) -> TokensDoc:
 
 
 def tokens_to_css(tokens: Optional[TokensDoc]) -> str:
-    """``:root { … } .dark { … }`` — overridden vars only (+ derived
+    """``:root { … } .dark { … }`` - overridden vars only (+ derived
     transparents). Defaults stay in the frontend's foundryx-tokens.css."""
     if not tokens:
         return ""

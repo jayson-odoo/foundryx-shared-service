@@ -1,4 +1,4 @@
-"""Aggregate facts (sprint-4/03 G3) — count/sum/min/max/avg over an owner's
+"""Aggregate facts (sprint-4/03 G3) - count/sum/min/max/avg over an owner's
 child rows, exposed as a normal ``FactDef`` so derived auto-edge conditions are
 authored in the RuleBuilder like any other rule.
 
@@ -37,7 +37,7 @@ def aggregate_fact(
     ``op`` ∈ count|sum|min|max|avg. ``column`` is required for every op except
     ``count``. ``where`` is an optional extra SQLAlchemy filter clause. ``sum``
     over zero rows returns 0 (so "amount paid" reads 0, not None); min/max/avg
-    over zero rows return None (fail closed — no derivation).
+    over zero rows return None (fail closed - no derivation).
     """
     if op not in ({"count"} | set(_AGG)):
         raise ValueError(f"Unknown aggregate op '{op}'.")
@@ -84,7 +84,7 @@ class AggregatableRelation:
 
     ``child_entity_type`` is the event-match string the child emits (e.g.
     ``"project_participant"``). The child's write path MUST emit that entity
-    event (``notify_entity_event``) or the re-derivation can't fire — that lives
+    event (``notify_entity_event``) or the re-derivation can't fire - that lives
     in the child service, not here (documented contract)."""
 
     key: str
@@ -139,7 +139,7 @@ def expand_relation_facts(relation: AggregatableRelation) -> List[FactDef]:
 
 
 def expand_relation(owner_entity: str, owner_model: Any, relation: AggregatableRelation):
-    """Return ``(facts, DerivedTrigger)`` for a relation — the facts on the
+    """Return ``(facts, DerivedTrigger)`` for a relation - the facts on the
     owner's source + the child→owner re-derive trigger. Imported lazily by the
     status registry to avoid a cycle."""
     from app.status_engine.derived import DerivedTrigger

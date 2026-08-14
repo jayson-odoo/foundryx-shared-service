@@ -1,13 +1,13 @@
 /**
- * Document Management (the Drive) — wire types.
+ * Document Management (the Drive) - wire types.
  *
  * F3 slice 1 (sprint-3/04). A Google-Drive-class repository on top of the
  * core StorageService: a navigable shared-tenant folder tree, files with
  * version history, upload/download/move/rename/trash, preview. Sharing (links,
- * tiers, public route) lands in slice 05 (sprint-3/05) — not here.
+ * tiers, public route) lands in slice 05 (sprint-3/05) - not here.
  *
  * camelCase mirrors the planned backend Pydantic schemas (`app/document_engine/
- * schemas.py`). Kept deliberately flat — a folder/file is not a block-document
+ * schemas.py`). Kept deliberately flat - a folder/file is not a block-document
  * engine; the only "document" here is the literal file blob.
  */
 
@@ -46,7 +46,7 @@ export interface FileRow {
   /** NULL = at the Drive root. */
   folderId: string | null;
   name: string;
-  /** The current (latest) version — what previews/downloads serve. */
+  /** The current (latest) version - what previews/downloads serve. */
   currentVersion: FileVersionRow;
   /** Optional categorization (D7). */
   attachmentTypeId: string | null;
@@ -144,7 +144,7 @@ export interface UploadFileItem {
   name: string;
   sizeBytes: number;
   status: UploadFileStatus;
-  /** 0–100. */
+  /** 0-100. */
   progress: number;
   error?: string;
   conflict?: UploadConflict;
@@ -181,7 +181,7 @@ export interface UploadResult {
   file: FileRow;
 }
 
-/** Request to start a bulk/folder ZIP download — any mix of files + folders
+/** Request to start a bulk/folder ZIP download - any mix of files + folders
  * (each folder contributes its whole subtree). */
 export interface ZipRequest {
   fileIds?: string[];
@@ -241,7 +241,7 @@ export interface ShareUpdatePayload {
   isDisabled?: boolean;
 }
 
-/** One root shared TO the current user — the "Shared with me" drive. */
+/** One root shared TO the current user - the "Shared with me" drive. */
 export interface SharedWithMeItem {
   token: string;
   targetKind: ShareTargetKind;

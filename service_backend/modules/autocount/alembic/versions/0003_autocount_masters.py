@@ -1,10 +1,10 @@
-"""autocount masters — per-entity response envelope + initial-load policy
+"""autocount masters - per-entity response envelope + initial-load policy
 
 Two columns on ``ac_entity_config``:
 
-* ``envelope``     — which OUTER response shape this entity returns
+* ``envelope``     - which OUTER response shape this entity returns
                      (``status_dict`` for GRN, ``row_array`` for masters).
-* ``initial_load`` — whether the FIRST sync is ``windowed`` (a document stream)
+* ``initial_load`` - whether the FIRST sync is ``windowed`` (a document stream)
                      or ``full`` (a master list, which must be mirrored whole).
 
     !!  EXISTING ROWS NEED A REAL BACKFILL, NOT JUST A COLUMN DEFAULT.  !!
@@ -18,15 +18,15 @@ existence-checked AND ``backfill_entity_config_defaults`` runs unconditionally.
 
     !!  IDEMPOTENT BY NECESSITY, NOT BY TASTE.  !!
 
-``bootstrap_modules`` runs each module's ``install()`` — which is ``create_all``
-— BEFORE ``run_module_migrations``. On a deployment already stamped at 0002,
+``bootstrap_modules`` runs each module's ``install()`` - which is ``create_all``
+- BEFORE ``run_module_migrations``. On a deployment already stamped at 0002,
 ``create_all`` cannot ALTER the existing ``ac_entity_config`` (create_all only
 creates MISSING TABLES), so the columns are genuinely absent and must be added
 here. On a FRESH deployment ``create_all`` builds the table WITH both columns
 from the model, and an unguarded ``add_column`` would then explode with
 ``DuplicateColumn``. pytest sees neither path (conftest is pure ``create_all``
 and module Alembic is a Postgres-only no-op), so a green suite proves nothing
-about this file — the only gates are code review and a real
+about this file - the only gates are code review and a real
 ``alembic upgrade head``.
 
 Revision ID: 0003_autocount_masters
@@ -42,7 +42,7 @@ from modules.autocount.backfill import backfill_entity_config_defaults
 from modules.autocount.envelopes import ENVELOPE_STATUS_DICT
 from modules.autocount.sources import INITIAL_LOAD_WINDOWED
 
-# Revision ids MUST be <= 32 chars — ``alembic_version.version_num`` is
+# Revision ids MUST be <= 32 chars - ``alembic_version.version_num`` is
 # VARCHAR(32). "0003_autocount_masters" is 22.
 revision: str = "0003_autocount_masters"
 down_revision: Union[str, Sequence[str], None] = "0002_autocount_grn"
@@ -61,7 +61,7 @@ def _columns() -> set:
 
 
 def add_column(name: str, column: sa.Column) -> None:
-    """Existence-checked ADD — see the module docstring for why this is not
+    """Existence-checked ADD - see the module docstring for why this is not
     optional. A bare ``op.add_column`` below should be rejected on sight."""
     if name not in _columns():
         op.add_column(TABLE, column, schema=SCHEMA)

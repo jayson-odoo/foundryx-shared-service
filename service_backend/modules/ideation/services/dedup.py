@@ -1,18 +1,18 @@
 """Deterministic text-similarity dedup (Slice 6, AC-A-21/30/31/32).
 
 **No LLM, no embedding model (D20).** Duplicate detection is a single deterministic
-query over existing OLTP Idea rows (the source of truth) — no derived vector
+query over existing OLTP Idea rows (the source of truth) - no derived vector
 artifact is stored. It runs **inline** in the ``create_idea`` path, scoped to
 ``(tenant, product)`` so a similar problem under a different product is never a
 false positive.
 
 Dialect-aware similarity:
 
-- **Postgres** — the ``pg_trgm`` extension's ``similarity(a, b)`` over the same
+- **Postgres** - the ``pg_trgm`` extension's ``similarity(a, b)`` over the same
   ``(tenant, product)``, accelerated by a GIN trigram index (provisioned by the
   migration via :func:`ensure_pg_trgm_index`). Matches at/above
   :data:`PG_SIMILARITY_THRESHOLD`.
-- **SQLite (tests) / any non-Postgres** — a pure-Python ``difflib`` ratio fallback
+- **SQLite (tests) / any non-Postgres** - a pure-Python ``difflib`` ratio fallback
   over normalized text, so the dedup UNIT TESTS run GREEN with no live Postgres.
   Matches at/above :data:`FALLBACK_SIMILARITY_THRESHOLD`.
 
@@ -79,7 +79,7 @@ class DedupService:
         bind = self.db.get_bind()
         return bool(bind is not None and bind.dialect.name == "postgresql")
 
-    # ── Postgres path — pg_trgm similarity() over the same (tenant, product) ────
+    # ── Postgres path - pg_trgm similarity() over the same (tenant, product) ────
     def _find_duplicate_pg(
         self, tenant_id: str, product_id: str, needle: str, exclude_id: Optional[str]
     ) -> Optional[str]:
@@ -106,7 +106,7 @@ class DedupService:
         ).first()
         return row[0] if row is not None else None
 
-    # ── Fallback path — difflib ratio in Python (SQLite tests) ─────────────────
+    # ── Fallback path - difflib ratio in Python (SQLite tests) ─────────────────
     def _find_duplicate_fallback(
         self, tenant_id: str, product_id: str, needle: str, exclude_id: Optional[str]
     ) -> Optional[str]:
@@ -135,7 +135,7 @@ class DedupService:
 
 def ensure_pg_trgm_index(bind: Connection) -> None:
     """Provision ``pg_trgm`` + a GIN trigram index on the Idea dedup text
-    (AC-A-30). **Postgres-only** — a graceful no-op on SQLite / any non-Postgres
+    (AC-A-30). **Postgres-only** - a graceful no-op on SQLite / any non-Postgres
     engine (the test engine has no ``pg_trgm``). There is **no ``vector`` extension
     and no ``embedding`` column** (D20)."""
     if bind is None or bind.dialect.name != "postgresql":

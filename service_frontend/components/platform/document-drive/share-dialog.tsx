@@ -3,12 +3,12 @@
 /**
  * Share dialog (plan sprint-3/05, Google-Drive model). A target has ONE stable
  * link; this dialog ensures it on open and edits it in place:
- *   - "People with access" — add named users, each with their own View/Edit role.
- *   - "General access" — Restricted | Anyone in the workspace | Anyone with the
+ *   - "People with access" - add named users, each with their own View/Edit role.
+ *   - "General access" - Restricted | Anyone in the workspace | Anyone with the
  *     link, with a role; the Public option is hidden when the tenant ceiling is
  *     off, and Editor is disabled for Public when ceiling=view or the user lacks
- *     documents.manage (foolproof — can't configure a guaranteed rejection).
- *   - Advanced — expiry, password, and (public-edit) upload caps.
+ *     documents.manage (foolproof - can't configure a guaranteed rejection).
+ *   - Advanced - expiry, password, and (public-edit) upload caps.
  * The copyable link never changes when access is edited (Google semantics).
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -127,7 +127,7 @@ function Body({
   }
 
   const accessOptions = [
-    { value: 'restricted', label: 'Restricted — only people added below' },
+    { value: 'restricted', label: 'Restricted - only people added below' },
     { value: 'workspace', label: 'Anyone in the workspace' },
     ...(publicOff ? [] : [{ value: 'public', label: 'Anyone with the link' }]),
   ];
@@ -237,7 +237,7 @@ function Body({
         </div>
         {publicOff && (
           <p className="text-xs text-muted-foreground">
-            Public links are turned off for this workspace — enable them in Document settings.
+            Public links are turned off for this workspace - enable them in Document settings.
           </p>
         )}
         {share.generalAccess === 'public' && publicEditLocked && (

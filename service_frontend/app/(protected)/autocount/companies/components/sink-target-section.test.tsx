@@ -32,7 +32,7 @@ beforeEach(() => {
   });
 });
 
-describe('push target — read vs edit (AC-15-20/21)', () => {
+describe('push target - read vs edit (AC-15-20/21)', () => {
   it('read mode shows plain label/value, no dropdowns and no Save', () => {
     render(
       <SinkTargetSection

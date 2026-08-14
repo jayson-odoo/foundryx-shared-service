@@ -12,7 +12,7 @@ import { workflowPath } from './paths';
 const publishable = (w: WorkflowListItem) =>
   w.currentVersionNumber == null || w.hasUnpublishedChanges;
 
-/** ONE action registry — row `…`, bulk dropdown and form `…` share it.
+/** ONE action registry - row `…`, bulk dropdown and form `…` share it.
  * Visibility branches on the Active vs Archived view (via `isTrashed`). */
 export function useWorkflowActions(): ResourceAction<WorkflowListItem>[] {
   const router = useRouter();

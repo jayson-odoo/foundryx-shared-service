@@ -6,11 +6,11 @@ export PATH=/home/appuser/.local/bin:$PATH
 # Make the app root importable regardless of launch method. The API starts via
 # `python -m …` which puts the CWD (/app) on sys.path, so `import app` AND
 # `import modules.*` both work. The Celery workers/beat, however, run as a
-# console-script (`exec celery …` below) which does NOT add the CWD — so
+# console-script (`exec celery …` below) which does NOT add the CWD - so
 # `import modules.omnichannel.*` raised `ModuleNotFoundError: No module named
 # 'modules'` in the worker, breaking module bootstrap + the storage-migration
 # location registration (silently on old code; loudly since sprint-4/12). Pin it
-# here so every container — API and workers — resolves both packages.
+# here so every container - API and workers - resolves both packages.
 export PYTHONPATH="/app${PYTHONPATH:+:$PYTHONPATH}"
 
 # ── Wait for Postgres ──────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ echo "  db accepting connections"
 
 # ── Worker / beat reuse this image via a command override ──────────────────
 # (e.g. `celery -A app.workflow_engine.worker worker`). They must NOT run the
-# DB bootstrap — blue/green orchestration owns schema upgrades via the API
+# DB bootstrap - blue/green orchestration owns schema upgrades via the API
 # container alone, so we never double-run migrations/seed from a worker.
 if [ $# -gt 0 ]; then
   echo "Running override command: $@"
@@ -51,7 +51,7 @@ if [ "${SKIP_MIGRATIONS:-0}" != "1" ]; then
   # Retry a few times: a TRANSIENT lock (a live query that finishes) clears
   # between attempts and the deploy still goes green. A PERSISTENT lock exhausts
   # the retries → container start aborts (the old color keeps serving) with a
-  # NAMED lock_timeout error in the log — diagnosable, not a silent hang.
+  # NAMED lock_timeout error in the log - diagnosable, not a silent hang.
   BOOTSTRAP_ATTEMPTS="${BOOTSTRAP_ATTEMPTS:-5}"
   BOOTSTRAP_RETRY_DELAY="${BOOTSTRAP_RETRY_DELAY:-8}"
   n=1

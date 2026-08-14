@@ -6,7 +6,7 @@
       --allowed-origin https://fe-sorento.foundryx.my \
       [--tenant-id <tenant>] [--product-id <product>] [--inactive]
 
-Idempotent by ``connection_id`` — re-running rotates the secret / origins. The
+Idempotent by ``connection_id`` - re-running rotates the secret / origins. The
 secret is Fernet-encrypted at rest and never printed. The SAME ``connection_id``
 + ``signing_secret`` must be set on the host (sorento) default RespondWorkspace.
 """

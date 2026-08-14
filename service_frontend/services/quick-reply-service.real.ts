@@ -1,5 +1,5 @@
 /**
- * Real quick-reply service — talks to FastAPI via the shared api-client.
+ * Real quick-reply service - talks to FastAPI via the shared api-client.
  * Reads gated `conversations.read`; writes gated `workspaces.manage`.
  */
 import { apiFetch } from '@/lib/api-client';

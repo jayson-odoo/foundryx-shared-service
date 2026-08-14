@@ -1,5 +1,5 @@
 /**
- * Real form service (Phase B) — talks to FastAPI via the shared api-client.
+ * Real form service (Phase B) - talks to FastAPI via the shared api-client.
  * Endpoints follow plan sprint-3/01 §API. Error contracts: publish 422 carries
  * `{problems: string[]}` → FormPublishError; submit 422 carries
  * `{fieldErrors: {key: message}}` → FormSubmitError.
@@ -41,7 +41,7 @@ function listParams(query: ListQuery): URLSearchParams {
   return p;
 }
 
-/** 422 details ride ApiError.detail (api-client) — translate the engine's
+/** 422 details ride ApiError.detail (api-client) - translate the engine's
  * structured shapes into the service error classes the UI consumes. */
 function detailOf(error: unknown): unknown {
   return error instanceof ApiError ? error.detail : undefined;

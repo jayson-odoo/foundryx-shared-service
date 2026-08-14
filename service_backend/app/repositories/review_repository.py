@@ -1,8 +1,8 @@
-"""Review/Approval engine persistence (plan sprint-4/06 Part 2) — pure
+"""Review/Approval engine persistence (plan sprint-4/06 Part 2) - pure
 SQLAlchemy, ALWAYS tenant-scoped. Every query filters ``tenant_id`` from the
 authed context, never client input (multi-tenancy invariant). Stored cross-engine
 ids (status ids, bound persona/staff-role ids, actor ids) are resolved
-scope/tenant-guarded by the SERVICE — the repo never returns rows for another
+scope/tenant-guarded by the SERVICE - the repo never returns rows for another
 tenant.
 """
 from typing import List, Optional
@@ -48,7 +48,7 @@ class ReviewRepository:
         return config
 
     def delete_config(self, config: ReviewConfiguration) -> None:
-        # Roles + actors are wiped by the service first (no DB cascade — plain
+        # Roles + actors are wiped by the service first (no DB cascade - plain
         # cross-engine ids, not FKs).
         self.db.delete(config)
 
@@ -138,7 +138,7 @@ class ReviewRepository:
     def list_assignments_for_actor(
         self, tenant_id: str, actor_kind: str, actor_id: str
     ) -> List[ReviewAssignment]:
-        """The reviewer's queue (My Reviews) — every assignment for an actor."""
+        """The reviewer's queue (My Reviews) - every assignment for an actor."""
         return (
             self.db.query(ReviewAssignment)
             .filter(
@@ -195,7 +195,7 @@ class ReviewRepository:
 
     def list_groups_for_config(self, tenant_id: str, config_id: str) -> List[str]:
         """Distinct submission-group ids that have at least one assignment under
-        the config — the universe a decider's Decisions surface iterates over."""
+        the config - the universe a decider's Decisions surface iterates over."""
         rows = (
             self.db.query(ReviewAssignment.reviewed_submission_group_id)
             .filter(

@@ -1,12 +1,12 @@
-"""Review-surface read/write logic (plan sprint-4/06 slice 2) — the
+"""Review-surface read/write logic (plan sprint-4/06 slice 2) - the
 actor-agnostic engine behind BOTH worlds:
 
 - the PORTAL surfaces (EMS ``PortalReviewService`` for ``profile``-kind actors),
 - the STAFF surfaces (``app/api/v1/reviews.py`` for ``user``-kind actors).
 
-CORE — never imports the EMS module. Every method takes an explicit
+CORE - never imports the EMS module. Every method takes an explicit
 ``(actor_kind, actor_id)`` and is fully tenant-scoped; identity routing
-(AC-06-10/47) is the CALLER's concern — a portal router only ever passes
+(AC-06-10/47) is the CALLER's concern - a portal router only ever passes
 ``actor_kind='profile'``, a staff router ``'user'``, and a surface method 404s an
 assignment/decision whose ``actor_kind`` doesn't match (so a user-kind assignment
 is invisible on the portal and vice versa).
@@ -16,16 +16,16 @@ routers do NO DB/SQL.
 
 The four surface concerns:
 
-- **My Submissions** (AC-06-43/08/52) — the AUTHOR's view of their submission
+- **My Submissions** (AC-06-43/08/52) - the AUTHOR's view of their submission
   groups: lifecycle status + decision + feedback ONLY (``author_visible_group``;
   raw reviews/scores are NEVER in the payload).
-- **My Reviews** (AC-06-44/05/48) — the reviewer's assignments + the two-pane
+- **My Reviews** (AC-06-44/05/48) - the reviewer's assignments + the two-pane
   grade payload (submission at its pinned version ‖ the review form) with
   **reviewer isolation**: only THIS assignment's own review draft, never another
   reviewer's content.
-- **Decisions** (AC-06-45/07) — the decider's groups with the live partial
+- **Decisions** (AC-06-45/07) - the decider's groups with the live partial
   average + a ready flag + the individual completed reviews (the decider MAY see
-  them — distinct from reviewer isolation) + first-wins decide.
+  them - distinct from reviewer isolation) + first-wins decide.
 """
 from __future__ import annotations
 
@@ -103,7 +103,7 @@ class ReviewSurfaceService:
         return form[0] if form else ""
 
     def _context_label(self, config: ReviewConfiguration) -> Optional[str]:
-        """The human label of the config's bound event/context (AC-06-25) — the
+        """The human label of the config's bound event/context (AC-06-25) - the
         event name for a ``project`` context, resolved tenant-scoped through the
         injectable context-label resolver (keeps core EMS-free). None when the
         config is context-less or the id is unresolvable; the surface then has no
@@ -127,7 +127,7 @@ class ReviewSurfaceService:
         )
 
     def _submission_title(self, submission: FormSubmission) -> str:
-        """A friendly title for a submission — the first textual answer, else the
+        """A friendly title for a submission - the first textual answer, else the
         form name. Never exposes review content (this is author/queue metadata)."""
         answers = submission.answers_json or {}
         for value in answers.values():
@@ -148,7 +148,7 @@ class ReviewSurfaceService:
     def resolve_accepted_submission(
         self, tenant_id: str, group_id: str
     ) -> Optional[Dict[str, Any]]:
-        """Resolve an ACCEPTED submission group to its CURRENT revision (AC-06-53 —
+        """Resolve an ACCEPTED submission group to its CURRENT revision (AC-06-53 -
         agenda binding by ``submission_group_id`` lives in Cluster G; this is the
         minimal tenant-scoped lookup). Returns the current revision's id + author
         actor + status only when the group is at the config's ``accepted_status_id``;
@@ -181,7 +181,7 @@ class ReviewSurfaceService:
         submission: FormSubmission,
     ) -> Dict[str, Any]:
         """The AUTHOR's view of a submission group: lifecycle status + (if decided)
-        the decision + feedback ONLY. Raw reviews/scores are NEVER included — this
+        the decision + feedback ONLY. Raw reviews/scores are NEVER included - this
         is the single function My Submissions renders, so the contract can't leak
         (AC-06-08). ``submission`` is the group's CURRENT revision."""
         status = self._status(tenant_id, submission.form_id, submission.status_id)
@@ -221,7 +221,7 @@ class ReviewSurfaceService:
         (AC-06-25). ``context_id=None`` = unfiltered (every config matches);
         otherwise only configs whose own ``context_id`` equals it. A config
         without a ``context_id`` (a generic, context-less process) is hidden while
-        a specific event is selected — it isn't part of that event's surface."""
+        a specific event is selected - it isn't part of that event's surface."""
         if context_id is None:
             return True
         return config.context_id == context_id
@@ -234,7 +234,7 @@ class ReviewSurfaceService:
         context_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Every submission GROUP authored by this actor (AC-06-43/52). One entry
-        per group (each its own group — multiple per author allowed), showing the
+        per group (each its own group - multiple per author allowed), showing the
         CURRENT revision's author-visible view. Never raw reviews/scores.
         ``context_id`` (AC-06-25) narrows to a single event's configs; None = all
         contexts (the per-row config carries its event so the surface can label
@@ -269,7 +269,7 @@ class ReviewSurfaceService:
 
     def _config_for_form(self, tenant_id: str, form_id: str) -> Optional[ReviewConfiguration]:
         """The review configuration whose SUBMISSION form is ``form_id`` (the
-        first active one — v1 is one config per submission form)."""
+        first active one - v1 is one config per submission form)."""
         return (
             self.db.query(ReviewConfiguration)
             .filter(
@@ -290,7 +290,7 @@ class ReviewSurfaceService:
         context_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """The actor's review assignments (PENDING/COMPLETED), newest first. Only
-        assignments of THIS actor-kind are returned — identity routing
+        assignments of THIS actor-kind are returned - identity routing
         (AC-06-10/47): a user-kind actor never sees profile-kind assignments.
         ``context_id`` (AC-06-25) narrows to a single event's configs; None = all
         contexts (each row carries its config's event for per-row labelling)."""
@@ -325,7 +325,7 @@ class ReviewSurfaceService:
         self, tenant_id: str, assignment_id: str, actor_kind: str, actor_id: str
     ) -> ReviewAssignment:
         """The assignment, asserting it belongs to THIS actor (tenant + kind + id).
-        Anything else 404s — reviewer isolation + identity routing (AC-06-47/48)."""
+        Anything else 404s - reviewer isolation + identity routing (AC-06-47/48)."""
         a = self.repo.get_assignment(tenant_id, assignment_id)
         if a is None or a.actor_kind != actor_kind or a.actor_id != actor_id:
             raise SurfaceNotFound()
@@ -337,7 +337,7 @@ class ReviewSurfaceService:
         """The two-pane grade payload (AC-06-05/48): the read-only SUBMISSION at
         the assignment-revision's pinned version ‖ the review-form fill view, plus
         THIS reviewer's in-progress review draft answers (if any). Reviewer
-        isolation: only the assignment's own ``review_submission_id`` draft —
+        isolation: only the assignment's own ``review_submission_id`` draft -
         NEVER another reviewer's review."""
         from app.services.form_service import FormService
 
@@ -361,7 +361,7 @@ class ReviewSurfaceService:
 
         form_service = FormService(self.db)
         # Read-only submission at its pinned version (the engine resolves
-        # version-pinned answers tenant-scoped). Reuse a synthetic-actor read —
+        # version-pinned answers tenant-scoped). Reuse a synthetic-actor read -
         # get_submission only uses the user for fireable-edge buttons, which this
         # read-only view ignores.
         version = form_service.get_version(tenant_id, submission.form_id, submission.version_id)
@@ -410,7 +410,7 @@ class ReviewSurfaceService:
         submission in Draft on first save (linked as the assignment's
         ``review_submission_id`` while still Draft); subsequent saves UPDATE the
         same Draft. Idempotent resume. The review IS a form_submission of the
-        review form — created via the form engine so it pins the review form's
+        review form - created via the form engine so it pins the review form's
         current version + materializes on the scoped graph. ``author_user`` is the
         staff User when a user-kind actor saves (so file uploads etc. attribute
         correctly); profile-kind passes None + the subject author ref."""
@@ -544,7 +544,7 @@ class ReviewSurfaceService:
         except (FormClosed, FormSubmitInvalid):
             raise
         if not fired:
-            raise SurfaceClosed("The review could not be submitted — the Submit step is restricted.")
+            raise SurfaceClosed("The review could not be submitted - the Submit step is restricted.")
 
         a.review_submission_id = draft.id
         a.status = ASSIGNMENT_COMPLETED
@@ -624,7 +624,7 @@ class ReviewSurfaceService:
     def _completed_reviews(
         self, tenant_id: str, config: ReviewConfiguration, completed: List[ReviewAssignment]
     ) -> List[Dict[str, Any]]:
-        """The completed reviews' answers for the DECIDER surface (AC-06-07 — the
+        """The completed reviews' answers for the DECIDER surface (AC-06-07 - the
         decider expands individual reviews; this is intentionally NOT used on the
         reviewer surface, which is isolated)."""
         review_ids = [a.review_submission_id for a in completed if a.review_submission_id]
@@ -661,7 +661,7 @@ class ReviewSurfaceService:
             )
         return out
 
-    # ---- admin overview (AC-06, §10 deferred — the staff god-view) ----
+    # ---- admin overview (AC-06, §10 deferred - the staff god-view) ----
 
     def admin_submissions(
         self, tenant_id: str, config_id: str
@@ -680,7 +680,7 @@ class ReviewSurfaceService:
         Iterates every CURRENT-revision submission of the config's submission form
         (not just allocated groups) so a submitted-but-not-yet-allocated group is
         still visible. Reuses ``_decision_view``'s building blocks
-        (average + per-revision assignments) — factored, not duplicated."""
+        (average + per-revision assignments) - factored, not duplicated."""
         config = self.configs.repo.get_config(tenant_id, config_id)
         if config is None:
             raise SurfaceNotFound()
