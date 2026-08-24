@@ -49,7 +49,8 @@ vi.mock('@/hooks/use-can', () => ({
   useCan: () => ({ can: () => true, ready: true, permissions: new Set<string>() }),
 }));
 
-const { MeetingsSettingsView } = await import('./meetings-settings-view');
+// `vi.mock` is hoisted above imports, so a static import is already mocked.
+import { MeetingsSettingsView } from './meetings-settings-view';
 
 function connection(overrides: Partial<Connection>): Connection {
   return {

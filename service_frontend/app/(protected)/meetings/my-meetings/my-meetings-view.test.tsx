@@ -84,7 +84,8 @@ vi.mock('@/hooks/use-view-preferences', () => ({
   }),
 }));
 
-const { MyMeetingsView } = await import('./my-meetings-view');
+// `vi.mock` is hoisted above imports, so a static import is already mocked.
+import { MyMeetingsView } from './my-meetings-view';
 
 describe('My meetings', () => {
   beforeEach(() => {

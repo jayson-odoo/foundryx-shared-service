@@ -39,6 +39,10 @@ celery_app.conf.beat_schedule = {
     # self-reschedule was lost to a crash (omnichannel Slice 4). Defined in this
     # worker (the sole beat host); guarded so a missing module is a no-op.
     "retry-due-webhooks": {"task": "webhooks.retry_due", "schedule": 60.0},
+    # Meetings calendar sync (sprint-5 S0) — a new event with a conference link
+    # must surface within 60 s, so this is a minute tick like the rest. It only
+    # enqueues for tenants that have the module active AND someone opted in.
+    "meetings-calendar-sync": {"task": "meetings.calendar_sync_due", "schedule": 60.0},
 }
 
 
@@ -91,6 +95,28 @@ def run_due_workflows_task() -> dict:
         logger.exception("scheduled-workflow tick failed")
         db.rollback()
         return {"fired": 0, "pruned": 0}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="meetings.calendar_sync_due")
+def meetings_calendar_sync_due_task() -> dict:
+    """Minute tick enqueuing one calendar-sync job per due tenant (S0 plan §3).
+    Failure-isolated; a no-op when the meetings module isn't installed."""
+    from app.database import SessionLocal
+
+    try:
+        from modules.meetings.jobs import enqueue_due_calendar_syncs
+    except ImportError:
+        return {"enqueued": 0}
+
+    db = SessionLocal()
+    try:
+        return {"enqueued": enqueue_due_calendar_syncs(db)}
+    except Exception:  # noqa: BLE001 — a bad tick never kills the beat loop
+        logger.exception("meetings calendar sync tick failed")
+        db.rollback()
+        return {"enqueued": 0}
     finally:
         db.close()
 
@@ -168,3 +194,4 @@ def run_workflow_task(run_id: str) -> dict:
 import app.jobs.worker  # noqa: E402,F401 — registers the `jobs.run` Celery task
 import app.storage_migration.service  # noqa: E402,F401 — module-level register_storage_migration_handler()
 import modules.autocount.sync  # noqa: E402,F401 — registers the `autocount_sync` job handler
+import modules.meetings.jobs  # noqa: E402,F401 — registers the `meetings.calendar_sync` handler

@@ -73,6 +73,7 @@ def session_factory():
     # the module schema onto it — keeps module tables isolated from core (the
     # module's `statuses` must not collide with the core `statuses`, plan 07).
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
+    from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
 
     engine = create_engine(
@@ -84,14 +85,24 @@ def session_factory():
         # names; no collisions) — module tables stay isolated from core's.
         # autocount (sprint-4/13) maps onto the same attached db: its tables are
         # ``ac_``-prefixed, so they cannot collide with omnichannel's.
-        schema_translate_map={OMNI_SCHEMA: "omni", AUTOCOUNT_SCHEMA: "omni"}
+        # meetings (sprint-5 S0) gets its OWN attached db — every module on disk
+        # is globally installed by ``bootstrap_modules`` below, so a module whose
+        # schema maps nowhere would fail its create_all and land in
+        # ERRORED_MODULES for the whole suite.
+        schema_translate_map={
+            OMNI_SCHEMA: "omni",
+            AUTOCOUNT_SCHEMA: "omni",
+            MEETINGS_SCHEMA: "meetings",
+        }
     )
     with engine.connect() as conn:
         conn.exec_driver_sql("ATTACH ':memory:' AS omni")
+        conn.exec_driver_sql("ATTACH ':memory:' AS meetings")
         conn.commit()
     Base.metadata.create_all(bind=engine)
     OmniBase.metadata.create_all(bind=engine)
     AutocountBase.metadata.create_all(bind=engine)
+    MeetingsBase.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(
         bind=engine, autoflush=False, autocommit=False
     )
@@ -172,6 +183,7 @@ def ideation_session_factory():
     """
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
+    from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
 
     engine = create_engine(
@@ -187,16 +199,19 @@ def ideation_session_factory():
             OMNI_SCHEMA: "omni",
             AUTOCOUNT_SCHEMA: "omni",
             IDEATION_SCHEMA: "ideation",
+            MEETINGS_SCHEMA: "meetings",
         }
     )
     with engine.connect() as conn:
         conn.exec_driver_sql("ATTACH ':memory:' AS omni")
         conn.exec_driver_sql("ATTACH ':memory:' AS ideation")
+        conn.exec_driver_sql("ATTACH ':memory:' AS meetings")
         conn.commit()
     Base.metadata.create_all(bind=engine)
     OmniBase.metadata.create_all(bind=engine)
     AutocountBase.metadata.create_all(bind=engine)
     IdeationBase.metadata.create_all(bind=engine)
+    MeetingsBase.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
     db = TestingSessionLocal()
@@ -259,3 +274,88 @@ def client(session_factory):
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def meetings_session_factory():
+    """SQLite session factory with the meetings module mounted + installed.
+
+    Mirrors ``ideation_session_factory``: every module schema maps onto its own
+    attached in-memory db, ``bootstrap_modules`` runs the real global install for
+    all of them, and the App Store then installs ``meetings`` for the default
+    tenant — so a meetings test gets the same wiring production has (permission
+    grants included).
+    """
+    from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
+    from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
+    from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
+    from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    ).execution_options(
+        # Every module on disk is globally installed by ``bootstrap_modules``
+        # below, so every module schema needs somewhere to live here — one whose
+        # schema maps nowhere lands in ERRORED_MODULES and pollutes the run.
+        schema_translate_map={
+            OMNI_SCHEMA: "omni",
+            AUTOCOUNT_SCHEMA: "omni",
+            IDEATION_SCHEMA: "ideation",
+            MEETINGS_SCHEMA: "meetings",
+        }
+    )
+    with engine.connect() as conn:
+        conn.exec_driver_sql("ATTACH ':memory:' AS omni")
+        conn.exec_driver_sql("ATTACH ':memory:' AS ideation")
+        conn.exec_driver_sql("ATTACH ':memory:' AS meetings")
+        conn.commit()
+    Base.metadata.create_all(bind=engine)
+    OmniBase.metadata.create_all(bind=engine)
+    AutocountBase.metadata.create_all(bind=engine)
+    IdeationBase.metadata.create_all(bind=engine)
+    MeetingsBase.metadata.create_all(bind=engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    db = TestingSessionLocal()
+    seed_statuses(db)
+    seed_tenant_transitions(db)
+    seed_default_tenant(db)
+    seed_platform_tenant(db)
+    seed_permissions(db)
+    seed_platform_admin(db)
+    from app.template_engine.seed_templates import seed_platform_templates
+
+    seed_platform_templates(db)
+
+    admin_role = Role(
+        tenant_id=DEFAULT_TENANT_ID,
+        name="Admin",
+        description="Full system access",
+        is_system=True,
+    )
+    admin_role.permissions = tenant_admin_grant(db, DEFAULT_TENANT_ID)
+    db.add(admin_role)
+    db.flush()
+
+    demo = User(
+        tenant_id=DEFAULT_TENANT_ID,
+        email=ACTIVE_EMAIL,
+        password=hash_password(ACTIVE_PASSWORD),
+        name="Demo User",
+        status=UserStatus.ACTIVE.value,
+        email_verified_at=func.now(),
+    )
+    demo.roles = [admin_role]
+    db.add(demo)
+    db.commit()
+
+    from app.module_loader import bootstrap_modules
+    from app.services.app_store_service import AppStoreService
+
+    bootstrap_modules(engine=engine, db=db)
+    AppStoreService(db).install(DEFAULT_TENANT_ID, "meetings")
+    db.close()
+
+    yield TestingSessionLocal

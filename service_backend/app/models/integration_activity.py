@@ -33,6 +33,10 @@ SOURCE_WEBHOOK_DELIVERY = "webhook_delivery"
 # AutoCount instance (sprint-4/13). ``ACTIVITY_SOURCES`` is a CLOSED tuple —
 # without this value the ESB's calls never render in the Developer Logs console.
 SOURCE_AUTOCOUNT = "autocount"
+# Calendar reads the ``meetings`` module makes against Google (sprint-5 S0).
+# Same reason as ``autocount`` above: the tuple is CLOSED, so a missing value
+# means the module's runs never render in the Developer Logs console.
+SOURCE_MEETINGS = "meetings"
 
 ACTIVITY_SOURCES = (
     SOURCE_INBOUND_API,
@@ -40,6 +44,7 @@ ACTIVITY_SOURCES = (
     SOURCE_OUTBOUND_META,
     SOURCE_WEBHOOK_DELIVERY,
     SOURCE_AUTOCOUNT,
+    SOURCE_MEETINGS,
 )
 
 # Outcome — code branches on these; the console filters/segments by them.

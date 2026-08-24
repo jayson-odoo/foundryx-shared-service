@@ -12,7 +12,7 @@ import type {
   MeetingsSettings,
   MeetingsSettingsInput,
 } from '@/types/meetings';
-import { mockMeetingsService } from './meetings-service.mock';
+import { realMeetingsService } from './meetings-service.real';
 
 /** Window of upcoming events to read; both ends are ISO-8601 UTC. */
 export interface MeetingsEventRange {
@@ -34,5 +34,5 @@ export interface MeetingsService {
   saveSettings(input: MeetingsSettingsInput): Promise<MeetingsSettings>;
 }
 
-// PHASE 1 MOCK — swapped to `realMeetingsService` once the backend lands.
-export const meetingsService: MeetingsService = mockMeetingsService;
+// Phase 2 swap done — the mock is retained in *.mock.ts for tunable states.
+export const meetingsService: MeetingsService = realMeetingsService;
