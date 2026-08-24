@@ -91,10 +91,10 @@ by it):
    unsavable. This avoids touching core's `EXEMPT_FROM_ONE_PER_TYPE`. Test:
    `::test_a_tenant_can_hold_both_kinds_at_once`.
 2. **The Test button needs a second Google scope.** AC-S0-4 asks the test to list the first five
-   users of the domain, which is the Admin SDK Directory API, not Calendar. The tenant onboarding in
-   spine §5.3 step 2 grants only `calendar.readonly`; it also needs
-   `admin.directory.user.readonly` or the Test button will always fail with Google's
-   "not authorized" message. **The spine should be updated.**
+   users of the domain, which is the Admin SDK Directory API, not Calendar, so a tenant that grants
+   only `calendar.readonly` gets Google's "not authorized" message from every Test. Spine §5.3
+   step 2 now names `admin.directory.user.readonly` alongside it, and step 3 names the two connection
+   types (decision 1 below) - both folded back in commit `76a6d4c`.
 3. **Connections are not re-implemented on Settings -> Meetings.** Each kind is a card that
    deep-links into the shared `/settings/integrations` form. That needed a small extension to the
    shared form (`?provider=` preselect, threaded through `ConnectionFormView` /
