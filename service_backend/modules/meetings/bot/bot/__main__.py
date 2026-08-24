@@ -127,8 +127,7 @@ def run(a: argparse.Namespace) -> int:
             outcome = session.join(a.meet_url)
             if outcome != "joined":
                 reason, code = outcome, 0
-                finish()
-                return code
+                return code  # finally still runs finish()
 
             recorder.start()
             events.emit("recording_started")
