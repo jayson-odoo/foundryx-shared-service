@@ -100,8 +100,8 @@ Same mechanism as `PLAN-ideation-embed-sso.md`, mounted on the module's own pref
 ### 5.3 Tenant onboarding (human steps, wizard-scripted in S7)
 
 1. Google Cloud: FoundryX service account + OAuth client ID exist once (platform-owned).
-2. Tenant Workspace admin: create `notetaker@<domain>`, put it in a 2SV-exempt OU, grant domain-wide delegation to the FoundryX client ID with scope `https://www.googleapis.com/auth/calendar.readonly`.
-3. Tenant admin in shared-service: `google_dwd` connection (admin email to impersonate for the directory listing), `meet_bot` connection (notetaker email + password), storage connection (existing), optional `llm` connection.
+2. Tenant Workspace admin: create `notetaker@<domain>`, put it in a 2SV-exempt OU, grant domain-wide delegation to the FoundryX client ID with scopes `https://www.googleapis.com/auth/calendar.readonly` and `https://www.googleapis.com/auth/admin.directory.user.readonly` (the second one is what the connection Test button and the opt-in user lookup use; found in S0).
+3. Tenant admin in shared-service: connection of type `calendar` (provider `google_dwd`: service-account JSON + admin email to impersonate), connection of type `meeting_bot` (notetaker email + password), storage connection (existing), optional `llm` connection. Two connection types because core allows one active connection per type per tenant (S0 decision).
 
 ## 6. Slices, gates, estimates
 
