@@ -35,10 +35,15 @@ CHAT_INPUT = 'textarea[aria-label*="Send a message" i]'
 CHAT_SEND = 'button[aria-label*="Send a message" i]'
 CHAT_CLOSE = 'button[aria-label*="Close" i]'
 
-# people panel
-PEOPLE_OPEN = 'button[aria-label*="People" i], button[aria-label*="Show everyone" i], button[aria-label*="participants" i]'
-PEOPLE_LIST_ITEM = 'div[role="list"][aria-label*="participant" i] [role="listitem"]'
-PEOPLE_SELF_MARK = "(You)"
+# participants: the People button renders the count as its only text ("2"); tiles carry
+# data-participant-id and the display name as their first text line. Both include the bot itself.
+PEOPLE_COUNT_JS = """() => {
+  const b = Array.from(document.querySelectorAll('button,[role=button]'))
+    .map(e => (e.innerText || '').trim()).find(t => /^\\d+$/.test(t));
+  return b ? parseInt(b, 10) : null;
+}"""
+TILE_NAMES_JS = """() => Array.from(document.querySelectorAll('[data-participant-id]'))
+  .map(t => ((t.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean)[0]) || '')"""
 
 # active speaker: participant tiles carry data-participant-id; the speaking indicator is an
 # animated element inside the tile. Best-effort, refined by the spike report.

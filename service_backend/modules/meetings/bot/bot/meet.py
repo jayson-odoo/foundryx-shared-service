@@ -141,10 +141,6 @@ class MeetSession:
             self.events.emit("consent_skipped", reason="chat_input_not_found")
         self._click_if_present(S.CHAT_CLOSE, 1500)
 
-    def open_people_panel(self) -> None:
-        if self._click_if_present(S.PEOPLE_OPEN, 5000):
-            self.page.wait_for_timeout(1000)
-
     def dom_probe(self) -> dict:
         """Dump what the in-call DOM offers so selectors can be pinned from a real run (spike only)."""
         return self.page.evaluate(
@@ -172,19 +168,18 @@ class MeetSession:
             return Poll(0, [], [], "ended")
         if self.page.locator(S.LOBBY_WAITING).count():
             return Poll(0, [], [], "ended")
-        names = [
-            (item.get_attribute("aria-label") or item.inner_text() or "").strip()
-            for item in self.page.locator(S.PEOPLE_LIST_ITEM).all()
-        ]
-        humans = [n for n in names if n and S.PEOPLE_SELF_MARK not in n]
+        names = [n for n in self.page.evaluate(S.TILE_NAMES_JS) if n]
+        count = self.page.evaluate(S.PEOPLE_COUNT_JS)
+        total = count if count is not None else len(names)
+        humans_n = max(total - 1, 0)  # minus the bot itself
         speaking = self.page.evaluate(
             """([tile, nameAttr, speakingSel]) => Array.from(document.querySelectorAll(tile))
                  .filter(t => t.querySelector(speakingSel))
-                 .map(t => t.getAttribute(nameAttr) || t.getAttribute('aria-label') || '')
+                 .map(t => ((t.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean)[0]) || '')
                  .filter(Boolean)""",
             [S.TILE, S.TILE_NAME_ATTR, S.TILE_SPEAKING],
         )
-        return Poll(len(humans), humans, speaking, "in_call")
+        return Poll(humans_n, names, speaking, "in_call")
 
     def leave(self) -> None:
         self._click_if_present(S.IN_CALL_LEAVE, 3000)

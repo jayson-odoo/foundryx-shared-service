@@ -14,7 +14,8 @@ case "${1:-}" in
     RUN="$OUT/$(date +%Y%m%d-%H%M%S)"; mkdir -p "$RUN"
     NAME="bot-$(basename "$RUN")"
     ( sleep 10; while docker stats --no-stream --format '{{.MemUsage}} {{.CPUPerc}}' "$NAME" 2>/dev/null; do sleep 15; done ) >> "$RUN/stats.log" &
-    docker run --rm --name "$NAME" -v "$PROFILE:/profile" -v "$RUN:/out" --shm-size=1g -e BOT_HEADLESS="${BOT_HEADLESS:-1}" \
+    rm -f "$PROFILE"/Singleton*; docker run --rm --name "$NAME" -v "$PROFILE:/profile" -v "$RUN:/out" --shm-size=1g -e BOT_HEADLESS="${BOT_HEADLESS:-1}" \
       "$IMG" --meet-url "$2" --display-name Notetaker --for-user "${3:-}" --out /out ;;
-  *) echo "usage: $0 build|login|join <url> [for-user]"; exit 2 ;;
+  stop) docker ps --format '{{.Names}}' | grep '^bot-2026' | xargs -r docker stop -t 30 ;;   # SIGTERM -> bot leaves the call first
+  *) echo "usage: $0 build|login|join <url> [for-user]|stop"; exit 2 ;;
 esac

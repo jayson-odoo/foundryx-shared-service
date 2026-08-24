@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import os
 import subprocess
 import sys
@@ -97,7 +98,16 @@ def login_only(profile: str) -> int:
     return 0
 
 
+STOP = {"requested": False}
+
+
+def _request_stop(signum, frame):  # SIGTERM from docker stop / run.sh stop: leave the call, do not vanish
+    STOP["requested"] = True
+
+
 def run(a: argparse.Namespace) -> int:
+    signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
     work = Path("/tmp/botwork")
     work.mkdir(parents=True, exist_ok=True)
     storage = Storage(a.out)
@@ -134,13 +144,16 @@ def run(a: argparse.Namespace) -> int:
             recorder.start()
             events.emit("recording_started")
             session.post_consent()
-            session.open_people_panel()
             probe_at = time.time() + 20  # first DOM probe once tiles have settled
 
             started = time.time()
             empty_since: float | None = None
             last_names: list[str] = []
+            last_humans = -1
             while True:
+                if STOP["requested"]:
+                    reason = "stopped"
+                    break
                 p = session.poll()
                 if p.state == "removed":
                     reason = "removed"
@@ -148,9 +161,9 @@ def run(a: argparse.Namespace) -> int:
                 if p.state == "ended":
                     reason = "ended"
                     break
-                if p.names != last_names:
-                    events.emit("participants", count=p.humans, names=p.names)
-                    last_names = p.names
+                if p.names != last_names or p.humans != last_humans:
+                    events.emit("participants", humans=p.humans, tiles=p.names)
+                    last_names, last_humans = p.names, p.humans
                 if p.speaking:
                     events.emit("active_speaker", names=p.speaking)
                 if p.humans == 0 and time.time() - started > a.min_seconds:
