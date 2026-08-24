@@ -22,7 +22,7 @@ PREJOIN_SWITCH_HERE = 'button:has-text("Switch here")'
 
 # lobby / denial
 LOBBY_WAITING = 'text=/Asking to join|Someone will let you in|will let you in soon/i'
-LOBBY_DENIED = 'text=/You can.t join this (video )?call|No one responded|denied your request|Meeting is full/i'
+LOBBY_DENIED = 'text=/You can.t join this (video )?call|meeting code that you entered doesn.t work|No one responded|denied your request|Meeting is full/i'
 
 # in call
 IN_CALL_LEAVE = 'button[aria-label*="Leave call" i]'
