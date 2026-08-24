@@ -80,8 +80,15 @@ class MeetSession:
 
     def join(self, url: str) -> str:
         """Returns joined | not_admitted | denied."""
-        self.page.goto(url, wait_until="domcontentloaded")
-        self.page.wait_for_timeout(3000)
+        for attempt in (1, 2):
+            try:
+                self.page.goto(url, wait_until="commit", timeout=60000)
+                break
+            except PWTimeout:
+                self.events.emit("goto_timeout", attempt=attempt)
+                if attempt == 2:
+                    raise BotError("meet_page_did_not_load")
+        self.page.wait_for_timeout(5000)
         if self.page.locator(S.LOBBY_DENIED).count():
             self.events.emit("denied", stage="landing")
             return "denied"
@@ -102,15 +109,17 @@ class MeetSession:
         deadline = time.time() + self.lobby_timeout_s
         lobby_seen = False
         while time.time() < deadline:
-            if self.page.locator(S.IN_CALL_LEAVE).count():
-                self.events.emit("joined", lobby=lobby_seen)
-                return "joined"
             if self.page.locator(S.LOBBY_DENIED).count():
                 self.events.emit("denied")
                 return "denied"
-            if not lobby_seen and self.page.locator(S.LOBBY_WAITING).count():
+            waiting = self.page.locator(S.LOBBY_WAITING).count() > 0
+            if waiting and not lobby_seen:
                 lobby_seen = True
                 self.events.emit("in_lobby")
+            # the host-hold screen shows a Leave button too; only a Leave button with no hold text is a real join
+            if not waiting and self.page.locator(S.IN_CALL_LEAVE).count():
+                self.events.emit("joined", lobby=lobby_seen)
+                return "joined"
             self.page.wait_for_timeout(1000)
         self.events.emit("not_admitted", waited_s=self.lobby_timeout_s)
         return "not_admitted"
@@ -136,12 +145,32 @@ class MeetSession:
         if self._click_if_present(S.PEOPLE_OPEN, 5000):
             self.page.wait_for_timeout(1000)
 
+    def dom_probe(self) -> dict:
+        """Dump what the in-call DOM offers so selectors can be pinned from a real run (spike only)."""
+        return self.page.evaluate(
+            """() => {
+              const lab = (e) => (e.getAttribute('aria-label') || e.innerText || '').trim().slice(0, 80);
+              const uniq = (a) => Array.from(new Set(a.filter(Boolean)));
+              return {
+                buttons: uniq(Array.from(document.querySelectorAll('button,[role=button]')).map(lab)),
+                lists: uniq(Array.from(document.querySelectorAll('[role=list]')).map(e => e.getAttribute('aria-label') || '')),
+                listitems: uniq(Array.from(document.querySelectorAll('[role=listitem]')).map(lab)),
+                tiles: Array.from(document.querySelectorAll('[data-participant-id]')).map(e => ({
+                  name: e.getAttribute('data-self-name') || e.getAttribute('aria-label') || '',
+                  cls: e.className.toString().slice(0, 120)})),
+                url: location.href,
+              };
+            }"""
+        )
+
     # -- polling (AC-S1-6, AC-S1-7, AC-S1-8) -------------------------------------------------
 
     def poll(self) -> Poll:
         if self.page.locator(S.IN_CALL_REMOVED).count():
             return Poll(0, [], [], "removed")
         if self.page.locator(S.IN_CALL_ENDED).count() or not self.page.locator(S.IN_CALL_LEAVE).count():
+            return Poll(0, [], [], "ended")
+        if self.page.locator(S.LOBBY_WAITING).count():
             return Poll(0, [], [], "ended")
         names = [
             (item.get_attribute("aria-label") or item.inner_text() or "").strip()

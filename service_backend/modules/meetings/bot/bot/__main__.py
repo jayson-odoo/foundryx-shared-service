@@ -9,6 +9,7 @@ Exit 1 with reason error:<what> and last screenshot uploaded (AC-S1-9).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -51,6 +52,7 @@ def parse() -> argparse.Namespace:
     p.add_argument("--profile", default=os.environ.get("BOT_PROFILE_DIR", "/profile"))
     p.add_argument("--lobby-timeout", type=int, default=int(os.environ.get("BOT_LOBBY_TIMEOUT", "180")))
     p.add_argument("--empty-room-seconds", type=int, default=int(os.environ.get("BOT_EMPTY_ROOM_SECONDS", "60")))
+    p.add_argument("--min-seconds", type=int, default=int(os.environ.get("BOT_MIN_SECONDS", "180")))
     p.add_argument("--max-seconds", type=int, default=int(os.environ.get("BOT_MAX_SECONDS", str(4 * 3600))))
     p.add_argument("--login-only", action="store_true")
     a = p.parse_args()
@@ -133,6 +135,7 @@ def run(a: argparse.Namespace) -> int:
             events.emit("recording_started")
             session.post_consent()
             session.open_people_panel()
+            probe_at = time.time() + 20  # first DOM probe once tiles have settled
 
             started = time.time()
             empty_since: float | None = None
@@ -150,7 +153,7 @@ def run(a: argparse.Namespace) -> int:
                     last_names = p.names
                 if p.speaking:
                     events.emit("active_speaker", names=p.speaking)
-                if p.humans == 0:
+                if p.humans == 0 and time.time() - started > a.min_seconds:
                     empty_since = empty_since or time.time()
                     if time.time() - empty_since >= a.empty_room_seconds:
                         reason = "room_empty"
@@ -160,6 +163,14 @@ def run(a: argparse.Namespace) -> int:
                 if time.time() - started >= a.max_seconds:
                     reason = "max_duration"
                     break
+                if time.time() >= probe_at:
+                    probe = session.dom_probe()
+                    (work / "dom_probe.json").write_text(json.dumps(probe, indent=1, ensure_ascii=False))
+                    storage.put(work / "dom_probe.json")
+                    page.screenshot(path=str(work / "in_call.png"))
+                    storage.put(work / "in_call.png")
+                    events.emit("dom_probe", buttons=len(probe["buttons"]), listitems=len(probe["listitems"]), tiles=len(probe["tiles"]))
+                    probe_at = time.time() + 60
                 time.sleep(1)
             session.leave()
             code = 0

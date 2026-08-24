@@ -21,7 +21,7 @@ PREJOIN_ASK_TO_JOIN = 'button:has-text("Ask to join")'
 PREJOIN_SWITCH_HERE = 'button:has-text("Switch here")'
 
 # lobby / denial
-LOBBY_WAITING = 'text=/Asking to join|Someone will let you in|will let you in soon/i'
+LOBBY_WAITING = 'text=/Asking to join|Someone will let you in|will let you in soon|wait until a meeting host|host brings you into the call/i'
 LOBBY_DENIED = 'text=/You can.t join this (video )?call|meeting code that you entered doesn.t work|No one responded|denied your request|Meeting is full/i'
 
 # in call
@@ -36,7 +36,7 @@ CHAT_SEND = 'button[aria-label*="Send a message" i]'
 CHAT_CLOSE = 'button[aria-label*="Close" i]'
 
 # people panel
-PEOPLE_OPEN = 'button[aria-label*="People" i]'
+PEOPLE_OPEN = 'button[aria-label*="People" i], button[aria-label*="Show everyone" i], button[aria-label*="participants" i]'
 PEOPLE_LIST_ITEM = 'div[role="list"][aria-label*="participant" i] [role="listitem"]'
 PEOPLE_SELF_MARK = "(You)"
 
