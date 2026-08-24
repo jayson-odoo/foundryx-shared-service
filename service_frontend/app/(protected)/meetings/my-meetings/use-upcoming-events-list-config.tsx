@@ -12,7 +12,7 @@ import type { ResourceListConfig } from '@/components/platform/resource-list';
 import type { ListQuery, ListResult } from '@/types/resource';
 import type { MeetingAttendee, MeetingsEvent, MeetingPlatform } from '@/types/meetings';
 import { toCsv } from '@/lib/csv';
-import { formatDateTime } from '@/lib/datetime';
+import { formatDateTime, formatTime } from '@/lib/datetime';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -33,8 +33,6 @@ function sortRows(rows: MeetingsEvent[], sort: ListQuery['sort']): MeetingsEvent
         return r.organiserEmail ?? '';
       case 'platform':
         return PLATFORM_LABELS[r.platform];
-      case 'endsAt':
-        return r.endsAt ?? '';
       default:
         return r.startsAt;
     }
@@ -73,6 +71,12 @@ export function useUpcomingEventsListConfig(
 
   return useMemo<ResourceListConfig<MeetingsEvent>>(() => {
     const when = (iso: string | null): string => formatDateTime(iso, { timeZone });
+    const whenRange = (row: MeetingsEvent): string => {
+      const start = when(row.startsAt);
+      // An all-day or open-ended event has no end to append.
+      if (!row.endsAt) return start;
+      return `${start}-${formatTime(row.endsAt, { timeZone })}`;
+    };
 
     const columns: ColumnDef<MeetingsEvent>[] = [
       {
@@ -85,31 +89,23 @@ export function useUpcomingEventsListConfig(
             <ClampedText text={row.original.title ?? '—'} lines={2} />
           </span>
         ),
-        size: 260,
+        size: 175,
         enableSorting: true,
       },
       {
-        id: 'startsAt',
+        // Start AND end in ONE column: seven separate columns do not fit beside
+        // the sidebar at 1280px, and "02:57-03:57" is how a person reads a
+        // meeting time anyway. Both ends of the AC are still on screen.
+        id: 'when',
         accessorFn: (r) => r.startsAt,
-        meta: { headerTitle: 'Starts' },
-        header: ({ column }) => <DataGridColumnHeader title="Starts" column={column} />,
+        meta: { headerTitle: 'When' },
+        header: ({ column }) => <DataGridColumnHeader title="When" column={column} />,
         cell: ({ row }) => (
           <span className={row.original.optedOut ? 'text-muted-foreground' : undefined}>
-            {when(row.original.startsAt)}
+            {whenRange(row.original)}
           </span>
         ),
-        size: 170,
-        enableSorting: true,
-      },
-      {
-        id: 'endsAt',
-        accessorFn: (r) => r.endsAt ?? '',
-        meta: { headerTitle: 'Ends' },
-        header: ({ column }) => <DataGridColumnHeader title="Ends" column={column} />,
-        cell: ({ row }) => (
-          <span className="text-muted-foreground">{when(row.original.endsAt)}</span>
-        ),
-        size: 170,
+        size: 215,
         enableSorting: true,
       },
       {
@@ -120,7 +116,7 @@ export function useUpcomingEventsListConfig(
         cell: ({ row }) => (
           <ClampedText text={row.original.organiserEmail ?? '—'} lines={1} />
         ),
-        size: 200,
+        size: 165,
         enableSorting: true,
       },
       {
@@ -139,7 +135,7 @@ export function useUpcomingEventsListConfig(
             )}
           />
         ),
-        size: 240,
+        size: 145,
         enableSorting: true,
       },
       {
@@ -169,7 +165,7 @@ export function useUpcomingEventsListConfig(
             />
           </div>
         ),
-        size: 110,
+        size: 90,
         enableSorting: false,
         enableHiding: false,
         enableResizing: false,
@@ -209,23 +205,64 @@ export function useUpcomingEventsListConfig(
       );
     };
 
+    // Card view (the shared list's own prop, not a parallel component): at 375px
+    // the grid has to scroll sideways to reach the capture switch, and that
+    // switch is the entire point of the page.
+    const cardRender = (row: MeetingsEvent) => (
+      <div className="flex flex-col gap-3">
+        <div className="flex items-start justify-between gap-3">
+          <span
+            className={`text-sm font-medium ${row.optedOut ? 'text-muted-foreground' : ''}`}
+          >
+            <ClampedText text={row.title ?? '—'} lines={2} />
+          </span>
+          <div onClick={stop}>
+            <Switch
+              aria-label={`Capture ${row.title ?? 'this meeting'}`}
+              checked={!row.optedOut}
+              disabled={saving}
+              onCheckedChange={(checked) => onToggleCapture(row, checked)}
+            />
+          </div>
+        </div>
+        <div className="text-sm text-muted-foreground">{whenRange(row)}</div>
+        <div className="text-sm">
+          <ClampedText text={row.organiserEmail ?? '—'} lines={1} />
+        </div>
+        <OverflowPills
+          items={row.attendees}
+          keyFor={(a) => a.email}
+          renderPill={(a) => (
+            <Badge variant="secondary" appearance="light" size="sm">
+              {attendeeLabel(a)}
+            </Badge>
+          )}
+        />
+        <div>
+          <Badge variant="outline" size="sm">
+            {PLATFORM_LABELS[row.platform]}
+          </Badge>
+        </div>
+      </div>
+    );
+
     return {
       viewKey: 'meetings.upcoming-events',
+      cardRender,
       getRowId: (row) => row.id,
       rowHref: () => pathname, // no detail page in S0 — the row IS the control
       fetcher,
       exporter,
       searchPlaceholder: 'Search meetings…',
       searchHints: ['Meeting', 'Organiser', 'Attendee'],
-      defaultSort: { id: 'startsAt', desc: false },
+      defaultSort: { id: 'when', desc: false },
       exportFilename: 'upcoming-meetings',
       enableStatusViews: false,
       columns,
       filterFields: [],
       exportColumns: [
         { id: 'title', label: 'Meeting' },
-        { id: 'startsAt', label: 'Starts' },
-        { id: 'endsAt', label: 'Ends' },
+        { id: 'when', label: 'When' },
         { id: 'organiser', label: 'Organiser' },
         { id: 'attendees', label: 'Attendees' },
         { id: 'platform', label: 'Platform' },

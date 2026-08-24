@@ -25,8 +25,12 @@ def upgrade() -> None:
     # and can never drift from models.py.
     from sqlalchemy import text
 
+    from modules.meetings import models  # noqa: F401 — POPULATES the metadata
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
 
+    # Importing ``models`` is load-bearing: ``MeetingsBase.metadata`` is empty
+    # until the model module runs, and an empty metadata makes ``create_all`` a
+    # silent no-op — the migration would "succeed" having built nothing.
     bind = op.get_bind()
     bind.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{MEETINGS_SCHEMA}"'))
     MeetingsBase.metadata.create_all(bind=bind)
@@ -45,6 +49,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     from sqlalchemy import text
 
+    from modules.meetings import models  # noqa: F401 — populates the metadata
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
 
     bind = op.get_bind()

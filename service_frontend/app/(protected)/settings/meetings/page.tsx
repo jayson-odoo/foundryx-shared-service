@@ -13,7 +13,7 @@ export default function MeetingsSettingsPage() {
         <Container width="fluid">
           <Toolbar>
             <ToolbarHeading>
-              <ToolbarPageTitle />
+              <ToolbarPageTitle text="Meetings settings" />
             </ToolbarHeading>
           </Toolbar>
         </Container>
