@@ -1,11 +1,22 @@
 # PLAN - Meetings S0: Module skeleton, calendar sync, opt-in
 
-**Status:** BUILT (2026-08-25) on `sprint-5/meetings-s0-calendar-optin`, unmerged. All fourteen ACs
-pass; report: `meetings-s0-calendar-optin-test-report.md`. Backend 47/47, frontend 9/9, migration
-verified on real Postgres (both the fresh-upgrade and the production stamp path). Two follow-ups the
-report raises: the `google_dwd` adapter has never run against a real Google Workspace, and tenant
-onboarding needs a SECOND scope (`admin.directory.user.readonly`) for the Test button, which spine
-§5.3 step 2 does not yet mention.
+**Status:** BUILT + REVIEWED (2026-08-25) on `sprint-5/meetings-s0-calendar-optin`, unmerged. All
+fourteen ACs pass; report: `meetings-s0-calendar-optin-test-report.md`. Backend 54/54 meetings
+(134/134 including every core suite this slice touches), frontend 1147/1147, migration verified on
+real Postgres across fresh upgrade, downgrade-to-base, re-upgrade and the production stamp path,
+with a model-vs-migration drift check that now comes back clean.
+
+Code review closed three blockers that automated tests alone had not caught: a held `syncToken`
+meant the 14-day window never rolled, so a meeting first seen beyond it would never arrive; a full
+read never returns cancelled events (`showDeleted=false`), so cancellations outside an incremental
+page were invisible until the sync learned to prune; and the minute tick had no in-flight guard, so
+a tenant whose pass outran the tick accumulated jobs that raced on one `sync_token`. The migration
+was also rewritten from `metadata.create_all` to explicit DDL, without which drift is undetectable
+by construction.
+
+One follow-up stands: the `google_dwd` adapter has never run against a real Google Workspace, and
+tenant onboarding needs a SECOND scope (`admin.directory.user.readonly`) for the Test button, which
+spine §5.3 step 2 does not yet mention.
 UAC: `meetings-s0-calendar-optin-acceptance-criteria.md`. Spine: `PLAN-meetings-program.md`.
 **Order:** after S1 gate. Frontend mock first (PRINCIPLES step 3), backend test-first second.
 
