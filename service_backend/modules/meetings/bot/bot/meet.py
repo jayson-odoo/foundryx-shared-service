@@ -36,7 +36,9 @@ class MeetSession:
     def is_logged_in(self) -> bool:
         self.page.goto("https://meet.google.com/", wait_until="domcontentloaded")
         self.page.wait_for_timeout(2000)
-        return "accounts.google.com" not in self.page.url
+        if "accounts.google.com" in self.page.url:
+            return False
+        return self.page.locator(S.HOME_SIGN_IN).count() == 0
 
     def login(self, email: str, password: str) -> None:
         self.page.goto("https://accounts.google.com/ServiceLogin?continue=https://meet.google.com/",
@@ -79,6 +81,10 @@ class MeetSession:
     def join(self, url: str) -> str:
         """Returns joined | not_admitted | denied."""
         self.page.goto(url, wait_until="domcontentloaded")
+        self.page.wait_for_timeout(3000)
+        if self.page.locator(S.LOBBY_DENIED).count():
+            self.events.emit("denied", stage="landing")
+            return "denied"
         self._click_if_present(S.PREJOIN_CONTINUE_WITHOUT_MEDIA, 4000)
         self._ensure_muted(S.PREJOIN_MIC_BUTTON)
         self._ensure_muted(S.PREJOIN_CAM_BUTTON)

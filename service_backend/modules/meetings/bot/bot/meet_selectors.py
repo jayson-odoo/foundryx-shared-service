@@ -7,6 +7,9 @@ LOGIN_PASSWORD = 'input[type="password"]'
 LOGIN_NEXT = 'button:has-text("Next")'
 LOGIN_2SV_HINT = 'text=/2-Step Verification|Verify it.s you|Check your phone/i'
 
+# meet.google.com home when signed out
+HOME_SIGN_IN = 'a:has-text("Sign in"), button:has-text("Sign in")'
+
 # pre-join screen
 PREJOIN_CONTINUE_WITHOUT_MEDIA = 'button:has-text("Continue without microphone")'
 PREJOIN_MIC_BUTTON = '[role="button"][aria-label*="microphone" i]'
@@ -19,7 +22,7 @@ PREJOIN_SWITCH_HERE = 'button:has-text("Switch here")'
 
 # lobby / denial
 LOBBY_WAITING = 'text=/Asking to join|Someone will let you in|will let you in soon/i'
-LOBBY_DENIED = 'text=/You can.t join this call|No one responded|denied your request|Meeting is full/i'
+LOBBY_DENIED = 'text=/You can.t join this (video )?call|No one responded|denied your request|Meeting is full/i'
 
 # in call
 IN_CALL_LEAVE = 'button[aria-label*="Leave call" i]'
