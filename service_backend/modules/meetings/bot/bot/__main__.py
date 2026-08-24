@@ -144,6 +144,8 @@ def run(a: argparse.Namespace) -> int:
             recorder.start()
             events.emit("recording_started")
             session.post_consent()
+            session.enable_captions()
+            last_caption: tuple[str, str] | None = None
             probe_at = time.time() + 20  # first DOM probe once tiles have settled
 
             started = time.time()
@@ -166,6 +168,12 @@ def run(a: argparse.Namespace) -> int:
                     last_names, last_humans = p.names, p.humans
                 if p.speaking:
                     events.emit("active_speaker", names=p.speaking)
+                blocks = session.captions()
+                if blocks:
+                    cur = (blocks[-1]["speaker"], blocks[-1]["text"])
+                    if cur != last_caption:
+                        events.emit("caption", speaker=cur[0], text=cur[1])
+                        last_caption = cur
                 if p.humans == 0 and time.time() - started > a.min_seconds:
                     empty_since = empty_since or time.time()
                     if time.time() - empty_since >= a.empty_room_seconds:
