@@ -6,6 +6,8 @@ sync's own behaviour — incremental token use, the HTTP-410 fallback, link
 recognition per platform, the cancelled/link-removed cleanup, the one-meeting
 dedupe across two invitees, and tenant scoping.
 """
+from datetime import timedelta
+
 import pytest
 
 from app.models import DEFAULT_TENANT_ID
@@ -36,10 +38,10 @@ def _demo_user(session):
     return session.query(User).filter(User.email == ACTIVE_EMAIL).one()
 
 
-def _sync(session, source, tenant_id=DEFAULT_TENANT_ID):
+def _sync(session, source, tenant_id=DEFAULT_TENANT_ID, now=None):
     from modules.meetings.services.calendar_sync import sync_tenant
 
-    return sync_tenant(session, tenant_id, source)
+    return sync_tenant(session, tenant_id, source, now=now)
 
 
 # ── AC-S0-7: the events that make it into the mirror ─────────────────────────
@@ -180,24 +182,73 @@ def test_a_later_sync_never_flips_the_opt_out_back(db):
 
 
 # ── AC-S0-10: cancelled / link removed ───────────────────────────────────────
+#
+# Google reports a cancellation two different ways, and the sync has to handle
+# BOTH: an incremental (tokened) read returns the event with
+# ``status="cancelled"``, while a full read defaults to ``showDeleted=false``
+# and simply stops returning it. Only the first is an event we can react to;
+# the second is an absence, which is why a full read prunes.
 
 
-def test_a_cancelled_event_disappears(db):
-    """AC-S0-10: the calendar dropped it, so the mirror drops it."""
+def test_a_cancelled_event_disappears_on_an_incremental_read(db):
+    """AC-S0-10: an incremental read names the cancellation, so we delete it."""
     from modules.meetings.models import CalendarEvent
 
     user = _demo_user(db)
     opt_in(db, DEFAULT_TENANT_ID, user.id)
     db.commit()
 
+    now = utc(2026, 9, 1, 0)
+    _sync(
+        db,
+        FakeCalendarSource(
+            {user.email: [SyncPage(events=[raw_event("g1", starts_at=utc(2026, 9, 1, 2))],
+                                   next_sync_token="tok-1")]}
+        ),
+        now=now,
+    )
+    assert db.query(CalendarEvent).count() == 1
+
+    result = _sync(
+        db,
+        FakeCalendarSource(
+            {
+                user.email: [
+                    SyncPage(
+                        events=[raw_event("g1", starts_at=utc(2026, 9, 1, 2), cancelled=True)],
+                        next_sync_token="tok-2",
+                    )
+                ]
+            }
+        ),
+        # Inside the staleness window, so this really is the incremental path.
+        now=now + timedelta(hours=1),
+    )
+    assert db.query(CalendarEvent).count() == 0
+    assert result.events_deleted == 1
+
+
+def test_a_cancelled_event_disappears_on_a_full_read(db):
+    """AC-S0-10: a full read never SEES the cancellation, it just stops
+    returning the event - so the row goes because it was not in the page."""
+    from modules.meetings.models import CalendarEvent
+
+    user = _demo_user(db)
+    opt_in(db, DEFAULT_TENANT_ID, user.id)
+    db.commit()
+
+    now = utc(2026, 9, 1, 0)
     _sync(
         db,
         FakeCalendarSource(
             {user.email: [SyncPage(events=[raw_event("g1", starts_at=utc(2026, 9, 1, 2))])]}
         ),
+        now=now,
     )
     assert db.query(CalendarEvent).count() == 1
 
+    # The fake drops cancelled events from a tokenless read exactly as Google's
+    # showDeleted=false does, so this page arrives EMPTY.
     result = _sync(
         db,
         FakeCalendarSource(
@@ -207,9 +258,111 @@ def test_a_cancelled_event_disappears(db):
                 ]
             }
         ),
+        now=now,
     )
     assert db.query(CalendarEvent).count() == 0
     assert result.events_deleted == 1
+
+
+def test_a_full_read_prunes_a_row_the_calendar_no_longer_returns(db):
+    """AC-S0-10: whatever made the event go, its absence from a full read is
+    the only signal there is."""
+    from modules.meetings.models import CalendarEvent
+
+    user = _demo_user(db)
+    opt_in(db, DEFAULT_TENANT_ID, user.id)
+    db.commit()
+
+    now = utc(2026, 9, 1, 0)
+    _sync(
+        db,
+        FakeCalendarSource(
+            {
+                user.email: [
+                    SyncPage(
+                        events=[
+                            raw_event("keep", starts_at=utc(2026, 9, 1, 2)),
+                            raw_event("gone", starts_at=utc(2026, 9, 2, 2)),
+                        ]
+                    )
+                ]
+            }
+        ),
+        now=now,
+    )
+    assert db.query(CalendarEvent).count() == 2
+
+    result = _sync(
+        db,
+        FakeCalendarSource(
+            {user.email: [SyncPage(events=[raw_event("keep", starts_at=utc(2026, 9, 1, 2))])]}
+        ),
+        now=now,
+    )
+    assert [r.external_id for r in db.query(CalendarEvent).all()] == ["keep"]
+    assert result.events_deleted == 1
+
+
+def test_a_full_read_does_not_prune_rows_outside_its_window(db):
+    """The prune is scoped to the window that was actually read. A meeting that
+    has since STARTED is outside it, and dropping it would delete history the
+    calendar was never asked about."""
+    from modules.meetings.models import CalendarEvent
+
+    user = _demo_user(db)
+    opt_in(db, DEFAULT_TENANT_ID, user.id)
+    db.commit()
+
+    now = utc(2026, 9, 1, 0)
+    _sync(
+        db,
+        FakeCalendarSource(
+            {user.email: [SyncPage(events=[raw_event("past", starts_at=utc(2026, 9, 1, 2))])]}
+        ),
+        now=now,
+    )
+    assert db.query(CalendarEvent).count() == 1
+
+    # Three hours later the meeting has started: it is behind time_min, so the
+    # empty page says nothing about it.
+    result = _sync(
+        db,
+        FakeCalendarSource({user.email: [SyncPage(events=[])]}),
+        now=now + timedelta(hours=3),
+    )
+    assert db.query(CalendarEvent).count() == 1
+    assert result.events_deleted == 0
+
+
+def test_an_incremental_read_never_prunes(db):
+    """An incremental page carries only what CHANGED, so treating an absent
+    event as deleted there would wipe the whole calendar on the first quiet
+    tick."""
+    from modules.meetings.models import CalendarEvent
+
+    user = _demo_user(db)
+    opt_in(db, DEFAULT_TENANT_ID, user.id)
+    db.commit()
+
+    now = utc(2026, 9, 1, 0)
+    source = FakeCalendarSource(
+        {
+            user.email: [
+                SyncPage(
+                    events=[raw_event("g1", starts_at=utc(2026, 9, 1, 2))],
+                    next_sync_token="tok-1",
+                ),
+                SyncPage(events=[], next_sync_token="tok-2"),
+            ]
+        }
+    )
+    _sync(db, source, now=now)
+    assert db.query(CalendarEvent).count() == 1
+
+    result = _sync(db, source, now=now + timedelta(hours=1))
+    assert source.calls[1]["sync_token"] == "tok-1"
+    assert db.query(CalendarEvent).count() == 1
+    assert result.events_deleted == 0
 
 
 def test_removing_the_link_removes_the_row(db):
@@ -280,9 +433,13 @@ def test_an_expired_token_falls_back_to_the_full_window(db):
     """AC-S0-11: HTTP 410 drops the token and refetches 14 days."""
     from modules.meetings.models import CalendarEvent, UserOptIn
 
+    now = utc(2026, 9, 1, 0)
     user = _demo_user(db)
     row = opt_in(db, DEFAULT_TENANT_ID, user.id)
     row.sync_token = "stale"
+    # Freshly synced, so the token is the one that gets TRIED - otherwise the
+    # periodic full-window refresh would pre-empt the 410 path this pins down.
+    row.last_synced_at = now
     db.commit()
 
     source = FakeCalendarSource(
@@ -293,13 +450,59 @@ def test_an_expired_token_falls_back_to_the_full_window(db):
         },
         invalid_token_for=user.email,
     )
-    result = _sync(db, source)
+    result = _sync(db, source, now=now)
 
     assert [c["sync_token"] for c in source.calls] == ["stale", None]
     assert source.calls[1]["time_min"] is not None and source.calls[1]["time_max"] is not None
     assert db.query(CalendarEvent).count() == 1
     assert db.query(UserOptIn).filter(UserOptIn.user_id == user.id).one().sync_token == "fresh"
     assert result.errors == []
+
+
+def test_a_held_token_is_refreshed_with_a_full_read_once_it_goes_stale(db):
+    """A syncToken is bound to the window of the request that MINTED it.
+
+    Google keeps answering an incremental read against the ORIGINAL timeMin /
+    timeMax, so a meeting that starts beyond 14 days at first sync would never
+    arrive - the window would never roll, however long the module ran. Every
+    ``FULL_RESYNC_AFTER_HOURS`` the sync therefore drops the token and reads the
+    whole window again.
+    """
+    from modules.meetings.models import CalendarEvent, UserOptIn
+    from modules.meetings.services.calendar_sync import FULL_RESYNC_AFTER_HOURS, WINDOW_DAYS
+
+    user = _demo_user(db)
+    opt_in(db, DEFAULT_TENANT_ID, user.id)
+    db.commit()
+
+    t0 = utc(2026, 9, 1, 0)
+    # Beyond the FIRST window, inside a later one - the event the old code could
+    # never have delivered.
+    far = raw_event("far", starts_at=t0 + timedelta(days=20))
+    source = FakeCalendarSource(
+        {
+            user.email: [
+                SyncPage(events=[], next_sync_token="tok-1"),
+                SyncPage(events=[], next_sync_token="tok-1"),
+                SyncPage(events=[far], next_sync_token="tok-3"),
+            ]
+        }
+    )
+
+    _sync(db, source, now=t0)
+    # Well inside the staleness window: the token is used, no window is sent.
+    _sync(db, source, now=t0 + timedelta(hours=FULL_RESYNC_AFTER_HOURS - 1))
+    # Past it: the token is dropped and the window rolls forward.
+    t2 = t0 + timedelta(days=8)
+    _sync(db, source, now=t2)
+
+    assert [c["sync_token"] for c in source.calls] == [None, "tok-1", None]
+    assert source.calls[1]["time_min"] is None
+    assert source.calls[2]["time_min"] == t2
+    assert source.calls[2]["time_max"] == t2 + timedelta(days=WINDOW_DAYS)
+    # The far event is inside the rolled window and finally lands.
+    assert [r.external_id for r in db.query(CalendarEvent).all()] == ["far"]
+    assert db.query(UserOptIn).filter(UserOptIn.user_id == user.id).one().sync_token == "tok-3"
 
 
 def test_a_calendar_error_is_recorded_and_does_not_stop_the_run(db):

@@ -4,6 +4,10 @@
 the per-tenant hooks (``install_tenant`` / ``update_tenant`` / ``uninstall_tenant``)
 are driven by AppStoreService when a tenant installs/updates/uninstalls. Permission
 GRANTS are the store's concern (it grants the module keys to the tenant's roles).
+
+The optional ``register_capabilities`` / ``tenant_has_data`` hooks are absent on
+purpose: the loader reaches for them with ``getattr``, and meetings has neither a
+cross-module capability to publish nor any pre-App-Store data to backfill.
 """
 from pathlib import Path
 
@@ -19,14 +23,6 @@ from .db import MEETINGS_SCHEMA, MeetingsBase
 
 MODULE_NAME = "meetings"
 MODULE_CSV = Path(__file__).resolve().parent / "permissions" / "permissions.csv"
-
-
-def register_capabilities() -> None:
-    """Boot-time capability registration (sprint-3/10 D5). Idempotent.
-
-    Meetings provides no cross-module capability: sorento consumes it over the
-    embed contract (S6), not the in-process capability seam."""
-    return None
 
 
 def register_engine_entities() -> None:
@@ -107,8 +103,3 @@ def uninstall_tenant(db: Session, tenant_id: str) -> None:
             db.execute(table.delete().where(table.c.tenant_id == tenant_id))
     db.flush()
 
-
-def tenant_has_data(db: Session, tenant_id: str) -> bool:
-    """Backfill detection (loader) for pre-App-Store installs. Meetings is a
-    net-new module — no legacy data ever existed — so no tenant backfills."""
-    return False

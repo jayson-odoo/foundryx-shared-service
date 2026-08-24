@@ -70,16 +70,58 @@ def test_tenants_due_needs_both_the_module_and_an_opted_in_user(db):
 
     user = _demo_user(db)
     opt_in(db, DEFAULT_TENANT_ID, user.id)
+    _google_connection(db)
     db.commit()
     assert tenants_due(db) == [DEFAULT_TENANT_ID]
 
-    # A second tenant with the module installed but everyone opted out stays out.
+    # A second tenant with the module AND a connection but everyone opted out.
     make_tenant(db, OTHER_TENANT_ID, "Other Co")
     AppStoreService(db).install(OTHER_TENANT_ID, "meetings")
     other = make_admin_user(db, OTHER_TENANT_ID, "other@example.com")
     opt_in(db, OTHER_TENANT_ID, other.id, enabled=False)
+    _google_connection(db, OTHER_TENANT_ID)
     db.commit()
     assert tenants_due(db) == [DEFAULT_TENANT_ID]
+
+
+def test_tenants_due_skips_a_tenant_with_no_calendar_connection(db):
+    """A tenant with nobody to ask is not due: without this it would enqueue a
+    job that does nothing, once a minute, forever."""
+    from modules.meetings.jobs import tenants_due
+
+    user = _demo_user(db)
+    opt_in(db, DEFAULT_TENANT_ID, user.id)
+    db.commit()
+    assert tenants_due(db) == []
+
+    _google_connection(db)
+    db.commit()
+    assert tenants_due(db) == [DEFAULT_TENANT_ID]
+
+
+def test_the_tick_skips_a_tenant_whose_last_sync_is_still_in_flight(db):
+    """A pass slower than the tick would otherwise pile up jobs that race on the
+    same ``sync_token`` and collide on ``uq_meetings_event_calendar``."""
+    from app.jobs.service import JobService
+    from app.models.background_job import JOB_PENDING, BackgroundJob
+    from modules.meetings import jobs as jobs_module
+
+    user = _demo_user(db)
+    opt_in(db, DEFAULT_TENANT_ID, user.id)
+    _google_connection(db)
+    db.commit()
+
+    # A previous tick's job that has not finished yet (created, never run).
+    stuck = JobService(db).create(type=jobs_module.CALENDAR_SYNC, tenant_id=DEFAULT_TENANT_ID)
+    assert stuck.status == JOB_PENDING
+
+    assert jobs_module.enqueue_due_calendar_syncs(db) == 0
+    assert (
+        db.query(BackgroundJob)
+        .filter(BackgroundJob.type == jobs_module.CALENDAR_SYNC)
+        .count()
+        == 1
+    )
 
 
 def test_a_tenant_without_a_calendar_connection_finishes_clean(db):

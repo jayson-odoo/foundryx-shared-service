@@ -31,10 +31,7 @@ def get_settings(
     current_user: User = Depends(require_permission("meetings.settings.manage")),
     db: Session = Depends(get_db),
 ) -> SettingsOut:
-    service = MeetingsSettingsService(db)
-    row = service.get(current_user.tenant_id)
-    db.commit()
-    return _out(row)
+    return _out(MeetingsSettingsService(db).get(current_user.tenant_id))
 
 
 @router.put("", response_model=SettingsOut)
@@ -43,16 +40,10 @@ def update_settings(
     current_user: User = Depends(require_permission("meetings.settings.manage")),
     db: Session = Depends(get_db),
 ) -> SettingsOut:
-    # An omitted key keeps its stored value; a key SENT as null clears it. The
-    # two cases are told apart by what the client actually sent, never by None.
-    sent = body.model_dump(exclude_unset=True)
-    row = MeetingsSettingsService(db).update(
-        current_user.tenant_id,
-        minutes_language=body.minutesLanguage,
-        audio_retention_days=body.audioRetentionDays,
-        llm_connection_id=body.llmConnectionId,
-        bot_display_name=body.botDisplayName,
-        consent_message=body.consentMessage,
-        clear=tuple(k for k, v in sent.items() if v is None),
+    # An omitted key keeps its stored value; a key SENT as null clears it - told
+    # apart by what the client actually sent, never by the value being None.
+    return _out(
+        MeetingsSettingsService(db).update(
+            current_user.tenant_id, body.model_dump(exclude_unset=True)
+        )
     )
-    return _out(row)

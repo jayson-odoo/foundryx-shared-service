@@ -5,11 +5,14 @@ One pass per tenant:
 1. every user whose master toggle is ON, one read each through the tenant's
    ``CalendarSource``;
 2. incremental where Google gave us a ``syncToken`` last time, a full 14-day
-   window when it did not — or when it rejects the token (HTTP 410), which is
-   the only recovery Google documents (AC-S0-11);
+   window when it did not — when it rejects the token (HTTP 410), which is the
+   only recovery Google documents, or every ``FULL_RESYNC_AFTER_HOURS`` so the
+   window actually rolls forward (AC-S0-11);
 3. upsert the events that carry a conference link, delete the ones that were
-   cancelled or lost their link (AC-S0-10), and NEVER touch ``opted_out`` — the
-   user's decision outranks the calendar (AC-S0-8);
+   cancelled or lost their link, and — on a FULL read only — delete the rows in
+   the window the calendar stopped returning at all, which is the only way a
+   cancellation shows up outside an incremental page (AC-S0-10). ``opted_out``
+   is never touched: the user's decision outranks the calendar (AC-S0-8);
 4. one ``meetings`` row per ``conference_url|starts_at`` so two invitees of the
    same meeting produce one bot, not two (AC-S0-12).
 
@@ -44,8 +47,15 @@ from ..models import (
 
 logger = logging.getLogger("foundryx.meetings")
 
-# The window a full (non-incremental) read covers (S0 plan §3).
+# The window a full (non-incremental) read covers (S0 plan §3). The events
+# service reads the same constant - one window, one definition.
 WINDOW_DAYS = 14
+
+# How long a stored ``syncToken`` may be used before the sync reads the whole
+# window again. Google answers an incremental read against the timeMin/timeMax
+# of the request that MINTED the token, so a token held forever means the window
+# never rolls and a meeting first seen beyond 14 days never arrives at all.
+FULL_RESYNC_AFTER_HOURS = 6
 
 # One activity row per run (AC-S0-11). The source value is the module's own —
 # see ``app/models/integration_activity.ACTIVITY_SOURCES``.
@@ -132,14 +142,16 @@ def sync_tenant(
             result.errors.append(f"No email for user {opt_in.user_id}")
             continue
         try:
-            events = _read_calendar(source, user.email, opt_in, now)
+            read = _read_calendar(source, user.email, opt_in, now)
         except CalendarSourceError as exc:
             # One broken calendar must not cost the tenant its whole run.
             logger.warning("meetings calendar read failed for %s: %s", user.email, exc)
             result.errors.append(f"{user.email}: {exc}")
             continue
 
-        for raw in events:
+        seen = set()
+        for raw in read.events:
+            seen.add(raw.external_id)
             _apply_event(
                 db,
                 tenant_id,
@@ -149,6 +161,15 @@ def sync_tenant(
                 tenant_users_by_email,
                 opted_in_user_ids,
             )
+        if read.full_window:
+            result.events_deleted += _prune_missing(
+                db,
+                tenant_id,
+                opt_in.user_id,
+                seen,
+                read.window_start,
+                read.window_end,
+            )
         opt_in.last_synced_at = now
         result.users_synced += 1
 
@@ -156,23 +177,88 @@ def sync_tenant(
     return result
 
 
+@dataclass
+class _CalendarRead:
+    """One user's page plus WHICH read it was.
+
+    ``full_window`` is what licenses the prune: an incremental page carries only
+    what changed, so an absent event there means nothing, while on a full read an
+    absent event is the only signal a cancellation ever gives us."""
+
+    events: List[RawEvent] = field(default_factory=list)
+    full_window: bool = False
+    window_start: Optional[datetime] = None
+    window_end: Optional[datetime] = None
+
+
+def _token_is_stale(opt_in: UserOptIn, now: datetime) -> bool:
+    """True once the held token is old enough that the window must roll."""
+    last = _as_utc(opt_in.last_synced_at)
+    if last is None:
+        return True
+    return (now - last) >= timedelta(hours=FULL_RESYNC_AFTER_HOURS)
+
+
 def _read_calendar(
     source: CalendarSource, user_email: str, opt_in: UserOptIn, now: datetime
-) -> List[RawEvent]:
-    """One user's events, incremental when we hold a token (AC-S0-11)."""
-    window = dict(time_min=now, time_max=now + timedelta(days=WINDOW_DAYS))
-    if opt_in.sync_token:
+) -> _CalendarRead:
+    """One user's events: incremental while the token is fresh (AC-S0-11)."""
+    start, end = now, now + timedelta(days=WINDOW_DAYS)
+    window = dict(time_min=start, time_max=end)
+
+    if opt_in.sync_token and not _token_is_stale(opt_in, now):
         try:
             page = source.list_events(user_email=user_email, sync_token=opt_in.sync_token)
+            if page.next_sync_token:
+                opt_in.sync_token = page.next_sync_token
+            return _CalendarRead(events=page.events, full_window=False)
         except SyncTokenInvalid:
-            # Google expired the token — drop it and refetch the whole window.
-            opt_in.sync_token = None
-            page = source.list_events(user_email=user_email, **window)
-    else:
-        page = source.list_events(user_email=user_email, **window)
+            # Google expired the token — the documented recovery is a full read.
+            pass
+
+    # Full read: clear the token FIRST so a page that returns none leaves us
+    # reading the whole window again rather than reusing a token we just retired.
+    opt_in.sync_token = None
+    page = source.list_events(user_email=user_email, **window)
     if page.next_sync_token:
         opt_in.sync_token = page.next_sync_token
-    return page.events
+    return _CalendarRead(
+        events=page.events, full_window=True, window_start=start, window_end=end
+    )
+
+
+def _prune_missing(
+    db: Session,
+    tenant_id: str,
+    calendar_user_id: str,
+    seen: set,
+    window_start: datetime,
+    window_end: datetime,
+) -> int:
+    """Delete this user's rows INSIDE the read window that the page omitted.
+
+    ``events.list`` defaults to ``showDeleted=false``, so a full read never
+    reports a cancellation — it simply stops returning the event. Scoping the
+    delete to the window that was actually read is what stops it eating rows the
+    calendar was never asked about (a meeting that has since started)."""
+    stale = (
+        db.query(CalendarEvent)
+        .filter(
+            CalendarEvent.tenant_id == tenant_id,
+            CalendarEvent.calendar_user_id == calendar_user_id,
+            CalendarEvent.starts_at >= window_start,
+            CalendarEvent.starts_at <= window_end,
+        )
+        .all()
+    )
+    removed = 0
+    for row in stale:
+        if row.external_id in seen:
+            continue
+        db.delete(row)
+        removed += 1
+    db.flush()
+    return removed
 
 
 def _apply_event(

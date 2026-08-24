@@ -5,16 +5,16 @@ One platform-owned service account, granted domain-wide delegation by each
 tenant's Workspace admin, impersonates each user in turn. No per-user OAuth, no
 Google app verification, and no token to refresh in our database.
 
-The Google client is imported LAZILY and built through an injectable factory, so
-this module imports cleanly (and the whole test suite runs) on a machine with no
-``google-api-python-client`` installed, and every test drives it without a
-network.
+The Google client is imported LAZILY, so this module imports cleanly (and the
+whole test suite runs) on a machine with no ``google-api-python-client``
+installed. The sync's tests drive a scripted ``CalendarSource`` instead of this
+class, which is why nothing here needs an injection seam.
 """
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .base import (
     CalendarSourceError,
@@ -78,32 +78,18 @@ def _status_of(exc: Exception) -> Optional[int]:
 
 
 def list_directory_users(
-    *,
-    service_account_json: str,
-    impersonate_email: str,
-    limit: int = 5,
-    service_factory: Optional[Callable[[], Any]] = None,
+    *, service_account_json: str, impersonate_email: str, limit: int = 5
 ) -> List[str]:
     """The domain's first ``limit`` user emails — what the Test button proves.
 
     Raises ``CalendarSourceError`` carrying Google's own message, because
     "connection failed" tells the operator nothing about whether to fix the key,
     the impersonated admin or the delegation grant (AC-S0-4)."""
-    if service_factory is None:
-        creds = _service_account_credentials(
-            service_account_json, DIRECTORY_SCOPES, impersonate_email
-        )
-
-        def service_factory():  # noqa: E306 — bound to the credentials above
-            return _build("admin", "directory_v1", creds)
-
-    else:
-        # A caller-supplied factory still gets the malformed-key check, so a
-        # local mistake never becomes a Google round trip.
-        json.loads(service_account_json)
-
+    creds = _service_account_credentials(
+        service_account_json, DIRECTORY_SCOPES, impersonate_email
+    )
     try:
-        service = service_factory()
+        service = _build("admin", "directory_v1", creds)
         response = (
             service.users()
             .list(customer="my_customer", maxResults=limit, orderBy="email")
@@ -135,22 +121,10 @@ def _google_message(exc: Exception) -> str:
 class GoogleDwdCalendarSource:
     """``CalendarSource`` over Google Calendar with domain-wide delegation."""
 
-    kind = "google_dwd"
-
-    def __init__(
-        self,
-        service_account_json: str,
-        *,
-        service_factory: Optional[Callable[[str], Any]] = None,
-    ):
+    def __init__(self, service_account_json: str):
         self._service_account_json = service_account_json
-        # ``service_factory(user_email) -> Google Calendar service``. Injectable
-        # so nothing here needs a network to be exercised.
-        self._service_factory = service_factory
 
     def _service(self, user_email: str):
-        if self._service_factory is not None:
-            return self._service_factory(user_email)
         creds = _service_account_credentials(
             self._service_account_json, CALENDAR_SCOPES, user_email
         )

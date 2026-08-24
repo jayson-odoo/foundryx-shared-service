@@ -94,6 +94,12 @@ class FakeCalendarSource:
     ``invalid_token_for`` to make the FIRST read that carries a sync token raise
     ``SyncTokenInvalid`` (Google's HTTP 410), which is what the fallback path
     must recover from. ``calls`` records every read for assertions.
+
+    **A tokenless read never yields a cancelled event.** ``events.list`` defaults
+    to ``showDeleted=false``, so a full-window read simply OMITS an event the
+    calendar has dropped; only an incremental (tokened) read reports it with
+    ``status="cancelled"``. Getting this wrong is what let the first cut of the
+    sync believe a full read could see cancellations at all.
     """
 
     kind = "fake"
@@ -132,7 +138,14 @@ class FakeCalendarSource:
             self._invalid_token_for = None  # only the first tokened read 410s
             raise SyncTokenInvalid("Sync token is no longer valid")
         queue = self._pages.get(user_email) or [SyncPage()]
-        return queue.pop(0) if len(queue) > 1 else queue[0]
+        page = queue.pop(0) if len(queue) > 1 else queue[0]
+        if sync_token:
+            return page
+        # showDeleted defaults false: a full read omits cancellations entirely.
+        return SyncPage(
+            events=[e for e in page.events if not e.cancelled],
+            next_sync_token=page.next_sync_token,
+        )
 
 
 def raw_event(

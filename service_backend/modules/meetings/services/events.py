@@ -12,9 +12,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from ..models import CalendarEvent, UserOptIn
-
-# How far ahead "upcoming" reaches when the caller names no window (S0 plan §3).
-DEFAULT_WINDOW_DAYS = 14
+from .calendar_sync import WINDOW_DAYS
 
 
 class EventsService:
@@ -45,7 +43,8 @@ class EventsService:
 
         now = now or datetime.now(timezone.utc)
         start = start or now
-        end = end or (start + timedelta(days=DEFAULT_WINDOW_DAYS))
+        # The same window the sync mirrors - one definition, one horizon.
+        end = end or (start + timedelta(days=WINDOW_DAYS))
         return (
             self.db.query(CalendarEvent)
             .filter(

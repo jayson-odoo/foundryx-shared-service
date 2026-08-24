@@ -102,9 +102,11 @@ class GoogleDwdProvider:
 class MeetBotProvider:
     """The tenant's notetaker Workspace account (spine M5).
 
-    S0 stores it; S2's bot is what signs in with it. There is no live test here
-    because a real sign-in is a headed browser session, and a Test button that
-    silently did one would be lying about what it checked (AC-S0-5).
+    S0 stores it; S2's bot is what signs in with it. It offers NO test at all
+    (``test_label`` is empty, which is how a provider declares that): verifying
+    this account means a real interactive sign-in, and a cheaper check that
+    answered ok would stamp the connection ACTIVE and show the operator
+    "Connected" for an account nobody has signed into (AC-S0-5).
     """
 
     provider = MEET_BOT_PROVIDER
@@ -115,7 +117,9 @@ class MeetBotProvider:
         "domain and exempt it from 2-step verification."
     )
     icon = "bot"
-    test_label = "Check details"
+    # Empty = this provider offers no test; the connection stays UNVERIFIED
+    # until the bot really signs in, in S2.
+    test_label = ""
     test_target = None
 
     def fields(self) -> List[Dict[str, Any]]:
@@ -143,23 +147,6 @@ class MeetBotProvider:
                 "placeholder": "Notetaker",
             },
         ]
-
-    def test(
-        self,
-        config: Dict[str, Any],
-        credentials: Dict[str, Any],
-        target: Optional[str] = None,
-    ) -> TestResult:
-        email = str(config.get("email") or "").strip()
-        password = str(credentials.get("password") or "")
-        if not _EMAIL_RE.match(email):
-            return TestResult(ok=False, message="Enter the notetaker's email address.")
-        if not password:
-            return TestResult(ok=False, message="Enter the notetaker's password.")
-        return TestResult(
-            ok=True,
-            message="Details stored. The notetaker signs in when it first joins a meeting.",
-        )
 
 
 def calendar_source_from_connection(

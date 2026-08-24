@@ -67,8 +67,6 @@ class SyncPage:
 class CalendarSource(Protocol):
     """Read one user's calendar."""
 
-    kind: str
-
     def list_events(
         self,
         *,

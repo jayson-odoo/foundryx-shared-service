@@ -4,8 +4,9 @@ Rides the EXISTING ``background_jobs`` table + ``register_job_handler`` (spine
 M19) — the module adds no queue, no scheduler and no runner of its own.
 
 The beat tick (``enqueue_due_calendar_syncs``) is deliberately narrow: it creates
-a job only for a tenant that has the module ACTIVE, a Google connection, and at
-least one opted-in user. A tenant that has switched everyone off costs nothing.
+a job only for a tenant that has the module ACTIVE, an ACTIVE Google connection,
+at least one opted-in user, and no pass still in flight. A tenant that switched
+everyone off, or never finished onboarding Google, costs nothing.
 """
 from __future__ import annotations
 
@@ -16,7 +17,14 @@ from cryptography.fernet import InvalidToken
 from sqlalchemy.orm import Session
 
 from app.jobs.registry import JobHandlerDef, register_job_handler
-from app.models.background_job import JOB_DONE, JOB_FAILED, BackgroundJob
+from app.models.background_job import (
+    JOB_DONE,
+    JOB_FAILED,
+    JOB_NEEDS_REVIEW,
+    JOB_PENDING,
+    JOB_RUNNING,
+    BackgroundJob,
+)
 from app.models.connection import CONNECTION_STATUS_ERROR, Connection
 from app.secrets import decrypt_secret
 
@@ -29,6 +37,12 @@ logger = logging.getLogger("foundryx.meetings")
 
 CALENDAR_SYNC = "meetings.calendar_sync"
 MODULE_NAME = "meetings"
+
+# Non-terminal statuses = a pass is still in flight (mirrors the storage
+# migration's ``_ACTIVE_JOB_STATUSES``). A tenant whose sync outruns the minute
+# tick would otherwise accumulate jobs that race on the same ``sync_token`` and
+# collide on ``uq_meetings_event_calendar``.
+_ACTIVE_JOB_STATUSES = (JOB_PENDING, JOB_RUNNING, JOB_NEEDS_REVIEW)
 
 
 def _google_connection(db: Session, tenant_id: str) -> Optional[Connection]:
@@ -88,7 +102,12 @@ def run_calendar_sync(db: Session, job: BackgroundJob) -> None:
 
 
 def tenants_due(db: Session) -> List[str]:
-    """Tenants worth a sync right now: module ACTIVE + at least one opted-in user."""
+    """Tenants worth a sync right now: module ACTIVE, an active Google
+    connection, and at least one opted-in user.
+
+    The connection filter is not an optimisation. Without it a tenant that
+    installed the module but never onboarded Google gets a job every 60 seconds
+    that can only finish ``skipped`` - forever."""
     from app.models.module import MODULE_STATUS_ACTIVE, Module, TenantModule
 
     module = db.query(Module).filter(Module.name == MODULE_NAME).first()
@@ -111,17 +130,47 @@ def tenants_due(db: Session) -> List[str]:
         .filter(UserOptIn.enabled.is_(True), UserOptIn.tenant_id.in_(active))
         .all()
     }
-    return sorted(opted_in)
+    if not opted_in:
+        return []
+    connected = {
+        row.tenant_id
+        for row in db.query(Connection)
+        .filter(
+            Connection.provider == GOOGLE_DWD_PROVIDER,
+            Connection.is_active.is_(True),
+            Connection.tenant_id.in_(opted_in),
+        )
+        .all()
+    }
+    return sorted(connected)
+
+
+def _sync_in_flight(db: Session, tenant_id: str) -> bool:
+    """True while this tenant's previous pass is still pending or running."""
+    from app.jobs.repository import BackgroundJobRepository
+
+    return bool(
+        BackgroundJobRepository(db).active_of_type(
+            tenant_id, CALENDAR_SYNC, _ACTIVE_JOB_STATUSES
+        )
+    )
 
 
 def enqueue_due_calendar_syncs(db: Session) -> int:
-    """Beat tick: one job per due tenant. Returns how many were enqueued."""
+    """Beat tick: one job per due tenant. Returns how many were enqueued.
+
+    A tenant whose previous pass has not finished is SKIPPED rather than queued
+    behind itself - two concurrent passes over one calendar race on the stored
+    ``sync_token`` and collide on ``uq_meetings_event_calendar``."""
     from app.jobs.service import JobService
 
     service = JobService(db)
     enqueued = 0
     for tenant_id in tenants_due(db):
         try:
+            if _sync_in_flight(db, tenant_id):
+                logger.info("meetings calendar sync still in flight for %s", tenant_id)
+                continue
             service.create_and_enqueue(type=CALENDAR_SYNC, tenant_id=tenant_id)
             enqueued += 1
         except Exception:  # noqa: BLE001 — one tenant never breaks the tick

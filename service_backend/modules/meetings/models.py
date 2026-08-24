@@ -42,7 +42,6 @@ PLATFORM_MEET = "meet"
 PLATFORM_ZOOM = "zoom"
 PLATFORM_TEAMS = "teams"
 PLATFORM_OTHER = "other"
-PLATFORMS = (PLATFORM_MEET, PLATFORM_ZOOM, PLATFORM_TEAMS, PLATFORM_OTHER)
 
 # Meeting lifecycle — a plain machine-driven enum column, NOT the status engine
 # (spine M19): no tenant ever edits these and no transition is a human action.
@@ -55,17 +54,6 @@ STATUS_READY = "ready"
 STATUS_FAILED = "failed"
 STATUS_NOT_ADMITTED = "not_admitted"
 STATUS_SKIPPED = "skipped"
-MEETING_STATUSES = (
-    STATUS_SCHEDULED,
-    STATUS_JOINING,
-    STATUS_IN_LOBBY,
-    STATUS_RECORDING,
-    STATUS_PROCESSING,
-    STATUS_READY,
-    STATUS_FAILED,
-    STATUS_NOT_ADMITTED,
-    STATUS_SKIPPED,
-)
 
 # Who authored a minutes version.
 MINUTES_AUTHOR_LLM = "llm"

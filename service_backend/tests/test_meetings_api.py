@@ -5,6 +5,8 @@ pinned is the contract the frontend binds to: the master toggle, the caller's
 own upcoming events, the per-event opt-out, and the tenant scoping that must
 hold across every one of them.
 """
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -12,10 +14,14 @@ from app.database import get_db
 from app.main import app
 from app.models import DEFAULT_TENANT_ID, User
 from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD
-from tests.meetings_helpers import make_admin_user, make_tenant, utc
+from tests.meetings_helpers import make_admin_user, make_tenant
 
 OTHER_TENANT_ID = "44444444-4444-4444-4444-444444444444"
 OTHER_EMAIL = "other@example.com"
+
+# Seeded RELATIVE to now: a fixed calendar date turns the suite red the day it
+# passes, and "upcoming" is the whole point of the window these rows sit in.
+TOMORROW = datetime.now(timezone.utc) + timedelta(days=1)
 
 
 @pytest.fixture
@@ -67,8 +73,8 @@ def _seed_event(db, *, tenant_id: str, calendar_user_id: str, external_id: str, 
         ),
         conference_url=kw.get("conference_url", "https://meet.google.com/abc-defg-hij"),
         platform=kw.get("platform", "meet"),
-        starts_at=kw.get("starts_at", utc(2026, 9, 1, 2)),
-        ends_at=kw.get("ends_at", utc(2026, 9, 1, 3)),
+        starts_at=kw.get("starts_at", TOMORROW),
+        ends_at=kw.get("ends_at", TOMORROW + timedelta(hours=1)),
         opted_out=kw.get("opted_out", False),
     )
     db.add(row)
@@ -81,9 +87,18 @@ def _seed_event(db, *, tenant_id: str, calendar_user_id: str, external_id: str, 
 
 def test_optin_is_off_by_default(meetings_client):
     """AC-S0-6: a user who has never touched it is opted OUT."""
+    from modules.meetings.models import UserOptIn
+
     res = meetings_client.get("/meetings/optin", headers=_auth(meetings_client))
     assert res.status_code == 200, res.text
     assert res.json() == {"enabled": False, "lastSyncedAt": None}
+
+    # Reading is a read: never insert a row just because someone looked.
+    db = meetings_client._factory()
+    try:
+        assert db.query(UserOptIn).count() == 0
+    finally:
+        db.close()
 
 
 def test_optin_can_be_flipped_both_ways(meetings_client):

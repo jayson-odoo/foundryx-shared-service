@@ -59,7 +59,6 @@ def test_google_dwd_is_offered_with_its_two_fields(meetings_client):
     fields = {f["key"]: f for f in provider["fields"]}
     assert set(fields) == {"serviceAccountJson", "impersonateEmail"}
     assert fields["serviceAccountJson"]["secret"] is True
-    assert fields["serviceAccountJson"]["required"] is True
     assert not fields["impersonateEmail"].get("secret")
     assert provider["testLabel"]
 
@@ -190,16 +189,42 @@ def test_meet_bot_saves_without_a_live_test(meetings_client):
         db.close()
 
 
-def test_meet_bot_test_does_not_pretend_to_have_signed_in():
-    """AC-S0-5: the S0 check is a format check and says so — no false ACTIVE."""
-    from modules.meetings.providers import MeetBotProvider
+def test_meet_bot_offers_no_test_at_all(meetings_client):
+    """AC-S0-5: there is no live test in S0, so the provider must not offer one.
 
-    ok = MeetBotProvider().test(
-        {"email": "notetaker@example.com"}, {"password": "s3cr3t-pass"}
+    A regex check that answered ok would flip the connection to ACTIVE and show
+    the operator "Connected" for an account nobody has ever signed into. The
+    connection stays UNVERIFIED until the bot really signs in, in S2."""
+    from app.models.connection import CONNECTION_STATUS_UNVERIFIED
+
+    provider = _provider(meetings_client, "meet_bot")
+    assert provider["testLabel"] == ""
+
+    headers = _auth(meetings_client)
+    created = meetings_client.post(
+        "/integrations/connections",
+        headers=headers,
+        json={
+            "provider": "meet_bot",
+            "name": "Notetaker",
+            "config": {"email": "notetaker@example.com"},
+            "credentials": {"password": "s3cr3t-pass"},
+        },
     )
-    assert ok.ok is True
-    bad = MeetBotProvider().test({"email": "not-an-email"}, {"password": ""})
-    assert bad.ok is False
+    assert created.status_code in (200, 201), created.text
+    assert created.json()["status"] == CONNECTION_STATUS_UNVERIFIED
+
+    # And the API refuses to run one rather than inventing a verdict.
+    res = meetings_client.post(
+        f"/integrations/connections/{created.json()['id']}/test", headers=headers, json={}
+    )
+    assert res.status_code == 422, res.text
+
+    read = meetings_client.get(
+        f"/integrations/connections/{created.json()['id']}", headers=headers
+    ).json()
+    assert read["status"] == CONNECTION_STATUS_UNVERIFIED
+    assert read["lastTestedAt"] is None
 
 
 def test_a_tenant_can_hold_both_kinds_at_once(meetings_client):

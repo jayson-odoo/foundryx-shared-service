@@ -3,8 +3,6 @@
 Seed-if-absent on every read, so a tenant provisioned before this row existed
 (or one whose install predates a new setting) is never left without one.
 """
-from typing import Optional
-
 from sqlalchemy.orm import Session
 
 from ..models import MeetingsTenantSettings
@@ -18,7 +16,10 @@ class MeetingsSettingsService:
         self.db = db
 
     def ensure(self, tenant_id: str) -> MeetingsTenantSettings:
-        """This tenant's settings row, created at platform defaults if absent."""
+        """This tenant's settings row, created at platform defaults if absent.
+
+        Owns its own commit, so a caller on a READ path (``get``, and the
+        install/update hooks) never has to commit for it - a router must not."""
         row = (
             self.db.query(MeetingsTenantSettings)
             .filter(MeetingsTenantSettings.tenant_id == tenant_id)
@@ -31,37 +32,30 @@ class MeetingsSettingsService:
                 audio_retention_days=DEFAULT_AUDIO_RETENTION_DAYS,
             )
             self.db.add(row)
-            self.db.flush()
+            self.db.commit()
+            self.db.refresh(row)
         return row
 
     def get(self, tenant_id: str) -> MeetingsTenantSettings:
         return self.ensure(tenant_id)
 
-    def update(
-        self,
-        tenant_id: str,
-        *,
-        minutes_language: Optional[str] = None,
-        audio_retention_days: Optional[int] = None,
-        llm_connection_id: Optional[str] = None,
-        bot_display_name: Optional[str] = None,
-        consent_message: Optional[str] = None,
-        clear: tuple = (),
-    ) -> MeetingsTenantSettings:
-        """Partial update. A key the caller did not send keeps its stored value;
-        a key sent as null is cleared, which ``clear`` names explicitly so
-        ``None`` cannot mean both "absent" and "blank"."""
+    # Wire key -> column. The router hands over only the keys the client actually
+    # SENT, so "absent" and "sent as null" never have to be told apart by value.
+    _FIELDS = {
+        "minutesLanguage": "minutes_language",
+        "audioRetentionDays": "audio_retention_days",
+        "llmConnectionId": "llm_connection_id",
+        "botDisplayName": "bot_display_name",
+        "consentMessage": "consent_message",
+    }
+
+    def update(self, tenant_id: str, sent: dict) -> MeetingsTenantSettings:
+        """Partial update from the keys the client sent. An omitted key keeps its
+        stored value; a key sent as null clears it."""
         row = self.ensure(tenant_id)
-        if minutes_language is not None:
-            row.minutes_language = minutes_language
-        if audio_retention_days is not None:
-            row.audio_retention_days = audio_retention_days
-        if llm_connection_id is not None or "llmConnectionId" in clear:
-            row.llm_connection_id = llm_connection_id
-        if bot_display_name is not None or "botDisplayName" in clear:
-            row.bot_display_name = bot_display_name
-        if consent_message is not None or "consentMessage" in clear:
-            row.consent_message = consent_message
+        for wire_key, column in self._FIELDS.items():
+            if wire_key in sent:
+                setattr(row, column, sent[wire_key])
         self.db.commit()
         self.db.refresh(row)
         return row
