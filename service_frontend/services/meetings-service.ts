@@ -1,0 +1,38 @@
+/**
+ * Meetings service — the boundary the UI talks to (S0 plan §4/§5).
+ *
+ * The interface IS the backend contract (`/meetings/optin`, `/meetings/events`,
+ * `/meetings/settings`). Frontend-first was built against `meetings-service.mock`;
+ * the shipped pages bind the REAL api-client implementation — the swap is the ONE
+ * line at the bottom of this file.
+ */
+import type {
+  MeetingsEvent,
+  MeetingsOptIn,
+  MeetingsSettings,
+  MeetingsSettingsInput,
+} from '@/types/meetings';
+import { mockMeetingsService } from './meetings-service.mock';
+
+/** Window of upcoming events to read; both ends are ISO-8601 UTC. */
+export interface MeetingsEventRange {
+  from?: string;
+  to?: string;
+}
+
+export interface MeetingsService {
+  /** The caller's own master toggle. */
+  getOptIn(): Promise<MeetingsOptIn>;
+  /** Flip the caller's master toggle. */
+  setOptIn(enabled: boolean): Promise<MeetingsOptIn>;
+  /** The caller's upcoming events that carry a conference link. */
+  listEvents(range?: MeetingsEventRange): Promise<MeetingsEvent[]>;
+  /** Switch a single event out of (or back into) capture. */
+  setEventOptOut(eventId: string, optedOut: boolean): Promise<MeetingsEvent>;
+  /** Tenant-wide module settings. */
+  getSettings(): Promise<MeetingsSettings>;
+  saveSettings(input: MeetingsSettingsInput): Promise<MeetingsSettings>;
+}
+
+// PHASE 1 MOCK — swapped to `realMeetingsService` once the backend lands.
+export const meetingsService: MeetingsService = mockMeetingsService;

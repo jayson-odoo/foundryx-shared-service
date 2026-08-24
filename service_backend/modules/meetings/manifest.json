@@ -1,0 +1,29 @@
+{
+  "module_name": "meetings",
+  "version": "0.1.0",
+  "author": "FoundryX",
+  "title": "Meetings",
+  "description": "AI meeting assistant: reads each opted-in user's calendar, records the meetings they choose, and turns them into transcripts and minutes that live beside the tenant's operational data.",
+  "icon": "video",
+  "required_core_version": ">=1.0.0",
+  "schema": "app_meetings",
+  "alembic_version_table": "alembic_version_meetings",
+  "requires": [],
+  "optional": [],
+  "provides": [],
+  "routers": [
+    {
+      "name": "optin",
+      "prefix": "/meetings/optin"
+    },
+    {
+      "name": "events",
+      "prefix": "/meetings/events"
+    },
+    {
+      "name": "settings",
+      "prefix": "/meetings/settings"
+    }
+  ],
+  "permissions_csv": "permissions/permissions.csv"
+}

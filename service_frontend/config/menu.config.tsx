@@ -18,6 +18,7 @@ import {
   LifeBuoy,
   Lightbulb,
   MessageSquare,
+  Video,
   Network,
   Package,
   Plug,
@@ -495,6 +496,26 @@ export const MENU_SIDEBAR: MenuConfig = [
       },
     ],
   },
+  // Meetings (sprint-5 S0) — module menu block, visible only while the
+  // `meetings` module is ACTIVE for the tenant AND the user holds the key its
+  // page gates on (filterMenu prunes at every level). No clickable parent.
+  {
+    title: 'Meetings',
+    icon: Video,
+    module: 'meetings',
+    children: [
+      {
+        title: 'My meetings',
+        path: '/meetings/my-meetings',
+        permission: 'meetings.view',
+      },
+      {
+        title: 'Settings',
+        path: '/settings/meetings',
+        permission: 'meetings.settings.manage',
+      },
+    ],
+  },
   // AutoCount ESB (sprint-4/13) — module menu block, visible only while the
   // `autocount` module is ACTIVE for the tenant AND the user holds the key its
   // page gates on (filterMenu prunes at every level).
@@ -868,6 +889,24 @@ export const MENU_SIDEBAR_COMPACT: MenuConfig = [
       },
     ],
   },
+  // Meetings (sprint-5 S0) — tagged so this copy prunes exactly like the sidebar.
+  {
+    title: 'Meetings',
+    icon: Video,
+    module: 'meetings',
+    children: [
+      {
+        title: 'My meetings',
+        path: '/meetings/my-meetings',
+        permission: 'meetings.view',
+      },
+      {
+        title: 'Settings',
+        path: '/settings/meetings',
+        permission: 'meetings.settings.manage',
+      },
+    ],
+  },
   // AutoCount ESB (sprint-4/13) — tagged so the mega menu prunes it exactly
   // like the sidebar (the mega menus are SEPARATE copies; an untagged entry
   // here would leak a gated path).
@@ -1039,6 +1078,28 @@ export const MENU_MEGA: MenuConfig = [
           },
         ],
       },
+      // Meetings (sprint-5 S0) — the DESKTOP mega menu copy. Same module +
+      // permission tags, so `filterMenu` prunes it identically in all three.
+      {
+        title: 'Meetings',
+        module: 'meetings',
+        children: [
+          {
+            children: [
+              {
+                title: 'My meetings',
+                path: '/meetings/my-meetings',
+                permission: 'meetings.view',
+              },
+              {
+                title: 'Settings',
+                path: '/settings/meetings',
+                permission: 'meetings.settings.manage',
+              },
+            ],
+          },
+        ],
+      },
       // AutoCount ESB (sprint-4/13) — the DESKTOP mega menu. demo1 renders
       // MENU_SIDEBAR, MENU_MEGA and MENU_MEGA_MOBILE, so an entry present in
       // the mobile mega but absent here is visible on a phone and missing on a
@@ -1179,6 +1240,25 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Log settings',
         path: '/developers/logs/settings',
         permission: 'integration_logs.manage',
+      },
+    ],
+  },
+  // Meetings (sprint-5 S0) — third menu copy; same module + permission tags so
+  // the mobile mega menu prunes identically.
+  {
+    title: 'Meetings',
+    icon: Video,
+    module: 'meetings',
+    children: [
+      {
+        title: 'My meetings',
+        path: '/meetings/my-meetings',
+        permission: 'meetings.view',
+      },
+      {
+        title: 'Settings',
+        path: '/settings/meetings',
+        permission: 'meetings.settings.manage',
       },
     ],
   },
