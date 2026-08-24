@@ -24,6 +24,7 @@ The slim, always-true rules. `CLAUDE.md` is the detailed per-engine reference; *
 5. **Verify from the USER's perspective** — real clicks, real data, fresh `rm -rf .next && npm run build`, **375px AND 1280px**, ports **3001** (FE) / **8001** (FoundryX backend; kill any sorento squatting 8001). Tests green ≠ user-verifiable (conftest `create_all` hides broken Alembic migrations — keep revision ids ≤ 32 chars).
 
 ## Design mandates (user-issued; non-negotiable)
+- **Simplest thing that works (all repos, 2026-08-24)** - build the simplest solution that solves the problem end to end. No new abstraction, indirection, config knob, flag, service, cache or dependency unless the direct path is proven inadequate and you can name what proved it. Nothing for hypothetical futures. Push back on review findings that propose machinery; report rejections with the measurement.
 - **Reuse, don't rebuild** — extend an existing component for a new variant.
 - **Foolproof-UI** — the UI is self-evident; NO instructional/how-to copy on screen. Only offer valid options; warn on missing prerequisites; never auto-derive an ambiguous action.
 - **Responsive** — every surface usable + non-clipped at 375px AND 1280px; verify both.
