@@ -42,8 +42,10 @@ PEOPLE_COUNT_JS = """() => {
     .map(e => (e.innerText || '').trim()).find(t => /^\\d+$/.test(t));
   return b ? parseInt(b, 10) : null;
 }"""
+# the bot's own tile has no name, only icon labels (e.g. "visual_effects"); those are not people
 TILE_NAMES_JS = """() => Array.from(document.querySelectorAll('[data-participant-id]'))
-  .map(t => ((t.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean)[0]) || '')"""
+  .map(t => ((t.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean)[0]) || '')
+  .filter(n => n && !/^[a-z_]+$/.test(n))"""
 
 # active speaker: participant tiles carry data-participant-id; the speaking indicator is an
 # animated element inside the tile. Best-effort, refined by the spike report.

@@ -99,11 +99,23 @@ class MeetSession:
         if name.count() and name.is_visible():
             name.fill(self.display_name)
 
-        if self._click_if_present(S.PREJOIN_JOIN_NOW, 8000):
-            self.events.emit("join_clicked", mode="join_now")
-        elif self._click_if_present(S.PREJOIN_ASK_TO_JOIN, 3000):
-            self.events.emit("join_clicked", mode="ask_to_join")
-        else:
+        # the account's previous seat (e.g. a killed run) can linger a minute or two: wait it out
+        ghost_deadline = time.time() + self.lobby_timeout_s
+        while True:
+            if self._click_if_present(S.PREJOIN_JOIN_NOW, 8000):
+                self.events.emit("join_clicked", mode="join_now")
+                break
+            if self._click_if_present(S.PREJOIN_ASK_TO_JOIN, 3000):
+                self.events.emit("join_clicked", mode="ask_to_join")
+                break
+            if self.page.locator(S.PREJOIN_SWITCH_HERE).count() and time.time() < ghost_deadline:
+                self.events.emit("same_account_in_call", retry_in_s=15)
+                self.page.wait_for_timeout(15000)
+                self.page.reload(wait_until="commit")
+                self.page.wait_for_timeout(5000)
+                self._ensure_muted(S.PREJOIN_MIC_BUTTON)
+                self._ensure_muted(S.PREJOIN_CAM_BUTTON)
+                continue
             raise BotError("join_button_not_found")
 
         deadline = time.time() + self.lobby_timeout_s

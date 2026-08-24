@@ -53,7 +53,7 @@ def parse() -> argparse.Namespace:
     p.add_argument("--profile", default=os.environ.get("BOT_PROFILE_DIR", "/profile"))
     p.add_argument("--lobby-timeout", type=int, default=int(os.environ.get("BOT_LOBBY_TIMEOUT", "180")))
     p.add_argument("--empty-room-seconds", type=int, default=int(os.environ.get("BOT_EMPTY_ROOM_SECONDS", "60")))
-    p.add_argument("--min-seconds", type=int, default=int(os.environ.get("BOT_MIN_SECONDS", "180")))
+    p.add_argument("--min-seconds", type=int, default=int(os.environ.get("BOT_MIN_SECONDS", "60")))
     p.add_argument("--max-seconds", type=int, default=int(os.environ.get("BOT_MAX_SECONDS", str(4 * 3600))))
     p.add_argument("--login-only", action="store_true")
     a = p.parse_args()

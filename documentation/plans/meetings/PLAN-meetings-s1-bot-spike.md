@@ -1,6 +1,6 @@
 # PLAN - Meetings S1: Bot spike
 
-**Status:** Planning. UAC: `meetings-s1-bot-spike-acceptance-criteria.md`. Spine: `PLAN-meetings-program.md`.
+**Status:** In progress (day 1: 6 runs, join + record + leave proven; see `meetings-s1-bot-spike-test-report.md`). UAC: `meetings-s1-bot-spike-acceptance-criteria.md`. Spine: `PLAN-meetings-program.md`.
 **Nature:** one-week spike. Code lives in `service_backend/modules/meetings/bot/` from the start (so S2 keeps it), but nothing is wired to the app, no migrations, no UI. Gate = evidence run, not a PR review.
 
 ## 1. What is built
