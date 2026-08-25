@@ -62,6 +62,29 @@ describe('OutputParamsEditor', () => {
     expect(screen.getByLabelText('Parameter 1 key')).toHaveAttribute('aria-invalid', 'true');
     expect(screen.getByLabelText('Parameter 2 key')).toHaveAttribute('aria-invalid', 'true');
     expect(screen.getByLabelText('Parameter 3 key')).toHaveAttribute('aria-invalid', 'false');
+    expect(screen.getAllByText('Key must be unique.')).toHaveLength(2);
+  });
+
+  it('surfaces blank and invalid syntax keys clearly', () => {
+    const params: WorkflowAiOutputParam[] = [
+      { key: ' ', type: 'string', required: true },
+      { key: 'intent-value', type: 'string', required: false },
+    ];
+    render(<OutputParamsEditor params={params} editing onChange={vi.fn()} />);
+
+    expect(screen.getByLabelText('Parameter 1 key')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByLabelText('Parameter 2 key')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText('Key is required.')).toBeInTheDocument();
+    expect(screen.getByText(/Key must start with a letter/)).toBeInTheDocument();
+  });
+
+  it('surfaces invalid types from an older or malformed draft', () => {
+    const params = [
+      { key: 'intent', type: 'object', required: true },
+    ] as unknown as WorkflowAiOutputParam[];
+    render(<OutputParamsEditor params={params} editing={false} onChange={vi.fn()} />);
+
+    expect(screen.getByText('Type must be string, number, or boolean.')).toBeInTheDocument();
   });
 
   it('editing a key/description/required field patches only that row', async () => {

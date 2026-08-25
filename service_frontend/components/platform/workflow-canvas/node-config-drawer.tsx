@@ -28,7 +28,12 @@ import { Label } from '@/components/ui/label';
 import { SearchSelect } from '@/components/platform/search-select';
 import { RuleBuilder } from '@/components/platform/rule-builder';
 import { ACTION_CATALOG, TRIGGER_CATALOG, catalogEntry } from '@/lib/workflow-catalog';
-import { nodeDisplayName } from '@/lib/workflow-doc';
+import {
+  AI_OUTPUT_PARAM_KEY_RE,
+  AI_OUTPUT_PARAM_TYPES,
+  nodeDisplayName,
+  validAiOutputParams,
+} from '@/lib/workflow-doc';
 import { cn } from '@/lib/utils';
 import type { RuleFact, RuleFactType, RuleGroup } from '@/types/rules';
 import type {
@@ -111,7 +116,7 @@ function backHint(depth: number): string {
  * they ARE its output schema, so the picker lists them as `nodes.<id>.<key>`. */
 function aiOutputParams(node: WorkflowNode): WorkflowAiOutputParam[] {
   const params = node.config.outputParams;
-  return Array.isArray(params) ? (params as WorkflowAiOutputParam[]) : [];
+  return validAiOutputParams(params);
 }
 
 /** Ancestors of `nodeId` whose outputs are referenceable here (D7), closest
@@ -374,8 +379,8 @@ const AI_PARAM_TYPES: { value: WorkflowAiOutputParam['type']; label: string }[] 
 ];
 
 /** key · type · description · required rows for the AI Agent action's
- * structured-output schema (plan sprint-4/17). Duplicate keys highlight -
- * the last row wins server-side, so the editor surfaces the collision. */
+ * structured-output schema (plan sprint-4/17). Invalid rows and duplicate
+ * keys surface inline and block publish through the shared document validator. */
 export function OutputParamsEditor({
   params,
   editing,
@@ -386,70 +391,105 @@ export function OutputParamsEditor({
   onChange: (next: WorkflowAiOutputParam[]) => void;
 }) {
   const update = (i: number, patch: Partial<WorkflowAiOutputParam>) =>
-    onChange(params.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
+    onChange(
+      params.map((row, idx) =>
+        idx === i
+          ? ({ ...(row as unknown as Record<string, unknown>), ...patch } as WorkflowAiOutputParam)
+          : row,
+      ),
+    );
   const keyCounts = new Map<string, number>();
-  for (const p of params) {
-    if (p.key) keyCounts.set(p.key, (keyCounts.get(p.key) ?? 0) + 1);
+  for (const raw of params as unknown[]) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue;
+    const key = (raw as Record<string, unknown>).key;
+    if (typeof key === 'string' && key) keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
   }
   return (
     <div className="flex flex-col gap-2" data-testid="output-params-editor">
-      {params.map((row, i) => (
-        <div key={i} className="flex flex-col gap-1.5 rounded-lg border border-input p-2">
-          <div className="flex items-center gap-1.5">
-            <Input
-              value={row.key}
-              disabled={!editing}
-              placeholder="key"
-              aria-label={`Parameter ${i + 1} key`}
-              aria-invalid={(keyCounts.get(row.key) ?? 0) > 1}
-              onChange={(e) => update(i, { key: e.target.value })}
-              className={cn('flex-1', (keyCounts.get(row.key) ?? 0) > 1 && 'border-destructive')}
-            />
-            <div className="w-28 shrink-0">
-              <SearchSelect
-                options={AI_PARAM_TYPES}
-                value={row.type}
-                onChange={(v) => update(i, { type: (v ?? 'string') as WorkflowAiOutputParam['type'] })}
-                ariaLabel={`Parameter ${i + 1} type`}
-                placeholder="Type…"
+      {params.map((raw, i) => {
+        const row =
+          typeof raw === 'object' && raw !== null && !Array.isArray(raw)
+            ? (raw as unknown as Record<string, unknown>)
+            : {};
+        const key = typeof row.key === 'string' ? row.key : '';
+        const type = typeof row.type === 'string' ? row.type : '';
+        const description = typeof row.description === 'string' ? row.description : '';
+        const required = row.required === true;
+        const duplicate = (keyCounts.get(key) ?? 0) > 1;
+        const issue = !key.trim()
+          ? 'Key is required.'
+          : key !== key.trim()
+            ? 'Key must be trimmed.'
+            : !AI_OUTPUT_PARAM_KEY_RE.test(key)
+              ? 'Key must start with a letter or underscore and use only letters, numbers, and underscores.'
+              : duplicate
+                ? 'Key must be unique.'
+                : !AI_OUTPUT_PARAM_TYPES.includes(type as (typeof AI_OUTPUT_PARAM_TYPES)[number])
+                  ? 'Type must be string, number, or boolean.'
+                  : undefined;
+        return (
+          <div key={i} className="flex flex-col gap-1.5 rounded-lg border border-input p-2">
+            <div className="flex items-center gap-1.5">
+              <Input
+                value={key}
                 disabled={!editing}
+                placeholder="key"
+                aria-label={`Parameter ${i + 1} key`}
+                aria-invalid={Boolean(issue)}
+                onChange={(e) => update(i, { key: e.target.value })}
+                className={cn('flex-1', issue && 'border-destructive')}
               />
+              <div className="w-28 shrink-0">
+                <SearchSelect
+                  options={AI_PARAM_TYPES}
+                  value={type}
+                  onChange={(v) => update(i, { type: (v ?? 'string') as WorkflowAiOutputParam['type'] })}
+                  ariaLabel={`Parameter ${i + 1} type`}
+                  placeholder="Type…"
+                  disabled={!editing}
+                />
+              </div>
+              {editing && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0 text-destructive"
+                  aria-label={`Remove parameter ${i + 1}`}
+                  onClick={() => onChange(params.filter((_, idx) => idx !== i))}
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              )}
             </div>
-            {editing && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="size-8 shrink-0 text-destructive"
-                aria-label={`Remove parameter ${i + 1}`}
-                onClick={() => onChange(params.filter((_, idx) => idx !== i))}
-              >
-                <Trash2 className="size-3.5" />
-              </Button>
+            {issue && (
+              <p className="text-xs text-destructive" role="alert">
+                {issue}
+              </p>
             )}
-          </div>
-          <div className="flex items-center gap-1.5">
-            <Input
-              value={row.description ?? ''}
-              disabled={!editing}
-              placeholder="Description"
-              aria-label={`Parameter ${i + 1} description`}
-              onChange={(e) => update(i, { description: e.target.value })}
-              className="flex-1"
-            />
-            <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={Boolean(row.required)}
+            <div className="flex items-center gap-1.5">
+              <Input
+                value={description}
                 disabled={!editing}
-                aria-label={`Parameter ${i + 1} required`}
-                onChange={(e) => update(i, { required: e.target.checked })}
+                placeholder="Description"
+                aria-label={`Parameter ${i + 1} description`}
+                onChange={(e) => update(i, { description: e.target.value })}
+                className="flex-1"
               />
-              Required
-            </label>
+              <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={required}
+                  disabled={!editing}
+                  aria-label={`Parameter ${i + 1} required`}
+                  onChange={(e) => update(i, { required: e.target.checked })}
+                />
+                Required
+              </label>
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
       {editing && (
         <Button
           type="button"

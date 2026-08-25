@@ -42,6 +42,26 @@ Executed 2026-08-14 on branch `fm/fs-omniflow-b1` (isolated worktree).
 - Backend: full `python -m pytest -q` = 1745 passed, 35 failed - ALL 35 failures are `tests/test_autocount_pipeline.py`, confirmed PRE-EXISTING by running the same file on a clean `origin/main` worktree (identical 35 failures, unrelated ESB module). Zero regressions from this branch.
 - Frontend: `npx vitest run` = 142 files, 1160 tests, all passing.
 
+## Review follow-up
+
+Resolved findings from the follow-up review:
+
+- Omnichannel workflow actions now require the tenant's module to be ACTIVE.
+- Workflow metadata filters AI agent options by the caller's `ai_agents.read` permission.
+- AI skill loading enforces tenant or sanctioned platform-tier ownership and verifies each active version belongs to its skill.
+- AI output parameters now use a strict, shared frontend and backend contract for non-empty rows, canonical keys, uniqueness, and supported types.
+- Contact output includes the canonical thread status in both backend and frontend workflow contracts.
+- Workflow media output uses a signed, time-limited media URL.
+
+Final validation:
+
+- Backend focused PR tests: 137 passed.
+- Focused frontend tests: 23 passed.
+- ESLint, Python compile checks, and `git diff --check`: clean.
+- `npm run build`: exit 0, 111/111 pages generated, with only existing warnings.
+
+Live E2E execution and responsive verification at 375px and 1280px remain deferred below. They are not claimed by this follow-up.
+
 ## Deferred: live E2E run
 
 Ports 3001/8001 are currently held by stale `next-server`/uvicorn processes whose cwd is a DELETED worktree in `~/.Trash` (`.Trash/foundryx/foundryx-shared-service/.claude/worktrees/s17`) - killing processes outside this isolated task worktree and reseeding the shared dev Postgres from this branch both violate the task's isolation rules, so the live run is handed to the stack owner. To execute:

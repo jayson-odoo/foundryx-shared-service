@@ -16,11 +16,14 @@ the intended seam, deliberately not built out in this slice (BL-SS-031).
 """
 from typing import Any, Dict, List
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.integrations.base import LLMError
-from app.models.ai import AiAgent
+from app.models.ai import AiAgent, AiSkill, AiSkillVersion
+from app.repositories.ai_repository import SkillRepository
 from app.workflow_engine.context import render_field
+from app.workflow_engine.schemas import output_param_issues
 
 
 class ActionError(Exception):
@@ -33,16 +36,16 @@ _ALLOWED_PARAM_TYPES = {"string", "number", "boolean"}
 def _schema_from_params(params: Any) -> Dict[str, Any]:
     """Friendly config rows → a JSON Schema object, interpreted at run time -
     same "friendly config, executor interprets" shape as ``entity.update``'s
-    ``assignments`` field. Foolproof-UI upstream (the frontend editor only
-    offers string/number/boolean) is defended here too: an unknown type is
-    dropped rather than sent to the provider as a garbage schema."""
+    ``assignments`` field. The action validates the full output contract before
+    calling this transformer; its fallback remains defensive for direct use."""
     properties: Dict[str, Any] = {}
     required: List[str] = []
     for row in params if isinstance(params, list) else []:
         if not isinstance(row, dict):
             continue
         key = str(row.get("key") or "").strip()
-        param_type = row.get("type") if row.get("type") in _ALLOWED_PARAM_TYPES else "string"
+        row_type = row.get("type")
+        param_type = row_type if isinstance(row_type, str) and row_type in _ALLOWED_PARAM_TYPES else "string"
         if not key:
             continue
         prop: Dict[str, Any] = {"type": param_type}
@@ -50,7 +53,7 @@ def _schema_from_params(params: Any) -> Dict[str, Any]:
         if description:
             prop["description"] = str(description)
         properties[key] = prop
-        if row.get("required"):
+        if row.get("required") and key not in required:
             required.append(key)
     schema: Dict[str, Any] = {"type": "object", "properties": properties}
     if required:
@@ -58,26 +61,45 @@ def _schema_from_params(params: Any) -> Dict[str, Any]:
     return schema
 
 
-def _build_system(db: Session, agent: AiAgent, instructions: str) -> str:
+def _build_system(db: Session, tenant_id: str, agent: AiAgent, instructions: str) -> str:
     """The agent's equipped skills (active version bodies) + this node's own
     instructions - mirrors how a grill turn assembles its system prompt
     (``app/ai/grill.py``), independently, for this second caller of the one
     ``AiClient`` seam."""
-    from app.models.ai import AiSkillVersion
-
-    version_ids = [s.active_version_id for s in agent.skills if s.active_version_id]
-    bodies_by_id: Dict[str, str] = {}
-    if version_ids:
+    skill_ids = [skill.id for skill in agent.skills]
+    bodies_by_skill_id: Dict[str, str] = {}
+    if skill_ids:
         rows = (
-            db.query(AiSkillVersion.id, AiSkillVersion.body)
-            .filter(AiSkillVersion.id.in_(version_ids))
+            SkillRepository(db)
+            .visible_query(tenant_id)
+            .join(
+                AiSkillVersion,
+                and_(
+                    AiSkillVersion.skill_id == AiSkill.id,
+                    AiSkillVersion.id == AiSkill.active_version_id,
+                ),
+            )
+            .filter(
+                AiSkill.id.in_(skill_ids),
+                or_(
+                    and_(
+                        AiSkill.tenant_id == tenant_id,
+                        AiSkillVersion.tenant_id == tenant_id,
+                    ),
+                    and_(
+                        AiSkill.tenant_id.is_(None),
+                        AiSkillVersion.tenant_id.is_(None),
+                    ),
+                ),
+            )
+            .with_entities(AiSkill.id, AiSkillVersion.body)
             .all()
         )
-        bodies_by_id = {row.id: row.body for row in rows}
+        bodies_by_skill_id = {row.id: row.body for row in rows}
     parts: List[str] = [
-        bodies_by_id[s.active_version_id]
+        bodies_by_skill_id[s.id]
         for s in agent.skills
-        if s.active_version_id and bodies_by_id.get(s.active_version_id)
+        if bodies_by_skill_id.get(s.id)
     ]
     if instructions:
         parts.append(instructions)
@@ -99,11 +121,15 @@ def ai_agent_run(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[
         raise ActionError(f'The agent "{agent.name}" is disabled.')
 
     instructions = render_field(config.get("instructions"), ctx)
-    system = _build_system(db, agent, instructions)
+    system = _build_system(db, tenant_id, agent, instructions)
     user_text = render_field(config.get("inputText"), ctx)
     if not user_text.strip():
         raise ActionError("Message is empty after merging.")
-    output_schema = _schema_from_params(config.get("outputParams"))
+    output_params = config.get("outputParams")
+    param_issues = output_param_issues(output_params)
+    if param_issues:
+        raise ActionError(param_issues[0])
+    output_schema = _schema_from_params(output_params)
 
     from app.ai.client import AiClient
 

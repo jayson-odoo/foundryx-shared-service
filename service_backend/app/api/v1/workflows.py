@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_db, require_permission
+from app.dependencies import effective_permission_keys, get_db, require_permission
 from app.models.user import User
 from app.schemas.filters import FilterGroup
 from app.schemas.workflow import (
@@ -115,7 +115,11 @@ def workflow_metadata(
     db: Session = Depends(get_db),
 ) -> dict:
     """Triggerable entities + statuses + record fields for the editor pickers."""
-    return WorkflowService(db).metadata(current_user.tenant_id)
+    can_read_ai_agents = "ai_agents.read" in effective_permission_keys(current_user)
+    return WorkflowService(db).metadata(
+        current_user.tenant_id,
+        include_ai_agents=can_read_ai_agents,
+    )
 
 
 @router.get("/settings", response_model=WorkflowSettingsOut)

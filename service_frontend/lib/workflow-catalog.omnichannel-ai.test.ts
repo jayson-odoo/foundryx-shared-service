@@ -20,6 +20,15 @@ describe('omnichannel + AI Agent catalog entries (plan sprint-4/17)', () => {
     expect(sendMessage).toBeDefined();
     expect(sendMessage?.kind).toBe('action');
     expect(sendMessage?.module).toBe('omnichannel');
+    expect(getContact?.outputs?.map((output) => output.key)).toEqual([
+      'id',
+      'name',
+      'phone',
+      'email',
+      'workspaceId',
+      'statusId',
+      'status',
+    ]);
     expect(catalogEntry('omnichannel.get_contact')).toBe(getContact);
     expect(catalogEntry('omnichannel.send_message')).toBe(sendMessage);
   });

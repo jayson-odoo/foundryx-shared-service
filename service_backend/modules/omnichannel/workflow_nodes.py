@@ -71,6 +71,7 @@ def register_omnichannel_workflow_nodes() -> None:
                 NodeOutput("email", "Email"),
                 NodeOutput("workspaceId", "Workspace id"),
                 NodeOutput("statusId", "Status id"),
+                NodeOutput("status", "Status"),
             ],
         )
     )

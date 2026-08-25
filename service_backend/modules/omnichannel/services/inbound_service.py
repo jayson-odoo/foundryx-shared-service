@@ -15,6 +15,7 @@ from app.config import settings
 from ..adapters.whatsapp_cloud import get_adapter
 from ..models import Channel, Contact, ContactChannelIdentity, ConversationMessage
 from ..repositories.contact_repository import ContactRepository
+from ..security import signed_media_url
 from .conversation_service import ConversationService
 from . import realtime, statuses
 
@@ -253,7 +254,7 @@ class InboundService:
                     "messageId": row.id,
                     "messageType": row.message_type,
                     "messageText": row.body,
-                    "mediaUrl": message_payload.get("mediaUrl"),
+                    "mediaUrl": signed_media_url(row.id) if row.media_key else None,
                     "mediaMime": row.media_mime,
                 },
             )

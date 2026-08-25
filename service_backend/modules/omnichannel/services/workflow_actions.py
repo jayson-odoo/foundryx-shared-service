@@ -9,8 +9,10 @@ from typing import Any, Dict
 
 from sqlalchemy.orm import Session
 
+from app.repositories.module_repository import ModuleRepository
 from app.workflow_engine.context import render_field
 
+from ..models import Status
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import SendMessageRequest
 from .conversation_service import ThreadNotFound
@@ -19,6 +21,11 @@ from .message_service import MessageService, SendRejected
 
 class ActionError(Exception):
     """A node failed - halts the run (D14)."""
+
+
+def _require_module_active(db: Session, tenant_id: str) -> None:
+    if not ModuleRepository(db).is_active(tenant_id, "omnichannel"):
+        raise ActionError("The omnichannel service is not active.")
 
 
 def _contact_id(config: Dict[str, Any], ctx: Dict[str, Any]) -> str:
@@ -31,11 +38,22 @@ def _contact_id(config: Dict[str, Any], ctx: Dict[str, Any]) -> str:
 def omnichannel_get_contact(
     db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[str, Any]
 ) -> Dict[str, Any]:
+    _require_module_active(db, tenant_id)
     contact_id = _contact_id(config, ctx)
     contact = ContactRepository(db).get_by_id(contact_id, tenant_id)
     if contact is None:
         raise ActionError("Contact not found.")
     name = " ".join(part for part in [contact.first_name, contact.last_name] if part).strip()
+    status = (
+        db.query(Status.key)
+        .filter(
+            Status.id == contact.status_id,
+            Status.tenant_id == tenant_id,
+            Status.scope == "THREAD",
+        )
+        .scalar()
+        or "OPEN"
+    )
     return {
         "id": contact.id,
         "name": name or contact.phone or "",
@@ -43,12 +61,14 @@ def omnichannel_get_contact(
         "email": contact.email or "",
         "workspaceId": contact.workspace_id,
         "statusId": contact.status_id,
+        "status": status,
     }
 
 
 def omnichannel_send_message(
     db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[str, Any]
 ) -> Dict[str, Any]:
+    _require_module_active(db, tenant_id)
     contact_id = _contact_id(config, ctx)
     text = render_field(config.get("message"), ctx)
     if not text.strip():

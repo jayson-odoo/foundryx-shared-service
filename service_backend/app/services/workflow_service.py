@@ -441,9 +441,13 @@ class WorkflowService:
             for t in touched
         ]
 
-    def metadata(self, tenant_id: str) -> Dict[str, Any]:
+    def metadata(self, tenant_id: str, *, include_ai_agents: bool = False) -> Dict[str, Any]:
         """Triggerable entities + resolved statuses + record fields — the editor's
-        entity/status/field pickers (swaps the frontend mock, slice 09)."""
+        entity/status/field pickers (swaps the frontend mock, slice 09).
+
+        AI-agent options are included only when the caller holds the dedicated
+        ``ai_agents.read`` permission. The workflow metadata endpoint itself
+        remains available to every ``workflows.read`` caller."""
         from app.models.status import Status
         from app.rule_engine.registry import _camel, get_facts
         from app.workflow_engine.entities import list_workflow_entities
@@ -492,13 +496,15 @@ class WorkflowService:
             "email": conn_repo.resolve_for_type(tenant_id, "email") is not None,
             "storage": conn_repo.resolve_for_type(tenant_id, "storage") is not None,
         }
-        return {
+        metadata = {
             "entities": entities,
             "connections": connections,
             "forms": self._form_options(tenant_id),
             "omnichannelChannels": self._omnichannel_channel_options(tenant_id),
-            "aiAgents": self._ai_agent_options(tenant_id),
         }
+        if include_ai_agents:
+            metadata["aiAgents"] = self._ai_agent_options(tenant_id)
+        return metadata
 
     def _omnichannel_channel_options(self, tenant_id: str) -> List[Dict[str, Any]]:
         """Backs the omnichannel trigger's channel picker (sprint-4/17). A

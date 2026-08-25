@@ -348,6 +348,7 @@ export const ACTION_CATALOG: ActionCatalogEntry[] = [
       { key: 'email', label: 'Email' },
       { key: 'workspaceId', label: 'Workspace id' },
       { key: 'statusId', label: 'Status id' },
+      { key: 'status', label: 'Status' },
     ],
   },
   {
