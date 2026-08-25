@@ -7,7 +7,7 @@
  * revocable. Kept framework-agnostic so the service + UI share one source.
  */
 
-/** Key lifecycle — ACTIVE until revoked. */
+/** Key lifecycle - ACTIVE until revoked. */
 export type ApiKeyStatus = 'ACTIVE' | 'REVOKED';
 
 /** A workspace API key as surfaced to the management UI (never the plaintext). */
@@ -26,7 +26,7 @@ export interface ApiKeyItem {
 }
 
 /**
- * Mint result — carries the ONE-TIME full plaintext key alongside the stored
+ * Mint result - carries the ONE-TIME full plaintext key alongside the stored
  * (masked) item. `fullKey` is never returned by any later read.
  */
 export interface MintApiKeyResult {

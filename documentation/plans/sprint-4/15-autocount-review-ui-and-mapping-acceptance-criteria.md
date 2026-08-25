@@ -1,6 +1,6 @@
-# 15 — AutoCount review UI + field-mapping editor — User Acceptance Criteria
+# 15 - AutoCount review UI + field-mapping editor - User Acceptance Criteria
 
-> **Status:** DRAFT — contract for `15-autocount-review-ui-and-mapping.md`
+> **Status:** DRAFT - contract for `15-autocount-review-ui-and-mapping.md`
 > **Builds on:** slice 14 (masters end-to-end, MERGED-pending-review on `sprint-4/14-autocount-sorento-masters`).
 > **Source:** UI eyeball feedback 2026-07-22 (6 items) + grill decisions below.
 > **Nature:** UI/UX conformance pass + one new feature (mapping editor). No change to the sync/push
@@ -24,7 +24,7 @@ all are the surface.
 
 ---
 
-## Group A — Review has its own menu (list + form)
+## Group A - Review has its own menu (list + form)
 
 ### AC-15-01 `[FE]` A "Review" entry in the AutoCount sidebar section
 **Given** the AutoCount module is active and the user holds `autocount.sync.read`
@@ -38,7 +38,7 @@ all are the surface.
 **Then** a config-driven `ResourceList` shows one row per sync batch (job), newest first
 **And** it is **server-paginated, searchable and filterable** (status segment at least: Needs review | Done | All)
 **And** each row shows: company, entity, status, record count, when
-**And** a backend `GET /autocount/jobs` (tenant-scoped, paginated, status filter) backs it — the list
+**And** a backend `GET /autocount/jobs` (tenant-scoped, paginated, status filter) backs it - the list
 must NOT be an unbounded fetch.
 
 ### AC-15-03 `[FE]` A batch row opens the review FORM view
@@ -49,14 +49,14 @@ must NOT be an unbounded fetch.
 
 ---
 
-## Group B — Staged record list on the Resource shell
+## Group B - Staged record list on the Resource shell
 
 ### AC-15-10 `[FE][BE]` The staged list paginates, filters and searches
 **Given** a batch with many staged records (e.g. 172)
 **When** the operator reviews it
 **Then** the staged records render through the **Resource-shell list** (server pagination, a page-size
 control, search by source ref/name, and a filter)
-**And** `GET /autocount/jobs/{id}/staged` accepts `page`/`page_size` (mirroring `/runs`) — no
+**And** `GET /autocount/jobs/{id}/staged` accepts `page`/`page_size` (mirroring `/runs`) - no
 all-rows fetch
 **And** the tall full-card-per-record layout is replaced by a scannable list; a record's full diff is
 reachable (expand / detail), not forced inline for every row.
@@ -68,16 +68,16 @@ reachable (expand / detail), not forced inline for every row.
 **Then** the no-change records are **collapsed into a count** ("N records with no field changes"),
 expandable, exactly like the dry-run preview panel does
 **And** they are never shown as full-height cards that bury the records that DID change.
-> These are legitimate no-op re-fetches, not errors — the fix is presentation, not suppression.
+> These are legitimate no-op re-fetches, not errors - the fix is presentation, not suppression.
 
 ---
 
-## Group C — Push target conforms to read-only-until-Edit
+## Group C - Push target conforms to read-only-until-Edit
 
 ### AC-15-20 `[FE]` The push target is read-only until the form is in Edit
 **Given** the company detail Overview (a read-by-default Resource form)
 **When** the operator views it without editing
-**Then** the push target (delivery sink + Sorento connection) renders **read-only** — plain
+**Then** the push target (delivery sink + Sorento connection) renders **read-only** - plain
 label/value like the other Overview fields, no bare dropdowns, no always-visible Save
 **And** it becomes editable **only** under the form's global Edit toggle, saving through the form's
 single save (dirty-guarded), never its own detached Save button.
@@ -93,15 +93,15 @@ Sorento delivery cannot be saved without a connection.
 
 ---
 
-## Group D — First-run window is not a dead control
+## Group D - First-run window is not a dead control
 
 ### AC-15-30 `[FE]` Editing the first-run window is only offered when it can take effect
-**Given** an entity that has already synced (superseded — has a watermark)
+**Given** an entity that has already synced (superseded - has a watermark)
 **When** the operator opens its row actions
 **Then** a plain "Edit first-run window" that opens a disabled dialog is **not** presented
 **And** instead the superseded state is shown as read-only info (the current sync position), with any
 re-fetch offered as an explicit, clearly-labelled "re-fetch history" action (which resets the
-watermark) — never a Days box that silently does nothing.
+watermark) - never a Days box that silently does nothing.
 
 ### AC-15-31 `[FE]` A not-yet-synced entity can edit the window normally
 **Given** an entity with no watermark
@@ -110,7 +110,7 @@ watermark) — never a Days box that silently does nothing.
 
 ---
 
-## Group E — Field-mapping editor (the feature)
+## Group E - Field-mapping editor (the feature)
 
 ### AC-15-40 `[FE][BE]` Each entity's field mappings are viewable in the UI
 **Given** a company + entity (e.g. Customer)
@@ -132,7 +132,7 @@ revert (existing contract).
 ### AC-15-42 `[BE]` The Sorento target picker offers ONLY Sorento's accepted fields
 **Given** the mapping editor for an entity
 **When** the operator picks a Sorento target field
-**Then** the choices are exactly Sorento's accepted fields for that entity (the sink's field set) —
+**Then** the choices are exactly Sorento's accepted fields for that entity (the sink's field set) -
 no more (`extra="forbid"` can never be tripped) and each shown once
 **And** a mapping to a non-accepted field is rejected server-side (422), not silently dropped.
 
@@ -146,7 +146,7 @@ declared source fields), with free-entry allowed for an un-listed path (dotted, 
 ### AC-15-44 `[FE]` Mapping editor is read-only until Edit + foolproof
 **Given** the mapping editor
 **Then** it follows read-only-until-Edit, searchable dropdowns, and warns (not silently breaks) if a
-required Sorento field (e.g. `code`, `name`) has no source mapped — a required Sorento field left
+required Sorento field (e.g. `code`, `name`) has no source mapped - a required Sorento field left
 unmapped is exactly the null-record failure the slice-14 live verify caught, and the UI must flag it
 before a sync produces a batch that fails.
 
@@ -165,4 +165,4 @@ before a sync produces a batch that fails.
 - `[FE]` Review list config, staged Resource list + no-change collapse, push-target read/edit modes,
   first-run superseded gating, mapping editor render + accepted-target picker + unmapped-required warning.
 - `[E2E]` Review via sidebar → list → open batch → preview; edit a mapping and re-sync; push-target edit.
-- Live-verify (both viewports) — the mandate that caught the slice-14 issues.
+- Live-verify (both viewports) - the mandate that caught the slice-14 issues.

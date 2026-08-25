@@ -2,7 +2,7 @@
 
 /**
  * One message bubble (plan 05 §6): CONTACT left, AGENT right (primary-soft
- * FoundryX token), SYSTEM centered amber internal note. Agent bubbles carry
+ * Foundryx token), SYSTEM centered amber internal note. Agent bubbles carry
  * delivery ticks (✓ sent, ✓✓ delivered, ✓✓-info read, ⚠ failed + reason).
  * Right-click opens the WhatsApp-style context menu: Reply / Copy message /
  * Copy link to message.
@@ -29,13 +29,13 @@ import { MessageStructured, isStructuredMessage } from './message-structured';
 
 export interface MessageBubbleProps {
   message: ConversationMessage;
-  /** Contact display name — labels quoted CONTACT messages. */
+  /** Contact display name - labels quoted CONTACT messages. */
   contactName?: string;
   /** Start a reply to this message (quoted composer). */
   onReply?: (message: ConversationMessage) => void;
   /** Render the message timestamp in the viewer's locale/tz. */
   formatTime?: (iso: string) => string;
-  /** In-thread search term — occurrences in the body get <mark>ed. */
+  /** In-thread search term - occurrences in the body get <mark>ed. */
   highlight?: string;
   /** This bubble is the active search match (ring + scroll target). */
   isActiveMatch?: boolean;
@@ -136,7 +136,7 @@ async function copyText(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
-    // Clipboard unavailable (permissions/insecure context) — nothing to do.
+    // Clipboard unavailable (permissions/insecure context) - nothing to do.
   }
 }
 
@@ -160,7 +160,7 @@ export function MessageBubble({
   const agentReacted = message.reactions.some((r) => r.reactorType === 'AGENT');
 
   if (message.senderType === 'SYSTEM') {
-    // Internal note — visible to agents only, never sent to the contact.
+    // Internal note - visible to agents only, never sent to the contact.
     return (
       <ContextMenu>
         <ContextMenuTrigger asChild>
@@ -266,7 +266,7 @@ export function MessageBubble({
                   {emoji}
                 </ContextMenuItem>
               ))}
-              {/* Full bundled picker (no CDN — CSP) for any emoji beyond the six. */}
+              {/* Full bundled picker (no CDN - CSP) for any emoji beyond the six. */}
               <ContextMenuSub>
                 <ContextMenuSubTrigger
                   className="justify-center rounded px-1.5 py-1 [&>svg:last-child]:hidden"

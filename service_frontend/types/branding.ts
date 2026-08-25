@@ -1,21 +1,21 @@
 /**
- * Tenant branding types (sprint-2/03) — white-label foundation. A tenant owns
+ * Tenant branding types (sprint-2/03) - white-label foundation. A tenant owns
  * one branding record: image assets (logo / favicon / illustration), a slogan,
- * and curated theme-token overrides (light + dark) over the FoundryX defaults.
- * No record = pure FoundryX branding.
+ * and curated theme-token overrides (light + dark) over the Foundryx defaults.
+ * No record = pure Foundryx branding.
  */
 
 export type ThemeName = 'light' | 'dark';
 
 /**
  * Per-theme token overrides, keyed by WHITELISTED token key (e.g. "primary",
- * "grey-200" — see `lib/branding-tokens.ts`). Partial on purpose: only the
+ * "grey-200" - see `lib/branding-tokens.ts`). Partial on purpose: only the
  * keys a tenant changed are stored; everything else falls through to the
- * FoundryX defaults in `css/foundryx-tokens.css`.
+ * Foundryx defaults in `css/foundryx-tokens.css`.
  */
 export type TokenOverrides = Record<string, string>;
 
-/** The stored theme document — both edit methods (pickers / JSON upload) write this. */
+/** The stored theme document - both edit methods (pickers / JSON upload) write this. */
 export interface BrandingTokens {
   light: TokenOverrides;
   dark: TokenOverrides;
@@ -24,7 +24,7 @@ export interface BrandingTokens {
 export type BrandingAssetKind = 'logo' | 'favicon' | 'illustration';
 
 /**
- * Tenant social profiles + email footer text (plan sprint-2/07 D4) — set
+ * Tenant social profiles + email footer text (plan sprint-2/07 D4) - set
  * once, consumed by the template engine's Brand Footer / Social Links blocks
  * (and future legal-footer compliance, BL-074).
  */
@@ -41,24 +41,24 @@ export interface BrandingSocials {
 export interface BrandingFooter {
   /** Company display line (e.g. legal name). */
   companyName: string | null;
-  /** Postal address line (CAN-SPAM/PDPA home — machinery BL-074). */
+  /** Postal address line (CAN-SPAM/PDPA home - machinery BL-074). */
   addressLine: string | null;
   tagline: string | null;
 }
 
-/** A tenant's own branding record (GET /branding — admin surfaces). */
+/** A tenant's own branding record (GET /branding - admin surfaces). */
 export interface TenantBranding {
   slogan: string | null;
-  /** Tenant-chosen product/system name — "Welcome to {appName}" on sign-in. */
+  /** Tenant-chosen product/system name - "Welcome to {appName}" on sign-in. */
   appName: string | null;
   logoUrl: string | null;
   faviconUrl: string | null;
   illustrationUrl: string | null;
   tokens: BrandingTokens | null;
-  /** Null until set — Phase B persists; the UI treats null as all-empty. */
+  /** Null until set - Phase B persists; the UI treats null as all-empty. */
   socials: BrandingSocials | null;
   footer: BrandingFooter | null;
-  /** Bumped on every save — busts the theme-CSS / asset URLs. */
+  /** Bumped on every save - busts the theme-CSS / asset URLs. */
   version: number;
 }
 
@@ -72,17 +72,17 @@ export interface UpdateBrandingInput {
 }
 
 /**
- * Public branding for a host slug (GET /public/branding/{slug}) — consumed
+ * Public branding for a host slug (GET /public/branding/{slug}) - consumed
  * pre-auth by the sign-in page, tab metadata and the app shell. Unknown slug
- * resolves to FoundryX defaults (`isBranded: false`) — never a 404, so tenant
+ * resolves to Foundryx defaults (`isBranded: false`) - never a 404, so tenant
  * existence can't be enumerated.
  */
 export interface PublicBranding {
-  /** False = render stock FoundryX branding everywhere. */
+  /** False = render stock Foundryx branding everywhere. */
   isBranded: boolean;
-  /** Tenant display name — drives the browser-tab title when branded. */
+  /** Tenant display name - drives the browser-tab title when branded. */
   tenantName: string | null;
-  /** Tenant-chosen product/system name — "Welcome to {appName}" on sign-in. */
+  /** Tenant-chosen product/system name - "Welcome to {appName}" on sign-in. */
   appName: string | null;
   slogan: string | null;
   logoUrl: string | null;

@@ -1,5 +1,5 @@
 /**
- * Real user service — talks to FastAPI via the shared api-client. The backend
+ * Real user service - talks to FastAPI via the shared api-client. The backend
  * already returns camelCase matching the `User` type, so no field remapping.
  */
 import { apiFetch, apiFetchText } from '@/lib/api-client';

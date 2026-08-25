@@ -111,7 +111,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
         id: 'promote-br',
         label: 'Promote to BR',
         icon: Rocket,
-        // The destination is a new draft BR — gated by the BR write perm
+        // The destination is a new draft BR - gated by the BR write perm
         // (hidden in embed, which has no operator user / BR surface).
         permission: 'ideation.business_requirements.manage',
         surfaces: { row: false, form: true, bulk: false },
@@ -126,7 +126,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       {
         id: 'advance',
         // Label auto-derived from the status_engine transition target (prototype:
-        // IDEA_NEXT_STATUS) — e.g. "Move to Triaged".
+        // IDEA_NEXT_STATUS) - e.g. "Move to Triaged".
         label: (rows) => {
           const next = rows[0] ? IDEA_NEXT_STATUS[rows[0].status] : undefined;
           return next ? `Move to ${IDEA_STATUS_LABEL[next]}` : 'Advance to next stage';
@@ -267,7 +267,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           icon: FileText,
           render: () => <AttachmentsTab attachments={idea?.attachments ?? []} />,
         },
-        // Business Requirements this idea feeds (reverse lineage, AC-BI-29c) —
+        // Business Requirements this idea feeds (reverse lineage, AC-BI-29c) -
         // operator surface only, and only once the idea exists (not on create).
         ...(showBrsTab && !creating && idea
           ? [

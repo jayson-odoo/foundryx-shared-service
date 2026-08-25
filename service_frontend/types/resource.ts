@@ -1,5 +1,5 @@
 /**
- * Generic "Resource" types — the contract shared by every list/form in the
+ * Generic "Resource" types - the contract shared by every list/form in the
  * system. The Resource shell (components/platform) and every entity service
  * (users, and future entities) speak this language so the design + data
  * patterns are replicable. See documentation/plans/sprint-1/02-user-management.md.
@@ -50,7 +50,7 @@ export interface FilterFieldDef {
 /** Which records are in scope (soft-trash aware). */
 export type StatusView = 'active' | 'trashed';
 
-/** Sort directive — column id + direction. */
+/** Sort directive - column id + direction. */
 export interface SortState {
   id: string;
   desc: boolean;
@@ -65,7 +65,7 @@ export interface ListQuery {
   filter?: FilterGroup | null;
   statusView?: StatusView;
   /**
-   * Generic N-way segment (entities with more views than Active|Trashed —
+   * Generic N-way segment (entities with more views than Active|Trashed -
    * e.g. the email log's All|Pending|Sent|Failed|Cancelled). Mutually
    * exclusive with statusView; configured via ResourceListConfig.segments.
    */

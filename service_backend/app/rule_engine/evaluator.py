@@ -1,7 +1,7 @@
-"""Pure rule evaluator (sprint-2/02 D3–D5) — condition tree + fact dict →
+"""Pure rule evaluator (sprint-2/02 D3-D5) - condition tree + fact dict →
 bool. No I/O, no ORM. Fail closed, uniformly (D5): a missing or null fact, a
 garbage value, an unknown operator or an over-deep tree makes that node
-False — never an exception. The whole rule may still pass via an OR branch.
+False - never an exception. The whole rule may still pass via an OR branch.
 """
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -17,7 +17,7 @@ CROSS_FACT_OPERATORS = {"eq", "neq", "gt", "gte", "lt", "lte", "before", "after"
 
 def evaluate(tree: Optional[Dict[str, Any]], facts: Dict[str, Any]) -> bool:
     """True when the tree passes against the facts. None/empty = True
-    (unconditional edge — today's behavior)."""
+    (unconditional edge - today's behavior)."""
     if not tree or not tree.get("rules"):
         return True
     return _eval_group(tree, facts, depth=1)
@@ -26,16 +26,16 @@ def evaluate(tree: Optional[Dict[str, Any]], facts: Dict[str, Any]) -> bool:
 def failed_conditions(
     tree: Optional[Dict[str, Any]], facts: Dict[str, Any]
 ) -> List[Dict[str, Any]]:
-    """The condition nodes that actually BLOCK the tree — feeds the specific
+    """The condition nodes that actually BLOCK the tree - feeds the specific
     409 message (D6). Combinator-aware (code-review fix): a failing leaf
     inside an OR group whose sibling already passed is irrelevant and is NOT
-    listed — only failing leaves of failing groups count."""
+    listed - only failing leaves of failing groups count."""
     failed: List[Dict[str, Any]] = []
     if not tree:
         return failed
 
     def _walk(node: Dict[str, Any], depth: int) -> None:
-        # Only called for groups that evaluate False — every rule inspected
+        # Only called for groups that evaluate False - every rule inspected
         # here genuinely contributes to the block.
         if depth > _MAX_DEPTH:
             return
@@ -52,7 +52,7 @@ def failed_conditions(
 
 
 def collect_fact_keys(tree: Optional[Dict[str, Any]]) -> Set[str]:
-    """Every fact key the tree reads (LHS + cross-fact RHS) — lets callers
+    """Every fact key the tree reads (LHS + cross-fact RHS) - lets callers
     resolve only the facts a rule actually needs (code-review perf fix)."""
     keys: Set[str] = set()
     if not tree:
@@ -92,7 +92,7 @@ def _eval_condition(node: Dict[str, Any], facts: Dict[str, Any]) -> bool:
     try:
         value = facts.get(node.get("fact"))
         if value is None:
-            return False  # D5 — uniformly, including negative operators
+            return False  # D5 - uniformly, including negative operators
 
         operand = node.get("value")
         if node.get("valueKind") == "fact":
@@ -101,7 +101,7 @@ def _eval_condition(node: Dict[str, Any], facts: Dict[str, Any]) -> bool:
                 return False
 
         return _apply(node.get("operator"), value, operand)
-    except Exception:  # noqa: BLE001 — fail closed, never raise (D5)
+    except Exception:  # noqa: BLE001 - fail closed, never raise (D5)
         return False
 
 
@@ -149,7 +149,7 @@ def _apply(operator: Optional[str], value: Any, operand: Any) -> bool:
         return _str_set(_as_list(operand)) <= _str_set(value)
     if operator == "not_contains":
         return not (_str_set(value) & _str_set(_as_list(operand)))
-    return False  # unknown operator — fail closed
+    return False  # unknown operator - fail closed
 
 
 # ---- coercion helpers ----
@@ -170,7 +170,7 @@ def _maybe_float(x: Any) -> Optional[float]:
         return None
     if isinstance(x, (int, float)):
         return float(x)
-    # Decimal money/rate facts (sprint-4/07 Cluster F) — coerce to float for the
+    # Decimal money/rate facts (sprint-4/07 Cluster F) - coerce to float for the
     # numeric comparison (a Numeric(14,4) value is < 2^53, so exact in float64).
     if isinstance(x, Decimal):
         return float(x)
@@ -183,7 +183,7 @@ def _maybe_float(x: Any) -> Optional[float]:
 
 
 def _comparable_pair(value: Any, operand: Any):
-    """(value, operand) as floats, else as datetimes. Raises on garbage —
+    """(value, operand) as floats, else as datetimes. Raises on garbage -
     the caller fails closed."""
     left = _maybe_float(value)
     right = _maybe_float(operand)
@@ -202,7 +202,7 @@ def _as_dt(x: Any) -> datetime:
     else:
         raise ValueError(f"not a datetime: {x!r}")
     # Columns are aware-UTC since plan sprint-2/05; comparisons here run on
-    # naive-UTC internally — both sides normalize through this function.
+    # naive-UTC internally - both sides normalize through this function.
     if dt.tzinfo is not None:
         dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt

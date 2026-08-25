@@ -3,7 +3,7 @@
 /**
  * Public (anonymous) share page (plan sprint-3/05, Google model). Pre-auth,
  * branded by the public layout (white-label). Renders the SAME mini-Drive
- * (`ShareBrowser`) as the in-app scoped view — card/list, folder nav,
+ * (`ShareBrowser`) as the in-app scoped view - card/list, folder nav,
  * click-to-preview, download (+ upload on a public-edit folder). A workspace/
  * restricted link resolves to `sign_in_required`: a logged-in member is routed
  * into the in-app scoped view; everyone else gets a Sign-in CTA. Responsive ≤375px.

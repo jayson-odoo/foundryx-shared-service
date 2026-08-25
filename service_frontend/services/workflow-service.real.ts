@@ -144,7 +144,7 @@ export const realWorkflowService: WorkflowService = {
   },
 
   async export(query, columns) {
-    // No bulk export endpoint — render CSV from a large page client-side.
+    // No bulk export endpoint - render CSV from a large page client-side.
     const result = await apiFetch<ListResult<WorkflowListItem>>(
       `/workflows?${listParams({ ...query, page: 0, pageSize: 1000 }).toString()}`,
     );

@@ -10,7 +10,7 @@ import type { Job } from '@/types/jobs';
 const MIGRATE_PERM = 'integrations.migrate_storage';
 
 /**
- * Background-job action registry (sprint-4/10) — Abort / Retry / Complete,
+ * Background-job action registry (sprint-4/10) - Abort / Retry / Complete,
  * state-aware via `isVisible`, gated by `integrations.migrate_storage` (the
  * job-control ops are storage-migration controls). Surfaced in the `/jobs` row
  * "…" menu and the `/jobs/[id]` detail "…" menu.

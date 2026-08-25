@@ -1,4 +1,4 @@
-/** Real terminology service — talks to FastAPI via the shared api-client. */
+/** Real terminology service - talks to FastAPI via the shared api-client. */
 import type { TermCatalogItem, TermLabels, TerminologyMap } from '@/types/terminology';
 import { apiFetch } from '@/lib/api-client';
 import type { TerminologyService } from './terminology-service';

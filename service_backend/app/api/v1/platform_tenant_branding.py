@@ -1,4 +1,4 @@
-"""Operator surface of tenant branding (plan sprint-2/03) — the same
+"""Operator surface of tenant branding (plan sprint-2/03) - the same
 BrandingService behind the console's Branding tab. ALL routes operator-only:
 ``require_platform_permission("tenants.manage_branding")`` = permission key
 AND platform-tenant membership (follows platform_tenant_modules)."""
@@ -25,7 +25,7 @@ def get_branding(
 ):
     try:
         return BrandingService(db).get_checked(tenant_id)
-    except Exception as e:  # noqa: BLE001 — translated to HTTP below
+    except Exception as e:  # noqa: BLE001 - translated to HTTP below
         _raise(e)
 
 

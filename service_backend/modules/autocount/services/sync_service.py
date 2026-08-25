@@ -1,4 +1,4 @@
-"""Sync service — trigger a run, read what is staged, approve or discard.
+"""Sync service - trigger a run, read what is staged, approve or discard.
 
 Slice 1 is **MANUAL trigger only**. No scheduling, no beat entry: a scheduled
 pull that nobody has yet watched approve a single batch is a data-integrity risk
@@ -6,8 +6,8 @@ running unattended. Scheduling lands once the pipeline has been exercised by
 hand (plan §9).
 
 **Approval is idempotent (AC-13-13).** The mechanism is an ATOMIC guarded status
-claim on the job row — the same ``UPDATE … WHERE status=?`` the import engine
-and storage migration use — so a double-click, a retry or a replay races into
+claim on the job row - the same ``UPDATE … WHERE status=?`` the import engine
+and storage migration use - so a double-click, a retry or a replay races into
 exactly ONE winner. The loser does not error and does not push: it returns the
 original result, because from the operator's point of view the approval DID
 happen and a scary error on the second click of a successful action is its own
@@ -85,12 +85,12 @@ class NotAwaitingApproval(AutocountServiceError):
 
 class PushFailed(AutocountServiceError):
     """The push raised part-way through. The batch is back in ``needs_review``
-    and is re-approvable — it is NOT stranded and NOT silently half-delivered."""
+    and is re-approvable - it is NOT stranded and NOT silently half-delivered."""
 
 
 class PreviewFailed(AutocountServiceError):
     """The dry run itself failed (a transport / contract fault talking to the
-    consumer). The gate must SHOW this and refuse to offer approval — an operator
+    consumer). The gate must SHOW this and refuse to offer approval - an operator
     must never approve blind (plan §D4). Nothing was written either way."""
 
 
@@ -146,7 +146,7 @@ class SyncService:
         *,
         actor_user_id: Optional[str] = None,
     ) -> BackgroundJob:
-        """"Sync now" — MANUAL only this slice."""
+        """"Sync now" - MANUAL only this slice."""
         company = self.companies.get(tenant_id, company_id)  # tenant-scope guard
         config = self.configs.get(tenant_id, company_id, entity_type)
         if config is None or not config.enabled:
@@ -163,7 +163,7 @@ class SyncService:
     # ── reads ────────────────────────────────────────────────────────────────
 
     def _job(self, tenant_id: str, job_id: str) -> BackgroundJob:
-        """Tenant-scoped job lookup, restricted to OUR job type — a job id from
+        """Tenant-scoped job lookup, restricted to OUR job type - a job id from
         another feature must never be steerable into this service."""
         job = self.jobs.get(tenant_id, job_id)
         if job is None or job.type != AUTOCOUNT_SYNC:
@@ -175,7 +175,7 @@ class SyncService:
 
     def _entity_type_for(self, job: BackgroundJob) -> str:
         # A job syncs exactly ONE entity, so all its staged rows share this type
-        # — read it from the job's own payload, never from client input.
+        # - read it from the job's own payload, never from client input.
         return str((job.payload_json or {}).get("entityType") or "")
 
     def _rehydrate_pushable(
@@ -204,7 +204,7 @@ class SyncService:
     ) -> Tuple[BackgroundJob, List[AcStagedRecord]]:
         job = self._job(tenant_id, job_id)
         company_id = self._company_id_for(job)
-        # Company scope comes from the JOB's payload, never from client input —
+        # Company scope comes from the JOB's payload, never from client input -
         # a caller cannot ask for another company's staged rows (AC-13-41).
         return job, self.staged.list_for_job(tenant_id, company_id, job_id)
 
@@ -232,7 +232,7 @@ class SyncService:
         page: int = 0,
         page_size: int = 25,
     ) -> Tuple[List[JobBatch], int]:
-        """The Review list — sync batches for THIS tenant, newest first (AC-15-02).
+        """The Review list - sync batches for THIS tenant, newest first (AC-15-02).
 
         Reads core ``background_jobs`` filtered to ``type='autocount_sync'`` and
         the caller's tenant (never client input), paginated at the DB level (no
@@ -326,7 +326,7 @@ class SyncService:
     def _claim_review(self, job: BackgroundJob) -> bool:
         """Atomically claim ``needs_review`` → ``running``. Exactly one winner.
 
-        This IS the idempotency mechanism (AC-13-13) — not a flag check, which
+        This IS the idempotency mechanism (AC-13-13) - not a flag check, which
         would race two concurrent approvals straight through.
         """
         claimed = BackgroundJobRepository(self.db).claim(
@@ -344,13 +344,13 @@ class SyncService:
         """The push raised mid-loop. Do NOT leave the job in ``running``.
 
         ``_claim_review`` moved ``needs_review`` → ``running``; a raise between
-        that and ``finish`` would strand the job forever — non-terminal so the
+        that and ``finish`` would strand the job forever - non-terminal so the
         pruner never reaps it, and no longer ``needs_review`` so ``_claim_review``
         can never succeed again. No re-approve, no retry, an approved batch dead
         in the water. Today only ``model(**row.canonical_json)`` can raise, but
         the moment a real network sink lands, ONE timeout does this.
 
-        **Returned to ``needs_review``, not finished ``failed``** — because the
+        **Returned to ``needs_review``, not finished ``failed``** - because the
         approval genuinely did not complete, and ``needs_review`` is precisely
         "a human must act on this". Finishing ``failed`` would be the stranding
         bug in different clothes: a terminal job whose staged rows sit ``STAGED``
@@ -362,7 +362,7 @@ class SyncService:
         """
         self.db.rollback()
         if pushed:
-            # Re-attach by id — the rollback expired the objects held above.
+            # Re-attach by id - the rollback expired the objects held above.
             ids = {row.id for row in pushed}
             fresh = [
                 row
@@ -404,7 +404,7 @@ class SyncService:
                     )
                     continue
                 record = model(**row.canonical_json)
-                # Deterministic request id from (job, staged row) — a lower-layer
+                # Deterministic request id from (job, staged row) - a lower-layer
                 # replay maps to the SAME id for the sink to dedupe on.
                 result: WriteResult = sink.write(
                     record, request_id=f"{job.id}:{row.id}"
@@ -420,7 +420,7 @@ class SyncService:
             self._release_claim(job, pushed, exc)
             raise PushFailed(
                 "The push failed part-way through, so this batch was returned to "
-                "review. Records already delivered will not be sent again — "
+                "review. Records already delivered will not be sent again - "
                 "approve it again to push the rest."
             ) from exc
         return pushed, failures, delivered
@@ -433,7 +433,7 @@ class SyncService:
 
         Per-record success/failure is preserved from the sink's per-record
         verdicts. A BATCH-level fault (``SorentoSinkError`` / ``SorentoRateLimited``)
-        means NOTHING resolved — the whole batch returns to review with nothing
+        means NOTHING resolved - the whole batch returns to review with nothing
         marked pushed, exactly like any push failure. It is never stranded in
         ``running`` and never half-delivered.
         """
@@ -457,14 +457,14 @@ class SyncService:
             self._release_claim(job, [], exc)
             raise PushFailed(
                 "The consumer rejected the whole batch, so it was returned to "
-                "review. Nothing was delivered — resolve the error and approve "
+                "review. Nothing was delivered - resolve the error and approve "
                 "again."
             ) from exc
         except Exception as exc:  # noqa: BLE001
             self._release_claim(job, [], exc)
             raise PushFailed(
                 "The push failed before the consumer resolved it, so the batch "
-                "was returned to review. Nothing was delivered — approve again."
+                "was returned to review. Nothing was delivered - approve again."
             ) from exc
         return pushed, failures, delivered
 
@@ -472,7 +472,7 @@ class SyncService:
         """Ask the consumer what approving WOULD do, writing nothing (AC-14-20/21).
 
         The prediction is Sorento's own ``?dry_run=true`` resolution rolled back
-        — adoption matching included — NEVER a local reconstruction (AC-14-21).
+        - adoption matching included - NEVER a local reconstruction (AC-14-21).
         This never claims the job or mutates any row: it is a read plus one
         dry-run call, so it is safe to call repeatedly before approval.
 
@@ -488,14 +488,14 @@ class SyncService:
         if not hasattr(sink, "dry_run"):
             # Two ways to land on a dry-run-less sink: the company is genuinely
             # configured to log, OR it targets Sorento but Sorento does not
-            # ingest THIS entity yet (a document — GRN/PO/…). The second is not a
+            # ingest THIS entity yet (a document - GRN/PO/…). The second is not a
             # misconfiguration, so it gets its own honest explanation instead of
             # the misleading "no consumer configured".
             if company.sink_impl == SINK_IMPL_SORENTO and not sorento_supports_entity(
                 entity_type
             ):
                 reason = (
-                    f"Sorento does not yet ingest '{entity_type}' records — it "
+                    f"Sorento does not yet ingest '{entity_type}' records - it "
                     "currently accepts suppliers and customers only. There is "
                     "nothing to dry-run; these records are staged and logged, "
                     "not delivered to Sorento."
@@ -512,12 +512,12 @@ class SyncService:
         try:
             result = sink.dry_run(records)
         except SorentoSinkError as exc:
-            # The gate must SHOW this and refuse to offer approval (plan §D4) —
+            # The gate must SHOW this and refuse to offer approval (plan §D4) -
             # an operator must never approve blind. Nothing was written.
             raise PreviewFailed(
                 "The dry run against the consumer failed, so no prediction is "
                 "available and this batch cannot be approved yet. Nothing was "
-                "written — resolve the consumer error first."
+                "written - resolve the consumer error first."
             ) from exc
 
         return {
@@ -562,8 +562,8 @@ class SyncService:
         # return the job to needs_review, or it strands in ``running`` forever
         # (non-terminal so the pruner never reaps it, no longer ``needs_review``
         # so the claim can never win again). Sink RESOLUTION runs AFTER the claim
-        # — deliberately, so the double-click no-op above returns the cached
-        # result WITHOUT touching a connection that may since have been deleted —
+        # - deliberately, so the double-click no-op above returns the cached
+        # result WITHOUT touching a connection that may since have been deleted -
         # so a resolution failure (no target, undecryptable creds, unknown impl)
         # must release the claim, then propagate its own clean error.
         try:
@@ -604,7 +604,7 @@ class SyncService:
             }
         )
         if sink.name == SINK_IMPL_LOGGING:
-            # The slice-1 sink is a tagged seam, not a consumer — say so.
+            # The slice-1 sink is a tagged seam, not a consumer - say so.
             summary["sinkNote"] = (
                 "Records were accepted by the slice-1 logging sink; no consumer "
                 "is wired for this company, so nothing left the ESB."
@@ -626,7 +626,7 @@ class SyncService:
         self, tenant_id: str, job_id: str, *, actor_user_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Close the job WITHOUT pushing. Staged rows are marked discarded, not
-        deleted — the raw payloads stay for audit and retroactive re-mapping
+        deleted - the raw payloads stay for audit and retroactive re-mapping
         (AC-13-07)."""
         job = self._job(tenant_id, job_id)
         company_id = self._company_id_for(job)

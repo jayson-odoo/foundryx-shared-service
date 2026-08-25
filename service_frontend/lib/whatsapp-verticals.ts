@@ -1,5 +1,5 @@
 /**
- * Meta WhatsApp Business Profile `vertical` enum — mirror of the backend
+ * Meta WhatsApp Business Profile `vertical` enum - mirror of the backend
  * `modules/omnichannel/verticals.py`. Drives the Profile-tab SearchSelect and
  * the client-side whitelist. Keep both lists in sync (plan 06 §2).
  */

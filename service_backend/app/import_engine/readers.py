@@ -1,7 +1,7 @@
-"""Multi-format reader adapter (sprint-3/09 D10/D14) — one magic-byte-sniffing
+"""Multi-format reader adapter (sprint-3/09 D10/D14) - one magic-byte-sniffing
 entry, format-blind downstream.
 
-Accepts xlsx/xlsm (openpyxl, ``read_only=True, data_only=True`` — streams values
+Accepts xlsx/xlsm (openpyxl, ``read_only=True, data_only=True`` - streams values
 not formulas, stops at the cap), xls (xlrd, legacy whole-file path bounded by the
 size cap), csv (stdlib + charset-normalizer). ``.xlsm`` macros never execute
 (cell-read only). Extension/declared content-type are hints; magic bytes gate.

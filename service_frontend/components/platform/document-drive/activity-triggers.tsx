@@ -16,7 +16,7 @@ import { useUploadManager } from './upload-manager';
 /**
  * App-wide header triggers for the Uploads + Downloads activity drawers
  * (sprint-3/04b). These live next to the profile badge because file transfer is
- * universal — the Drive enqueues them today, but any feature (complaint /
+ * universal - the Drive enqueues them today, but any feature (complaint /
  * invoice attachments, …) can in future. Mounted in the demo1 header; the
  * providers + drawers live at the protected-layout root.
  */

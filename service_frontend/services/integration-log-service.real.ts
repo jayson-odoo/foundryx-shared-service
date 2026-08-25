@@ -1,4 +1,4 @@
-/** Real integration-log service — talks to FastAPI via the shared api-client
+/** Real integration-log service - talks to FastAPI via the shared api-client
  * (`GET /integration-logs`, `GET /integration-logs/{id}`). */
 import { apiFetch } from '@/lib/api-client';
 import { toCsv } from '@/lib/csv';

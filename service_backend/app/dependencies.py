@@ -1,4 +1,4 @@
-"""Shared FastAPI dependencies — current-user resolution, impersonation, gating.
+"""Shared FastAPI dependencies - current-user resolution, impersonation, gating.
 
 `get_current_user` returns the *effective* user (the impersonation target when an
 active session matches the `X-Impersonate-User-Id` header), so permission checks +
@@ -39,7 +39,7 @@ _TENANT_INACTIVE_EXC = HTTPException(
 def _resolve_user(token: str, db: Session) -> User:
     """Decode the JWT and load the real user (tenant-scoped). No impersonation.
 
-    Also re-checks the tenant's lifecycle per request (plan 07 §4) — suspending
+    Also re-checks the tenant's lifecycle per request (plan 07 §4) - suspending
     or archiving a tenant kills its live sessions on their next request.
     """
     try:
@@ -52,14 +52,14 @@ def _resolve_user(token: str, db: Session) -> User:
         raise _CREDENTIALS_EXC
 
     # A Profile-portal token (kind="profile") must NEVER authenticate a staff
-    # endpoint — defense-in-depth so the staff/portal boundary doesn't rely on
+    # endpoint - defense-in-depth so the staff/portal boundary doesn't rely on
     # id-space disjointness alone (plan sprint-4/06 AC-06-11). Staff tokens carry
     # no `kind` claim (None).
     if payload.get("kind") == "profile":
         raise _CREDENTIALS_EXC
 
     # An omnichannel embed access token (typ="embed", plan 11H) authenticates ONLY
-    # the embed principal on the omnichannel conversation API/WS — it must never
+    # the embed principal on the omnichannel conversation API/WS - it must never
     # authenticate a staff endpoint (defense-in-depth: the boundary can't rely on
     # id-space disjointness alone; its `sub` is an external-agent id).
     if payload.get("typ") == "embed":
@@ -70,7 +70,7 @@ def _resolve_user(token: str, db: Session) -> User:
     if user is None:
         raise _CREDENTIALS_EXC
 
-    # user.tenant (and its status) ride the user query via lazy="joined" — the
+    # user.tenant (and its status) ride the user query via lazy="joined" - the
     # lifecycle re-check costs no extra round-trip.
     if user.tenant is None or not user.tenant.signin_allowed:
         raise _TENANT_INACTIVE_EXC
@@ -81,7 +81,7 @@ def effective_permission_keys(user: User) -> Set[str]:
     """Union of permission keys across all the user's roles (resolved per request).
 
     Read fresh from the DB (via the selectin-loaded role.permissions), NOT from
-    the JWT — so RBAC edits take effect immediately, not on token refresh.
+    the JWT - so RBAC edits take effect immediately, not on token refresh.
     """
     keys: Set[str] = set()
     for role in user.roles:
@@ -94,7 +94,7 @@ def _maybe_apply_impersonation(request: Request, db: Session, real_user: User) -
     """Swap to the target user when a valid active impersonation session matches.
 
     Stashes the real user on ``request.state.real_user`` regardless. Stale/invalid
-    headers are silently ignored — the admin simply browses as themselves.
+    headers are silently ignored - the admin simply browses as themselves.
     """
     request.state.real_user = real_user
     target_id = request.headers.get(IMPERSONATE_HEADER)
@@ -131,7 +131,7 @@ def get_real_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ) -> User:
-    """The authenticated user, ignoring impersonation — used by the impersonation
+    """The authenticated user, ignoring impersonation - used by the impersonation
     endpoints so an impersonated session can't start/stop its own impersonation."""
     real_user = _resolve_user(token, db)
     request.state.real_user = real_user
@@ -143,13 +143,13 @@ def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ) -> User:
-    """The *effective* user — the impersonation target when active, else the real user."""
+    """The *effective* user - the impersonation target when active, else the real user."""
     real_user = _resolve_user(token, db)
     return _maybe_apply_impersonation(request, db, real_user)
 
 
 def get_actor_user_id(request: Request, current_user: User = Depends(get_current_user)) -> str:
-    """The *real* user id for audit / created_by — stays the admin while impersonating."""
+    """The *real* user id for audit / created_by - stays the admin while impersonating."""
     real = getattr(request.state, "real_user", None)
     if isinstance(real, User) and real.id:
         return str(real.id)
@@ -159,7 +159,7 @@ def get_actor_user_id(request: Request, current_user: User = Depends(get_current
 def require_permission(key: str) -> Callable[..., User]:
     """Dependency factory: 403 unless the current (effective) user holds `key`.
 
-    No superuser bypass — Admin passes because it is seeded with every key.
+    No superuser bypass - Admin passes because it is seeded with every key.
     """
 
     def dependency(current_user: User = Depends(get_current_user)) -> User:
@@ -176,7 +176,7 @@ def require_permission(key: str) -> Callable[..., User]:
 def require_module(name: str) -> Callable[..., User]:
     """Dependency factory: 403 unless `name` is installed AND ACTIVE for the
     current user's tenant (plan 08 §6). Injected by the module loader at
-    ``include_router`` time — module code stays untouched. Same fresh-from-DB
+    ``include_router`` time - module code stays untouched. Same fresh-from-DB
     philosophy as ``require_permission``: deactivation applies on the next
     request, no token refresh needed.
     """
@@ -207,12 +207,12 @@ def module_version(db: Session, tenant_id: str, name: str) -> Optional[str]:
 def requires_version(name: str, spec: str) -> Callable[..., User]:
     """Version gate for endpoints introduced after a module's 1.0 (plan 08 §6).
 
-    ``spec`` is ``">=X.Y.Z"`` — tenants provisioned below it get 403 until they
+    ``spec`` is ``">=X.Y.Z"`` - tenants provisioned below it get 403 until they
     run Update (D4: version gating, not code pinning). First real use arrives
     with the first post-1.0 module feature.
     """
     if not spec.startswith(">="):
-        # Wiring error, not a request error — fail loudly at import/decoration
+        # Wiring error, not a request error - fail loudly at import/decoration
         # time (asserts vanish under `python -O`, so raise explicitly).
         raise ValueError(f"requires_version: only '>=' specs are supported, got {spec!r}")
     minimum = spec[2:].strip()
@@ -237,7 +237,7 @@ def requires_version(name: str, spec: str) -> Callable[..., User]:
 def require_platform_permission(key: str) -> Callable[..., User]:
     """Dependency factory for platform-operator endpoints (plan 07 §5).
 
-    Double lock: the user must hold `key` AND belong to the platform tenant —
+    Double lock: the user must hold `key` AND belong to the platform tenant -
     a tenant role that somehow acquired a platform key is still blocked. Keys
     off the tenant's `is_platform` flag (the schema's source of truth), not the
     seeded id constant.

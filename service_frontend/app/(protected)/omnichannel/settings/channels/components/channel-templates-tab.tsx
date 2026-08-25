@@ -19,7 +19,7 @@ import type { TemplateManageItem } from '@/types/whatsapp-template';
 import { useTemplateList } from './use-template-list';
 import { templateNewPath, templateEditPath } from './paths';
 
-/** Templates tab — embedded ResourceList + Sync + the two-pane builder route. */
+/** Templates tab - embedded ResourceList + Sync + the two-pane builder route. */
 export function ChannelTemplatesTab({ channelId }: { channelId: string }) {
   const router = useRouter();
   const { can } = useCan();
@@ -94,7 +94,7 @@ export function ChannelTemplatesTab({ channelId }: { channelId: string }) {
       <Dialog open={payloadOf !== null} onOpenChange={(o) => !o && setPayloadOf(null)}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Template payload — {payloadOf?.name}</DialogTitle>
+            <DialogTitle>Template payload - {payloadOf?.name}</DialogTitle>
           </DialogHeader>
           <pre className="max-h-[60vh] overflow-auto rounded-md bg-muted p-3 text-xs">
             {payloadJson}

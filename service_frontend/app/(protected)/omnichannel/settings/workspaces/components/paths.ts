@@ -1,4 +1,4 @@
-/** Route helpers for the Workspaces feature — single source of truth for its URLs. */
+/** Route helpers for the Workspaces feature - single source of truth for its URLs. */
 
 export const workspacesListPath = '/omnichannel/settings/workspaces';
 export const workspaceNewPath = `${workspacesListPath}/new`;

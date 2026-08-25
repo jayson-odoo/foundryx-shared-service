@@ -24,7 +24,7 @@ export default function ProtectedLayout({
   const { data: session, status } = useSession();
   const router = useRouter();
   // Session freshness (plan 06 D8): every hard page load reconciles the
-  // session (permissions/roles/identity) with the backend — update-on-drift
+  // session (permissions/roles/identity) with the backend - update-on-drift
   // only, so this can't loop the loading state below.
   useSessionSync();
 
@@ -39,10 +39,10 @@ export default function ProtectedLayout({
   }
 
   return session ? (
-    // Upload + download activity are app-wide (any feature can enqueue them —
+    // Upload + download activity are app-wide (any feature can enqueue them -
     // documents today, complaint/invoice attachments later), so the providers +
     // their drawers live at the protected-layout root and the header triggers
-    // them (sprint-3/04b — universal Uploads/Downloads).
+    // them (sprint-3/04b - universal Uploads/Downloads).
     <UploadManagerProvider>
       <DownloadsProvider>
         <ImportActivityProvider>

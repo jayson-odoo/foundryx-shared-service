@@ -1,5 +1,5 @@
 /**
- * Tenant admin service (plan 07) — the boundary the Platform Console talks to
+ * Tenant admin service (plan 07) - the boundary the Platform Console talks to
  * (via hooks). Phase A binds the mock; Phase B swaps `tenantAdminService` to the
  * real api-client impl in ONE line (bottom of file). The interface IS the
  * backend contract (plan 07 §9).
@@ -22,19 +22,19 @@ export interface TenantAdminService {
     query: ListQuery,
     index: number,
   ): Promise<{ tenant: TenantDetail | null; total: number }>;
-  /** Create tenant + seeded roles + first admin user — one transaction (plan 07 §7). */
+  /** Create tenant + seeded roles + first admin user - one transaction (plan 07 §7). */
   provision(input: ProvisionTenantInput): Promise<TenantDetail>;
   update(id: string, input: UpdateTenantInput): Promise<TenantDetail>;
 
-  /** Lifecycle actions (plan 07 §4) — platform tenant rejected server-side. */
+  /** Lifecycle actions (plan 07 §4) - platform tenant rejected server-side. */
   suspend(id: string): Promise<TenantDetail>;
   reactivate(id: string): Promise<TenantDetail>;
   archive(id: string): Promise<TenantDetail>;
-  /** Fire an explicit status-graph edge (sprint-2/01) — the generic move. */
+  /** Fire an explicit status-graph edge (sprint-2/01) - the generic move. */
   transition(id: string, transitionId: string): Promise<TenantDetail>;
-  /** Hard delete (BL-035) — ARCHIVED tenants only; typed slug confirm. */
+  /** Hard delete (BL-035) - ARCHIVED tenants only; typed slug confirm. */
   purge(id: string, confirmSlug: string): Promise<void>;
-  /** The tenant entity's status graph (tenants.read — decoupled from statuses.read). */
+  /** The tenant entity's status graph (tenants.read - decoupled from statuses.read). */
   statusGraph(): Promise<StatusGraph>;
 
   /** Selected rows if `ids` given, else the whole filtered set. Returns CSV text. */

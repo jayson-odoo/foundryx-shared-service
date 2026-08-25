@@ -17,7 +17,7 @@ import {
 } from './log-badges';
 
 /**
- * `/developers/logs` list config (sprint-4/12 AC-DLC-10) — the Integration
+ * `/developers/logs` list config (sprint-4/12 AC-DLC-10) - the Integration
  * Activity console on the Resource shell. Server-side sort/filter/search/
  * paginate; source + status filter fields; per-user column prefs by viewKey.
  */
@@ -112,7 +112,7 @@ export function useIntegrationLogsListConfig(): ResourceListConfig<IntegrationLo
         header: ({ column }) => <DataGridColumnHeader title="Latency" column={column} />,
         cell: ({ row }) => (
           <span className="text-muted-foreground text-sm">
-            {row.original.latencyMs != null ? `${row.original.latencyMs} ms` : '—'}
+            {row.original.latencyMs != null ? `${row.original.latencyMs} ms` : '-'}
           </span>
         ),
         size: 110,
@@ -126,7 +126,7 @@ export function useIntegrationLogsListConfig(): ResourceListConfig<IntegrationLo
         cell: ({ row }) => (
           <ClampedText
             className="text-muted-foreground max-w-[160px] font-mono text-xs"
-            text={row.original.workspaceId ?? '—'}
+            text={row.original.workspaceId ?? '-'}
           />
         ),
         size: 170,

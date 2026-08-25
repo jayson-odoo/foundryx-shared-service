@@ -1,5 +1,5 @@
 /**
- * Real AutoCount service — talks to FastAPI via the shared api-client. Router
+ * Real AutoCount service - talks to FastAPI via the shared api-client. Router
  * prefixes come from the module manifest: companies at `/autocount/companies`,
  * sync at `/autocount`.
  */
@@ -29,7 +29,7 @@ import type { AutocountListQuery, AutocountService } from './autocount-service';
 function pageParams(query: AutocountListQuery = {}): URLSearchParams {
   const p = new URLSearchParams();
   p.set('page', String(query.page ?? 0));
-  // The backend caps page_size at 200 — asking for more is a 422, not a bigger
+  // The backend caps page_size at 200 - asking for more is a 422, not a bigger
   // page, so never send an uncapped "give me everything" size.
   p.set('page_size', String(Math.min(query.pageSize ?? 25, 200)));
   return p;

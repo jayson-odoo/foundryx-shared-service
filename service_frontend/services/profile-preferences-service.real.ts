@@ -1,5 +1,5 @@
 /**
- * Real profile-preferences service (plan sprint-2/05 Phase B) — PATCH
+ * Real profile-preferences service (plan sprint-2/05 Phase B) - PATCH
  * /me/preferences (perm-free self-scope, like the view-prefs sibling).
  */
 import { apiFetch } from '@/lib/api-client';

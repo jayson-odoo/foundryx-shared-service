@@ -2,7 +2,7 @@
  * Mock role service (Phase A). In-memory roles + permission grants + user
  * assignments, with the same query semantics the real backend exposes, so the
  * Roles list/form behave like production. Counts (users, permissions) are
- * computed on read — never stored (plan 03 §6).
+ * computed on read - never stored (plan 03 §6).
  */
 import type { AssignableUser, RoleDetail, RoleListItem, RoleUser } from '@/types/role';
 import type { UserStatus } from '@/types/user';

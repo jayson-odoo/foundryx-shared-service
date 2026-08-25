@@ -1,5 +1,5 @@
 /**
- * Numbering types (sprint-4/07, Cluster F) — mirror of the backend wire schemas.
+ * Numbering types (sprint-4/07, Cluster F) - mirror of the backend wire schemas.
  * The DB/code doc-type names are fixed; only prefix / format / reset / next-val
  * are tenant-set per doc type.
  */
@@ -12,7 +12,7 @@ export const NUMBER_RESET_OPTIONS: { value: NumberReset; label: string }[] = [
   { value: 'monthly', label: 'Monthly' },
 ];
 
-/** GET /numbering item — a registered NumberSequenceDef + its current override. */
+/** GET /numbering item - a registered NumberSequenceDef + its current override. */
 export interface NumberCatalogItem {
   docType: string;
   label: string;
@@ -34,7 +34,7 @@ export interface NumberCatalogItem {
   sample: string;
 }
 
-/** PUT /numbering/{docType} body — upsert a format override. */
+/** PUT /numbering/{docType} body - upsert a format override. */
 export interface NumberFormatSet {
   prefix: string;
   formatPattern: string;

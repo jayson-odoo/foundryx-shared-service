@@ -43,7 +43,7 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
   const actions = useUserActions();
   const creating = !userId;
   const { data: session } = useSession();
-  // Own record: email locked on this form — the /account ceremony owns it
+  // Own record: email locked on this form - the /account ceremony owns it
   // (plan sprint-2/04, no self-bypass; the backend 409s it anyway).
   const isSelf = !creating && session?.user.id === userId;
   const { can } = useCan();
@@ -103,15 +103,15 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
             roleIds: values.roleIds,
             status: values.status,
           });
-          toast.success('User created — invitation sent.');
+          toast.success('User created - invitation sent.');
           router.push(userFormPath(created.id));
         } else {
           const updated = await userService.update(userId, {
             name: values.name,
-            // Admin instant path (plan 04) — own email never rides this PATCH.
+            // Admin instant path (plan 04) - own email never rides this PATCH.
             email: isSelf ? undefined : values.email,
             roleIds: values.roleIds,
-            // INVITED is system-managed — don't let a save flip it.
+            // INVITED is system-managed - don't let a save flip it.
             status: user?.status === 'INVITED' ? undefined : values.status,
           });
           setUser(updated);
@@ -180,7 +180,7 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
       backLabel: 'Back to users',
       title: creating ? 'New user' : (user?.name ?? 'User'),
       subtitle: creating ? 'Invite a new user' : (user?.email ?? undefined),
-      // Others' avatars: interactive upload (admin path, applies immediately —
+      // Others' avatars: interactive upload (admin path, applies immediately -
       // branding-asset convention). Own row stays read-only here; /account is
       // the self-service surface (plan 06 D5).
       avatar: creating

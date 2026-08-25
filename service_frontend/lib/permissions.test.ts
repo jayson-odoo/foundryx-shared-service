@@ -28,7 +28,7 @@ describe('key parsing', () => {
   });
 });
 
-describe('implied-read (blanket — any action implies read)', () => {
+describe('implied-read (blanket - any action implies read)', () => {
   it('adds read when a standard write is present', () => {
     expect(applyImpliedRead(['users.create'])).toEqual(
       expect.arrayContaining(['users.create', 'users.read']),

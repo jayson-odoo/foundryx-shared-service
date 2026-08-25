@@ -1,6 +1,6 @@
-"""Meta webhook receiver (plan 05 §4.1) — PUBLIC endpoints, signature-verified.
+"""Meta webhook receiver (plan 05 §4.1) - PUBLIC endpoints, signature-verified.
 
-Contract: verify fast, ACK fast (<50ms), do NOTHING else synchronously — the
+Contract: verify fast, ACK fast (<50ms), do NOTHING else synchronously - the
 raw payload goes to the Celery queue and the worker owns processing. A slow
 handler makes Meta retry + eventually disable the subscription.
 """
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-MAX_BODY_BYTES = 1_000_000  # size guard — webhook bodies are tiny; 1MB is generous
+MAX_BODY_BYTES = 1_000_000  # size guard - webhook bodies are tiny; 1MB is generous
 
 
 @router.get("/{channel_id}")
@@ -38,7 +38,7 @@ def _signature_valid(body: bytes, header: str) -> bool:
     """X-Hub-Signature-256 = HMAC-SHA256(app_secret, raw_body).
 
     Fail-OPEN only in development with no secret set (local testing without a
-    Meta app). In any other environment a missing secret fails CLOSED — a prod
+    Meta app). In any other environment a missing secret fails CLOSED - a prod
     misconfig must never silently accept forged webhooks.
     """
     if not settings.meta_app_secret:
@@ -64,7 +64,7 @@ async def receive_webhook(channel_id: str, request: Request) -> dict:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
     # Fast ACK: enqueue and return. Channel validity, parsing, contact
-    # resolution — all the worker's job (plan 05 §4.2).
+    # resolution - all the worker's job (plan 05 §4.2).
     from ..worker import process_inbound_webhook
 
     process_inbound_webhook.delay(channel_id, payload)

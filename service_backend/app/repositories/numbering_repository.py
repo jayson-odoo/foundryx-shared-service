@@ -1,4 +1,4 @@
-"""Numbering repository (sprint-4/07) — pure SQLAlchemy, tenant-scoped.
+"""Numbering repository (sprint-4/07) - pure SQLAlchemy, tenant-scoped.
 
 The counter access is the load-bearing piece: ``get_counter_for_update`` locks
 the (tenant, doc_type, period_key) row ``FOR UPDATE`` on Postgres so concurrent
@@ -81,7 +81,7 @@ class NumberingRepository:
     def get_counter_for_update(
         self, tenant_id: str, doc_type: str, period_key: str
     ) -> Optional[NumberCounter]:
-        """Lock the counter row ``FOR UPDATE`` (Postgres) — concurrency safety
+        """Lock the counter row ``FOR UPDATE`` (Postgres) - concurrency safety
         (AC-07-04). No-op lock on SQLite, but reads are serialised there anyway."""
         q = self.db.query(NumberCounter).filter(
             NumberCounter.tenant_id == tenant_id,
@@ -133,7 +133,7 @@ class NumberingRepository:
                 self.db.flush()
             return row
         except IntegrityError:
-            # A concurrent caller won the create — re-fetch its row under lock.
+            # A concurrent caller won the create - re-fetch its row under lock.
             counter = self.get_counter_for_update(tenant_id, doc_type, period_key)
             if counter is None:  # pragma: no cover - constraint guarantees a row
                 raise

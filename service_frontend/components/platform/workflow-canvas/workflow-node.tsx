@@ -21,7 +21,7 @@ const ICONS = WORKFLOW_NODE_ICONS;
 export interface WorkflowNodeData {
   node: WorkflowNode;
   catalog?: NodeCatalogEntry;
-  /** Run-replay tint (D16) — omitted in the editor. */
+  /** Run-replay tint (D16) - omitted in the editor. */
   runStatus?: WorkflowNodeRunStatus;
   [key: string]: unknown;
 }
@@ -44,7 +44,7 @@ export function WorkflowFlowNode({ data, selected }: NodeProps & { data: Workflo
   const baseSummary = nodeSummary(node);
   // When the node carries a CUSTOM name (≠ its type label), surface the actual
   // type in the subtitle so a name like "Record created" can never masquerade
-  // as a different trigger type (foolproof-UI — the card states what it IS).
+  // as a different trigger type (foolproof-UI - the card states what it IS).
   const summary =
     label !== typeLabel
       ? [typeLabel, baseSummary].filter(Boolean).join(' · ')

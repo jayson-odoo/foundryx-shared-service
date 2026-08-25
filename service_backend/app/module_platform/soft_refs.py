@@ -1,8 +1,8 @@
-"""Soft references (sprint-3/10 D6) — cross-module data WITHOUT FKs.
+"""Soft references (sprint-3/10 D6) - cross-module data WITHOUT FKs.
 
 A consumer stores a ``SoftRef{module, entity_type, id}`` (JSON column v1) instead
 of an FK into another module's schema. Resolution goes through a provider
-``<entity>.resolve`` capability — ``resolve_soft_ref`` → ``resolve_capability``
+``<entity>.resolve`` capability - ``resolve_soft_ref`` → ``resolve_capability``
 → the provider's handler. NO ``app_ems → app_omnichannel`` query, ever. An orphan
 (provider inactive/uninstalled) → ``None`` → UI "linked record unavailable".
 
@@ -43,7 +43,7 @@ def resolve_soft_ref(
 ) -> Optional[Any]:
     """Resolve through the provider's ``<entity>.resolve`` capability, tenant-
     scoped. Returns ``None`` if the ref is absent or the provider is inactive/
-    gone (orphan) — never a dangling FK, never a cross-schema query."""
+    gone (orphan) - never a dangling FK, never a cross-schema query."""
     if ref is None:
         return None
     from app.module_platform.capabilities import resolve_capability

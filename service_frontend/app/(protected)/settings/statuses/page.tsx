@@ -13,7 +13,7 @@ import { ResourceList } from '@/components/platform/resource-list';
 import { useStatusEntitiesListConfig } from '@/components/platform/status-engine';
 
 /**
- * Tenant surface of the Status Engine (sprint-2/01) — entity list; a tenant's
+ * Tenant surface of the Status Engine (sprint-2/01) - entity list; a tenant's
  * first edit forks the entity's whole set into the workspace (D7). Entities
  * arrive as installed modules register them; the tenant lifecycle itself is
  * platform-owned and hidden here.

@@ -1,12 +1,12 @@
 'use client';
 
-/** Internal fill state (plan sprint-3/01 D15/D19) — loads the PUBLISHED
+/** Internal fill state (plan sprint-3/01 D15/D19) - loads the PUBLISHED
  * version, holds answers, submits through the service (422 → per-field error
  * map for the renderer). Any authenticated user may fill (filling ≠
  * administering).
  *
  * Plan sprint-4/04: with `revisionId`, the page instead edits an existing
- * Draft revision — it loads that submission, pre-fills its cloned answers,
+ * Draft revision - it loads that submission, pre-fills its cloned answers,
  * renders against ITS pinned version, and resubmits into the same row (R3,
  * "rides the existing submit/transition flow"). */
 import { useCallback, useEffect, useState } from 'react';
@@ -23,7 +23,7 @@ export interface UseFormFillResult {
   view: FormFillView | null;
   loading: boolean;
   notAvailable: boolean;
-  /** True in revision mode — the page heads it as a revision + redirects on save. */
+  /** True in revision mode - the page heads it as a revision + redirects on save. */
   isRevision: boolean;
   /** The resubmitted submission id once a revision is saved (for redirect). */
   resubmittedId: string | null;

@@ -21,7 +21,7 @@ import {
 
 /**
  * Sync run history embedded on a company's Runs tab. A row opens the batch's
- * review surface — for a decided batch that surface is read-only, which is the
+ * review surface - for a decided batch that surface is read-only, which is the
  * honest way to show what was pushed.
  */
 export function useAutocountRunsListConfig(
@@ -97,7 +97,7 @@ export function useAutocountRunsListConfig(
         header: ({ column }) => <DataGridColumnHeader title="Finished" column={column} />,
         cell: ({ row }) => (
           <span className="text-sm text-muted-foreground">
-            {row.original.finishedAt ? formatDateTime(row.original.finishedAt) : '—'}
+            {row.original.finishedAt ? formatDateTime(row.original.finishedAt) : '-'}
           </span>
         ),
         size: 190,
@@ -116,7 +116,7 @@ export function useAutocountRunsListConfig(
               className="text-sm text-destructive"
             />
           ) : (
-            <span className="text-sm text-muted-foreground">—</span>
+            <span className="text-sm text-muted-foreground">-</span>
           ),
         size: 260,
         enableSorting: false,

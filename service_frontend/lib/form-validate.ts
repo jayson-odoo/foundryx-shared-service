@@ -1,12 +1,12 @@
 /**
- * Form runtime validation + visibility (plan sprint-3/01, D14) — the CLIENT
+ * Form runtime validation + visibility (plan sprint-3/01, D14) - the CLIENT
  * mirror of the backend submit gate (`validate_submission`); the SERVER stays
  * the boundary (it re-derives the visible set + revalidates on submit). These
  * are PURE functions shared by the renderer (inline errors, Next-blocking) and
  * its tests.
  *
  * Visibility (D14): a field/section hides when its `conditionsJson` fails
- * against `answersToFacts(answers)` — fail-closed handled by `evaluateRules`.
+ * against `answersToFacts(answers)` - fail-closed handled by `evaluateRules`.
  * Hidden fields KEEP their local answer (a flip-back restores it) but are
  * EXCLUDED from the visible set, from `visibleAnswers`, and from validation.
  * `required` therefore applies ONLY when visible. Computed fields are
@@ -26,24 +26,24 @@ import type {
   FormSubField,
 } from '@/types/forms';
 
-// Anchored ECMAScript email shape — pragmatic (matches the backend's loose
+// Anchored ECMAScript email shape - pragmatic (matches the backend's loose
 // check); deliverability is never asserted client-side.
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // ---- visibility resolution (renderer + validation shared) ----
 
 /**
- * The fact map conditions evaluate against — built from the VISIBLE set in
+ * The fact map conditions evaluate against - built from the VISIBLE set in
  * document order, NOT the raw answer map. This mirrors the backend
  * (`validate_submission`): a hidden field contributes NO fact, so it can't
  * keep a downstream field visible (its retained UI value is ignored for
  * conditions). Conditions reference earlier fields only (publish gate), so a
- * single document-order pass is exact — an earlier field's facts are final
+ * single document-order pass is exact - an earlier field's facts are final
  * before any later condition reads them. Computed fields contribute their
  * recomputed value.
  */
 interface Resolved {
-  /** Visible answers keyed by field key — computed fields recomputed. This is
+  /** Visible answers keyed by field key - computed fields recomputed. This is
    * the submit payload AND the source of condition facts. */
   clean: FormAnswers;
   /** Visible input-field keys (computed excluded). */
@@ -55,7 +55,7 @@ interface Resolved {
  * `validate_submission`: a field/section is visible iff its condition passes
  * against the facts of the visible fields BEFORE it (refs are backward-only,
  * publish-enforced, so one pass is exact). A hidden field contributes no fact
- * and is dropped — so a retained UI value for a hidden field can't keep a
+ * and is dropped - so a retained UI value for a hidden field can't keep a
  * downstream field visible (parity with the server; prevents a submit payload
  * the server would silently drop).
  */
@@ -85,7 +85,7 @@ function resolveVisible(doc: FormDocument, answers: FormAnswers): Resolved {
   return { clean, visibleKeys };
 }
 
-/** The visible-set fact map (`answers.<key>`) — drives the renderer's
+/** The visible-set fact map (`answers.<key>`) - drives the renderer's
  * show/hide so display matches the server's visibility (D14 parity). */
 export function visibleFacts(doc: FormDocument, answers: FormAnswers): Record<string, unknown> {
   const { clean } = resolveVisible(doc, answers);
@@ -115,7 +115,7 @@ export function computeValue(field: FormField, answers: FormAnswers): number | n
   const values: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(answers)) {
     // Scalars feed plain refs; arrays (repeater rows) feed aggregate functions
-    // (sum/avg/min/max/count over a column) — pass them through too.
+    // (sum/avg/min/max/count over a column) - pass them through too.
     if (typeof value === 'number' || typeof value === 'string' || Array.isArray(value)) {
       values[key] = value;
     }
@@ -134,7 +134,7 @@ export function validatePage(
   const page = doc.pages[pageIndex];
   if (!page) return {};
   // Visible-set facts (not the raw map) so we never require a field the
-  // server considers hidden — parity with validate_submission (D14).
+  // server considers hidden - parity with validate_submission (D14).
   const facts = visibleFacts(doc, answers);
   const errors: FormFieldErrors = {};
   for (const section of page.sections) {
@@ -161,7 +161,7 @@ export function pageOfKey(doc: FormDocument, key: string): number {
   for (const loc of allFields(doc)) {
     if (loc.field.key === key) return loc.pageIndex;
   }
-  // Server error keys for repeaters are `key.row.subKey` — match the prefix.
+  // Server error keys for repeaters are `key.row.subKey` - match the prefix.
   const bare = key.split('.')[0];
   for (const loc of allFields(doc)) {
     if (loc.field.key === bare) return loc.pageIndex;
@@ -227,7 +227,7 @@ export function validateField(field: FormField, answers: FormAnswers, errors: Fo
     case 'multiselect':
     case 'checkboxes': {
       const picked = asStringArray(value);
-      // Reject duplicate selections — parity with the backend
+      // Reject duplicate selections - parity with the backend
       // `_validate_multi_choice` (else the client passes but submit 422s).
       if (new Set(picked).size !== picked.length) {
         errors[key] = 'Duplicate selection.';
@@ -250,7 +250,7 @@ export function validateField(field: FormField, answers: FormAnswers, errors: Fo
       break;
     case 'signature':
       // Presence already covered by the required check above; a non-empty
-      // value is an opaque data-URL string — nothing further to assert.
+      // value is an opaque data-URL string - nothing further to assert.
       break;
     default:
       break;
@@ -279,7 +279,7 @@ function validateText(
     try {
       re = new RegExp(cfg.pattern);
     } catch {
-      re = null; // invalid author pattern — fail open (publish gate caught it)
+      re = null; // invalid author pattern - fail open (publish gate caught it)
     }
     if (re && !re.test(value)) {
       errors[key] = cfg.patternMessage?.trim() || 'This value is not in the expected format.';
@@ -436,7 +436,7 @@ function validateTable(
 
   realRows.forEach((row, rowIndex) => {
     for (const col of field.table?.columns ?? []) {
-      // computed = derived; fixed = server-stamped — neither is user input.
+      // computed = derived; fixed = server-stamped - neither is user input.
       if (col.type === 'computed' || col.type === 'fixed') continue;
       const errorKey = `${key}.${rowIndex}.${col.key}`;
       const cell = row[col.key];

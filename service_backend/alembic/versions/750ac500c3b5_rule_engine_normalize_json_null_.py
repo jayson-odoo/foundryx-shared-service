@@ -20,7 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Data fix: edges cleared before none_as_null landed stored JSON null
-    (not SQL NULL) — they ghosted on the Rules page as "Always allowed" and
+    (not SQL NULL) - they ghosted on the Rules page as "Always allowed" and
     needlessly triggered per-record fireable computation."""
     op.execute(
         "UPDATE status_transitions SET conditions_json = NULL "
@@ -29,5 +29,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """No-op — SQL NULL is the canonical 'unconditional' either way."""
+    """No-op - SQL NULL is the canonical 'unconditional' either way."""
     pass

@@ -1,7 +1,7 @@
 /**
  * Form engine service boundary (plan sprint-3/01). Phase A binds the mock;
  * Phase B swaps to the real api-client implementation at this one line
- * (house methodology — UI → hook → service → api-client).
+ * (house methodology - UI → hook → service → api-client).
  */
 import type { ListQuery, ListResult } from '@/types/resource';
 import type {
@@ -18,7 +18,7 @@ import type {
 } from '@/types/forms';
 import { realFormService } from './form-service.real';
 
-/** Publish refused — the validate gate's problem list (422 contract, D9). */
+/** Publish refused - the validate gate's problem list (422 contract, D9). */
 export class FormPublishError extends Error {
   problems: string[];
 
@@ -29,7 +29,7 @@ export class FormPublishError extends Error {
   }
 }
 
-/** Submit refused — per-field error map (422 contract, D14). */
+/** Submit refused - per-field error map (422 contract, D14). */
 export class FormSubmitError extends Error {
   fieldErrors: FormFieldErrors;
 
@@ -66,17 +66,17 @@ export interface FormService {
   unpublish(id: string): Promise<FormDetail>;
   archive(id: string): Promise<FormRow>;
   restore(id: string): Promise<FormRow>;
-  /** Hard delete — drops versions, submissions and the scoped status graph. */
+  /** Hard delete - drops versions, submissions and the scoped status graph. */
   remove(id: string): Promise<void>;
   export(query: ListQuery, columns: string[]): Promise<string>;
 
   versions(formId: string, page: number, pageSize: number): Promise<ListResult<FormVersionRow>>;
-  /** The immutable definition of one published version — submissions re-render
+  /** The immutable definition of one published version - submissions re-render
    * against their PINNED version forever (D9). */
   versionDefinition(formId: string, versionId: string): Promise<FormDocument | null>;
-  /** Author preview — renders the DRAFT (D9). */
+  /** Author preview - renders the DRAFT (D9). */
   preview(formId: string): Promise<FormFillView>;
-  /** Fill surface — the PUBLISHED version only (D9). Null = not published. */
+  /** Fill surface - the PUBLISHED version only (D9). Null = not published. */
   fill(formId: string): Promise<FormFillView | null>;
   /** Internal submit (any authed user, D19). Throws `FormSubmitError` on 422. */
   submit(formId: string, answers: FormAnswers): Promise<FormSubmissionRow>;
@@ -95,7 +95,7 @@ export interface FormService {
   /** The full revision chain for a group, newest first (R3 history). Each row
    * pins its OWN version for faithful re-render. */
   submissionRevisions(formId: string, groupId: string): Promise<FormSubmissionRow[]>;
-  /** Save edited answers into a Draft revision + fire its Submit edge (R3 —
+  /** Save edited answers into a Draft revision + fire its Submit edge (R3 -
    * rides the existing submit/transition flow). Throws `FormSubmitError` on 422. */
   resubmitRevision(submissionId: string, answers: FormAnswers): Promise<FormSubmissionRow>;
 }

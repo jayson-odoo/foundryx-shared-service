@@ -70,7 +70,7 @@ def test_record_swallows_a_raising_writer(session_factory, monkeypatch):
     def _boom(*_a, **_k):
         raise RuntimeError("db exploded")
 
-    # Force the insert to raise — record() must swallow, never propagate.
+    # Force the insert to raise - record() must swallow, never propagate.
     monkeypatch.setattr(service.repo, "add", _boom)
     result = service.record(
         tenant_id=DEFAULT_TENANT_ID,
@@ -235,7 +235,7 @@ def test_summarize_body_json_parsed():
 def test_summarize_body_multipart_stores_note_not_bytes():
     from app.activity_log.middleware import _summarize_body
 
-    # Multipart / binary body is NEVER buffered — capture=False, only the size.
+    # Multipart / binary body is NEVER buffered - capture=False, only the size.
     out = _summarize_body(
         b"",  # nothing buffered (capture was off)
         content_type="multipart/form-data; boundary=xyz",
@@ -273,7 +273,7 @@ def test_summarize_body_none_when_empty():
 def test_gateway_send_captures_request_and_response_bodies(client, session_factory):
     """A JSON POST /messages through the gateway records the inbound_api row with
     the REQUEST body (secret Authorization header masked, message text kept) AND
-    the RESPONSE body — the 'No payload captured' case is gone for JSON."""
+    the RESPONSE body - the 'No payload captured' case is gone for JSON."""
     from app.models.integration_activity import IntegrationActivity
     from tests.test_omnichannel_api_gateway import (
         _default_workspace_id,

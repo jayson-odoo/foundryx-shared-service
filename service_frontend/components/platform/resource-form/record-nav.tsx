@@ -7,7 +7,7 @@ import { useRecordNav, type UseRecordNavOptions } from '@/hooks/use-record-nav';
 export type RecordNavProps = UseRecordNavOptions & {
   /**
    * Wraps a navigation action behind the form's dirty-guard: runs it now when
-   * clean, else defers it behind the Discard-changes dialog (async — no
+   * clean, else defers it behind the Discard-changes dialog (async - no
    * synchronous boolean, so the prompt is a real dialog not window.confirm).
    */
   guard?: (proceed: () => void) => void;

@@ -33,7 +33,7 @@ export interface AccountProfileTabProps {
 }
 
 /**
- * Profile tab — name is the one self-editable field. Email is click-to-copy;
+ * Profile tab - name is the one self-editable field. Email is click-to-copy;
  * changing it = the "…" → Change email action (plan-04 ceremony), explained
  * by the info tooltip. An outstanding ceremony shows as the banner up top.
  */
@@ -98,7 +98,7 @@ export function AccountProfileTab({
                 )}
               />
             ) : (
-              (name ?? '—')
+              (name ?? '-')
             )}
           </FormRow>
 
@@ -111,7 +111,7 @@ export function AccountProfileTab({
                     className="cursor-pointer hover:text-primary"
                     onClick={() => void copyEmail()}
                   >
-                    {email || '—'}
+                    {email || '-'}
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">Click to copy</TooltipContent>
@@ -138,7 +138,7 @@ export function AccountProfileTab({
                   {role.name}
                 </Badge>
               ))}
-              {roles.length === 0 && <span className="text-muted-foreground">—</span>}
+              {roles.length === 0 && <span className="text-muted-foreground">-</span>}
             </div>
           </FormRow>
         </CardContent>

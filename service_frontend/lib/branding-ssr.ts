@@ -1,5 +1,5 @@
 /**
- * Server-side branding resolution (sprint-2/03 Phase B) — the first-paint
+ * Server-side branding resolution (sprint-2/03 Phase B) - the first-paint
  * path. The root layout derives the tenant slug from the request host, pulls
  * the public branding JSON (title/favicon via generateMetadata) and emits the
  * backend-generated theme.css <link>. The client-side BrandingProvider keeps
@@ -11,7 +11,7 @@ import type { PublicBranding } from '@/types/branding';
 import { deriveTenantSlug } from '@/lib/tenant';
 
 // Server-side fetch target (NextAuth's BACKEND_API_URL convention) with the
-// public var as fallback; the <link> href must use the PUBLIC base — the
+// public var as fallback; the <link> href must use the PUBLIC base - the
 // browser fetches it.
 const SERVER_API =
   process.env.BACKEND_API_URL ||
@@ -22,7 +22,7 @@ const PUBLIC_API =
 
 export interface RequestBranding {
   slug: string;
-  /** null = backend unreachable / non-OK — render FoundryX defaults, never block. */
+  /** null = backend unreachable / non-OK - render Foundryx defaults, never block. */
   branding: PublicBranding | null;
 }
 
@@ -34,7 +34,7 @@ export const getRequestBranding = cache(async (): Promise<RequestBranding> => {
     // Branding changes rarely: a short server-side revalidate amortizes the
     // per-request fetch; the in-session BrandingProvider covers freshness for
     // the editing admin. The 2s abort keeps a degraded backend from stalling
-    // first paint app-wide — branding is cosmetic, never worth blocking on.
+    // first paint app-wide - branding is cosmetic, never worth blocking on.
     const res = await fetch(`${SERVER_API}/public/branding/${slug}`, {
       next: { revalidate: 60 },
       signal: AbortSignal.timeout(2000),

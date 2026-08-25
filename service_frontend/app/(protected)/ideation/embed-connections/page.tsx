@@ -20,7 +20,7 @@ import { RotateSecretDialog } from './rotate-secret-dialog';
 /**
  * Embed connections admin (PLAN-ideation-embed-sso §7, AC-E-5/12) on the shared
  * ResourceList. Registers the host apps allowed to embed this tenant's Ideas
- * workspace — the UI replacement for the `seed_ideation_embed_connection.py`
+ * workspace - the UI replacement for the `seed_ideation_embed_connection.py`
  * docker script. Add opens the create modal (secret revealed once); each row
  * exposes Rotate secret, Activate/Deactivate, and hard Delete. Products load once
  * to resolve the product-scope column to names + feed the create picker.
@@ -72,7 +72,7 @@ export default function EmbedConnectionsPage() {
             <ToolbarPageTitle />
             <ToolbarDescription>
               Host apps allowed to embed this tenant&apos;s Ideas workspace. The signing secret is
-              shown once on create or rotate — paste the same value into the host&apos;s embed config.
+              shown once on create or rotate - paste the same value into the host&apos;s embed config.
             </ToolbarDescription>
           </ToolbarHeading>
         </Toolbar>

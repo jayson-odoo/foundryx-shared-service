@@ -1,4 +1,4 @@
-"""Contact (thread) + message repository — tenant-scoped, pure SQLAlchemy.
+"""Contact (thread) + message repository - tenant-scoped, pure SQLAlchemy.
 
 The contact IS the thread (plan 05): list/filter threads, fetch a thread's
 messages, resolve identities, and maintain the thread metadata columns the
@@ -42,7 +42,7 @@ class ContactRepository:
         if workspace_id:
             q = q.filter(Contact.workspace_id == workspace_id)
         if assignee == "me":
-            # "Mine" resolves to the CALLER's identity — a federated (embed) agent
+            # "Mine" resolves to the CALLER's identity - a federated (embed) agent
             # matches on the external-agent column, a native user on the user column.
             if me_external_agent_id:
                 q = q.filter(Contact.assigned_external_agent_id == me_external_agent_id)
@@ -123,11 +123,11 @@ class ContactRepository:
         """A bounded window of a contact's messages, always returned oldest→newest.
 
         Two-way keyset paging (respond.io next/previous):
-        - ``before_id`` — the ``limit`` messages OLDER than that anchor (page back
+        - ``before_id`` - the ``limit`` messages OLDER than that anchor (page back
           into history).
-        - ``after_id`` — the ``limit`` messages NEWER than that anchor (page
+        - ``after_id`` - the ``limit`` messages NEWER than that anchor (page
           forward toward the present).
-        - neither — the most recent ``limit`` messages.
+        - neither - the most recent ``limit`` messages.
         Never loads an entire (possibly huge) thread."""
         q = self.db.query(ConversationMessage).filter(
             ConversationMessage.tenant_id == tenant_id,
@@ -143,7 +143,7 @@ class ContactRepository:
                         & (ConversationMessage.id > anchor.id)
                     )
                 )
-            # Ascending window from the anchor forward — already oldest→newest.
+            # Ascending window from the anchor forward - already oldest→newest.
             return (
                 q.order_by(ConversationMessage.created_at.asc(), ConversationMessage.id.asc())
                 .limit(limit)
@@ -169,7 +169,7 @@ class ContactRepository:
     def get_message_global(self, message_id: str) -> Optional[ConversationMessage]:
         """Resolve a message by id WITHOUT a tenant filter. ONLY for the signed
         media path, where a verified HMAC signature is the authorization (it binds
-        this exact id) — never call from a tenant-scoped request path."""
+        this exact id) - never call from a tenant-scoped request path."""
         return (
             self.db.query(ConversationMessage)
             .filter(ConversationMessage.id == message_id)
@@ -290,7 +290,7 @@ class ContactRepository:
         )
         # Tie-break: two messages can share an identical created_at (µs-coarse
         # clocks / batched inbound). Order so the highest id wins deterministically
-        # — setdefault keeps the first seen per contact.
+        # - setdefault keeps the first seen per contact.
         preview: dict = {}
         for m in sorted(rows, key=lambda r: r.id, reverse=True):
             preview.setdefault(m.contact_id, m)
@@ -345,9 +345,9 @@ class ContactRepository:
         self, phone_digits: str, workspace_id: str, tenant_id: str
     ) -> Optional[Contact]:
         """Within-workspace stitch (decision 15): match an existing contact by
-        phone. Phones are stored in varying formats — compare digits-only."""
+        phone. Phones are stored in varying formats - compare digits-only."""
         # Empty digits (malformed wa_id) must NOT match contacts with a digitless
-        # phone — that would mis-stitch the message onto an unrelated contact.
+        # phone - that would mis-stitch the message onto an unrelated contact.
         if not phone_digits:
             return None
         candidates = (

@@ -41,7 +41,7 @@ const TYPE_OPTIONS = [
   { label: 'Badge / canvas', value: 'badge' },
 ];
 
-/** Contexts belong to a surface — filter by the chosen type so the picker only
+/** Contexts belong to a surface - filter by the chosen type so the picker only
  * offers vocabularies that render on it (badge.* / document.* / everything-else
  * = email). Keeps the create flow foolproof (can't pair a badge with an email
  * context). */
@@ -89,11 +89,11 @@ export function TemplateSettingsFields({
             onChange={(e) => form.setValue('name', e.target.value, { shouldDirty: true })}
           />
         ) : (
-          <span className="text-sm font-medium">{values.name || '—'}</span>
+          <span className="text-sm font-medium">{values.name || '-'}</span>
         )}
       </Row>
 
-      {/* Badges render to a card, not an email — no subject line. */}
+      {/* Badges render to a card, not an email - no subject line. */}
       {!isBadge && (
         <Row label="Subject" required>
           {editing ? (
@@ -104,13 +104,13 @@ export function TemplateSettingsFields({
               fields={mergeFields}
             />
           ) : (
-            <span className="text-sm">{values.subject || '—'}</span>
+            <span className="text-sm">{values.subject || '-'}</span>
           )}
         </Row>
       )}
 
       <Row label="Context" required>
-        {/* Context is immutable after creation — it defines the fact vocabulary. */}
+        {/* Context is immutable after creation - it defines the fact vocabulary. */}
         {editing && isNew ? (
           <SearchSelect
             ariaLabel="Template context"
@@ -121,7 +121,7 @@ export function TemplateSettingsFields({
           />
         ) : (
           <span className="text-sm">
-            {contexts.find((c) => c.key === values.context)?.label ?? values.context ?? '—'}
+            {contexts.find((c) => c.key === values.context)?.label ?? values.context ?? '-'}
           </span>
         )}
       </Row>

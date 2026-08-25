@@ -7,7 +7,7 @@ import type { ResourceAction } from '@/components/platform/resource-list';
 import { emailLogService } from '@/services/email-log-service';
 import type { EmailLogListItem } from '@/types/templates';
 
-/** Retry + Cancel (D14) — one registry for row `…`, bulk and detail `…`. */
+/** Retry + Cancel (D14) - one registry for row `…`, bulk and detail `…`. */
 export function useEmailLogActions(): ResourceAction<EmailLogListItem>[] {
   return useMemo<ResourceAction<EmailLogListItem>[]>(
     () => [
@@ -37,7 +37,7 @@ export function useEmailLogActions(): ResourceAction<EmailLogListItem>[] {
         confirm: {
           title: 'Cancel pending email?',
           description:
-            'The email will not be sent. If the dispatcher already claimed it, cancelling fails — it was too late.',
+            'The email will not be sent. If the dispatcher already claimed it, cancelling fails - it was too late.',
           confirmLabel: 'Cancel email',
         },
         run: async (rows, runtime) => {

@@ -1,7 +1,7 @@
-"""Template contexts — code-side registry (plan 07 D11).
+"""Template contexts - code-side registry (plan 07 D11).
 
 Mirrors ``STATUS_ENTITIES`` / fact-source registration: a context defines
-WHERE a template renders — its merge-fact vocabulary (with samples for
+WHERE a template renders - its merge-fact vocabulary (with samples for
 preview/test-send), the rule-engine fact sources usable in visibility
 conditions, and the facts a template MUST consume to be saveable (D7 safety
 rail: a reset-password template without {{resetLink}} is a broken product
@@ -26,7 +26,7 @@ class ContextFact:
 
 @dataclass(frozen=True)
 class ListFact:
-    """A list fact — bound by a table/repeater `source` (F2 document surface).
+    """A list fact - bound by a table/repeater `source` (F2 document surface).
 
     ``item_facts`` are the row sub-fields (the ``row.*`` vocabulary for the
     iterator body); ``sample`` is a list of row dicts used by preview/render
@@ -49,9 +49,9 @@ class TemplateContext:
     facts: Sequence[ContextFact] = field(default_factory=tuple)
     # List facts bindable by table/repeater blocks (document surface, F2).
     list_facts: Sequence[ListFact] = field(default_factory=tuple)
-    # Facts that MUST appear in doc/subject (save-time 422 — D7).
+    # Facts that MUST appear in doc/subject (save-time 422 - D7).
     required_facts: Sequence[str] = field(default_factory=tuple)
-    # Registering module — delisted with it (core = "core").
+    # Registering module - delisted with it (core = "core").
     module: str = "core"
 
     def sample_facts(self) -> Dict[str, str]:
@@ -68,7 +68,7 @@ _CONTEXTS: Dict[str, TemplateContext] = {}
 
 
 def register_context(context: TemplateContext) -> None:
-    """Idempotent — modules re-register on every bootstrap."""
+    """Idempotent - modules re-register on every bootstrap."""
     _CONTEXTS[context.key] = context
 
 
@@ -137,7 +137,7 @@ def _register_core() -> None:
     register_context(
         TemplateContext(
             key="account.email_change_approve",
-            label="Account · Email change — approve (old mailbox)",
+            label="Account · Email change - approve (old mailbox)",
             fact_sources=("recipient",),
             facts=_RECIPIENT_FACTS
             + (
@@ -150,7 +150,7 @@ def _register_core() -> None:
     register_context(
         TemplateContext(
             key="account.email_change_verify",
-            label="Account · Email change — verify (new mailbox)",
+            label="Account · Email change - verify (new mailbox)",
             fact_sources=("recipient",),
             facts=_RECIPIENT_FACTS
             + (
@@ -162,7 +162,7 @@ def _register_core() -> None:
     register_context(
         TemplateContext(
             key="account.email_change_notice",
-            label="Account · Email change — notice (both mailboxes)",
+            label="Account · Email change - notice (both mailboxes)",
             fact_sources=("recipient",),
             facts=_RECIPIENT_FACTS
             + (
@@ -197,7 +197,7 @@ def _register_core() -> None:
             required_facts=(),
         )
     )
-    # F2 document surface — sample context so the PDF designer is exercisable
+    # F2 document surface - sample context so the PDF designer is exercisable
     # ahead of the real invoice entity (Cluster F registers the bound context).
     register_context(
         TemplateContext(
@@ -232,7 +232,7 @@ def _register_core() -> None:
         )
     )
 
-    # F2 slice 2 — fixed-canvas (badge) sample context so the canvas designer is
+    # F2 slice 2 - fixed-canvas (badge) sample context so the canvas designer is
     # exercisable ahead of the real attendee entity (Cluster H binds the real
     # context). Scalar facts only; ticketCode drives a QR element.
     register_context(
@@ -250,7 +250,7 @@ def _register_core() -> None:
         )
     )
 
-    # Visibility conditions over the RECIPIENT need a rule-engine source —
+    # Visibility conditions over the RECIPIENT need a rule-engine source -
     # register it beside the contexts (core fact sources live in
     # app/rule_engine/registry; this one is template-engine-owned).
     from app.models.user import User

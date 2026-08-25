@@ -1,10 +1,10 @@
 """Rule-engine routes (sprint-2/02).
 
-``GET /rule-facts`` — whitelisted facts for a consumer's builder
-(authenticated-only, like /roles/options — D13; config WRITES ride each
+``GET /rule-facts`` - whitelisted facts for a consumer's builder
+(authenticated-only, like /roles/options - D13; config WRITES ride each
 consumer's own permission, e.g. statuses.manage for edges).
 
-``GET /rules`` — read-only observability aggregation over the rule-site
+``GET /rules`` - read-only observability aggregation over the rule-site
 registry (D12), gated by ``rules.read``; rows deep-link to the owning editor.
 """
 from fastapi import APIRouter, Depends, Query

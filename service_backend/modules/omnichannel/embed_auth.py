@@ -1,4 +1,4 @@
-"""Embed access-token authorization — plan 11H Slice 3 (AC-11H-09/10/11).
+"""Embed access-token authorization - plan 11H Slice 3 (AC-11H-09/10/11).
 
 The conversation API accepts EITHER the native session/permission auth OR an
 embed access token (``Authorization: Bearer <accessToken>``, ``typ="embed"``,
@@ -8,14 +8,14 @@ carrying the tenant, the actor identity (native user OR external agent), and the
 authorization surface (native permission keys OR embed scope+caps).
 
 Enforcement is SERVER-SIDE and the backend is the boundary:
-- **scope** — a ``thread:<contactId>`` token may only read/act on that contact;
+- **scope** - a ``thread:<contactId>`` token may only read/act on that contact;
   it cannot list the workspace or touch any other contact (403). An ``inbox``
   token spans its workspace.
-- **caps** — a write cap (reply/assign/close/note/send_template) must be present;
+- **caps** - a write cap (reply/assign/close/note/send_template) must be present;
   a ``read_only`` (or cap-missing) token is refused on every write (403),
   regardless of what the widget UI shows.
 
-The native path is UNCHANGED — same ``_resolve_user`` / impersonation / permission
+The native path is UNCHANGED - same ``_resolve_user`` / impersonation / permission
 resolution / module-active check, just invoked here instead of via the router
 gate (the conversation router is mounted public so both auth schemes reach it).
 """
@@ -51,7 +51,7 @@ _MODULE_EXC = HTTPException(
 
 @dataclass
 class EmbedPrincipal:
-    """Resolved from an embed access token — the WS handshake uses this directly."""
+    """Resolved from an embed access token - the WS handshake uses this directly."""
 
     tenant_id: str
     workspace_id: str
@@ -63,7 +63,7 @@ class EmbedPrincipal:
 
 @dataclass
 class ConversationPrincipal:
-    """Unified caller identity for the conversation API — native user OR embed."""
+    """Unified caller identity for the conversation API - native user OR embed."""
 
     tenant_id: str
     is_embed: bool
@@ -156,7 +156,7 @@ def _resolve_embed(token: str, db: Session) -> Optional[EmbedPrincipal]:
     connection_id = payload.get("connection_id")
     if not (tenant_id and workspace_id and agent_id and connection_id):
         raise _CREDENTIALS_EXC
-    # Module must be active for the tenant (mounted public — re-apply the gate).
+    # Module must be active for the tenant (mounted public - re-apply the gate).
     if not ModuleRepository(db).is_active(tenant_id, MODULE_NAME):
         raise _MODULE_EXC
     # The workspace must still belong to the tenant (a moved/trashed workspace
@@ -204,7 +204,7 @@ def get_conversation_principal(
             connection_id=embed.connection_id,
         )
 
-    # Native path — identical to the pre-embed protected auth (get_current_user +
+    # Native path - identical to the pre-embed protected auth (get_current_user +
     # impersonation + module-active + effective permission keys).
     real_user = _resolve_user(token, db)
     effective = _maybe_apply_impersonation(request, db, real_user)
@@ -251,7 +251,7 @@ def enforce_thread_access(
 def enforce_workspace(principal: ConversationPrincipal, workspace_id: str) -> None:
     """Workspace-scope gate for the reused workspace-catalog reads (quick-replies,
     members). Native: no-op (a native user spans the tenant). Embed: the requested
-    workspace MUST be the token's own — a token for workspace A can never read
+    workspace MUST be the token's own - a token for workspace A can never read
     workspace B's quick-replies/members (backend is the boundary, never the
     widget). This holds even for a ``thread:<contactId>`` token, which stays
     confined to its workspace for these catalog lists."""

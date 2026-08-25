@@ -3,7 +3,7 @@
 The Idea rides the **core** status engine (``app/status_engine`` + ``public.statuses``)
 as a **tenant-owned, non-scoped** entity. Its status set + transition graph are
 seeded as **platform defaults** (``tenant_id = NULL``, ``is_system = True``) at
-global install — two-tier resolution means every tenant uses these defaults until
+global install - two-tier resolution means every tenant uses these defaults until
 it forks the set (``resolve_tier`` returns NULL when unforked). This mirrors how
 core seeds the ``tenant`` lifecycle (``app/seed.py``).
 
@@ -47,7 +47,7 @@ IDEA_STATUS_SEED: List[Tuple[str, str, str, int, Dict[str, bool]]] = [
     ("closed", "Closed", "gray", 7, {"is_terminal": True, "is_archived": True}),
     ("duplicate", "Duplicate", "gray", 8, {"is_terminal": True, "is_archived": True}),
     ("rejected", "Rejected", "red", 9, {"is_terminal": True, "is_archived": True}),
-    # Manual off-board archive (Slice 4) — restorable back to captured, so NOT
+    # Manual off-board archive (Slice 4) - restorable back to captured, so NOT
     # terminal. ``is_archived`` keeps it out of the active board / into the
     # archived filter.
     ("archived", "Archived", "gray", 10, {"is_archived": True}),
@@ -95,7 +95,7 @@ def seed_idea_statuses(db: Session) -> None:
                 id=status_id,
                 entity_type=IDEA_ENTITY,
                 key=key,
-                category=key.upper(),  # cosmetic mirror — never branched on
+                category=key.upper(),  # cosmetic mirror - never branched on
                 label=label,
                 color=color,
                 sort_order=sort_order,
@@ -103,7 +103,7 @@ def seed_idea_statuses(db: Session) -> None:
                 tenant_id=None,
             )
             db.add(row)
-        # Trait flags are the machine semantics — always converge them.
+        # Trait flags are the machine semantics - always converge them.
         for flag, value in flags.items():
             setattr(row, flag, value)
     db.flush()
@@ -194,12 +194,12 @@ def idea_migrate_records(
 # as platform defaults (``tenant_id = NULL``); every tenant uses them until it
 # forks. The ``draft → ready`` PROMOTE edge is the S4 gate seam (transition_roles
 # empty here = unrestricted at the engine; the router's ``.promote`` permission
-# is the real boundary — S4 wires the promote UI onto this edge).
+# is the real boundary - S4 wires the promote UI onto this edge).
 
 BR_ENTITY = "ideation_business_requirement"
 
 # The promote gate edge (Gate 0, AC-BI-19/34): draft → ready. It is gated by the
-# SEPARATE ``ideation.business_requirements.promote`` permission — the BR status
+# SEPARATE ``ideation.business_requirements.promote`` permission - the BR status
 # graph is platform-tier (``tenant_id=NULL``) so a platform edge cannot carry
 # per-tenant ``transition_roles``; gating the specific EDGE ID on ``.promote`` is
 # the equivalent real backend boundary. The edge id is a CODE contract (not a
@@ -257,7 +257,7 @@ def seed_br_statuses(db: Session) -> None:
                 id=status_id,
                 entity_type=BR_ENTITY,
                 key=key,
-                category=key.upper(),  # cosmetic mirror — never branched on
+                category=key.upper(),  # cosmetic mirror - never branched on
                 label=label,
                 color=color,
                 sort_order=sort_order,
@@ -296,7 +296,7 @@ def br_status_id(
     db: Session, key: str, tenant_id: Optional[str] = None
 ) -> Optional[str]:
     """Resolve the BR ``status_id`` for a lifecycle ``key`` in the tenant's
-    resolved tier (never hardcode a raw id — a tenant may fork the set)."""
+    resolved tier (never hardcode a raw id - a tenant may fork the set)."""
     tier = StatusRepository(db).resolve_tier(BR_ENTITY, tenant_id)
     row = (
         db.query(Status)

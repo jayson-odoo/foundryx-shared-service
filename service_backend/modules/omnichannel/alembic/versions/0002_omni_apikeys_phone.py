@@ -1,4 +1,4 @@
-"""omnichannel Slice 3 — workspace_api_keys + phone_number_id UNIQUE.
+"""omnichannel Slice 3 - workspace_api_keys + phone_number_id UNIQUE.
 
 Adds the public-gateway API-key table and a service-wide partial-unique index on
 ``channels.phone_number_id`` (O(1) inbound routing, AC-01-20). Existing duplicate
@@ -22,7 +22,7 @@ SCHEMA = "app_omnichannel"
 
 def upgrade() -> None:
     # The module baseline (0001) runs ``OmniBase.metadata.create_all`` over the
-    # CURRENT metadata, which already includes ``workspace_api_keys`` — so on a
+    # CURRENT metadata, which already includes ``workspace_api_keys`` - so on a
     # fresh alembic deploy the table may already exist. Guard existence so this
     # migration is idempotent (BL-029: per-module Alembic still shares the
     # create_all baseline).
@@ -52,7 +52,7 @@ def upgrade() -> None:
     # Reconcile duplicate phone_number_id among LIVE (non-trashed) channels:
     # keep the earliest by (created_at, id), NULL the losers, then add a partial
     # unique index scoped to live rows. The scope matches both the connect guard
-    # and "route inbound to the ACTIVE channel" — a disconnected (is_trashed)
+    # and "route inbound to the ACTIVE channel" - a disconnected (is_trashed)
     # channel keeps its phone_number_id so the same number can be reconnected.
     op.execute(
         f'UPDATE "{SCHEMA}".channels c SET phone_number_id = NULL '

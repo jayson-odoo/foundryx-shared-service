@@ -1,10 +1,10 @@
-"""Ideas router (operator surface) — gated by ``require_module("ideation")``
+"""Ideas router (operator surface) - gated by ``require_module("ideation")``
 (injected by the module loader) + the relevant ``ideation.*`` permission.
 
 Slice 3 added the read surface (list + detail, AC-A-12). Slice 4 adds the write
 actions the FE prototype calls: vote (``ideation.ideas.upvote``), reorder /
 status / delete (``ideation.triage.manage``). Status moves ride the core status
-engine (server-authoritative — illegal moves refused)."""
+engine (server-authoritative - illegal moves refused)."""
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, Response, status
@@ -43,7 +43,7 @@ def list_ideas(
 ) -> List[IdeaOut]:
     """All ideas for the tenant, newest first. ``search`` matches problem/raw
     text; ``filter`` selects active (default) / archived / all; optional
-    ``productId`` scopes to a single product (the canonical ideation scope —
+    ``productId`` scopes to a single product (the canonical ideation scope -
     omitted = every product in the tenant). ``myVote`` is resolved for the
     calling user. Always tenant-scoped: the product filter never crosses tenants."""
     return IdeaReadService(db).list(
@@ -62,7 +62,7 @@ def create_idea(
     db: Session = Depends(get_db),
 ) -> IdeaOut:
     """Operator-facing in-app create (distinct from the conversational WhatsApp
-    intake). No draft/collect/confirm gate — the idea is created straight into
+    intake). No draft/collect/confirm gate - the idea is created straight into
     ``captured`` (rides the status engine ``draft → captured``), with the logged-in
     operator as submitter. Gated by ``ideation.ideas.submit``."""
     return IdeaActionService(db).create_operator(
@@ -87,10 +87,10 @@ def get_board(
     current_user: User = Depends(require_permission("ideation.triage.manage")),
     db: Session = Depends(get_db),
 ) -> BoardOut:
-    """Triage board (AC-A-33) — ideas grouped by lifecycle status column, in the
+    """Triage board (AC-A-33) - ideas grouped by lifecycle status column, in the
     board order, cards ordered by priority within a column. Optional ``productId``
     scopes to a single product (omitted = every product in the tenant). Triager
-    surface — gated by ``ideation.triage.manage`` (403 without it, AC-A-37).
+    surface - gated by ``ideation.triage.manage`` (403 without it, AC-A-37).
     Dragging a card across columns / within a column uses POST ``/{id}/status`` +
     PUT ``/reorder``."""
     return IdeaReadService(db).board(
@@ -116,10 +116,10 @@ def suggest_clusters(
     current_user: User = Depends(require_permission("ideation.clusters.manage")),
     db: Session = Depends(get_db),
 ) -> ClusterSuggestionsOut:
-    """Suggested idea clusters (AC-BI-30/31) — ``pg_trgm`` candidates grouped +
+    """Suggested idea clusters (AC-BI-30/31) - ``pg_trgm`` candidates grouped +
     named by ONE LLM call, degrading to ungrouped trigram candidates if the LLM
     is unavailable. Optional ``productId`` scopes to a single product (omitted =
-    every product with candidates in the tenant). Suggestions only — nothing
+    every product with candidates in the tenant). Suggestions only - nothing
     auto-promotes. Gated by ``ideation.clusters.manage`` (Triager)."""
     return ClusteringService(db).suggest(
         current_user.tenant_id, product_id=product_id, voter_id=current_user.id
@@ -132,7 +132,7 @@ def get_idea(
     current_user: User = Depends(require_permission("ideation.ideas.view")),
     db: Session = Depends(get_db),
 ) -> IdeaOut:
-    """One idea by id — every section present (attachments empty-state), submitter
+    """One idea by id - every section present (attachments empty-state), submitter
     human-readable (never a raw UUID). 404 if not found in the tenant."""
     return IdeaReadService(db).get(
         current_user.tenant_id, idea_id, voter_id=current_user.id
@@ -147,7 +147,7 @@ def list_idea_business_requirements(
     ),
     db: Session = Depends(get_db),
 ) -> List[BusinessRequirementOut]:
-    """The Business Requirements this idea feeds (AC-BI-29c) — the reverse of the
+    """The Business Requirements this idea feeds (AC-BI-29c) - the reverse of the
     BR's Ideas tab, for the idea detail's Business Requirements tab. Tenant-scoped,
     newest BR first. Gated by ``ideation.business_requirements.read`` (viewing BRs
     is the BR read boundary, not the idea's)."""
@@ -164,7 +164,7 @@ def update_idea(
     db: Session = Depends(get_db),
 ) -> IdeaOut:
     """Operator-facing in-app edit of the mutable idea fields (``productId`` /
-    ``problem`` / ``rawText``). Status moves ride ``POST /{idea_id}/status`` — not
+    ``problem`` / ``rawText``). Status moves ride ``POST /{idea_id}/status`` - not
     here. 404 if the idea is not in the tenant. Gated by ``ideation.triage.manage``."""
     return IdeaActionService(db).update_operator(
         current_user.tenant_id,
@@ -201,7 +201,7 @@ def set_idea_status(
     db: Session = Depends(get_db),
 ) -> IdeaOut:
     """Move the idea to a lifecycle status by key (advance / archive / restore).
-    Server-authoritative — illegal moves are refused (409)."""
+    Server-authoritative - illegal moves are refused (409)."""
     return IdeaActionService(db).set_status(
         current_user.tenant_id,
         idea_id,

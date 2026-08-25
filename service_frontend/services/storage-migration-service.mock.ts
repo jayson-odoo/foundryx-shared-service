@@ -1,5 +1,5 @@
 /**
- * PHASE 1 MOCK storage-migration service (sprint-4/10) — lets the wizard iterate
+ * PHASE 1 MOCK storage-migration service (sprint-4/10) - lets the wizard iterate
  * its Test-gated Start flow with NO backend. `testBucket` is tunable via
  * `setMockTestOutcome` (pass/fail). `startMigration` returns a fresh running job.
  *
@@ -17,10 +17,10 @@ const delay = <T>(v: T) => new Promise<T>((r) => setTimeout(() => r(v), 80));
 
 let _testOutcome: StorageMigrationTestResult = {
   ok: true,
-  message: 'Bucket verified — a round-trip write/read succeeded.',
+  message: 'Bucket verified - a round-trip write/read succeeded.',
 };
 
-/** Test/dev seam — control the next `testBucket` result. */
+/** Test/dev seam - control the next `testBucket` result. */
 export function setMockTestOutcome(outcome: StorageMigrationTestResult): void {
   _testOutcome = outcome;
 }

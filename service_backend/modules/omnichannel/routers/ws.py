@@ -46,14 +46,14 @@ def get_async_redis():
 
 
 def set_async_redis(client) -> None:
-    """Test seam — inject a fakeredis.aioredis client sharing the publisher's server."""
+    """Test seam - inject a fakeredis.aioredis client sharing the publisher's server."""
     global _async_client
     _async_client = client
 
 
 def _authorize(token: str, workspace_id: str):
     """Resolve + authorize the WS user synchronously. Returns ``(principal_id,
-    scope_contact_id)`` — ``principal_id`` is the user id OR external-agent id,
+    scope_contact_id)`` - ``principal_id`` is the user id OR external-agent id,
     ``scope_contact_id`` is the single contact a thread-scoped embed token is
     confined to (``None`` = whole-workspace visibility). Returns ``None`` when
     the caller is not authorized (callers close the socket with 4403).
@@ -108,7 +108,7 @@ def _authorize(token: str, workspace_id: str):
         keys = effective_permission_keys(user)
         if "conversations.read" not in keys:
             return None
-        # The router is mounted public (no require_module gate) — re-apply the
+        # The router is mounted public (no require_module gate) - re-apply the
         # module-active check here, where we have the resolved tenant.
         from app.repositories.module_repository import ModuleRepository
 
@@ -179,13 +179,13 @@ async def conversation_socket(
                 continue
             data = message["data"]
             # Thread-scoped embed token: only relay frames for its one contact
-            # (server-side scope enforcement — never trust the widget to filter).
+            # (server-side scope enforcement - never trust the widget to filter).
             if scope_contact_id is not None and _event_contact_id(data) != scope_contact_id:
                 continue
             await websocket.send_text(data)
 
     async def watch_disconnect():
-        # Drain client frames (pings etc.) — raises on close.
+        # Drain client frames (pings etc.) - raises on close.
         while True:
             await websocket.receive_text()
 
@@ -205,5 +205,5 @@ async def conversation_socket(
         try:
             await pubsub.unsubscribe(channel_for(workspace_id))
             await pubsub.aclose()
-        except Exception:  # noqa: BLE001 — teardown best-effort
+        except Exception:  # noqa: BLE001 - teardown best-effort
             pass

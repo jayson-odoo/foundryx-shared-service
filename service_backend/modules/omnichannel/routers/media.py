@@ -1,7 +1,7 @@
 """Omnichannel media serving.
 
 ONE authed route on the ``/omnichannel/media`` mount (declared public in the
-manifest — auth is enforced INSIDE):
+manifest - auth is enforced INSIDE):
 
 ``GET /omnichannel/media/{message_id}`` (plan 12 AC-12-05): blob-fetch a message's
 stored media, authed by **either** a session JWT (agent browser via
@@ -13,7 +13,7 @@ the API-key path is additionally workspace-scoped + re-checks the module is acti
 No auth → 401; a message id the caller can't reach → 404.
 
 NOTE: the legacy unauthenticated ``GET /{path:path}`` local-disk route was removed
-(plan 12 review) — it co-served outbound blobs under ``media_root`` with no auth/
+(plan 12 review) - it co-served outbound blobs under ``media_root`` with no auth/
 CSP. All blobs now flow through this authed endpoint only.
 """
 from typing import Optional, Tuple
@@ -52,7 +52,7 @@ def _resolve_principal(
     """Resolve either auth path → (tenant_id, workspace_id | None). API-key auth
     is workspace-scoped (+ module-active re-check); session auth is tenant-scoped
     (workspace None) and gated by ``conversations.read``. Raises 401 on any miss
-    (uniform — no enumeration)."""
+    (uniform - no enumeration)."""
     token = _parse_bearer(authorization)
     if not token:
         raise HTTPException(status_code=401, detail="Missing or invalid credentials.")
@@ -94,7 +94,7 @@ def serve_message_media(
     db: Session = Depends(get_db),
 ) -> Response:
     # Signed-URL path (public gateway, respond.io parity): a valid HMAC signature
-    # over (message_id, exp) IS the authorization — no header needed, so the link
+    # over (message_id, exp) IS the authorization - no header needed, so the link
     # opens on a raw browser click. Resolved GLOBALLY (the signature already binds
     # this exact message id; it can't be pointed at another).
     if exp is not None and sig is not None:
@@ -117,7 +117,7 @@ def serve_message_media(
                 raise HTTPException(status_code=404, detail="Not found")
 
     # Stream the bytes back SAME-ORIGIN (plan 12 review). A remote backend (R2/
-    # S3) is read through the storage adapter and re-served from our origin —
+    # S3) is read through the storage adapter and re-served from our origin -
     # never a 307 to a presigned bucket URL, which the browser then CORS-blocks
     # (the client sends x-tenant-slug/Authorization, so the redirected fetch
     # triggers an OPTIONS preflight the bucket 403s). Local disk still streams

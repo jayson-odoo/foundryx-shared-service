@@ -1,5 +1,5 @@
 /**
- * Ideation service — the boundary the UI talks to (plan: documentation/plans/
+ * Ideation service - the boundary the UI talks to (plan: documentation/plans/
  * ideation/, Phase A). The interface IS the backend contract (§5.1: the
  * `create_idea` HTTP endpoint + idea reads). Phase-1 binds the in-memory MOCK
  * (swap is the ONE line at the bottom); Phase-2 will add `ideation-service.real.ts`
@@ -36,7 +36,7 @@ export interface IdeaService {
   getIdea(id: string): Promise<Idea>;
   /** Update editable idea fields (form view save). */
   updateIdea(id: string, input: Partial<IdeaCreateInput> & { status?: IdeaStatus }): Promise<Idea>;
-  /** Manually create a captured idea (deterministic — no LLM at shared-service). */
+  /** Manually create a captured idea (deterministic - no LLM at shared-service). */
   createIdea(input: IdeaCreateInput): Promise<Idea>;
   /** Move an idea to a new lifecycle status (triage board drag / row action). */
   setStatus(id: string, status: IdeaStatus): Promise<Idea>;
@@ -46,7 +46,7 @@ export interface IdeaService {
   /** Re-rank ideas by the given id order (drag-to-reorder priority). */
   reorderPriority(orderedIds: string[]): Promise<Idea[]>;
   /** Suggested idea clusters (trigram + LLM grouping, degrades to ungrouped).
-   * Optional productId scopes to one product. Suggestions only — never promotes. */
+   * Optional productId scopes to one product. Suggestions only - never promotes. */
   suggestClusters(productId?: string): Promise<IdeaClusterSuggestions>;
   /** Hard-delete an idea. */
   remove(id: string): Promise<void>;

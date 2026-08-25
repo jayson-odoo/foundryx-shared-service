@@ -1,4 +1,4 @@
-"""Webhook pipeline tests — plan 05 Phase B-4.
+"""Webhook pipeline tests - plan 05 Phase B-4.
 
 Receiver: verify handshake, signature gate, fast-ACK enqueue.
 Worker logic (InboundService driven directly): contact resolution & stitching,
@@ -187,7 +187,7 @@ def test_inbound_idempotent_by_wamid(client, session_factory):
 
 
 def test_inbound_stitches_existing_contact_by_phone(client, session_factory):
-    # Seeded contact phone +60123456789 — webhook from 60123456789 must stitch,
+    # Seeded contact phone +60123456789 - webhook from 60123456789 must stitch,
     # not create a duplicate contact.
     cid = _seed_thread(session_factory, name="Sarah Chen", phone="+60123456789", messages=[{}])
     channel_id = _channel_id(session_factory)
@@ -250,7 +250,7 @@ def test_inbound_reply_context_maps_quote(client, session_factory):
         phone="+60123123123",
         messages=[
             {
-                "body": "Saturday is free — move it?",
+                "body": "Saturday is free - move it?",
                 "sender_type": "AGENT",
                 "external_message_id": "wamid.agent-q",
                 "delivery_status": "READ",
@@ -272,7 +272,7 @@ def test_inbound_reply_context_maps_quote(client, session_factory):
 
     msgs = client.get(f"/omnichannel/contacts/{cid}/messages", headers=_auth(client)).json()
     assert msgs[-1]["body"] == "Yes please!"
-    assert msgs[-1]["replyTo"]["body"] == "Saturday is free — move it?"
+    assert msgs[-1]["replyTo"]["body"] == "Saturday is free - move it?"
     assert msgs[-1]["replyTo"]["senderType"] == "AGENT"
 
 

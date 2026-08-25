@@ -1,5 +1,5 @@
 /**
- * Real email-change service — talks to FastAPI via the shared api-client.
+ * Real email-change service - talks to FastAPI via the shared api-client.
  * Wired in Phase B (plan 04 §Backend). /me/* endpoints are auth'd self-scope;
  * the approve/verify endpoints are public token redeems (apiFetch simply has
  * no session token to attach on the auth pages).

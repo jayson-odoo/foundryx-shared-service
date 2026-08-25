@@ -1,9 +1,9 @@
-"""Idea write actions (Slice 4) — vote / reorder / status transition / delete.
+"""Idea write actions (Slice 4) - vote / reorder / status transition / delete.
 
 These back the FE prototype's ``vote`` / ``reorderPriority`` / ``setStatus`` /
 ``remove`` service methods. Status moves are server-authoritative: every change
 rides the CORE status engine (``status_machine.transition``) so an illegal move
-is refused at the boundary (D-A3). No LLM anywhere — deterministic paths only.
+is refused at the boundary (D-A3). No LLM anywhere - deterministic paths only.
 """
 from typing import List, Optional
 
@@ -63,12 +63,12 @@ class IdeaActionService:
         source: str = "manual",
         actor: Optional[User] = None,
     ) -> IdeaOut:
-        """Operator-authored create (no draft/collect/confirm gate — an operator
+        """Operator-authored create (no draft/collect/confirm gate - an operator
         typing an idea IS deliberate). Validates the product, seeds the idea at the
         initial ``draft`` status, then rides the status engine ``draft → captured``
         so the move is server-authoritative + emits the same events as any other
         transition. Submitter = the operator (``submitter_name`` set from the user;
-        ``submitter_contact_id`` stays NULL — operator ideas have no contact copy).
+        ``submitter_contact_id`` stays NULL - operator ideas have no contact copy).
         The segregated intake fields (proposed_solution / impact / department) are
         persisted to their first-class columns and mirrored into ``captured_json``."""
         self._product_or_422(tenant_id, product_id)
@@ -124,7 +124,7 @@ class IdeaActionService:
         voter_id: Optional[str] = None,
     ) -> IdeaOut:
         """Operator edit of the mutable idea fields (partial). Status moves ride
-        the dedicated ``/{id}/status`` route — never duplicated here. Each provided
+        the dedicated ``/{id}/status`` route - never duplicated here. Each provided
         segregated field updates its column AND its ``captured_json`` mirror (blank
         clears the optional ones; ``problem`` keeps its NOT-NULL value)."""
         idea = self._idea_or_404(tenant_id, idea_id)
@@ -164,7 +164,7 @@ class IdeaActionService:
 
     def vote(self, tenant_id: str, idea_id: str, voter_id: str, dir: str) -> IdeaOut:
         """Toggle the caller's vote (one row per ``(idea, voter)``): same ``dir``
-        cancels, the other ``dir`` switches. Idempotent — recomputes tallies."""
+        cancels, the other ``dir`` switches. Idempotent - recomputes tallies."""
         idea = self._idea_or_404(tenant_id, idea_id)
         existing = (
             self.db.query(IdeaVote)

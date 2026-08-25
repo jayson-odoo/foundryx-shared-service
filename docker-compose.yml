@@ -1,15 +1,15 @@
-# FoundryX EMS — blue/green production compose.
+# Foundryx EMS - blue/green production compose.
 #
 # Active color tracked in .active_color (managed by scripts/blue_green_deploy.sh).
 # IMAGE_TAG = git SHA pushed by CI; the deploy script exports it before pull/up.
 # Public ports are owned by the HOST nginx; every container binds 127.0.0.1 only.
 #
-# Infra (db/redis/pgbackups) + the Celery workers/beat are NOT blue/green —
+# Infra (db/redis/pgbackups) + the Celery workers/beat are NOT blue/green -
 # they are recreated in place each deploy. Only the API + frontend swap colors.
 #
 # Secrets (JWT_SECRET, FERNET_KEY, OMNICHANNEL_FERNET_KEY, POSTGRES_PASSWORD,
 # NEXTAUTH_SECRET, META_*, SMTP_*) come from a server-side .env file at the repo
-# root — see .env.example. No secret carries an inline default here.
+# root - see .env.example. No secret carries an inline default here.
 
 x-backend-env: &backend-env
   DATABASE_URL: postgresql://${POSTGRES_USER:-foundryx}:${POSTGRES_PASSWORD:?set in .env}@db:5432/${POSTGRES_DB:-foundryx_service}
@@ -32,10 +32,10 @@ x-backend-env: &backend-env
   FORWARDED_ALLOW_IPS: "*"
   FRONTEND_URL: ${FRONTEND_URL:?set in .env}
   CORS_ORIGINS: ${CORS_ORIGINS:?set in .env}
-  # External backend base INCLUDING the /be path prefix — backend self-built
+  # External backend base INCLUDING the /be path prefix - backend self-built
   # absolute URLs (avatars, branding assets/theme, media, share links) use it.
   PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set in .env}
-  # Meta WhatsApp (omnichannel) — empty = simulated/dev-safe
+  # Meta WhatsApp (omnichannel) - empty = simulated/dev-safe
   META_APP_ID: ${META_APP_ID:-}
   META_APP_SECRET: ${META_APP_SECRET:-}
   META_ES_CONFIG_ID: ${META_ES_CONFIG_ID:-}
@@ -48,7 +48,7 @@ x-backend-env: &backend-env
   PLATFORM_SMTP_USERNAME: ${PLATFORM_SMTP_USERNAME:-}
   PLATFORM_SMTP_PASSWORD: ${PLATFORM_SMTP_PASSWORD:-}
   PLATFORM_SMTP_FROM_EMAIL: ${PLATFORM_SMTP_FROM_EMAIL:-}
-  PLATFORM_SMTP_FROM_NAME: ${PLATFORM_SMTP_FROM_NAME:-FoundryX EMS}
+  PLATFORM_SMTP_FROM_NAME: ${PLATFORM_SMTP_FROM_NAME:-Foundryx EMS}
 
 x-backend-base: &backend-base
   image: ${IMAGE_REPO:-jayson1004/foundryx-shared-service}:backend-${IMAGE_TAG:-latest}
@@ -62,7 +62,7 @@ x-backend-base: &backend-base
       condition: service_started
   restart: unless-stopped
   # NOTE: the `backend` network alias is added ONLY on the API colors below, not
-  # here — otherwise the workers/beat would also answer to `backend:8001` and the
+  # here - otherwise the workers/beat would also answer to `backend:8001` and the
   # frontend's BACKEND_API_URL could resolve to a process with no HTTP server.
   networks:
     - foundryx_ss_network
@@ -194,7 +194,7 @@ services:
       NODE_ENV: production
       PORT: 3001
       HOSTNAME: 0.0.0.0
-      # Server-side (NextAuth authorize() + branding SSR) — internal cluster URL.
+      # Server-side (NextAuth authorize() + branding SSR) - internal cluster URL.
       BACKEND_API_URL: http://backend:8001
       NEXTAUTH_URL: ${NEXTAUTH_URL:?set in .env}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set in .env}

@@ -4,7 +4,7 @@ An authorized user (holds `users.impersonate`) browses the system with a target
 user's *effective permissions* to verify access. The effective user is signaled
 per-request via the ``X-Impersonate-User-Id`` header, honored only while an active
 row exists for that (admin, target) pair. Audit / actor always stays the real
-admin — see ``app.dependencies.get_actor_user_id``.
+admin - see ``app.dependencies.get_actor_user_id``.
 """
 import uuid
 

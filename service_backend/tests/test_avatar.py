@@ -1,7 +1,7 @@
 """Avatar endpoints + PATCH /me/profile (plan sprint-2/06 D4/D5, BL-007).
 
 Self routes are perm-free (like /auth/me); the admin route rides users.update.
-The public route resolves the stored KEY per request — local backend here.
+The public route resolves the stored KEY per request - local backend here.
 """
 import io
 
@@ -51,7 +51,7 @@ def test_upload_own_avatar_roundtrip(client):
     # /auth/me carries the same URL (session refresh path).
     assert client.get("/auth/me", headers=h).json()["avatar"] == url
 
-    # The public route serves the bytes — no auth (avatars render in <img>).
+    # The public route serves the bytes - no auth (avatars render in <img>).
     public = client.get(f"/public/avatars/{me['id']}")
     assert public.status_code == 200
     assert public.content == PNG
@@ -81,7 +81,7 @@ def test_public_route_404s_without_avatar(client):
     assert client.get("/public/avatars/nope").status_code == 404
 
 
-# ── the sniff gate (D5 — declared type is ignored) ─────────────────────────
+# ── the sniff gate (D5 - declared type is ignored) ─────────────────────────
 
 def test_webp_accepted(client):
     h, _ = _login(client)

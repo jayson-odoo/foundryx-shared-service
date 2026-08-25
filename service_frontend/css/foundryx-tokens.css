@@ -1,5 +1,5 @@
 /**
- * FoundryX Design Tokens
+ * Foundryx Design Tokens
  * Source of truth: documentation/ui_ux/FoundryX-Light.TokensStudio.json + FoundryX-Dark.TokensStudio.json
  * (Figma Tokens Studio). Same semantic names per theme; values flip.
  *
@@ -11,7 +11,7 @@
  * Imported AFTER config.reui.css so these values win.
  */
 
-/* ───────────────── Layer 1 — Primitives (Light theme) ──────────────────── */
+/* ───────────────── Layer 1 - Primitives (Light theme) ──────────────────── */
 :root {
   --foundryx-grey-50: #f7f6f4;
   --foundryx-grey-100: #ecebe7;
@@ -64,7 +64,7 @@
   --foundryx-warning-transparent: rgba(232, 163, 24, 0.2);
 }
 
-/* ───────────────── Layer 1 — Primitives (Dark theme) ───────────────────── */
+/* ───────────────── Layer 1 - Primitives (Dark theme) ───────────────────── */
 .dark {
   /* Grey scale inverts: 50 = darkest surface … 950 = lightest text */
   --foundryx-grey-50: #141210;
@@ -84,7 +84,7 @@
   --foundryx-light-soft: #16140f;
   --foundryx-dark: #f7f6f4;
   --foundryx-dark-active: #d9d6cf;
-  /* --foundryx-white / --foundryx-black are true constants — not overridden */
+  /* --foundryx-white / --foundryx-black are true constants - not overridden */
 
   --foundryx-primary: #ff5a00;
   --foundryx-primary-active: #ff7a1a;
@@ -117,7 +117,7 @@
   --foundryx-warning-transparent: rgba(232, 163, 24, 0.2);
 }
 
-/* ───── Layer 2 — Semantic mapping (theme-agnostic; flips via primitives) ── */
+/* ───── Layer 2 - Semantic mapping (theme-agnostic; flips via primitives) ── */
 :root {
   --background: var(--foundryx-light);
   --foreground: var(--foundryx-grey-900);
@@ -179,7 +179,7 @@
   --chart-5: var(--foundryx-info);
 }
 
-/* Layer 2 (dark) — re-declare the semantic vars config.reui.css sets under .dark,
+/* Layer 2 (dark) - re-declare the semantic vars config.reui.css sets under .dark,
  * so ours win (.dark beats :root). Values still point at primitives, which already flipped above. */
 .dark {
   --background: var(--foundryx-light);
@@ -213,9 +213,9 @@
   --chart-5: var(--foundryx-info);
 }
 
-/* ──────── Layer 3 — Register semantic names as Tailwind utilities ───────── */
+/* ──────── Layer 3 - Register semantic names as Tailwind utilities ───────── */
 @theme inline {
-  /* Fonts — Inter body (default sans), Poppins display via `font-heading` */
+  /* Fonts - Inter body (default sans), Poppins display via `font-heading` */
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
   --font-heading: var(--font-poppins), var(--font-inter), ui-sans-serif, sans-serif;
 
@@ -250,7 +250,7 @@
 
   --color-destructive-foreground: var(--destructive-foreground);
 
-  /* Raw FoundryX greys as utilities (bg-foundryx-grey-500, ...) — also flip under .dark */
+  /* Raw Foundryx greys as utilities (bg-foundryx-grey-500, ...) - also flip under .dark */
   --color-foundryx-grey-50: var(--foundryx-grey-50);
   --color-foundryx-grey-100: var(--foundryx-grey-100);
   --color-foundryx-grey-200: var(--foundryx-grey-200);

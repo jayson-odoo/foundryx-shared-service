@@ -1,6 +1,6 @@
 'use client';
 
-/** The form detail config hook (plan sprint-3/01 D18) — tabbed ResourceForm:
+/** The form detail config hook (plan sprint-3/01 D18) - tabbed ResourceForm:
  * Builder · Submissions · Flow · Settings · Versions. Clones the workflow
  * form shape: the doc is editor state (dirty rides the shell's guard), the
  * Flow tab's layout draft plugs into the form Save/Cancel (BL-064 final
@@ -189,11 +189,11 @@ export function useFormDetail(
       await formService.publish(formId);
       await refresh(formId);
       setPublishProblems([]);
-      toast.success('Published — the form can now be filled.');
+      toast.success('Published - the form can now be filled.');
     } catch (e) {
       if (e instanceof FormPublishError) {
         setPublishProblems(e.problems);
-        toast.error('Publish blocked — fix the listed problems.');
+        toast.error('Publish blocked - fix the listed problems.');
       } else {
         toast.error(e instanceof Error ? e.message : 'Publish failed.');
       }
@@ -208,7 +208,7 @@ export function useFormDetail(
     try {
       await formService.unpublish(formId);
       await refresh(formId);
-      toast.success('Unpublished — the fill link is offline.');
+      toast.success('Unpublished - the fill link is offline.');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Unpublish failed.');
     } finally {

@@ -4,7 +4,7 @@
  * Right-side node config drawer (plan sprint-2/08 D15, extended in 09). Renders
  * the selected node's fields from its catalog entry: mergeable text → the n8n
  * dynamic-content picker, `template`/`select` → a Select, `inputs` → the
- * manual-input editor, and the slice-09 field types — `entity`/`status`/`field`
+ * manual-input editor, and the slice-09 field types - `entity`/`status`/`field`
  * pickers (resolved from the workflow metadata + the node's own `entityType`),
  * `cron` → the structured cron builder, `assignments` → the field-set editor.
  * IF nodes render a `<RuleBuilder>` over the upstream run-context facts.
@@ -101,7 +101,7 @@ function triggerOutputItems(
   return items;
 }
 
-/** "N node(s) back" — the n8n distance hint that tells two same-type nodes apart. */
+/** "N node(s) back" - the n8n distance hint that tells two same-type nodes apart. */
 function backHint(depth: number): string {
   return `${depth} node${depth === 1 ? '' : 's'} back`;
 }
@@ -131,7 +131,7 @@ function upstreamGroups(
   return groups;
 }
 
-/** Run-context facts for an IF node's rule builder — the same upstream outputs,
+/** Run-context facts for an IF node's rule builder - the same upstream outputs,
  * typed where the metadata knows the type (entity record fields), else string. */
 function runContextFacts(
   doc: WorkflowDefinition,
@@ -180,7 +180,7 @@ function runContextFacts(
 }
 
 /** Reverse-BFS ancestors of a node with their minimum distance (closest first
- * — n8n lists nearest nodes at the top). */
+ * - n8n lists nearest nodes at the top). */
 function ancestorsByDepth(doc: WorkflowDefinition, nodeId: string): { node: WorkflowNode; depth: number }[] {
   const parents = new Map<string, string[]>();
   for (const e of doc.edges) parents.set(e.target, [...(parents.get(e.target) ?? []), e.source]);
@@ -212,7 +212,7 @@ function entityFor(node: WorkflowNode, metadata: WorkflowMetadata): WorkflowTrig
 }
 
 /** The published form a `form.submitted` trigger points at via `config.formId`
- * — backs the dynamic `trigger.answers.<key>` outputs (slice 2). */
+ * - backs the dynamic `trigger.answers.<key>` outputs (slice 2). */
 function formFor(node: WorkflowNode, metadata: WorkflowMetadata): WorkflowFormOption | undefined {
   const id = node.config.formId;
   if (typeof id !== 'string' || !id) return undefined;
@@ -503,7 +503,7 @@ export function NodeConfigDrawer({
     }
 
     if (field.type === 'assignments') {
-      // Only writable fields — the others fail at run time (server whitelist).
+      // Only writable fields - the others fail at run time (server whitelist).
       const writable = new Set(entity?.writableFields ?? []);
       const writableFields = (entity?.fields ?? []).filter((f) => writable.has(f.key));
       return wrap(
@@ -532,7 +532,7 @@ export function NodeConfigDrawer({
               }
               // Copy the template's block doc for per-use editing (branded).
               void templateEngineService.getTemplate(v).then((t) => {
-                // Email picker lists only email templates — never a canvas doc.
+                // Email picker lists only email templates - never a canvas doc.
                 if (t && !isCanvasDoc(t.doc))
                   onConfigChange(node.id, {
                     [field.key]: v,
@@ -602,7 +602,7 @@ export function NodeConfigDrawer({
       );
     }
 
-    // text / textarea — mergeable → dynamic-content field.
+    // text / textarea - mergeable → dynamic-content field.
     return wrap(
       field.mergeable ? (
         <DynamicContentField
@@ -646,7 +646,7 @@ export function NodeConfigDrawer({
         )}
         {duplicateName && (
           <p className="text-[11px] text-destructive" data-testid="node-name-error">
-            Another node already uses this name — names must be unique.
+            Another node already uses this name - names must be unique.
           </p>
         )}
         {editing && onReplaceNode && node.kind !== 'if' && (
@@ -691,7 +691,7 @@ export function NodeConfigDrawer({
               Output
             </div>
             <pre className="max-h-32 overflow-auto rounded bg-muted p-1.5 text-[11px] text-foreground">
-              {runData?.outputJson == null ? '—' : JSON.stringify(runData.outputJson, null, 2)}
+              {runData?.outputJson == null ? '-' : JSON.stringify(runData.outputJson, null, 2)}
             </pre>
           </div>
           {runData?.error && (

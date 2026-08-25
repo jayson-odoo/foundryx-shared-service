@@ -1,4 +1,4 @@
-"""Conversation (thread + message) service — plan 05.
+"""Conversation (thread + message) service - plan 05.
 
 Maps Contact/ConversationMessage rows to the camelCase API shapes, resolves
 status keys + user display names, maintains the read marker, and applies the
@@ -57,7 +57,7 @@ class ConversationService:
         The polymorphic-target_id house rule: a STORED user id must be resolved
         scoped, never by bare id. `assigned_user_id` is validated on write by
         `patch_thread`, but it is not the only writer and `sender_id` is never
-        validated — and this resolves to a name/EMAIL that is rendered to the
+        validated - and this resolves to a name/EMAIL that is rendered to the
         caller, including on the key-authed public gateway. An id belonging to
         another tenant must resolve to nothing, not to their user's address."""
         ids = [u for u in set(user_ids) if u]
@@ -81,8 +81,8 @@ class ConversationService:
         return ExternalAgentService(self.db).names(ids, tenant_id)
 
     def _channel_types(self, channel_ids: List[str], tenant_id: str) -> Dict[str, str]:
-        """Tenant-scoped for the same reason as `_user_names` (lower impact —
-        leaks only a channel_type — but the same stored-id resolution rule)."""
+        """Tenant-scoped for the same reason as `_user_names` (lower impact -
+        leaks only a channel_type - but the same stored-id resolution rule)."""
         ids = [c for c in set(channel_ids) if c]
         if not ids:
             return {}
@@ -113,7 +113,7 @@ class ConversationService:
         for c in contacts:
             preview = previews.get(c.id)
             channel_id = preview.channel_id if preview else None
-            # Assignee display resolves from whichever assignee column is set —
+            # Assignee display resolves from whichever assignee column is set -
             # native user OR federated external agent (they are mutually exclusive).
             agent = agents.get(c.assigned_external_agent_id) if c.assigned_external_agent_id else None
             if agent is not None:
@@ -158,7 +158,7 @@ class ConversationService:
             [m.sender_external_agent_id for m in messages if m.sender_external_agent_id],
             tenant_id,
         )
-        # Batched reaction chips (plan 12 Slice 3) — one query for the whole page.
+        # Batched reaction chips (plan 12 Slice 3) - one query for the whole page.
         reactions_by_msg = self.repo.reactions_for(
             [m.id for m in messages],
             tenant_id,
@@ -167,7 +167,7 @@ class ConversationService:
         for m in messages:
             meta = m.metadata_json or {}
             reply = meta.get("reply_to")
-            # Sender display resolves from whichever sender column is set — native
+            # Sender display resolves from whichever sender column is set - native
             # user OR federated external agent.
             agent = agents.get(m.sender_external_agent_id) if m.sender_external_agent_id else None
             if agent is not None:
@@ -246,7 +246,7 @@ class ConversationService:
 
         if assigned_user_id is not ...:
             if external_connection_id is not None:
-                # Embed principal: the assignee id is an EXTERNAL agent id — it
+                # Embed principal: the assignee id is an EXTERNAL agent id - it
                 # must belong to the token's connection (a token can only assign
                 # to its own consumer's agents; cross-consumer is impossible).
                 if assigned_user_id is not None:
@@ -300,7 +300,7 @@ class ConversationService:
         )
         # Fan out to consumer webhooks (Slice 4). Endpoints are per-channel, so
         # forward on the contact's current channel (its latest message's); skip
-        # if the contact has never messaged on a channel yet. Fully isolated —
+        # if the contact has never messaged on a channel yet. Fully isolated -
         # the PATCH already committed, forwarding must never 500 the response.
         if item.channelId:
             try:
@@ -319,6 +319,6 @@ class ConversationService:
                         f"{c.id}:{int(c.updated_at.timestamp())}",
                         {"contact": item.model_dump(mode="json")},
                     )
-            except Exception:  # noqa: BLE001 — forwarding never breaks the PATCH
+            except Exception:  # noqa: BLE001 - forwarding never breaks the PATCH
                 logger.exception("contact.updated webhook fan-out failed for %s", c.id)
         return item

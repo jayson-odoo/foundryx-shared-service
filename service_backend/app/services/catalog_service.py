@@ -1,4 +1,4 @@
-"""Core catalog services (sprint-4/08) — Service-Repository, tenant-scoped.
+"""Core catalog services (sprint-4/08) - Service-Repository, tenant-scoped.
 
 Products + categories are core/horizontal. ``kind`` validated against the active
 product-kind registry (metadata, not a behavior branch). Product delete is
@@ -107,7 +107,7 @@ def tenant_default_currency(db: Session, tenant_id: str) -> str:
 
 
 class CategoryService:
-    """Product category taxonomy tree — list returns the whole tenant set; the
+    """Product category taxonomy tree - list returns the whole tenant set; the
     frontend builds the tree (reusable Resource-shell tree mode)."""
 
     def __init__(self, db: Session):
@@ -242,7 +242,7 @@ class ProductService:
         return _csv(columns, rows, _PRODUCT_COLS)
 
     def options(self, tenant_id, *, search=None, limit=20):
-        """(id, name, price, currency) picker for quotation lines — active only."""
+        """(id, name, price, currency) picker for quotation lines - active only."""
         q = self.db.query(Product).filter(
             Product.tenant_id == tenant_id,
             Product.is_deleted.is_(False),

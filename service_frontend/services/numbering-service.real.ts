@@ -1,4 +1,4 @@
-/** Real numbering service — talks to FastAPI via the shared api-client. */
+/** Real numbering service - talks to FastAPI via the shared api-client. */
 import type { NumberCatalogItem, NumberFormatSet } from '@/types/numbering';
 import { apiFetch } from '@/lib/api-client';
 import type { NumberingService } from './numbering-service';

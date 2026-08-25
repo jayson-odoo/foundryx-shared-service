@@ -1,21 +1,21 @@
-"""Hop 1 — AutoCount → canonical. **Field mapping is DATA, not code** (D5,
+"""Hop 1 - AutoCount → canonical. **Field mapping is DATA, not code** (D5,
 AC-13-08 / AC-13-09).
 
 Why data: per-customer UDF arrays. Customer A's GRN lines carry
 ``UDF_DriverName``; customer B's carry nothing; customer C's carry three other
 things. Encoding that in Python means a release per customer. So a mapping is a
-ROW — source path, canonical field, transform — and adding or removing a row
+ROW - source path, canonical field, transform - and adding or removing a row
 changes behaviour with **no code change** (pinned by a test).
 
 What this layer absorbs, so nothing downstream ever sees it:
 
 * ``"T"`` / ``"F"`` string booleans (and real bools, which also occur)
-* three date formats — ``2023/12/01``, ``2024/08/05 16:37:34``, ``2024-09-15``
+* three date formats - ``2023/12/01``, ``2024/08/05 16:37:34``, ``2024-09-15``
 * 8-dp numeric STRINGS (``"120.00000000"``) → ``Decimal``
-* numerics inconsistently typed — ``2`` (int) and ``"10"`` (str) for one field
+* numerics inconsistently typed - ``2`` (int) and ``"10"`` (str) for one field
 * the nested detail array key, which is **``GRDTL``** for GRN (not ``GRNDTL``)
 * **inconsistent casing, which is inconsistent ON PURPOSE**: GRN uses ``DtlKey``,
-  DO uses ``Dtlkey``. Paths are matched **LITERALLY** — no case-folding, no
+  DO uses ``Dtlkey``. Paths are matched **LITERALLY** - no case-folding, no
   normalisation. Normalising would paper over a real vendor difference and make
   the mapping table lie about what the API returns.
 
@@ -55,7 +55,7 @@ SCOPES = (SCOPE_HEADER, SCOPE_LINE)
 
 class TransformError(ValueError):
     """A value could not be coerced by its configured transform. Always becomes
-    a NAMED per-field error — never a silent null."""
+    a NAMED per-field error - never a silent null."""
 
 
 # ── transforms (declarative coercion) ─────────────────────────────────────────
@@ -90,7 +90,7 @@ def t_string(value: Any) -> Optional[str]:
 
 
 def t_bool(value: Any) -> Optional[bool]:
-    """``"T"``/``"F"`` — and real bools, and 1/0, all of which occur."""
+    """``"T"``/``"F"`` - and real bools, and 1/0, all of which occur."""
     if _blank(value):
         return None
     if isinstance(value, bool):
@@ -106,7 +106,7 @@ def t_bool(value: Any) -> Optional[bool]:
 
 
 def t_decimal(value: Any) -> Optional[Decimal]:
-    """8-dp strings AND real numbers — the vendor mixes ``2`` and ``"10"`` for
+    """8-dp strings AND real numbers - the vendor mixes ``2`` and ``"10"`` for
     one field, so both are accepted. Via ``str()`` so a float never introduces
     binary-float noise into money."""
     if _blank(value):
@@ -162,7 +162,7 @@ def t_date(value: Any) -> Optional[date]:
 
 def t_datetime(value: Any) -> Optional[datetime]:
     """Aware-**UTC** out, always (house datetime rule). The vendor sends no
-    offset; its timestamps are read as UTC — the one assumption this layer makes,
+    offset; its timestamps are read as UTC - the one assumption this layer makes,
     stated here rather than scattered."""
     if _blank(value):
         return None
@@ -178,7 +178,7 @@ def t_f_bool(value: Any) -> Optional[bool]:
     Deliberately narrower than ``t_bool`` (which also takes ``true``/``yes``/1/0)
     because this one governs ``is_active`` on a live supplier or customer in the
     consumer system. **An unrecognised value fails THAT RECORD ONLY, naming the
-    field** (AC-14-05) — it is never coerced and never defaulted. A silent
+    field** (AC-14-05) - it is never coerced and never defaulted. A silent
     ``False`` here would deactivate a live supplier in Sorento, and nothing in
     either system would report a problem.
 
@@ -209,7 +209,7 @@ def slash_datetime(value: Any) -> Optional[datetime]:
     """``"2026/03/18 16:03:21"`` → **aware UTC** (house datetime rule).
 
     The vendor sends no offset. Reading it as UTC is the one assumption this
-    layer makes and it is stated here rather than scattered — the same assumption
+    layer makes and it is stated here rather than scattered - the same assumption
     ``t_datetime`` already makes for documents.
 
     Strict about the FORMAT on purpose: this transform is named for the shape it
@@ -251,7 +251,7 @@ TRANSFORMS = {
 # ── output-type coercion for FORMULA rows (slice 16, AC-16-04) ─────────────────
 # A formula produces a language value (str/number/bool/None/FormulaDate). The
 # target Sorento/canonical field has a declared type, and the formula's output
-# is coerced/validated to it — a mismatch (a formula feeding a boolean field that
+# is coerced/validated to it - a mismatch (a formula feeding a boolean field that
 # yields a string) is a NAMED per-field error, never a wrong value sent onward.
 # Named transforms are NOT run through this: they already return the right type.
 
@@ -308,7 +308,7 @@ def coerce_output(value: Any, type_token: Optional[str]) -> Any:
     datetime targets reuse the module's own transforms (``t_decimal``/``t_int``/
     ``t_datetime``/``t_date``), so a formula and a named transform land the SAME
     Python type in the canonical record. A boolean target demands a real boolean
-    — anything else is a ``TransformError`` naming the mismatch.
+    - anything else is a ``TransformError`` naming the mismatch.
     """
     if value is None:
         return None
@@ -336,7 +336,7 @@ def coerce_output(value: Any, type_token: Optional[str]) -> Any:
         return t_datetime(value)
     if type_token == TYPE_DATE:
         return t_date(value)
-    # string / unknown target — stringify (a bool/number feeding a text field).
+    # string / unknown target - stringify (a bool/number feeding a text field).
     if type_token == TYPE_STRING:
         return t_string(value)
     return value
@@ -355,7 +355,7 @@ def coerce_output(value: Any, type_token: Optional[str]) -> Any:
 # ``FieldName2`` is checked too because the vendor populates either.
 #
 # The list-index segment exists because a MASTER record nests its real DB row
-# under ``Data[0]`` while keeping other fields at the top level — so a mapping
+# under ``Data[0]`` while keeping other fields at the top level - so a mapping
 # row genuinely needs to address both (``EmailAddress`` and ``Data.0.AutoKey``).
 # Flattening ``Data[0]`` into the parent instead would be simpler to implement
 # and worse to operate: both levels carry unique fields AND overlapping ones
@@ -371,7 +371,7 @@ _MISSING = object()
 
 def resolve_path(source: Dict[str, Any], path: str) -> Any:
     """Read ``path`` out of a raw vendor record. Returns ``_MISSING`` when the
-    path is absent — distinct from a present-but-null value, which is a real
+    path is absent - distinct from a present-but-null value, which is a real
     ``None`` the customer actually sent.
 
     **Never raises.** A wrong path is an operator's data-entry mistake in a
@@ -387,7 +387,7 @@ def resolve_path(source: Dict[str, Any], path: str) -> Any:
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
-            # LITERAL match on either field-name column — no case folding.
+            # LITERAL match on either field-name column - no case folding.
             if entry.get("FieldName") == wanted or entry.get("FieldName2") == wanted:
                 return entry.get("Value")
         return _MISSING
@@ -409,7 +409,7 @@ def resolve_path(source: Dict[str, Any], path: str) -> Any:
                 return _MISSING
             current = current[part]
         else:
-            # A scalar with path left to walk — the path does not fit this
+            # A scalar with path left to walk - the path does not fit this
             # record's shape.
             return _MISSING
     return current
@@ -449,7 +449,7 @@ class MappingRow:
 
     def coerce(self, value: Any) -> Any:
         if self.formula:
-            # A BLANK source value short-circuits to None WITHOUT evaluating —
+            # A BLANK source value short-circuits to None WITHOUT evaluating -
             # exactly as every named transform treats blank (``_blank`` → None).
             # This keeps "absent is not unconvertible" and lets the row's
             # ``is_required`` flag catch a required-but-empty field, so a formula
@@ -471,7 +471,7 @@ class MappingRow:
 
 @dataclass(frozen=True)
 class FieldError:
-    """A NAMED per-field failure (AC-13-09) — and the raw material for the
+    """A NAMED per-field failure (AC-13-09) - and the raw material for the
     per-document failure message required by AC-13-10, which must name the
     document, the line, and the field."""
 
@@ -485,7 +485,7 @@ class FieldError:
     def message(self) -> str:
         where = f"line {self.line_no}" if self.line_no else "header"
         doc = self.doc_no or self.doc_key or "document"
-        return f"{doc} {where}: field '{self.field}' ({self.source_path}) — {self.reason}"
+        return f"{doc} {where}: field '{self.field}' ({self.source_path}) - {self.reason}"
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -502,7 +502,7 @@ class FieldError:
 @dataclass
 class MappedDocument:
     """One document's hop-1 outcome. ``record`` is None whenever ``errors`` is
-    non-empty — **a partially-mapped transaction is never produced** (D13): the
+    non-empty - **a partially-mapped transaction is never produced** (D13): the
     caller cannot accidentally push half a GRN because half a GRN does not
     exist as a value."""
 
@@ -531,7 +531,7 @@ class IdentityError(ValueError):
 def doc_key_identity(raw: Dict[str, Any], database_name: str) -> str:
     """Documents: the vendor's ``DocKey``.
 
-    Never ``DocNo`` — the vendor exposes ``NewDocNo``, so ``DocNo`` is MUTABLE
+    Never ``DocNo`` - the vendor exposes ``NewDocNo``, so ``DocNo`` is MUTABLE
     and correlating on it forks a document in two the first time a customer
     renumbers one.
     """
@@ -548,8 +548,8 @@ def company_qualified_identity(raw: Dict[str, Any], database_name: str) -> str:
 
         !!  THE COMPANY PREFIX IS LOAD-BEARING, NOT DECORATION.  !!
 
-    ``AutoKey`` is a PER-COMPANY primary key — ``AutoKey=1`` exists in every
-    AutoCount company — while the consumer's uniqueness is
+    ``AutoKey`` is a PER-COMPANY primary key - ``AutoKey=1`` exists in every
+    AutoCount company - while the consumer's uniqueness is
     ``(source_system, entity_type, source_ref)`` with **no company dimension**.
     We support several companies per tenant, so an unqualified ref collides on
     the second company connected: two different suppliers would resolve to one
@@ -557,7 +557,7 @@ def company_qualified_identity(raw: Dict[str, Any], database_name: str) -> str:
 
     Not ``Guid`` (Debtor rows carry one, Creditor rows do not) and not ``AccNo``
     (a business code an operator can renumber, which would orphan the link and
-    duplicate the record — AC-14-11).
+    duplicate the record - AC-14-11).
     """
     key = t_string(read_path(raw, VENDOR_AUTOKEY_PATH)) or ""
     if not key:
@@ -640,7 +640,7 @@ ENTITY_PROFILES: Dict[str, EntityProfile] = {
 
 
 class UnknownEntityProfile(Exception):
-    """A configured entity has no profile. LOUD — mapping it as a GRN would
+    """A configured entity has no profile. LOUD - mapping it as a GRN would
     produce a canonical record of the wrong shape and no error at all."""
 
 
@@ -655,7 +655,7 @@ def profile_for(entity_type: str) -> EntityProfile:
 
 class MappingEngine:
     """Applies mapping ROWS to raw vendor records. Holds no per-customer
-    knowledge itself — everything customer-specific arrives as rows.
+    knowledge itself - everything customer-specific arrives as rows.
 
     One engine per (company, entity); build it from ``ac_field_mapping`` via
     ``MappingEngine.from_rows``.
@@ -675,7 +675,7 @@ class MappingEngine:
         self.line_rows = [r for r in enabled if r.scope == SCOPE_LINE]
         self.profile = profile or profile_for(entity_type)
         self.entity_type = self.profile.entity_type
-        # Per-entity, from config — GRN is GRDTL, DO is DODTL. Never guessed.
+        # Per-entity, from config - GRN is GRDTL, DO is DODTL. Never guessed.
         # ``None`` means "use the profile's", NOT "no lines": an explicit
         # override still wins, so a customer whose wrapper renames the array can
         # be fixed from config.
@@ -693,7 +693,7 @@ class MappingEngine:
 
     def map_document(self, raw: Dict[str, Any]) -> MappedDocument:
         """Map ONE raw vendor record. Collects EVERY field error rather than
-        stopping at the first — an operator fixing a mapping wants the whole
+        stopping at the first - an operator fixing a mapping wants the whole
         list, not one error per sync cycle."""
         errors: List[FieldError] = []
         doc_no = t_string(read_path(raw, self.profile.display_path))
@@ -771,13 +771,13 @@ class MappingEngine:
             values["extras"] = extras
             try:
                 lines.append(self.profile.line_model(**values))
-            except Exception as exc:  # noqa: BLE001 — a model reject is a field error
+            except Exception as exc:  # noqa: BLE001 - a model reject is a field error
                 # Same guard as the header below, and for the same reason: a
                 # mapping row is OPERATOR-EDITABLE DATA, so a row can hand the
                 # model a value pydantic rejects (``qty`` mapped ``string``, a
                 # UOM landing in a Decimal field). Unguarded, that ValidationError
                 # escapes map_document → _stage_documents → run_autocount_sync
-                # and kills the WHOLE batch, losing every sibling GRN — exactly
+                # and kills the WHOLE batch, losing every sibling GRN - exactly
                 # what AC-13-10 forbids. Named, line-scoped, document-local.
                 errors.append(
                     FieldError(
@@ -795,8 +795,8 @@ class MappingEngine:
             # All-or-nothing per document (D13/AC-13-10): no partial record.
             return MappedDocument(record=None, errors=errors, raw=raw, doc_no=doc_no)
 
-        # Identity is minted into the CANONICAL SHAPE (D2/AC-14-10) — never at
-        # push time — so the staged record, its diff and the pushed record all
+        # Identity is minted into the CANONICAL SHAPE (D2/AC-14-10) - never at
+        # push time - so the staged record, its diff and the pushed record all
         # key on one string.
         header["source_ref"] = source_ref
         header["entity_type"] = self.entity_type
@@ -805,7 +805,7 @@ class MappingEngine:
             header["lines"] = lines
         try:
             record = self.profile.record_model(**header)
-        except Exception as exc:  # noqa: BLE001 — a model reject is a field error
+        except Exception as exc:  # noqa: BLE001 - a model reject is a field error
             return MappedDocument(
                 record=None,
                 errors=[
@@ -823,7 +823,7 @@ class MappingEngine:
         return MappedDocument(record=record, errors=[], raw=raw, doc_no=doc_no)
 
     def map_batch(self, records: Sequence[Dict[str, Any]]) -> List[MappedDocument]:
-        """Map many. Each document stands alone — one failure never contaminates
+        """Map many. Each document stands alone - one failure never contaminates
         a sibling (AC-13-10)."""
         return [self.map_document(raw) for raw in records]
 
@@ -836,7 +836,7 @@ class MappingEngine:
         Unlike ``map_document`` (which discards partial values when any field
         fails), this evaluates each row INDEPENDENTLY so the operator sees every
         field's value or its error side-by-side (record-in → record-out,
-        AC-16-30/31). It WRITES NOTHING — pure preview.
+        AC-16-30/31). It WRITES NOTHING - pure preview.
         """
         doc_no = t_string(read_path(raw, self.profile.display_path))
         try:
@@ -966,11 +966,11 @@ class MappingEngine:
                 # A FORMULA row's output is coerced/validated to the target
                 # field's declared type (AC-16-04). Named-transform rows already
                 # return the right type, so they skip this. Extras (undeclared
-                # target) have no declared type — the raw value is kept.
+                # target) have no declared type - the raw value is kept.
                 if row.formula and row.canonical_field in fields:
                     coerced = coerce_output(coerced, types.get(row.canonical_field))
             except TransformError as exc:
-                # NAMED per-field error — never a silent null (AC-13-09/16-03).
+                # NAMED per-field error - never a silent null (AC-13-09/16-03).
                 errors.append(
                     FieldError(
                         field=row.canonical_field,
@@ -1022,7 +1022,7 @@ def _json_safe(value: Any) -> Any:
 # operator's edits are never silently reverted by a deploy. It is a starting
 # point, deliberately not a fallback.
 #
-# Casing here is LITERAL vendor casing (GRN's ``DtlKey`` — DO's is ``Dtlkey``).
+# Casing here is LITERAL vendor casing (GRN's ``DtlKey`` - DO's is ``Dtlkey``).
 
 DEFAULT_GRN_MAPPING: Tuple[MappingRow, ...] = (
     # header
@@ -1041,7 +1041,7 @@ DEFAULT_GRN_MAPPING: Tuple[MappingRow, ...] = (
     MappingRow("LastModifiedUserID", "last_modified_user_id", "string", SCOPE_HEADER),
     MappingRow("CreatedTimeStamp", "created_at_source", "datetime", SCOPE_HEADER),
     MappingRow("CreatedUserID", "created_user_id", "string", SCOPE_HEADER),
-    # lines — GRN detail casing is ``DtlKey`` (DO's is ``Dtlkey``; map literally)
+    # lines - GRN detail casing is ``DtlKey`` (DO's is ``Dtlkey``; map literally)
     MappingRow("DtlKey", "source_ref", "string", SCOPE_LINE),
     MappingRow("ItemCode", "item_code", "string", SCOPE_LINE),
     MappingRow("Description", "description", "string", SCOPE_LINE),
@@ -1057,7 +1057,7 @@ DEFAULT_GRN_MAPPING: Tuple[MappingRow, ...] = (
 
 # ── default MASTER mappings (SEED DATA, AC-14-05) ─────────────────────────────
 #
-# Masters are FLAT — one scope, no detail array — but they nest their real DB row
+# Masters are FLAT - one scope, no detail array - but they nest their real DB row
 # under ``Data[0]``, so paths address BOTH levels explicitly (see ``resolve_path``
 # for why this is not flattened).
 #
@@ -1077,13 +1077,13 @@ _MASTER_COMMON: Tuple[MappingRow, ...] = (
     MappingRow("CompanyName", "name", "string", SCOPE_HEADER, is_required=True),
     MappingRow("EmailAddress", "email", "string", SCOPE_HEADER),
     # STRICT "T"/"F" + REQUIRED, together. The transform refuses to guess and the
-    # required flag refuses a blank — so an unreadable active flag fails THAT
+    # required flag refuses a blank - so an unreadable active flag fails THAT
     # record with the field named, and never falls through to the consumer's
     # ``is_active: bool = True`` default. A silently-activated blacklisted
     # supplier, or a silently-deactivated live one, is the failure this pair
     # exists to make impossible (AC-14-05).
     MappingRow("IsActive", "is_active", "t_f_bool", SCOPE_HEADER, is_required=True),
-    # Human-facing account number. DISPLAY only — mutable at source, which is
+    # Human-facing account number. DISPLAY only - mutable at source, which is
     # precisely why identity is AutoKey and not this (AC-14-11).
     MappingRow("AccNo", "source_doc_no", "string", SCOPE_HEADER),
     # Lives in the NESTED row, not at the top level (AC-14-02). Drives the
@@ -1093,7 +1093,7 @@ _MASTER_COMMON: Tuple[MappingRow, ...] = (
     ),
 )
 
-# Creditor → Sorento suppliers. Code, name, email, active flag ONLY — Creditor
+# Creditor → Sorento suppliers. Code, name, email, active flag ONLY - Creditor
 # has no phone field, and the seven address fields Sorento accepts are ones it
 # never persists, so sending them would let us report a sync that did not happen
 # (AC-14-13).

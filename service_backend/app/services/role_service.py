@@ -209,7 +209,7 @@ class RoleService:
         role = self.get(role_id, tenant_id)
         if role.is_system:
             raise SystemRoleProtected()
-        # Emit BEFORE the delete commits — record facts captured while live; the
+        # Emit BEFORE the delete commits - record facts captured while live; the
         # delete's own commit drains the buffer (rolled-back delete discards it).
         emit_entity_event(self.db, "role", "deleted", role, tenant_id=tenant_id)
         self.repo.delete(role)

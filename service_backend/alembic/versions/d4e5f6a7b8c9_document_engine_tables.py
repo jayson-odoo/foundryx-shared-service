@@ -1,4 +1,4 @@
-"""Document engine tables — folders / files / file_versions / attachment_types /
+"""Document engine tables - folders / files / file_versions / attachment_types /
 document_settings / document_download_jobs (plan sprint-3/04)
 
 Revision ID: d4e5f6a7b8c9
@@ -9,7 +9,7 @@ Create Date: 2026-06-12
 from alembic import op
 import sqlalchemy as sa
 
-import app.models.utc_datetime  # noqa: F401 — UTCDateTime columns (workflow lesson)
+import app.models.utc_datetime  # noqa: F401 - UTCDateTime columns (workflow lesson)
 from app.models.utc_datetime import UTCDateTime
 
 revision = "d4e5f6a7b8c9"

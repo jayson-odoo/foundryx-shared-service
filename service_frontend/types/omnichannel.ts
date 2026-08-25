@@ -1,5 +1,5 @@
 /**
- * Omnichannel BSP domain types (sprint-1 plan 04 — foundation).
+ * Omnichannel BSP domain types (sprint-1 plan 04 - foundation).
  *
  * Mirrors the backend `app_omnichannel` schema the module will expose. Kept
  * framework-agnostic so the services + UI share one source. Phase A is mock-
@@ -18,7 +18,7 @@ export type ChannelStatus = 'ACTIVE' | 'PENDING' | 'INACTIVE' | 'ERROR';
 /** Lifecycle of a workspace (statuses table, WORKSPACE scope). */
 export type WorkspaceStatus = 'ACTIVE' | 'INACTIVE';
 
-/** A messaging workspace — a tenant-owned division channels/contacts/members hang off. */
+/** A messaging workspace - a tenant-owned division channels/contacts/members hang off. */
 export interface Workspace {
   id: string;
   tenantId: string;
@@ -61,7 +61,7 @@ export interface Channel {
   name: string;
   status: ChannelStatus;
   isActive: boolean;
-  /** WhatsApp Business Account id (display only — read from Meta on connect). */
+  /** WhatsApp Business Account id (display only - read from Meta on connect). */
   wabaId: string | null;
   phoneNumberId: string | null;
   displayPhoneNumber: string | null;
@@ -78,7 +78,7 @@ export interface Channel {
   updatedAt: string; // ISO
 }
 
-/** Mirrored WhatsApp Business Profile (plan 06 — Meta system-of-record). */
+/** Mirrored WhatsApp Business Profile (plan 06 - Meta system-of-record). */
 export interface ChannelProfile {
   about: string | null;
   address: string | null;
@@ -132,13 +132,13 @@ export interface EmbeddedSignupResult {
   /** Resolved server-side from phone_number_id when the real SDK omits them. */
   displayPhoneNumber?: string;
   businessName?: string;
-  /** The origin the JS SDK dialog ran on — sent to the backend so the code
+  /** The origin the JS SDK dialog ran on - sent to the backend so the code
    *  exchange can pass a matching redirect_uri (required by Meta apps with
    *  "Use Strict Mode for redirect URIs" on). Absent for the simulated popup. */
   redirectUri?: string;
 }
 
-/** Manual channel connect — paste a System User token + phone ids (validation
+/** Manual channel connect - paste a System User token + phone ids (validation
  *  escape hatch before Business Verification). */
 export interface ManualConnectInput {
   workspaceId: string;
@@ -157,13 +157,13 @@ export interface MockWabaOption {
 }
 
 // ---------------------------------------------------------------------------
-// Plan 05 — message processing (conversations, inbox, templates, quick replies)
+// Plan 05 - message processing (conversations, inbox, templates, quick replies)
 // ---------------------------------------------------------------------------
 
 /** Who authored a message bubble. SYSTEM = internal note (never sent to the contact). */
 export type SenderType = 'AGENT' | 'CONTACT' | 'SYSTEM';
 
-/** Message payload kinds (plan 12 — full media set; interactive/location/
+/** Message payload kinds (plan 12 - full media set; interactive/location/
  *  contacts/reaction land in slices 2/3). */
 export type MessageType =
   | 'TEXT'
@@ -195,7 +195,7 @@ export type ThreadPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
 
 /**
  * A conversation thread = a contact + its thread metadata (mirrors backend
- * `contacts` — the contact IS the thread; messages hang off it).
+ * `contacts` - the contact IS the thread; messages hang off it).
  */
 export interface ConversationThread {
   id: string; // contact id
@@ -278,7 +278,7 @@ export interface MessageReaction {
 /** Header format of a template (drives which send input to show). */
 export type TemplateHeaderFormat = 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT';
 
-/** A synced (read-only) WhatsApp template — authoring lives in Meta (backlog). */
+/** A synced (read-only) WhatsApp template - authoring lives in Meta (backlog). */
 export interface WhatsAppTemplate {
   id: string;
   channelId: string;
@@ -341,7 +341,7 @@ export interface SendTemplateInput {
 }
 
 // ---------------------------------------------------------------------------
-// Plan 12 Slice 2 — interactive / location / contacts (structured payloads)
+// Plan 12 Slice 2 - interactive / location / contacts (structured payloads)
 // ---------------------------------------------------------------------------
 
 export type InteractiveKind = 'buttons' | 'list' | 'cta_url' | 'location_request';
@@ -416,7 +416,7 @@ export interface SendContactsInput {
   replyToMessageId?: string;
 }
 
-/** Inbox thread-list filters (left panel — not the Resource shell). */
+/** Inbox thread-list filters (left panel - not the Resource shell). */
 export interface ThreadListQuery {
   workspaceId?: string;
   assignee?: 'all' | 'me' | 'unassigned';

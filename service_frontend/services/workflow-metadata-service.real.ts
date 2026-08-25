@@ -1,5 +1,5 @@
 /**
- * Real workflow-metadata service (plan sprint-2/09 Phase B) — GET
+ * Real workflow-metadata service (plan sprint-2/09 Phase B) - GET
  * /workflows/metadata returns the tenant's triggerable entities with resolved
  * statuses (real status ids) + record fields. Swaps the Phase A mock.
  */

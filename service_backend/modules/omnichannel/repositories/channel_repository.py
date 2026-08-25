@@ -1,4 +1,4 @@
-"""Channel repository — tenant-scoped channel queries. Pure SQLAlchemy."""
+"""Channel repository - tenant-scoped channel queries. Pure SQLAlchemy."""
 from typing import List, Optional, Tuple
 
 from sqlalchemy import or_

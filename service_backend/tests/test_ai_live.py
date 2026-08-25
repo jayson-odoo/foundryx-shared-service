@@ -1,10 +1,10 @@
-"""Opt-in LIVE provider tests (AC-BI-13) — `pytest -m live`.
+"""Opt-in LIVE provider tests (AC-BI-13) - `pytest -m live`.
 
 **Deselected by default** (`pytest.ini` sets `addopts = -m "not live"`), so a
 normal run and CI need no key, cost nothing and never touch the network.
 
 Each provider reads its own env var and **skips cleanly when that key is
-absent** — so `-m live` stays green on a machine that only has the Gemini key:
+absent** - so `-m live` stays green on a machine that only has the Gemini key:
 
     PLATFORM_LLM_API_KEY / GRILL_API_KEY  → gemini   (the guaranteed one)
     ANTHROPIC_API_KEY                     → anthropic
@@ -13,7 +13,7 @@ absent** — so `-m live` stays green on a machine that only has the Gemini key:
 Run:  `python -m pytest -m live -q`
 
 What these assert is narrow on purpose: the adapter ROUND-TRIPS and structured
-output PARSES on each provider. Prompt quality is not CI-testable — that is what
+output PARSES on each provider. Prompt quality is not CI-testable - that is what
 the manual live-verification gate (AC-BI-37) is for.
 """
 import os
@@ -57,7 +57,7 @@ def live_provider(request):
     api_key = _key_for(provider_key)
     if not api_key:
         env_names = " / ".join(_LIVE_PROVIDERS[provider_key][0])
-        pytest.skip(f"no {env_names} in the environment — skipping {provider_key}")
+        pytest.skip(f"no {env_names} in the environment - skipping {provider_key}")
     provider = get_provider(provider_key)
     assert provider is not None
     return provider, {"apiKey": api_key}, _model_for(provider_key)
@@ -72,14 +72,14 @@ def test_live_models_lists_chat_models(live_provider):
 
 
 def test_live_test_reports_ok(live_provider):
-    """AC-BI-04 — `test()` doubles as the model-list probe."""
+    """AC-BI-04 - `test()` doubles as the model-list probe."""
     provider, credentials, _ = live_provider
     result = provider.test({}, credentials)
     assert result.ok is True, result.message
 
 
 def test_live_text_completion_round_trips(live_provider):
-    """AC-BI-13 — the adapter round-trips prose and reports normalized usage."""
+    """AC-BI-13 - the adapter round-trips prose and reports normalized usage."""
     provider, credentials, model = live_provider
     result = provider.complete(
         {},
@@ -91,13 +91,13 @@ def test_live_text_completion_round_trips(live_provider):
     )
     assert result.structured is None
     assert result.text and "pong" in result.text.lower()
-    # Usage is normalized across vendors — this is what cost tracking reads.
+    # Usage is normalized across vendors - this is what cost tracking reads.
     assert result.tokens_in > 0
     assert result.tokens_out > 0
 
 
 def test_live_structured_output_parses(live_provider):
-    """AC-BI-13 — each provider's OWN structured-output mechanism (Anthropic
+    """AC-BI-13 - each provider's OWN structured-output mechanism (Anthropic
     tool-use · OpenAI json_schema · Gemini responseSchema) parses to the same
     normalized `LLMResult.structured`. No caller branches on provider."""
     provider, credentials, model = live_provider
@@ -131,7 +131,7 @@ def test_live_structured_output_parses(live_provider):
 
 
 def test_live_retired_model_fails_loudly(live_provider):
-    """AC-BI-05 — a model id the provider does not serve must fail LOUDLY,
+    """AC-BI-05 - a model id the provider does not serve must fail LOUDLY,
     never silently substitute a different model."""
     provider, credentials, _ = live_provider
     with pytest.raises(LLMError):
@@ -146,7 +146,7 @@ def test_live_retired_model_fails_loudly(live_provider):
 
 
 def test_live_bad_key_is_rejected_cleanly(live_provider):
-    """AC-BI-04 — a bad key yields a clean message, never a raw traceback and
+    """AC-BI-04 - a bad key yields a clean message, never a raw traceback and
     never the key echoed back."""
     provider, _, _ = live_provider
     result = provider.test({}, {"apiKey": "sk-obviously-invalid-key-000"})

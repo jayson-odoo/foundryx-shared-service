@@ -7,9 +7,9 @@ predicate. ``resolve_for_type`` filters ``is_active`` (only B is the write
 target); resolve-BY-KEY ignores it (A still serves its historical blobs).
 
 Every pre-existing row is BACKFILLED to ``true`` (explicit UPDATE, not merely
-default-on-insert — DoD backfill rule).
+default-on-insert - DoD backfill rule).
 
-Revision id length: 19 chars (≤ 32 — alembic_version.version_num VARCHAR(32)).
+Revision id length: 19 chars (≤ 32 - alembic_version.version_num VARCHAR(32)).
 
 Revision ID: conn_is_active_s410
 Revises: bgjobs_1a2b3c4d5e6f
@@ -49,7 +49,7 @@ def upgrade() -> None:
     )
 
     # Relax the (tenant, provider) plain unique CONSTRAINT to a partial unique
-    # INDEX on is_active — a SAME-PROVIDER bucket migration (s3→s3) must let the
+    # INDEX on is_active - a SAME-PROVIDER bucket migration (s3→s3) must let the
     # retired A and active B coexist. Two ACTIVE same-provider rows stay blocked.
     op.drop_constraint("uq_connection_tenant_provider", "connections", type_="unique")
     op.create_index(

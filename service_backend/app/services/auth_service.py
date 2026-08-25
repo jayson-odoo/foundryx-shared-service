@@ -30,7 +30,7 @@ class AuthError(Exception):
 
 
 class InvalidCredentials(AuthError):
-    """Email unknown OR password wrong — deliberately indistinguishable."""
+    """Email unknown OR password wrong - deliberately indistinguishable."""
 
 
 class AccountInactive(AuthError):
@@ -38,7 +38,7 @@ class AccountInactive(AuthError):
 
 
 class TenantInactive(AuthError):
-    """The tenant is suspended or archived — sign-in blocked (plan 07 §4)."""
+    """The tenant is suspended or archived - sign-in blocked (plan 07 §4)."""
 
 
 class EmailAlreadyExists(AuthError):
@@ -54,7 +54,7 @@ class AuthService:
         """Resolve the login tenant from its subdomain slug (plan 07 §6).
 
         Missing slug = the default tenant (local dev / bare domains). Unknown
-        slug raises InvalidCredentials — same uniform 401 as a bad password, so
+        slug raises InvalidCredentials - same uniform 401 as a bad password, so
         probing slugs leaks nothing beyond what DNS already exposes.
         """
         slug = (tenant_slug or DEFAULT_TENANT_SLUG).strip().lower()
@@ -86,7 +86,7 @@ class AuthService:
         return user
 
     def issue_token(self, user: User, remember_me: bool = False) -> str:
-        # rememberMe = long session (30d) vs the 24h default — the JWT exp is
+        # rememberMe = long session (30d) vs the 24h default - the JWT exp is
         # the real session boundary (plan 10 D4).
         return create_access_token(
             {

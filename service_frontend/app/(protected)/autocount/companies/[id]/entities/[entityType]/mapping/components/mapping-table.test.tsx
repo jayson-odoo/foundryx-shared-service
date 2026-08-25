@@ -112,7 +112,7 @@ describe('MappingTable edit mode', () => {
     const items = within(listbox).getAllByRole('option').map((o) => o.textContent);
     // code (own) + is_active/email/phone_number (unused). name is taken by row 2.
     expect(items).toEqual(['Code *', 'Is active *', 'Email', 'Phone number']);
-    // The already-used `name` target is NOT offered again — no duplicate possible.
+    // The already-used `name` target is NOT offered again - no duplicate possible.
     expect(items.some((t) => t === 'Name *')).toBe(false);
   });
 
@@ -162,7 +162,7 @@ describe('MappingTable formula display (AC-16-10)', () => {
     expect(screen.getByText('if(value == "T", true, false)')).toBeInTheDocument();
   });
 
-  it('keeps a passthrough row simple — preset label, no formula clutter', () => {
+  it('keeps a passthrough row simple - preset label, no formula clutter', () => {
     renderTable(false, {
       rows: [{ sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code' }],
     });

@@ -1,9 +1,9 @@
-"""Template engine (plan sprint-2/07) — the third platform engine.
+"""Template engine (plan sprint-2/07) - the third platform engine.
 
 PLATFORM CORE, not an App Store module (core auth mails render through it;
 the Workflow engine consumes ``render_email``). Modules adopt it by
 registering :class:`~app.template_engine.contexts.TemplateContext` rows at
-install — same lifecycle as permissions.csv / fact sources / status entities.
+install - same lifecycle as permissions.csv / fact sources / status entities.
 """
 
 from app.template_engine.compiler import compile_document, document_text

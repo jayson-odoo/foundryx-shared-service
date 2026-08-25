@@ -27,7 +27,7 @@ from app.models.ai import (
 # Per-string cap inside a span payload. Generous enough to keep a real prompt
 # readable, small enough that 1000 traces stay a few MB.
 MAX_PAYLOAD_CHARS = 8_000
-# Total serialized cap for one payload object — the backstop when a payload has
+# Total serialized cap for one payload object - the backstop when a payload has
 # many individually-short values.
 MAX_PAYLOAD_TOTAL_CHARS = 32_000
 TRUNCATION_SUFFIX = "…[truncated]"
@@ -42,7 +42,7 @@ def _now() -> datetime:
 def cap_payload(payload: Optional[Any]) -> Optional[Any]:
     """Truncate strings inside a payload, MARKING that it happened.
 
-    Returns a NEW structure — never mutates the caller's dict (the SQLAlchemy
+    Returns a NEW structure - never mutates the caller's dict (the SQLAlchemy
     in-place-JSON-mutation trap).
     """
     if payload is None:
@@ -85,7 +85,7 @@ def cap_payload(payload: Optional[Any]) -> Optional[Any]:
 class TraceWriter:
     """Accumulates spans for one run, then flushes trace + spans together.
 
-    Nothing is written until `finish()` — a run that raises mid-way still lands
+    Nothing is written until `finish()` - a run that raises mid-way still lands
     exactly one trace row (with `status='error'`) plus the spans it got through,
     never a half-written trace the UI can't render.
     """
@@ -166,7 +166,7 @@ class TraceWriter:
             prompt_version=self.prompt_version,
             provider=self.provider,
             model=self.model,
-            # Roll up usage from the LLM spans — the trace total is what cost
+            # Roll up usage from the LLM spans - the trace total is what cost
             # tracking reads, so it must never drift from the spans.
             tokens_in=sum(s.tokens_in for s in self._spans),
             tokens_out=sum(s.tokens_out for s in self._spans),
@@ -204,7 +204,7 @@ def append_span(
 
     ``AiClient.complete`` owns the ``llm_call`` span; the grill engine adds the
     validate/retry steps around it onto the SAME trace so the flat step list is
-    the full run. Flush only — the caller owns the commit (the grill runs the
+    the full run. Flush only - the caller owns the commit (the grill runs the
     whole turn/extract in one transaction). ``span_count`` is bumped so the trace
     total never drifts from its spans.
     """

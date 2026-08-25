@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Workflow editor canvas (plan sprint-2/08 D15) — a directed, ported node graph
+ * Workflow editor canvas (plan sprint-2/08 D15) - a directed, ported node graph
  * over the shared FlowCanvas (@xyflow/react) primitives. Palette (left,
  * dnd-kit + click-to-add) → canvas (center) → node config drawer (right).
  * Client-side undo/redo + non-destructive Tidy (BL-064) over the definition doc.
@@ -82,7 +82,7 @@ export interface WorkflowCanvasProps {
   debug?: WorkflowDebugBundle | null;
 }
 
-/** Branch-port edge styling — green true / red false (D8 IF node). */
+/** Branch-port edge styling - green true / red false (D8 IF node). */
 const BRANCH_EDGE: Record<string, { label: string; stroke: string }> = {
   true: { label: 'True', stroke: '#16a34a' },
   false: { label: 'False', stroke: '#dc2626' },
@@ -106,7 +106,7 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
   const [menuCoords, setMenuCoords] = useState<{ left: number; top: number } | null>(null);
 
   // Clamp the context menu into the viewport (flips up/left near an edge so the
-  // popup never truncates — measured before paint, no flicker).
+  // popup never truncates - measured before paint, no flicker).
   useLayoutEffect(() => {
     if (!contextMenu || !menuRef.current) {
       setMenuCoords(null);
@@ -159,7 +159,7 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Delete' && e.key !== 'Backspace') return;
       const target = e.target as HTMLElement | null;
-      // Skip while focus is on any interactive control — SearchSelect/dropdown
+      // Skip while focus is on any interactive control - SearchSelect/dropdown
       // triggers are buttons/comboboxes (not inputs), so a reflexive Backspace
       // after a selection would otherwise delete the whole node mid-config.
       if (
@@ -212,7 +212,7 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
         };
       }),
     );
-    // selectedNodeId intentionally excluded — selection re-tint handled below.
+    // selectedNodeId intentionally excluded - selection re-tint handled below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc]);
 
@@ -278,7 +278,7 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
       // apart in the dynamic-content picker.
       const name = uniqueNodeName(doc, entry?.label ?? type);
       const node = { ...created, config: { ...created.config, name } };
-      // No auto-connect — the node drops unwired so the author chooses which
+      // No auto-connect - the node drops unwired so the author chooses which
       // edge/branch it belongs to (auto-deriving forced wrong edges, esp. on
       // IF false-branches; user feedback).
       emit(addDocNode(doc, node));

@@ -23,7 +23,7 @@ export default function WorkflowsPage() {
             <ToolbarHeading>
               <ToolbarPageTitle />
               <ToolbarDescription>
-                Automate work — triggers run actions like sending emails, on a schedule or on demand.
+                Automate work - triggers run actions like sending emails, on a schedule or on demand.
               </ToolbarDescription>
             </ToolbarHeading>
           </Toolbar>

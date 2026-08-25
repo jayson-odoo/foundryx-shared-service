@@ -14,9 +14,9 @@ from app.database import Base
 from app.models.permission import role_permissions, tenant_id_from_role
 from app.models.tenant import DEFAULT_TENANT_ID
 
-# Association table — tenant_id carried for tenant-scoped integrity; assigned_at
+# Association table - tenant_id carried for tenant-scoped integrity; assigned_at
 # records when the membership was granted (Assigned Users "Joined" column).
-# tenant_id is derived from the OWNING ROLE at insert (BL-015) — relationship
+# tenant_id is derived from the OWNING ROLE at insert (BL-015) - relationship
 # appends (`user.roles.append(...)`) only set the FK columns, so a static
 # default would stamp the wrong tenant the moment a 2nd tenant exists.
 user_roles = Table(
@@ -44,7 +44,7 @@ class Role(Base):
     )
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
-    # Seeded/protected role — cannot be deleted while true (admin-toggleable).
+    # Seeded/protected role - cannot be deleted while true (admin-toggleable).
     is_system = Column(Boolean, default=False, nullable=False)
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)

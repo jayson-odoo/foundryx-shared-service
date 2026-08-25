@@ -1,8 +1,8 @@
-"""Workflow engine models (plan sprint-2/08) — core ``public`` tables.
+"""Workflow engine models (plan sprint-2/08) - core ``public`` tables.
 
 A ``Workflow`` carries a mutable ``draft_definition_json`` (the editor's working
 graph). Publishing snapshots the draft into an immutable ``WorkflowVersion`` and
-points ``current_version_id`` at it (D4) — only the current version fires.
+points ``current_version_id`` at it (D4) - only the current version fires.
 A ``WorkflowRun`` snapshots the EXACT graph it executed (draft or version) so
 the Logs replay is always faithful regardless of later edits (D6); per-node
 trace lives in ``WorkflowRunNode``.
@@ -16,7 +16,7 @@ from sqlalchemy.sql import func
 from app.database import Base
 from app.models.utc_datetime import UTCDateTime
 
-# Run lifecycle — code branches only on these.
+# Run lifecycle - code branches only on these.
 RUN_PENDING = "pending"
 RUN_RUNNING = "running"
 RUN_SUCCESS = "success"
@@ -58,7 +58,7 @@ class Workflow(Base):
     # The published version that fires (NULL = never published).
     current_version_id = Column(String, nullable=True)
 
-    # Denormalized trigger of the PUBLISHED version — fast event/schedule
+    # Denormalized trigger of the PUBLISHED version - fast event/schedule
     # matching without parsing JSON (set on publish, D4 / slice 09).
     trigger_type = Column(String, nullable=True, index=True)
     trigger_entity_type = Column(String, nullable=True, index=True)
@@ -113,7 +113,7 @@ class WorkflowRun(Base):
     triggered_by = Column(String, nullable=False, default=TRIGGER_MANUAL)
     is_test = Column(Boolean, nullable=False, default=False)
 
-    # The EXACT graph executed — replay is faithful even after edits (D6).
+    # The EXACT graph executed - replay is faithful even after edits (D6).
     definition_snapshot_json = Column(JSON, nullable=False)
     trigger_payload_json = Column(JSON, nullable=False, default=dict)
 
@@ -156,7 +156,7 @@ class WorkflowRunNode(Base):
 
 
 class WorkflowSettings(Base):
-    """Per-tenant workflow engine settings (plan sprint-2/10) — one row per
+    """Per-tenant workflow engine settings (plan sprint-2/10) - one row per
     tenant. ``run_retention_days`` NULL = fall back to the global default
     (``settings.workflow_run_retention_days``)."""
 

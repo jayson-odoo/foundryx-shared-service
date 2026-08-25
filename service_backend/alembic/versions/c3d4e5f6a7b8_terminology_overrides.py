@@ -1,4 +1,4 @@
-"""Terminology overrides (sprint-3/08, F10) — per-tenant entity relabeling.
+"""Terminology overrides (sprint-3/08, F10) - per-tenant entity relabeling.
 
 One row per (tenant, entity_key); absence = code default. Reset = delete row.
 

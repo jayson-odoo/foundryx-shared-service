@@ -13,7 +13,7 @@ import { RequirePermission } from '@/components/common/require-permission';
 import { useConnectionsListConfig } from './components/use-connections-list-config';
 
 /**
- * Integrations (plan 09; Resource shell since plan 06 D6) — the tenant's
+ * Integrations (plan 09; Resource shell since plan 06 D6) - the tenant's
  * connections to external services (email, storage, …). List + full-page form,
  * like every entity; the card grid + wizard are gone. Gated integrations.read;
  * connect/edit/test/disconnect additionally need integrations.manage.
@@ -29,7 +29,7 @@ export default function IntegrationsPage() {
             <ToolbarHeading>
               <ToolbarPageTitle />
               <ToolbarDescription>
-                Connect external services — email, storage and more.
+                Connect external services - email, storage and more.
               </ToolbarDescription>
             </ToolbarHeading>
           </Toolbar>

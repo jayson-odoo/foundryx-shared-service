@@ -4,7 +4,7 @@
 /* ReUI Configs */
 @import './config.reui.css';
 
-/* FoundryX Design Tokens (overrides ReUI defaults — must come after config.reui) */
+/* Foundryx Design Tokens (overrides ReUI defaults - must come after config.reui) */
 @import './foundryx-tokens.css';
 
 /** Global Styles **/

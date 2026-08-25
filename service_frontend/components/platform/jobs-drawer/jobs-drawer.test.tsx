@@ -28,7 +28,7 @@ function job(status: JobStatus, over: Partial<Job> = {}): Job {
   };
 }
 
-describe('JobsDrawer (generic, type-aware) — AC-10-19', () => {
+describe('JobsDrawer (generic, type-aware) - AC-10-19', () => {
   it('renders the empty state', () => {
     render(<JobsDrawer open onOpenChange={() => {}} jobs={[]} />);
     expect(screen.getByText('No background jobs yet.')).toBeInTheDocument();

@@ -46,7 +46,7 @@ function blankWorkflow(): Workflow {
     isActive: false,
     isTrashed: false,
     triggerType: '',
-    triggerLabel: '—',
+    triggerLabel: '-',
     currentVersionNumber: null,
     hasUnpublishedChanges: false,
     lastRunAt: null,
@@ -63,7 +63,7 @@ function blankWorkflow(): Workflow {
 /**
  * Stale start-nodes + every descendant reachable along the TAKEN path the run
  * took (D6). At an IF node we follow only the branch the cached run executed
- * (`outputJson.passed`), mirroring the backend's branch-aware re-run — so an
+ * (`outputJson.passed`), mirroring the backend's branch-aware re-run - so an
  * edit never marks the untaken branch stale.
  */
 function takenDescendants(
@@ -153,7 +153,7 @@ export function useWorkflowForm(
       setWorkflow(loaded);
       form.reset({ name: loaded.name, description: loaded.description });
 
-      // Always edit the live DRAFT — debug never replaces it (n8n behavior).
+      // Always edit the live DRAFT - debug never replaces it (n8n behavior).
       docRef.current = loaded.draftDefinition;
       setDoc(loaded.draftDefinition);
 
@@ -182,7 +182,7 @@ export function useWorkflowForm(
   const handleDocChange = useCallback(
     (next: WorkflowDefinition) => {
       // While debugging, an edit marks that node stale AND propagates staleness
-      // to its taken-branch descendants (D6 — a fresh upstream output
+      // to its taken-branch descendants (D6 - a fresh upstream output
       // invalidates everything downstream of it on the path the run took).
       if (debugCache) {
         const prev = docRef.current;
@@ -273,7 +273,7 @@ export function useWorkflowForm(
       }
       await workflowService.publish(workflowId);
       await refresh(workflowId);
-      toast.success('Published — the trigger can now fire this workflow.');
+      toast.success('Published - the trigger can now fire this workflow.');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Publish failed.');
     } finally {
@@ -287,7 +287,7 @@ export function useWorkflowForm(
     try {
       await workflowService.unpublish(workflowId);
       await refresh(workflowId);
-      toast.success('Unpublished — the trigger will no longer fire it.');
+      toast.success('Unpublished - the trigger will no longer fire it.');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Unpublish failed.');
     } finally {
@@ -330,7 +330,7 @@ export function useWorkflowForm(
         await workflowService.run(workflowId, { inputs });
         setRunsReloadToken((t) => t + 1);
         setRunDialogOpen(false);
-        toast.success('Run started — open the Logs tab to follow it.');
+        toast.success('Run started - open the Logs tab to follow it.');
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Run failed.');
       } finally {

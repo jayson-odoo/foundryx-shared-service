@@ -22,7 +22,7 @@ export interface JobsDrawerProps {
 }
 
 /**
- * Generic, type-aware background-jobs activity drawer (sprint-4/10 AC-10-19) —
+ * Generic, type-aware background-jobs activity drawer (sprint-4/10 AC-10-19) -
  * a sibling of the Uploads/Downloads/Imports drawers, triggered from the header.
  * Storage migration is the first `type`; the drawer renders any job's type +
  * status + progress. Click a job → its detail page. Poll/refresh is owned by the

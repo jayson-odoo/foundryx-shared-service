@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * WhatsApp Templates (plan 07 Slice B1) E2E — LIVE backend, dev-stub mode.
+ * WhatsApp Templates (plan 07 Slice B1) E2E - LIVE backend, dev-stub mode.
  * Real clicks: open the seeded demo channel → Templates tab → build a draft →
  * Save → Submit → Sync(→Approved) → Delete. Desktop + 375px.
  */
@@ -101,14 +101,14 @@ test.describe('WhatsApp Templates', () => {
     await expect(page.getByText(/provide exactly 2 sample/i)).toBeVisible({ timeout: 10_000 });
   });
 
-  test('responsive at 375px — builder stacks, no overflow', async ({ page }) => {
+  test('responsive at 375px - builder stacks, no overflow', async ({ page }) => {
     await openDemoTemplatesTab(page);
     await page.getByRole('button', { name: /submit template/i }).click();
     await page.waitForURL(/\/templates\/new$/, { timeout: 45_000 });
     await page.setViewportSize({ width: 375, height: 800 });
     await expect(page.getByPlaceholder('order_update')).toBeVisible();
     await page.waitForTimeout(300);
-    // Use innerWidth (includes the scrollbar) — a tall page's vertical scrollbar
+    // Use innerWidth (includes the scrollbar) - a tall page's vertical scrollbar
     // otherwise trips the check on the global fixed header, not our content.
     const info = await page.evaluate(() => {
       const vw = window.innerWidth;

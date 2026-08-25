@@ -81,7 +81,7 @@ export function ActionMenu<T>({
                 onSelect={(e) => {
                   // preventDefault keeps Radix from auto-closing (which races
                   // dialogs opened by the action); we close EXPLICITLY instead
-                  // — a menu left open intercepts every later click on the
+                  // - a menu left open intercepts every later click on the
                   // page (the change-email banner bug, plan 06 review).
                   e.preventDefault();
                   setOpen(false);

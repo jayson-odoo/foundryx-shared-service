@@ -1,4 +1,4 @@
-# Sprint 3 · Plan 07 — Test Execution Report (Slice B1: WhatsApp Templates)
+# Sprint 3 · Plan 07 - Test Execution Report (Slice B1: WhatsApp Templates)
 
 > **Plan:** [`07-omnichannel-templates.md`](./07-omnichannel-templates.md) ·
 > **UAC:** [`07-omnichannel-templates-uac.md`](./07-omnichannel-templates-uac.md)
@@ -69,13 +69,13 @@ E2E journeys: ① build (name/body+var/sample) → **Save draft** → list shows
 
 ## 3. `[real]` against a connected number
 
-Not exercised locally (no Meta app). The acceptance rule's `[real]` rows — BR-5/6/7/8/10, GP-5/6, SEC-6 — remain a UAT step once a real WABA token + the 3 template webhook fields (`message_template_status_update`/`_quality_update`/`_category_update`) are subscribed (runbook). The dev path is the same code with the adapter's real Graph branch.
+Not exercised locally (no Meta app). The acceptance rule's `[real]` rows - BR-5/6/7/8/10, GP-5/6, SEC-6 - remain a UAT step once a real WABA token + the 3 template webhook fields (`message_template_status_update`/`_quality_update`/`_category_update`) are subscribed (runbook). The dev path is the same code with the adapter's real Graph branch.
 
 ---
 
 ## 4. Notes / deviations
 
-- **Permission keys renamed `templates.*` → `wa_templates.read`/`wa_templates.manage`** — the core Template Engine (sprint-2/07) already owns the global `templates.read`/`templates.manage` keys, so the plan's `templates.*` would collide on `permissions.key`. Granted to tenant Admin via the install-aware grant.
-- **Service named `whatsapp-template-service.*`** (not `template-service.*`) — the core email Template Engine already owns `template-service.*`.
+- **Permission keys renamed `templates.*` → `wa_templates.read`/`wa_templates.manage`** - the core Template Engine (sprint-2/07) already owns the global `templates.read`/`templates.manage` keys, so the plan's `templates.*` would collide on `permissions.key`. Granted to tenant Admin via the install-aware grant.
+- **Service named `whatsapp-template-service.*`** (not `template-service.*`) - the core email Template Engine already owns `template-service.*`.
 - Backend `save_profile`-style write paths surface a Meta `SendError` as a recoverable **502** (submit/delete), leaving the local row unchanged.
-- E2E ran on the dev server; a `waitForTimeout(300)` after `setViewportSize` lets the layout reflow before the overflow check (a reflow-timing race, not a content overflow — measured `scrollWidth ≤ innerWidth`).
+- E2E ran on the dev server; a `waitForTimeout(300)` after `setViewportSize` lets the layout reflow before the overflow check (a reflow-timing race, not a content overflow - measured `scrollWidth ≤ innerWidth`).

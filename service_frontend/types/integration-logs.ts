@@ -1,5 +1,5 @@
 /**
- * Developer Logs / Integration Activity types (sprint-4/12) — the wire contract
+ * Developer Logs / Integration Activity types (sprint-4/12) - the wire contract
  * the console list/detail speak. Source-tagged generic log across inbound API /
  * embed / outbound Meta / webhook legs (Slice 1 = inbound_api only).
  *
@@ -10,7 +10,7 @@
 /**
  * Where the activity came from (Slice 1 writes `inbound_api`; others reserved).
  * MIRRORS the backend's closed `ACTIVITY_SOURCES` tuple
- * (`app/models/integration_activity.py`) — add a value to BOTH or the console
+ * (`app/models/integration_activity.py`) - add a value to BOTH or the console
  * type-mismatches the wire.
  */
 export type IntegrationLogSource =
@@ -41,7 +41,7 @@ export interface IntegrationLogItem {
   createdAt: string; // ISO Z
 }
 
-/** Detail row — adds the redacted request/response summaries + error message. */
+/** Detail row - adds the redacted request/response summaries + error message. */
 export interface IntegrationLogDetail extends IntegrationLogItem {
   errorMessage: string | null;
   requestSummary: Record<string, unknown> | null;
@@ -56,7 +56,7 @@ export interface IntegrationLogListResponse {
 }
 
 /**
- * `GET /integration-logs/trace/{traceId}` — the ordered legs (oldest→newest) of
+ * `GET /integration-logs/trace/{traceId}` - the ordered legs (oldest→newest) of
  * ONE consumption: inbound API → outbound Meta → webhook delivery (sprint-4/12
  * Slice 2, AC-DLC-17). Matches backend `IntegrationActivityTraceResponse`.
  */
@@ -66,7 +66,7 @@ export interface IntegrationLogTrace {
 }
 
 /**
- * `GET/PUT /integration-logs/settings` — per-tenant retention window (sprint-4/12
+ * `GET/PUT /integration-logs/settings` - per-tenant retention window (sprint-4/12
  * Slice 3, AC-DLC-21). `isDefault` = using the deployment default (no override).
  * Matches backend `IntegrationLogSettingsOut`.
  */

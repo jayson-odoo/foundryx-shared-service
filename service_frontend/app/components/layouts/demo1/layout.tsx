@@ -53,7 +53,7 @@ export function Demo1Layout({ children }: { children: ReactNode }) {
     <>
       {!isMobile && <Sidebar />}
 
-      {/* min-w-0: the wrapper is a flex item of the horizontal body flex —
+      {/* min-w-0: the wrapper is a flex item of the horizontal body flex -
           without it, any page content with a wide min-content (tab strips,
           toolbars) blows the whole layout past the viewport on mobile
           instead of shrinking/scrolling within its own box (sprint-3/01

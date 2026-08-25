@@ -40,7 +40,7 @@ describe('formatters render in the requested timezone', () => {
 
   it('formatDateTime shifts into the viewer tz', () => {
     expect(formatDateTime(iso, { timeZone: 'UTC' })).toBe('01 Jan 2026, 10:00');
-    // UTC+8 — same instant, evening local time
+    // UTC+8 - same instant, evening local time
     expect(formatDateTime(iso, { timeZone: 'Asia/Singapore' })).toBe(
       '01 Jan 2026, 18:00',
     );
@@ -58,13 +58,13 @@ describe('formatters render in the requested timezone', () => {
   });
 
   it('renders the em dash for null/invalid input', () => {
-    expect(formatDateTime(null)).toBe('—');
-    expect(formatDate(undefined)).toBe('—');
-    expect(formatTime('garbage')).toBe('—');
+    expect(formatDateTime(null)).toBe('-');
+    expect(formatDate(undefined)).toBe('-');
+    expect(formatTime('garbage')).toBe('-');
   });
 
   it('falls back to the browser tz on an invalid stored preference', () => {
-    // must not throw — bad pref must never crash a list render
+    // must not throw - bad pref must never crash a list render
     expect(() => formatDateTime(iso, { timeZone: 'Not/AZone' })).not.toThrow();
     expect(formatDateTime(iso, { timeZone: 'Not/AZone' })).toMatch(/Jan 2026/);
   });

@@ -1,11 +1,11 @@
 """Terminology routes (sprint-3/08, F10). Thin: validate, delegate, shape HTTP.
 
-- GET /terminology          — authenticated. Merged map (client-cache source).
-- GET /terminology/catalog  — terminology.manage. TermDefs + current overrides.
-- PUT /terminology/{key}    — terminology.manage. Upsert override (422 unknown).
-- DELETE /terminology/{key} — terminology.manage. Reset (delete row). 204.
+- GET /terminology          - authenticated. Merged map (client-cache source).
+- GET /terminology/catalog  - terminology.manage. TermDefs + current overrides.
+- PUT /terminology/{key}    - terminology.manage. Upsert override (422 unknown).
+- DELETE /terminology/{key} - terminology.manage. Reset (delete row). 204.
 
-Read is authenticated-only like /auth/me — labels are not secret but are
+Read is authenticated-only like /auth/me - labels are not secret but are
 tenant-scoped. No DB logic here (house rule); TerminologyService owns it.
 """
 from typing import Dict, List

@@ -1,4 +1,4 @@
-"""Review/Approval engine wire schemas (plan sprint-4/06 Part 2) — camelCase out.
+"""Review/Approval engine wire schemas (plan sprint-4/06 Part 2) - camelCase out.
 Datetime-bearing models inherit ``ApiModel`` so timestamps leave the API as
 Z-suffixed UTC (BL-012). Requests accept camelCase via ``validation_alias``
 (``populate_by_name`` lets the service pass snake kwargs too).
@@ -130,7 +130,7 @@ class ReviewConfigListResponse(ApiModel):
     total: int
 
 
-# ---- editor metadata (the admin pickers — AC-06-55) ----
+# ---- editor metadata (the admin pickers - AC-06-55) ----
 
 
 class ReviewMetaStatusOut(ApiModel):
@@ -151,11 +151,11 @@ class ReviewMetaFactOut(ApiModel):
     options: Optional[List[Dict[str, str]]] = None
 
 
-# ---- surfaces (slice 2 — My Submissions / My Reviews / Decisions) ----
+# ---- surfaces (slice 2 - My Submissions / My Reviews / Decisions) ----
 
 
 class MySubmissionOut(ApiModel):
-    """Author view of a submission group (AC-06-43/08) — lifecycle + decision +
+    """Author view of a submission group (AC-06-43/08) - lifecycle + decision +
     feedback ONLY; never raw reviews/scores."""
 
     group_id: str = Field(serialization_alias="groupId")
@@ -196,7 +196,7 @@ class MyReviewOut(ApiModel):
 
 
 class ReviewTwoPaneOut(ApiModel):
-    """The two-pane grade payload (AC-06-05/48) — submission (pinned) ‖ review form
+    """The two-pane grade payload (AC-06-05/48) - submission (pinned) ‖ review form
     + THIS reviewer's draft only (reviewer isolation)."""
 
     assignment_id: str = Field(serialization_alias="assignmentId")
@@ -250,7 +250,7 @@ class DecisionQueueItemOut(ApiModel):
     created_at: Optional[datetime] = Field(default=None, serialization_alias="createdAt")
 
 
-# ---- admin overview (the staff god-view — AC §10 deferred) ----
+# ---- admin overview (the staff god-view - AC §10 deferred) ----
 
 
 class ReviewAdminAuthorOut(ApiModel):
@@ -260,7 +260,7 @@ class ReviewAdminAuthorOut(ApiModel):
 
 
 class ReviewAdminReviewOut(ApiModel):
-    """One reviewer's review on the admin overview — MAY surface the raw score
+    """One reviewer's review on the admin overview - MAY surface the raw score
     (staff view, unlike the author-visible surface)."""
 
     assignment_id: str = Field(serialization_alias="assignmentId")

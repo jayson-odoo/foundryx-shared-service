@@ -1,7 +1,7 @@
-"""Template engine endpoints (plan 07) — gated templates.read / templates.manage.
+"""Template engine endpoints (plan 07) - gated templates.read / templates.manage.
 
 Tenant scope: a tenant works its own tier (fork-on-edit over platform
-defaults). The PLATFORM TENANT maps to scope ``None`` — it maintains the
+defaults). The PLATFORM TENANT maps to scope ``None`` - it maintains the
 NULL-tier defaults through these same endpoints (D13).
 """
 
@@ -169,7 +169,7 @@ async def preview_template(
 ):
     """Preview a template. ``format=html`` → email HTML JSON (default);
     ``format=pdf`` → the document-surface PDF inline (``?download=true`` →
-    attachment). The PDF render is CPU-bound + sync — offloaded to a threadpool
+    attachment). The PDF render is CPU-bound + sync - offloaded to a threadpool
     so the event loop stays free (D8)."""
     service = TemplateService(db)
     if payload.format == "pdf":
@@ -224,7 +224,7 @@ async def preview_template(
         return Response(content=canvas_html, media_type="text/html")
 
     if payload.format == "docHtml":
-        # In-app document preview sheet (no browser PDF-viewer chrome) — same
+        # In-app document preview sheet (no browser PDF-viewer chrome) - same
         # compiler as the PDF; the editor renders this in a sandboxed iframe.
         try:
             doc_html = await run_in_threadpool(

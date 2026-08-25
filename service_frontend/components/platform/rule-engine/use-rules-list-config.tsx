@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Rules observability list config (sprint-2/02 D12) — read-only: rules are
+ * Rules observability list config (sprint-2/02 D12) - read-only: rules are
  * born where they're used; each row deep-links to its owning editor (edge
  * drawer, …). Same config-driven ResourceList shell as every other list.
  */
@@ -17,7 +17,7 @@ import { ClampedText } from '@/components/platform/clamped-text';
 import type { ResourceListConfig } from '@/components/platform/resource-list/types';
 
 /**
- * Maps a rule row's (site, target) to THIS frontend's deep-link — the
+ * Maps a rule row's (site, target) to THIS frontend's deep-link - the
  * backend ships data, never routes (code-review fix). `statusEngineBase`
  * differs per surface: operator vs tenant settings.
  */
@@ -102,7 +102,7 @@ export function useRulesListConfig(
       viewKey: 'rules.list',
       columns,
       getRowId: (row) => `${row.site}:${row.context}`,
-      // Read-only registry — the row opens the OWNING editor (D12).
+      // Read-only registry - the row opens the OWNING editor (D12).
       rowHref: (row) => editHref(row, statusEngineBase),
       fetcher: (query) => ruleEngineService.listRules(query),
       exporter: async () => {

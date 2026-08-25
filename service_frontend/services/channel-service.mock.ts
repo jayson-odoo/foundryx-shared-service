@@ -23,7 +23,7 @@ function seed(): ChannelRow[] {
   const base: Array<
     Pick<Channel, 'name' | 'workspaceId' | 'workspaceName' | 'status' | 'isActive' | 'displayPhoneNumber'>
   > = [
-    { name: 'FoundryX Official WhatsApp', workspaceId: 'wsp-001', workspaceName: 'General', status: 'ACTIVE', isActive: true, displayPhoneNumber: '+65 8123 4567' },
+    { name: 'Foundryx Official WhatsApp', workspaceId: 'wsp-001', workspaceName: 'General', status: 'ACTIVE', isActive: true, displayPhoneNumber: '+65 8123 4567' },
     { name: 'Sales WhatsApp', workspaceId: 'wsp-002', workspaceName: 'Sales & Support', status: 'ACTIVE', isActive: true, displayPhoneNumber: '+65 8222 9090' },
   ];
   return base.map((c, i) => {
@@ -51,7 +51,7 @@ function seed(): ChannelRow[] {
   });
 }
 
-/** Workspace names by id — mirrors the workspace mock seed (for display only). */
+/** Workspace names by id - mirrors the workspace mock seed (for display only). */
 const WORKSPACE_NAMES: Record<string, string> = {
   'wsp-001': 'General',
   'wsp-002': 'Sales & Support',
@@ -201,7 +201,7 @@ export const mockChannelService: ChannelService = {
   async syncConfig(id) {
     const r = rows.find((c) => c.id === id);
     if (!r) throw new Error('Channel not found');
-    r.businessAccountName = 'FoundryX Events (dev sandbox)';
+    r.businessAccountName = 'Foundryx Events (dev sandbox)';
     r.verifiedName = r.verifiedName ?? r.name;
     r.lastVerifiedAt = new Date(EPOCH).toISOString();
     return delay(toPublic(r));
@@ -216,7 +216,7 @@ export const mockChannelService: ChannelService = {
     if (!rows.find((c) => c.id === id)) throw new Error('Channel not found');
     const synced: ChannelProfile = {
       about: 'Premier event spaces & concierge in KL.',
-      address: 'Level 12, Menara FoundryX, Kuala Lumpur',
+      address: 'Level 12, Menara Foundryx, Kuala Lumpur',
       description: 'We host weddings, conferences and galas.',
       email: 'hello@foundryx.example',
       vertical: 'EVENT_PLAN',

@@ -1,4 +1,4 @@
-"""Terminology tests (sprint-3/08, F10) — AC-08-04/05/06/07/14/17.
+"""Terminology tests (sprint-3/08, F10) - AC-08-04/05/06/07/14/17.
 
 Registry seed · merged map = defaults ⊕ overrides · PUT upsert + 422 unknown
 key + blank-reject · DELETE reset → fallback · tenant isolation · perm gate
@@ -56,18 +56,18 @@ def _make_noperm_user(session_factory, email="noperm@example.com", pw="NoPerm1!"
 
 
 def test_registry_seed_present(client):
-    """AC-08 — core relabelable entities registered (catalog non-empty)."""
+    """AC-08 - core relabelable entities registered (catalog non-empty)."""
     h = _admin_headers(client)
     res = client.get("/terminology/catalog", headers=h)
     assert res.status_code == 200, res.text
     keys = {item["key"] for item in res.json()}
     assert {"form", "workflow", "template", "document", "connection", "role", "import"} <= keys
-    # Deliberately excluded (D2 seed) — relabeling these confuses RBAC/admin.
+    # Deliberately excluded (D2 seed) - relabeling these confuses RBAC/admin.
     assert "user" not in keys and "tenant" not in keys and "permission" not in keys
 
 
 def test_merged_map_defaults_then_overrides(client):
-    """AC-08-04 — GET /terminology = defaults ⊕ tenant overrides."""
+    """AC-08-04 - GET /terminology = defaults ⊕ tenant overrides."""
     h = _admin_headers(client)
     res = client.get("/terminology", headers=h)
     assert res.status_code == 200
@@ -127,7 +127,7 @@ def test_delete_resets_to_default(client):
     assert client.delete("/terminology/form", headers=h).status_code == 204
     res = client.get("/terminology", headers=h)
     assert res.json()["form"] == {"singular": "Form", "plural": "Forms"}
-    # Idempotent — deleting an absent override still 204s.
+    # Idempotent - deleting an absent override still 204s.
     assert client.delete("/terminology/form", headers=h).status_code == 204
 
 
@@ -135,7 +135,7 @@ def test_delete_resets_to_default(client):
 
 
 def test_tenant_isolation(client):
-    """AC-08-07 — tenant A's rename invisible to tenant B."""
+    """AC-08-07 - tenant A's rename invisible to tenant B."""
     # Provision tenant B.
     ph = _headers(_login(client, PLATFORM_EMAIL, PLATFORM_PASSWORD, "platform"))
     res = client.post(
@@ -180,6 +180,6 @@ def test_get_terminology_authenticated_only_no_manage(client, session_factory):
 
 
 def test_admin_has_terminology_manage(client):
-    """AC-08-17 — terminology.manage in the tenant Admin grant (CSV synced)."""
+    """AC-08-17 - terminology.manage in the tenant Admin grant (CSV synced)."""
     h = _admin_headers(client)
     assert client.get("/terminology/catalog", headers=h).status_code == 200

@@ -1,12 +1,12 @@
 'use client';
 
 /**
- * Left palette (plan sprint-2/08 D15, search + collapse in 09) — triggers /
+ * Left palette (plan sprint-2/08 D15, search + collapse in 09) - triggers /
  * logic / actions grouped into collapsible sections (collapsed by default so
  * the growing catalog stays compact) with a search box that filters across all
  * sections and auto-expands matches. Each item is a dnd-kit draggable AND a
- * click-to-add button — click is the E2E path (dnd-kit pointer sensors aren't
- * drivable by Playwright's dragTo — template-engine lesson); drag is the
+ * click-to-add button - click is the E2E path (dnd-kit pointer sensors aren't
+ * drivable by Playwright's dragTo - template-engine lesson); drag is the
  * nicety. A trigger is disabled once one exists (one trigger per workflow, D2).
  */
 import { useMemo, useState } from 'react';
@@ -77,7 +77,7 @@ function matches(entry: NodeCatalogEntry, q: string): boolean {
 }
 
 export interface NodePaletteProps {
-  /** True when a trigger already exists — disables trigger items. */
+  /** True when a trigger already exists - disables trigger items. */
   hasTrigger: boolean;
   disabled: boolean;
   onAdd: (type: string) => void;
@@ -85,7 +85,7 @@ export interface NodePaletteProps {
 
 export function NodePalette({ hasTrigger, disabled, onAdd }: NodePaletteProps) {
   const [query, setQuery] = useState('');
-  // Sections collapsed by default — the catalog is long; expand on click/search.
+  // Sections collapsed by default - the catalog is long; expand on click/search.
   const [open, setOpen] = useState<Record<string, boolean>>({});
 
   const sections: PaletteSection[] = useMemo(

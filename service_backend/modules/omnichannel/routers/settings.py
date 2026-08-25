@@ -1,4 +1,4 @@
-"""Omnichannel workspace settings — per-workspace media caps (plan 12 AC-12-12/23).
+"""Omnichannel workspace settings - per-workspace media caps (plan 12 AC-12-12/23).
 
 ``GET/PUT /omnichannel/settings?workspaceId=`` gated by ``channels.manage``.
 ``workspaceId`` omitted = the tenant-wide default row. Accepted mimes are fixed

@@ -31,10 +31,10 @@ export interface ThemeTokenEditorProps {
 const GROUP_ORDER: TokenGroup[] = ['brand', 'status', 'grey', 'surface'];
 
 /**
- * The curated theme editor (sprint-2/03) — BOTH edit methods over the same
+ * The curated theme editor (sprint-2/03) - BOTH edit methods over the same
  * stored document: per-variable color pickers (grouped by section, light/dark
  * tabs) and download-template → modify → upload-JSON. Values equal to the
- * FoundryX default are treated as "not overridden".
+ * Foundryx default are treated as "not overridden".
  */
 export function ThemeTokenEditor({
   tokens,
@@ -83,7 +83,7 @@ export function ThemeTokenEditor({
     if (!file) return;
     const { tokens: parsed, errors } = parseTemplateFile(await file.text());
     if (errors.length) {
-      // Show exactly why — silent drops are forbidden.
+      // Show exactly why - silent drops are forbidden.
       toast.error(
         <div className="flex flex-col gap-1">
           <span className="font-medium">Template rejected:</span>
@@ -100,7 +100,7 @@ export function ThemeTokenEditor({
       return;
     }
     onChange(parsed);
-    toast.success('Template applied — review and save.');
+    toast.success('Template applied - review and save.');
     if (fileRef.current) fileRef.current.value = '';
   };
 
@@ -169,7 +169,7 @@ export function ThemeTokenEditor({
       </CardHeader>
       <CardContent className="flex flex-col gap-6">
         <p className="text-xs text-muted-foreground">
-          Override only what you need — everything else keeps the default
+          Override only what you need - everything else keeps the default
           theme. Download the template to edit every value in one JSON file,
           or pick colors directly below.
         </p>
@@ -197,8 +197,8 @@ export function ThemeTokenEditor({
                       }}
                       title={
                         overridden
-                          ? 'Overridden — click to change'
-                          : 'Default — click to override'
+                          ? 'Overridden - click to change'
+                          : 'Default - click to override'
                       }
                     >
                       <input

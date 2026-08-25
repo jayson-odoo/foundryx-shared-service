@@ -45,12 +45,12 @@ export interface UseEmbedConnectionsListConfigResult {
 
 /**
  * Embed-connections list config (PLAN-ideation-embed-sso §7) on the shared
- * ResourceList — SAME component as the Users / API-keys lists. The connection set
+ * ResourceList - SAME component as the Users / API-keys lists. The connection set
  * per tenant is small, so the fetcher pulls it whole and applies search/sort/
  * paginate client-side (mirrors the API-keys adapter). No detail page
  * (`rowHref` '#'); Add = the create action, and each row exposes Rotate secret,
- * Activate/Deactivate, and hard Delete — the operations the backend CRUD
- * supports. Product ids are resolved to names (never a raw UUID — cursor rule).
+ * Activate/Deactivate, and hard Delete - the operations the backend CRUD
+ * supports. Product ids are resolved to names (never a raw UUID - cursor rule).
  */
 export function useEmbedConnectionsListConfig(
   products: Product[],
@@ -200,7 +200,7 @@ export function useEmbedConnectionsListConfig(
         header: ({ column }) => <DataGridColumnHeader title="Updated" column={column} />,
         cell: ({ row }) => (
           <span className="text-sm text-muted-foreground">
-            {row.original.updatedAt ? formatDateTime(row.original.updatedAt) : '—'}
+            {row.original.updatedAt ? formatDateTime(row.original.updatedAt) : '-'}
           </span>
         ),
         size: 180,

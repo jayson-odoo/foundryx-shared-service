@@ -2,7 +2,7 @@
 
 /** Ordered submission ids for prev/next scroll-through (Resource-shell-style
  * record nav). Fetched once per form; the same default order as the list
- * (current revision per group — plan sprint-4/04 R3). */
+ * (current revision per group - plan sprint-4/04 R3). */
 import { useEffect, useState } from 'react';
 import { formService } from '@/services/form-service';
 

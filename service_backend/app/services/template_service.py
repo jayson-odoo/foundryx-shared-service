@@ -1,8 +1,8 @@
-"""TemplateService — two-tier lifecycle + render orchestration (plan 07).
+"""TemplateService - two-tier lifecycle + render orchestration (plan 07).
 
 Tier semantics (D6): platform rows (tenant_id NULL) are the defaults every
 tenant reads until they fork. A tenant edit of a platform row creates a
-TENANT COPY (same key, is_system preserved) — the platform row is never
+TENANT COPY (same key, is_system preserved) - the platform row is never
 mutated by tenant callers. The platform tenant maintains the NULL tier
 through these same endpoints (its edits write the platform rows directly).
 """
@@ -52,7 +52,7 @@ _FILTER_COLUMNS = {
 
 
 def _tier_special(condition) -> Optional[Any]:
-    """Filter field 'tier' — computed from the tenant_id NULL-ness."""
+    """Filter field 'tier' - computed from the tenant_id NULL-ness."""
     if condition.field != "tier":
         return None
     is_default = case((Template.tenant_id.is_(None), "default"), else_="customized")
@@ -86,7 +86,7 @@ class TemplateService:
     ) -> Tuple[List[Template], int]:
         clause = translate_filter(filter_group, _FILTER_COLUMNS, special=_tier_special)
         if context:
-            # Picker filter (plan 10 BL-081) — AND a context match onto whatever
+            # Picker filter (plan 10 BL-081) - AND a context match onto whatever
             # the caller's filter produced (None-safe).
             ctx_clause = Template.context == context
             clause = ctx_clause if clause is None else and_(clause, ctx_clause)
@@ -236,7 +236,7 @@ class TemplateService:
     def delete(self, template_id: str, tenant_id: str) -> None:
         row = self.get(template_id, tenant_id)
         if row.is_system:
-            raise TemplateError("System templates cannot be deleted — reset them instead.")
+            raise TemplateError("System templates cannot be deleted - reset them instead.")
         if row.tenant_id != tenant_id:
             raise TemplateError("Only this workspace's own templates can be deleted.")
         emit_entity_event(self.db, "template", "deleted", row, tenant_id=tenant_id)
@@ -299,7 +299,7 @@ class TemplateService:
         )
 
     def _preview_facts(self, ctx) -> Dict[str, Any]:
-        """Sample scalars + list-fact samples — the facts a preview renders
+        """Sample scalars + list-fact samples - the facts a preview renders
         against (the list-fact key carries its sample row dicts so the expand
         pass sees a binding identically to a real one)."""
         facts: Dict[str, Any] = dict(ctx.sample_facts())
@@ -351,7 +351,7 @@ class TemplateService:
         context: str,
     ) -> str:
         """Render the in-app PREVIEW HTML sheet (no WeasyPrint, no browser PDF
-        chrome) — same compiler/merge/brand as the PDF download."""
+        chrome) - same compiler/merge/brand as the PDF download."""
         from app.template_engine.renderer import render_document_html
 
         temp, facts = self._preview_template(tenant_id, doc, subject, context)
@@ -403,7 +403,7 @@ class TemplateService:
         if ctx is None:
             raise TemplateError(f'Unknown template context "{row.context}".')
         facts = dict(ctx.sample_facts())
-        # Real recipient values where we have them — the sample stays for links.
+        # Real recipient values where we have them - the sample stays for links.
         facts.update(
             {
                 "recipient.firstName": (user.name or user.email).split(" ")[0],

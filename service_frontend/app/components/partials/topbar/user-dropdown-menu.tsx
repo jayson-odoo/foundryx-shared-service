@@ -67,7 +67,7 @@ export function UserDropdownMenu({ trigger }: { trigger: ReactNode }) {
 
         <DropdownMenuSeparator />
 
-        {/* My Account (plan sprint-2/04) — the real self-service page; the
+        {/* My Account (plan sprint-2/04) - the real self-service page; the
             Metronic demo deep-links ('Public Profile', /account/* tree) and
             the fake 'Pro' plan badge are gone (white-label rule). */}
         <DropdownMenuItem asChild>

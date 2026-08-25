@@ -1,10 +1,10 @@
-# 09 — Integration Core & Email (SMTP)
+# 09 - Integration Core & Email (SMTP)
 
 **Sprint:** 1
 **Branch:** `sprint-1/integration-core-email`
 **Closes:** BL-006 (production mailer provider)
-**Depends on:** sprint-1/07 (tenant-core — platform tenant owns the default connection), sprint-1/03 (RBAC), sprint-1/02 (Resource shell)
-**Successor:** `sprint-1/10-auth-hardening.md` — consumes the working `EmailService`.
+**Depends on:** sprint-1/07 (tenant-core - platform tenant owns the default connection), sprint-1/03 (RBAC), sprint-1/02 (Resource shell)
+**Successor:** `sprint-1/10-auth-hardening.md` - consumes the working `EmailService`.
 
 ---
 
@@ -12,12 +12,12 @@
 
 Two deliverables, deliberately coupled:
 
-1. **Integration framework in core** — the reusable primitives every external-service
+1. **Integration framework in core** - the reusable primitives every external-service
    integration (SMTP now; R2, ERP, OpenAI, … later) plugs into: a generic `connections`
    table, a core secrets-encryption helper, a "test connection" contract, and a guided
    connect-wizard shell. The framework is the *shell* (like the Resource shell);
    business integrations ship as separate App Store modules that consume it.
-2. **SMTP email, production-grade** — replace the dev console-log `EmailService` with a
+2. **SMTP email, production-grade** - replace the dev console-log `EmailService` with a
    generic SMTP adapter behind a durable **email outbox** (per-connection rate limiting,
    retry/backoff, tenant→platform fallback), branded Jinja2 templates, and a tenant-facing
    `/settings/integrations` page with a guided setup wizard + test-send.
@@ -31,23 +31,23 @@ API-native mail adapters (Resend/SES REST), multi-connection-per-provider, Redis
 
 | # | Decision | Choice |
 |---|----------|--------|
-| D1 | SMTP placement | **Platform core with pluggable adapters** — never an App Store module. Core auth flows (reset/invite/verify) depend on email; governance forbids core→module dependencies. Same status as auth itself. |
+| D1 | SMTP placement | **Platform core with pluggable adapters** - never an App Store module. Core auth flows (reset/invite/verify) depend on email; governance forbids core→module dependencies. Same status as auth itself. |
 | D2 | Integration architecture | **Separate module per business integration, shared core primitives.** Core owns: `connections` table, Fernet secrets helper, test-connection contract, connect-wizard shell. Infra integrations core itself needs (email; later blob storage) = core adapters registered in the same table. |
-| D3 | Config scope | **Platform default + per-tenant override.** Platform tenant (plan 07) owns the default connection row (env-seeded at bootstrap — zero-touch on-prem); tenants connect their own SMTP via the wizard. |
-| D4 | Adapter | **Generic SMTP** (host/port/user/pass/TLS via `smtplib`) — covers Gmail, SES, Resend, Mailgun SMTP endpoints with one adapter. API-native adapters = BL-046. |
-| D5 | Delivery mechanics | **DB outbox + in-process dispatcher loop** — NOT fire-and-forget BackgroundTasks. Lesson learnt: low-spec SMTP servers get overwhelmed at event spikes → per-connection rate limit + durable queue + retry/backoff + fallback chain. Outbox doubles as sent-mail audit. |
+| D3 | Config scope | **Platform default + per-tenant override.** Platform tenant (plan 07) owns the default connection row (env-seeded at bootstrap - zero-touch on-prem); tenants connect their own SMTP via the wizard. |
+| D4 | Adapter | **Generic SMTP** (host/port/user/pass/TLS via `smtplib`) - covers Gmail, SES, Resend, Mailgun SMTP endpoints with one adapter. API-native adapters = BL-046. |
+| D5 | Delivery mechanics | **DB outbox + in-process dispatcher loop** - NOT fire-and-forget BackgroundTasks. Lesson learnt: low-spec SMTP servers get overwhelmed at event spikes → per-connection rate limit + durable queue + retry/backoff + fallback chain. Outbox doubles as sent-mail audit. |
 | D6 | Fallback chain | tenant connection fails (after retries) → **platform connection** → mark failed. Resolution order per email: recipient-tenant connection → platform connection → dev-log (dev). |
-| D7 | Secrets storage | **Split**: `config_json` plain (host/port/from — displayable/queryable) + `credentials_json` Fernet-encrypted (password). New core `FERNET_KEY` + `app/secrets.py` helper; omnichannel migrates onto it later (BL-042). |
+| D7 | Secrets storage | **Split**: `config_json` plain (host/port/from - displayable/queryable) + `credentials_json` Fernet-encrypted (password). New core `FERNET_KEY` + `app/secrets.py` helper; omnichannel migrates onto it later (BL-042). |
 | D8 | Uniqueness | **One connection per (tenant, provider)** for MVP. Multi-connection (marketing vs transactional) = BL-043. |
-| D9 | Templates | **Jinja2 branded HTML + plain-text fallback** — one FoundryX base layout + invite/reset/verify children. Per-tenant branding + user-editable templates = BL-038 (ties BL-024 template engine). |
+| D9 | Templates | **Jinja2 branded HTML + plain-text fallback** - one Foundryx base layout + invite/reset/verify children. Per-tenant branding + user-editable templates = BL-038 (ties BL-024 template engine). |
 | D10 | Tenant UI | **New `/settings/integrations`** card grid + guided wizard (`integration-connect-wizard` shell in `components/platform/`), gated by new `integrations.read/manage` permission keys. Retrofitting omnichannel's channel wizard onto the shell = BL-045. |
-| D11 | Counter/queue store | **Postgres, not Redis** — auth/email volume is low-QPS; on-prem stays one-service; outbox *wants* durability. Redis enters the stack when a feature genuinely needs it (BL-022 pub/sub) — BL-040. |
+| D11 | Counter/queue store | **Postgres, not Redis** - auth/email volume is low-QPS; on-prem stays one-service; outbox *wants* durability. Redis enters the stack when a feature genuinely needs it (BL-022 pub/sub) - BL-040. |
 
 ---
 
 ## 3. Data model (core `public`, Alembic migration)
 
-### `connections` — generic integration registry
+### `connections` - generic integration registry
 
 ```
 connections
@@ -66,7 +66,7 @@ connections
   UNIQUE(tenant_id, provider)
 ```
 
-### `email_outbox` — durable queue + audit
+### `email_outbox` - durable queue + audit
 
 ```
 email_outbox
@@ -89,7 +89,7 @@ email_outbox
 ### Core secrets helper
 
 `app/secrets.py`: `encrypt_secret(dict) -> str` / `decrypt_secret(str) -> dict` using new
-`FERNET_KEY` setting (same ephemeral-key dev behavior as omnichannel's — stable key required in
+`FERNET_KEY` setting (same ephemeral-key dev behavior as omnichannel's - stable key required in
 prod, runbook note alongside BL-031). Omnichannel keeps `OMNICHANNEL_FERNET_KEY` until BL-042.
 
 ---
@@ -99,7 +99,7 @@ prod, runbook note alongside BL-031). Omnichannel keeps `OMNICHANNEL_FERNET_KEY`
 What core provides, what an integration implements:
 
 - **`IntegrationProvider` protocol** (`app/integrations/base.py`):
-  `provider: str`, `type: str`, `config_schema` (Pydantic — drives wizard fields),
+  `provider: str`, `type: str`, `config_schema` (Pydantic - drives wizard fields),
   `test_connection(config, credentials) -> TestResult`. Registered in a core
   `provider_registry` (core registers `smtp`; App Store modules register theirs at load).
 - **Connections service/repository** (tenant-scoped, Service-Repository layering):
@@ -110,7 +110,7 @@ What core provides, what an integration implements:
   config-driven fields, inline test feedback. SMTP is the first consumer; modules
   ship their own steps into the same shell later (BL-045 retrofits omnichannel).
 
-### Permissions (core CSV rows — add to `app/permissions/permissions.csv`)
+### Permissions (core CSV rows - add to `app/permissions/permissions.csv`)
 
 ```csv
 integrations,Integrations,read,View integrations,Can view configured integrations
@@ -129,13 +129,13 @@ Admin seed re-grant picks these up (existing bootstrap behavior).
   render Jinja2 template → insert `email_outbox` row (`pending`, `next_attempt_at=now`).
   Callers (`user_service`) pass the recipient's `tenant_id`.
 - **Resolution** (at dispatch): recipient-tenant `smtp` connection → platform-tenant
-  connection → if neither (or `FERNET_KEY`-less dev) **DevLog adapter** prints the link —
+  connection → if neither (or `FERNET_KEY`-less dev) **DevLog adapter** prints the link -
   local dev behavior unchanged, zero config.
-- **Templates** `app/templates/email/`: `base.html` (FoundryX logo, orange `#FF5A00`,
+- **Templates** `app/templates/email/`: `base.html` (Foundryx logo, orange `#FF5A00`,
   footer) + `invite.html` / `password_reset.html` / `verification.html` + `.txt` siblings.
   Jinja2 added to requirements (FastAPI already ships it transitively; pin explicitly).
 - **Test-send** (wizard step): renders a `test` template and sends **inline**
-  (bypasses outbox — user is waiting for the result), updating `status`/`last_tested_at`/`last_error`.
+  (bypasses outbox - user is waiting for the result), updating `status`/`last_tested_at`/`last_error`.
 
 ### Dispatcher (`app/services/email_dispatcher.py`)
 
@@ -178,17 +178,17 @@ POST   /integrations/connections/{id}/test  inline test-send / test-connection (
 ```
 
 Schemas camelCase via `validation_alias`; repository tenant-scoped (platform default
-row is **not** visible to tenants — it belongs to the platform tenant).
+row is **not** visible to tenants - it belongs to the platform tenant).
 
 ## 7. Frontend
 
-- **`app/(protected)/settings/integrations/`** — card grid of available integrations
+- **`app/(protected)/settings/integrations/`** - card grid of available integrations
   (SMTP/Email first; future providers appear as modules register). Card states:
   not-connected → "Connect" (wizard) · connected → status badge, host/from summary,
   actions Edit / Test / Disconnect (confirm).
 - **Wizard** (`integration-connect-wizard` shell): provider → configure (host, port,
   security, username, password, from email/name, rate limit advanced field) → test
-  (default = plain CONNECTION CHECK — connect + authenticate, no recipient; optional
+  (default = plain CONNECTION CHECK - connect + authenticate, no recipient; optional
   "send a test email instead" link for a targeted send) → done. Card "Test" = inline
   connection check + toast (no dialog). [Reworked on user feedback during Phase A.]
 - Sidebar: "Settings → Integrations" entry in `menu.config.tsx`, gated `integrations.read`.
@@ -199,16 +199,16 @@ row is **not** visible to tenants — it belongs to the platform tenant).
 
 ## 8. Phases (mandatory methodology)
 
-- **Phase A — frontend-first:** integration types, mock service (configurable
+- **Phase A - frontend-first:** integration types, mock service (configurable
   loading/error/success + simulated test-send failure), `/settings/integrations` grid +
   wizard shell + all states, menu gating, Vitest component tests, Playwright real-click
-  E2E against mock (navigate via sidebar — no direct URLs).
-- **Phase B — backend (TDD, pytest+httpx):** migration (`connections`, `email_outbox`),
+  E2E against mock (navigate via sidebar - no direct URLs).
+- **Phase B - backend (TDD, pytest+httpx):** migration (`connections`, `email_outbox`),
   secrets helper, provider registry + SMTP provider, connections service/repo/endpoints,
-  EmailService façade + Jinja2 templates, dispatcher (throttle, retry, fallback —
+  EmailService façade + Jinja2 templates, dispatcher (throttle, retry, fallback -
   tested with a fake SMTP transport), bootstrap env-seed, permissions CSV rows.
   Swap mock→real at the service boundary.
-- **Phase C — E2E + report:** full stack (login → Settings → Integrations → connect
+- **Phase C - E2E + report:** full stack (login → Settings → Integrations → connect
   SMTP via wizard against a local debug SMTP server (`aiosmtpd`) → test-send arrives →
   trigger user-invite → mail lands via outbox), Test Execution Report per §6.
 
@@ -217,7 +217,7 @@ row is **not** visible to tenants — it belongs to the platform tenant).
 - **Never log or return credentials**; `credentials_json` write-only over the API.
 - Dispatcher must be a no-op crash-wise: any exception logged, loop survives.
 - Dev with no `FERNET_KEY`/SMTP env = identical behavior to today (console links).
-- Outbox is the only send path for product mail (test-send excepted) — no direct
+- Outbox is the only send path for product mail (test-send excepted) - no direct
   `smtplib` calls from services.
 
 ## 10. Deferred → backlog
@@ -228,6 +228,6 @@ row is **not** visible to tenants — it belongs to the platform tenant).
 | BL-040 | Adopt Redis (pub/sub for BL-022, cache, throttle/outbox stores) when scale demands |
 | BL-042 | Migrate omnichannel secrets onto core `FERNET_KEY` (re-encryption pass; retires `OMNICHANNEL_FERNET_KEY`) |
 | BL-043 | Multiple connections per provider per tenant (e.g. marketing vs transactional SMTP) |
-| BL-044 | Email log page — Resource-shell list over `email_outbox`, manual retry, per-tenant view |
+| BL-044 | Email log page - Resource-shell list over `email_outbox`, manual retry, per-tenant view |
 | BL-045 | Retrofit omnichannel `channel-connect-wizard` onto the core integration wizard shell |
 | BL-046 | API-native mail adapters (Resend REST, SES SDK) in the provider registry |

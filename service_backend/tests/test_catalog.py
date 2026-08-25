@@ -1,4 +1,4 @@
-"""Core catalog tests (sprint-4/08) — products + categories in core public.
+"""Core catalog tests (sprint-4/08) - products + categories in core public.
 
 kind registry (core + ems-registered, active filter) · currency default + override
 · product soft-delete only + reference-guard delete-block · category tree + cycle
@@ -42,7 +42,7 @@ def test_tenant_default_currency(client):
 
 
 def test_product_soft_delete_only(client, session_factory):
-    # NOTE: the CRM quotation reference-guard leg was dropped — the CRM module
+    # NOTE: the CRM quotation reference-guard leg was dropped - the CRM module
     # (which registered products-in-quotations into the reference-count registry)
     # is stripped from this shared-service fork. Core coverage kept: a product
     # soft-deletes (never hard delete) when nothing references it.

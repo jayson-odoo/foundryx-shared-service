@@ -1,15 +1,15 @@
-"""ideation — idea media attachments (voice/image/video/file).
+"""ideation - idea media attachments (voice/image/video/file).
 
-Create ``app_ideation.idea_attachments`` — the media pointers on an Idea captured
+Create ``app_ideation.idea_attachments`` - the media pointers on an Idea captured
 over WhatsApp (§5.1 ``attachments[]``, DC-9). Sorento durably stores the Respond
 CDN bytes (R2/S3) and passes a durable ``url``; this table only persists the
 resolved pointer + metadata. ``source_msg_id`` (Respond.io message id) is the
-idempotency key — ``UNIQUE(idea_id, source_msg_id)`` so a re-sent/retried media
+idempotency key - ``UNIQUE(idea_id, source_msg_id)`` so a re-sent/retried media
 upserts one row, never duplicates.
 
 CRITICAL (same deploy lesson as 0005): idempotent (``CREATE TABLE IF NOT EXISTS``)
 AND the same table lands via ``IdeationBase.metadata.create_all`` in the module's
-``install()`` — a fresh install gets the table whether the stamp-path or the
+``install()`` - a fresh install gets the table whether the stamp-path or the
 upgrade-path runs. Postgres-only DDL; a no-op on the SQLite test engine (the test
 suite creates the table via ``create_all``).
 

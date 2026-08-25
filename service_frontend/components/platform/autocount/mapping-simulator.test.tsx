@@ -85,7 +85,7 @@ describe('MappingSimulator (AC-16-30/31)', () => {
     await waitFor(() => expect(onSimulate).toHaveBeenCalled());
     // The draft rows are the second argument.
     expect(onSimulate.mock.calls[0][1]).toEqual(ROWS);
-    // And the parsed mock record is the first — prefilled from the top-level
+    // And the parsed mock record is the first - prefilled from the top-level
     // (non-dotted) source paths of the current rows.
     expect(onSimulate.mock.calls[0][0]).toEqual({ AccNo: '', CreditLimit: '' });
   });

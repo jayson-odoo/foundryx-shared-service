@@ -1,4 +1,4 @@
-"""Per-module Alembic env (sprint-3/10 D3) — autocount.
+"""Per-module Alembic env (sprint-3/10 D3) - autocount.
 
 Reads the version-table name + schema + target metadata from the orchestrator's
 ``Config.attributes`` (``app/module_platform/migrations.py``). Isolated history in

@@ -1,16 +1,16 @@
-# 08 — App Store (per-tenant module lifecycle)
+# 08 - App Store (per-tenant module lifecycle)
 
 **Sprint:** 1
 **Branch:** `sprint-1/app-store`
 **Closes:** BL-013 (sync_permissions lifecycle wiring), BL-016 (installer wiring for omnichannel), BL-014 partially (module menu items)
 **Depends on:** `sprint-1/07-tenant-core.md` (platform tenant, statuses, provisioning)
-**Still open after this plan:** BL-029 (per-module Alembic — schema DDL stays `create_all` here)
+**Still open after this plan:** BL-029 (per-module Alembic - schema DDL stays `create_all` here)
 
 ---
 
 ## 1. Goal
 
-Each tenant gets its own **App Store**: install, update, deactivate (archive — data kept), uninstall (tenant data wiped) modules. Platform operator can perform the same actions from the console (support). The module loader generalizes from hardcoded omnichannel wiring to a manifest-driven contract.
+Each tenant gets its own **App Store**: install, update, deactivate (archive - data kept), uninstall (tenant data wiped) modules. Platform operator can perform the same actions from the console (support). The module loader generalizes from hardcoded omnichannel wiring to a manifest-driven contract.
 
 ---
 
@@ -19,12 +19,12 @@ Each tenant gets its own **App Store**: install, update, deactivate (archive —
 | # | Decision | Choice |
 |---|----------|--------|
 | D1 | Catalog source + visibility | **Global `modules` table synced from on-disk `manifest.json`** at bootstrap (same pattern as permission CSV sync). Every active tenant sees all `is_listed` modules. Per-tenant entitlements/pricing = BL-036. |
-| D2 | Per-tenant install state | **`tenant_modules`** row per (tenant, module): INSTALL → ACTIVE; DEACTIVATE → INACTIVE (data kept, routes 403, perms grants kept-but-inert); REACTIVATE instant; UNINSTALL → wipe the tenant's rows from the module schema, revoke module perm grants from tenant roles, delete row. **Schema/global tables never dropped** — other tenants live there. |
+| D2 | Per-tenant install state | **`tenant_modules`** row per (tenant, module): INSTALL → ACTIVE; DEACTIVATE → INACTIVE (data kept, routes 403, perms grants kept-but-inert); REACTIVATE instant; UNINSTALL → wipe the tenant's rows from the module schema, revoke module perm grants from tenant roles, delete row. **Schema/global tables never dropped** - other tenants live there. |
 | D3 | Update semantics | **Code is global; per-tenant "update" is a data-provisioning step.** `installed_version` tracks what the tenant was provisioned at; deploy bumps manifest version → "Update available" badge; Update runs `update_tenant(tenant_id, from_version)` (new seeds, backfills, re-grant new perms) and bumps the version. |
 | D4 | Version pinning vs chargeable upgrades | **Version gating, not code pinning** (confirmed after grill). One deployment = one code version for everyone. `installed_version` gates feature access: v1.0 tenants don't see/use v1.1 features until they upgrade (the future billing hook attaches here, BL-036). |
-| D5 | Migration discipline | **Shared module schema + add-first-delete-later (expand-contract).** Additive changes (new table/column) free within a major. Rename/delete/type-change: add replacement column first, dual-write, drop the old one only when no tenant's active version reads it. True breaking rewrite = new module listing (rare escape hatch). **Binding rule — goes into `EMS_Developer_Governance_Framework.md`; the future certifier rejects violating migrations.** |
+| D5 | Migration discipline | **Shared module schema + add-first-delete-later (expand-contract).** Additive changes (new table/column) free within a major. Rename/delete/type-change: add replacement column first, dual-write, drop the old one only when no tenant's active version reads it. True breaking rewrite = new module listing (rare escape hatch). **Binding rule - goes into `EMS_Developer_Governance_Framework.md`; the future certifier rejects violating migrations.** |
 | D6 | Store actors | **Tenant admin self-serve + platform operator override.** Tenant-side core perms `app_store.*` seeded to tenant Admin; operator path gated by `tenants.manage_modules` (platform key, plan 07). Same service layer, two entry points. |
-| D7 | Frontend freshness | **`GET /app-store/installed` endpoint + NextAuth `update()` after actions** — acting admin's session perms refresh immediately; menu refilters; no stale store. |
+| D7 | Frontend freshness | **`GET /app-store/installed` endpoint + NextAuth `update()` after actions** - acting admin's session perms refresh immediately; menu refilters; no stale store. |
 
 ---
 
@@ -65,7 +65,7 @@ uninstall_tenant(db, tenant_id)           # DELETE the tenant's rows from every 
 ```
 
 - `load_modules(app)`: scan manifests → dynamic-import routers → `app.include_router(..., dependencies=[require_module(name)])`. **Module code untouched; the loader injects the gate.**
-- `bootstrap_modules()`: run every module's global `install()` (schema DDL stays idempotent `create_all` — BL-029 unchanged) + sync the `modules` catalog.
+- `bootstrap_modules()`: run every module's global `install()` (schema DDL stays idempotent `create_all` - BL-029 unchanged) + sync the `modules` catalog.
 - **Backfill migration:** existing tenants already have omnichannel data seeded → bootstrap creates `tenant_modules` rows ACTIVE at the current version for them (platform tenant excluded).
 - Omnichannel `bootstrap.py` refactored onto the contract: per-tenant seeding moves from "loop all tenants at install" into `install_tenant`; the blanket Admin re-grant is replaced by per-tenant grant on install (see §5).
 
@@ -83,8 +83,8 @@ uninstall_tenant(db, tenant_id)           # DELETE the tenant's rows from every 
 
 ## 6. Enforcement
 
-- **`require_module(name)`** (`app/dependencies.py`): per-request lookup — `tenant_modules` ACTIVE for the current user's tenant, else 403 `"Module not installed"`. Same fresh-from-DB philosophy as `require_permission`. Injected by the loader at `include_router` time.
-- **Version gating helper** for module code: `module_version(db, tenant_id, name) -> str` + `requires_version(name, ">=1.1")` dependency for endpoints introduced after 1.0 — v1.0 tenants get 403/hidden features until they update. (Omnichannel is all-1.0 today; the helper ships, first real use comes with the first 1.1 feature.)
+- **`require_module(name)`** (`app/dependencies.py`): per-request lookup - `tenant_modules` ACTIVE for the current user's tenant, else 403 `"Module not installed"`. Same fresh-from-DB philosophy as `require_permission`. Injected by the loader at `include_router` time.
+- **Version gating helper** for module code: `module_version(db, tenant_id, name) -> str` + `requires_version(name, ">=1.1")` dependency for endpoints introduced after 1.0 - v1.0 tenants get 403/hidden features until they update. (Omnichannel is all-1.0 today; the helper ships, first real use comes with the first 1.1 feature.)
 - **Catalog visibility for tenant role editors:** `GET /permissions` additionally excludes module keys for modules not installed for the caller's tenant (uninstalled modules' perms aren't grantable or visible).
 
 ## 7. API
@@ -120,7 +120,7 @@ app_store,App Store,uninstall,Uninstall modules,Can uninstall modules and wipe t
 
 ## 8. Frontend
 
-- **`/app-store`** (`app/(protected)/app-store/`) — **card grid storefront, not a Resource list**: card = icon, title, description, version, StatusBadge (Not installed / Active / Inactive / Update available) + action buttons per `app_store.*` perms. Deactivate/uninstall behind confirm dialogs (uninstall = typed module name + red copy "wipes all <module> data for this workspace").
+- **`/app-store`** (`app/(protected)/app-store/`) - **card grid storefront, not a Resource list**: card = icon, title, description, version, StatusBadge (Not installed / Active / Inactive / Update available) + action buttons per `app_store.*` perms. Deactivate/uninstall behind confirm dialogs (uninstall = typed module name + red copy "wipes all <module> data for this workspace").
 - **Console tenant detail → Modules tab** (placeholder from plan 07 becomes real): same cards/actions against the operator endpoints.
 - **Menu gating (lands BL-014 for module items):** menu items gain optional `module: "<name>"`; nav filters on the `useInstalledModules()` hook (`GET /app-store/installed`) AND `can(key)`. Omnichannel menu block tagged `module: "omnichannel"`.
 - **Freshness:** after any store action → NextAuth `update()` (re-pull `/auth/me` → fresh `permissions[]` in session) + refetch installed list. Other users converge on next request/login; backend 403 is the real boundary.
@@ -130,16 +130,16 @@ app_store,App Store,uninstall,Uninstall modules,Can uninstall modules and wipe t
 
 ## 9. Phases (mandatory methodology)
 
-- **Phase A — frontend-first:** types + mock service (all states: not installed/active/inactive/update available), storefront page, confirm dialogs, menu gating, console Modules tab, Vitest tests, Playwright real-click E2E vs mock.
-- **Phase B — backend:** TDD: `modules`/`tenant_modules` Alembic migration, manifest sync, loader generalization + omnichannel contract refactor + backfill, `require_module` + version helper, Admin-grant model change, `AppStoreService` + both endpoint sets, perms CSV rows. Tests cover: install seeds + grants; deactivate 403s module routes but keeps data; uninstall wipes ONLY that tenant's rows (two-tenant test) + revokes grants; update bumps version + re-grants. Swap mock→real.
-- **Phase C — E2E + report:** full-stack Playwright: tenant admin installs omnichannel → menu appears → deactivates → menu gone + API 403 → reactivates → uninstalls (typed confirm) → data gone for that tenant only. Test Execution Report.
+- **Phase A - frontend-first:** types + mock service (all states: not installed/active/inactive/update available), storefront page, confirm dialogs, menu gating, console Modules tab, Vitest tests, Playwright real-click E2E vs mock.
+- **Phase B - backend:** TDD: `modules`/`tenant_modules` Alembic migration, manifest sync, loader generalization + omnichannel contract refactor + backfill, `require_module` + version helper, Admin-grant model change, `AppStoreService` + both endpoint sets, perms CSV rows. Tests cover: install seeds + grants; deactivate 403s module routes but keeps data; uninstall wipes ONLY that tenant's rows (two-tenant test) + revokes grants; update bumps version + re-grants. Swap mock→real.
+- **Phase C - E2E + report:** full-stack Playwright: tenant admin installs omnichannel → menu appears → deactivates → menu gone + API 403 → reactivates → uninstalls (typed confirm) → data gone for that tenant only. Test Execution Report.
 
 ## 10. Deferred → backlog
 
 | New ID | Item |
 |--------|------|
 | BL-036 | Per-tenant module entitlements + billing (chargeable installs/upgrades; attach to install/update actions + version gating) |
-| — | BL-029/BL-030 remain open (per-module Alembic; cross-schema FKs) — this plan keeps `create_all` |
+| - | BL-029/BL-030 remain open (per-module Alembic; cross-schema FKs) - this plan keeps `create_all` |
 
 ## 11. Governance doc update (part of this plan)
 

@@ -3,7 +3,7 @@
 Creates the five core review tables (configurations / roles / role-actors /
 assignments / decisions). All tenant-scoped (``tenant_id`` indexed); cross-engine
 references (status ids, bound persona/staff-role ids, actor ids) are plain string
-columns, not FKs (the polymorphic-target_id rule — they may point into a module
+columns, not FKs (the polymorphic-target_id rule - they may point into a module
 schema).
 
 Revision ID: f7b8c9d0e1a2
@@ -31,7 +31,7 @@ def upgrade() -> None:
         sa.Column("review_form_id", sa.String(), nullable=False),
         sa.Column("required_review_count", sa.Integer(), nullable=False),
         sa.Column("score_field_key", sa.String(), nullable=True),
-        # Event/context binding (AC-06-25/24) — plain indexed cols (BL-030).
+        # Event/context binding (AC-06-25/24) - plain indexed cols (BL-030).
         sa.Column("context_type", sa.String(), nullable=True),
         sa.Column("context_id", sa.String(), nullable=True),
         sa.Column("window_start", utc.UTCDateTime(), nullable=True),

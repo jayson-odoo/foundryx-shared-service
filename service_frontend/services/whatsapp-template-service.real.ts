@@ -1,5 +1,5 @@
 /**
- * Real WhatsApp template service — talks to FastAPI via the shared api-client.
+ * Real WhatsApp template service - talks to FastAPI via the shared api-client.
  * Endpoints per plan 07 §4 (mounted under /omnichannel/channels/{id}/templates).
  */
 import { apiFetch } from '@/lib/api-client';

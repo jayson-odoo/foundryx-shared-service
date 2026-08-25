@@ -1,6 +1,6 @@
 'use client';
 
-/** Submission detail (plan sprint-3/01 D18) — read-only render of the PINNED
+/** Submission detail (plan sprint-3/01 D18) - read-only render of the PINNED
  * version (D9: the reviewer sees the form as it was), graph-driven transition
  * buttons (edge label = button text, D15) and the raw answers. Plan sprint-4/04
  * adds the Revise action (clone a frozen entry into a new Draft), the
@@ -288,7 +288,7 @@ function RevisionHistory({
                     size="sm"
                   />
                   <span className="tabular-nums">
-                    {r.submittedAt ? formatDateTime(r.submittedAt) : '—'}
+                    {r.submittedAt ? formatDateTime(r.submittedAt) : '-'}
                   </span>
                 </span>
               </Link>

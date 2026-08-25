@@ -1,6 +1,6 @@
-# F2 Slice 2 — Fixed-Canvas Badge Designer · Test Execution Report
+# F2 Slice 2 - Fixed-Canvas Badge Designer · Test Execution Report
 
-**Plan:** `documentation/plans/sprint-3/03-multi-format-render.md` (§2, D12–D19)
+**Plan:** `documentation/plans/sprint-3/03-multi-format-render.md` (§2, D12-D19)
 **Branch:** `sprint-3/03b-canvas-designer`
 **Date:** 2026-06-12
 **Stack:** backend :8001 (sprint-3/03b, Postgres, seeded) · frontend prod build :3001 (clean `.next` rebuild)
@@ -28,29 +28,29 @@ All five drive the seeded platform **"Attendee badge"** (`badge.attendee`, type 
 context `badge.preview`) via real navigation (header Settings mega-menu → Templates →
 row click). No shared state mutated (draft preview only) → parallel-safe.
 
-### Journey 1 — Open badge → Konva editor mounts
+### Journey 1 - Open badge → Konva editor mounts
 - **Steps:** login → Templates → open "Attendee badge" → Design tab.
 - **Expected:** the CanvasEditor mounts; palette (4 element types) + the Konva canvas stage visible.
 - **Actual:** `canvas-editor`, `canvas-palette`, `canvas-stage` all visible. ✅
 
-### Journey 2 — Edit → palette click-to-add opens the inspector
+### Journey 2 - Edit → palette click-to-add opens the inspector
 - **Steps:** open badge → Edit toggle → palette "Text".
 - **Expected:** the new text element auto-selects; the inspector opens with the content field.
 - **Actual:** `canvas-inspector` + "Text content" field visible. ✅
 
-### Journey 3 — Preview renders the server canvas sheet
+### Journey 3 - Preview renders the server canvas sheet
 - **Steps:** open badge → Preview toggle.
 - **Expected:** the in-app sheet (sandboxed iframe, `srcDoc`) shows the **server-rendered**
-  canvas — the QR is a real server-generated inline `<svg>`; the `{{attendeeName}}` sample
+  canvas - the QR is a real server-generated inline `<svg>`; the `{{attendeeName}}` sample
   resolves to "Alex Tan"; a `.badge-side` page sheet is visible inside the frame.
 - **Actual:** `srcdoc` contains `<svg>` and "Alex Tan"; `.badge-side` visible in-frame. ✅
 
-### Journey 4 — Download PDF
+### Journey 4 - Download PDF
 - **Steps:** open badge → Preview → "Download PDF".
 - **Expected:** a `.pdf` download starts (WeasyPrint bytes).
 - **Actual:** download `suggestedFilename()` matches `*.pdf`. ✅
 
-### Journey 5 — Responsive (375px AND 1280px)
+### Journey 5 - Responsive (375px AND 1280px)
 - **Steps:** for each viewport: open badge (Design) → assert no horizontal overflow →
   Preview → assert no horizontal overflow.
 - **Expected:** canvas stage + preview pane render with `scrollWidth − clientWidth ≤ 1` at
@@ -62,10 +62,10 @@ row click). No shared state mutated (draft preview only) → parallel-safe.
 ## Notes / decisions surfaced during the build
 
 - **`contextKey` stays on the Template row** (not in the canvas doc, deviating from the D14
-  sketch) — keeps the doc shape consistent with email/document docs and the validate
+  sketch) - keeps the doc shape consistent with email/document docs and the validate
   signature uniform (context passed in).
 - **Rotation pivot = top-left** on both the Konva editor (default node pivot at x,y) and the
-  HTML render (`transform-origin: left top`) — editor↔render parity without centre-offset math.
+  HTML render (`transform-origin: left top`) - editor↔render parity without centre-offset math.
 - **Konva never renders the artifact**: in-editor QR + storage-backed images show placeholders;
   the Preview/Download PDF is the authoritative server render (segno QR + WeasyPrint).
 - **Real bug caught:** the workflow email-template picker (`template_options`) listed every
@@ -79,4 +79,4 @@ row click). No shared state mutated (draft preview only) → parallel-safe.
   repeater conditions remain a slice-1 deferral.
 - `render_canvas_batch` is the Celery batch **seam** (tested with synthetic facts); the real
   "print all badges for Event X" trigger lands with Cluster H (no attendee entity yet).
-- Cert starter seed on the canvas surface — post-slice-2 (badge starter only).
+- Cert starter seed on the canvas surface - post-slice-2 (badge starter only).

@@ -1,4 +1,4 @@
-"""ApiModel — shared wire-schema base (plan sprint-2/05, BL-012).
+"""ApiModel - shared wire-schema base (plan sprint-2/05, BL-012).
 
 ONE place that guarantees every datetime leaves the API as Z-suffixed UTC
 ISO-8601, whatever a field is named. Columns are aware-UTC (UTCDateTime)
@@ -11,7 +11,7 @@ Caveat: the wildcard serializer sees TOP-LEVEL field values only. A nested
 ApiModel re-applies it, but a `List[datetime]` / `Dict[..., datetime]`
 field would bypass the net (aware-UTC values still emit `Z` via pydantic;
 only NAIVE nested values could leak offset-less). No such field exists
-today — if you add one, give it its own field_serializer.
+today - if you add one, give it its own field_serializer.
 """
 from datetime import datetime, timezone
 from typing import Any

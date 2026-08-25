@@ -23,7 +23,7 @@ export default function TemplatesPage() {
             <ToolbarHeading>
               <ToolbarPageTitle />
               <ToolbarDescription>
-                Design the emails this workspace sends — system mails and your own templates.
+                Design the emails this workspace sends - system mails and your own templates.
               </ToolbarDescription>
             </ToolbarHeading>
           </Toolbar>

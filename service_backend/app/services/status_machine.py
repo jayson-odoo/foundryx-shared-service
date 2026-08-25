@@ -1,10 +1,10 @@
-"""The shared transition executor (sprint-2/01 §backend) — ONE path for every
+"""The shared transition executor (sprint-2/01 §backend) - ONE path for every
 status change in the system.
 
-``transition(...)``: resolve the edge (STRICT — no edge, no move, D4) → check
+``transition(...)``: resolve the edge (STRICT - no edge, no move, D4) → check
 edge roles (≥1 shared role, empty = unrestricted, D5) → write the record's
 ``status_id`` → dispatch notifications (outbox, D6) → emit
-``StatusTransitioned`` (Workflow engine plugs in later). Commits the unit —
+``StatusTransitioned`` (Workflow engine plugs in later). Commits the unit -
 record + outbox rows land atomically.
 """
 from typing import Any, Optional
@@ -40,7 +40,7 @@ class TransitionForbidden(StatusMachineError):
 
 class TransitionConditionsNotMet(StatusMachineError):
     """The edge's rule-engine conditions evaluate False for this record/actor
-    (sprint-2/02 D6) — distinct from the role block; lists what failed."""
+    (sprint-2/02 D6) - distinct from the role block; lists what failed."""
 
 
 class UnknownStatusEntity(StatusMachineError):
@@ -56,10 +56,10 @@ def _tier_and_scope(
 ):
     """Resolve (tier, record_scope_id) for a record (sprint-3/01 D4).
 
-    Scoped entities skip two-tier resolution — their graphs are tenant-owned
+    Scoped entities skip two-tier resolution - their graphs are tenant-owned
     from birth: tier = the RECORD's tenant (defense-first; falls back to the
     caller), and every status touched must carry the record's ``scope_id``
-    (a submission can never move onto another form's graph — same guard
+    (a submission can never move onto another form's graph - same guard
     class as polymorphic target_id)."""
     if entity.scoped:
         tier = (
@@ -85,7 +85,7 @@ def _scope_guard(entity: StatusEntity, edge, record_scope_id: Optional[str]) -> 
 
 def _actor_may_fire(transition: StatusTransition, actor: Optional[User]) -> bool:
     if not transition.roles:
-        return True  # unrestricted edge — the endpoint's own gate applies
+        return True  # unrestricted edge - the endpoint's own gate applies
     if actor is None:
         return False
     actor_role_ids = {role.id for role in actor.roles}
@@ -99,11 +99,11 @@ def _edge_facts(
     actor: Optional[User],
     only_keys: Optional[set] = None,
 ) -> dict:
-    """The fact dict an edge's conditions evaluate against — the consumer's
+    """The fact dict an edge's conditions evaluate against - the consumer's
     declared sources (D2): the acting user + this entity's record.
 
     NOTE: with ``actor=None`` every actor.* fact resolves None and fails
-    closed (D5) — actor-conditioned edges are unfireable from actor-less
+    closed (D5) - actor-conditioned edges are unfireable from actor-less
     (system/background) contexts BY DESIGN. Pass the acting user whenever
     one exists."""
     return resolve_facts(
@@ -135,13 +135,13 @@ def transition(
         raise UnknownStatusEntity(f"Unknown status entity '{entity_type}'.")
 
     status_repo = StatusRepository(db)
-    # ``scope`` = the caller's tenant (notification routing) — distinct from
+    # ``scope`` = the caller's tenant (notification routing) - distinct from
     # ``tier`` = the tenant owning the visible status rows.
     scope = None if entity.platform_owned else (tenant_id or (actor.tenant_id if actor else None))
     tier, record_scope_id = _tier_and_scope(status_repo, entity, record, actor, tenant_id)
 
     # Scope guard BEFORE edge lookup (D4): the target must belong to the
-    # record's own graph — clearer failure than a generic missing-edge.
+    # record's own graph - clearer failure than a generic missing-edge.
     if entity.scoped:
         to_status = status_repo.get_by_id(to_status_id)
         if (
@@ -169,7 +169,7 @@ def transition(
         raise TransitionForbidden(
             f"You are not allowed to perform '{edge.label}'."
         )
-    # Rule-engine conditions re-check at fire (D6 — the listing already hides
+    # Rule-engine conditions re-check at fire (D6 - the listing already hides
     # failing edges, but the server boundary wins races/API bypass).
     if edge.conditions_json:
         facts = _edge_facts(
@@ -182,7 +182,7 @@ def transition(
                 for c in failed_conditions(edge.conditions_json, facts)
             )
             raise TransitionConditionsNotMet(
-                f"'{edge.label}' is not available: conditions not met — {details}."
+                f"'{edge.label}' is not available: conditions not met - {details}."
             )
 
     setattr(record, entity.status_attr, to_status_id)
@@ -224,7 +224,7 @@ def transition(
         extra={"from_status_id": from_status_id, "to_status_id": to_status_id},
     )
 
-    # Capture the event payload BEFORE commit — expire_on_commit would make
+    # Capture the event payload BEFORE commit - expire_on_commit would make
     # post-commit attribute reads lazy-load (and explode for any subscriber
     # holding the payload past the session's life). Code-review fix.
     payload = {
@@ -245,7 +245,7 @@ def transition(
 
 
 def _record_tenant(record: Any) -> str:
-    """Tenant for notification routing when the record has no tenant_id —
+    """Tenant for notification routing when the record has no tenant_id -
     e.g. the tenant entity itself (the record IS a tenant)."""
     from app.models.tenant import PLATFORM_TENANT_ID, Tenant
 
@@ -262,7 +262,7 @@ def available_transitions(
     *,
     tenant_id: Optional[str] = None,
 ) -> list:
-    """Outgoing edges from the record's current status the actor may fire —
+    """Outgoing edges from the record's current status the actor may fire -
     drives the action buttons (edge label = button text)."""
     entity = get_status_entity(entity_type)
     if entity is None:
@@ -281,17 +281,17 @@ def _filter_fireable(
     actor: Optional[User],
     edges: list,
 ) -> list:
-    """Role check + rule-engine condition check over a candidate edge list —
+    """Role check + rule-engine condition check over a candidate edge list -
     facts resolved once per record, and only the keys the trees read."""
     entity = get_status_entity(entity_type)
-    # Scoped entities REPURPOSE is_active ("respondent may still edit" —
+    # Scoped entities REPURPOSE is_active ("respondent may still edit" -
     # sprint-3/01 D4): an inactive status (Submitted) is a normal transition
     # target there, so the hide-inactive-targets rule applies only unscoped.
     hide_inactive = not (entity is not None and entity.scoped)
     edges = [
         e
         for e in edges
-        # Derived status (sprint-4/03 G6): auto edges are system-fired — never
+        # Derived status (sprint-4/03 G6): auto edges are system-fired - never
         # offered as user actions on any list/detail surface.
         if e.trigger_mode != "auto"
         and _actor_may_fire(e, actor)
@@ -316,7 +316,7 @@ def fireable_edge_ids(
     tenant_id: Optional[str] = None,
 ) -> Optional[dict]:
     """Per-record fireable edge ids for LIST surfaces (sprint-2/02 D6, made
-    generic in code review) — rule-blocked actions hide per record, and
+    generic in code review) - rule-blocked actions hide per record, and
     conditions are record-specific so clients can't derive this from the
     shared graph. Returns None while NO edge of the entity's resolved tier
     carries conditions (the common case costs one EXISTS probe). Batched:
@@ -328,7 +328,7 @@ def fireable_edge_ids(
     status_repo = StatusRepository(db)
     if entity.scoped:
         # Scoped machines: tenant-owned from birth; records on a list surface
-        # are one tenant's but may span scopes — per-record scope filtering
+        # are one tenant's but may span scopes - per-record scope filtering
         # happens below against each record's own scope_id.
         tier = tenant_id or (actor.tenant_id if actor else None)
     else:
@@ -347,7 +347,7 @@ def fireable_edge_ids(
             tier_filter,
             StatusTransition.conditions_json.isnot(None),
             # Auto edges are never offered, so they don't make a list surface
-            # "conditioned" (sprint-4/03) — only manual conditioned edges do.
+            # "conditioned" (sprint-4/03) - only manual conditioned edges do.
             StatusTransition.trigger_mode != "auto",
         )
         .first()
@@ -393,7 +393,7 @@ def reevaluate(
     tenant_id: Optional[str] = None,
     origin: Optional[dict] = None,
 ) -> int:
-    """Fire any AUTO edges whose conditions now pass — the derived-status driver
+    """Fire any AUTO edges whose conditions now pass - the derived-status driver
     (sprint-4/03 G5). From the record's current status, evaluate outgoing auto
     edges in ``sort_order`` and fire the FIRST whose ``conditions_json`` is true
     via ``transition(actor=None, commit=False)``; re-evaluate from the new
@@ -425,14 +425,14 @@ def reevaluate(
         while hops < REEVAL_HOP_CAP:
             current = getattr(record, entity.status_attr)
             if current in visited:
-                break  # no-revisit — a cycle of passing auto-edges can't loop
+                break  # no-revisit - a cycle of passing auto-edges can't loop
             visited.add(current)
 
             edges = [
                 e
                 for e in repo.outgoing(current, tier)
                 # Fail-safe: an auto edge MUST carry conditions (save-validated);
-                # one without (e.g. planted by a direct DB write) never fires —
+                # one without (e.g. planted by a direct DB write) never fires -
                 # an unconditioned auto edge would otherwise fire always.
                 if e.trigger_mode == "auto"
                 and e.conditions_json

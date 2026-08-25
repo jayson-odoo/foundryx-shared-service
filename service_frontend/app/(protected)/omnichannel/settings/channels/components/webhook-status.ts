@@ -6,7 +6,7 @@ import type {
 } from '@/types/whatsapp-webhook';
 
 /**
- * Consumer-webhook status pills — frontend-only registries (the endpoint /
+ * Consumer-webhook status pills - frontend-only registries (the endpoint /
  * delivery lifecycle is a plain enum on the row, not the status engine).
  * ACTIVE = live/green, DISABLED = muted, AUTO_DISABLED = the pipeline gave up
  * (destructive/red).
@@ -23,7 +23,7 @@ export const WEBHOOK_STATUS_OPTIONS = [
   { label: 'Auto-disabled', value: 'AUTO_DISABLED' },
 ];
 
-/** Delivery-attempt pills — SUCCESS green, PENDING amber, FAILED red. */
+/** Delivery-attempt pills - SUCCESS green, PENDING amber, FAILED red. */
 export const WEBHOOK_DELIVERY_STATUS_REGISTRY: StatusRegistry<WebhookDeliveryStatus> = {
   SUCCESS: { label: 'Success', tone: 'success' },
   PENDING: { label: 'Pending', tone: 'warning' },

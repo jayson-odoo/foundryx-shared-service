@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Signature draw pad (plan sprint-3/01, spike c) — a pointer-driven canvas the
+ * Signature draw pad (plan sprint-3/01, spike c) - a pointer-driven canvas the
  * user draws into; the answer is the canvas exported as a PNG data-URL string.
  * Works with touch AND mouse (Pointer Events, `touch-none` so the gesture
  * doesn't scroll the page) and at 375px (the canvas backing store tracks the
@@ -31,7 +31,7 @@ export function SignaturePad({ value, onChange, disabled, ariaLabel, invalid }: 
   const [hasInk, setHasInk] = useState(Boolean(value));
 
   // Size the backing store to the measured CSS box × DPR, then restore any
-  // existing value. Re-runs on container resize (responsive — 375px ↔ desktop).
+  // existing value. Re-runs on container resize (responsive - 375px ↔ desktop).
   const sizeCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     const wrap = wrapRef.current;

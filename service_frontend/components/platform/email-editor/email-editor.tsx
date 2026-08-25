@@ -60,13 +60,13 @@ const collisionDetection: CollisionDetection = (args) => {
 };
 
 /**
- * The email block editor (plan sprint-2/07 D2/D12) — editor-agnostic JSON
+ * The email block editor (plan sprint-2/07 D2/D12) - editor-agnostic JSON
  * doc in/out; the schema in types/templates.ts is the only contract.
  */
 export interface EmailEditorProps {
   doc: TemplateDocument;
   onChange: (doc: TemplateDocument) => void;
-  /** Global Edit toggle (ResourceForm) gates every mutation — FlowCanvas precedent. */
+  /** Global Edit toggle (ResourceForm) gates every mutation - FlowCanvas precedent. */
   editing: boolean;
   /** Merge-field vocabulary of the template's context (chips + tokens). */
   mergeFields: TemplateContextFact[];
@@ -83,7 +83,7 @@ export interface EmailEditorProps {
    */
   surface?: EditorSurface;
   /**
-   * List facts (document surface) bindable by table/repeater blocks — drives
+   * List facts (document surface) bindable by table/repeater blocks - drives
    * the source pickers + row.* item-field pickers. Ignored on the email surface.
    */
   listFacts?: TemplateListFact[];
@@ -96,7 +96,7 @@ export interface EmailEditorProps {
   renderPdf?: (doc: TemplateDocument) => Promise<Blob>;
   /**
    * Content-only mode (per-use template copy): edit WORDING in place, but the
-   * STRUCTURE is locked — no palette, no add/reorder/delete of sections/blocks
+   * STRUCTURE is locked - no palette, no add/reorder/delete of sections/blocks
    * (rearranging the layout belongs in the Templates engine). Default false.
    */
   structureLocked?: boolean;
@@ -123,7 +123,7 @@ export function EmailEditor({
   // ---- Undo/redo history (client-side, buffered like the canvas itself) ----
   const [past, setPast] = useState<TemplateDocument[]>([]);
   const [future, setFuture] = useState<TemplateDocument[]>([]);
-  // Last doc WE emitted — a prop change that isn't ours (load, Cancel/discard)
+  // Last doc WE emitted - a prop change that isn't ours (load, Cancel/discard)
   // belongs to a different timeline: reset the stacks.
   const lastEmitted = useRef<TemplateDocument | null>(null);
 
@@ -167,7 +167,7 @@ export function EmailEditor({
     });
   }, [doc, onChange]);
 
-  // Cmd/Ctrl+Z / Shift+Cmd+Z / Ctrl+Y — but never hijack native text-undo
+  // Cmd/Ctrl+Z / Shift+Cmd+Z / Ctrl+Y - but never hijack native text-undo
   // inside an active text field or inline-editable block.
   useEffect(() => {
     if (!editing || mode !== 'design') return;
@@ -323,7 +323,7 @@ export function EmailEditor({
         >
           <Eye className="size-3.5" /> Preview
         </Button>
-        {/* Undo/redo in the toolbar — consistent with the form + workflow + canvas
+        {/* Undo/redo in the toolbar - consistent with the form + workflow + canvas
             editors. ⌘Z / ⇧⌘Z / Ctrl+Y also work. */}
         {mode === 'design' && editing && (
           <div className="ml-auto flex gap-0.5 rounded-md border border-input bg-background p-0.5">
@@ -421,7 +421,7 @@ export function EmailEditor({
               )}
             </aside>
           </div>
-          {/* Floating chip following the pointer — drop feedback. */}
+          {/* Floating chip following the pointer - drop feedback. */}
           <DragOverlay dropAnimation={null}>
             {dragLabel ? (
               <div className="pointer-events-none rounded-md border border-primary bg-background px-2.5 py-1.5 text-xs font-medium shadow-md">

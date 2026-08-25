@@ -1,4 +1,4 @@
-# Sprint 3 · Plan 08 — Terminology · Test Execution Report
+# Sprint 3 · Plan 08 - Terminology · Test Execution Report
 
 **Branch:** `sprint-3/08-terminology` · **Date:** 2026-06-16
 **Stack:** Next 15 :3001 → FastAPI :8001 → native Postgres `foundryx_service`
@@ -18,27 +18,27 @@ Validates the plan-08 acceptance criteria (`08-terminology-acceptance-criteria.m
 | Backend live smoke (curl → Postgres) | **PASS** (rename persists, 422, reset→fallback) |
 | E2E (`e2e/terminology.spec.ts`) | see §E2E |
 
-\* `app/(auth)/signin/page.test.tsx` expects the heading "Welcome to FoundryX EMS";
+\* `app/(auth)/signin/page.test.tsx` expects the heading "Welcome to Foundryx EMS";
 the heading is now the tenant-settable system name (commit `2aa5ab7`). Pre-existing
 on `main`, untouched by this branch (`git status` shows no signin file in the diff).
 
 ---
 
-## Backend — `tests/test_terminology.py` (9)
+## Backend - `tests/test_terminology.py` (9)
 
 | # | Test | AC | Result |
 |---|------|----|--------|
-| 1 | `test_registry_seed_present` | AC-08-09 | PASS — form/workflow/template/document/connection/role/import present; user/tenant/permission excluded |
+| 1 | `test_registry_seed_present` | AC-08-09 | PASS - form/workflow/template/document/connection/role/import present; user/tenant/permission excluded |
 | 2 | `test_merged_map_defaults_then_overrides` | AC-08-04 | PASS |
 | 3 | `test_put_upsert_and_returns_entry` | AC-08-01/14 | PASS |
 | 4 | `test_put_unknown_key_422` | AC-08-03 | PASS |
 | 5 | `test_put_blank_rejected` | AC-08-03 | PASS |
 | 6 | `test_delete_resets_to_default` | AC-08-02 | PASS (idempotent) |
-| 7 | `test_tenant_isolation` | AC-08-07 | PASS — tenant A rename invisible to tenant B |
-| 8 | `test_get_terminology_authenticated_only_no_manage` | AC-08-06 | PASS — GET 200, catalog/PUT/DELETE 403 |
+| 7 | `test_tenant_isolation` | AC-08-07 | PASS - tenant A rename invisible to tenant B |
+| 8 | `test_get_terminology_authenticated_only_no_manage` | AC-08-06 | PASS - GET 200, catalog/PUT/DELETE 403 |
 | 9 | `test_admin_has_terminology_manage` | AC-08-17 | PASS |
 
-## Backend — live smoke (curl against Postgres)
+## Backend - live smoke (curl against Postgres)
 
 Migration `c3d4e5f6a7b8` applied (head); `bootstrap_db` synced `terminology.manage`
 to the tenant Admin grant. As `demo@example.com`:
@@ -48,7 +48,7 @@ to the tenant Admin grant. As `demo@example.com`:
 - `PUT /terminology/bogus` → **422** ✔ (AC-08-03)
 - `DELETE /terminology/form` → **204**; re-GET reverts to Form ✔ (AC-08-02)
 
-## Frontend — `hooks/use-terminology.test.ts` (4)
+## Frontend - `hooks/use-terminology.test.ts` (4)
 
 | Test | AC | Result |
 |------|----|--------|
@@ -66,9 +66,9 @@ to the tenant Admin grant. As `demo@example.com`:
 - `/settings/terminology` page on the Resource-shell-adjacent table + edit dialog,
   no instructional copy, responsive (`overflow-x-auto`, `hidden sm:table-cell`) (AC-08-11/12/13).
 
-## E2E — `e2e/terminology.spec.ts`
+## E2E - `e2e/terminology.spec.ts`
 
-Two serial journeys against the live stack, both viewports — **2 passed**:
+Two serial journeys against the live stack, both viewports - **2 passed**:
 ① rename Form→Survey → sidebar leaf + `/forms` h1 title + "New survey" create button
    all follow with no reload; mobile (375) coherent; Reset reverts to Form/Forms. ✔
 ② second provisioned tenant still reads "Forms" while tenant A is renamed (isolation). ✔

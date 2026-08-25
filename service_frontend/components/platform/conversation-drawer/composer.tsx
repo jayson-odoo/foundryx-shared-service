@@ -5,7 +5,7 @@
  * 24h CSW; once the window closes the input locks and only an approved template
  * sends (mirrors the backend rule). Rich composing: attach menu (photo/video/
  * audio/document/sticker) → multi-file preview tray with per-file captions, a
- * BUNDLED emoji picker (no CDN — CSP), a voice recorder (MediaRecorder → VOICE),
+ * BUNDLED emoji picker (no CDN - CSP), a voice recorder (MediaRecorder → VOICE),
  * and ★ workspace quick replies.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -90,7 +90,7 @@ export interface ComposerProps {
   onSendTemplate: (input: SendTemplateInput) => Promise<boolean>;
   /** Send a media attachment (image/video/audio/voice/document/sticker). */
   onSendMedia?: (input: SendMediaInput) => Promise<boolean>;
-  /** Structured sends (interactive/location/contacts) — plan 12 Slice 2. */
+  /** Structured sends (interactive/location/contacts) - plan 12 Slice 2. */
   onSendInteractive?: (input: SendInteractiveInput) => Promise<boolean>;
   onSendLocation?: (input: SendLocationInput) => Promise<boolean>;
   onSendContacts?: (input: SendContactsInput) => Promise<boolean>;
@@ -223,7 +223,7 @@ function TemplateSendDialog({
         <DialogHeader>
           <DialogTitle>Send a template</DialogTitle>
           <DialogDescription>
-            The 24-hour window has closed — re-engage with an approved template.
+            The 24-hour window has closed - re-engage with an approved template.
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-4">
@@ -444,7 +444,7 @@ export function Composer({
       setRecording(true);
       setRecordSeconds(0);
     } catch {
-      // Mic permission denied / unavailable — silently ignore (no how-to copy).
+      // Mic permission denied / unavailable - silently ignore (no how-to copy).
     }
   };
 
@@ -498,7 +498,7 @@ export function Composer({
         >
           <span className="flex items-center gap-2">
             <Lock className="size-4 shrink-0" />
-            The 24-hour window has closed — only an approved template can be sent.
+            The 24-hour window has closed - only an approved template can be sent.
           </span>
           <Button size="sm" variant="outline" onClick={() => setTemplateOpen(true)} data-testid="csw-pick-template">
             Choose template
@@ -672,7 +672,7 @@ export function Composer({
               ? 'Add an internal note (only your team sees this)…'
               : locked
                 ? 'Free-form messaging is locked'
-                : 'Type a message — Enter to send, Shift+Enter for a new line'
+                : 'Type a message - Enter to send, Shift+Enter for a new line'
           }
           disabled={locked || recording}
           className="min-h-[44px] max-h-40 flex-1 resize-none"

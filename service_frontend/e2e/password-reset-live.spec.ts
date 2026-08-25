@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { expectMailTo } from './helpers/mailbox';
 
 /**
- * Plan 10 Phase C — full-stack forgot-password + throttle E2E.
+ * Plan 10 Phase C - full-stack forgot-password + throttle E2E.
  *
  * Preconditions (matches the plan-09 Phase C rig):
  *   - backend :8001 on the plan-10 branch, seeded (platform@example.com)
@@ -12,14 +12,14 @@ import { expectMailTo } from './helpers/mailbox';
  *
  * Spec isolation (methodology §7): login throttling + password changes MUTATE
  * state, so everything runs on a DEDICATED tenant provisioned via the operator
- * API (setup only — the flows under test stay real clicks). Names are
+ * API (setup only - the flows under test stay real clicks). Names are
  * timestamped; e2e-* tenants are residue until BL-035.
  */
 const API = process.env.NEXT_PUBLIC_BACKEND_API_URL ?? 'http://localhost:8001';
 
 const STAMP = Date.now();
 const SLUG = `e2e-reset-${STAMP}`;
-// example.com — .test/.invalid TLDs fail the backend EmailStr validation.
+// example.com - .test/.invalid TLDs fail the backend EmailStr validation.
 const ADMIN_EMAIL = `admin-${STAMP}@example.com`;
 const ADMIN_PASSWORD = 'E2eStart1!';
 const NEW_PASSWORD = 'E2eFresh2@';
@@ -33,10 +33,10 @@ function tenantUrl(pathname: string): string {
 
 
 // Timeout covers the shared expectMailTo's worst-case dispatcher lag (~35s
-// observed) — the default 30s test timeout loses races under a parallel suite.
+// observed) - the default 30s test timeout loses races under a parallel suite.
 test.describe.configure({ mode: 'serial', timeout: 120_000 });
 
-test.describe('Forgot password — live stack (plan 10 Phase C)', () => {
+test.describe('Forgot password - live stack (plan 10 Phase C)', () => {
   test.beforeAll(async ({ request }) => {
     // Operator provisions the dedicated tenant (plan 07 §7).
     const platformLogin = await request.post(`${API}/auth/login`, {
@@ -78,7 +78,7 @@ test.describe('Forgot password — live stack (plan 10 Phase C)', () => {
           port: '1025',
           security: 'none',
           fromEmail: 'no-reply@example.com',
-          fromName: 'FoundryX E2E',
+          fromName: 'Foundryx E2E',
         },
         credentials: {},
       },
@@ -92,7 +92,7 @@ test.describe('Forgot password — live stack (plan 10 Phase C)', () => {
     // Real clicks: signin → "Forgot Password?" → request a link.
     await page.goto(tenantUrl('/signin'));
     await page.getByRole('link', { name: /forgot password/i }).click();
-    // Both pages have a "Your email" field — anchor on the reset heading so
+    // Both pages have a "Your email" field - anchor on the reset heading so
     // the fill can't race the navigation and land on the signin form.
     await expect(
       page.getByRole('heading', { name: /forgot your password/i }),
@@ -160,7 +160,7 @@ test.describe('Forgot password — live stack (plan 10 Phase C)', () => {
       await expect(page.getByText('Invalid email or password.')).toBeVisible();
     }
 
-    // 6th attempt — even with the CORRECT password — is throttled (429),
+    // 6th attempt - even with the CORRECT password - is throttled (429),
     // and the message is deliberately distinct from invalid-credentials.
     await page.getByPlaceholder('Your email').fill(ADMIN_EMAIL);
     await page.getByPlaceholder('Your password').fill(NEW_PASSWORD);

@@ -11,7 +11,7 @@ import {
   type TemplateSection,
 } from '@/types/templates';
 
-/** Stable short id for blocks/sections/columns (forever-contract ids — D3). */
+/** Stable short id for blocks/sections/columns (forever-contract ids - D3). */
 export function newDocId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -53,7 +53,7 @@ export function createBlock(type: TemplateBlockType): TemplateBlock {
       return { id, type, html: '' };
     case 'qr':
       return { id, type, data: '', ecLevel: 'M', size: 120, align: 'center' };
-    // F2 document blocks — empty source (bound in the panel) + a starter column.
+    // F2 document blocks - empty source (bound in the panel) + a starter column.
     case 'table':
       return {
         id,
@@ -75,7 +75,7 @@ export const DEFAULT_PAGE_SETUP: PageSetup = {
 };
 
 /**
- * A repeater body leaf block (heading/text/image/button/divider/spacer only —
+ * A repeater body leaf block (heading/text/image/button/divider/spacer only -
  * no nesting). Reuses createBlock then narrows the type.
  */
 export function createRepeaterBodyBlock(type: RepeaterBodyBlock['type']): RepeaterBodyBlock {
@@ -219,7 +219,7 @@ export function updateBlock(
   }));
 }
 
-/** Move a block to (sectionId, columnId, index) — drag-and-drop commit. */
+/** Move a block to (sectionId, columnId, index) - drag-and-drop commit. */
 export function moveBlock(
   doc: TemplateDocument,
   blockId: string,
@@ -336,7 +336,7 @@ function collectBlockTokens(block: TemplateBlock, out: Set<string>): void {
 
 /**
  * Every CONTEXT merge token used in the doc + subject (required-facts check).
- * `row.*` tokens (table/repeater iterator scope) are deliberately EXCLUDED —
+ * `row.*` tokens (table/repeater iterator scope) are deliberately EXCLUDED -
  * they resolve against the source's item facts, not the context vocabulary.
  */
 export function collectMergeTokens(doc: TemplateDocument, subject: string): Set<string> {
@@ -350,7 +350,7 @@ export function collectMergeTokens(doc: TemplateDocument, subject: string): Set<
             for (const cell of row.cells) collectTokens(cell.text, tokens);
           }
         } else if (block.type === 'repeater') {
-          // Repeater body uses row.* (scoped) — only doc-level scalars (rare)
+          // Repeater body uses row.* (scoped) - only doc-level scalars (rare)
           // count toward required facts.
           for (const child of block.body) collectBlockTokens(child, tokens);
         } else {
@@ -365,7 +365,7 @@ export function collectMergeTokens(doc: TemplateDocument, subject: string): Set<
 }
 
 // ---------------------------------------------------------------------------
-// Document-surface validation mirror (F2 D10) — keep PARITY with the backend
+// Document-surface validation mirror (F2 D10) - keep PARITY with the backend
 // validate_doc document branch (422 `{problems:[...]}`).
 // ---------------------------------------------------------------------------
 

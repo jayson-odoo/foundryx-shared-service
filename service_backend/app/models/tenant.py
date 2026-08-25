@@ -1,7 +1,7 @@
-"""Tenant model — root of multi-tenancy (SaaS, plan 07).
+"""Tenant model - root of multi-tenancy (SaaS, plan 07).
 
 A tenant is a workspace: users/roles/data are scoped to it via ``tenant_id``.
-Lifecycle is a core ``statuses`` row (FK) — behavior binds to the status TRAIT
+Lifecycle is a core ``statuses`` row (FK) - behavior binds to the status TRAIT
 FLAGS (``blocks_access`` / ``is_archived``, sprint-2/01 D2); transitions move
 along the status-engine edge graph only. Labels/colors stay editable.
 
@@ -22,12 +22,12 @@ from app.database import Base
 # resolution is explicit everywhere. Keep in sync with scripts/init_db.py.
 DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 DEFAULT_TENANT_SLUG = "default"
-DEFAULT_TENANT_NAME = "FoundryX EMS"
+DEFAULT_TENANT_NAME = "Foundryx EMS"
 
-# The reserved operator tenant (plan 07 §5) — seeded at bootstrap.
+# The reserved operator tenant (plan 07 §5) - seeded at bootstrap.
 PLATFORM_TENANT_ID = "00000000-0000-0000-0000-000000000002"
 PLATFORM_TENANT_SLUG = "platform"
-PLATFORM_TENANT_NAME = "FoundryX Platform"
+PLATFORM_TENANT_NAME = "Foundryx Platform"
 
 # Slugs that can never be tenant identities (infra/system hostnames). Mirrors
 # the frontend list in lib/tenant.ts.
@@ -63,11 +63,11 @@ class Tenant(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String, nullable=False)
-    # URL identity (subdomain) — immutable after creation.
+    # URL identity (subdomain) - immutable after creation.
     slug = Column(String, unique=True, nullable=False, index=True)
-    # Lifecycle — a status-engine row; behavior binds to its trait flags.
+    # Lifecycle - a status-engine row; behavior binds to its trait flags.
     status_id = Column(String, ForeignKey("statuses.id"), nullable=False, index=True)
-    # Exactly one seeded row true — the operator tenant.
+    # Exactly one seeded row true - the operator tenant.
     is_platform = Column(Boolean, nullable=False, default=False)
     contact_name = Column(String, nullable=True)
     contact_email = Column(String, nullable=True)
@@ -86,16 +86,16 @@ class Tenant(Base):
     )
 
     # joined: the lifecycle check in get_current_user/login reads the category
-    # on every request — load it with the tenant row, never lazily/N+1.
+    # on every request - load it with the tenant row, never lazily/N+1.
     status = relationship("Status", lazy="joined")
 
     @property
     def signin_allowed(self) -> bool:
         """Single chokepoint for the lifecycle rule (login + per-request).
 
-        Behavior binds to the status TRAIT FLAGS (sprint-2/01 D2) — a status
+        Behavior binds to the status TRAIT FLAGS (sprint-2/01 D2) - a status
         that blocks access or archives the tenant kills sign-in; a missing
-        status row counts as not-allowed (defensive — FK should prevent it).
+        status row counts as not-allowed (defensive - FK should prevent it).
         """
         return (
             self.status is not None

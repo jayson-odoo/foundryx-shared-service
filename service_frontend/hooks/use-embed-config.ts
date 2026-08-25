@@ -21,7 +21,7 @@ export interface UseEmbedConfig {
 
 /**
  * Loads + mutates the tenant's embed-access config. The screen reads state ONLY
- * through this hook — the UI never touches the service/api-client directly.
+ * through this hook - the UI never touches the service/api-client directly.
  */
 export function useEmbedConfig(): UseEmbedConfig {
   const [config, setConfig] = useState<EmbedConfig | null>(null);

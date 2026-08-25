@@ -1,7 +1,7 @@
-"""omnichannel plan 12 Slice 3 — message_reactions table.
+"""omnichannel plan 12 Slice 3 - message_reactions table.
 
-A reaction is never a message row — it upserts here keyed to the target message
-+ the reactor (``UNIQUE(target_message_id, reactor)``). Idempotent guard — the
+A reaction is never a message row - it upserts here keyed to the target message
++ the reactor (``UNIQUE(target_message_id, reactor)``). Idempotent guard - the
 module baseline runs ``create_all`` so a fresh deploy may already have this
 table. Revision id ≤ 32 chars.
 

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Plan sprint-3/04 Phase C — Document management (the Drive), full stack (real
+ * Plan sprint-3/04 Phase C - Document management (the Drive), full stack (real
  * clicks). Mapped to the UAT (`04-document-mgmt-drive-uat.md`).
  *
  * Journeys:
@@ -42,9 +42,9 @@ async function newFolder(page: Page, name: string) {
   await expect(page.locator('[data-entry="folder"]', { hasText: name }).first()).toBeVisible();
 }
 
-/** Open a folder via the tree sidebar — the reliable nav path (grid dblclick is
+/** Open a folder via the tree sidebar - the reliable nav path (grid dblclick is
  * a real feature but, layered on dnd-kit + a Radix context-menu trigger, isn't
- * deterministically drivable by Playwright — same class as the canvas
+ * deterministically drivable by Playwright - same class as the canvas
  * click-to-add lesson). Asserts the breadcrumb (scoped) updated. */
 async function openFolder(page: Page, name: string) {
   await page.locator(`[data-tree-folder="${name}"]`).first().click();
@@ -75,7 +75,7 @@ async function uploadFile(page: Page, name: string, body: string) {
 
 test.describe.configure({ mode: 'serial', timeout: 180_000 });
 
-test.describe('Document Drive — live stack (plan sprint-3/04 Phase C)', () => {
+test.describe('Document Drive - live stack (plan sprint-3/04 Phase C)', () => {
   test.beforeAll(async ({ request }) => {
     const platformLogin = await request.post(`${API}/auth/login`, {
       data: { email: 'platform@example.com', password: 'platform1234', tenantSlug: 'platform' },
@@ -142,7 +142,7 @@ test.describe('Document Drive — live stack (plan sprint-3/04 Phase C)', () => 
     const folder = page.locator('[data-entry="folder"]', { hasText: 'Temp' }).first();
     await rightClickEntry(page, 'folder', 'Temp');
     // Wait for the soft-delete request to commit before switching to Trash (the
-    // Trash view fetches once on mount — racing it shows an empty trash).
+    // Trash view fetches once on mount - racing it shows an empty trash).
     await Promise.all([
       page.waitForResponse((r) => r.url().includes('/documents/folders/delete') && r.ok()),
       page.getByRole('menuitem', { name: 'Delete' }).click(),

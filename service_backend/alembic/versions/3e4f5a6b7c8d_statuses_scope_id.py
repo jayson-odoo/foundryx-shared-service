@@ -1,4 +1,4 @@
-"""statuses.scope_id — scoped status machines (plan sprint-3/01 D4)
+"""statuses.scope_id - scoped status machines (plan sprint-3/01 D4)
 
 Revision ID: 3e4f5a6b7c8d
 Revises: 2d3e4f5a6b7c

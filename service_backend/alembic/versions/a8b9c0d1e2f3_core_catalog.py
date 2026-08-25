@@ -1,6 +1,6 @@
 """core catalog: products + product_categories + tenant_settings (sprint-4/08)
 
-Moves the product catalog out of modules/ems into core public (horizontal —
+Moves the product catalog out of modules/ems into core public (horizontal -
 consumed by CRM quotations, EMS ticketing, future commerce). Money is Numeric
 (exact cents). Adds tenant_settings (default currency).
 

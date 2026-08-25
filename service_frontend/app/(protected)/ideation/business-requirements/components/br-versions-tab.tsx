@@ -10,7 +10,7 @@ export interface BrVersionsTabProps {
   brId: string;
 }
 
-/** Versions tab — the BR's template version history; the STAMPED version is the
+/** Versions tab - the BR's template version history; the STAMPED version is the
  * one this BR renders against forever (AC-BI-16). Data via `useBrVersions`
  * (UI → hook → service). */
 export function BrVersionsTab({ brId }: BrVersionsTabProps) {

@@ -8,16 +8,16 @@ import { AuthFooter } from '@/components/auth/auth-footer';
 
 export interface PublicBrandedShellProps {
   children: ReactNode;
-  /** Server-resolved branding (layout) — first paint, no FoundryX flash. */
+  /** Server-resolved branding (layout) - first paint, no Foundryx flash. */
   initialBranding?: PublicBranding | null;
 }
 
 /**
  * Branded shell for pre-auth PUBLIC surfaces (slice 2 public form fill). A
- * single full-width column — a top brand bar, the page body centered, footer
- * pinned bottom — vs the auth split-screen (forms here can be long). White-label
+ * single full-width column - a top brand bar, the page body centered, footer
+ * pinned bottom - vs the auth split-screen (forms here can be long). White-label
  * rule (sprint-2/03): a branded tenant shows its logo on a primary chip (or its
- * NAME when it has no logo); an unbranded host shows the FoundryX wordmark.
+ * NAME when it has no logo); an unbranded host shows the Foundryx wordmark.
  */
 export function PublicBrandedShell({ children, initialBranding }: PublicBrandedShellProps) {
   const { branding: live, isResolved } = useTenantBranding();
@@ -37,9 +37,9 @@ export function PublicBrandedShell({ children, initialBranding }: PublicBrandedS
 }
 
 function BrandMark({ branding }: { branding: PublicBranding }) {
-  // A logo URL can fail (a DB branding row outliving its blob — see the asset
+  // A logo URL can fail (a DB branding row outliving its blob - see the asset
   // route's 404 guard). White-label rule: a branded tenant NEVER shows a broken
-  // image — fall back to its NAME (or the FoundryX mark only when unbranded).
+  // image - fall back to its NAME (or the Foundryx mark only when unbranded).
   const [logoFailed, setLogoFailed] = useState(false);
   const nameMark = (
     <span className="font-heading text-lg font-semibold text-foreground">{branding.tenantName}</span>
@@ -66,7 +66,7 @@ function BrandMark({ branding }: { branding: PublicBranding }) {
   return (
     <Image
       src="/media/foundryx/foundryx-logo.png"
-      alt="FoundryX"
+      alt="Foundryx"
       width={120}
       height={32}
       className="h-7 w-auto object-contain"

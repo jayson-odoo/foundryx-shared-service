@@ -1,9 +1,9 @@
-# Sprint 4 · Plan 07 — Cluster F (Payment · Finance · SO · Settlement) — Test Execution Report
+# Sprint 4 · Plan 07 - Cluster F (Payment · Finance · SO · Settlement) - Test Execution Report
 
 **Branch:** `sprint-4/07-cluster-f` (HEAD `db9e9fe`)
 **Date:** 2026-06-23
 **Tester:** QA (Claude Code)
-**Scope:** AC-07-01 .. AC-07-53 (Slices 0–4 + cross-cutting)
+**Scope:** AC-07-01 .. AC-07-53 (Slices 0-4 + cross-cutting)
 
 ---
 
@@ -12,10 +12,10 @@
 | Suite | Command | Result |
 |---|---|---|
 | Backend (pytest + httpx, in-memory SQLite) | `python -m pytest -q` | **1153 passed, 0 failed** (592 warnings, 13m06s) |
-| Frontend unit (Vitest) | `npx vitest run` | **722 passed, 1 failed** — the 1 failure is the **PRE-EXISTING** `app/(auth)/signin/page.test.tsx` "welcome to foundryx ems" branding-heading test, **unrelated to Cluster F** (flagged in the brief). No Cluster F regression. |
+| Frontend unit (Vitest) | `npx vitest run` | **722 passed, 1 failed** - the 1 failure is the **PRE-EXISTING** `app/(auth)/signin/page.test.tsx` "welcome to foundryx ems" branding-heading test, **unrelated to Cluster F** (flagged in the brief). No Cluster F regression. |
 | Frontend build (prod, tsc + lint gate) | `rm -rf .next && npm run build` | **Compiled successfully** (159/159 static pages). All F routes present: `/settings/numbering`, `/finance/invoices`, `/finance/settlements`, `/ems/sales-orders[/new][/[id]]`. |
 
-**Live stack:** backend `uvicorn :8001` (health `{"status":"ok"}`), frontend `npm start :3001` (HTTP 200, cwd-confirmed owner of port). `bootstrap_db` ran clean — Alembic core + per-module finance migrations (`0001..0005`) applied to **live Postgres** (NOT just create_all). E2E driven via Playwright real-clicks + live HTTP (CASH/CARD/BANK manual-payment path; no live gateway creds — gateway-only ACs verified via the HTTP-mocked adapter unit tests as planned).
+**Live stack:** backend `uvicorn :8001` (health `{"status":"ok"}`), frontend `npm start :3001` (HTTP 200, cwd-confirmed owner of port). `bootstrap_db` ran clean - Alembic core + per-module finance migrations (`0001..0005`) applied to **live Postgres** (NOT just create_all). E2E driven via Playwright real-clicks + live HTTP (CASH/CARD/BANK manual-payment path; no live gateway creds - gateway-only ACs verified via the HTTP-mocked adapter unit tests as planned).
 
 **Cluster F test files & coverage map:**
 - `test_numbering.py` (19 tests) → AC-07-03/04/05/06/07
@@ -29,7 +29,7 @@
 
 ## 2. Per-AC results
 
-### Slice 0 — Numbering + money→Numeric(14,4)
+### Slice 0 - Numbering + money→Numeric(14,4)
 
 | AC | Verdict | Evidence | Remarks |
 |---|---|---|---|
@@ -41,7 +41,7 @@
 | AC-07-06 number at state-change | **PASS** | `test_number_assigned_at_state_change`, `test_number_assigned_at_issue_and_frozen` (Draft `invoice_number` NULL → assigned at Issue same commit). | |
 | AC-07-07 numbering settings UI (Resource shell) [E2E] | **PASS** | `test_numbering_api_catalog_and_edit` (BE) + **real-click E2E**: `/settings/numbering` renders Resource-shell list; row "…" → Edit opens a dialog with prefix/format/next-val fields. No h-scroll at 375px & 1280px. | |
 
-### Slice 1 — Finance invoice depth + PDF
+### Slice 1 - Finance invoice depth + PDF
 
 | AC | Verdict | Evidence | Remarks |
 |---|---|---|---|
@@ -57,7 +57,7 @@
 | AC-07-17 invoice TemplateContext + PDF download [E2E] | **PASS** | `test_invoice_pdf_renders`, `test_pdf_download_endpoint` (BE) + **live HTTP**: `GET /finance/invoices/{id}/pdf` → `application/pdf`, `%PDF`, 14KB. **Live E2E**: detail menu shows Download. | |
 | AC-07-18 receipt = Paid-state PDF | **PASS** | `test_receipt_is_paid_invoice_pdf` (`paidStamp=="PAID"`, payments table). | |
 
-### Slice 2 — CRM Sales Order
+### Slice 2 - CRM Sales Order
 
 | AC | Verdict | Evidence | Remarks |
 |---|---|---|---|
@@ -67,25 +67,25 @@
 | AC-07-22 invoiced_qty via capability | **PASS** | `test_create_invoice_from_so_partial` (invoiced_qty→3 via `crm.so_line_invoiced@1`), `test_so_line_invoiced_capability_resolves`. | |
 | AC-07-23 SO Fulfilled derived | **PASS** | `test_full_invoicing_derives_fulfilled` (every line fully invoiced → Fulfilled; partial stays Confirmed). | |
 
-### Slice 3 — Gateways + checkout + webhooks
+### Slice 3 - Gateways + checkout + webhooks
 
 | AC | Verdict | Evidence | Remarks |
 |---|---|---|---|
 | AC-07-24 payment connections one-per-type relaxed | **PASS** | `test_two_different_payment_providers_allowed`, `test_same_payment_provider_duplicate_rejected`, `test_non_payment_type_still_one_per_type`. | |
 | AC-07-25 per-project connection resolution | **PASS** | `test_per_project_connection_resolution` (project override Billplz used over tenant-default Stripe). | |
 | AC-07-26 Stripe + Billplz adapters | **PASS** | `test_payment_providers_registered` (both implement create_checkout/verify_webhook/refund/test). | |
-| AC-07-27 checkout Pending row + redirect [E2E] | **PASS (BE) / DEFERRED (live gateway)** | `test_checkout_creates_pending_and_redirects` (Pending row, external_ref=id, redirect URL) — adapter HTTP-mocked. | No live Stripe/Billplz creds → the actual browser redirect to a hosted page is **DEFERRED**; logic fully verified in unit test. |
+| AC-07-27 checkout Pending row + redirect [E2E] | **PASS (BE) / DEFERRED (live gateway)** | `test_checkout_creates_pending_and_redirects` (Pending row, external_ref=id, redirect URL) - adapter HTTP-mocked. | No live Stripe/Billplz creds → the actual browser redirect to a hosted page is **DEFERRED**; logic fully verified in unit test. |
 | AC-07-28 webhook route, tenant from connection, masked log | **PASS** | `test_webhook_flips_pending_to_succeeded`, `test_webhook_log_is_masked`, `test_unknown_connection_rejected` (secret/PAN masked in `integration_logs`). | |
 | AC-07-29 signature + timestamp tolerance | **PASS** | `test_invalid_signature_rejected`, `test_stale_event_rejected` (both `status:"rejected"`). | |
 | AC-07-30 idempotent ingest + idempotent flip | **PASS** | `test_idempotent_ingest_and_flip` (dup event = no-op; second success on Succeeded payment `applied:false`, never re-credited). | |
-| AC-07-31 webhook flips Pending→Succeeded→Paid [E2E] | **PASS (BE) / DEFERRED (live gateway)** | `test_webhook_flips_pending_to_succeeded` (FOR UPDATE flip → invoice key `paid`) — HTTP-mocked adapter, signed test event. | No live gateway → real webhook delivery DEFERRED; signed-event ingest fully verified. |
+| AC-07-31 webhook flips Pending→Succeeded→Paid [E2E] | **PASS (BE) / DEFERRED (live gateway)** | `test_webhook_flips_pending_to_succeeded` (FOR UPDATE flip → invoice key `paid`) - HTTP-mocked adapter, signed test event. | No live gateway → real webhook delivery DEFERRED; signed-event ingest fully verified. |
 | AC-07-32 gateway_fee captured | **PASS** | `test_gateway_fee_captured` (fee 320 cents → `Decimal("3.2000")`). | |
 | AC-07-33 abandoned Pending reaped | **PASS** | `test_reaper_expires_abandoned_pending` (5h-old Pending → Expired). | |
 | AC-07-34 out-of-order webhook tolerated | **PASS** | `test_out_of_order_webhook_retried` (refund/success for unknown payment → `status:"retry"`; idempotency row removed). | |
 | AC-07-35 post-payment workflow fires [E2E] | **PASS** | `test_post_payment_reaction` (invoice→Paid → ticket Valid + participant Eligible, failure-isolated). | Verified end-to-end via the eager event bus. |
 | AC-07-36 dispute webhook → Disputed | **PASS** | `test_dispute_flips_to_disputed` (`charge.dispute.created` → payment Disputed). | |
 
-### Slice 4 — Refunds + settlement
+### Slice 4 - Refunds + settlement
 
 | AC | Verdict | Evidence | Remarks |
 |---|---|---|---|
@@ -110,38 +110,38 @@
 | AC-07-50 failure isolation | **PASS** | `test_post_payment_reaction` (workflow failure-isolated on the event bus; webhook never 500s). | |
 | AC-07-51 money exact end-to-end | **PASS** | `test_refund_lines_sum_to_amount_exactly`, `test_settlement_net_reconciles_exactly`, `test_money_is_exact_decimal_numeric` (Σ reconciles exactly, zero float drift). | |
 | AC-07-52 responsive surfaces [E2E] | **PASS** | **Live E2E**: `/settings/numbering`, `/finance/invoices`, `/finance/settlements`, `/ems/sales-orders` all show `scrollWidth==clientWidth` at **375px AND 1280px** (no page h-scroll; table internal `overflow-x-auto` scrolls within its container). Settlement tab no h-scroll at 375px. | |
-| AC-07-53 Definition-of-Done gate | **PASS** | (1) FE services bound to **real** (`numberingService = realNumberingService`; `financeService` uses real `apiFetch` — no surviving phase-1 mock). (2) **Backfill** present: `backfill_graph` for invoice/payment/refund/settlement + 5 finance migrations (incl. money→Numeric + legacy status_id backfill). (3) Status keys **`is_system=True`** → locked from tenant rename, key-lookups safe. (4) New perms **granted to existing Admin**: verified `settlements.read/manage`, `numbering.read/manage`, `invoices.read/manage`, `finance.*` all in the default-tenant Admin effective set. | |
+| AC-07-53 Definition-of-Done gate | **PASS** | (1) FE services bound to **real** (`numberingService = realNumberingService`; `financeService` uses real `apiFetch` - no surviving phase-1 mock). (2) **Backfill** present: `backfill_graph` for invoice/payment/refund/settlement + 5 finance migrations (incl. money→Numeric + legacy status_id backfill). (3) Status keys **`is_system=True`** → locked from tenant rename, key-lookups safe. (4) New perms **granted to existing Admin**: verified `settlements.read/manage`, `numbering.read/manage`, `invoices.read/manage`, `finance.*` all in the default-tenant Admin effective set. | |
 
 ---
 
 ## 3. Summary
 
-- **PASS: 51 / 53.** **DEFERRED (live-gateway only): 2** — AC-07-27 (browser redirect to hosted page) and AC-07-31 (real webhook delivery flip). Both have their full logic verified via the HTTP-mocked adapter unit tests (Pending row + external_ref + redirect URL; signed-event ingest → FOR-UPDATE flip → derived Paid). Reason: no live Stripe/Billplz credentials in this environment (planned). AC-07-37 gateway-refund branch is likewise unit-verified (mocked `provider.refund`); the manual CASH refund path was verified live end-to-end.
+- **PASS: 51 / 53.** **DEFERRED (live-gateway only): 2** - AC-07-27 (browser redirect to hosted page) and AC-07-31 (real webhook delivery flip). Both have their full logic verified via the HTTP-mocked adapter unit tests (Pending row + external_ref + redirect URL; signed-event ingest → FOR-UPDATE flip → derived Paid). Reason: no live Stripe/Billplz credentials in this environment (planned). AC-07-37 gateway-refund branch is likewise unit-verified (mocked `provider.refund`); the manual CASH refund path was verified live end-to-end.
 - **No FAILs.** No Cluster F regression. The single FE-unit failure is the pre-existing, unrelated signin branding-heading test.
-- **Live Postgres migrations applied clean** (money columns confirmed `numeric(14,4)`, 0 floats) — the recurring "broken-migration-invisible-to-create_all-suite" gap does NOT apply here.
+- **Live Postgres migrations applied clean** (money columns confirmed `numeric(14,4)`, 0 floats) - the recurring "broken-migration-invisible-to-create_all-suite" gap does NOT apply here.
 
 ## 4. E2E scenarios (User Story / Steps / Expected / Actual)
 
-**Scenario A — Manual record-payment derives Paid (AC-07-10/11).**
+**Scenario A - Manual record-payment derives Paid (AC-07-10/11).**
 - *User story:* As an event organiser I record a cash payment against an issued invoice and watch it settle.
 - *Precondition:* AGENCY event, issued MYR 100 invoice (seeded via service + boot-registered capabilities).
 - *Steps:* `POST /finance/invoices/{id}/payments {amount:40, method:CASH}`; then `{amount:60, method:BANK}` (real live server).
 - *Expected:* 40 → Partially Paid; 60 (Σ=100) → Paid.
 - *Actual:* `200 partially_paid`, then `200 paid, paidTotal 100.0`. **PASS.**
 
-**Scenario B — AGENCY settlement three-way net + lifecycle (AC-07-46/47).**
+**Scenario B - AGENCY settlement three-way net + lifecycle (AC-07-46/47).**
 - *Precondition:* AGENCY project (PERCENT 10%), two paid MYR 100 attendee invoices.
 - *Steps:* `POST /finance/settlements`; then Approve; remit without ref; remit with ref (live server) + open the event Settlement tab in browser.
 - *Expected:* PRIMARY gross 200 / fees 0 / fee 20 / net 180; Draft→Approved→(422 no-ref)→Remitted; tab renders net.
 - *Actual:* `net 180 = 200−0−20`; `approved`; `422`; `remitted ref TXN-QA-001`; tab shows net/gross/remitted, no h-scroll at 375px. **PASS.**
 
-**Scenario C — Per-ticket manual refund → numbered credit note + PDF (AC-07-37/40).**
+**Scenario C - Per-ticket manual refund → numbered credit note + PDF (AC-07-37/40).**
 - *Precondition:* a Paid CASH invoice with one admission ticket.
 - *Steps:* `POST /finance/invoices/{id}/refunds {ticketIds, reason}`; then `GET /finance/invoices/refunds/{id}/credit-note` (live server).
 - *Expected:* refund method CASH, credit note number assigned, credit-note PDF.
 - *Actual:* `method CASH, creditNote CN-2026-00001, statusKey confirmed`; PDF `application/pdf %PDF`. **PASS.**
 
-**Scenario D — Numbering settings edit (AC-07-07).**
+**Scenario D - Numbering settings edit (AC-07-07).**
 - *Steps:* navigate `/settings/numbering`, open invoice row "…" → Edit (real clicks).
 - *Expected:* Resource-shell list; edit dialog with prefix/format/next-val.
 - *Actual:* dialog opened with the fields. **PASS.**

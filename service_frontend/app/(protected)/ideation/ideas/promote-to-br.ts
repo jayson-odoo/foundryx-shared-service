@@ -10,7 +10,7 @@ type Router = ReturnType<typeof useRouter>;
 
 export interface PromoteOptions {
   /** Cluster label → the new BR's title (AC-BI-32b). Omitted for a single-idea /
-   * bulk promote — the backend derives the title from the representative idea's
+   * bulk promote - the backend derives the title from the representative idea's
    * problem so the BR is never "Untitled BR". */
   title?: string;
 }
@@ -21,8 +21,8 @@ export interface PromoteOptions {
  * AC-BI-17). The BR absorbs the idea (warm start): its problem_statement is
  * pre-filled server-side and the grill auto-opens on arrival (AC-BI-29b).
  *
- * Shared by every promote surface — the ideas-list row/bulk menu, the cluster
- * suggestions, and the idea form/detail view — so the flow stays identical.
+ * Shared by every promote surface - the ideas-list row/bulk menu, the cluster
+ * suggestions, and the idea form/detail view - so the flow stays identical.
  */
 export async function promoteIdeasToBr(
   ideas: Idea[],
@@ -41,7 +41,7 @@ export async function promoteIdeasToBr(
       ideaIds: ideas.map((i) => i.id),
       ...(opts.title ? { title: opts.title } : {}),
     });
-    toast.success('Draft requirement created — start grilling.');
+    toast.success('Draft requirement created - start grilling.');
     router.push(brFormHref(created.id, { tab: 'grill' }));
   } catch (e) {
     toast.error(

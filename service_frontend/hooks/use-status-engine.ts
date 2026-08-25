@@ -1,10 +1,10 @@
 'use client';
 
 /**
- * Status-engine state (sprint-2/01) — `useStatusEntities` backs the entity
+ * Status-engine state (sprint-2/01) - `useStatusEntities` backs the entity
  * LIST surface; `useStatusGraph(entityType)` backs one entity's detail form
  * (canvas + statuses tab) with mutation helpers that refetch on success.
- * Position saves are SILENT (no refetch — the canvas already shows the node
+ * Position saves are SILENT (no refetch - the canvas already shows the node
  * where the user dropped it; a refetch would make dragging feel janky).
  */
 import { useCallback, useEffect, useState } from 'react';
@@ -64,7 +64,7 @@ export interface UseStatusGraphResult {
   refresh: () => Promise<void>;
   createStatus: (input: CreateStatusInput) => Promise<boolean>;
   updateStatus: (id: string, input: UpdateStatusInput) => Promise<boolean>;
-  /** Canvas drag-stop — persists silently, never refetches (smooth drag). */
+  /** Canvas drag-stop - persists silently, never refetches (smooth drag). */
   saveNodePosition: (id: string, x: number, y: number) => void;
   deleteStatus: (id: string) => Promise<boolean>;
   setStatusActive: (id: string, active: boolean) => Promise<boolean>;

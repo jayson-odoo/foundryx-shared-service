@@ -39,7 +39,7 @@ export function sorentoFieldLabel(field: string): string {
 
 /**
  * The required Sorento fields (`code`, `name`, `is_active`) with no source row
- * mapping them — the exact null-record failure a sync would hit. Warned before
+ * mapping them - the exact null-record failure a sync would hit. Warned before
  * save, never silently allowed (AC-15-44). Pure, so it is unit-tested directly.
  */
 export function unmappedRequiredFields(
@@ -55,7 +55,7 @@ export function unmappedRequiredFields(
 export interface MappingTableProps {
   editing: boolean;
   rows: MappingEditableRow[];
-  /** Non-deliverable provenance/identity rows (e.g. last_modified) — read-only. */
+  /** Non-deliverable provenance/identity rows (e.g. last_modified) - read-only. */
   provenanceRows: AutocountMappingRow[];
   /** The ONLY Sorento targets the picker offers (AC-15-42). */
   sorentoFields: AutocountSorentoField[];
@@ -72,7 +72,7 @@ export interface MappingTableProps {
  * The AutoCount source → (transform) → Sorento field table (AC-15-40). Read-only
  * by default (plain values); under Edit each cell is a searchable picker. The
  * Sorento picker offers ONLY the accepted set (and never a target already used
- * by another row — a duplicate can't even be selected), so the foolproof-UI
+ * by another row - a duplicate can't even be selected), so the foolproof-UI
  * guard is enforced in the UI as well as server-side.
  */
 export function MappingTable({

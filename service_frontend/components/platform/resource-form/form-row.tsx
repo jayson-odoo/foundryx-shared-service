@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils';
 
-/** Red required marker — system-wide convention for required fields (plan 02 review). */
+/** Red required marker - system-wide convention for required fields (plan 02 review). */
 export function RequiredMark() {
   return (
     <span className="ms-0.5 text-destructive" aria-hidden="true">

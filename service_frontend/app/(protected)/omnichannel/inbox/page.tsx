@@ -33,7 +33,7 @@ export default function InboxPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   // Deep link: ?thread=<contactId> is the source of truth for the open
-  // conversation — opening a thread pushes it into the URL (shareable +
+  // conversation - opening a thread pushes it into the URL (shareable +
   // debuggable), and browser back/forward re-selects. Read from window/history
   // instead of useSearchParams to keep the route statically prerenderable.
   useEffect(() => {

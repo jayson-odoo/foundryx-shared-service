@@ -1,6 +1,6 @@
-"""Drive persistence (plan sprint-3/04) — pure SQLAlchemy, ALWAYS tenant-scoped.
+"""Drive persistence (plan sprint-3/04) - pure SQLAlchemy, ALWAYS tenant-scoped.
 Every query filters ``tenant_id`` from the authed context, never client input
-(multi-tenancy invariant). Repository flushes but does NOT commit — the service
+(multi-tenancy invariant). Repository flushes but does NOT commit - the service
 owns the transaction (so it can ``emit_entity_event`` before the commit that
 drives the after-commit workflow drain)."""
 from typing import List, Optional, Set, Tuple
@@ -70,7 +70,7 @@ class DocumentRepository:
         return crumbs
 
     def subtree_folder_ids(self, tenant_id: str, root_id: str) -> Set[str]:
-        """All descendant folder ids (inclusive) — for cascade + cycle guard."""
+        """All descendant folder ids (inclusive) - for cascade + cycle guard."""
         out: Set[str] = {root_id}
         frontier = [root_id]
         while frontier:
@@ -180,7 +180,7 @@ class DocumentRepository:
     def used_bytes(self, tenant_id: str) -> int:
         # Quota basis = "sum of non-purged version bytes" (plan D12). Trashed
         # files still occupy storage (blobs are dropped only on PURGE, which
-        # also deletes the File row) — so count EVERY surviving file's versions,
+        # also deletes the File row) - so count EVERY surviving file's versions,
         # is_deleted or not, else trash-then-upload would bypass the quota.
         return (
             self.db.query(func.coalesce(func.sum(FileVersion.size_bytes), 0))

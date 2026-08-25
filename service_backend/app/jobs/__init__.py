@@ -2,7 +2,7 @@
 
 A generic ``type``-dispatched async job framework: one ``background_jobs`` table,
 a handler registry, a service (create/claim/enqueue/progress/finish/resume) and a
-Celery worker — mirrors the import-engine job pattern so every future job type
+Celery worker - mirrors the import-engine job pattern so every future job type
 reuses the machinery. Storage migration is the first registered ``type``.
 """
 from app.jobs.registry import (

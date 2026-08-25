@@ -1,6 +1,6 @@
 """Storage providers + S3-compatible adapter (plan sprint-2/06 D2/D3).
 
-The boto3 client is stubbed at the adapter seam — no network, no moto. The
+The boto3 client is stubbed at the adapter seam - no network, no moto. The
 CDN probe fetch is patched at the urlopen seam.
 """
 from typing import Any, Dict, Optional
@@ -24,7 +24,7 @@ class StubS3Client:
         self.fail_head = fail_head
         self.presigned: list = []
 
-    def head_bucket(self, Bucket):  # noqa: N803 — boto3 casing
+    def head_bucket(self, Bucket):  # noqa: N803 - boto3 casing
         if self.fail_head:
             raise RuntimeError("403 Forbidden (head_bucket)")
 
@@ -98,7 +98,7 @@ def test_resolve_presigns_without_cdn():
     client = StubS3Client()
     a = adapter(client=client)
     kind, url = a.resolve("avatars/x.webp")
-    # Presigned URLs EXPIRE — the distinct kind tells serving routes to skip
+    # Presigned URLs EXPIRE - the distinct kind tells serving routes to skip
     # the immutable cache header (review fix).
     assert kind == "presigned"
     assert url.startswith("https://signed.example/avatars/x.webp")
@@ -144,7 +144,7 @@ def test_s3_fields_have_optional_endpoint_and_cdn():
     assert fields["secretAccessKey"]["secret"] is True
 
 
-# ── provider.test() — probe round-trip (plan 06 D3) ────────────────────────
+# ── provider.test() - probe round-trip (plan 06 D3) ────────────────────────
 
 def _patch_adapter_client(monkeypatch, client: StubS3Client):
     monkeypatch.setattr(

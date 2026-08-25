@@ -1,5 +1,5 @@
 /**
- * PHASE 1 MOCK jobs service (sprint-4/10) — an in-memory job store the wizard +
+ * PHASE 1 MOCK jobs service (sprint-4/10) - an in-memory job store the wizard +
  * Jobs drawer iterate against with NO backend. A `running` job auto-advances its
  * progress on each `getJob`/`listJobs` poll (copying → done), so every state
  * (running / needs_review / failed / done / aborted) is exercisable. Tests seed
@@ -37,7 +37,7 @@ function makeJob(over: Partial<Job> = {}): Job {
 
 let _jobs: Job[] = [makeJob()];
 
-/** Test/dev seam — replace the store with a controlled set of jobs. */
+/** Test/dev seam - replace the store with a controlled set of jobs. */
 export function seedMockJobs(jobs: Job[]): void {
   _jobs = jobs.map((j) => ({ ...j }));
 }

@@ -1,5 +1,5 @@
 /**
- * Business Requirement service — the boundary the BR UI talks to (Phase B-i
+ * Business Requirement service - the boundary the BR UI talks to (Phase B-i
  * slice 2). The interface IS the backend contract
  * (modules/ideation/routers/business_requirements.py).
  *
@@ -28,7 +28,7 @@ export interface BrListFilter {
 export interface BusinessRequirementService {
   /** All BRs for the tenant, newest first. */
   list(params?: BrListFilter): Promise<BusinessRequirement[]>;
-  /** One BR by id (detail — answers + stamped template doc). Rejects if absent. */
+  /** One BR by id (detail - answers + stamped template doc). Rejects if absent. */
   get(id: string): Promise<BusinessRequirementDetail>;
   /** Create a draft BR (stamps the active template version). */
   create(input: BusinessRequirementCreateInput): Promise<BusinessRequirementDetail>;
@@ -42,12 +42,12 @@ export interface BusinessRequirementService {
     id: string,
     status: BusinessRequirementStatus,
   ): Promise<BusinessRequirementDetail>;
-  /** The BR entity's status graph — backs the detail form's lifecycle/promote
+  /** The BR entity's status graph - backs the detail form's lifecycle/promote
    * action registry (AC-BI-34). Gated ideation.business_requirements.read. */
   statusGraph(): Promise<StatusGraph>;
   /** The Ideas feeding this BR (lineage). */
   listIdeas(id: string): Promise<Idea[]>;
-  /** The BRs an idea feeds (reverse lineage) — backs the idea detail's Business
+  /** The BRs an idea feeds (reverse lineage) - backs the idea detail's Business
    * Requirements tab (AC-BI-29c). */
   listForIdea(ideaId: string): Promise<BusinessRequirement[]>;
   /** Link ideas to the BR (same product). Returns the new linked set. */

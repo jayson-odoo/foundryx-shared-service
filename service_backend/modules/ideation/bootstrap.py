@@ -1,4 +1,4 @@
-"""Ideation bootstrap — the App-Store module contract (plan 08 §4).
+"""Ideation bootstrap - the App-Store module contract (plan 08 §4).
 
 ``install`` is GLOBAL and idempotent (schema + tables + permission-catalog sync);
 the per-tenant hooks (``install_tenant`` / ``update_tenant`` / ``uninstall_tenant``)
@@ -7,7 +7,7 @@ GRANTS are the store's concern (it grants the module keys to the tenant's roles)
 
 Slice 1 scaffold: schema + (currently empty) tables + permission CSV. Idea status
 entity, IntakeDefinition registry, capabilities and per-tenant seeds are filled by
-later slices — the hooks are wired now so the module contract is complete.
+later slices - the hooks are wired now so the module contract is complete.
 """
 from pathlib import Path
 
@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.repositories.permission_repository import PermissionRepository
 from app.services.permission_service import load_csv
 
-from . import models  # noqa: F401 — register module tables on IdeationBase.metadata
+from . import models  # noqa: F401 - register module tables on IdeationBase.metadata
 from .db import IDEATION_SCHEMA, IdeationBase
 
 MODULE_NAME = "ideation"
@@ -29,19 +29,19 @@ def register_capabilities() -> None:
     """Boot-time capability registration (plan sprint-3/10 D5). Idempotent.
 
     Ideation provides no capabilities yet (it consumes omnichannel's
-    ``messaging.send@1`` for submitter notifications — later slice)."""
+    ``messaging.send@1`` for submitter notifications - later slice)."""
     return None
 
 
 def register_engine_entities() -> None:
-    """Boot-time engine registration (plan 11 D9). Idempotent — called by
+    """Boot-time engine registration (plan 11 D9). Idempotent - called by
     ``register_module_boot`` whenever the module is loaded.
 
     Slice 2 (AC-A-05/A-07): register the ``software`` product-kind and the
     delivery adapter-kind registry. Both registrations are GLOBAL (module-tagged);
     the ``software`` kind is filtered by the active-modules visibility gate at
     every catalog read, so it surfaces (in ``/products/kinds``) only for tenants
-    with ideation installed — core ``good`` covers goods.
+    with ideation installed - core ``good`` covers goods.
 
     Slice 3 (AC-A-10): register the Idea as a **tenant-owned** status entity on
     the core status engine (lifecycle draft→…→closed +duplicate/+rejected). The
@@ -63,11 +63,11 @@ def register_engine_entities() -> None:
         idea_migrate_records,
     )
 
-    # Software is the ideation-owned kind — visible only while ideation is active.
+    # Software is the ideation-owned kind - visible only while ideation is active.
     register_product_kind(ProductKind("software", "Software", MODULE_NAME, 3))
     # Populate the adapter-kind registry (embed_connection wired; the rest dormant).
     registered_adapter_kinds()
-    # Idea rides the core status engine — tenant-owned, non-scoped (D-A3).
+    # Idea rides the core status engine - tenant-owned, non-scoped (D-A3).
     register_status_entity(
         StatusEntity(
             entity_type=IDEA_ENTITY,
@@ -79,7 +79,7 @@ def register_engine_entities() -> None:
             required_flags=["is_initial", "is_terminal", "is_archived"],
         )
     )
-    # Business Requirement rides the core status engine too — tenant-owned,
+    # Business Requirement rides the core status engine too - tenant-owned,
     # unscoped (Bi-D3, slice 2). draft → grilling → ready → in-FR → delivered →
     # archived; the draft → ready edge is the S4 promote gate.
     register_status_entity(
@@ -134,7 +134,7 @@ def install(engine: Engine, db: Session) -> None:
     seed_br_statuses(db)
     seed_br_template(db)
     # The platform-tier grill-me-business skill (Phase B-i slice 3, AC-BI-28).
-    # Insert-if-missing — an operator's edits survive a reseed.
+    # Insert-if-missing - an operator's edits survive a reseed.
     from .services.grill_seed import seed_grill_skill
 
     seed_grill_skill(db)
@@ -158,17 +158,17 @@ def install_tenant(db: Session, tenant_id: str) -> None:
 def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     """Per-tenant data migration between provisioned versions (plan 08 D3).
 
-    All of ideation is 0.1.0 today — nothing to backfill yet."""
+    All of ideation is 0.1.0 today - nothing to backfill yet."""
     return None
 
 
 def uninstall_tenant(db: Session, tenant_id: str) -> None:
     """Wipe THIS tenant's rows from every module table (plan 08 §5).
 
-    The module schema and other tenants' rows are untouched — uninstall is
+    The module schema and other tenants' rows are untouched - uninstall is
     per-tenant, never global. Core ``public.products``, omnichannel contacts and
     other tenants' rows stay intact (AC-A-03). Reverse dependency order avoids FK
-    violations. (No module tables in the scaffold slice — a safe no-op.)"""
+    violations. (No module tables in the scaffold slice - a safe no-op.)"""
     for table in reversed(IdeationBase.metadata.sorted_tables):
         if "tenant_id" in table.c:
             db.execute(table.delete().where(table.c.tenant_id == tenant_id))
@@ -177,5 +177,5 @@ def uninstall_tenant(db: Session, tenant_id: str) -> None:
 
 def tenant_has_data(db: Session, tenant_id: str) -> bool:
     """Backfill detection (loader) for pre-App-Store installs. Ideation is a
-    net-new module — no legacy data ever existed — so no tenant backfills."""
+    net-new module - no legacy data ever existed - so no tenant backfills."""
     return False

@@ -1,10 +1,10 @@
-"""Grill router (Phase B-i slice 3, AC-BI-20..29) — the AI grill on the BR
+"""Grill router (Phase B-i slice 3, AC-BI-20..29) - the AI grill on the BR
 detail's Grill tab. Mounted at ``/ideation/business-requirements`` alongside the
 BR router; gated by ``require_module("ideation")`` + ``ideation.business_
 requirements.manage`` (grilling + editing answers ride ``.manage``; ``.promote``
 is the separate Gate-0 permission, not needed here).
 
-HTTP-only (no DB/SQL — the hard-fail rule). Turns are SYNCHRONOUS (Bi-D10): a
+HTTP-only (no DB/SQL - the hard-fail rule). Turns are SYNCHRONOUS (Bi-D10): a
 chat turn is a request/response, never a ``background_jobs`` row.
 """
 from fastapi import APIRouter, Depends
@@ -38,7 +38,7 @@ def post_grill_open(
     current_user: User = Depends(require_permission(_MANAGE)),
     db: Session = Depends(get_db),
 ) -> GrillTurnOut:
-    """Fire the opening grill turn on a fresh promoted BR (AC-BI-29b) — the agent
+    """Fire the opening grill turn on a fresh promoted BR (AC-BI-29b) - the agent
     greets + summarizes the absorbed idea(s) + asks its first question, with NO
     user message. Idempotent (a BR that already has messages returns its latest
     reply, no new LLM call)."""

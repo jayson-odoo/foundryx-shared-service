@@ -1,4 +1,4 @@
-"""Datetime hygiene (plan sprint-2/05, BL-012) — UTC end-to-end:
+"""Datetime hygiene (plan sprint-2/05, BL-012) - UTC end-to-end:
 
 - columns are timezone-aware (UTCDateTime) and ALWAYS read back aware-UTC,
   on SQLite (tests) and Postgres alike;
@@ -76,7 +76,7 @@ def test_pending_email_change_datetimes_are_z_suffixed(client):
     body = res.json()
     assert body["expiresAt"].endswith("Z"), body["expiresAt"]
     assert body["createdAt"].endswith("Z")
-    # cleanup — cancel the ceremony so other specs see no pending row
+    # cleanup - cancel the ceremony so other specs see no pending row
     client.delete("/me/change-email", headers=headers)
 
 

@@ -1,4 +1,4 @@
-"""Status engine's rule-site lister (sprint-2/02 D12) — one observability
+"""Status engine's rule-site lister (sprint-2/02 D12) - one observability
 row per conditioned edge on the caller's resolved tier. Visibility mirrors
 ``GET /status-entities``: tenant callers don't see platform-owned entities.
 Imported (and thereby registered) by ``app.rule_engine.sites._ensure_core``.
@@ -53,7 +53,7 @@ def _edge_rows(db: Session, current_user: Any) -> List[Dict[str, Any]]:
                     ),
                     "summary": tree_text(edge.conditions_json, facts),
                     # DATA, not a URL (code-review fix): the backend must not
-                    # know frontend routes — the Rules page maps site+target
+                    # know frontend routes - the Rules page maps site+target
                     # to its own deep-link.
                     "target": entity.entity_type,
                     "updatedAt": edge.updated_at.isoformat() if edge.updated_at else None,

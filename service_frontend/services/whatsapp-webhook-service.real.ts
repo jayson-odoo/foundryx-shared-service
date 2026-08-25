@@ -1,5 +1,5 @@
 /**
- * Real consumer-webhook service — talks to FastAPI via the shared api-client.
+ * Real consumer-webhook service - talks to FastAPI via the shared api-client.
  * Bound by the `whatsapp-webhook-service.ts` barrel. Endpoints per omnichannel
  * Slice 4.
  */

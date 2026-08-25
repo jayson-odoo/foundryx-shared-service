@@ -17,7 +17,7 @@ def main() -> None:
         print("seeded: tenant + roles + demo users")
     finally:
         db.close()
-    # Module catalog + global installs + backfill (plan 08) — without this a
+    # Module catalog + global installs + backfill (plan 08) - without this a
     # fresh init_db DB has an empty App Store and no module tables.
     bootstrap_modules()
     print("modules: catalog synced + installed")

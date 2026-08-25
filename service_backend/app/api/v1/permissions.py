@@ -1,4 +1,4 @@
-"""Permission catalog route — the grouped catalog driving the role Permissions tab."""
+"""Permission catalog route - the grouped catalog driving the role Permissions tab."""
 from typing import List
 
 from fastapi import APIRouter, Depends
@@ -20,7 +20,7 @@ def list_catalog(
     current_user: User = Depends(require_permission("roles.read")),
     db: Session = Depends(get_db),
 ) -> List[PermissionResourceOut]:
-    # Platform keys are operator-only — tenant role editors never see them.
+    # Platform keys are operator-only - tenant role editors never see them.
     # Module keys narrow to the tenant's INSTALLED modules (plan 08 §6).
     is_platform = current_user.tenant_id == PLATFORM_TENANT_ID
     installed = (

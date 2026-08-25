@@ -1,4 +1,4 @@
-"""Centralized background-jobs infra (sprint-4/10 Slice 1) — AC-10-01..03.
+"""Centralized background-jobs infra (sprint-4/10 Slice 1) - AC-10-01..03.
 
 Covers: table shape + ApiModel wire, handler registry + dispatch + unknown-type
 loud, atomic claim exactly-once, eager inline run, resume-from-cursor, retention
@@ -211,7 +211,7 @@ def test_resume_from_cursor_no_redo(db):
     run_job(db, job.id)
     db.refresh(job)
     assert job.status == JOB_DONE
-    # Exactly-once per item — no duplicates from the resume.
+    # Exactly-once per item - no duplicates from the resume.
     assert job.result_json["processed"] == ["a", "b", "c", "d"]
 
 
@@ -255,7 +255,7 @@ def test_prune_removes_only_old_terminal_jobs(db):
 # The workflow Celery worker (`celery -A app.workflow_engine.worker`) runs no
 # FastAPI lifespan, so any task/handler in another package must be imported by
 # the worker module itself. When it wasn't, the worker received `jobs.run`,
-# found it UNREGISTERED, and DISCARDED the message (KeyError: 'jobs.run') —
+# found it UNREGISTERED, and DISCARDED the message (KeyError: 'jobs.run') -
 # storage migrations hung Pending forever with no error. These pin the wiring so
 # the next background-job type added can't silently reintroduce the stall.
 
@@ -270,11 +270,11 @@ def test_workflow_worker_registers_jobs_run_task():
 
 def test_workflow_worker_registers_storage_migration_handler():
     """Importing the workflow worker entrypoint must register the
-    storage_migration job handler — else `jobs.run` runs but `handler_for`
+    storage_migration job handler - else `jobs.run` runs but `handler_for`
     raises and the job flips to failed."""
     import importlib
 
-    import app.workflow_engine.worker  # noqa: F401 — triggers cross-package imports
+    import app.workflow_engine.worker  # noqa: F401 - triggers cross-package imports
 
     registry = importlib.import_module("app.jobs.registry")
     handler_def = registry.handler_for("storage_migration")

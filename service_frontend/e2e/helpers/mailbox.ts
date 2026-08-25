@@ -3,11 +3,11 @@ import path from 'node:path';
 
 /**
  * Shared maildir-reading helpers for mail-asserting E2E specs (plan 10
- * pattern, extracted in the sprint-2/04 review — password-reset and
+ * pattern, extracted in the sprint-2/04 review - password-reset and
  * account-security specs previously carried diverging copies).
  *
  * Rig (see CLAUDE.md §7): a maildir-handler smtpd the backend's SMTP
- * connection points at —
+ * connection points at -
  *   python -m aiosmtpd -n -l localhost:1025 \
  *     -c aiosmtpd.handlers.Mailbox /tmp/foundryx-e2e-mailbox
  * Pre-create the tmp/new/cur subdirs (the handler doesn't).
@@ -16,7 +16,7 @@ export const MAILBOX_DIR = '/tmp/foundryx-e2e-mailbox/new';
 
 /**
  * Newest mailbox message addressed to `to` (and containing `containing`,
- * when given — flows that send SEVERAL mails to one address would otherwise
+ * when given - flows that send SEVERAL mails to one address would otherwise
  * race the dispatcher and match a stale message). Returns the
  * quoted-printable-decoded body, or null.
  */
@@ -38,7 +38,7 @@ export function readMailTo(to: string, containing?: string): string | null {
 }
 
 /**
- * Polls until a matching mail lands. Default timeout is generous — the
+ * Polls until a matching mail lands. Default timeout is generous - the
  * outbox dispatcher's claim/retry cadence was observed to deliver up to
  * ~35s after enqueue under a busy local stack (pair with a raised Playwright
  * test timeout when waits can stack).

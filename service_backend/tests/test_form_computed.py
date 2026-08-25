@@ -1,4 +1,4 @@
-"""Tests for app.form_engine.computed — arithmetic expression parser/evaluator.
+"""Tests for app.form_engine.computed - arithmetic expression parser/evaluator.
 
 All tests are pure unit tests (no DB, no fixtures).  Run with:
     .venv/bin/python -m pytest tests/test_form_computed.py -q
@@ -208,7 +208,7 @@ class TestSyntaxErrors:
             parse_expression("   ")
 
     def test_trailing_operator(self):
-        # "2+" — trailing garbage after parse
+        # "2+" - trailing garbage after parse
         with pytest.raises(ComputedExpressionError):
             parse_expression("2 +")
 
@@ -221,12 +221,12 @@ class TestSyntaxErrors:
             parse_expression("2 + 3)")
 
     def test_two_consecutive_numbers(self):
-        # "2 2" — trailing content after first number parsed
+        # "2 2" - trailing content after first number parsed
         with pytest.raises(ComputedExpressionError, match="trailing"):
             parse_expression("2 2")
 
     def test_two_consecutive_operators(self):
-        # "2 + * 3" — unexpected '*' where a primary is expected
+        # "2 + * 3" - unexpected '*' where a primary is expected
         with pytest.raises(ComputedExpressionError):
             parse_expression("2 + * 3")
 
@@ -256,7 +256,7 @@ class TestSyntaxErrors:
 
 class TestHardCaps:
     def test_expression_at_length_limit_does_not_raise_length_error(self):
-        # Build a short expression well under both caps — just confirm a
+        # Build a short expression well under both caps - just confirm a
         # MAX_EXPR_LEN-character string that contains only whitespace padding
         # is rejected for being empty, not for length.  The real cap boundary
         # is tested by test_expression_over_length_cap below.
@@ -274,7 +274,7 @@ class TestHardCaps:
     def test_token_cap(self):
         # Build an expression that exceeds MAX_TOKENS but is within MAX_EXPR_LEN.
         # "1+1+1+...": each pair is "1+", 2 chars; 101 numbers needs 100 "+"s.
-        # Total: 101 * 2 - 1 = 201 chars — well under 1000.
+        # Total: 101 * 2 - 1 = 201 chars - well under 1000.
         n = MAX_TOKENS + 2  # one over the limit in token count
         expr = "+".join(["1"] * n)
         assert len(expr) < MAX_EXPR_LEN

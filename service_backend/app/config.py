@@ -26,17 +26,17 @@ class Settings(BaseSettings):
     # Single-use token TTLs (per-tenant control = BL-039).
     reset_token_ttl_minutes: int = 60
     invite_token_ttl_minutes: int = 10080  # 7d
-    # Change-email ceremony (plan sprint-2/04) — ONE window for the whole
+    # Change-email ceremony (plan sprint-2/04) - ONE window for the whole
     # request (old-side approve AND new-side verify share it).
     email_change_token_ttl_minutes: int = 60
-    # Public self-signup kill-switch (D3) — BL-032 re-enables with real tenant
+    # Public self-signup kill-switch (D3) - BL-032 re-enables with real tenant
     # provisioning. While false the endpoint 404s.
     signup_enabled: bool = False
     # Honor X-Forwarded-For (first hop) only when deployed behind the known
-    # proxy — false for direct uvicorn in dev, or attackers mint fresh
+    # proxy - false for direct uvicorn in dev, or attackers mint fresh
     # counters per spoofed header.
     trust_proxy_headers: bool = False
-    # Dual throttle policy (D6): email = temp lock (never permanent — a hard
+    # Dual throttle policy (D6): email = temp lock (never permanent - a hard
     # lockout is an attacker DoS on victims); IP = window throttle.
     throttle_email_max_fails: int = 5
     throttle_email_window_minutes: int = 15
@@ -47,23 +47,23 @@ class Settings(BaseSettings):
     # login (legit event registration is bursty) but still spam-bounded.
     throttle_form_public_max_fails: int = 30
     throttle_form_public_window_minutes: int = 15
-    # Public document-share access per IP (plan sprint-3/05 D6) — own bucket for
+    # Public document-share access per IP (plan sprint-3/05 D6) - own bucket for
     # failed unlock attempts + anonymous uploads.
     throttle_doc_share_max_fails: int = 30
     throttle_doc_share_window_minutes: int = 15
-    # Profile Portal auth per IP (plan sprint-4/06 slice 0a, AC-06-16) — own
+    # Profile Portal auth per IP (plan sprint-4/06 slice 0a, AC-06-16) - own
     # bucket so portal login/OTP/forgot/set-password spam never locks the staff
     # login bucket. Window-throttle like IP (no permanent lock).
     throttle_portal_max_fails: int = 20
     throttle_portal_window_minutes: int = 15
-    # Omnichannel embed session exchange per IP (plan sprint-4/11H, AC-11H-08) —
+    # Omnichannel embed session exchange per IP (plan sprint-4/11H, AC-11H-08) -
     # own bucket so assertion-exchange spam never locks the staff login bucket.
     # Window-throttle like IP (no permanent lock).
     throttle_embed_max_fails: int = 30
     throttle_embed_window_minutes: int = 15
-    # Profile Portal email one-time-code TTL (short — emailed login fallback).
+    # Profile Portal email one-time-code TTL (short - emailed login fallback).
     profile_otp_ttl_minutes: int = 10
-    # Form upload caps (D12). Per-file hard ceiling (DoS guard — capped reads
+    # Form upload caps (D12). Per-file hard ceiling (DoS guard - capped reads
     # never buffer beyond this) + per-submission total. Field-level maxSizeMb
     # (author setting) is enforced under this ceiling.
     form_upload_max_file_mb: float = 10
@@ -73,14 +73,14 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
-    # Frontend origin — used to build invite / set-password / reset links.
+    # Frontend origin - used to build invite / set-password / reset links.
     frontend_url: str = "http://localhost:3001"
 
-    # CORS — Next.js auto-bumps ports (3000 -> 3001 ...), cover a few.
+    # CORS - Next.js auto-bumps ports (3000 -> 3001 ...), cover a few.
     cors_origins: str = (
         "http://localhost:3000,http://localhost:3001,http://localhost:3002"
     )
-    # Tenants live on subdomains (plan 07 §6) — allow <slug>.localhost in dev
+    # Tenants live on subdomains (plan 07 §6) - allow <slug>.localhost in dev
     # and <slug>.<prod-domain> in prod (override in env).
     cors_origin_regex: str = r"http://[a-z0-9-]+\.localhost:300[0-2]"
 
@@ -101,11 +101,11 @@ class Settings(BaseSettings):
 
     # ── Integration core (plan 09) ──────────────────────────────────────────
     # Core Fernet key for encrypting connection credentials at rest
-    # (app/secrets.py). Ephemeral per-process key when unset (dev only — set a
+    # (app/secrets.py). Ephemeral per-process key when unset (dev only - set a
     # stable FERNET_KEY in prod or stored credentials die on restart).
     fernet_key: str = ""
 
-    # Platform-default SMTP — seeded into the PLATFORM tenant's `connections`
+    # Platform-default SMTP - seeded into the PLATFORM tenant's `connections`
     # row at bootstrap (zero-touch on-prem). Unset = no row = dev-log fallback.
     platform_smtp_host: str = ""
     platform_smtp_port: int = 587
@@ -113,17 +113,17 @@ class Settings(BaseSettings):
     platform_smtp_username: str = ""
     platform_smtp_password: str = ""
     platform_smtp_from_email: str = ""
-    platform_smtp_from_name: str = "FoundryX EMS"
+    platform_smtp_from_name: str = "Foundryx EMS"
 
-    # Email outbox (plan 09 §5) — dispatcher cadence + retention housekeeping.
+    # Email outbox (plan 09 §5) - dispatcher cadence + retention housekeeping.
     # `email_dispatcher_enabled` is the explicit kill-switch (tests/one-off
-    # scripts set it False) — never sniff the runtime for test frameworks.
+    # scripts set it False) - never sniff the runtime for test frameworks.
     email_dispatcher_enabled: bool = True
     email_outbox_retention_days: int = 90
     email_dispatch_interval_seconds: float = 2.0
     email_send_timeout_seconds: int = 10
 
-    # Workflow run retention (plan sprint-2/10 D4) — the scheduler minute-tick
+    # Workflow run retention (plan sprint-2/10 D4) - the scheduler minute-tick
     # prunes workflow_runs (+ cascade workflow_run_nodes) older than this window
     # so run history can't grow unbounded. Mirrors the email-outbox prune.
     workflow_run_retention_days: int = 30
@@ -137,7 +137,7 @@ class Settings(BaseSettings):
     import_file_retention_days: int = 30
 
     # ── Background jobs (plan sprint-4/10) ──────────────────────────────────
-    # Centralized background_jobs retention — the beat housekeeping pass prunes
+    # Centralized background_jobs retention - the beat housekeeping pass prunes
     # TERMINAL jobs (done/failed/aborted) older than this window; running,
     # pending and needs_review jobs are never pruned.
     background_job_retention_days: int = 30
@@ -148,7 +148,7 @@ class Settings(BaseSettings):
     # default a tenant without its own key falls back to (Bi-D18).
     #
     # This is a BOOTSTRAP CONVENIENCE ONLY. It is not an alternative runtime
-    # credential path — resolution always reads `connections.credentials_json`
+    # credential path - resolution always reads `connections.credentials_json`
     # (Fernet, write-only). Keys entered through the UI behave identically.
     #
     # `GRILL_API_KEY` is accepted as a fallback alias so an existing .env keeps
@@ -178,21 +178,21 @@ class Settings(BaseSettings):
     # integration_log_settings.retention_days NULL falls back to this). The beat
     # pruner deletes rows older than the effective window per tenant.
     integration_activity_retention_days: int = 30
-    # Volume guard (AC-DLC-26) — a lightweight per-process cap on activity writes
+    # Volume guard (AC-DLC-26) - a lightweight per-process cap on activity writes
     # so a burst degrades to dropping rows (with a logged counter) rather than
     # hammering the DB or blocking. Async/buffered writer = the scale path
     # (backlog). Set generously; 0 disables the guard.
     integration_activity_max_writes_per_second: int = 500
 
     # ── Omnichannel module (WhatsApp BSP) ───────────────────────────────────
-    # Meta app (FoundryX = Tech Provider). Embedded Signup exchanges the code
+    # Meta app (Foundryx = Tech Provider). Embedded Signup exchanges the code
     # against this one app. Empty in dev until the Meta app is configured.
     meta_app_id: str = ""
     meta_app_secret: str = ""
     meta_graph_version: str = "v19.0"
     meta_es_config_id: str = ""
     # Fernet key for encrypting channel credentials at rest. A throwaway dev
-    # key is generated per-process if unset (NEVER rely on that in prod — set
+    # key is generated per-process if unset (NEVER rely on that in prod - set
     # OMNICHANNEL_FERNET_KEY so encrypted credentials survive a restart).
     omnichannel_fernet_key: str = ""
 
@@ -201,7 +201,7 @@ class Settings(BaseSettings):
     # redis-server (brew install redis), same no-Docker stance as Postgres.
     redis_url: str = "redis://localhost:6379/0"
     # Celery eager mode runs tasks inline (tests; also a no-worker dev escape
-    # hatch — real deploys run a worker process and leave this false).
+    # hatch - real deploys run a worker process and leave this false).
     celery_task_always_eager: bool = False
     # Webhook callback base (the public URL Meta calls; ngrok etc. in dev).
     public_base_url: str = "http://localhost:8001"
@@ -212,7 +212,7 @@ class Settings(BaseSettings):
     # Meta webhook verify-token for the GET handshake (set the same value in
     # the Meta app's webhook config).
     meta_webhook_verify_token: str = "foundryx-omnichannel-verify"
-    # Media storage (plan sprint-2/06 D1/D10): backend selection is DATA —
+    # Media storage (plan sprint-2/06 D1/D10): backend selection is DATA -
     # tenant storage connection → platform connection → local disk. The old
     # STORAGE_BACKEND env is retired; media_root remains for the local adapter.
     media_root: str = "./media"

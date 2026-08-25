@@ -71,7 +71,7 @@ function sortItems(rows: NumberCatalogItem[], sort: ListQuery['sort']): NumberCa
 }
 
 /**
- * Numbering list config (sprint-4/07, Cluster F) — the document-numbering
+ * Numbering list config (sprint-4/07, Cluster F) - the document-numbering
  * catalog on the FULL Resource shell (search · filter · column prefs · sort ·
  * export). The catalog is small client data, so the fetcher pulls it whole and
  * filters/sorts/paginates client-side. Edit is an inline dialog (no detail page).
@@ -129,7 +129,7 @@ export function useNumberingListConfig(
           row.original.prefix ? (
             <span className="font-mono text-sm">{row.original.prefix}</span>
           ) : (
-            <span className="text-muted-foreground">—</span>
+            <span className="text-muted-foreground">-</span>
           ),
         size: 120,
         enableSorting: true,
@@ -229,7 +229,7 @@ export function useNumberingListConfig(
     return {
       viewKey: 'numbering',
       getRowId: (row) => row.docType,
-      rowHref: () => pathname, // no detail page — edit is an inline action
+      rowHref: () => pathname, // no detail page - edit is an inline action
       fetcher,
       exporter,
       searchPlaceholder: 'Search document types…',

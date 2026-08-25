@@ -1,4 +1,4 @@
-"""Background-job handler registry (sprint-4/10) — code-side, ``type``-keyed.
+"""Background-job handler registry (sprint-4/10) - code-side, ``type``-keyed.
 
 Mirrors the engine registries (status entities / rule facts / importers): a
 ``JobHandlerDef`` per job ``type`` registered at boot. Dispatch of an unknown
@@ -36,7 +36,7 @@ class UnknownJobType(Exception):
 
 def register_job_handler(handler_def: JobHandlerDef) -> None:
     """Register a job handler. Duplicate ``type`` = loud error (a re-run of the
-    SAME def object is tolerated — idempotent boot registration)."""
+    SAME def object is tolerated - idempotent boot registration)."""
     existing = _REGISTRY.get(handler_def.type)
     if existing is not None and existing is not handler_def:
         raise ValueError(f"Duplicate job handler registration for type '{handler_def.type}'.")
@@ -56,5 +56,5 @@ def list_job_handlers() -> List[JobHandlerDef]:
 
 
 def _reset_registry_for_tests() -> None:
-    """Test seam — clears the registry (handlers re-register idempotently)."""
+    """Test seam - clears the registry (handlers re-register idempotently)."""
     _REGISTRY.clear()

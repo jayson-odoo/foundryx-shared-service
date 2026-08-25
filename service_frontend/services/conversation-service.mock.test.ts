@@ -35,7 +35,7 @@ describe('listThreads', () => {
   });
 });
 
-describe('sendMessage — CSW enforcement (decision 14)', () => {
+describe('sendMessage - CSW enforcement (decision 14)', () => {
   it('allows free-form inside the 24h window', async () => {
     const msg = await svc.sendMessage('cnt-001', { messageType: 'TEXT', body: 'Hello!' });
     expect(msg.senderType).toBe('AGENT');
@@ -141,7 +141,7 @@ describe('realtime emitter', () => {
 
     unsub();
     __mockSimulateInbound('wsp-001', 'cnt-001');
-    expect(handler).toHaveBeenCalledTimes(1); // unsubscribed — no more calls
+    expect(handler).toHaveBeenCalledTimes(1); // unsubscribed - no more calls
   });
 
   it('ticks delivery receipts SENT→DELIVERED→READ after a send', async () => {

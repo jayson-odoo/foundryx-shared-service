@@ -30,7 +30,7 @@ const MIN_SECRET = 8;
 
 /**
  * Rotate a connection's signing secret, then reveal the new value ONCE. Rotating
- * invalidates every assertion signed with the old secret — the host must be
+ * invalidates every assertion signed with the old secret - the host must be
  * updated with the new value at the same time. The plaintext lives client-side
  * only; the backend stores it encrypted and never returns it.
  */
@@ -74,7 +74,7 @@ export function RotateSecretDialog({ connectionId, onOpenChange, onRotated }: Ro
           {!revealed && (
             <DialogDescription>
               Set a new signing secret for <span className="font-mono">{connectionId}</span>. Every
-              assertion signed with the old secret stops working immediately — update the host at the
+              assertion signed with the old secret stops working immediately - update the host at the
               same time.
             </DialogDescription>
           )}

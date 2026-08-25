@@ -1,4 +1,4 @@
-"""Workflow engine endpoints (plan sprint-2/08) — gated workflows.read /
+"""Workflow engine endpoints (plan sprint-2/08) - gated workflows.read /
 .manage / .run. Tenant-scoped: a tenant only ever sees/acts on its own
 workflows (scope = the authed user's tenant)."""
 from typing import List, Optional
@@ -123,7 +123,7 @@ def get_workflow_settings(
     current_user: User = Depends(require_permission("workflows.manage")),
     db: Session = Depends(get_db),
 ) -> WorkflowSettingsOut:
-    """Tenant workflow settings — run retention (plan 10)."""
+    """Tenant workflow settings - run retention (plan 10)."""
     days, is_default = WorkflowService(db).get_run_retention(current_user.tenant_id)
     return WorkflowSettingsOut(run_retention_days=days, is_default=is_default)
 

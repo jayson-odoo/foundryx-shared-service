@@ -1,4 +1,4 @@
-"""Platform Console tenant tests (plan 07) — operator RBAC, provisioning,
+"""Platform Console tenant tests (plan 07) - operator RBAC, provisioning,
 lifecycle enforcement, slug rules, BL-015 association tenant_id."""
 from tests.conftest import (
     ACTIVE_EMAIL,
@@ -288,7 +288,7 @@ def test_purge_requires_archived_and_typed_slug(client):
     operator = _platform_headers(client)
     tenant_id = _provision(client, operator, slug="purgee", name="Purgee").json()["id"]
 
-    # Active tenant: refused (two-step safety — archive first).
+    # Active tenant: refused (two-step safety - archive first).
     res = client.post(
         f"/platform/tenants/{tenant_id}/purge",
         json={"confirmSlug": "purgee"},
@@ -307,7 +307,7 @@ def test_purge_requires_archived_and_typed_slug(client):
     )
     assert res.status_code == 422
 
-    # Correct: gone for good — list (both views) no longer knows it.
+    # Correct: gone for good - list (both views) no longer knows it.
     res = client.post(
         f"/platform/tenants/{tenant_id}/purge",
         json={"confirmSlug": "purgee"},

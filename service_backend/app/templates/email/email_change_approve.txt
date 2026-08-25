@@ -5,4 +5,4 @@ If this was you, approve it here (a confirmation link will then be sent to the n
 
 {{ link }}
 
-Wasn't you? Ignore this email — the request expires on its own and your email stays unchanged.
+Wasn't you? Ignore this email - the request expires on its own and your email stays unchanged.

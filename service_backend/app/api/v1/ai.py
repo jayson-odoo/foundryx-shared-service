@@ -1,11 +1,11 @@
-"""AI endpoints (Phase B-i slice 1) — HTTP validation + responses only.
+"""AI endpoints (Phase B-i slice 1) - HTTP validation + responses only.
 
 No DB access and no SQL here: every read/write goes through `AgentService` /
 `SkillService` / `TraceService`.
 
 Gating (AC-BI-14): agents AND skills ride `ai_agents.read` / `ai_agents.manage`;
 traces ride a SEPARATE `ai_traces.read`, because a trace holds raw prompts and
-completions — granting debugging access must not also grant the ability to
+completions - granting debugging access must not also grant the ability to
 re-key providers or rewrite prompts. LLM *connections* need no new permission:
 they ride the existing `integrations.read` / `integrations.manage`.
 """
@@ -89,7 +89,7 @@ def list_agents(
     return AgentListResponse(data=rows, total=total, page=page)
 
 
-# Literal routes BEFORE /{agent_id} — route order matters.
+# Literal routes BEFORE /{agent_id} - route order matters.
 @agents_router.get("/at", response_model=AgentNeighborResponse)
 def agent_at(
     user: User = Depends(require_permission("ai_agents.read")),
@@ -142,7 +142,7 @@ def ai_prerequisite(
     user: User = Depends(require_permission("ai_agents.read")),
     db: Session = Depends(get_db),
 ) -> AiPrerequisiteOut:
-    """AC-BI-11 — is any LLM connection configured, and which may an agent use?"""
+    """AC-BI-11 - is any LLM connection configured, and which may an agent use?"""
     return AgentService(db).prerequisite(user.tenant_id)
 
 
@@ -160,7 +160,7 @@ def list_models(
     db: Session = Depends(get_db),
     connection_id: str = Query(...),
 ) -> ModelListResponse:
-    """The model picker's source (AC-BI-05). Never raises on a provider outage —
+    """The model picker's source (AC-BI-05). Never raises on a provider outage -
     it returns the curated static list with `isLive=false` so the form renders."""
     return AgentService(db).models(user.tenant_id, connection_id)
 
@@ -311,7 +311,7 @@ def update_skill(
     db: Session = Depends(get_db),
 ) -> SkillOut:
     """A changed body mints a NEW immutable version and moves the active label
-    — prior versions are never mutated (AC-BI-07)."""
+    - prior versions are never mutated (AC-BI-07)."""
     return SkillService(db).update(user.tenant_id, skill_id, req, user)
 
 
@@ -335,7 +335,7 @@ def delete_skill(
     SkillService(db).delete(user.tenant_id, skill_id)
 
 
-# ── traces (SEPARATE permission — raw prompts/completions, AC-BI-14) ──────
+# ── traces (SEPARATE permission - raw prompts/completions, AC-BI-14) ──────
 @traces_router.get("", response_model=TraceListResponse)
 def list_traces(
     user: User = Depends(require_permission("ai_traces.read")),
@@ -368,7 +368,7 @@ def get_trace(
     user: User = Depends(require_permission("ai_traces.read")),
     db: Session = Depends(get_db),
 ) -> TraceDetailOut:
-    """Trace + its ordered FLAT step list (Bi-D17 — a tree renderer waits for
+    """Trace + its ordered FLAT step list (Bi-D17 - a tree renderer waits for
     real depth > 1)."""
     return TraceService(db).get(user.tenant_id, trace_id)
 

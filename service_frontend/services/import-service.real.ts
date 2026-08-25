@@ -1,4 +1,4 @@
-/** Real import service — talks to FastAPI via the shared api-client. */
+/** Real import service - talks to FastAPI via the shared api-client. */
 import type {
   ImportConfig,
   ImportJob,

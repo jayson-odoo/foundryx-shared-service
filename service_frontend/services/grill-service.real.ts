@@ -1,5 +1,5 @@
 /**
- * Real grill service — talks to FastAPI shared-service via the shared
+ * Real grill service - talks to FastAPI shared-service via the shared
  * api-client (Phase B-i slice 3). Endpoint map:
  * - state    → GET  /ideation/business-requirements/{id}/grill
  * - open     → POST /ideation/business-requirements/{id}/grill/open

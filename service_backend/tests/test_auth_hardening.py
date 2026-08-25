@@ -61,7 +61,7 @@ def test_forgot_password_unknown_email_same_response_no_email(client, session_fa
     unknown = client.post(
         "/auth/forgot-password", json={"email": "ghost@example.com"}
     )
-    # Identical status + body — no enumeration.
+    # Identical status + body - no enumeration.
     assert unknown.status_code == known.status_code == 200
     assert unknown.json() == known.json()
 
@@ -315,7 +315,7 @@ def test_success_resets_email_counter(client):
     )
     assert ok.status_code == 200
 
-    # Counter was reset — another (max-1) fails still get the uniform 401.
+    # Counter was reset - another (max-1) fails still get the uniform 401.
     last = _fail_login(client, ACTIVE_EMAIL, max_fails - 1)
     assert last.status_code == 401
 
@@ -337,7 +337,7 @@ def test_throttled_response_does_not_leak_validity(client):
 
 def test_ip_throttle_across_emails(client, monkeypatch):
     monkeypatch.setattr(settings, "throttle_ip_max_fails", 4)
-    # 4 fails across DIFFERENT emails — none trips the email counter.
+    # 4 fails across DIFFERENT emails - none trips the email counter.
     for i in range(4):
         res = client.post(
             "/auth/login",

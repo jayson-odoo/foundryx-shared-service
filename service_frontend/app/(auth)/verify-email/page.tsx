@@ -16,7 +16,7 @@ export default function Page() {
   const [message, setMessage] = useState<string | null>('Verifying...');
   const [error, setError] = useState<string | null>(null);
 
-  // Parked with signup (plan 10 D3) — no live path issues verification links
+  // Parked with signup (plan 10 D3) - no live path issues verification links
   // while self-signup is disabled.
   if (!signupEnabled) notFound();
 

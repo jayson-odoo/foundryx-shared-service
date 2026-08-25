@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 
 /**
- * AutoCount ESB — slice 1 read pipeline (sprint-4/13, AC-13-14) — E2E against
+ * AutoCount ESB - slice 1 read pipeline (sprint-4/13, AC-13-14) - E2E against
  * the LIVE stack (Next :3001 → FastAPI :8001 → Postgres). Real user clicks
  * only: after the one `goto` of the sign-in page, EVERY navigation is a click
  * on something a real operator can see. No deep-link `page.goto`.
@@ -11,9 +11,9 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
  * ── Why a scripted vendor, and what stays real ──────────────────────────────
  * AutoCount is customer-hosted and on-prem; no live instance is reachable from
  * CI (the demo box is IP-whitelisted to one workstation). So this spec stands a
- * tiny HTTP server in front of the two endpoints the slice-1 pipeline calls —
+ * tiny HTTP server in front of the two endpoints the slice-1 pipeline calls -
  * `POST /api/Server/Login` and `POST /api/GoodsReceivedNote/GetGoodsReceivedNote`
- * — and points a REAL `erp` connection at it.
+ * - and points a REAL `erp` connection at it.
  *
  * Only the vendor's socket is scripted. Everything downstream is the production
  * code path: the real provider `test()`, real company discovery from the login
@@ -26,7 +26,7 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
  *
  * ── Honest scope of "pushed" ────────────────────────────────────────────────
  * The slice-1 consumer sink is a DELIBERATE logging no-op (`sinks.LoggingSink`,
- * `delivered=False` always) — backlog BL-133. A record reaching `PUSHED` means
+ * `delivered=False` always) - backlog BL-133. A record reaching `PUSHED` means
  * "handed to the sink", NOT "delivered to the consumer". This spec therefore
  * asserts the click path and the staged-record lifecycle, and does NOT claim
  * the GRN appeared in a consumer. See the test report's AC-13-14 verdict.
@@ -34,7 +34,7 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
  * ── Spec isolation ──────────────────────────────────────────────────────────
  * The suite is fullyParallel and a sync mutates tenant-wide AutoCount state, so
  * every test provisions its OWN timestamped tenant via the operator API (setup
- * only — the flow under test stays real clicks) and installs the module there.
+ * only - the flow under test stays real clicks) and installs the module there.
  * No fixed literal names: residue from an earlier run must never collide.
  */
 
@@ -65,7 +65,7 @@ function vendorDay(): string {
 }
 
 /**
- * One vendor GRN, header + nested `GRDTL` lines (AC-13-06 — one call, no
+ * One vendor GRN, header + nested `GRDTL` lines (AC-13-06 - one call, no
  * fan-out). Values carry the vendor's real quirks: `"F"` for false, 8-dp
  * decimal strings, `YYYY/MM/DD` dates.
  */
@@ -112,7 +112,7 @@ interface Vendor {
   queueRead(records: Record<string, unknown>[]): void;
   logins(): number;
   reads(): number;
-  /** Every read filter the backend actually sent — asserted for AC-13-05. */
+  /** Every read filter the backend actually sent - asserted for AC-13-05. */
   filters(): Record<string, unknown>[];
   close(): Promise<void>;
 }
@@ -143,7 +143,7 @@ async function startVendor(): Promise<Vendor> {
       if (req.url === '/api/Server/Login') {
         logins += 1;
         // A BARE ARRAY is the vendor's success shape, and the session lives at
-        // [0]. Both `Token` (a GUID) and `JWTToken` are returned — the client
+        // [0]. Both `Token` (a GUID) and `JWTToken` are returned - the client
         // must pick the JWT.
         send([
           {
@@ -183,7 +183,7 @@ async function startVendor(): Promise<Vendor> {
   };
 }
 
-// ── tenant setup (operator API — setup only) ─────────────────────────────────
+// ── tenant setup (operator API - setup only) ─────────────────────────────────
 
 interface TenantAdmin {
   slug: string;
@@ -204,7 +204,7 @@ async function operatorToken(request: APIRequestContext): Promise<string> {
 async function provisionTenant(request: APIRequestContext, tag: string): Promise<TenantAdmin> {
   // Timestamp AND a random suffix: two workers starting in the same
   // millisecond would otherwise mint the same slug and collide on
-  // `ix_tenants_slug`. Never a fixed literal — residue must not break the
+  // `ix_tenants_slug`. Never a fixed literal - residue must not break the
   // next run.
   const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const slug = `e2e-ac-${tag}-${stamp}`;
@@ -306,7 +306,7 @@ async function openViaSidebar(page: Page, section: string, child: string, urlRe:
 /**
  * Create the AutoCount `erp` connection through the standard integrations form
  * (AC-13-01: four fields, no AppSecret, no company field), then run the Test
- * action — the "clicks Test" half of AC-13-14.
+ * action - the "clicks Test" half of AC-13-14.
  */
 async function createAndTestConnection(page: Page, vendorUrl: string, name: string) {
   await openViaSidebar(page, 'Settings', 'Integrations', /\/settings\/integrations$/);
@@ -319,7 +319,7 @@ async function createAndTestConnection(page: Page, vendorUrl: string, name: stri
   await page.getByPlaceholder('e.g. Company mail server').fill(name);
   await page.getByPlaceholder('https://autocount.customer.com').fill(vendorUrl);
   await page.getByPlaceholder('ADMIN').fill('ADMIN');
-  // FormRow labels aren't wired to inputs (no htmlFor, BL-080) — target the
+  // FormRow labels aren't wired to inputs (no htmlFor, BL-080) - target the
   // secrets by type. Provider field order: AppId, then Password.
   const secrets = page.locator('input[type="password"]');
   await secrets.nth(0).fill('app-vsoft');
@@ -330,7 +330,7 @@ async function createAndTestConnection(page: Page, vendorUrl: string, name: stri
 
   await page.getByRole('button', { name: 'Actions' }).click();
   await page.getByRole('menuitem', { name: 'Test connection' }).click();
-  // Success echoes the DISCOVERED company (AC-13-01/04) — proof the AppId
+  // Success echoes the DISCOVERED company (AC-13-01/04) - proof the AppId
   // selected the intended company database, not just that auth worked.
   await expect(page.getByText(new RegExp(`Connected to ${COMPANY_NAME}`)).first()).toBeVisible({
     timeout: 20_000,
@@ -367,7 +367,7 @@ function jobIdFromUrl(page: Page): string {
 
 /**
  * Open the company's Entities tab. Entities moved off the Overview tab onto
- * their own Resource-shell list — the catalogue is heading for nine-plus
+ * their own Resource-shell list - the catalogue is heading for nine-plus
  * entities, each with its own sync mode, cap and watermark.
  */
 async function openEntitiesTab(page: Page) {
@@ -379,9 +379,9 @@ async function openEntitiesTab(page: Page) {
 
 /**
  * Run the GRN entity's "Sync now" from its row action menu (the Resource-shell
- * action registry — the same registry that surfaces in the bulk menu). Eager
+ * action registry - the same registry that surfaces in the bulk menu). Eager
  * dev runs the job inline, so when the batch has records the app itself
- * navigates to the review surface — a click-driven navigation, not a URL
+ * navigates to the review surface - a click-driven navigation, not a URL
  * shortcut.
  */
 async function clickSyncNow(page: Page) {
@@ -396,7 +396,7 @@ async function syncNow(page: Page) {
   await expect(page.getByText('Needs review')).toBeVisible();
 }
 
-/** No horizontal PAGE scroll — wide content must scroll inside its own box. */
+/** No horizontal PAGE scroll - wide content must scroll inside its own box. */
 async function expectNoPageScroll(page: Page, where: string) {
   const overflow = await page.evaluate(() => {
     const el = document.documentElement;
@@ -408,18 +408,18 @@ async function expectNoPageScroll(page: Page, where: string) {
   ).toBeLessThanOrEqual(overflow.clientWidth + 1);
 }
 
-/** AC-13-44 — the surface is usable at BOTH widths, asserted not eyeballed. */
+/** AC-13-44 - the surface is usable at BOTH widths, asserted not eyeballed. */
 async function assertResponsive(page: Page, where: string, anchor: Locator) {
   for (const size of [
     { width: 375, height: 812 },
     { width: 1280, height: 900 },
   ]) {
     await page.setViewportSize(size);
-    // Let the reflow land before measuring — a box read on the same tick as the
+    // Let the reflow land before measuring - a box read on the same tick as the
     // resize still reports the OLD layout and produces a phantom failure.
     await page.waitForTimeout(400);
     await expect(anchor, `${where} @${size.width}px: anchor not visible`).toBeVisible();
-    // Visible AND laid out inside the viewport — a clipped control has a box
+    // Visible AND laid out inside the viewport - a clipped control has a box
     // starting past the right edge.
     const box = await anchor.boundingBox();
     expect(box, `${where} @${size.width}px: anchor has no box`).not.toBeNull();
@@ -431,7 +431,7 @@ async function assertResponsive(page: Page, where: string, anchor: Locator) {
 
 // ── the journey ──────────────────────────────────────────────────────────────
 
-test.describe('AutoCount ESB — slice 1 read pipeline', () => {
+test.describe('AutoCount ESB - slice 1 read pipeline', () => {
   test('AC-13-14 · Test → Sync now → review → Approve, entirely by clicking', async ({
     page,
     request,
@@ -454,7 +454,7 @@ test.describe('AutoCount ESB — slice 1 read pipeline', () => {
       const companyId = companyIdFromUrl(page);
       await assertResponsive(page, 'company detail', page.getByText(DB_NAME).first());
 
-      // ── 3. Sync 1 — two brand-new GRNs, staged for review ────────────────
+      // ── 3. Sync 1 - two brand-new GRNs, staged for review ────────────────
       vendor.queueRead([
         grn('1001', 'GRN-0001', { lastModified: `${vendorDay()} 09:15:00` }),
         grn('1002', 'GRN-0002', {
@@ -475,7 +475,7 @@ test.describe('AutoCount ESB — slice 1 read pipeline', () => {
 
       await expect(page.getByText('2 records · 2 awaiting approval')).toBeVisible();
 
-      // AC-13-11 — the job stops at needs_review and NOTHING is pushed.
+      // AC-13-11 - the job stops at needs_review and NOTHING is pushed.
       const before = await readStaged(request, token, job1);
       expect(before.jobStatus).toBe('needs_review');
       expect(before.rows).toHaveLength(2);
@@ -488,7 +488,7 @@ test.describe('AutoCount ESB — slice 1 read pipeline', () => {
 
       // Approve → both records PUSHED, job done.
       await page.getByTestId('approve-batch').click();
-      // Wait for the DECIDED state, not merely the in-flight disable — the
+      // Wait for the DECIDED state, not merely the in-flight disable - the
       // submitting flag flips before the POST resolves and would race the
       // read-back below.
       await expect(page.getByText('This batch has already been reviewed.')).toBeVisible({
@@ -498,7 +498,7 @@ test.describe('AutoCount ESB — slice 1 read pipeline', () => {
       expect(after1.jobStatus).toBe('done');
       expect(after1.rows.map((r) => r.status).sort()).toEqual(['PUSHED', 'PUSHED']);
 
-      // ── 4. Sync 2 — one CHANGED GRN + one new one ────────────────────────
+      // ── 4. Sync 2 - one CHANGED GRN + one new one ────────────────────────
       // Back to the company by clicking Back, then sync again.
       await page.getByRole('link', { name: 'Back' }).click();
       await page.waitForURL(new RegExp(`/autocount/companies/${companyId}$`));
@@ -531,7 +531,7 @@ test.describe('AutoCount ESB — slice 1 read pipeline', () => {
       expect(changedRow, 'GRN-0001 not staged').toBeTruthy();
       expect(newRow, 'GRN-0003 not staged').toBeTruthy();
 
-      // ── 5. AC-13-12 — the diff shows ONLY the changed fields ─────────────
+      // ── 5. AC-13-12 - the diff shows ONLY the changed fields ─────────────
       const changedCard = page.getByTestId(`staged-${changedRow!.id}`);
       await expect(changedCard).toBeVisible();
 
@@ -545,7 +545,7 @@ test.describe('AutoCount ESB — slice 1 read pipeline', () => {
       await expect(changedCard.getByTestId('diff-row-total')).toBeVisible();
       await expect(changedCard.getByTestId('diff-row-lines')).toBeVisible();
 
-      // Untouched fields are absent — including `last_modified`, which changes
+      // Untouched fields are absent - including `last_modified`, which changes
       // on EVERY re-fetch and is deliberately excluded as tautological noise.
       for (const absent of [
         'supplier_name',
@@ -575,7 +575,7 @@ test.describe('AutoCount ESB — slice 1 read pipeline', () => {
 
       // ── 6. Approve → PUSHED + done ───────────────────────────────────────
       await page.getByTestId('approve-batch').click();
-      // Wait for the DECIDED state, not merely the in-flight disable — the
+      // Wait for the DECIDED state, not merely the in-flight disable - the
       // submitting flag flips before the POST resolves and would race the
       // read-back below.
       await expect(page.getByText('This batch has already been reviewed.')).toBeVisible({
@@ -585,9 +585,9 @@ test.describe('AutoCount ESB — slice 1 read pipeline', () => {
       expect(after2.jobStatus).toBe('done');
       expect(after2.rows.map((r) => r.status).sort()).toEqual(['PUSHED', 'PUSHED']);
 
-      // ── 7. AC-13-13 — approval is idempotent ─────────────────────────────
+      // ── 7. AC-13-13 - approval is idempotent ─────────────────────────────
       // A replay (double-click, retry, redelivered request) must be a NO-OP
-      // that returns the original result — never a second push and never a
+      // that returns the original result - never a second push and never a
       // scary error on the second click of a successful action. The UI
       // disables the button, so the replay is issued at the boundary that a
       // real double-submit would reach.
@@ -620,7 +620,7 @@ test.describe('AutoCount ESB — slice 1 read pipeline', () => {
       // ── 9. A sync that legitimately finds nothing SAYS so ────────────────
       // The reported defect: clicking Sync now a second time produced silence.
       // The behaviour was correct (the vendor had no changes since the
-      // watermark, and an empty batch must not advance it) — only the UI was
+      // watermark, and an empty batch must not advance it) - only the UI was
       // mute. An empty run must read as a successful no-op: no navigation to a
       // review surface that has nothing in it, and no failure badge.
       vendor.queueRead([]);
@@ -628,7 +628,7 @@ test.describe('AutoCount ESB — slice 1 read pipeline', () => {
       const outcome = page.getByTestId('sync-outcome');
       await expect(outcome).toBeVisible({ timeout: 30_000 });
       await expect(outcome).toContainText(/no changes since last sync/i);
-      // Still on the company — an empty batch never pretends to be reviewable.
+      // Still on the company - an empty batch never pretends to be reviewable.
       expect(new URL(page.url()).pathname).toBe(`/autocount/companies/${companyId}`);
 
       // …and the state that makes the zero explicable is on the row itself.
@@ -667,7 +667,7 @@ test.describe('AutoCount ESB — slice 1 read pipeline', () => {
 
       const after = await readStaged(request, token, jobId);
       expect(after.jobStatus).toBe('done');
-      // Discarded, never deleted — the raw payload stays for audit (AC-13-07)
+      // Discarded, never deleted - the raw payload stays for audit (AC-13-07)
       // and nothing reached the sink.
       expect(after.rows.map((r) => r.status)).toEqual(['DISCARDED']);
     } finally {

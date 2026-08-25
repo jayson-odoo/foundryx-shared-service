@@ -20,7 +20,7 @@ function applyFavicon(branding: PublicBranding): void {
  * Applies the current host's tenant branding globally (sprint-2/03):
  *  - theme-token overrides as inline CSS custom properties on <html>
  *    (inline style beats both the `:root` and `.dark` stylesheet blocks, and
- *    is NOT an injected <style> tag — governance-clean);
+ *    is NOT an injected <style> tag - governance-clean);
  *  - browser-tab title (tenant name) + favicon when branded.
  *
  * Phase A applies client-side off the mock service. Phase B adds the real
@@ -31,7 +31,7 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
   const { branding, isResolved } = useTenantBranding();
   const { resolvedTheme } = useTheme();
 
-  // Theme variables — re-applied whenever branding or light/dark flips.
+  // Theme variables - re-applied whenever branding or light/dark flips.
   useEffect(() => {
     if (!isResolved) return;
     const root = document.documentElement;
@@ -49,7 +49,7 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
 
   // Tab title + favicon. generateMetadata handles first paint, but its value
   // can be STALE (the SSR branding fetch is revalidate-cached) and Next 15
-  // STREAMS metadata — the <title> may land AFTER this effect ran and clobber
+  // STREAMS metadata - the <title> may land AFTER this effect ran and clobber
   // it. The observer re-asserts the fresh client-resolved name whenever the
   // head rewrites the title (found via the branding E2E).
   useEffect(() => {

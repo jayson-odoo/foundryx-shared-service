@@ -17,7 +17,7 @@ import { Composer } from './composer';
 import { ConversationDrawer, dayLabel } from './conversation-drawer';
 import { HighlightedText, MessageBubble } from './message-bubble';
 
-// useDatetime reads the session tz preference (plan sprint-2/05) — no
+// useDatetime reads the session tz preference (plan sprint-2/05) - no
 // preference here, so formatters fall back to the runner's browser tz.
 vi.mock('next-auth/react', () => ({
   useSession: () => ({ status: 'authenticated', data: null }),
@@ -104,7 +104,7 @@ describe('MessageBubble', () => {
         message={msg({
           senderType: 'AGENT',
           deliveryStatus: 'FAILED',
-          errorMessage: 'Re-engagement message — 24h window has passed.',
+          errorMessage: 'Re-engagement message - 24h window has passed.',
         })}
       />,
     );
@@ -124,7 +124,7 @@ describe('MessageBubble', () => {
   });
 });
 
-describe('Composer — CSW lock (decision 14)', () => {
+describe('Composer - CSW lock (decision 14)', () => {
   const base = {
     templates: TEMPLATES,
     quickReplies: QUICK,
@@ -290,7 +290,7 @@ describe('Composer — CSW lock (decision 14)', () => {
   });
 });
 
-describe('MessageBubble — quoted replies + context menu', () => {
+describe('MessageBubble - quoted replies + context menu', () => {
   it('renders the quoted block on a reply message', () => {
     render(
       <MessageBubble
@@ -346,7 +346,7 @@ describe('HighlightedText', () => {
   });
 });
 
-describe('ConversationDrawer — in-thread search', () => {
+describe('ConversationDrawer - in-thread search', () => {
   beforeEach(async () => {
     const { __mockResetConversations } = await import('@/services/conversation-service.mock');
     __mockResetConversations();

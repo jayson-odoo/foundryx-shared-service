@@ -3,7 +3,7 @@ name: codex-review
 description: Second-opinion code review from a different model family (OpenAI Codex CLI). Runs `codex exec` read-only over the current branch diff and merges the findings with the primary code-review pass. Use in the review step after code-review on risky or large diffs, or when the user asks for a codex/cross-model review.
 ---
 
-# /codex-review — cross-model second-opinion review
+# /codex-review - cross-model second-opinion review
 
 A different model family catches different bug classes. This skill shells out to
 the OpenAI Codex CLI for a read-only review of the current diff, then the main
@@ -25,7 +25,7 @@ codex exec --sandbox read-only --cd <service_backend-or-service_frontend-or-root
   "Review the diff between <base> and HEAD in this repository for CORRECTNESS BUGS only:
    logic errors, missing auth/RBAC checks (Depends(get_current_user), require_permission,
    tenant scoping), off-by-one, naive-vs-aware datetime handling (this repo requires
-   aware-UTC everywhere — see PRINCIPLES.md Datetimes), broken idempotency,
+   aware-UTC everywhere - see PRINCIPLES.md Datetimes), broken idempotency,
    post-commit side effects that can raise, data loss, a router doing DB queries
    directly, a module writing to core public tables, cross-tenant leaks (an
    unscoped lookup of a stored user/role/record id).
@@ -40,7 +40,7 @@ codex exec --sandbox read-only --cd <service_backend-or-service_frontend-or-root
   diff spanning both, run from the repo root; for a diff confined to one app or
   one module, `--cd` into that directory so codex reads less.
 - Long diffs: run once per app/module rather than one giant pass.
-- Timeout generously (5–10 min); codex explores files itself.
+- Timeout generously (5-10 min); codex explores files itself.
 
 ## Merging findings
 

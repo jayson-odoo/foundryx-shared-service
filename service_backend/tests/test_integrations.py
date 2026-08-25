@@ -1,4 +1,4 @@
-"""Integration core tests (plan 09) — provider catalog, connection CRUD,
+"""Integration core tests (plan 09) - provider catalog, connection CRUD,
 write-only credentials (encryption at rest), inline test + status upkeep,
 tenant scoping."""
 from app.integrations import get_provider
@@ -91,7 +91,7 @@ def test_create_connection_encrypts_credentials_and_never_echoes(client, session
 
 def test_embed_connection_hidden_from_integrations(client):
     """The embed ``omnichannel_shared`` row lives in core ``connections`` but is
-    NOT part of the Integrations surface — it must never appear in the list
+    NOT part of the Integrations surface - it must never appear in the list
     (where Disconnect would destroy it + mint a new connection id, breaking every
     consumer's embed iframe) nor resolve on detail."""
     h = _demo_headers(client)
@@ -99,7 +99,7 @@ def test_embed_connection_hidden_from_integrations(client):
     assert client.post("/omnichannel/embed-config/enable", headers=h).status_code == 200
     embed_id = client.get("/omnichannel/embed-config", headers=h).json()["connectionId"]
     assert embed_id
-    # A normal SMTP connection for contrast — that one DOES show.
+    # A normal SMTP connection for contrast - that one DOES show.
     smtp = _create(client, h)
 
     ids = [c["id"] for c in client.get("/integrations/connections", headers=h).json()["data"]]
@@ -151,7 +151,7 @@ def test_update_blank_credentials_keep_stored_secret(client, session_factory):
 
 def test_update_partial_config_merges_not_wipes(client, session_factory):
     """A partial config PATCH must merge with stored keys (sibling credentials
-    merge too) — never silently wipe omitted keys."""
+    merge too) - never silently wipe omitted keys."""
     h = _demo_headers(client)
     created = _create(client, h)
     res = client.patch(

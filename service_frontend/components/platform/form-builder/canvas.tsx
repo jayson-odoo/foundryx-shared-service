@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Form-builder canvas (plan sprint-3/01 D6) — a VERTICAL page/section/field
+ * Form-builder canvas (plan sprint-3/01 D6) - a VERTICAL page/section/field
  * list editor (NOT a node graph). Pages are cards; each holds titled sections;
  * sections hold field rows. Click selects a page/section/field (visual ring);
  * dnd-kit sortable reorders fields within/between sections; hover row actions

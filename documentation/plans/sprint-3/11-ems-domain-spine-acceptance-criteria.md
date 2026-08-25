@@ -1,4 +1,4 @@
-# Sprint 3 · Plan 11 — EMS Domain Spine · User Acceptance Criteria
+# Sprint 3 · Plan 11 - EMS Domain Spine · User Acceptance Criteria
 
 **Plan:** `11-ems-domain-spine.md` · **Advances:** F4 (first vertical, first big module `app_ems`)
 **Gate role:** final of the continuous 08→11 run. Depends on 08 (Terminology), 09 (Import), 10
@@ -9,7 +9,7 @@ MET = named test green (UI at 375/1280 where it renders).
 
 ---
 
-## 1. Functional SaaS — the EMS spine works end-to-end 🟢
+## 1. Functional SaaS - the EMS spine works end-to-end 🟢
 
 - **AC-11-01 (demo) Full spine demo passes.**
   *Given* a tenant, *when* the operator installs `ems`, creates Project Type "Fun Run", a Template
@@ -33,7 +33,7 @@ MET = named test green (UI at 375/1280 where it renders).
 - **AC-11-04 (D4) Create-from-template copies the eligibility graph.**
   *Given* a Project created from a template, *when* created, *then* `copy_scope(db,
   'project_participant', tenant, from=template_id, to=project_id)` materializes the project's own
-  editable graph (Option A — per-project copy, not live-inherit); roles/segments stay template-level
+  editable graph (Option A - per-project copy, not live-inherit); roles/segments stay template-level
   shared (participant FKs point at the template's rows, not copied).
 
 - **AC-11-05 (D6) Participant registration join + one-step bulk.**
@@ -54,13 +54,13 @@ MET = named test green (UI at 375/1280 where it renders).
   *Given* the engines, *then*: tier-1 = `Profile.status_id` (tenant-level graph Active/Suspended/
   Blacklisted); project lifecycle = `projects.status_id` (tenant-level Draft→…→Completed/Cancelled);
   tier-2 = participant eligibility (scoped machine, `scope_attr=project_id`, reusing the form-engine
-  scoped extension — **zero new engine code**). Checkpoint access (Cluster H) = tier-1 AND tier-2 valid.
+  scoped extension - **zero new engine code**). Checkpoint access (Cluster H) = tier-1 AND tier-2 valid.
 
 - **AC-11-08 (D9) Pure registration into existing engines, no new engine code.**
   *Given* the spine entities, *then* each registers into status (tier-1, tier-2), workflow
   triggerable (`profile`/`project`/`project_participant` → created/updated/status_changed), rule fact
   sources (segment/role/eligibility), importer configs (profile + participant), and terminology labels
-  — clusters B–H get automation for free.
+  - clusters B-H get automation for free.
 
 - **AC-11-09 (house) Every query tenant-scoped, Service-Repository layered.**
   *Given* any `/ems/*` endpoint, *then* repositories are tenant-scoped, no DB/raw SQL in routers,
@@ -68,7 +68,7 @@ MET = named test green (UI at 375/1280 where it renders).
 
 - **AC-11-10 (D5/D7) Future seams reserved without building them.**
   *Given* the tables, *then* `projects.client_id` is nullable (Cluster B), `domain_name` is a
-  placeholder (F5), and financial (ticket/invoice) columns are absent in F4 — "paid?" is designed to
+  placeholder (F5), and financial (ticket/invoice) columns are absent in F4 - "paid?" is designed to
   derive `participant → ticket → invoice.status` with no denormalized payment column.
 
 ## 3. Guided UX 🧭
@@ -84,7 +84,7 @@ MET = named test green (UI at 375/1280 where it renders).
   (`fireable_edge_ids` batched) on the participants list.
 
 - **AC-11-13 Bulk participant registration is one guided step** (BRD Excel upload) launched from the
-  Project's participants tab — not a separate disconnected screen.
+  Project's participants tab - not a separate disconnected screen.
 
 - **AC-11-14 (house mandate) Responsive** at 375px and 1280px across all EMS lists, forms, Flow tabs,
   and the embedded participants list.
@@ -95,14 +95,14 @@ MET = named test green (UI at 375/1280 where it renders).
   (`copy_scope`) · tier-1 + tier-2 transitions through the one executor · participant uniqueness ·
   profile email dedup · import round-trip (incl. find-or-create + project context) · tenant isolation
   · module install grants perms · the full pre-existing status-engine suite stays green (tenant
-  lifecycle untouched — load-bearing).
+  lifecycle untouched - load-bearing).
 
 - **AC-11-16 E2E green** (real clicks, both viewports, dedicated tenant): create type → create event →
   import profiles → register participants → move eligibility; relabel Event via Terminology. Reports
   filed per slice.
 
 - **AC-11-17 (D6/D9) Find-or-create + project-context import verified against the live F8 engine** (the
-  first real consumer beyond Users) — exercises plan-09 AC-09-23 (D17/D18) end-to-end.
+  first real consumer beyond Users) - exercises plan-09 AC-09-23 (D17/D18) end-to-end.
 
 - **AC-11-18 (governance/D1) Module governance honored:** `manifest.json` (module_name, schema,
   alembic_version_table, optional[omnichannel], provides[…]) · permissions CSV
@@ -117,13 +117,13 @@ MET = named test green (UI at 375/1280 where it renders).
 Backend spine **complete, tested (8 + full 804 green), live-verified** end-to-end (per-module
 Alembic fresh-upgrade → `app_ems`; type→template→project copy_scope; tier-1/tier-2 transitions;
 find-or-create participant import; tenant isolation). Frontend: Profiles + Events list pages
-(create + profile bulk-import + create-from-template) + module-gated Events menu — live-verified
+(create + profile bulk-import + create-from-template) + module-gated Events menu - live-verified
 via Playwright MCP. **Deferred** (documented, backend-supported, primitives exist): the tabbed
 detail-page **Flow tab** (reuse `EntityFlow`) + **embedded participants tab** with graph-driven
 transitions/bulk-import UI (AC-11-12/13 detail surfaces). All other AC MET. See
 `11-ems-domain-spine-test-report.md`.
 
-## Management-UI follow-up (2026-06-18) — deferred surfaces now SHIPPED
+## Management-UI follow-up (2026-06-18) - deferred surfaces now SHIPPED
 The deferred detail surfaces are **built + live-verified via Playwright** (branch
 `sprint-3/ems-management-ui`, merged to `main`). First iteration of the spine UI is complete.
 - **Event Types + Event Templates** on the Resource shell (create/edit/delete; backend gained
@@ -136,15 +136,15 @@ The deferred detail surfaces are **built + live-verified via Playwright** (branc
   **AC-11-12/13 met.** Roles/segments are template-owned, validated cross-template.
 - **Profiles** get a detail/form view + tier-1 status change in the list row, the form, and **bulk**.
 - **Status engine gates participation (AC-11-07 deepened):** a `blocks_access` profile
-  (Suspended/Blacklisted) is refused as a participant — add + bulk import (422) — and withheld from
+  (Suspended/Blacklisted) is refused as a participant - add + bulk import (422) - and withheld from
   the Add picker. Tests +6 (14 ems green; status-engine suite stays green).
 - Generic win: the **Resource shell gained a card/list view toggle** (`cardRender`/`defaultView`,
   persisted per `viewKey`), and the **App Store migrated onto the Resource shell** (card default,
-  storefront + console) with a module detail/form view — closes sprint-3/10 AC-10-12/13.
+  storefront + console) with a module detail/form view - closes sprint-3/10 AC-10-12/13.
 
 ## Definition of Done (plan 11 / F4 spine)
 All AC-11-* MET across the 3 slices · suites green (incl. unchanged status-engine suite) · E2E
-reports filed · reviewer approved · merged to `main`. The EMS spine is ready for clusters B–H to
+reports filed · reviewer approved · merged to `main`. The EMS spine is ready for clusters B-H to
 wire onto (Money/Submissions/Agenda/Portal designed-for, not built).
 
 ---

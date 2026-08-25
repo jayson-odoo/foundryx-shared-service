@@ -1,11 +1,11 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Sprint-3/03 (F2) slice 2 — fixed-canvas (badge/ticket/cert) designer, live
+ * Sprint-3/03 (F2) slice 2 - fixed-canvas (badge/ticket/cert) designer, live
  * stack.
  *
  * Preconditions (stack already up; this spec starts NOTHING):
- *   - backend :8001 on the sprint-3/03b branch, migrated + seeded — a
+ *   - backend :8001 on the sprint-3/03b branch, migrated + seeded - a
  *     platform-tier BADGE template named "Attendee badge" (key `badge.attendee`,
  *     context `badge.preview`, type `badge`) is present.
  *   - frontend prod build served on :3001 (same checkout).
@@ -20,7 +20,7 @@ import { expect, test, type Page } from '@playwright/test';
  *   3. Preview → the in-app sheet renders the server canvas HTML (the QR is a
  *      real server-generated <svg>; the {{attendeeName}} sample resolves).
  *   4. Download PDF → a `.pdf` download starts.
- *   5. Responsive — editor + preview render without horizontal overflow at
+ *   5. Responsive - editor + preview render without horizontal overflow at
  *      375px AND 1280px (CLAUDE.md both-sizes mandate).
  */
 
@@ -72,7 +72,7 @@ async function openPreview(page: Page) {
 
 test.describe.configure({ timeout: 120_000 });
 
-test.describe('F2 slice 2 — fixed-canvas badge designer (live stack)', () => {
+test.describe('F2 slice 2 - fixed-canvas badge designer (live stack)', () => {
   test('Open badge → Konva editor mounts (palette + canvas)', async ({ page }) => {
     await login(page);
     await gotoTemplatesByClick(page);
@@ -89,7 +89,7 @@ test.describe('F2 slice 2 — fixed-canvas badge designer (live stack)', () => {
     await openBadge(page);
 
     await page.getByRole('button', { name: /^edit$/i }).click();
-    // Add a Text element — it auto-selects, so the inspector appears.
+    // Add a Text element - it auto-selects, so the inspector appears.
     await page.getByTestId('palette-add-text').click();
     await expect(page.getByTestId('canvas-inspector')).toBeVisible();
     await expect(page.getByLabel('Text content')).toBeVisible();

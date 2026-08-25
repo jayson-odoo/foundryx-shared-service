@@ -1,15 +1,15 @@
-"""The sync job handler — fetch → map → stage → hold for approval.
+"""The sync job handler - fetch → map → stage → hold for approval.
 
 Rides the EXISTING ``background_jobs`` table + ``register_job_handler`` (plan §5
 "do not build these"). ``needs_review`` is a deliberately NON-terminal status the
-retention pruner never touches — that IS the approval gate (AC-13-11). No new
+retention pruner never touches - that IS the approval gate (AC-13-11). No new
 job table, no bespoke worker.
 
 Three behaviours here are the ones most likely to regress, so they are stated
 plainly:
 
 1. **Per-document all-or-nothing** (D13 / AC-13-10). A GRN whose line 3 fails
-   validation is staged ``FAILED`` with **no canonical payload at all** — there
+   validation is staged ``FAILED`` with **no canonical payload at all** - there
    is no half-record in existence to push by accident. Its siblings in the same
    batch are entirely unaffected, and the error names document, line and field.
 
@@ -19,7 +19,7 @@ plainly:
    nobody finds out until a reconciliation months later.
 
 3. **Cooperative abort re-reads status FRESH from the DB** before the terminal
-   step. A held ORM object says ``running`` forever — the operator's abort was
+   step. A held ORM object says ``running`` forever - the operator's abort was
    committed on a DIFFERENT session. Eager mode (dev/test) runs this handler
    inline with no interleave, so this class of bug is INVISIBLE unless the test
    forces a real one.
@@ -93,7 +93,7 @@ logger = logging.getLogger("foundryx.autocount")
 # The registered ``background_jobs.type``.
 AUTOCOUNT_SYNC = "autocount_sync"
 
-# Vendor entity per canonical entity — the URL grammar is uniform
+# Vendor entity per canonical entity - the URL grammar is uniform
 # (``POST /api/{Entity}/Get{Entity}``), only the name varies.
 VENDOR_ENTITIES = {
     ENTITY_GOODS_RECEIVED_NOTE: VENDOR_ENTITY,
@@ -102,7 +102,7 @@ VENDOR_ENTITIES = {
 }
 
 # The nested detail-array key PER ENTITY. It is not derivable from the entity
-# name — GRN's is ``GRDTL``, NOT ``GRNDTL`` (plan §4a hazard table) — so it is
+# name - GRN's is ``GRDTL``, NOT ``GRNDTL`` (plan §4a hazard table) - so it is
 # looked up, never constructed. Getting it wrong yields a header with zero lines
 # and NO error at all, which is the worst possible shape of failure.
 # Masters are FLAT and are deliberately ABSENT here: ``None`` means "no detail
@@ -117,7 +117,7 @@ VENDOR_IDENTIFIER_KEYS = {
 }
 
 # Where ``LastModified`` actually LIVES per entity. Masters nest their real DB
-# row under ``Data[0]`` (AC-14-02), so the top-level lookup finds nothing — which
+# row under ``Data[0]`` (AC-14-02), so the top-level lookup finds nothing - which
 # would fail the window assertion on every row AND leave the watermark stuck.
 VENDOR_LAST_MODIFIED_PATHS = {
     ENTITY_SUPPLIER: VENDOR_LAST_MODIFIED_PATH,
@@ -126,7 +126,7 @@ VENDOR_LAST_MODIFIED_PATHS = {
 
 
 class SyncConfigError(Exception):
-    """The job cannot run as configured — a setup problem, not a vendor fault."""
+    """The job cannot run as configured - a setup problem, not a vendor fault."""
 
 
 # ── cooperative abort ─────────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ def _aborted(db: Session, job_id: str) -> bool:
     A concurrent abort committed ``JOB_ABORTED`` on a DIFFERENT session, so the
     handler's own in-memory ``job`` object is stale and will happily report
     ``running`` right up to the terminal write that overwrites the abort. Copied
-    from ``app/storage_migration/service.py`` — same reason, same shape.
+    from ``app/storage_migration/service.py`` - same reason, same shape.
     """
     return (
         db.query(BackgroundJob.status).filter(BackgroundJob.id == job_id).scalar()
@@ -150,8 +150,8 @@ def _aborted(db: Session, job_id: str) -> bool:
 
 
 # Bookkeeping fields excluded from a diff. ``last_modified`` in particular
-# changes on EVERY re-fetch by definition — it is the reason the record came
-# back at all — so reporting it as a change is tautological noise on every
+# changes on EVERY re-fetch by definition - it is the reason the record came
+# back at all - so reporting it as a change is tautological noise on every
 # single diff, and noise is what turns review into rubber-stamping.
 # Identity fields are excluded because a diff is BETWEEN two versions of ONE
 # document; if they differed, the rows would not have been paired.
@@ -171,7 +171,7 @@ def compute_diff(
 ) -> Dict[str, Any]:
     """Per-field before → after, **changed fields only**.
 
-    Unchanged fields are omitted entirely — a "diff" that lists every field
+    Unchanged fields are omitted entirely - a "diff" that lists every field
     makes a reviewer scan noise to find the one thing that moved, which is how
     review degrades into rubber-stamping (the exact failure D20 warns about at
     scale).
@@ -203,8 +203,8 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     company_id = str(payload.get("companyId") or "")
     entity_type = str(payload.get("entityType") or ENTITY_GOODS_RECEIVED_NOTE)
     started = time.monotonic()
-    # ONE trace ties every leg of this run together — the login, the read, and
-    # the run summary — so the Developer Logs console can show the whole
+    # ONE trace ties every leg of this run together - the login, the read, and
+    # the run summary - so the Developer Logs console can show the whole
     # interaction rather than three unrelated rows.
     trace_id = trace_id_for_job(job.id)
 
@@ -246,13 +246,13 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
 
     # ── fetch ────────────────────────────────────────────────────────────────
     # Deferred import: ``services`` imports the sync service, which imports THIS
-    # module for the job type — a module-level import here would be a cycle.
+    # module for the job type - a module-level import here would be a cycle.
     from .services.company_service import CompanyService
 
     companies = CompanyService(db)
     try:
         client = companies.client_for(tenant_id, company)
-    except Exception as exc:  # noqa: BLE001 — a setup fault, reported cleanly
+    except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
         _fail(db, service, job, run, watermark_row, str(exc), started)
         return
 
@@ -273,14 +273,14 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         )
         result: FetchResult = source.fetch_changes(watermark)
     except AutoCountError as exc:
-        # Includes TruncatedWindowError — a truncated read must NEVER read as a
+        # Includes TruncatedWindowError - a truncated read must NEVER read as a
         # complete one (AC-13-46), so it fails the run and holds the watermark.
         # The ``truncated`` FLAG is set only for an actual truncation: an
         # operator reads it to decide whether to narrow the window, so marking
         # every vendor error truncated would make the signal meaningless.
         # The HTTP legs FIRST: a failed call is exactly the one a diagnostician
         # needs, and it is the path that used to store no request payload at
-        # all. Safe here — the last write committed above, nothing is pending.
+        # all. Safe here - the last write committed above, nothing is pending.
         record_client_calls(
             db,
             client,
@@ -357,7 +357,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         response={
             "records": len(result.records),
             # What the vendor says exists, beside what we actually got
-            # (AC-14-26). Advisory — it is computed AFTER the record cap, so it
+            # (AC-14-26). Advisory - it is computed AFTER the record cap, so it
             # is never used to decide truncation.
             "vendorReportedTotal": result.reported_total,
         },
@@ -380,7 +380,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         detail_key=VENDOR_DETAIL_KEYS.get(entity_type),
         entity_type=entity_type,
         # Masters mint a COMPANY-QUALIFIED ``source_ref`` (AC-14-10). The name
-        # comes from the discovered company, never from operator input — and it
+        # comes from the discovered company, never from operator input - and it
         # is what stops company B's ``AutoKey=1`` overwriting company A's.
         database_name=company.database_name,
     )
@@ -398,7 +398,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     run.failed_count = failed_count
     db.commit()
 
-    # Fresh status re-read BEFORE the terminal step — the whole point of
+    # Fresh status re-read BEFORE the terminal step - the whole point of
     # cooperative abort (an abort committed mid-loop must not be overwritten).
     if _aborted(db, job.id):
         _abort(db, service, run, started)
@@ -408,8 +408,8 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     #
     # ``last_success_at`` and ``consecutive_failures`` are the STALE-SYNC SIGNAL
     # (AC-13-19, plan §7 "a blocked sync is always visible"). Stamping success
-    # unconditionally would make a permanently-stalled entity — watermark held,
-    # every document failing to map, forever — present as perfectly healthy:
+    # unconditionally would make a permanently-stalled entity - watermark held,
+    # every document failing to map, forever - present as perfectly healthy:
     # fresh success timestamp, zero consecutive failures. The monitor would then
     # never fire on the one case it exists for. So a batch with ANY failed
     # document counts as a FAILURE here, exactly as a fetch fault does in
@@ -425,7 +425,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     else:
         # D18: a failed document HOLDS the watermark for the entity, so the next
         # run re-reads the same window and the document gets another chance
-        # after the mapping is fixed — no manual re-drive, no lost document.
+        # after the mapping is fixed - no manual re-drive, no lost document.
         watermark_row.consecutive_failures = (
             watermark_row.consecutive_failures or 0
         ) + 1
@@ -449,7 +449,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         "awaitingApproval": staged_count > 0,
         #     !!  A COUNT WITHOUT ITS DENOMINATOR IS NOT A RESULT (AC-14-26).  !!
         # "2 records" alone cannot be told apart from "nothing changed" and
-        # "the window excluded 170 of 172 records" — and the second one looks
+        # "the window excluded 170 of 172 records" - and the second one looks
         # exactly like success while being near-total data loss. So the vendor's
         # own availability marker travels beside the fetched count, and the
         # policy that produced the window travels with both.
@@ -467,7 +467,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             else "."
         )
         + (
-            " Awaiting approval — nothing has been pushed."
+            " Awaiting approval - nothing has been pushed."
             if staged_count
             else " Nothing to review."
         ),
@@ -510,7 +510,7 @@ def _stage_documents(
         raw_json = source_record.raw  # retained verbatim (AC-13-07)
 
         if not mapped.ok:
-            # D13: NO canonical payload is stored for a failed transaction —
+            # D13: NO canonical payload is stored for a failed transaction -
             # there is nothing half-formed for a later step to pick up.
             doc_no = None
             doc_key = ""
@@ -524,7 +524,7 @@ def _stage_documents(
                     entity_type=entity_type,
                     job_id=job.id,
                     # A document that failed BEFORE yielding a DocKey still
-                    # needs a stable, reproducible handle — its position in the
+                    # needs a stable, reproducible handle - its position in the
                     # run. (``id(obj)`` would be a memory address: different on
                     # every run and meaningless to a human.)
                     source_ref=doc_key or f"unmapped:{job.id}:{position}",
@@ -600,7 +600,7 @@ def _fail(
     # ``JOB_ABORTED`` MUST stand. An abort landing while a fetch was in flight
     # (the fetch then errors, because the abort raced a real fault) would
     # otherwise be overwritten with ``failed`` here, erasing the fact that a
-    # human stopped this. The run's own bookkeeping above is kept either way —
+    # human stopped this. The run's own bookkeeping above is kept either way -
     # the fetch genuinely did fail, and that is why the run stopped.
     if _aborted(db, job.id):
         logger.info("autocount sync failed after an abort was committed; abort stands.")
@@ -609,12 +609,12 @@ def _fail(
 
 
 def _abort(db: Session, service: JobService, run: AcSyncRun, started: float) -> None:
-    """Aborted: record the outcome but NEVER touch the job's status — the
+    """Aborted: record the outcome but NEVER touch the job's status - the
     operator's ``JOB_ABORTED`` already stands, and overwriting it (even with
     ``failed``) would erase the fact that a human stopped this.
 
     Known, accepted: documents staged before the abort landed stay on the
-    aborted job and are never approvable. That is deliberate — the watermark
+    aborted job and are never approvable. That is deliberate - the watermark
     HELD, so the next run re-reads the same window and re-stages them under a
     fresh job. The cost is a little duplicate staging; the alternative (letting
     a partial batch be approved) would push a half-read window as if it were
@@ -638,7 +638,7 @@ def register_autocount_sync_handler() -> None:
     !!  The Celery worker boots NO FastAPI lifespan.  !!
     A worker only sees handlers whose MODULE was imported, so
     ``app/workflow_engine/worker.py`` imports this module explicitly. Omitting
-    that import leaves every sync job Pending forever with NO error — the
+    that import leaves every sync job Pending forever with NO error - the
     single nastiest footgun in this codebase.
     """
     register_job_handler(_HANDLER_DEF)

@@ -1,4 +1,4 @@
-"""workflow_settings (per-tenant run retention) — plan sprint-2/10
+"""workflow_settings (per-tenant run retention) - plan sprint-2/10
 
 Revision ID: 1c2d3e4f5a6b
 Revises: 0b0a96337c3d

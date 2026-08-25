@@ -22,7 +22,7 @@ const ROUTE_OPTIONS = [
 ];
 
 /** Build the iframe snippet for the chosen route + workspace. The assertion (minted
- * on the consumer's backend) carries the workspaceId — surfaced here as a comment
+ * on the consumer's backend) carries the workspaceId - surfaced here as a comment
  * so the consumer knows which id to sign. */
 export function buildSnippet(
   host: string,
@@ -42,7 +42,7 @@ export function buildSnippet(
 }
 
 /**
- * The iframe snippet builder — pick a workspace + a route (single thread / full
+ * The iframe snippet builder - pick a workspace + a route (single thread / full
  * inbox) and copy the ready-to-paste `<iframe>`. The connection id rides the
  * `?c=` param; the assertion (minted on the consumer's own backend) carries the
  * workspace + scope.
@@ -52,7 +52,7 @@ export function SnippetCard({ host, connectionId, workspaces }: SnippetCardProps
   const [workspaceId, setWorkspaceId] = useState<string>(workspaces[0]?.id ?? '');
 
   // The embed pages (`/embed/omnichannel/*`) are served by THIS Next app, so the
-  // iframe host is the frontend origin — NOT the backend `host` (public_base_url,
+  // iframe host is the frontend origin - NOT the backend `host` (public_base_url,
   // which may be a different port/prefix and has no embed *page* routes). Fall
   // back to `host` only for SSR where `window` is absent.
   const embedOrigin = typeof window !== 'undefined' ? window.location.origin : host;

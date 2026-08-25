@@ -1,4 +1,4 @@
-# Sprint 1 · Plan 02 — User Management · Test Execution Report
+# Sprint 1 · Plan 02 - User Management · Test Execution Report
 
 **Stack under test:** Next.js :3001 → FastAPI :8001 → Postgres (`foundryx_service`).
 **Date:** sprint-1/user-management branch.
@@ -25,12 +25,12 @@
 
 ## Frontend unit (Vitest)
 
-- `StatusBadge` — maps status→label; falls back on unknown.
-- `userFormSchema` — rejects empty name / invalid email / unknown status; accepts valid + no-roles.
-- `MultiSelect` — renders selected as pills; **Select all** selects every option; **Clear all** empties.
+- `StatusBadge` - maps status→label; falls back on unknown.
+- `userFormSchema` - rejects empty name / invalid email / unknown status; accepts valid + no-roles.
+- `MultiSelect` - renders selected as pills; **Select all** selects every option; **Clear all** empties.
 - (plus existing signin page tests.)
 
-## E2E (Playwright, real clicks — no URL jumping)
+## E2E (Playwright, real clicks - no URL jumping)
 
 | Scenario | Steps | Expected | Actual |
 |---|---|---|---|
@@ -41,5 +41,5 @@
 | Trashed view | click "Trashed" | list reloads in trashed scope | ✅ |
 
 ## Notes / follow-ups
-- Existing session JWTs are invalidated by the SQLite→Postgres swap (different user ids) — users must re-login once.
+- Existing session JWTs are invalidated by the SQLite→Postgres swap (different user ids) - users must re-login once.
 - Reserved-TLD emails (`.test`) are rejected by `EmailStr`; tests use `.io`.

@@ -3,7 +3,7 @@
 /**
  * Structured message bodies (plan 12 Slice 2): interactive (what the recipient
  * sees), the inbound "chose: …" reply badge, location cards, and contact cards.
- * Pure presentation — the composer builds these, the bubble renders them.
+ * Pure presentation - the composer builds these, the bubble renders them.
  */
 import { ExternalLink, LayoutList, MapPin, Phone, User } from 'lucide-react';
 
@@ -69,7 +69,7 @@ function InteractiveCard({ def }: { def: InteractiveDefinition }) {
               {sec.rows.map((r) => (
                 <div key={r.id} className="pl-2">
                   • {r.title}
-                  {r.description ? ` — ${r.description}` : ''}
+                  {r.description ? ` - ${r.description}` : ''}
                 </div>
               ))}
             </div>

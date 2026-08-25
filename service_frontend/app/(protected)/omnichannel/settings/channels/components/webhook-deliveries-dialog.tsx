@@ -33,7 +33,7 @@ export function WebhookDeliveriesDialog({ endpoint, onOpenChange }: WebhookDeliv
     <Dialog open={endpoint !== null} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Deliveries — {endpoint?.name}</DialogTitle>
+          <DialogTitle>Deliveries - {endpoint?.name}</DialogTitle>
         </DialogHeader>
         <DialogBody className="max-h-[60vh] overflow-y-auto">
           {loading ? (
@@ -77,8 +77,8 @@ export function WebhookDeliveriesDialog({ endpoint, onOpenChange }: WebhookDeliv
                     <span>
                       {d.attemptCount} {d.attemptCount === 1 ? 'attempt' : 'attempts'}
                     </span>
-                    <span>{d.responseStatus !== null ? `HTTP ${d.responseStatus}` : '—'}</span>
-                    <span>{d.responseMs !== null ? `${d.responseMs} ms` : '—'}</span>
+                    <span>{d.responseStatus !== null ? `HTTP ${d.responseStatus}` : '-'}</span>
+                    <span>{d.responseMs !== null ? `${d.responseMs} ms` : '-'}</span>
                   </div>
                 </li>
               ))}

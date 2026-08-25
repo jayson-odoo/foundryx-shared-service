@@ -1,20 +1,20 @@
-"""The generic grill engine (Bi-D7, AC-BI-20) — CORE, one layer up from Phase A's
+"""The generic grill engine (Bi-D7, AC-BI-20) - CORE, one layer up from Phase A's
 ``IntakeDefinition``.
 
 A ``GrillDefinition`` binds *source artifact type + target template resolver +
 skill + agent resolver + completion rule*. **Idea → BR is instance one**; adding
-BR → FR later is a NEW definition row + template, not new engine code — the
+BR → FR later is a NEW definition row + template, not new engine code - the
 target template's field list is injected into the prompt at runtime (AC-BI-08),
 so ONE ``grill-me-business`` skill serves every target.
 
 The engine runs two operations:
 
-- **turn** — ONE structured LLM call returning ``{replyText, coveredFields[]}``
+- **turn** - ONE structured LLM call returning ``{replyText, coveredFields[]}``
   (AC-BI-24b): the prose reply and the cheap coverage map come back together.
   ``coveredFields`` are answer-keys the transcript has grounded so far.
-- **generate** — a SEPARATE extraction call over the WHOLE transcript + source
+- **generate** - a SEPARATE extraction call over the WHOLE transcript + source
   artifacts (AC-BI-24), provider-native structured output shaped by the target
-  fields, ``form_engine``-validated (type/format/choice ONLY, NOT ``required`` —
+  fields, ``form_engine``-validated (type/format/choice ONLY, NOT ``required`` -
   AC-BI-26 partial emit), ONE retry with the errors fed back (AC-BI-25), then the
   cleaned answers are persisted via the definition's callback. **The model never
   writes** (AC-BI-27/D22-A): the agent holds no tool with a side effect; OUR code
@@ -61,7 +61,7 @@ def _elapsed_ms(since: datetime) -> int:
 
 
 class GrillError(Exception):
-    """A clean, user-facing grill failure — the router maps it to an HTTP error.
+    """A clean, user-facing grill failure - the router maps it to an HTTP error.
 
     Distinct from ``LLMError`` (provider transport): the engine catches
     ``LLMError``, commits the error trace, then raises THIS so the trace survives
@@ -80,7 +80,7 @@ class GrillContext:
 
     tenant_id: str
     target_id: str
-    # [{key, label}] — the target template's answer-keys, injected into the
+    # [{key, label}] - the target template's answer-keys, injected into the
     # prompt AND used to shape both output schemas.
     target_fields: List[Dict[str, str]]
     # The FormDocument (dict) the extraction validates against.
@@ -100,7 +100,7 @@ class GrillContext:
 
 # resolve_context(db, tenant_id, target_id) -> GrillContext (raises GrillError)
 ResolveContext = Callable[[Session, str, str], GrillContext]
-# persist_answers(db, tenant_id, target_id, answers, actor) -> None. FLUSH-ONLY —
+# persist_answers(db, tenant_id, target_id, answers, actor) -> None. FLUSH-ONLY -
 # the engine owns the commit; the callback NEVER promotes (writes answers only).
 PersistAnswers = Callable[..., None]
 
@@ -120,7 +120,7 @@ _REGISTRY: Dict[str, GrillDefinition] = {}
 
 
 def register_grill_definition(definition: GrillDefinition) -> None:
-    """Register (idempotently) a grill definition by key — boot hooks re-run."""
+    """Register (idempotently) a grill definition by key - boot hooks re-run."""
     _REGISTRY[definition.key] = definition
 
 
@@ -155,7 +155,7 @@ class GrillState:
     fields: List[Dict[str, str]]
     messages: List[Dict[str, Any]]
     covered_fields: List[str]
-    # The latest assistant turn's captured summary (AC-BI-24c) — carried so the
+    # The latest assistant turn's captured summary (AC-BI-24c) - carried so the
     # panel survives a reload / a returned-to-later session (durable draft).
     captured_summary: Dict[str, str]
 
@@ -172,7 +172,7 @@ class GrillEngine:
     def state(
         self, definition: GrillDefinition, tenant_id: str, target_id: str
     ) -> GrillState:
-        """The current transcript + coverage for the Grill tab. Read-only — never
+        """The current transcript + coverage for the Grill tab. Read-only - never
         creates the conversation (a GET must not mutate; the first TURN creates
         it). ``covered_fields`` = the LATEST assistant turn's map."""
         ctx = definition.resolve_context(self.db, tenant_id, target_id)
@@ -203,7 +203,7 @@ class GrillEngine:
                     # turn that reports only the field it just discussed must NEVER
                     # drop an earlier-captured field. Fold every turn's map onto the
                     # running state (latest value wins per field) so a reload / a
-                    # returned-to-later session shows the FULL captured set — never
+                    # returned-to-later session shows the FULL captured set - never
                     # just the last turn's. Robust even against legacy rows that
                     # stored a single turn's partial map.
                     covered = _merge_covered(covered, covered_fields)
@@ -298,7 +298,7 @@ class GrillEngine:
         the grill greets, summarizes the absorbed source artifact(s) and asks its
         first clarifying question, grounded in the linked ideas.
 
-        Idempotent — if the transcript is already non-empty this returns the latest
+        Idempotent - if the transcript is already non-empty this returns the latest
         assistant reply WITHOUT another LLM call, so a double-fire (a re-render /
         two racing requests) never produces two opening messages or a wasted call.
         Like every completion here, an ``LLMError`` commits the flushed trace
@@ -330,7 +330,7 @@ class GrillEngine:
 
         system = _compose_system(ctx)
         schema = _turn_schema(ctx)
-        # A synthetic, NON-persisted user directive drives the opening — the model
+        # A synthetic, NON-persisted user directive drives the opening - the model
         # needs something to respond to, but the transcript starts with only the
         # assistant greeting (no user turn is stored).
         opening = [{"role": ROLE_USER, "content": _opening_instruction()}]
@@ -365,7 +365,7 @@ class GrillEngine:
     ) -> GenerateResult:
         """Extraction over the WHOLE transcript (AC-BI-24). Validates type/format
         ONLY (partial emit is success, AC-BI-26), one retry on validation failure
-        (AC-BI-25), then persists the cleaned answers — the BR STAYS draft
+        (AC-BI-25), then persists the cleaned answers - the BR STAYS draft
         (AC-BI-27). One commit at the end; an LLM failure commits its trace first."""
         ctx = definition.resolve_context(self.db, tenant_id, target_id)
         convo = self.convos.get_or_create_for_target(
@@ -383,7 +383,7 @@ class GrillEngine:
         system = _compose_extraction_system(ctx)
         base_messages = _extraction_messages(ctx, transcript)
         # required=True (AC-BI-24c): mark EVERY target key required so the model
-        # returns a value for each field — including one synthesized across turns
+        # returns a value for each field - including one synthesized across turns
         # or a negative answer. The paired directive keeps genuinely-ungrounded
         # fields blank (never invented) and validate stays enforce_required=False.
         schema = field_schema(ctx.target_fields, required=True)
@@ -453,14 +453,14 @@ class GrillEngine:
             )
 
         if errors:
-            # Both attempts failed validation — surface to the human, never an
+            # Both attempts failed validation - surface to the human, never an
             # infinite loop, never a silent discard (AC-BI-25). Commit so the
             # traces + validate/retry spans survive.
             self.db.commit()
             return GenerateResult(ok=False, answers={}, field_errors=errors)
 
         # Commit the extraction trace(s) FIRST so they survive even if the
-        # persist step below raises (a rare mid-grill BR delete) — a failed run
+        # persist step below raises (a rare mid-grill BR delete) - a failed run
         # must never silently lose its trace (AC-BI-09). Persist then commits the
         # answers separately (write-only; NEVER promotes, AC-BI-27).
         self.db.commit()
@@ -484,7 +484,7 @@ class GrillEngine:
         actor,
     ):
         """Run ONE traced completion. On ``LLMError`` the flushed trace is
-        COMMITTED before a clean ``GrillError`` is raised (decision 1) — so a
+        COMMITTED before a clean ``GrillError`` is raised (decision 1) - so a
         failed grill always leaves an ``error`` trace behind (AC-BI-24b)."""
         client = AiClient(self.db)
         try:
@@ -501,7 +501,7 @@ class GrillEngine:
             )
         except LLMError as exc:
             # Persist the flushed error trace + any messages written this turn,
-            # THEN surface — the commit means get_db's teardown rollback is a
+            # THEN surface - the commit means get_db's teardown rollback is a
             # no-op and the trace is never lost.
             self.db.commit()
             raise GrillError(str(exc)) from exc
@@ -511,7 +511,7 @@ class GrillEngine:
 
 
 def _target_type(definition: GrillDefinition) -> str:
-    """The conversation ``target_type`` is the ideation BR status-entity key —
+    """The conversation ``target_type`` is the ideation BR status-entity key -
     passed through the context resolver via the definition. Kept as a small
     indirection so a second definition names its own target type."""
     return _DEFINITION_TARGET_TYPES.get(definition.key, definition.key)
@@ -543,7 +543,7 @@ def _clean_covered(raw: Any, valid_keys: set) -> List[str]:
 
 
 def _merge_covered(base: List[str], incoming: List[str]) -> List[str]:
-    """Union two covered-field lists preserving order (AC-BI-29c) — coverage is
+    """Union two covered-field lists preserving order (AC-BI-29c) - coverage is
     monotonic: a field once grounded stays grounded."""
     out = list(base)
     seen = set(base)
@@ -556,7 +556,7 @@ def _merge_covered(base: List[str], incoming: List[str]) -> List[str]:
 
 def _merge_summary(base: Dict[str, str], incoming: Dict[str, str]) -> Dict[str, str]:
     """Merge two captured-summary maps, latest non-blank value winning per field
-    (AC-BI-29c). A field absent from ``incoming`` keeps its prior value — never
+    (AC-BI-29c). A field absent from ``incoming`` keeps its prior value - never
     dropped just because a later turn didn't mention it. ``incoming`` is already
     ``_clean_summary``-coerced (str, non-blank), but re-guard defensively."""
     out = dict(base)
@@ -568,7 +568,7 @@ def _merge_summary(base: Dict[str, str], incoming: Dict[str, str]) -> Dict[str, 
 
 def _accumulate(messages, valid_keys: set):
     """Fold the running (summary, covered) cumulative state over every ASSISTANT
-    turn in ``messages`` (AC-BI-29c) — the authoritative merged capture the panel
+    turn in ``messages`` (AC-BI-29c) - the authoritative merged capture the panel
     renders, independent of whether individual rows stored a partial map."""
     covered: List[str] = []
     summary: Dict[str, str] = {}
@@ -580,7 +580,7 @@ def _accumulate(messages, valid_keys: set):
 
 
 def _field_lines(ctx: GrillContext) -> List[str]:
-    return [f"{f['key']} — {f.get('label') or f['key']}" for f in ctx.target_fields if f.get("key")]
+    return [f"{f['key']} - {f.get('label') or f['key']}" for f in ctx.target_fields if f.get("key")]
 
 
 def _compose_system(ctx: GrillContext) -> str:
@@ -598,7 +598,7 @@ def _compose_system(ctx: GrillContext) -> str:
 
 def _compose_extraction_system(ctx: GrillContext) -> str:
     """Extraction reuses the same grounded skill body, then appends the strict
-    extraction directive (partial emit; never invent — AC-BI-26)."""
+    extraction directive (partial emit; never invent - AC-BI-26)."""
     base = _compose_system(ctx)
     directive = (
         "\n\n---\nEXTRACTION TASK: Read the ENTIRE conversation above and the "
@@ -606,8 +606,8 @@ def _compose_extraction_system(ctx: GrillContext) -> str:
         "value for EVERY field in the schema. For a field discussed across "
         "several turns, SYNTHESIZE the final agreed answer from the whole "
         "conversation. A negative answer (e.g. 'no constraints', 'none') is still "
-        "a value — state it plainly. A later answer overrides an earlier one. "
-        "Only leave a field an EMPTY string if it was GENUINELY never discussed — "
+        "a value - state it plainly. A later answer overrides an earlier one. "
+        "Only leave a field an EMPTY string if it was GENUINELY never discussed - "
         "NEVER invent a value to fill a field. Do not add commentary."
     )
     return base + directive
@@ -635,7 +635,7 @@ def _turn_schema(ctx: GrillContext) -> Dict[str, Any]:
     extraction pass (AC-BI-24c).
 
     - ``capturedSummary`` = a ``{fieldKey: shortValue}`` map of what the
-      conversation has understood so far (values only — the panel renders them).
+      conversation has understood so far (values only - the panel renders them).
     - ``generateSignal`` = TRUE only when the user's LATEST message clearly asks
       to finalize/generate ("generate it", "that's enough"). The MODEL signals;
       the APP fires Generate (D22-A: the model gains no side-effect tool).
@@ -653,7 +653,7 @@ def _turn_schema(ctx: GrillContext) -> Dict[str, Any]:
                 "items": {"type": "string", "enum": keys},
                 "description": "Target field keys the conversation has grounded SO FAR.",
             },
-            # A LIST of {key, value} — NOT a nested object with per-field
+            # A LIST of {key, value} - NOT a nested object with per-field
             # properties. gemini-2.5-flash runs away to MAX_TOKENS on a nested
             # object property here even with thinking off (live-verified, the S3
             # runaway class); the enum-keyed array shape (like coveredFields)
@@ -663,7 +663,7 @@ def _turn_schema(ctx: GrillContext) -> Dict[str, Any]:
                 "type": "array",
                 "description": (
                     "The target fields established so far, each with a concise "
-                    "current value. Omit a field not yet discussed. Values only — "
+                    "current value. Omit a field not yet discussed. Values only - "
                     "no commentary."
                 ),
                 "items": {
@@ -692,18 +692,18 @@ def _turn_schema(ctx: GrillContext) -> Dict[str, Any]:
 def _structured(result: LLMResult) -> Dict[str, Any]:
     if isinstance(result.structured, dict):
         return result.structured
-    # A provider that returned text where structured was requested — treat as an
+    # A provider that returned text where structured was requested - treat as an
     # empty extraction (partial emit); the retry/validate path still runs.
     return {}
 
 
 def _clean_summary(raw: Any, valid_keys: set) -> Dict[str, str]:
-    """Coerce the model's ``capturedSummary`` to a ``{validKey: str}`` map — drop
+    """Coerce the model's ``capturedSummary`` to a ``{validKey: str}`` map - drop
     unknown keys (defense, like ``coveredFields``) and non-string / blank values
     so the panel only ever renders grounded target fields.
 
     Accepts BOTH shapes: the wire/model list-of-``{key, value}`` (the enum-keyed
-    array the turn schema requests — a nested object property runs Gemini away,
+    array the turn schema requests - a nested object property runs Gemini away,
     the S3 runaway class) AND a plain ``{key: value}`` dict (a persisted map, or a
     stub/other-provider fallback)."""
 
@@ -738,7 +738,7 @@ def _parse_turn(result: LLMResult, valid_keys: set):
 
 
 def _opening_instruction() -> str:
-    """The synthetic directive that drives the opening turn (AC-BI-29b) — greet,
+    """The synthetic directive that drives the opening turn (AC-BI-29b) - greet,
     summarize the grounded source artifacts, ask ONE first clarifying question.
     Substitution-only content already rode the system prompt; this is a fixed
     instruction, never tenant input."""
@@ -747,14 +747,14 @@ def _opening_instruction() -> str:
         "two sentences what you understand from the linked source artifacts above, "
         "then (2) ask your FIRST clarifying question about a target field the source "
         "artifacts do NOT already establish. NEVER re-ask a field you are about to "
-        "mark covered — if the artifacts already give the problem statement, "
+        "mark covered - if the artifacts already give the problem statement, "
         "acknowledge it and move on to the first still-missing field (e.g. the "
         "business goal), do not ask the respondent to restate it. Ask only ONE "
         "question. Do not invent details the artifacts do not contain. In "
         "coveredFields, include EVERY target field the linked source artifacts "
         "already establish (do not leave a field the artifacts clearly answer marked "
         "as uncovered), and give its value in capturedSummary. Set generateSignal to "
-        "false — the interview is only beginning."
+        "false - the interview is only beginning."
     )
 
 

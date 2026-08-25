@@ -1,11 +1,11 @@
 /**
- * Integration-log service (sprint-4/12) — the boundary the Developers → Logs
+ * Integration-log service (sprint-4/12) - the boundary the Developers → Logs
  * console (list + detail) talks to via hooks. The interface IS the backend
  * contract (`app/api/v1/integration_logs.py`).
  *
  * Frontend-first: the UI iterated against `integration-log-service.mock`
  * (loading / error / empty / success states); the shipped boundary below is the
- * `.real` api-client impl — the mock→real swap is this one line.
+ * `.real` api-client impl - the mock→real swap is this one line.
  */
 import type { ListQuery, ListResult } from '@/types/resource';
 import type {

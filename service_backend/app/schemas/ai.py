@@ -1,4 +1,4 @@
-"""AI wire schemas — camelCase out, `ApiModel` for Z-suffixed datetimes."""
+"""AI wire schemas - camelCase out, `ApiModel` for Z-suffixed datetimes."""
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -20,13 +20,13 @@ class AgentOut(ApiModel):
     name: str
     description: str = ""
     connectionId: Optional[str] = Field(default=None, validation_alias="connection_id")
-    # Denormalised for display — the list must show which credential an agent
+    # Denormalised for display - the list must show which credential an agent
     # uses without the client resolving it.
     connectionName: Optional[str] = None
     provider: Optional[str] = None
     model: str = ""
     temperature: float = 0.0
-    # The equipped skill set (AC-BI-06b) — an agent equips MANY skills, like a
+    # The equipped skill set (AC-BI-06b) - an agent equips MANY skills, like a
     # Claude agent's skill set. Which one RUNS a grill is slice 3's choice.
     skills: List[EquippedSkillOut] = []
     isEnabled: bool = Field(default=True, validation_alias="is_enabled")
@@ -88,7 +88,7 @@ class SkillOut(ApiModel):
     key: str
     name: str
     description: str = ""
-    # The ACTIVE version's body — what an agent actually runs.
+    # The ACTIVE version's body - what an agent actually runs.
     body: str = ""
     activeVersionId: Optional[str] = Field(default=None, validation_alias="active_version_id")
     activeVersionNumber: Optional[int] = None
@@ -148,7 +148,7 @@ class ModelOptionOut(ApiModel):
 class ModelListResponse(ApiModel):
     data: List[ModelOptionOut]
     # False when the live catalog call failed and the curated static list is
-    # being served instead — the form still renders either way (AC-BI-05).
+    # being served instead - the form still renders either way (AC-BI-05).
     isLive: bool = True
     message: Optional[str] = None
 
@@ -194,7 +194,7 @@ class TraceOut(ApiModel):
 
 
 class TraceDetailOut(TraceOut):
-    """Trace + its ordered flat step list (Bi-D17 — no tree renderer in v1)."""
+    """Trace + its ordered flat step list (Bi-D17 - no tree renderer in v1)."""
 
     spans: List[SpanOut] = []
 

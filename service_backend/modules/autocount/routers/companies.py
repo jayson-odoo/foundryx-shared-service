@@ -1,7 +1,7 @@
-"""Company routes — thin: HTTP + Pydantic only.
+"""Company routes - thin: HTTP + Pydantic only.
 
 No DB query and no raw SQL lives here (code-review hard-fail). Every handler
-takes the tenant from the authenticated user — NEVER from client input — and
+takes the tenant from the authenticated user - NEVER from client input - and
 hands off to a service.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -116,7 +116,7 @@ def set_sink_target(
 
     ``logging`` keeps the no-op default; ``sorento`` requires a Sorento
     ``consumer`` connection id, validated to belong to this tenant. Reuses
-    ``autocount.companies.manage`` — the same "configure the company" authority —
+    ``autocount.companies.manage`` - the same "configure the company" authority -
     so no new permission needs a grant sweep for existing tenants."""
     try:
         company = CompanyService(db).set_sink_target(
@@ -205,8 +205,8 @@ def get_entity_mapping(
     """The entity's current field mappings projected AutoCount→Sorento, plus the
     source/target catalogs the editor's pickers need (AC-15-40).
 
-    Reuses ``autocount.companies.manage`` — the same "configure the company"
-    authority — so no new permission needs a grant sweep for existing tenants.
+    Reuses ``autocount.companies.manage`` - the same "configure the company"
+    authority - so no new permission needs a grant sweep for existing tenants.
     """
     try:
         view = CompanyService(db).mapping_view(
@@ -231,7 +231,7 @@ def replace_entity_mapping(
     """Replace the entity's deliverable field mappings (AC-15-41/42/43).
 
     The server GUARDS every row: the Sorento target must be an accepted field
-    (else 422 naming it — a target Sorento would reject can never be stored), the
+    (else 422 naming it - a target Sorento would reject can never be stored), the
     source path is non-blank and the transform is known. Provenance/watermark
     rows are preserved; the write is seed-if-absent-safe (``update_tenant`` never
     reverts an operator edit).
@@ -289,7 +289,7 @@ def test_formula(
     current_user: User = Depends(require_permission("autocount.companies.manage")),
     db: Session = Depends(get_db),
 ) -> FormulaTestResponse:
-    """Server-authoritative single-formula eval (AC-16-21) — the parity check for
+    """Server-authoritative single-formula eval (AC-16-21) - the parity check for
     the builder's live client preview. Writes NOTHING. A bad formula/value comes
     back as ``{ok: false, error}``, never a 500. Reuses ``autocount.companies.manage``.
     """
@@ -314,7 +314,7 @@ def simulate_mapping(
     db: Session = Depends(get_db),
 ) -> SimulateResponse:
     """Run the REAL MappingEngine over a MOCK AutoCount record → the projected
-    Sorento record + per-field results (AC-16-30). Writes NOTHING — pure transform
+    Sorento record + per-field results (AC-16-30). Writes NOTHING - pure transform
     preview, distinct from the slice-14 Sorento dry-run. ``rows`` (optional) lets
     the operator simulate UNSAVED edits. Reuses ``autocount.companies.manage``.
     """

@@ -1,4 +1,4 @@
-"""Canonical shapes — the FoundryX-neutral middle of the two-hop translation
+"""Canonical shapes - the Foundryx-neutral middle of the two-hop translation
 (plan §8, D7).
 
 **Canonical is DERIVED from the consumer's proven shapes, not designed fresh.**
@@ -8,7 +8,7 @@ document models (and `SCM_Module_Build_Plan.md`, which already specifies
 ``source_system`` / ``source_ref``).
 
 Hard rule for this package: **no vendor concept leaks in.** ``"T"``/``"F"``,
-``GRDTL``, ``DtlKey`` vs ``Dtlkey``, three date formats, 8-dp numeric strings —
+``GRDTL``, ``DtlKey`` vs ``Dtlkey``, three date formats, 8-dp numeric strings -
 all of that is absorbed by hop 1 (``mapping.py``) and must never appear here. If
 a canonical field name reads like AutoCount jargon, it is in the wrong layer.
 """

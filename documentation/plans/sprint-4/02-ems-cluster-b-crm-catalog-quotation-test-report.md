@@ -1,4 +1,4 @@
-# Sprint 3 · Plan 12 — EMS Cluster B · Test Execution Report
+# Sprint 3 · Plan 12 - EMS Cluster B · Test Execution Report
 
 **Plan:** `02-ems-cluster-b-crm-catalog-quotation.md` · **AC:** `02-...-acceptance-criteria.md`
 **Branch:** `sprint-3/12-ems-cluster-b` (worktree `.claude/worktrees/cluster-b`, served :3003/:8003)
@@ -22,7 +22,7 @@ Format per the orchestration guide: User Story / Scenario / Precondition / Steps
 
 ---
 
-## Slice 1 — CRM (Clients + Leads)
+## Slice 1 - CRM (Clients + Leads)
 
 - **US:** As an admin I manage B2B clients and sales leads, and win a lead into an event.
 - **Scenario (E2E ①):** create Client → create Lead inline-quick-creating a Client → move New→Qualified → "Create event" (Won convert) → lands on the new event.
@@ -33,7 +33,7 @@ Format per the orchestration guide: User Story / Scenario / Precondition / Steps
 - **Scenario (E2E ②, mobile 375px):** Clients + Leads lists render with no horizontal overflow. **Actual:** ✅.
 - **AC covered:** AC-12-02/03/04, 09 (client/lead triggerable), 11 (tenant isolation), 12 (import round-trip + foreign-client reject), 14 (quick-create), 15 (graph-driven Won), 18/19/20.
 
-## Slice 2 — Product catalog (categories tree + master)
+## Slice 2 - Product catalog (categories tree + master)
 
 - **US:** As an admin I organize a product catalog by a category tree and maintain products with behavioral kinds.
 - **Scenario (E2E ③):** create a root category + sub-category → create a product in it (kind Admission) → toggle active off.
@@ -44,13 +44,13 @@ Format per the orchestration guide: User Story / Scenario / Precondition / Steps
 - **Name-collision lesson:** core already owns `products.*` → product perms namespaced **`ems_products.*`** (category perms `product_categories.*` are free). Consistent end-to-end (router/CSV/menu/RequirePermission/importer/createPermission).
 - **AC covered:** AC-12-05, 09, 11, 12, 17, 19, 20, 24.
 
-## Slice 3 — Quotations + document attach
+## Slice 3 - Quotations + document attach
 
 - **US:** As an admin I raise a B2B quote against a lead, build line items with a derived total, attach a document, and revise it.
 - **Scenario (E2E ⑤):** New quotation (raised against a lead, autofills client) → Edit → Add line referencing a product (autofills unit price) → qty 2 → Save → total = 100 → Revise.
   - **Expected:** lines saved with server-recomputed amount; header total derived; revise clones lines into a new Draft v2 with `parent_quotation_id` lineage, original untouched.
   - **Actual:** ✅ (E2E + `test_quotation_create_with_lines_derives_total`, `test_quotation_revise_clones_with_lineage`, `test_quotation_update_replaces_lines`, `test_quotation_status_transitions`).
-- **FileLink attach seam (AC-12-08):** the core `/documents/file-links` API already existed (ShareService, tenant-scoped) — **consumed, not rebuilt**. Verified for `entity_type='quotation'`: link → list → detach, foreign/bogus file rejected (`test_quotation_filelink_attach_list_detach`). Frontend AttachPanel + Drive folder picker on the Documents tab.
+- **FileLink attach seam (AC-12-08):** the core `/documents/file-links` API already existed (ShareService, tenant-scoped) - **consumed, not rebuilt**. Verified for `entity_type='quotation'`: link → list → detach, foreign/bogus file rejected (`test_quotation_filelink_attach_list_detach`). Frontend AttachPanel + Drive folder picker on the Documents tab.
 - **Validation:** ≥1 of lead/project (422), client required, line product tenant-scoped (incl. soft-deleted excluded), quotation `get()` excludes trashed.
 - **Scenario (E2E ⑥, mobile):** Quotations list renders with no horizontal overflow. **Actual:** ✅.
 - **AC covered:** AC-12-06, 07, 08, 09 (quotation triggerable), 11, 13, 16 (RepeaterField-style line editor), 19, 20.
@@ -64,7 +64,7 @@ Each slice reviewed by an independent reviewer before commit; verdicts APPROVE /
 - Slice 3: `get()` is_deleted filter + line product soft-delete exclusion.
 
 ## Environment notes
-- Worktree served on **:3003 / :8003** (two other developers active on 3001/8001 + 3002/8002). Backend CORS extended to `:3003` + `*.localhost:3003` via env (not committed config) — prod ports already covered.
+- Worktree served on **:3003 / :8003** (two other developers active on 3001/8001 + 3002/8002). Backend CORS extended to `:3003` + `*.localhost:3003` via env (not committed config) - prod ports already covered.
 - DB = shared local Postgres; new `app_ems` tables + namespaced perms applied surgically (no full reseed, to avoid clobbering siblings' module rows).
 
 ## Definition of Done

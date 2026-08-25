@@ -10,7 +10,7 @@ import type { Channel } from '@/types/omnichannel';
 import { channelFormHref } from './paths';
 
 /**
- * The Channel action registry — one set surfaced in the row "…" menu, the bulk
+ * The Channel action registry - one set surfaced in the row "…" menu, the bulk
  * toolbar, and the form "…" menu (plan 04 §7). Channels are CREATED via the
  * Connect wizard, not an action; here we edit / test / disconnect.
  */
@@ -88,7 +88,7 @@ export function useChannelActions(): ResourceAction<Channel>[] {
         tone: 'destructive',
         permission: 'channels.manage',
         surfaces: { row: true, bulk: true },
-        // Only from the Trashed view — hard delete.
+        // Only from the Trashed view - hard delete.
         isVisible: (rows) => rows.length > 0 && rows.every((r) => r.isTrashed),
         confirm: {
           title: 'Delete channel permanently?',

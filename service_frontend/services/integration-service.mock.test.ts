@@ -55,7 +55,7 @@ describe('one connection per type (plan 06 D7)', () => {
         config: { accountId: 'abc', bucket: 'assets', cdnBaseUrl: '' },
         credentials: { accessKeyId: 'k', secretAccessKey: 's' },
       }),
-    ).rejects.toThrow(/already exists — disconnect it first/i);
+    ).rejects.toThrow(/already exists - disconnect it first/i);
   });
 
   it('allows different types side by side', async () => {

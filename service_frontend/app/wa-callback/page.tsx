@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react';
  *
  * Meta's OAuth dialog redirects here with `?code=…` after the tenant finishes.
  * This page runs in the popup opened by `launchEmbeddedSignup`: it relays the
- * code back to the opener via postMessage, then closes. No auth needed — the
+ * code back to the opener via postMessage, then closes. No auth needed - the
  * opener does the authenticated exchange. Registered as a Valid OAuth Redirect
  * URI in the Meta app.
  */
@@ -24,7 +24,7 @@ export default function WaCallbackPage() {
 
     if (window.opener) {
       window.opener.postMessage(payload, window.location.origin);
-      setMessage('Done — you can close this window.');
+      setMessage('Done - you can close this window.');
       // Give the message a tick to flush before the window disappears.
       window.setTimeout(() => window.close(), 300);
     } else {

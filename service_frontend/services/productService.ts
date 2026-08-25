@@ -1,5 +1,5 @@
 /**
- * Product catalog service — the boundary the Products UI talks to (via the
+ * Product catalog service - the boundary the Products UI talks to (via the
  * list config + form dialog). Enforced layering:
  *   UI → hooks/config → this service → lib/api-client → FastAPI.
  *

@@ -70,7 +70,7 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
     conversationService
       .listThreads(query)
       .then((list) => {
-        if (seq !== fetchSeq.current) return; // stale response — a newer fetch won
+        if (seq !== fetchSeq.current) return; // stale response - a newer fetch won
         setThreads(list);
         setError(null);
       })
@@ -88,7 +88,7 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
   // Live updates. Unfiltered view: upsert the event's thread in place and
   // re-sort (cheap). Filtered view: the event may move a thread IN or OUT of
   // the current bucket (e.g. self-claim leaves Unassigned) and 'me' can only
-  // be resolved server-side — reconcile with a refetch instead of guessing.
+  // be resolved server-side - reconcile with a refetch instead of guessing.
   const isFiltered =
     filters.assignee !== 'all' ||
     filters.status !== 'ALL' ||

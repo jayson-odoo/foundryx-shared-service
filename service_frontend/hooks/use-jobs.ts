@@ -9,7 +9,7 @@ const POLL_MS = 3000;
 /**
  * Recent background jobs for the generic Jobs drawer / list (sprint-4/10).
  * Polls every 3s while any job is in flight (running/pending); stops when all
- * settle — mirrors `useImportJobs` (the Imports drawer). Filters are optional.
+ * settle - mirrors `useImportJobs` (the Imports drawer). Filters are optional.
  */
 export function useJobs(query: JobListQuery = {}): {
   jobs: Job[];

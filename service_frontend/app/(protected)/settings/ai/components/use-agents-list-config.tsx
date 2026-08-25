@@ -73,7 +73,7 @@ export function useAgentsListConfig(): ResourceListConfig<AiAgent> {
         header: ({ column }) => <DataGridColumnHeader title="Connection" column={column} />,
         cell: ({ row }) => {
           const { connectionName, warning } = row.original;
-          // The missing-prerequisite warning rides the list, not just the form —
+          // The missing-prerequisite warning rides the list, not just the form -
           // a broken agent is visible BEFORE anyone tries to run it (AC-BI-06).
           if (warning) {
             return (
@@ -99,7 +99,7 @@ export function useAgentsListConfig(): ResourceListConfig<AiAgent> {
         meta: { headerTitle: 'Model' },
         header: ({ column }) => <DataGridColumnHeader title="Model" column={column} />,
         cell: ({ row }) => (
-          <span className="text-sm text-muted-foreground">{row.original.model || '—'}</span>
+          <span className="text-sm text-muted-foreground">{row.original.model || '-'}</span>
         ),
         size: 180,
         enableSorting: true,
@@ -121,7 +121,7 @@ export function useAgentsListConfig(): ResourceListConfig<AiAgent> {
               )}
             />
           ) : (
-            <span className="text-sm text-muted-foreground">—</span>
+            <span className="text-sm text-muted-foreground">-</span>
           ),
         size: 200,
         enableSorting: false,
@@ -152,7 +152,7 @@ export function useAgentsListConfig(): ResourceListConfig<AiAgent> {
         header: ({ column }) => <DataGridColumnHeader title="Updated" column={column} />,
         cell: ({ row }) => (
           <span className="text-sm text-muted-foreground">
-            {row.original.updatedAt ? formatDateTime(row.original.updatedAt) : '—'}
+            {row.original.updatedAt ? formatDateTime(row.original.updatedAt) : '-'}
           </span>
         ),
         size: 150,
@@ -184,7 +184,7 @@ export function useAgentsListConfig(): ResourceListConfig<AiAgent> {
 
     return {
       viewKey: 'ai.agents',
-      // No soft-trash on agents — offering a "Trashed" view that can never
+      // No soft-trash on agents - offering a "Trashed" view that can never
       // hold anything is a foolproof-UI violation (only offer valid options).
       enableStatusViews: false,
       getRowId: (row) => row.id,

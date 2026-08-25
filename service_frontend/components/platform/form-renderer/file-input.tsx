@@ -1,11 +1,11 @@
 'use client';
 
 /**
- * File-pick input (plan sprint-3/01, Phase A) — the answer is the serializable
+ * File-pick input (plan sprint-3/01, Phase A) - the answer is the serializable
  * `FormFileAnswer[]` (key/name/size/mime). Picked `File` objects are held in an
  * internal ref keyed by a `local:<uuid>` placeholder; upload wiring (Phase B)
  * resolves those placeholders to real storage keys, so nothing extra leaks into
- * the public API. Size/mime are checked at PICK time — a rejected file shows an
+ * the public API. Size/mime are checked at PICK time - a rejected file shows an
  * inline error and is dropped (never silently accepted).
  */
 import { useRef, useState } from 'react';

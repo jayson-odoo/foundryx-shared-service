@@ -1,4 +1,4 @@
-"""Workflow engine tests (plan sprint-2/08) — validate gate, executor, publish/
+"""Workflow engine tests (plan sprint-2/08) - validate gate, executor, publish/
 versioning, run-the-draft, run logs + replay, debug execute, archive/restore,
 tenant scoping, permission reachability."""
 
@@ -120,7 +120,7 @@ def test_full_lifecycle(client):
     assert detail["hasUnpublishedChanges"] is False
     assert detail["triggerType"] == "manual"
 
-    # run the draft (no re-publish needed) — eager → completes inline
+    # run the draft (no re-publish needed) - eager → completes inline
     res = client.post(f"/workflows/{wid}/run", headers=h, json={"inputs": {"email": "x@y.com"}})
     assert res.status_code == 200, res.text
     assert res.json()["status"] == "success"

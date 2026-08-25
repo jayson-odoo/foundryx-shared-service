@@ -24,19 +24,19 @@ export interface AuthService {
   /** Resolves on success; throws {@link AuthError} with a user-safe message on failure. */
   signin(credentials: SigninCredentials): Promise<void>;
   /**
-   * Fresh identity from the backend — used to detect a stale session (the
+   * Fresh identity from the backend - used to detect a stale session (the
    * change-email ceremony, plan 04, flips the email outside this session's
    * browser context).
    */
   identity(): Promise<SessionIdentity>;
 }
 
-// Generic message — must NOT distinguish "no such user" from "wrong password"
+// Generic message - must NOT distinguish "no such user" from "wrong password"
 // (avoids enumeration; mirrors the backend contract).
 const INVALID_CREDENTIALS = 'Invalid email or password.';
 
 /**
- * Auth service — delegates to NextAuth, which POSTs to FastAPI `/auth/login`
+ * Auth service - delegates to NextAuth, which POSTs to FastAPI `/auth/login`
  * and stores the returned JWT in the session.
  */
 export const authService: AuthService = {
@@ -54,7 +54,7 @@ export const authService: AuthService = {
         const parsed = JSON.parse(response.error) as { message?: string };
         if (parsed.message) message = parsed.message;
       } catch {
-        // non-JSON error — keep the generic message
+        // non-JSON error - keep the generic message
       }
       throw new AuthError(message);
     }

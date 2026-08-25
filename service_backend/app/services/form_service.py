@@ -1,9 +1,9 @@
-"""Form engine business logic (plan sprint-3/01) — Router → THIS → Repository.
+"""Form engine business logic (plan sprint-3/01) - Router → THIS → Repository.
 
 Owns the whole form lifecycle and the submission pipeline:
 
 - CREATE materializes the form's OWN scoped status machine in the SAME
-  transaction (D4) — a minimal Draft→Submitted seed; tenants add review states
+  transaction (D4) - a minimal Draft→Submitted seed; tenants add review states
   per scope afterwards. Deleting the form drops that graph (delete_scope) then
   cascades versions + submissions.
 - PUBLISH runs the ``validate_form_doc`` gate (D9), snapshots the draft into an
@@ -78,7 +78,7 @@ from app.status_engine.scoped import (
 
 # The minimal seed graph every new form's submissions start on (D4). Flag
 # semantics, never labels: ``is_active`` on a SCOPED status means "the
-# respondent may still edit answers" — so Submitted is intentionally inactive.
+# respondent may still edit answers" - so Submitted is intentionally inactive.
 SUBMISSION_SEED_STATUSES = [
     ScopeSeedStatus(
         key="draft",
@@ -134,7 +134,7 @@ class FormValidationError(FormError):
 
 
 class FormPublishBlocked(FormError):
-    """The publish gate found problems (D9) — 422 detail={'problems': [...]}."""
+    """The publish gate found problems (D9) - 422 detail={'problems': [...]}."""
 
     def __init__(self, problems: List[str]):
         super().__init__("; ".join(problems))
@@ -142,7 +142,7 @@ class FormPublishBlocked(FormError):
 
 
 class FormSubmitInvalid(FormError):
-    """Per-field validation failed (D14) — 422 detail={'fieldErrors': {...}}."""
+    """Per-field validation failed (D14) - 422 detail={'fieldErrors': {...}}."""
 
     def __init__(self, field_errors: Dict[str, str]):
         super().__init__("Some answers need attention.")
@@ -158,7 +158,7 @@ class SubmissionNotFound(FormError):
 
 
 class FormRevisionBlocked(FormError):
-    """Revise refused — revisions off / not current / not frozen / no published
+    """Revise refused - revisions off / not current / not frozen / no published
     version (plan sprint-4/04) → 409."""
 
 
@@ -333,7 +333,7 @@ class FormService:
         return form
 
     def update(self, tenant_id: str, form_id: str, *, fields_set: set, **values) -> Form:
-        """PATCH — only keys present in ``fields_set`` are applied (so an absent
+        """PATCH - only keys present in ``fields_set`` are applied (so an absent
         field is untouched and an explicit null clears nullable columns)."""
         form = self.get(tenant_id, form_id)
 
@@ -423,7 +423,7 @@ class FormService:
             return []
         try:
             doc = FormDocument.model_validate(form.draft_definition_json or {})
-        except Exception:  # noqa: BLE001 — already validated above; defensive
+        except Exception:  # noqa: BLE001 - already validated above; defensive
             return []
         numeric = {
             f.key for f in doc.input_fields() if f.key and f.type in NUMERIC_FIELD_TYPES
@@ -469,7 +469,7 @@ class FormService:
     def delete(self, tenant_id: str, form_id: str) -> None:
         form = self.get(tenant_id, form_id)
         # Drop the scoped status graph first (submissions reference its rows),
-        # then the form — versions + submissions cascade via FK.
+        # then the form - versions + submissions cascade via FK.
         delete_scope(self.db, FORM_SUBMISSION_ENTITY, tenant_id, form.id)
         self.repo.delete(form)
         self.db.commit()
@@ -514,7 +514,7 @@ class FormService:
         }
 
     def preview(self, tenant_id: str, form_id: str) -> Dict[str, Any]:
-        """Author preview — renders the live DRAFT (D9). version 0 / no real id
+        """Author preview - renders the live DRAFT (D9). version 0 / no real id
         because the draft is unsnapshotted."""
         form = self.get(tenant_id, form_id)
         return {
@@ -528,7 +528,7 @@ class FormService:
         }
 
     def fill(self, tenant_id: str, form_id: str) -> Optional[Dict[str, Any]]:
-        """Fill surface — serves the PUBLISHED current version only (D9).
+        """Fill surface - serves the PUBLISHED current version only (D9).
         Returns None when the form is not currently published."""
         form = self.get(tenant_id, form_id)
         if form.status != FORM_PUBLISHED or not form.current_version_id:
@@ -542,8 +542,8 @@ class FormService:
 
     def _resolve_public(self, tenant_slug: str, form_slug: str) -> Optional[Tuple[Form, FormVersion]]:
         """Resolve a SERVABLE public form by (tenant slug, form slug). Returns
-        None for every non-servable case — unknown/suspended tenant, unknown
-        form, non-public access, or not currently published — so the router can
+        None for every non-servable case - unknown/suspended tenant, unknown
+        form, non-public access, or not currently published - so the router can
         answer a UNIFORM 404 (no enumeration, D11). A published-but-window-closed
         or full form IS servable here (the caller decides open vs closed/full)."""
         from app.repositories.tenant_repository import TenantRepository
@@ -603,7 +603,7 @@ class FormService:
         uploads: Optional[List[UploadedFormFile]] = None,
     ) -> Optional[FormSubmission]:
         """Anonymous submit. Returns None when the honeypot is tripped (silently
-        dropped — never tip off the bot, D12). Raises FormNotFound (→404) for a
+        dropped - never tip off the bot, D12). Raises FormNotFound (→404) for a
         non-servable form; FormClosed (→409) / FormSubmitInvalid (→422) ride the
         shared submit pipeline. user=None → anonymous; per-user cap is unenforced
         for public forms (D10)."""
@@ -650,14 +650,14 @@ class FormService:
             raise FormClosed("This form is closed.")
 
         # 3. Total cap. v1 is check-then-insert in one transaction; a tiny race
-        # window can overshoot by one under concurrency (acceptable for v1 — the
+        # window can overshoot by one under concurrency (acceptable for v1 - the
         # same pattern as the email-outbox cancel claim; a DB-level atomic guard
         # is the hardening follow-up).
         if form.max_submissions is not None:
             if self.subs.count_for_form(tenant_id, form_id) >= form.max_submissions:
                 raise FormClosed("This form has reached its submission limit.")
 
-        # 4. Per-user cap — enforceable only with an authenticated identity on an
+        # 4. Per-user cap - enforceable only with an authenticated identity on an
         # internal form (public/anonymous ignore it, D10).
         if (
             form.access == ACCESS_INTERNAL
@@ -677,13 +677,13 @@ class FormService:
         # 5a. Sniff-gate uploads + signatures BEFORE validation, replacing client
         # file placeholders with provisional answers (real name/size/sniffed
         # mime). Bytes are stored ONLY after the row exists (the quarantine key
-        # needs the submission id) — so a validation failure leaves NO orphan
+        # needs the submission id) - so a validation failure leaves NO orphan
         # blobs (D12). ``staged`` = field_key → list of (mime, bytes, filename).
         field_map = self._field_map(version.definition_json)
         staged, staged_sig, file_errors = self._stage_uploads(field_map, answers, uploads or [])
 
         clean, errors = validate_submission(version.definition_json, answers)
-        # Only surface upload errors for fields in the VISIBLE set (clean keys) —
+        # Only surface upload errors for fields in the VISIBLE set (clean keys) -
         # a file field hidden by a condition is dropped by validation and must
         # NEVER 422 (the hidden-fields-never-error contract; code-review).
         visible_file_errors = {k: v for k, v in file_errors.items() if k in clean}
@@ -692,12 +692,12 @@ class FormService:
             raise FormSubmitInvalid(errors)
 
         # 6. Create at the scope's initial status, then move to "Submitted"
-        # through the ONE status executor (D4) — notifications + the workflow
+        # through the ONE status executor (D4) - notifications + the workflow
         # status_changed event ride that transition.
         initial = initial_scope_status(self.db, FORM_SUBMISSION_ENTITY, tenant_id, form.id)
         if initial is None:
             raise FormError("This form's submission machine is misconfigured.")
-        # An original's group id == its own id (R1) — generate it explicitly so
+        # An original's group id == its own id (R1) - generate it explicitly so
         # external refs to the group resolve to this row from day one.
         sub_id = str(uuid.uuid4())
         submission = FormSubmission(
@@ -713,7 +713,7 @@ class FormService:
             subject_type=subject_type,
             subject_id=subject_id,
             # Deep copy so the column's change-tracking baseline is INDEPENDENT
-            # of ``clean`` — _store_uploads mutates ``clean`` in place, and a
+            # of ``clean`` - _store_uploads mutates ``clean`` in place, and a
             # plain JSON column would otherwise see the post-mutation baseline
             # and miss the swap (so the placeholder would persist).
             answers_json=json.loads(json.dumps(clean)),
@@ -729,7 +729,7 @@ class FormService:
             submission.answers_json = json.loads(json.dumps(clean))
 
         # Move Draft→Submitted + fire the form.submitted event. A tenant that
-        # restricted the Submit edge leaves the record at Draft (lenient — the
+        # restricted the Submit edge leaves the record at Draft (lenient - the
         # initial submit doesn't fail; a revision resubmit does, see below).
         self._fire_submit_and_emit(tenant_id, form, submission, clean, user)
         self.db.commit()
@@ -747,10 +747,10 @@ class FormService:
         """Move a captured submission Draft→Submitted through the ONE status
         executor (D4) and fire the form.submitted workflow trigger. Returns
         whether the move happened (False = no Submitted target, or the tenant
-        restricted the Submit edge — the record stays at Draft, submitted_at
+        restricted the Submit edge - the record stays at Draft, submitted_at
         unstamped: a record at Draft is NOT "submitted"). The event is buffered
         on the session → drained failure-isolated on the SAME commit's
-        after_commit hook (the status_changed event rides along) — a broken
+        after_commit hook (the status_changed event rides along) - a broken
         workflow can NEVER 500 the submit/resubmit. Shared by submit() +
         resubmit_revision() so the invariants live in ONE place."""
         submitted = self._submitted_status(tenant_id, form.id)
@@ -805,7 +805,7 @@ class FormService:
         ``answers`` to carry provisional file answers (so validation sees real
         count/size). Returns (staged files, staged signatures, per-field errors).
         Parts whose field is unknown/not-a-file are ignored (like hidden answers
-        — curl can't force-feed them). Total per-submission cap enforced here."""
+        - curl can't force-feed them). Total per-submission cap enforced here."""
         staged: Dict[str, List] = {}
         staged_sig: Dict[str, bytes] = {}
         errors: Dict[str, str] = {}
@@ -815,7 +815,7 @@ class FormService:
         for up in uploads:
             field = field_map.get(up.field_key)
             if field is None or field.type != "file":
-                continue  # stray/unknown part — drop silently
+                continue  # stray/unknown part - drop silently
             mime = detect_upload_mime(up.content, up.filename)
             if mime is None:
                 errors[up.field_key] = "Unsupported file type."
@@ -934,7 +934,7 @@ class FormService:
             segment=segment,
         )
         fireable = self._fireable_map(tenant_id, form_id, rows, user)
-        # Status rows for the page (label/color) — one query over the page's ids.
+        # Status rows for the page (label/color) - one query over the page's ids.
         status_by_id = self._status_map(tenant_id, form_id, {r.status_id for r in rows})
         return [
             self._submission_row(r, status_by_id, fireable.get(r.id))
@@ -962,7 +962,7 @@ class FormService:
         """Per-record fireable edge ids for the list buttons (D15). The generic
         ``fireable_edge_ids`` only returns a map when conditioned edges exist;
         for list surfaces the buttons need the fireable edges even unconditioned,
-        so we compute outgoing-from-current per DISTINCT status (cached — records
+        so we compute outgoing-from-current per DISTINCT status (cached - records
         sharing a status reuse the same edge set; role/condition check via
         ``available_transitions``)."""
         conditioned = status_machine.fireable_edge_ids(
@@ -1012,7 +1012,7 @@ class FormService:
         }
 
     def _version_number(self, submission: FormSubmission) -> int:
-        # Tenant-scoped via the join to forms — never resolve a stored id
+        # Tenant-scoped via the join to forms - never resolve a stored id
         # unscoped (the polymorphic target_id rule; code-review finding).
         version = (
             self.db.query(FormVersion.version_number)
@@ -1039,7 +1039,7 @@ class FormService:
         submission = self.subs.get_by_id(tenant_id, submission_id)
         if submission is None:
             raise SubmissionNotFound()
-        # Resolve the edge — it must exist AND belong to this submission's own
+        # Resolve the edge - it must exist AND belong to this submission's own
         # scope (both endpoints carry the form's scope_id; the executor's scope
         # guard re-checks, but resolving here gives a clean 404 for a foreign id).
         edge = StatusTransitionRepository(self.db).get_by_id(transition_id)
@@ -1054,7 +1054,7 @@ class FormService:
             or to_status.scope_id != submission.form_id
             or from_status.tenant_id != tenant_id
         ):
-            # Cross-form / cross-tenant edge id — refuse (polymorphic guard).
+            # Cross-form / cross-tenant edge id - refuse (polymorphic guard).
             raise SubmissionNotFound()
         status_machine.transition(
             self.db,
@@ -1074,7 +1074,7 @@ class FormService:
     def _scoped_status_active(self, tenant_id: str, form_id: str, status_id: str) -> bool:
         """True only when ``status_id`` RESOLVES within this form's own scope AND
         is active (editable). An unresolvable/foreign id → False (refuse), never
-        fail-open — the polymorphic target_id rule via ``get_scope_status``."""
+        fail-open - the polymorphic target_id rule via ``get_scope_status``."""
         status = get_scope_status(self.db, FORM_SUBMISSION_ENTITY, tenant_id, form_id, status_id)
         return bool(status and status.is_active)
 
@@ -1099,13 +1099,13 @@ class FormService:
         if not current.is_current:
             raise FormRevisionBlocked("Only the current revision can be revised.")
         # Frozen = the current status is NOT active. A status that fails to
-        # resolve in-scope is refused (not treated as frozen) — never fail-open.
+        # resolve in-scope is refused (not treated as frozen) - never fail-open.
         if self._scoped_status_active(tenant_id, form.id, current.status_id):
             raise FormRevisionBlocked(
-                "This submission is still editable — edit it instead of revising."
+                "This submission is still editable - edit it instead of revising."
             )
         # A revision pins the CURRENT published version + the author re-fills it
-        # — both require the form to be live now (an unpublished form's fill
+        # - both require the form to be live now (an unpublished form's fill
         # surface is offline, so there is nothing to revise against).
         if form.status != FORM_PUBLISHED or not form.current_version_id:
             raise FormRevisionBlocked("This form has no published version to revise against.")
@@ -1125,14 +1125,14 @@ class FormService:
             submission_group_id=current.submission_group_id,
             revision_number=next_rev,
             is_current=True,
-            # Pin the version published NOW — faithful re-render of what the
+            # Pin the version published NOW - faithful re-render of what the
             # author actually edits this time (R2).
             version_id=form.current_version_id,
             status_id=initial.id,
             user_id=current.user_id,
             subject_type=current.subject_type,
             subject_id=current.subject_id,
-            # Deep copy the prior clean answers (file refs by reference — blobs
+            # Deep copy the prior clean answers (file refs by reference - blobs
             # are immutable; changing a file uploads a new key, R4).
             answers_json=json.loads(json.dumps(current.answers_json or {})),
             submitted_at=None,
@@ -1141,7 +1141,7 @@ class FormService:
         try:
             self.db.commit()
         except IntegrityError:
-            # The partial-unique index fired — another revise already produced
+            # The partial-unique index fired - another revise already produced
             # the next current revision for this group (concurrent click/race).
             self.db.rollback()
             raise FormRevisionBlocked("A newer revision already exists for this submission.")
@@ -1158,7 +1158,7 @@ class FormService:
         *,
         can_manage: bool,
     ) -> FormSubmission:
-        """Save edited answers into a Draft revision and fire its Submit edge —
+        """Save edited answers into a Draft revision and fire its Submit edge -
         rides the EXISTING submit/transition pipeline (R3, via the shared
         ``_fire_submit_and_emit``). The row stays the same (one row per
         revision); only the current Draft of a group is editable."""
@@ -1189,15 +1189,15 @@ class FormService:
         if staged or staged_sig:
             self._store_uploads(tenant_id, form.id, submission, clean, staged, staged_sig)
         # Reassign a NEW dict so a plain JSON column tracks the swap (the
-        # in-place-mutation gotcha — same as submit()).
+        # in-place-mutation gotcha - same as submit()).
         submission.answers_json = json.loads(json.dumps(clean))
 
-        # Unlike the initial submit, a resubmit is an EXPLICIT "submit" action —
+        # Unlike the initial submit, a resubmit is an EXPLICIT "submit" action -
         # if the tenant restricted the Submit edge so the move can't happen, the
         # revision would silently stay editable; surface that as a 409 instead.
         if not self._fire_submit_and_emit(tenant_id, form, submission, clean, user):
             self.db.rollback()
-            raise FormRevisionBlocked("This revision could not be submitted — the Submit step is restricted.")
+            raise FormRevisionBlocked("This revision could not be submitted - the Submit step is restricted.")
         self.db.commit()
         self.db.refresh(submission)
         return submission
@@ -1218,7 +1218,7 @@ class FormService:
         self, tenant_id: str, submission_id: str, field_key: str, index: int
     ) -> Optional[Tuple[str, str, str]]:
         """Resolve (storage_key, mime, filename) for the nth file of a field on a
-        submission — tenant-scoped (never resolve a stored id unscoped). None on
+        submission - tenant-scoped (never resolve a stored id unscoped). None on
         any miss. Files are objects {key,name,mime}; a signature is a bare key
         string (index 0). The route serves these CSP-sandboxed (D12)."""
         submission = self.subs.get_by_id(tenant_id, submission_id)
@@ -1337,7 +1337,7 @@ def _write_csv(columns: List[str], rows: List[Dict[str, Any]], cell) -> str:
 
 def _camel_value(row: Dict[str, Any], column: str) -> str:
     """Map a camelCase export column to its snake row key (the row dict here
-    uses snake keys — the schema aliases to camel only at serialization)."""
+    uses snake keys - the schema aliases to camel only at serialization)."""
     snake = re.sub(r"(?<!^)(?=[A-Z])", "_", column).lower()
     value = row.get(snake, row.get(column, ""))
     return "" if value is None else str(value)

@@ -1,9 +1,9 @@
-"""OpenAI LLM provider — `type='llm'` (AC-BI-02).
+"""OpenAI LLM provider - `type='llm'` (AC-BI-02).
 
 Structured output = the **`json_schema` response format**. Note `strict` is
 deliberately NOT set: strict mode requires every property to appear in
 `required`, which would forbid the partial extraction the grill explicitly
-permits (Bi-D13 — "partial emit is success, invention is not"). Our own
+permits (Bi-D13 - "partial emit is success, invention is not"). Our own
 `form_engine` validation is the authority either way (D22-A), so the response
 format is a shaping hint, not the gate.
 """
@@ -22,7 +22,7 @@ from app.integrations.llm_base import (
 )
 
 API_BASE = "https://api.openai.com/v1"
-# The catalog carries embeddings/audio/image/moderation models too — the picker
+# The catalog carries embeddings/audio/image/moderation models too - the picker
 # must only offer models that will actually work (foolproof-UI).
 _NON_CHAT_HINTS = (
     "embedding", "whisper", "tts", "dall-e", "moderation", "audio",
@@ -45,7 +45,7 @@ class OpenAIProvider(LLMProviderBase):
     provider = "openai"
     title = "OpenAI"
     description = (
-        "Use OpenAI models for AI features — grilling, drafting and structured "
+        "Use OpenAI models for AI features - grilling, drafting and structured "
         "extraction. Bring your own API key from the OpenAI platform."
     )
     icon = "bot"
@@ -123,12 +123,12 @@ class OpenAIProvider(LLMProviderBase):
 
         if output_schema is not None:
             # A truncated response ("length" = hit max_completion_tokens) is
-            # never valid structured output — refuse cleanly, never blind-parse a
+            # never valid structured output - refuse cleanly, never blind-parse a
             # fragment (defense: a runaway model must produce an LLMError).
             if finish_reason == "length":
                 raise LLMError(
                     "The model's structured response was cut off at the token "
-                    "limit — try again."
+                    "limit - try again."
                 )
             try:
                 structured = json.loads(content)

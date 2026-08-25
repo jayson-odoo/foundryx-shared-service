@@ -74,7 +74,7 @@ function TextRow({
               : 'text-muted-foreground'
           }
         >
-          {readValue || '—'}
+          {readValue || '-'}
         </span>
       )}
     </FormRow>
@@ -109,7 +109,7 @@ export function DetailsTab({
             readValue={tenant?.name}
           />
 
-          {/* Slug is the tenant's URL identity — editable only at create (plan 07 §4). */}
+          {/* Slug is the tenant's URL identity - editable only at create (plan 07 §4). */}
           <FormRow label="Slug" required={creating && editing}>
             {creating && editing ? (
               <FormField
@@ -121,7 +121,7 @@ export function DetailsTab({
                       <Input placeholder="e.g. acme-events" {...field} />
                     </FormControl>
                     <p className="text-xs text-muted-foreground">
-                      The tenant&apos;s subdomain — lowercase, immutable after
+                      The tenant&apos;s subdomain - lowercase, immutable after
                       creation.
                     </p>
                     <FormMessage />
@@ -130,7 +130,7 @@ export function DetailsTab({
               />
             ) : (
               <span className="flex items-center gap-2">
-                <span className="font-mono text-xs">{tenant?.slug ?? '—'}</span>
+                <span className="font-mono text-xs">{tenant?.slug ?? '-'}</span>
                 {tenant?.isPlatform && (
                   <Badge variant="secondary" appearance="light" size="sm">
                     Platform
@@ -199,7 +199,7 @@ export function DetailsTab({
               />
             ) : (
               <span className={tenant?.notes ? '' : 'text-muted-foreground'}>
-                {tenant?.notes || '—'}
+                {tenant?.notes || '-'}
               </span>
             )}
           </FormRow>
@@ -210,7 +210,7 @@ export function DetailsTab({
         </CardContent>
       </Card>
 
-      {/* First admin — provisioned with the tenant in one transaction (plan 07 §7). */}
+      {/* First admin - provisioned with the tenant in one transaction (plan 07 §7). */}
       {creating && (
         <Card>
           <CardContent className="py-1">
@@ -249,7 +249,7 @@ export function DetailsTab({
                       />
                     </FormControl>
                     <p className="text-xs text-muted-foreground">
-                      Hand it to the tenant admin out-of-band — invite emails
+                      Hand it to the tenant admin out-of-band - invite emails
                       arrive with BL-033.
                     </p>
                     <FormMessage />
@@ -267,7 +267,7 @@ export function DetailsTab({
 /* ─────────────────────────── Modules tab ─────────────────────────── */
 
 /**
- * Per-tenant module state + operator actions (plan 08 §8) — the same card grid
+ * Per-tenant module state + operator actions (plan 08 §8) - the same card grid
  * as the tenant storefront, against the operator endpoints. All actions gated
  * by tenants.manage_modules (platform key; require_platform_permission is the
  * real boundary).
@@ -285,7 +285,7 @@ export function ModulesTab({ tenant }: { tenant: TenantDetail | null }) {
           </p>
           <p className="text-sm text-muted-foreground">
             {tenant
-              ? 'The platform tenant hosts the operator team only — it never installs App Store modules (plan 07 §5).'
+              ? 'The platform tenant hosts the operator team only - it never installs App Store modules (plan 07 §5).'
               : 'Modules can be managed once the tenant is provisioned.'}
           </p>
         </CardContent>
@@ -305,10 +305,10 @@ function TenantModulesGrid({ tenantId }: { tenantId: string }) {
 /* ─────────────────────────── Branding tab ─────────────────────────── */
 
 /**
- * Operator surface of tenant branding (sprint-2/03) — the SAME editor as the
+ * Operator surface of tenant branding (sprint-2/03) - the SAME editor as the
  * tenant's /settings/branding, against the operator endpoints. One platform
  * key (tenants.manage_branding) covers every edit; the platform tenant itself
- * keeps stock FoundryX branding (the console IS the product).
+ * keeps stock Foundryx branding (the console IS the product).
  */
 export function BrandingTab({ tenant }: { tenant: TenantDetail | null }) {
   const { can } = useCan();
@@ -324,7 +324,7 @@ export function BrandingTab({ tenant }: { tenant: TenantDetail | null }) {
           </p>
           <p className="text-sm text-muted-foreground">
             {tenant
-              ? 'The platform console keeps stock FoundryX branding — tenant branding applies to customer tenants only.'
+              ? 'The platform console keeps stock Foundryx branding - tenant branding applies to customer tenants only.'
               : 'Branding can be managed once the tenant is provisioned.'}
           </p>
         </CardContent>

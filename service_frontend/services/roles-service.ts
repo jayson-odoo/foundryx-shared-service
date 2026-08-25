@@ -1,5 +1,5 @@
 /**
- * Roles service — real api-client (Phase B). RBAC/permissions = backlog BL-009.
+ * Roles service - real api-client (Phase B). RBAC/permissions = backlog BL-009.
  */
 import { apiFetch } from '@/lib/api-client';
 import type { Role } from '@/types/user';
