@@ -1,5 +1,5 @@
 /**
- * Settings → Meetings, Bot section — AC-S2-12.
+ * Settings → Meetings, Bot section - AC-S2-12.
  *
  * Drives the page through the SERVICE boundary, so what is asserted is what the
  * tenant admin sees: a week of runs with meeting, start, end, exit reason and
@@ -137,7 +137,7 @@ describe('Settings → Meetings, Bot runs', () => {
 
     expect(await screen.findByText('Vendor call')).toBeInTheDocument();
     expect(screen.getAllByText('Not admitted').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('-').length).toBeGreaterThan(0);
   });
 
   it('AC-S2-12: the notetaker account stays Unverified until a run signs in', async () => {
@@ -160,7 +160,7 @@ describe('Settings → Meetings, Bot runs', () => {
 
 describe('formatDuration', () => {
   it('reads a call length the way an operator does', () => {
-    expect(formatDuration(null)).toBe('—');
+    expect(formatDuration(null)).toBe('-');
     expect(formatDuration(42)).toBe('42s');
     expect(formatDuration(3480)).toBe('58m 00s');
     expect(formatDuration(3720)).toBe('1h 02m');

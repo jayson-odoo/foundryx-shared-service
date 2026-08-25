@@ -323,7 +323,7 @@ def test_shared_mode_test_says_what_to_do_when_nobody_has_opted_in(db, monkeypat
     ok here would stamp it ACTIVE on the strength of having read nothing."""
     from modules.meetings import providers as providers_module
 
-    def never(**kw):  # pragma: no cover — must not be reached
+    def never(**kw):  # pragma: no cover - must not be reached
         raise AssertionError("Google must not be called with no calendars to read")
 
     monkeypatch.setattr(providers_module, "probe_calendar", never)
@@ -345,7 +345,7 @@ def test_shared_mode_test_never_calls_the_directory_api(db, monkeypatch):
     opt_in(db, DEFAULT_TENANT_ID, user.id)
     db.commit()
 
-    def never(**kw):  # pragma: no cover — must not be reached
+    def never(**kw):  # pragma: no cover - must not be reached
         raise AssertionError("shared mode must not touch the Directory API")
 
     monkeypatch.setattr(providers_module, "list_directory_users", never)

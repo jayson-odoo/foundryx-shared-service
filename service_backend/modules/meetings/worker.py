@@ -7,6 +7,19 @@ workers, and the app server's tasks must never land here.
 
     celery -A modules.meetings.worker worker -Q bots -c 2 --loglevel info
 
+**On macOS (the pilot host) that command needs three env vars in front of it:**
+
+    no_proxy='*' PGGSSENCMODE=disable OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES \
+      celery -A modules.meetings.worker worker -Q bots -c 2
+
+Without ``PGGSSENCMODE=disable`` the forked prefork child SEGFAULTS (signal 11)
+inside libpq's Kerberos/XPC path the first time it opens a connection - measured,
+not theoretical: the first live run died with ``WorkerLostError: Worker exited
+prematurely: signal 11`` before the handler ran at all, and the meeting sat in
+``joining`` forever. ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY`` is the same class of
+problem one signal along (the Obj-C runtime aborts the child, signal 6). Linux
+needs none of them, so the compose service does not carry them.
+
 Boot is checked LOUDLY. A worker consuming the wrong queue, or one that cannot
 reach Docker, looks exactly like a healthy idle worker from the outside - and the
 symptom is meetings that are never joined, discovered hours later.
@@ -15,8 +28,7 @@ from __future__ import annotations
 
 import logging
 
-from celery import Celery
-from celery.signals import worker_init
+from celery import Celery, bootsteps
 
 from app.config import settings
 
@@ -34,7 +46,7 @@ celery_app.conf.update(
     # A failed run is recorded on the meeting, not raised at the worker.
     task_eager_propagates=False,
     broker_connection_retry_on_startup=True,
-    # Dedicated queue — this worker consumes ONLY this, and the workflow/omni
+    # Dedicated queue - this worker consumes ONLY this, and the workflow/omni
     # workers never see a bot run. Both other apps share the same broker, so
     # without per-app queues the tasks cross over and get discarded unregistered.
     task_default_queue=BOTS_QUEUE,
@@ -62,23 +74,37 @@ def check_worker_boot(queues, *, client_factory=None) -> None:
         from .services.bot_runner import docker_client as client_factory
     try:
         client_factory().info()
-    except Exception as exc:  # noqa: BLE001 — any reason is the same problem
+    except Exception as exc:  # noqa: BLE001 - any reason is the same problem
         raise WorkerBootError(
             f"The bots worker cannot reach Docker: {exc}. "
             "Check DOCKER_HOST and that the socket is mounted."
         ) from exc
 
 
-@worker_init.connect
-def _check_boot(sender=None, **_kwargs) -> None:
-    """Run the boot check for a real ``celery worker`` process only.
+class BootChecks(bootsteps.Step):
+    """Run the boot check as a BOOTSTEP, which is the only thing that can stop
+    a worker.
 
-    ``worker_init`` fires once per worker; ``sender.app.amqp.queues`` is already
-    narrowed to whatever ``-Q`` selected by this point."""
-    app = getattr(sender, "app", None)
-    queues = list(getattr(app.amqp, "queues", {}).keys()) if app else []
-    check_worker_boot(queues)
-    logger.info("meetings bots worker ready: queue=%s, docker reachable", BOTS_QUEUE)
+    Not a ``worker_init`` signal handler: Celery catches whatever a signal
+    receiver raises, logs it and carries on (``Signal.send`` - "send and
+    send_robust do the same thing"), so the worker would have gone on to sit
+    there consuming the wrong queue with an error two screens up the log. That
+    is precisely the silent-idle-worker failure AC-S2-14 exists to prevent, and
+    the first version of this file had it. A bootstep raising during
+    ``blueprint.apply`` propagates out of the worker's own constructor.
+
+    Bootsteps are instantiated only by a real ``celery worker`` process, so the
+    app server - which imports this module just to PUBLISH a bot run - never
+    needs a Docker socket."""
+
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, **kwargs)
+        # `-Q` has already narrowed this by the time bootsteps are applied.
+        check_worker_boot(list(getattr(parent.app.amqp, "queues", {}).keys()))
+        logger.info("meetings bots worker: queue=%s, docker reachable", BOTS_QUEUE)
+
+
+celery_app.steps["worker"].add(BootChecks)
 
 
 @celery_app.task(name="meetings.bot_run")

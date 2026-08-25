@@ -1,4 +1,4 @@
-"""One container per meeting — AC-S2-5, AC-S2-6, AC-S2-7, AC-S2-8, AC-S2-10,
+"""One container per meeting - AC-S2-5, AC-S2-6, AC-S2-7, AC-S2-8, AC-S2-10,
 AC-S2-13, AC-S2-14.
 
 No Docker daemon is involved. The runner's three jobs are shaping a container
@@ -101,7 +101,7 @@ def _bot_connection(db, tenant_id=DEFAULT_TENANT_ID, *, email="notetaker@example
     from app.models.connection import Connection
     from app.secrets import encrypt_secret
 
-    # One active connection per (tenant, provider) — reuse it across meetings.
+    # One active connection per (tenant, provider) - reuse it across meetings.
     existing = (
         db.query(Connection)
         .filter(Connection.tenant_id == tenant_id, Connection.provider == "meet_bot")
@@ -208,7 +208,7 @@ def test_the_container_carries_this_tenants_credentials_and_volume(db):
     assert spec.environment["BOT_PASSWORD"] == f"pw-for-{DEFAULT_TENANT_ID}"
     assert spec.environment["BOT_HEADLESS"] == "1"
     assert spec.environment["BOT_FOR_USER"]
-    # One profile volume per TENANT — the signed-in Chromium profile IS that
+    # One profile volume per TENANT - the signed-in Chromium profile IS that
     # tenant's credential in cookie form.
     assert f"meetings-profile-{DEFAULT_TENANT_ID}" in spec.volumes
     # Logs and exit code are the only record of the run; they die with the
@@ -526,7 +526,7 @@ def test_sigterm_stops_the_container_the_polite_way_and_lets_celery_shut_down():
         signal.signal(signal.SIGTERM, previous)
 
     # `docker stop` sends the container ITS OWN sigterm, which the bot handles
-    # by leaving the call and flushing its tail — segments so far survive.
+    # by leaving the call and flushing its tail - segments so far survive.
     assert container.stopped_with == STOP_TIMEOUT_SECONDS
     assert len(delegated) == 1
 
@@ -603,3 +603,31 @@ def test_the_bots_worker_consumes_only_its_own_queue():
     # One bot per slot for the whole meeting: prefetching a second job a slot
     # cannot start for an hour hides it from an idle sibling worker.
     assert celery_app.conf.worker_prefetch_multiplier == 1
+
+
+def test_the_boot_check_runs_as_a_bootstep_not_a_signal():
+    """AC-S2-14's teeth. Celery CATCHES whatever a signal receiver raises, logs
+    it and carries on ("send and send_robust do the same thing"), so a
+    `worker_init` handler cannot stop a worker - it would sit there consuming
+    the wrong queue with an error two screens up the log, which is exactly the
+    silent idle worker this AC forbids. Verified live: the first cut used the
+    signal and booted happily on `-Q workflow`; as a bootstep the same worker
+    exits 1 with the message. A bootstep raising propagates out of the worker's
+    own constructor."""
+    from celery.signals import worker_init
+
+    from modules.meetings.worker import BootChecks, celery_app
+
+    assert BootChecks in celery_app.steps["worker"]
+    assert not [
+        r for r in worker_init.receivers if "meetings" in repr(r)
+    ], "the boot check must not be a signal handler - celery swallows those"
+
+
+def test_the_bootstep_is_only_built_by_a_real_worker(db):
+    """The app server imports this module just to PUBLISH a bot run, so it must
+    never need a Docker socket to do it."""
+    import modules.meetings.worker as worker_module
+
+    # Importing the module has already happened; nothing has run a check.
+    assert worker_module.celery_app.conf.task_default_queue == "bots"

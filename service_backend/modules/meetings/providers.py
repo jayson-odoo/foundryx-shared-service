@@ -56,7 +56,7 @@ class GoogleDwdProvider:
     # No targeted test: reading a calendar is the connection check.
     test_target = None
     # Shared mode probes the opted-in users' OWN calendars, so this test needs
-    # the tenant's rows — core hands over ``db`` + ``tenant_id`` when a provider
+    # the tenant's rows - core hands over ``db`` + ``tenant_id`` when a provider
     # declares this (the only provider that does).
     test_needs_context = True
 
@@ -150,7 +150,7 @@ class GoogleDwdProvider:
         """Read every opted-in user's calendar and report which ones answer.
 
         NOT ``calendarList``: a calendar shared with a service account does not
-        appear in that account's list at all (verified against a real key — it
+        appear in that account's list at all (verified against a real key - it
         came back empty while ``events.list`` on the same address worked), so
         listing would report "no calendars" for a correctly shared one."""
         address = service_account_email(key) or "the service account"
@@ -170,7 +170,7 @@ class GoogleDwdProvider:
                 probe_calendar(service_account_json=key, calendar_id=calendar_id)
             except CalendarSourceError as exc:
                 failures.append(f"{calendar_id}: {exc}")
-            except Exception as exc:  # noqa: BLE001 — never a raw traceback
+            except Exception as exc:  # noqa: BLE001 - never a raw traceback
                 failures.append(f"{calendar_id}: {exc}")
             else:
                 readable.append(calendar_id)

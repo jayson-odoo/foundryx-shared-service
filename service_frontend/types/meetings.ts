@@ -41,7 +41,7 @@ export interface MeetingsOptIn {
   serviceAccountEmail: string | null;
 }
 
-/** Write shape for the master toggle — an omitted key keeps its stored value. */
+/** Write shape for the master toggle - an omitted key keeps its stored value. */
 export interface MeetingsOptInInput {
   enabled: boolean;
   calendarEmail?: string | null;
@@ -96,7 +96,7 @@ export interface MeetingsSettings {
   consentMessage: string | null;
 }
 
-/** Every settings field is optional on write — an omitted key keeps its value.
+/** Every settings field is optional on write - an omitted key keeps its value.
  *  `calendarServiceAccountEmail` is read-only, so it is not writable. */
 export type MeetingsSettingsInput = Partial<
   Omit<MeetingsSettings, 'calendarServiceAccountEmail'>

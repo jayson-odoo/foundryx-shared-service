@@ -1,4 +1,4 @@
-"""Google Calendar through one service account — the only ``CalendarSource``.
+"""Google Calendar through one service account - the only ``CalendarSource``.
 
 TWO modes, one adapter, one flag (``impersonate`` on the connection config):
 
@@ -112,7 +112,7 @@ def _status_of(exc: Exception) -> Optional[int]:
 def list_directory_users(
     *, service_account_json: str, impersonate_email: str, limit: int = 5
 ) -> List[str]:
-    """The domain's first ``limit`` user emails — what the DWD Test proves.
+    """The domain's first ``limit`` user emails - what the DWD Test proves.
 
     Raises ``CalendarSourceError`` carrying Google's own message, because
     "connection failed" tells the operator nothing about whether to fix the key,
@@ -150,7 +150,7 @@ def probe_calendar(*, service_account_json: str, calendar_id: str) -> None:
         service.events().list(calendarId=calendar_id, maxResults=1).execute()
     except CalendarSourceError:
         raise
-    except Exception as exc:  # noqa: BLE001 — Google's message, verbatim
+    except Exception as exc:  # noqa: BLE001 - Google's message, verbatim
         raise CalendarSourceError(_google_message(exc)) from exc
 
 

@@ -1,4 +1,4 @@
-"""user_opt_ins.calendar_email — WHICH calendar a user's events are read from.
+"""user_opt_ins.calendar_email - WHICH calendar a user's events are read from.
 
 Nullable, no backfill needed and none possible: NULL is the correct value for
 every existing row and means "my login email", which is exactly what the sync did

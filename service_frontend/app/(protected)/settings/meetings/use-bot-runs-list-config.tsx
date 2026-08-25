@@ -15,7 +15,7 @@ import { formatDateTime } from '@/lib/datetime';
 
 /** Seconds as the operator reads a call length: `58m 12s`, `1h 02m`. */
 export function formatDuration(seconds: number | null): string {
-  if (seconds === null || seconds < 0) return '—';
+  if (seconds === null || seconds < 0) return '-';
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = seconds % 60;
@@ -49,7 +49,7 @@ function sortRows(rows: MeetingsBotRun[], sort: ListQuery['sort']): MeetingsBotR
  * Bot-runs list config (S2 plan §6, AC-S2-12).
  *
  * A week of runs is a handful of rows already in memory from
- * `useMeetingsBotRuns`, so the fetcher pages over them client-side — the same
+ * `useMeetingsBotRuns`, so the fetcher pages over them client-side - the same
  * client-adapter shape the upcoming-events list uses. There is no detail page:
  * the exit reason IS the detail, and it is on the row.
  */
@@ -69,7 +69,7 @@ export function useBotRunsListConfig(
         accessorFn: (r) => r.meetingTitle ?? '',
         meta: { headerTitle: 'Meeting' },
         header: ({ column }) => <DataGridColumnHeader title="Meeting" column={column} />,
-        cell: ({ row }) => <ClampedText text={row.original.meetingTitle ?? '—'} lines={2} />,
+        cell: ({ row }) => <ClampedText text={row.original.meetingTitle ?? '-'} lines={2} />,
         size: 200,
         enableSorting: true,
       },
@@ -157,13 +157,13 @@ export function useBotRunsListConfig(
       );
     };
 
-    // Card view at 375px — the grid would have to scroll sideways to reach the
+    // Card view at 375px - the grid would have to scroll sideways to reach the
     // exit reason, which is the only thing anyone opens this list for.
     const cardRender = (row: MeetingsBotRun) => (
       <div className="flex flex-col gap-3">
         <div className="flex items-start justify-between gap-3">
           <span className="text-sm font-medium">
-            <ClampedText text={row.meetingTitle ?? '—'} lines={2} />
+            <ClampedText text={row.meetingTitle ?? '-'} lines={2} />
           </span>
           <StatusBadge status={row.meetingStatus} registry={MEETING_STATUS_REGISTRY} size="sm" />
         </div>
@@ -183,7 +183,7 @@ export function useBotRunsListConfig(
       viewKey: 'meetings.bot-runs',
       cardRender,
       getRowId: (row) => row.id,
-      rowHref: () => pathname, // no detail page — the reason IS the detail
+      rowHref: () => pathname, // no detail page - the reason IS the detail
       fetcher,
       exporter,
       searchPlaceholder: 'Search bot runs…',

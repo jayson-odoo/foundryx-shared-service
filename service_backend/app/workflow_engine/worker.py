@@ -43,7 +43,7 @@ celery_app.conf.beat_schedule = {
     # must surface within 60 s, so this is a minute tick like the rest. It only
     # enqueues for tenants that have the module active AND someone opted in.
     "meetings-calendar-sync": {"task": "meetings.calendar_sync_due", "schedule": 60.0},
-    # Meetings bot dispatch (sprint-5 S2) — a meeting is joined 2 min before it
+    # Meetings bot dispatch (sprint-5 S2) - a meeting is joined 2 min before it
     # starts, so the tick has to be finer than that lead. Same minute tick as
     # the sync; it enqueues onto the `bots` queue, which this worker never
     # consumes.
@@ -141,7 +141,7 @@ def meetings_bot_dispatch_due_task() -> dict:
     db = SessionLocal()
     try:
         return {"dispatched": dispatch_due_bot_runs(db)}
-    except Exception:  # noqa: BLE001 — a bad tick never kills the beat loop
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
         logger.exception("meetings bot dispatch tick failed")
         db.rollback()
         return {"dispatched": 0}

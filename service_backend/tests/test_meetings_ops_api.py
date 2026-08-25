@@ -1,4 +1,4 @@
-"""What the two S2 surfaces actually receive — AC-S2-11, AC-S2-12, AC-S2-3.
+"""What the two S2 surfaces actually receive - AC-S2-11, AC-S2-12, AC-S2-3.
 
 Both are read-only, and both are tenant- and permission-scoped like everything
 else in the module: My meetings is the caller's own calendar, bot runs are the

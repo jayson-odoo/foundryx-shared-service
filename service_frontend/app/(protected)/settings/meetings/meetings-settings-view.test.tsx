@@ -168,7 +168,7 @@ describe('Settings → Meetings', () => {
   it('Task 0: the Google Calendar card names the address to share a calendar with', async () => {
     render(<MeetingsSettingsView />);
 
-    // Read off the stored key's client_email — the key itself never reaches
+    // Read off the stored key's client_email - the key itself never reaches
     // the browser, so this is the only address the page can show.
     expect(await screen.findByText(SERVICE_ACCOUNT)).toBeInTheDocument();
   });

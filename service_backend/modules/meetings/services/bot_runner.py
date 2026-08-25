@@ -108,7 +108,7 @@ class ContainerSpec:
 
 def docker_client():
     """The Docker client. A module-level function so a test can swap it."""
-    import docker  # noqa: PLC0415 — optional at import time, required at run time
+    import docker  # noqa: PLC0415 - optional at import time, required at run time
 
     return docker.from_env()
 
@@ -293,21 +293,21 @@ def graceful_stop_on_sigterm(container):
     swallowed by ours."""
     try:
         previous = signal.getsignal(signal.SIGTERM)
-    except (ValueError, AttributeError):  # pragma: no cover — not the main thread
+    except (ValueError, AttributeError):  # pragma: no cover - not the main thread
         yield
         return
 
     def handler(signum, frame):
         try:
             container.stop(timeout=STOP_TIMEOUT_SECONDS)
-        except Exception:  # noqa: BLE001 — shutdown must continue regardless
+        except Exception:  # noqa: BLE001 - shutdown must continue regardless
             logger.exception("meetings bot container could not be stopped gracefully")
         if callable(previous):
             previous(signum, frame)
 
     try:
         signal.signal(signal.SIGTERM, handler)
-    except ValueError:  # pragma: no cover — signal only works in the main thread
+    except ValueError:  # pragma: no cover - signal only works in the main thread
         yield
         return
     try:
@@ -363,7 +363,7 @@ def _now_ts() -> float:
 
 
 def run_bot(db: Session, job: BackgroundJob) -> None:
-    """Handler for ``meetings.bot_run`` — one meeting, start to finish."""
+    """Handler for ``meetings.bot_run`` - one meeting, start to finish."""
     from app.jobs.service import JobService
 
     service = JobService(db)
@@ -392,7 +392,7 @@ def run_bot(db: Session, job: BackgroundJob) -> None:
     try:
         client = docker_client()
         container = client.containers.run(**spec.as_kwargs())
-    except Exception as exc:  # noqa: BLE001 — no container means no run
+    except Exception as exc:  # noqa: BLE001 - no container means no run
         _fail(db, service, job, meeting, f"The bot container could not start: {exc}", None)
         return
 
@@ -401,7 +401,7 @@ def run_bot(db: Session, job: BackgroundJob) -> None:
         with graceful_stop_on_sigterm(container):
             reason, started_ts, finished_ts = follow(db, meeting, container)
             exit_code = int((container.wait() or {}).get("StatusCode", 1))
-    except Exception as exc:  # noqa: BLE001 — the run itself blew up
+    except Exception as exc:  # noqa: BLE001 - the run itself blew up
         _fail(db, service, job, meeting, f"The bot run failed: {exc}", artifacts)
         return
 
@@ -421,7 +421,7 @@ def run_bot(db: Session, job: BackgroundJob) -> None:
     duration = _duration_seconds(started_ts, finished_ts)
     try:
         file_id = register_recording(db, meeting, artifacts)
-    except Exception as exc:  # noqa: BLE001 — the bot did its job; we did not
+    except Exception as exc:  # noqa: BLE001 - the bot did its job; we did not
         # The audio exists and is still where the bot left it; what failed is
         # ours. Say so on the meeting rather than leaving it stuck in `joining`
         # forever, which is what an uncaught raise here would do.
@@ -466,7 +466,7 @@ def _fail(
         try:
             if SCREENSHOT_NAME in artifacts.names():
                 screenshot = artifacts.key_of(SCREENSHOT_NAME)
-        except Exception:  # noqa: BLE001 — a missing screenshot is not the failure
+        except Exception:  # noqa: BLE001 - a missing screenshot is not the failure
             logger.warning("meetings screenshot lookup failed for %s", meeting.id)
     meeting.status = STATUS_FAILED
     meeting.status_reason = reason

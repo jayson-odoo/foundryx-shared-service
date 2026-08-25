@@ -125,7 +125,7 @@ def active_tenants(db: Session) -> List[str]:
 
 
 def run_transcribe(db: Session, job: BackgroundJob) -> None:
-    """Handler for ``meetings.transcribe`` — a STUB until S3.
+    """Handler for ``meetings.transcribe`` - a STUB until S3.
 
     It exists now so the recording path has somewhere real to hand off to and
     the UI reaches ``ready``; it produces no transcript. S3 replaces the body,

@@ -189,7 +189,7 @@ def dispatch_tenant(
             )
             enqueue_bot_run(db, job.id)
             result.dispatched.append(meeting.id)
-        except Exception as exc:  # noqa: BLE001 — one meeting never breaks the tick
+        except Exception as exc:  # noqa: BLE001 - one meeting never breaks the tick
             logger.exception("meetings bot dispatch failed for %s", meeting.id)
             db.rollback()
             result.errors.append(f"{meeting.id}: {exc}")
@@ -225,7 +225,7 @@ def dispatch_due_bot_runs(db: Session, *, now: Optional[datetime] = None) -> int
     for tenant_id in jobs_module.active_tenants(db):
         try:
             dispatched += len(dispatch_tenant(db, tenant_id, now=now).dispatched)
-        except Exception:  # noqa: BLE001 — one tenant never breaks the tick
+        except Exception:  # noqa: BLE001 - one tenant never breaks the tick
             logger.exception("meetings bot dispatch tick failed for %s", tenant_id)
             db.rollback()
     return dispatched

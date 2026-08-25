@@ -1,4 +1,4 @@
-"""Segments in, one recording out — AC-S2-6 in detail.
+"""Segments in, one recording out - AC-S2-6 in detail.
 
 The concatenation is exercised against REAL opus bytes made by the same ffmpeg
 the worker uses: fabricated bytes would satisfy every assertion here and still
@@ -109,7 +109,7 @@ def test_the_segments_are_joined_in_the_order_the_recorder_wrote_them():
             "dom_probe.json": b"",
         }
     )
-    # Zero-padded by the recorder, so a plain sort IS chronological — and only
+    # Zero-padded by the recorder, so a plain sort IS chronological - and only
     # the audio is a segment.
     assert segment_names(artifacts) == [
         "audio_0000.ogg",

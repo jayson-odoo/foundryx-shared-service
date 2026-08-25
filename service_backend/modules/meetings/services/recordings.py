@@ -9,7 +9,7 @@ between them, so nothing above here branches on which.
 
 The segments are concatenated into ONE recording (a meeting is one thing to
 listen to, and S3 transcribes one file) and registered as a core ``files`` row in
-the tenant's "Meetings" folder — spine M19: reuse core, do not add a table.
+the tenant's "Meetings" folder - spine M19: reuse core, do not add a table.
 """
 from __future__ import annotations
 
@@ -111,7 +111,7 @@ def segment_names(artifacts: Artifacts) -> List[str]:
     """The audio segments, in the order the recorder wrote them.
 
     ``audio_0000.ogg`` … is zero-padded by the recorder, so a plain sort is the
-    chronological one — no numeric parsing needed and none that can go wrong."""
+    chronological one - no numeric parsing needed and none that can go wrong."""
     return sorted(n for n in artifacts.names() if SEGMENT_RE.match(n))
 
 
@@ -126,7 +126,7 @@ def ffmpeg_exe() -> str:
         import imageio_ffmpeg  # optional; installed via requirements
 
         return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:  # noqa: BLE001 — resolved lazily; the caller reports it
+    except Exception:  # noqa: BLE001 - resolved lazily; the caller reports it
         return "ffmpeg"
 
 
@@ -240,6 +240,6 @@ def register_recording(
     for name in names:
         try:
             artifacts.delete(name)
-        except Exception:  # noqa: BLE001 — the recording is safe; a leftover is not a failure
+        except Exception:  # noqa: BLE001 - the recording is safe; a leftover is not a failure
             logger.warning("meetings segment %s could not be removed", name)
     return file.id

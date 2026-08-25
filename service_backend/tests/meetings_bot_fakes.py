@@ -95,7 +95,7 @@ def bot_stdout(
 
 
 class FakeArtifacts:
-    """An in-memory ``Artifacts`` — what the container left behind."""
+    """An in-memory ``Artifacts`` - what the container left behind."""
 
     kind = "fake"
 

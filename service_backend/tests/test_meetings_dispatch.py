@@ -1,4 +1,4 @@
-"""Who gets a bot, and when — AC-S2-1, AC-S2-2, AC-S2-3, AC-S2-4, AC-S2-9.
+"""Who gets a bot, and when - AC-S2-1, AC-S2-2, AC-S2-3, AC-S2-4, AC-S2-9.
 
 The tick is the only thing in S2 with no human in the loop at all, so what is
 pinned here is every way it can decide NOT to dispatch, and that deciding twice
