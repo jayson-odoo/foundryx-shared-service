@@ -52,3 +52,18 @@ TILE_NAMES_JS = """() => Array.from(document.querySelectorAll('[data-participant
 TILE = "[data-participant-id]"
 TILE_NAME_ATTR = "data-self-name"
 TILE_SPEAKING = '[class*="speaking" i], [aria-label*="is speaking" i]'
+
+# captions: Meet renders "<speaker name> / <text>" blocks inside a live region. Turning them on gives
+# speaker attribution with names for free (AC-S1-6 route chosen 2026-08-24, names guaranteed).
+CAPTIONS_ON = 'button[aria-label*="Turn on captions" i]'
+CAPTIONS_OFF = 'button[aria-label*="Turn off captions" i]'
+CAPTION_BLOCKS_JS = """() => {
+  const region = document.querySelector('[aria-live="polite"], [aria-live="assertive"], [role="region"][aria-label*="aption" i]');
+  if (!region) return null;
+  const blocks = Array.from(region.children).map(b => (b.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean));
+  return blocks.filter(b => b.length >= 2).map(b => ({speaker: b[0], text: b.slice(1).join(' ')}));
+}"""
+CAPTION_REGION_TEXT_JS = """() => {
+  const region = document.querySelector('[aria-live="polite"], [aria-live="assertive"], [role="region"][aria-label*="aption" i]');
+  return region ? (region.innerText || '').slice(0, 400) : null;
+}"""
