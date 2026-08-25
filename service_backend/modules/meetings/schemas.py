@@ -48,6 +48,10 @@ class EventOut(ApiModel):
     startsAt: datetime
     endsAt: Optional[datetime] = None
     optedOut: bool
+    # S2: where the SHARED meeting behind this event has got to, and why it is
+    # not on the happy path when it is not.
+    meetingStatus: str
+    statusReason: Optional[str] = None
 
 
 class EventListResponse(ApiModel):
@@ -78,3 +82,21 @@ class SettingsIn(ApiModel):
     llmConnectionId: Optional[str] = None
     botDisplayName: Optional[str] = Field(default=None, max_length=120)
     consentMessage: Optional[str] = Field(default=None, max_length=2000)
+
+
+class BotRunOut(ApiModel):
+    """One bot run for the tenant admin's ops list (AC-S2-12)."""
+
+    id: str
+    meetingId: str
+    meetingTitle: Optional[str] = None
+    startsAt: datetime
+    startedAt: Optional[datetime] = None
+    endedAt: Optional[datetime] = None
+    exitReason: Optional[str] = None
+    durationS: Optional[int] = None
+    meetingStatus: str
+
+
+class BotRunListResponse(ApiModel):
+    data: List[BotRunOut]

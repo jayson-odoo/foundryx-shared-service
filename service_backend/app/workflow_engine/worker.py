@@ -43,6 +43,11 @@ celery_app.conf.beat_schedule = {
     # must surface within 60 s, so this is a minute tick like the rest. It only
     # enqueues for tenants that have the module active AND someone opted in.
     "meetings-calendar-sync": {"task": "meetings.calendar_sync_due", "schedule": 60.0},
+    # Meetings bot dispatch (sprint-5 S2) — a meeting is joined 2 min before it
+    # starts, so the tick has to be finer than that lead. Same minute tick as
+    # the sync; it enqueues onto the `bots` queue, which this worker never
+    # consumes.
+    "meetings-dispatch-bots": {"task": "meetings.bot_dispatch_due", "schedule": 60.0},
 }
 
 
@@ -117,6 +122,29 @@ def meetings_calendar_sync_due_task() -> dict:
         logger.exception("meetings calendar sync tick failed")
         db.rollback()
         return {"enqueued": 0}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="meetings.bot_dispatch_due")
+def meetings_bot_dispatch_due_task() -> dict:
+    """Minute tick dispatching a bot run for every meeting about to start (S2
+    plan §2). Failure-isolated; a no-op when the meetings module isn't
+    installed. The runs themselves execute on the `bots` worker, never here."""
+    from app.database import SessionLocal
+
+    try:
+        from modules.meetings.services.dispatch import dispatch_due_bot_runs
+    except ImportError:
+        return {"dispatched": 0}
+
+    db = SessionLocal()
+    try:
+        return {"dispatched": dispatch_due_bot_runs(db)}
+    except Exception:  # noqa: BLE001 — a bad tick never kills the beat loop
+        logger.exception("meetings bot dispatch tick failed")
+        db.rollback()
+        return {"dispatched": 0}
     finally:
         db.close()
 

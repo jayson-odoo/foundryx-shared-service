@@ -144,6 +144,24 @@ services:
     healthcheck:
       disable: true
 
+  # The bot fleet (sprint-5 S2). NOT part of *backend-base: it is the only
+  # service that needs the Docker socket, and the pilot runs it on a separate
+  # host entirely (the Mac Mini) rather than here. Left commented until the bot
+  # image is published and a host is chosen - a worker with no reachable Docker
+  # refuses to boot by design (AC-S2-14), so enabling it early breaks a deploy.
+  #
+  # worker_bots:
+  #   <<: *backend-base
+  #   container_name: foundryx_ss_worker_bots
+  #   environment:
+  #     <<: *backend-env
+  #     MEETINGS_BOT_IMAGE: ${MEETINGS_BOT_IMAGE:-jayson1004/foundryx-shared-service:bot-latest}
+  #   command: ["celery", "-A", "modules.meetings.worker", "worker", "-Q", "bots", "-c", "2", "--loglevel", "info"]
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #   healthcheck:
+  #     disable: true
+
   beat:
     <<: *backend-base
     container_name: foundryx_ss_beat

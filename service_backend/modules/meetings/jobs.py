@@ -36,6 +36,11 @@ from .services.calendar_sync import record_sync_activity, sync_tenant
 logger = logging.getLogger("foundryx.meetings")
 
 CALENDAR_SYNC = "meetings.calendar_sync"
+# The orchestrator's two types (S2). ``bot_run`` is the only job in the system
+# that runs on the ``bots`` queue; ``transcribe`` is S3's, and its S2 handler
+# does nothing but log and mark the meeting ready so the UI path can be seen.
+BOT_RUN = "meetings.bot_run"
+TRANSCRIBE = "meetings.transcribe"
 MODULE_NAME = "meetings"
 
 # Non-terminal statuses = a pass is still in flight (mirrors the storage
@@ -101,19 +106,14 @@ def run_calendar_sync(db: Session, job: BackgroundJob) -> None:
     service.finish(job, status=JOB_DONE, result=result.as_summary())
 
 
-def tenants_due(db: Session) -> List[str]:
-    """Tenants worth a sync right now: module ACTIVE, an active Google
-    connection, and at least one opted-in user.
-
-    The connection filter is not an optimisation. Without it a tenant that
-    installed the module but never onboarded Google gets a job every 60 seconds
-    that can only finish ``skipped`` - forever."""
+def active_tenants(db: Session) -> List[str]:
+    """Tenants with the meetings module ACTIVE. The floor every tick stands on."""
     from app.models.module import MODULE_STATUS_ACTIVE, Module, TenantModule
 
     module = db.query(Module).filter(Module.name == MODULE_NAME).first()
     if module is None:
         return []
-    active = {
+    return sorted(
         state.tenant_id
         for state in db.query(TenantModule)
         .filter(
@@ -121,7 +121,53 @@ def tenants_due(db: Session) -> List[str]:
             TenantModule.status == MODULE_STATUS_ACTIVE,
         )
         .all()
-    }
+    )
+
+
+def run_transcribe(db: Session, job: BackgroundJob) -> None:
+    """Handler for ``meetings.transcribe`` — a STUB until S3.
+
+    It exists now so the recording path has somewhere real to hand off to and
+    the UI reaches ``ready``; it produces no transcript. S3 replaces the body,
+    not the wiring."""
+    from app.jobs.service import JobService
+    from app.models.background_job import JOB_DONE
+
+    from .models import STATUS_READY, Meeting
+
+    service = JobService(db)
+    meeting_id = str((job.payload_json or {}).get("meeting_id") or "")
+    meeting = (
+        db.query(Meeting)
+        .filter(Meeting.tenant_id == job.tenant_id, Meeting.id == meeting_id)
+        .first()
+    )
+    if meeting is None:
+        service.finish(job, status=JOB_DONE, result={"skipped": "meeting is gone"})
+        return
+    service.log(job, "transcription is not built yet (S3); marking the meeting ready")
+    meeting.status = STATUS_READY
+    db.commit()
+    service.finish(job, status=JOB_DONE, result={"stub": True})
+
+
+def _run_bot(db: Session, job: BackgroundJob) -> None:
+    """Forwarder for ``meetings.bot_run``. Deliberately thin: it keeps the
+    ``docker`` import inside the handler, so the API process registers the type
+    without needing the Docker SDK present at all."""
+    from .services.bot_runner import run_bot
+
+    run_bot(db, job)
+
+
+def tenants_due(db: Session) -> List[str]:
+    """Tenants worth a sync right now: module ACTIVE, an active Google
+    connection, and at least one opted-in user.
+
+    The connection filter is not an optimisation. Without it a tenant that
+    installed the module but never onboarded Google gets a job every 60 seconds
+    that can only finish ``skipped`` - forever."""
+    active = set(active_tenants(db))
     if not active:
         return []
     opted_in = {
@@ -182,16 +228,25 @@ def enqueue_due_calendar_syncs(db: Session) -> int:
 # ── boot registration (idempotent) ────────────────────────────────────────────
 # The SAME def object re-registers cleanly (the registry tolerates identity).
 _HANDLER_DEF = JobHandlerDef(CALENDAR_SYNC, run_calendar_sync, "Meetings calendar sync")
+_BOT_RUN_DEF = JobHandlerDef(BOT_RUN, _run_bot, "Meetings bot run")
+_TRANSCRIBE_DEF = JobHandlerDef(TRANSCRIBE, run_transcribe, "Meetings transcription")
 
 
 def register_calendar_sync_handler() -> None:
-    """Register the ``meetings.calendar_sync`` handler.
+    """Register every meetings job handler.
 
-    !!  The Celery worker boots NO FastAPI lifespan.  !!
+    !!  The Celery workers boot NO FastAPI lifespan.  !!
     A worker only sees handlers whose MODULE was imported, so
-    ``app/workflow_engine/worker.py`` imports this module explicitly. Omitting
-    that import leaves every sync job Pending forever with NO error."""
+    ``app/workflow_engine/worker.py`` and ``modules/meetings/worker.py`` import
+    this module explicitly. Omitting that import leaves the job Pending forever
+    with NO error.
+
+    ``bot_run`` is registered in EVERY process, the API one included, because
+    ``JobService.create`` refuses to persist a job whose type is unregistered -
+    the dispatch tick runs on the app server and would create nothing."""
     register_job_handler(_HANDLER_DEF)
+    register_job_handler(_BOT_RUN_DEF)
+    register_job_handler(_TRANSCRIBE_DEF)
 
 
 register_calendar_sync_handler()

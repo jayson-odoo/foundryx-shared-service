@@ -148,6 +148,13 @@ class Meeting(MeetingsBase):
     ``dedupe_key`` is ``<conference_url>|<starts_at ISO in UTC>``; it is what
     stops two invitees producing two bots for one meeting. S0 only ever creates
     it in ``scheduled``; S2 owns every other status.
+
+    ``status_reason`` explains any status that is not the happy path - why the
+    bot was not admitted, why the run failed, why the meeting was skipped. It
+    replaces S0's ``not_admitted_reason``, which could only ever have carried one
+    third of that (rev 0003); nothing had written it yet, so nothing was lost.
+    ``screenshot_key`` is the storage key of the bot's ``last.png``, the one
+    artefact that makes a failure diagnosable after the container is gone.
     """
 
     __tablename__ = "meetings"
@@ -168,7 +175,8 @@ class Meeting(MeetingsBase):
     # Core ``public.files.id`` holding the recorded audio — plain column (S2).
     recording_file_id = Column(String, nullable=True, index=True)
     language = Column(String, nullable=True)
-    not_admitted_reason = Column(Text, nullable=True)
+    status_reason = Column(Text, nullable=True)
+    screenshot_key = Column(Text, nullable=True)
     duration_s = Column(Integer, nullable=True)
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)

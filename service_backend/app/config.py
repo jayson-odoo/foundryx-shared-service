@@ -228,6 +228,11 @@ class Settings(BaseSettings):
     platform_storage_secret_access_key: str = ""
     platform_storage_cdn_base_url: str = ""
 
+    # ── Meetings bot fleet (sprint-5 S2) ───────────────────────────────────
+    # The image one bot container runs. Empty = the pilot image built locally
+    # from modules/meetings/bot; a deploy pins a published tag here.
+    meetings_bot_image: str = ""
+
     # ── Payment gateways (sprint-4/07 Cluster F slice 3) ───────────────────
     # Webhook anti-replay: reject events whose timestamp is older than this
     # tolerance window (seconds). Stripe's own SDK uses 300s; mirror it.

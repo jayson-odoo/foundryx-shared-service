@@ -45,5 +45,10 @@ charset-normalizer==3.4.7
 # the app and the test suite still boot without it.
 google-api-python-client>=2.140.0
 google-auth>=2.34.0
+# ---- Meetings bot fleet (sprint-5 S2) ----
+# The `bots` Celery worker starts one container per meeting through the local
+# Docker socket. Only that worker needs a reachable daemon; the API process
+# imports the SDK lazily, inside the job handler.
+docker>=7
 
 imageio-ffmpeg>=0.5.1   # bundles a static ffmpeg binary → voice-note transcode (AC-12-04) works on a native local boot with no system ffmpeg; the Docker image still ships a full system ffmpeg and is preferred at runtime
