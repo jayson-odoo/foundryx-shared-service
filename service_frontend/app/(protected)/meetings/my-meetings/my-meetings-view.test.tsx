@@ -9,10 +9,17 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MeetingsEvent, MeetingsOptIn } from '@/types/meetings';
+import type { MeetingsEvent, MeetingsOptIn, MeetingsOptInInput } from '@/types/meetings';
+
+const SERVICE_ACCOUNT = 'notetaker@proj.iam.gserviceaccount.com';
 
 const optInState: { value: MeetingsOptIn } = {
-  value: { enabled: false, lastSyncedAt: null },
+  value: {
+    enabled: false,
+    lastSyncedAt: null,
+    calendarEmail: null,
+    serviceAccountEmail: SERVICE_ACCOUNT,
+  },
 };
 
 const events: MeetingsEvent[] = [
@@ -46,8 +53,16 @@ const events: MeetingsEvent[] = [
 ];
 
 const getOptIn = vi.fn(async () => optInState.value);
-const setOptIn = vi.fn(async (enabled: boolean) => {
-  optInState.value = { enabled, lastSyncedAt: enabled ? '2026-09-01T00:00:00Z' : null };
+const setOptIn = vi.fn(async (input: MeetingsOptInInput) => {
+  optInState.value = {
+    ...optInState.value,
+    enabled: input.enabled,
+    lastSyncedAt: input.enabled ? '2026-09-01T00:00:00Z' : null,
+    calendarEmail:
+      'calendarEmail' in input
+        ? (input.calendarEmail?.trim() || null)
+        : optInState.value.calendarEmail,
+  };
   return optInState.value;
 });
 const listEvents = vi.fn(async () => (optInState.value.enabled ? events : []));
@@ -60,7 +75,7 @@ const setEventOptOut = vi.fn(async (id: string, optedOut: boolean) => {
 vi.mock('@/services/meetings-service', () => ({
   meetingsService: {
     getOptIn: () => getOptIn(),
-    setOptIn: (enabled: boolean) => setOptIn(enabled),
+    setOptIn: (input: MeetingsOptInInput) => setOptIn(input),
     listEvents: () => listEvents(),
     setEventOptOut: (id: string, optedOut: boolean) => setEventOptOut(id, optedOut),
     getSettings: vi.fn(),
@@ -89,7 +104,12 @@ import { MyMeetingsView } from './my-meetings-view';
 
 describe('My meetings', () => {
   beforeEach(() => {
-    optInState.value = { enabled: false, lastSyncedAt: null };
+    optInState.value = {
+      enabled: false,
+      lastSyncedAt: null,
+      calendarEmail: null,
+      serviceAccountEmail: SERVICE_ACCOUNT,
+    };
     events[0].optedOut = false;
     events[1].optedOut = true;
     setOptIn.mockClear();
@@ -116,7 +136,7 @@ describe('My meetings', () => {
     await waitFor(() => expect(toggle).not.toBeDisabled());
     await user.click(toggle);
 
-    await waitFor(() => expect(setOptIn).toHaveBeenCalledWith(true));
+    await waitFor(() => expect(setOptIn).toHaveBeenCalledWith({ enabled: true }));
     expect(await screen.findByText('Weekly product sync')).toBeInTheDocument();
     expect(screen.getByText('ops@example.com')).toBeInTheDocument();
     expect(screen.getByText('Google Meet')).toBeInTheDocument();
@@ -174,11 +194,64 @@ describe('My meetings', () => {
     await screen.findByText('Weekly product sync');
 
     await user.click(toggle);
-    await waitFor(() => expect(setOptIn).toHaveBeenLastCalledWith(false));
+    await waitFor(() => expect(setOptIn).toHaveBeenLastCalledWith({ enabled: false }));
     await waitFor(() =>
       expect(screen.queryByText('Weekly product sync')).not.toBeInTheDocument(),
     );
     const empty = screen.getByRole('button', { name: 'Record my meetings' });
     expect(within(empty).getByText('Record my meetings')).toBeInTheDocument();
+  });
+
+  it('Task 0: the calendar field saves the address the user can actually share', async () => {
+    const user = userEvent.setup();
+    render(<MyMeetingsView />);
+
+    const toggle = await screen.findByRole('switch', { name: 'Record my meetings' });
+    await waitFor(() => expect(toggle).not.toBeDisabled());
+
+    // The address to share a calendar WITH is on screen as a value to copy.
+    expect(screen.getByText(SERVICE_ACCOUNT)).toBeInTheDocument();
+
+    const field = screen.getByLabelText('Calendar');
+    await user.type(field, 'personal@gmail.com');
+    await user.tab();
+
+    await waitFor(() =>
+      expect(setOptIn).toHaveBeenLastCalledWith({
+        enabled: false,
+        calendarEmail: 'personal@gmail.com',
+      }),
+    );
+  });
+
+  it('Task 0: a malformed calendar address is refused and the field reverts', async () => {
+    const user = userEvent.setup();
+    render(<MyMeetingsView />);
+
+    const toggle = await screen.findByRole('switch', { name: 'Record my meetings' });
+    await waitFor(() => expect(toggle).not.toBeDisabled());
+
+    const field = screen.getByLabelText('Calendar');
+    await user.type(field, 'not-an-email');
+    await user.tab();
+
+    await waitFor(() => expect(field).toHaveValue(''));
+    expect(setOptIn).not.toHaveBeenCalled();
+  });
+
+  it('Task 0: blank means my login email, so clearing it sends null', async () => {
+    const user = userEvent.setup();
+    optInState.value = { ...optInState.value, calendarEmail: 'personal@gmail.com' };
+    render(<MyMeetingsView />);
+
+    const field = await screen.findByLabelText('Calendar');
+    await waitFor(() => expect(field).toHaveValue('personal@gmail.com'));
+
+    await user.clear(field);
+    await user.tab();
+
+    await waitFor(() =>
+      expect(setOptIn).toHaveBeenLastCalledWith({ enabled: false, calendarEmail: null }),
+    );
   });
 });

@@ -13,6 +13,8 @@ export interface UseMyMeetings {
   error: string | null;
   reload: () => Promise<void>;
   setEnabled: (enabled: boolean) => Promise<void>;
+  /** Point the sync at a different calendar; null = back to the login email. */
+  setCalendarEmail: (calendarEmail: string | null) => Promise<void>;
   setEventOptOut: (eventId: string, optedOut: boolean) => Promise<void>;
 }
 
@@ -53,7 +55,7 @@ export function useMyMeetings(): UseMyMeetings {
       setSaving(true);
       setError(null);
       try {
-        const state = await meetingsService.setOptIn(enabled);
+        const state = await meetingsService.setOptIn({ enabled });
         setOptIn(state);
         setEvents(state.enabled ? await meetingsService.listEvents() : []);
       } catch (e) {
@@ -64,6 +66,29 @@ export function useMyMeetings(): UseMyMeetings {
       }
     },
     [],
+  );
+
+  const setCalendarEmail = useCallback(
+    async (calendarEmail: string | null) => {
+      setSaving(true);
+      setError(null);
+      try {
+        // Enabled travels with it: the write is one PUT and the toggle is
+        // whatever it already is, never a value this call gets to change.
+        const current = optIn?.enabled ?? false;
+        const state = await meetingsService.setOptIn({ enabled: current, calendarEmail });
+        setOptIn(state);
+        // A different calendar is a different set of events, so re-read rather
+        // than leave the old calendar's rows on screen.
+        setEvents(state.enabled ? await meetingsService.listEvents() : []);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not save the change.');
+        throw e;
+      } finally {
+        setSaving(false);
+      }
+    },
+    [optIn],
   );
 
   const setEventOptOut = useCallback(async (eventId: string, optedOut: boolean) => {
@@ -80,5 +105,15 @@ export function useMyMeetings(): UseMyMeetings {
     }
   }, []);
 
-  return { optIn, events, loading, saving, error, reload, setEnabled, setEventOptOut };
+  return {
+    optIn,
+    events,
+    loading,
+    saving,
+    error,
+    reload,
+    setEnabled,
+    setCalendarEmail,
+    setEventOptOut,
+  };
 }

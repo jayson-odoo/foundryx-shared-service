@@ -3,9 +3,44 @@
 Seed-if-absent on every read, so a tenant provisioned before this row existed
 (or one whose install predates a new setting) is never left without one.
 """
+from typing import Optional
+
 from sqlalchemy.orm import Session
 
 from ..models import MeetingsTenantSettings
+
+
+def calendar_service_account_email(db: Session, tenant_id: str) -> Optional[str]:
+    """The address a user has to share their calendar WITH, or None when the
+    tenant has no Google connection yet.
+
+    Read out of the stored key's ``client_email`` - the key itself never leaves
+    the server, and a key that cannot be decrypted (rotated FERNET_KEY) is a
+    missing address here, not a 500."""
+    from cryptography.fernet import InvalidToken
+
+    from app.models.connection import Connection
+    from app.secrets import decrypt_secret
+
+    from ..calendar.google_dwd import service_account_email
+    from ..providers import GOOGLE_DWD_PROVIDER
+
+    connection = (
+        db.query(Connection)
+        .filter(
+            Connection.tenant_id == tenant_id,
+            Connection.provider == GOOGLE_DWD_PROVIDER,
+            Connection.is_active.is_(True),
+        )
+        .first()
+    )
+    if connection is None or not connection.credentials_json:
+        return None
+    try:
+        credentials = decrypt_secret(connection.credentials_json)
+    except InvalidToken:
+        return None
+    return service_account_email(str(credentials.get("serviceAccountJson") or ""))
 
 DEFAULT_MINUTES_LANGUAGE = "en"
 DEFAULT_AUDIO_RETENTION_DAYS = 90

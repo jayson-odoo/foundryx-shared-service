@@ -18,11 +18,18 @@ from app.schemas.base import ApiModel
 
 class OptInIn(ApiModel):
     enabled: bool
+    # Omitted = keep the stored address; sent as null/blank = back to my login
+    # email. Told apart by ``model_fields_set``, never by the value being None.
+    calendarEmail: Optional[str] = Field(default=None, max_length=254)
 
 
 class OptInOut(ApiModel):
     enabled: bool
     lastSyncedAt: Optional[datetime] = None
+    # The calendar this user's events are read from; null = their login email.
+    calendarEmail: Optional[str] = None
+    # The address to share a calendar with; null = no Google connection yet.
+    serviceAccountEmail: Optional[str] = None
 
 
 class AttendeeOut(ApiModel):
@@ -52,6 +59,9 @@ class EventOptOutIn(ApiModel):
 
 
 class SettingsOut(ApiModel):
+    # Read-only: the connection's own service-account address, so the operator
+    # knows what to share calendars with. Never the key.
+    calendarServiceAccountEmail: Optional[str] = None
     minutesLanguage: str
     audioRetentionDays: int
     llmConnectionId: Optional[str] = None

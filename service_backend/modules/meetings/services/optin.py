@@ -2,12 +2,62 @@
 
 Every method takes the tenant from the caller's JWT; there is no path here that
 reads or writes another tenant's row.
+
+It also owns the answer to "WHICH calendar is this user's?", because the opt-in
+row is where the override lives: ``calendar_address_for`` is the one definition
+the sync and the connection test both read, so the two can never disagree about
+what the service account is supposed to be able to see.
 """
-from typing import Optional
+import re
+from typing import Any, List, Optional
 
 from sqlalchemy.orm import Session
 
 from ..models import UserOptIn
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def calendar_address_for(opt_in: Any, user: Any) -> Optional[str]:
+    """The calendar address to read for this user.
+
+    ``calendar_email`` when they set one - a Workspace that blocks external
+    sharing cannot share its own users' calendars with our service account, so
+    the calendar they CAN share is often a personal address - else their login
+    email, which is what domain-wide delegation always impersonates."""
+    explicit = (getattr(opt_in, "calendar_email", None) or "").strip()
+    if explicit:
+        return explicit
+    return (getattr(user, "email", None) or "").strip() or None
+
+
+def opted_in_calendars(db: Optional[Session], tenant_id: Optional[str]) -> List[str]:
+    """Every opted-in user's calendar address for this tenant, deduped, in a
+    stable order. What the shared-calendar connection test probes."""
+    if db is None or not tenant_id:
+        return []
+    from app.models.user import User
+
+    rows = (
+        db.query(UserOptIn)
+        .filter(UserOptIn.tenant_id == tenant_id, UserOptIn.enabled.is_(True))
+        .order_by(UserOptIn.user_id.asc())
+        .all()
+    )
+    if not rows:
+        return []
+    users = {
+        user.id: user
+        for user in db.query(User)
+        .filter(User.tenant_id == tenant_id, User.id.in_([r.user_id for r in rows]))
+        .all()
+    }
+    out: List[str] = []
+    for row in rows:
+        address = calendar_address_for(row, users.get(row.user_id))
+        if address and address not in out:
+            out.append(address)
+    return out
 
 
 class OptInService:
@@ -31,17 +81,37 @@ class OptInService:
             return UserOptIn(tenant_id=tenant_id, user_id=user_id, enabled=False)
         return row
 
-    def set(self, tenant_id: str, user_id: str, enabled: bool) -> UserOptIn:
+    def set(
+        self,
+        tenant_id: str,
+        user_id: str,
+        enabled: bool,
+        *,
+        calendar_email: Optional[str] = None,
+        set_calendar_email: bool = False,
+    ) -> UserOptIn:
         """Flip the toggle - the only path that creates the row.
 
         Switching OFF keeps the mirrored events and the sync token: the rows stay
         (AC-S0-9) and a later re-opt-in resumes incrementally instead of
-        refetching the fortnight."""
+        refetching the fortnight.
+
+        ``set_calendar_email`` tells "not sent" from "sent as null": only a
+        client that actually sent the key changes the stored address, so flipping
+        the toggle from anywhere else never silently clears it. Changing the
+        address DROPS the sync token - it belongs to the calendar that minted it,
+        and reusing it against a different calendar is a 400 from Google."""
         row = self._row(tenant_id, user_id)
         if row is None:
             row = UserOptIn(tenant_id=tenant_id, user_id=user_id, enabled=enabled)
             self.db.add(row)
         row.enabled = enabled
+        if set_calendar_email:
+            cleaned = (calendar_email or "").strip() or None
+            if cleaned != row.calendar_email:
+                row.calendar_email = cleaned
+                row.sync_token = None
+                row.last_synced_at = None
         self.db.commit()
         self.db.refresh(row)
         return row

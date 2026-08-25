@@ -52,14 +52,21 @@ def _provider(client, key: str) -> dict:
 # ── AC-S0-4: google_dwd ──────────────────────────────────────────────────────
 
 
-def test_google_dwd_is_offered_with_its_two_fields(meetings_client):
-    """AC-S0-4: service-account JSON (secret) + the admin email to impersonate."""
+def test_google_dwd_is_offered_with_its_three_fields(meetings_client):
+    """AC-S0-4: the access mode, the admin email to impersonate, and the
+    service-account JSON (secret). The mode defaults to shared calendars, the
+    only one a tenant without a Workspace admin can use."""
     provider = _provider(meetings_client, "google_dwd")
     assert provider["type"] == "calendar"
     fields = {f["key"]: f for f in provider["fields"]}
-    assert set(fields) == {"serviceAccountJson", "impersonateEmail"}
+    assert set(fields) == {"impersonate", "serviceAccountJson", "impersonateEmail"}
     assert fields["serviceAccountJson"]["secret"] is True
     assert not fields["impersonateEmail"].get("secret")
+    assert fields["impersonate"]["defaultValue"] == "off"
+    assert [o["value"] for o in fields["impersonate"]["options"]] == ["off", "on"]
+    # Only delegation impersonates anyone, so the admin email cannot be a
+    # form-level requirement any more.
+    assert fields["impersonateEmail"]["required"] is False
     assert provider["testLabel"]
 
 
@@ -109,7 +116,7 @@ def test_google_dwd_test_lists_the_first_five_directory_users(monkeypatch):
         lambda **kw: ["a@x.com", "b@x.com", "c@x.com", "d@x.com", "e@x.com"],
     )
     result = providers_module.GoogleDwdProvider().test(
-        {"impersonateEmail": "admin@x.com"},
+        {"impersonate": "on", "impersonateEmail": "admin@x.com"},
         {"serviceAccountJson": SERVICE_ACCOUNT_JSON},
     )
     assert result.ok is True
@@ -128,7 +135,7 @@ def test_google_dwd_test_reports_the_google_error_verbatim(monkeypatch):
 
     monkeypatch.setattr(providers_module, "list_directory_users", boom)
     result = providers_module.GoogleDwdProvider().test(
-        {"impersonateEmail": "admin@x.com"},
+        {"impersonate": "on", "impersonateEmail": "admin@x.com"},
         {"serviceAccountJson": SERVICE_ACCOUNT_JSON},
     )
     assert result.ok is False
@@ -144,7 +151,8 @@ def test_google_dwd_test_rejects_a_malformed_key_before_calling_google(monkeypat
 
     monkeypatch.setattr(providers_module, "list_directory_users", never)
     result = providers_module.GoogleDwdProvider().test(
-        {"impersonateEmail": "admin@x.com"}, {"serviceAccountJson": "not json"}
+        {"impersonate": "on", "impersonateEmail": "admin@x.com"},
+        {"serviceAccountJson": "not json"},
     )
     assert result.ok is False
 

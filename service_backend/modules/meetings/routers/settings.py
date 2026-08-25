@@ -11,13 +11,17 @@ from app.dependencies import require_permission
 from app.models.user import User
 
 from ..schemas import SettingsIn, SettingsOut
-from ..services.settings import MeetingsSettingsService
+from ..services.settings import (
+    MeetingsSettingsService,
+    calendar_service_account_email,
+)
 
 router = APIRouter()
 
 
-def _out(row) -> SettingsOut:
+def _out(row, service_account_email=None) -> SettingsOut:
     return SettingsOut(
+        calendarServiceAccountEmail=service_account_email,
         minutesLanguage=row.minutes_language,
         audioRetentionDays=row.audio_retention_days,
         llmConnectionId=row.llm_connection_id,
@@ -31,7 +35,10 @@ def get_settings(
     current_user: User = Depends(require_permission("meetings.settings.manage")),
     db: Session = Depends(get_db),
 ) -> SettingsOut:
-    return _out(MeetingsSettingsService(db).get(current_user.tenant_id))
+    return _out(
+        MeetingsSettingsService(db).get(current_user.tenant_id),
+        calendar_service_account_email(db, current_user.tenant_id),
+    )
 
 
 @router.put("", response_model=SettingsOut)
@@ -45,5 +52,6 @@ def update_settings(
     return _out(
         MeetingsSettingsService(db).update(
             current_user.tenant_id, body.model_dump(exclude_unset=True)
-        )
+        ),
+        calendar_service_account_email(db, current_user.tenant_id),
     )

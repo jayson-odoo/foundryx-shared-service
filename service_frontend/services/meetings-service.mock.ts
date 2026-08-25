@@ -7,6 +7,7 @@
 import type {
   MeetingsEvent,
   MeetingsOptIn,
+  MeetingsOptInInput,
   MeetingsSettings,
   MeetingsSettingsInput,
 } from '@/types/meetings';
@@ -62,9 +63,17 @@ const seedEvents = (): MeetingsEvent[] => [
   },
 ];
 
-let optIn: MeetingsOptIn = { enabled: false, lastSyncedAt: null };
+const SERVICE_ACCOUNT = 'notetaker@foundryx.iam.gserviceaccount.com';
+
+let optIn: MeetingsOptIn = {
+  enabled: false,
+  lastSyncedAt: null,
+  calendarEmail: null,
+  serviceAccountEmail: SERVICE_ACCOUNT,
+};
 let events: MeetingsEvent[] = seedEvents();
 let settings: MeetingsSettings = {
+  calendarServiceAccountEmail: SERVICE_ACCOUNT,
   minutesLanguage: 'en',
   audioRetentionDays: 90,
   llmConnectionId: null,
@@ -74,9 +83,15 @@ let settings: MeetingsSettings = {
 
 /** Test seam — put the mock back to its shipped starting state. */
 export function resetMeetingsMock(): void {
-  optIn = { enabled: false, lastSyncedAt: null };
+  optIn = {
+    enabled: false,
+    lastSyncedAt: null,
+    calendarEmail: null,
+    serviceAccountEmail: SERVICE_ACCOUNT,
+  };
   events = seedEvents();
   settings = {
+    calendarServiceAccountEmail: SERVICE_ACCOUNT,
     minutesLanguage: 'en',
     audioRetentionDays: 90,
     llmConnectionId: null,
@@ -89,12 +104,18 @@ export const mockMeetingsService: MeetingsService = {
   async getOptIn() {
     return { ...optIn };
   },
-  async setOptIn(enabled: boolean) {
+  async setOptIn(input: MeetingsOptInInput) {
     // A sync only ever runs for an opted-in user, so the timestamp appears
-    // with the first ON and is left alone afterwards.
+    // with the first ON and is left alone afterwards. An omitted calendar
+    // address keeps the stored one; sent as null clears it back to the login.
     optIn = {
-      enabled,
-      lastSyncedAt: enabled ? (optIn.lastSyncedAt ?? new Date().toISOString()) : optIn.lastSyncedAt,
+      ...optIn,
+      enabled: input.enabled,
+      lastSyncedAt: input.enabled
+        ? (optIn.lastSyncedAt ?? new Date().toISOString())
+        : optIn.lastSyncedAt,
+      calendarEmail:
+        'calendarEmail' in input ? (input.calendarEmail?.trim() || null) : optIn.calendarEmail,
     };
     return { ...optIn };
   },

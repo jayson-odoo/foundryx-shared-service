@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { SearchSelect } from '@/components/platform/search-select';
+import { ClampedText } from '@/components/platform/clamped-text';
 import { useCan } from '@/hooks/use-can';
 import { useMeetingsSettings } from '@/hooks/use-meetings-settings';
 import {
@@ -43,6 +44,9 @@ const CONNECTION_CARDS: { provider: MeetingsProviderKey; title: string }[] = [
   { provider: 'meet_bot', title: 'Notetaker account' },
 ];
 
+// The one card that also carries a value the operator has to hand out.
+const SERVICE_ACCOUNT_CARD: MeetingsProviderKey = 'google_dwd';
+
 const STATUS_TONE: Record<ConnectionStatus, 'success' | 'warning' | 'destructive'> = {
   ACTIVE: 'success',
   UNVERIFIED: 'warning',
@@ -68,6 +72,7 @@ export function MeetingsSettingsView() {
   const canManage = can('meetings.settings.manage');
   const { settings, loading, saving, save } = useMeetingsSettings();
   const { byProvider, loading: connectionsLoading } = useMeetingsConnections();
+  const serviceAccountEmail = settings?.calendarServiceAccountEmail ?? null;
 
   const [minutesLanguage, setMinutesLanguage] = useState('en');
   const [audioRetentionDays, setAudioRetentionDays] = useState('90');
@@ -122,6 +127,14 @@ export function MeetingsSettingsView() {
                     >
                       {STATUS_LABEL[connection.status]}
                     </Badge>
+                  )}
+                  {/* The address users share their calendar WITH. It comes off
+                      the stored key's client_email; the key itself never
+                      leaves the server. */}
+                  {provider === SERVICE_ACCOUNT_CARD && serviceAccountEmail && (
+                    <span className="max-w-[16rem] text-sm text-muted-foreground">
+                      <ClampedText text={serviceAccountEmail} lines={1} />
+                    </span>
                   )}
                 </div>
                 <Button variant="outline" size="sm" disabled={connectionsLoading} asChild>

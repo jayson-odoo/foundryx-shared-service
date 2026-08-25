@@ -91,7 +91,12 @@ def test_optin_is_off_by_default(meetings_client):
 
     res = meetings_client.get("/meetings/optin", headers=_auth(meetings_client))
     assert res.status_code == 200, res.text
-    assert res.json() == {"enabled": False, "lastSyncedAt": None}
+    assert res.json() == {
+        "enabled": False,
+        "lastSyncedAt": None,
+        "calendarEmail": None,
+        "serviceAccountEmail": None,
+    }
 
     # Reading is a read: never insert a row just because someone looked.
     db = meetings_client._factory()

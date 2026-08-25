@@ -8,6 +8,7 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   MeetingsEvent,
   MeetingsOptIn,
+  MeetingsOptInInput,
   MeetingsSettings,
   MeetingsSettingsInput,
 } from '@/types/meetings';
@@ -29,10 +30,10 @@ export const realMeetingsService: MeetingsService = {
   getOptIn() {
     return apiFetch<MeetingsOptIn>('/meetings/optin');
   },
-  setOptIn(enabled: boolean) {
+  setOptIn(input: MeetingsOptInInput) {
     return apiFetch<MeetingsOptIn>('/meetings/optin', {
       method: 'PUT',
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify(input),
     });
   },
   async listEvents(range?: MeetingsEventRange) {

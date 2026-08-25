@@ -11,8 +11,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Connection } from '@/types/integration';
 import type { MeetingsSettings } from '@/types/meetings';
 
+const SERVICE_ACCOUNT = 'notetaker@proj.iam.gserviceaccount.com';
+
 const settingsState: { value: MeetingsSettings } = {
   value: {
+    calendarServiceAccountEmail: SERVICE_ACCOUNT,
     minutesLanguage: 'en',
     audioRetentionDays: 90,
     llmConnectionId: null,
@@ -75,6 +78,7 @@ describe('Settings → Meetings', () => {
   beforeEach(() => {
     connections.value = [];
     settingsState.value = {
+      calendarServiceAccountEmail: SERVICE_ACCOUNT,
       minutesLanguage: 'en',
       audioRetentionDays: 90,
       llmConnectionId: null,
@@ -142,5 +146,13 @@ describe('Settings → Meetings', () => {
     expect(await screen.findByText('Keep')).toBeInTheDocument();
     // '90 days' is both the trigger's current value and its option row.
     expect(screen.getAllByText('90 days').length).toBeGreaterThan(0);
+  });
+
+  it('Task 0: the Google Calendar card names the address to share a calendar with', async () => {
+    render(<MeetingsSettingsView />);
+
+    // Read off the stored key's client_email — the key itself never reaches
+    // the browser, so this is the only address the page can show.
+    expect(await screen.findByText(SERVICE_ACCOUNT)).toBeInTheDocument();
   });
 });

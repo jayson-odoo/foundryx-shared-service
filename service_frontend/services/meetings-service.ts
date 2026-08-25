@@ -9,6 +9,7 @@
 import type {
   MeetingsEvent,
   MeetingsOptIn,
+  MeetingsOptInInput,
   MeetingsSettings,
   MeetingsSettingsInput,
 } from '@/types/meetings';
@@ -23,8 +24,8 @@ export interface MeetingsEventRange {
 export interface MeetingsService {
   /** The caller's own master toggle. */
   getOptIn(): Promise<MeetingsOptIn>;
-  /** Flip the caller's master toggle. */
-  setOptIn(enabled: boolean): Promise<MeetingsOptIn>;
+  /** Flip the caller's master toggle, and optionally point it at a calendar. */
+  setOptIn(input: MeetingsOptInInput): Promise<MeetingsOptIn>;
   /** The caller's upcoming events that carry a conference link. */
   listEvents(range?: MeetingsEventRange): Promise<MeetingsEvent[]>;
   /** Switch a single event out of (or back into) capture. */

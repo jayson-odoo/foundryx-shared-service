@@ -33,7 +33,7 @@ Google Calendar (domain-wide delegation)
 | M1 | Meetings is a **Service module on foundryx-shared-service**: `modules/meetings`, schema `app_meetings`, own alembic table. Sorento consumes via iframe + a thin link table; nothing mirrored. |
 | M2 | **Own bot**, not Recall.ai or similar. Google Meet first. Zoom / Teams later as guest-join browser adapters behind the same `JoinAdapter` interface; native SDKs only if guest join proves too flaky. |
 | M3 | **Multi-tenant from day one.** Pilot tenant = FoundryX internal; Sorento = tenant 2. |
-| M4 | **Calendar read = Google domain-wide delegation** (tenant admin grants once at onboarding, no per-user OAuth, no Google app verification). Per-user OAuth is a later adapter for tenants that refuse DWD. Google only; Microsoft 365 later. |
+| M4 | **Calendar read = one Google service account, in either of two modes** (one adapter, one `impersonate` flag on the connection). **Shared calendar (default):** each user shares their calendar with the service account's own address at "See all event details"; the account reads `calendarId=<that address>` as itself. Needs NO Workspace admin, which is why it is the default - the pilot tenant has none. **Domain-wide delegation:** the Workspace admin grants it once and the account impersonates each user's `primary`. Per-user OAuth is a later adapter; Google only, Microsoft 365 later. |
 | M5 | **Bot identity = one Workspace account inside each tenant's domain** (`notetaker@<tenant-domain>`), created by the tenant admin, 2SV-exempt OU. Credentials stored encrypted in a tenant `Connection` of kind `meet_bot`; persistent Chromium profile volume per tenant. Auto-admitted to tenant-hosted meetings. |
 | M6 | **Opt-in model:** user flips a master toggle; after that every event with a conference link is joined unless the user opts that event out. Cutoff 2 min before start. |
 | M7 | **Externally hosted meetings are attempted:** bot waits in lobby 3 min, then marks the meeting `not_admitted` and tells the user. |
@@ -56,7 +56,7 @@ Google Calendar (domain-wide delegation)
 
 | Table | Purpose | Key columns |
 |---|---|---|
-| `user_opt_ins` | master toggle per user | `user_id` (unique per tenant), `enabled`, `updated_at` |
+| `user_opt_ins` | master toggle per user | `user_id` (unique per tenant), `enabled`, `calendar_email` (nullable; which calendar to read, NULL = the user's login email), `updated_at` |
 | `calendar_events` | mirror of calendar events that carry a conference link | `external_id`, `calendar_user_id`, `organiser_email`, `attendees_json`, `conference_url`, `platform` (`meet`/`zoom`/`teams`/`other`), `starts_at`, `ends_at`, `opted_out`, `synced_at` |
 | `meetings` | one per link + start | `dedupe_key`, `conference_url`, `platform`, `starts_at`, `ends_at`, `status`, `recording_file_id` (core `files`), `language`, `not_admitted_reason`, `duration_s` |
 | `meeting_participants` | who was invited / seen | `meeting_id`, `email`, `display_name`, `user_id` (nullable), `is_opted_in` |
@@ -100,8 +100,14 @@ Same mechanism as `PLAN-ideation-embed-sso.md`, mounted on the module's own pref
 ### 5.3 Tenant onboarding (human steps, wizard-scripted in S7)
 
 1. Google Cloud: FoundryX service account + OAuth client ID exist once (platform-owned).
-2. Tenant Workspace admin: create `notetaker@<domain>`, put it in a 2SV-exempt OU, grant domain-wide delegation to the FoundryX client ID with scopes `https://www.googleapis.com/auth/calendar.readonly` and `https://www.googleapis.com/auth/admin.directory.user.readonly` (the second one is what the connection Test button and the opt-in user lookup use; found in S0).
-3. Tenant admin in shared-service: connection of type `calendar` (provider `google_dwd`: service-account JSON + admin email to impersonate), connection of type `meeting_bot` (notetaker email + password), storage connection (existing), optional `llm` connection. Two connection types because core allows one active connection per type per tenant (S0 decision).
+2. **Shared-calendar mode (default, no Workspace admin needed):** each user opens Google Calendar settings, shares their calendar with the service account's address at "See all event details", and types that calendar's address into My meetings when it is not their login email. Only `calendar.readonly` is involved; nothing is granted domain-wide.
+   **Domain-wide delegation mode:** the tenant Workspace admin grants delegation to the FoundryX client ID with scopes `https://www.googleapis.com/auth/calendar.readonly` and `https://www.googleapis.com/auth/admin.directory.user.readonly` (the second is what the DWD Test button and the opt-in user lookup use; found in S0). Either mode: create `notetaker@<domain>` in a 2SV-exempt OU.
+3. Tenant admin in shared-service: connection of type `calendar` (provider `google_dwd`: access mode, service-account JSON, and the admin email only when impersonating), connection of type `meeting_bot` (notetaker email + password), storage connection (existing), optional `llm` connection. Two connection types because core allows one active connection per type per tenant (S0 decision).
+
+**Three facts from a live probe with a real service account (2026-08-25), which the two modes are built around:**
+a. A calendar shared with a service account does NOT appear in that account's `calendarList` - the list comes back empty while `events.list(calendarId=<address>)` on the same calendar works. Reading a calendar is therefore the only proof the share exists, and the shared-mode Test button probes each opted-in user's calendar rather than listing anything.
+b. `events.list` returns NO `nextSyncToken` when `orderBy` is set. The adapter never sends `orderBy`; without that, every read would be a full one forever.
+c. A Workspace that blocks external sharing cannot share its own users' calendars with the service account, so the calendar a user can share is often a personal address. Hence `user_opt_ins.calendar_email`; participant-to-user matching still runs off the LOGIN email.
 
 ## 6. Slices, gates, estimates
 

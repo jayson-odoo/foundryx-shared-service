@@ -70,6 +70,13 @@ class UserOptIn(MeetingsBase):
     of theirs is ever synced while it is off. ``sync_token`` is Google's
     incremental ``syncToken`` for THIS user's calendar; it is dropped whenever
     Google rejects it (HTTP 410) and the next run refetches the full window.
+
+    ``calendar_email`` is WHICH calendar to read, and it is not always the login
+    email: a Workspace that blocks external sharing cannot share its own users'
+    calendars with our service account, so the calendar a user can actually share
+    is often a personal address. NULL means "my login email", which is what every
+    domain-wide-delegation tenant uses. Participant-to-user matching still goes by
+    the LOGIN email - this column changes the source, never the identity.
     """
 
     __tablename__ = "user_opt_ins"
@@ -82,6 +89,7 @@ class UserOptIn(MeetingsBase):
     # Core ``public.users.id`` — plain indexed column, no cross-schema FK.
     user_id = Column(String, nullable=False, index=True)
     enabled = Column(Boolean, nullable=False, default=False, server_default="0")
+    calendar_email = Column(String, nullable=True)
     sync_token = Column(Text, nullable=True)
     last_synced_at = Column(UTCDateTime(), nullable=True)
 

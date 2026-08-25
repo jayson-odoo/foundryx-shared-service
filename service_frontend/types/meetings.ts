@@ -20,6 +20,16 @@ export interface MeetingsOptIn {
   enabled: boolean;
   /** When this user's calendar was last read; null until the first sync. */
   lastSyncedAt: string | null;
+  /** Which calendar to read; null = the caller's own login email. */
+  calendarEmail: string | null;
+  /** The address a calendar has to be shared with; null = no connection yet. */
+  serviceAccountEmail: string | null;
+}
+
+/** Write shape for the master toggle — an omitted key keeps its stored value. */
+export interface MeetingsOptInInput {
+  enabled: boolean;
+  calendarEmail?: string | null;
 }
 
 /** One upcoming calendar event carrying a conference link. */
@@ -39,6 +49,8 @@ export interface MeetingsEvent {
 
 /** Tenant-wide module settings. */
 export interface MeetingsSettings {
+  /** Read-only: the calendar connection's own service-account address. */
+  calendarServiceAccountEmail: string | null;
   minutesLanguage: string;
   /** 0 = keep recordings forever. */
   audioRetentionDays: number;
@@ -47,5 +59,8 @@ export interface MeetingsSettings {
   consentMessage: string | null;
 }
 
-/** Every settings field is optional on write — an omitted key keeps its value. */
-export type MeetingsSettingsInput = Partial<MeetingsSettings>;
+/** Every settings field is optional on write — an omitted key keeps its value.
+ *  `calendarServiceAccountEmail` is read-only, so it is not writable. */
+export type MeetingsSettingsInput = Partial<
+  Omit<MeetingsSettings, 'calendarServiceAccountEmail'>
+>;
