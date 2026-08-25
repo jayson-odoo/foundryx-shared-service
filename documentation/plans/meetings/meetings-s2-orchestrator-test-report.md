@@ -10,9 +10,10 @@
 
 | Suite | Command | Result |
 |---|---|---|
-| Meetings backend (10 files) | `python -m pytest tests/test_meetings_*.py -q` | `130 passed, 3 warnings in 67.95s` |
-| Meetings + every core suite this slice touches | `... test_integrations test_connections_list test_storage_migration test_app_store test_module_platform test_document_engine test_document_sharing test_background_jobs` | `265 passed, 13 warnings in 197.33s` |
-| Full frontend | `npx vitest run` | `Test Files 140 passed (140) · Tests 1160 passed (1160)` |
+| Meetings backend (10 files) | `python -m pytest tests/test_meetings_*.py -q` | `143 passed, 3 warnings in 68.31s` |
+| Core suites this slice touches | `... test_integrations test_connections_list test_storage_migration test_app_store test_module_platform test_document_engine test_document_sharing test_background_jobs` | `135 passed, 11 warnings in 106.79s` |
+| Meetings frontend | `npx vitest run "app/(protected)/meetings" "app/(protected)/settings/meetings"` | `Test Files 3 passed (3) · Tests 22 passed (22)` |
+| Full frontend | `npx vitest run` | `Test Files 140 passed (140) · Tests 1160 passed (1160)` (measured before the review round; the meetings row above is the post-review measurement) |
 | Types | `npx tsc --noEmit -p tsconfig.json` | no error in any meetings file |
 | Lint | `npx eslint` over every touched frontend path | 0 errors, 0 warnings |
 
@@ -25,8 +26,8 @@ New frontend tests: 3 cases on My meetings (status badge, reason, no reason on a
 
 ### 1.1 The full-sweep caveat, stated honestly
 
-Meetings plus every core suite this diff touches is green (`265 passed`). What is NOT measured here
-is the whole `python -m pytest -q` sweep. **Run it before merge** and expect the same pre-existing
+Meetings (`143 passed`) plus every core suite this diff touches (`135 passed`) is green. What is NOT
+measured here is the whole `python -m pytest -q` sweep. **Run it before merge** and expect the same pre-existing
 `tests/test_autocount_pipeline.py` failures S0 recorded (35) and nothing else - nothing in this slice
 touches AutoCount.
 
@@ -46,8 +47,8 @@ Legend: **T** = covered by an automated test · **L** = exercised in the live ru
 | **AC-S2-8** non-zero exit -> `failed` with reason + screenshot key, no retry | PASS (T) | `::test_a_non_zero_exit_fails_the_meeting_and_keeps_the_screenshot` (asserts `screenshot_key` and the job result), `::test_a_failed_run_is_never_retried`, `::test_a_container_that_cannot_start_is_a_failed_meeting_not_a_crash`. |
 | **AC-S2-9** five meetings in one minute, none dropped | PARTIAL (T) | `::test_five_meetings_in_one_minute_all_get_a_job` proves the tick never drops one and all five sit `pending`, and `::test_the_bots_worker_consumes_only_its_own_queue` pins `worker_prefetch_multiplier = 1` so a slot never hoards a job it cannot start. **The cap itself is Celery's `--concurrency` and is NOT tested** - proving the fifth waits and then starts needs five concurrent containers, which the pilot host cannot run. |
 | **AC-S2-10** SIGTERM stops each container gracefully, segments kept | PASS (T), **NOT live** | `::test_sigterm_stops_the_container_the_polite_way_and_lets_celery_shut_down` asserts `container.stop(timeout=45)` and that the previous (Celery) handler still runs. That `docker stop` makes the bot leave the call and flush its tail is S1's behaviour, asserted there, not re-proven here. |
-| **AC-S2-11** status badge + reason on My meetings | PASS (T) | Backend: `test_meetings_ops_api.py::test_an_event_carries_the_status_of_the_meeting_behind_it`, `::test_a_not_admitted_row_carries_the_reason`, `::test_a_failed_row_carries_the_reason_too`, `::test_an_event_whose_meeting_row_is_not_there_yet_reads_scheduled`, `::test_the_opt_out_write_answers_with_the_status_too`. UI: `my-meetings-view.test.tsx` three AC-S2-11 cases; the reason renders through `ClampedText`, never a bare truncate. **Not verified in a browser** - see §5. |
-| **AC-S2-12** bot-runs list + notetaker connection status | PASS (T + L) | Backend: `::test_a_run_is_listed_with_everything_the_page_renders`, `::test_a_failed_run_reports_the_jobs_error_when_the_bot_gave_no_reason`, `::test_the_window_is_a_week_by_default`, `::test_bot_runs_need_the_settings_permission` (403 for `meetings.view` alone), `::test_bot_runs_are_scoped_to_the_calling_tenant`. Connection half: `test_meetings_bot_runner.py::test_a_run_that_reached_meet_marks_the_notetaker_connection_active`. UI: `bot-runs.test.tsx` (6). **Live:** after the run the `meet_bot` connection was `ACTIVE` with `last_tested_at` set, having been `UNVERIFIED` before. |
+| **AC-S2-11** status badge + reason on My meetings | PARTIAL (T + B) | Backend: `test_meetings_ops_api.py::test_an_event_carries_the_status_of_the_meeting_behind_it`, `::test_a_not_admitted_row_carries_the_reason`, `::test_a_failed_row_carries_the_reason_too`, `::test_an_event_whose_meeting_row_is_not_there_yet_reads_scheduled`, `::test_the_opt_out_write_answers_with_the_status_too`. UI: `my-meetings-view.test.tsx` three AC-S2-11 cases; the reason renders through `ClampedText`, never a bare truncate. **Browser (§3b):** every status renders as a badge at 1280 and 375, and the reason is on screen clamped to two lines. **The hover half does NOT work** - `ClampedText`'s tooltip never fires in this app (pre-existing, platform-wide, evidenced in §3b), so a reason longer than two lines cannot currently be read in full. That is why this row is PARTIAL. |
+| **AC-S2-12** bot-runs list + notetaker connection status | PASS (T + L + B) | Backend: `::test_a_run_is_listed_with_everything_the_page_renders`, `::test_a_failed_run_reports_the_jobs_error_when_the_bot_gave_no_reason`, `::test_the_window_is_a_week_by_default`, `::test_bot_runs_need_the_settings_permission` (403 for `meetings.view` alone), `::test_bot_runs_are_scoped_to_the_calling_tenant`. Connection half: `test_meetings_bot_runner.py::test_a_run_that_reached_meet_marks_the_notetaker_connection_active`. UI: `bot-runs.test.tsx` (6). **Live:** after the run the `meet_bot` connection was `ACTIVE` with `last_tested_at` set, having been `UNVERIFIED` before. **Browser (§3b):** `settings-meetings-1280.png` / `-375.png`. |
 | **AC-S2-13** two tenants at once share nothing | PASS (T) | `::test_two_tenants_meeting_at_once_share_nothing_but_the_image` builds both specs and asserts neither contains the other's password, tenant id or volume, while the image is the same. |
 | **AC-S2-14** the worker consumes only `bots` and `docker info` succeeds, or it is a startup ERROR | PASS (T + L) | `::test_the_worker_refuses_to_boot_on_the_wrong_queue`, `::test_the_worker_refuses_to_boot_without_docker`, `::test_the_worker_boots_when_the_queue_and_the_socket_are_both_right`, `::test_the_boot_check_runs_as_a_bootstep_not_a_signal`. **Live, all three:** `-Q bots` logged `queue=bots, docker reachable` and became ready; `-Q workflow` exited 1 with `WorkerBootError: The bots worker must consume only the 'bots' queue (got ['bots', 'workflow'])`; `DOCKER_HOST=unix:///nonexistent/docker.sock` exited 1 with `cannot reach Docker: ... Check DOCKER_HOST and that the socket is mounted`. |
 
@@ -111,6 +112,71 @@ tick2   dispatched: 0
 killed by PID filtered on its own cwd. Verified afterwards: no `meetings_s2%` database, no
 `meetings-bot-*` container, no `meetings*` volume, no worker process.
 
+## 3a. Review round (2026-08-25)
+
+Seven correctness findings, each written test-first. **Every new test was then confirmed RED with
+its fix reverted** - which is how three of them were caught proving nothing:
+
+| Test | First verdict | Why it was not testing anything |
+|---|---|---|
+| the skip survives a later failure | GREEN | `JobService.create` commits, so a LATER meeting's insert had already committed the earlier skip. The failure has to happen before anything in that pass commits, so it now explodes inside `wants_capture`. |
+| a NULL-ended meeting is not dispatched weeks later | GREEN | The test helper turned an explicit `ends_at=None` into its DEFAULT (start + 1 h), so the NULL case was never built. A sentinel now tells "not given" from "the calendar gave no end". |
+| the twelfth calendar still fails the test | GREEN | `opted_in_calendars` ordered by `user_id`, which is a uuid - so "the twelfth calendar" landed anywhere in the list. It now sorts by ADDRESS, which is stable and also stops the Test message reordering itself between runs. |
+
+The other four were red first time: any-setup-failure, container re-attach, SIG_DFL, and the
+double registration.
+
+## 3b. Browser pass (DoD gate)
+
+Driven with `agent-browser` (own session `meetings-s2`, closed afterwards; never `close --all`),
+navigating by SIDEBAR clicks from `/`, against a throwaway Postgres `meetings_s2_browser` seeded
+with every state the surfaces have to render - scheduled / recording / not-admitted / failed (with a
+deliberately long, space-free reason) / ready / skipped, two bot runs, and a calendar connection in
+shared mode. Backend on 8051 and `npm run dev` on 3051 (8001 and 3001 belong to other lanes and were
+left alone). Screenshots: `evidence/s2/`.
+
+**Two real defects the tests could not have caught, both fixed and re-verified:**
+
+1. **The status column pushed the Capture switch off the right edge at 1280 px** - the exact trap S0
+   hit and fixed once already (its decision 4). A seventh column does not fit beside the sidebar at
+   the widths S0 chose. Every column was re-sized to what it actually needs; the switch is back on
+   screen and `When` still shows both ends of the meeting.
+2. **The failed row's reason ran out of its cell instead of wrapping.** Two causes stacked: the
+   DataGrid's own `td` carries `truncate`, whose `white-space: nowrap` cascades in and neuters
+   `line-clamp` entirely; and a reason like `error:TimeoutError:waiting...` has no spaces to wrap at.
+   Fixed with `whitespace-normal break-all` on that one cell. It now clamps to two lines inside the
+   column.
+
+**One defect found and deliberately NOT fixed here.** `ClampedText` renders its recover-the-text
+tooltip only when it measures itself as truncated, and in this app it never does: instrumented in
+the live page, all 16 `ClampedText` instances reported `truncated=false`, including several that
+were genuinely overflowing (the reason at `scrollHeight` 192 vs `clientHeight` 32, and the
+service-account address at 40 vs 20). A `ResizeObserver` attached by hand to the same element from
+the console fired normally, so the observer is not the problem - the component's state is being
+reset, most likely by a remount on every grid render. **This is pre-existing and platform-wide**
+(it affects every list in the app, not just meetings), so it is reported rather than patched: a
+speculative change to a shared component that I could not verify fixes the cause is worse than
+leaving it visible. One such change was written during this pass and REVERTED for exactly that
+reason. Consequence for this slice: the reason is on screen, clamped, and present in full in the
+DOM, but the hover half of AC-S2-11 does not work. Logged as the top follow-up.
+
+| Evidence | Shows |
+|---|---|
+| `my-meetings-1280.png` | AC-S2-11 at 1280: status badge per row (Scheduled / Recording / Not admitted / Failed / Ready / Skipped), the reason clamped under the badge, the Capture switch on screen, plus Task 0's Calendar field and the "Shared with" service-account address. |
+| `my-meetings-375.png` | AC-S2-14-equivalent at 375: `scrollWidth === clientWidth === 375`, the toggle, Calendar field and address stacked. |
+| `my-meetings-375-cards.png` | AC-S2-11 at 375 in the shared list's card mode: every card carries status, reason and the capture switch without sideways scrolling. |
+| `settings-meetings-1280.png` | AC-S2-12 at 1280: Bot runs with meeting, started, ended, exit reason (badge + word) and duration (`58m 00s`, and `-` for the run that never recorded); the notetaker connection Connected with its last success time; the calendar connection Unverified with the service-account address. |
+| `settings-meetings-375.png` | AC-S2-12 at 375: `scrollWidth === clientWidth === 375`, cards stack. |
+| `connection-shared-mode-1280.png` | Task 0: Access reads "Calendars shared with the service account", Admin email empty, key masked. |
+| `connection-shared-mode-test-1280.png` | Task 0, the Test button run for real against the Google client: `notetaker@foundryx-meet.iam.gserviceaccount.com cannot read demo.personal@gmail.com: The private_key field was not found in the service account info.` It names the address to share WITH, the calendar it could not read (which is the opt-in override, so `test_needs_context` really reached the tenant's rows), and Google's own wording. |
+
+Also verified by hand, not screenshotted: typing a new address into the Calendar field and blurring
+wrote it through the real API (`demo.personal@gmail.com` to `demo.work@gmail.comx`, confirmed by
+SQL against `app_meetings.user_opt_ins`).
+
+Torn down afterwards: browser session closed, both servers stopped by PID filtered on their own cwd,
+database dropped. Verified zero leftovers, and the other lanes' servers on 3030/3060/8001 untouched.
+
 ## 4. Decisions the plan did not cover
 
 1. **The boot check is a BOOTSTEP, not a `worker_init` signal handler** (plan §5 did not say how).
@@ -170,9 +236,9 @@ killed by PID filtered on its own cwd. Verified afterwards: no `meetings_s2%` da
   not run.
 - **SIGTERM mid-call (AC-S2-10)** against a real container. The handler is asserted with a fake; the
   bot's own leave-and-flush behaviour is S1's evidence, not this slice's.
-- **The browser.** Neither surface was driven in a real browser this round, at 375 px or 1280 px.
-  Both are Vitest-green through the service boundary and the backend they call is pytest-green, but
-  a user-perspective pass is outstanding and is the first thing to do before the PR.
+- **The recover-the-text tooltip on a clamped reason** (the hover half of AC-S2-11), because
+  `ClampedText` never measures itself as truncated in this app. Pre-existing and platform-wide;
+  evidence and the reasoning for not patching it are in §3b. **Top follow-up.**
 - **`next build`.** Dev-server rule; not run.
 - **The full `pytest -q` sweep** (see §1.1).
 - **A real Google Workspace** for the Task 0 shared-calendar sync. The three live-probe facts are
@@ -183,8 +249,8 @@ killed by PID filtered on its own cwd. Verified afterwards: no `meetings_s2%` da
 
 | Gate item | State |
 |---|---|
-| Mock swapped to real + verified showing real data | **Partly.** `meetings-service.ts` binds `realMeetingsService` and every new method exists on both implementations, and the endpoints they call are pytest-green. **Not yet driven in a browser against a live stack** - that is the outstanding item above. |
+| Mock swapped to real + verified showing real data | **Done.** `meetings-service.ts` binds `realMeetingsService`, and both surfaces were driven in a browser against a live backend and Postgres (§3b): the bot-runs list, the status badges and the service-account address are all real rows, and a Calendar address typed in the browser was confirmed written by SQL. |
 | Backfill existing rows/tenants | **Covered.** `user_opt_ins.calendar_email` is nullable and NULL is the correct value for every existing row (it means "my login email", which is what the sync already did). `meetings.status_reason` is a rename of a column nothing had written; `screenshot_key` is new and NULL is correct. Verified on Postgres: fresh upgrade, downgrade to base, re-upgrade, zero model-vs-schema drift. |
 | No hardcoded lookup of a tenant-editable key | **Holds.** The "Meetings" folder is looked up by NAME and created if absent - a stored id would be a hardcoded reference to something a tenant can rename. Connection providers resolve by registry key, which is a code constant. |
 | New permission -> grant sweep | **N/A.** No new permission. `/meetings/bot-runs` reuses `meetings.settings.manage`, which S0 already grants at install. |
-| Verify from the USER's perspective, 375 + 1280 | **NOT DONE.** See §5. |
+| Verify from the USER's perspective, 375 + 1280 | **Done** (§3b), on `npm run dev` per the standing rule, not a production build - so `next build`-only errors are unverified. Two real layout defects were found and fixed by it. One pre-existing platform defect (the ClampedText tooltip) is reported, not fixed. |

@@ -93,7 +93,7 @@ export function useUpcomingEventsListConfig(
             <ClampedText text={row.original.title ?? '—'} lines={2} />
           </span>
         ),
-        size: 175,
+        size: 150,
         enableSorting: true,
       },
       {
@@ -109,7 +109,7 @@ export function useUpcomingEventsListConfig(
             {whenRange(row.original)}
           </span>
         ),
-        size: 215,
+        size: 200,
         enableSorting: true,
       },
       {
@@ -120,7 +120,7 @@ export function useUpcomingEventsListConfig(
         cell: ({ row }) => (
           <ClampedText text={row.original.organiserEmail ?? '—'} lines={1} />
         ),
-        size: 165,
+        size: 150,
         enableSorting: true,
       },
       {
@@ -139,7 +139,7 @@ export function useUpcomingEventsListConfig(
             )}
           />
         ),
-        size: 145,
+        size: 118,
         enableSorting: true,
       },
       {
@@ -152,7 +152,7 @@ export function useUpcomingEventsListConfig(
             {PLATFORM_LABELS[row.original.platform]}
           </Badge>
         ),
-        size: 130,
+        size: 100,
         enableSorting: true,
       },
       {
@@ -165,20 +165,31 @@ export function useUpcomingEventsListConfig(
         meta: { headerTitle: 'Status' },
         header: ({ column }) => <DataGridColumnHeader title="Status" column={column} />,
         cell: ({ row }) => (
-          <div className="flex flex-col items-start gap-1">
+          <div className="flex w-full min-w-0 flex-col items-start gap-1">
             <StatusBadge
               status={row.original.meetingStatus}
               registry={MEETING_STATUS_REGISTRY}
               size="sm"
             />
             {row.original.statusReason && (
-              <span className="text-xs text-muted-foreground">
-                <ClampedText text={row.original.statusReason} lines={2} />
+              <span className="w-full min-w-0 text-xs text-muted-foreground">
+                <ClampedText
+                  text={row.original.statusReason}
+                  lines={2}
+                  // The DataGrid's own `td` carries `truncate`, and its
+                  // `white-space: nowrap` cascades in and neuters line-clamp -
+                  // the reason rendered as ONE unwrapped line running off the
+                  // cell, with no tooltip because nothing measured as clamped.
+                  // `whitespace-normal` puts wrapping back; `break-all` is what
+                  // lets a reason like `error:TimeoutError:waiting...`, which
+                  // has no spaces, break at all.
+                  className="whitespace-normal break-all"
+                />
               </span>
             )}
           </div>
         ),
-        size: 160,
+        size: 130,
         enableSorting: true,
       },
       {
@@ -195,7 +206,7 @@ export function useUpcomingEventsListConfig(
             />
           </div>
         ),
-        size: 90,
+        size: 68,
         enableSorting: false,
         enableHiding: false,
         enableResizing: false,
@@ -292,7 +303,11 @@ export function useUpcomingEventsListConfig(
         </div>
         {row.statusReason && (
           <div className="text-xs text-muted-foreground">
-            <ClampedText text={row.statusReason} lines={2} />
+            <ClampedText
+              text={row.statusReason}
+              lines={2}
+              className="whitespace-normal break-all"
+            />
           </div>
         )}
       </div>

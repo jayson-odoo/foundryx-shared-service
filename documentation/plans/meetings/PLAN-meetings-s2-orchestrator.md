@@ -1,11 +1,15 @@
 # PLAN - Meetings S2: Orchestrator
 
-**Status:** BUILT, tests green, live-verified end to end (2026-08-25). Report:
-`meetings-s2-orchestrator-test-report.md`. UAC: `meetings-s2-orchestrator-acceptance-criteria.md`.
-Spine: `PLAN-meetings-program.md`. Outstanding before PR: a user-perspective browser pass at
-375 px and 1280 px, and a full `pytest -q` sweep. AC-S2-6 (recording) and AC-S2-10 (SIGTERM
-mid-call) are covered by tests but have never run live - no Meet is reachable from here that
-will admit the bot.
+**Status:** BUILT, review round applied, tests green, live-verified end to end, and driven in a
+browser at 375 px and 1280 px (2026-08-25). Report: `meetings-s2-orchestrator-test-report.md`
+(evidence in `evidence/s2/`). UAC: `meetings-s2-orchestrator-acceptance-criteria.md`. Spine:
+`PLAN-meetings-program.md`.
+
+Outstanding before PR: a full `pytest -q` sweep. AC-S2-11 is PARTIAL - the status badge and the
+clamped reason are verified on screen, but the hover-to-read-it-all half does not work because
+`ClampedText` never measures itself as truncated anywhere in this app (pre-existing and
+platform-wide, evidenced in report §3b). AC-S2-6 (recording) and AC-S2-10 (SIGTERM mid-call) are
+covered by tests but have never run live - no Meet reachable from here will admit the bot.
 **Branch:** `sprint-5/meetings-s2-orchestrator`, stacked on S0 with the S1 bot merged in.
 **Order:** frontend status badge + bot-runs list against a mock, then backend test-first, then swap.
 
