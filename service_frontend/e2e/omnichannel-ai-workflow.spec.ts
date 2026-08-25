@@ -41,11 +41,46 @@ async function token(
 }
 
 async function login(page: Page, email: string, password: string, base?: string) {
-  await page.goto(base ? `${base}/signin` : '/signin');
-  await page.getByPlaceholder('Your email').fill(email);
-  await page.getByPlaceholder('Your password').fill(password);
-  await page.getByRole('button', { name: /sign in/i }).click();
-  await page.waitForURL((url) => !url.pathname.startsWith('/signin'));
+  const signinUrl = base ? `${base}/signin` : '/signin';
+  let lastFailure = 'unknown navigation failure';
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    await page.goto(signinUrl);
+    // Live Next hydration can replace controlled inputs after navigation.
+    // Waiting for network idle keeps this test deterministic without changing product behavior.
+    await page.waitForLoadState('networkidle');
+    const emailField = page.getByPlaceholder('Your email');
+    const passwordField = page.getByPlaceholder('Your password');
+    const submit = page.getByRole('button', { name: /sign in/i });
+    await emailField.fill(email);
+    await passwordField.fill(password);
+    await expect(submit).toBeEnabled({ timeout: 30_000 });
+    await submit.click();
+
+    try {
+      await page.waitForURL((url) => !url.pathname.startsWith('/signin'), { timeout: 30_000 });
+      return;
+    } catch (error) {
+      // Ignore the empty global notification region; only a form alert is an
+      // actual credential response that must not be hidden by a retry.
+      const alert = page.locator('form [role="alert"]');
+      if (await alert.isVisible().catch(() => false)) {
+        const detail = (await alert.innerText()).trim();
+        throw new Error(`Sign-in rejected: ${detail}`);
+      }
+      lastFailure = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  throw new Error(`Sign-in did not leave /signin after 2 attempts: ${lastFailure}`);
+}
+
+async function expectNoDocumentOverflow(page: Page) {
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    ),
+  ).toBe(true);
 }
 
 function inboundPayload(phone: string, text: string) {
@@ -109,6 +144,7 @@ test.describe('Omnichannel × AI Agent workflow (plan sprint-4/17)', () => {
     await expect(page.getByText('logged this as', { exact: false }).first()).toBeVisible({
       timeout: 30_000,
     });
+    await expectNoDocumentOverflow(page);
   });
 
   test('② build trigger → AI Agent → Send Message via real clicks and publish (AC-OA-23)', async ({
@@ -147,18 +183,44 @@ test.describe('Omnichannel × AI Agent workflow (plan sprint-4/17)', () => {
     // Create a workflow through the UI.
     await page.goto(tenantUrl('/workflows'));
     await page.getByRole('button', { name: /new workflow/i }).click();
-    await page.getByLabel(/name/i).first().fill(`OA17 flow ${STAMP}`);
-    await page.getByRole('button', { name: /^(Save|Create)$/ }).first().click();
-    await page.waitForURL(/\/workflows\/(?!new)[^/]+/, { timeout: 30_000 });
+    await expect(page.getByTestId('workflow-canvas')).toBeVisible();
 
-    // Enter edit mode, then click-to-add the three nodes from the palette.
-    await page.getByRole('button', { name: /^Edit$/ }).click();
+    // New workflows open in edit mode. Click-to-add the three nodes.
     await page.getByTestId('palette-search').fill('omnichannel');
     await page.getByTestId('palette-omnichannel.message_received').click();
     await page.getByTestId('palette-search').fill('AI Agent');
     await page.getByTestId('palette-ai_agent.run').click();
     await page.getByTestId('palette-search').fill('Send Message');
     await page.getByTestId('palette-omnichannel.send_message').click();
+
+    // Wire trigger → AI → send (React Flow handle drags via page.mouse are
+    // driven by the shared connect helper pattern; nodes target by testid).
+    // The canvas connect helper lives in the slice-09 spec - reuse its approach.
+    const canvas = page.getByTestId('flow-canvas');
+    await expect(canvas).toBeVisible();
+    await page.getByRole('button', { name: /fit view/i }).click();
+    const connect = async (fromType: string, toType: string) => {
+      // Stable test ids avoid coupling this journey to React Flow's CSS classes.
+      const from = page
+        .locator(`[data-node-type="${fromType}"] [data-testid="source-handle"]`)
+        .first();
+      const to = page
+        .locator(`[data-node-type="${toType}"] [data-testid="target-handle"]`)
+        .first();
+      await from.scrollIntoViewIfNeeded();
+      await to.scrollIntoViewIfNeeded();
+      const fb = await from.boundingBox();
+      const tb = await to.boundingBox();
+      if (!fb || !tb) throw new Error('handle not visible');
+      await page.mouse.move(fb.x + fb.width / 2, fb.y + fb.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(tb.x + tb.width / 2, tb.y + tb.height / 2, { steps: 12 });
+      await page.mouse.up();
+    };
+    await connect('omnichannel.message_received', 'ai_agent.run');
+    await expect(page.locator('.react-flow__edge')).toHaveCount(1);
+    await connect('ai_agent.run', 'omnichannel.send_message');
+    await expect(page.locator('.react-flow__edge')).toHaveCount(2);
 
     // Configure the AI Agent node: pick the agent, instructions, input, params.
     await page.locator('[data-node-type="ai_agent.run"]').click();
@@ -169,33 +231,34 @@ test.describe('Omnichannel × AI Agent workflow (plan sprint-4/17)', () => {
     await page.getByTestId('add-output-param').click();
     await page.getByLabel('Parameter 1 key').fill('intent');
 
-    // Configure Send Message: contact ref + a message referencing the AI output.
+    // Configure Send Message after wiring so its picker exposes the upstream AI output.
     await page.locator('[data-node-type="omnichannel.send_message"]').click();
     await page.getByLabel('Contact').fill('{{ trigger.contact.id }}');
-    await page.getByLabel('Message', { exact: true }).fill('Classified.');
+    const messageField = page.getByLabel('Message', { exact: true });
+    await messageField.fill('Classified: ');
+    const dynamicContentTrigger = messageField.locator('..').getByTestId('dynamic-content-trigger');
+    await expect(dynamicContentTrigger).toHaveCount(1);
+    await dynamicContentTrigger.click();
+    const intentItem = page.locator(
+      '[data-testid^="dynamic-content-nodes."][data-testid$=".intent"]',
+    );
+    await expect(intentItem).toHaveCount(1);
+    const intentTestId = await intentItem.getAttribute('data-testid');
+    const intentPath = intentTestId?.match(/^dynamic-content-(nodes\..+\.intent)$/)?.[1];
+    if (!intentPath) throw new Error(`AI intent picker token missing: ${intentTestId ?? 'none'}`);
+    expect(intentPath).toMatch(/^nodes\.[^.]+\.intent$/);
+    await intentItem.click();
+    await expect(messageField).toHaveValue(new RegExp(`\\{\\{ ${intentPath} \\}\\}`));
 
-    // Wire trigger → AI → send (React Flow handle drags via page.mouse are
-    // driven by the shared connect helper pattern; nodes target by testid).
-    // The canvas connect helper lives in the slice-09 spec - reuse its approach.
-    const canvas = page.getByTestId('flow-canvas');
-    await expect(canvas).toBeVisible();
-    const connect = async (fromType: string, toType: string) => {
-      const from = page.locator(`[data-node-type="${fromType}"] .react-flow__handle-bottom`).first();
-      const to = page.locator(`[data-node-type="${toType}"] .react-flow__handle-top`).first();
-      const fb = await from.boundingBox();
-      const tb = await to.boundingBox();
-      if (!fb || !tb) throw new Error('handle not visible');
-      await page.mouse.move(fb.x + fb.width / 2, fb.y + fb.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(tb.x + tb.width / 2, tb.y + tb.height / 2, { steps: 12 });
-      await page.mouse.up();
-    };
-    await connect('omnichannel.message_received', 'ai_agent.run');
-    await connect('ai_agent.run', 'omnichannel.send_message');
-
-    // Publish - the validator passes (trigger + required config + wired graph).
-    await page.getByRole('button', { name: /^Save$/ }).click();
-    await page.getByRole('button', { name: /publish/i }).click();
-    await expect(page.getByText(/published|version 1/i).first()).toBeVisible({ timeout: 30_000 });
+    // Name and create it through Settings, then publish from Editor.
+    await page.getByRole('tab', { name: 'Settings' }).click();
+    await page.getByLabel('Workflow name').fill(`OA17 flow ${STAMP}`);
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await page.waitForURL(/\/workflows\/[^/]+(\?|$)/, { timeout: 30_000 });
+    await page.getByRole('tab', { name: 'Editor' }).click();
+    await page.getByTestId('workflow-publish').click();
+    await page.getByRole('tab', { name: 'Settings' }).click();
+    await expect(page.getByTestId('current-version')).toContainText('v1');
+    await expectNoDocumentOverflow(page);
   });
 });

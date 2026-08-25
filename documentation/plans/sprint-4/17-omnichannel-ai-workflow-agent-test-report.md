@@ -1,13 +1,13 @@
 # 17 - Omnichannel × AI Agent workflow nodes - Test Execution Report
 
 Keyed to `17-omnichannel-ai-workflow-agent-acceptance-criteria.md` (AC-OA ids).
-Executed 2026-08-14 on branch `fm/fs-omniflow-b1` (isolated worktree).
+Executed 2026-08-25 on branch `fm/fs-omniflow-b1` (isolated worktree).
 
 ## Environment
 
 - Backend: pytest + httpx, in-memory SQLite with `schema_translate_map` (repo conftest), Celery eager, stub LLM provider (`app/ai/stub.py`) - zero live API key anywhere, per the brief.
 - Frontend: Vitest + React Testing Library (`vitest.config.mts`).
-- Live-stack E2E: spec authored (`e2e/omnichannel-ai-workflow.spec.ts`); live run DEFERRED in this worktree - see "Deferred" below.
+- Live-stack E2E: verified with the isolated backend on port 8002 and frontend on port 3001; the existing 8001/Sorento stack was not touched.
 
 ## Results by AC id
 
@@ -30,12 +30,12 @@ Executed 2026-08-14 on branch `fm/fs-omniflow-b1` (isolated worktree).
 | AC-OA-15 | FE | PASS | `node-config-drawer.omnichannel-ai.test.tsx` - channel SearchSelect with explicit "All channels" default |
 | AC-OA-16 | FE | PASS | same file - mergeable contactId/message fields render with the dynamic-content picker |
 | AC-OA-17 | FE | PASS | agent SearchSelect + `output-params-editor.test.tsx` (add/remove rows, string/number/boolean only, duplicate-key flagging) |
-| AC-OA-18 | FE | PARTIAL | `aiOutputParams` feeds `upstreamGroups`/`runContextFacts` (implementation + drawer integration test); the full `{ }` picker journey is asserted by E2E journey ② (deferred live run) |
+| AC-OA-18 | FE | PASS | `aiOutputParams` feeds `upstreamGroups`/`runContextFacts`; the full `{ }` picker journey passed in the live AC-OA-23 build at 1280x800 and 375x812 |
 | AC-OA-19 | FE | PASS (by design) | no new surface - run inspector reuses the existing run-node views unchanged |
 | AC-OA-20 | FE/T | PASS | 22 new Vitest tests; full frontend suite 142 files / 1160 tests green; eslint clean on all touched files |
 | AC-OA-21 | BE | PASS (by inspection) | `seed_demo_ai_workflow` wired into both dev seed scripts behind `ENVIRONMENT=development`; the identical 3-node flow is executed end-to-end by `test_end_to_end_inbound_to_reply` |
-| AC-OA-22 | E2E | DEFERRED | spec authored (journey ① in `e2e/omnichannel-ai-workflow.spec.ts`); live run deferred - see below |
-| AC-OA-23 | E2E | DEFERRED | spec authored (journey ② - real-click build + publish); live run deferred - see below |
+| AC-OA-22 | E2E | PASS | Live inbound-to-reply journey passed at 1280x800 in 22.5s and 375x812 in 24.0s; document overflow assertion passed at both sizes |
+| AC-OA-23 | E2E | PASS | Live real-click build and publish journey passed at 1280x800 in 21.7s and 375x812 in 21.0s; document overflow assertion passed at both sizes. Final rerun evidence: the published workflow snapshot contains `message: "Classified: {{ nodes.act_9dlzkx.intent }}"` (the picker inserted the real upstream AI node token `nodes.act_9dlzkx.intent`), and the Settings surface showed current version `v1` after publish. |
 
 ## Suite totals
 
@@ -60,15 +60,11 @@ Final validation:
 - ESLint, Python compile checks, and `git diff --check`: clean.
 - `npm run build`: exit 0, 111/111 pages generated, with only existing warnings.
 
-Live E2E execution and responsive verification at 375px and 1280px remain deferred below. They are not claimed by this follow-up.
+## Live E2E and responsive verification
 
-## Deferred: live E2E run
-
-Ports 3001/8001 are currently held by stale `next-server`/uvicorn processes whose cwd is a DELETED worktree in `~/.Trash` (`.Trash/foundryx/foundryx-shared-service/.claude/worktrees/s17`) - killing processes outside this isolated task worktree and reseeding the shared dev Postgres from this branch both violate the task's isolation rules, so the live run is handed to the stack owner. To execute:
-
-1. `pkill -9 -f next-server` and free :8001 (the stale owners are the `.Trash` processes above - safe to kill from the primary checkout).
-2. Backend: `ENVIRONMENT=development python -m scripts.init_db && uvicorn app.main:app --reload --port 8001` (seeds `chn-demo` + the demo AI workflow).
-3. Frontend: `rm -rf .next && npm run build && npm start` (port 3001).
-4. `npx playwright test e2e/omnichannel-ai-workflow.spec.ts`.
-
-Responsive check (375px AND 1280px) for the new drawer editors rides the same deferred live pass - the editors reuse the existing drawer layout primitives (stacked rows, no fixed widths beyond the existing 28/32-unit selects), so no new horizontal-overflow surface is introduced.
+- Environment: `with_server.py` managed FastAPI on 8002 and Next on 3001 with `NEXT_PUBLIC_BACKEND_API_URL`, `BACKEND_API_URL`, and `PUBLIC_BASE_URL` set to `http://localhost:8002`, `ENVIRONMENT=development`, and `CELERY_TASK_ALWAYS_EAGER=true`. The run used one Playwright worker and the dev-seeded demo workflow.
+- Desktop viewport: 1280x800. AC-OA-22 passed in 22.5s; final AC-OA-23 passed in 21.7s (wrapper elapsed 22.2s).
+- Mobile viewport: 375x812. AC-OA-22 passed in 24.0s; final AC-OA-23 passed in 21.0s (wrapper elapsed 21.5s).
+- The spec asserts `document.documentElement.scrollWidth <= document.documentElement.clientWidth` after each journey. The assertion passed at both viewports, with no horizontal document overflow.
+- `with_server.py` stopped the temporary 8002/3001 processes after each run. Port 8001 and the unrelated Sorento process were not touched.
+- E2E reliability adjustments are test-only: wait for initial page hydration before filling controlled sign-in fields, use stable handle test ids instead of React Flow class names, and save the new workflow through Settings before publishing from Editor. No product behavior was changed for the live gate.
