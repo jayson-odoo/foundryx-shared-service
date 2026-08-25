@@ -11,13 +11,17 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { SearchSelect } from '@/components/platform/search-select';
 import { ClampedText } from '@/components/platform/clamped-text';
+import { ResourceList } from '@/components/platform/resource-list';
 import { useCan } from '@/hooks/use-can';
+import { useDatetime } from '@/hooks/use-datetime';
+import { useMeetingsBotRuns } from '@/hooks/use-meetings-bot-runs';
 import { useMeetingsSettings } from '@/hooks/use-meetings-settings';
 import {
   useMeetingsConnections,
   type MeetingsProviderKey,
 } from '@/hooks/use-meetings-connections';
 import type { ConnectionStatus } from '@/types/integration';
+import { useBotRunsListConfig } from './use-bot-runs-list-config';
 
 const MINUTES_LANGUAGES = [
   { value: 'en', label: 'English' },
@@ -73,6 +77,12 @@ export function MeetingsSettingsView() {
   const { settings, loading, saving, save } = useMeetingsSettings();
   const { byProvider, loading: connectionsLoading } = useMeetingsConnections();
   const serviceAccountEmail = settings?.calendarServiceAccountEmail ?? null;
+  const { runs, error: runsError } = useMeetingsBotRuns(7);
+  const { timeZone, formatDateTime } = useDatetime();
+  const botRunsConfig = useBotRunsListConfig(runs, { timeZone });
+  // AC-S2-12: the notetaker account stays UNVERIFIED until a bot really signs
+  // in; the first successful run stamps it ACTIVE with the time.
+  const botConnection = byProvider.meet_bot;
 
   const [minutesLanguage, setMinutesLanguage] = useState('en');
   const [audioRetentionDays, setAudioRetentionDays] = useState('90');
@@ -136,6 +146,14 @@ export function MeetingsSettingsView() {
                       <ClampedText text={serviceAccountEmail} lines={1} />
                     </span>
                   )}
+                  {/* When the notetaker last really signed in (AC-S2-12). Only
+                      a bot run can set it, so it is the truth about the
+                      account rather than a test button's opinion. */}
+                  {provider === 'meet_bot' && connection?.lastTestedAt && (
+                    <span className="text-sm text-muted-foreground">
+                      {formatDateTime(connection.lastTestedAt)}
+                    </span>
+                  )}
                 </div>
                 <Button variant="outline" size="sm" disabled={connectionsLoading} asChild>
                   <Link
@@ -151,6 +169,21 @@ export function MeetingsSettingsView() {
               </div>
             );
           })}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardHeading>
+            <CardTitle>Bot runs</CardTitle>
+          </CardHeading>
+        </CardHeader>
+        <CardContent>
+          {runsError ? (
+            <p className="py-5 text-sm text-destructive">{runsError}</p>
+          ) : (
+            <ResourceList config={botRunsConfig} />
+          )}
         </CardContent>
       </Card>
 

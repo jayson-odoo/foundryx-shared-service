@@ -7,6 +7,7 @@
  * line at the bottom of this file.
  */
 import type {
+  MeetingsBotRun,
   MeetingsEvent,
   MeetingsOptIn,
   MeetingsOptInInput,
@@ -30,6 +31,8 @@ export interface MeetingsService {
   listEvents(range?: MeetingsEventRange): Promise<MeetingsEvent[]>;
   /** Switch a single event out of (or back into) capture. */
   setEventOptOut(eventId: string, optedOut: boolean): Promise<MeetingsEvent>;
+  /** The tenant's bot runs over the last `days` days (default 7). */
+  listBotRuns(days?: number): Promise<MeetingsBotRun[]>;
   /** Tenant-wide module settings. */
   getSettings(): Promise<MeetingsSettings>;
   saveSettings(input: MeetingsSettingsInput): Promise<MeetingsSettings>;
