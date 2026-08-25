@@ -11,7 +11,7 @@ row's columns the wire actually exposes.
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import Field
+from pydantic import EmailStr, Field, field_validator
 
 from app.schemas.base import ApiModel
 
@@ -20,7 +20,18 @@ class OptInIn(ApiModel):
     enabled: bool
     # Omitted = keep the stored address; sent as null/blank = back to my login
     # email. Told apart by ``model_fields_set``, never by the value being None.
-    calendarEmail: Optional[str] = Field(default=None, max_length=254)
+    calendarEmail: Optional[EmailStr] = None
+
+    @field_validator("calendarEmail", mode="before")
+    @classmethod
+    def _blank_means_my_login_email(cls, value):
+        """A cleared form field is "use my login email", not a bad address.
+
+        Runs BEFORE ``EmailStr``, which would otherwise 422 the empty string a
+        text input sends when someone deletes what they typed."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 class OptInOut(ApiModel):

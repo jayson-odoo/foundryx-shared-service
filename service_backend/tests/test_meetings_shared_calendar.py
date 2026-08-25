@@ -10,7 +10,8 @@ tests below pin so they cannot be lost again:
    ``calendarList`` - the list comes back empty. Reading the calendar by address
    is the only proof the share was granted, so that is what Test does.
 2. ``events.list`` returns NO ``nextSyncToken`` when ``orderBy`` is set, so the
-   sync must never ask for an order it does not need.
+   adapter must never ask for an order it does not need. Guarded by asserting on
+   the real request params, which is the only place ``orderBy`` could come from.
 3. The calendar a user can share is often NOT their login email (a Workspace can
    block sharing outward), hence ``user_opt_ins.calendar_email``.
 """
@@ -19,7 +20,13 @@ import pytest
 from app.models import DEFAULT_TENANT_ID
 from modules.meetings.calendar.base import CalendarSourceError, SyncPage
 from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD
-from tests.meetings_helpers import FakeCalendarSource, opt_in, raw_event, utc
+from tests.meetings_helpers import (
+    FakeCalendarSource,
+    make_admin_user,
+    opt_in,
+    raw_event,
+    utc,
+)
 
 SERVICE_ACCOUNT_JSON = (
     '{"type":"service_account","client_email":"notetaker@proj.iam.gserviceaccount.com"}'
@@ -157,19 +164,6 @@ def test_a_tokened_read_carries_no_window(monkeypatch):
     )
     assert fake.calls[0]["syncToken"] == "t1"
     assert "timeMin" not in fake.calls[0] and "timeMax" not in fake.calls[0]
-
-
-def test_the_fake_refuses_a_token_when_an_order_was_asked_for(db):
-    """The regression guard for live-probe fact 2, on the source every sync test
-    drives: if a future change puts ``orderBy`` back, the sync's token tests go
-    red instead of the behaviour silently degrading in production."""
-    source = FakeCalendarSource({"a@x.com": [SyncPage(events=[], next_sync_token="t1")]})
-
-    with_order = source.list_events(user_email="a@x.com", order_by="startTime")
-    assert with_order.next_sync_token is None
-
-    without_order = source.list_events(user_email="a@x.com")
-    assert without_order.next_sync_token == "t1"
 
 
 # ── the per-user calendar address ────────────────────────────────────────────
@@ -455,3 +449,77 @@ def _auth(client) -> dict:
     )
     assert res.status_code == 200, res.text
     return {"Authorization": f"Bearer {res.json()['access_token']}"}
+
+
+# ── review round ─────────────────────────────────────────────────────────────
+
+
+def test_every_opted_in_calendar_is_probed_not_just_the_first_ten(db, monkeypatch):
+    """A cap here is worse than useless: the test would answer "Reading ..." and
+    stamp the connection ACTIVE while the eleventh person's calendar had never
+    been shared, and their meetings would silently never be captured."""
+    from modules.meetings import providers as providers_module
+    from modules.meetings.models import UserOptIn
+
+    for index in range(12):
+        user = make_admin_user(
+            db, DEFAULT_TENANT_ID, f"probe{index:02d}@example.com", name=f"P{index}"
+        )
+        db.add(UserOptIn(tenant_id=DEFAULT_TENANT_ID, user_id=user.id, enabled=True))
+    db.commit()
+
+    probed = []
+    monkeypatch.setattr(
+        providers_module,
+        "probe_calendar",
+        lambda **kw: probed.append(kw["calendar_id"]),
+    )
+    result = providers_module.GoogleDwdProvider().test(
+        {}, {"serviceAccountJson": SERVICE_ACCOUNT_JSON},
+        db=db, tenant_id=DEFAULT_TENANT_ID,
+    )
+
+    assert len(probed) == 12
+    assert result.ok is True
+
+
+def test_the_twelfth_unshared_calendar_still_fails_the_test(db, monkeypatch):
+    """The case the cap actually hid."""
+    from modules.meetings import providers as providers_module
+    from modules.meetings.models import UserOptIn
+
+    for index in range(12):
+        user = make_admin_user(
+            db, DEFAULT_TENANT_ID, f"probe{index:02d}@example.com", name=f"P{index}"
+        )
+        db.add(UserOptIn(tenant_id=DEFAULT_TENANT_ID, user_id=user.id, enabled=True))
+    db.commit()
+
+    def probe(**kw):
+        if kw["calendar_id"] == "probe11@example.com":
+            raise CalendarSourceError("Not Found")
+
+    monkeypatch.setattr(providers_module, "probe_calendar", probe)
+    result = providers_module.GoogleDwdProvider().test(
+        {}, {"serviceAccountJson": SERVICE_ACCOUNT_JSON},
+        db=db, tenant_id=DEFAULT_TENANT_ID,
+    )
+
+    assert result.ok is False
+    assert "probe11@example.com" in result.message
+
+
+def test_a_blank_calendar_address_means_my_login_email_not_a_422(meetings_client):
+    """The field is cleared by sending it empty from a form; that is "use my
+    login email", not a malformed address."""
+    headers = _auth(meetings_client)
+    meetings_client.put(
+        "/meetings/optin",
+        headers=headers,
+        json={"enabled": True, "calendarEmail": "personal@gmail.com"},
+    )
+    cleared = meetings_client.put(
+        "/meetings/optin", headers=headers, json={"enabled": True, "calendarEmail": "  "}
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["calendarEmail"] is None

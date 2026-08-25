@@ -16,7 +16,6 @@ second tick a minute later sees nothing to do.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -49,21 +48,11 @@ LATE_AFTER = timedelta(minutes=15)
 REASON_OPTED_OUT = "opted_out"
 REASON_MISSED = "missed"
 
-
-@dataclass
-class DispatchResult:
-    """What one tick did for one tenant."""
-
-    dispatched: List[str] = field(default_factory=list)
-    skipped: List[str] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
-
-    def as_summary(self) -> dict:
-        return {
-            "dispatched": len(self.dispatched),
-            "skipped": len(self.skipped),
-            "errors": len(self.errors),
-        }
+# What a meeting with no ``ends_at`` is assumed to last. A calendar event can
+# arrive without an end, and without this the missed check below never fires for
+# one - so a meeting from three weeks ago would be dispatched the moment anyone
+# looked at it.
+ASSUMED_DURATION = timedelta(hours=1)
 
 
 def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
@@ -143,32 +132,38 @@ def wants_capture(db: Session, meeting: Meeting) -> bool:
 def _skip(db: Session, meeting: Meeting, reason: str) -> None:
     meeting.status = STATUS_SKIPPED
     meeting.status_reason = reason
-    db.flush()
+    db.commit()
 
 
 def dispatch_tenant(
     db: Session, tenant_id: str, *, now: Optional[datetime] = None
-) -> DispatchResult:
-    """One tick for one tenant. Returns what it did."""
+) -> List[str]:
+    """One tick for one tenant. Returns the meeting ids it dispatched.
+
+    Every decision is COMMITTED as it is made, not flushed and committed once at
+    the end. The rollback that isolates a failing meeting would otherwise undo
+    every skip already decided in the same pass, putting those meetings back to
+    ``scheduled`` for the next tick to decide again - forever, while the bad one
+    kept failing."""
     from app.jobs.service import JobService
 
     now = now or datetime.now(timezone.utc)
-    result = DispatchResult()
+    dispatched: List[str] = []
     service = JobService(db)
 
     for meeting in due_meetings(db, tenant_id, now):
-        ends_at = _as_utc(meeting.ends_at)
         starts_at = _as_utc(meeting.starts_at) or now
+        # A calendar event can arrive with no end; assume an hour rather than
+        # treat it as a meeting that never finishes.
+        ends_at = _as_utc(meeting.ends_at) or (starts_at + ASSUMED_DURATION)
         try:
-            if ends_at is not None and ends_at < now:
+            if ends_at < now:
                 # Already over. Joining now would record an empty room and then
                 # report it as a successful capture.
                 _skip(db, meeting, REASON_MISSED)
-                result.skipped.append(meeting.id)
                 continue
             if not wants_capture(db, meeting):
                 _skip(db, meeting, REASON_OPTED_OUT)
-                result.skipped.append(meeting.id)
                 continue
 
             late = starts_at < now - LATE_AFTER
@@ -188,14 +183,13 @@ def dispatch_tenant(
                 },
             )
             enqueue_bot_run(db, job.id)
-            result.dispatched.append(meeting.id)
-        except Exception as exc:  # noqa: BLE001 - one meeting never breaks the tick
+            db.commit()
+            dispatched.append(meeting.id)
+        except Exception:  # noqa: BLE001 - one meeting never breaks the tick
             logger.exception("meetings bot dispatch failed for %s", meeting.id)
             db.rollback()
-            result.errors.append(f"{meeting.id}: {exc}")
 
-    db.commit()
-    return result
+    return dispatched
 
 
 def enqueue_bot_run(db: Session, job_id: str) -> None:
@@ -224,7 +218,7 @@ def dispatch_due_bot_runs(db: Session, *, now: Optional[datetime] = None) -> int
     dispatched = 0
     for tenant_id in jobs_module.active_tenants(db):
         try:
-            dispatched += len(dispatch_tenant(db, tenant_id, now=now).dispatched)
+            dispatched += len(dispatch_tenant(db, tenant_id, now=now))
         except Exception:  # noqa: BLE001 - one tenant never breaks the tick
             logger.exception("meetings bot dispatch tick failed for %s", tenant_id)
             db.rollback()

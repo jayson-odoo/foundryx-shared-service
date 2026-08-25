@@ -8,15 +8,11 @@ row is where the override lives: ``calendar_address_for`` is the one definition
 the sync and the connection test both read, so the two can never disagree about
 what the service account is supposed to be able to see.
 """
-import re
 from typing import Any, List, Optional
 
 from sqlalchemy.orm import Session
 
 from ..models import UserOptIn
-
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
 
 def calendar_address_for(opt_in: Any, user: Any) -> Optional[str]:
     """The calendar address to read for this user.
@@ -32,8 +28,11 @@ def calendar_address_for(opt_in: Any, user: Any) -> Optional[str]:
 
 
 def opted_in_calendars(db: Optional[Session], tenant_id: Optional[str]) -> List[str]:
-    """Every opted-in user's calendar address for this tenant, deduped, in a
-    stable order. What the shared-calendar connection test probes."""
+    """Every opted-in user's calendar address for this tenant, deduped, sorted.
+
+    Sorted by ADDRESS, not by ``user_id``: the ids are uuids, so ordering by
+    them is effectively random and the connection test would list the same
+    calendars in a different order on every run."""
     if db is None or not tenant_id:
         return []
     from app.models.user import User
@@ -52,12 +51,12 @@ def opted_in_calendars(db: Optional[Session], tenant_id: Optional[str]) -> List[
         .filter(User.tenant_id == tenant_id, User.id.in_([r.user_id for r in rows]))
         .all()
     }
-    out: List[str] = []
-    for row in rows:
-        address = calendar_address_for(row, users.get(row.user_id))
-        if address and address not in out:
-            out.append(address)
-    return out
+    out = {
+        address
+        for row in rows
+        if (address := calendar_address_for(row, users.get(row.user_id)))
+    }
+    return sorted(out)
 
 
 class OptInService:

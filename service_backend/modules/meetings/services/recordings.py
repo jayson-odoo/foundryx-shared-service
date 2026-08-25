@@ -14,7 +14,6 @@ the tenant's "Meetings" folder - spine M19: reuse core, do not add a table.
 from __future__ import annotations
 
 import logging
-import os
 import re
 import shutil
 import subprocess
@@ -56,8 +55,6 @@ class Artifacts(Protocol):
 class LocalArtifacts:
     """A bind-mounted directory on the worker host (the pilot's target)."""
 
-    kind = "local"
-
     def __init__(self, root: Path):
         self.root = Path(root)
 
@@ -81,8 +78,6 @@ class LocalArtifacts:
 
 class S3Artifacts:
     """An S3/R2 prefix the container uploaded to through the tenant's bucket."""
-
-    kind = "s3"
 
     def __init__(self, adapter, bucket: str, prefix: str):
         self.adapter = adapter
@@ -200,7 +195,13 @@ def register_recording(
     recorded nothing at all.
 
     The segments are deleted only AFTER the joined file is safely stored: losing
-    the source to a failed upload would lose the meeting."""
+    the source to a failed upload would lose the meeting - which is also why
+    deletion is best-effort, and therefore why this has to be idempotent: a job
+    redelivered after a failed delete would otherwise find the segments still
+    there and register a SECOND recording over the first."""
+    if meeting.recording_file_id:
+        return meeting.recording_file_id
+
     names = segment_names(artifacts)
     if not names:
         return None

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import signal
 from contextlib import contextmanager
@@ -55,8 +56,8 @@ logger = logging.getLogger("foundryx.meetings")
 DEFAULT_BOT_IMAGE = "foundryx-shared-service:bot-spike"
 DEFAULT_DISPLAY_NAME = "Notetaker"
 
-# The bot's own exit words (see ``bot/__main__.py``).
-FINISHED_REASONS = ("room_empty", "removed", "ended", "max_duration", "stopped")
+# The two exit words that mean the bot never got into the room (see
+# ``bot/__main__.py``). Every other zero exit is a finished call.
 NOT_ADMITTED_REASONS = ("not_admitted", "denied")
 
 # A live event that moves the meeting on while the call is still running.
@@ -120,8 +121,8 @@ def bot_image() -> str:
 # ── per-tenant inputs ─────────────────────────────────────────────────────────
 
 
-def bot_credentials(db: Session, tenant_id: str) -> Tuple[str, str, Optional[str]]:
-    """The tenant's notetaker email + password + display-name override.
+def bot_credentials(db: Session, tenant_id: str) -> Tuple[str, str]:
+    """The tenant's notetaker email and password.
 
     Raises ``BotRunError`` rather than running a bot that cannot sign in - a
     container that fails to log in burns a meeting and reports a confusing
@@ -151,7 +152,7 @@ def bot_credentials(db: Session, tenant_id: str) -> Tuple[str, str, Optional[str
     password = str(credentials.get("password") or "")
     if not email or not password:
         raise BotRunError("The notetaker account is missing an email or password.")
-    return email, password, (str(config.get("displayNameOverride") or "").strip() or None)
+    return email, password
 
 
 def storage_connection(db: Session, tenant_id: str) -> Optional[Connection]:
@@ -208,16 +209,17 @@ def build_spec(db: Session, meeting: Meeting) -> Tuple[ContainerSpec, Artifacts]
     """The container for ONE meeting of ONE tenant."""
     from .settings import MeetingsSettingsService
 
-    email, password, name_override = bot_credentials(db, meeting.tenant_id)
+    email, password = bot_credentials(db, meeting.tenant_id)
     tenant_settings = MeetingsSettingsService(db).get(meeting.tenant_id)
     out_env, volumes, artifacts = build_output(db, meeting)
 
     environment = {
         "BOT_EMAIL": email,
         "BOT_PASSWORD": password,
-        "BOT_DISPLAY_NAME": (
-            tenant_settings.bot_display_name or name_override or DEFAULT_DISPLAY_NAME
-        ),
+        # ONE source for the display name: the module's tenant settings. The
+        # connection used to carry an override too, which meant two places to
+        # look and a silent winner between them.
+        "BOT_DISPLAY_NAME": tenant_settings.bot_display_name or DEFAULT_DISPLAY_NAME,
         "BOT_FOR_USER": _for_user(db, meeting),
         "BOT_HEADLESS": "1",
         **out_env,
@@ -288,9 +290,14 @@ def graceful_stop_on_sigterm(container):
     Celery's warm shutdown lets a running task finish, which for a meeting could
     be hours - so SIGTERM has to reach the container. ``docker stop`` sends the
     container its own SIGTERM, which the bot handles by LEAVING the call and
-    flushing its tail (AC-S2-10), so segments recorded so far survive. The
-    previous handler still runs afterwards: Celery's own shutdown must not be
-    swallowed by ours."""
+    flushing its tail (AC-S2-10), so segments recorded so far survive.
+
+    The shutdown then CONTINUES: the previous handler is restored and the signal
+    re-raised against it, so Celery's own warm shutdown is not swallowed by ours.
+    Calling ``previous`` directly is not enough - ``signal.SIG_DFL`` is the
+    integer 0 and is not callable, so the default "terminate" disposition would
+    have been silently dropped and the process would have gone on running until
+    something SIGKILLed it, which is exactly the 45 s the bot needs."""
     try:
         previous = signal.getsignal(signal.SIGTERM)
     except (ValueError, AttributeError):  # pragma: no cover - not the main thread
@@ -304,6 +311,11 @@ def graceful_stop_on_sigterm(container):
             logger.exception("meetings bot container could not be stopped gracefully")
         if callable(previous):
             previous(signum, frame)
+            return
+        # SIG_DFL / SIG_IGN: put the disposition back and let the signal do
+        # whatever it was always going to do.
+        signal.signal(signal.SIGTERM, previous)
+        os.kill(os.getpid(), signum)
 
     try:
         signal.signal(signal.SIGTERM, handler)
@@ -362,6 +374,24 @@ def _now_ts() -> float:
     return datetime.now(timezone.utc).timestamp()
 
 
+def _container_for(spec: ContainerSpec):
+    """This meeting's container, started or RE-ATTACHED. Returns
+    ``(container, reattached)``.
+
+    The queue is ``acks_late`` and the container name is fixed per meeting, so a
+    hard worker kill mid-meeting gets the job redelivered while the container is
+    STILL RECORDING. Starting a second one is a name conflict, and treating that
+    conflict as a failure stamped `failed` on a meeting that was going perfectly
+    well - and abandoned its recording. Attaching to what is already there
+    resumes the tail and the wait instead."""
+    client = docker_client()
+    try:
+        return client.containers.get(spec.name), True
+    except Exception:  # noqa: BLE001 - "not found" is the normal first delivery
+        pass
+    return client.containers.run(**spec.as_kwargs()), False
+
+
 def run_bot(db: Session, job: BackgroundJob) -> None:
     """Handler for ``meetings.bot_run`` - one meeting, start to finish."""
     from app.jobs.service import JobService
@@ -382,21 +412,28 @@ def run_bot(db: Session, job: BackgroundJob) -> None:
 
     try:
         spec, artifacts = build_spec(db, meeting)
-    except BotRunError as exc:
-        _fail(db, service, job, meeting, str(exc), artifacts=None)
+    except Exception as exc:  # noqa: BLE001 - see below
+        # NOT just BotRunError. A meeting leaves `scheduled` exactly once, so
+        # anything that escapes this leaves it in `joining` forever: dispatch
+        # never looks at it again and nobody is ever told why. A storage
+        # connection whose credentials no longer decrypt raises InvalidToken
+        # from a different layer entirely.
+        _fail(db, service, job, meeting, f"The bot could not be prepared: {exc}", None)
         return
 
     if payload.get("late"):
         service.log(job, "the meeting had already started when the bot was dispatched")
 
     try:
-        client = docker_client()
-        container = client.containers.run(**spec.as_kwargs())
+        container, reattached = _container_for(spec)
     except Exception as exc:  # noqa: BLE001 - no container means no run
-        _fail(db, service, job, meeting, f"The bot container could not start: {exc}", None)
+        _fail(db, service, job, meeting, f"The bot container could not start: {exc}", artifacts)
         return
 
-    service.log(job, f"started {spec.name} from {spec.image}")
+    service.log(
+        job,
+        f"{'re-attached to' if reattached else 'started'} {spec.name} from {spec.image}",
+    )
     try:
         with graceful_stop_on_sigterm(container):
             reason, started_ts, finished_ts = follow(db, meeting, container)

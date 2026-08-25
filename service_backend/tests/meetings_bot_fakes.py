@@ -32,11 +32,24 @@ class FakeContainer:
         self.stopped_with = timeout
 
 
+class NotFound(Exception):
+    """What ``docker.errors.NotFound`` is, for our purposes."""
+
+
 class FakeContainers:
     def __init__(self, container: FakeContainer, fail_with: Optional[Exception] = None):
         self._container = container
         self._fail_with = fail_with
         self.runs: List[Dict] = []
+        # Containers that ALREADY exist under a given name - the redelivered-task
+        # case, where a container from the first delivery is still recording.
+        self.existing: Dict[str, FakeContainer] = {}
+
+    def get(self, name: str):
+        try:
+            return self.existing[name]
+        except KeyError:
+            raise NotFound(name) from None
 
     def run(self, **kwargs):
         self.runs.append(kwargs)
@@ -57,6 +70,10 @@ class FakeDocker:
     ):
         self.containers = FakeContainers(container or FakeContainer([]), run_error)
         self._info_error = info_error
+
+    @property
+    def existing(self):
+        return self.containers.existing
 
     def info(self) -> dict:
         if self._info_error is not None:

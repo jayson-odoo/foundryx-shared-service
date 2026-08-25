@@ -23,15 +23,11 @@ from .calendar.google_dwd import (
     probe_calendar,
     service_account_email,
 )
-from .services.optin import opted_in_calendars
 
 GOOGLE_DWD_PROVIDER = "google_dwd"
 GOOGLE_DWD_TYPE = "calendar"
 MEET_BOT_PROVIDER = "meet_bot"
 MEET_BOT_TYPE = "meeting_bot"
-
-# How many calendars the shared-mode Test names before it stops listing.
-_PROBE_LIMIT = 10
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -153,6 +149,11 @@ class GoogleDwdProvider:
         appear in that account's list at all (verified against a real key - it
         came back empty while ``events.list`` on the same address worked), so
         listing would report "no calendars" for a correctly shared one."""
+        # Imported HERE, not at module scope: this adapter is loaded at boot to
+        # register the provider, and an adapter must not drag the domain service
+        # in with it.
+        from .services.optin import opted_in_calendars
+
         address = service_account_email(key) or "the service account"
         calendars = opted_in_calendars(db, tenant_id)
         if not calendars:
@@ -165,7 +166,10 @@ class GoogleDwdProvider:
             )
         readable: List[str] = []
         failures: List[str] = []
-        for calendar_id in calendars[:_PROBE_LIMIT]:
+        # EVERY calendar, not a slice: a capped probe would answer ok while the
+        # eleventh person's calendar had never been shared, and their meetings
+        # would silently never be captured.
+        for calendar_id in calendars:
             try:
                 probe_calendar(service_account_json=key, calendar_id=calendar_id)
             except CalendarSourceError as exc:
@@ -225,14 +229,6 @@ class MeetBotProvider:
                 "type": "password",
                 "required": True,
                 "secret": True,
-            },
-            {
-                "key": "displayNameOverride",
-                "label": "Display name",
-                "type": "text",
-                "required": False,
-                "advanced": True,
-                "placeholder": "Notetaker",
             },
         ]
 

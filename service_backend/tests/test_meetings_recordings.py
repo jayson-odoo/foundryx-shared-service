@@ -240,3 +240,24 @@ def test_an_empty_output_directory_is_not_an_error(tmp_path):
     from modules.meetings.services.recordings import LocalArtifacts
 
     assert LocalArtifacts(tmp_path / "never-created").names() == []
+
+
+def test_registering_twice_leaves_one_file(db, storage):
+    """Segment deletion is best-effort (a bucket hiccup only warns), so a job
+    that is retried or redelivered would find the segments still there and
+    register a SECOND recording over the first. The meeting already pointing at
+    a file is the guard."""
+    from app.models.document import File
+    from modules.meetings.services.recordings import register_recording
+
+    meeting = _meeting(db)
+    artifacts = FakeArtifacts({"audio_0000.ogg": _opus(0.3)})
+
+    first = register_recording(db, meeting, artifacts)
+    # The delete "failed": the segment is still on the store.
+    artifacts.blobs["audio_0000.ogg"] = _opus(0.3)
+    second = register_recording(db, meeting, artifacts)
+    db.commit()
+
+    assert first == second
+    assert db.query(File).count() == 1

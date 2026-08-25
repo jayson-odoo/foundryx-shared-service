@@ -38,12 +38,18 @@ def _demo_user(session):
     return session.query(User).filter(User.email == ACTIVE_EMAIL).one()
 
 
+# "not given" is not the same as "the calendar gave no end time", and a helper
+# that conflates them silently stopped the NULL-ends_at test from testing
+# anything at all.
+_UNSET = object()
+
+
 def _meeting(
     db,
     *,
     tenant_id=DEFAULT_TENANT_ID,
     starts_at=None,
-    ends_at=None,
+    ends_at=_UNSET,
     url=MEET_URL,
     status=STATUS_SCHEDULED,
     title="Weekly product sync",
@@ -58,7 +64,7 @@ def _meeting(
         conference_url=url,
         platform="meet",
         starts_at=starts_at,
-        ends_at=ends_at if ends_at is not None else starts_at + timedelta(hours=1),
+        ends_at=starts_at + timedelta(hours=1) if ends_at is _UNSET else ends_at,
         status=status,
     )
     db.add(row)
@@ -122,10 +128,15 @@ def _bot_jobs(db, tenant_id=DEFAULT_TENANT_ID):
 @pytest.fixture(autouse=True)
 def no_inline_run(monkeypatch):
     """Dispatch is what is under test, not the run. Eager mode would otherwise
-    execute the bot handler inline and reach for Docker."""
+    execute the bot handler inline and reach for Docker.
+
+    Hands the REAL function back, so the two tests that are about the enqueue
+    seam itself can call it without the fixture standing in their way."""
     from modules.meetings.services import dispatch as dispatch_module
 
+    original = dispatch_module.enqueue_bot_run
     monkeypatch.setattr(dispatch_module, "enqueue_bot_run", lambda db, job_id: None)
+    return original
 
 
 # ── AC-S2-1: the happy path, exactly once ────────────────────────────────────
@@ -136,9 +147,9 @@ def test_a_meeting_about_to_start_gets_exactly_one_bot(db):
 
     meeting, _ = _ready_meeting(db)
 
-    result = dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW)
+    dispatched = dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW)
 
-    assert result.dispatched == [meeting.id]
+    assert dispatched == [meeting.id]
     jobs = _bot_jobs(db)
     assert len(jobs) == 1
     assert jobs[0].payload_json["meeting_id"] == meeting.id
@@ -156,7 +167,7 @@ def test_a_second_tick_does_not_dispatch_it_again(db):
     dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW)
     second = dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW + timedelta(seconds=60))
 
-    assert second.dispatched == []
+    assert second == []
     assert len(_bot_jobs(db)) == 1
 
 
@@ -166,7 +177,7 @@ def test_a_meeting_further_out_than_the_lead_is_left_alone(db):
 
     meeting, _ = _ready_meeting(db, starts_at=NOW + timedelta(hours=1))
 
-    assert dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW).dispatched == []
+    assert dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW) == []
     db.refresh(meeting)
     assert meeting.status == STATUS_SCHEDULED
 
@@ -184,9 +195,7 @@ def test_a_meeting_everyone_opted_out_of_is_skipped(db):
     _calendar_row(db, meeting, user, opted_out=True)
     db.commit()
 
-    result = dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW)
-
-    assert result.skipped == [meeting.id]
+    assert dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW) == []
     assert _bot_jobs(db) == []
     db.refresh(meeting)
     assert meeting.status == STATUS_SKIPPED
@@ -353,9 +362,9 @@ def test_five_meetings_in_one_minute_all_get_a_job(db):
         _calendar_row(db, meeting, user, external_id=f"g{index}")
     db.commit()
 
-    result = dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW)
+    dispatched = dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW)
 
-    assert len(result.dispatched) == 5
+    assert len(dispatched) == 5
     jobs = _bot_jobs(db)
     assert len(jobs) == 5
     assert {j.status for j in jobs} == {"pending"}
@@ -392,3 +401,124 @@ def test_the_beat_tick_covers_every_tenant_with_the_module(db):
 
     assert dispatch_due_bot_runs(db, now=NOW) == 1
     assert len(_bot_jobs(db)) == 1
+
+
+# ── review round: one bad meeting must not undo the tick's earlier decisions ─
+
+
+def test_a_meeting_that_blows_up_does_not_undo_an_earlier_skip(db, monkeypatch):
+    """The tick used to flush every decision and commit ONCE at the end, so the
+    rollback that isolates a failing meeting also threw away every `skipped`
+    already decided in that pass. Those meetings went back to `scheduled` and
+    the next tick re-decided them - forever, if the bad one kept failing."""
+    from modules.meetings.services import dispatch as dispatch_module
+
+    user = _demo_user(db)
+    opt_in(db, DEFAULT_TENANT_ID, user.id)
+
+    # First by start time: nobody wants it, so it is skipped.
+    skipped = _meeting(
+        db, starts_at=NOW, url="https://meet.google.com/aaa-aaaa-aa1", title="Skip me"
+    )
+    _participant(db, skipped, user)
+    _calendar_row(db, skipped, user, opted_out=True, external_id="g-skip")
+
+    # Second: it will explode on the way to being dispatched.
+    boom = _meeting(
+        db,
+        starts_at=NOW + timedelta(seconds=30),
+        url="https://meet.google.com/bbb-bbbb-bb2",
+        title="Boom",
+    )
+    _participant(db, boom, user)
+    _calendar_row(db, boom, user, external_id="g-boom")
+    db.commit()
+
+    real_wants = dispatch_module.wants_capture
+
+    def explode(db_, m):
+        if m.id == boom.id:
+            raise RuntimeError("the database went away mid-tick")
+        return real_wants(db_, m)
+
+    monkeypatch.setattr(dispatch_module, "wants_capture", explode)
+
+    dispatch_module.dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW)
+
+    db.expire_all()
+    assert db.query(Meeting).filter(Meeting.id == skipped.id).one().status == STATUS_SKIPPED
+
+
+def test_a_meeting_with_no_end_time_is_not_dispatched_weeks_later(db):
+    """`ends_at` is nullable (a calendar event can arrive without one), and the
+    missed guard skipped the check entirely when it was NULL - so a meeting from
+    three weeks ago sat `scheduled` and got dispatched `late` the moment the
+    module was installed. Treat a missing end as one hour after the start."""
+    from modules.meetings.services.dispatch import REASON_MISSED, dispatch_tenant
+
+    meeting, _ = _ready_meeting(
+        db, starts_at=NOW - timedelta(days=21), ends_at=None
+    )
+
+    dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW)
+
+    assert _bot_jobs(db) == []
+    db.refresh(meeting)
+    assert meeting.status == STATUS_SKIPPED
+    assert meeting.status_reason == REASON_MISSED
+
+
+def test_a_meeting_with_no_end_time_starting_now_is_still_dispatched(db):
+    """The other side of the same guard: an open-ended meeting about to start is
+    a normal meeting."""
+    from modules.meetings.services.dispatch import dispatch_tenant
+
+    meeting, _ = _ready_meeting(db, starts_at=NOW + timedelta(minutes=1), ends_at=None)
+
+    dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW)
+
+    assert len(_bot_jobs(db)) == 1
+    db.refresh(meeting)
+    assert meeting.status == STATUS_JOINING
+
+
+# ── review round: the enqueue seam itself ────────────────────────────────────
+
+
+def test_enqueue_bot_run_runs_the_job_inline_under_eager(db, monkeypatch, no_inline_run):
+    """Every other test patches this out, so the one line that decides whether a
+    bot ever runs had no coverage at all. Under eager config it must run the job
+    on THIS session - the Celery eager path would open a second one that no test
+    (and no dev server) can see."""
+    from app.jobs.service import JobService
+    from modules.meetings.jobs import BOT_RUN
+
+    ran = []
+    monkeypatch.setattr(
+        "app.jobs.service.run_job", lambda session, job_id: ran.append((session, job_id))
+    )
+
+    job = JobService(db).create(type=BOT_RUN, tenant_id=DEFAULT_TENANT_ID, payload={})
+    no_inline_run(db, job.id)
+
+    assert ran == [(db, job.id)]
+
+
+def test_enqueue_bot_run_publishes_to_the_bots_queue_when_not_eager(
+    db, monkeypatch, no_inline_run
+):
+    """And with a real worker it publishes rather than running inline - onto the
+    meetings app, whose default queue is `bots`, never the app server's."""
+    from app.config import settings
+    from modules.meetings import worker as worker_module
+
+    published = []
+    monkeypatch.setattr(settings, "celery_task_always_eager", False)
+    monkeypatch.setattr(
+        worker_module.run_bot_job, "delay", lambda job_id: published.append(job_id)
+    )
+
+    no_inline_run(db, "job-123")
+
+    assert published == ["job-123"]
+    assert worker_module.celery_app.conf.task_default_queue == "bots"

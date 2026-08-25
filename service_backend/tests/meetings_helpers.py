@@ -95,9 +95,9 @@ class FakeCalendarSource:
     ``SyncTokenInvalid`` (Google's HTTP 410), which is what the fallback path
     must recover from. ``calls`` records every read for assertions.
 
-    **A read that asks for an order gets NO sync token.** Google drops
-    ``nextSyncToken`` from any response carrying an ``orderBy`` - which is why
-    the adapter never sends one.
+    Google also drops ``nextSyncToken`` from any response carrying an
+    ``orderBy``, which is why the adapter never sends one - guarded where that
+    parameter is actually built, in ``test_meetings_shared_calendar.py``.
 
     **A tokenless read never yields a cancelled event.** ``events.list`` defaults
     to ``showDeleted=false``, so a full-window read simply OMITS an event the
@@ -127,7 +127,6 @@ class FakeCalendarSource:
         sync_token: Optional[str] = None,
         time_min: Optional[datetime] = None,
         time_max: Optional[datetime] = None,
-        order_by: Optional[str] = None,
     ) -> SyncPage:
         self.calls.append(
             {
@@ -135,7 +134,6 @@ class FakeCalendarSource:
                 "sync_token": sync_token,
                 "time_min": time_min,
                 "time_max": time_max,
-                "order_by": order_by,
             }
         )
         if self._error_for == user_email:
@@ -145,17 +143,12 @@ class FakeCalendarSource:
             raise SyncTokenInvalid("Sync token is no longer valid")
         queue = self._pages.get(user_email) or [SyncPage()]
         page = queue.pop(0) if len(queue) > 1 else queue[0]
-        # Google drops nextSyncToken from ANY response that carries an orderBy
-        # (verified against a real calendar). Mirroring that here is what stops a
-        # future change quietly reintroducing orderBy and losing incremental
-        # sync: the token tests go red instead.
-        token = None if order_by else page.next_sync_token
         if sync_token:
-            return SyncPage(events=page.events, next_sync_token=token)
+            return page
         # showDeleted defaults false: a full read omits cancellations entirely.
         return SyncPage(
             events=[e for e in page.events if not e.cancelled],
-            next_sync_token=token,
+            next_sync_token=page.next_sync_token,
         )
 
 

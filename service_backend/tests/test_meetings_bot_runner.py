@@ -516,12 +516,13 @@ def test_sigterm_stops_the_container_the_polite_way_and_lets_celery_shut_down():
 
     container = FakeContainer([])
     delegated = []
-    previous = signal.signal(signal.SIGTERM, lambda *a: delegated.append(a))
+    previous_handler = lambda *a: delegated.append(a)  # noqa: E731 - identity matters
+    previous = signal.signal(signal.SIGTERM, previous_handler)
     try:
         with graceful_stop_on_sigterm(container):
             signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
-        # The handler is put back, so a later shutdown is Celery's alone.
-        assert signal.getsignal(signal.SIGTERM) is not None
+        # The handler is put back EXACTLY, so a later shutdown is Celery's alone.
+        assert signal.getsignal(signal.SIGTERM) is previous_handler
     finally:
         signal.signal(signal.SIGTERM, previous)
 
@@ -624,10 +625,165 @@ def test_the_boot_check_runs_as_a_bootstep_not_a_signal():
     ], "the boot check must not be a signal handler - celery swallows those"
 
 
-def test_the_bootstep_is_only_built_by_a_real_worker(db):
-    """The app server imports this module just to PUBLISH a bot run, so it must
-    never need a Docker socket to do it."""
-    import modules.meetings.worker as worker_module
+# ── review round: failures that must not strand a meeting in `joining` ───────
 
-    # Importing the module has already happened; nothing has run a check.
-    assert worker_module.celery_app.conf.task_default_queue == "bots"
+
+def test_any_setup_failure_marks_the_meeting_failed_not_just_a_known_one(db, monkeypatch):
+    """A meeting only leaves `scheduled` once, so anything that escapes here
+    strands it in `joining` FOREVER - dispatch never looks at it again and no
+    human ever sees why. `BotRunError` was only the failure we thought of; a
+    storage connection whose credentials no longer decrypt raises `InvalidToken`
+    from a completely different layer."""
+    from cryptography.fernet import InvalidToken
+
+    from modules.meetings.services import bot_runner
+
+    meeting = _prepare(db)
+    docker = FakeDocker(FakeContainer([]))
+    monkeypatch.setattr(bot_runner, "docker_client", lambda: docker)
+
+    def boom(db_, m):
+        raise InvalidToken("stored storage credentials are unreadable")
+
+    monkeypatch.setattr(bot_runner, "build_output", boom)
+
+    job = _job(db, meeting)
+    bot_runner.run_bot(db, job)
+
+    db.refresh(meeting)
+    db.refresh(job)
+    assert docker.containers.runs == []
+    assert meeting.status == STATUS_FAILED
+    assert meeting.status != STATUS_JOINING
+    assert "could not be prepared" in (meeting.status_reason or "")
+    assert job.status == "failed"
+
+
+# ── review round: a redelivered task must not kill a live container ──────────
+
+
+def test_a_redelivered_task_reattaches_to_the_container_already_running(db, monkeypatch):
+    """``task_acks_late`` plus a fixed container name is a live hazard: kill the
+    worker mid-meeting and Celery redelivers the job while the container is
+    STILL RECORDING. Calling ``containers.run`` again hits Docker's name
+    conflict, and the old code turned that into `failed` on a meeting that was
+    going perfectly well. Re-attach instead."""
+    from modules.meetings.services import bot_runner
+
+    meeting = _prepare(db)
+    existing = FakeContainer(bot_stdout(reason="room_empty"), exit_code=0)
+    docker = FakeDocker(FakeContainer([]))
+    docker.existing[f"meetings-bot-{meeting.id}"] = existing
+    monkeypatch.setattr(bot_runner, "docker_client", lambda: docker)
+    real_build = bot_runner.build_spec
+    artifacts = FakeArtifacts({"audio_0000.ogg": OGG})
+    monkeypatch.setattr(
+        bot_runner, "build_spec", lambda db_, m: (real_build(db_, m)[0], artifacts)
+    )
+
+    job = _job(db, meeting)
+    bot_runner.run_bot(db, job)
+    db.refresh(meeting)
+
+    # It attached to the running container and never tried to start a second.
+    assert docker.containers.runs == []
+    assert existing.waited is True
+    assert meeting.status == STATUS_READY
+
+
+def test_a_first_delivery_still_starts_a_container(db, monkeypatch):
+    """The other branch: nothing of that name exists, so one is started."""
+    from modules.meetings.services import bot_runner
+
+    meeting = _prepare(db)
+    _run(
+        db,
+        monkeypatch,
+        meeting,
+        lines=bot_stdout(reason="room_empty"),
+        artifacts=FakeArtifacts({"audio_0000.ogg": OGG}),
+    )
+
+    assert meeting.status == STATUS_READY
+
+
+# ── review round: SIGTERM must actually terminate the process ────────────────
+
+
+def test_sigterm_still_terminates_when_the_previous_handler_was_the_default():
+    """``signal.SIG_DFL`` is the integer 0, so ``if callable(previous)`` skipped
+    it - the process stopped its containers and then carried on running, which
+    on a real shutdown means the supervisor eventually SIGKILLs it and the bot
+    never gets its 45 s. Re-raise the signal against the restored handler."""
+    import os
+
+    from modules.meetings.services.bot_runner import graceful_stop_on_sigterm
+
+    container = FakeContainer([])
+    killed = {}
+    real_kill = os.kill
+
+    def fake_kill(pid, sig):
+        killed["pid"], killed["sig"] = pid, sig
+
+    previous = signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    try:
+        import modules.meetings.services.bot_runner as runner
+
+        runner.os.kill = fake_kill
+        try:
+            with graceful_stop_on_sigterm(container):
+                signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+        finally:
+            runner.os.kill = real_kill
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+    assert container.stopped_with is not None
+    assert killed == {"pid": os.getpid(), "sig": signal.SIGTERM}
+
+
+def test_the_previous_sigterm_handler_is_put_back_exactly():
+    """Not "is not None" - that passes even when the handler was left as ours."""
+    from modules.meetings.services.bot_runner import graceful_stop_on_sigterm
+
+    marker = lambda *a: None  # noqa: E731 - identity is the whole assertion
+    previous = signal.signal(signal.SIGTERM, marker)
+    try:
+        with graceful_stop_on_sigterm(FakeContainer([])):
+            assert signal.getsignal(signal.SIGTERM) is not marker
+        assert signal.getsignal(signal.SIGTERM) is marker
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+# ── review round: the bootstep really carries the checks ─────────────────────
+
+
+def test_the_bootstep_runs_the_docker_check_when_a_worker_builds_it():
+    """Asserting the queue name proves nothing about AC-S2-14. Build the
+    bootstep the way a worker does and watch it reject an unreachable daemon."""
+    from modules.meetings.worker import BootChecks, WorkerBootError, celery_app
+
+    assert BootChecks in celery_app.steps["worker"]
+
+    class FakeAmqp:
+        queues = {"bots": object()}
+
+    class FakeApp:
+        amqp = FakeAmqp()
+        steps = {"worker": set()}
+
+    class FakeParent:
+        app = FakeApp()
+
+    import modules.meetings.services.bot_runner as runner
+
+    real = runner.docker_client
+    runner.docker_client = lambda: FakeDocker(info_error=RuntimeError("socket missing"))
+    try:
+        with pytest.raises(WorkerBootError) as excinfo:
+            BootChecks(FakeParent())
+        assert "socket missing" in str(excinfo.value)
+    finally:
+        runner.docker_client = real

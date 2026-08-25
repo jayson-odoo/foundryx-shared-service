@@ -48,7 +48,6 @@ def list_bot_runs(
     from ..jobs import BOT_RUN
 
     now = now or datetime.now(timezone.utc)
-    days = max(1, min(int(days or DEFAULT_DAYS), MAX_DAYS))
     cutoff = now - timedelta(days=days)
 
     jobs = (

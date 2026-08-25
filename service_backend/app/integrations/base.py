@@ -58,6 +58,11 @@ class IntegrationProvider(Protocol):
     test_label: str  # CTA for the optional targeted test
     # None = connection check only; else {"label", "placeholder"}.
     test_target: Optional[Dict[str, str]]
+    # True = this provider's `test` needs the caller's session and tenant, and
+    # IntegrationService passes them as `db=` / `tenant_id=` keywords. Absent or
+    # False (the default for every provider) = the three-argument call below.
+    # Only a test that must READ the tenant's own rows should opt in.
+    test_needs_context: bool
 
     def fields(self) -> List[Dict[str, Any]]:
         """Config schema rows (key/label/type/required/secret/…) for the wizard."""
