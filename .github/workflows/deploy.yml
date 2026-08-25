@@ -26,10 +26,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: No emdash / en-dash punctuation in tracked files
         run: |
-          if git grep -I -n $'\xe2\x80\x94\|\xe2\x80\x93'; then
-            echo "::error::Found an em dash (U+2014) or en dash (U+2013) - use a plain hyphen instead. See PRINCIPLES.md."
-            exit 1
+          fail=0
+          if git grep -I -n $'\xe2\x80\x94'; then
+            echo "::error::Found an em dash (U+2014) - use a plain hyphen instead. See PRINCIPLES.md."
+            fail=1
           fi
+          if git grep -I -n $'\xe2\x80\x93'; then
+            echo "::error::Found an en dash (U+2013) - use a plain hyphen instead. See PRINCIPLES.md."
+            fail=1
+          fi
+          exit $fail
       - name: Brand spelling has no capital X after Foundry
         run: |
           # 'Foundry[X]' so this script never matches itself; TokensStudio
