@@ -1,6 +1,6 @@
 # EMS Development Governance & App Certification Framework
 
-Because the Foundryx EMS is designed as a Platform-as-a-Service (PaaS) with an internal App Store, strict development governance is mandatory. Any future developer (internal hires or third-party agencies) building a custom module MUST adhere to this framework. 
+Because the Foundryx EMS is designed as a Platform-as-a-Service (PaaS) with an internal App Store, strict development governance is mandatory. Any future developer (internal hires or third-party agencies) building a custom module MUST adhere to this framework.
 
 Modules that fail to comply with these rules will be rejected by the system's App Store installer to prevent core system corruption.
 

@@ -113,7 +113,7 @@ Every list/form in the system is built on the **config-driven Resource shell** i
 - **Backend per entity:** Pydantic schemas expose **camelCase** (`Field(validation_alias="snake_case")` + `from_attributes`); recursive filter goes through a **whitelisted** translator (never arbitrary columns); every repository query is tenant-scoped.
 
 ### Design system (Foundryx brand)
-- **Tokens:** `css/foundryx-tokens.css` - imported AFTER `config.reui.css` so Foundryx values win over Metronic defaults. Primary brand = **orange `#FF5A00`** (`--primary`). Source of truth = `documentation/ui_ux/Foundryx-{Light,Dark}.TokensStudio.json` (Figma Tokens Studio export).
+- **Tokens:** `css/foundryx-tokens.css` - imported AFTER `config.reui.css` so Foundryx values win over Metronic defaults. Primary brand = **orange `#FF5A00`** (`--primary`). Source of truth = `documentation/ui_ux/FoundryX-{Light,Dark}.TokensStudio.json` (Figma Tokens Studio export; filenames are a sanctioned legacy exception).
 - **Fonts:** Poppins (display - `font-heading` utility) + Inter (body, default `font-sans`), both via `next/font/google` in `app/layout.tsx`.
 - **Figma → code:** designs pulled via the Figma REST API (`/v1/files/<key>/nodes`, `/v1/images` for PNG/SVG export). The Metronic file key is `fPQB8IuZ76vLaHOjMQqsfA`; brand assets land in `public/media/foundryx/`. Build UI from the Figma frame, not guesswork.
 - Governance reminder: Metronic utility classes only - **no `<style>` tags, no raw CSS** (the old `branded.tsx` `<style>` block was removed for this reason).

@@ -103,7 +103,7 @@ jobs:
 
   build-and-deploy:
     name: Build, push, deploy (blue/green)
-    needs: [validate-backend, validate-frontend]
+    needs: [lint-conventions, validate-backend, validate-frontend]
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
