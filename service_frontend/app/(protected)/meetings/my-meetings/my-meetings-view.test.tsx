@@ -37,6 +37,8 @@ const events: MeetingsEvent[] = [
     startsAt: '2026-09-01T02:00:00Z',
     endsAt: '2026-09-01T03:00:00Z',
     optedOut: false,
+    meetingStatus: 'scheduled',
+    statusReason: null,
   },
   {
     id: 'evt-2',
@@ -49,6 +51,8 @@ const events: MeetingsEvent[] = [
     startsAt: '2026-09-02T02:00:00Z',
     endsAt: null,
     optedOut: true,
+    meetingStatus: 'not_admitted',
+    statusReason: 'denied: the host never let the notetaker in',
   },
 ];
 
@@ -253,5 +257,45 @@ describe('My meetings', () => {
     await waitFor(() =>
       expect(setOptIn).toHaveBeenLastCalledWith({ enabled: false, calendarEmail: null }),
     );
+  });
+
+  it('AC-S2-11: every row carries the meeting status as a badge', async () => {
+    const user = userEvent.setup();
+    render(<MyMeetingsView />);
+
+    const toggle = await screen.findByRole('switch', { name: 'Record my meetings' });
+    await waitFor(() => expect(toggle).not.toBeDisabled());
+    await user.click(toggle);
+
+    await screen.findByText('Weekly product sync');
+    expect(screen.getAllByText('Scheduled').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Not admitted').length).toBeGreaterThan(0);
+  });
+
+  it('AC-S2-11: a not-admitted row shows its reason, recoverable not truncated away', async () => {
+    const user = userEvent.setup();
+    render(<MyMeetingsView />);
+
+    const toggle = await screen.findByRole('switch', { name: 'Record my meetings' });
+    await waitFor(() => expect(toggle).not.toBeDisabled());
+    await user.click(toggle);
+
+    await screen.findByText('Vendor call');
+    // ClampedText renders the full text and makes the overflow recoverable;
+    // a bare `truncate` would have thrown the tail away (design mandate).
+    const reason = screen.getAllByText('denied: the host never let the notetaker in');
+    expect(reason.length).toBeGreaterThan(0);
+  });
+
+  it('AC-S2-11: a scheduled row shows no reason at all', async () => {
+    const user = userEvent.setup();
+    render(<MyMeetingsView />);
+
+    const toggle = await screen.findByRole('switch', { name: 'Record my meetings' });
+    await waitFor(() => expect(toggle).not.toBeDisabled());
+    await user.click(toggle);
+
+    await screen.findByText('Weekly product sync');
+    expect(screen.queryByText('opted_out')).not.toBeInTheDocument();
   });
 });

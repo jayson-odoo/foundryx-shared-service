@@ -31,8 +31,25 @@ const saveSettings = vi.fn(async (input: Partial<MeetingsSettings>) => {
   return settingsState.value;
 });
 
+vi.mock('next-auth/react', () => ({
+  useSession: () => ({ status: 'authenticated', data: { user: { timezone: 'UTC' } } }),
+}));
+
+vi.mock('@/hooks/use-view-preferences', () => ({
+  useViewPreferences: () => ({
+    isLoaded: true,
+    columnOrder: [],
+    columnVisibility: {},
+    columnSizing: {},
+    setColumnOrder: () => {},
+    setColumnVisibility: () => {},
+    setColumnSizing: () => {},
+  }),
+}));
+
 vi.mock('@/services/meetings-service', () => ({
   meetingsService: {
+    listBotRuns: vi.fn(async () => []),
     getOptIn: vi.fn(),
     setOptIn: vi.fn(),
     listEvents: vi.fn(),

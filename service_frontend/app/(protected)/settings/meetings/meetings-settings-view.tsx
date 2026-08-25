@@ -8,10 +8,11 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Badge } from '@/components/ui/badge';
 import { SearchSelect } from '@/components/platform/search-select';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { ResourceList } from '@/components/platform/resource-list';
+import { StatusBadge } from '@/components/platform/status-badge';
+import { CONNECTION_STATUS_REGISTRY } from '../integrations/components/connection-status';
 import { useCan } from '@/hooks/use-can';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useMeetingsBotRuns } from '@/hooks/use-meetings-bot-runs';
@@ -20,7 +21,6 @@ import {
   useMeetingsConnections,
   type MeetingsProviderKey,
 } from '@/hooks/use-meetings-connections';
-import type { ConnectionStatus } from '@/types/integration';
 import { useBotRunsListConfig } from './use-bot-runs-list-config';
 
 const MINUTES_LANGUAGES = [
@@ -51,18 +51,6 @@ const CONNECTION_CARDS: { provider: MeetingsProviderKey; title: string }[] = [
 // The one card that also carries a value the operator has to hand out.
 const SERVICE_ACCOUNT_CARD: MeetingsProviderKey = 'google_dwd';
 
-const STATUS_TONE: Record<ConnectionStatus, 'success' | 'warning' | 'destructive'> = {
-  ACTIVE: 'success',
-  UNVERIFIED: 'warning',
-  ERROR: 'destructive',
-};
-
-const STATUS_LABEL: Record<ConnectionStatus, string> = {
-  ACTIVE: 'Connected',
-  UNVERIFIED: 'Not tested',
-  ERROR: 'Error',
-};
-
 /**
  * Settings → Meetings (S0 plan §4, AC-S0-4/5/14).
  *
@@ -80,9 +68,6 @@ export function MeetingsSettingsView() {
   const { runs, error: runsError } = useMeetingsBotRuns(7);
   const { timeZone, formatDateTime } = useDatetime();
   const botRunsConfig = useBotRunsListConfig(runs, { timeZone });
-  // AC-S2-12: the notetaker account stays UNVERIFIED until a bot really signs
-  // in; the first successful run stamps it ACTIVE with the time.
-  const botConnection = byProvider.meet_bot;
 
   const [minutesLanguage, setMinutesLanguage] = useState('en');
   const [audioRetentionDays, setAudioRetentionDays] = useState('90');
@@ -130,13 +115,11 @@ export function MeetingsSettingsView() {
                 <div className="flex flex-wrap items-center gap-3">
                   <span className="text-sm font-medium">{title}</span>
                   {connection && (
-                    <Badge
-                      variant={STATUS_TONE[connection.status]}
-                      appearance="light"
+                    <StatusBadge
+                      status={connection.status}
+                      registry={CONNECTION_STATUS_REGISTRY}
                       size="sm"
-                    >
-                      {STATUS_LABEL[connection.status]}
-                    </Badge>
+                    />
                   )}
                   {/* The address users share their calendar WITH. It comes off
                       the stored key's client_email; the key itself never
