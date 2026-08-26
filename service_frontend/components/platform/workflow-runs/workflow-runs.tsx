@@ -7,18 +7,12 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { FlaskConical } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { useDatetime } from '@/hooks/use-datetime';
-import { cn } from '@/lib/utils';
-import { workflowService } from '@/services/workflow-service';
 import type { WorkflowRunDetail, WorkflowRunListItem } from '@/types/workflows';
+import { cn } from '@/lib/utils';
+import { useDatetime } from '@/hooks/use-datetime';
+import { workflowService } from '@/services/workflow-service';
+import { Button } from '@/components/ui/button';
+import { SearchSelect } from '@/components/platform/search-select';
 import { RunReplay } from './run-replay';
 import { RunStatusBadge } from './run-status-badge';
 
@@ -44,7 +38,11 @@ export interface WorkflowRunsProps {
   reloadToken?: number;
 }
 
-export function WorkflowRuns({ workflowId, onDebugInEditor, reloadToken = 0 }: WorkflowRunsProps) {
+export function WorkflowRuns({
+  workflowId,
+  onDebugInEditor,
+  reloadToken = 0,
+}: WorkflowRunsProps) {
   const { formatDateTime } = useDatetime();
   const [rows, setRows] = useState<WorkflowRunListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -98,25 +96,30 @@ export function WorkflowRuns({ workflowId, onDebugInEditor, reloadToken = 0 }: W
   }, [page, workflowId, segment]);
 
   return (
-    <div className="flex items-start gap-4" data-testid="workflow-runs">
-      <aside className="w-72 shrink-0">
-        <Select value={segment} onValueChange={setSegment}>
-          <SelectTrigger className="mb-2 w-full" aria-label="Filter runs by status">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {SEGMENTS.map((s) => (
-              <SelectItem key={s.value} value={s.value}>
-                {s.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+    <div
+      className="flex flex-col items-stretch gap-4 lg:flex-row lg:items-start"
+      data-testid="workflow-runs"
+    >
+      <aside className="w-full shrink-0 lg:w-72">
+        <SearchSelect
+          options={SEGMENTS}
+          value={segment}
+          onChange={setSegment}
+          className="mb-2"
+          ariaLabel="Filter runs by status"
+        />
 
-        <div className="flex max-h-[calc(100vh-19rem)] min-h-[420px] flex-col gap-1 overflow-auto rounded-lg border border-border p-1">
-          {loading && <p className="px-2 py-6 text-center text-xs text-muted-foreground">Loading…</p>}
+        <div className="flex max-h-[40vh] min-h-64 flex-col gap-1 overflow-auto rounded-lg border border-border p-1 lg:max-h-[calc(100vh-19rem)] lg:min-h-[420px]">
+          {loading && (
+            <p className="px-2 py-6 text-center text-xs text-muted-foreground">
+              Loading…
+            </p>
+          )}
           {!loading && rows.length === 0 && (
-            <p className="px-2 py-6 text-center text-xs text-muted-foreground" data-testid="run-list-empty">
+            <p
+              className="px-2 py-6 text-center text-xs text-muted-foreground"
+              data-testid="run-list-empty"
+            >
               No runs yet. Run the workflow to see executions here.
             </p>
           )}
@@ -135,10 +138,14 @@ export function WorkflowRuns({ workflowId, onDebugInEditor, reloadToken = 0 }: W
             >
               <div className="flex items-center justify-between gap-2">
                 <RunStatusBadge status={run.status} size="sm" />
-                <span className="text-[11px] text-muted-foreground">{formatDuration(run.durationMs)}</span>
+                <span className="text-[11px] text-muted-foreground">
+                  {formatDuration(run.durationMs)}
+                </span>
               </div>
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <span>{run.startedAt ? formatDateTime(run.startedAt) : '—'}</span>
+                <span>
+                  {run.startedAt ? formatDateTime(run.startedAt) : '—'}
+                </span>
                 {run.isTest && <FlaskConical className="size-3" />}
               </div>
             </button>
@@ -162,7 +169,7 @@ export function WorkflowRuns({ workflowId, onDebugInEditor, reloadToken = 0 }: W
         {runDetail ? (
           <RunReplay run={runDetail} onDebugInEditor={onDebugInEditor} />
         ) : (
-          <div className="flex h-[calc(100vh-23rem)] min-h-[420px] items-center justify-center rounded-lg border border-dashed border-border text-sm text-muted-foreground">
+          <div className="flex min-h-64 items-center justify-center rounded-lg border border-dashed border-border text-sm text-muted-foreground lg:h-[calc(100vh-23rem)] lg:min-h-[420px]">
             {rows.length ? 'Select a run to view it.' : 'No runs yet.'}
           </div>
         )}

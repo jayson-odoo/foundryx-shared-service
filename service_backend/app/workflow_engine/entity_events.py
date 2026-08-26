@@ -357,17 +357,12 @@ def _match_and_enqueue(session: Session, ev: Dict[str, Any]) -> None:
         _create_run(session, wf, ev, depth=new_depth)
 
 
-def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: int) -> None:
-    from app.config import settings
-    from app.models.workflow import WorkflowVersion
+def build_event_trigger_payload(ev: Dict[str, Any]) -> Dict[str, Any]:
+    """Canonical event envelope consumed by the executor.
 
-    version = (
-        session.query(WorkflowVersion)
-        .filter(WorkflowVersion.id == wf.current_version_id)
-        .first()
-    )
-    if version is None:
-        return
+    Production dispatch and module-owned synthetic test builders share this
+    function so their ``trigger.*`` context cannot drift.
+    """
     actor = ev.get("actor") or {}
     extra = ev.get("extra") or {}
     payload = {
@@ -391,6 +386,21 @@ def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: in
         # Omnichannel inbound message (sprint-4/17) - the executor flattens
         # this into trigger.message.*/trigger.contact.*/trigger.channel.*.
         payload["omnichannel"] = extra
+    return payload
+
+
+def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: int) -> None:
+    from app.config import settings
+    from app.models.workflow import WorkflowVersion
+
+    version = (
+        session.query(WorkflowVersion)
+        .filter(WorkflowVersion.id == wf.current_version_id)
+        .first()
+    )
+    if version is None:
+        return
+    payload = build_event_trigger_payload(ev)
     source = ev.get("source") or {}
     run = WorkflowRun(
         tenant_id=wf.tenant_id,
@@ -403,7 +413,7 @@ def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: in
         trigger_payload_json=payload,
         triggered_by_run_id=source.get("run_id"),
         depth=depth,
-        actor_id=actor.get("id"),
+        actor_id=(ev.get("actor") or {}).get("id"),
     )
     session.add(run)
     session.flush()

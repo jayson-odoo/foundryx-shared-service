@@ -79,6 +79,8 @@ def omnichannel_send_message(
             tenant_id,
             actor_user_id=None,
             payload=SendMessageRequest(messageType="TEXT", body=text),
+            channel_id_override=str(ctx.get("trigger.channel.id") or "") or None,
+            sandbox_only=ctx.get("_workflow.sandboxOnly") is True,
         )
     except ThreadNotFound as exc:
         raise ActionError("Contact not found.") from exc

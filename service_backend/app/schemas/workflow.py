@@ -3,7 +3,7 @@ frontend ``types/workflows.ts``). Requests use camel field names directly."""
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.workflow import Workflow, WorkflowRun, WorkflowRunNode, WorkflowVersion
 from app.schemas.base import ApiModel
@@ -179,9 +179,23 @@ class WorkflowActiveRequest(BaseModel):
     isActive: bool
 
 
+class WorkflowTestTriggerRequest(BaseModel):
+    """Module-owned test data envelope.
+
+    Core validates the discriminant and preserves the remaining camelCase
+    fields; the selected trigger's registered callback owns their strict
+    schema and tenant-scoped resolution.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str = Field(min_length=1, max_length=120)
+
+
 class WorkflowRunRequest(BaseModel):
     inputs: Dict[str, Any] = Field(default_factory=dict)
     isTest: bool = False
+    testTrigger: Optional[WorkflowTestTriggerRequest] = None
 
 
 class WorkflowDebugRequest(BaseModel):

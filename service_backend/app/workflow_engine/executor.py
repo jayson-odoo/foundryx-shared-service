@@ -44,6 +44,8 @@ def _ctx_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         actor_id=actor.get("id", ""),
         inputs=payload.get("input") or {},
     )
+    workflow_test = payload.get("_workflowTest") or {}
+    ctx["_workflow.sandboxOnly"] = workflow_test.get("sandboxOnly") is True
     # Event-trigger context (slice 09): record fields, action, changes, statuses.
     for key, value in (payload.get("recordFacts") or {}).items():
         # `record.email` → `trigger.record.email` (the picker's namespace).
@@ -98,6 +100,26 @@ def _execute_node(
             "triggeredBy": ctx.get("trigger.triggeredBy", "manual"),
             **{k.split("trigger.input.")[1]: v for k, v in ctx.items() if k.startswith("trigger.input.")},
         }
+        # Event triggers expose the captured event in their trace, not only in
+        # the private flat executor context. This is identical for production
+        # and synthetic test events because both use the canonical envelope.
+        if "trigger.message.id" in ctx:
+            output["message"] = {
+                "id": ctx.get("trigger.message.id"),
+                "text": ctx.get("trigger.message.text"),
+                "type": ctx.get("trigger.message.type"),
+                "mediaUrl": ctx.get("trigger.message.mediaUrl"),
+            }
+            output["contact"] = {
+                "id": ctx.get("trigger.contact.id"),
+                "name": ctx.get("trigger.contact.name"),
+                "phone": ctx.get("trigger.contact.phone"),
+            }
+            output["channel"] = {
+                "id": ctx.get("trigger.channel.id"),
+                "name": ctx.get("trigger.channel.name"),
+            }
+            output["conversationId"] = ctx.get("trigger.conversationId")
         return output
     if node.kind == "if":
         from app.rule_engine.evaluator import evaluate

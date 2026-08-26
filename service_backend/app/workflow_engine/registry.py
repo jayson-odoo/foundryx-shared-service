@@ -35,6 +35,19 @@ class NodeOutput:
     label: str
 
 
+# Module callbacks keep trigger-specific test discovery/validation out of core.
+TriggerTestMetadataProvider = Callable[
+    [Session, str, Dict[str, Any]], Dict[str, Any]
+]
+TriggerTestPayloadBuilder = Callable[
+    [Session, str, Dict[str, Any], Dict[str, Any]], Dict[str, Any]
+]
+
+
+class TriggerTestDataError(Exception):
+    """A test-trigger selection failed structural or tenant validation."""
+
+
 @dataclass(frozen=True)
 class TriggerDef:
     key: str
@@ -45,6 +58,8 @@ class TriggerDef:
     fields: List[NodeField] = field(default_factory=list)
     outputs: List[NodeOutput] = field(default_factory=list)
     module: str = "core"
+    test_metadata_provider: Optional[TriggerTestMetadataProvider] = None
+    test_payload_builder: Optional[TriggerTestPayloadBuilder] = None
 
 
 # An action executor: (db, tenant_id, config, ctx) -> output dict. ``ctx`` is the

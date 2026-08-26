@@ -35,6 +35,7 @@ from app.services.filter_translator import translate_filter
 from app.workflow_engine import (
     get_trigger,
     parse_definition,
+    TriggerTestDataError,
     validate_definition,
 )
 from app.workflow_engine.entity_events import emit_entity_event
@@ -333,23 +334,58 @@ class WorkflowService:
 
     # ---- runs ----
 
-    def run(self, workflow_id: str, tenant_id: str, *, inputs: Dict[str, Any], is_test: bool, actor: User) -> WorkflowRun:
-        """Manual run — executes the DRAFT (no publish required, D13)."""
+    def run(
+        self,
+        workflow_id: str,
+        tenant_id: str,
+        *,
+        inputs: Dict[str, Any],
+        is_test: bool,
+        actor: User,
+        test_trigger: Optional[Dict[str, Any]] = None,
+    ) -> WorkflowRun:
+        """Execute the draft manually or with registered synthetic trigger data."""
         wf = self.get(workflow_id, tenant_id)
-        current = self.repo.get_version(wf.current_version_id) if wf.current_version_id else None
-        payload = {
-            "triggeredBy": TRIGGER_MANUAL,
-            "input": inputs or {},
-            "actor": {"id": actor.id, "name": actor.name or actor.email, "email": actor.email},
-        }
+        version_id = wf.current_version_id
+        current = self.repo.get_version(version_id) if version_id else None
+        version_number = current.version_number if current else 0
+        triggered_by = TRIGGER_MANUAL
+        effective_is_test = is_test
+
+        if test_trigger is not None:
+            if not is_test:
+                raise TriggerTestDataError("Test-trigger data requires test mode.")
+            doc = parse_definition(wf.draft_definition_json)
+            trigger = next((node for node in doc.nodes if node.kind == "trigger"), None)
+            requested_type = str(test_trigger.get("type") or "")
+            if trigger is None or requested_type != trigger.type:
+                raise TriggerTestDataError("Test-trigger type does not match the draft.")
+            trigger_def = get_trigger(trigger.type)
+            if trigger_def is None or trigger_def.test_payload_builder is None:
+                raise TriggerTestDataError("This trigger does not support test data.")
+            payload = trigger_def.test_payload_builder(
+                self.db, tenant_id, trigger.config, test_trigger
+            )
+            # Test-trigger runs always execute and identify the draft, regardless
+            # of the workflow's current published version.
+            version_id = None
+            version_number = 0
+            triggered_by = str(payload.get("triggeredBy") or "event")
+            effective_is_test = True
+        else:
+            payload = {
+                "triggeredBy": TRIGGER_MANUAL,
+                "input": inputs or {},
+                "actor": {"id": actor.id, "name": actor.name or actor.email, "email": actor.email},
+            }
         run = WorkflowRun(
             tenant_id=tenant_id,
             workflow_id=wf.id,
-            version_id=wf.current_version_id,
-            version_number=current.version_number if current else 0,
+            version_id=version_id,
+            version_number=version_number,
             status=RUN_PENDING,
-            triggered_by=TRIGGER_MANUAL,
-            is_test=is_test,
+            triggered_by=triggered_by,
+            is_test=effective_is_test,
             definition_snapshot_json=json.loads(json.dumps(wf.draft_definition_json)),
             trigger_payload_json=payload,
             actor_id=actor.id,
@@ -505,6 +541,23 @@ class WorkflowService:
         if include_ai_agents:
             metadata["aiAgents"] = self._ai_agent_options(tenant_id)
         return metadata
+
+    def test_options(self, workflow_id: str, tenant_id: str) -> Dict[str, Any]:
+        """Return tenant-safe options for the trigger in this workflow's draft.
+
+        Trigger-specific discovery stays behind the registry callback so core
+        never imports a Service module. The router separately gates access to
+        the workflow run capability and the trigger data's domain permission.
+        """
+        workflow = self.get(workflow_id, tenant_id)
+        document = parse_definition(workflow.draft_definition_json)
+        trigger = next((node for node in document.nodes if node.kind == "trigger"), None)
+        if trigger is None:
+            return {}
+        trigger_def = get_trigger(trigger.type)
+        if trigger_def is None or trigger_def.test_metadata_provider is None:
+            return {}
+        return trigger_def.test_metadata_provider(self.db, tenant_id, trigger.config)
 
     def _omnichannel_channel_options(self, tenant_id: str) -> List[Dict[str, Any]]:
         """Backs the omnichannel trigger's channel picker (sprint-4/17). A

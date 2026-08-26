@@ -31,6 +31,7 @@ from app.schemas.workflow import (
 from app.services.filter_translator import FilterError
 from app.services.workflow_service import WorkflowError, WorkflowNotFound, WorkflowService
 from app.workflow_engine import WorkflowValidationError
+from app.workflow_engine.registry import TriggerTestDataError
 
 router = APIRouter()
 
@@ -295,11 +296,31 @@ def run_workflow(
     service = WorkflowService(db)
     try:
         run = service.run(
-            workflow_id, current_user.tenant_id, inputs=body.inputs, is_test=body.isTest, actor=current_user
+            workflow_id,
+            current_user.tenant_id,
+            inputs=body.inputs,
+            is_test=body.isTest,
+            actor=current_user,
+            test_trigger=(body.testTrigger.model_dump() if body.testTrigger else None),
         )
     except WorkflowNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow not found.")
+    except TriggerTestDataError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
     return WorkflowRunItemOut.from_row(run, current_user.name or current_user.email)
+
+
+@router.get("/{workflow_id}/test-options")
+def workflow_test_options(
+    workflow_id: str,
+    current_user: User = Depends(require_permission("workflows.run")),
+    _conversation_reader: User = Depends(require_permission("conversations.read")),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        return WorkflowService(db).test_options(workflow_id, current_user.tenant_id)
+    except WorkflowNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow not found.")
 
 
 @router.get("/{workflow_id}/runs", response_model=WorkflowRunListResponse)

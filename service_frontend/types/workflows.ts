@@ -170,7 +170,10 @@ export interface IfCatalogEntry {
   outputs: NodeOutputDef[];
 }
 
-export type NodeCatalogEntry = TriggerCatalogEntry | ActionCatalogEntry | IfCatalogEntry;
+export type NodeCatalogEntry =
+  | TriggerCatalogEntry
+  | ActionCatalogEntry
+  | IfCatalogEntry;
 
 // ---- workflow metadata (triggerable entities — D6) ----
 
@@ -220,6 +223,20 @@ export interface WorkflowMetadata {
   /** Tenant's enabled AI agents - backs the AI Agent action's agent picker
    * (plan sprint-4/17). */
   aiAgents?: { id: string; name: string; model: string }[];
+}
+
+/** One backend-validated sandbox contact/channel pair for test-trigger runs. */
+export interface WorkflowOmnichannelTestSource {
+  channelId: string;
+  channelName: string;
+  contactId: string;
+  contactName: string;
+  contactPhone: string;
+}
+
+/** Permission-gated, workflow-specific options for a synthetic trigger run. */
+export interface WorkflowTestOptions {
+  omnichannelTestSources: WorkflowOmnichannelTestSource[];
 }
 
 // ---- entities ----
@@ -273,8 +290,18 @@ export interface WorkflowInput {
 
 // ---- runs ----
 
-export type WorkflowRunStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled';
-export type WorkflowNodeRunStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped';
+export type WorkflowRunStatus =
+  | 'pending'
+  | 'running'
+  | 'success'
+  | 'failed'
+  | 'cancelled';
+export type WorkflowNodeRunStatus =
+  | 'pending'
+  | 'running'
+  | 'success'
+  | 'failed'
+  | 'skipped';
 export type WorkflowRunTrigger = 'manual' | 'schedule' | 'event';
 
 export interface WorkflowRunListItem {
@@ -309,10 +336,21 @@ export interface WorkflowRunDetail extends WorkflowRunListItem {
   nodes: WorkflowRunNode[];
 }
 
-/** Manual-run request: values for the trigger's declared inputs. */
+/** Synthetic event data accepted by the omnichannel trigger test path. */
+export interface WorkflowOmnichannelTestTrigger {
+  type: 'omnichannel.message_received';
+  channelId: string;
+  contactId: string;
+  messageText: string;
+}
+
+export type WorkflowTestTrigger = WorkflowOmnichannelTestTrigger;
+
+/** Draft-run request: manual inputs and, for event triggers, typed test data. */
 export interface WorkflowRunRequest {
   inputs: Record<string, string | number | boolean>;
   isTest?: boolean;
+  testTrigger?: WorkflowTestTrigger;
 }
 
 /** Debug single-node (staleness-aware) execute request (D16). */

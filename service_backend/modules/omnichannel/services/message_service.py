@@ -22,6 +22,7 @@ from ..models import (
     QuickReply,
     WhatsappTemplate,
 )
+from ..repositories.channel_repository import ChannelRepository
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import (
     MessageItem,
@@ -35,7 +36,12 @@ from ..security import decrypt_credentials
 from .conversation_service import ConversationService, ThreadNotFound
 from .media_pipeline import MediaRejected, sniff_and_validate
 from .media_settings_service import MediaSettingsService
-from .send_runner import TransientSendError, run_send
+from .send_runner import (
+    SANDBOX_ONLY_KEY,
+    WORKFLOW_TEST_METADATA_KEY,
+    TransientSendError,
+    run_send,
+)
 from . import realtime
 
 
@@ -100,6 +106,7 @@ class MessageService:
     def __init__(self, db: Session):
         self.db = db
         self.repo = ContactRepository(db)
+        self.channels = ChannelRepository(db)
         self.conversations = ConversationService(db)
 
     @staticmethod
@@ -114,9 +121,24 @@ class MessageService:
         return actor_user_id, None
 
     # ── Channel resolution ───────────────────────────────────────────────────
-    def _channel_for_contact(self, contact: Contact) -> Channel:
+    def _channel_for_contact(
+        self, contact: Contact, channel_id_override: Optional[str] = None
+    ) -> Channel:
         """The channel this thread lives on: the identity's channel, else the
         workspace's first active channel."""
+        if channel_id_override:
+            selected = self.channels.get_active_by_id(
+                channel_id_override, contact.tenant_id
+            )
+            if (
+                selected is None
+                or selected.workspace_id != contact.workspace_id
+                or not self.repo.is_attached_to_channel(
+                    contact.id, channel_id_override, contact.tenant_id
+                )
+            ):
+                raise SendRejected("Selected channel is unavailable for this contact.")
+            return selected
         via_identity = (
             self.db.query(Channel)
             .join(ContactChannelIdentity, Channel.id == ContactChannelIdentity.channel_id)
@@ -221,12 +243,17 @@ class MessageService:
         header_content: Optional[bytes] = None,
         header_filename: Optional[str] = None,
         external_agent_id: Optional[str] = None,
+        channel_id_override: Optional[str] = None,
+        sandbox_only: bool = False,
     ) -> MessageItem:
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
             raise ThreadNotFound()
-        channel = self._channel_for_contact(contact)
+        channel = self._channel_for_contact(contact, channel_id_override)
         metadata, _ = self._reply_metadata(contact, tenant_id, payload.replyToMessageId)
+        if sandbox_only:
+            metadata = dict(metadata or {})
+            metadata[WORKFLOW_TEST_METADATA_KEY] = {SANDBOX_ONLY_KEY: True}
 
         message_type = (payload.messageType or "TEXT").upper()
         payload_json: Optional[Dict[str, Any]] = None

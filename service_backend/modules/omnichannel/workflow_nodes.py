@@ -8,6 +8,7 @@ governance: hook via the predefined seam, no global-store injection).
 from app.workflow_engine.registry import ActionDef, NodeField, NodeOutput, TriggerDef, register_action, register_trigger
 
 from .services.workflow_actions import omnichannel_get_contact, omnichannel_send_message
+from .services.workflow_test_data import build_test_payload, test_metadata
 
 MODULE_NAME = "omnichannel"
 
@@ -35,6 +36,8 @@ def register_omnichannel_workflow_nodes() -> None:
             icon="MessageCircle",
             category="Triggers",
             module=MODULE_NAME,
+            test_metadata_provider=test_metadata,
+            test_payload_builder=build_test_payload,
             fields=[
                 NodeField(
                     key="channelId",
@@ -83,6 +86,7 @@ def register_omnichannel_workflow_nodes() -> None:
             icon="Send",
             category="Actions",
             module=MODULE_NAME,
+            destructive=True,
             executor=omnichannel_send_message,
             fields=[
                 NodeField(

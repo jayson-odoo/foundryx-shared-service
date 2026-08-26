@@ -2,28 +2,38 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { FileText, History, ScrollText, Workflow as WorkflowIcon } from 'lucide-react';
+import {
+  FileText,
+  History,
+  ScrollText,
+  Workflow as WorkflowIcon,
+} from 'lucide-react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { toast } from 'sonner';
-import type { ResourceFormConfig } from '@/components/platform/resource-form';
-import type { TemplateOption, WorkflowDebugBundle } from '@/components/platform/workflow-canvas';
-import { WorkflowRuns } from '@/components/platform/workflow-runs';
-import { createBlankDefinition, topoOrder } from '@/lib/workflow-doc';
-import { workflowService } from '@/services/workflow-service';
-import { workflowMetadataService } from '@/services/workflow-metadata-service';
 import type {
   Workflow,
   WorkflowDefinition,
   WorkflowManualInput,
   WorkflowMetadata,
+  WorkflowOmnichannelTestSource,
   WorkflowRunNode,
+  WorkflowRunRequest,
 } from '@/types/workflows';
+import { createBlankDefinition, topoOrder } from '@/lib/workflow-doc';
+import { workflowMetadataService } from '@/services/workflow-metadata-service';
+import { workflowService } from '@/services/workflow-service';
+import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type {
+  TemplateOption,
+  WorkflowDebugBundle,
+} from '@/components/platform/workflow-canvas';
+import { WorkflowRuns } from '@/components/platform/workflow-runs';
+import { workflowFormHref, workflowPath, WORKFLOWS_PATH } from './paths';
 import { RunDialog } from './run-dialog';
+import { useWorkflowActions } from './use-workflow-actions';
 import { WorkflowEditorTab } from './workflow-editor-tab';
 import { WorkflowSettingsFields } from './workflow-settings-fields';
 import { WorkflowVersionsTab } from './workflow-versions-tab';
-import { WORKFLOWS_PATH, workflowFormHref, workflowPath } from './paths';
-import { useWorkflowActions } from './use-workflow-actions';
 
 export interface WorkflowFormValues {
   name: string;
@@ -115,11 +125,18 @@ export function useWorkflowForm(
   const isNew = workflowId === undefined;
 
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
-  const [doc, setDoc] = useState<WorkflowDefinition>(() => createBlankDefinition());
+  const [doc, setDoc] = useState<WorkflowDefinition>(() =>
+    createBlankDefinition(),
+  );
   const docRef = useRef(doc);
   const [docDirty, setDocDirty] = useState(false);
   const [templateOptions, setTemplateOptions] = useState<TemplateOption[]>([]);
   const [metadata, setMetadata] = useState<WorkflowMetadata>({ entities: [] });
+  const [testSources, setTestSources] = useState<
+    WorkflowOmnichannelTestSource[]
+  >([]);
+  const [testOptionsLoading, setTestOptionsLoading] = useState(false);
+  const [testOptionsError, setTestOptionsError] = useState(false);
   const [isLoading, setIsLoading] = useState(!isNew);
   const [notFound, setNotFound] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -127,15 +144,26 @@ export function useWorkflowForm(
   const [runsReloadToken, setRunsReloadToken] = useState(0);
 
   // ---- debug session (Logs → Debug in editor) ----
-  const [debugCache, setDebugCache] = useState<Record<string, WorkflowRunNode> | null>(null);
+  const [debugCache, setDebugCache] = useState<Record<
+    string,
+    WorkflowRunNode
+  > | null>(null);
   const [debugStale, setDebugStale] = useState<Set<string>>(new Set());
   const [debugBusy, setDebugBusy] = useState(false);
 
-  const form = useForm<WorkflowFormValues>({ defaultValues: { name: '', description: '' } });
+  const form = useForm<WorkflowFormValues>({
+    defaultValues: { name: '', description: '' },
+  });
 
   useEffect(() => {
-    workflowService.listTemplateOptions().then(setTemplateOptions).catch(() => undefined);
-    workflowMetadataService.getMetadata().then(setMetadata).catch(() => undefined);
+    workflowService
+      .listTemplateOptions()
+      .then(setTemplateOptions)
+      .catch(() => undefined);
+    workflowMetadataService
+      .getMetadata()
+      .then(setMetadata)
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -163,7 +191,9 @@ export function useWorkflowForm(
         const run = await workflowService.getRun(debugRunId);
         if (cancelled) return;
         if (run) {
-          setDebugCache(Object.fromEntries(run.nodes.map((n) => [n.nodeId, n])));
+          setDebugCache(
+            Object.fromEntries(run.nodes.map((n) => [n.nodeId, n])),
+          );
           setDebugStale(new Set());
         } else {
           toast.error('That run no longer exists.');
@@ -188,7 +218,9 @@ export function useWorkflowForm(
         const prev = docRef.current;
         const prevById = new Map(prev.nodes.map((n) => [n.id, n]));
         const changed = next.nodes.filter(
-          (n) => JSON.stringify(prevById.get(n.id)?.config) !== JSON.stringify(n.config),
+          (n) =>
+            JSON.stringify(prevById.get(n.id)?.config) !==
+            JSON.stringify(n.config),
         );
         if (changed.length) {
           const restale = takenDescendants(
@@ -196,7 +228,9 @@ export function useWorkflowForm(
             next,
             debugCache,
           );
-          setDebugStale((s) => new Set([...Array.from(s), ...Array.from(restale)]));
+          setDebugStale(
+            (s) => new Set([...Array.from(s), ...Array.from(restale)]),
+          );
         }
       }
       docRef.current = next;
@@ -312,22 +346,39 @@ export function useWorkflowForm(
     [workflowId, refresh],
   );
 
+  const trigger = useMemo(
+    () => doc.nodes.find((node) => node.kind === 'trigger'),
+    [doc],
+  );
+
   const triggerInputs = useMemo<WorkflowManualInput[]>(() => {
-    const trigger = doc.nodes.find((n) => n.kind === 'trigger');
     const inputs = trigger?.config.inputs;
     return Array.isArray(inputs) ? (inputs as WorkflowManualInput[]) : [];
-  }, [doc]);
+  }, [trigger]);
+
+  const runSideEffects = useMemo(
+    () => ({
+      callsAi: doc.nodes.some((node) => node.type === 'ai_agent.run'),
+      sendsMessage: doc.nodes.some(
+        (node) => node.type === 'omnichannel.send_message',
+      ),
+    }),
+    [doc],
+  );
 
   const doRun = useCallback(
-    async (inputs: Record<string, string | number | boolean>) => {
+    async (request: WorkflowRunRequest) => {
       if (!workflowId) {
         toast.error('Save the workflow before running it.');
         return;
       }
       setBusy(true);
       try {
-        if (docDirty) await onSave(); // run the latest draft
-        await workflowService.run(workflowId, { inputs });
+        if (docDirty) {
+          const saved = await onSave(); // run the latest draft
+          if (!saved) return;
+        }
+        await workflowService.run(workflowId, request);
         setRunsReloadToken((t) => t + 1);
         setRunDialogOpen(false);
         toast.success('Run started — open the Logs tab to follow it.');
@@ -340,10 +391,35 @@ export function useWorkflowForm(
     [workflowId, docDirty, onSave],
   );
 
+  const loadTestOptions = useCallback(async () => {
+    if (!workflowId) return;
+    setTestSources([]);
+    setTestOptionsLoading(true);
+    setTestOptionsError(false);
+    try {
+      const options = await workflowService.getTestOptions(workflowId);
+      setTestSources(options.omnichannelTestSources);
+    } catch {
+      setTestOptionsError(true);
+    } finally {
+      setTestOptionsLoading(false);
+    }
+  }, [workflowId]);
+
   const onRun = useCallback(() => {
-    if (triggerInputs.length > 0) setRunDialogOpen(true);
-    else void doRun({});
-  }, [triggerInputs, doRun]);
+    if (trigger?.type === 'omnichannel.message_received') {
+      if (!workflowId) {
+        void doRun({ inputs: {} });
+        return;
+      }
+      setRunDialogOpen(true);
+      void loadTestOptions();
+    } else if (triggerInputs.length > 0) {
+      setRunDialogOpen(true);
+    } else {
+      void doRun({ inputs: {} });
+    }
+  }, [trigger, triggerInputs, workflowId, doRun, loadTestOptions]);
 
   // ---- debug execution (staleness-aware, D16) ----
   const runDebug = useCallback(
@@ -354,7 +430,9 @@ export function useWorkflowForm(
         const result = await workflowService.debugExecute(workflowId, {
           runId: debugRunId,
           targetNodeId,
-          scratch: Object.fromEntries(docRef.current.nodes.map((n) => [n.id, n.config])),
+          scratch: Object.fromEntries(
+            docRef.current.nodes.map((n) => [n.id, n.config]),
+          ),
           staleNodeIds: staleIds,
         });
         setDebugCache((cache) => {
@@ -379,7 +457,11 @@ export function useWorkflowForm(
   const onExecuteAll = useCallback(() => {
     const ordered = topoOrder(docRef.current);
     const last = ordered[ordered.length - 1];
-    if (last) void runDebug(last.id, docRef.current.nodes.map((n) => n.id));
+    if (last)
+      void runDebug(
+        last.id,
+        docRef.current.nodes.map((n) => n.id),
+      );
   }, [runDebug]);
 
   const exitDebug = useCallback(() => {
@@ -388,7 +470,8 @@ export function useWorkflowForm(
 
   const debugInEditor = useCallback(
     (runId: string) => {
-      if (workflowId) router.push(`${workflowPath(workflowId)}?edit=1&debug=${runId}`);
+      if (workflowId)
+        router.push(`${workflowPath(workflowId)}?edit=1&debug=${runId}`);
     },
     [router, workflowId],
   );
@@ -403,7 +486,8 @@ export function useWorkflowForm(
     return {
       data,
       busy: debugBusy,
-      onExecuteNode: (nodeId: string) => void runDebug(nodeId, Array.from(debugStale)),
+      onExecuteNode: (nodeId: string) =>
+        void runDebug(nodeId, Array.from(debugStale)),
     };
   }, [debugCache, debugStale, debugBusy, runDebug]);
 
@@ -444,7 +528,11 @@ export function useWorkflowForm(
               <RunDialog
                 open={runDialogOpen}
                 onOpenChange={setRunDialogOpen}
-                inputs={triggerInputs}
+                trigger={trigger}
+                testSources={testSources}
+                testOptionsLoading={testOptionsLoading}
+                testOptionsError={testOptionsError}
+                sideEffects={runSideEffects}
                 busy={busy}
                 onRun={doRun}
               />
@@ -518,7 +606,8 @@ export function useWorkflowForm(
                 recordId: r.workflow?.id ?? null,
                 total: r.total,
               })),
-            buildHref: (recordId, ctx, index) => workflowFormHref(recordId, { ctx, index }),
+            buildHref: (recordId, ctx, index) =>
+              workflowFormHref(recordId, { ctx, index }),
           },
     };
   }, [
@@ -546,8 +635,12 @@ export function useWorkflowForm(
     refresh,
     runDialogOpen,
     runsReloadToken,
+    runSideEffects,
     templateOptions,
-    triggerInputs,
+    testOptionsError,
+    testOptionsLoading,
+    testSources,
+    trigger,
     workflow,
     workflowId,
   ]);

@@ -26,6 +26,15 @@ from .media_pipeline import MediaRejected, transcode_voice
 
 logger = logging.getLogger(__name__)
 
+WORKFLOW_TEST_METADATA_KEY = "workflowTest"
+SANDBOX_ONLY_KEY = "sandboxOnly"
+SANDBOX_CREDENTIALS_ERROR = (
+    "Sandbox-only workflow test blocked because the channel is no longer in dev mode."
+)
+SANDBOX_CHANNEL_ERROR = (
+    "Sandbox-only workflow test blocked because the channel is no longer active."
+)
+
 
 def _read_media(db: Session, tenant_id: str, media_key: str) -> bytes:
     """Read a stored media blob back by key (local path or remote URL)."""
@@ -122,12 +131,47 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
     if channel is None or contact is None:
         return _fail(db, row, "No active channel for this thread.")
 
+    meta = row.metadata_json or {}
+    sandbox_only = (
+        (meta.get(WORKFLOW_TEST_METADATA_KEY) or {}).get(SANDBOX_ONLY_KEY) is True
+    )
+    sandbox_credentials = None
+    if sandbox_only:
+        try:
+            sandbox_credentials = decrypt_credentials(channel.credentials_json)
+        except Exception:  # noqa: BLE001 — malformed/rotated secrets fail closed
+            return _fail(db, row, SANDBOX_CREDENTIALS_ERROR)
+        if sandbox_credentials.get("dev") is not True:
+            return _fail(db, row, SANDBOX_CREDENTIALS_ERROR)
+
     # CLAIM before touching Meta. If this commit fails the row stays QUEUED and a
     # retry safely re-claims (no send happened yet).
     row.delivery_status = "SENDING"
     db.commit()
 
-    credentials = decrypt_credentials(channel.credentials_json)
+    if sandbox_only:
+        # Re-read lifecycle state after claiming the row.  A sandbox test can
+        # sit queued while an operator deactivates or disconnects its channel;
+        # never dispatch such a row, even if the earlier validation saw dev
+        # credentials.  Normal sends intentionally retain their existing path.
+        channel = (
+            db.query(Channel)
+            .populate_existing()
+            .filter(
+                Channel.id == row.channel_id,
+                Channel.tenant_id == row.tenant_id,
+                Channel.is_active.is_(True),
+                Channel.is_trashed.is_(False),
+            )
+            .first()
+        )
+        if channel is None:
+            return _fail(db, row, SANDBOX_CHANNEL_ERROR)
+
+    # For sandbox rows, keep the credentials snapshot validated above. Even if
+    # the DB row changes immediately afterward, this dispatch can only use the
+    # already-validated dev adapter credentials.
+    credentials = sandbox_credentials or decrypt_credentials(channel.credentials_json)
     # Instrument the outbound Meta call — an ``outbound_meta`` activity row lands
     # on the inbound trace (gateway sends) or standalone (internal inbox sends).
     from .activity import build_meta_recorder
@@ -138,7 +182,6 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
     )
     phone_id = channel.phone_number_id or ""
     to = "".join(ch for ch in (contact.phone or "") if ch.isdigit())
-    meta = row.metadata_json or {}
     context_id: Optional[str] = meta.get("context_external_id")
 
     try:
