@@ -420,6 +420,7 @@ export function useWorkflowForm(
 
     if (runPreparationRef.current) return;
     runPreparationRef.current = true;
+    setBusy(true);
     try {
       if (!workflowId) {
         await doRun({ inputs: {} });
@@ -434,6 +435,7 @@ export function useWorkflowForm(
       if (docRef.current !== intendedDraft) return;
       setRunDialogOpen(true);
     } finally {
+      setBusy(false);
       runPreparationRef.current = false;
     }
   }, [trigger, triggerInputs, workflowId, docDirty, doRun, loadTestOptions, onSave]);

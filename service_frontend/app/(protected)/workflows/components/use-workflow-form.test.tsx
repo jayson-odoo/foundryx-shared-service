@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Workflow } from '@/types/workflows';
@@ -43,6 +43,11 @@ vi.mock('./workflow-editor-tab', () => ({
     </>
   ),
 }));
+vi.mock('./workflow-settings-fields', () => ({
+  WorkflowSettingsFields: ({ busy }: { busy: boolean }) => (
+    <input aria-label="Workflow name" disabled={busy} />
+  ),
+}));
 
 const WORKFLOW: Workflow = {
   id: 'workflow-1',
@@ -77,10 +82,16 @@ const WORKFLOW: Workflow = {
 };
 
 function Harness() {
-  const { config, isLoading } = useWorkflowForm('workflow-1', false, true);
+  const { config, isLoading } = useWorkflowForm('workflow-1', true, true);
   if (isLoading || !config) return <span>Loading</span>;
   const editor = config.tabs.find((tab) => tab.id === 'editor');
-  return <>{editor?.render({ editing: false })}</>;
+  const settings = config.tabs.find((tab) => tab.id === 'settings');
+  return (
+    <>
+      {editor?.render({ editing: true })}
+      {settings?.render({ editing: true })}
+    </>
+  );
 }
 
 describe('useWorkflowForm test-trigger routing', () => {
@@ -178,7 +189,7 @@ describe('useWorkflowForm test-trigger routing', () => {
     fireEvent.click(runButton);
 
     expect(workflowService.update).toHaveBeenCalledTimes(1);
-    resolveSave(WORKFLOW);
+    await act(async () => resolveSave(WORKFLOW));
     await waitFor(() => expect(workflowService.getTestOptions).toHaveBeenCalledTimes(1));
   });
 
@@ -196,10 +207,27 @@ describe('useWorkflowForm test-trigger routing', () => {
     fireEvent.click(makeDirty);
     fireEvent.click(screen.getByRole('button', { name: 'Open run' }));
     fireEvent.click(makeDirty);
-    resolveSave(WORKFLOW);
+    await act(async () => resolveSave(WORKFLOW));
 
     await waitFor(() => expect(workflowService.update).toHaveBeenCalledTimes(1));
     expect(workflowService.getTestOptions).not.toHaveBeenCalled();
     expect(screen.queryByRole('heading', { name: 'Test workflow' })).not.toBeInTheDocument();
+  });
+
+  it('disables workflow settings while preparing an omnichannel run', async () => {
+    let resolveSave!: (workflow: Workflow) => void;
+    workflowService.get.mockResolvedValue(WORKFLOW);
+    workflowService.listTemplateOptions.mockResolvedValue([]);
+    workflowMetadataService.getMetadata.mockResolvedValue({ entities: [] });
+    workflowService.update.mockImplementation(
+      () => new Promise((resolve) => { resolveSave = resolve; }),
+    );
+
+    render(<Harness />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Make dirty' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open run' }));
+
+    await waitFor(() => expect(screen.getByLabelText('Workflow name')).toBeDisabled());
+    await act(async () => resolveSave(WORKFLOW));
   });
 });
