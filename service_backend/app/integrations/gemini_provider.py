@@ -28,6 +28,10 @@ _ALLOWED_SCHEMA_KEYS = {
     "type", "format", "description", "nullable", "enum",
     "items", "properties", "required", "maxItems", "minItems",
 }
+# Gemini's thinking controls are model-specific. Keep this deliberately narrow:
+# this is the only model for which the platform has live-verified that disabling
+# thinking is both accepted and needed for reliable structured extraction.
+_THINKING_BUDGET_ZERO_MODELS = {"gemini-2.5-flash"}
 
 
 def _headers(api_key: str) -> Dict[str, str]:
@@ -119,10 +123,11 @@ class GeminiProvider(LLMProviderBase):
             # away on structured extraction — it restates the transcript as
             # "thoughts" until it hits maxOutputTokens, returns finishReason=
             # MAX_TOKENS and a TRUNCATED JSON fragment. Disabling thinking on
-            # structured calls yields a clean STOP + valid JSON in ~a hundred
-            # tokens. Non-2.5 models simply ignore thinkingConfig, so this is
-            # safe to always send on a structured call.
-            generation["thinkingConfig"] = {"thinkingBudget": 0}
+            # that model yields a clean STOP + valid JSON in ~a hundred tokens.
+            # Do not send this model-specific field to unknown/newer models:
+            # gemini-3.6-flash rejects it as INVALID_ARGUMENT.
+            if model in _THINKING_BUDGET_ZERO_MODELS:
+                generation["thinkingConfig"] = {"thinkingBudget": 0}
 
         body: Dict[str, Any] = {
             "contents": [

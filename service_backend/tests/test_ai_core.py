@@ -193,6 +193,35 @@ def test_gemini_disables_thinking_on_structured_calls(monkeypatch):
     assert thinking == {"thinkingBudget": 0}
 
 
+def test_gemini_36_omits_unsupported_thinking_config(monkeypatch):
+    """Gemini 3.6 rejects ``thinkingConfig`` with INVALID_ARGUMENT."""
+    import app.integrations.gemini_provider as gp
+
+    captured = {}
+
+    def fake_http(method, url, *, headers=None, json_body=None, timeout=None):
+        captured["body"] = json_body
+        return {
+            "candidates": [
+                {"content": {"parts": [{"text": '{"intent": "status"}'}]}, "finishReason": "STOP"}
+            ],
+            "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 4},
+        }
+
+    monkeypatch.setattr(gp, "_http_json", fake_http)
+    result = gp.GeminiProvider().complete(
+        {},
+        {"apiKey": "x"},
+        model="gemini-3.6-flash",
+        system="s",
+        messages=[{"role": "user", "content": "hi"}],
+        output_schema={"type": "object", "properties": {"intent": {"type": "string"}}},
+    )
+
+    assert result.structured == {"intent": "status"}
+    assert "thinkingConfig" not in captured["body"]["generationConfig"]
+
+
 @pytest.mark.parametrize(
     "provider_key, provider_module, payload",
     [
