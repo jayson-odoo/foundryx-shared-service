@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Workflow } from '@/types/workflows';
@@ -31,7 +31,10 @@ vi.mock('./workflow-editor-tab', () => ({
     doc: Workflow['draftDefinition'];
   }) => (
     <>
-      <button type="button" onClick={() => onDocChange({ ...doc })}>
+      <button
+        type="button"
+        onClick={() => onDocChange({ ...doc, schemaVersion: doc.schemaVersion + 1 })}
+      >
         Make dirty
       </button>
       <button type="button" onClick={onRun}>
@@ -131,7 +134,9 @@ describe('useWorkflowForm test-trigger routing', () => {
     await waitFor(() =>
       expect(workflowService.update).toHaveBeenCalledWith(
         'workflow-1',
-        expect.objectContaining({ draftDefinition: WORKFLOW.draftDefinition }),
+        expect.objectContaining({
+          draftDefinition: expect.objectContaining({ schemaVersion: 2 }),
+        }),
       ),
     );
     expect(workflowService.getTestOptions).toHaveBeenCalledWith('workflow-1');
@@ -152,6 +157,48 @@ describe('useWorkflowForm test-trigger routing', () => {
     await user.click(screen.getByRole('button', { name: 'Open run' }));
 
     await waitFor(() => expect(workflowService.update).toHaveBeenCalled());
+    expect(workflowService.getTestOptions).not.toHaveBeenCalled();
+    expect(screen.queryByRole('heading', { name: 'Test workflow' })).not.toBeInTheDocument();
+  });
+
+  it('ignores a rapid duplicate omnichannel run click while preparing', async () => {
+    let resolveSave!: (workflow: Workflow) => void;
+    workflowService.get.mockResolvedValue(WORKFLOW);
+    workflowService.listTemplateOptions.mockResolvedValue([]);
+    workflowMetadataService.getMetadata.mockResolvedValue({ entities: [] });
+    workflowService.update.mockImplementation(
+      () => new Promise((resolve) => { resolveSave = resolve; }),
+    );
+    workflowService.getTestOptions.mockResolvedValue({ omnichannelTestSources: [] });
+
+    render(<Harness />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Make dirty' }));
+    const runButton = screen.getByRole('button', { name: 'Open run' });
+    fireEvent.click(runButton);
+    fireEvent.click(runButton);
+
+    expect(workflowService.update).toHaveBeenCalledTimes(1);
+    resolveSave(WORKFLOW);
+    await waitFor(() => expect(workflowService.getTestOptions).toHaveBeenCalledTimes(1));
+  });
+
+  it('aborts test options when the draft changes during save', async () => {
+    let resolveSave!: (workflow: Workflow) => void;
+    workflowService.get.mockResolvedValue(WORKFLOW);
+    workflowService.listTemplateOptions.mockResolvedValue([]);
+    workflowMetadataService.getMetadata.mockResolvedValue({ entities: [] });
+    workflowService.update.mockImplementation(
+      () => new Promise((resolve) => { resolveSave = resolve; }),
+    );
+
+    render(<Harness />);
+    const makeDirty = await screen.findByRole('button', { name: 'Make dirty' });
+    fireEvent.click(makeDirty);
+    fireEvent.click(screen.getByRole('button', { name: 'Open run' }));
+    fireEvent.click(makeDirty);
+    resolveSave(WORKFLOW);
+
+    await waitFor(() => expect(workflowService.update).toHaveBeenCalledTimes(1));
     expect(workflowService.getTestOptions).not.toHaveBeenCalled();
     expect(screen.queryByRole('heading', { name: 'Test workflow' })).not.toBeInTheDocument();
   });

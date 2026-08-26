@@ -129,6 +129,7 @@ export function useWorkflowForm(
     createBlankDefinition(),
   );
   const docRef = useRef(doc);
+  const runPreparationRef = useRef(false);
   const [docDirty, setDocDirty] = useState(false);
   const [templateOptions, setTemplateOptions] = useState<TemplateOption[]>([]);
   const [metadata, setMetadata] = useState<WorkflowMetadata>({ entities: [] });
@@ -276,7 +277,8 @@ export function useWorkflowForm(
         form.reset({ name: updated.name, description: updated.description });
         toast.success('Workflow saved.');
       }
-      setDocDirty(false);
+      // Do not clear a newer edit made while the save was in flight.
+      if (docRef.current === input.draftDefinition) setDocDirty(false);
       return true;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Save failed.');
@@ -407,21 +409,32 @@ export function useWorkflowForm(
   }, [workflowId]);
 
   const onRun = useCallback(async () => {
-    if (trigger?.type === 'omnichannel.message_received') {
-      if (!workflowId) {
+    if (trigger?.type !== 'omnichannel.message_received') {
+      if (triggerInputs.length > 0) {
+        setRunDialogOpen(true);
+      } else {
         void doRun({ inputs: {} });
+      }
+      return;
+    }
+
+    if (runPreparationRef.current) return;
+    runPreparationRef.current = true;
+    try {
+      if (!workflowId) {
+        await doRun({ inputs: {} });
         return;
       }
+      const intendedDraft = docRef.current;
       if (docDirty) {
         const saved = await onSave();
-        if (!saved) return;
+        if (!saved || docRef.current !== intendedDraft) return;
       }
-      setRunDialogOpen(true);
       await loadTestOptions();
-    } else if (triggerInputs.length > 0) {
+      if (docRef.current !== intendedDraft) return;
       setRunDialogOpen(true);
-    } else {
-      void doRun({ inputs: {} });
+    } finally {
+      runPreparationRef.current = false;
     }
   }, [trigger, triggerInputs, workflowId, docDirty, doRun, loadTestOptions, onSave]);
 
