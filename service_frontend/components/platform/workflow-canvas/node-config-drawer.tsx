@@ -28,11 +28,17 @@ import { Label } from '@/components/ui/label';
 import { SearchSelect } from '@/components/platform/search-select';
 import { RuleBuilder } from '@/components/platform/rule-builder';
 import { ACTION_CATALOG, TRIGGER_CATALOG, catalogEntry } from '@/lib/workflow-catalog';
-import { nodeDisplayName } from '@/lib/workflow-doc';
+import {
+  AI_OUTPUT_PARAM_KEY_RE,
+  AI_OUTPUT_PARAM_TYPES,
+  nodeDisplayName,
+  validAiOutputParams,
+} from '@/lib/workflow-doc';
 import { cn } from '@/lib/utils';
 import type { RuleFact, RuleFactType, RuleGroup } from '@/types/rules';
 import type {
   NodeFieldDef,
+  WorkflowAiOutputParam,
   WorkflowDefinition,
   WorkflowEntityField,
   WorkflowFieldAssignment,
@@ -106,6 +112,13 @@ function backHint(depth: number): string {
   return `${depth} node${depth === 1 ? '' : 's'} back`;
 }
 
+/** An `ai_agent.run` node's user-defined output params (plan sprint-4/17) -
+ * they ARE its output schema, so the picker lists them as `nodes.<id>.<key>`. */
+function aiOutputParams(node: WorkflowNode): WorkflowAiOutputParam[] {
+  const params = node.config.outputParams;
+  return validAiOutputParams(params);
+}
+
 /** Ancestors of `nodeId` whose outputs are referenceable here (D7), closest
  * first, labelled by unique node name + distance. */
 function upstreamGroups(
@@ -121,11 +134,11 @@ function upstreamGroups(
     if (node.kind === 'trigger') {
       groups.push({ sourceLabel, hint: backHint(depth), items: triggerOutputItems(node, metadata) });
     } else if (node.kind === 'action') {
-      groups.push({
-        sourceLabel,
-        hint: backHint(depth),
-        items: entry.outputs.map((o) => ({ key: `nodes.${node.id}.${o.key}`, label: o.label })),
-      });
+      const items = entry.outputs.map((o) => ({ key: `nodes.${node.id}.${o.key}`, label: o.label }));
+      for (const p of aiOutputParams(node)) {
+        items.push({ key: `nodes.${node.id}.${p.key}`, label: p.description || p.key });
+      }
+      groups.push({ sourceLabel, hint: backHint(depth), items });
     }
   }
   return groups;
@@ -173,6 +186,15 @@ function runContextFacts(
     } else if (node.kind === 'action') {
       for (const o of entry?.outputs ?? []) {
         push(`nodes.${node.id}.${o.key}`, o.label, 'string', `nodes.${node.id}`, label);
+      }
+      for (const p of aiOutputParams(node)) {
+        push(
+          `nodes.${node.id}.${p.key}`,
+          p.description || p.key,
+          p.type === 'number' ? 'number' : p.type === 'boolean' ? 'boolean' : 'string',
+          `nodes.${node.id}`,
+          label,
+        );
       }
     }
   }
@@ -350,6 +372,142 @@ function AssignmentsEditor({
   );
 }
 
+const AI_PARAM_TYPES: { value: WorkflowAiOutputParam['type']; label: string }[] = [
+  { value: 'string', label: 'Text' },
+  { value: 'number', label: 'Number' },
+  { value: 'boolean', label: 'Yes / no' },
+];
+
+/** key · type · description · required rows for the AI Agent action's
+ * structured-output schema (plan sprint-4/17). Invalid rows and duplicate
+ * keys surface inline and block publish through the shared document validator. */
+export function OutputParamsEditor({
+  params,
+  editing,
+  onChange,
+}: {
+  params: WorkflowAiOutputParam[];
+  editing: boolean;
+  onChange: (next: WorkflowAiOutputParam[]) => void;
+}) {
+  const update = (i: number, patch: Partial<WorkflowAiOutputParam>) =>
+    onChange(
+      params.map((row, idx) =>
+        idx === i
+          ? ({ ...(row as unknown as Record<string, unknown>), ...patch } as WorkflowAiOutputParam)
+          : row,
+      ),
+    );
+  const keyCounts = new Map<string, number>();
+  for (const raw of params as unknown[]) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue;
+    const key = (raw as Record<string, unknown>).key;
+    if (typeof key === 'string' && key) keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
+  }
+  return (
+    <div className="flex flex-col gap-2" data-testid="output-params-editor">
+      {params.map((raw, i) => {
+        const row =
+          typeof raw === 'object' && raw !== null && !Array.isArray(raw)
+            ? (raw as unknown as Record<string, unknown>)
+            : {};
+        const key = typeof row.key === 'string' ? row.key : '';
+        const type = typeof row.type === 'string' ? row.type : '';
+        const description = typeof row.description === 'string' ? row.description : '';
+        const required = row.required === true;
+        const duplicate = (keyCounts.get(key) ?? 0) > 1;
+        const issue = !key.trim()
+          ? 'Key is required.'
+          : key !== key.trim()
+            ? 'Key must be trimmed.'
+            : !AI_OUTPUT_PARAM_KEY_RE.test(key)
+              ? 'Key must start with a letter or underscore and use only letters, numbers, and underscores.'
+              : duplicate
+                ? 'Key must be unique.'
+                : !AI_OUTPUT_PARAM_TYPES.includes(type as (typeof AI_OUTPUT_PARAM_TYPES)[number])
+                  ? 'Type must be string, number, or boolean.'
+                  : undefined;
+        return (
+          <div key={i} className="flex flex-col gap-1.5 rounded-lg border border-input p-2">
+            <div className="flex items-center gap-1.5">
+              <Input
+                value={key}
+                disabled={!editing}
+                placeholder="key"
+                aria-label={`Parameter ${i + 1} key`}
+                aria-invalid={Boolean(issue)}
+                onChange={(e) => update(i, { key: e.target.value })}
+                className={cn('flex-1', issue && 'border-destructive')}
+              />
+              <div className="w-28 shrink-0">
+                <SearchSelect
+                  options={AI_PARAM_TYPES}
+                  value={type}
+                  onChange={(v) => update(i, { type: (v ?? 'string') as WorkflowAiOutputParam['type'] })}
+                  ariaLabel={`Parameter ${i + 1} type`}
+                  placeholder="Type…"
+                  disabled={!editing}
+                />
+              </div>
+              {editing && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0 text-destructive"
+                  aria-label={`Remove parameter ${i + 1}`}
+                  onClick={() => onChange(params.filter((_, idx) => idx !== i))}
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              )}
+            </div>
+            {issue && (
+              <p className="text-xs text-destructive" role="alert">
+                {issue}
+              </p>
+            )}
+            <div className="flex items-center gap-1.5">
+              <Input
+                value={description}
+                disabled={!editing}
+                placeholder="Description"
+                aria-label={`Parameter ${i + 1} description`}
+                onChange={(e) => update(i, { description: e.target.value })}
+                className="flex-1"
+              />
+              <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={required}
+                  disabled={!editing}
+                  aria-label={`Parameter ${i + 1} required`}
+                  onChange={(e) => update(i, { required: e.target.checked })}
+                />
+                Required
+              </label>
+            </div>
+          </div>
+        );
+      })}
+      {editing && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          data-testid="add-output-param"
+          onClick={() => onChange([...params, { key: '', type: 'string', required: true }])}
+        >
+          <Plus className="size-3.5" /> Add parameter
+        </Button>
+      )}
+      {!params.length && !editing && (
+        <p className="text-xs text-muted-foreground">No output parameters.</p>
+      )}
+    </div>
+  );
+}
+
 export function NodeConfigDrawer({
   node,
   doc,
@@ -471,6 +629,55 @@ export function NodeConfigDrawer({
           placeholder={entity ? 'Choose a field…' : 'Choose an entity first'}
           searchPlaceholder="Search fields…"
           disabled={!editing || !entity}
+        />,
+      );
+    }
+
+    if (field.type === 'omnichannelChannel') {
+      // Explicit "All channels" option first (foolproof-UI: the unset state is
+      // a real, visible choice - not an empty picker).
+      const channelOptions = [
+        { value: '__all__', label: 'All channels' },
+        ...(metadata.omnichannelChannels ?? []).map((c) => ({ value: c.id, label: c.name })),
+      ];
+      const selected = typeof value === 'string' && value ? value : '__all__';
+      return wrap(
+        <SearchSelect
+          options={channelOptions}
+          value={selected}
+          onChange={(v) => onConfigChange(node.id, { [field.key]: v === '__all__' ? null : v })}
+          ariaLabel={field.label}
+          placeholder="All channels"
+          searchPlaceholder="Search channels…"
+          disabled={!editing}
+        />,
+      );
+    }
+
+    if (field.type === 'aiAgent') {
+      const agentOptions = (metadata.aiAgents ?? []).map((a) => ({
+        value: a.id,
+        label: a.model ? `${a.name} · ${a.model}` : a.name,
+      }));
+      return wrap(
+        <SearchSelect
+          options={agentOptions}
+          value={typeof value === 'string' && value ? value : null}
+          onChange={(v) => onConfigChange(node.id, { [field.key]: v })}
+          ariaLabel={field.label}
+          placeholder="Choose an agent…"
+          searchPlaceholder="Search agents…"
+          disabled={!editing}
+        />,
+      );
+    }
+
+    if (field.type === 'outputSchema') {
+      return wrap(
+        <OutputParamsEditor
+          params={Array.isArray(value) ? (value as WorkflowAiOutputParam[]) : []}
+          editing={editing}
+          onChange={(next) => onConfigChange(node.id, { [field.key]: next })}
         />,
       );
     }

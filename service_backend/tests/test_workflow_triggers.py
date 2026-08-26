@@ -13,7 +13,8 @@ import pytest
 from sqlalchemy import Boolean, Column, String
 
 from app.database import Base
-from app.models import DEFAULT_TENANT_ID, User
+from app.models import DEFAULT_TENANT_ID, PLATFORM_TENANT_ID, User
+from app.models.ai import AiAgent
 from app.models.status import Status
 from app.models.status_transition import StatusTransition
 from app.models.workflow import WorkflowRun
@@ -475,6 +476,49 @@ def test_metadata_lists_entities_statuses_and_fields(session_factory):
     # wfticket adopts the status engine → real status rows surface as options.
     assert by_type["wfticket"]["hasStatus"] is True
     assert any(s["value"] == open_s.id for s in by_type["wfticket"]["statuses"])
+
+
+def test_workflow_metadata_omits_ai_agents_without_read_permission(client, session_factory):
+    db = session_factory()
+    role = db.query(User).filter(User.email == "demo@example.com").first().roles[0]
+    role.permissions = [
+        permission
+        for permission in role.permissions
+        if permission.key not in {"ai_agents.read", "ai_agents.manage"}
+    ]
+    db.add(AiAgent(tenant_id=DEFAULT_TENANT_ID, name="Hidden agent", model="stub-model-1"))
+    db.commit()
+    db.close()
+
+    login = client.post("/auth/login", json={"email": "demo@example.com", "password": "demo1234"})
+    assert login.status_code == 200, login.text
+    response = client.get(
+        "/workflows/metadata",
+        headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert "aiAgents" not in response.json()
+
+
+def test_workflow_metadata_ai_agents_is_tenant_scoped(client, session_factory):
+    db = session_factory()
+    own = AiAgent(tenant_id=DEFAULT_TENANT_ID, name="Own agent", model="stub-model-1")
+    foreign = AiAgent(tenant_id=PLATFORM_TENANT_ID, name="Foreign agent", model="stub-model-2")
+    db.add_all([own, foreign])
+    db.commit()
+    own_item = {"id": own.id, "name": own.name, "model": own.model}
+    db.close()
+
+    login = client.post("/auth/login", json={"email": "demo@example.com", "password": "demo1234"})
+    assert login.status_code == 200, login.text
+    response = client.get(
+        "/workflows/metadata",
+        headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["aiAgents"] == [own_item]
 
 
 # ---- scheduler -------------------------------------------------------------

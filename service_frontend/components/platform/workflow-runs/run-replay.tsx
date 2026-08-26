@@ -10,6 +10,8 @@
 import { useMemo, useState } from 'react';
 import { MarkerType, type Edge, type Node } from '@xyflow/react';
 import { Bug } from 'lucide-react';
+import type { WorkflowRunDetail } from '@/types/workflows';
+import { catalogEntry } from '@/lib/workflow-catalog';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,9 +24,10 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { FlowCanvas } from '@/components/platform/flow-canvas';
-import { WorkflowFlowNode, type WorkflowNodeData } from '@/components/platform/workflow-canvas';
-import { catalogEntry } from '@/lib/workflow-catalog';
-import type { WorkflowRunDetail } from '@/types/workflows';
+import {
+  WorkflowFlowNode,
+  type WorkflowNodeData,
+} from '@/components/platform/workflow-canvas';
 import { NodeRunStatusBadge, RunStatusBadge } from './run-status-badge';
 
 const NODE_TYPES = { workflow: WorkflowFlowNode };
@@ -74,7 +77,8 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
     [run],
   );
 
-  const selectedNode = run.definition.nodes.find((n) => n.id === selectedNodeId) ?? null;
+  const selectedNode =
+    run.definition.nodes.find((n) => n.id === selectedNodeId) ?? null;
   const selectedData = selectedNodeId ? cache[selectedNodeId] : null;
 
   return (
@@ -83,36 +87,44 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
         <div className="flex items-center gap-2">
           <RunStatusBadge status={run.status} />
           <span className="text-xs text-muted-foreground">
-            {run.versionNumber > 0 ? `v${run.versionNumber}` : 'draft'} · {run.triggeredBy}
+            {run.versionNumber > 0 ? `v${run.versionNumber}` : 'draft'} ·{' '}
+            {run.triggeredBy}
             {run.isTest ? ' · test' : ''}
           </span>
         </div>
-        <Button variant="outline" size="sm" onClick={() => setConfirmOpen(true)} data-testid="debug-in-editor">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setConfirmOpen(true)}
+          data-testid="debug-in-editor"
+        >
           <Bug className="size-3.5" /> Debug in editor
         </Button>
       </div>
 
       {run.error && (
-        <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{run.error}</p>
+        <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {run.error}
+        </p>
       )}
 
-      <div className="flex items-start gap-3">
-        <div className="flex-1">
+      <div className="flex flex-col items-stretch gap-3 lg:flex-row lg:items-start">
+        <div className="min-w-0 flex-1">
           <FlowCanvas
             nodes={nodes}
             edges={edges}
             nodeTypes={NODE_TYPES}
-            className="h-[calc(100vh-23rem)] min-h-[420px]"
+            className="h-[50vh] min-h-72 lg:h-[calc(100vh-23rem)] lg:min-h-[420px]"
             readOnly
             onNodeClick={(id) => setSelectedNodeId(id)}
             onPaneClick={() => setSelectedNodeId(null)}
           />
         </div>
 
-        <aside className="w-72 shrink-0 rounded-lg border border-input bg-background p-3">
+        <aside className="w-full shrink-0 rounded-lg border border-input bg-background p-3 lg:w-72">
           {!selectedNode ? (
             <p className="px-1 py-8 text-center text-xs text-muted-foreground">
-              Click a node to inspect its data.
+              Select a node to inspect its data.
             </p>
           ) : (
             <div className="flex flex-col gap-3" data-testid="node-inspector">
@@ -120,7 +132,9 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
                 <span className="text-sm font-semibold text-foreground">
                   {catalogEntry(selectedNode.type)?.label ?? selectedNode.type}
                 </span>
-                {selectedData && <NodeRunStatusBadge status={selectedData.status} />}
+                {selectedData && (
+                  <NodeRunStatusBadge status={selectedData.status} />
+                )}
               </div>
               <DataBlock label="Input" value={selectedData?.inputJson} />
               <DataBlock label="Output" value={selectedData?.outputJson} />
@@ -144,13 +158,17 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
           <AlertDialogHeader>
             <AlertDialogTitle>Debug this run in the editor?</AlertDialogTitle>
             <AlertDialogDescription>
-              The editor opens with this run’s data pinned onto your current draft, so you can fix
-              the flow and re-run nodes. Your draft is kept - nothing is replaced.
+              The editor opens with this run’s data pinned onto your current
+              draft, so you can fix the flow and re-run nodes. Your draft is
+              kept - nothing is replaced.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => onDebugInEditor(run.id)} data-testid="confirm-debug">
+            <AlertDialogAction
+              onClick={() => onDebugInEditor(run.id)}
+              data-testid="confirm-debug"
+            >
               Load into editor
             </AlertDialogAction>
           </AlertDialogFooter>

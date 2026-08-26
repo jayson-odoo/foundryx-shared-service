@@ -66,6 +66,7 @@ export function WorkflowSettingsFields({
           <Input
             aria-label="Workflow name"
             value={values.name}
+            disabled={busy}
             onChange={(e) => form.setValue('name', e.target.value, { shouldDirty: true })}
           />
         ) : (
@@ -79,6 +80,7 @@ export function WorkflowSettingsFields({
             aria-label="Workflow description"
             rows={3}
             value={values.description}
+            disabled={busy}
             onChange={(e) => form.setValue('description', e.target.value, { shouldDirty: true })}
           />
         ) : (

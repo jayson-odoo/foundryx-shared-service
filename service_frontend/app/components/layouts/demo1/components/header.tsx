@@ -19,7 +19,6 @@ import {
 import { useSession } from 'next-auth/react';
 import { toAbsoluteUrl } from '@/lib/helpers';
 import { cn } from '@/lib/utils';
-import { UserAvatar } from '@/components/platform/user-avatar';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useScrollPosition } from '@/hooks/use-scroll-position';
 import { Button } from '@/components/ui/button';
@@ -32,6 +31,7 @@ import {
 } from '@/components/ui/sheet';
 import { Container } from '@/components/common/container';
 import { ActivityTriggers } from '@/components/platform/document-drive';
+import { UserAvatar } from '@/components/platform/user-avatar';
 import { MegaMenu } from './mega-menu';
 import { MegaMenuMobile } from './mega-menu-mobile';
 import { SidebarMenu } from './sidebar-menu';
@@ -63,7 +63,10 @@ export function Header() {
       {/* Fluid like the content pages - the Metronic default was fixed
           max-w-[1320px], which left the header floating centered on wide
           screens while every list page stretches full width (plan 06). */}
-      <Container width="fluid" className="flex justify-between items-stretch lg:gap-4">
+      <Container
+        width="fluid"
+        className="flex justify-between items-stretch lg:gap-4"
+      >
         {/* HeaderLogo */}
         <div className="flex gap-1 lg:hidden items-center gap-2.5">
           <Link href="/" className="shrink-0">
@@ -80,7 +83,11 @@ export function Header() {
                 onOpenChange={setIsSidebarSheetOpen}
               >
                 <SheetTrigger asChild>
-                  <Button variant="ghost" mode="icon">
+                  <Button
+                    variant="ghost"
+                    mode="icon"
+                    aria-label="Open navigation"
+                  >
                     <Menu className="text-muted-foreground/70" />
                   </Button>
                 </SheetTrigger>

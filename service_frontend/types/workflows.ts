@@ -26,6 +26,7 @@ export type WorkflowNodeConfig = Record<
   | string[]
   | WorkflowManualInput[]
   | WorkflowFieldAssignment[]
+  | WorkflowAiOutputParam[]
   | RuleGroup
   // A copied template block document (email.send per-use design).
   | TemplateDocument
@@ -43,6 +44,15 @@ export interface WorkflowFieldAssignment {
   field: string;
   /** Merge-templated literal written to the field. */
   value: string;
+}
+
+/** One structured-output parameter the AI Agent action asks the model for
+ * (plan sprint-4/17) - becomes one JSON-Schema property server-side. */
+export interface WorkflowAiOutputParam {
+  key: string;
+  type: 'string' | 'number' | 'boolean';
+  description?: string;
+  required?: boolean;
 }
 
 export interface WorkflowNode {
@@ -89,7 +99,10 @@ export interface NodeFieldDef {
     | 'field'
     | 'cron'
     | 'form'
-    | 'assignments';
+    | 'assignments'
+    | 'omnichannelChannel'
+    | 'aiAgent'
+    | 'outputSchema';
   required?: boolean;
   placeholder?: string;
   /** For `select` - static options (dynamic ones resolve in Phase B). */
@@ -120,6 +133,10 @@ export interface TriggerCatalogEntry {
   fields: NodeFieldDef[];
   /** Output schema seeded into the run context (drives the picker). */
   outputs: NodeOutputDef[];
+  /** Owning module - `'core'`/absent = always visible; else gated by the
+   * module being ACTIVE for the tenant (plan sprint-4/17, mirrors the backend
+   * `TriggerDef.module`). */
+  module?: string;
 }
 
 export interface ActionCatalogEntry {
@@ -135,6 +152,8 @@ export interface ActionCatalogEntry {
   requiresConnection?: 'email' | 'storage';
   /** Real side effects that warrant a confirm before a manual/test run (D13). */
   destructive?: boolean;
+  /** Owning module - see `TriggerCatalogEntry.module`. */
+  module?: string;
 }
 
 /** The IF node (built-in, not a registered Trigger/Action - D8). Its config is
@@ -151,7 +170,10 @@ export interface IfCatalogEntry {
   outputs: NodeOutputDef[];
 }
 
-export type NodeCatalogEntry = TriggerCatalogEntry | ActionCatalogEntry | IfCatalogEntry;
+export type NodeCatalogEntry =
+  | TriggerCatalogEntry
+  | ActionCatalogEntry
+  | IfCatalogEntry;
 
 // ---- workflow metadata (triggerable entities - D6) ----
 
@@ -195,6 +217,26 @@ export interface WorkflowMetadata {
   connections?: { email: boolean; storage: boolean };
   /** Published forms for the `form.submitted` trigger picker (slice 2). */
   forms?: WorkflowFormOption[];
+  /** Tenant's active omnichannel channels - backs the omnichannel trigger's
+   * channel picker (plan sprint-4/17). */
+  omnichannelChannels?: { id: string; name: string }[];
+  /** Tenant's enabled AI agents - backs the AI Agent action's agent picker
+   * (plan sprint-4/17). */
+  aiAgents?: { id: string; name: string; model: string }[];
+}
+
+/** One backend-validated sandbox contact/channel pair for test-trigger runs. */
+export interface WorkflowOmnichannelTestSource {
+  channelId: string;
+  channelName: string;
+  contactId: string;
+  contactName: string;
+  contactPhone: string;
+}
+
+/** Permission-gated, workflow-specific options for a synthetic trigger run. */
+export interface WorkflowTestOptions {
+  omnichannelTestSources: WorkflowOmnichannelTestSource[];
 }
 
 // ---- entities ----
@@ -248,8 +290,18 @@ export interface WorkflowInput {
 
 // ---- runs ----
 
-export type WorkflowRunStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled';
-export type WorkflowNodeRunStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped';
+export type WorkflowRunStatus =
+  | 'pending'
+  | 'running'
+  | 'success'
+  | 'failed'
+  | 'cancelled';
+export type WorkflowNodeRunStatus =
+  | 'pending'
+  | 'running'
+  | 'success'
+  | 'failed'
+  | 'skipped';
 export type WorkflowRunTrigger = 'manual' | 'schedule' | 'event';
 
 export interface WorkflowRunListItem {
@@ -284,10 +336,21 @@ export interface WorkflowRunDetail extends WorkflowRunListItem {
   nodes: WorkflowRunNode[];
 }
 
-/** Manual-run request: values for the trigger's declared inputs. */
+/** Synthetic event data accepted by the omnichannel trigger test path. */
+export interface WorkflowOmnichannelTestTrigger {
+  type: 'omnichannel.message_received';
+  channelId: string;
+  contactId: string;
+  messageText: string;
+}
+
+export type WorkflowTestTrigger = WorkflowOmnichannelTestTrigger;
+
+/** Draft-run request: manual inputs and, for event triggers, typed test data. */
 export interface WorkflowRunRequest {
   inputs: Record<string, string | number | boolean>;
   isTest?: boolean;
+  testTrigger?: WorkflowTestTrigger;
 }
 
 /** Debug single-node (staleness-aware) execute request (D16). */

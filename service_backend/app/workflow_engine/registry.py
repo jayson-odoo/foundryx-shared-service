@@ -35,6 +35,19 @@ class NodeOutput:
     label: str
 
 
+# Module callbacks keep trigger-specific test discovery/validation out of core.
+TriggerTestMetadataProvider = Callable[
+    [Session, str, Dict[str, Any]], Dict[str, Any]
+]
+TriggerTestPayloadBuilder = Callable[
+    [Session, str, Dict[str, Any], Dict[str, Any]], Dict[str, Any]
+]
+
+
+class TriggerTestDataError(Exception):
+    """A test-trigger selection failed structural or tenant validation."""
+
+
 @dataclass(frozen=True)
 class TriggerDef:
     key: str
@@ -45,6 +58,8 @@ class TriggerDef:
     fields: List[NodeField] = field(default_factory=list)
     outputs: List[NodeOutput] = field(default_factory=list)
     module: str = "core"
+    test_metadata_provider: Optional[TriggerTestMetadataProvider] = None
+    test_payload_builder: Optional[TriggerTestPayloadBuilder] = None
 
 
 # An action executor: (db, tenant_id, config, ctx) -> output dict. ``ctx`` is the
@@ -354,6 +369,46 @@ def _register_core() -> None:
     from app.review_engine.actions import register_review_actions
 
     register_review_actions()
+
+    # ---- AI Agent action (sprint-4/17) ----
+    from app.workflow_engine.actions.ai_agent_actions import ai_agent_run
+
+    register_action(
+        ActionDef(
+            key="ai_agent.run",
+            label="AI Agent",
+            description="Send content to an AI agent and capture structured output.",
+            icon="Sparkles",
+            category="Actions",
+            executor=ai_agent_run,
+            fields=[
+                NodeField(key="agentId", label="Agent", type="aiAgent", required=True),
+                NodeField(
+                    key="instructions",
+                    label="Instructions",
+                    type="textarea",
+                    mergeable=True,
+                    required=True,
+                ),
+                NodeField(
+                    key="inputText",
+                    label="Message",
+                    type="textarea",
+                    mergeable=True,
+                    required=True,
+                ),
+                NodeField(
+                    key="outputParams",
+                    label="Output parameters",
+                    type="outputSchema",
+                    required=True,
+                ),
+            ],
+            # Dynamic - the frontend lists config.outputParams as nodes.<id>.<key>
+            # (mirrors how entity/form triggers already inject dynamic outputs).
+            outputs=[],
+        )
+    )
 
 
 _ensure_core = lazy_once(_register_core)

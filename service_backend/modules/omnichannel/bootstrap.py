@@ -69,6 +69,12 @@ def register_engine_entities() -> None:
             register_module_declared_locations(manifest)
             break
 
+    # Workflow-engine trigger + actions (plan sprint-4/17) - registers into the
+    # core registry's dict-backed catalog; idempotent like the rest of this hook.
+    from .workflow_nodes import register_omnichannel_workflow_nodes
+
+    register_omnichannel_workflow_nodes()
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""

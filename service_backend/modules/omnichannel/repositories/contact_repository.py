@@ -95,6 +95,45 @@ class ContactRepository:
             .first()
         )
 
+    def testable_for_channels(
+        self, tenant_id: str, channel_ids: List[str], *, now: datetime
+    ) -> List[Tuple[str, Contact]]:
+        """Attached channel/contact pairs usable for a free-form test reply."""
+        if not channel_ids:
+            return []
+        return (
+            self.db.query(ContactChannelIdentity.channel_id, Contact)
+            .join(Contact, Contact.id == ContactChannelIdentity.contact_id)
+            .filter(
+                ContactChannelIdentity.tenant_id == tenant_id,
+                ContactChannelIdentity.channel_id.in_(channel_ids),
+                Contact.tenant_id == tenant_id,
+                Contact.csw_expires_at.isnot(None),
+                Contact.csw_expires_at > now,
+            )
+            .order_by(
+                ContactChannelIdentity.channel_id.asc(),
+                Contact.first_name.asc(),
+                Contact.last_name.asc(),
+                Contact.id.asc(),
+            )
+            .all()
+        )
+
+    def is_attached_to_channel(
+        self, contact_id: str, channel_id: str, tenant_id: str
+    ) -> bool:
+        return (
+            self.db.query(ContactChannelIdentity.id)
+            .filter(
+                ContactChannelIdentity.tenant_id == tenant_id,
+                ContactChannelIdentity.contact_id == contact_id,
+                ContactChannelIdentity.channel_id == channel_id,
+            )
+            .first()
+            is not None
+        )
+
     def mark_read(self, contact: Contact) -> None:
         contact.agent_last_read_at = datetime.now(timezone.utc)
         self.db.flush()

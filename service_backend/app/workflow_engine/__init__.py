@@ -9,6 +9,7 @@ from app.workflow_engine.registry import (
     NodeField,
     NodeOutput,
     TriggerDef,
+    TriggerTestDataError,
     get_action,
     get_trigger,
     list_actions,
@@ -33,6 +34,7 @@ from app.workflow_engine.entity_events import emit_entity_event  # noqa: E402
 __all__ = [
     "ActionDef",
     "TriggerDef",
+    "TriggerTestDataError",
     "NodeField",
     "NodeOutput",
     "get_action",

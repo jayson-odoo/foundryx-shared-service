@@ -5,11 +5,57 @@ The doc is the forever-contract graph (mirror of frontend ``types/workflows.ts``
 ``draft_definition_json`` / version ``definition_json``. ``validate_definition``
 is the save/publish gate - same rules the editor surfaces live.
 """
+import re
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 WORKFLOW_SCHEMA_VERSION = 1
+
+# Conservative ASCII identifier grammar. Output keys are inserted into merge
+# paths as ``nodes.<id>.<key>`` and must remain one merge-token segment.
+AI_OUTPUT_PARAM_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+AI_OUTPUT_PARAM_TYPES = frozenset({"string", "number", "boolean"})
+_AI_OUTPUT_PARAM_PREFIX = 'AI Agent: "Output parameters"'
+
+
+def output_param_issues(value: Any) -> List[str]:
+    """Return the shared output-parameter contract errors.
+
+    This helper is used by both the publish gate and the runtime action so a
+    saved draft cannot bypass the editor's schema rules.
+    """
+    if not isinstance(value, list):
+        return [f"{_AI_OUTPUT_PARAM_PREFIX} must be a non-empty list of parameter objects."]
+    if not value:
+        return [f"{_AI_OUTPUT_PARAM_PREFIX} must contain at least one parameter."]
+
+    issues: List[str] = []
+    seen: set[str] = set()
+    for row in value:
+        if not isinstance(row, dict):
+            issues.append(f"{_AI_OUTPUT_PARAM_PREFIX} contains a parameter that is not an object.")
+            continue
+        key = row.get("key")
+        if not isinstance(key, str) or not key.strip():
+            issues.append(f'{_AI_OUTPUT_PARAM_PREFIX} contains a parameter without a key.')
+            continue
+        if key != key.strip():
+            issues.append(f"{_AI_OUTPUT_PARAM_PREFIX} contains a key with surrounding whitespace.")
+            continue
+        if AI_OUTPUT_PARAM_KEY_RE.fullmatch(key) is None:
+            issues.append(
+                f'{_AI_OUTPUT_PARAM_PREFIX} contains an invalid key "{key}". '
+                "Use letters, numbers, and underscores; start with a letter or underscore."
+            )
+        elif key in seen:
+            issues.append(f'{_AI_OUTPUT_PARAM_PREFIX} contains duplicate key "{key}".')
+        else:
+            seen.add(key)
+        param_type = row.get("type")
+        if not isinstance(param_type, str) or param_type not in AI_OUTPUT_PARAM_TYPES:
+            issues.append(f"{_AI_OUTPUT_PARAM_PREFIX} contains a parameter with an invalid type.")
+    return issues
 
 
 class WorkflowNodeModel(BaseModel):
@@ -101,7 +147,12 @@ def definition_issues(doc: WorkflowDefinitionModel) -> List[str]:
                 continue  # hidden field - don't require it
             if field.required:
                 value = n.config.get(field.key)
-                if value is None or value == "" or value == []:
+                if field.type == "outputSchema":
+                    if value is None or value == "":
+                        issues.append(f'{entry.label}: "{field.label}" is required.')
+                    else:
+                        issues.extend(output_param_issues(value))
+                elif value is None or value == "" or value == []:
                     issues.append(f'{entry.label}: "{field.label}" is required.')
     return issues
 

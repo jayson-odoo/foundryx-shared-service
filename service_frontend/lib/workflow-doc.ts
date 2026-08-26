@@ -8,12 +8,96 @@ import { catalogEntry, isTriggerType } from '@/lib/workflow-catalog';
 import type {
   WorkflowDefinition,
   WorkflowEdge,
+  WorkflowAiOutputParam,
   WorkflowNode,
   WorkflowNodeConfig,
   WorkflowNodeKind,
 } from '@/types/workflows';
 
 export const WORKFLOW_SCHEMA_VERSION = 1;
+
+// Conservative ASCII identifier grammar. Output keys are inserted into merge
+// paths as `nodes.<id>.<key>` and must remain one merge-token segment.
+export const AI_OUTPUT_PARAM_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export const AI_OUTPUT_PARAM_TYPES = ['string', 'number', 'boolean'] as const;
+const AI_OUTPUT_PARAM_PREFIX = 'AI Agent: "Output parameters"';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function outputParamIssues(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [`${AI_OUTPUT_PARAM_PREFIX} must be a non-empty list of parameter objects.`];
+  }
+  if (!value.length) {
+    return [`${AI_OUTPUT_PARAM_PREFIX} must contain at least one parameter.`];
+  }
+
+  const issues: string[] = [];
+  const seen = new Set<string>();
+  for (const row of value) {
+    if (!isRecord(row)) {
+      issues.push(`${AI_OUTPUT_PARAM_PREFIX} contains a parameter that is not an object.`);
+      continue;
+    }
+    const key = row.key;
+    if (typeof key !== 'string' || !key.trim()) {
+      issues.push(`${AI_OUTPUT_PARAM_PREFIX} contains a parameter without a key.`);
+      continue;
+    }
+    if (key !== key.trim()) {
+      issues.push(`${AI_OUTPUT_PARAM_PREFIX} contains a key with surrounding whitespace.`);
+      continue;
+    }
+    if (!AI_OUTPUT_PARAM_KEY_RE.test(key)) {
+      issues.push(
+        `${AI_OUTPUT_PARAM_PREFIX} contains an invalid key "${key}". ` +
+          'Use letters, numbers, and underscores; start with a letter or underscore.',
+      );
+    } else if (seen.has(key)) {
+      issues.push(`${AI_OUTPUT_PARAM_PREFIX} contains duplicate key "${key}".`);
+    } else {
+      seen.add(key);
+    }
+    if (
+      typeof row.type !== 'string' ||
+      !AI_OUTPUT_PARAM_TYPES.includes(row.type as (typeof AI_OUTPUT_PARAM_TYPES)[number])
+    ) {
+      issues.push(`${AI_OUTPUT_PARAM_PREFIX} contains a parameter with an invalid type.`);
+    }
+  }
+  return issues;
+}
+
+export function validAiOutputParams(value: unknown): WorkflowAiOutputParam[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const valid: WorkflowAiOutputParam[] = [];
+  for (const row of value) {
+    if (!isRecord(row)) continue;
+    const key = row.key;
+    const type = row.type;
+    if (
+      typeof key !== 'string' ||
+      key !== key.trim() ||
+      !AI_OUTPUT_PARAM_KEY_RE.test(key) ||
+      typeof type !== 'string' ||
+      !AI_OUTPUT_PARAM_TYPES.includes(type as (typeof AI_OUTPUT_PARAM_TYPES)[number]) ||
+      seen.has(key)
+    ) {
+      continue;
+    }
+    seen.add(key);
+    valid.push({
+      key,
+      type: type as WorkflowAiOutputParam['type'],
+      ...(typeof row.description === 'string' ? { description: row.description } : {}),
+      ...(typeof row.required === 'boolean' ? { required: row.required } : {}),
+    });
+  }
+  return valid;
+}
 
 /** Stable short id for nodes/edges (forever-contract ids). */
 export function newId(prefix: string): string {
@@ -36,6 +120,12 @@ function defaultConfig(type: string): WorkflowNodeConfig {
   if (type === 'form.submitted') return { formId: '' };
   if (type === 'schedule.cron') return { cron: '0 9 * * *', timezone: '' };
   if (type === 'if') return { conditions: null };
+  // Omnichannel + AI Agent nodes (plan sprint-4/17).
+  if (type === 'omnichannel.message_received') return { channelId: null };
+  if (type === 'omnichannel.get_contact') return { contactId: '' };
+  if (type === 'omnichannel.send_message') return { contactId: '', message: '' };
+  if (type === 'ai_agent.run')
+    return { agentId: '', instructions: '', inputText: '', outputParams: [] };
   return {};
 }
 
@@ -287,7 +377,15 @@ export function validateDefinition(doc: WorkflowDefinition): DefinitionIssue[] {
           value === null ||
           value === '' ||
           (Array.isArray(value) && value.length === 0);
-        if (empty) {
+        if (field.type === 'outputSchema') {
+          if (value === undefined || value === null || value === '') {
+            issues.push({ level: 'error', message: `${entry.label}: "${field.label}" is required.`, nodeId: n.id });
+          } else {
+            for (const message of outputParamIssues(value)) {
+              issues.push({ level: 'error', message, nodeId: n.id });
+            }
+          }
+        } else if (empty) {
           issues.push({ level: 'error', message: `${entry.label}: "${field.label}" is required.`, nodeId: n.id });
         }
       }

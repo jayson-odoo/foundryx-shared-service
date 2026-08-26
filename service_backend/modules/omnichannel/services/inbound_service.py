@@ -15,6 +15,7 @@ from app.config import settings
 from ..adapters.whatsapp_cloud import get_adapter
 from ..models import Channel, Contact, ContactChannelIdentity, ConversationMessage
 from ..repositories.contact_repository import ContactRepository
+from ..security import signed_media_url
 from .conversation_service import ConversationService
 from . import realtime, statuses
 
@@ -225,6 +226,41 @@ class InboundService:
             message_payload["mimeType"] = message_payload.pop("mediaMime", None)
             message_payload["filename"] = message_payload.pop("mediaFilename", None)
             message_payload["size"] = message_payload.pop("mediaSize", None)
+
+        # Start any workflow whose trigger is "Incoming omnichannel message"
+        # (plan sprint-4/17) - failure-isolated (CLAUDE.md: workflow dispatch
+        # must never break the triggering request), on top of
+        # notify_entity_event's own internal dispatch-failure isolation.
+        try:
+            from app.workflow_engine.entity_events import notify_entity_event
+
+            name = " ".join(
+                part for part in [contact.first_name, contact.last_name] if part
+            ).strip()
+            notify_entity_event(
+                self.db,
+                "omnichannel_message",
+                "received",
+                row,
+                tenant_id=channel.tenant_id,
+                extra={
+                    "channelId": channel.id,
+                    "channelName": channel.name,
+                    "workspaceId": channel.workspace_id,
+                    "contactId": contact.id,
+                    "contactName": name or contact.phone or "",
+                    "contactPhone": contact.phone or "",
+                    "conversationId": contact.id,
+                    "messageId": row.id,
+                    "messageType": row.message_type,
+                    "messageText": row.body,
+                    "mediaUrl": signed_media_url(row.id) if row.media_key else None,
+                    "mediaMime": row.media_mime,
+                },
+            )
+        except Exception:  # noqa: BLE001 - a broken workflow never drops a message
+            logger.exception("workflow trigger dispatch failed for inbound message %s", row.id)
+
         enqueue_event(
             self.db,
             channel,

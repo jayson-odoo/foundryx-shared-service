@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_db, require_permission
+from app.dependencies import effective_permission_keys, get_db, require_permission
 from app.models.user import User
 from app.schemas.filters import FilterGroup
 from app.schemas.workflow import (
@@ -31,6 +31,7 @@ from app.schemas.workflow import (
 from app.services.filter_translator import FilterError
 from app.services.workflow_service import WorkflowError, WorkflowNotFound, WorkflowService
 from app.workflow_engine import WorkflowValidationError
+from app.workflow_engine.registry import TriggerTestDataError
 
 router = APIRouter()
 
@@ -115,7 +116,11 @@ def workflow_metadata(
     db: Session = Depends(get_db),
 ) -> dict:
     """Triggerable entities + statuses + record fields for the editor pickers."""
-    return WorkflowService(db).metadata(current_user.tenant_id)
+    can_read_ai_agents = "ai_agents.read" in effective_permission_keys(current_user)
+    return WorkflowService(db).metadata(
+        current_user.tenant_id,
+        include_ai_agents=can_read_ai_agents,
+    )
 
 
 @router.get("/settings", response_model=WorkflowSettingsOut)
@@ -288,14 +293,44 @@ def run_workflow(
     current_user: User = Depends(require_permission("workflows.run")),
     db: Session = Depends(get_db),
 ) -> WorkflowRunItemOut:
+    # Manual runs only need workflows.run. Test-trigger runs also expose
+    # conversation data, so enforce the read permission at this boundary even
+    # when the caller skips the dedicated test-options endpoint.
+    if (
+        body.testTrigger is not None
+        and "conversations.read" not in effective_permission_keys(current_user)
+    ):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Missing permission: conversations.read"
+        )
     service = WorkflowService(db)
     try:
         run = service.run(
-            workflow_id, current_user.tenant_id, inputs=body.inputs, is_test=body.isTest, actor=current_user
+            workflow_id,
+            current_user.tenant_id,
+            inputs=body.inputs,
+            is_test=body.isTest,
+            actor=current_user,
+            test_trigger=(body.testTrigger.model_dump() if body.testTrigger else None),
         )
     except WorkflowNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow not found.")
+    except TriggerTestDataError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
     return WorkflowRunItemOut.from_row(run, current_user.name or current_user.email)
+
+
+@router.get("/{workflow_id}/test-options")
+def workflow_test_options(
+    workflow_id: str,
+    current_user: User = Depends(require_permission("workflows.run")),
+    _conversation_reader: User = Depends(require_permission("conversations.read")),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        return WorkflowService(db).test_options(workflow_id, current_user.tenant_id)
+    except WorkflowNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow not found.")
 
 
 @router.get("/{workflow_id}/runs", response_model=WorkflowRunListResponse)

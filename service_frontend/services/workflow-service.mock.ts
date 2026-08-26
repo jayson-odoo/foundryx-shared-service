@@ -15,6 +15,7 @@ import type {
   WorkflowRunListItem,
   WorkflowRunNode,
   WorkflowRunRequest,
+  WorkflowTestOptions,
   WorkflowVersionSummary,
 } from '@/types/workflows';
 import type { WorkflowService } from './workflow-service';
@@ -460,6 +461,20 @@ export const mockWorkflowService: WorkflowService = {
     };
     RUNS = [run, ...RUNS];
     return delay(toRunSummary(run));
+  },
+
+  getTestOptions(): Promise<WorkflowTestOptions> {
+    return delay({
+      omnichannelTestSources: [
+        {
+          channelId: 'chn-demo',
+          channelName: 'Demo sandbox',
+          contactId: 'cnt-001',
+          contactName: 'Alice',
+          contactPhone: '+6012',
+        },
+      ],
+    });
   },
 
   listRuns(workflowId, query) {
