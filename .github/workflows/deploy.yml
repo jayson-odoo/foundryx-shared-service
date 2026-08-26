@@ -233,6 +233,8 @@ jobs:
 
       - name: Verify public endpoints (retry)
         uses: nick-fields/retry@v3
+        env:
+          APP_DOMAIN: ${{ vars.APP_DOMAIN }}
         with:
           timeout_minutes: 4
           max_attempts: 3
@@ -243,6 +245,8 @@ jobs:
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
             wait_for_port "$H" "$P" || { echo "ssh port never came up"; exit 1; }
             ssh $O -p "$P" "$U@$H" "ACTIVE=\$(cat $D/.active_color 2>/dev/null || echo blue); if [ \"\$ACTIVE\" = blue ]; then BE=8200; FE=3200; else BE=8210; FE=3210; fi; echo \"active=\$ACTIVE be=\$BE fe=\$FE\"; curl -fsS -o /dev/null http://127.0.0.1:\$BE/health && curl -fsS -o /dev/null http://127.0.0.1:\$FE/ && echo endpoints OK"
+            curl --fail --silent --show-error --output /dev/null "https://$APP_DOMAIN/"
+            echo "public HTTPS certificate verified"
 
   notify-owner:
     name: Notify owner by email
