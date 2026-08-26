@@ -1,7 +1,7 @@
-"""Current-user routes — per-user view preferences (column order/width/
+"""Current-user routes - per-user view preferences (column order/width/
 visibility), the change-email ceremony's self-service surface (plan
 sprint-2/04) and avatar/profile self-service (plan sprint-2/06). All
-endpoints are self-scope only — perm-free like /auth/me."""
+endpoints are self-scope only - perm-free like /auth/me."""
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
@@ -39,9 +39,9 @@ async def upload_own_avatar(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AvatarOut:
-    """Set own avatar (plan 06 D5) — the gate runs on SNIFFED bytes, the
+    """Set own avatar (plan 06 D5) - the gate runs on SNIFFED bytes, the
     declared content-type is ignored (it's client input)."""
-    # Cap the read — a full read() buffers an arbitrary-size body in RAM
+    # Cap the read - a full read() buffers an arbitrary-size body in RAM
     # before any size check (review finding). One byte past the cap is
     # enough for the service's too-large 422.
     content = await file.read(AVATAR_MAX_BYTES + 1)
@@ -67,7 +67,7 @@ def update_own_profile(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ProfileOut:
-    """Self-editable profile (plan 06) — name only; email = the ceremony."""
+    """Self-editable profile (plan 06) - name only; email = the ceremony."""
     name = payload.name.strip()
     if not name:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Name is required.")
@@ -96,7 +96,7 @@ def request_email_change(
         row = service.request(current_user, payload.newEmail, payload.password)
     except InvalidPassword:
         throttle.record_login_failure(ip=ip, email=current_user.email)
-        # 400, NOT 401 — the api-client treats 401-with-token as session death.
+        # 400, NOT 401 - the api-client treats 401-with-token as session death.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Incorrect password.",
@@ -136,7 +136,7 @@ def save_profile_preferences(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ProfilePreferences:
-    """User-level display preferences (plan sprint-2/05) — timezone (IANA,
+    """User-level display preferences (plan sprint-2/05) - timezone (IANA,
     422 on unknown; null = browser tz). Self-scope, perm-free; the fresh
     value rides /auth/me + the login payload into the session."""
     return PreferenceService(db).save_profile(current_user, payload)
@@ -168,7 +168,7 @@ def my_tenant_modules(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> List[InstalledModuleOut]:
-    """The caller's tenant install list for MENU GATING — perm-free (self-scope,
+    """The caller's tenant install list for MENU GATING - perm-free (self-scope,
     like /me/preferences). Decouples sidebar module-visibility from
     `app_store.read`: an agent who only uses a module's pages shouldn't need
     App Store read just to see its menu. The gated `/app-store/installed`

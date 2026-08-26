@@ -105,7 +105,7 @@ function FailedCard({ prediction }: { prediction: AutocountPrediction }) {
 export interface PreviewPanelProps {
   preview: AutocountPreview | null;
   isLoading: boolean;
-  /** Set when the dry run itself failed — approval is blocked upstream. */
+  /** Set when the dry run itself failed - approval is blocked upstream. */
   error: string | null;
   /** Whether a preview has been requested yet. */
   hasRun: boolean;
@@ -117,7 +117,7 @@ export interface PreviewPanelProps {
  * prominently (blankings tinted destructive by `PredictionDiff`), and collapses
  * safe creates into a single count so overwrites are never buried under them.
  *
- * "Preview" is a prediction, not a delivery — approving is the separate act
+ * "Preview" is a prediction, not a delivery - approving is the separate act
  * (AC-14-41). Copy here is labels + one-line status only (foolproof-UI).
  */
 export function PreviewPanel({ preview, isLoading, error, hasRun }: PreviewPanelProps) {

@@ -5,7 +5,7 @@ sprint-4/12 Slice 1 (Developer Logs / Integration Activity console):
   the five ``(tenant_id, …)`` composite indexes (AC-DLC-01).
 - The two core permission rows ``integration_logs.read`` / ``.manage``, and a
   grant sweep so EXISTING tenants' Admin roles receive them (a new core
-  permission is otherwise only granted at provision/seed — DoD backfill rule,
+  permission is otherwise only granted at provision/seed - DoD backfill rule,
   AC-DLC-08). ``sweep_tenant_admin_grants`` at bootstrap is belt-and-suspenders.
 
 Deploy via ``bootstrap_db`` (runs ``alembic upgrade``), NOT ``init_db``.

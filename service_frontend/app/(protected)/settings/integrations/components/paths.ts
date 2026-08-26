@@ -1,4 +1,4 @@
-/** Route helpers for the Integrations feature — single source of truth for its URLs. */
+/** Route helpers for the Integrations feature - single source of truth for its URLs. */
 
 export const integrationsListPath = '/settings/integrations';
 export const connectionNewPath = `${integrationsListPath}/new`;

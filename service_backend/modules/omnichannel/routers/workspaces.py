@@ -1,4 +1,4 @@
-"""Workspace routes — thin; gated by omnichannel `workspaces.*` permissions.
+"""Workspace routes - thin; gated by omnichannel `workspaces.*` permissions.
 All tenant-scoped via the JWT user."""
 import csv
 import io

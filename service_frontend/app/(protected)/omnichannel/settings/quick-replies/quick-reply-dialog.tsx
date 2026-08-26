@@ -31,7 +31,7 @@ interface QuickReplyDialogProps {
 /**
  * Create / edit a canned response (plan sprint-3/12). Trivial entity → a modal,
  * not a detail page. `body` required; `shortcut` optional (a `/xyz` the composer
- * matches). All mutations go through the parent's hook — no direct service call.
+ * matches). All mutations go through the parent's hook - no direct service call.
  */
 export function QuickReplyDialog({ item, onClose, onCreate, onUpdate }: QuickReplyDialogProps) {
   const editing = item !== null;

@@ -145,9 +145,9 @@ export interface SettingsPanelProps {
     | null;
   mergeFields: TemplateContextFact[];
   visibilityFacts: RuleFact[];
-  /** Content-only mode — hide structure controls (remove block, section layout). */
+  /** Content-only mode - hide structure controls (remove block, section layout). */
   structureLocked?: boolean;
-  /** List facts (document surface) — back the table/repeater source pickers. */
+  /** List facts (document surface) - back the table/repeater source pickers. */
   listFacts?: TemplateListFact[];
   onBlockChange: (blockId: string, patch: Partial<TemplateBlock>) => void;
   onSectionChange: (sectionId: string, patch: Partial<TemplateSection>) => void;
@@ -176,7 +176,7 @@ export function SettingsPanel({
     );
   }
 
-  // Sections are structure — nothing to edit in content-only mode.
+  // Sections are structure - nothing to edit in content-only mode.
   if (selection.kind === 'section' && structureLocked) {
     return (
       <div className="px-1 py-8 text-center text-xs text-muted-foreground">
@@ -479,7 +479,7 @@ function labelFor(type: TemplateBlock['type']): string {
 }
 
 // ---------------------------------------------------------------------------
-// Table editor (F2 D4) — source · columns · footer rows.
+// Table editor (F2 D4) - source · columns · footer rows.
 // ---------------------------------------------------------------------------
 
 /** Item-fact options for the bound source (column-key picker). */
@@ -660,7 +660,7 @@ function TableFooterEditor({
 }
 
 // ---------------------------------------------------------------------------
-// Repeater editor (F2 D5) — source · body (mini block list, row.* picker).
+// Repeater editor (F2 D5) - source · body (mini block list, row.* picker).
 // ---------------------------------------------------------------------------
 
 const REPEATER_BODY_TYPES: { label: string; value: RepeaterBodyBlock['type'] }[] = [
@@ -809,7 +809,7 @@ function RepeaterBodyFields({
   }
 }
 
-/** Block/section visibility conditions — rule engine (D8). */
+/** Block/section visibility conditions - rule engine (D8). */
 function VisibilitySection({
   conditions,
   facts,
@@ -830,7 +830,7 @@ function VisibilitySection({
       <p className="text-xs text-muted-foreground">
         Shown to a recipient only while these conditions pass. Empty = always shown.
       </p>
-      {/* RuleBuilder is mount-initialized — remount per selected element. */}
+      {/* RuleBuilder is mount-initialized - remount per selected element. */}
       <RuleBuilder key={remountKey} facts={facts} value={conditions} onChange={onChange} />
     </div>
   );

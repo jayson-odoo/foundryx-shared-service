@@ -1,11 +1,11 @@
-"""Change-email ceremony (plan sprint-2/04) — Service layer.
+"""Change-email ceremony (plan sprint-2/04) - Service layer.
 
 Dual confirmation: the OLD mailbox approves the change, the NEW mailbox
 proves deliverability; ``users.email`` flips only on the new-side verify
-(an old-email approval alone cannot prove the new address is deliverable —
+(an old-email approval alone cannot prove the new address is deliverable -
 a typo would bind the account to a mailbox nobody owns).
 
-Self-service only — the admin instant path lives in UserService.update.
+Self-service only - the admin instant path lives in UserService.update.
 """
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -33,7 +33,7 @@ class EmailChangeError(Exception):
 
 
 class InvalidPassword(EmailChangeError):
-    """Password re-entry rejected — fresh proof of possession failed."""
+    """Password re-entry rejected - fresh proof of possession failed."""
 
 
 class SameEmail(EmailChangeError):
@@ -58,7 +58,7 @@ def _ttl() -> timedelta:
 
 
 def mask_email(email: str) -> str:
-    """``name@example.com`` → ``n***@example.com`` — enough for the old-side
+    """``name@example.com`` → ``n***@example.com`` - enough for the old-side
     approve mail to identify the request without disclosing the full target."""
     local, _, domain = email.partition("@")
     if not domain:
@@ -81,7 +81,7 @@ class EmailChangeService:
     def request(self, user: User, new_email: str, password: str) -> EmailChangeRequest:
         """Start the ceremony. Password re-entry = fresh proof of possession
         (a hijacked live session must not be enough to redirect the account's
-        mailbox). Uniqueness is deliberately NOT checked here — the response
+        mailbox). Uniqueness is deliberately NOT checked here - the response
         stays uniform whether or not the address is taken (no enumeration);
         the flip re-checks transactionally in verify()."""
         if not verify_password(password, user.password or ""):
@@ -93,7 +93,7 @@ class EmailChangeService:
 
         # A new request supersedes every prior outstanding one (plan 04 data
         # model). ONE transaction for cancel + create + enqueue (the enqueue
-        # commits) — separate commits could lose the prior request or leave a
+        # commits) - separate commits could lose the prior request or leave a
         # pending row whose approve mail never sends (review fix).
         self.requests.cancel_outstanding(user.id, user.tenant_id, commit=False)
 
@@ -129,7 +129,7 @@ class EmailChangeService:
             raise InvalidChangeToken()
         row.new_token = secrets.token_urlsafe(32)
         row.status = CHANGE_PENDING_NEW
-        # commit=False: the enqueue commits flip + mail atomically — a crash
+        # commit=False: the enqueue commits flip + mail atomically - a crash
         # between separate commits would consume the old token while the
         # verify mail never sends (review fix).
         self.requests.save(row, commit=False)
@@ -142,7 +142,7 @@ class EmailChangeService:
         )
 
     def verify(self, token: str) -> User:
-        """NEW-side verify — THE step that flips the email. Uniqueness is
+        """NEW-side verify - THE step that flips the email. Uniqueness is
         re-checked transactionally (the request never checked it); the final
         notice goes to the PREVIOUS address."""
         row = self.requests.get_by_new_token(token)
@@ -150,30 +150,30 @@ class EmailChangeService:
             raise InvalidChangeToken()
 
         # Tenant-scoped resolution of the stored user id (polymorphic
-        # target_id rule — never resolve with an unscoped get).
+        # target_id rule - never resolve with an unscoped get).
         user = self.users.get_by_id(row.user_id, row.tenant_id)
         if user is None:
             raise InvalidChangeToken()
 
-        # include_trashed: uq_users_tenant_email covers trashed rows too — a
+        # include_trashed: uq_users_tenant_email covers trashed rows too - a
         # trashed holder of the address would pass the active-only check and
         # then 500 at flush instead of this clean 409 (review fix).
         if self.users.exists_by_email(row.new_email, row.tenant_id, include_trashed=True):
-            # Row stays PENDING_NEW — the link may be retried within the TTL
+            # Row stays PENDING_NEW - the link may be retried within the TTL
             # once the conflict clears; the user can also cancel + re-request.
             raise EmailTaken()
 
         old_email = user.email
         try:
             user.email = row.new_email
-            # They just proved control of the mailbox — that IS verification.
+            # They just proved control of the mailbox - that IS verification.
             user.email_verified_at = _now()
             row.status = CHANGE_COMPLETED
             row.completed_at = _now()
             self.db.add(user)
             self.requests.save(row, commit=False)
             # Enqueue commits the whole unit: flip + request row + notice
-            # (uq_users_tenant_email backstops the exists check above — the
+            # (uq_users_tenant_email backstops the exists check above - the
             # try covers the flush AND the commit, so a constraint race
             # surfaces as 409, never 500).
             email_service.send_email_change_notice(

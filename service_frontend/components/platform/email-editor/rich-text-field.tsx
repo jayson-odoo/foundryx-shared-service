@@ -8,12 +8,12 @@ import type { TemplateContextFact } from '@/types/templates';
 
 /**
  * WYSIWYG rich-text field for Text blocks (plan sprint-2/07). A toolbar drives
- * formatting via execCommand so the user NEVER types raw tags — that produced
+ * formatting via execCommand so the user NEVER types raw tags - that produced
  * literal, escaped `&lt;i&gt;` in the output. The command set is deliberately
  * limited to the email-safe vocabulary nh3 keeps server-side (b/i/u/a/ul/ol).
  *
  * Single writer: React never re-applies innerHTML while focused (the
- * contentEditable race we already fixed once) — the sync effect seeds it, the
+ * contentEditable race we already fixed once) - the sync effect seeds it, the
  * user owns it after, commit fires on blur + after each command.
  */
 

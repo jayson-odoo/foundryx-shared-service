@@ -18,7 +18,7 @@ import { useDatetime } from '@/hooks/use-datetime';
 import type { AutocountEntityConfig } from '@/types/autocount';
 import { entityLabel } from '../../components/autocount-meta';
 
-/** Session-timezone rendering of a backend timestamp — never `new Date(iso)`. */
+/** Session-timezone rendering of a backend timestamp - never `new Date(iso)`. */
 function SyncPosition({ iso }: { iso: string }) {
   const { formatDateTime } = useDatetime();
   return <>{formatDateTime(iso)}</>;
@@ -41,7 +41,7 @@ export interface EntityLookbackDialogProps {
  * Why editable at all: `initialLookbackDays` defaults to 30, so a newly
  * connected company only ever sees the last 30 days and a customer's whole
  * back-catalogue is invisible with no operator remedy. This is the cheap escape
- * hatch — widen the first window once and the history comes in. The supervised
+ * hatch - widen the first window once and the history comes in. The supervised
  * full initial-load reconciliation remains D20 / slice 3 and is NOT this.
  *
  * The "first run only" semantics are conveyed as STATE, not as instructional
@@ -61,7 +61,7 @@ export function EntityLookbackDialog({
     if (entity) setValue(String(entity.initialLookbackDays));
   }, [entity]);
 
-  // Once a sync position exists the watermark wins — the backend's
+  // Once a sync position exists the watermark wins - the backend's
   // `Watermark.start()` returns it and ignores the lookback entirely. Offering
   // an edit that provably does nothing is exactly the foolproof-UI violation
   // ("only offer valid options"), so the field is locked and the established
@@ -91,7 +91,7 @@ export function EntityLookbackDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>
-            First-run window{entity ? ` — ${entityLabel(entity.entityType)}` : ''}
+            First-run window{entity ? ` - ${entityLabel(entity.entityType)}` : ''}
           </DialogTitle>
           <DialogDescription>
             Days of history the first sync fetches.

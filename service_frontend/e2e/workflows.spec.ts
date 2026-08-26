@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Plan sprint-2/08 Phase C — Workflow engine, full stack (real clicks).
+ * Plan sprint-2/08 Phase C - Workflow engine, full stack (real clicks).
  *
  * Preconditions:
  *   - frontend :3001 + backend :8001 on the plan-08 branch, migrated + seeded;
@@ -9,7 +9,7 @@ import { expect, test, type Page } from '@playwright/test';
  *
  * Isolation (methodology §7): building + running workflows mutates tenant
  * state, so everything runs on a DEDICATED tenant provisioned via the operator
- * API (setup only — the flow under test stays real clicks). Names timestamped.
+ * API (setup only - the flow under test stays real clicks). Names timestamped.
  */
 const API = process.env.NEXT_PUBLIC_BACKEND_API_URL ?? 'http://localhost:8001';
 
@@ -31,7 +31,7 @@ async function login(page: Page, email: string, password: string) {
   await page.waitForURL((url) => !url.pathname.startsWith('/signin'));
 }
 
-/** Palette sections are collapsed by default — search surfaces the item. */
+/** Palette sections are collapsed by default - search surfaces the item. */
 async function addNode(page: Page, term: string, type: string) {
   await page.getByTestId('palette-search').fill(term);
   await page.getByTestId(`palette-${type}`).click();
@@ -52,7 +52,7 @@ async function connect(page: Page, fromType: string, toType: string) {
 
 test.describe.configure({ mode: 'serial', timeout: 120_000 });
 
-test.describe('Workflow engine — live stack (plan sprint-2/08 Phase C)', () => {
+test.describe('Workflow engine - live stack (plan sprint-2/08 Phase C)', () => {
   test.beforeAll(async ({ request }) => {
     const platformLogin = await request.post(`${API}/auth/login`, {
       data: { email: 'platform@example.com', password: 'platform1234', tenantSlug: 'platform' },
@@ -111,12 +111,12 @@ test.describe('Workflow engine — live stack (plan sprint-2/08 Phase C)', () =>
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await page.waitForURL(/\/workflows\/[^/]+(\?|$)/);
 
-    // Publish (arms the trigger) — proves the validate gate passed.
+    // Publish (arms the trigger) - proves the validate gate passed.
     await page.getByRole('tab', { name: 'Editor' }).click();
     await page.getByTestId('workflow-publish').click();
     await expect(page.getByTestId('unpublished-badge')).toHaveCount(0);
 
-    // Run — the manual input dialog collects the value, run executes inline.
+    // Run - the manual input dialog collects the value, run executes inline.
     await page.getByTestId('workflow-run').click();
     await page.getByTestId('run-input-email').fill('e2e@example.com');
     await page.getByTestId('run-dialog-submit').click();

@@ -30,12 +30,12 @@ export interface ChannelProfileTabProps {
 }
 
 function ReadValue({ value }: { value: string | null | undefined }) {
-  if (!value) return <span className="text-muted-foreground">—</span>;
+  if (!value) return <span className="text-muted-foreground">-</span>;
   return <ClampedText text={value} lines={2} />;
 }
 
 /**
- * Profile tab — the mirrored WhatsApp Business Profile (write-through). Read by
+ * Profile tab - the mirrored WhatsApp Business Profile (write-through). Read by
  * default; the shell's global Edit toggle reveals the inputs. Sync Profile pulls
  * from Meta; Save is the form's global Save (handled in use-channel-form).
  */

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Companion tabular view (sprint-2/01) — scan the statuses, drag-reorder the
+ * Companion tabular view (sprint-2/01) - scan the statuses, drag-reorder the
  * display order (no manual sort numbers, D-UX), quick CSV export. The canvas
  * remains the graph editor; this is the list-shaped lens on the same data.
  */
@@ -164,7 +164,7 @@ export function StatusTable({
     const oldIndex = rows.findIndex((r) => r.id === active.id);
     const newIndex = rows.findIndex((r) => r.id === over.id);
     const next = arrayMove(rows, oldIndex, newIndex);
-    setRows(next); // optimistic — server refetch converges
+    setRows(next); // optimistic - server refetch converges
     void onReorder(next.map((r) => r.id));
   };
 

@@ -13,7 +13,7 @@ export interface UseChangePasswordResult {
   isProcessing: boolean;
   isSuccess: boolean;
   error: string | null;
-  /** True when the failure was a bad/expired token — offer "request a new link". */
+  /** True when the failure was a bad/expired token - offer "request a new link". */
   isTokenError: boolean;
   clearError: () => void;
 }

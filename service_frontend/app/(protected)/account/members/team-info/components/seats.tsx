@@ -19,7 +19,7 @@ const Seats = () => {
       <CardContent className="flex flex-col gap-2.5">
         <h4 className="text-base font-medium text-mono">14/49 Seats</h4>
         <p className="text-sm text-foreground">
-          Additional seats have been added, yet availability remains limited –
+          Additional seats have been added, yet availability remains limited -
           secure yours quickly today.
         </p>
         <div>

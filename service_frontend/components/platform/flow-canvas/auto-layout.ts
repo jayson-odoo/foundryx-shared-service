@@ -1,14 +1,14 @@
 /**
- * Auto-layout for the generic flow canvas (sprint-2/01 "Tidy") — layered
+ * Auto-layout for the generic flow canvas (sprint-2/01 "Tidy") - layered
  * left→right via dagre: initial states land on the left, downstream states
  * rank rightward, loop-backs route around. Engine-agnostic on purpose (the
- * Workflow engine reuses it). Pure function — callers persist positions.
+ * Workflow engine reuses it). Pure function - callers persist positions.
  */
 import dagre from '@dagrejs/dagre';
 import type { Edge, Node } from '@xyflow/react';
 
 export interface AutoLayoutOptions {
-  /** Rank direction — left→right reads like a pipeline (default). */
+  /** Rank direction - left→right reads like a pipeline (default). */
   direction?: 'LR' | 'TB';
   /** Fallbacks when a node hasn't been measured yet. */
   nodeWidth?: number;

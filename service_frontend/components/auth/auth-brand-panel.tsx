@@ -6,9 +6,9 @@ export interface AuthBrandPanelProps {
   /** Tagline shown under the logo. Empty/null = none (branded tenants, plan 03). */
   tagline?: string | null;
   /**
-   * Wordmark logo: /public path or full/data URL. `undefined` = FoundryX default;
-   * `null` = no logo — the panel shows `brandName` instead (a branded tenant
-   * must NEVER fall back to the FoundryX wordmark — white-label rule).
+   * Wordmark logo: /public path or full/data URL. `undefined` = Foundryx default;
+   * `null` = no logo - the panel shows `brandName` instead (a branded tenant
+   * must NEVER fall back to the Foundryx wordmark - white-label rule).
    */
   logoSrc?: string | null;
   /** Text wordmark rendered when `logoSrc` is null (the tenant's name). */
@@ -23,7 +23,7 @@ const resolveSrc = (src: string): string =>
   src.startsWith('/') ? toAbsoluteUrl(src) : src;
 
 /**
- * Brand panel — the solid-primary left side of auth screens. FoundryX by
+ * Brand panel - the solid-primary left side of auth screens. Foundryx by
  * default; tenant branding (sprint-2/03) feeds logo/tagline/illustration via
  * props and recolors the panel through the `bg-primary` token.
  * Hidden below `lg` (the form takes the full width on small screens).

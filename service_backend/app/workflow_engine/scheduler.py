@@ -1,4 +1,4 @@
-"""Schedule trigger drain (plan sprint-2/09 D9) — a single minute-tick.
+"""Schedule trigger drain (plan sprint-2/09 D9) - a single minute-tick.
 
 ``compute_next_run_at`` turns a 5-field cron + IANA timezone into the next UTC
 fire time (stored on ``workflows.next_run_at``). ``run_due_workflows`` is the
@@ -29,7 +29,7 @@ def _zone(tzname: str):
         return timezone.utc
     try:
         return ZoneInfo(tzname)
-    except Exception:  # noqa: BLE001 — bad tz falls back to UTC, never explodes
+    except Exception:  # noqa: BLE001 - bad tz falls back to UTC, never explodes
         return timezone.utc
 
 
@@ -81,7 +81,7 @@ def run_due_workflows(db: Session, *, now: Optional[datetime] = None) -> int:
             continue
         next_at = compute_next_run_at(cron_expr, str(config.get("timezone") or ""), after=now)
         # Claim: advance next_run_at guarded on the still-due value (idempotent
-        # under two concurrent beats — only the winner's UPDATE hits a row).
+        # under two concurrent beats - only the winner's UPDATE hits a row).
         claimed = (
             db.query(Workflow)
             .filter(Workflow.id == wf.id, Workflow.next_run_at <= now)
@@ -108,7 +108,7 @@ def run_due_workflows(db: Session, *, now: Optional[datetime] = None) -> int:
 
 
 def prune_runs(db: Session, *, now: Optional[datetime] = None) -> int:
-    """Housekeeping (plan sprint-2/10 D4) — delete workflow runs older than the
+    """Housekeeping (plan sprint-2/10 D4) - delete workflow runs older than the
     retention window, PER TENANT (plan 10 follow-up): each tenant's retention is
     its ``WorkflowSettings.run_retention_days`` override, else the global default
     (``settings.workflow_run_retention_days``). Child ``workflow_run_nodes`` go
@@ -146,7 +146,7 @@ def prune_runs(db: Session, *, now: Optional[datetime] = None) -> int:
 
 
 def reevaluate_time_based(db: Session) -> int:
-    """Derived status time sweep (sprint-4/03 G4) — re-evaluate records whose
+    """Derived status time sweep (sprint-4/03 G4) - re-evaluate records whose
     TIME-conditioned auto edges (e.g. invoice Overdue when due_date < now) the
     event bus can't catch, since no write fires when the clock merely advances.
 
@@ -164,7 +164,7 @@ def reevaluate_time_based(db: Session) -> int:
             continue
         try:
             candidates = entity.time_candidates(db) or []
-        except Exception:  # noqa: BLE001 — a bad candidate query never kills the tick
+        except Exception:  # noqa: BLE001 - a bad candidate query never kills the tick
             logger.exception("time-based candidate query failed: %s", entity.entity_type)
             db.rollback()
             continue
@@ -179,7 +179,7 @@ def reevaluate_time_based(db: Session) -> int:
                 db.commit()
                 if hops:
                     advanced += 1
-            except Exception:  # noqa: BLE001 — isolate one record's failure
+            except Exception:  # noqa: BLE001 - isolate one record's failure
                 logger.exception(
                     "time-based reevaluate failed: %s %s",
                     entity.entity_type,
@@ -190,13 +190,13 @@ def reevaluate_time_based(db: Session) -> int:
 
 
 def simulate_entity_sweep(db, entity_type, tenant_id, as_of, apply=False):
-    """Admin date-simulation (sprint-4/03 Slice 6) — run ONE entity's time sweep
+    """Admin date-simulation (sprint-4/03 Slice 6) - run ONE entity's time sweep
     AS-OF ``as_of`` (the injectable clock), tenant-scoped, returning the records
     that would advance: ``[{id,label,fromId,toId}]``.
 
     ``apply=False`` (default) = DRY-RUN: a single ``rollback`` at the end discards
     everything (the after_rollback listener clears the buffered events too), so
-    nothing persists and no events/notifications fire — a side-effect-free preview.
+    nothing persists and no events/notifications fire - a side-effect-free preview.
     ``apply=True`` = a single ``commit`` (transitions persist, events drain). A
     record whose ``reevaluate`` raises is logged + skipped (the others still
     preview); ``reevaluate`` validates before mutating, so a skip leaves no
@@ -225,7 +225,7 @@ def simulate_entity_sweep(db, entity_type, tenant_id, as_of, apply=False):
             before = getattr(record, attr)
             try:
                 reevaluate(db, entity_type, record, tenant_id=tenant_id)
-            except Exception:  # noqa: BLE001 — isolate one record; preview the rest
+            except Exception:  # noqa: BLE001 - isolate one record; preview the rest
                 logger.exception(
                     "simulate reevaluate failed: %s %s", entity_type,
                     getattr(record, "id", None),

@@ -26,12 +26,12 @@ function sortRows(rows: QuickReply[], sort: ListQuery['sort']): QuickReply[] {
 }
 
 /**
- * Quick-replies list config (plan sprint-3/12) — canned responses on the FULL
+ * Quick-replies list config (plan sprint-3/12) - canned responses on the FULL
  * Resource shell (search · column visibility/reorder/resize · sort · export).
  * The dataset is small workspace-scoped client data: `items` is supplied by the
  * page's `useQuickReplies` hook and the fetcher pages over it client-side (the
  * same client-adapter pattern as the terminology list). Edit/Delete/Create are
- * inline actions — no detail page.
+ * inline actions - no detail page.
  */
 export function useQuickRepliesListConfig(
   items: QuickReply[],
@@ -84,7 +84,7 @@ export function useQuickRepliesListConfig(
               {row.original.shortcut}
             </code>
           ) : (
-            <span className="text-muted-foreground">—</span>
+            <span className="text-muted-foreground">-</span>
           ),
         size: 160,
         enableSorting: true,
@@ -146,7 +146,7 @@ export function useQuickRepliesListConfig(
     return {
       viewKey: 'omnichannel.quick-replies',
       getRowId: (row) => row.id,
-      rowHref: () => pathname, // no detail page — edit is an inline action
+      rowHref: () => pathname, // no detail page - edit is an inline action
       fetcher,
       exporter,
       searchPlaceholder: 'Search quick replies…',

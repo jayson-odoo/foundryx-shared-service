@@ -1,4 +1,4 @@
-"""Embed-access config tests — plan 11H (tenant-level embed connection admin).
+"""Embed-access config tests - plan 11H (tenant-level embed connection admin).
 
 Covers: enable idempotency; rotate returns the secret exactly once + GET then
 reports hasSecret without ever echoing it; origin validation (reject path /
@@ -81,12 +81,12 @@ def test_rotate_returns_secret_once_then_hidden(client, session_factory):
     secret = rot.json()["embedSecret"]
     assert secret and len(secret) >= 32
 
-    # GET never echoes the secret — only hasSecret flips true.
+    # GET never echoes the secret - only hasSecret flips true.
     cfg = client.get("/omnichannel/embed-config", headers=_bearer(token)).json()
     assert cfg["hasSecret"] is True
     assert "embedSecret" not in cfg
 
-    # It is genuinely stored (encrypted) — decrypts back to the returned value.
+    # It is genuinely stored (encrypted) - decrypts back to the returned value.
     conn = _connection(session_factory, DEFAULT_TENANT_ID)
     assert decrypt_secret(conn.credentials_json)["embedSecret"] == secret
 
@@ -152,7 +152,7 @@ def test_set_origins_rejects_query(client):
 
 
 def test_set_origins_rejects_wildcard_host(client):
-    """A wildcard host is a legal urlsplit host but must be refused — fed to a
+    """A wildcard host is a legal urlsplit host but must be refused - fed to a
     CSP frame-ancestors it would silently broaden who may embed."""
     token = _token(client)
     client.post("/omnichannel/embed-config/enable", headers=_bearer(token))
@@ -251,7 +251,7 @@ def test_tenant_scoping(client, session_factory):
     a_cfg = client.get("/omnichannel/embed-config", headers=_bearer(token_a)).json()
     assert a_cfg["connectionId"] is None
 
-    # A enables — a NEW row for A, B untouched.
+    # A enables - a NEW row for A, B untouched.
     a_cid = client.post("/omnichannel/embed-config/enable", headers=_bearer(token_a)).json()[
         "connectionId"
     ]
@@ -265,7 +265,7 @@ def test_tenant_scoping(client, session_factory):
 # ── permission gate ──────────────────────────────────────────────────────────
 def test_requires_workspaces_manage(client, session_factory):
     """A user WITHOUT workspaces.manage is refused (403). Reuses the existing
-    perm — no new permission, no grant sweep."""
+    perm - no new permission, no grant sweep."""
     from sqlalchemy.sql import func
 
     from app.models import Role, User, UserStatus

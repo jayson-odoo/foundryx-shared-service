@@ -5,13 +5,13 @@ action, form auto-fill, an omnichannel reply-draft), and moving a table out of a
 module schema later is a migration nobody wants.
 
 Shape notes that are load-bearing:
-- **Credential ≠ persona (Bi-D3).** An agent holds NO API key — it points at a
+- **Credential ≠ persona (Bi-D3).** An agent holds NO API key - it points at a
   `connections` row (`type='llm'`), which owns the Fernet-encrypted secret.
 - **A skill version is IMMUTABLE (Bi-D5/AC-BI-07).** An edit inserts a new
   `ai_skill_versions` row and repoints the movable `active_version_id` label;
   rollback is a label move, never a content copy or delete.
 - **Spans carry `parent_id` + `dotted_order` from day one** even though slice 1
-  only ever writes depth-1 sequences — the flat renderer is the deferred piece,
+  only ever writes depth-1 sequences - the flat renderer is the deferred piece,
   not the model (Bi-D17). Real tool loops land later with no migration.
 - All datetimes `UTCDateTime`; all JSON `JSON(none_as_null=True)`.
 """
@@ -37,7 +37,7 @@ from sqlalchemy.sql import func
 from app.database import Base
 from app.models.utc_datetime import UTCDateTime
 
-# Trace outcome — code branches only on these.
+# Trace outcome - code branches only on these.
 TRACE_STATUS_OK = "ok"
 TRACE_STATUS_ERROR = "error"
 
@@ -60,7 +60,7 @@ def _uuid() -> str:
 def _tenant_id_from_agent(context) -> str:
     """Context-sensitive default for the join's ``tenant_id`` (the BL-015
     pattern). Relationship appends only populate the FK columns, so the tenant
-    is DERIVED from the owning agent at insert — never a static default."""
+    is DERIVED from the owning agent at insert - never a static default."""
     agent_id = context.get_current_parameters().get("agent_id")
     if agent_id:
         tenant_id = context.connection.execute(
@@ -71,7 +71,7 @@ def _tenant_id_from_agent(context) -> str:
     raise ValueError("ai_agent_skills.tenant_id could not be derived from the agent.")
 
 
-# An agent equips a SET of skills, like a Claude agent's skill set (AC-BI-06b) —
+# An agent equips a SET of skills, like a Claude agent's skill set (AC-BI-06b) -
 # NOT one. Which of the equipped skills actually RUNS a given grill is the
 # GrillDefinition's choice in slice 3; S1 only stores the set. `tenant_id` is
 # denormalised (derived from the owning agent at insert) so the join reads stay
@@ -109,7 +109,7 @@ class AiAgent(Base):
     __tablename__ = "ai_agents"
     __table_args__ = (
         Index("ix_ai_agents_tenant_name", "tenant_id", "name"),
-        # One agent per (tenant, key) — only where a key is set (system agents).
+        # One agent per (tenant, key) - only where a key is set (system agents).
         Index(
             "uq_ai_agents_tenant_key",
             "tenant_id",
@@ -142,7 +142,7 @@ class AiAgent(Base):
     connection_id = Column(
         String, ForeignKey("connections.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    # A pinned model id. If the provider retires it, a run fails LOUDLY —
+    # A pinned model id. If the provider retires it, a run fails LOUDLY -
     # never a silent substitution (AC-BI-05).
     model = Column(String, nullable=False, default="")
     temperature = Column(Float, nullable=False, default=0.0)
@@ -165,7 +165,7 @@ class AiAgent(Base):
 
 
 class AiSkill(Base):
-    """A browsable, selectable prompt artifact — never an anonymous text blob on
+    """A browsable, selectable prompt artifact - never an anonymous text blob on
     the agent row (AC-BI-07). ``tenant_id IS NULL`` = the platform tier."""
 
     __tablename__ = "ai_skills"
@@ -210,7 +210,7 @@ class AiSkill(Base):
 
 
 class AiSkillVersion(Base):
-    """IMMUTABLE prompt body. Never updated in place — an edit inserts the next
+    """IMMUTABLE prompt body. Never updated in place - an edit inserts the next
     version and the skill's `active_version_id` label moves (AC-BI-07)."""
 
     __tablename__ = "ai_skill_versions"
@@ -278,7 +278,7 @@ class AiMessage(Base):
     content = Column(Text, nullable=False, default="")
     # The cheap coverage map a grill turn reports (slice 3, AC-BI-22).
     covered_fields_json = Column(JSON(none_as_null=True), nullable=True)
-    # The running per-field captured summary a grill turn reports (AC-BI-24c) —
+    # The running per-field captured summary a grill turn reports (AC-BI-24c) -
     # a {fieldKey: shortValue} map. Persisted on the assistant turn so the panel
     # survives a reload / resumed session (durable draft, AC-BI-21).
     captured_summary_json = Column(JSON(none_as_null=True), nullable=True)
@@ -292,7 +292,7 @@ class AiTrace(Base):
     __tablename__ = "ai_traces"
     __table_args__ = (
         Index("ix_ai_traces_tenant_created", "tenant_id", "created_at"),
-        # The retention sweep scans (status, created_at) — `ok` prunes sooner
+        # The retention sweep scans (status, created_at) - `ok` prunes sooner
         # than `error`/`flagged` (AC-BI-10).
         Index("ix_ai_traces_status_created", "status", "created_at"),
     )
@@ -307,7 +307,7 @@ class AiTrace(Base):
     agent_id = Column(
         String, ForeignKey("ai_agents.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    # Denormalised display name — survives the agent being deleted, so an old
+    # Denormalised display name - survives the agent being deleted, so an old
     # trace stays readable (the whole point of keeping traces).
     agent_name = Column(String, nullable=False, default="")
     skill_key = Column(String, nullable=True)
@@ -329,10 +329,10 @@ class AiTrace(Base):
 
 
 class AiSpan(Base):
-    """One step within a run — `llm_call`, `validate`, `retry`, later `tool:*`.
+    """One step within a run - `llm_call`, `validate`, `retry`, later `tool:*`.
 
     `input_json`/`output_json` are SIZE-CAPPED with truncation marked so a long
-    grill can't bloat Postgres unbounded (AC-BI-10) — see `app/ai/tracing.py`.
+    grill can't bloat Postgres unbounded (AC-BI-10) - see `app/ai/tracing.py`.
     """
 
     __tablename__ = "ai_spans"
@@ -349,7 +349,7 @@ class AiSpan(Base):
     )
     # Present from day one for the future tree (Bi-D17); slice 1 writes NULL.
     parent_id = Column(String, nullable=True)
-    # Sortable materialised path ("1", "2", "2.1") — one ORDER BY renders the
+    # Sortable materialised path ("1", "2", "2.1") - one ORDER BY renders the
     # flat list now and the tree later.
     dotted_order = Column(String, nullable=False, default="")
     span_kind = Column(String, nullable=False)

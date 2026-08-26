@@ -1,4 +1,4 @@
-"""Generic Review/Approval engine tests (plan sprint-4/06 Part A — slice-1
+"""Generic Review/Approval engine tests (plan sprint-4/06 Part A - slice-1
 schema/sources/guard portion, AC-06-27..42).
 
 Covers (this slice): config CRUD + score-field guard (422 non-numeric / 200
@@ -752,7 +752,7 @@ def test_assignment_unique_per_actor_revision(client, session_factory):
 
 
 # =====================================================================
-# Audit additions (QA gap closure) — AC-06-29/30/34/57
+# Audit additions (QA gap closure) - AC-06-29/30/34/57
 # =====================================================================
 
 
@@ -804,7 +804,7 @@ def test_role_staff_role_requires_binding(client, session_factory):
 
 def test_staff_role_resolver_tenant_scoped(client, session_factory):
     """AC-06-57: a STAFF_ROLE bound to ANOTHER tenant's role resolves to an empty
-    pool — the resolver scopes both Role.tenant_id and User.tenant_id, so a
+    pool - the resolver scopes both Role.tenant_id and User.tenant_id, so a
     foreign/planted staff-role id never leaks that tenant's users."""
     db = session_factory()
     sub_form = _published_form(db, DEFAULT_TENANT_ID, fields=[_text_field("title")])
@@ -836,7 +836,7 @@ def test_staff_role_resolver_tenant_scoped(client, session_factory):
 def test_decision_durable_when_target_status_unset(client, session_factory):
     """AC-06-34: decide_and_transition writes the first-wins decision durably even
     when no target status is mapped for the outcome (the transition is skipped, the
-    decision still commits — first-wins is honored)."""
+    decision still commits - first-wins is honored)."""
     db = session_factory()
     sub_form = _published_form(db, DEFAULT_TENANT_ID, fields=[_text_field("title")])
     rev_form = _published_form(db, DEFAULT_TENANT_ID, fields=[_num_field("score")])

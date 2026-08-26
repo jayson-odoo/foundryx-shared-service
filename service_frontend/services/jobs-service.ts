@@ -1,11 +1,11 @@
 /**
- * Jobs service (sprint-4/10) — the boundary the Jobs drawer + `/jobs`
+ * Jobs service (sprint-4/10) - the boundary the Jobs drawer + `/jobs`
  * list/detail talk to (via hooks). Generic over job `type`; storage migration
  * is the first. The interface IS the backend contract (`app/api/v1/jobs.py`).
  *
  * Frontend-first: the UI iterates against `jobs-service.mock` (tunable
  * running/needs_review/failed/done states); the shipped boundary below is the
- * `.real` api-client impl — the mock/real swap is this one line.
+ * `.real` api-client impl - the mock/real swap is this one line.
  */
 import type { Job, JobListQuery, JobListResult } from '@/types/jobs';
 import { realJobsService } from './jobs-service.real';

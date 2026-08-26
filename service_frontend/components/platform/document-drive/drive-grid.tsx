@@ -145,7 +145,7 @@ function FolderEntry({
       icon={<Folder className="size-8 text-primary" />}
       listIcon={<Folder className="size-5 text-primary" />}
       typeLabel="Folder"
-      sizeLabel="—"
+      sizeLabel="-"
       modified={folder.updatedAt}
       meta={`${itemCount} item${itemCount === 1 ? '' : 's'}`}
       setRef={setRef}

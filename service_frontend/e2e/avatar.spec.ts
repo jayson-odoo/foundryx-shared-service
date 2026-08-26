@@ -1,13 +1,13 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
 /**
- * Avatar self-service (plan sprint-2/06 D5) — Phase C E2E against the LIVE
+ * Avatar self-service (plan sprint-2/06 D5) - Phase C E2E against the LIVE
  * stack. Upload → crop → save on /account, then verify the avatar renders in
  * the header AND the users list. No storage connection exists on the fresh
  * tenant, so this exercises the LOCAL fallback (StorageService local backend
  * → /public/avatars/{id} route).
  *
- * Spec isolation: dedicated tenant — mutating the demo admin's avatar would
+ * Spec isolation: dedicated tenant - mutating the demo admin's avatar would
  * bleed into every concurrent spec's header.
  */
 
@@ -42,7 +42,7 @@ async function loginTenantAdmin(page: Page, t: { slug: string; email: string; pa
   await page.waitForURL((url) => !url.pathname.startsWith('/signin'));
 }
 
-test.describe('Avatar — upload → crop → renders everywhere (live backend)', () => {
+test.describe('Avatar - upload → crop → renders everywhere (live backend)', () => {
   test('uploads via /account and shows in header + users list', async ({ page, request }) => {
     const tenant = await provisionTenant(request, 'up');
     await loginTenantAdmin(page, tenant);
@@ -66,7 +66,7 @@ test.describe('Avatar — upload → crop → renders everywhere (live backend)'
     await expect(accountAvatar).toBeVisible();
     await expect(accountAvatar).toHaveAttribute('src', /\/public\/avatars\/.+\?v=/);
 
-    // Header (session catches up via update()) — image in the topbar.
+    // Header (session catches up via update()) - image in the topbar.
     await expect(
       page.getByRole('button', { name: 'User menu' }).locator('img'),
     ).toBeVisible({ timeout: 15_000 });

@@ -1,16 +1,16 @@
-"""Company service — registering an AutoCount company database and seeding its
+"""Company service - registering an AutoCount company database and seeding its
 per-entity config + mapping rows.
 
 **A company is DISCOVERED, never typed** (AC-13-01/D16). The operator supplies a
 connection; we sign in and read ``DatabaseName``/``CompanyName`` back. The
-vendor API has no company parameter at all — the server resolves it from the
-``AppId`` header — so asking an operator to name the company would be asking for
+vendor API has no company parameter at all - the server resolves it from the
+``AppId`` header - so asking an operator to name the company would be asking for
 a value that is silently overridden. Worse, it would let two connections claim
 the same company under different labels.
 
 Company identity is therefore ``database_name``, enforced UNIQUE per tenant by
 ``ac_company``. Core's ``uq_connection_tenant_provider`` was carved out for
-``erp`` precisely so this owns it — core keeps zero AutoCount knowledge.
+``erp`` precisely so this owns it - core keeps zero AutoCount knowledge.
 """
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ logger = logging.getLogger("foundryx.autocount")
 # sync that silently does nothing. Probed live 2026-07-21: ``Stock``,
 # ``StockItem``, ``Item``, ``UOM``, ``StockGroup``, ``StockCategory``,
 # ``StockLocation`` and ``StockUOM`` all return HTTP 500 with an EMPTY
-# ``Message`` — distinct from the wrong-credential signature ("Stream was not
+# ``Message`` - distinct from the wrong-credential signature ("Stream was not
 # readable."), and consistent with the route being absent from this wrapper
 # build. They are therefore ABSENT here, not present-and-disabled.
 #
@@ -143,7 +143,7 @@ ENTITY_DEFAULTS: Dict[str, EntityDefaults] = {
 
 
 class AutocountServiceError(Exception):
-    """Base — carries an operator-safe message (never a stack trace, never a
+    """Base - carries an operator-safe message (never a stack trace, never a
     credential)."""
 
     def __init__(self, message: str):
@@ -169,7 +169,7 @@ class EntityConfigNotFound(AutocountServiceError):
 
 # The first sync of a brand-new company reaches back exactly this far
 # (``AcEntityConfig.initial_lookback_days``, default 30). Anything older is
-# INVISIBLE until the supervised full initial load lands (D20, slice 3) — which
+# INVISIBLE until the supervised full initial load lands (D20, slice 3) - which
 # is precisely why the value has to be shown to an operator and be adjustable,
 # rather than sitting silently in a column nobody can see.
 MIN_LOOKBACK_DAYS = 1
@@ -212,7 +212,7 @@ class MappingWriteRow:
 
     ``sorento_field`` is the Sorento-facing target the operator picked; the
     service maps it back to the stored ``canonical_field`` (they are equal for
-    master sink fields). Only these three are operator-authored — ``scope`` and
+    master sink fields). Only these three are operator-authored - ``scope`` and
     the required/enabled flags are derived server-side so the editor cannot
     invent them.
     """
@@ -229,7 +229,7 @@ class MappingWriteRow:
 class MappingRowView:
     """One projected mapping row (AC-15-40). ``sorento_field`` is ``None`` when
     the stored ``canonical_field`` is not delivered to Sorento (identity /
-    watermark provenance like ``last_modified``, or an ``extras`` key) — shown as
+    watermark provenance like ``last_modified``, or an ``extras`` key) - shown as
     non-delivered rather than hidden.
 
     Flat + snake_cased so ``MappingRowOut.model_validate`` maps it straight
@@ -285,7 +285,7 @@ class CompanyService:
         return self.configs.list_for_company(tenant_id, company_id)
 
     def entity_states(self, tenant_id: str, company_id: str) -> List[EntityState]:
-        """Configured entities joined with their watermarks — TWO queries total,
+        """Configured entities joined with their watermarks - TWO queries total,
         never one per entity (the catalogue is heading for nine-plus rows).
 
         A missing watermark row is normal: it means this entity has never been
@@ -364,7 +364,7 @@ class CompanyService:
 
         This is the explicit, deliberate act behind the "Re-fetch history" action
         (AC-15-30): once an entity has synced, its first-run window is spent and
-        the lookback box is inert — the ONLY way to widen history again is to drop
+        the lookback box is inert - the ONLY way to widen history again is to drop
         the watermark. Distinct from ``update_entity_config`` precisely so a
         window edit never silently re-fetches and a re-fetch is never mistaken for
         a config tweak.
@@ -377,7 +377,7 @@ class CompanyService:
             )
         mark = self.watermarks.get(tenant_id, company_id, entity_type)
         if mark is not None:
-            # Clear the delta position and the failure bookkeeping — the next run
+            # Clear the delta position and the failure bookkeeping - the next run
             # starts clean. cursor_json (a mid-window resume point) goes too.
             mark.last_modified_at = None
             mark.last_success_at = None
@@ -400,7 +400,7 @@ class CompanyService:
     # ── connection resolution ────────────────────────────────────────────────
 
     def _connection(self, tenant_id: str, connection_id: str) -> Connection:
-        """Tenant-scoped connection lookup. NEVER a bare ``get(id)`` — a stored
+        """Tenant-scoped connection lookup. NEVER a bare ``get(id)`` - a stored
         id resolved unscoped is the polymorphic-target_id leak class. The query
         itself lives in the repository layer (Router → Service → Repository)."""
         conn = self.connections.get_for_provider(
@@ -413,7 +413,7 @@ class CompanyService:
     def _consumer_connection(self, tenant_id: str, connection_id: str) -> Connection:
         """Tenant- AND provider-scoped lookup of the outbound Sorento connection.
 
-        Mirrors ``_connection`` exactly (never a bare ``get(id)`` — a stored
+        Mirrors ``_connection`` exactly (never a bare ``get(id)`` - a stored
         connection id resolved unscoped is the polymorphic-target_id leak class),
         but pins ``provider='sorento'`` so a company can never be pointed at
         another provider's connection by id."""
@@ -433,21 +433,21 @@ class CompanyService:
         NOT a mock). ``'sorento'`` resolves the company's ``consumer`` connection,
         decrypts its ``apiKey`` (a wrong/rotated ``FERNET_KEY`` yields a CLEAN
         rejection via ``credentials``, never a 500) and builds a per-entity
-        ``SorentoSink``. An unknown ``sink_impl`` is a LOUD error — a silent
+        ``SorentoSink``. An unknown ``sink_impl`` is a LOUD error - a silent
         fallback to the logging sink would stop delivering to a real consumer
         without anyone noticing.
         """
         impl = company.sink_impl or SINK_IMPL_LOGGING
         if impl == SINK_IMPL_LOGGING:
             # Via the registry (not ``LoggingSink()`` directly) so the sink is
-            # swappable the same way the Sorento sink is chosen — one seam.
+            # swappable the same way the Sorento sink is chosen - one seam.
             return sink_for(SINK_IMPL_LOGGING)
         if impl == SINK_IMPL_SORENTO:
             if not sorento_supports_entity(entity_type):
                 # Sorento ingests masters only; a document entity (GRN, PO, …)
                 # has no ingest endpoint yet. Route it to the logging sink so it
                 # stages + logs cleanly instead of raising on a missing ingest
-                # path — deliverability, an expected not-yet-built state, not a
+                # path - deliverability, an expected not-yet-built state, not a
                 # misconfiguration. (The unknown-impl case below stays LOUD.)
                 return sink_for(SINK_IMPL_LOGGING)
             if not company.sink_connection_id:
@@ -474,7 +474,7 @@ class CompanyService:
         sink_impl: str,
         sink_connection_id: Optional[str] = None,
     ) -> AcCompany:
-        """Point a company at a push target (plan 14 hop 2 — the operator wiring).
+        """Point a company at a push target (plan 14 hop 2 - the operator wiring).
 
         Validates the impl against the known set and, for ``'sorento'``, that the
         connection exists and is genuinely a Sorento ``consumer`` connection for
@@ -492,7 +492,7 @@ class CompanyService:
                     "Choose a Sorento connection to push to."
                 )
             # Proves the connection exists AND is a Sorento consumer for this
-            # tenant — 404 otherwise, never a silently-stored dangling id.
+            # tenant - 404 otherwise, never a silently-stored dangling id.
             self._consumer_connection(tenant_id, sink_connection_id)
             company.sink_impl = SINK_IMPL_SORENTO
             company.sink_connection_id = sink_connection_id
@@ -506,7 +506,7 @@ class CompanyService:
 
     def credentials(self, connection: Connection) -> Dict[str, Any]:
         """Decrypt a connection's credentials. A wrong/rotated ``FERNET_KEY``
-        yields a CLEAN rejection, never a 500 — and the message never echoes any
+        yields a CLEAN rejection, never a 500 - and the message never echoes any
         ciphertext."""
         if not connection.credentials_json:
             return {}
@@ -540,7 +540,7 @@ class CompanyService:
 
         The sign-in is not ceremony: it is the only way to learn which company
         an ``AppId`` selects. Registering without it would let an operator
-        create two rows for one company, each with its own watermark — which
+        create two rows for one company, each with its own watermark - which
         would double-deliver every document.
         """
         conn = self._connection(tenant_id, connection_id)
@@ -555,13 +555,13 @@ class CompanyService:
         client = client_from_connection(
             conn.config_json or {}, self.credentials(conn), transport=transport
         )
-        # ONE trace for the discovery interaction — the HTTP leg and the
+        # ONE trace for the discovery interaction - the HTTP leg and the
         # domain-level outcome below share it.
         trace_id = f"acdiscover-{uuid.uuid4()}"
         try:
             session = client.login()
         except AutoCountError as exc:
-            # The real (masked) request/response of the failed login — the leg
+            # The real (masked) request/response of the failed login - the leg
             # that previously logged nothing but a message.
             record_client_calls(
                 self.db,
@@ -648,7 +648,7 @@ class CompanyService:
                         entity_type=entity_type,
                         # Every entity starts gated: a human sees the first
                         # batches before anything reaches a consumer (plan §9).
-                        # Masters especially — they OVERWRITE live data.
+                        # Masters especially - they OVERWRITE live data.
                         sync_mode=SYNC_MODE_SCHEDULED_REVIEW,
                         source_impl="autocount_read",
                         envelope=defaults.envelope,
@@ -683,7 +683,7 @@ class CompanyService:
     def mapping_rows(
         self, tenant_id: str, company_id: str, entity_type: str
     ) -> List[MappingRow]:
-        """DB rows → engine rows. The DB is the source of truth (D5) — there is
+        """DB rows → engine rows. The DB is the source of truth (D5) - there is
         deliberately NO fallback to ``DEFAULT_MAPPINGS`` here: a company whose
         rows were all deleted must map nothing and say so, not quietly resume
         the built-in behaviour an operator thought they had removed."""
@@ -704,7 +704,7 @@ class CompanyService:
 
     def _require_entity(self, tenant_id: str, company_id: str, entity_type: str):
         """Tenant-scope the company, then confirm the entity is one this company
-        is configured for — a 404 otherwise, never a mapping surface for an
+        is configured for - a 404 otherwise, never a mapping surface for an
         entity that does not exist here."""
         self.get(tenant_id, company_id)  # tenant-scope guard (CompanyNotFound)
         config = self.configs.get(tenant_id, company_id, entity_type)
@@ -753,18 +753,18 @@ class CompanyService:
         """Replace the DELIVERABLE mapping rows for one (company, entity) in ONE
         transaction (AC-15-41).
 
-        Foolproof guard (AC-15-42/43 + AC-16-03), enforced server-side — never
+        Foolproof guard (AC-15-42/43 + AC-16-03), enforced server-side - never
         advisory:
           * every ``sorento_field`` must be in the accepted set (else 422 naming
-            the field) — a target Sorento would reject (``extra="forbid"``) can
+            the field) - a target Sorento would reject (``extra="forbid"``) can
             never be stored;
           * each accepted field maps once (no duplicate target);
           * ``source_path`` is non-blank; ``transform`` is a known transform;
-          * a row's ``formula``, if present, PARSES — an unknown name/function or
+          * a row's ``formula``, if present, PARSES - an unknown name/function or
             bad arity is a 422 naming the problem, so a broken formula can never
             reach a sync (AC-16-03).
 
-        Only rows whose canonical field is in the accepted set are replaced —
+        Only rows whose canonical field is in the accepted set are replaced -
         provenance/watermark rows (``last_modified``) are PRESERVED, so a re-map
         can never silently break delta sync. This persists to ``ac_field_mapping``
         and is seed-if-absent-safe: ``seed_company_defaults`` only seeds when the
@@ -849,7 +849,7 @@ class CompanyService:
         formula: str,
         value: Any,
     ) -> Dict[str, Any]:
-        """Server-authoritative single-formula eval (AC-16-21) — the parity check
+        """Server-authoritative single-formula eval (AC-16-21) - the parity check
         behind the builder's live client preview. Writes nothing.
 
         A parse or runtime fault is returned as ``{ok: False, error}`` (named),

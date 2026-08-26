@@ -1,9 +1,9 @@
 /**
- * AutoCount ESB service (sprint-4/13, slice 1) — the boundary the
+ * AutoCount ESB service (sprint-4/13, slice 1) - the boundary the
  * `/autocount/*` surfaces talk to via hooks. The interface IS the backend
  * contract: `modules/autocount/routers/{companies,sync}.py`.
  *
- * The shipped binding is `.real` — the backend is live. A `.mock` sibling
+ * The shipped binding is `.real` - the backend is live. A `.mock` sibling
  * exists ONLY as frontend-first scaffolding for the dry-run review states
  * (previewable / not-previewable / failure) and the Vitest suite; flip the
  * export at the bottom to `mockAutocountService` to build against it, back to
@@ -49,13 +49,13 @@ export interface AutocountService {
   /**
    * Register a company by DISCOVERING it from its connection
    * (`POST /autocount/companies`). The backend signs in and reads the company
-   * name back — there is deliberately no company field to supply.
+   * name back - there is deliberately no company field to supply.
    */
   createCompany(input: AutocountCompanyCreateInput): Promise<AutocountCompany>;
   /**
    * Adjust one entity's sync configuration
    * (`PATCH /autocount/companies/{id}/entities/{entityType}`). Narrow by
-   * design — the initial lookback window only, and changing it re-fetches
+   * design - the initial lookback window only, and changing it re-fetches
    * nothing.
    */
   updateEntityConfig(
@@ -68,7 +68,7 @@ export interface AutocountService {
   /**
    * Re-open an entity's first-run window by RESETTING its watermark
    * (`POST /autocount/companies/{id}/entities/{entityType}/refetch`). The
-   * deliberate, confirmed act that re-widens a spent window (AC-15-30) — the
+   * deliberate, confirmed act that re-widens a spent window (AC-15-30) - the
    * next sync re-reads from `initialLookbackDays` again. Distinct from editing
    * the window, which is a no-op once superseded.
    */
@@ -77,7 +77,7 @@ export interface AutocountService {
     entityType: string,
   ): Promise<AutocountEntityConfig>;
   /**
-   * The Review list — sync batches for the tenant, newest first
+   * The Review list - sync batches for the tenant, newest first
    * (`GET /autocount/jobs`, AC-15-02). Server-paginated + status-segment
    * filtered; NEVER an unbounded fetch.
    */
@@ -89,7 +89,7 @@ export interface AutocountService {
   ): Promise<ListResult<AutocountSyncRun>>;
   /**
    * Staged records + per-record diffs (`GET /autocount/jobs/{id}/staged`).
-   * Server-paginated + searchable + `changed`-filtered (AC-15-10) — never an
+   * Server-paginated + searchable + `changed`-filtered (AC-15-10) - never an
    * all-rows fetch. Omitting the query returns the first page.
    */
   listStaged(
@@ -99,11 +99,11 @@ export interface AutocountService {
   /**
    * Dry-run the batch against the consumer, writing nothing
    * (`POST /autocount/jobs/{id}/preview`). Returns the consumer's own
-   * prediction — the overwrite gate (AC-14-20/21). A logging-sink company
+   * prediction - the overwrite gate (AC-14-20/21). A logging-sink company
    * yields a "not previewable" shape; an unreachable consumer throws (HTTP 502).
    */
   preview(jobId: string): Promise<AutocountPreviewResult>;
-  /** Push the batch (`POST /autocount/jobs/{id}/approve`) — idempotent. */
+  /** Push the batch (`POST /autocount/jobs/{id}/approve`) - idempotent. */
   approve(jobId: string): Promise<AutocountApprovalResult>;
   /** Close without pushing (`POST /autocount/jobs/{id}/discard`). */
   discard(jobId: string): Promise<AutocountApprovalResult>;
@@ -126,7 +126,7 @@ export interface AutocountService {
    * Replace the entity's deliverable field mappings
    * (`PUT .../entities/{entityType}/mapping`, AC-15-41). The server GUARDS every
    * row (accepted Sorento target, non-blank source, known transform, no
-   * duplicate target) — a rejected row is a 422, never a silent drop.
+   * duplicate target) - a rejected row is a 422, never a silent drop.
    */
   updateMapping(
     companyId: string,
@@ -135,7 +135,7 @@ export interface AutocountService {
   ): Promise<AutocountMappingView>;
   /**
    * Server-authoritative single-formula eval
-   * (`POST .../mapping/test-formula`, AC-16-21) — the parity check behind the
+   * (`POST .../mapping/test-formula`, AC-16-21) - the parity check behind the
    * builder's live client preview. A bad formula/value comes back as
    * `{ ok: false, error }`, never a throw. Writes nothing.
    */
@@ -149,7 +149,7 @@ export interface AutocountService {
    * Run the REAL MappingEngine over a MOCK AutoCount record
    * (`POST .../mapping/simulate`, AC-16-30) → the projected Sorento record +
    * per-field results. `rows` (optional) previews UNSAVED draft edits. Writes
-   * NOTHING — pure transform preview, distinct from the slice-14 Sorento dry-run.
+   * NOTHING - pure transform preview, distinct from the slice-14 Sorento dry-run.
    */
   simulateMapping(
     companyId: string,

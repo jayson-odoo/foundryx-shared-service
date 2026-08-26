@@ -1,4 +1,4 @@
-"""Channel business logic — tenant-scoped. Owns status transitions + the
+"""Channel business logic - tenant-scoped. Owns status transitions + the
 Test Connection call via the channel adapter."""
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -157,7 +157,7 @@ class ChannelService:
         """Hard-delete channels. The FKs pointing at ``channels.id`` have no
         ON DELETE CASCADE, so a raw ``db.delete`` raises IntegrityError when the
         channel has identities/templates/messages (rolling back the whole batch
-        — why 'Delete permanently' silently failed). Detach dependents first:
+        - why 'Delete permanently' silently failed). Detach dependents first:
         messages keep their history (channel_id is nullable → set NULL),
         identities + templates are channel-owned → deleted."""
         channels = self.repo.get_many(ids, tenant_id)

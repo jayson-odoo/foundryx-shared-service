@@ -1,5 +1,5 @@
 /**
- * Real status-engine service — talks to FastAPI via the shared api-client.
+ * Real status-engine service - talks to FastAPI via the shared api-client.
  * Endpoints follow sprint-2/01 §backend.
  */
 import { apiFetch } from '@/lib/api-client';

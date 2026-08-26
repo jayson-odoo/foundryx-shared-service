@@ -1,4 +1,4 @@
-"""Document management (the Drive) models — core ``public`` tables (plan
+"""Document management (the Drive) models - core ``public`` tables (plan
 sprint-3/04).
 
 A shared per-tenant Drive: nested ``Folder`` tree, ``File`` rows whose identity
@@ -9,7 +9,7 @@ categorisation (D7); ``DocumentSettings`` is the one-row-per-tenant policy
 backs the async bulk/folder ZIP (D8).
 
 Tenant-born, tenant-scoped on every row (never two-tier). Name-collision and
-folder-cycle are enforced in the service/repository (app-level) — a functional
+folder-cycle are enforced in the service/repository (app-level) - a functional
 ``lower(name)`` unique index is Postgres-only and NULL-distinct on the nullable
 ``folder_id``, so the DB backstop is a follow-up, not the guard.
 """
@@ -68,7 +68,7 @@ SHARE_CAP_VIEW = "view"
 SHARE_CAP_EDIT = "edit"
 SHARE_CAPABILITIES = (SHARE_CAP_VIEW, SHARE_CAP_EDIT)
 
-# Public-edit per-link guardrail defaults (D6) — caps abuse independent of quota.
+# Public-edit per-link guardrail defaults (D6) - caps abuse independent of quota.
 SHARE_DEFAULT_MAX_UPLOADS = 50
 SHARE_DEFAULT_MAX_TOTAL_MB = 200
 
@@ -163,7 +163,7 @@ class DocumentSettings(Base):
 
 class FileShare(Base):
     """The ONE stable share link for a file or folder (Google-Drive model). A
-    target has at most one share row — the ``token`` never changes; the owner
+    target has at most one share row - the ``token`` never changes; the owner
     edits ``general_access`` / ``general_capability`` / the people list in place,
     so flipping "Anyone with the link" → "Restricted" simply makes the same URL
     stop working for the public without re-minting. ``is_disabled`` is a hard
@@ -182,7 +182,7 @@ class FileShare(Base):
     target_kind = Column(String, nullable=False)  # file | folder
     target_id = Column(String, nullable=False, index=True)
     token = Column(String, nullable=False, unique=True, index=True)
-    # restricted | workspace | public — the tier BEYOND the named people list.
+    # restricted | workspace | public - the tier BEYOND the named people list.
     general_access = Column(
         String, nullable=False, default=SHARE_ACCESS_RESTRICTED
     )
@@ -204,10 +204,10 @@ class FileShare(Base):
 
 
 class FileShareUser(Base):
-    """A named person on a share (Google "People with access") — ALWAYS additive,
+    """A named person on a share (Google "People with access") - ALWAYS additive,
     each with their own ``capability``. ``user_id`` is validated to the share's
     tenant at save (422 otherwise) and tenant-scoped at resolve (the sprint-2/01
-    cross-tenant-leak rule — never resolve a stored id unscoped)."""
+    cross-tenant-leak rule - never resolve a stored id unscoped)."""
 
     __tablename__ = "file_share_users"
     __table_args__ = (

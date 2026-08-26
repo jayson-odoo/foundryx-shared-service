@@ -113,7 +113,7 @@ function seedWorkflows(): StoredWorkflow[] {
     {
       id: 'wf-draft',
       name: 'Reminder blast (draft)',
-      description: 'Work in progress — not published yet.',
+      description: 'Work in progress - not published yet.',
       isActive: false,
       isTrashed: false,
       draftDefinition: createBlankDefinition(),
@@ -239,7 +239,7 @@ function toRunDetail(run: StoredRun): WorkflowRunDetail {
 
 function toListItem(wf: StoredWorkflow): WorkflowListItem {
   const trigger = wf.draftDefinition.nodes.find((n) => n.kind === 'trigger');
-  const triggerLabel = trigger ? (catalogEntry(trigger.type)?.label ?? trigger.type) : '—';
+  const triggerLabel = trigger ? (catalogEntry(trigger.type)?.label ?? trigger.type) : '-';
   const lastRun = RUNS.filter((r) => r.workflowId === wf.id).sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt),
   )[0];
@@ -437,7 +437,7 @@ export const mockWorkflowService: WorkflowService = {
   run(id, request: WorkflowRunRequest) {
     const wf = WORKFLOWS.find((w) => w.id === id);
     if (!wf) return Promise.reject(new Error('Workflow not found.'));
-    // Manual run executes the current DRAFT — no publish required (D13).
+    // Manual run executes the current DRAFT - no publish required (D13).
     const version = wf.versions.find((v) => v.id === wf.currentVersionId);
     const definition = wf.draftDefinition;
     const now = new Date().toISOString();

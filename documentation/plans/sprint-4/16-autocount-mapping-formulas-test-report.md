@@ -1,4 +1,4 @@
-# 16 — AutoCount mapping transform formulas + simulators — Test Execution Report
+# 16 - AutoCount mapping transform formulas + simulators - Test Execution Report
 
 > **Contract:** `16-autocount-mapping-formulas-acceptance-criteria.md`
 > **Branch:** `sprint-4/14-autocount-sorento-masters`
@@ -11,10 +11,10 @@
 | Suite | Result |
 |-------|--------|
 | Backend `test_autocount*` + `test_sorento_sink` | **295 passed** (`python -m pytest`) |
-| Frontend vitest (full) | **1079 passed** — incl. `lib/autocount-formula.test.ts`, `lib/autocount-formula.parity.test.ts`, `autocount-formula-builder.test.tsx`, `date-format-tool.test.tsx`, `mapping-simulator.test.tsx` |
+| Frontend vitest (full) | **1079 passed** - incl. `lib/autocount-formula.test.ts`, `lib/autocount-formula.parity.test.ts`, `autocount-formula-builder.test.tsx`, `date-format-tool.test.tsx`, `mapping-simulator.test.tsx` |
 | **E2E** `e2e/autocount-mapping.spec.ts` | **2 passed** (real clicks vs live stack) |
 
-## E2E journey — Formula builder + per-formula + whole-mapping simulation
+## E2E journey - Formula builder + per-formula + whole-mapping simulation
 
 - **User story:** As an operator I express a T/F transform as a formula, watch it evaluate live against
   a mock value, and simulate a whole AutoCount record → the whole Sorento record before a sync uses it.
@@ -38,7 +38,7 @@
     `field-results` table shown; "This record maps cleanly." (AC-16-30/31).
   - Formula builder opened pre-filled with `if(value == "T", true, false)`; `formula-status` = "Valid
     formula" (AC-16-10/11).
-  - `client-output` showed `true` for input `T` and `false` for input `F` — the formula genuinely
+  - `client-output` showed `true` for input `T` and `false` for input `F` - the formula genuinely
     evaluates (AC-16-20).
   - Save produced `Field mapping saved.` (AC-15-41).
 - **Remarks:** Verified responsive at **375px and 1280px** on the mapping editor (no horizontal page
@@ -51,27 +51,27 @@
 |----|---------|----------|
 | AC-16-01 Safe evaluator, client↔server parity | **PASS** | `lib/autocount-formula.parity.test.ts` + backend golden-matrix agreement (`test_autocount_pipeline.py` `:3892`); hand-written parser, no eval/Jinja. |
 | AC-16-02 Grammar covers the need + quirks | **PASS** | `lib/autocount-formula.test.ts` + backend evaluator matrix; `if(value == "T", true, false)`→bool verified live in E2E. |
-| AC-16-03 Fails CLOSED and named | **PASS** | `test_autocount_pipeline.py` AC-16-03 (`:3922`, `:3930`, `:4030`, `:4050`) — unknown name/fn/arity = 422 at save; `number('Acme')` fails that field named at eval. |
-| AC-16-04 Output coerced to Sorento field type | **PASS** | `test_autocount_pipeline.py` AC-16-04 (`:3996`) — a boolean field fed a string is a per-field error, not a wrong value. |
+| AC-16-03 Fails CLOSED and named | **PASS** | `test_autocount_pipeline.py` AC-16-03 (`:3922`, `:3930`, `:4030`, `:4050`) - unknown name/fn/arity = 422 at save; `number('Acme')` fails that field named at eval. |
+| AC-16-04 Output coerced to Sorento field type | **PASS** | `test_autocount_pipeline.py` AC-16-04 (`:3996`) - a boolean field fed a string is a per-field error, not a wrong value. |
 | AC-16-10 Preset pre-fills the formula | **PASS** | E2E: Boolean preset → `if(value == "T", true, false)` in the builder; `autocount-formula-builder.test.tsx`; `applyPreset` in `autocount-meta.ts`. |
 | AC-16-11 Builder discoverable + safe | **PASS** | E2E opens the builder (Build affordance), live parse validation shows "Valid formula"; `autocount-formula-builder.test.tsx`. |
-| AC-16-12 Foolproof — searchable, read-only-until-Edit | **PASS** | E2E: builder only reachable under the form's Edit toggle; category/search are `SearchSelect`/inputs; per-function reference panel (not procedural copy). `autocount-formula-builder.test.tsx`. |
+| AC-16-12 Foolproof - searchable, read-only-until-Edit | **PASS** | E2E: builder only reachable under the form's Edit toggle; category/search are `SearchSelect`/inputs; per-function reference panel (not procedural copy). `autocount-formula-builder.test.tsx`. |
 | AC-16-13 Functions grouped by type + searchable | **PASS** | `autocount-formula-builder.test.tsx` (category `SearchSelect` String/Number/Boolean/Date/Logical + search + insert-at-caret); backend `function_catalog`. |
 | AC-16-14 Date-format tool (input + output tokens) | **PASS** | `date-format-tool.test.tsx` (fixed token vocabulary, live sample preview); backend date parity anchor case (`test_autocount_pipeline.py` `:3912`). **Not driven by the E2E** (shown only under the Date category; covered by unit + parity). |
 | AC-16-15 Builder explains each function | **PASS** | `autocount-formula-builder.test.tsx` (reference panel: signature/args/description/example); `function-reference` testid in `autocount-formula-builder.tsx`. |
 | AC-16-20 Per-formula live test with a mock value | **PASS** | E2E: `T`→`true`, `F`→`false` live in the Testing tab (`client-output`); `autocount-formula-builder.test.tsx`. |
-| AC-16-21 Server confirms same result (parity) | **PASS** | Backend test-formula endpoint parity (`test_autocount_pipeline.py` `:4086`) + `lib/autocount-formula.parity.test.ts`. **E2E exercised the client preview only** (the "Check on server" click was not driven — server parity is robustly unit-covered). |
+| AC-16-21 Server confirms same result (parity) | **PASS** | Backend test-formula endpoint parity (`test_autocount_pipeline.py` `:4086`) + `lib/autocount-formula.parity.test.ts`. **E2E exercised the client preview only** (the "Check on server" click was not driven - server parity is robustly unit-covered). |
 | AC-16-30 Whole-mapping sim → whole Sorento record | **PASS** | E2E: mock record → `sorento-output` with every mapped field + `field-results`; backend whole-mapping simulate (`test_autocount_pipeline.py` `:4104`, `:4130`), `mapping-simulator.test.tsx`. |
 | AC-16-31 Legible record-in → record-out, writes nothing | **PASS** | E2E: AutoCount-in beside Sorento-out, "This record maps cleanly.", nothing written (pure preview); `mapping-simulator.test.tsx`. |
-| AC-16-32 Simulator may seed a REAL sample | **DEFERRED** | Optional nice-to-have per the AC ("if it complicates the slice, a hand-entered/pasted mock record satisfies AC-16-30"). Not implemented — the simulator takes a hand-entered/pasted mock (the sanctioned fallback), which AC-16-30 confirms is sufficient. No "pull one real AutoCount record" button in `mapping-simulator.tsx`. |
+| AC-16-32 Simulator may seed a REAL sample | **DEFERRED** | Optional nice-to-have per the AC ("if it complicates the slice, a hand-entered/pasted mock record satisfies AC-16-30"). Not implemented - the simulator takes a hand-entered/pasted mock (the sanctioned fallback), which AC-16-30 confirms is sufficient. No "pull one real AutoCount record" button in `mapping-simulator.tsx`. |
 
 ## DoD gate
 
-1. **Mock swapped to real** — `autocount-service.ts` binds `.real`; the whole-mapping simulator calls the real backend `…/mapping/simulate` (real `MappingEngine`), the formula tester calls the real `…/test-formula`. ✅
-2. **Backfill** — `formula` column NULL-default (migration `0005`), behavior-preserving; a row with no formula runs its exact named transform. ✅
-3. **No hardcoded tenant-editable key** — formulas operate on `value`; entity/field keys are code constants. ✅
-4. **Permissions reach existing tenants** — `…/mapping/{functions,test-formula,simulate}` reuse `autocount.companies.manage`; no new permission introduced. ✅
-5. **Responsive** — E2E asserts 375px + 1280px on the mapping editor. ✅
+1. **Mock swapped to real** - `autocount-service.ts` binds `.real`; the whole-mapping simulator calls the real backend `…/mapping/simulate` (real `MappingEngine`), the formula tester calls the real `…/test-formula`. ✅
+2. **Backfill** - `formula` column NULL-default (migration `0005`), behavior-preserving; a row with no formula runs its exact named transform. ✅
+3. **No hardcoded tenant-editable key** - formulas operate on `value`; entity/field keys are code constants. ✅
+4. **Permissions reach existing tenants** - `…/mapping/{functions,test-formula,simulate}` reuse `autocount.companies.manage`; no new permission introduced. ✅
+5. **Responsive** - E2E asserts 375px + 1280px on the mapping editor. ✅
 
 ## Verdict
 

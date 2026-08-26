@@ -1,4 +1,4 @@
-"""Module platform v2 tests (sprint-3/10, F9) — validates AC-10-*.
+"""Module platform v2 tests (sprint-3/10, F9) - validates AC-10-*.
 
 topo order + cycle · version_satisfies · resolve_capability matrix (tenant-
 active gated, exact-major) · duplicate boot error · active_modules filters a

@@ -1,4 +1,4 @@
-"""App Store business logic (plan 08) — ONE service behind both entry points
+"""App Store business logic (plan 08) - ONE service behind both entry points
 (tenant-side ``/app-store/*`` and operator ``/platform/tenants/{id}/modules/*``).
 
 Lifecycle semantics (§5):
@@ -72,7 +72,7 @@ class RequiresUnmet(AppStoreError):
 
 
 class DependentsActive(AppStoreError):
-    """Reverse-dep guard (plan 10 D4): a dependent is ACTIVE — block removal."""
+    """Reverse-dep guard (plan 10 D4): a dependent is ACTIVE - block removal."""
 
     def __init__(self, message: str, dependents: list):
         super().__init__(message)
@@ -80,7 +80,7 @@ class DependentsActive(AppStoreError):
 
 
 def module_hooks(name: str):
-    """The module's bootstrap contract (plan 08 §4) — absent hooks are no-ops."""
+    """The module's bootstrap contract (plan 08 §4) - absent hooks are no-ops."""
     try:
         return importlib.import_module(f"modules.{name}.bootstrap")
     except ModuleNotFoundError:
@@ -178,7 +178,7 @@ class AppStoreService:
         if hooks and hasattr(hooks, "update_tenant"):
             hooks.update_tenant(self.db, tenant_id, state.installed_version)
 
-        # New versions may declare new permission rows — Admin picks them up.
+        # New versions may declare new permission rows - Admin picks them up.
         self._grant_admin(tenant_id, name)
         state.installed_version = module.version
         self.db.commit()
@@ -195,7 +195,7 @@ class AppStoreService:
             hooks.uninstall_tenant(self.db, tenant_id)
 
         # Revoke the module's permission grants from EVERY role of this tenant
-        # (catalog rows stay — they're global, owned by the module's CSV).
+        # (catalog rows stay - they're global, owned by the module's CSV).
         for role in self.db.query(Role).filter(Role.tenant_id == tenant_id).all():
             kept = [p for p in role.permissions if p.module != name]
             if len(kept) != len(role.permissions):
@@ -206,9 +206,9 @@ class AppStoreService:
 
     def remove_all_tenant_modules(self, tenant_id: str) -> None:
         """Tenant-purge teardown (BL-035): run every module's
-        ``uninstall_tenant`` hook (ACTIVE and INACTIVE alike — deactivated
+        ``uninstall_tenant`` hook (ACTIVE and INACTIVE alike - deactivated
         modules keep their rows and must be wiped too) and drop the state
-        rows. NO commit — rides the caller's transaction; NO grant revoke —
+        rows. NO commit - rides the caller's transaction; NO grant revoke -
         the purge deletes the tenant's roles outright."""
         for name in self.repo.installed_module_names(tenant_id):
             hooks = module_hooks(name)

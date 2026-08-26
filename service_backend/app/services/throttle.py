@@ -1,18 +1,18 @@
 """Brute-force throttling for the public auth endpoints (plan 10 §5).
 
 Dual counters (D6):
-  - email: N fails per account per window → TEMP lock (never permanent — a
+  - email: N fails per account per window → TEMP lock (never permanent - a
     hard lockout is an attacker DoS on victims). Success resets the counter.
   - ip:    N fails per client address per window → throttled until the window
     rolls over.
 
 `ThrottleStore` is the small interface a future Redis adapter (BL-040)
-implements; `DbThrottleStore` is the Postgres-backed default — auth traffic is
+implements; `DbThrottleStore` is the Postgres-backed default - auth traffic is
 low-QPS and on-prem stays one-service (D5). Atomicity via row upsert + row
 lock (`with_for_update`, a no-op on SQLite under tests).
 
 The guard runs BEFORE any credential work (cheap rejection under attack) and
-the 429 is deliberately distinct from the uniform 401 — locking is observable
+the 429 is deliberately distinct from the uniform 401 - locking is observable
 anyway; clarity beats theater.
 """
 import math
@@ -36,7 +36,7 @@ from app.models.auth_throttle import (
 
 
 class Throttled(Exception):
-    """Over the limit — the router translates to 429 + Retry-After."""
+    """Over the limit - the router translates to 429 + Retry-After."""
 
     def __init__(self, retry_after_seconds: int):
         super().__init__(f"throttled for {retry_after_seconds}s")
@@ -49,7 +49,7 @@ def _now() -> datetime:
 
 
 def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
-    """(max_fails, window, lock) for a scope — read at call time so tests and
+    """(max_fails, window, lock) for a scope - read at call time so tests and
     ops tune Settings without restarts."""
     if scope == THROTTLE_SCOPE_EMAIL:
         return (
@@ -89,7 +89,7 @@ def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
 
 
 class ThrottleStore(Protocol):
-    """Counter backend. Small on purpose — the Redis impl (BL-040) is one file."""
+    """Counter backend. Small on purpose - the Redis impl (BL-040) is one file."""
 
     def check(self, scope: str, key: str) -> Optional[int]:
         """None = allowed; int = seconds until the caller may retry."""
@@ -122,7 +122,7 @@ class DbThrottleStore:
         max_fails, window, _lock = _scope_policy(scope)
         window_end = row.window_start + window
         if window_end <= now:
-            return None  # stale window — counters no longer apply
+            return None  # stale window - counters no longer apply
         if row.fail_count >= max_fails:
             return math.ceil((window_end - now).total_seconds())
         return None
@@ -137,10 +137,10 @@ class DbThrottleStore:
             try:
                 self.db.commit()
             except IntegrityError:
-                # Concurrent first-failure race — retry against the winner's row.
+                # Concurrent first-failure race - retry against the winner's row.
                 self.db.rollback()
                 row = self._get(scope, key, for_update=True)
-                if row is None:  # pragma: no cover — row vanished between statements
+                if row is None:  # pragma: no cover - row vanished between statements
                     return
                 self._bump(row, now, max_fails, window, lock)
             else:
@@ -157,7 +157,7 @@ class DbThrottleStore:
         lock: Optional[timedelta],
     ) -> None:
         if row.window_start + window <= now:
-            # New window — start over (also clears an expired lock).
+            # New window - start over (also clears an expired lock).
             row.window_start = now
             row.fail_count = 1
             row.locked_until = None
@@ -176,7 +176,7 @@ class DbThrottleStore:
 
 
 def prune_stale(db: Session) -> int:
-    """Housekeeping — drop rows whose window AND lock are long past. Piggybacks
+    """Housekeeping - drop rows whose window AND lock are long past. Piggybacks
     the email-dispatcher housekeeping pass (plan 10 §5)."""
     horizon = _now() - timedelta(
         minutes=2
@@ -203,7 +203,7 @@ def prune_stale(db: Session) -> int:
 
 def client_ip(request: Request) -> str:
     """The throttle key for the caller's address. X-Forwarded-For (first hop)
-    is honored ONLY behind the known proxy (`trust_proxy_headers`) — otherwise
+    is honored ONLY behind the known proxy (`trust_proxy_headers`) - otherwise
     attackers mint fresh counters per spoofed header."""
     if settings.trust_proxy_headers:
         forwarded = request.headers.get("x-forwarded-for")

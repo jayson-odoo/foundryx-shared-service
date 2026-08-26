@@ -1,5 +1,5 @@
 /**
- * Real tenant admin service (Phase B) — talks to FastAPI via the shared
+ * Real tenant admin service (Phase B) - talks to FastAPI via the shared
  * api-client. Backend returns camelCase matching the tenant-admin types, so no
  * field remapping. Bound in one line from tenant-admin-service.ts when the
  * backend lands (plan 07 §9 endpoints, all require_platform_permission).

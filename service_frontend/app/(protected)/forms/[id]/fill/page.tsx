@@ -1,6 +1,6 @@
 'use client';
 
-/** Internal fill page (plan sprint-3/01 D19) — any authenticated tenant user
+/** Internal fill page (plan sprint-3/01 D19) - any authenticated tenant user
  * (filling ≠ administering; deliberately NO forms.* permission gate). Serves
  * only the PUBLISHED version (D9).
  *

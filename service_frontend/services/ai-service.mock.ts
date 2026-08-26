@@ -1,5 +1,5 @@
 /**
- * In-memory AI service — **TEST FIXTURE ONLY, not a shipped mock.**
+ * In-memory AI service - **TEST FIXTURE ONLY, not a shipped mock.**
  *
  * The slice ships real-bound (`ai-service.ts` → `ai-service.real`); this module
  * exists so Vitest can drive the list/form configs without a backend. It is

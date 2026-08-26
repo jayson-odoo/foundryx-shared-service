@@ -1,7 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
 /**
- * App Store E2E (plan 08 Phase C) — real user clicks against the LIVE stack
+ * App Store E2E (plan 08 Phase C) - real user clicks against the LIVE stack
  * (Next :3001 → FastAPI :8001 → Postgres). Backend must be up + bootstrapped
  * (`python -m scripts.bootstrap_db`).
  *
@@ -44,7 +44,7 @@ async function loginTenantAdmin(page: Page, t: { slug: string; email: string; pa
 }
 
 async function gotoAppStore(page: Page) {
-  // "App Store" is a grouping parent — the navigable entry is its child.
+  // "App Store" is a grouping parent - the navigable entry is its child.
   const link = page.getByRole('link', { name: 'Browse Modules', exact: true });
   if (!(await link.isVisible().catch(() => false))) {
     await page.getByText('App Store', { exact: true }).click();
@@ -80,7 +80,7 @@ test('full lifecycle on a fresh tenant: install → menu appears → deactivate 
   await expect(omni.getByText('Active')).toBeVisible();
   await expect(omniMenu(page).first()).toBeVisible(); // session perms + menu refresh (D7)
 
-  // Click through to Workspaces — install_tenant seeded the default 'General'.
+  // Click through to Workspaces - install_tenant seeded the default 'General'.
   await omniMenu(page).first().click();
   await page.getByRole('link', { name: 'Workspaces' }).click();
   await expect(page).toHaveURL(/\/omnichannel\/settings\/workspaces/);
@@ -114,7 +114,7 @@ test('full lifecycle on a fresh tenant: install → menu appears → deactivate 
 
   await expect(card(page, 'omnichannel').getByText('Not installed')).toBeVisible();
   await expect(omniMenu(page)).toHaveCount(0);
-  // (Per-tenant wipe isolation — other tenants' data untouched — is pinned by
+  // (Per-tenant wipe isolation - other tenants' data untouched - is pinned by
   // pytest: tests/test_app_store.py::test_uninstall_wipes_only_that_tenant.)
 });
 

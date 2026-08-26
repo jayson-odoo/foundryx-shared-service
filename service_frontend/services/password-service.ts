@@ -1,18 +1,18 @@
 /**
- * Password service (plan 10) — the boundary the forgot/change-password pages
+ * Password service (plan 10) - the boundary the forgot/change-password pages
  * talk to (via use-forgot-password / use-change-password). Phase A binds the
  * MOCK; Phase B swaps `passwordService` to the real api-client impl in ONE
  * line (bottom).
  *
  * The interface IS the backend contract (plan 10 §3/§6):
- *   POST /auth/forgot-password  — public, enumeration-safe, ALWAYS 200 with a
+ *   POST /auth/forgot-password  - public, enumeration-safe, ALWAYS 200 with a
  *                                 uniform message; throttled (429 + Retry-After).
- *   POST /auth/set-password     — redeems the single-use token; throttled.
+ *   POST /auth/set-password     - redeems the single-use token; throttled.
  */
 import { InvalidTokenError, RateLimitError } from '@/lib/service-errors';
 import { realPasswordService } from './password-service.real';
 
-// Shared identities (lib/service-errors, sprint-2/04 review extraction) —
+// Shared identities (lib/service-errors, sprint-2/04 review extraction) -
 // re-exported so consumers keep importing from the service boundary.
 export { InvalidTokenError, RateLimitError };
 
@@ -30,5 +30,5 @@ export interface PasswordService {
   setPassword(token: string, password: string): Promise<void>;
 }
 
-// Phase B swap done — mock retained in password-service.mock.ts for tests.
+// Phase B swap done - mock retained in password-service.mock.ts for tests.
 export const passwordService: PasswordService = realPasswordService;

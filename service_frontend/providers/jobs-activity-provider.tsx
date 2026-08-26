@@ -28,7 +28,7 @@ interface JobsActivityContextValue {
 const Ctx = createContext<JobsActivityContextValue | null>(null);
 
 /**
- * Jobs activity provider (sprint-4/10) — holds the generic Jobs drawer + the
+ * Jobs activity provider (sprint-4/10) - holds the generic Jobs drawer + the
  * storage-migration wizard at the layout root (sibling of the Uploads/Downloads/
  * Imports providers), so the header can trigger the drawer and any storage
  * connection's "Migrate storage" action can open the wizard. Polls the job list

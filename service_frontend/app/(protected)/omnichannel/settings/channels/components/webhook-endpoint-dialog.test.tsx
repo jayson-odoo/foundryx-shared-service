@@ -21,7 +21,7 @@ vi.mock('@/services/whatsapp-webhook-service', () => ({
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
-// Stub the MultiSelect popover with a flat set of toggle buttons — the popover
+// Stub the MultiSelect popover with a flat set of toggle buttons - the popover
 // internals aren't under test here, the dialog's validation + reveal are.
 vi.mock('@/components/platform/multi-select', () => ({
   MultiSelect: ({

@@ -1,11 +1,11 @@
 /**
- * Meta WhatsApp Embedded Signup (Route A — FoundryX = Tech Provider).
+ * Meta WhatsApp Embedded Signup (Route A - Foundryx = Tech Provider).
  *
  * SELF-HOSTED REDIRECT FLOW. We do NOT use `FB.login` (the JS SDK): under Meta's
  * forced "Use Strict Mode for redirect URIs", `FB.login` mints the code against a
  * dynamic internal `xd_arbiter` URL that can never be matched server-side, so the
  * token exchange always fails with error 36008. Instead we drive Meta's OAuth
- * dialog ourselves with a redirect_uri WE own + registered — the code is bound to
+ * dialog ourselves with a redirect_uri WE own + registered - the code is bound to
  * that fixed URL, and the backend exchanges with the identical value. The WABA +
  * phone number are then read back from the token (no postMessage needed).
  *
@@ -20,7 +20,7 @@ const META_APP_ID = process.env.NEXT_PUBLIC_META_APP_ID ?? '';
 const META_CONFIG_ID = process.env.NEXT_PUBLIC_META_ES_CONFIG_ID ?? '';
 const GRAPH_VERSION = process.env.NEXT_PUBLIC_META_GRAPH_VERSION ?? 'v23.0';
 
-/** Path of our OAuth callback page — must be registered as a Valid OAuth
+/** Path of our OAuth callback page - must be registered as a Valid OAuth
  *  Redirect URI in the Meta app (Facebook Login for Business → Settings). */
 const CALLBACK_PATH = '/wa-callback';
 
@@ -32,7 +32,7 @@ const FB_ORIGINS = new Set([
   'https://m.facebook.com',
 ]);
 
-/** True only when the Meta app is configured — drives real-vs-simulated popup. */
+/** True only when the Meta app is configured - drives real-vs-simulated popup. */
 export function isEmbeddedSignupConfigured(): boolean {
   return Boolean(META_APP_ID && META_CONFIG_ID);
 }
@@ -44,7 +44,7 @@ interface OAuthMessage {
   error?: string;
 }
 
-/** Meta's Embedded Signup session-info message — identifies the EXACT number the
+/** Meta's Embedded Signup session-info message - identifies the EXACT number the
  *  user selected/registered, so we don't have to guess it from the token. */
 interface WaSessionInfo {
   phone_number_id?: string;
@@ -74,12 +74,12 @@ export async function launchEmbeddedSignup(): Promise<EmbeddedSignupResult> {
 
   const popup = window.open(dialogUrl, 'fx_wa_es', 'popup,width=600,height=760');
   if (!popup) {
-    throw new Error('Popup blocked — allow popups for this site and try again.');
+    throw new Error('Popup blocked - allow popups for this site and try again.');
   }
 
   return new Promise<EmbeddedSignupResult>((resolve, reject) => {
     let settled = false;
-    // Captured from Meta's ES FINISH message during the flow — the EXACT number
+    // Captured from Meta's ES FINISH message during the flow - the EXACT number
     // the user picked. Falls back to server-side token resolution if absent.
     let session: WaSessionInfo = {};
     const cleanup = () => {
@@ -95,7 +95,7 @@ export async function launchEmbeddedSignup(): Promise<EmbeddedSignupResult> {
     };
 
     // Meta's Embedded Signup posts session info (selected phone_number_id +
-    // waba_id) to the opener while the popup runs. Exact-origin allowlist —
+    // waba_id) to the opener while the popup runs. Exact-origin allowlist -
     // `endsWith('facebook.com')` would also match `evilfacebook.com`.
     const onWaMessage = (event: MessageEvent) => {
       if (!FB_ORIGINS.has(event.origin)) return;
@@ -105,7 +105,7 @@ export async function launchEmbeddedSignup(): Promise<EmbeddedSignupResult> {
           session = (msg.data ?? {}) as WaSessionInfo;
         }
       } catch {
-        /* non-JSON SDK chatter — ignore */
+        /* non-JSON SDK chatter - ignore */
       }
     };
 

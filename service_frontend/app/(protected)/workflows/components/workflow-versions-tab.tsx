@@ -1,6 +1,6 @@
 'use client';
 
-/** Versions tab (plan sprint-2/08 D4) — paginated version history. Never embed
+/** Versions tab (plan sprint-2/08 D4) - paginated version history. Never embed
  * the full list in the workflow GET; page it (history grows unbounded). */
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';

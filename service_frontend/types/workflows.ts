@@ -1,6 +1,6 @@
 /**
  * Workflow engine wire contracts (plan sprint-2/08). The block-document
- * analogue: `WorkflowDefinition` is the forever-contract graph — `schemaVersion`
+ * analogue: `WorkflowDefinition` is the forever-contract graph - `schemaVersion`
  * at root, `nodes[]` + `edges[]`, editor-agnostic. Mirrors the backend
  * `app/workflow_engine/schemas.py` (Phase B). All datetimes are Z-suffixed UTC
  * strings (ApiModel); render via `useDatetime`.
@@ -68,7 +68,7 @@ export interface WorkflowEdge {
   id: string;
   source: string;
   target: string;
-  /** Output port on the source node — `out` for linear, `true`/`false` for IF. */
+  /** Output port on the source node - `out` for linear, `true`/`false` for IF. */
   sourcePort?: string;
 }
 
@@ -105,13 +105,13 @@ export interface NodeFieldDef {
     | 'outputSchema';
   required?: boolean;
   placeholder?: string;
-  /** For `select` — static options (dynamic ones resolve in Phase B). */
+  /** For `select` - static options (dynamic ones resolve in Phase B). */
   options?: { value: string; label: string }[];
   /** Whether the dynamic-content picker attaches to this field. */
   mergeable?: boolean;
   /** Conditional: only shown/required when config[field] === value. */
   showWhen?: { field: string; value: string };
-  /** For `entity` — restrict the picker (e.g. only status-engine entities). */
+  /** For `entity` - restrict the picker (e.g. only status-engine entities). */
   entityFilter?: 'status';
   help?: string;
 }
@@ -156,7 +156,7 @@ export interface ActionCatalogEntry {
   module?: string;
 }
 
-/** The IF node (built-in, not a registered Trigger/Action — D8). Its config is
+/** The IF node (built-in, not a registered Trigger/Action - D8). Its config is
  * a rule-engine tree (`conditions`); the drawer renders a `<RuleBuilder>` over
  * the run-context facts and the canvas gives it true/false output ports. */
 export interface IfCatalogEntry {
@@ -175,7 +175,7 @@ export type NodeCatalogEntry =
   | ActionCatalogEntry
   | IfCatalogEntry;
 
-// ---- workflow metadata (triggerable entities — D6) ----
+// ---- workflow metadata (triggerable entities - D6) ----
 
 /** One readable/patchable field on a triggerable entity (the rule-engine fact
  * shape, reused for the field picker + entity.update assignments). */
@@ -200,7 +200,7 @@ export interface WorkflowTriggerableEntity {
 }
 
 /** A published form selectable by the `form.submitted` trigger (slice 2). Its
- * `fields` are the published version's answer keys — they drive the dynamic
+ * `fields` are the published version's answer keys - they drive the dynamic
  * `trigger.answers.<key>` outputs in the dynamic-content picker. */
 export interface WorkflowFormOption {
   id: string;
@@ -208,7 +208,7 @@ export interface WorkflowFormOption {
   fields: { key: string; label: string }[];
 }
 
-/** Tenant-resolved metadata the editor needs to configure slice-09 nodes —
+/** Tenant-resolved metadata the editor needs to configure slice-09 nodes -
  * `GET /workflow-metadata` in Phase B (mock in Phase A). */
 export interface WorkflowMetadata {
   entities: WorkflowTriggerableEntity[];
@@ -268,14 +268,14 @@ export interface WorkflowVersionSummary {
 }
 
 /** The detail entity. Superset of WorkflowListItem so the ONE action registry
- * (typed for the list item) is reusable on the form surface (shell variance —
+ * (typed for the list item) is reusable on the form surface (shell variance -
  * template-engine precedent). */
 export interface Workflow extends WorkflowListItem {
   /** Mutable working copy the editor reads/writes. */
   draftDefinition: WorkflowDefinition;
   /** Id of the published version that fires (null = never published). */
   currentVersionId: string | null;
-  /** ONLY the current version (full history is a separate paginated endpoint —
+  /** ONLY the current version (full history is a separate paginated endpoint -
    * the version list can grow unbounded, never embed it in the workflow GET). */
   currentVersion: WorkflowVersionSummary | null;
   createdByName: string;

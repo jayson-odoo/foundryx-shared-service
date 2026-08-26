@@ -36,7 +36,7 @@ export function acMappingHref(companyId: string, entityType: string): string {
 
 /**
  * The known field transforms an operator may pick in the mapping editor. Mirror
- * of the backend `TRANSFORMS` registry (`modules/autocount/mapping.py`) — the
+ * of the backend `TRANSFORMS` registry (`modules/autocount/mapping.py`) - the
  * PUT guard rejects an unknown transform, so only these are offered (foolproof).
  */
 export const AC_TRANSFORMS: { value: string; label: string }[] = [
@@ -71,7 +71,7 @@ export const AC_PRESET_TRANSFORM: Record<string, string> = {
 };
 
 /** The 6 presets offered in the Transform cell (Text/Boolean/Decimal/Integer/
- *  Date/Custom) — the picker's option list, from the canonical `PRESETS`. */
+ *  Date/Custom) - the picker's option list, from the canonical `PRESETS`. */
 export const AC_PRESET_OPTIONS: { value: string; label: string }[] = PRESETS.map((p) => ({
   value: p.key,
   label: p.label,
@@ -84,7 +84,7 @@ export function presetFormula(key: string): string {
 
 /**
  * Derive which preset a row currently reflects: from its named transform, but a
- * formula that DIVERGES from that preset's canonical expression reads as Custom —
+ * formula that DIVERGES from that preset's canonical expression reads as Custom -
  * so an edited/authored formula is never mislabelled as a stock preset.
  */
 export function presetForRow(transform: string, formula: string | null): string {
@@ -96,10 +96,10 @@ export function presetForRow(transform: string, formula: string | null): string 
 
 /**
  * What choosing a preset writes to a row (AC-16-10). Fills the formula for the
- * non-trivial transforms the operator wants to EXPRESS (boolean/integer/date —
+ * non-trivial transforms the operator wants to EXPRESS (boolean/integer/date -
  * incl. the stated `if(value == "T", …)`); the trivial Text passthrough and the
  * precision-sensitive Decimal keep their EXACT named transform with no formula
- * (so simple rows stay clutter-free and money keeps exact precision — the Build
+ * (so simple rows stay clutter-free and money keeps exact precision - the Build
  * dialog still pre-fills their canonical formula for opt-in editing).
  */
 export function applyPreset(key: string): { transform: string; formula: string | null } {

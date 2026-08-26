@@ -60,7 +60,7 @@ export function Header() {
         headerSticky && 'border-b border-border',
       )}
     >
-      {/* Fluid like the content pages — the Metronic default was fixed
+      {/* Fluid like the content pages - the Metronic default was fixed
           max-w-[1320px], which left the header floating centered on wide
           screens while every list page stretches full width (plan 06). */}
       <Container
@@ -128,7 +128,7 @@ export function Header() {
           </div>
         </div>
 
-        {/* Main Content — the mega menu renders on every page. (The old
+        {/* Main Content - the mega menu renders on every page. (The old
             Metronic special-case swapped in <Breadcrumb /> for /account demo
             pages, which left the real My Account page with an empty header.) */}
         {!mobileMode && <MegaMenu />}
@@ -190,7 +190,7 @@ export function Header() {
               />
               <UserDropdownMenu
                 trigger={
-                  // Real session avatar (initials fallback) — the Metronic
+                  // Real session avatar (initials fallback) - the Metronic
                   // demo image is gone (plan 06 D5).
                   <button
                     type="button"

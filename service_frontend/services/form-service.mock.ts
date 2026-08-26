@@ -1,5 +1,5 @@
 /**
- * Mock form service (Phase A) — in-memory forms/versions/submissions with the
+ * Mock form service (Phase A) - in-memory forms/versions/submissions with the
  * REAL contracts: publish runs `validateFormDoc` (422 problems), submit runs
  * the client validation mirror over the visible set (422 per-field map),
  * transitions walk the seeded scoped graph (D15). Latency on every call so
@@ -273,7 +273,7 @@ const FEEDBACK_DOC: FormDocument = {
   ],
 };
 
-// ---- seeded scoped graphs (D4 — per-form pipelines) ----
+// ---- seeded scoped graphs (D4 - per-form pipelines) ----
 
 type MockGraph = FormSubmissionGraph;
 
@@ -388,7 +388,7 @@ function seedForms(): MockForm[] {
       id: 'form-speaker',
       name: 'Speaker Application',
       slug: 'speaker-application',
-      description: 'Call for papers — annual tech summit.',
+      description: 'Call for papers - annual tech summit.',
       status: 'published',
       access: 'internal',
       currentVersionId: 'ver-speaker-2',
@@ -497,7 +497,7 @@ function seedSubmissions(): FormSubmissionRow[] {
     ...overrides,
   });
   return [
-    // A 2-revision group — rev 1 frozen (rejected), rev 2 current (submitted).
+    // A 2-revision group - rev 1 frozen (rejected), rev 2 current (submitted).
     // Demonstrates the history panel + "rev N" badge without a live revise.
     make(
       1,
@@ -512,7 +512,7 @@ function seedSubmissions(): FormSubmissionRow[] {
         feePerSeat: 25,
         projectedRevenue: 1000,
         abstract:
-          'A deep dive into building multi-tenant platforms with schema isolation and per-tenant theming — revised with a sharper workshop outline.',
+          'A deep dive into building multi-tenant platforms with schema isolation and per-tenant theming - revised with a sharper workshop outline.',
         topics: ['ai', 'cloud'],
         address: { line1: '12 Jalan Api', city: 'Kuala Lumpur', country: 'MY' },
         availableFrom: '2026-08-01',
@@ -565,7 +565,7 @@ function seedSubmissions(): FormSubmissionRow[] {
       track: 'product',
       isWorkshop: false,
       abstract:
-        'Roadmaps that survive contact with customers — a product discovery playbook for B2B SaaS.',
+        'Roadmaps that survive contact with customers - a product discovery playbook for B2B SaaS.',
       topics: ['data'],
       address: { line1: '88 Nanjing Rd', city: 'Shanghai', country: 'CN' },
       availableFrom: '2026-09-01',
@@ -604,7 +604,7 @@ function seedSubmissions(): FormSubmissionRow[] {
 let forms: MockForm[] = seedForms();
 let submissions: FormSubmissionRow[] = seedSubmissions();
 
-/** Test hook — fresh state per Vitest run. */
+/** Test hook - fresh state per Vitest run. */
 export function resetMockForms(): void {
   forms = seedForms();
   submissions = seedSubmissions();
@@ -908,7 +908,7 @@ export const mockFormService: FormService = {
   },
 
   submissions(formId, query) {
-    // Lists default to the current revision of each group (R3) — one row/group.
+    // Lists default to the current revision of each group (R3) - one row/group.
     let rows = submissions.filter((s) => s.formId === formId && s.isCurrent);
     if (query.segment && query.segment !== 'all') {
       rows = rows.filter((s) => s.statusKey === query.segment);
@@ -967,7 +967,7 @@ export const mockFormService: FormService = {
     const graph = graphs[prior.formId];
     const priorStatus = graph.statuses.find((s) => s.id === prior.statusId);
     if (priorStatus?.isActive) {
-      return Promise.reject(new Error('This submission is still editable — edit it instead.'));
+      return Promise.reject(new Error('This submission is still editable - edit it instead.'));
     }
     if (!form.currentVersionId) {
       return Promise.reject(new Error('The form has no published version to revise against.'));

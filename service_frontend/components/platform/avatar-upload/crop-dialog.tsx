@@ -21,7 +21,7 @@ import {
 } from '@/components/ui/dialog';
 import { Slider } from '@/components/ui/slider';
 
-const VIEWPORT = 288; // px — square crop stage
+const VIEWPORT = 288; // px - square crop stage
 const MAX_ZOOM = 4;
 
 export interface AvatarCropDialogProps {
@@ -40,7 +40,7 @@ interface Loaded {
 /**
  * Square crop stage (plan 06 D5): drag to pan, slider to zoom, output is
  * downscaled client-side so the bucket never stores multi-MB originals.
- * Hand-rolled (pointer events + canvas) — no image-crop dependency.
+ * Hand-rolled (pointer events + canvas) - no image-crop dependency.
  */
 export function AvatarCropDialog({ file, onCancel, onCropped }: AvatarCropDialogProps) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -148,7 +148,7 @@ export function AvatarCropDialog({ file, onCancel, onCropped }: AvatarCropDialog
         <DialogBody className="flex flex-col items-center gap-4">
           <div
             role="application"
-            aria-label="Crop area — drag to reposition"
+            aria-label="Crop area - drag to reposition"
             className="relative touch-none overflow-hidden rounded-md border border-border bg-muted"
             style={{ width: VIEWPORT, height: VIEWPORT }}
             onPointerDown={onPointerDown}
@@ -157,7 +157,7 @@ export function AvatarCropDialog({ file, onCancel, onCropped }: AvatarCropDialog
             onPointerCancel={onPointerUp}
           >
             {image ? (
-              // Plain <img> on purpose — object-URL source.
+              // Plain <img> on purpose - object-URL source.
               <img
                 src={image.src}
                 alt="Crop preview"
@@ -175,7 +175,7 @@ export function AvatarCropDialog({ file, onCancel, onCropped }: AvatarCropDialog
                 <LoaderCircleIcon className="size-5 animate-spin text-muted-foreground" />
               </div>
             )}
-            {/* Circle mask preview — purely visual. */}
+            {/* Circle mask preview - purely visual. */}
             <div className="pointer-events-none absolute inset-0 rounded-full border-2 border-white/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]" />
           </div>
           <div className="flex w-full items-center gap-3">

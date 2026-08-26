@@ -9,7 +9,7 @@ from app.rule_engine.registry import FactDef
 # KEEP IN SYNC with the operator enum: OPERATORS_BY_TYPE (schemas.py) and the
 # frontend builder labels (service_frontend/types/rules.ts RULE_OPERATORS).
 # Wording intentionally differs (builder = terse UI labels, prose = sentences)
-# but every operator key must exist in BOTH tables — a missing entry leaks the
+# but every operator key must exist in BOTH tables - a missing entry leaks the
 # raw key ("amount starts_with 5") into 409s and the Rules page.
 _PHRASES = {
     "eq": "is",
@@ -41,7 +41,7 @@ def condition_text(node: Dict[str, Any], facts: Dict[str, FactDef]) -> str:
 
 
 def tree_text(tree: Optional[Dict[str, Any]], facts: Dict[str, FactDef]) -> str:
-    """"A AND (B OR C)" — nested groups parenthesized."""
+    """"A AND (B OR C)" - nested groups parenthesized."""
     if not tree or not tree.get("rules"):
         return "Always allowed"
     return _group_text(tree, facts, top=True)

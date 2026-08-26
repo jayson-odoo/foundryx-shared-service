@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Entity ResourceList config (sprint-2/01 rework) — the status engine's list
+ * Entity ResourceList config (sprint-2/01 rework) - the status engine's list
  * surface follows the same config-driven shell as Users/Tenants. The registry
  * is small + code-side, so the fetcher adapts the full entity list to the
  * shell's server-query contract client-side (search/sort/page).

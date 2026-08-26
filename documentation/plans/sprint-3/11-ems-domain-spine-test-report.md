@@ -1,4 +1,4 @@
-# Sprint 3 · Plan 11 — EMS Domain Spine · Test Execution Report
+# Sprint 3 · Plan 11 - EMS Domain Spine · Test Execution Report
 
 **Branch:** `sprint-3/11-ems-domain-spine` · **Date:** 2026-06-16
 
@@ -42,16 +42,16 @@ Validates `11-ems-domain-spine-acceptance-criteria.md` (AC-11-01 … AC-11-19).
   (tier-2 scoped initial status set) → participants list = 1.
 - **Frontend** (Playwright MCP, real login): `/ems/events` h1 = "Events", "New event"
   button, the live "City Run Live 2026" event in the list, module-gated "Events" sidebar
-  group — all Terminology-driven (AC-11-11/12/13 list surfaces).
+  group - all Terminology-driven (AC-11-11/12/13 list surfaces).
 
-## Engine wiring (D9 — zero new engine code)
+## Engine wiring (D9 - zero new engine code)
 
 profile/project (unscoped tier-1/lifecycle) + project_participant (scoped, scope=project)
 registered as status entities; terminology TermDefs (Event/Event Type/Event Template/
 Participant/Profile); importer configs (profile + project-scoped participant find-or-create);
-capabilities profile.resolve@1 + participant.resolve@1 — all via `register_engine_entities`/
+capabilities profile.resolve@1 + participant.resolve@1 - all via `register_engine_entities`/
 `register_capabilities` at boot. The pre-existing status-engine suite stays green (tenant
-lifecycle untouched — AC-11-15).
+lifecycle untouched - AC-11-15).
 
 ## Frontend scope (delivered vs deferred)
 
@@ -66,7 +66,7 @@ transitions + in-tab bulk import. These are UI assembly over the proven backend 
 existing components; logged as follow-ups.
 
 ## Verdict
-The F4 EMS spine is **live end-to-end** — module installs via per-module Alembic, all four
+The F4 EMS spine is **live end-to-end** - module installs via per-module Alembic, all four
 foundation entities + two-tier status work, registers into every engine, and the vertical
 is demoable (UI → API → Postgres). AC-11-01..11, 15, 17, 18, 19 MET; AC-11-12/13/14 list
-surfaces met, detail-page Flow/participants UI deferred (documented). Clusters B–H can wire on.
+surfaces met, detail-page Flow/participants UI deferred (documented). Clusters B-H can wire on.

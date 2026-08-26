@@ -1,5 +1,5 @@
 /**
- * AutoCount ESB types (sprint-4/13, slice 1) — the wire contract of the
+ * AutoCount ESB types (sprint-4/13, slice 1) - the wire contract of the
  * `autocount` module's routers (`modules/autocount/schemas.py`).
  *
  * Wire = camelCase, Z-suffixed datetimes (every backend schema inherits
@@ -31,7 +31,7 @@ export interface AutocountEntityConfig {
   /**
    * How far back the FIRST sync reaches when no watermark exists yet
    * (default 30). Anything older is invisible until the supervised full initial
-   * load (D20, slice 3) — so this is shown, and editable, rather than hidden.
+   * load (D20, slice 3) - so this is shown, and editable, rather than hidden.
    */
   initialLookbackDays: number;
   enabled: boolean;
@@ -41,19 +41,19 @@ export interface AutocountEntityConfig {
   lastAttemptAt: string | null; // ISO Z
   /** The high-water mark: "we hold everything modified up to here". */
   watermarkAt: string | null; // ISO Z
-  /** Consecutive failed runs — the stale-sync signal (AC-13-19). */
+  /** Consecutive failed runs - the stale-sync signal (AC-13-19). */
   consecutiveFailures: number;
   lastError: string | null;
 }
 
-/** `PATCH /autocount/companies/{id}/entities/{entityType}` — narrow by design. */
+/** `PATCH /autocount/companies/{id}/entities/{entityType}` - narrow by design. */
 export interface AutocountEntityConfigUpdate {
   initialLookbackDays?: number;
 }
 
 /**
  * One AutoCount company database. `databaseName`/`companyName` are DISCOVERED
- * from the login response and read-only — the vendor API resolves the company
+ * from the login response and read-only - the vendor API resolves the company
  * from the AppId header, so an operator-entered value would be silently
  * overridden (AC-13-01).
  */
@@ -75,7 +75,7 @@ export interface AutocountCompany {
   createdAt: string | null; // ISO Z
 }
 
-/** `GET /autocount/companies/{id}` — the company plus its entity configs. */
+/** `GET /autocount/companies/{id}` - the company plus its entity configs. */
 export interface AutocountCompanyDetail {
   company: AutocountCompany;
   entities: AutocountEntityConfig[];
@@ -94,7 +94,7 @@ export interface AutocountSinkTargetInput {
   sinkConnectionId?: string | null;
 }
 
-/** `POST /autocount/companies` — the operator supplies ONLY a connection. */
+/** `POST /autocount/companies` - the operator supplies ONLY a connection. */
 export interface AutocountCompanyCreateInput {
   connectionId: string;
   /** Optional label; blank falls back to the discovered company name. */
@@ -126,7 +126,7 @@ export interface AutocountSyncJob {
 
 /**
  * The `result` a finished `autocount_sync` job carries (`sync.py`'s summary).
- * Parsed rather than read blind so the UI can state the outcome — a run that
+ * Parsed rather than read blind so the UI can state the outcome - a run that
  * fetched nothing is a SUCCESSFUL no-op, not silence and not a failure.
  */
 export interface AutocountSyncSummary {
@@ -162,7 +162,7 @@ export function parseSyncSummary(
 /** Terminal state of one sync run. */
 export type AutocountRunOutcome = 'SUCCESS' | 'FAILED' | 'ABORTED';
 
-/** One executed sync run — the visible run state on a company. */
+/** One executed sync run - the visible run state on a company. */
 export interface AutocountSyncRun {
   id: string;
   entityType: string;
@@ -175,7 +175,7 @@ export interface AutocountSyncRun {
   pushedCount: number;
   outcome: AutocountRunOutcome | string | null;
   error: string | null;
-  /** True when the record cap was hit — a truncated sync must never read as a
+  /** True when the record cap was hit - a truncated sync must never read as a
    * complete one (AC-13-46). */
   truncated: boolean;
   watermarkAdvancedTo: string | null; // ISO Z
@@ -195,7 +195,7 @@ export interface AutocountStagedError {
 }
 
 /**
- * A record awaiting approval. `diff` holds CHANGED FIELDS ONLY — the backend's
+ * A record awaiting approval. `diff` holds CHANGED FIELDS ONLY - the backend's
  * `compute_diff` omits unchanged fields entirely, and deliberately ignores
  * `last_modified` (it moves on every fetch by definition). A first-seen record
  * carries the sentinel `{ __new__: true }` instead of per-field entries.
@@ -223,7 +223,7 @@ export interface AutocountStagedRecord {
 
 /**
  * `GET /autocount/jobs/{id}/staged` query. The staged list is server-paginated
- * (AC-15-10) — an all-rows fetch is never issued. `changed` narrows the page to
+ * (AC-15-10) - an all-rows fetch is never issued. `changed` narrows the page to
  * records the operator must act on (`true`) or the collapsed no-change set
  * (`false`); omitted = the whole batch.
  */
@@ -234,11 +234,11 @@ export interface AutocountStagedQuery {
   search?: string;
   /** true = changed + failed rows; false = no-field-change rows; omit = all. */
   changed?: boolean;
-  /** One staged status (`STAGED`/`FAILED`/…) — the list's Filters control. */
+  /** One staged status (`STAGED`/`FAILED`/…) - the list's Filters control. */
   status?: AutocountStagedStatus | string;
 }
 
-/** `GET /autocount/jobs/{id}/staged` — the review surface's payload. */
+/** `GET /autocount/jobs/{id}/staged` - the review surface's payload. */
 export interface AutocountStagedList {
   job: AutocountSyncJob;
   data: AutocountStagedRecord[];
@@ -246,13 +246,13 @@ export interface AutocountStagedList {
   total: number;
   /**
    * Count of no-field-change records in the whole batch (constant across
-   * pages) — lets the FE render the collapsed "N with no field changes" line
+   * pages) - lets the FE render the collapsed "N with no field changes" line
    * without fetching them (AC-15-11).
    */
   noChangeCount: number;
 }
 
-/** `POST /autocount/jobs/{id}/{approve,discard}` — idempotent (AC-13-13). */
+/** `POST /autocount/jobs/{id}/{approve,discard}` - idempotent (AC-13-13). */
 export interface AutocountApprovalResult {
   jobId: string;
   result: Record<string, unknown>;
@@ -283,7 +283,7 @@ export interface AutocountSyncJobBatch {
 
 /**
  * `GET /autocount/jobs` query. `status` is the review segment
- * (`needs_review|done|all`) — server-filtered, never an unbounded fetch.
+ * (`needs_review|done|all`) - server-filtered, never an unbounded fetch.
  */
 export interface AutocountJobListQuery {
   page?: number; // 0-based
@@ -297,7 +297,7 @@ export interface AutocountJobListQuery {
 /**
  * One mapping row as the editor sees it: an AutoCount source path → (transform)
  * → Sorento field. `sorentoField` is null for a PROVENANCE/identity row (e.g.
- * `last_modified`) that is stored canonically but never delivered to Sorento —
+ * `last_modified`) that is stored canonically but never delivered to Sorento -
  * shown non-deliverable, never offered for edit (AC-15-40).
  */
 export interface AutocountMappingRow {
@@ -316,13 +316,13 @@ export interface AutocountMappingRow {
   isEnabled: boolean;
 }
 
-/** One accepted Sorento target for the picker (AC-15-42) — the offered set. */
+/** One accepted Sorento target for the picker (AC-15-42) - the offered set. */
 export interface AutocountSorentoField {
   field: string;
   required: boolean;
 }
 
-/** `GET .../mapping` — current rows + the source/target catalogs the pickers need. */
+/** `GET .../mapping` - current rows + the source/target catalogs the pickers need. */
 export interface AutocountMappingView {
   entityType: string;
   rows: AutocountMappingRow[];
@@ -345,7 +345,7 @@ export interface AutocountMappingWriteRow {
   formula?: string | null;
 }
 
-/** `PUT .../mapping` body — replaces the entity's deliverable rows transactionally. */
+/** `PUT .../mapping` body - replaces the entity's deliverable rows transactionally. */
 export interface AutocountMappingUpdate {
   rows: AutocountMappingWriteRow[];
 }
@@ -353,7 +353,7 @@ export interface AutocountMappingUpdate {
 // ── formula catalog + simulators (plan 16 §3, AC-16-13/21/30) ─────────────────
 
 /**
- * `POST .../mapping/test-formula` result (AC-16-21) — the server-authoritative
+ * `POST .../mapping/test-formula` result (AC-16-21) - the server-authoritative
  * single-formula eval, the parity check behind the builder's live client
  * preview. Same shape as `lib/autocount-formula.ts testFormula`.
  */
@@ -363,7 +363,7 @@ export interface AutocountFormulaTestResult {
   error: string | null;
 }
 
-/** One field's simulated outcome in the whole-mapping preview — value or error. */
+/** One field's simulated outcome in the whole-mapping preview - value or error. */
 export interface AutocountSimulateFieldResult {
   scope: string;
   sourcePath: string;
@@ -375,10 +375,10 @@ export interface AutocountSimulateFieldResult {
 }
 
 /**
- * `POST .../mapping/simulate` result (AC-16-30/31) — the REAL MappingEngine run
+ * `POST .../mapping/simulate` result (AC-16-30/31) - the REAL MappingEngine run
  * over a mock AutoCount record. `record` is the projected Sorento payload (every
  * mapped field), or null when the record would be REJECTED (all-or-nothing per
- * document). Writes NOTHING — pure transform preview.
+ * document). Writes NOTHING - pure transform preview.
  */
 export interface AutocountSimulateResult {
   ok: boolean;
@@ -414,7 +414,7 @@ export interface AutocountPreviewFieldDiff {
 }
 
 /**
- * One record's dry-run verdict (AC-14-20/22). Authoritative — it is Sorento's
+ * One record's dry-run verdict (AC-14-20/22). Authoritative - it is Sorento's
  * own `?dry_run=true` resolution rolled back, never a local reconstruction.
  * `changesLiveData` marks the rows that would OVERWRITE live values.
  */
@@ -437,7 +437,7 @@ export interface AutocountPreviewOk {
   predictions: AutocountPrediction[];
 }
 
-/** No consumer to ask (logging sink) — a clear "nothing to preview", not an error. */
+/** No consumer to ask (logging sink) - a clear "nothing to preview", not an error. */
 export interface AutocountPreviewUnavailable {
   previewable: false;
   sink: string;
@@ -482,7 +482,7 @@ export function partitionPredictions(
 }
 
 /**
- * True when this field's incoming value BLANKS an existing one — the
+ * True when this field's incoming value BLANKS an existing one - the
  * destructive case (AC-14-22): a live value replaced by nothing.
  */
 export function isBlanking(change: AutocountPreviewFieldDiff): boolean {
@@ -504,7 +504,7 @@ export interface AutocountFieldChange {
 
 /** The parsed, renderable form of a staged record's `diff`. */
 export interface AutocountRecordDiff {
-  /** First time we have seen this record — there is no "before". */
+  /** First time we have seen this record - there is no "before". */
   isNew: boolean;
   /** Changed fields ONLY. Empty for a new record and for a no-change record. */
   changes: AutocountFieldChange[];

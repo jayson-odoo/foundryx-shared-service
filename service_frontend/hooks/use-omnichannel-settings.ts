@@ -21,7 +21,7 @@ export interface UseOmnichannelSettings {
 /**
  * Loads + persists the omnichannel media-caps settings for a scope (a workspace
  * id, or the tenant default when omitted). The page reads settings ONLY through
- * this hook — the UI never touches the service/api-client directly.
+ * this hook - the UI never touches the service/api-client directly.
  */
 export function useOmnichannelSettings(workspaceId?: string | null): UseOmnichannelSettings {
   const [settings, setSettings] = useState<OmnichannelSettings | null>(null);

@@ -1,4 +1,4 @@
-"""Integration schemas (plan 09 §6) — camelCase on the wire.
+"""Integration schemas (plan 09 §6) - camelCase on the wire.
 
 Credentials are WRITE-ONLY: accepted on create/update, never serialized back.
 """
@@ -11,7 +11,7 @@ from app.schemas.base import ApiModel
 
 
 class ProviderOut(ApiModel):
-    """Catalog entry — `fields` is the config schema driving the wizard."""
+    """Catalog entry - `fields` is the config schema driving the wizard."""
 
     provider: str
     type: str
@@ -29,7 +29,7 @@ class ConnectionOut(ApiModel):
     provider: str
     type: str
     name: str
-    # Non-secret config only — camelCase keys for the frontend.
+    # Non-secret config only - camelCase keys for the frontend.
     config: Dict[str, str]
     status: str
     # The write-target flag (storage): exactly one storage connection per tenant
@@ -59,7 +59,7 @@ class ConnectionUpdateRequest(ApiModel):
 
 
 class ConnectionListResponse(ApiModel):
-    """Resource-shell page (plan 06 D6) — like every list entity."""
+    """Resource-shell page (plan 06 D6) - like every list entity."""
 
     data: List[ConnectionOut]
     total: int

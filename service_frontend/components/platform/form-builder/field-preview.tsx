@@ -4,7 +4,7 @@
  * Compact, NON-interactive canvas approximation of a field (plan sprint-3/01
  * D6). Renders a disabled-looking control matching the type so the author sees
  * the shape; display fields render themselves (heading/paragraph/divider).
- * Pure presentation — no inputs are wired, the real renderer lives in the fill
+ * Pure presentation - no inputs are wired, the real renderer lives in the fill
  * surface (slice 2). No instructional copy.
  */
 import { ChevronDown, Star } from 'lucide-react';

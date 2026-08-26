@@ -47,7 +47,7 @@ export function useEmailChange(): UseEmailChangeResult {
         if (!cancelled) setPending(row);
       })
       .catch(() => {
-        // Banner is best-effort — a failed status read never blocks the page.
+        // Banner is best-effort - a failed status read never blocks the page.
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);

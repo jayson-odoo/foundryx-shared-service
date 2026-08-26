@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ideation — Capture Quality + Embed Parity</title>
+  <title>Ideation - Capture Quality + Embed Parity</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css">
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
@@ -26,11 +26,11 @@
       <span class="badge badge-soft badge-warning">grilled · pre-build</span>
       <span class="badge badge-soft">cross-repo: sorento · shared-service · n8n</span>
     </div>
-    <h1 class="text-3xl lg:text-4xl font-bold">Ideation — Capture Quality + Embed Parity</h1>
+    <h1 class="text-3xl lg:text-4xl font-bold">Ideation - Capture Quality + Embed Parity</h1>
     <p class="text-base-content/70 max-w-3xl">
       Three defects surfaced when eyeballing the live embed on <code>fe-sorento.foundryx.my</code>.
       This plan fixes capture identity + raw notes, and collapses the duplicated iframe UI onto the
-      operator grid. Decisions below are already grilled &amp; locked — annotate anything you want changed.
+      operator grid. Decisions below are already grilled &amp; locked - annotate anything you want changed.
     </p>
   </header>
 
@@ -48,7 +48,7 @@
       <div class="card card-border bg-base-100">
         <div class="card-body">
           <h3 class="card-title text-lg">2 · Raw notes = last line</h3>
-          <p class="text-sm text-base-content/70">Raw notes store only the final message —
+          <p class="text-sm text-base-content/70">Raw notes store only the final message -
           usually <i>"okay i confirm"</i>. The actual conversation is lost.</p>
         </div>
       </div>
@@ -64,7 +64,7 @@
 
   <!-- ── DIAGRAM: capture pipeline ──────────────────────────────────────── -->
   <section class="space-y-3">
-    <h2 class="text-2xl font-semibold">Where the fixes land — capture pipeline</h2>
+    <h2 class="text-2xl font-semibold">Where the fixes land - capture pipeline</h2>
     <p class="text-base-content/70 text-sm">No new WhatsApp channel. Identity + transcript ride the
       existing Respond.io → n8n → turn flow. Shared-service stays a no-LLM sink (D20).</p>
     <div class="card card-border bg-base-100"><div class="card-body">
@@ -83,7 +83,7 @@ flowchart TD
 
   <!-- ── DIAGRAM: embed handshake ───────────────────────────────────────── -->
   <section class="space-y-3">
-    <h2 class="text-2xl font-semibold">Where the fixes land — embed (full grid parity)</h2>
+    <h2 class="text-2xl font-semibold">Where the fixes land - embed (full grid parity)</h2>
     <div class="card card-border bg-base-100"><div class="card-body">
       <pre class="mermaid">
 flowchart TD
@@ -108,7 +108,7 @@ flowchart TD
       <div class="collapse-content text-sm space-y-2">
         <ul class="list-disc ml-5 space-y-1">
           <li><b>Sorento</b> turn service: extend <code>_get_contact_row</code> SELECT to include name/first_name/last_name; send <code>submitter_name</code> (DB name → n8n fallback → None).</li>
-          <li><b>Shared-service</b> <code>create_idea</code>: accept the string, store <code>idea.submitter_name</code> directly (not the Contact copy — G4).</li>
+          <li><b>Shared-service</b> <code>create_idea</code>: accept the string, store <code>idea.submitter_name</code> directly (not the Contact copy - G4).</li>
           <li>Serializer already prefers <code>idea.submitter_name</code> (<code>ideas.py:61</code>).</li>
         </ul>
         <div class="text-base-content/60">AC-CAP-1..4</div>
@@ -155,7 +155,7 @@ flowchart TD
 
   <!-- ── DECISIONS (RESOLVED) ───────────────────────────────────────────── -->
   <section class="space-y-3">
-    <h2 class="text-2xl font-semibold">Grilled decisions <span class="text-base-content/50 text-base font-normal">— locked, with cost</span></h2>
+    <h2 class="text-2xl font-semibold">Grilled decisions <span class="text-base-content/50 text-base font-normal">- locked, with cost</span></h2>
     <div class="overflow-x-auto rounded-box border border-base-content/10 bg-base-100">
       <table class="table table-zebra">
         <thead><tr><th>#</th><th>Decision</th><th>Chosen</th><th>Cost / note</th></tr></thead>
@@ -164,7 +164,7 @@ flowchart TD
           <tr><td>D2</td><td>Transcript owner</td><td><span class="badge badge-success badge-sm">sorento accumulates</span></td><td>Shared-service stays a dumb sink; sorento owns conversation state.</td></tr>
           <tr><td>D3 / G1</td><td>Embed write scope</td><td><span class="badge badge-error badge-sm">truly everything (incl. delete/bulk)</span></td><td class="text-warning">Destructive ops reachable in-iframe → guarded by tenant+product scope, host-gated minting, allow-listed origin, short token, audit.</td></tr>
           <tr><td>G2</td><td>Auth model</td><td><span class="badge badge-info badge-sm">dedicated /embed/* routes</span></td><td>Explicit scope per route (auditable) over a dual-auth dependency.</td></tr>
-          <tr><td>G3</td><td>Transcript PII</td><td><span class="badge badge-soft badge-sm">cap length, existing retention</span></td><td>raw_text now holds full convo — same visibility operators already have.</td></tr>
+          <tr><td>G3</td><td>Transcript PII</td><td><span class="badge badge-soft badge-sm">cap length, existing retention</span></td><td>raw_text now holds full convo - same visibility operators already have.</td></tr>
           <tr><td>G4</td><td>Name storage</td><td><span class="badge badge-soft badge-sm">idea.submitter_name only</span></td><td>Not stamped on the Contact copy → vote attribution stays clean.</td></tr>
           <tr><td>G5</td><td>Token TTL</td><td><span class="badge badge-success badge-sm">5-min + silent re-mint</span></td><td>Host stays the gate; no long-lived embed token.</td></tr>
         </tbody>
@@ -199,7 +199,7 @@ flowchart TD
   </section>
 
   <footer class="text-xs text-base-content/50 border-t border-base-content/10 pt-4">
-    Design: Lavish CDN (Tailwind v4 + DaisyUI · luxury) — plan-review surface, not a product-UI mock.
+    Design: Lavish CDN (Tailwind v4 + DaisyUI · luxury) - plan-review surface, not a product-UI mock.
     Source: <code>documentation/plans/ideation/PLAN-ideation-capture-and-embed-parity.md</code> + UAC (AC-CAP-1..15).
   </footer>
 

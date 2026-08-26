@@ -18,7 +18,7 @@ const optionalUrl = z
 
 /**
  * Profile-tab form (mirrors the backend save-time validation, plan 06 §6). The
- * website cap of 2 is structural (only website1/website2 exist — no UI to add a
+ * website cap of 2 is structural (only website1/website2 exist - no UI to add a
  * third), satisfying BR-8.
  */
 export const channelProfileSchema = z.object({

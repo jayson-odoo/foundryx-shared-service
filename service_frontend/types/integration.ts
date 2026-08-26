@@ -1,11 +1,11 @@
 /**
- * Integration framework types (plan 09) — the core "connections" primitives
+ * Integration framework types (plan 09) - the core "connections" primitives
  * every external-service integration plugs into. SMTP (email) is the first
  * provider; future providers (storage, LLM, ERP) reuse these shapes, whether
  * they ship in core or as App Store modules.
  */
 
-/** Integration category — drives grouping/iconography, not behavior. */
+/** Integration category - drives grouping/iconography, not behavior. */
 export type IntegrationType =
   | 'email'
   | 'storage'
@@ -14,7 +14,7 @@ export type IntegrationType =
   | 'payment'
   | 'consumer';
 
-/** Connection health — UNVERIFIED until a test passes, ERROR on failures. */
+/** Connection health - UNVERIFIED until a test passes, ERROR on failures. */
 export type ConnectionStatus = 'ACTIVE' | 'UNVERIFIED' | 'ERROR';
 
 /** One wizard form field, declared by the provider (drives the configure step). */
@@ -34,7 +34,7 @@ export interface ProviderField {
   advanced?: boolean;
 }
 
-/** Catalog entry (GET /integrations/providers) — config schema drives the wizard. */
+/** Catalog entry (GET /integrations/providers) - config schema drives the wizard. */
 export interface IntegrationProvider {
   /** API identity, e.g. "smtp". */
   provider: string;
@@ -52,7 +52,7 @@ export interface IntegrationProvider {
   testTarget: { label: string; placeholder: string } | null;
 }
 
-/** A tenant's configured connection — credentials are NEVER returned. */
+/** A tenant's configured connection - credentials are NEVER returned. */
 export interface Connection {
   id: string;
   tenantId: string;
@@ -62,18 +62,18 @@ export interface Connection {
   /** Non-secret config only (host, port, fromEmail, …). */
   config: Record<string, string>;
   status: ConnectionStatus;
-  /** Storage write-target flag — exactly one active storage connection per
+  /** Storage write-target flag - exactly one active storage connection per
    * tenant; new uploads land there, resolve-by-type serves it. */
   isActive: boolean;
   lastTestedAt: string | null; // ISO
   lastError: string | null;
-  /** Outbox dispatcher throttle (plan 09 §5 — low-spec SMTP guard). */
+  /** Outbox dispatcher throttle (plan 09 §5 - low-spec SMTP guard). */
   rateLimitPerMinute: number;
   createdAt: string; // ISO
   updatedAt: string; // ISO
 }
 
-/** Create/update payload — secrets travel separately, write-only. */
+/** Create/update payload - secrets travel separately, write-only. */
 export interface ConnectionInput {
   provider: string;
   name: string;

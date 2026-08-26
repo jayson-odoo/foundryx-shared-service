@@ -26,7 +26,7 @@ export interface AvatarUploadProps {
 }
 
 /**
- * Shared avatar slot (plan 06 D5) — the avatar with a pen badge. No avatar:
+ * Shared avatar slot (plan 06 D5) - the avatar with a pen badge. No avatar:
  * the pen opens the file picker directly; with one: a small menu (change /
  * remove). The square crop dialog sits between pick and upload. Changes apply
  * immediately (branding-asset convention), no Edit-toggle coupling.

@@ -1,4 +1,4 @@
-# Sprint 3 · Plan 10 — Module Platform v2 · User Acceptance Criteria
+# Sprint 3 · Plan 10 - Module Platform v2 · User Acceptance Criteria
 
 **Plan:** `10-module-platform.md` · **Foundation:** F9 (closes BL-029)
 **Gate role:** MERGE green after 09, before 11. Slice 1 (per-module Alembic) is the F4 hard gate.
@@ -8,7 +8,7 @@ MET = named test green (UI at 375/1280 where it renders).
 
 ---
 
-## 1. Functional SaaS — module ecosystem works end-to-end 🟢
+## 1. Functional SaaS - module ecosystem works end-to-end 🟢
 
 - **AC-10-01 (demo/D4/D5) Optional-dep self-disable round-trip.**
   *Given* a demo consumer module declaring `optional` on omnichannel + a workflow action resolving
@@ -26,7 +26,7 @@ MET = named test green (UI at 375/1280 where it renders).
   `upgrade head`. omnichannel ships a baseline + is stamped on existing DBs (data untouched);
   `create_all` is retired; ems starts at rev 1.
 
-- **AC-10-04 (D8) Failure isolation — no single point of failure.**
+- **AC-10-04 (D8) Failure isolation - no single point of failure.**
   *Given* a module that fails at boot (import/registration) or migration, *when* the app starts,
   *then* that module is marked `errored` + skipped + logged loudly; the app, all siblings, and core
   continue; an errored module behaves like inactive, is not installable, and is surfaced in the
@@ -36,7 +36,7 @@ MET = named test green (UI at 375/1280 where it renders).
 
 - **AC-10-05 (D1) Register at boot, gate per-tenant at resolve.**
   *Given* in-repo modules, *then* capabilities + extensions register at boot (like `lazy_once`) and
-  per-tenant gating happens at resolve/use — install/uninstall is a per-tenant activation in
+  per-tenant gating happens at resolve/use - install/uninstall is a per-tenant activation in
   `tenant_modules`, never code load/unload (no register churn on install).
 
 - **AC-10-06 (D2) One `active_modules` filter across ALL catalogs.**
@@ -48,7 +48,7 @@ MET = named test green (UI at 375/1280 where it renders).
 
 - **AC-10-07 (D2) Stale references degrade gracefully.**
   *Given* a workflow referencing a now-inactive module's extension, *when* the run hits that node,
-  *then* it errors "module X inactive", failure-isolated — never crashes the run or the system.
+  *then* it errors "module X inactive", failure-isolated - never crashes the run or the system.
 
 - **AC-10-08 (D5) Capability registry isolates cross-module calls.**
   *Given* `CapabilityDef{key,version,provider,handler}` boot-registered, *when*
@@ -86,7 +86,7 @@ MET = named test green (UI at 375/1280 where it renders).
 
 - **AC-10-14 Dependency state is legible.** Requires-met/unmet + enhances badges, errored badge,
   reverse-dep block messaging on deactivate/uninstall, and the self-disable warning (reuse the
-  workflow editor's missing-connection component) are all shown — foolproof, no silent failures.
+  workflow editor's missing-connection component) are all shown - foolproof, no silent failures.
 
 - **AC-10-15 (house mandate) Responsive** at 375px and 1280px across list + detail form.
 
@@ -117,11 +117,11 @@ MET = named test green (UI at 375/1280 where it renders).
 ---
 
 ## Delivery note (2026-06-16)
-Slices 1–3 (the F9 backend contract — per-module Alembic/BL-029, dependency system, capability
+Slices 1-3 (the F9 backend contract - per-module Alembic/BL-029, dependency system, capability
 registry, soft-refs, `active_modules`) are **complete, tested (13 + full 796 green), and the
 per-module Alembic is live-verified**. AC-10-01..11, 16, 18, 19, 20 MET. **AC-10-12/13** (full
 App-Store-on-Resource-shell migration) and **AC-10-17** (consumer-module Playwright E2E + the
-in-tree demo module) are **deferred refinements** — their value is delivered in lighter form
+in-tree demo module) are **deferred refinements** - their value is delivered in lighter form
 (`StoreModuleOut` surfaces deps/provides/errored/availability; `ModuleCard` renders dep chips +
 errored/availability warnings → AC-10-14). Deferral rationale + follow-ups in the test report.
 F4 (plan 11) is unblocked. See `10-module-platform-test-report.md`.
@@ -130,4 +130,4 @@ F4 (plan 11) is unblocked. See `10-module-platform-test-report.md`.
 All AC-10-* MET · suites green · E2E report filed · reviewer approved · merged to `main` ·
 BL-029 closed. **Continuity gate:** plan 11's `ems` module rides per-module Alembic (AC-10-03),
 `optional`-deps omnichannel (AC-10-01), and provides `profile.resolve`/`participant.resolve`
-capabilities (AC-10-08) — these must be green before EMS is built.
+capabilities (AC-10-08) - these must be green before EMS is built.

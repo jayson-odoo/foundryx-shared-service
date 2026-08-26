@@ -262,6 +262,6 @@ def test_sync_core_is_idempotent(session_factory):
     PermissionService(db).sync_core()
     after = len(PermissionRepository(db).all_keys())
     core_rows = [p for p in PermissionRepository(db).list_all() if p.module == CORE_MODULE]
-    assert before == after  # idempotent — sync_core adds/removes nothing on re-run
+    assert before == after  # idempotent - sync_core adds/removes nothing on re-run
     assert len(core_rows) == len(load_csv(CORE_CSV))  # core catalog matches its CSV
     db.close()

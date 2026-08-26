@@ -75,7 +75,7 @@ const DOCUMENT_BLOCKS: TemplateBlockType[] = [
   'brandFooter',
 ];
 
-/** The default (email) palette — kept exported for the existing email tests. */
+/** The default (email) palette - kept exported for the existing email tests. */
 export const PALETTE: PaletteEntry[] = EMAIL_BLOCKS.map((t) => ENTRIES[t]);
 
 /** Palette entries for a given editor surface. */
@@ -83,7 +83,7 @@ export function paletteFor(surface: EditorSurface): PaletteEntry[] {
   return (surface === 'document' ? DOCUMENT_BLOCKS : EMAIL_BLOCKS).map((t) => ENTRIES[t]);
 }
 
-/** Display label for any block type (drag overlay) — across all surfaces. */
+/** Display label for any block type (drag overlay) - across all surfaces. */
 export function labelForBlockType(type: TemplateBlockType): string {
   return ENTRIES[type]?.label ?? type;
 }

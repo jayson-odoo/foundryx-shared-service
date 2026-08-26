@@ -9,7 +9,7 @@ export function formFillPath(id: string): string {
   return `${formPath(id)}/fill`;
 }
 
-/** Public (anonymous) fill page — addressed by the form's per-tenant slug, on
+/** Public (anonymous) fill page - addressed by the form's per-tenant slug, on
  * whatever host the operator is on (the tenant subdomain in prod). slice 2. */
 export function publicFormFillPath(slug: string): string {
   return `/public/forms/${slug}`;

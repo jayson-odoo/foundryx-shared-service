@@ -1,10 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Omnichannel — Embed access CONFIG SCREEN E2E (sprint-4/11H, AC-11H-18).
+ * Omnichannel - Embed access CONFIG SCREEN E2E (sprint-4/11H, AC-11H-18).
  *
  * The operator-facing setup surface at Omnichannel ▸ Settings ▸ Embed access
- * (/omnichannel/settings/embed, gated workspaces.manage). Real user clicks —
+ * (/omnichannel/settings/embed, gated workspaces.manage). Real user clicks -
  * navigates via the sidebar menu, never a URL shortcut.
  *
  * Live test data (already provisioned, DO NOT MUTATE): connection
@@ -42,7 +42,7 @@ function snippetPre(page: Page) {
   return page.locator('pre').first();
 }
 
-test.describe('Embed access — config screen (AC-11H-18)', () => {
+test.describe('Embed access - config screen (AC-11H-18)', () => {
   test('renders the config surfaces, frontend-origin snippet, route/workspace switch, rotate control (1280px)', async ({
     page,
   }) => {
@@ -97,7 +97,7 @@ test.describe('Embed access — config screen (AC-11H-18)', () => {
         expect(await snippetPre(page).textContent()).not.toBe(before);
       }).toPass();
     } else {
-      // Single workspace on this tenant — close the popover; the workspaceId
+      // Single workspace on this tenant - close the popover; the workspaceId
       // still rides the snippet comment (asserted below).
       await page.keyboard.press('Escape');
     }

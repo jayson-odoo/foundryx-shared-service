@@ -55,7 +55,7 @@ export default function Page() {
             <MailCheck />
           </AlertIcon>
           <AlertTitle>
-            The link expires soon — use it as quickly as you can.
+            The link expires soon - use it as quickly as you can.
           </AlertTitle>
         </Alert>
         <Button variant="outline" className="w-full" asChild>

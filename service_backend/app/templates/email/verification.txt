@@ -1,6 +1,6 @@
 Verify your email
 
-Confirm this email address to activate your FoundryX EMS account:
+Confirm this email address to activate your Foundryx EMS account:
 
 {{ link }}
 

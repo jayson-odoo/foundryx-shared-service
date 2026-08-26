@@ -85,7 +85,7 @@ describe('canvas-doc factories + mutations', () => {
   });
 });
 
-describe('containment — no element exceeds the canvas', () => {
+describe('containment - no element exceeds the canvas', () => {
   const canvas = createBlankBadgeDoc().canvas; // 86×54
 
   it('clampBox keeps a box inside the page', () => {

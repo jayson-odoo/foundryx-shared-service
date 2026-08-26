@@ -1,6 +1,6 @@
 """Block-document schema + save-time validation (plan 07 D2/D3).
 
-Mirrors the frontend forever-contract in ``types/templates.ts`` —
+Mirrors the frontend forever-contract in ``types/templates.ts`` -
 camelCase wire, ``schemaVersion`` at the root, discriminated block union.
 ``validate_doc`` is the 422 gate: unknown block shapes fail Pydantic;
 conditions validate through the rule engine; custom/rich HTML is sanitized
@@ -24,10 +24,10 @@ SECTION_LAYOUT_COLUMNS: Dict[str, List[float]] = {
     "67/33": [67, 33],
 }
 
-# Rich-lite vocabulary for Text blocks (D3) — formatting only, no containers.
+# Rich-lite vocabulary for Text blocks (D3) - formatting only, no containers.
 TEXT_ALLOWED_TAGS = {"b", "strong", "i", "em", "u", "a", "ul", "ol", "li", "br", "span", "p"}
 TEXT_ALLOWED_ATTRS = {"a": {"href", "target"}, "span": set()}
-# Custom-HTML escape hatch — block elements allowed, scripts/handlers never.
+# Custom-HTML escape hatch - block elements allowed, scripts/handlers never.
 CUSTOM_ALLOWED_TAGS = TEXT_ALLOWED_TAGS | {
     "table", "thead", "tbody", "tr", "td", "th", "div", "img",
     "h1", "h2", "h3", "h4", "hr", "blockquote", "center",
@@ -175,7 +175,7 @@ class CustomHtmlBlock(_Base):
 
 
 class QrBlock(_Base):
-    """QR block for the flowing (email/document) surface — a centred QR image of
+    """QR block for the flowing (email/document) surface - a centred QR image of
     a fixed pixel size. ``data`` is merge-enabled (e.g. {{ticketLink}})."""
 
     id: str
@@ -217,7 +217,7 @@ class TableBlock(_Base):
     conditions_json: Conditions = Field(default=None, alias="conditionsJson")
 
 
-# Leaf blocks legal inside a repeater body — single level (no table/repeater
+# Leaf blocks legal inside a repeater body - single level (no table/repeater
 # nesting v1), no brand/social (those resolve tenant-globals, not row scope).
 LeafBlockModel = Annotated[
     Union[
@@ -302,7 +302,7 @@ class TemplateDocumentModel(_Base):
                     yield section, column, block
 
     def iter_all_blocks(self):
-        """Every block incl. repeater-body children — token/condition scans."""
+        """Every block incl. repeater-body children - token/condition scans."""
         for section in self.sections:
             for column in section.columns:
                 for block in column.blocks:
@@ -333,7 +333,7 @@ def _block_token_values(block: TemplateBlockModel) -> List[str]:
 
 
 def _doc_tokens(doc: TemplateDocumentModel, subject: str) -> set:
-    """Context-scalar tokens only — row.* (repeater/table scope) excluded so a
+    """Context-scalar tokens only - row.* (repeater/table scope) excluded so a
     required context fact is never 'satisfied' by an iterator-local ref."""
     values: List[str] = [subject]
     for _s, _c, block in doc.iter_blocks():
@@ -387,7 +387,7 @@ def _iterator_problems(
                     for tok in collect_tokens(cell.text):
                         if tok.startswith("row."):
                             problems.append(
-                                f"Table {block.id}: footer cell uses row.* — footer binds totals (scalar facts) only."
+                                f"Table {block.id}: footer cell uses row.* - footer binds totals (scalar facts) only."
                             )
                         elif scalar_facts and tok not in scalar_facts:
                             problems.append(
@@ -450,7 +450,7 @@ class CanvasTextElement(_CanvasElementBase):
     type: Literal["text"]
     content: str = ""
     # Any bundled family name (app/template_engine/fonts.py FONT_NAMES). Free
-    # string — an unknown family falls back at render, never a 422.
+    # string - an unknown family falls back at render, never a 422.
     font_family: str = Field(default="Inter", alias="fontFamily")
     font_size: float = Field(default=12.0, gt=0, le=400, alias="fontSize")
     weight: Literal[400, 600, 700] = 400
@@ -481,7 +481,7 @@ class CanvasQrElement(_CanvasElementBase):
     ec_level: Literal["L", "M", "Q", "H"] = Field(default="M", alias="ecLevel")
 
 
-# Cross-surface parity (user request): divider / socialLinks / customHtml — the
+# Cross-surface parity (user request): divider / socialLinks / customHtml - the
 # flowing-block elements that also make sense positioned on a fixed card.
 class CanvasDividerElement(_CanvasElementBase):
     type: Literal["divider"]
@@ -620,7 +620,7 @@ def validate_canvas_doc(
             problems.append(f"QR element {el.id}: add the data field (e.g. {{{{ticketCode}}}}).")
         if isinstance(el, CanvasImageElement) and el.src:
             scheme = el.src.split(":", 1)[0].lower() if ":" in el.src.split("/", 1)[0] else "https"
-            # A {{token}} src is a merge placeholder — scheme-checked post-merge.
+            # A {{token}} src is a merge placeholder - scheme-checked post-merge.
             if "{{" not in el.src and scheme not in ("http", "https", "data"):
                 problems.append(f"Image element {el.id}: unsupported image URL scheme.")
         for value in _element_token_values(el):
@@ -649,7 +649,7 @@ def validate_doc(
     """Parse + sanitize + validate a document. Returns (model, problems).
 
     Problems non-empty ⇒ the caller raises a named 422. The returned model
-    has rich/custom HTML already SANITIZED — persist the model's dump, never
+    has rich/custom HTML already SANITIZED - persist the model's dump, never
     the raw input.
 
     ``list_facts`` / ``scalar_facts`` drive the document-surface checks
@@ -657,7 +657,7 @@ def validate_doc(
     (email path) → those checks are skipped; row.* outside an iterator still
     fails as a scope leak regardless.
     """
-    # The 'recipient' fact source registers with the core contexts — make
+    # The 'recipient' fact source registers with the core contexts - make
     # sure it exists before validating visibility trees against it.
     from app.template_engine.contexts import ensure_core_contexts
 

@@ -38,7 +38,7 @@ describe('channelProfileSchema (validation mirror, plan 06 §6)', () => {
     }
   });
 
-  it('has exactly two website fields (cap of 2 is structural — BR-8)', () => {
+  it('has exactly two website fields (cap of 2 is structural - BR-8)', () => {
     const shape = channelProfileSchema.shape;
     expect('website1' in shape).toBe(true);
     expect('website2' in shape).toBe(true);
@@ -46,7 +46,7 @@ describe('channelProfileSchema (validation mirror, plan 06 §6)', () => {
   });
 });
 
-describe('mockChannelService — profile flow', () => {
+describe('mockChannelService - profile flow', () => {
   it('returns an empty profile before any sync', async () => {
     const p = await mockChannelService.getProfile('chn-001');
     expect(p.about).toBeNull();
@@ -77,7 +77,7 @@ describe('mockChannelService — profile flow', () => {
 
   it('syncConfig stamps the business account name', async () => {
     const c = await mockChannelService.syncConfig('chn-001');
-    expect(c.businessAccountName).toBe('FoundryX Events (dev sandbox)');
+    expect(c.businessAccountName).toBe('Foundryx Events (dev sandbox)');
     expect(c.lastVerifiedAt).toBeTruthy();
   });
 });

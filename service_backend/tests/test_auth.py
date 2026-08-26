@@ -49,7 +49,7 @@ def test_unknown_email_is_401_not_404(client):
     res = client.post(
         "/auth/login", json={"email": "ghost@example.com", "password": "whatever1"}
     )
-    assert res.status_code == 401  # NOT 404 — no enumeration
+    assert res.status_code == 401  # NOT 404 - no enumeration
     assert res.json()["detail"] == GENERIC_ERROR
 
 
@@ -132,7 +132,7 @@ def test_signup_reusing_trashed_email_is_409_not_500(client, session_factory, mo
 
 
 def test_me_rejects_token_from_another_tenant(client):
-    """Review #3: get_current_user is tenant-scoped — a token whose tenant_id
+    """Review #3: get_current_user is tenant-scoped - a token whose tenant_id
     doesn't match the user's tenant must not authenticate."""
     from app.security import create_access_token
 

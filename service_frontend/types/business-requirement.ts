@@ -1,5 +1,5 @@
 /**
- * Business Requirement types (Phase B-i slice 2, AC-BI-15..19) — the FE side of
+ * Business Requirement types (Phase B-i slice 2, AC-BI-15..19) - the FE side of
  * the ideation BR backend contract (modules/ideation/schemas.py). A BR is the
  * second stage of the pipeline (Idea → BR → FR → delivery); its `answers` render
  * through the form-engine renderer against its STAMPED template doc.
@@ -32,7 +32,7 @@ export interface BusinessRequirement {
   updatedAt: string;
 }
 
-/** BR detail — adds the answer map + the STAMPED template block document. */
+/** BR detail - adds the answer map + the STAMPED template block document. */
 export interface BusinessRequirementDetail extends BusinessRequirement {
   answers: FormAnswers;
   templateDoc: FormDocument;
@@ -56,7 +56,7 @@ export interface BusinessRequirementCreateInput {
   ideaIds?: string[];
 }
 
-/** Partial edit — title and/or answers (validated against the stamped version). */
+/** Partial edit - title and/or answers (validated against the stamped version). */
 export interface BusinessRequirementUpdateInput {
   title?: string;
   answers?: FormAnswers;

@@ -116,7 +116,7 @@ export const mockEmailLogService: EmailLogService = {
     if (row.status !== 'FAILED' && row.status !== 'CANCELLED') {
       return Promise.reject(new Error('Only failed or cancelled emails can be retried.'));
     }
-    // Attempts counter keeps counting — history stays honest (D14).
+    // Attempts counter keeps counting - history stays honest (D14).
     row.status = 'PENDING';
     row.nextAttemptAt = new Date().toISOString();
     row.lastError = null;
@@ -126,9 +126,9 @@ export const mockEmailLogService: EmailLogService = {
   cancel(id: string): Promise<EmailLogListItem> {
     const row = rows.find((r) => r.id === id);
     if (!row) return Promise.reject(new Error('Email not found.'));
-    // Atomic WHERE status = PENDING — dispatcher lease wins the race (D14).
+    // Atomic WHERE status = PENDING - dispatcher lease wins the race (D14).
     if (row.status !== 'PENDING') {
-      return Promise.reject(new Error('Email is already sending or sent — too late to cancel.'));
+      return Promise.reject(new Error('Email is already sending or sent - too late to cancel.'));
     }
     row.status = 'CANCELLED';
     row.nextAttemptAt = null;
@@ -146,7 +146,7 @@ export const mockEmailLogService: EmailLogService = {
   },
 };
 
-/** Test hook — reset the in-memory store between Vitest cases. */
+/** Test hook - reset the in-memory store between Vitest cases. */
 export function __resetMockEmailLog(): void {
   rows = seedRows();
 }

@@ -2,10 +2,10 @@
 
 /**
  * Circular prev/next record-nav for the Developer Logs detail (sprint-4/12
- * enhancement — matches the Users/submission ResourceForm "‹ N / M ›" pager).
+ * enhancement - matches the Users/submission ResourceForm "‹ N / M ›" pager).
  *
  * Fetches the ordered id list from the SAME list query in the list's default
- * order (createdAt desc), capped at the endpoint max page size (200 — the
+ * order (createdAt desc), capped at the endpoint max page size (200 - the
  * submission record-nav precedent). Neighbours wrap circularly. UI → hook →
  * service.
  */

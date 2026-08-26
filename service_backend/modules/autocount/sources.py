@@ -1,10 +1,10 @@
-"""``EntitySource`` — the fetch seam (D6, plan §6), plus the AutoCount GRN
+"""``EntitySource`` - the fetch seam (D6, plan §6), plus the AutoCount GRN
 implementation.
 
 Pluggability sits on the axis of **uncertainty**: how data is fetched (two API
 generations coexist, and each customer runs their own wrapper version).
-Endpoint topology is NOT uncertain — it is a fixed uniform grammar
-(``POST /api/{Entity}/Get{Entity}``) — so there is no seam there.
+Endpoint topology is NOT uncertain - it is a fixed uniform grammar
+(``POST /api/{Entity}/Get{Entity}``) - so there is no seam there.
 
 Everything downstream of a source (mapping, staging, approval, push, retry,
 observability) is identical regardless of which implementation is selected.
@@ -35,13 +35,13 @@ logger = logging.getLogger("foundryx.autocount")
 #
 # A document stream (GRN) is naturally time-bounded, so reaching back N days is
 # the right first read. A MASTER LIST is a standing set whose purpose is to
-# mirror current state — applying document semantics to it produces a sync that
+# mirror current state - applying document semantics to it produces a sync that
 # reports success while importing ~1% of the data, which is the most dangerous
 # failure available because nothing looks wrong.
 #
 # Measured live 2026-07-21 against slice 1's 30-day default: Creditor 106 total →
 # **1** in window; Debtor 172 → **2**. A 365-day window still misses 4 and 15.
-# So no window is correct for masters — only an unbounded first pull.
+# So no window is correct for masters - only an unbounded first pull.
 #
 # ``initial_lookback_days`` therefore applies to ``windowed`` entities ONLY.
 INITIAL_LOAD_FULL = "full"
@@ -50,7 +50,7 @@ INITIAL_LOADS = (INITIAL_LOAD_FULL, INITIAL_LOAD_WINDOWED)
 
 
 class UnknownInitialLoad(Exception):
-    """A configured ``initial_load`` is not one we implement. LOUD — silently
+    """A configured ``initial_load`` is not one we implement. LOUD - silently
     defaulting to ``windowed`` would give a master entity a 30-day first read and
     report the resulting 1-of-106 import as a clean success."""
 
@@ -61,7 +61,7 @@ class TruncatedWindowError(AutoCountError):
 
     ``len == cap`` is the ONLY truncation signal the vendor gives us. The
     response's per-record ``"N of TOTAL"`` marker looks like a free total and is
-    not one — TOTAL is computed AFTER the cap is applied (verified live: an
+    not one - TOTAL is computed AFTER the cap is applied (verified live: an
     uncapped fetch reports ``"1 of 11"``, a ``RecordCount:5`` fetch reports
     ``"1 of 5"``). Trusting it would turn a truncated page into a "complete" one.
     """
@@ -79,12 +79,12 @@ class Watermark:
         first-run lookback.
 
         For a document stream a missing watermark must NEVER mean "fetch
-        everything" — an unbounded first fetch on a customer with years of
+        everything" - an unbounded first fetch on a customer with years of
         history is guaranteed to hit the record cap and fail.
 
         This stays the WINDOWED rule only. A ``full`` entity never calls it: the
         decision to send no lower bound belongs to the source, which knows the
-        entity's ``initial_load`` — a ``Watermark`` is a value object and has no
+        entity's ``initial_load`` - a ``Watermark`` is a value object and has no
         business holding policy (see ``AutoCountReadSource.window``).
         """
         if self.last_modified_at is not None:
@@ -96,7 +96,7 @@ class Watermark:
 class SourceRecord:
     """One raw vendor record + its parsed ``LastModified``.
 
-    The RAW payload travels with it all the way to storage (AC-13-07) —
+    The RAW payload travels with it all the way to storage (AC-13-07) -
     retained so a field discovered later can be mapped retroactively without
     re-fetching history.
     """
@@ -109,14 +109,14 @@ class SourceRecord:
 class FetchResult:
     records: List[SourceRecord] = field(default_factory=list)
     # Max LastModified observed. The caller advances the watermark to this ONLY
-    # once the whole batch has succeeded — never here.
+    # once the whole batch has succeeded - never here.
     max_last_modified: Optional[datetime] = None
     # ``None`` = no lower bound was sent: the unbounded initial master load.
     window_from: Optional[datetime] = None
     window_to: Optional[datetime] = None
     # What the vendor says is available, when it says so (AC-14-26). Reported
     # NEXT TO the fetched count so an operator can tell "nothing changed" from
-    # "the window excluded almost everything". Advisory ONLY — slice 1 verified
+    # "the window excluded almost everything". Advisory ONLY - slice 1 verified
     # this marker is computed AFTER the record cap is applied, so it is never
     # used to decide truncation.
     reported_total: Optional[int] = None
@@ -134,7 +134,7 @@ class AutoCountReadSource:
     """The vendor read implementation: ``POST /api/{Entity}/Get{Entity}`` with
     ``LastModifiedFrom``/``To`` (verified live to genuinely filter).
 
-    **Header and all lines arrive in ONE call** (AC-13-06) — the vendor nests
+    **Header and all lines arrive in ONE call** (AC-13-06) - the vendor nests
     the detail array in the header response, so there is no per-document
     fan-out anywhere. This is the property that makes the whole delta design
     viable at volume.
@@ -159,7 +159,7 @@ class AutoCountReadSource:
         self.vendor_entity = vendor_entity
         self.record_cap = record_cap
         self.lookback_days = lookback_days
-        # Per-entity from config (AC-14-03) — resolved HERE so a bad value fails
+        # Per-entity from config (AC-14-03) - resolved HERE so a bad value fails
         # at construction with a clear message, not mid-fetch.
         self.envelope = envelope_for(envelope)
         if initial_load not in INITIAL_LOADS:
@@ -191,7 +191,7 @@ class AutoCountReadSource:
         start, end = self.window(since)
         unbounded = start is None
 
-        # build_read_filter enforces the list-valued identifier keys — the exact
+        # build_read_filter enforces the list-valued identifier keys - the exact
         # mistake AutoCount does NOT report (it silently returns the whole
         # table). client.read then asserts the returned window (AC-13-04a).
         payload = build_read_filter(
@@ -207,7 +207,7 @@ class AutoCountReadSource:
         unwrapped = self.client.read(
             self.vendor_entity,
             payload,
-            # No lower bound means no window to assert — correct, not a gap:
+            # No lower bound means no window to assert - correct, not a gap:
             # AC-13-04a's defence exists to catch a filter the server IGNORED,
             # and here we deliberately sent none.
             window=None if unbounded else (start, end),
@@ -225,7 +225,7 @@ class AutoCountReadSource:
                 else f"window {start.isoformat()}..{end.isoformat()}"
             )
             logger.error(
-                "AutoCount %s fetch hit the record cap (%d) for %s — the page may "
+                "AutoCount %s fetch hit the record cap (%d) for %s - the page may "
                 "be truncated and window narrowing is not yet implemented; failing "
                 "rather than delivering partial data.",
                 self.vendor_entity,
@@ -267,7 +267,7 @@ class AutoCountReadSource:
 # ── source registry (D6) ──────────────────────────────────────────────────────
 # ``ac_entity_config.source_impl`` selects the implementation PER ENTITY, PER
 # COMPANY. A second API generation, or a customer needing a bespoke fetch, adds
-# a factory here and a config value — no change to the pipeline.
+# a factory here and a config value - no change to the pipeline.
 
 SourceFactory = Callable[..., EntitySource]
 
@@ -275,7 +275,7 @@ _SOURCES: Dict[str, SourceFactory] = {}
 
 
 class UnknownSourceImpl(Exception):
-    """A configured ``source_impl`` has no registered factory. LOUD — a silent
+    """A configured ``source_impl`` has no registered factory. LOUD - a silent
     fallback to the default would sync a customer with the wrong strategy and
     look like it worked."""
 

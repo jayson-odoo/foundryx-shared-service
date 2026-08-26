@@ -26,7 +26,7 @@ CSW_WINDOW = timedelta(hours=24)
 
 def _payload_phone_number_id(payload: Dict[str, Any]) -> Optional[str]:
     """Pull ``entry[].changes[].value.metadata.phone_number_id`` from a WhatsApp
-    webhook — the number the event is FOR (Meta uses one app-level callback)."""
+    webhook - the number the event is FOR (Meta uses one app-level callback)."""
     try:
         for entry in payload.get("entry", []) or []:
             for change in entry.get("changes", []) or []:
@@ -53,7 +53,7 @@ class InboundService:
         """Process one raw webhook payload. The channel is resolved by the
         payload's ``metadata.phone_number_id`` (Meta delivers ALL numbers to the
         one app-level callback URL, so the URL's ``channel_id`` can't identify the
-        number) — falling back to the URL id for the single-channel/legacy case.
+        number) - falling back to the URL id for the single-channel/legacy case.
         This is what makes multi-number correct: number #2's inbound is attributed
         to number #2's channel, not the URL's."""
         channel = self._resolve_channel(channel_id, payload)
@@ -61,7 +61,7 @@ class InboundService:
             logger.warning("webhook for unknown channel %s dropped", channel_id)
             return {"messages": 0, "statuses": 0, "skipped": 0}
 
-        # The webhook router is mounted public (no require_module gate) — re-apply
+        # The webhook router is mounted public (no require_module gate) - re-apply
         # the module-active check here so a tenant that uninstalled/deactivated
         # omnichannel doesn't get resurrected inbox rows from late webhooks.
         from app.repositories.module_repository import ModuleRepository
@@ -121,7 +121,7 @@ class InboundService:
         external_id = event.get("external_message_id")
         if not external_id or not event.get("from"):
             return False
-        # Idempotency (§4.2.2): Meta retries webhooks — same wamid = skip.
+        # Idempotency (§4.2.2): Meta retries webhooks - same wamid = skip.
         if self.repo.get_message_by_external_id(external_id, channel.tenant_id):
             return False
 
@@ -184,7 +184,7 @@ class InboundService:
             payload_json=event.get("payload"),
             external_message_id=external_id,
             metadata_json=metadata,
-            # Explicit (µs precision) — the DB server_default is second-granular
+            # Explicit (µs precision) - the DB server_default is second-granular
             # on SQLite, which scrambles ordering for rapid messages.
             created_at=now,
         )
@@ -215,7 +215,7 @@ class InboundService:
         from .webhook_delivery import enqueue_event
 
         # The consumer (EMS) fetches media bytes from an ABSOLUTE, API-key-authed
-        # gateway URL (plan 12 AC-12-11) — override the inbox-relative mediaUrl.
+        # gateway URL (plan 12 AC-12-11) - override the inbox-relative mediaUrl.
         # The consumer-facing envelope uses mimeType/filename/size (the EMS
         # integration ticket + UAC), distinct from the internal FE naming.
         message_payload = item.model_dump(mode="json")
@@ -276,7 +276,7 @@ class InboundService:
     # ── Inbound reactions (plan 12 AC-12-19/20) ──────────────────────────────
     def _handle_reaction(self, channel: Channel, event: Dict[str, Any]) -> bool:
         """A contact reacted to one of our messages. Upsert (emoji) / delete
-        (empty emoji) keyed to the target message + reactor — never a bubble.
+        (empty emoji) keyed to the target message + reactor - never a bubble.
         Unknown target wamid → drop + log."""
         target_ext = event.get("target_external_id")
         reactor = event.get("from")
@@ -292,7 +292,7 @@ class InboundService:
             return False
         contact = self.repo.get_by_id(target.contact_id, channel.tenant_id)
         workspace_id = contact.workspace_id if contact is not None else None
-        # A reaction is a single emoji — clamp a garbage/oversize payload defensively.
+        # A reaction is a single emoji - clamp a garbage/oversize payload defensively.
         emoji = (event.get("emoji") or "")[:32]
         _, removed = self.repo.set_reaction(
             target,
@@ -325,7 +325,7 @@ class InboundService:
         if identity is not None:
             contact = self.repo.get_by_id(identity.contact_id, channel.tenant_id)
             if contact is not None:
-                # Profile names drift — keep the identity fresh.
+                # Profile names drift - keep the identity fresh.
                 if event.get("profile_name") and identity.profile_name != event["profile_name"]:
                     identity.profile_name = event["profile_name"]
                 return contact
@@ -363,7 +363,7 @@ class InboundService:
 
     def _store_media(self, channel: Channel, media_id: str) -> Optional[Dict[str, Any]]:
         """Fetch inbound media via Graph + store by KEY (plan 12 AC-12-09).
-        Returns {key, mime, size} or None (dev/unconfigured/hiccup — media-less
+        Returns {key, mime, size} or None (dev/unconfigured/hiccup - media-less
         beats a dropped message)."""
         from app.services.storage import storage_for_tenant
 
@@ -372,7 +372,7 @@ class InboundService:
         adapter = get_adapter(channel.channel_type)
         try:
             credentials = decrypt_credentials(channel.credentials_json)
-        except Exception:  # noqa: BLE001 — bad/dev credentials: skip media, keep the message
+        except Exception:  # noqa: BLE001 - bad/dev credentials: skip media, keep the message
             return None
         blob = adapter.fetch_media(credentials, media_id)
         if not blob:

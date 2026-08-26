@@ -1,8 +1,8 @@
-"""Google Gemini LLM provider — `type='llm'` (AC-BI-02).
+"""Google Gemini LLM provider - `type='llm'` (AC-BI-02).
 
 Structured output = `generationConfig.responseSchema` + a JSON response mime
 type. Gemini accepts only a SUBSET of JSON Schema (no `additionalProperties`,
-no `$schema`, no `oneOf`…), so the adapter down-converts the schema here —
+no `$schema`, no `oneOf`…), so the adapter down-converts the schema here -
 callers pass ordinary JSON Schema and never learn about this (AC-BI-01).
 
 The API key rides as a header (`x-goog-api-key`), never in the query string:
@@ -67,7 +67,7 @@ class GeminiProvider(LLMProviderBase):
     provider = "gemini"
     title = "Google Gemini"
     description = (
-        "Use Gemini models for AI features — grilling, drafting and structured "
+        "Use Gemini models for AI features - grilling, drafting and structured "
         "extraction. Bring your own API key from Google AI Studio."
     )
     icon = "gem"
@@ -88,7 +88,7 @@ class GeminiProvider(LLMProviderBase):
         options: List[ModelOption] = []
         for row in payload.get("models", []):
             name = str(row.get("name", ""))
-            # Only chat-capable models — the picker never offers a model that
+            # Only chat-capable models - the picker never offers a model that
             # would fail at run time (foolproof-UI).
             if "generateContent" not in (row.get("supportedGenerationMethods") or []):
                 continue
@@ -98,7 +98,7 @@ class GeminiProvider(LLMProviderBase):
             options.append(
                 ModelOption(id=model_id, label=str(row.get("displayName") or model_id))
             )
-        # Gemini's catalog carries no timestamps — keep the API's own ordering.
+        # Gemini's catalog carries no timestamps - keep the API's own ordering.
         return sorted_models(options)
 
     def complete(
@@ -120,7 +120,7 @@ class GeminiProvider(LLMProviderBase):
             generation["responseMimeType"] = "application/json"
             generation["responseSchema"] = to_gemini_schema(output_schema)
             # CRITICAL (live-verified): gemini-2.5-flash with thinking ON runs
-            # away on structured extraction — it restates the transcript as
+            # away on structured extraction - it restates the transcript as
             # "thoughts" until it hits maxOutputTokens, returns finishReason=
             # MAX_TOKENS and a TRUNCATED JSON fragment. Disabling thinking on
             # that model yields a clean STOP + valid JSON in ~a hundred tokens.
@@ -162,14 +162,14 @@ class GeminiProvider(LLMProviderBase):
         finish_reason = candidates[0].get("finishReason")
 
         if output_schema is not None:
-            # A truncated response is NEVER valid structured output — refuse it
+            # A truncated response is NEVER valid structured output - refuse it
             # cleanly rather than blind-`json.loads`-ing a fragment (which would
             # 500 on a parse crash or, worse, parse a partial object). The grill's
             # `_complete_traced` turns this LLMError into an `error` trace.
             if finish_reason == "MAX_TOKENS":
                 raise LLMError(
                     "The model's structured response was cut off at the token "
-                    "limit — try again."
+                    "limit - try again."
                 )
             try:
                 structured = json.loads(content)

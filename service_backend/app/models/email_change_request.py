@@ -1,4 +1,4 @@
-"""Change-email ceremony requests (plan sprint-2/04 — dual confirmation).
+"""Change-email ceremony requests (plan sprint-2/04 - dual confirmation).
 
 One row per attempt: the OLD mailbox approves (old_token), then the NEW
 mailbox proves deliverability (new_token, generated only at approve time);
@@ -7,7 +7,7 @@ same user cancels prior non-terminal rows.
 
 Tokens are stored like the plan-10 invite/reset tokens: the 256-bit
 ``secrets.token_urlsafe(32)`` value IS the capability (unique-indexed
-plaintext — see ``models/invite_token.py``).
+plaintext - see ``models/invite_token.py``).
 """
 import uuid
 
@@ -17,7 +17,7 @@ from app.models.utc_datetime import UTCDateTime
 
 from app.database import Base
 
-# Request lifecycle (EXPIRED is implicit — ``expires_at`` is checked at every
+# Request lifecycle (EXPIRED is implicit - ``expires_at`` is checked at every
 # read/redeem; terminal states are written explicitly).
 CHANGE_PENDING_OLD = "PENDING_OLD"
 CHANGE_PENDING_NEW = "PENDING_NEW"

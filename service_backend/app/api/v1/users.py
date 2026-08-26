@@ -195,7 +195,7 @@ def update_user(
     payload: UserUpdate,
     current_user: User = Depends(require_permission("users.update")),
     # The REAL admin while impersonating (impersonation invariant: actor =
-    # real user) — keying the self-email guard on the effective user would
+    # real user) - keying the self-email guard on the effective user would
     # wrongly 409 an impersonating admin editing the target's email.
     actor_id: str = Depends(get_actor_user_id),
     db: Session = Depends(get_db),
@@ -216,7 +216,7 @@ def update_user(
         # No self-bypass (plan sprint-2/04): own email rides the ceremony.
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "Change your own email from My Account — it needs confirmation from both mailboxes.",
+            "Change your own email from My Account - it needs confirmation from both mailboxes.",
         )
     except EmailExists:
         raise HTTPException(
@@ -258,12 +258,12 @@ async def set_user_avatar(
     current_user: User = Depends(require_permission("users.update")),
     db: Session = Depends(get_db),
 ) -> AvatarOut:
-    """Admin avatar path (plan 06 D5) — same sniff gate as /me/avatar."""
+    """Admin avatar path (plan 06 D5) - same sniff gate as /me/avatar."""
     try:
         target = UserService(db).get(user_id, current_user.tenant_id)
     except UserNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
-    # Cap the read — a full read() buffers an arbitrary-size body in RAM
+    # Cap the read - a full read() buffers an arbitrary-size body in RAM
     # before any size check (review finding). One byte past the cap is
     # enough for the service's too-large 422.
     content = await file.read(AVATAR_MAX_BYTES + 1)

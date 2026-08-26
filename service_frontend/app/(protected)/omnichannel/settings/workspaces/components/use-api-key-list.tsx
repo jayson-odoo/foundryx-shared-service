@@ -62,7 +62,7 @@ export interface UseApiKeyListResult {
 }
 
 /**
- * Workspace API-keys list config (omnichannel Slice 3) — the keys on the full
+ * Workspace API-keys list config (omnichannel Slice 3) - the keys on the full
  * Resource shell embedded in the workspace detail. The key set per workspace is
  * small, so the fetcher pulls it whole and applies search/filter/sort/paginate
  * client-side (mirrors the terminology list adapter). No detail page (`rowHref`
@@ -87,7 +87,7 @@ export function useApiKeyList(
         confirm: {
           title: 'Revoke API key?',
           description:
-            'Consumers using this key will stop authenticating immediately. This cannot be undone — mint a new key to restore access.',
+            'Consumers using this key will stop authenticating immediately. This cannot be undone - mint a new key to restore access.',
           confirmLabel: 'Revoke',
         },
         run: async (rows, rt) => {

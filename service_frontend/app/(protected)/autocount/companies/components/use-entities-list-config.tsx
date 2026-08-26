@@ -65,7 +65,7 @@ function paginate(
 
 export interface EntitiesListConfigOptions {
   entities: AutocountEntityConfig[];
-  /** False when the company is inactive — a sync could not succeed. */
+  /** False when the company is inactive - a sync could not succeed. */
   companyActive: boolean;
   onSync: (entityType: string) => void | Promise<void>;
   onEditLookback: (entity: AutocountEntityConfig) => void;
@@ -108,7 +108,7 @@ export function useAutocountEntitiesListConfig({
         surfaces: { row: true },
         permission: AC_COMPANIES_MANAGE,
         // Only offered BEFORE the first sync. Once a watermark exists the window
-        // is spent and editing it is a guaranteed no-op — offering a dialog that
+        // is spent and editing it is a guaranteed no-op - offering a dialog that
         // cannot take effect is the dead-control violation (AC-15-30). The
         // superseded state is shown read-only in the "Synced up to" column.
         isVisible: (rows) => !rows[0]?.watermarkAt,
@@ -233,7 +233,7 @@ export function useAutocountEntitiesListConfig({
         header: ({ column }) => (
           <DataGridColumnHeader title="First-run window" column={column} />
         ),
-        // The value governs the first run ONLY — once a watermark exists the
+        // The value governs the first run ONLY - once a watermark exists the
         // watermark wins. That is shown as STATE (an "In effect" / "Superseded"
         // badge paired with the "Synced up to" column) rather than explained in
         // prose, per the no-instructional-copy rule.
@@ -304,7 +304,7 @@ export function useAutocountEntitiesListConfig({
       },
       {
         // The table view renders the row `…` menu from an explicit column (the
-        // shell only auto-wraps it in CARD view) — the same shape Terminology,
+        // shell only auto-wraps it in CARD view) - the same shape Terminology,
         // Connections and Workflows use.
         id: 'actions',
         meta: { reorderable: false },
@@ -330,7 +330,7 @@ export function useAutocountEntitiesListConfig({
         viewKey: 'autocount.entities.list',
         columns,
         getRowId: (row) => row.id,
-        // No per-entity detail page in slice 1 — '#' opts the list out of row
+        // No per-entity detail page in slice 1 - '#' opts the list out of row
         // navigation entirely (shell contract), so a click never dead-ends.
         rowHref: () => '#',
         searchPlaceholder: 'Search entities',

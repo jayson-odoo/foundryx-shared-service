@@ -1,32 +1,32 @@
-# 13 — AutoCount ESB (integration spine) — User Acceptance Criteria
+# 13 - AutoCount ESB (integration spine) - User Acceptance Criteria
 
-> **Status:** DRAFT — contract for `documentation/plans/sprint-4/13-autocount-esb.md`
+> **Status:** DRAFT - contract for `documentation/plans/sprint-4/13-autocount-esb.md`
 > **Companion repo:** `sorento_crm` → `documentation/plans/autocount/autocount-integration-acceptance-criteria.md`
 > **Source of decisions:** grill session 2026-07-21 (24 decisions, reproduced in the plan's Decision Log)
 
 ## Scope
 
-A new **`autocount` module** in the FoundryX shared service that syncs data between customer-hosted
-AutoCount installations and FoundryX consumer products (first consumer: Sorento CRM).
+A new **`autocount` module** in the Foundryx shared service that syncs data between customer-hosted
+AutoCount installations and Foundryx consumer products (first consumer: Sorento CRM).
 
-**Read** (AutoCount → FoundryX → consumer): Product, Stock, Warehouse, Creditor/Supplier, Debtor/Customer,
+**Read** (AutoCount → Foundryx → consumer): Product, Stock, Warehouse, Creditor/Supplier, Debtor/Customer,
 Payment Terms, Tax, Delivery Order (+lines), Goods Received Note (+lines).
-**Write** (consumer → FoundryX → AutoCount): Purchase Order, Sales Quotation, Purchase Request / RFQ, Sales Order.
+**Write** (consumer → Foundryx → AutoCount): Purchase Order, Sales Quotation, Purchase Request / RFQ, Sales Order.
 
 **Out of scope v1:** AR/AP documents, GL, e-invoice, consolidated e-invoice, stock adjustments/transfers/issues,
 report endpoints beyond what paging requires.
 
 ## Definitions
 
-- **Company** — one AutoCount company database (`DatabaseName` in the `GetToken` response). A tenant may have several.
-- **Canonical record** — the FoundryX-neutral shape a record takes inside the ESB (hop 1 output, hop 2 input).
-- **Staged change** — a canonical record awaiting human approval before being pushed to a consumer.
-- **Quarantine** — a master row that failed validation and was withheld while its siblings imported.
-- **Watermark** — the per (connection, entity) `LastModified` high-water mark driving delta fetch.
+- **Company** - one AutoCount company database (`DatabaseName` in the `GetToken` response). A tenant may have several.
+- **Canonical record** - the Foundryx-neutral shape a record takes inside the ESB (hop 1 output, hop 2 input).
+- **Staged change** - a canonical record awaiting human approval before being pushed to a consumer.
+- **Quarantine** - a master row that failed validation and was withheld while its siblings imported.
+- **Watermark** - the per (connection, entity) `LastModified` high-water mark driving delta fetch.
 
 ---
 
-## Slice 1 — Connection, auth, and the GRN read pipeline
+## Slice 1 - Connection, auth, and the GRN read pipeline
 
 ### AC-13-01 `[BE]` AutoCount registers as an `erp` connection provider
 **Given** the integrations registry
@@ -36,7 +36,7 @@ report endpoints beyond what paging requires.
 **And** credentials persist to `connections.credentials_json` Fernet-encrypted, never echoed on read
 **And** the company (`DatabaseName` / `CompanyName`) is **discovered from the login response and stored read-only**, never entered by the operator.
 > Revised against the live demo instance 2026-07-21. There is no AppSecret and no company-selection
-> parameter — the company is resolved server-side from the `AppId` header, so **AppId IS the company
+> parameter - the company is resolved server-side from the `AppId` header, so **AppId IS the company
 > selector** (D16: multi-company = one connection per AppId).
 
 ### AC-13-02 `[BE]` Multiple AutoCount companies per tenant
@@ -52,14 +52,14 @@ report endpoints beyond what paging requires.
 **When** `test()` runs
 **Then** `POST /api/Server/Login` is called ONCE with header `AppId` and body `{UserID, Password}`
 **And** the response's **`JWTToken`** (not the `Token` GUID) is held and sent on every subsequent call
-    as a bare **`Authorization: <JWTToken>`** header — no `Bearer` prefix, not `X-API-Key`
+    as a bare **`Authorization: <JWTToken>`** header - no `Bearer` prefix, not `X-API-Key`
 **And** the session is **proactively re-logged-in** once the held token exceeds its configured max age
 **And** a call failing with the ambiguous `HTTP 500 "Stream was not readable."` triggers **exactly one**
     re-login and retry before the batch fails.
 > Revised against the live demo instance 2026-07-21, replacing the two-step `Auth/Login`→`Server/Login`
 > design (no such endpoint exists). **There is no 401**: an invalid or expired token returns the same
 > HTTP 500 `"Stream was not readable."` as every other relay-level fault, so expiry is not reliably
-> distinguishable. Hence both mechanisms — proactive age-based renewal is the primary defence; the
+> distinguishable. Hence both mechanisms - proactive age-based renewal is the primary defence; the
 > single retry is the backstop. The retry is safe because all slice-1 calls are reads (idempotent).
 > **Trap:** the login response carries BOTH `Token` (a GUID) and `JWTToken`. The GUID is what the vendor
 > Postman collection stores in `{{token}}` and it is rejected by every endpoint. Use `JWTToken`.
@@ -70,12 +70,12 @@ report endpoints beyond what paging requires.
 **Then** each returns a distinct, human-readable message naming the failing step
 **And** a network timeout is distinguishable from an auth rejection
 **And** the two distinct wire-level failure shapes are both handled:
-  - **app-level** — `HTTP 200` + `{"Status":"Fail","Message":…,"ResultTable":[]}`; surface `Message`
-  - **relay-level** — `HTTP 500` + a .NET exception object (`ClassName`/`Message`/`StackTraceString`);
+  - **app-level** - `HTTP 200` + `{"Status":"Fail","Message":…,"ResultTable":[]}`; surface `Message`
+  - **relay-level** - `HTTP 500` + a .NET exception object (`ClassName`/`Message`/`StackTraceString`);
     surface a mapped message, never the raw stack trace
 **And** success is determined by **`Status == "Success"`**, never by HTTP status and never by the
     presence of `ResultTable` (which is present-but-empty on failure).
-> No "Connection failed" catch-alls — the operator must know which to fix. HTTP status is meaningless
+> No "Connection failed" catch-alls - the operator must know which to fix. HTTP status is meaningless
 > here: the API returns 200 for business failures.
 
 ### AC-13-04a `[BE]` A filter that the API silently ignores must not read as a narrow fetch
@@ -160,7 +160,7 @@ mapping + coercion, per-document atomicity, `needs_review` gating, approval idem
 
 ---
 
-## Slice 2 — Delta hardening
+## Slice 2 - Delta hardening
 
 ### AC-13-16 `[BE]` Paging by window narrowing
 **Given** a window returning exactly `RecordCount` records
@@ -168,7 +168,7 @@ mapping + coercion, per-document atomicity, `needs_review` gating, approval idem
 **Then** it splits the window and re-fetches
 **And** all records are eventually retrieved with no duplicates in the canonical output.
 > **Do not use the response's `RecordCount` marker as a total.** Each record carries a `"N of TOTAL"`
-> string, but TOTAL is computed **after** the cap is applied — verified live: an uncapped fetch reports
+> string, but TOTAL is computed **after** the cap is applied - verified live: an uncapped fetch reports
 > `"1 of 11"` (the true total) while `RecordCount:5` reports `"1 of 5"`. It looks like a free total and
 > is not one. `len(records) == CAP` remains the only truncation signal (D22).
 
@@ -207,11 +207,11 @@ mapping + coercion, per-document atomicity, `needs_review` gating, approval idem
 **Then** the worker stops at its next checkpoint
 **And** the job ends `aborted`, not `done`
 **And** the watermark reflects only fully-committed work.
-> Eager mode hides this — must be tested with a real interleave.
+> Eager mode hides this - must be tested with a real interleave.
 
 ---
 
-## Slice 3 — Masters and reconciliation
+## Slice 3 - Masters and reconciliation
 
 ### AC-13-22 `[BE]` Masters quarantine invalid rows, import valid ones
 **Given** 10,000 products of which 12 fail validation
@@ -219,7 +219,7 @@ mapping + coercion, per-document atomicity, `needs_review` gating, approval idem
 **Then** 9,988 import
 **And** 12 are quarantined with the failing field named
 **And** the watermark advances past the successful rows only.
-> D13 (revised) — masters differ from transactions deliberately.
+> D13 (revised) - masters differ from transactions deliberately.
 
 ### AC-13-23 `[FE]` Quarantine is actionable
 **Given** quarantined rows
@@ -280,14 +280,14 @@ mapping + coercion, per-document atomicity, `needs_review` gating, approval idem
 
 ---
 
-## Slice 4 — Writes (SQ / PR / RFQ / SO, create-only)
+## Slice 4 - Writes (SQ / PR / RFQ / SO, create-only)
 
 ### AC-13-31 `[BE]` Consumer events trigger writes per config
 **Given** doc type `sales_order` configured to trigger `on_approved`
 **When** the consumer emits a lifecycle event for a different transition
 **Then** no write occurs
 **And** when it emits `approved`, exactly one write occurs.
-> D12a/D12b — the ESB filters; the consumer emits broadly.
+> D12a/D12b - the ESB filters; the consumer emits broadly.
 
 ### AC-13-32 `[BE]` Writes are idempotent via an ESB-owned ledger
 **Given** a document pushed to AutoCount
@@ -297,7 +297,7 @@ mapping + coercion, per-document atomicity, `needs_review` gating, approval idem
 **And** the write is never retried blind after an ambiguous failure without first reading back
     by correlation to check whether it actually landed.
 > **Revised.** The original wording assumed vendor-supplied `requestId` / `externalSystem` /
-> `externalId` fields and a `GET /api/requests/{requestId}` status endpoint. **None of these exist** —
+> `externalId` fields and a `GET /api/requests/{requestId}` status endpoint. **None of these exist** -
 > zero occurrences in the vendor collection, confirmed against the live instance. Writes are synchronous
 > and return the persisted document inline; the only correlation handle AutoCount gives us is the
 > returned `DocKey`/`DocNo`. Idempotency is therefore **entirely ours to build** (slice 4), and the
@@ -309,7 +309,7 @@ mapping + coercion, per-document atomicity, `needs_review` gating, approval idem
 **Then** status is one of `PENDING` / `SYNCED` / `FAILED`
 **And** `SYNCED` carries the AutoCount document number
 **And** `FAILED` carries the AutoCount error verbatim.
-> D14 — no approval gate on writes.
+> D14 - no approval gate on writes.
 
 ### AC-13-34 `[BE]` Failed writes retry with backoff, then dead-letter
 **Given** AutoCount is unreachable
@@ -327,7 +327,7 @@ mapping + coercion, per-document atomicity, `needs_review` gating, approval idem
 
 ---
 
-## Slice 5 — PO write
+## Slice 5 - PO write
 
 ### AC-13-36 `[BE]` PO write is gated by an explicit per-tenant switch, default off
 **Given** a tenant that has not enabled PO transmission
@@ -344,7 +344,7 @@ mapping + coercion, per-document atomicity, `needs_review` gating, approval idem
 
 ---
 
-## Slice 6 — Lifecycle mirroring
+## Slice 6 - Lifecycle mirroring
 
 ### AC-13-38 `[BE]` Update propagation
 **Given** a document already pushed to AutoCount
@@ -388,7 +388,7 @@ mapping + coercion, per-document atomicity, `needs_review` gating, approval idem
 **And** the failure is isolated and logged.
 
 ### AC-13-44 `[FE]` Responsive at 375px and 1280px
-Review, quarantine and reconciliation surfaces are usable at both widths — no horizontal scroll,
+Review, quarantine and reconciliation surfaces are usable at both widths - no horizontal scroll,
 no clipped controls, tables scroll within their own container.
 
 ### AC-13-45 `[BE]` Module hygiene
@@ -409,5 +409,5 @@ A truncated sync must never read as a complete one.
 | AR/AP, GL, e-invoice entities | Not in the requirement diagram |
 | Cross-company reporting in a consumer | Consumers take one company each (D19) |
 | Bidirectional master editing (consumer → AutoCount masters) | AutoCount is system of record (D8) |
-| Direct SQL Server read path | Unnecessary — `LastModifiedFrom` covers it (D4) |
+| Direct SQL Server read path | Unnecessary - `LastModifiedFrom` covers it (D4) |
 | Second consumer product | Canonical model exists to make it cheap; not built until demanded |

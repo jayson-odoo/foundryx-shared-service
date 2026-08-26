@@ -1,5 +1,5 @@
 /**
- * Real integration service — talks to FastAPI via the shared api-client.
+ * Real integration service - talks to FastAPI via the shared api-client.
  * Endpoints follow plan 09 §6 + the plan 06 Resource-shell additions
  * (list/at/export). Bound in Phase B.
  */

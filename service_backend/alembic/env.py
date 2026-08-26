@@ -1,4 +1,4 @@
-"""Alembic environment — core migrations.
+"""Alembic environment - core migrations.
 
 URL + metadata come from the app (settings.database_url + Base.metadata) so a
 single source of truth drives both runtime and migrations. `render_as_batch`

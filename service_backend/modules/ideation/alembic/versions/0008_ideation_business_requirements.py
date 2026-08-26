@@ -1,4 +1,4 @@
-"""ideation — Business Requirement entity (Phase B-i slice 2, AC-BI-15..19).
+"""ideation - Business Requirement entity (Phase B-i slice 2, AC-BI-15..19).
 
 Create ``app_ideation.business_requirements`` (+ the Idea↔BR many-many join) and
 the versioned artifact-template store (``ideation_artifact_templates`` +
@@ -8,7 +8,7 @@ ideas/BRs; version → template) are kept.
 
 CRITICAL (same deploy lesson as 0005/0007): idempotent
 (``CREATE TABLE IF NOT EXISTS``) AND the same tables land via
-``IdeationBase.metadata.create_all`` in the module's ``install()`` — a fresh
+``IdeationBase.metadata.create_all`` in the module's ``install()`` - a fresh
 install gets the tables whether the stamp-path or the upgrade-path runs.
 Postgres-only DDL; a no-op on the SQLite test engine (the test suite creates the
 tables via ``create_all``). ``TIMESTAMPTZ`` for ``UTCDateTime``, ``JSONB`` for
@@ -143,7 +143,7 @@ def upgrade() -> None:
             # hot, pre-existing ``ideas`` table takes a SHARE ROW EXCLUSIVE lock that
             # HANGS the blue/green deploy behind any live connection on ``ideas``
             # (backend_green never healthy). ``business_requirement_id`` keeps its FK
-            # — that table is created just above in this same migration (no lock
+            # - that table is created just above in this same migration (no lock
             # contention). Integrity for idea_id is enforced tenant-scoped in the
             # service layer.
             "  idea_id VARCHAR NOT NULL,"

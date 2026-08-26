@@ -1,5 +1,5 @@
 /**
- * Embed-access config service — the boundary the embed-settings screen talks to
+ * Embed-access config service - the boundary the embed-settings screen talks to
  * (plan 11H, tenant-level embed connection admin). The UI reads/writes ONLY
  * through this interface (via `useEmbedConfig`); it never touches api-client.
  *
@@ -15,19 +15,19 @@ export interface EmbedWorkspaceOption {
   name: string;
 }
 
-/** The tenant's embed-access state. The `embedSecret` is NEVER present here —
+/** The tenant's embed-access state. The `embedSecret` is NEVER present here -
  * `hasSecret` only reports whether one is set (revealed once at rotate). */
 export interface EmbedConfig {
   /** `null` until the tenant enables embed access. Also the `?c=` / assertion `iss`. */
   connectionId: string | null;
   allowedOrigins: string[];
   hasSecret: boolean;
-  /** Public backend origin — used to build the iframe snippet. */
+  /** Public backend origin - used to build the iframe snippet. */
   host: string;
   workspaces: EmbedWorkspaceOption[];
 }
 
-/** The freshly-minted secret — returned EXACTLY ONCE (write-only after). */
+/** The freshly-minted secret - returned EXACTLY ONCE (write-only after). */
 export interface EmbedRotateSecretResult {
   embedSecret: string;
 }

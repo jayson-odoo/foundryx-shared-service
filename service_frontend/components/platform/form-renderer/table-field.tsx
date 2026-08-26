@@ -1,14 +1,14 @@
 'use client';
 
 /**
- * Table field (sprint-3/02) — PO/SO/invoice line items. A real `<table>`:
+ * Table field (sprint-3/02) - PO/SO/invoice line items. A real `<table>`:
  * authored columns, per-row **computed** columns (`qty * unit_price`, evaluated
- * over the row's own cells via the computed parser — never eval, anti-SSTI),
+ * over the row's own cells via the computed parser - never eval, anti-SSTI),
  * a column-total footer (`<tfoot>`, aligned under each column), optional row
  * numbers. Horizontal-scrolls on narrow screens so the columns never reflow.
  * Answer = `Record<string, FormAnswerScalar>[]`; per-row errors keyed
  * `key.rowIndex.colKey`. Computed cells are recomputed authoritatively server-
- * side on submit — the client value is display-only.
+ * side on submit - the client value is display-only.
  */
 import { Plus, Trash2 } from 'lucide-react';
 import { SearchSelect } from '@/components/platform/search-select';
@@ -31,7 +31,7 @@ export interface TableFieldProps {
   fieldKey: string;
   disabled?: boolean;
   idBase: string;
-  /** Read-only submission view — inputs become text. */
+  /** Read-only submission view - inputs become text. */
   readOnly?: boolean;
 }
 
@@ -72,7 +72,7 @@ function summarize(rows: Row[], col: FormTableColumn): string | null {
   else if (col.summarize === 'avg') v = nums.reduce((a, b) => a + b, 0) / nums.length;
   else if (col.summarize === 'min') v = Math.min(...nums);
   else v = Math.max(...nums);
-  return v === null ? '—' : fmtNum(v, col.decimals);
+  return v === null ? '-' : fmtNum(v, col.decimals);
 }
 
 export function TableField({
@@ -219,7 +219,7 @@ interface CellProps {
 function Cell({ col, id, value, onChange, invalid, readOnly }: CellProps) {
   if (col.type === 'computed') {
     const n = toNum(value);
-    const display = Number.isFinite(n) ? fmtNum(n, col.decimals) : '—';
+    const display = Number.isFinite(n) ? fmtNum(n, col.decimals) : '-';
     return (
       <span className="inline-block min-w-16 tabular-nums" data-slot="table-computed">
         {display}
@@ -227,15 +227,15 @@ function Cell({ col, id, value, onChange, invalid, readOnly }: CellProps) {
     );
   }
   if (col.type === 'fixed') {
-    // Read-only constant — same for every row, server-stamped on submit.
+    // Read-only constant - same for every row, server-stamped on submit.
     return (
       <span className="inline-block tabular-nums text-muted-foreground" data-slot="table-fixed">
-        {col.fixedValue ?? '—'}
+        {col.fixedValue ?? '-'}
       </span>
     );
   }
   if (readOnly) {
-    return <span className="text-foreground">{value === '' || value == null ? '—' : String(value)}</span>;
+    return <span className="text-foreground">{value === '' || value == null ? '-' : String(value)}</span>;
   }
   const common = { id, 'aria-invalid': invalid || undefined, className: cn('h-9', invalid && 'aria-invalid') };
   const isInt = col.type === 'integer' || col.integer;

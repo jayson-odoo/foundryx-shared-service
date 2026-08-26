@@ -61,7 +61,7 @@ describe('GrillChat (AC-BI-29)', () => {
     expect(onSend).toHaveBeenCalledWith('It is about exports');
   });
 
-  it('has NO explicit Generate button (AC-BI-29c — generation fires from the signal)', () => {
+  it('has NO explicit Generate button (AC-BI-29c - generation fires from the signal)', () => {
     renderChat({ coveredFields: [], missingFields: FIELDS });
     expect(screen.queryByRole('button', { name: /generate/i })).not.toBeInTheDocument();
     // Only the Send action is offered in the composer.
@@ -88,6 +88,6 @@ describe('GrillChat (AC-BI-29)', () => {
     // The captured value is shown for the grounded field…
     expect(screen.getByText('Exports time out on big accounts')).toBeInTheDocument();
     // …and an em-dash placeholder for the two not-yet-captured fields.
-    expect(screen.getAllByText('—')).toHaveLength(2);
+    expect(screen.getAllByText('-')).toHaveLength(2);
   });
 });

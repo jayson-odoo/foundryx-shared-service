@@ -1,5 +1,5 @@
 /**
- * Shared lucide icon registry for workflow nodes (plan sprint-2/09) — the
+ * Shared lucide icon registry for workflow nodes (plan sprint-2/09) - the
  * palette and the canvas node both resolve `catalog.icon` through this map so
  * the names stay in one place. Add a catalog `icon` → add it here.
  */

@@ -1,4 +1,4 @@
-"""Numbering engine tests (sprint-4/07, Cluster F) — AC-07-03/04/05/06/07.
+"""Numbering engine tests (sprint-4/07, Cluster F) - AC-07-03/04/05/06/07.
 
 format_number token matrix · gapless + consecutive · rollback un-advances the
 counter (no gap) · per-period reset · active_modules catalog filter · set_next_val
@@ -68,7 +68,7 @@ def test_next_number_consecutive_and_gapless(session_factory):
 
 
 def test_rollback_leaves_counter_unadvanced(session_factory):
-    """AC-07-04 — a caller rollback un-advances the counter (no gap). The
+    """AC-07-04 - a caller rollback un-advances the counter (no gap). The
     increment rides the caller's transaction (flush, not commit)."""
     db = session_factory()
     register_number_sequence(
@@ -82,7 +82,7 @@ def test_rollback_leaves_counter_unadvanced(session_factory):
     db.commit()
     assert first == "R-0001"
 
-    # Hand out the next one but ROLL BACK — the counter must un-advance.
+    # Hand out the next one but ROLL BACK - the counter must un-advance.
     second = svc.next_number(DEFAULT_TENANT_ID, "t_rollback", d)
     assert second == "R-0002"
     db.rollback()
@@ -117,7 +117,7 @@ def test_create_race_loser_recovers_no_error(session_factory):
     """Simulate the race: a concurrent 'winner' has already inserted the row when
     the 'loser' reaches its create branch. The loser's INSERT trips the unique
     constraint inside the SAVEPOINT; it must rollback the SAVEPOINT, re-fetch the
-    winner's row and return it WITHOUT raising — not 500."""
+    winner's row and return it WITHOUT raising - not 500."""
     from app.models.numbering import NumberCounter
     from app.repositories.numbering_repository import NumberingRepository
 
@@ -125,7 +125,7 @@ def test_create_race_loser_recovers_no_error(session_factory):
     repo = NumberingRepository(db)
 
     # Pre-seed the "winner" row directly via core SQL so the ORM session does not
-    # already track it — mirrors a row a concurrent committed transaction wrote.
+    # already track it - mirrors a row a concurrent committed transaction wrote.
     winner = NumberCounter(
         tenant_id=DEFAULT_TENANT_ID, doc_type="t_race2", period_key="", next_val=9
     )
@@ -260,7 +260,7 @@ def test_number_assigned_at_state_change(session_factory):
         number = None
 
     doc = _Doc()
-    assert doc.number is None  # draft — no number
+    assert doc.number is None  # draft - no number
 
     # "Issue" step assigns the number in the SAME transaction as the state change.
     svc = NumberingService(db)

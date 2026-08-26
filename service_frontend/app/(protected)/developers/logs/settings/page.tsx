@@ -17,7 +17,7 @@ import { Label } from '@/components/ui/label';
 import { useIntegrationLogSettings } from '@/hooks/use-integration-log-settings';
 
 /**
- * Developer Logs retention settings (sprint-4/12 Slice 3, AC-DLC-21/23) — the
+ * Developer Logs retention settings (sprint-4/12 Slice 3, AC-DLC-21/23) - the
  * beat pruner deletes integration-activity rows older than this window (left at
  * the deployment default until overridden here). Gated integration_logs.manage.
  * Reuses the /settings/workflows page shape.

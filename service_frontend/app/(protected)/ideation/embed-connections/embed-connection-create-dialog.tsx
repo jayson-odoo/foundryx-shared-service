@@ -35,7 +35,7 @@ const MIN_SECRET = 8;
  * Register an embed connection, then reveal the signing secret ONCE. The admin
  * either types a secret or clicks Generate for a strong random one; on create the
  * SAME value is revealed (copyable) so it can be pasted into the host's embed
- * config. The plaintext lives client-side only — the backend stores it encrypted
+ * config. The plaintext lives client-side only - the backend stores it encrypted
  * and never returns it. Closing clears every field (never leave a plaintext).
  */
 export function EmbedConnectionCreateDialog({
@@ -163,7 +163,7 @@ export function EmbedConnectionCreateDialog({
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Shown once after create — copy it then. Stored encrypted; never shown again.
+                  Shown once after create - copy it then. Stored encrypted; never shown again.
                 </p>
               </div>
 

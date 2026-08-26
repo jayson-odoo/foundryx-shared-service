@@ -1,9 +1,9 @@
 {
   "module_name": "ideation",
   "version": "0.1.0",
-  "author": "FoundryX",
+  "author": "Foundryx",
   "title": "Ideation",
-  "description": "Capture raw ideas from WhatsApp into structured, deduped, triageable Ideas against a Product — the Capture spine of the Ideation → Delivery program.",
+  "description": "Capture raw ideas from WhatsApp into structured, deduped, triageable Ideas against a Product - the Capture spine of the Ideation → Delivery program.",
   "icon": "lightbulb",
   "required_core_version": ">=1.0.0",
   "schema": "app_ideation",

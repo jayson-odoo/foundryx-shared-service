@@ -1,8 +1,8 @@
-"""Canonical master shapes — Supplier (Creditor) and Customer (Debtor).
+"""Canonical master shapes - Supplier (Creditor) and Customer (Debtor).
 
     !!  THESE ARE A STRICT SUBSET OF SORENTO'S OWN SCHEMAS, READ FROM SOURCE.  !!
     !!  `app/schemas/canonical_masters.py` sets ``extra="forbid"``, so a field  !!
-    !!  we invent is a hard PER-RECORD REJECTION — not a warning, not a drop.   !!
+    !!  we invent is a hard PER-RECORD REJECTION - not a warning, not a drop.   !!
 
 Two rules decided which fields exist here, and both are the opposite of the
 obvious "map everything" instinct:
@@ -10,7 +10,7 @@ obvious "map everything" instinct:
 1. **Payment terms are absent on purpose** (AC-14-12). AutoCount supplies
    ``DisplayTerm`` as a CODE (``"C.O.D."``), not a number of days, and Sorento's
    ``_supplier_columns`` raises ``MissingReference`` on ``payment_terms_code``
-   **unconditionally** — it performs no lookup at all until their Phase D. Any
+   **unconditionally** - it performs no lookup at all until their Phase D. Any
    value we sent would make the record permanently ``retryable`` and build an
    undrainable queue. So no field, and no code→days mapping invented anywhere.
 
@@ -20,7 +20,7 @@ obvious "map everything" instinct:
    report an operator that seven address fields synced when Sorento silently
    discarded all seven. That is the exact failure Sorento's canonical layer says
    it exists to prevent ("a field the ESB believed it sent and Sorento silently
-   dropped is the worst kind of mapping bug") — we must not re-create it from
+   dropped is the worst kind of mapping bug") - we must not re-create it from
    the other side by reporting success.
 
 ``source_ref`` is **company-qualified** (AC-14-10): ``"{DatabaseName}:{AutoKey}"``.
@@ -32,7 +32,7 @@ It is minted in the canonical shape (``mapping.company_qualified_identity``), no
 at push time, so staging, the diff and the eventual push all key on one string.
 
 Not ``Guid`` (Debtor rows carry one, Creditor rows do not) and not ``AccNo``
-(a business code an operator can renumber — correlating on it would orphan the
+(a business code an operator can renumber - correlating on it would orphan the
 Sorento row and duplicate the record on the next sync).
 """
 from datetime import datetime
@@ -51,7 +51,7 @@ VENDOR_ENTITY_SUPPLIER = "Creditor"
 VENDOR_ENTITY_CUSTOMER = "Debtor"
 
 # Where the real DB row hides. A master response nests it one level down, so a
-# mapping row's path is ``Data.0.AutoKey`` — NOT ``AutoKey``.
+# mapping row's path is ``Data.0.AutoKey`` - NOT ``AutoKey``.
 #
 # Deliberately NOT flattened into the parent: BOTH levels carry unique fields
 # (top: ``EmailAddress``/``RegisterNo``/``TaxRegistrationNo``/``UDF``;
@@ -67,7 +67,7 @@ VENDOR_LAST_MODIFIED_PATH = "Data.0.LastModified"
 class CanonicalMaster(CanonicalRecord):
     """Shared master provenance.
 
-    ``last_modified`` is carried for staging, diffing and the watermark — it is
+    ``last_modified`` is carried for staging, diffing and the watermark - it is
     NOT a Sorento field and is excluded from ``sink_payload`` below.
     """
 
@@ -83,12 +83,12 @@ class CanonicalMaster(CanonicalRecord):
     #     !!  THE ONLY KEYS THAT MAY CROSS THE WIRE TO SORENTO.  !!
     # Their models forbid extras, so an unknown key is a per-record rejection
     # costing a round-trip to discover (AC-14-14). Keeping the allow-list beside
-    # the model — rather than in the sink — means a field added here without a
+    # the model - rather than in the sink - means a field added here without a
     # deliberate decision about the consumer cannot silently reach it.
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = ()
 
     def sink_payload(self) -> Dict[str, Any]:
-        """Exactly the keys Sorento defines — provenance and locally-useful
+        """Exactly the keys Sorento defines - provenance and locally-useful
         fields (``source_system``, ``entity_type``, ``last_modified``,
         ``extras``) stripped."""
         data = self.model_dump(mode="json")
@@ -98,7 +98,7 @@ class CanonicalMaster(CanonicalRecord):
 class CanonicalSupplier(CanonicalMaster):
     """AutoCount ``Creditor`` → Sorento ``suppliers``.
 
-    A synced supplier carries **code, name, email and the active flag only** —
+    A synced supplier carries **code, name, email and the active flag only** -
     that is the honest list, and it is what an operator must be shown (AC-14-13).
     Creditor has no phone field at all, so ``phone_number`` (which Sorento *does*
     persist) has no source and is omitted rather than faked.
@@ -120,7 +120,7 @@ class CanonicalCustomer(CanonicalMaster):
     """AutoCount ``Debtor`` → Sorento ``customers``.
 
     No ``country`` source exists on Debtor, and ``registration_number`` exists on
-    Creditor but not Debtor — both omitted rather than invented.
+    Creditor but not Debtor - both omitted rather than invented.
     """
 
     entity_type: str = ENTITY_CUSTOMER

@@ -116,7 +116,7 @@ def test_signature_data_url_stored(client):
     assert served.status_code == 200
 
 
-# A zip container (PK magic) — docx/xlsx/pptx are zips; the gate reads the magic
+# A zip container (PK magic) - docx/xlsx/pptx are zips; the gate reads the magic
 # only, the office sub-type is refined from the filename (BL-093).
 _ZIP = b"PK\x03\x04" + b"\x00" * 24
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -129,7 +129,7 @@ def test_detect_upload_mime_office_and_floor():
     assert detect_upload_mime(_ZIP, "report.xlsx") == _XLSX_MIME
     assert detect_upload_mime(_ZIP, "archive.zip") == "application/zip"
     assert detect_upload_mime(_ZIP, None) == "application/zip"
-    # Hard floor preserved — no config can open these.
+    # Hard floor preserved - no config can open these.
     assert detect_upload_mime(b"MZ\x90\x00", "evil.xlsx") is None  # PE exe
     assert detect_upload_mime(b"<svg onload=x>", "a.svg") is None
     assert detect_upload_mime(b"<!doctype html>", "a.xlsx") is None

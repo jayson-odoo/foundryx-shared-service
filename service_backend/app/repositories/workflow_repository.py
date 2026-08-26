@@ -1,4 +1,4 @@
-"""Workflow persistence (plan sprint-2/08) — pure SQLAlchemy, ALWAYS tenant-scoped.
+"""Workflow persistence (plan sprint-2/08) - pure SQLAlchemy, ALWAYS tenant-scoped.
 Every query filters ``tenant_id``; the tenant comes from the authed context."""
 from typing import Dict, List, Optional, Tuple
 

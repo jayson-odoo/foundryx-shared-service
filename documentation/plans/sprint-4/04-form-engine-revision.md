@@ -1,9 +1,9 @@
-# Sprint 4 · Plan 04 — Form Engine: Submission Revisions (core foundation enhancement)
+# Sprint 4 · Plan 04 - Form Engine: Submission Revisions (core foundation enhancement)
 
-**Status:** GRILLED (2026-06-18) — design locked, ready to slice + build.
+**Status:** GRILLED (2026-06-18) - design locked, ready to slice + build.
 **Branch (future):** `sprint-4/04-form-revisions`
-**Type:** Core form-engine enhancement. **Generic** — any form benefits (vendor onboarding resubmit, grant re-application, EMS abstracts).
-**Prerequisite for** Cluster E review (plan 06) — reviewer-requested-changes → author resubmits a revision.
+**Type:** Core form-engine enhancement. **Generic** - any form benefits (vendor onboarding resubmit, grant re-application, EMS abstracts).
+**Prerequisite for** Cluster E review (plan 06) - reviewer-requested-changes → author resubmits a revision.
 **Source:** `01-...-grill-decisions.md` §6.9 + this grill.
 
 > **Scope split (grilled):** REVISION is generic (no Profile) → **core form engine, this plan.** REVIEW needs Profile reviewers → **EMS module, plan 06.** Dependency direction stays EMS→core, never core→EMS. The earlier "form engine gains revision + review" splits here.
@@ -22,7 +22,7 @@ Today a `form_submission` is editable only while in an `is_active` (Draft) statu
 
 3. **Status across revisions (R3).** New revision re-enters the scoped graph from initial; resubmits via the EXISTING submit/transition flow. Prior revisions retain their final status, `is_current = False`. **Lists default to `is_current = True`** (one row per group); history is accessible on demand.
 
-4. **Files (default).** Cloned answers reference the SAME storage blobs (no byte copy — blobs are immutable); changing a file in the revision uploads a new key. Blob lifecycle by reference (don't delete a blob still referenced by a sibling revision).
+4. **Files (default).** Cloned answers reference the SAME storage blobs (no byte copy - blobs are immutable); changing a file in the revision uploads a new key. Blob lifecycle by reference (don't delete a blob still referenced by a sibling revision).
 
 ---
 
@@ -52,7 +52,7 @@ def revise(self, tenant_id: str, submission_id: str, user: User) -> FormSubmissi
     # returns the new Draft revision (author then edits + submits via existing endpoints)
 ```
 - **Listing:** `submissions()` default filters `is_current = True`; a `group` param (or `is_current=all`) returns the full chain for history.
-- Existing `submit`/`transition`/file-serve unchanged — the new revision rides them.
+- Existing `submit`/`transition`/file-serve unchanged - the new revision rides them.
 
 ## API
 
@@ -63,16 +63,16 @@ def revise(self, tenant_id: str, submission_id: str, user: User) -> FormSubmissi
 ## Frontend
 
 - **Form settings:** an `allow_revisions` toggle.
-- **Submission detail:** a **Revise** action (visible only when `allow_revisions` + frozen + owner/manager) → opens the new Draft revision in the renderer (`mode='fill'`); a **revision history** panel listing revisions (number, status, submitted_at) — each opens read-only via the renderer **pinned to ITS `version_id`** (faithful). A **"current" / "rev N"** badge on the detail header + list.
+- **Submission detail:** a **Revise** action (visible only when `allow_revisions` + frozen + owner/manager) → opens the new Draft revision in the renderer (`mode='fill'`); a **revision history** panel listing revisions (number, status, submitted_at) - each opens read-only via the renderer **pinned to ITS `version_id`** (faithful). A **"current" / "rev N"** badge on the detail header + list.
 - `types/forms.ts`: `FormSubmissionRow` gains `submissionGroupId`/`revisionNumber`/`isCurrent`; form gains `allowRevisions`. Parity-pinned.
 
 ## Slices
 
-1. **Backend revisions** — columns + migration + backfill; `revise()` + guards; list default `is_current`; history endpoint; tests (clone answers + files-by-ref; increment + flip `is_current`; pin own version; re-enter Draft; guard matrix: toggle-off / not-frozen / not-owner; list-default-current; history read; backfill correctness).
-2. **Frontend** — `allow_revisions` toggle; Revise action + revision-history viewer + badges; E2E (submit → revise → edit → resubmit → history shows 2 immutable revisions, latest current).
+1. **Backend revisions** - columns + migration + backfill; `revise()` + guards; list default `is_current`; history endpoint; tests (clone answers + files-by-ref; increment + flip `is_current`; pin own version; re-enter Draft; guard matrix: toggle-off / not-frozen / not-owner; list-default-current; history read; backfill correctness).
+2. **Frontend** - `allow_revisions` toggle; Revise action + revision-history viewer + badges; E2E (submit → revise → edit → resubmit → history shows 2 immutable revisions, latest current).
 
 ## Open risks / backlog
 - **Anonymous/public revision** (claim-link to revise a public submission) → backlog (overlaps BL-090 autosave).
 - **Blob GC** when a revision is hard-deleted: only delete blobs unreferenced by sibling revisions.
 - **Revision diff view** (what changed between revisions) → nice-to-have backlog.
-- Each revision currently pins the CURRENT published version at revise time; if the form was unpublished, revise is blocked (no current version) — surface a clear 409.
+- Each revision currently pins the CURRENT published version at revise time; if the form was unpublished, revise is blocked (no current version) - surface a clear 409.

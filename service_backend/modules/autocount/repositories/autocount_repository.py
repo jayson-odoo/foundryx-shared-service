@@ -1,14 +1,14 @@
-"""AutoCount repositories — pure SQLAlchemy. No business logic, no HTTP.
+"""AutoCount repositories - pure SQLAlchemy. No business logic, no HTTP.
 
     !!  EVERY query below filters ``tenant_id`` AND ``company_id`` (AC-13-41).  !!
 
 Company scope is not decoration. One tenant legitimately runs several AutoCount
-companies (D16 — ``AppId`` IS the company selector), so a tenant-only filter
+companies (D16 - ``AppId`` IS the company selector), so a tenant-only filter
 would let company A's staged supplier documents surface under company B inside
 the same customer. That is a data-leak class defect, not a UX bug.
 
 The ONE exception is ``CompanyRepository``, where the company id IS the row's
-primary key — scoping by ``(tenant_id, id)`` is the same guarantee.
+primary key - scoping by ``(tenant_id, id)`` is the same guarantee.
 """
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ class CompanyRepository:
         """Company ids whose label or database name contains ``term`` (case-
         insensitive), for the Review-list search. Tenant-scoped. The jobs table
         holds only a ``companyId``, so a company-name search resolves to an id
-        set here first, then the jobs query filters ``payload.companyId IN`` it —
+        set here first, then the jobs query filters ``payload.companyId IN`` it -
         the only way to keep the paginated total correct in one SQL pass."""
         like = f"%{term.strip()}%"
         rows = (
@@ -103,7 +103,7 @@ class CompanyRepository:
     def get_by_database_name(
         self, tenant_id: str, database_name: str
     ) -> Optional[AcCompany]:
-        """Company identity is ``DatabaseName`` — the uniqueness guard core
+        """Company identity is ``DatabaseName`` - the uniqueness guard core
         deliberately delegated to this module (the ``erp`` carve-out)."""
         return (
             self.db.query(AcCompany)
@@ -129,7 +129,7 @@ class CompanyRepository:
     def get_map(
         self, tenant_id: str, company_ids: Sequence[str]
     ) -> dict[str, AcCompany]:
-        """Batch, TENANT-scoped id→company lookup (for a jobs page's labels) —
+        """Batch, TENANT-scoped id→company lookup (for a jobs page's labels) -
         ONE query, never one per row. A company id resolved here is filtered by
         tenant, so a job payload's id can never reach another tenant's row."""
         ids = list({cid for cid in company_ids if cid})
@@ -208,7 +208,7 @@ class WatermarkRepository:
         )
 
     def list_for_company(self, tenant_id: str, company_id: str) -> List[AcWatermark]:
-        """Every entity's delta state for one company — ONE query, so the
+        """Every entity's delta state for one company - ONE query, so the
         Entities surface never fans out per row."""
         return (
             self.db.query(AcWatermark)
@@ -244,7 +244,7 @@ class FieldMappingRepository:
     def list(
         self, tenant_id: str, company_id: str, entity_type: str
     ) -> List[AcFieldMapping]:
-        """Mapping ROWS for one (company, entity) — the data that IS the
+        """Mapping ROWS for one (company, entity) - the data that IS the
         behaviour (D5). Includes disabled rows; the engine filters them, so the
         management surface can show an operator what exists but is off."""
         return (
@@ -280,7 +280,7 @@ class FieldMappingRepository:
         entity_type: str,
         canonical_fields: Sequence[str],
     ) -> int:
-        """Delete the mapping rows whose ``canonical_field`` is in the given set —
+        """Delete the mapping rows whose ``canonical_field`` is in the given set -
         the DELIVERABLE rows the operator is replacing (plan 15 §2). Rows whose
         canonical field is NOT listed (identity/watermark provenance like
         ``last_modified``) are left untouched, so a full re-map can never wipe the
@@ -338,17 +338,17 @@ class StagedRecordRepository:
         """A PAGE of a job's staged records + counts (plan 15 §2, AC-15-10/11).
 
         Returns ``(rows, batch_total, filtered_total, no_change_count)``:
-          * ``batch_total``    — every staged row for the job (unfiltered).
-          * ``filtered_total`` — rows matching the ``changed`` filter (== total
+          * ``batch_total``    - every staged row for the job (unfiltered).
+          * ``filtered_total`` - rows matching the ``changed`` filter (== total
             when unfiltered), for the caller's page math.
-          * ``no_change_count`` — rows whose per-record diff is an EMPTY object
-            (a legitimate no-op re-fetch — LastModified advanced but no mapped
+          * ``no_change_count`` - rows whose per-record diff is an EMPTY object
+            (a legitimate no-op re-fetch - LastModified advanced but no mapped
             field differs), so the FE can render the collapsed summary WITHOUT
             fetching them all.
 
         The "no field changes" predicate is ``diff_json`` serialising to the
         empty-object literal ``'{}'``. It is expressed as a TEXT cast compared to
-        that one literal — NEVER a JSON ``=`` (the Postgres ``json`` type has no
+        that one literal - NEVER a JSON ``=`` (the Postgres ``json`` type has no
         equality operator; a JSON ``==`` would pass the SQLite suite and 500 in
         production). Only ever compared to ``'{}'``, so key ordering / whitespace
         of non-empty diffs is irrelevant.
@@ -379,7 +379,7 @@ class StagedRecordRepository:
     def list_pending_for_job(
         self, tenant_id: str, company_id: str, job_id: str
     ) -> List[AcStagedRecord]:
-        """STAGED rows only — FAILED rows are never pushable (D13) and already
+        """STAGED rows only - FAILED rows are never pushable (D13) and already
         PUSHED rows are skipped, which is the belt to the approval claim's
         braces for exactly-once (AC-13-13)."""
         return (
@@ -397,7 +397,7 @@ class StagedRecordRepository:
     def last_pushed(
         self, tenant_id: str, company_id: str, entity_type: str, source_ref: str
     ) -> Optional[AcStagedRecord]:
-        """The most recently PUSHED version of this document — the "before" side
+        """The most recently PUSHED version of this document - the "before" side
         of the per-record diff (AC-13-12)."""
         from ..models import STAGED_PUSHED
 
@@ -482,7 +482,7 @@ class SyncJobRepository:
     ``background_jobs`` is generic machinery, but AutoCount's sync-job knowledge
     (the ``type`` tag and the ``entityType`` payload key) is module-specific, so
     the JSON-payload filter belongs here rather than in the generic core
-    ``JobService``. Every query filters ``tenant_id`` — a job from another tenant
+    ``JobService``. Every query filters ``tenant_id`` - a job from another tenant
     can never surface (the polymorphic-scope rule).
     """
 
@@ -514,7 +514,7 @@ class SyncJobRepository:
                 BackgroundJob.payload_json["companyId"].as_string().in_(company_ids)
             )
         if entity_type:
-            # ``payload_json ->> 'entityType'`` — the generic-JSON string
+            # ``payload_json ->> 'entityType'`` - the generic-JSON string
             # comparator compiles per dialect (``json_extract`` on SQLite, ``->>``
             # on Postgres, both valid for the ``json`` type) so the filter runs
             # in SQL and pagination totals stay correct.

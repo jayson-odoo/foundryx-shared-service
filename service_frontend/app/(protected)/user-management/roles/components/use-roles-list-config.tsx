@@ -80,7 +80,7 @@ export function useRolesListConfig(): ResourceListConfig<RoleListItem> {
         meta: { headerTitle: 'Description' },
         header: ({ column }) => <DataGridColumnHeader title="Description" column={column} />,
         cell: ({ row }) => (
-          <span className="text-sm text-muted-foreground">{row.original.description ?? '—'}</span>
+          <span className="text-sm text-muted-foreground">{row.original.description ?? '-'}</span>
         ),
         size: 360,
         enableSorting: false,

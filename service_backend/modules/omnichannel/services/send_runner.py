@@ -8,7 +8,7 @@ transcode/upload-by-id → ``adapter.send`` → stamp ``SENT``/``FAILED`` +
 The Celery task (``worker.omnichannel_send_message``) calls this on a fresh
 session in prod; in eager dev/tests ``MessageService`` calls it INLINE on the
 request session (a worker would open a different DB session and not see the
-in-request row — the workflow-engine eager pattern).
+in-request row - the workflow-engine eager pattern).
 """
 import logging
 from typing import Optional
@@ -69,7 +69,7 @@ def _publish_status(db: Session, row: ConversationMessage) -> None:
 class TransientSendError(Exception):
     """A retryable send failure (network/5xx/storage blip). The Celery task
     re-raises this so ``autoretry_for`` applies bounded backoff; eager dev leaves
-    the row QUEUED for a later manual retry (dev uses the stub adapter — no
+    the row QUEUED for a later manual retry (dev uses the stub adapter - no
     transient failures)."""
 
 
@@ -84,7 +84,7 @@ def _fail(db: Session, row: ConversationMessage, message: str) -> str:
 def _requeue_transient(db: Session, row: ConversationMessage, message: str) -> None:
     """Reset a claimed row to QUEUED so a retry re-sends (the send did NOT reach
     the contact), then raise for backoff. Only reached BEFORE ``adapter.send``
-    returns — a post-success commit failure leaves the row SENDING (never re-sent)."""
+    returns - a post-success commit failure leaves the row SENDING (never re-sent)."""
     row.delivery_status = "QUEUED"
     row.error_message = message
     db.commit()
@@ -96,7 +96,7 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
 
     IDEMPOTENT double-send guard (plan 12 review): the row is CLAIMED (QUEUED →
     SENDING, committed) BEFORE ``adapter.send`` touches Meta. A row not in QUEUED
-    is a no-op — so if the post-send commit fails and Celery retries, the retry
+    is a no-op - so if the post-send commit fails and Celery retries, the retry
     sees SENDING and never re-calls ``adapter.send`` (the contact can't get it
     twice). A transient failure (network/5xx/storage) raises ``TransientSendError``
     for backoff; a permanent Meta rejection / transcode error stamps FAILED.
@@ -105,7 +105,7 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
     correlation id when the send crossed the Celery boundary (the worker's
     contextvar is None by default). We re-seed it here so the ``outbound_meta``
     activity row lands on the SAME trace as the inbound leg (AC-DLC-15). In eager
-    dev/tests the contextvar is already set on the request context — passing None
+    dev/tests the contextvar is already set on the request context - passing None
     leaves it untouched."""
     if trace_id is not None:
         from app.activity_log.context import set_trace_id
@@ -119,7 +119,7 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
     if row is None:
         return "MISSING"
     if row.delivery_status not in (None, "QUEUED"):
-        # Already claimed/sent/failed — never re-send (double-dispatch guard).
+        # Already claimed/sent/failed - never re-send (double-dispatch guard).
         return row.delivery_status
 
     channel = (
@@ -172,7 +172,7 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
     # the DB row changes immediately afterward, this dispatch can only use the
     # already-validated dev adapter credentials.
     credentials = sandbox_credentials or decrypt_credentials(channel.credentials_json)
-    # Instrument the outbound Meta call — an ``outbound_meta`` activity row lands
+    # Instrument the outbound Meta call - an ``outbound_meta`` activity row lands
     # on the inbound trace (gateway sends) or standalone (internal inbox sends).
     from .activity import build_meta_recorder
 
@@ -206,7 +206,7 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
             if row.message_type == "VOICE":
                 content = transcode_voice(content)  # webm/opus → ogg/opus
                 mime = "audio/ogg"
-                # The stored blob is now ogg — keep media_key/mime consistent so
+                # The stored blob is now ogg - keep media_key/mime consistent so
                 # agent playback + the media endpoint serve the correct type.
                 from app.services.storage import storage_for_tenant
 
@@ -265,14 +265,14 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
                 credentials, phone_id, to, text=row.body, context_message_id=context_id
             )
     except MediaRejected as exc:
-        # Sniff/cap/transcode failure — permanent.
+        # Sniff/cap/transcode failure - permanent.
         return _fail(db, row, exc.message)
     except SendError as exc:
         if getattr(exc, "transient", False):
             _requeue_transient(db, row, str(exc))
         return _fail(db, row, str(exc))
     except (httpx.HTTPError, OSError) as exc:
-        # Transport / stored-media read blip — retryable with backoff.
+        # Transport / stored-media read blip - retryable with backoff.
         _requeue_transient(db, row, str(exc))
 
     row.external_message_id = result.get("external_message_id")

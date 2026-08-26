@@ -1,4 +1,4 @@
-/** Route helpers for the Platform → Tenants feature — single source of truth for its URLs. */
+/** Route helpers for the Platform → Tenants feature - single source of truth for its URLs. */
 
 export const tenantsListPath = '/platform/tenants';
 export const tenantNewPath = `${tenantsListPath}/new`;

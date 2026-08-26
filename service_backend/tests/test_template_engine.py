@@ -1,4 +1,4 @@
-"""Template engine tests (plan sprint-2/07) — merge security, compiler,
+"""Template engine tests (plan sprint-2/07) - merge security, compiler,
 conditional pruning, validate_doc 422 matrix, two-tier fork/reset, system
 guards, engine-rendered system mails, notification template path, email log
 retry/cancel semantics, retention, permission gates."""
@@ -108,7 +108,7 @@ class TestMerge:
 
 class TestRenderEmailDoc:
     def test_renders_a_raw_doc_branded(self, session_factory):
-        # Plan 10 follow-up — per-use template copy renders branded from a doc.
+        # Plan 10 follow-up - per-use template copy renders branded from a doc.
         from app.template_engine import render_email_doc
         from tests.conftest import DEFAULT_TENANT_ID
 
@@ -303,7 +303,7 @@ class TestPruning:
 
 
 # ---------------------------------------------------------------------------
-# API — two-tier lifecycle
+# API - two-tier lifecycle
 # ---------------------------------------------------------------------------
 
 
@@ -322,7 +322,7 @@ class TestTemplatesApi:
         assert res.status_code in (401, 403)
 
     def test_status_notification_starter_template_seeded(self, client):
-        # BL-081 — a platform-tier starter template backs the notification picker.
+        # BL-081 - a platform-tier starter template backs the notification picker.
         headers = _demo_headers(client)
         res = client.get(
             "/templates", headers=headers, params={"context": "status.notification"}
@@ -332,7 +332,7 @@ class TestTemplatesApi:
         assert "Status change notification" in names
 
     def test_context_filter_narrows_the_picker(self, client):
-        # BL-081 — the ?context= param backs the notification template picker.
+        # BL-081 - the ?context= param backs the notification template picker.
         headers = _demo_headers(client)
         rows = client.get("/templates", headers=headers, params={"page_size": 200}).json()["data"]
         a_context = rows[0]["context"]
@@ -449,7 +449,7 @@ class TestTemplatesApi:
         )
         assert res.status_code == 200, res.text
         updated = res.json()
-        assert updated["id"] == target["id"]  # in place — no fork
+        assert updated["id"] == target["id"]  # in place - no fork
         assert updated["tier"] == "default"
 
     def test_contexts_endpoint(self, client):

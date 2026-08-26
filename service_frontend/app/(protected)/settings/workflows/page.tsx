@@ -17,7 +17,7 @@ import { Label } from '@/components/ui/label';
 import { workflowService } from '@/services/workflow-service';
 
 /**
- * Workflow engine tenant settings (plan sprint-2/10) — run retention. The
+ * Workflow engine tenant settings (plan sprint-2/10) - run retention. The
  * scheduler prunes a tenant's workflow runs older than this window; left at the
  * deployment default until overridden here. Gated by workflows.manage.
  */

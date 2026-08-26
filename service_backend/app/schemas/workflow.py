@@ -1,4 +1,4 @@
-"""Workflow engine wire schemas (plan sprint-2/08) — camelCase out (mirror of
+"""Workflow engine wire schemas (plan sprint-2/08) - camelCase out (mirror of
 frontend ``types/workflows.ts``). Requests use camel field names directly."""
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -40,7 +40,7 @@ class WorkflowVersionSummaryOut(ApiModel):
             id=v.id,
             version_number=v.version_number,
             published_at=v.published_at,
-            published_by_name=published_by_name or "—",
+            published_by_name=published_by_name or "-",
             notes=v.notes,
         )
 
@@ -99,7 +99,7 @@ class WorkflowRunItemOut(ApiModel):
             status=r.status,
             triggered_by=r.triggered_by,
             is_test=r.is_test,
-            actor_name=actor_name or "—",
+            actor_name=actor_name or "-",
             started_at=r.started_at,
             finished_at=r.finished_at,
             duration_ms=_duration_ms(r.started_at, r.finished_at),
@@ -160,7 +160,7 @@ class WorkflowDebugResultOut(ApiModel):
     nodes: List[WorkflowRunNodeOut]
 
 
-# ---- requests (camelCase field names — frontend sends these) ----
+# ---- requests (camelCase field names - frontend sends these) ----
 
 
 class WorkflowCreateRequest(BaseModel):

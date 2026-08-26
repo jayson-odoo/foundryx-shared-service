@@ -1,4 +1,4 @@
-"""Permission catalog business logic — grouped catalog + module sync (plan 03 §4).
+"""Permission catalog business logic - grouped catalog + module sync (plan 03 §4).
 
 `sync_permissions(module, rows)` is the App-Store mechanism, reused by core at
 bootstrap (module = 'core'). The catalog endpoint returns resources grouped with
@@ -14,7 +14,7 @@ from app.repositories.permission_repository import PermissionRepository
 from app.schemas.permission import PermissionActionOut, PermissionResourceOut
 
 CORE_MODULE = "core"
-# Platform-operator permissions (plan 07 §5) — never grantable/visible to
+# Platform-operator permissions (plan 07 §5) - never grantable/visible to
 # tenant role editors; enforced by require_platform_permission + catalog filter.
 PLATFORM_MODULE = "platform"
 # app/services/permission_service.py -> app/permissions/*.csv
@@ -40,10 +40,10 @@ class PermissionService:
         """All permissions grouped by resource (module preserved for UI grouping).
 
         Platform-module rows are hidden unless the caller is in the platform
-        tenant (plan 07 §5) — tenant role editors never see or grant them.
+        tenant (plan 07 §5) - tenant role editors never see or grant them.
         When ``installed_modules`` is given (tenant callers, plan 08 §6),
         App-Store module rows are limited to modules installed for that tenant
-        — uninstalled modules' perms aren't visible or grantable.
+        - uninstalled modules' perms aren't visible or grantable.
         """
         grouped: Dict[str, PermissionResourceOut] = {}
         order: List[str] = []

@@ -1,4 +1,4 @@
-"""Workflow engine (plan sprint-2/08) — the last core platform engine.
+"""Workflow engine (plan sprint-2/08) - the last core platform engine.
 
 PLATFORM CORE, never an App Store module: lives in core ``public`` tables, perms
 in the core CSV, present for every tenant. Modules EXTEND it by registering

@@ -1,6 +1,6 @@
-"""Storage actions (plan sprint-2/09 D8) — push / resolve / delete a file via
+"""Storage actions (plan sprint-2/09 D8) - push / resolve / delete a file via
 ``storage_for_tenant``. ``storage.get`` resolves a key to a URL + metadata ONLY
-(never loads bytes into the run context — the binary-in-JSON trap). The run owns
+(never loads bytes into the run context - the binary-in-JSON trap). The run owns
 the transaction; these touch the storage backend, not the DB.
 """
 import mimetypes
@@ -14,11 +14,11 @@ from app.workflow_engine.context import render_field
 
 
 class ActionError(Exception):
-    """A node failed — halts the run (D14)."""
+    """A node failed - halts the run (D14)."""
 
 
 def _resolve_key(config: Dict[str, Any], ctx: Dict[str, Any]) -> str:
-    """Render + validate a tenant-authored storage key. Reject path traversal —
+    """Render + validate a tenant-authored storage key. Reject path traversal -
     the key is merge-rendered from tenant config and lands in LocalDiskStorage
     (the default/fallback backend), which joins it onto the media root without
     sanitizing; `../` would escape the root (read/delete arbitrary files)."""

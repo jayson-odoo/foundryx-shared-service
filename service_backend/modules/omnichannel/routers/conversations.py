@@ -1,14 +1,14 @@
-"""Conversation (inbox) routes — thin; authorized by the unified conversation
+"""Conversation (inbox) routes - thin; authorized by the unified conversation
 principal (native session/permission OR embed access token, plan 11H Slice 3).
 
 Every route depends on ``get_conversation_principal`` and enforces:
-- **scope** — embed thread/inbox tokens can't widen (``enforce_list`` /
+- **scope** - embed thread/inbox tokens can't widen (``enforce_list`` /
   ``enforce_thread_access``);
-- **caps/permissions** — native PATCH is field-gated (assign vs reply); embed
+- **caps/permissions** - native PATCH is field-gated (assign vs reply); embed
   writes require the matching cap. Backend is the boundary.
 
 Sends are attributed to the native actor (real admin under impersonation) OR the
-federated external agent — never to client input.
+federated external agent - never to client input.
 """
 import json
 from typing import List, Optional
@@ -73,7 +73,7 @@ def list_threads(
     # A thread-scoped embed token cannot list the workspace.
     principal.enforce_list()
     # Embed tokens are pinned to their own workspace + agent identity (client
-    # query is ignored for tenancy — never trust it).
+    # query is ignored for tenancy - never trust it).
     if principal.is_embed:
         workspace_id = principal.workspace_id
     items, total = ConversationService(db).list_threads(
@@ -184,7 +184,7 @@ async def send_template(
     principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> MessageItem:
-    """Send an approved template — accepts JSON (the SendMessageRequest fields) OR
+    """Send an approved template - accepts JSON (the SendMessageRequest fields) OR
     multipart (a ``payload`` JSON part + an optional ``file`` header-media part).
     Handles TEXT-header / body / URL-button variables + image/video/document
     header media (AC-12-22). The header-less/text path also works via
@@ -246,7 +246,7 @@ async def send_message_media(
     principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> MessageItem:
-    """Send outbound media (image/video/audio/voice/document/sticker) — multipart.
+    """Send outbound media (image/video/audio/voice/document/sticker) - multipart.
     Sniff-gated + cap-checked, then queued for async upload-by-id send."""
     principal.require(native_perm="conversations.reply", embed_cap="reply")
     enforce_thread_access(db, principal, contact_id)
@@ -395,7 +395,7 @@ def react_to_message(
     principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> ReactionResult:
-    """React (emoji) to a message by our durable id — empty emoji removes."""
+    """React (emoji) to a message by our durable id - empty emoji removes."""
     principal.require(native_perm="conversations.reply", embed_cap="reply")
     enforce_thread_access(db, principal, contact_id)
     try:

@@ -20,7 +20,7 @@ export interface IdeaClusterSuggestionsProps {
 }
 
 /**
- * Cluster suggestions (AC-BI-30/31) — on-demand trigram+LLM grouping surfaced
+ * Cluster suggestions (AC-BI-30/31) - on-demand trigram+LLM grouping surfaced
  * above the ideas list. Each suggested cluster is FULLY EDITABLE before
  * promotion: deselect ideas, or promote a single idea alone. Nothing
  * auto-promotes. Gated by `ideation.clusters.manage` (Triager); hidden entirely

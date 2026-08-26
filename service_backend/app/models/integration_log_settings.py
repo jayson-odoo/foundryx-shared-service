@@ -1,4 +1,4 @@
-"""Per-tenant developer-logs settings (sprint-4/12 Slice 3, AC-DLC-21) — core
+"""Per-tenant developer-logs settings (sprint-4/12 Slice 3, AC-DLC-21) - core
 ``public`` table, one row per tenant. Mirrors ``workflow_settings`` shape.
 
 ``retention_days`` NULL = fall back to the global default

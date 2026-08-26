@@ -148,7 +148,7 @@ describe('Change-password (redeem) page', () => {
     await fillAndSubmit(user);
 
     expect(
-      await screen.findByText(/too many attempts — please try again in ~2 minutes/i),
+      await screen.findByText(/too many attempts - please try again in ~2 minutes/i),
     ).toBeInTheDocument();
     expect(
       screen.getByPlaceholderText('Your new password'),

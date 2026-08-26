@@ -6,11 +6,11 @@ import type Konva from 'konva';
 import { clampBox, roundForUnit } from '@/lib/canvas-doc';
 import type { CanvasDocument, CanvasElement } from '@/types/templates';
 
-/** Geometry quantisation — 1dp in mm (shared with the inspector via roundForUnit). */
+/** Geometry quantisation - 1dp in mm (shared with the inspector via roundForUnit). */
 const round = (v: number): number => roundForUnit(v, 'mm');
 
 /**
- * The Konva canvas surface (slice 2 D13/D15). Interactive editor ONLY — it never
+ * The Konva canvas surface (slice 2 D13/D15). Interactive editor ONLY - it never
  * renders the final artifact (the server HTML is authoritative). Select / move /
  * resize / rotate via a Konva Transformer; snap guides to the canvas centre +
  * edges; bleed + safe-area overlay. mm geometry ⇄ px via a fit-to-width scale.
@@ -25,7 +25,7 @@ export interface CanvasStageProps {
   selectedId: string | null;
   editing: boolean;
   onSelect: (id: string | null) => void;
-  /** Commit a geometry change (mm) for one element — pushed through history. */
+  /** Commit a geometry change (mm) for one element - pushed through history. */
   onGeometry: (id: string, patch: Partial<CanvasElement>) => void;
 }
 
@@ -121,7 +121,7 @@ export function CanvasStage({
       draggable: editing,
       onMouseDown: () => onSelect(el.id),
       onTap: () => onSelect(el.id),
-      // No element may leave the page — clamp the drag to the canvas trim.
+      // No element may leave the page - clamp the drag to the canvas trim.
       dragBoundFunc: (pos: { x: number; y: number }) => {
         const maxX = off + mm(Math.max(0, cw - el.w));
         const maxY = off + mm(Math.max(0, ch - el.h));
@@ -303,7 +303,7 @@ export function CanvasStage({
               anchorStroke="#FF5A00"
               boundBoxFunc={(oldBox, newBox) => {
                 // Snap the resized box edges to the canvas centre/edges + keep it
-                // inside the page (rotated boxes skip snapping — AABB math only).
+                // inside the page (rotated boxes skip snapping - AABB math only).
                 if (newBox.rotation) return newBox;
                 const tol = mm(SNAP_TOLERANCE_MM);
                 let { x, y, width, height } = newBox;

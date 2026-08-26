@@ -1,9 +1,9 @@
-"""omnichannel Slice 4 — consumer webhook endpoints + delivery outbox.
+"""omnichannel Slice 4 - consumer webhook endpoints + delivery outbox.
 
 Adds ``webhook_endpoints`` (per-channel consumer subscriptions) and
 ``webhook_deliveries`` (durable signed-delivery outbox). Idempotent: the module
 baseline runs ``OmniBase.metadata.create_all`` which already includes these
-tables, so on a fresh deploy they may exist — guard each create.
+tables, so on a fresh deploy they may exist - guard each create.
 
 Revision ID: 0003_omni_webhooks
 Revises: 0002_omni_apikeys

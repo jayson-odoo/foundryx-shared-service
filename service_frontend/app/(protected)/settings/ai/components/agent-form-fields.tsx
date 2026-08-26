@@ -22,7 +22,7 @@ export interface AgentFormValues {
   connectionId: string;
   model: string;
   temperature: string;
-  /** The equipped skill ids (AC-BI-06b) — an agent equips a SET of skills. */
+  /** The equipped skill ids (AC-BI-06b) - an agent equips a SET of skills. */
   skillIds: string[];
   isEnabled: boolean;
 }
@@ -37,7 +37,7 @@ export interface AgentFormFieldsProps {
   modelsLoading: boolean;
   /** False = the live model list failed; the curated static list is showing. */
   modelsLive: boolean;
-  /** AC-BI-11 — no LLM connection configured anywhere. */
+  /** AC-BI-11 - no LLM connection configured anywhere. */
   hasConnection: boolean;
 }
 
@@ -55,7 +55,7 @@ export function AgentFormFields({
   const connectionId = form.watch('connectionId');
   const selectedConnection = connections.find((c) => c.id === connectionId);
 
-  // A pinned model the provider no longer lists must stay selectable — dropping
+  // A pinned model the provider no longer lists must stay selectable - dropping
   // it would silently blank the agent's model on the next save (AC-BI-05).
   const pinned = form.watch('model');
   const modelOptions = models.map((m) => ({ label: m.label, value: m.id }));
@@ -104,7 +104,7 @@ export function AgentFormFields({
                 )}
               />
             ) : (
-              (agent?.name ?? '—')
+              (agent?.name ?? '-')
             )}
           </FormRow>
 
@@ -123,7 +123,7 @@ export function AgentFormFields({
                 )}
               />
             ) : (
-              (agent?.description || '—')
+              (agent?.description || '-')
             )}
           </FormRow>
 
@@ -144,7 +144,7 @@ export function AgentFormFields({
                         value={field.value || null}
                         onChange={(value) => {
                           field.onChange(value);
-                          // A different provider has a different catalog — the
+                          // A different provider has a different catalog - the
                           // old pinned model would be invalid.
                           form.setValue('model', '', { shouldDirty: true });
                         }}
@@ -159,7 +159,7 @@ export function AgentFormFields({
               />
             ) : (
               <div className="flex flex-col">
-                <span>{agent?.connectionName ?? '—'}</span>
+                <span>{agent?.connectionName ?? '-'}</span>
                 {agent?.provider && (
                   <span className="text-xs text-muted-foreground">{agent.provider}</span>
                 )}
@@ -175,7 +175,7 @@ export function AgentFormFields({
                 render={({ field }) => (
                   <FormItem className="max-w-sm">
                     <FormControl>
-                      {/* Searchable picker, never a free-text input — only
+                      {/* Searchable picker, never a free-text input - only
                           offer models that will actually work (AC-BI-05). */}
                       <SearchSelect
                         options={modelOptions}
@@ -195,7 +195,7 @@ export function AgentFormFields({
                     </FormControl>
                     {!modelsLive && modelOptions.length > 0 && (
                       <p className="text-xs text-muted-foreground">
-                        Showing the built-in list — the provider&apos;s catalog was unavailable.
+                        Showing the built-in list - the provider&apos;s catalog was unavailable.
                       </p>
                     )}
                     <FormMessage />
@@ -203,7 +203,7 @@ export function AgentFormFields({
                 )}
               />
             ) : (
-              (agent?.model || '—')
+              (agent?.model || '-')
             )}
           </FormRow>
 
@@ -234,7 +234,7 @@ export function AgentFormFields({
                 render={({ field }) => (
                   <FormItem className="max-w-sm">
                     <FormControl>
-                      {/* An agent equips a SET of skills (AC-BI-06b) — search +
+                      {/* An agent equips a SET of skills (AC-BI-06b) - search +
                           select-all + pills, never a single SearchSelect. */}
                       <MultiSelect
                         options={skills.map((s) => ({ label: s.name, value: s.id }))}
@@ -256,7 +256,7 @@ export function AgentFormFields({
                 ))}
               </div>
             ) : (
-              '—'
+              '-'
             )}
           </FormRow>
 

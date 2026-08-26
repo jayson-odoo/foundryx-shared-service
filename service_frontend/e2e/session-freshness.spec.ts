@@ -1,18 +1,18 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
 /**
- * Session freshness + menu hygiene (plan sprint-2/06 D8/D9) — Phase C E2E.
+ * Session freshness + menu hygiene (plan sprint-2/06 D8/D9) - Phase C E2E.
  *
  * D8: revoking a permission on the user's role must take effect on the next
- * page refresh WITHOUT a re-login — the protected layout's use-session-sync
+ * page refresh WITHOUT a re-login - the protected layout's use-session-sync
  * probes /auth/me and update()s the NextAuth session on drift; the menu
  * filter (plan 05 BL-014) then prunes the gated entries.
  *
  * D9: "Workspace Settings" is renamed to "Settings"; the Metronic demo's
- * dead User-Management entries (Permissions/Account/Logs/Settings — routes
+ * dead User-Management entries (Permissions/Account/Logs/Settings - routes
  * that never existed) are gone.
  *
- * Spec isolation: dedicated tenant — this MUTATES the Admin role's grants;
+ * Spec isolation: dedicated tenant - this MUTATES the Admin role's grants;
  * doing that to the default tenant would 403 every concurrent spec.
  */
 
@@ -47,7 +47,7 @@ async function loginTenantAdmin(page: Page, t: { slug: string; email: string; pa
 }
 
 /** Revoke every integrations.* grant from the tenant's Admin role via the API
- * (role editing itself is covered by roles-permissions.spec — the flow under
+ * (role editing itself is covered by roles-permissions.spec - the flow under
  * test here is the refresh-freshness, which stays real clicks). */
 async function revokeIntegrations(
   request: APIRequestContext,
@@ -89,7 +89,7 @@ test.describe('Session freshness + menu hygiene (live backend)', () => {
     await page.waitForURL(/\/settings\/integrations$/);
     await expect(page.getByRole('button', { name: 'Connect integration' })).toBeVisible();
 
-    // Revoke behind the session's back, then refresh — use-session-sync
+    // Revoke behind the session's back, then refresh - use-session-sync
     // pulls fresh permissions; the menu filter prunes the entry.
     await revokeIntegrations(request, tenant);
     await page.reload();
@@ -113,7 +113,7 @@ test.describe('Session freshness + menu hygiene (live backend)', () => {
     // …the old name is gone.
     await expect(page.getByText('Workspace Settings', { exact: true })).toHaveCount(0);
 
-    // User Management carries ONLY the real entries — the Metronic demo's
+    // User Management carries ONLY the real entries - the Metronic demo's
     // dead links (404 routes) were pruned.
     await page.getByText('User Management', { exact: true }).click();
     await expect(page.getByRole('link', { name: 'Users', exact: true })).toBeVisible();

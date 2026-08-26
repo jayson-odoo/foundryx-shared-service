@@ -33,7 +33,7 @@ export function FormulaTesting({ formula, onServerTest }: FormulaTestingProps) {
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState<string | null>(null);
 
-  // Live client evaluation as the operator types (AC-16-20) — never a blank.
+  // Live client evaluation as the operator types (AC-16-20) - never a blank.
   const client = useMemo(() => testFormula(formula, mockValue), [formula, mockValue]);
 
   // Any edit to the value or formula invalidates a prior server check.

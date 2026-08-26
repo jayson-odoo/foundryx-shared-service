@@ -15,7 +15,7 @@ export function normalizePhone(input: string): string {
   return hasPlus ? `+${digits}` : digits;
 }
 
-/** True if `input` is a plausible E.164 phone number (8–15 digits). */
+/** True if `input` is a plausible E.164 phone number (8-15 digits). */
 export function isValidPhone(input: string): boolean {
   const normalized = normalizePhone(input);
   return /^\+?[1-9]\d{7,14}$/.test(normalized);

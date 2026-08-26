@@ -1,9 +1,9 @@
-"""omnichannel plan 11H — embed host (external-agent identity + jti ledger).
+"""omnichannel plan 11H - embed host (external-agent identity + jti ledger).
 
 Creates ``external_agent`` (federated agent identity, UNIQUE(connection_id, sub))
 and ``embed_jti`` (single-use assertion ledger), and adds the two nullable
 federated-attribution columns (``conversation_messages.sender_external_agent_id``,
-``contacts.assigned_external_agent_id``). All idempotent — the module baseline
+``contacts.assigned_external_agent_id``). All idempotent - the module baseline
 runs ``create_all`` so a fresh deploy may already have these. Revision id ≤ 32
 chars.
 

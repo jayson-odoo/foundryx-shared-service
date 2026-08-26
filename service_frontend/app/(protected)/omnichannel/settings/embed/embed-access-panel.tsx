@@ -25,8 +25,8 @@ import { CopyField } from './copy-field';
 import { OriginsEditor } from './origins-editor';
 import { SnippetCard } from './snippet-card';
 
-/** One labelled setting row — label + description on the left, control on the
- * right — matching the read-detail rows used across the platform (User detail). */
+/** One labelled setting row - label + description on the left, control on the
+ * right - matching the read-detail rows used across the platform (User detail). */
 function SettingRow({
   label,
   description,
@@ -111,7 +111,7 @@ export function EmbedAccessPanel() {
     }
   };
 
-  // Empty state — not yet provisioned.
+  // Empty state - not yet provisioned.
   if (!config.connectionId) {
     return (
       <Card>
@@ -148,14 +148,14 @@ export function EmbedAccessPanel() {
           </TabsTrigger>
         </TabsList>
 
-        {/* Setup — connection id + secret. Both are tenant-wide; a workspace is
+        {/* Setup - connection id + secret. Both are tenant-wide; a workspace is
             chosen per-assertion (see the Snippet tab), not per-connection. */}
         <TabsContent value="setup" className="pt-2">
           <Card>
             <CardContent className="divide-y py-2">
               <SettingRow
                 label="Connection id"
-                description="The non-secret identifier — the iframe's ?c= and the assertion issuer."
+                description="The non-secret identifier - the iframe's ?c= and the assertion issuer."
               >
                 <CopyField value={config.connectionId} ariaLabel="connection id" />
               </SettingRow>
@@ -184,7 +184,7 @@ export function EmbedAccessPanel() {
 
                   {revealedSecret && (
                     <div className="flex flex-col gap-2 rounded-md border border-amber-500/40 bg-amber-50 p-3 dark:bg-amber-950/20">
-                      <Label>New secret — copy it now, it won&apos;t be shown again</Label>
+                      <Label>New secret - copy it now, it won&apos;t be shown again</Label>
                       <CopyField value={revealedSecret} ariaLabel="embed secret" />
                     </div>
                   )}
@@ -224,7 +224,7 @@ export function EmbedAccessPanel() {
             </AlertDialogTitle>
             <AlertDialogDescription>
               {config.hasSecret
-                ? 'A new secret is generated and shown once. Every outstanding assertion signed with the old secret stops working immediately — update your consumer backend with the new value.'
+                ? 'A new secret is generated and shown once. Every outstanding assertion signed with the old secret stops working immediately - update your consumer backend with the new value.'
                 : 'A new secret is generated and shown once. Sign your embed assertions with it on your consumer backend.'}
             </AlertDialogDescription>
           </AlertDialogHeader>

@@ -2,7 +2,7 @@
  * AI service boundary (Phase B-i slice 1). UI → hook → THIS → api-client.
  *
  * Built frontend-first against `ai-service.mock`, then swapped to the real
- * api-client implementation — the swap is the ONE line at the bottom of this
+ * api-client implementation - the swap is the ONE line at the bottom of this
  * file. The mock is retained for Vitest only (a shipped mock behind a "done"
  * slice would be debt).
  */
@@ -33,9 +33,9 @@ export interface AiService {
   removeAgent(id: string): Promise<void>;
   exportAgents(query: ListQuery, columns: string[]): Promise<string>;
 
-  /** AC-BI-11 — is any LLM connection configured, and which may an agent use? */
+  /** AC-BI-11 - is any LLM connection configured, and which may an agent use? */
   getPrerequisite(): Promise<AiPrerequisite>;
-  /** AC-BI-05 — live model list; falls back to a curated static list. */
+  /** AC-BI-05 - live model list; falls back to a curated static list. */
   listModels(connectionId: string): Promise<AiModelList>;
   listSkillOptions(): Promise<AiSkillOption[]>;
 
@@ -56,12 +56,12 @@ export interface AiService {
   listTraces(query: ListQuery): Promise<ListResult<AiTrace>>;
   getTrace(id: string): Promise<AiTraceDetail | null>;
   flagTrace(id: string, flagged: boolean): Promise<AiTrace>;
-  /** Traces have no bulk export endpoint — CSV is rendered client-side from a
+  /** Traces have no bulk export endpoint - CSV is rendered client-side from a
    *  large page (the workflow-service precedent). Raw prompts/completions are
    *  deliberately NOT exported; the trace detail is where you read those. */
   exportTraces(query: ListQuery, columns: string[]): Promise<string>;
 }
 
-// Slice 1 ships REAL-bound (Definition-of-Done #1 — a surviving mock is debt).
+// Slice 1 ships REAL-bound (Definition-of-Done #1 - a surviving mock is debt).
 // `mockAiService` remains importable for unit tests only.
 export const aiService: AiService = realAiService;

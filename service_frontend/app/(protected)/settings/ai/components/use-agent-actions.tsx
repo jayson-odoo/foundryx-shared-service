@@ -9,7 +9,7 @@ import { aiService } from '@/services/ai-service';
 import type { AiAgent } from '@/types/ai';
 import { agentPath } from './paths';
 
-/** ONE action registry — row `…`, bulk dropdown and form `…` share it. */
+/** ONE action registry - row `…`, bulk dropdown and form `…` share it. */
 export function useAgentActions(): ResourceAction<AiAgent>[] {
   const router = useRouter();
 

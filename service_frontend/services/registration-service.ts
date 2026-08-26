@@ -1,7 +1,7 @@
 /**
- * Cluster D (sprint-4/05) registration service — Venues, Zones, Seats,
+ * Cluster D (sprint-4/05) registration service - Venues, Zones, Seats,
  * Offerings, CapacityUnits. Talks to the `ems` module routers via the shared
- * api-client (Phase B — the in-memory mock was swapped out once the backend
+ * api-client (Phase B - the in-memory mock was swapped out once the backend
  * landed; the method boundary is unchanged so no UI touched).
  */
 import { apiFetch, publicFetch } from '@/lib/api-client';
@@ -54,7 +54,7 @@ export const registrationService = {
     return { data: p.items, total: p.total, page: p.page };
   },
   async exportVenues(): Promise<string> {
-    // No dedicated export endpoint — build the CSV from a full page (slice-1 scope).
+    // No dedicated export endpoint - build the CSV from a full page (slice-1 scope).
     const p = await apiFetch<EmsList<Venue>>('/ems/venues?page=0&page_size=200');
     const cols: [string, (v: Venue) => unknown][] = [
       ['id', (v) => v.id],
@@ -151,7 +151,7 @@ export const registrationService = {
     );
   },
 
-  // ── Public registration portal (anonymous, read-only — slice 1) ──
+  // ── Public registration portal (anonymous, read-only - slice 1) ──
   getPublicEvent(tenantSlug: string, projectId: string): Promise<PublicEvent> {
     return publicFetch<PublicEvent>(`/public/register/${tenantSlug}/${projectId}`);
   },

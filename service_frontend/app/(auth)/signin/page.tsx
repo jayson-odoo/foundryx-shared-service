@@ -26,7 +26,7 @@ export default function Page() {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const { signin, isProcessing, error } = useSignin('/');
   // White-label: the tenant's chosen system name, then its org name; never the
-  // FoundryX product name. Unresolved/unbranded → a neutral greeting.
+  // Foundryx product name. Unresolved/unbranded → a neutral greeting.
   const { branding } = useTenantBranding();
   const welcomeName = branding.appName || branding.tenantName;
 

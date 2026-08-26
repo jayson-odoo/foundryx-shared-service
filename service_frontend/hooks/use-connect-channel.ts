@@ -10,7 +10,7 @@ import type {
 import { onboardingService } from '@/services/onboarding-service';
 
 /**
- * Embedded Signup connect flow — the wizard state machine (plan 04 §5.2).
+ * Embedded Signup connect flow - the wizard state machine (plan 04 §5.2).
  *
  *   idle ──start()──▶ selecting ──authorize(opt)──▶ exchanging ──▶ connected
  *     ▲                  │                              │

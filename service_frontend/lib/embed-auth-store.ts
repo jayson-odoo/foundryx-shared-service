@@ -5,20 +5,20 @@ import { useSyncExternalStore } from 'react';
 /**
  * Embed access-token store (sprint-4/11 §4). When the omnichannel embed shell
  * is mounted it holds the `/embed/session` access token IN MEMORY (never
- * localStorage, never the URL — contract §3) so the reused conversation service
+ * localStorage, never the URL - contract §3) so the reused conversation service
  * + WebSocket authenticate as the external agent instead of the NextAuth
  * session.
  *
  * Mirrors {@link impersonationStore}: a module-level singleton that
  * `lib/api-client` + `conversation-service.real` read synchronously. Deliberately
- * NOT persisted — a refresh re-runs the postMessage handshake from scratch.
+ * NOT persisted - a refresh re-runs the postMessage handshake from scratch.
  */
 export interface EmbedAuth {
   /** Short-lived (~15 min) bearer for the omnichannel API + WS. */
   accessToken: string;
   /** Workspace the token is scoped to (WS subscription + inbox fetch). */
   workspaceId: string;
-  /** External-agent id — the self-claim ("assign to me") target in embed mode. */
+  /** External-agent id - the self-claim ("assign to me") target in embed mode. */
   agentId: string;
 }
 

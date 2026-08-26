@@ -1,8 +1,8 @@
 /**
- * Client-side rule evaluator (sprint-3/01) — the UX mirror of the backend
+ * Client-side rule evaluator (sprint-3/01) - the UX mirror of the backend
  * `app/rule_engine/evaluator.py`. Drives the form renderer's conditional
  * visibility (facts namespace `answers.<fieldKey>`, D14); the SERVER remains
- * the boundary — it re-derives the visible set on submit. Semantics kept in
+ * the boundary - it re-derives the visible set on submit. Semantics kept in
  * parity: fail closed uniformly (missing/null fact, garbage value, unknown
  * operator, over-deep tree → that node is false, never a throw), numeric
  * string coercion in `eq`, date-only `between` END bound inclusive of the
@@ -31,7 +31,7 @@ function evalGroup(node: RuleGroup, facts: Record<string, unknown>, depth: numbe
 function evalCondition(node: RuleCondition, facts: Record<string, unknown>): boolean {
   try {
     const value = facts[node.fact];
-    if (value === null || value === undefined) return false; // D5 — incl. negative ops
+    if (value === null || value === undefined) return false; // D5 - incl. negative ops
 
     let operand: unknown = node.value;
     if (node.valueKind === 'fact') {
@@ -81,7 +81,7 @@ function apply(operator: string, value: unknown, operand: unknown): boolean {
     case 'after':
       return asTime(value) > asTime(operand);
     // Truthiness, matching the backend's `bool(value)` (note: any non-empty
-    // string — including "false" — is truthy on both sides).
+    // string - including "false" - is truthy on both sides).
     case 'is_true':
       return Boolean(value) === true;
     case 'is_false':
@@ -93,7 +93,7 @@ function apply(operator: string, value: unknown, operand: unknown): boolean {
     case 'not_contains':
       return !intersects(strSet(value), strSet(asList(operand)));
     default:
-      return false; // unknown operator — fail closed
+      return false; // unknown operator - fail closed
   }
 }
 
@@ -118,7 +118,7 @@ function maybeNumber(x: unknown): number | null {
   return null;
 }
 
-/** (value, operand) as numbers, else as epoch millis. Throws on garbage —
+/** (value, operand) as numbers, else as epoch millis. Throws on garbage -
  * the caller fails closed. */
 function comparablePair(value: unknown, operand: unknown): [number, number] {
   const left = maybeNumber(value);

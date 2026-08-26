@@ -12,7 +12,7 @@ export interface UseAutocountCompanyResult {
 }
 
 /**
- * One AutoCount company + its per-entity sync config. Components never fetch —
+ * One AutoCount company + its per-entity sync config. Components never fetch -
  * this is the hook boundary (`UI → hook → service → api-client`).
  */
 export function useAutocountCompany(companyId: string): UseAutocountCompanyResult {

@@ -1,4 +1,4 @@
-"""template engine plan 07 — templates table, branding socials/footer, notification template_id
+"""template engine plan 07 - templates table, branding socials/footer, notification template_id
 
 Revision ID: b7c8d9e0f1a2
 Revises: a6b7c8d9e0f1
@@ -43,7 +43,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_templates_tenant_id", "templates", ["tenant_id"])
     op.create_index("ix_templates_key", "templates", ["key"])
-    # Two-tier uniqueness — partial indexes; a plain UNIQUE treats NULLs as
+    # Two-tier uniqueness - partial indexes; a plain UNIQUE treats NULLs as
     # distinct and lets duplicate platform rows in (BL-065 lesson).
     op.create_index(
         "uq_templates_tenant_key",

@@ -1,10 +1,10 @@
 'use client';
 
 /**
- * Read-mode value renderer (plan sprint-3/01, D18) — the submission-view shape:
+ * Read-mode value renderer (plan sprint-3/01, D18) - the submission-view shape:
  * inputs are replaced by their FORMATTED answer values. Choice answers render
  * labels (not stored values), yesno → Yes/No, dates via the shared
- * `lib/datetime.ts` formatters (no raw `new Date(...).toLocaleString` —
+ * `lib/datetime.ts` formatters (no raw `new Date(...).toLocaleString` -
  * house rule), files as name+size chips, signature as an <img>, repeater as a
  * small table, address stacked. Empty answers render an em-dash.
  */
@@ -39,7 +39,7 @@ export interface FieldReadProps {
   computed?: number | null;
 }
 
-const EMPTY = '—';
+const EMPTY = '-';
 
 export function FieldRead({ field, value, computed }: FieldReadProps) {
   if (field.type === 'computed') {
@@ -106,7 +106,7 @@ export function FieldRead({ field, value, computed }: FieldReadProps) {
           <img src={value} alt="Signature" className="max-h-32 rounded-md border border-border bg-background" />
         );
       }
-      // A persisted submission stores a quarantine storage KEY — fetch it
+      // A persisted submission stores a quarantine storage KEY - fetch it
       // authed (the serve route is CSP-sandboxed) and open the blob.
       return <FileChip fieldKey={field.key ?? ''} index={0} label="View signature" />;
     }
@@ -231,7 +231,7 @@ function FileChip({ fieldKey, index, label }: { fieldKey: string; index: number;
 
   // Clickable only when the page injected a session-bound blob fetcher (staff =
   // apiFetchBlob, portal = portalApiFetchBlob). Without one (fill/preview, or a
-  // surface that didn't wire it) it's a plain label — never the staff client.
+  // surface that didn't wire it) it's a plain label - never the staff client.
   if (!submissionId || !fetchFile) {
     return (
       <Badge variant="secondary" appearance="light" size="sm">

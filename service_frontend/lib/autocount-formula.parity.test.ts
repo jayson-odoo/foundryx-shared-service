@@ -3,7 +3,7 @@
  * (`service_backend/modules/autocount/formula_parity.json`) through the TS
  * evaluator; the pytest side runs the SAME file through the Python evaluator.
  * A divergence between `lib/autocount-formula.ts` and `modules/autocount/
- * formula.py` fails whichever side drifted — the matrix is the single source of
+ * formula.py` fails whichever side drifted - the matrix is the single source of
  * truth, never forked.
  */
 import { readFileSync } from 'node:fs';
@@ -42,7 +42,7 @@ function matrixEqual(expected: unknown, got: unknown): boolean {
   return expected === got;
 }
 
-describe('formula parity matrix — TS side', () => {
+describe('formula parity matrix - TS side', () => {
   it('loaded the shared matrix', () => {
     expect(matrix.cases.length).toBeGreaterThan(40);
   });

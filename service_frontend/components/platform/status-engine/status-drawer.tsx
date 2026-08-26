@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Status drawer (sprint-2/01) — create/edit a status node: label, color,
+ * Status drawer (sprint-2/01) - create/edit a status node: label, color,
  * trait flags. System rows keep label/color editable but lock behavior flags
  * and delete. Delete offers deactivate + migrate-records when referenced.
  */
@@ -115,7 +115,7 @@ export function StatusDrawer({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="flex flex-col sm:max-w-md">
         <SheetHeader>
-          <SheetTitle>{status ? `Edit status — ${status.label}` : 'New status'}</SheetTitle>
+          <SheetTitle>{status ? `Edit status - ${status.label}` : 'New status'}</SheetTitle>
         </SheetHeader>
         {/* Scrollable body + pinned footer. */}
         <SheetBody className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto">
@@ -179,7 +179,7 @@ export function StatusDrawer({
             <div className="text-sm font-medium text-foreground">Behavior</div>
             {status?.isSystem && (
               <p className="text-xs text-muted-foreground">
-                System status — behavior is locked; label, color and order stay editable.
+                System status - behavior is locked; label, color and order stay editable.
               </p>
             )}
             {FLAG_FIELDS.map((field) => (
@@ -207,7 +207,7 @@ export function StatusDrawer({
                 <div className="text-sm font-medium text-foreground">Records</div>
                 <p className="text-xs text-muted-foreground">
                   {status.recordCount} record(s) currently hold this status. Hard delete is
-                  blocked while referenced — deactivate it and migrate records instead.
+                  blocked while referenced - deactivate it and migrate records instead.
                 </p>
                 {canManage && migrateTargets.length > 0 && (
                   <div className="flex items-center gap-2.5">
@@ -237,7 +237,7 @@ export function StatusDrawer({
             <div className="flex items-center gap-2.5">
               {status?.isSystem && (
                 <p className="text-xs text-muted-foreground">
-                  System status — cannot be deleted or deactivated (the seeded
+                  System status - cannot be deleted or deactivated (the seeded
                   lifecycle depends on it). Label and color stay yours.
                 </p>
               )}

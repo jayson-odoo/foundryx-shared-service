@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 /**
- * Sign-in E2E — real user clicks against the live stack
+ * Sign-in E2E - real user clicks against the live stack
  * (NextAuth → FastAPI :8001). Requires the backend up + seeded
  * (`python -m scripts.init_db`). Drives the UI; never URL-jumps into
  * protected areas.
@@ -15,7 +15,7 @@ test.describe('Sign-in', () => {
   });
 
   test('shows the sign-in form', async ({ page }) => {
-    // Form only — EVERY brand-panel element (slogan, logo, illustration) is
+    // Form only - EVERY brand-panel element (slogan, logo, illustration) is
     // tenant-configurable since sprint-2/03 (a branded tenant may clear any
     // of them), so the spec must not assert specific branding content.
     await expect(page.getByPlaceholder('Your email')).toBeVisible();

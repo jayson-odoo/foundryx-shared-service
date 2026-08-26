@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * Date-format tool (AC-16-14) — a structured sub-panel of the formula builder.
+ * Date-format tool (AC-16-14) - a structured sub-panel of the formula builder.
  * The operator picks an INPUT format (how AutoCount sends the date) and an
- * OUTPUT format (what Sorento receives) from a FIXED token vocabulary — never a
+ * OUTPUT format (what Sorento receives) from a FIXED token vocabulary - never a
  * hand-typed pattern that could drift between the client preview and the server
  * evaluator. A live sample runs a reference date through input→output so the
  * choice is verifiable before it is written into the formula.

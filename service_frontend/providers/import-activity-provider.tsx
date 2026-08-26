@@ -32,7 +32,7 @@ const Ctx = createContext<ImportActivityContextValue | null>(null);
 const IN_FLIGHT = new Set(['pending', 'validating', 'importing']);
 
 /**
- * Import activity provider (sprint-3/09 D9) — holds the wizard modal + the
+ * Import activity provider (sprint-3/09 D9) - holds the wizard modal + the
  * Imports activity drawer (top-bar trigger, sibling of Uploads/Downloads) at
  * the layout level so any ResourceList's Import button can trigger the flow and
  * every import is trackable from the header.

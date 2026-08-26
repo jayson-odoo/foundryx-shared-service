@@ -22,7 +22,7 @@ import { delay, runQuery, type QueryAdapter } from './mock-query';
 const DEFAULT_TENANT = 'default';
 const EPOCH = Date.parse('2026-06-01T09:00:00Z');
 
-/** Provider catalog — SMTP (plan 09) + the storage pair (plan 06 D2/D3):
+/** Provider catalog - SMTP (plan 09) + the storage pair (plan 06 D2/D3):
  *  TWO cards, one S3-compatible adapter underneath. R2 derives its endpoint
  *  from the Account ID; the S3 card's optional endpoint covers MinIO/Wasabi. */
 const PROVIDERS: IntegrationProvider[] = [
@@ -31,7 +31,7 @@ const PROVIDERS: IntegrationProvider[] = [
     type: 'email',
     title: 'Email (SMTP)',
     description:
-      'Send invites, password resets and verifications from your own mail server. Works with any SMTP provider — Gmail, SES, Resend, Mailgun or self-hosted.',
+      'Send invites, password resets and verifications from your own mail server. Works with any SMTP provider - Gmail, SES, Resend, Mailgun or self-hosted.',
     icon: 'mail',
     testLabel: 'Send test email',
     testTarget: { label: 'Send a test email to', placeholder: 'you@yourcompany.com' },
@@ -61,7 +61,7 @@ const PROVIDERS: IntegrationProvider[] = [
     type: 'storage',
     title: 'Amazon S3',
     description:
-      'Store uploads (avatars, branding, media) in your own S3 bucket. Any S3-compatible service works — AWS, MinIO, Wasabi — via the optional endpoint.',
+      'Store uploads (avatars, branding, media) in your own S3 bucket. Any S3-compatible service works - AWS, MinIO, Wasabi - via the optional endpoint.',
     icon: 'database',
     testLabel: 'Verify storage',
     testTarget: null,
@@ -93,7 +93,7 @@ const PROVIDERS: IntegrationProvider[] = [
     type: 'storage',
     title: 'Cloudflare R2',
     description:
-      'Store uploads in Cloudflare R2 — S3-compatible, zero egress fees. The endpoint is derived from your Account ID; add a custom domain as the CDN base URL for fast public delivery.',
+      'Store uploads in Cloudflare R2 - S3-compatible, zero egress fees. The endpoint is derived from your Account ID; add a custom domain as the CDN base URL for fast public delivery.',
     icon: 'cloud',
     testLabel: 'Verify storage',
     testTarget: null,
@@ -117,7 +117,7 @@ const PROVIDERS: IntegrationProvider[] = [
 let connections: Connection[] = [];
 let seq = 0;
 
-/** Test helper — reset the in-memory store between specs. */
+/** Test helper - reset the in-memory store between specs. */
 export function __resetIntegrationMock(): void {
   connections = [];
   secrets.clear();
@@ -176,13 +176,13 @@ function simulateTest(c: Connection, target?: string): TestConnectionResult {
     return { ok: false, message: 'Storage authentication failed (403 SignatureDoesNotMatch).', checkedAt };
   }
   if (c.type === 'storage') {
-    // Plan 06 D3 — the storage check is a probe-object round-trip, fetched
+    // Plan 06 D3 - the storage check is a probe-object round-trip, fetched
     // back through the CDN when one is configured.
     return {
       ok: true,
       message: c.config.cdnBaseUrl
-        ? `Bucket verified — probe object round-tripped via ${c.config.cdnBaseUrl}.`
-        : 'Bucket verified — probe object uploaded, fetched back and deleted.',
+        ? `Bucket verified - probe object round-tripped via ${c.config.cdnBaseUrl}.`
+        : 'Bucket verified - probe object uploaded, fetched back and deleted.',
       checkedAt,
     };
   }
@@ -263,12 +263,12 @@ export const mockIntegrationService: IntegrationService = {
   async create(input: ConnectionInput) {
     const provider = findProvider(input.provider);
     if (input.name === 'Fail Save') throw new Error('The server rejected the connection. Please try again.');
-    // ONE active connection per TYPE (plan 06 D7) — resolution must stay
+    // ONE active connection per TYPE (plan 06 D7) - resolution must stay
     // deterministic (which bucket does StorageService write to?).
     const sameType = connections.find((c) => c.type === provider.type);
     if (sameType) {
       throw new Error(
-        `A ${sameType.type} connection ("${sameType.name}") already exists — disconnect it first.`,
+        `A ${sameType.type} connection ("${sameType.name}") already exists - disconnect it first.`,
       );
     }
     seq += 1;
@@ -341,7 +341,7 @@ export const mockIntegrationService: IntegrationService = {
       lastError: result.ok ? null : result.message,
     };
     connections = connections.map((x) => (x.id === id ? settled : x));
-    // A touch slower than list calls — a real handshake takes a moment.
+    // A touch slower than list calls - a real handshake takes a moment.
     return delay(result, 700);
   },
 };

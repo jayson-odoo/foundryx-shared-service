@@ -1,5 +1,5 @@
 /**
- * Shared CSV building (code-review consolidation, extends BL-048e/BL-063h) —
+ * Shared CSV building (code-review consolidation, extends BL-048e/BL-063h) -
  * one escaping definition for every client-side exporter.
  */
 export function csvEscape(cell: string | number | null | undefined): string {

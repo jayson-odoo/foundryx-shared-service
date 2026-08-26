@@ -1,9 +1,9 @@
-"""Generic SMTP provider (plan 09 D4) — covers any SMTP endpoint (Gmail, SES,
+"""Generic SMTP provider (plan 09 D4) - covers any SMTP endpoint (Gmail, SES,
 Resend, Mailgun, self-hosted). One adapter, any provider; API-native adapters
 (Resend REST / SES SDK) are BL-046.
 
 `test()` without a target = connection check: connect + (when credentials are
-set) authenticate, then QUIT — no mail sent. With a target = send a real test
+set) authenticate, then QUIT - no mail sent. With a target = send a real test
 email. `send()` is the dispatcher's transport.
 """
 import smtplib
@@ -63,7 +63,7 @@ def smtp_send(
     finally:
         try:
             client.quit()
-        except Exception:  # noqa: BLE001 — best-effort QUIT
+        except Exception:  # noqa: BLE001 - best-effort QUIT
             pass
 
 
@@ -73,7 +73,7 @@ class SmtpProvider:
     title = "Email (SMTP)"
     description = (
         "Send invites, password resets and verifications from your own mail server. "
-        "Works with any SMTP provider — Gmail, SES, Resend, Mailgun or self-hosted."
+        "Works with any SMTP provider - Gmail, SES, Resend, Mailgun or self-hosted."
     )
     icon = "mail"
     test_label = "Send test email"
@@ -111,7 +111,7 @@ class SmtpProvider:
         html_body: str,
         text_body: str,
     ) -> None:
-        """Dispatcher transport — raises on failure (drives retry/fallback)."""
+        """Dispatcher transport - raises on failure (drives retry/fallback)."""
         smtp_send(config, credentials, to_email, subject, html_body, text_body)
 
     def test(
@@ -122,7 +122,7 @@ class SmtpProvider:
                 from app.services.email_templates import render_email
 
                 subject, html, text = render_email(
-                    "test", {"product": "FoundryX EMS"}
+                    "test", {"product": "Foundryx EMS"}
                 )
                 smtp_send(config, credentials, target, subject, html, text)
                 return TestResult(ok=True, message=f"Test email sent to {target}.")

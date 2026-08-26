@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * Cluster B (sprint-3/12) E2E config — runs against THIS worktree's live stack
+ * Cluster B (sprint-3/12) E2E config - runs against THIS worktree's live stack
  * (Next dev :3003 → FastAPI :8003 → shared Postgres). No webServer auto-start;
  * reuse the already-running dev server.
  */

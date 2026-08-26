@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils';
 /**
  * Line-clamped text that ALWAYS offers the full content when it actually
  * truncates (house rule: truncation must never hide text with no way to read
- * it). Detects real overflow — short text renders plain, no tooltip noise.
+ * it). Detects real overflow - short text renders plain, no tooltip noise.
  */
 export interface ClampedTextProps {
   text: string;

@@ -1,5 +1,5 @@
 /**
- * Real channel service — talks to FastAPI via the shared api-client. Wired in
+ * Real channel service - talks to FastAPI via the shared api-client. Wired in
  * Phase B. Endpoints follow plan 04 §6.
  */
 import { apiFetch, apiFetchText } from '@/lib/api-client';

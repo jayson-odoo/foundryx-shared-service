@@ -1,7 +1,7 @@
-"""Node-type registry (plan sprint-2/08 D8) — code-side, like the permissions
+"""Node-type registry (plan sprint-2/08 D8) - code-side, like the permissions
 CSV / StatusEntity / FactSource registries. Each trigger and action declares its
-config schema (drawer), output schema (dynamic-content picker) and — for actions
-— an executor + connection requirement. Slice 08 registers ``manual`` +
+config schema (drawer), output schema (dynamic-content picker) and - for actions
+- an executor + connection requirement. Slice 08 registers ``manual`` +
 ``email.send``; modules append at install (slice 09 fans out core triggers/actions).
 """
 from dataclasses import dataclass, field
@@ -25,7 +25,7 @@ class NodeField:
     options: Optional[List[Dict[str, str]]] = None
     # Conditional field: only shown/required when config[field] == value.
     show_when: Optional[Tuple[str, str]] = None
-    # For `entity` — restrict the picker (e.g. only status-engine entities).
+    # For `entity` - restrict the picker (e.g. only status-engine entities).
     entity_filter: Optional[str] = None
 
 
@@ -232,7 +232,7 @@ def _register_core() -> None:
             outputs=[NodeOutput("trigger.firedAt", "Fired at")],
         )
     )
-    # slice sprint-3/02 — a form submission starts a workflow. The form is picked
+    # slice sprint-3/02 - a form submission starts a workflow. The form is picked
     # via a searchable `form` field; `trigger.answers.<key>` outputs are dynamic
     # per selected form (the frontend resolves them from /workflows/metadata).
     register_trigger(

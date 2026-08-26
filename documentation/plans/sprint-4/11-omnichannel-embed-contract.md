@@ -1,10 +1,10 @@
-# Omnichannel Embed — Cross-Repo Interface Contract
+# Omnichannel Embed - Cross-Repo Interface Contract
 
-**Status:** authored 2026-07-11 (grilled). This is the **interface both repos build against** — the EMS consumer (`dreamz_ems`, plan `sprint-4/11-omnichannel-embed-widget`) and the shared-service host (`foundryx-shared-service`, plan `sprint-4/11-omnichannel-embed-host`). A change here requires updating BOTH plans. Copy of this file lives in both repos' `documentation/plans/sprint-4/`.
+**Status:** authored 2026-07-11 (grilled). This is the **interface both repos build against** - the EMS consumer (`dreamz_ems`, plan `sprint-4/11-omnichannel-embed-widget`) and the shared-service host (`foundryx-shared-service`, plan `sprint-4/11-omnichannel-embed-host`). A change here requires updating BOTH plans. Copy of this file lives in both repos' `documentation/plans/sprint-4/`.
 
 ## 1. Model
 
-EMS embeds the shared service's conversation UI as a **chromeless, token-authed iframe widget** on lead pages. EMS stores **no conversation messages** — the shared service is the sole system of record. EMS keeps only a link (`Profile.shared_contact_id`) and reacts to inbound events. Supersedes the sprint-4/10 local-mirror decision.
+EMS embeds the shared service's conversation UI as a **chromeless, token-authed iframe widget** on lead pages. EMS stores **no conversation messages** - the shared service is the sole system of record. EMS keeps only a link (`Profile.shared_contact_id`) and reacts to inbound events. Supersedes the sprint-4/10 local-mirror decision.
 
 Two actors, two origins:
 - **Parent** = the EMS frontend (`https://<tenant>.<ems-domain>`), which mounts the iframe and mints assertions server-side.
@@ -12,27 +12,27 @@ Two actors, two origins:
 
 ## 2. Embed assertion (the SSO token EMS mints)
 
-A short-lived JWT, **HS256**, signed with the connection's per-workspace `embedSecret` (see §8). Minted **server-side in EMS only** — never in the browser.
+A short-lived JWT, **HS256**, signed with the connection's per-workspace `embedSecret` (see §8). Minted **server-side in EMS only** - never in the browser.
 
 | Claim | Type | Meaning |
 |---|---|---|
-| `iss` | string | the EMS↔shared-service **connection id** — identifies the consumer + workspace that minted it |
-| `aud` | string | **`"omnichannel-embed"`** — the shared service rejects any token with a different `aud` |
-| `sub` | string | the EMS agent's user id — stable per agent; `(iss, sub)` is the federated identity key |
+| `iss` | string | the EMS↔shared-service **connection id** - identifies the consumer + workspace that minted it |
+| `aud` | string | **`"omnichannel-embed"`** - the shared service rejects any token with a different `aud` |
+| `sub` | string | the EMS agent's user id - stable per agent; `(iss, sub)` is the federated identity key |
 | `workspaceId` | string | target shared-service workspace |
 | `scope` | string | **`"inbox"`** (whole workspace) or **`"thread:<contactId>"`** (single thread) |
 | `name` | string | agent display name (attribution / "sent by") |
 | `email` | string? | agent email (optional) |
 | `avatarUrl` | string? | agent avatar (optional) |
-| `caps` | string[] | capabilities from EMS RBAC — subset of `["reply","assign","close","note","send_template"]`, or `["read_only"]` |
+| `caps` | string[] | capabilities from EMS RBAC - subset of `["reply","assign","close","note","send_template"]`, or `["read_only"]` |
 | `allowedOrigins` | string[] | the parent origins permitted to embed + postMessage (mirrors the connection's `allowedOrigins`) |
 | `iat` | number | issued-at (epoch seconds) |
-| `exp` | number | expiry — **`iat + 900`** (15 min) |
-| `jti` | string | unique id — **single-use** at the shared service |
+| `exp` | number | expiry - **`iat + 900`** (15 min) |
+| `jti` | string | unique id - **single-use** at the shared service |
 
 ## 3. `POST /embed/session` (shared service exchanges assertion → access token)
 
-The widget, after its postMessage handshake receives the assertion, exchanges it here. **No cookies** — the response body carries the access token, held in widget JS memory.
+The widget, after its postMessage handshake receives the assertion, exchanges it here. **No cookies** - the response body carries the access token, held in widget JS memory.
 
 **Request:** `{ "assertion": "<jwt>" }`
 
@@ -61,19 +61,19 @@ The **access token embeds `workspaceId`, `scope`, `caps`, and the external-agent
 
 - **API/WS auth:** the widget sends `Authorization: Bearer <accessToken>` on every shared-service omnichannel API + WS call. The shared service **enforces `scope` and `caps` server-side** on every request: a `thread:<contactId>` token may only read/act on that contact; a `read_only` (or missing-cap) token is rejected on any write (reply/assign/close/note/template). Widget-side control hiding is UX only.
 - **Embed routes (chromeless, no app shell, no login redirect):**
-  - `GET /embed/omnichannel/thread` — single conversation pane (scope `thread:<contactId>`).
-  - `GET /embed/omnichannel/inbox` — full workspace inbox (scope `inbox`).
-  - Both reuse the existing inbox React components; both **boot bare** and obtain the assertion via the postMessage handshake (§5) — the assertion is **never** placed in the URL.
-  - **`?c=<connectionId>` on the iframe src (required):** the consumer mounts the iframe with the **non-secret connection id** (= the assertion's `iss`) as the `c` query param. The shared service's `middleware.ts` resolves that connection's `allowedOrigins` (via public `GET /embed/frame-policy?c=`) and emits `Content-Security-Policy: frame-ancestors <origins>` on the embed page response (§8.5). Absent/unknown `c` → `frame-ancestors 'none'` (the page cannot be framed). Only the connection id — never the assertion — appears in the URL.
+  - `GET /embed/omnichannel/thread` - single conversation pane (scope `thread:<contactId>`).
+  - `GET /embed/omnichannel/inbox` - full workspace inbox (scope `inbox`).
+  - Both reuse the existing inbox React components; both **boot bare** and obtain the assertion via the postMessage handshake (§5) - the assertion is **never** placed in the URL.
+  - **`?c=<connectionId>` on the iframe src (required):** the consumer mounts the iframe with the **non-secret connection id** (= the assertion's `iss`) as the `c` query param. The shared service's `middleware.ts` resolves that connection's `allowedOrigins` (via public `GET /embed/frame-policy?c=`) and emits `Content-Security-Policy: frame-ancestors <origins>` on the embed page response (§8.5). Absent/unknown `c` → `frame-ancestors 'none'` (the page cannot be framed). Only the connection id - never the assertion - appears in the URL.
 
 ## 5. postMessage protocol (v1)
 
-Envelope: `{ "v": 1, "type": "<type>", "payload": { ... } }`. **Every handler validates `event.origin`** — the parent accepts only the shared-service embed origin; the widget accepts only an origin in the assertion's `allowedOrigins`. No `*`.
+Envelope: `{ "v": 1, "type": "<type>", "payload": { ... } }`. **Every handler validates `event.origin`** - the parent accepts only the shared-service embed origin; the widget accepts only an origin in the assertion's `allowedOrigins`. No `*`.
 
 **Parent → widget:**
 | type | payload | when |
 |---|---|---|
-| `init` | `{ assertion, theme, colorScheme }` | response to `ready` — starts the session + first paint |
+| `init` | `{ assertion, theme, colorScheme }` | response to `ready` - starts the session + first paint |
 | `theme` | `{ theme, colorScheme }` | live re-skin (dark toggle / rebrand) |
 | `token` | `{ assertion }` | silent refresh (response to `needToken`) |
 
@@ -81,24 +81,24 @@ Envelope: `{ "v": 1, "type": "<type>", "payload": { ... } }`. **Every handler va
 | type | payload | when |
 |---|---|---|
 | `ready` | `{}` | widget mounted, requesting `init` |
-| `needToken` | `{}` | access token near expiry — mint a fresh assertion |
+| `needToken` | `{}` | access token near expiry - mint a fresh assertion |
 | `resize` | `{ height }` | content height changed (full-inbox mode) |
 | `activity` | `{ kind, contactId }` | coarse "something happened" (message sent/received/assigned) so EMS can refresh the lead's last-contacted; NOT message content |
 
 `theme` = the whitelisted brand primitives (`{ primary, surface, text, bubbleIn, bubbleOut, radius, ... }`); `colorScheme` = `"light" | "dark"`. Business deep-links (create-X-from-conversation) are **deferred to v2** via the same `type` seam.
 
-**Assertions are single-use — mint a FRESH one per handshake cycle (MUST).** The parent mints a new, single-use assertion (unique `jti`) in response to **every** `ready` AND **every** `needToken` — it must NEVER cache/reuse an assertion across handshake cycles. The shared service consumes each `jti` exactly once (§8.1), so a replayed assertion is rejected `401 replayed`. A widget can legitimately re-`ready` on a genuine remount (recovery); if the parent replied to two `ready`s with the SAME assertion the second would `replayed`-fail and could brick the widget. The widget side minimises spurious remounts, but correctness rests on the parent honouring the mint-fresh-per-`ready` rule.
+**Assertions are single-use - mint a FRESH one per handshake cycle (MUST).** The parent mints a new, single-use assertion (unique `jti`) in response to **every** `ready` AND **every** `needToken` - it must NEVER cache/reuse an assertion across handshake cycles. The shared service consumes each `jti` exactly once (§8.1), so a replayed assertion is rejected `401 replayed`. A widget can legitimately re-`ready` on a genuine remount (recovery); if the parent replied to two `ready`s with the SAME assertion the second would `replayed`-fail and could brick the widget. The widget side minimises spurious remounts, but correctness rests on the parent honouring the mint-fresh-per-`ready` rule.
 
 ## 6. `message.received` webhook (the react bridge)
 
-Unchanged from the sprint-4/10 consumer webhook — the shared service already emits `message.inbound` on `POST /webhooks/omnichannel` (HMAC `X-Fx-Signature`, `X-Fx-Event-Id` dedup). EMS adds an `omnichannel.message_received` **workflow trigger** that consumes the inbound event and flattens it to the run context:
+Unchanged from the sprint-4/10 consumer webhook - the shared service already emits `message.inbound` on `POST /webhooks/omnichannel` (HMAC `X-Fx-Signature`, `X-Fx-Event-Id` dedup). EMS adds an `omnichannel.message_received` **workflow trigger** that consumes the inbound event and flattens it to the run context:
 `trigger.workspaceId`, `trigger.contactId`, `trigger.profileId`, `trigger.message.{type,body,mediaUrl}`, `trigger.contact.{name,phone}` (substitution-only, anti-SSTI). **Inbound-only** (from-contact) → no send-loop. Delivery receipts / `contact.updated` do not drive business workflows in v1.
 
-## 7. Connection config — two new fields
+## 7. Connection config - two new fields
 
 On the core `connections` row (provider `omnichannel_shared`), added by the consumer:
-- **`embedSecret`** — per-workspace HMAC secret for minting/verifying assertions. Fernet-encrypted at rest, write-only over the API. **Separate from `signingSecret`** (webhook-verify) — key separation.
-- **`allowedOrigins`** — string[] of parent origins permitted to embed (drives `frame-ancestors` + the assertion's `allowedOrigins` claim + `/embed/session` origin check).
+- **`embedSecret`** - per-workspace HMAC secret for minting/verifying assertions. Fernet-encrypted at rest, write-only over the API. **Separate from `signingSecret`** (webhook-verify) - key separation.
+- **`allowedOrigins`** - string[] of parent origins permitted to embed (drives `frame-ancestors` + the assertion's `allowedOrigins` claim + `/embed/session` origin check).
 
 ## 8. Security posture (server-enforced at the shared service)
 

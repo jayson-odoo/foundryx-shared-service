@@ -1,10 +1,10 @@
-"""Idea read service (AC-A-12) — list + detail, serialized to the FE Idea shape.
+"""Idea read service (AC-A-12) - list + detail, serialized to the FE Idea shape.
 
 Reads are tenant-scoped. The Idea's ``product_id`` / ``status_id`` /
 ``submitter_contact_id`` are cross-schema FKs; this service resolves them to
 human-readable values (product name, status key, submitter name) so the UI never
 renders a raw UUID (cursor rule). Attachments are an always-present (currently
-empty) section — the attachment writer lands with the create_idea slice.
+empty) section - the attachment writer lands with the create_idea slice.
 """
 from typing import Dict, List, Optional
 
@@ -22,7 +22,7 @@ from ..schemas import BoardColumnOut, BoardOut, IdeaAttachmentOut, IdeaOut
 # The active board shows non-archived ideas; the archived filter shows the rest.
 _ARCHIVED_KEYS = {"closed", "duplicate", "rejected", "archived"}
 
-# Triage board columns (key, title) in lifecycle order — mirrors the FE
+# Triage board columns (key, title) in lifecycle order - mirrors the FE
 # ``IDEA_BOARD_COLUMNS`` (types/ideation.ts) byte-for-byte. Only these statuses
 # appear on the board; archived / terminal ideas are off-board (AC-A-33).
 BOARD_COLUMNS: List[tuple] = [
@@ -167,7 +167,7 @@ class IdeaReadService:
         """Ideas for a tenant, newest first. ``search`` matches problem/raw_text
         (case-insensitive); ``filter`` = ``active`` (non-archived statuses) |
         ``archived`` | ``all``. ``product_id`` (optional) additionally scopes to a
-        single product — the canonical ideation scope (an idea belongs to a
+        single product - the canonical ideation scope (an idea belongs to a
         product, which belongs to a tenant). ``None`` = every product in the
         tenant (today's behaviour, unchanged). Always tenant-scoped first: the
         product filter never widens visibility across tenants."""
@@ -203,7 +203,7 @@ class IdeaReadService:
     ) -> BoardOut:
         """The triage board (AC-A-33): ideas grouped into the board lifecycle
         columns in order, cards within a column ordered by priority ascending.
-        Only board-lifecycle statuses appear — archived / terminal ideas are
+        Only board-lifecycle statuses appear - archived / terminal ideas are
         off-board. ``product_id`` (optional) additionally scopes to a single
         product (the canonical ideation scope); ``None`` = every product in the
         tenant (unchanged). Always tenant-scoped first."""

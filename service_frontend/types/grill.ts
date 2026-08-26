@@ -1,5 +1,5 @@
 /**
- * Grill types (Phase B-i slice 3, AC-BI-20..29) — the FE side of the ideation
+ * Grill types (Phase B-i slice 3, AC-BI-20..29) - the FE side of the ideation
  * grill backend contract (modules/ideation/routers/grill.py). The grill turns a
  * draft BR into a well-formed requirement through a bounded clarifying
  * conversation; the human ends it with Generate.

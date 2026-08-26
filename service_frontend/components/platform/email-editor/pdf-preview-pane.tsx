@@ -5,11 +5,11 @@ import { Download, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 /**
- * Document preview pane (F2 D7) — our OWN renderer, not the browser's native
+ * Document preview pane (F2 D7) - our OWN renderer, not the browser's native
  * PDF viewer. The backend compiles the document to its print HTML (the exact
  * input WeasyPrint consumes) and we show it via `srcDoc` in a fully-sandboxed
- * iframe (`sandbox=""` — same pattern as the email preview pane: scripts never
- * run, tenant content is also nh3-sanitized at save) styled as a paper sheet —
+ * iframe (`sandbox=""` - same pattern as the email preview pane: scripts never
+ * run, tenant content is also nh3-sanitized at save) styled as a paper sheet -
  * no browser PDF-viewer chrome. On-demand "Refresh" (NOT per-keystroke).
  * "Download PDF" fetches the authoritative WeasyPrint bytes.
  */
@@ -27,7 +27,7 @@ export function PdfPreviewPane({ renderHtml, downloadPdf }: PdfPreviewPaneProps)
   const [isDownloading, setIsDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Keep the latest renderHtml without making `refresh` change identity — the
+  // Keep the latest renderHtml without making `refresh` change identity - the
   // prop is an inline arrow (new each parent render). A stable `refresh` is what
   // makes the mount effect fire ONCE (not on every re-render, which raced
   // overlapping requests and could blank the pane when a stale one resolved).

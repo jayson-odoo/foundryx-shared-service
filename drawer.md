@@ -181,7 +181,7 @@
           - generic:
             - generic:
               - heading [level=1]: Tenant
-              - generic: Platform defaults — tenants inherit until they customize
+              - generic: Platform defaults - tenants inherit until they customize
           - generic:
             - tablist:
               - tab [selected]:
@@ -284,13 +284,13 @@
               - /url: ""
               - text: License
   - region "Notifications alt+T"
-  - dialog "Transition — Suspended → Active" [ref=e271]:
-    - heading "Transition — Suspended → Active" [level=2] [ref=e273]
+  - dialog "Transition - Suspended → Active" [ref=e271]:
+    - heading "Transition - Suspended → Active" [level=2] [ref=e273]
     - generic [ref=e274]:
       - generic [ref=e275]:
         - generic [ref=e276]: Action label *
         - textbox "Action label *" [active] [ref=e277]:
-          - /placeholder: Button text — e.g. "Approve"
+          - /placeholder: Button text - e.g. "Approve"
           - text: Reactivate
       - generic [ref=e278]:
         - generic [ref=e279]: Who can perform it
@@ -301,7 +301,7 @@
       - generic [ref=e286]:
         - generic [ref=e287]: Conditions
         - generic [ref=e289]:
-          - paragraph [ref=e290]: No conditions — always allowed (add one below).
+          - paragraph [ref=e290]: No conditions - always allowed (add one below).
           - generic [ref=e291]:
             - button "Add condition" [ref=e292] [cursor=pointer]:
               - img [ref=e293]
@@ -315,7 +315,7 @@
         - button "Add notification" [ref=e299] [cursor=pointer]:
           - img [ref=e300]
           - text: Add notification
-      - paragraph [ref=e301]: No notifications — add one to email people when this transition fires.
+      - paragraph [ref=e301]: No notifications - add one to email people when this transition fires.
     - generic [ref=e302]:
       - button "Delete transition" [ref=e304] [cursor=pointer]
       - button "Save" [ref=e305] [cursor=pointer]

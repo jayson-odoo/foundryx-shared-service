@@ -8,15 +8,15 @@ import { appStoreService } from '@/services/app-store-service';
 /**
  * App Store hooks (plan 08 §8).
  *
- * `useAppStore()` — the storefront/console state machine: catalog + per-module
+ * `useAppStore()` - the storefront/console state machine: catalog + per-module
  * pending actions. Pass a `tenantId` to act on ANOTHER tenant via the operator
  * endpoints (console Modules tab); omit it for the caller's own tenant.
  *
- * `useInstalledModules()` — lightweight install list for menu gating (D7),
+ * `useInstalledModules()` - lightweight install list for menu gating (D7),
  * backed by a module-level store so the sidebar doesn't refetch per render.
  * Store actions on the OWN tenant invalidate it + run NextAuth `update()` so
  * the acting admin's perms/menu refresh immediately; other users converge on
- * next request — the backend 403 (`require_module`) is the real boundary.
+ * next request - the backend 403 (`require_module`) is the real boundary.
  */
 
 /* ─────────────── installed-modules store (menu gating) ─────────────── */
@@ -58,7 +58,7 @@ export function invalidateInstalledModules(): Promise<void> {
   return fetchInstalled();
 }
 
-/** Test helper — clear the module-level cache between specs. */
+/** Test helper - clear the module-level cache between specs. */
 export function __resetInstalledModules(): void {
   installedState = { modules: null };
   installedPromise = null;
@@ -108,7 +108,7 @@ export interface UseAppStoreResult {
   refresh: () => Promise<void>;
   /** install | deactivate | reactivate | update. */
   run: (name: string, action: StoreAction) => Promise<boolean>;
-  /** Typed-confirmation wipe — `confirmName` must equal the module name. */
+  /** Typed-confirmation wipe - `confirmName` must equal the module name. */
   uninstall: (name: string, confirmName: string) => Promise<boolean>;
 }
 
@@ -153,7 +153,7 @@ export function useAppStore(tenantId?: string): UseAppStoreResult {
 
   /** Acting on the OWN tenant changes the acting admin's grants → refresh session + menu (D7). */
   const settle = useCallback(async () => {
-    // Independent refreshes — run them concurrently (review: no ordering need).
+    // Independent refreshes - run them concurrently (review: no ordering need).
     await Promise.all([
       refresh(),
       ...(tenantId ? [] : [invalidateInstalledModules(), update()]),

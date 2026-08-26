@@ -133,7 +133,7 @@ describe('entities actions', () => {
 
   it('offers "Edit first-run window" ONLY before the first sync (no dead dialog)', () => {
     // AC-15-30: once a watermark exists, editing the window is a guaranteed
-    // no-op — the action must not be offered (it opened a disabled dialog).
+    // no-op - the action must not be offered (it opened a disabled dialog).
     const c = config([entity()]);
     const edit = c.actions.find((a) => a.id === 'edit-lookback')!;
     expect(edit.isVisible?.([entity({ watermarkAt: null })])).toBe(true);
@@ -144,7 +144,7 @@ describe('entities actions', () => {
     const c = config([entity({ watermarkAt: '2026-07-12T00:00:00Z' })]);
     const refetch = c.actions.find((a) => a.id === 'refetch-history')!;
     expect(refetch.permission).toBe('autocount.companies.manage');
-    // The mirror image of edit-lookback — visible only when the window is spent.
+    // The mirror image of edit-lookback - visible only when the window is spent.
     expect(refetch.isVisible?.([entity({ watermarkAt: '2026-07-12T00:00:00Z' })])).toBe(true);
     expect(refetch.isVisible?.([entity({ watermarkAt: null })])).toBe(false);
     // Explicit + confirmed, never a silent Days box.
@@ -168,7 +168,7 @@ describe('entities actions', () => {
 describe('sync summary parsing (the zero-record case)', () => {
   it('reads a legitimate empty sync as a successful no-op', () => {
     // The reported symptom: a second Sync now appeared to do nothing. It was
-    // correct — the vendor had no changes — and the UI must say so.
+    // correct - the vendor had no changes - and the UI must say so.
     const summary = parseSyncSummary({
       entityType: 'goods_received_note',
       fetched: 0,
@@ -180,7 +180,7 @@ describe('sync summary parsing (the zero-record case)', () => {
     expect(summary).not.toBeNull();
     expect(summary!.fetched).toBe(0);
     expect(summary!.failed).toBe(0);
-    // Nothing to review — the operator must NOT be routed to a review surface.
+    // Nothing to review - the operator must NOT be routed to a review surface.
     expect(summary!.awaitingApproval).toBe(false);
   });
 

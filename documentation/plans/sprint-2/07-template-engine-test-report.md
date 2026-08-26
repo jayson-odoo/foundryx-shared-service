@@ -1,4 +1,4 @@
-# Sprint 2 · Plan 07 — Template Engine · Test Execution Report
+# Sprint 2 · Plan 07 - Template Engine · Test Execution Report
 
 **Feature:** Template engine (email surface) + email outbox UI
 **Plan:** [07-template-engine.md](./07-template-engine.md)
@@ -23,28 +23,28 @@ Rig: backend :8001 (migrated + seeded), frontend :3001 (built), maildir smtpd
 (`aiosmtpd … Mailbox /tmp/foundryx-e2e-mailbox`). Dedicated tenant provisioned via
 the operator API per run (isolation §7); timestamped names.
 
-### Scenario 1 — Create, design, preview, test-send
+### Scenario 1 - Create, design, preview, test-send
 
-- **User Story:** US-15 — as an admin I design email templates with dynamic variables.
+- **User Story:** US-15 - as an admin I design email templates with dynamic variables.
 - **Precondition:** Admin signed in on a fresh tenant; SMTP connection → debug maildir.
 - **Steps:** Templates list → New template → Settings tab: set name + pick context ("Template · Test send") → Design tab (blank doc = brand header/body/footer) → Save → Preview → Actions → Send test email.
 - **Expected:** Create replaces `/new` with the new template id; preview iframe renders; test mail lands in the maildir as mrml table HTML.
-- **Actual:** As expected — URL navigated to `/settings/templates/<id>`; preview frame visible; `[Test] …` mail delivered containing `<table`.
-- **Remarks:** Pass. (Palette drag-drop is covered by the editor Vitest suite — Playwright's mouse-event `dragTo` does not drive dnd-kit's pointer sensors.)
+- **Actual:** As expected - URL navigated to `/settings/templates/<id>`; preview frame visible; `[Test] …` mail delivered containing `<table`.
+- **Remarks:** Pass. (Palette drag-drop is covered by the editor Vitest suite - Playwright's mouse-event `dragTo` does not drive dnd-kit's pointer sensors.)
 
-### Scenario 2 — Fork a system template; forked mail; reset
+### Scenario 2 - Fork a system template; forked mail; reset
 
-- **User Story:** BL-038/BL-066 — tenant customizes (and brands) a system email.
+- **User Story:** BL-038/BL-066 - tenant customizes (and brands) a system email.
 - **Precondition:** Seeded platform-tier `auth.password_reset` at the Default tier.
 - **Steps:** Open Password reset → Edit → Settings tab → change subject (unique marker) → Save → return to list (row now Customized) → trigger real forgot-password → read mail → reset to default.
 - **Expected:** First edit FORKS a tenant copy (list shows Customized); the forgot-password mail renders the forked subject marker + a `change-password?token=` link; Reset drops the fork (row back to Default).
-- **Actual:** As expected — list row Customized; mail contained the marker + reset link; after Reset the row showed Default.
+- **Actual:** As expected - list row Customized; mail contained the marker + reset link; after Reset the row showed Default.
 - **Remarks:** Pass. Proves system mail renders through the engine and respects the tenant fork end-to-end.
 
-### Scenario 3 — Email log: list, body, segments
+### Scenario 3 - Email log: list, body, segments
 
-- **User Story:** D14 — the outbox is surfaced; bodies inspectable.
-- **Precondition:** Scenarios 1–2 left sent mail in the tenant's outbox.
+- **User Story:** D14 - the outbox is surfaced; bodies inspectable.
+- **Precondition:** Scenarios 1-2 left sent mail in the tenant's outbox.
 - **Steps:** Email log → open a `[Test]` row → Body tab → Raw HTML view.
 - **Expected:** Row opens to the read-only detail; sandboxed body iframe renders; Raw HTML shows the mrml `<table` output.
 - **Actual:** As expected.
@@ -60,5 +60,5 @@ the operator API per run (isolation §7); timestamped names.
 
 ## Follow-ups logged
 
-- BL-024 / BL-038 / BL-066 — closed by this plan (email surface).
+- BL-024 / BL-038 / BL-066 - closed by this plan (email surface).
 - New backlog: notification-spec template-picker UI; badge/ticket canvas (BL-071); repeater block (BL-072); template versioning (BL-073); unsubscribe machinery (BL-074); saved-blocks (BL-075); website builder (BL-076).

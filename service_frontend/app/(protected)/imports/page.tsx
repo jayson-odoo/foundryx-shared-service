@@ -32,8 +32,8 @@ const STATUS_TONE: Record<string, 'success' | 'destructive' | 'secondary' | 'pri
 };
 
 /**
- * Import history (sprint-3/09 D9) — the full job list. Gated forms.read?
- * No — any authenticated user reaching here; the engine's own jobs are scoped
+ * Import history (sprint-3/09 D9) - the full job list. Gated forms.read?
+ * No - any authenticated user reaching here; the engine's own jobs are scoped
  * server-side (own jobs unless imports.read_all). Title via Terminology.
  */
 export default function ImportsHistoryPage() {

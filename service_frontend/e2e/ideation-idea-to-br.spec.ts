@@ -1,14 +1,14 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
 /**
- * Phase B-i slice 4 — Idea → Business Requirement (real clicks, AC-BI-30..36).
+ * Phase B-i slice 4 - Idea → Business Requirement (real clicks, AC-BI-30..36).
  *
  * Journey: sign in → ideas board → Suggest clusters → select ideas →
  * Promote to BR (bulk) → lands on the Grill tab → send a turn → Generate →
  * review the populated Details → Promote to ready.
  *
  * Determinism (AC-BI-12/36): a fresh tenant gets a DEV-cred LLM connection so
- * the offline stub answers — zero key, zero network. The stub fills every BR
+ * the offline stub answers - zero key, zero network. The stub fills every BR
  * field on Generate (partial-emit schema is all-strings), so promote's
  * completeness gate passes.
  *
@@ -53,7 +53,7 @@ function ideaRow(page: Page, text: string) {
 
 test.describe.configure({ mode: 'serial', timeout: 180_000 });
 
-test.describe('Ideation — Idea → BR (plan Phase B-i S4)', () => {
+test.describe('Ideation - Idea → BR (plan Phase B-i S4)', () => {
   test.beforeAll(async ({ request }) => {
     // Provision a dedicated tenant.
     const platformLogin = await request.post(`${API}/auth/login`, {
@@ -95,7 +95,7 @@ test.describe('Ideation — Idea → BR (plan Phase B-i S4)', () => {
     });
     expect(conn.status(), await conn.text()).toBe(201);
 
-    // Now install ideation — seed_grill_agent binds the "Ideation grill" agent to
+    // Now install ideation - seed_grill_agent binds the "Ideation grill" agent to
     // the tenant's own dev connection (→ stub) + grants the module keys (incl.
     // .promote / clusters.manage) to this tenant's Admin.
     const installIdeation = await request.post(`${API}/app-store/modules/ideation/install`, { headers: auth });
@@ -122,7 +122,7 @@ test.describe('Ideation — Idea → BR (plan Phase B-i S4)', () => {
     await login(page);
     await page.goto(tenantUrl('/ideation/ideas'));
 
-    // Cluster suggestions surface (AC-BI-30/31) — smoke: the on-demand panel
+    // Cluster suggestions surface (AC-BI-30/31) - smoke: the on-demand panel
     // opens without blocking the board (degrades gracefully).
     await page.getByRole('button', { name: /suggest clusters/i }).click();
     await expect(page.getByText('Suggested clusters')).toBeVisible();
@@ -138,12 +138,12 @@ test.describe('Ideation — Idea → BR (plan Phase B-i S4)', () => {
     await page.waitForURL(/\/ideation\/business-requirements\/.*tab=grill/);
     await expect(page.getByPlaceholder('Message the grill')).toBeVisible();
 
-    // Send one grill turn (AC-BI-22) — the stub replies.
+    // Send one grill turn (AC-BI-22) - the stub replies.
     await page.getByPlaceholder('Message the grill').fill('Customers report the checkout is very slow.');
     await page.getByRole('button', { name: 'Send' }).click();
     await expect(page.getByText('Customers report the checkout is very slow.')).toBeVisible();
 
-    // Generate — the human ends the grill; extraction fills the BR (AC-BI-24/26).
+    // Generate - the human ends the grill; extraction fills the BR (AC-BI-24/26).
     await page.getByRole('button', { name: 'Generate' }).click();
     await expect(page.getByText('Requirement generated from the grill.')).toBeVisible({ timeout: 30_000 });
 

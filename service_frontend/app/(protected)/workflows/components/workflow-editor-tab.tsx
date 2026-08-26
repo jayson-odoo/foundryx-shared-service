@@ -59,7 +59,7 @@ export function WorkflowEditorTab({
             <Bug className="size-4 text-amber-600" />
             <span className="font-medium text-foreground">Debugging a past run.</span>
             <span className="text-muted-foreground">
-              Each node shows that run’s data — fix the flow here and it carries to future runs.
+              Each node shows that run’s data - fix the flow here and it carries to future runs.
             </span>
           </div>
           <div className="flex items-center gap-2">

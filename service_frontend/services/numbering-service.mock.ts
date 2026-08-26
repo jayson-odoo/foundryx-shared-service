@@ -1,4 +1,4 @@
-/** Mock numbering service — static catalog + simulated latency (unit tests). */
+/** Mock numbering service - static catalog + simulated latency (unit tests). */
 import type { NumberCatalogItem, NumberFormatSet, NumberReset } from '@/types/numbering';
 import type { NumberingService } from './numbering-service';
 

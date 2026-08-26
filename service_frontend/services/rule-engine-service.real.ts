@@ -1,5 +1,5 @@
 /**
- * Real rule-engine service — talks to FastAPI via the shared api-client.
+ * Real rule-engine service - talks to FastAPI via the shared api-client.
  * `GET /rule-facts` (authenticated) + `GET /rules` (rules.read), sprint-2/02.
  */
 import type { ListQuery, ListResult } from '@/types/resource';

@@ -1,5 +1,5 @@
 /**
- * PHASE 1 MOCK — in-memory consumer-webhook service.
+ * PHASE 1 MOCK - in-memory consumer-webhook service.
  *
  * Retained for tests + frontend-first iteration; the app binds the REAL impl
  * (see `whatsapp-webhook-service.ts`). Mirrors the backend's create-once
@@ -117,7 +117,7 @@ function seed(channelId: string): void {
       attemptCount: 3,
       responseStatus: 503,
       responseMs: 8021,
-      error: 'Service Unavailable — upstream timed out after 8s.',
+      error: 'Service Unavailable - upstream timed out after 8s.',
       lastAttemptAt: iso(120_000),
       nextAttemptAt: iso(-300_000),
       createdAt: iso(180_000),

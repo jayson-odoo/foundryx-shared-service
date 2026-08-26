@@ -1,8 +1,8 @@
-"""Core statuses — the status & state-machine engine (sprint-2/01, BL-027).
+"""Core statuses - the status & state-machine engine (sprint-2/01, BL-027).
 
 One row per (entity_type, tenant, key). Behavior binds to **boolean trait
 flags** (``blocks_access``, ``is_archived``, ``is_initial``, ``is_terminal``),
-NEVER to a named enum — tenants define arbitrary states. ``category`` is a
+NEVER to a named enum - tenants define arbitrary states. ``category`` is a
 legacy cosmetic mirror (uppercase key) kept for the wire/filter contract of
 already-shipped surfaces; code must never branch on it.
 
@@ -12,7 +12,7 @@ overrides. System rows: label/color/order editable, key/behavior/delete locked.
 
 Scoped machines (sprint-3/01 D4): entities registered ``scoped`` carry one
 graph PER OWNING RECORD via ``scope_id`` (e.g. each form's submissions get
-their own pipeline) — materialized at scope creation, tenant-owned from
+their own pipeline) - materialized at scope creation, tenant-owned from
 birth, no two-tier resolution. Unscoped entities keep ``scope_id NULL``.
 """
 import uuid
@@ -28,7 +28,7 @@ from app.database import Base
 TENANT_ENTITY = "tenant"
 
 # Legacy uppercase wire values for the seeded tenant lifecycle rows. These are
-# DISPLAY/filter constants only — lifecycle behavior reads the trait flags.
+# DISPLAY/filter constants only - lifecycle behavior reads the trait flags.
 TENANT_STATUS_ACTIVE = "ACTIVE"
 TENANT_STATUS_SUSPENDED = "SUSPENDED"
 TENANT_STATUS_ARCHIVED = "ARCHIVED"
@@ -40,7 +40,7 @@ TENANT_STATUS_IDS = {
     TENANT_STATUS_ARCHIVED: "20000000-0000-0000-0000-000000000003",
 }
 
-# (id, key, label, color, sort_order, flags) — system rows, label/color editable.
+# (id, key, label, color, sort_order, flags) - system rows, label/color editable.
 # flags = dict of trait columns; everything unset defaults False.
 TENANT_STATUS_SEED = [
     (
@@ -65,7 +65,7 @@ TENANT_STATUS_SEED = [
         "Archived",
         "gray",
         3,
-        # NOT terminal (sprint-2/02 revision — user decision): an archived
+        # NOT terminal (sprint-2/02 revision - user decision): an archived
         # tenant can be restored to active. is_terminal stays False explicitly
         # so the always-converge seed un-flags pre-revision DBs.
         {"is_terminal": False, "is_archived": True},
@@ -73,7 +73,7 @@ TENANT_STATUS_SEED = [
 ]
 
 # Stable ids for the seeded tenant transition graph (sprint-2/01; Restore
-# added sprint-2/02 — archive is reversible, hard purge stays BL-035).
+# added sprint-2/02 - archive is reversible, hard purge stays BL-035).
 TENANT_TRANSITION_SEED = [
     # (id, from_status, to_status, label, sort_order)
     ("30000000-0000-0000-0000-000000000001", TENANT_STATUS_ACTIVE, TENANT_STATUS_SUSPENDED, "Suspend", 1),
@@ -96,16 +96,16 @@ class Status(Base):
     entity_type = Column(String, nullable=False, index=True)
     # Machine key, stable per entity_type (e.g. "active").
     key = Column(String, nullable=False)
-    # LEGACY cosmetic mirror (uppercase key) — wire/filter display only.
+    # LEGACY cosmetic mirror (uppercase key) - wire/filter display only.
     # Behavior branches on the trait flags below, never here (sprint-2/01 D2).
     category = Column(String, nullable=True)
-    # Display — editable on any row, system rows included.
+    # Display - editable on any row, system rows included.
     label = Column(String, nullable=False)
     color = Column(String, nullable=False)
     sort_order = Column(Integer, nullable=False, default=0)
 
-    # ---- trait flags (the machine semantics — sprint-2/01 D2) ----
-    # Records of this entity start here (one per entity set — validated app-side).
+    # ---- trait flags (the machine semantics - sprint-2/01 D2) ----
+    # Records of this entity start here (one per entity set - validated app-side).
     is_initial = Column(Boolean, nullable=False, default=False)
     # No outgoing transitions allowed from a terminal status.
     is_terminal = Column(Boolean, nullable=False, default=False)
@@ -118,7 +118,7 @@ class Status(Base):
     # Pre-selected status for new records.
     is_default = Column(Boolean, nullable=False, default=False)
 
-    # Canvas layout (status-engine graph editor) — nullable = auto-layout.
+    # Canvas layout (status-engine graph editor) - nullable = auto-layout.
     position_x = Column(Float, nullable=True)
     position_y = Column(Float, nullable=True)
 
@@ -128,10 +128,10 @@ class Status(Base):
     # tenants<->statuses dependency cycle; integrity enforced app-side.
     tenant_id = Column(String, nullable=True, index=True)
     # Scoped machines (sprint-3/01 D4): for entities registered ``scoped``,
-    # each owning record (e.g. a form) carries its OWN graph — rows are
+    # each owning record (e.g. a form) carries its OWN graph - rows are
     # materialized at scope creation with ``(tenant_id, scope_id)`` set,
     # tenant-owned from birth (no two-tier fork). NULL = unscoped entity
-    # (tenant, …) — behavior unchanged. Plain column (no FK) — the scope
+    # (tenant, …) - behavior unchanged. Plain column (no FK) - the scope
     # table varies per entity; integrity enforced app-side like tenant_id.
     scope_id = Column(String, nullable=True, index=True)
 

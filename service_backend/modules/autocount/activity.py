@@ -1,17 +1,17 @@
-"""Observability — every AutoCount interaction lands in the Developer Logs
+"""Observability - every AutoCount interaction lands in the Developer Logs
 console under the ``autocount`` source (AC-13-42, AC-13-46).
 
 Two rules, both non-negotiable:
 
 1. **Masked, always.** Payloads go through ``mask_payload`` BEFORE they reach
-   the write seam (which redacts again — belt and braces, since the two use
+   the write seam (which redacts again - belt and braces, since the two use
    different key lists). AppId, Password, Token and JWTToken must never appear
    in plaintext in a log, an activity row, an error message, or an API response.
 2. **Never raises.** ``ActivityLogService.record`` is already swallow-isolated;
    this wrapper adds its own guard so an observability failure can never break,
    slow or fail a sync (AC-13-43).
 
-    !!  CALL-SITE CONSTRAINT — read before adding a call.  !!
+    !!  CALL-SITE CONSTRAINT - read before adding a call.  !!
 
 ``ActivityLogService.record`` **commits the session you hand it** (and
 ``rollback``s it if the activity write fails). That is the shared house
@@ -19,7 +19,7 @@ behaviour, not something this module chose. The consequence is sharp: calling
 this in the MIDDLE of uncommitted work will either commit that work early or
 throw it away.
 
-So every call must sit at a transaction boundary — right after a ``commit()``,
+So every call must sit at a transaction boundary - right after a ``commit()``,
 or before any pending change exists. Every call site in this module currently
 does; keep it that way. If a future slice needs to log mid-transaction, give it
 its own session (``Session(bind=db.get_bind())``, the pattern the workflow
@@ -40,7 +40,7 @@ from app.models.integration_activity import (
     SOURCE_AUTOCOUNT,
 )
 
-if TYPE_CHECKING:  # pragma: no cover — import cycle avoidance only
+if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance only
     from .client import AutoCountClient
 
 logger = logging.getLogger("foundryx.autocount")
@@ -101,7 +101,7 @@ def record_activity(
             request=(mask_payload(request) if request is not None else None),
             response=(mask_payload(response) if response is not None else None),
         )
-    except Exception:  # noqa: BLE001 — observability NEVER breaks the caller
+    except Exception:  # noqa: BLE001 - observability NEVER breaks the caller
         logger.exception("failed to record autocount activity for %s", operation)
 
 
@@ -116,7 +116,7 @@ def record_client_calls(
     """Drain a client's buffered HTTP calls into activity rows. Never raises.
 
     ONE row per real request/response, carrying the ACTUAL masked payloads plus
-    ``status_code``, ``latency_ms`` and the run's ``trace_id`` — which is what
+    ``status_code``, ``latency_ms`` and the run's ``trace_id`` - which is what
     the Developer Logs console is built to render, and what a customer's mapping
     failure cannot be diagnosed without.
 
@@ -148,7 +148,7 @@ def record_client_calls(
             latency_ms=call.latency_ms,
             error_message=call.error_message,
             # Already masked AND bounded by the client; ``record_activity``
-            # masks again (belt and braces — the two use different key lists).
+            # masks again (belt and braces - the two use different key lists).
             request=call.request,
             response=call.response,
         )

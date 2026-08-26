@@ -1,8 +1,8 @@
 /**
- * Real ideation service — talks to the FastAPI shared-service via the shared
- * api-client (plan: documentation/plans/ideation/, Phase A — Slice 8 wiring).
+ * Real ideation service - talks to the FastAPI shared-service via the shared
+ * api-client (plan: documentation/plans/ideation/, Phase A - Slice 8 wiring).
  *
- * Endpoint map (backend slices 2–7):
+ * Endpoint map (backend slices 2-7):
  * - listProducts  → GET  /products               (core catalog; unified Product)
  * - listIdeas     → GET  /ideation/ideas         (bare IdeaOut[], newest-first)
  * - getIdea       → GET  /ideation/ideas/{id}
@@ -11,7 +11,7 @@
  * - reorderPriority → PUT /ideation/ideas/reorder     {orderedIds}
  * - remove        → DELETE /ideation/ideas/{id}       (204)
  *
- * Contract deltas vs the Phase-1 mock (documented, FE adjusted to the real BE —
+ * Contract deltas vs the Phase-1 mock (documented, FE adjusted to the real BE -
  * we do NOT fork logic):
  * - listProducts reads the CORE catalog (`GET /products`), the unified Product
  *   source (kind `software`|`goods`). `productDomainBase` is NOT merged here: it
@@ -20,13 +20,13 @@
  *   non-Maintainers and (b) cost an N+1 the list/board/form never render. It is
  *   left undefined; a delivery-config surface fetches it on demand.
  * - createIdea → POST /ideation/ideas (operator surface, gated
- *   `ideation.ideas.submit`) — distinct from the conversational WhatsApp intake
+ *   `ideation.ideas.submit`) - distinct from the conversational WhatsApp intake
  *   (`POST /ideation/intake/create-idea`, workspace-key server-to-server). No
  *   draft/collect/confirm gate: an operator typing an idea IS deliberate, so it
  *   is created straight into `captured` with the operator as submitter.
- * - updateIdea → PATCH /ideation/ideas/{id} (gated `ideation.triage.manage`) —
+ * - updateIdea → PATCH /ideation/ideas/{id} (gated `ideation.triage.manage`) -
  *   edits productId / problem / rawText. A `status` field is routed through
- *   setStatus (POST /{id}/status) instead — the edit route never moves status.
+ *   setStatus (POST /{id}/status) instead - the edit route never moves status.
  * - Attachments on create are NOT persisted yet (idea_attachments writer is a
  *   later slice); the field is accepted by the FE input but dropped here.
  */
@@ -52,7 +52,7 @@ interface CoreProductList {
   pageSize: number;
 }
 
-/** The FE Product.kind is a 2-value union; core kinds are open — coerce. */
+/** The FE Product.kind is a 2-value union; core kinds are open - coerce. */
 function toProductKind(kind: string): Product['kind'] {
   return kind === 'software' ? 'software' : 'goods';
 }
@@ -79,7 +79,7 @@ export const realIdeationService: IdeaService = {
   },
 
   // Operator-facing create (distinct from the workspace-key WhatsApp intake).
-  // Attachments are not persisted yet (later slice) — the field is dropped here.
+  // Attachments are not persisted yet (later slice) - the field is dropped here.
   createIdea(input: IdeaCreateInput): Promise<Idea> {
     return apiFetch<Idea>('/ideation/ideas', {
       method: 'POST',
@@ -96,7 +96,7 @@ export const realIdeationService: IdeaService = {
   // Operator-facing edit. The PATCH route is fields-only; a requested `status`
   // that actually differs from the persisted one is applied afterwards via
   // setStatus (POST /{id}/status) so the move stays server-authoritative. When
-  // status is unchanged we skip it — the status machine has no self-edge, so a
+  // status is unchanged we skip it - the status machine has no self-edge, so a
   // captured→captured "move" would (correctly) 409.
   async updateIdea(
     id: string,

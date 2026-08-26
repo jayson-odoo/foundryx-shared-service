@@ -3,7 +3,7 @@
 The doc is the forever-contract graph (mirror of frontend ``types/workflows.ts``):
 ``schemaVersion`` at root, ``nodes[]`` + ``edges[]``. Stored camelCase in
 ``draft_definition_json`` / version ``definition_json``. ``validate_definition``
-is the save/publish gate — same rules the editor surfaces live.
+is the save/publish gate - same rules the editor surfaces live.
 """
 import re
 from typing import Any, Dict, List, Optional
@@ -91,7 +91,7 @@ def parse_definition(raw: Any) -> WorkflowDefinitionModel:
 
 
 class WorkflowValidationError(Exception):
-    """Publish gate failed — carries the human-readable issues."""
+    """Publish gate failed - carries the human-readable issues."""
 
     def __init__(self, issues: List[str]):
         super().__init__("; ".join(issues))
@@ -114,15 +114,15 @@ def definition_issues(doc: WorkflowDefinitionModel) -> List[str]:
     if trigger and any(e.target == trigger.id for e in doc.edges):
         issues.append("The trigger cannot have an incoming connection.")
 
-    # Unique node names (mirror of the frontend — names must not collide).
+    # Unique node names (mirror of the frontend - names must not collide).
     counts: Dict[str, int] = {}
     for n in doc.nodes:
         counts[_node_label(n)] = counts.get(_node_label(n), 0) + 1
     for name, count in counts.items():
         if count > 1:
-            issues.append(f'Two nodes are named "{name}" — names must be unique.')
+            issues.append(f'Two nodes are named "{name}" - names must be unique.')
 
-    # Reachability from the trigger — orphans block.
+    # Reachability from the trigger - orphans block.
     if trigger:
         reachable = {trigger.id}
         grew = True
@@ -144,7 +144,7 @@ def definition_issues(doc: WorkflowDefinitionModel) -> List[str]:
             continue
         for field in entry.fields:
             if field.show_when and n.config.get(field.show_when[0]) != field.show_when[1]:
-                continue  # hidden field — don't require it
+                continue  # hidden field - don't require it
             if field.required:
                 value = n.config.get(field.key)
                 if field.type == "outputSchema":
@@ -158,7 +158,7 @@ def definition_issues(doc: WorkflowDefinitionModel) -> List[str]:
 
 
 def _node_label(node: WorkflowNodeModel) -> str:
-    """The node's display name — the user-set config.name, else the catalog
+    """The node's display name - the user-set config.name, else the catalog
     label (mirror of the frontend nodeDisplayName)."""
     name = node.config.get("name")
     if isinstance(name, str) and name.strip():

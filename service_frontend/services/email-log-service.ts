@@ -2,7 +2,7 @@ import type { ListQuery, ListResult } from '@/types/resource';
 import type { EmailLogDetail, EmailLogListItem } from '@/types/templates';
 import { realEmailLogService } from './email-log-service.real';
 
-/** Email log segments (D14) — 'all' | lowercase outbox status. */
+/** Email log segments (D14) - 'all' | lowercase outbox status. */
 export type EmailLogSegment = 'all' | 'pending' | 'sent' | 'failed' | 'cancelled';
 
 export const EMAIL_LOG_SEGMENTS: { id: EmailLogSegment; label: string }[] = [

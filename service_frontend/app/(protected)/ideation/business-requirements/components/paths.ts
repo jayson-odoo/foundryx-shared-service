@@ -5,7 +5,7 @@ export function brPath(id: string): string {
 }
 
 /** Form href preserving record-nav context (ctx + index), optionally edit mode
- * and an initial tab (e.g. `grill` — Promote-to-BR lands on the Grill tab). */
+ * and an initial tab (e.g. `grill` - Promote-to-BR lands on the Grill tab). */
 export function brFormHref(
   id: string,
   opts?: { ctx?: string; index?: number; edit?: boolean; tab?: string },

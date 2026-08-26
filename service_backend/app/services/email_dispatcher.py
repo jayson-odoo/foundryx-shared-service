@@ -3,18 +3,18 @@
 A daemon thread drains `email_outbox`:
 
 - claims due rows with `FOR UPDATE SKIP LOCKED` (multi-worker claim safety on
-  Postgres; SQLite ignores the hint — tests drive `dispatch_pending` directly)
+  Postgres; SQLite ignores the hint - tests drive `dispatch_pending` directly)
   under a **lease**: claimed rows go SENDING with `next_attempt_at` = now +
   lease, so a worker that crashes mid-send leaves rows that simply get
   re-claimed once the lease expires (no stuck-SENDING orphans);
-- enforces the per-connection `rate_limit_per_minute` (low-spec SMTP guard) —
+- enforces the per-connection `rate_limit_per_minute` (low-spec SMTP guard) -
   the sent-window is counted once per connection per pass, not per row;
 - retries with backoff (1m → 5m → 25m, max 3 attempts per connection);
 - exhausted tenant connection → re-resolves to the PLATFORM default
   (`used_fallback`, attempts reset once) → exhausted again = failed;
 - housekeeping: prunes `sent` rows older than the retention window.
 
-Any exception is logged and the loop survives — the dispatcher must never
+Any exception is logged and the loop survives - the dispatcher must never
 take the app down. Gated by `settings.email_dispatcher_enabled` (tests and
 one-off scripts turn it off).
 """
@@ -139,18 +139,18 @@ class _PassCache:
 
 
 def dispatch_pending(db: Session, limit: int = _CLAIM_BATCH) -> int:
-    """One dispatcher pass — claim due rows, send, settle. Returns sent count."""
+    """One dispatcher pass - claim due rows, send, settle. Returns sent count."""
     return _dispatch(db, limit)[1]
 
 
 def _dispatch(db: Session, limit: int = _CLAIM_BATCH) -> tuple:
-    """Returns (claimed, sent) — the loop idles only when nothing was claimed."""
+    """Returns (claimed, sent) - the loop idles only when nothing was claimed."""
     now = _now()
     rows = (
         db.query(EmailOutbox)
         .filter(
             # Due pending rows, plus SENDING rows whose claim lease expired
-            # (a worker crashed mid-send — reclaim instead of orphaning).
+            # (a worker crashed mid-send - reclaim instead of orphaning).
             EmailOutbox.status.in_((OUTBOX_PENDING, OUTBOX_SENDING)),
             EmailOutbox.next_attempt_at <= now,
         )
@@ -169,8 +169,8 @@ def _dispatch(db: Session, limit: int = _CLAIM_BATCH) -> tuple:
     for row in rows:
         conn = cache.resolve(row)
         if conn is None:
-            # No connection anywhere — dev-log the audit row as sent.
-            logger.info("[email:%s] to=%s (no connection — dev log)", row.template_key, row.to_email)
+            # No connection anywhere - dev-log the audit row as sent.
+            logger.info("[email:%s] to=%s (no connection - dev log)", row.template_key, row.to_email)
             row.status = OUTBOX_SENT
             row.sent_at = _now()
             db.commit()
@@ -178,7 +178,7 @@ def _dispatch(db: Session, limit: int = _CLAIM_BATCH) -> tuple:
 
         row.connection_id = conn.id
 
-        # Per-connection throttle (plan 09 D5 — low-spec SMTP guard).
+        # Per-connection throttle (plan 09 D5 - low-spec SMTP guard).
         if not cache.has_budget(conn):
             row.status = OUTBOX_PENDING
             row.next_attempt_at = _now() + timedelta(seconds=_THROTTLE_RETRY_SECONDS)
@@ -208,7 +208,7 @@ def _dispatch(db: Session, limit: int = _CLAIM_BATCH) -> tuple:
             conn.last_error = None
             cache.consume(conn)
             sent += 1
-        except Exception as e:  # noqa: BLE001 — transport failures drive retry
+        except Exception as e:  # noqa: BLE001 - transport failures drive retry
             logger.warning("email send failed (outbox=%s): %s", row.id, e)
             _fail_or_retry(db, row, conn, str(e))
         # Per-row commit is deliberate: each send is durably settled the moment
@@ -218,10 +218,10 @@ def _dispatch(db: Session, limit: int = _CLAIM_BATCH) -> tuple:
 
 
 def prune_sent(db: Session) -> int:
-    """Housekeeping — delete terminal rows older than the retention window.
+    """Housekeeping - delete terminal rows older than the retention window.
 
     SENT prunes on sent_at; FAILED/CANCELLED prune on created_at (plan 07
-    D14 — the Email log shows history inside the window, nothing lives
+    D14 - the Email log shows history inside the window, nothing lives
     forever). PENDING is never pruned.
     """
     from app.models.email_outbox import OUTBOX_CANCELLED, OUTBOX_FAILED
@@ -262,7 +262,7 @@ def _run() -> None:
             try:
                 claimed, _ = _dispatch(db)
                 if claimed == 0:
-                    # Idle backoff — nothing claimable, don't hammer the DB.
+                    # Idle backoff - nothing claimable, don't hammer the DB.
                     interval = _IDLE_INTERVAL_SECONDS
                 passes += 1
                 if passes % _PRUNE_EVERY == 0:
@@ -272,7 +272,7 @@ def _run() -> None:
                     prune_stale_throttle_rows(db)
             finally:
                 db.close()
-        except Exception as e:  # noqa: BLE001 — the loop must survive anything
+        except Exception as e:  # noqa: BLE001 - the loop must survive anything
             logger.exception("dispatcher pass failed: %s", e)
         _stop.wait(interval)
 

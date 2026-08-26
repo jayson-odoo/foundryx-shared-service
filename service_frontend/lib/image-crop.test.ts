@@ -13,7 +13,7 @@ describe('validateAvatarFile', () => {
     }
   });
 
-  it('rejects SVG (XSS surface — plan 06 D5)', () => {
+  it('rejects SVG (XSS surface - plan 06 D5)', () => {
     expect(validateAvatarFile({ type: 'image/svg+xml', size: 10 })).toMatch(
       /unsupported/i,
     );
@@ -52,7 +52,7 @@ describe('cropRect', () => {
   });
 
   it('clamps the selection inside the image', () => {
-    // Way past the right edge — selection pins to the edge, never out of bounds.
+    // Way past the right edge - selection pins to the edge, never out of bounds.
     const rect = cropRect(800, 600, 2, 10_000, 10_000);
     expect(rect).toEqual({ x: 500, y: 300, size: 300 });
     expect(rect.x + rect.size).toBeLessThanOrEqual(800);

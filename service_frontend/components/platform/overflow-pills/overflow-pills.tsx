@@ -28,7 +28,7 @@ export function OverflowPills<T>({
   items,
   keyFor,
   renderPill,
-  emptyText = '—',
+  emptyText = '-',
   gap = 4,
   morePillWidth = 44,
   className,
@@ -77,7 +77,7 @@ export function OverflowPills<T>({
 
   return (
     <div ref={containerRef} className={cn('flex w-full items-center', className)}>
-      {/* Measurement layer — all pills, removed from flow, used only to size. */}
+      {/* Measurement layer - all pills, removed from flow, used only to size. */}
       <div
         ref={measureRef}
         aria-hidden

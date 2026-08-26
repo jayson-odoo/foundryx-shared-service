@@ -1,4 +1,4 @@
-/** EMS service (sprint-3/11, F4) — profiles / types / templates / events /
+/** EMS service (sprint-3/11, F4) - profiles / types / templates / events /
  * participants. Talks to the `ems` module routers via the shared api-client. */
 import { apiFetch, apiFetchText } from '@/lib/api-client';
 import type { ListQuery, ListResult } from '@/types/resource';

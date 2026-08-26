@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Run replay (plan sprint-2/08 D16) — the RIGHT pane of the Logs two-pane.
+ * Run replay (plan sprint-2/08 D16) - the RIGHT pane of the Logs two-pane.
  * Read-only canvas of the run's pinned-version graph, each node tinted by its
  * execution status; click a node to inspect its input/output/error.
  * "Debug in editor" (with confirm) hands the run's graph + data to the Editor
@@ -160,7 +160,7 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
             <AlertDialogDescription>
               The editor opens with this run’s data pinned onto your current
               draft, so you can fix the flow and re-run nodes. Your draft is
-              kept — nothing is replaced.
+              kept - nothing is replaced.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -185,7 +185,7 @@ function DataBlock({ label, value }: { label: string; value: unknown }) {
         {label}
       </div>
       <pre className="max-h-40 overflow-auto rounded-md bg-muted p-2 text-[11px] text-foreground">
-        {value == null ? '—' : JSON.stringify(value, null, 2)}
+        {value == null ? '-' : JSON.stringify(value, null, 2)}
       </pre>
     </div>
   );

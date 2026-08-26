@@ -28,7 +28,7 @@ erDiagram
 **`Workspaces` Table:**
 * `id` (UUID, Primary Key)
 * `tenant_id` (UUID, Foreign Key to `Tenants`)
-* `name` (String, e.g., "FoundryX Sales & Support")
+* `name` (String, e.g., "Foundryx Sales & Support")
 * `status_id` (UUID, Foreign Key to `Statuses`)
 * `created_at` (Timestamp)
 * `updated_at` (Timestamp)
@@ -213,7 +213,7 @@ flowchart TD
 Rather than forcing users to navigate away from the CRM to a dedicated multi-pane inbox, the chat interface is integrated natively within the workspace's forms (e.g., inside the Lead Details or Contact Profile screens), maximizing screen real estate and agent efficiency.
 
 ### 5.1 The Three-Zone Screen Layout
-1. **System Sidebar (Left):** The standard FoundryX Metronic navigation panel (Dashboards, Contacts, Events, Invoices, Settings).
+1. **System Sidebar (Left):** The standard Foundryx Metronic navigation panel (Dashboards, Contacts, Events, Invoices, Settings).
 2. **Main CRM Form View (Center):** Displays comprehensive lead or contact details:
    * Header details (e.g., `Lead: LD-2026-0023`, status badges).
    * Client parameters (Client Name, Contacts subtable, Property Details, Event Tickets purchased).
@@ -233,7 +233,7 @@ Rather than forcing users to navigate away from the CRM to a dedicated multi-pan
 
 ## 6. Integration with Core Engines
 
-This feature hooks directly into FoundryX EMS's Sprint 1 platform engines:
+This feature hooks directly into Foundryx EMS's Sprint 1 platform engines:
 
 1. **Workflow Engine (Automation Triggering):**
    * **Triggers:** `onNewMessageReceived` (fires when a contact messages any channel) and `onCSWExpired`.

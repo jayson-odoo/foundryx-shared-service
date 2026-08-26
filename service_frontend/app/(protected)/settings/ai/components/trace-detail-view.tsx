@@ -12,7 +12,7 @@ import { aiService } from '@/services/ai-service';
 import type { AiSpan, AiTraceDetail } from '@/types/ai';
 import { AI_TRACES_PATH } from './paths';
 
-/** Truncation the backend already marked — surfaced so a clipped payload is
+/** Truncation the backend already marked - surfaced so a clipped payload is
  *  never mistaken for a short one. */
 function wasTruncated(payload: unknown): boolean {
   return (
@@ -87,7 +87,7 @@ export interface TraceDetailViewProps {
  * Deliberately not a tree: slice 1 only ever produces depth-1 sequences, and a
  * tree renderer for a flat list is cost with no payoff. `parentId` and
  * `dottedOrder` are already carried on every span, so the tree is a renderer
- * change when real depth (agent tool loops) arrives — not a migration.
+ * change when real depth (agent tool loops) arrives - not a migration.
  */
 export function TraceDetailView({ traceId }: TraceDetailViewProps) {
   const [trace, setTrace] = useState<AiTraceDetail | null>(null);
@@ -149,12 +149,12 @@ export function TraceDetailView({ traceId }: TraceDetailViewProps) {
             <div className="flex flex-col gap-0.5">
               <span className="text-xs text-muted-foreground">Agent</span>
               <span className="text-sm font-medium text-foreground">
-                {trace.agentName || '—'}
+                {trace.agentName || '-'}
               </span>
             </div>
             <div className="flex flex-col gap-0.5">
               <span className="text-xs text-muted-foreground">Model</span>
-              <span className="text-sm text-foreground">{trace.model || '—'}</span>
+              <span className="text-sm text-foreground">{trace.model || '-'}</span>
               <span className="text-xs text-muted-foreground">{trace.provider}</span>
             </div>
             <div className="flex flex-col gap-0.5">
@@ -187,14 +187,14 @@ export function TraceDetailView({ traceId }: TraceDetailViewProps) {
             <div className="flex flex-col gap-0.5">
               <span className="text-xs text-muted-foreground">Prompt</span>
               <span className="font-mono text-xs text-foreground">
-                {trace.skillKey ?? '—'}
+                {trace.skillKey ?? '-'}
                 {trace.promptVersion ? ` v${trace.promptVersion}` : ''}
               </span>
             </div>
             <div className="flex flex-col gap-0.5">
               <span className="text-xs text-muted-foreground">When</span>
               <span className="text-sm text-foreground">
-                {trace.createdAt ? formatDateTime(trace.createdAt) : '—'}
+                {trace.createdAt ? formatDateTime(trace.createdAt) : '-'}
               </span>
             </div>
             <div className="flex flex-col gap-0.5">

@@ -88,7 +88,7 @@ def test_default_workspace_cannot_be_trashed(client):
 
 
 # ── Channels via onboarding ──────────────────────────────────────────────────
-def _onboard(client, h, workspace_id, name="FoundryX WA"):
+def _onboard(client, h, workspace_id, name="Foundryx WA"):
     return client.post(
         "/omnichannel/onboarding/oauth-callback",
         headers=h,
@@ -104,7 +104,7 @@ def _onboard(client, h, workspace_id, name="FoundryX WA"):
 
 
 def test_onboarding_surfaces_meta_exchange_error(client, monkeypatch):
-    """A Meta code-exchange failure must surface as 400 + Meta's message — never
+    """A Meta code-exchange failure must surface as 400 + Meta's message - never
     an unhandled 500 (which loses CORS headers → browser shows 'Failed to fetch')."""
     import httpx
 

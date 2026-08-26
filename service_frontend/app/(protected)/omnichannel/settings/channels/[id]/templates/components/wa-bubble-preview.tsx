@@ -14,7 +14,7 @@ function fill(text: string, examples: string[]): string {
 const MEDIA_ICON = { IMAGE: ImageIcon, VIDEO: Video, DOCUMENT: FileText } as const;
 
 /**
- * Live WhatsApp-bubble preview (plan 07 UX-6) — renders the doc exactly as a
+ * Live WhatsApp-bubble preview (plan 07 UX-6) - renders the doc exactly as a
  * recipient would see it, with sample values substituted. Read-only.
  */
 export function WaBubblePreview({ doc }: { doc: WaTemplateDoc }) {
@@ -56,7 +56,7 @@ export function WaBubblePreview({ doc }: { doc: WaTemplateDoc }) {
                       ? Copy
                       : Reply;
               const label =
-                b.type === 'COPY_CODE' ? `Copy code${b.example ? ` (${b.example})` : ''}` : b.text || '—';
+                b.type === 'COPY_CODE' ? `Copy code${b.example ? ` (${b.example})` : ''}` : b.text || '-';
               return (
                 <div
                   key={i}

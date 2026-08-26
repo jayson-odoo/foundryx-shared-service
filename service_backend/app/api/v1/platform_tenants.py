@@ -1,5 +1,5 @@
 """Platform Console tenant routes (plan 07 §9). Thin: validate, delegate to
-TenantService, shape HTTP. ALL routes are operator-only —
+TenantService, shape HTTP. ALL routes are operator-only -
 ``require_platform_permission`` = permission key AND platform-tenant membership.
 """
 from typing import Optional
@@ -201,12 +201,12 @@ def tenant_status_graph(
     current_user: User = Depends(require_platform_permission("tenants.read")),
     db: Session = Depends(get_db),
 ) -> StatusGraphResponse:
-    """The tenant entity's status graph for the console's action registry —
+    """The tenant entity's status graph for the console's action registry -
     gated by ``tenants.read`` so lifecycle buttons never depend on the
     operator also holding ``statuses.read`` (code-review fix)."""
     from app.api.v1.statuses import get_status_graph
 
-    # Keyword args — get_status_graph grew a ``scope_id`` parameter (scoped
+    # Keyword args - get_status_graph grew a ``scope_id`` parameter (scoped
     # status machines, sprint-3/01 D4) between entity_type and current_user, so
     # a positional call would land current_user in scope_id.
     return get_status_graph(entity_type="tenant", current_user=current_user, db=db)
@@ -336,7 +336,7 @@ def _transition_permission(to_status) -> str:
     """The legacy privilege boundary, derived from the TARGET's trait flags
     (code-review fix): archiving-like moves need ``tenants.archive``;
     everything else (suspend / reactivate / custom blocks) stays under
-    ``tenants.suspend`` — exactly the keys the dedicated endpoints used, so
+    ``tenants.suspend`` - exactly the keys the dedicated endpoints used, so
     introducing the generic endpoint grants nobody new capability."""
     return "tenants.archive" if to_status is not None and to_status.is_archived else "tenants.suspend"
 
@@ -347,7 +347,7 @@ def list_tenant_transitions(
     current_user: User = Depends(require_platform_permission("tenants.read")),
     db: Session = Depends(get_db),
 ) -> TenantTransitionListResponse:
-    """Outgoing edges from the tenant's current status the actor may fire —
+    """Outgoing edges from the tenant's current status the actor may fire -
     edge label = action button text."""
     service = TenantService(db)
     try:
@@ -375,7 +375,7 @@ def purge_tenant(
     current_user: User = Depends(require_platform_permission("tenants.delete")),
     db: Session = Depends(get_db),
 ) -> None:
-    """Hard-delete an ARCHIVED tenant + all its rows (BL-035). Irreversible —
+    """Hard-delete an ARCHIVED tenant + all its rows (BL-035). Irreversible -
     typed slug confirm, archive-first two-step."""
     try:
         TenantService(db).purge(tenant_id, payload.confirmSlug)

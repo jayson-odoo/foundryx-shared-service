@@ -1,10 +1,10 @@
 /**
- * Computed-field arithmetic expressions (sprint-3/01 D7) — client mirror of
+ * Computed-field arithmetic expressions (sprint-3/01 D7) - client mirror of
  * the backend `app/form_engine/computed.py`. Own tokenizer + recursive-descent
  * parser: `+ - * /` (unicode `×`/`÷` accepted), parentheses, unary minus,
  * sibling field refs. NEVER eval/Function on tenant content (anti-SSTI house
  * line). Runtime evaluation fails closed (missing/non-numeric ref,
- * div-by-zero → null); the SERVER recomputes authoritatively on submit —
+ * div-by-zero → null); the SERVER recomputes authoritatively on submit -
  * this mirror only drives the live in-form display.
  */
 
@@ -37,7 +37,7 @@ export interface AggregateRef {
   subKey: string | null;
 }
 
-// Anchored (not sticky) — the es5 build target has no `y` flag; we slice the
+// Anchored (not sticky) - the es5 build target has no `y` flag; we slice the
 // remaining input per step instead.
 const TOKEN_RE =
   /^\s*(?:(\d+(?:\.\d+)?)|([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)|([+\-*/×÷()]))/;
@@ -182,7 +182,7 @@ function collectRefs(node: Node, refs: Set<string>): void {
     collectRefs(node.left, refs);
     collectRefs(node.right, refs);
   }
-  // 'agg' refs are collected separately (collectAggs) — not scalar fields.
+  // 'agg' refs are collected separately (collectAggs) - not scalar fields.
 }
 
 function collectAggs(node: Node, out: AggregateRef[]): void {

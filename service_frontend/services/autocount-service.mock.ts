@@ -1,11 +1,11 @@
 /**
- * AutoCount ESB mock service (hop 2, plan 14 phase 4) — frontend-first
+ * AutoCount ESB mock service (hop 2, plan 14 phase 4) - frontend-first
  * scaffolding behind the service boundary. The real backend is live, so the
  * shipped `autocountService` binds `.real`; this mock exists so the dry-run
  * review states (previewable / not-previewable / failure) are tunable with NO
  * backend, and so the Vitest suite can drive them deterministically.
  *
- * PHASE 1 MOCK — do NOT let a component import this directly. It lives behind
+ * PHASE 1 MOCK - do NOT let a component import this directly. It lives behind
  * `autocount-service.ts`; flip that one line to `mockAutocountService` to build
  * the UI against it, and back to `.real` to ship.
  *
@@ -64,7 +64,7 @@ function previewablePayload(jobId: string): AutocountPreviewResult {
       sink: 'sorento',
       summary: { total: 172, created: 134, updated: 38, failed: 0, retryable: 0 },
       predictions: [
-        // An adoption that BLANKS a live value + overwrites a name — the
+        // An adoption that BLANKS a live value + overwrites a name - the
         // destructive rows an operator most needs to see.
         {
           sourceRef: 'AED_VSOFT:3',
@@ -87,7 +87,7 @@ function previewablePayload(jobId: string): AutocountPreviewResult {
           },
           errors: {},
         },
-        // A create — no diff, safe, summarised.
+        // A create - no diff, safe, summarised.
         {
           sourceRef: 'AED_VSOFT:50',
           outcome: 'created',
@@ -115,8 +115,8 @@ function mockName(record: AutocountStagedRecord): string {
 }
 
 /**
- * A batch with BOTH kinds of staged row — a handful the operator must see
- * (field changes / a failure) and a wall of no-field-change re-fetches — so the
+ * A batch with BOTH kinds of staged row - a handful the operator must see
+ * (field changes / a failure) and a wall of no-field-change re-fetches - so the
  * paginate + no-change-collapse behaviour (AC-15-10/11) is reachable with no
  * backend.
  */
@@ -162,7 +162,7 @@ function mockStagedRecords(): AutocountStagedRecord[] {
       sourceLastModified: '2026-03-19T04:00:00Z',
     },
   ];
-  // 24 legitimate no-op re-fetches — LastModified advanced, no mapped field
+  // 24 legitimate no-op re-fetches - LastModified advanced, no mapped field
   // differs. These must collapse, never bury the three above.
   const noChange: AutocountStagedRecord[] = Array.from({ length: 24 }, (_, i) => ({
     id: `staged-nc-${i}`,
@@ -305,7 +305,7 @@ export const mockAutocountService: AutocountService = {
       enabled: true,
       lastSuccessAt: null,
       lastAttemptAt: null,
-      watermarkAt: null, // the reset — the first-run window is live again
+      watermarkAt: null, // the reset - the first-run window is live again
       consecutiveFailures: 0,
       lastError: null,
     });
@@ -326,7 +326,7 @@ export const mockAutocountService: AutocountService = {
     if (jobId.includes('fail')) {
       return Promise.reject(
         new ApiError(
-          'The dry run against the consumer failed, so this batch cannot be approved yet. Nothing was written — resolve the consumer error first.',
+          'The dry run against the consumer failed, so this batch cannot be approved yet. Nothing was written - resolve the consumer error first.',
           502,
         ),
       );
@@ -511,7 +511,7 @@ function mockMappingView(entityType: string): AutocountMappingView {
         isRequired: false,
         isEnabled: true,
       },
-      // A provenance row — stored canonically, never delivered to Sorento.
+      // A provenance row - stored canonically, never delivered to Sorento.
       {
         sourcePath: 'Data.0.LastModified',
         transform: 'slash_datetime',

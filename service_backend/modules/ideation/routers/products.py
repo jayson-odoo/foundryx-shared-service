@@ -1,6 +1,6 @@
 """Ideation product delivery-config routes (AC-A-06 / AC-A-08).
 
-Product CRUD REUSES the core catalog API (``/products``, ``products.*`` perms) —
+Product CRUD REUSES the core catalog API (``/products``, ``products.*`` perms) -
 NOT duplicated here. This router owns only the ideation delivery extension: the
 software Product's ``product_domain_base``. Gated by ``require_module("ideation")``
 (injected by the module loader) + ``ideation.products.manage`` (Maintainer)."""

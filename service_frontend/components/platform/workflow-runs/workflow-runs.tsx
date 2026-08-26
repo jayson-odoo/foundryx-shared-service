@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Logs tab (plan sprint-2/08 D16) — n8n-style two-pane: a run list on the LEFT,
+ * Logs tab (plan sprint-2/08 D16) - n8n-style two-pane: a run list on the LEFT,
  * the selected run's replay canvas + data on the RIGHT. "Debug in editor"
  * (inside the replay) hands the run off to the Editor tab.
  */
@@ -27,7 +27,7 @@ const SEGMENTS = [
 ];
 
 function formatDuration(ms: number | null): string {
-  if (ms == null) return '—';
+  if (ms == null) return '-';
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
@@ -57,7 +57,7 @@ export function WorkflowRuns({
     workflowService.getRun(runId).then((detail) => setRunDetail(detail));
   }, []);
 
-  // First page (and reset on segment / reload). Paginate — never fetch all runs.
+  // First page (and reset on segment / reload). Paginate - never fetch all runs.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -144,7 +144,7 @@ export function WorkflowRuns({
               </div>
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <span>
-                  {run.startedAt ? formatDateTime(run.startedAt) : '—'}
+                  {run.startedAt ? formatDateTime(run.startedAt) : '-'}
                 </span>
                 {run.isTest && <FlaskConical className="size-3" />}
               </div>

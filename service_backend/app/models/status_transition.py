@@ -4,7 +4,7 @@ An edge is the ONLY way a record moves between statuses (strict graph, D4):
 no wildcards, no self-loops, no admin override. ``label`` is the action button
 text ("Approve" / "Reject" / "Resubmit"); ``sort_order`` orders the buttons.
 
-Authorization: ``transition_roles`` M2M — the actor must hold ≥1 of the edge's
+Authorization: ``transition_roles`` M2M - the actor must hold ≥1 of the edge's
 roles to fire it; an edge with NO roles is unrestricted (the endpoint's own
 permission gate still applies). ``statuses.manage`` gates who *configures*;
 edge roles gate who can *fire* (D5).
@@ -32,7 +32,7 @@ from app.database import Base
 
 def tenant_id_from_transition(context) -> str | None:
     """Derive the association ``tenant_id`` from the owning transition at insert
-    (same BL-015 pattern as ``tenant_id_from_role`` — relationship appends only
+    (same BL-015 pattern as ``tenant_id_from_role`` - relationship appends only
     populate the FK columns)."""
     transition_id = context.get_current_parameters().get("transition_id")
     if transition_id:
@@ -67,7 +67,7 @@ class StatusTransition(Base):
         UniqueConstraint(
             "tenant_id", "from_status_id", "to_status_id", name="uq_transition_edge"
         ),
-        # Derived status (sprint-4/03) — the re-eval loop looks up outgoing AUTO
+        # Derived status (sprint-4/03) - the re-eval loop looks up outgoing AUTO
         # edges from a record's current status; index the pair it filters on.
         Index("ix_transition_from_trigger", "from_status_id", "trigger_mode"),
     )
@@ -84,14 +84,14 @@ class StatusTransition(Base):
     # Derived status (sprint-4/03 G1): 'manual' = a user fires it (action
     # button); 'auto' = the engine fires it when conditions_json becomes true
     # (reevaluate). An AUTO edge MUST carry conditions and MUST NOT carry roles
-    # (system-fired) — both enforced at save. Auto edges are excluded from the
+    # (system-fired) - both enforced at save. Auto edges are excluded from the
     # user-facing transition surfaces (available_transitions / fireable_edge_ids).
     trigger_mode = Column(
         String, nullable=False, default="manual", server_default="manual"
     )
-    # Rule-engine condition tree (sprint-2/02 D1 — rule = property, not
+    # Rule-engine condition tree (sprint-2/02 D1 - rule = property, not
     # entity): camelCase wire JSON stored as-is. NULL = unconditional edge.
-    # none_as_null: Python None must store SQL NULL, not JSON null — the
+    # none_as_null: Python None must store SQL NULL, not JSON null - the
     # rule-site lister and the fireable-ids trigger filter on IS NOT NULL
     # (a cleared edge once ghosted on the Rules page as "Always allowed").
     conditions_json = Column(JSON(none_as_null=True), nullable=True)

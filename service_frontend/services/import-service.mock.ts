@@ -1,4 +1,4 @@
-/** Mock import service (Phase A) — static config + a single in-memory job. */
+/** Mock import service (Phase A) - static config + a single in-memory job. */
 import type { ImportConfig, ImportJob, ImportJobList, ImportPreview } from '@/types/import';
 import type { CreateImportInput, ImportService } from './import-service';
 

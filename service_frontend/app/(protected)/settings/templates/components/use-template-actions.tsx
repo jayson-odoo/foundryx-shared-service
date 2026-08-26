@@ -9,7 +9,7 @@ import { templateEngineService } from '@/services/template-service';
 import type { TemplateListItem } from '@/types/templates';
 import { templatePath } from './paths';
 
-/** ONE action registry — row `…`, bulk dropdown and form `…` all share it. */
+/** ONE action registry - row `…`, bulk dropdown and form `…` all share it. */
 export function useTemplateActions(): ResourceAction<TemplateListItem>[] {
   const router = useRouter();
 
@@ -75,7 +75,7 @@ export function useTemplateActions(): ResourceAction<TemplateListItem>[] {
         tone: 'destructive',
         surfaces: { row: true, bulk: true, form: true },
         permission: 'templates.manage',
-        // System templates are delete-blocked (D6) — reset instead.
+        // System templates are delete-blocked (D6) - reset instead.
         isVisible: (rows) => rows.every((t) => !t.isSystem),
         confirm: {
           title: 'Delete template?',

@@ -1,10 +1,10 @@
 /**
- * Cluster D (sprint-4/05) registration/ticketing types — Venues, Zones, Seats,
+ * Cluster D (sprint-4/05) registration/ticketing types - Venues, Zones, Seats,
  * Offerings, CapacityUnits. camelCase wire (matches the Resource-shell + EMS
  * convention). Mirrors `documentation/plans/sprint-4/05-...-venue.md` data model.
  *
  * PHASE 1 (frontend-first): consumed by the mock `registration-service`. The
- * backend phase swaps the service bodies to `apiFetch` — these types are the
+ * backend phase swaps the service bodies to `apiFetch` - these types are the
  * forever contract either way.
  */
 
@@ -46,7 +46,7 @@ export interface CartLine {
   unitPrice: number;
   currency: string;
   qty: number;
-  /** RESERVED only — the held seat ids + labels in this line. */
+  /** RESERVED only - the held seat ids + labels in this line. */
   seatIds: string[];
   seatLabels: string[];
 }
@@ -58,7 +58,7 @@ export interface Cart {
   tax: number;
   total: number;
   currency: string;
-  /** Hold expiry (ISO) — drives the countdown; null when the cart is empty. */
+  /** Hold expiry (ISO) - drives the countdown; null when the cart is empty. */
   expiresAt: string | null;
 }
 
@@ -71,7 +71,7 @@ export interface AttendeeInput {
   phone: string;
 }
 
-/** One ticket as returned by the live confirm response — carries the real
+/** One ticket as returned by the live confirm response - carries the real
  * signed/opaque QR token (AC-05-TKT-02) the Done screen renders. */
 export interface ConfirmedTicket {
   ticketId: string;
@@ -88,7 +88,7 @@ export interface OrderResult {
   /** Attendee emails that receive the confirmation mail (with tickets/QR). */
   confirmationEmails: string[];
   paid: boolean;
-  /** Per-ticket QR from the live confirm result — real signed tokens. */
+  /** Per-ticket QR from the live confirm result - real signed tokens. */
   tickets: ConfirmedTicket[];
 }
 
@@ -106,12 +106,12 @@ export interface AdminRegisterAttendee {
 export interface AdminRegisterItem {
   offeringId: string;
   attendee: AdminRegisterAttendee;
-  /** RESERVED offering only — the chosen free seat's capacity unit. */
+  /** RESERVED offering only - the chosen free seat's capacity unit. */
   capacityUnitId?: string;
 }
 export interface AdminRegisterRequest {
   items: AdminRegisterItem[];
-  /** Complimentary — skips invoice creation. */
+  /** Complimentary - skips invoice creation. */
   comp: boolean;
 }
 /** `CheckoutService.confirm` result. `invoiceId`/`total`/`currency` are null for
@@ -125,7 +125,7 @@ export interface AdminRegisterResult {
   confirmationEmails: string[];
 }
 
-/** Admin view — one registration row for an event (real `GET
+/** Admin view - one registration row for an event (real `GET
  * /ems/projects/{id}/tickets`). `invoiceTotal`/`currency` are null for a comp
  * ticket (no invoice). `ticketStatus` is the status LABEL ("Issued"); the raw
  * key rides `ticketStatusKey`. */
@@ -141,12 +141,12 @@ export interface EventRegistration {
   invoiceId: string | null;
   invoiceTotal: number | null;
   currency: string | null;
-  /** Signed/opaque QR token (AC-05-TKT-02) — rendered in the detail view. */
+  /** Signed/opaque QR token (AC-05-TKT-02) - rendered in the detail view. */
   qrToken: string | null;
   registeredAt: string;
 }
 
-/** Admin view — one invoice for an event. */
+/** Admin view - one invoice for an event. */
 export interface EventInvoice {
   id: string;
   billToName: string;
@@ -285,7 +285,7 @@ export interface EventInvoiceDetail {
   lines: EventInvoiceLine[];
 }
 
-/** Portal view — a participant's order (tickets + invoice). */
+/** Portal view - a participant's order (tickets + invoice). */
 export interface PortalTicket {
   id: string;
   offeringName: string;
@@ -348,7 +348,7 @@ export interface VenueSeat {
   row: string | null;
   number: string | null;
   label: string;
-  /** Auto-grid coordinates (R3-4 — visual designer repositions these later). */
+  /** Auto-grid coordinates (R3-4 - visual designer repositions these later). */
   x: number;
   y: number;
 }
@@ -384,7 +384,7 @@ export interface Offering {
   grantsRoleId: string | null;
   /** Per-attendee ticket cap (R3-7; null = unlimited). */
   maxTicketsPerAttendee: number | null;
-  /** RESERVED seat source — venue + the zones this offering draws seats from. */
+  /** RESERVED seat source - venue + the zones this offering draws seats from. */
   venueId: string | null;
   zoneIds: string[];
   /** Live counters (GA: counter-only; RESERVED: derived from units). */

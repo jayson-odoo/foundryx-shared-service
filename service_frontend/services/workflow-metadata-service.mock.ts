@@ -1,5 +1,5 @@
 /**
- * Mock workflow-metadata service (Phase A) — the v1 instrumented triggerable
+ * Mock workflow-metadata service (Phase A) - the v1 instrumented triggerable
  * entity set (plan sprint-2/09 D6: user, role, tenant, connection, template,
  * workflow). Each entity = a rule-engine fact source; status-engine adopters
  * (tenant) carry their statuses. Phase B swaps the binding to `GET

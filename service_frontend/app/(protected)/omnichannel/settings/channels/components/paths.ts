@@ -1,4 +1,4 @@
-/** Route helpers for the Channels feature — single source of truth for its URLs. */
+/** Route helpers for the Channels feature - single source of truth for its URLs. */
 
 export const channelsListPath = '/omnichannel/settings/channels';
 export const channelFormPath = (id: string) => `${channelsListPath}/${id}`;

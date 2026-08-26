@@ -2,7 +2,7 @@
  * AutoCount staged-record diff parsing + value formatting (AC-13-12).
  *
  * The backend's `compute_diff` (`modules/autocount/sync.py`) already emits
- * CHANGED FIELDS ONLY and deliberately excludes `last_modified` — it moves on
+ * CHANGED FIELDS ONLY and deliberately excludes `last_modified` - it moves on
  * every fetch by definition, so surfacing it would make every record look
  * changed. Nothing here re-adds it, and the ignore set below is a mirror of the
  * backend's `DIFF_IGNORED_FIELDS` used ONLY when expanding a first-seen
@@ -38,7 +38,7 @@ function isChangeEntry(value: unknown): value is { from: unknown; to: unknown } 
 /**
  * Parse a staged record's raw `diff` into the renderable view model.
  *
- * A null/empty diff yields NO changes — a record whose fields all matched is
+ * A null/empty diff yields NO changes - a record whose fields all matched is
  * not "everything changed", it is nothing changed.
  */
 export function parseRecordDiff(
@@ -51,7 +51,7 @@ export function parseRecordDiff(
   const changes: AutocountFieldChange[] = [];
   for (const [field, value] of Object.entries(diff)) {
     if (field === DIFF_NEW_KEY) continue;
-    // A malformed entry is skipped rather than rendered as a bogus change —
+    // A malformed entry is skipped rather than rendered as a bogus change -
     // an invented change is worse than a missing one on a review surface.
     if (!isChangeEntry(value)) continue;
     changes.push({ field, from: value.from, to: value.to });
@@ -72,7 +72,7 @@ function isEmptyValue(value: unknown): boolean {
  * The diff to render, given the raw diff and (for a first-seen record) its
  * canonical payload.
  *
- * For a NEW record the server sends only `{__new__: true}` — there is genuinely
+ * For a NEW record the server sends only `{__new__: true}` - there is genuinely
  * no "before". Rather than show an empty review, its canonical fields are
  * expanded as `nothing → value`, which is exactly what will be pushed. Ignored
  * fields stay ignored on this path too.
@@ -114,14 +114,14 @@ export interface DiffValueDisplay {
 /**
  * Format one side of a change for display. Structured values (a GRN's nested
  * `lines`, a customer's `extras` bag) are returned as pretty JSON so the
- * component can put them in their OWN scrollable block — never widening the
+ * component can put them in their OWN scrollable block - never widening the
  * page.
  */
 export function formatDiffValue(value: unknown): DiffValueDisplay {
-  // An empty array/object reads as nothing, not as a `[]` code block — "no
+  // An empty array/object reads as nothing, not as a `[]` code block - "no
   // lines → 3 lines" is the useful rendering of an added collection.
   if (isEmptyValue(value)) {
-    return { kind: 'empty', text: '—' };
+    return { kind: 'empty', text: '-' };
   }
   if (typeof value === 'boolean') {
     return { kind: 'scalar', text: value ? 'Yes' : 'No' };

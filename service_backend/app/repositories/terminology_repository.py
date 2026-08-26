@@ -1,4 +1,4 @@
-"""Terminology repository (sprint-3/08) — pure SQLAlchemy, tenant-scoped."""
+"""Terminology repository (sprint-3/08) - pure SQLAlchemy, tenant-scoped."""
 from typing import Dict, Optional
 
 from sqlalchemy.orm import Session

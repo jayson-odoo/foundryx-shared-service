@@ -54,7 +54,7 @@ def _request(method: str, base: str, api_key: str, path: str, form: Optional[Dic
     data = urllib.parse.urlencode(form, doseq=True).encode() if form is not None else None
     req = urllib.request.Request(f"{base}{path}", data=data, method=method)
     req.add_header("Authorization", _auth_header(api_key))
-    req.add_header("User-Agent", "FoundryXEMS/1.0 (+payments)")
+    req.add_header("User-Agent", "FoundryxEMS/1.0 (+payments)")
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
             raw = resp.read().decode()
@@ -184,13 +184,13 @@ class BillplzProvider:
     def _check_tolerance(self, params: Dict[str, str], tolerance: int) -> None:
         paid_at = params.get("paid_at")
         if not paid_at:
-            return  # unpaid notification — no timestamp to check
+            return  # unpaid notification - no timestamp to check
         try:
             ts = datetime.fromisoformat(paid_at.replace("Z", "+00:00"))
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
         except ValueError:
-            return  # unparseable timestamp — don't block on a format we don't know
+            return  # unparseable timestamp - don't block on a format we don't know
         age = abs((datetime.now(timezone.utc) - ts).total_seconds())
         if age > tolerance:
             raise PaymentError("Webhook timestamp outside tolerance (stale event).")
@@ -217,7 +217,7 @@ class BillplzProvider:
         amount: Decimal,
         currency: str,
     ) -> RefundResult:
-        # Billplz v3 has no public refund API — refunds are operator-initiated in
+        # Billplz v3 has no public refund API - refunds are operator-initiated in
         # the Billplz dashboard. We record the intent; the actual money movement
         # happens out-of-band (the refund record + credit note still apply).
         return RefundResult(external_refund_id=f"manual:{external_payment_id}")

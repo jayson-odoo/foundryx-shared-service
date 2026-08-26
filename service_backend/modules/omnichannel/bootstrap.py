@@ -1,9 +1,9 @@
-"""Omnichannel bootstrap — the App-Store module contract (plan 08 §4).
+"""Omnichannel bootstrap - the App-Store module contract (plan 08 §4).
 
 `install` is GLOBAL and idempotent (schema + tables + permission-catalog sync);
 the per-tenant hooks (`install_tenant` / `update_tenant` / `uninstall_tenant`)
 are driven by AppStoreService when a tenant installs/updates/uninstalls.
-Permission GRANTS are not this module's concern — the store grants/revokes
+Permission GRANTS are not this module's concern - the store grants/revokes
 against the tenant's roles (plan 08 §5).
 """
 from pathlib import Path
@@ -24,7 +24,7 @@ MODULE_CSV = Path(__file__).resolve().parent / "permissions" / "permissions.csv"
 
 def _messaging_send(db: Session, tenant_id: str, payload: dict) -> dict:
     """``messaging.send@1`` capability handler (plan sprint-3/10 D5). Tenant-
-    scoped seam other modules call via ``resolve_capability`` — full WhatsApp
+    scoped seam other modules call via ``resolve_capability`` - full WhatsApp
     outbound wiring lands in the EMS-comms slice (plan 11). Validates payload +
     accepts; never touches another tenant's data."""
     to = (payload or {}).get("to")
@@ -49,7 +49,7 @@ def register_capabilities() -> None:
 
 
 def register_engine_entities() -> None:
-    """Boot-time engine registration (plan 11 D9). Idempotent — called by
+    """Boot-time engine registration (plan 11 D9). Idempotent - called by
     ``register_module_boot`` whenever the module is loaded.
 
     Registers the omnichannel storage-key locations so its media rides the
@@ -57,7 +57,7 @@ def register_engine_entities() -> None:
     ``conversation_messages.media_key`` (inbound/outbound chat media) and
     ``whatsapp_templates.media_sample_key`` (a draft template's media-header
     sample). The declaration is the ``"storage_locations"`` block in
-    ``manifest.json`` — the SINGLE source of truth shared with the migration's
+    ``manifest.json`` - the SINGLE source of truth shared with the migration's
     own registration path (``ensure_all_storage_locations``), so the two can
     never drift. Registering the same signatures at app boot is idempotent.
     """
@@ -82,7 +82,7 @@ def create_schema_and_tables(engine: Engine) -> None:
         with engine.begin() as conn:
             conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{OMNI_SCHEMA}"'))
     OmniBase.metadata.create_all(bind=engine)
-    # create_all only adds NEW tables — columns added after plan 04 need an
+    # create_all only adds NEW tables - columns added after plan 04 need an
     # explicit idempotent ALTER for existing deployments (per-module Alembic
     # is the real fix, BL-029).
     if engine.dialect.name == "postgresql":
@@ -100,7 +100,7 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "ALTER COLUMN channel_id DROP NOT NULL"
                 )
             )
-            # WABA config + business-profile mirror (plan 06 §7) — idempotent
+            # WABA config + business-profile mirror (plan 06 §7) - idempotent
             # add for existing deployments (per-module Alembic is BL-029).
             _channel_cols = [
                 ("business_account_name", "VARCHAR"),
@@ -122,7 +122,7 @@ def create_schema_and_tables(engine: Engine) -> None:
                         f"ADD COLUMN IF NOT EXISTS {col} {coltype}"
                     )
                 )
-            # Rich-media columns (plan 12) — idempotent add for existing deploys.
+            # Rich-media columns (plan 12) - idempotent add for existing deploys.
             _message_cols = [
                 ("media_key", "VARCHAR"),
                 ("media_mime", "VARCHAR"),
@@ -139,7 +139,7 @@ def create_schema_and_tables(engine: Engine) -> None:
                         f"ADD COLUMN IF NOT EXISTS {col} {coltype}"
                     )
                 )
-            # Federated-attribution columns (plan 11H Slice 1) — idempotent add.
+            # Federated-attribution columns (plan 11H Slice 1) - idempotent add.
             conn.execute(
                 text(
                     f'ALTER TABLE "{OMNI_SCHEMA}".conversation_messages '
@@ -152,7 +152,7 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS assigned_external_agent_id VARCHAR"
                 )
             )
-            # Template management columns (plan 07 §8) — idempotent add.
+            # Template management columns (plan 07 §8) - idempotent add.
             _template_cols = [
                 ("meta_template_id", "VARCHAR"),
                 ("quality", "VARCHAR"),
@@ -182,7 +182,7 @@ def create_schema_and_tables(engine: Engine) -> None:
                 )
             )
             # Drop any pre-existing all-rows index (earlier build) so the scoped
-            # (live-only) predicate takes effect — a disconnected channel keeps
+            # (live-only) predicate takes effect - a disconnected channel keeps
             # its phone_number_id and must not block reconnecting the same number.
             conn.execute(text("DROP INDEX IF EXISTS uq_channels_phone_number_id"))
             conn.execute(
@@ -229,7 +229,7 @@ def install_tenant(db: Session, tenant_id: str) -> None:
 def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     """Per-tenant data migration between provisioned versions (plan 08 D3).
 
-    All of omnichannel is 0.1.0 today — nothing to backfill yet. New seeds /
+    All of omnichannel is 0.1.0 today - nothing to backfill yet. New seeds /
     backfills land here guarded by ``from_version`` comparisons.
     """
 
@@ -237,7 +237,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
 def uninstall_tenant(db: Session, tenant_id: str) -> None:
     """Wipe THIS tenant's rows from every module table (plan 08 §5).
 
-    The module schema and other tenants' rows are untouched — uninstall is
+    The module schema and other tenants' rows are untouched - uninstall is
     per-tenant, never global. Reverse dependency order avoids FK violations.
     """
     for table in reversed(OmniBase.metadata.sorted_tables):
@@ -248,7 +248,7 @@ def uninstall_tenant(db: Session, tenant_id: str) -> None:
 
 def tenant_has_data(db: Session, tenant_id: str) -> bool:
     """Backfill detection (loader): pre-App-Store installs seeded a default
-    workspace per tenant — its presence marks the tenant as already-installed."""
+    workspace per tenant - its presence marks the tenant as already-installed."""
     return (
         db.query(Workspace.id).filter(Workspace.tenant_id == tenant_id).first() is not None
     )
@@ -259,7 +259,7 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     distinct states + templates + quick replies, attached to a dev-credentialed
     "Demo WhatsApp" channel so outbound sends hit the adapter's stub, never the
     real Graph API. Idempotent (keys on the fixed contact ids). Called by the
-    dev seed scripts only — never in prod bootstrap.
+    dev seed scripts only - never in prod bootstrap.
     """
     from datetime import datetime, timedelta, timezone
 
@@ -307,12 +307,12 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
         # (id, name, phone, status_id, priority, csw_expires, last_in, msgs)
         ("cnt-001", ("Sarah", "Chen"), "+60 12-345 6789", open_id, "HIGH", now + timedelta(hours=20), [
             ("CONTACT", "Hi! I booked the Grand Ballroom for Friday.", 4.7, None),
-            ("AGENT", "Hi Sarah! Yes, I can see your booking — Friday 7pm, 120 pax.", 4.5, "READ"),
-            ("SYSTEM", "VIP client — handle with priority. Decision maker is Sarah.", 4.4, None),
-            ("CONTACT", "Great. One more thing —", 4.0, None),
+            ("AGENT", "Hi Sarah! Yes, I can see your booking - Friday 7pm, 120 pax.", 4.5, "READ"),
+            ("SYSTEM", "VIP client - handle with priority. Decision maker is Sarah.", 4.4, None),
+            ("CONTACT", "Great. One more thing -", 4.0, None),
             ("CONTACT", "Can I change my booking to Saturday?", 0.17, None),
             ("AGENT", "Checking availability now, give me a minute 🙏", 0.13, "DELIVERED"),
-            ("AGENT", "Saturday 7pm is free — shall I move it?", 0.1, "SENT"),
+            ("AGENT", "Saturday 7pm is free - shall I move it?", 0.1, "SENT"),
         ]),
         ("cnt-002", ("Marcus", "Wong"), "+60 16-888 2211", open_id, "MEDIUM", hours(3), [
             ("CONTACT", "Confirming Friday 3pm site visit.", 28, None),
@@ -324,12 +324,12 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
         ]),
         ("cnt-004", ("Daniel", "Lee"), "+60 11-555 7788", snoozed_id, "LOW", now + timedelta(hours=2), [
             ("CONTACT", "Any update on the quotation?", 22, None),
-            ("AGENT", "Finance is reviewing — I will revert by Thursday.", 21.5, "READ"),
-            ("CONTACT", "No rush — next week is fine.", 21, None),
+            ("AGENT", "Finance is reviewing - I will revert by Thursday.", 21.5, "READ"),
+            ("CONTACT", "No rush - next week is fine.", 21, None),
         ]),
         ("cnt-005", ("Aisha", "Abdullah"), "+60 19-444 9090", closed_id, "MEDIUM", hours(40), [
             ("CONTACT", "Received the invoice, paying today.", 64, None),
-            ("AGENT", "Payment received — booking confirmed! 🎉", 63.5, "READ"),
+            ("AGENT", "Payment received - booking confirmed! 🎉", 63.5, "READ"),
             ("CONTACT", "Perfect, thank you so much!", 63, None),
         ]),
     ]
@@ -400,8 +400,8 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
             name="promo_blast", language="en", category="MARKETING", status="PENDING",
             components_json=[{"type": "BODY", "text": "Big news {{1}}! Our new venue is open."}],
         ),
-        QuickReply(tenant_id=tenant_id, workspace_id=ws.id, shortcut="/hi", body="Hi! Thanks for reaching out to FoundryX Events — how can I help?"),
-        QuickReply(tenant_id=tenant_id, workspace_id=ws.id, shortcut="/hours", body="Our office hours are Mon–Fri 9am–6pm (MYT)."),
-        QuickReply(tenant_id=tenant_id, workspace_id=ws.id, shortcut="/payment", body="You can pay via bank transfer or card — the link is in your invoice email."),
+        QuickReply(tenant_id=tenant_id, workspace_id=ws.id, shortcut="/hi", body="Hi! Thanks for reaching out to Foundryx Events - how can I help?"),
+        QuickReply(tenant_id=tenant_id, workspace_id=ws.id, shortcut="/hours", body="Our office hours are Mon-Fri 9am-6pm (MYT)."),
+        QuickReply(tenant_id=tenant_id, workspace_id=ws.id, shortcut="/payment", body="You can pay via bank transfer or card - the link is in your invoice email."),
     ])
     db.commit()

@@ -49,7 +49,7 @@ import type { ResourceListConfig } from './types';
 import { useImportActivity } from '@/providers/import-activity-provider';
 
 /**
- * Row drag handle — a plain muted GripVertical (matches the triage board's card
+ * Row drag handle - a plain muted GripVertical (matches the triage board's card
  * grip so the two surfaces read consistently, per UX feedback). Grabs the same
  * `useSortable(id)` listeners the DndRows body wires up.
  */
@@ -113,7 +113,7 @@ export function ResourceList<T extends object>({ config }: ResourceListProps<T>)
   const [filterOpen, setFilterOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
 
-  // Card/list view — only offered when the config supplies a card renderer.
+  // Card/list view - only offered when the config supplies a card renderer.
   // Persisted per user per list in localStorage (no backend column-prefs change).
   const canCard = Boolean(config.cardRender);
   const viewStorageKey = `resource-view:${config.viewKey}`;
@@ -199,7 +199,7 @@ export function ResourceList<T extends object>({ config }: ResourceListProps<T>)
     if (!over || active.id === over.id) return;
 
     // Reorder only the movable subset, then rebuild the full order with fixed
-    // columns held at their default positions — so select/actions never drift.
+    // columns held at their default positions - so select/actions never drift.
     const movable = columnOrder.filter((id) => !fixedIds.has(id));
     const from = movable.indexOf(String(active.id));
     const to = movable.indexOf(String(over.id));
@@ -354,7 +354,7 @@ export function ResourceList<T extends object>({ config }: ResourceListProps<T>)
               )}
 
               {config.segments && (
-                /* Dropdown, not a toggle row — segment sets grow (user
+                /* Dropdown, not a toggle row - segment sets grow (user
                    feedback: a long status list would stretch the toolbar). */
                 <SearchSelect
                   className="w-36"
@@ -378,14 +378,14 @@ export function ResourceList<T extends object>({ config }: ResourceListProps<T>)
                   value={list.statusView}
                   onValueChange={(v) => {
                     if (!v) return;
-                    // Selection belongs to the view it was made in — carrying it
+                    // Selection belongs to the view it was made in - carrying it
                     // across views silently exports/acts on rows the user can no
                     // longer see (review finding: cross-view export dropped rows).
                     setRowSelection({});
                     list.setStatusView(v as 'active' | 'trashed');
                   }}
                 >
-                  {/* Selected segment is filled primary — the default bg-accent
+                  {/* Selected segment is filled primary - the default bg-accent
                       "on" state was too subtle to read which view is active. */}
                   <ToggleGroupItem
                     value="active"

@@ -1,4 +1,4 @@
-"""Ideation intake read route — ``GET /ideation/intake/products``.
+"""Ideation intake read route - ``GET /ideation/intake/products``.
 
 Public (workspace-key authed) lookup the sorento admin uses to bind a workspace to
 a software Product by NAME (no UUID pasting). Covers:
@@ -123,7 +123,7 @@ def test_excludes_soft_deleted(ideation_client):
 
 
 def test_excludes_other_tenants(ideation_client):
-    """A software product owned by another tenant is never returned — tenancy is
+    """A software product owned by another tenant is never returned - tenancy is
     derived from the key, never from the request."""
     h = _auth(ideation_client)
     _create_product(ideation_client, h, "Mine", "software")

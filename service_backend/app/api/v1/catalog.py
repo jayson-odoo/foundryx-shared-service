@@ -1,4 +1,4 @@
-"""Core catalog routes (sprint-4/08) — products + categories (horizontal,
+"""Core catalog routes (sprint-4/08) - products + categories (horizontal,
 ``public``) + tenant general settings (default currency). Thin: validation +
 responses only. Gated products.* / product_categories.* / settings.*."""
 from typing import Optional

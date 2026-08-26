@@ -40,7 +40,7 @@ export interface WorkflowService {
   /** Clear the current version → trigger stops firing (draft + history kept). */
   unpublish(id: string): Promise<Workflow>;
 
-  /** Manual run (D12/D13) — returns the created run. */
+  /** Manual run (D12/D13) - returns the created run. */
   run(id: string, request: WorkflowRunRequest): Promise<WorkflowRunListItem>;
   /** Permission-gated, workflow-specific options for a synthetic trigger run. */
   getTestOptions(id: string): Promise<WorkflowTestOptions>;
@@ -64,7 +64,7 @@ export interface WorkflowService {
   /** Template picker options for the email.send action (Phase B → GET /templates). */
   listTemplateOptions(): Promise<{ value: string; label: string }[]>;
 
-  /** Tenant workflow settings — run retention (plan 10). */
+  /** Tenant workflow settings - run retention (plan 10). */
   getSettings(): Promise<WorkflowSettings>;
   updateSettings(runRetentionDays: number): Promise<WorkflowSettings>;
 

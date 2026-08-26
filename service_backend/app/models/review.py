@@ -1,15 +1,15 @@
-"""Generic Review/Approval engine models (plan sprint-4/06 Part 2) — core
+"""Generic Review/Approval engine models (plan sprint-4/06 Part 2) - core
 ``public`` tables.
 
 A horizontal review/approval feature over ANY ``form_submission``. Role-agnostic
 (free-form roles + capability flags), identity-agnostic (a role's actors are all
-Users OR all Profiles — ``actor_identity_kind`` is uniform per role), reusable by
+Users OR all Profiles - ``actor_identity_kind`` is uniform per role), reusable by
 any use-case. EMS just *configures* it (Part B); NOTHING in core imports the EMS
-module — PERSONA actor pools are resolved through an injectable resolver hook
+module - PERSONA actor pools are resolved through an injectable resolver hook
 (``app/review_engine/resolvers.py``), so the engine never references Profiles.
 
 Cross-engine references (the submission form's scoped status ids, a bound
-persona/staff-role id, actor ids) are stored as PLAIN indexed string columns —
+persona/staff-role id, actor ids) are stored as PLAIN indexed string columns -
 the polymorphic-target_id rule (validate at save, scope at resolve) applies, NOT
 DB-level FKs (these may point into a module schema).
 """
@@ -66,7 +66,7 @@ def _uuid() -> str:
 
 class ReviewConfiguration(Base):
     """One review/approval process over a submission form (D27). ``review_form_id``
-    is the rubric form — reviews ARE ``form_submissions`` of it. The four status
+    is the rubric form - reviews ARE ``form_submissions`` of it. The four status
     ids map into the SUBMISSION form's OWN scoped status machine (plain string
     cols; resolved scope-guarded at use)."""
 
@@ -85,7 +85,7 @@ class ReviewConfiguration(Base):
     score_field_key = Column(String, nullable=True)
 
     # Event/context binding (AC-06-25/24/49): the granting membership's scope a
-    # config belongs to — plain indexed cols (BL-030 — NOT a cross-schema FK; the
+    # config belongs to - plain indexed cols (BL-030 - NOT a cross-schema FK; the
     # context_id may point into a module schema, e.g. an EMS ``app_ems.projects``
     # row). ``context_type='project'`` + ``context_id=<project_id>`` for an
     # EMS event review. NULL/NULL = unbound (a generic, context-less config).
@@ -114,7 +114,7 @@ class ReviewConfiguration(Base):
 class ReviewRole(Base):
     """A free-form role per config (D28). Behaviour is driven by the capability
     flags; ``label`` is display-only and per-config inline-relabelable. A role is
-    a SINGLE identity-kind (D29 — ``actor_identity_kind`` uniform) so surfaces
+    a SINGLE identity-kind (D29 - ``actor_identity_kind`` uniform) so surfaces
     route by kind without per-member branching."""
 
     __tablename__ = "review_roles"
@@ -137,7 +137,7 @@ class ReviewRole(Base):
     bound_persona_id = Column(String, nullable=True)
     bound_staff_role_id = Column(String, nullable=True)
 
-    # RULE source — a rule tree over the submission's answers (None = no gate).
+    # RULE source - a rule tree over the submission's answers (None = no gate).
     conditions_json = Column(JSON(none_as_null=True), nullable=True)
 
     sort_order = Column(Integer, nullable=False, default=0)
@@ -166,7 +166,7 @@ class ReviewRoleActor(Base):
 class ReviewAssignment(Base):
     """One reviewer's task for a submission group at a given revision (D37). The
     review itself is a ``form_submission`` of the review form, referenced by
-    ``review_submission_id`` (NULL until graded). Per-revision — prior rounds are
+    ``review_submission_id`` (NULL until graded). Per-revision - prior rounds are
     retained as history. UNIQUE prevents double-assigning the same actor for the
     same (config, group, revision)."""
 
@@ -206,7 +206,7 @@ class ReviewAssignment(Base):
 
 class ReviewDecision(Base):
     """The terminal decision for a submission group at a revision (D34). Single
-    decider, first-wins — the service writes a row IFF none exists yet for
+    decider, first-wins - the service writes a row IFF none exists yet for
     (config, group, revision); a second concurrent attempt is a no-op/409. The
     UNIQUE is the DB-level backstop for the first-wins guard."""
 

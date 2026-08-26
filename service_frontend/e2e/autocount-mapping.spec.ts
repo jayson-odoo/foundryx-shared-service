@@ -3,8 +3,8 @@ import type { AddressInfo } from 'node:net';
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 
 /**
- * AutoCount ESB — slices 15 + 16 review UI + mapping/formula editor
- * (`sprint-4/14-autocount-sorento-masters`) — E2E against the LIVE stack
+ * AutoCount ESB - slices 15 + 16 review UI + mapping/formula editor
+ * (`sprint-4/14-autocount-sorento-masters`) - E2E against the LIVE stack
  * (Next :3001 → FastAPI :8001 → Postgres). Real user clicks only: after the one
  * `goto` of the sign-in page, EVERY navigation is a click on something a real
  * operator can see. No deep-link `page.goto`.
@@ -12,8 +12,8 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
  * ── Why a scripted vendor, and what stays real ──────────────────────────────
  * AutoCount is customer-hosted and on-prem; no live instance is reachable from
  * CI. So this spec stands a tiny HTTP server in front of the two endpoints the
- * read pipeline calls — `POST /api/Server/Login` and
- * `POST /api/GoodsReceivedNote/GetGoodsReceivedNote` — and points a REAL `erp`
+ * read pipeline calls - `POST /api/Server/Login` and
+ * `POST /api/GoodsReceivedNote/GetGoodsReceivedNote` - and points a REAL `erp`
  * connection at it. The slice 15/16 surfaces under test (the mapping editor, the
  * formula builder, both simulators, the Review list) never touch the vendor:
  *   • the mapping editor's source/target catalogs come from the module's own
@@ -26,12 +26,12 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
  * ── Sorento is NOT a dependency ─────────────────────────────────────────────
  * Slice 14's Sorento push was verified separately end-to-end against real
  * Sorento (see the slice-14 test report). Sorento is a cross-repo service and is
- * deliberately NOT exercised here — the mapping/formula surfaces are FoundryX-only.
+ * deliberately NOT exercised here - the mapping/formula surfaces are Foundryx-only.
  *
  * ── Spec isolation ──────────────────────────────────────────────────────────
  * The suite is fullyParallel and a sync mutates tenant-wide AutoCount state, so
  * every test provisions its OWN timestamped tenant via the operator API (setup
- * only — the flow under test stays real clicks) and installs the module there.
+ * only - the flow under test stays real clicks) and installs the module there.
  */
 
 const API = 'http://localhost:8001';
@@ -41,7 +41,7 @@ const COMPANY_NAME = 'V Soft Trading Sdn Bhd';
 /** A JWT-shaped string. The client REJECTS a login carrying only the GUID. */
 const JWT_TOKEN = 'eyJhbGciOiJIUzI1NiJ9.e2UyZX0.sIgNaTuRe';
 
-// ── scripted vendor (GRN only — used solely to stage a review batch) ─────────
+// ── scripted vendor (GRN only - used solely to stage a review batch) ─────────
 
 /** Today's date in the vendor's `YYYY/MM/DD` filter format (UTC). */
 function vendorDay(): string {
@@ -138,7 +138,7 @@ async function startVendor(): Promise<Vendor> {
   };
 }
 
-// ── tenant setup (operator API — setup only) ─────────────────────────────────
+// ── tenant setup (operator API - setup only) ─────────────────────────────────
 
 interface TenantAdmin {
   slug: string;
@@ -158,7 +158,7 @@ async function operatorToken(request: APIRequestContext): Promise<string> {
 /** Dedicated, timestamped tenant with the `autocount` module ACTIVE. */
 async function provisionTenant(request: APIRequestContext, tag: string): Promise<TenantAdmin> {
   // Timestamp AND a random suffix so two workers in the same millisecond never
-  // collide on `ix_tenants_slug`. Never a fixed literal — residue must not break
+  // collide on `ix_tenants_slug`. Never a fixed literal - residue must not break
   // the next run.
   const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const slug = `e2e-acm-${tag}-${stamp}`;
@@ -207,7 +207,7 @@ async function openViaSidebar(page: Page, section: string, child: string, urlRe:
 }
 
 /** Create the AutoCount `erp` connection through the integrations form, then run
- *  Test — the discovered company echoes back on success. */
+ *  Test - the discovered company echoes back on success. */
 async function createAndTestConnection(page: Page, vendorUrl: string, name: string) {
   await openViaSidebar(page, 'Settings', 'Integrations', /\/settings\/integrations$/);
   await page.getByRole('button', { name: 'Connect integration' }).click();
@@ -251,7 +251,7 @@ async function connectCompany(page: Page, connectionName: string, label: string)
   return m[1];
 }
 
-/** No horizontal PAGE scroll — wide content must scroll inside its own box. */
+/** No horizontal PAGE scroll - wide content must scroll inside its own box. */
 async function expectNoPageScroll(page: Page, where: string) {
   const overflow = await page.evaluate(() => {
     const el = document.documentElement;
@@ -294,7 +294,7 @@ async function openSupplierMapping(page: Page, companyId: string) {
 
 // ── the journeys ──────────────────────────────────────────────────────────────
 
-test.describe('AutoCount ESB — slices 15/16 review UI + mapping', () => {
+test.describe('AutoCount ESB - slices 15/16 review UI + mapping', () => {
   test('AC-15-40..44 / AC-16-10..31 · mapping editor, formula builder + simulators by clicking', async ({
     page,
     request,
@@ -323,7 +323,7 @@ test.describe('AutoCount ESB — slices 15/16 review UI + mapping', () => {
       // A default deliverable row's source path is rendered read-only.
       await expect(page.getByText('AccNo').first()).toBeVisible();
 
-      // ── 2. Whole-mapping simulator (AC-16-30/31) — clean saved mapping ────
+      // ── 2. Whole-mapping simulator (AC-16-30/31) - clean saved mapping ────
       // Run it BEFORE editing so the mock maps through the untouched default
       // rows: a mock AutoCount record in → the whole Sorento record out, through
       // the REAL MappingEngine, writing nothing.
@@ -352,12 +352,12 @@ test.describe('AutoCount ESB — slices 15/16 review UI + mapping', () => {
       await expect(output).toContainText('"is_active": true');
       // Per-field results are legible.
       await expect(simDialog.getByTestId('field-results')).toBeVisible();
-      // It writes nothing — a pure preview.
+      // It writes nothing - a pure preview.
       await expect(simDialog.getByText('This record maps cleanly.')).toBeVisible();
       await page.keyboard.press('Escape');
       await expect(simDialog).toBeHidden();
 
-      // ── 3. Enter Edit — pickers appear (AC-15-44 read-only-until-Edit) ────
+      // ── 3. Enter Edit - pickers appear (AC-15-44 read-only-until-Edit) ────
       await editBtn.click();
       const transform1 = page.getByRole('combobox', { name: 'Transform for row 1' });
       await expect(transform1).toBeVisible();
@@ -379,7 +379,7 @@ test.describe('AutoCount ESB — slices 15/16 review UI + mapping', () => {
       await builder.getByRole('tab', { name: 'Testing' }).click();
       await builder.getByPlaceholder('e.g. T').fill('T');
       await expect(builder.getByTestId('client-output')).toContainText('true');
-      // A different value flips it — proving the formula truly evaluates.
+      // A different value flips it - proving the formula truly evaluates.
       await builder.getByPlaceholder('e.g. T').fill('F');
       await expect(builder.getByTestId('client-output')).toContainText('false');
       await builder.getByRole('button', { name: 'Apply' }).click();
@@ -428,7 +428,7 @@ test.describe('AutoCount ESB — slices 15/16 review UI + mapping', () => {
       await deliveryPicker.click();
       await page.getByRole('option', { name: 'Sorento', exact: true }).click();
       await expect(page.getByTestId('sink-connection-warning')).toBeVisible();
-      // Leave the target unchanged — cancel out of the edit.
+      // Leave the target unchanged - cancel out of the edit.
       await page.getByRole('button', { name: 'Cancel', exact: true }).click();
       // The Discard-changes guard may intercept (the form is dirty); confirm it.
       const discard = page.getByRole('button', { name: 'Discard changes', exact: true });

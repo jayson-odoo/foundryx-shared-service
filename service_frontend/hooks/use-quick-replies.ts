@@ -20,7 +20,7 @@ export interface UseQuickReplies {
 
 /**
  * Loads + mutates the quick replies for a workspace. The page reads quick
- * replies ONLY through this hook — the UI never touches the service/api-client
+ * replies ONLY through this hook - the UI never touches the service/api-client
  * directly. Idle until a `workspaceId` resolves.
  */
 export function useQuickReplies(workspaceId: string | null): UseQuickReplies {

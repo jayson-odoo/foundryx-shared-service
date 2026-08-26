@@ -1,4 +1,4 @@
-"""Form engine tests (plan sprint-3/01 §TDD) — service/router/scoped-status
+"""Form engine tests (plan sprint-3/01 §TDD) - service/router/scoped-status
 integration over httpx TestClient.
 
 Covers: create (scoped Draft→Submitted machine materialized) · slug dedupe ·
@@ -188,7 +188,7 @@ def test_fill_serves_published_not_draft(client):
     form = _create_form(client, headers)
     _set_draft(client, headers, form["id"], _doc(_text_field("f1", "name", "Name v1")))
     _publish(client, headers, form["id"])
-    # Edit the draft AFTER publishing — fill must still serve v1.
+    # Edit the draft AFTER publishing - fill must still serve v1.
     _set_draft(client, headers, form["id"], _doc(_text_field("f1", "name", "Name v2")))
     fill = client.get(f"/forms/{form['id']}/fill", headers=headers).json()
     label = fill["definition"]["pages"][0]["sections"][0]["fields"][0]["label"]
@@ -440,7 +440,7 @@ def test_fill_allowed_for_authed_user(client):
     form = _create_form(client, headers)
     _set_draft(client, headers, form["id"], _doc(_text_field("f1", "name")))
     _publish(client, headers, form["id"])
-    # fill is gated by get_current_user only (D19) — admin (authed) reaches it.
+    # fill is gated by get_current_user only (D19) - admin (authed) reaches it.
     assert client.get(f"/forms/{form['id']}/fill", headers=headers).status_code == 200
 
 
@@ -460,7 +460,7 @@ def test_delete_drops_scoped_statuses(client):
     assert before.json()["statuses"]
 
     assert client.delete(f"/forms/{form['id']}", headers=headers).status_code == 204
-    # The form (scope) is gone — the form GET 404s and the scope graph is
+    # The form (scope) is gone - the form GET 404s and the scope graph is
     # unreachable (the scope no longer exists in the tenant).
     assert client.get(f"/forms/{form['id']}", headers=headers).status_code == 404
     after = client.get(

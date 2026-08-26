@@ -118,16 +118,16 @@ export function EmailDetailView({ emailId }: { emailId: string }) {
               <OverviewRow label="Attempts">{email.attempts}</OverviewRow>
               <OverviewRow label="Created">{formatDateTime(email.createdAt)}</OverviewRow>
               <OverviewRow label="Sent">
-                {email.sentAt ? formatDateTime(email.sentAt) : '—'}
+                {email.sentAt ? formatDateTime(email.sentAt) : '-'}
               </OverviewRow>
               <OverviewRow label="Next attempt">
-                {email.nextAttemptAt ? formatDateTime(email.nextAttemptAt) : '—'}
+                {email.nextAttemptAt ? formatDateTime(email.nextAttemptAt) : '-'}
               </OverviewRow>
               <OverviewRow label="Fallback connection used">
-                {email.usedFallback ? 'Yes — tenant connection failed, platform took over' : 'No'}
+                {email.usedFallback ? 'Yes - tenant connection failed, platform took over' : 'No'}
               </OverviewRow>
               <OverviewRow label="Connection">
-                {email.connectionId ? <code className="text-xs">{email.connectionId}</code> : '—'}
+                {email.connectionId ? <code className="text-xs">{email.connectionId}</code> : '-'}
               </OverviewRow>
               {email.lastError && (
                 <OverviewRow label="Last error">
@@ -152,7 +152,7 @@ export function EmailDetailView({ emailId }: { emailId: string }) {
       initialTabId: 'overview',
       actions,
       actionRows: [email],
-      // Read-only surface — outbox rows are historical facts (D14: no Edit toggle).
+      // Read-only surface - outbox rows are historical facts (D14: no Edit toggle).
       editable: false,
       isDirty: false,
       onSave: () => true,

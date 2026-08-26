@@ -1,22 +1,22 @@
 """Idea clustering (Phase B-i slice 4, AC-BI-30/31, Bi-D14).
 
-**Retrieval, then grouping** — the same cheap-candidates-into-an-expensive-model
+**Retrieval, then grouping** - the same cheap-candidates-into-an-expensive-model
 trick the plan calls out (D10-A/Bi-D14):
 
-1. ``pg_trgm`` narrows to CANDIDATE neighbours within one ``(tenant, product)`` —
+1. ``pg_trgm`` narrows to CANDIDATE neighbours within one ``(tenant, product)`` -
    an all-pairs self-join reusing the Phase A dedup index/threshold (NOT
    ``find_duplicate``, which returns a single best match). A SQLite ``difflib``
    fallback keeps the routine suite offline.
 2. ONE ``AiClient.complete`` call (the lower-level seam, NOT the grill) groups +
    **names** the candidates via a forced ``{clusters:[{label, ideaIds[]}]}``
-   schema — so semantically-related ideas with no lexical overlap can still land
+   schema - so semantically-related ideas with no lexical overlap can still land
    in the same cluster (the reason pure trigram was insufficient).
 
 **Degrades, never blocks (AC-BI-30).** No pgvector, no embeddings. If the LLM
 call fails (or no agent/connection resolves), the trigram candidate GROUPS are
-returned UNGROUPED (the connected components of the similarity graph) — a 502
+returned UNGROUPED (the connected components of the similarity graph) - a 502
 must never reach the board. The model only ever SUGGESTS; nothing auto-promotes
-(AC-BI-31/D16 — promotion is a separate explicit human action).
+(AC-BI-31/D16 - promotion is a separate explicit human action).
 
 Anti-SSTI: idea text is passed to the model as DATA (message content), never
 interpolated into a prompt template that is evaluated.
@@ -44,7 +44,7 @@ from .dedup import (
 from .ideas import IdeaReadService
 from .statuses import initial_idea_status_id
 
-# The auto-seeded per-tenant grill agent — reused for the cheap grouping call
+# The auto-seeded per-tenant grill agent - reused for the cheap grouping call
 # (Bi-D20b). Bound by its STABLE key so a rename never breaks resolution.
 CLUSTER_AGENT_KEY = "ideation-grill"
 
@@ -52,13 +52,13 @@ CLUSTER_AGENT_KEY = "ideation-grill"
 # prompt (the trace payload cap + cost guard, mirrors the plan's size caps).
 _MAX_CANDIDATES = 60
 # Bound the in-Python difflib fallback's O(n²) pairwise scan (AC-BI-30 "never
-# blocks") — only reached when the pg_trgm path errors (missing extension, etc.)
+# blocks") - only reached when the pg_trgm path errors (missing extension, etc.)
 # or on a non-Postgres engine. A few hundred newest ideas is plenty of signal.
 _FALLBACK_MAX_ROWS = 400
 
 
 class ClusteringService:
-    """Suggest idea clusters for a ``(tenant, product)`` — retrieval + grouping,
+    """Suggest idea clusters for a ``(tenant, product)`` - retrieval + grouping,
     graceful degradation (AC-BI-30/31)."""
 
     def __init__(self, db: Session):
@@ -116,7 +116,7 @@ class ClusteringService:
         self, tenant_id: str, product_id: str
     ) -> List[Tuple[str, str]]:
         """High-similarity id pairs of NON-draft ideas in the same
-        ``(tenant, product)`` (``a.id < b.id`` — each unordered pair once).
+        ``(tenant, product)`` (``a.id < b.id`` - each unordered pair once).
 
         Clustering must DEGRADE, never block the board (AC-BI-30): if the
         ``pg_trgm`` retrieval fails (extension not installed, etc.), fall back to
@@ -125,7 +125,7 @@ class ClusteringService:
             try:
                 return self._candidate_pairs_pg(tenant_id, product_id)
             except SQLAlchemyError:
-                # The failed statement poisons the transaction — roll back before
+                # The failed statement poisons the transaction - roll back before
                 # the fallback runs another query on the same session.
                 self.db.rollback()
                 return self._candidate_pairs_fallback(tenant_id, product_id)
@@ -166,7 +166,7 @@ class ClusteringService:
         )
         if draft_id is not None:
             q = q.filter(Idea.status_id != draft_id)
-        # Bound the O(n²) difflib pass — clustering must DEGRADE, never block, even
+        # Bound the O(n²) difflib pass - clustering must DEGRADE, never block, even
         # on a large board when the pg_trgm path errored (AC-BI-30). Cap the row
         # set so the pairwise scan stays bounded; the newest ideas are the most
         # relevant clustering candidates.
@@ -256,7 +256,7 @@ class ClusteringService:
             # this is a read endpoint (the caller does not commit).
             self.db.commit()
         except Exception:
-            # DEGRADE on ANY grouping failure (AC-BI-30) — the provider contract
+            # DEGRADE on ANY grouping failure (AC-BI-30) - the provider contract
             # says failures are LLMError, but a transport/JSON error the adapter
             # missed must NEVER 500 the board. Roll back any poisoned txn state,
             # then persist the flushed ERROR trace best-effort, then fall back to
@@ -270,7 +270,7 @@ class ClusteringService:
         grouped = _parse_clusters(result.structured, set(candidate_ids))
         if not grouped:
             # The model returned nothing usable (e.g. the offline stub, which
-            # never fills a non-string array) — fall back to the components so a
+            # never fills a non-string array) - fall back to the components so a
             # zero-config workspace still sees suggestions.
             return _fallback_clusters(components), True
         return grouped, False
@@ -323,7 +323,7 @@ class ClusteringService:
         out: List[ClusterSuggestionOut] = []
         for label, ids in grouped:
             members = [serialized[i] for i in ids if i in serialized]
-            # A suggested cluster is a GROUP — a single idea is not a cluster
+            # A suggested cluster is a GROUP - a single idea is not a cluster
             # (the human can still promote one idea alone from the list).
             if len(members) < 2:
                 continue
@@ -342,7 +342,7 @@ class ClusteringService:
 
 
 def _components(pairs: List[Tuple[str, str]]) -> List[List[str]]:
-    """Connected components (union-find) of the similarity graph — the trigram
+    """Connected components (union-find) of the similarity graph - the trigram
     candidate GROUPS used as the ungrouped degrade fallback."""
     parent: Dict[str, str] = {}
 
@@ -373,7 +373,7 @@ def _fallback_clusters(components: List[List[str]]) -> List[Tuple[str, List[str]
 def _parse_clusters(
     structured, valid_ids: set
 ) -> List[Tuple[str, List[str]]]:
-    """Parse the model's ``{clusters:[{label, ideaIds}]}`` — dropping unknown ids
+    """Parse the model's ``{clusters:[{label, ideaIds}]}`` - dropping unknown ids
     (never resolve a hallucinated id) and de-duping within a cluster. An id may
     appear in at most one cluster (first wins)."""
     if not isinstance(structured, dict):

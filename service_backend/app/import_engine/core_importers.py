@@ -1,8 +1,8 @@
-"""Core importer configs (sprint-3/09). First opt-in target = ``user`` — proves
+"""Core importer configs (sprint-3/09). First opt-in target = ``user`` - proves
 the engine end-to-end before F4 consumes it (plan 11 adds profile/participant).
 
 Columns ⊆ the entity's workflow ``writable`` whitelist + ``email`` (a natural key
-that is unique-validated but never a match key — matching is id-only, D5). The
+that is unique-validated but never a match key - matching is id-only, D5). The
 drift-guard test asserts the subset relationship.
 """
 import re
@@ -82,7 +82,7 @@ def _create_users(db: Session, tenant_id: str, rows: List[dict], ctx: dict) -> L
 
 
 def _update_users(db: Session, tenant_id: str, rows: List[dict], ctx: dict) -> List[str]:
-    """Partial update — only present columns written, absent untouched (D5)."""
+    """Partial update - only present columns written, absent untouched (D5)."""
     ids = []
     for r in rows:
         patch = {k: v for k, v in r.items() if k != "id" and v is not None}

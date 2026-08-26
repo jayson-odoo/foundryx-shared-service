@@ -1,4 +1,4 @@
-"""The run executor (plan sprint-2/08 D1/D14/D16) — ONE topological walk.
+"""The run executor (plan sprint-2/08 D1/D14/D16) - ONE topological walk.
 
 ``run_workflow`` executes a persisted run's snapshot node-by-node, writing a
 ``WorkflowRunNode`` trace; a node failure halts the run (downstream skipped),
@@ -125,7 +125,7 @@ def _execute_node(
         from app.rule_engine.evaluator import evaluate
 
         # The condition tree's fact keys ARE the flat context's dotted keys
-        # (trigger.record.*, trigger.actor.*, nodes.<id>.*) — pass ctx straight.
+        # (trigger.record.*, trigger.actor.*, nodes.<id>.*) - pass ctx straight.
         passed = bool(evaluate(node.config.get("conditions"), ctx))
         output = {"passed": passed}
         set_node_output(ctx, node.id, output)
@@ -194,7 +194,7 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
                 else:
                     for _port, target in out_edges.get(node.id, []):
                         active.add(target)
-            except Exception as exc:  # noqa: BLE001 — a node failure halts the run (D14)
+            except Exception as exc:  # noqa: BLE001 - a node failure halts the run (D14)
                 rn.status = NODE_FAILED
                 rn.error = str(exc)
                 run.error = f"Node failed: {exc}"
@@ -221,14 +221,14 @@ def debug_execute(
 ) -> List[Dict[str, Any]]:
     """Staleness-aware partial re-run (D16, branch-aware since plan 10 D6).
 
-    Walks the snapshot like ``run_workflow`` — a node runs only if reached via a
+    Walks the snapshot like ``run_workflow`` - a node runs only if reached via a
     TAKEN edge (``active`` set; an IF activates only its true OR false branch).
     Within the taken path, a node re-executes when it is (a) directly stale (an
-    edited config — scratch edits are implicitly stale), (b) downstream of a node
-    that re-ran this pass (staleness PROPAGATES along taken edges — a fresh
+    edited config - scratch edits are implicitly stale), (b) downstream of a node
+    that re-ran this pass (staleness PROPAGATES along taken edges - a fresh
     upstream output invalidates every active descendant), (c) the target, or (d)
     never produced an output before. Otherwise its cached output is reused. Nodes
-    on the UNTAKEN branch (or unreached) are left untouched — their stale cache
+    on the UNTAKEN branch (or unreached) are left untouched - their stale cache
     never re-runs. Returns the touched nodes' results (ephemeral, not persisted).
     Real side effects fire (is_test); the caller commits."""
     doc = parse_definition(run.definition_snapshot_json)
@@ -242,7 +242,7 @@ def debug_execute(
 
     # Apply scratch config edits to the working doc. The frontend sends the
     # CURRENT config of EVERY node as scratch, so a node is stale only when its
-    # scratch config actually DIFFERS from the snapshot — never blanket-stale
+    # scratch config actually DIFFERS from the snapshot - never blanket-stale
     # every node (that would defeat the cache and re-fire side effects for the
     # whole chain). A genuine edit makes the node stale; it then propagates
     # downstream via ``recomputed``.
@@ -268,10 +268,10 @@ def debug_execute(
         is_target = node.id == target_node_id
         reached = node.id in active
         if not reached and not is_target:
-            # Untaken branch / unreached and not the explicit target — leave it.
+            # Untaken branch / unreached and not the explicit target - leave it.
             continue
         upstream_dirty = any(p in recomputed for p in taken_pred.get(node.id, []))
-        # The explicit target ALWAYS runs (n8n "execute this node" — even when
+        # The explicit target ALWAYS runs (n8n "execute this node" - even when
         # it sits on the currently-untaken branch); otherwise re-run only on a
         # genuine stale/dirty/never-produced reason and reuse the cache.
         must_run = (
@@ -295,13 +295,13 @@ def debug_execute(
                 }
             )
         else:
-            # Reuse the cached output — re-hydrate the context from it.
+            # Reuse the cached output - re-hydrate the context from it.
             output = cache[node.id]
             set_node_output(ctx, node.id, output)
         if is_target:
             break
         # Activate the taken downstream edges (branch-aware, like run_workflow).
-        # Only a node actually REACHED via a taken edge propagates activation —
+        # Only a node actually REACHED via a taken edge propagates activation -
         # a forced off-path target never fabricates a downstream walk.
         if reached:
             if node.kind == "if":

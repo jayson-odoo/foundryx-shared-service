@@ -1,10 +1,10 @@
 /**
- * Real document service (Phase B) — talks to FastAPI via the shared api-client.
+ * Real document service (Phase B) - talks to FastAPI via the shared api-client.
  * Endpoints follow plan sprint-3/04 §API. Error contracts: upload 409 carries
  * `{fileName, existingFileId}` → UploadConflictError; 413 → StorageQuotaError;
  * 415/422 (type/size) → UploadRejectedError.
  *
- * NOT wired in Phase A — `document-service.ts` exports the mock. Swap the
+ * NOT wired in Phase A - `document-service.ts` exports the mock. Swap the
  * boundary export to `realDocumentService` in Phase B (one line).
  */
 import { getSession } from 'next-auth/react';

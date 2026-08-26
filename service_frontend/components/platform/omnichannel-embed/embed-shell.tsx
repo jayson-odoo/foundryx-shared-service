@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * EmbedShell — the chromeless host for the omnichannel embed routes
+ * EmbedShell - the chromeless host for the omnichannel embed routes
  * (sprint-4/11 Slice 4). Runs the postMessage handshake (useEmbedSession),
  * bridges realtime events to coarse parent `activity` signals, posts `resize`
  * (inbox mode), and renders the reused conversation components once the session
@@ -19,7 +19,7 @@ import { useEmbedSession, type EmbedStatus } from './use-embed-session';
 
 // `thread` = compact single conversation (messages + composer only); `thread-full`
 // = the same `thread:<contactId>` scope but the FULL conversation UI (contact
-// header / assign / lifecycle). Both share the thread scope — compactness is a
+// header / assign / lifecycle). Both share the thread scope - compactness is a
 // frontend render choice, not a token difference.
 export type EmbedMode = 'thread' | 'thread-full' | 'inbox';
 

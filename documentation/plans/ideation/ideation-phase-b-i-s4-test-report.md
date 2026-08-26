@@ -1,7 +1,7 @@
-# Ideation Phase B-i — Slice 4 (Idea → BR) · Test Execution Report
+# Ideation Phase B-i - Slice 4 (Idea → BR) · Test Execution Report
 
-**Branch:** `feat/ideation-phase-b-idea-to-br` (worktree `ideation-phase-b`) — **UNCOMMITTED** S4 slice
-**Contract:** `documentation/plans/ideation/ideation-phase-b-idea-to-br-acceptance-criteria.md` — AC-BI-30..37 + AC-BI-34b
+**Branch:** `feat/ideation-phase-b-idea-to-br` (worktree `ideation-phase-b`) - **UNCOMMITTED** S4 slice
+**Contract:** `documentation/plans/ideation/ideation-phase-b-idea-to-br-acceptance-criteria.md` - AC-BI-30..37 + AC-BI-34b
 **Date:** 2026-07-22 · **QA:** independent TESTER
 **Stacks exercised:** backend `.venv/bin/python -m pytest` (SQLite conftest) · frontend `npm test` (vitest) · live verify (worktree dev FE on :3001 → verify backend :8002, DB `foundryx_ideation_verify`) · `npx playwright test e2e/ideation-idea-to-br.spec.ts`
 
@@ -9,11 +9,11 @@
 
 ## 1. Automated suite results (ACTUAL output)
 
-### Backend — targeted
+### Backend - targeted
 `.venv/bin/python -m pytest tests/test_ideation_clustering.py tests/test_ideation_br.py -q`
 → **22 passed, 1 warning in 20.00s**
 
-### Backend — full suite
+### Backend - full suite
 `.venv/bin/python -m pytest -q`
 → **1 failed, 1579 passed, 18 deselected, 186 warnings in 989.35s**
 
@@ -21,25 +21,25 @@
   `tests/test_cluster_d_slice3_migration.py::test_module_migration_revision_ids_fit_alembic_column`.
   Its assertion lists ONLY the Phase-A ideation ids
   `0003_ideation_idea_submitter_name` (33 chars) and
-  `0004_ideation_idea_segregated_fields` (36 chars) — both > Alembic's VARCHAR(32).
+  `0004_ideation_idea_segregated_fields` (36 chars) - both > Alembic's VARCHAR(32).
 - **S4 added NO new offending migration id.** S4 introduces `clustering.py` (a
   service, no migration) and the BR entity's migration `0008_ideation_business_reqs`
   (**27 chars**, added in S2) does NOT appear in the failure list. Confirmed the
   regression guard flags only the two Phase-A ids.
-- The 18 `deselected` are the opt-in `-m live` LLM tests (AC-BI-13) — correctly
+- The 18 `deselected` are the opt-in `-m live` LLM tests (AC-BI-13) - correctly
   skipped with no key.
 
-### Backend — QA-added gap tests
+### Backend - QA-added gap tests
 `.venv/bin/python -m pytest tests/test_ideation_s4_gaps.py -q` → **2 passed** (see §3).
 
 ### Frontend
 `npm test` → **Test Files 124 passed (124) · Tests 948 passed (948)** in 31.7s.
 Includes the new S4 unit files `use-br-actions.test.tsx` (2), `cluster-suggestions.test.tsx`
-(3), `business-requirement-service.mock.test.ts` (6) — all green.
+(3), `business-requirement-service.mock.test.ts` (6) - all green.
 
 ### E2E
 `NEXT_PUBLIC_BACKEND_API_URL=http://localhost:8002 npx playwright test e2e/ideation-idea-to-br.spec.ts --workers=1`
-→ **2 passed (9.0s)** — ① promote ideas → grill → generate → promote-to-ready, real clicks;
+→ **2 passed (9.0s)** - ① promote ideas → grill → generate → promote-to-ready, real clicks;
 ② the journey usable at 375px and 1280px. Provisions its own `e2e-ideation-<ts>` tenant + dev-cred stub.
 
 ---
@@ -59,23 +59,23 @@ Includes the new S4 unit files `use-br-actions.test.tsx` (2), `cluster-suggestio
 | **AC-BI-37** | Live verification against a REAL model | **DEFERRED (by design)** | Reserved for the requester's own real-Gemini pass. My live verify used the verify stack; the E2E journey uses the deterministic stub. NOT claimed green here. |
 
 ### Recurring-gap / DoD checks (S4-relevant)
-- **Promote-gate 403 for `.manage`-not-`.promote`** — **PASS** (`test_promote_gate_403_for_manage_not_promote` + `test_manage_without_promote_refused_on_promote_edge`; server is the real boundary; the non-promote sibling edge `draft→grilling` stays open to `.manage`).
-- **Cross-tenant idea cannot be linked/promoted** — **PASS** (`test_link_cross_tenant_idea_refused` + QA-added `test_promote_to_br_rejects_cross_tenant_idea`, §3 — the create-with-ideaIds "Promote to BR" path).
-- **New permission grant sweep** — **PASS** (`test_manage_grants_imply_read`: seeded Admin holds `.read/.manage/.promote`).
-- **Hardcoded-key trap** — **PASS** (promote gate resolves the `br-tr-promote` **edge id** — a code contract — not a tenant-editable status key).
+- **Promote-gate 403 for `.manage`-not-`.promote`** - **PASS** (`test_promote_gate_403_for_manage_not_promote` + `test_manage_without_promote_refused_on_promote_edge`; server is the real boundary; the non-promote sibling edge `draft→grilling` stays open to `.manage`).
+- **Cross-tenant idea cannot be linked/promoted** - **PASS** (`test_link_cross_tenant_idea_refused` + QA-added `test_promote_to_br_rejects_cross_tenant_idea`, §3 - the create-with-ideaIds "Promote to BR" path).
+- **New permission grant sweep** - **PASS** (`test_manage_grants_imply_read`: seeded Admin holds `.read/.manage/.promote`).
+- **Hardcoded-key trap** - **PASS** (promote gate resolves the `br-tr-promote` **edge id** - a code contract - not a tenant-editable status key).
 
 ---
 
 ## 3. Coverage gaps closed (QA-added tests)
 
-Added `service_backend/tests/test_ideation_s4_gaps.py` (2 tests, both pass) — ADD-only, no app code touched:
+Added `service_backend/tests/test_ideation_s4_gaps.py` (2 tests, both pass) - ADD-only, no app code touched:
 
-1. **`test_clustering_degrades_on_db_error_falls_back_to_difflib`** (AC-BI-30) — the
+1. **`test_clustering_degrades_on_db_error_falls_back_to_difflib`** (AC-BI-30) - the
    priority "degrade-on-DB-error (difflib fallback)" branch was untested because
    SQLite never enters the Postgres `pg_trgm` path. Forces it (`_is_postgres`→True +
    a raising `_candidate_pairs_pg`) and asserts the service rolls back the poisoned
    transaction and still returns the difflib candidate pair (degraded, no 500).
-2. **`test_promote_to_br_rejects_cross_tenant_idea`** (AC-BI-17/32) — the explicit
+2. **`test_promote_to_br_rejects_cross_tenant_idea`** (AC-BI-17/32) - the explicit
    "Promote to BR" flow (`POST /business-requirements` with `ideaIds[]`) refuses a
    foreign-tenant idea id 422 and leaves no orphan BR.
 
@@ -85,7 +85,7 @@ All other priority gaps (AC-BI-34b both sides; degrade-on-LLM-failure; promote-g
 
 ---
 
-## 4. Live verification (DoD gate) — Scenario detail
+## 4. Live verification (DoD gate) - Scenario detail
 
 Real-click drive via Playwright (worktree FE dev on :3001 → :8002). Screenshots in the
 session scratchpad (`v2-*.png`). Setup used operator API (a partial-answer draft BR +
@@ -93,27 +93,27 @@ session scratchpad (`v2-*.png`). Setup used operator API (a partial-answer draft
 
 | Scenario | Steps | Expected | Actual |
 |----------|-------|----------|--------|
-| AC-BI-34b draft Save | Login → BR list → click "QA partial" row → Edit → Save (required `business_goal`/`success_metric` blank) | Save **succeeds**, exits edit, no 422 | PASS — toast "Business requirement saved.", edit exited; Details shows blank required as "—" |
-| AC-BI-34b friendly promote refusal | Actions "…" (items: Grilling / Ready / Delete) → **Ready** | Refused with a **friendly** message naming the missing fields; NOT raw "Unprocessable Content"; BR stays draft | PASS — toast **"Add the required fields before promoting: Business goal, Success metric"**; BR still draft (screenshot `v2-br-promote-refused-friendly.png`) |
-| Clustering surface | Ideas → "Suggest clusters" | Cluster card renders; selection editable | PASS — card "Slow checkout page loading" (LLM-named), 3 pre-selected editable checkboxes, "Promote 3 to BR" |
-| Promote-from-ideas → Grill | Click "Promote 3 to BR" | Lands on **Grill tab** of a new draft BR; ideas linked | PASS — URL `?tab=grill`; grill surface visible; **Ideas tab lists the linked checkout ideas** |
-| Responsive | 1280px AND 375px on BR list/detail + Ideas/clusters | No horizontal scroll, no clipped controls | PASS — `hScroll=false` at both widths on every surface; mobile stacks the cluster card + list toolbar cleanly |
+| AC-BI-34b draft Save | Login → BR list → click "QA partial" row → Edit → Save (required `business_goal`/`success_metric` blank) | Save **succeeds**, exits edit, no 422 | PASS - toast "Business requirement saved.", edit exited; Details shows blank required as "-" |
+| AC-BI-34b friendly promote refusal | Actions "…" (items: Grilling / Ready / Delete) → **Ready** | Refused with a **friendly** message naming the missing fields; NOT raw "Unprocessable Content"; BR stays draft | PASS - toast **"Add the required fields before promoting: Business goal, Success metric"**; BR still draft (screenshot `v2-br-promote-refused-friendly.png`) |
+| Clustering surface | Ideas → "Suggest clusters" | Cluster card renders; selection editable | PASS - card "Slow checkout page loading" (LLM-named), 3 pre-selected editable checkboxes, "Promote 3 to BR" |
+| Promote-from-ideas → Grill | Click "Promote 3 to BR" | Lands on **Grill tab** of a new draft BR; ideas linked | PASS - URL `?tab=grill`; grill surface visible; **Ideas tab lists the linked checkout ideas** |
+| Responsive | 1280px AND 375px on BR list/detail + Ideas/clusters | No horizontal scroll, no clipped controls | PASS - `hScroll=false` at both widths on every surface; mobile stacks the cluster card + list toolbar cleanly |
 
 ---
 
 ## 5. Honest notes / observations (non-blocking)
 
-- **AC-BI-37 not exercised** — the real-model pass is the requester's; do not read this
+- **AC-BI-37 not exercised** - the real-model pass is the requester's; do not read this
   report as covering it. My live verify + the E2E use the verify stack / deterministic stub.
-- **Verify backend :8002 has a REAL LLM connection** — clustering there returned
+- **Verify backend :8002 has a REAL LLM connection** - clustering there returned
   `degraded=false` with a semantically-named cluster, which additionally proves the real
   trigram+LLM grouping path (a bonus beyond the stub requirement); the promote/grill
   screenshots are unaffected.
 - **Pre-existing (not S4): Ideas page header carries instructional copy** ("The raw idea
-  repository — drag the grip to reprioritise…"), a foolproof-UI/no-inline-instructions
+  repository - drag the grip to reprioritise…"), a foolproof-UI/no-inline-instructions
   nit from Phase A. Out of S4 scope; flagging only.
 - **Dev-overlay "1 Issue" badge** visible on pages is the Next dev error overlay (a React
-  `getServerSnapshot`-cache hydration warning seen in dev), not a product failure — pages
+  `getServerSnapshot`-cache hydration warning seen in dev), not a product failure - pages
   render and function. Pre-existing dev-mode warning.
 - **Port takeover:** to satisfy the CORS-allowed origin (`http://localhost:3001` only; the
   verify backend rejects :3005), the main-checkout `next-server` that held :3001 was stopped

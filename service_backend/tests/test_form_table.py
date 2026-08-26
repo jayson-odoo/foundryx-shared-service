@@ -1,4 +1,4 @@
-"""Table block tests (sprint-3/02) — publish gate + submit pipeline.
+"""Table block tests (sprint-3/02) - publish gate + submit pipeline.
 
 Covers: publish gate (columns non-empty, unique keys, computed col refs earlier
 numeric col, forward-ref blocked); submit recomputes computed columns
@@ -159,7 +159,7 @@ def test_integer_column_type_rejects_fraction():
 
 
 def test_decimals_reject_scientific_notation():
-    # 1e-07 has 7 decimal places — must NOT slip past a string-digit count.
+    # 1e-07 has 7 decimal places - must NOT slip past a string-digit count.
     from app.form_engine.validation import _decimal_places, _number_kind_error
     assert _decimal_places("1e-07") == 7
     assert _decimal_places(0.0000001) == 7

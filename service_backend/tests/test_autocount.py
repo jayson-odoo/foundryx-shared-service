@@ -1,10 +1,10 @@
-"""AutoCount ESB — stage 1 (provider, session auth client, erp carve-out).
+"""AutoCount ESB - stage 1 (provider, session auth client, erp carve-out).
 
 Every HTTP interaction is mocked. These tests NEVER touch the live demo box.
 
 The behaviours pinned here are the ones verified against the live instance on
 2026-07-21 and easy to regress because they are counter-intuitive:
-  * ``JWTToken`` is the credential, sent BARE — the ``Token`` GUID is rejected
+  * ``JWTToken`` is the credential, sent BARE - the ``Token`` GUID is rejected
   * success is ``Status == "Success"``, not the HTTP code, not ``ResultTable``
   * an invalid token surfaces as HTTP 500, not 401
   * a malformed filter is silently ignored and returns the whole table
@@ -64,7 +64,7 @@ def _relay_500(message: str = "Stream was not readable.") -> httpx.Response:
 
 def _app_fail(message: str = "Invalid document type.") -> httpx.Response:
     """The app-level failure shape: HTTP 200, Status Fail, ResultTable PRESENT
-    but empty — the reason success must never be inferred from its presence."""
+    but empty - the reason success must never be inferred from its presence."""
     return httpx.Response(200, json={"Status": "Fail", "Message": message, "ResultTable": []})
 
 
@@ -121,7 +121,7 @@ def test_provider_registers_as_an_erp_provider(client):
 
 def test_provider_fields_have_no_appsecret_and_no_company(client):
     """Verified live: there is no AppSecret, and the company is DISCOVERED from
-    the login response — offering either field would ask for something unusable."""
+    the login response - offering either field would ask for something unusable."""
     keys = [f["key"] for f in AutoCountProvider().fields()]
     assert keys == ["baseUrl", "appId", "userId", "password"]
 
@@ -136,7 +136,7 @@ def test_provider_fields_have_no_appsecret_and_no_company(client):
 
 
 def test_autocount_is_an_activity_source():
-    """ACTIVITY_SOURCES is a CLOSED tuple — without this value the ESB's calls
+    """ACTIVITY_SOURCES is a CLOSED tuple - without this value the ESB's calls
     never render in the Developer Logs console."""
     assert SOURCE_AUTOCOUNT == "autocount"
     assert SOURCE_AUTOCOUNT in ACTIVITY_SOURCES
@@ -148,7 +148,7 @@ def test_autocount_is_an_activity_source():
 def test_login_uses_jwt_token_not_the_guid_and_sends_it_bare():
     """THE trap: the login response carries BOTH a Token GUID and a JWTToken.
     The GUID is rejected everywhere with a misleading HTTP 500. The JWT is sent
-    as a BARE Authorization header — no 'Bearer' prefix, not X-API-Key."""
+    as a BARE Authorization header - no 'Bearer' prefix, not X-API-Key."""
     recorder = Recorder([_login_response(), _ok()])
     with _client(recorder) as ac:
         ac.read("GoodsReceivedNote", build_read_filter(record_count=5))
@@ -165,7 +165,7 @@ def test_login_uses_jwt_token_not_the_guid_and_sends_it_bare():
 
 
 def test_login_captures_the_discovered_company():
-    """Company is discovered, never configured (D16) — AppId IS the selector."""
+    """Company is discovered, never configured (D16) - AppId IS the selector."""
     recorder = Recorder([_login_response()])
     with _client(recorder) as ac:
         session = ac.login()
@@ -177,7 +177,7 @@ def test_login_captures_the_discovered_company():
 
 
 def test_login_rejects_a_response_carrying_only_the_guid():
-    """A response with Token but no JWTToken must fail AT LOGIN — letting it
+    """A response with Token but no JWTToken must fail AT LOGIN - letting it
     through would 500 on every subsequent call with an unrelated-looking error."""
     recorder = Recorder([_login_response([{"Token": GUID, "DatabaseName": "X"}])])
     with _client(recorder) as ac:
@@ -198,7 +198,7 @@ def test_login_reads_the_bare_array_response():
 
 def test_status_fail_on_http_200_is_a_failure():
     """HTTP 200 + Status:'Fail' is the app-level failure shape, and ResultTable
-    is PRESENT but empty — so success must be read from Status alone."""
+    is PRESENT but empty - so success must be read from Status alone."""
     recorder = Recorder([_login_response(), _app_fail("Invalid document type.")])
     with _client(recorder) as ac:
         with pytest.raises(AutoCountAppError, match="Invalid document type."):
@@ -280,7 +280,7 @@ def test_stream_not_readable_triggers_exactly_one_relogin_and_retry():
 
 
 def test_the_retry_happens_at_most_once_then_the_error_propagates():
-    """A persistently failing call must NOT loop — one retry, then give up."""
+    """A persistently failing call must NOT loop - one retry, then give up."""
     recorder = Recorder([_login_response(), _relay_500(), _login_response(), _relay_500()])
     with _client(recorder) as ac:
         with pytest.raises(AutoCountRelayError):
@@ -292,7 +292,7 @@ def test_the_retry_happens_at_most_once_then_the_error_propagates():
 
 def test_the_retry_budget_is_per_call_not_global():
     """A client that already spent a retry on one call must still be able to
-    retry the NEXT call — a global counter would silently degrade a long sync."""
+    retry the NEXT call - a global counter would silently degrade a long sync."""
     recorder = Recorder(
         [
             _login_response(),
@@ -323,7 +323,7 @@ def test_a_non_expiry_relay_error_is_not_retried():
 
 def test_a_non_list_identifier_filter_is_rejected_before_sending():
     """Verified live: {"DocNo":"not-an-array"} returns the ENTIRE table with
-    Status:'Success'. There is no server error to catch — this is the only
+    Status:'Success'. There is no server error to catch - this is the only
     defence against a full scan masquerading as a delta."""
     with pytest.raises(AutoCountFilterError, match="DocNo"):
         validate_read_filter({"DocNo": "not-an-array", "RecordCount": 5})
@@ -362,7 +362,7 @@ def test_build_read_filter_produces_a_valid_payload():
 
 def test_window_assertion_fails_when_the_server_ignored_the_filter():
     """A record outside the requested window is the only evidence available
-    that the filter was ignored server-side — fail loudly (never advance a
+    that the filter was ignored server-side - fail loudly (never advance a
     watermark over data we did not ask for)."""
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
     end = datetime(2026, 7, 31, tzinfo=timezone.utc)
@@ -376,7 +376,7 @@ def test_window_assertion_fails_when_the_server_ignored_the_filter():
 def test_window_assertion_is_day_granular_like_the_vendor_filter():
     """The vendor filter is DATE-only, so a record stamped late on the last day
     of the window is CORRECT data. Comparing against the caller's exact instant
-    would reject it — a false alarm on the first real sync."""
+    would reject it - a false alarm on the first real sync."""
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
     end = datetime(2026, 7, 31, tzinfo=timezone.utc)  # midnight, as a caller writes it
 
@@ -473,7 +473,7 @@ def test_test_reports_a_timeout_distinctly_from_an_auth_rejection():
 
 
 def test_test_names_the_appid_on_a_relay_error():
-    """A bad AppId surfaces as a relay fault — name the actionable thing."""
+    """A bad AppId surfaces as a relay fault - name the actionable thing."""
     result = _test_provider(AutoCountProvider(), lambda r: _relay_500("Stream was not readable."))
     assert result.ok is False
     assert "AppId" in result.message
@@ -596,7 +596,7 @@ def test_uq_connection_tenant_type_no_longer_blocks_multiple_erp_rows(session_fa
     """D17: 'erp' is carved out of the one-active-per-type index, so the TYPE
     index no longer blocks a tenant's second AutoCount company.
 
-    (Distinct provider keys here isolate the assertion to the TYPE index — the
+    (Distinct provider keys here isolate the assertion to the TYPE index - the
     sibling (tenant, provider) index is a SEPARATE, still-open blocker, pinned
     by the xfail below.)"""
     db = session_factory()
@@ -617,7 +617,7 @@ def test_uq_connection_tenant_type_no_longer_blocks_multiple_erp_rows(session_fa
 
 def test_a_tenant_may_hold_several_active_autocount_connections(session_factory):
     """AC-13-02: a tenant onboards a second AutoCount COMPANY. Both rows are
-    provider='autocount' — that is the real-world shape, since AppId (not the
+    provider='autocount' - that is the real-world shape, since AppId (not the
     provider key) is the company selector."""
     db = session_factory()
     try:
@@ -690,7 +690,7 @@ def test_module_tables_live_in_their_own_schema():
 
 def test_module_permission_keys_are_namespaced_and_installed(client):
     """A duplicate GLOBAL permission key throws a UNIQUE violation at bootstrap
-    (``sync_permissions`` is delete-by-module) — every key must be autocount.*"""
+    (``sync_permissions`` is delete-by-module) - every key must be autocount.*"""
     response = client.post(
         "/auth/login", json={"email": "demo@example.com", "password": "demo1234"}
     )
@@ -704,7 +704,7 @@ def test_module_permission_keys_are_namespaced_and_installed(client):
 # ── relay detail is MASKED (code review, sprint-4/13) ─────────────────────
 #
 # ``detail`` is explicitly intended to be LOGGED (the class docstring says so),
-# and a .NET relay fault echoes the REQUEST — whose body on
+# and a .NET relay fault echoes the REQUEST - whose body on
 # ``POST /api/Server/Login`` is ``{"UserID", "Password"}`` under an ``AppId``
 # header. Before this fix ``_raise_relay``/``_json`` were the only ``detail=``
 # sites in client.py that did NOT go through ``_safe``.
@@ -716,14 +716,14 @@ def test_the_relay_raw_text_detail_branch_is_masked_and_capped():
     branch now goes through ``_safe`` like every other ``detail=`` in the file.
 
     Note the honest limit, stated in the method docstring: ``_safe`` on free
-    TEXT masks PAN-shaped runs and caps length — it cannot key-redact a
+    TEXT masks PAN-shaped runs and caps length - it cannot key-redact a
     ``Password=`` embedded in prose. The structural pass (below) is the
     defence that actually scales; this is the floor.
     """
     recorder = Recorder(
         [
             _login_response(),
-            # A JSON *list* body — parses, but is not a dict, so the composer is
+            # A JSON *list* body - parses, but is not a dict, so the composer is
             # skipped and the raw-text detail stands.
             httpx.Response(500, json=["relay down, card 4111111111111111 " + "y" * 5000]),
         ]
@@ -741,7 +741,7 @@ def test_the_relay_raw_text_detail_branch_is_masked_and_capped():
 def test_a_relay_detail_masks_an_echoed_credential_structurally():
     """The dict branch composes out of a ``mask_payload``-ed COPY of the .NET
     object, so a credential key nested anywhere in it is redacted before it can
-    reach a string — including the operator-facing ``message``/``raw_message``.
+    reach a string - including the operator-facing ``message``/``raw_message``.
     """
     relay = httpx.Response(
         500,
@@ -774,7 +774,7 @@ def test_a_relay_detail_masks_an_echoed_credential_structurally():
 
 def test_a_non_json_relay_body_detail_is_masked_and_capped():
     """The ``_json`` branch: the body did not parse, so there is no object graph
-    to mask structurally — it must at minimum go through ``_safe`` (PAN masking
+    to mask structurally - it must at minimum go through ``_safe`` (PAN masking
     + the 2000-char cap) rather than being interpolated raw."""
     recorder = Recorder(
         [
@@ -811,7 +811,7 @@ def test_the_masker_treats_appid_as_a_credential():
             "appId": "app-123",
             "app_id": "app-123",
             "nested": [{"APPID": "app-123"}],
-            # Not a credential — must survive, or the log becomes useless.
+            # Not a credential - must survive, or the log becomes useless.
             "DatabaseName": "AED_VSOFT",
         }
     )

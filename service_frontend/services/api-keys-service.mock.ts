@@ -1,5 +1,5 @@
 /**
- * PHASE 1 MOCK — in-memory API-keys service.
+ * PHASE 1 MOCK - in-memory API-keys service.
  *
  * Retained for tests + frontend-first iteration; the app binds the REAL impl
  * (see `api-keys-service.ts`). Mirrors the backend's mint-once contract: `mint`
@@ -10,7 +10,7 @@ import type { ApiKeyItem, MintApiKeyResult } from '@/types/api-keys';
 import type { ApiKeysService } from './api-keys-service';
 import { delay } from './mock-query';
 
-/** Product key scheme — matches the backend `KEY_SCHEME`. */
+/** Product key scheme - matches the backend `KEY_SCHEME`. */
 const KEY_SCHEME = 'fxw_live_';
 const PREFIX_LEN = 8;
 
@@ -60,7 +60,7 @@ export const mockApiKeysService: ApiKeysService = {
       createdAt: new Date().toISOString(),
     };
     store[workspaceId] = [item, ...(store[workspaceId] ?? [])];
-    // fullKey rides ONLY this response — no stored copy, never re-derivable.
+    // fullKey rides ONLY this response - no stored copy, never re-derivable.
     return delay({ key: item, fullKey } satisfies MintApiKeyResult);
   },
 

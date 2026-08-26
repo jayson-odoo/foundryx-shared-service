@@ -83,7 +83,7 @@ describe('useBrActions', () => {
     );
     await waitFor(() => expect(result.current.length).toBe(1));
     const action = result.current[0];
-    // Bare target status name — no "Move to" prefix (EMS mandate).
+    // Bare target status name - no "Move to" prefix (EMS mandate).
     expect(action.label).toBe('Ready');
     expect(action.permission).toBe('ideation.business_requirements.promote');
   });

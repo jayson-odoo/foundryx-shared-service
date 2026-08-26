@@ -22,7 +22,7 @@ export interface NameDialogProps {
   onClose: () => void;
 }
 
-/** Shared single-field dialog — new folder + rename folder/file. */
+/** Shared single-field dialog - new folder + rename folder/file. */
 export function NameDialog({
   open,
   title,

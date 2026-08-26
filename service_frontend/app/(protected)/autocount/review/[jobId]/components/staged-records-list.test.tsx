@@ -20,10 +20,10 @@ vi.mock('@/hooks/use-datetime', () => ({
 
 const { StagedRecordsList } = await import('./staged-records-list');
 
-describe('staged records list — no-change collapse (AC-15-11)', () => {
+describe('staged records list - no-change collapse (AC-15-11)', () => {
   it('renders the changed list and ONE collapsed no-change line', () => {
     render(<StagedRecordsList jobId="job-1" noChangeCount={24} />);
-    // Only the changed list is mounted up front — the no-change ones are not
+    // Only the changed list is mounted up front - the no-change ones are not
     // shown as full cards that bury it.
     expect(screen.getAllByTestId('resource-list')).toHaveLength(1);
     expect(screen.getByTestId('no-change-toggle')).toHaveTextContent(

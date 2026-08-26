@@ -2,7 +2,7 @@
 
 **Why raw HTTP and not the vendor SDKs.** `anthropic`, `openai` and
 `google-genai` are three heavyweight dependencies with their own transitive
-trees and release cadences, for what is — in every case — a single JSON POST and
+trees and release cadences, for what is - in every case - a single JSON POST and
 a single JSON GET. `httpx` is already a project dependency, so the adapters
 speak the vendors' REST APIs directly. That keeps the dependency surface flat,
 makes the `_is_dev` stub seam trivially importable, and means a live test needs
@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 from app.integrations.base import LLMError, ModelOption, TestResult
 
 # A provider call is a foreground, user-visible request (the grill turn is
-# synchronous, Bi-D10) — long enough for a real completion, short enough that a
+# synchronous, Bi-D10) - long enough for a real completion, short enough that a
 # hung vendor doesn't pin a worker forever.
 LLM_TIMEOUT_SECONDS = 120.0
 LLM_LIST_TIMEOUT_SECONDS = 20.0
@@ -36,15 +36,15 @@ def _http_json(
     """One JSON round-trip, with vendor errors normalised to ``LLMError``.
 
     The raised message NEVER contains the request headers (the API key lives
-    there) — only the vendor's own error text, truncated (AC-BI-04).
+    there) - only the vendor's own error text, truncated (AC-BI-04).
     """
-    import httpx  # noqa: PLC0415 — imported here so the stub seam works without it
+    import httpx  # noqa: PLC0415 - imported here so the stub seam works without it
 
     try:
         response = httpx.request(
             method, url, headers=headers, json=json_body, timeout=timeout
         )
-    except Exception as exc:  # noqa: BLE001 — any transport failure
+    except Exception as exc:  # noqa: BLE001 - any transport failure
         raise LLMError(f"Could not reach the provider ({type(exc).__name__}).") from exc
 
     if response.status_code >= 400:
@@ -56,17 +56,17 @@ def _http_json(
 
 
 def _clean_error(status_code: int, body: str) -> str:
-    """A short, human-readable reason — never a raw traceback, never the key."""
+    """A short, human-readable reason - never a raw traceback, never the key."""
     detail = (body or "").strip().replace("\n", " ")
     if len(detail) > 300:
         detail = detail[:300] + "…"
     if status_code in (401, 403):
         return "The API key was rejected by the provider."
     if status_code == 404:
-        return f"The provider rejected the request as not found — {detail}"
+        return f"The provider rejected the request as not found - {detail}"
     if status_code == 429:
-        return "The provider rate-limited this request — try again shortly."
-    return f"The provider returned HTTP {status_code} — {detail}"
+        return "The provider rate-limited this request - try again shortly."
+    return f"The provider returned HTTP {status_code} - {detail}"
 
 
 def require_key(credentials: Dict[str, Any], key: str = "apiKey") -> str:
@@ -117,7 +117,7 @@ class LLMProviderBase:
                 ok=False, message="The key worked but the provider listed no usable chat models."
             )
         return TestResult(
-            ok=True, message=f"Key verified — {len(found)} chat models available."
+            ok=True, message=f"Key verified - {len(found)} chat models available."
         )
 
 

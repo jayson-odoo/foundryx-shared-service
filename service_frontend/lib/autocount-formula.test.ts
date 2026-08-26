@@ -11,7 +11,7 @@ import {
   validateFormula,
 } from './autocount-formula';
 
-describe('autocount-formula — TS twin of modules/autocount/formula.py', () => {
+describe('autocount-formula - TS twin of modules/autocount/formula.py', () => {
   describe('core expression semantics', () => {
     it('reads the value variable', () => expect(evaluateFormula('value', 'abc')).toBe('abc'));
     it('boolean preset on T/F', () => {
@@ -53,7 +53,7 @@ describe('autocount-formula — TS twin of modules/autocount/formula.py', () => 
     });
   });
 
-  describe('dates — fixed token vocabulary', () => {
+  describe('dates - fixed token vocabulary', () => {
     it('parses the vendor format to a FormulaDate', () => {
       const d = evaluateFormula('parseDate(value, "yyyy/MM/dd HH:mm:ss")', '2026/03/18 16:03:21');
       expect(d).toBeInstanceOf(FormulaDate);

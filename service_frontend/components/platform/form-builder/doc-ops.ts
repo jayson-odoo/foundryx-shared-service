@@ -1,6 +1,6 @@
 /**
  * Pure immutable mutations over the form block document (plan sprint-3/01
- * D6/D7) — the editor's write layer. `lib/form-doc.ts` is off-limits to this
+ * D6/D7) - the editor's write layer. `lib/form-doc.ts` is off-limits to this
  * session, so the builder's structural edits live here as pure functions
  * (every one returns a NEW document) so `useHistory` keeps a faithful
  * snapshot timeline (workflow-doc / template-doc precedent).
@@ -34,7 +34,7 @@ import type {
 
 // ---- the families that survive a quick type-switch (D7) ----
 
-/** Text-family input types — switch between these keeps the `text` bag. */
+/** Text-family input types - switch between these keeps the `text` bag. */
 export const TEXT_FAMILY: ReadonlySet<FormFieldType> = new Set<FormFieldType>([
   'text',
   'textarea',

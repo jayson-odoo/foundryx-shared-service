@@ -110,7 +110,7 @@ def role_options(
     db: Session = Depends(get_db),
 ) -> List[RoleOut]:
     """Lightweight (id, name) list for the user-form role picker. Authenticated
-    only — assigning roles to a user shouldn't require the roles.* management
+    only - assigning roles to a user shouldn't require the roles.* management
     permissions."""
     roles = RoleService(db).repo.list(current_user.tenant_id)
     return [RoleOut.model_validate(r) for r in roles]

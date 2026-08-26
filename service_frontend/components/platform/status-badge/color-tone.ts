@@ -54,13 +54,13 @@ export const COLOR_NAME_HEX: Record<string, string> = {
   gray: '#6B7280',
 };
 
-/** Hex for ANY stored color value (name or hex) — display fallback gray. */
+/** Hex for ANY stored color value (name or hex) - display fallback gray. */
 export function colorToHex(value: string | null | undefined): string {
   if (isHexColor(value)) return value as string;
   return COLOR_NAME_HEX[(value ?? '').toLowerCase()] ?? '#6B7280';
 }
 
-/** Quick-pick swatches from the FoundryX system tokens (brand orange first). */
+/** Quick-pick swatches from the Foundryx system tokens (brand orange first). */
 export const STATUS_COLOR_SWATCHES: { label: string; hex: string }[] = [
   { label: 'Brand', hex: '#FF5A00' },
   { label: 'Green', hex: '#22C55E' },

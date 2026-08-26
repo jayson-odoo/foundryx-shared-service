@@ -1,4 +1,4 @@
-"""Shared upload sniffing (extracted from branding_service in plan 06 —
+"""Shared upload sniffing (extracted from branding_service in plan 06 -
 avatars need the same gate).
 
 The DECLARED content-type is client input (browsers derive it from the file
@@ -30,7 +30,7 @@ def detect_mime(content: bytes) -> Optional[str]:
 
 # Office (OOXML) extensions → canonical mimes. A docx/xlsx/pptx is a ZIP
 # container indistinguishable from a plain .zip by magic alone, so the specific
-# office type is refined from the filename EXTENSION — a SOFT sub-classifier
+# office type is refined from the filename EXTENSION - a SOFT sub-classifier
 # WITHIN the already-magic-verified zip family, never a security decision (the
 # zip sniff is the gate). Lets the form-builder's "Allowed file types" config
 # target a specific office format (BL-093).
@@ -80,13 +80,13 @@ def detect_upload_mime(content: bytes, filename: Optional[str] = None) -> Option
 
 
 def detect_document_mime(content: bytes) -> Optional[str]:
-    """Sniff a Drive upload by magic bytes — the broader allow-list the document
+    """Sniff a Drive upload by magic bytes - the broader allow-list the document
     engine needs (plan sprint-3/04 D7): images, PDF, the zip family (docx/xlsx/
     pptx/odt/zip), GIF, and UTF-8 text/CSV. Returns the sniffed mime or None
     (= reject).
 
     HARD FLOOR, non-overridable: executables (MZ/ELF), HTML, SVG, and anything
-    else not on the list return None — a tenant's attachment-type config can
+    else not on the list return None - a tenant's attachment-type config can
     never open this. The declared content-type is ignored (it lies)."""
     image = detect_mime(content)
     if image is not None and image != "image/svg+xml":
@@ -95,7 +95,7 @@ def detect_document_mime(content: bytes) -> Optional[str]:
         return "image/gif"
     if content.startswith(b"%PDF-"):
         return "application/pdf"
-    # Zip container (docx/xlsx/pptx/odt are zips) — also a plain .zip. We cannot
+    # Zip container (docx/xlsx/pptx/odt are zips) - also a plain .zip. We cannot
     # cheaply distinguish office vs plain zip by magic alone; accept the family.
     if content[:4] in (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"):
         return "application/zip"

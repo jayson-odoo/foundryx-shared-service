@@ -1,5 +1,5 @@
 /**
- * RuleBuilder (sprint-2/02) — condition-tree builder over the whitelisted
+ * RuleBuilder (sprint-2/02) - condition-tree builder over the whitelisted
  * fact registry. Sibling of filter-builder (D9): per-type operators,
  * cross-fact compare toggle, nested AND/OR groups, stale-fact chips.
  */

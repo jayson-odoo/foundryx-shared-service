@@ -11,7 +11,7 @@ export interface WebhookSecretPanelProps {
 }
 
 /**
- * One-time signing-secret reveal — a readonly input + copy button + a "won't be
+ * One-time signing-secret reveal - a readonly input + copy button + a "won't be
  * shown again" line. Shared by the create dialog (post-submit) and the rotate
  * dialog. The signature-verification convention is a single-line field
  * description, not a tutorial.
@@ -45,7 +45,7 @@ export function WebhookSecretPanel({ secret }: WebhookSecretPanelProps) {
         </Button>
       </div>
       <p className="text-sm font-medium text-destructive">
-        Copy this secret now — it won&apos;t be shown again.
+        Copy this secret now - it won&apos;t be shown again.
       </p>
       <p className="text-xs text-muted-foreground">
         Sent as{' '}

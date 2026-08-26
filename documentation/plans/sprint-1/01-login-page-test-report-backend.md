@@ -1,9 +1,9 @@
-# Test Execution Report — Login Page (Backend Phase, live FastAPI)
+# Test Execution Report - Login Page (Backend Phase, live FastAPI)
 
 **Plan:** [01-login-page](./01-login-page.md) · **Branch:** `sprint-1/login-page`
 **Phase:** B (backend wiring + hardening + tenancy groundwork)
 **Stack under test:** NextAuth → FastAPI `/auth/login` (port 8001) → AuthService → UserRepository → SQLite.
-**Suites:** pytest (10) · Playwright real-backend E2E (2) · plus Phase-A regression (Vitest 10, mock E2E 6) — **all green**.
+**Suites:** pytest (10) · Playwright real-backend E2E (2) · plus Phase-A regression (Vitest 10, mock E2E 6) - **all green**.
 
 ---
 
@@ -22,7 +22,7 @@
 | P9 | Signup success then duplicate | 201 then 409 | As expected | Pass |
 | P10 | `/me` requires + accepts token | 401 without, 200 with (`tenantId` present) | As expected | Pass |
 
-## Playwright E2E — real backend (`npm run test:e2e:real`)
+## Playwright E2E - real backend (`npm run test:e2e:real`)
 
 | # | Scenario | Precondition | Steps | Expected | Actual | Remarks |
 |---|----------|--------------|-------|----------|--------|---------|
@@ -48,7 +48,7 @@
 
 ## Architecture / governance
 
-- Router (`app/api/v1/auth.py`) holds **no DB queries** — delegates to `AuthService` → `UserRepository`. Layering hard-fail resolved.
+- Router (`app/api/v1/auth.py`) holds **no DB queries** - delegates to `AuthService` → `UserRepository`. Layering hard-fail resolved.
 - Tenancy groundwork: `tenant_id` on `users` (FK → `tenants`), per-tenant email uniqueness, `tenant_id` in JWT, tenant-scoped repository lookups, default tenant seeded. Behaviour single-tenant. Full model → [BL-004].
 
 ## Commands
@@ -66,6 +66,6 @@ npm run test:e2e:real                     # real E2E → 2 passed (needs backend
 
 ## Result
 
-**PASS** — backend refactored to Service-Repository, cheap security fixes landed and
+**PASS** - backend refactored to Service-Repository, cheap security fixes landed and
 verified, tenancy groundwork in place, full-stack login works end-to-end. Ready for
 Phase C (code review → merge).

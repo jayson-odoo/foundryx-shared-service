@@ -19,7 +19,7 @@ function RoleBadge({ role }: { role: Role }) {
  * pill links to the role's form view (Users → Roles drill-through). Wraps freely.
  */
 export function RolePills({ roles }: { roles: Role[] }) {
-  if (!roles.length) return <span className="text-muted-foreground">—</span>;
+  if (!roles.length) return <span className="text-muted-foreground">-</span>;
   return (
     <div className="flex flex-wrap items-center gap-1">
       {roles.map((role) => (
