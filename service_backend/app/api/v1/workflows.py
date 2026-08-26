@@ -293,6 +293,16 @@ def run_workflow(
     current_user: User = Depends(require_permission("workflows.run")),
     db: Session = Depends(get_db),
 ) -> WorkflowRunItemOut:
+    # Manual runs only need workflows.run. Test-trigger runs also expose
+    # conversation data, so enforce the read permission at this boundary even
+    # when the caller skips the dedicated test-options endpoint.
+    if (
+        body.testTrigger is not None
+        and "conversations.read" not in effective_permission_keys(current_user)
+    ):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Missing permission: conversations.read"
+        )
     service = WorkflowService(db)
     try:
         run = service.run(

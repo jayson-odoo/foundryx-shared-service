@@ -406,20 +406,24 @@ export function useWorkflowForm(
     }
   }, [workflowId]);
 
-  const onRun = useCallback(() => {
+  const onRun = useCallback(async () => {
     if (trigger?.type === 'omnichannel.message_received') {
       if (!workflowId) {
         void doRun({ inputs: {} });
         return;
       }
+      if (docDirty) {
+        const saved = await onSave();
+        if (!saved) return;
+      }
       setRunDialogOpen(true);
-      void loadTestOptions();
+      await loadTestOptions();
     } else if (triggerInputs.length > 0) {
       setRunDialogOpen(true);
     } else {
       void doRun({ inputs: {} });
     }
-  }, [trigger, triggerInputs, workflowId, doRun, loadTestOptions]);
+  }, [trigger, triggerInputs, workflowId, docDirty, doRun, loadTestOptions, onSave]);
 
   // ---- debug execution (staleness-aware, D16) ----
   const runDebug = useCallback(

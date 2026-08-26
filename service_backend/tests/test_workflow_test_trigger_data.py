@@ -274,6 +274,39 @@ def test_test_options_requires_workflow_run_and_conversation_read(
     )
 
 
+def test_run_manual_allowed_but_test_trigger_requires_conversation_read(
+    client, session_factory
+):
+    contact_id = _seed_thread(session_factory, messages=[])
+    channel_id = _channel_id(session_factory)
+    _attach(session_factory, contact_id, channel_id)
+    workflow_id = _workflow(session_factory, channel_id)
+
+    db = session_factory()
+    try:
+        role = db.query(User).filter(User.email == ACTIVE_EMAIL).one().roles[0]
+        role.permissions = [
+            permission
+            for permission in role.permissions
+            if permission.key != "conversations.read"
+        ]
+        db.commit()
+    finally:
+        db.close()
+
+    headers = _headers(client)
+    manual = client.post(
+        f"/workflows/{workflow_id}/run", headers=headers, json={"inputs": {}}
+    )
+    assert manual.status_code == 200, manual.text
+
+    test_run = client.post(
+        f"/workflows/{workflow_id}/run",
+        headers=headers,
+        json=_request(channel_id, contact_id),
+    )
+    assert test_run.status_code == 403, test_run.text
+
 def test_sandbox_test_outbound_fails_closed_if_channel_becomes_live_before_dispatch(
     client, session_factory, monkeypatch
 ):

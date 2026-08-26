@@ -1,12 +1,13 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Workflow } from '@/types/workflows';
 import { useWorkflowForm } from './use-workflow-form';
 
 const { workflowService, workflowMetadataService } = vi.hoisted(() => ({
   workflowService: {
     get: vi.fn(),
+    update: vi.fn(),
     listTemplateOptions: vi.fn(),
     getTestOptions: vi.fn(),
     run: vi.fn(),
@@ -20,10 +21,23 @@ vi.mock('@/services/workflow-metadata-service', () => ({
 }));
 vi.mock('./use-workflow-actions', () => ({ useWorkflowActions: () => [] }));
 vi.mock('./workflow-editor-tab', () => ({
-  WorkflowEditorTab: ({ onRun }: { onRun: () => void }) => (
-    <button type="button" onClick={onRun}>
-      Open run
-    </button>
+  WorkflowEditorTab: ({
+    onRun,
+    onDocChange,
+    doc,
+  }: {
+    onRun: () => void;
+    onDocChange: (next: Workflow['draftDefinition']) => void;
+    doc: Workflow['draftDefinition'];
+  }) => (
+    <>
+      <button type="button" onClick={() => onDocChange({ ...doc })}>
+        Make dirty
+      </button>
+      <button type="button" onClick={onRun}>
+        Open run
+      </button>
+    </>
   ),
 }));
 
@@ -67,6 +81,8 @@ function Harness() {
 }
 
 describe('useWorkflowForm test-trigger routing', () => {
+  beforeEach(() => vi.clearAllMocks());
+
   it('opens test data for an omnichannel trigger instead of immediately running empty input', async () => {
     const user = userEvent.setup();
     workflowService.get.mockResolvedValue(WORKFLOW);
@@ -96,5 +112,47 @@ describe('useWorkflowForm test-trigger routing', () => {
     );
     expect(workflowService.getTestOptions).toHaveBeenCalledWith('workflow-1');
     expect(workflowService.run).not.toHaveBeenCalled();
+  });
+
+  it('saves a dirty omnichannel draft before loading test data', async () => {
+    const user = userEvent.setup();
+    workflowService.get.mockResolvedValue(WORKFLOW);
+    workflowService.listTemplateOptions.mockResolvedValue([]);
+    workflowMetadataService.getMetadata.mockResolvedValue({ entities: [] });
+    workflowService.update.mockResolvedValue(WORKFLOW);
+    workflowService.getTestOptions.mockResolvedValue({
+      omnichannelTestSources: [],
+    });
+
+    render(<Harness />);
+    await user.click(await screen.findByRole('button', { name: 'Make dirty' }));
+    await user.click(screen.getByRole('button', { name: 'Open run' }));
+
+    await waitFor(() =>
+      expect(workflowService.update).toHaveBeenCalledWith(
+        'workflow-1',
+        expect.objectContaining({ draftDefinition: WORKFLOW.draftDefinition }),
+      ),
+    );
+    expect(workflowService.getTestOptions).toHaveBeenCalledWith('workflow-1');
+    expect(workflowService.update.mock.invocationCallOrder[0]).toBeLessThan(
+      workflowService.getTestOptions.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('does not load test data when saving the dirty draft fails', async () => {
+    const user = userEvent.setup();
+    workflowService.get.mockResolvedValue(WORKFLOW);
+    workflowService.listTemplateOptions.mockResolvedValue([]);
+    workflowMetadataService.getMetadata.mockResolvedValue({ entities: [] });
+    workflowService.update.mockRejectedValue(new Error('Save failed'));
+
+    render(<Harness />);
+    await user.click(await screen.findByRole('button', { name: 'Make dirty' }));
+    await user.click(screen.getByRole('button', { name: 'Open run' }));
+
+    await waitFor(() => expect(workflowService.update).toHaveBeenCalled());
+    expect(workflowService.getTestOptions).not.toHaveBeenCalled();
+    expect(screen.queryByRole('heading', { name: 'Test workflow' })).not.toBeInTheDocument();
   });
 });
