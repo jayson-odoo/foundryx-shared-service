@@ -1,6 +1,6 @@
 # Workflow test-trigger data
 
-**Contract:** `18-workflow-test-trigger-data-acceptance-criteria.md`  
+**Contract:** `18-workflow-test-trigger-data-acceptance-criteria.md`
 **Depends on:** sprint-4/17 omnichannel trigger/actions/AI Agent
 
 ## Outcome
@@ -75,4 +75,3 @@ AI and outbound actions run normally and are auditable as a test.
 All AC-OA-24..34 evidence is recorded in
 `18-workflow-test-trigger-data-test-report.md`; backend/frontend tests, lint,
 build, desktop/mobile real-browser verification, and final diff review pass.
-

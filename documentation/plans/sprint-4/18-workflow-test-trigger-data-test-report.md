@@ -1,6 +1,6 @@
 # Slice 18 — workflow test-trigger data test report
 
-Date: 2026-08-26  
+Date: 2026-08-26
 Scope: `18-workflow-test-trigger-data.md` / `18-workflow-test-trigger-data-acceptance-criteria.md`
 
 ## Execution summary
