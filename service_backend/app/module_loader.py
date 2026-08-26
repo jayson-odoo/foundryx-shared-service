@@ -101,6 +101,27 @@ def register_module_boot(name: str) -> None:
         hooks.register_engine_entities()
 
 
+def boot_module_hooks() -> None:
+    """Run every discovered module's boot hooks (capabilities + engine
+    entities) WITHOUT a FastAPI app - for worker processes.
+
+    ``load_modules`` does this as a side effect of router inclusion, so the API
+    process always has module-registered workflow triggers/actions. A Celery
+    worker never calls ``load_modules``; without this the workflow worker only
+    knows core nodes and a run touching ``omnichannel.send_message`` fails
+    ``Unknown action`` in prod (invisible in eager dev, which runs inline in the
+    API process). Same D8 isolation as ``load_modules``: a broken module is
+    marked errored + skipped, siblings continue. Idempotent.
+    """
+    for manifest in discover_manifests():
+        name = manifest["module_name"]
+        try:
+            register_module_boot(name)
+        except Exception as exc:  # noqa: BLE001 - D8 isolation
+            ERRORED_MODULES[name] = f"{type(exc).__name__}: {exc}"
+            logger.error("Module '%s' boot hooks failed: %s", name, exc, exc_info=True)
+
+
 def sync_module_catalog(db: Session, modules_dir: Optional[Path] = None) -> None:
     """Upsert the global ``modules`` catalog from manifests; delist removed dirs."""
     from app.models.module import Module
