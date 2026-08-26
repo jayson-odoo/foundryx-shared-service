@@ -9,8 +9,18 @@ import logging
 from celery import Celery
 
 from app.config import settings
+from app.lazy_registry import lazy_once
 
 logger = logging.getLogger("foundryx.workflows")
+
+
+def _boot_module_nodes() -> None:
+    from app.module_loader import boot_module_hooks
+
+    boot_module_hooks()
+
+
+_ensure_module_nodes = lazy_once(_boot_module_nodes)
 
 celery_app = Celery(
     "workflows",
@@ -144,6 +154,15 @@ def run_workflow_task(run_id: str) -> dict:
     from app.models.workflow import RUN_FAILED, WorkflowRun
     from app.workflow_engine.executor import run_workflow
 
+    # The worker runs no FastAPI lifespan, so module-registered workflow nodes
+    # (omnichannel trigger/actions, plan sprint-4/17; any future module
+    # TriggerDef/ActionDef) never got booted here - a prod run failed
+    # `Unknown action "omnichannel.send_message"` (invisible in eager dev, which
+    # executes inline in the API process where `load_modules` already ran).
+    # Task-scoped + lazy_once, NOT module-level: worker.py is imported by the
+    # API process too (jobs/import workers share `celery_app`), and booting
+    # every module at import would run ahead of lifespan + pollute tests.
+    _ensure_module_nodes()
     db = SessionLocal()
     try:
         run = run_workflow(db, run_id)
