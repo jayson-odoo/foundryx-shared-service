@@ -329,7 +329,7 @@ pipeline). The AI Agent node's agent picker is gated by the existing
 ## Test plan
 
 - **Backend (pytest, Postgres)**: `tests/test_omnichannel_workflow_triggers.py`
-  (new) covering AC-OA-01–13 per the acceptance-criteria file, using
+  (new) covering AC-OA-01-13 per the acceptance-criteria file, using
   `app.ai.stub.stub_fixtures`/the default deterministic stub for every LLM call
   - no live key anywhere, per the brief's explicit instruction. Extend
   `tests/test_workflow_engine.py` only if a core-registry assertion needs it

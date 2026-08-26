@@ -1,4 +1,4 @@
-# Slice 18 — workflow test-trigger data test report
+# Slice 18 - workflow test-trigger data test report
 
 Date: 2026-08-26
 Scope: `18-workflow-test-trigger-data.md` / `18-workflow-test-trigger-data-acceptance-criteria.md`
@@ -13,11 +13,11 @@ Commands run from the repository worktree:
 
 | Command | Result |
 |---|---|
-| `cd service_backend && source .venv/bin/activate && python -m pytest -q tests/test_workflow_test_trigger_data.py` | **PASS** — 17 passed, 13 dependency deprecation warnings, 16.14s |
-| `cd service_frontend && npm test -- --run app/'(protected)'/workflows/components/run-dialog.test.tsx app/'(protected)'/workflows/components/use-workflow-form.test.tsx services/workflow-service.real.test.ts` | **PASS** — 3 files, 9 tests |
-| `cd service_frontend && npx eslint 'app/(protected)/workflows/components/run-dialog.tsx' 'app/(protected)/workflows/components/use-workflow-form.tsx' 'app/(protected)/workflows/components/run-dialog.test.tsx' 'app/(protected)/workflows/components/use-workflow-form.test.tsx' 'components/platform/workflow-runs/run-replay.tsx' 'components/platform/workflow-runs/workflow-runs.tsx' 'components/ui/accordion-menu.tsx' 'services/workflow-service.real.ts' 'services/workflow-service.ts' 'services/workflow-service.real.test.ts' 'types/workflows.ts' 'e2e/workflow-test-trigger.spec.ts'` | **PASS** — no output/errors |
-| `cd service_frontend && mv .next /tmp/foundryx-service-frontend-next-verify-2 && npm run build` | **PASS** — fresh production build; compiled, type-checked, generated 111 static pages, and completed route optimization. One existing invalid CSS media-query warning. |
-| `cd service_frontend && npm run lint` | **FAIL (baseline/unrelated)** — 11 errors in existing cluster-e/terminology E2E helpers and import mock; 3 unrelated warnings. No slice-18 file reported. |
+| `cd service_backend && source .venv/bin/activate && python -m pytest -q tests/test_workflow_test_trigger_data.py` | **PASS** - 17 passed, 13 dependency deprecation warnings, 16.14s |
+| `cd service_frontend && npm test -- --run app/'(protected)'/workflows/components/run-dialog.test.tsx app/'(protected)'/workflows/components/use-workflow-form.test.tsx services/workflow-service.real.test.ts` | **PASS** - 3 files, 9 tests |
+| `cd service_frontend && npx eslint 'app/(protected)/workflows/components/run-dialog.tsx' 'app/(protected)/workflows/components/use-workflow-form.tsx' 'app/(protected)/workflows/components/run-dialog.test.tsx' 'app/(protected)/workflows/components/use-workflow-form.test.tsx' 'components/platform/workflow-runs/run-replay.tsx' 'components/platform/workflow-runs/workflow-runs.tsx' 'components/ui/accordion-menu.tsx' 'services/workflow-service.real.ts' 'services/workflow-service.ts' 'services/workflow-service.real.test.ts' 'types/workflows.ts' 'e2e/workflow-test-trigger.spec.ts'` | **PASS** - no output/errors |
+| `cd service_frontend && mv .next /tmp/foundryx-service-frontend-next-verify-2 && npm run build` | **PASS** - fresh production build; compiled, type-checked, generated 111 static pages, and completed route optimization. One existing invalid CSS media-query warning. |
+| `cd service_frontend && npm run lint` | **FAIL (baseline/unrelated)** - 11 errors in existing cluster-e/terminology E2E helpers and import mock; 3 unrelated warnings. No slice-18 file reported. |
 | `git diff --check` | **PASS** |
 
 The full backend command `cd service_backend && source .venv/bin/activate &&
@@ -28,7 +28,7 @@ errors. The focused slice suite remained green.
 
 The implementation handoff also reports:
 
-* `npx playwright test e2e/workflow-test-trigger.spec.ts` — **PASS**, 2 real-click
+* `npx playwright test e2e/workflow-test-trigger.spec.ts` - **PASS**, 2 real-click
   tests at 1280px and 375px, including stub-AI and one outbound sandbox reply.
 * The Playwright run used isolated stub transport; no public webhook/inbound
   path was used.

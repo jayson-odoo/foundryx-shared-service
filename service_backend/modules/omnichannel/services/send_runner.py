@@ -139,7 +139,7 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
     if sandbox_only:
         try:
             sandbox_credentials = decrypt_credentials(channel.credentials_json)
-        except Exception:  # noqa: BLE001 — malformed/rotated secrets fail closed
+        except Exception:  # noqa: BLE001 - malformed/rotated secrets fail closed
             return _fail(db, row, SANDBOX_CREDENTIALS_ERROR)
         if sandbox_credentials.get("dev") is not True:
             return _fail(db, row, SANDBOX_CREDENTIALS_ERROR)

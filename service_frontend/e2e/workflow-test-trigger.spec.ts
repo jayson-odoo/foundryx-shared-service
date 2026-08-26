@@ -6,7 +6,7 @@ import {
   type Page,
 } from '@playwright/test';
 
-/** Sprint-4/18 — an isolated tenant exercises the editor's synthetic inbound
+/** Sprint-4/18 - an isolated tenant exercises the editor's synthetic inbound
  * event through a stub AI Agent and a dev-sandbox send. API calls create only
  * prerequisites; every feature interaction and navigation is a real click. */
 
@@ -381,7 +381,7 @@ for (const viewport of [
     await contactOption.click();
     await page
       .getByLabel('Message')
-      .fill(`Please classify my Saturday booking request — ${viewport.name}`);
+      .fill(`Please classify my Saturday booking request - ${viewport.name}`);
     await expect(page.getByTestId('test-side-effects-warning')).toContainText(
       'call the configured AI model and send a message',
     );

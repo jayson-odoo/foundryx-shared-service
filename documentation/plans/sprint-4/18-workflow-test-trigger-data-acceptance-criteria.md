@@ -1,4 +1,4 @@
-# Workflow test-trigger data — acceptance criteria
+# Workflow test-trigger data - acceptance criteria
 
 Contract for `18-workflow-test-trigger-data.md`. This slice extends the
 workflow editor's existing Run action with safe, n8n-style test data for the
