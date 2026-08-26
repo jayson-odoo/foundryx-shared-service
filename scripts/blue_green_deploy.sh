@@ -119,7 +119,7 @@ ${APP_DOMAIN} {
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer-when-downgrade"
 	}
-	tls internal
+	tls ${TLS_EMAIL}
 }
 EOF
 sudo install -m 0644 "$TMP_CADDY" "$CADDY_SITE_FILE"
