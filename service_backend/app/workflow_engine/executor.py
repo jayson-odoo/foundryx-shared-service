@@ -21,7 +21,7 @@ from app.models.workflow import (
     WorkflowRun,
     WorkflowRunNode,
 )
-from app.workflow_engine.context import build_initial_context, set_node_output
+from app.workflow_engine.context import build_initial_context, render_field, set_node_output
 from app.workflow_engine.registry import get_action
 from app.workflow_engine.schemas import (
     WorkflowNodeModel,
@@ -88,6 +88,39 @@ def _ctx_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         ctx["trigger.channel.name"] = oc.get("channelName")
         ctx["trigger.conversationId"] = oc.get("conversationId")
     return ctx
+
+
+def resolve_correlation_key(doc: Any, ctx: Dict[str, Any]) -> Optional[str]:
+    """Resolve the immutable definition's serialized key for this run.
+
+    S1 deliberately keeps this as a context seam; S2 can snapshot the result
+    on ``WorkflowRun`` when it adds keyed dispatch. Parallel definitions return
+    ``None`` and retain their existing behavior.
+    """
+    execution = getattr(doc, "execution", None)
+    if execution is None or execution.mode != "serialized":
+        return None
+    resolved = render_field(execution.correlationKey, ctx).strip()
+    if not resolved:
+        raise RuntimeError("Serialized execution requires a non-empty Correlation key.")
+    return resolved
+
+
+def _stateful_agent(node: WorkflowNodeModel) -> bool:
+    return node.type == "ai_agent.run" and any(
+        isinstance(row, dict) and row.get("stateful") is True
+        for row in (node.config.get("outputParams") or [])
+    )
+
+
+def _prepare_node_context(
+    ctx: Dict[str, Any], run: WorkflowRun, node: WorkflowNodeModel, completed_stateful: set[str]
+) -> None:
+    ctx["_workflow.runId"] = run.id
+    ctx["_workflow.workflowId"] = run.workflow_id
+    ctx["_workflow.isTest"] = run.is_test is True
+    ctx["_workflow.nodeId"] = node.id
+    ctx["_workflow.reachableStatefulAgentIds"] = sorted(completed_stateful)
 
 
 def _execute_node(
@@ -160,6 +193,17 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
 
     doc = parse_definition(run.definition_snapshot_json)
     ctx = _ctx_from_payload(run.trigger_payload_json or {})
+    try:
+        correlation_key = resolve_correlation_key(doc, ctx)
+    except RuntimeError as exc:
+        run.status = RUN_FAILED
+        run.error = str(exc)
+        run.finished_at = _now()
+        db.commit()
+        clear_run_origin(db)
+        return run
+    if correlation_key is not None:
+        ctx["_workflow.correlationKey"] = correlation_key
     ordered = topo_order(doc)
 
     out_edges: Dict[str, List] = {}
@@ -170,8 +214,10 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
     active = {n.id for n in ordered if n.kind == "trigger"}
 
     failed = False
+    completed_stateful: set[str] = set()
     try:
         for index, node in enumerate(ordered):
+            _prepare_node_context(ctx, run, node, completed_stateful)
             rn = WorkflowRunNode(
                 run_id=run.id, node_id=node.id, node_type=node.type, order_index=index
             )
@@ -194,6 +240,8 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
                 else:
                     for _port, target in out_edges.get(node.id, []):
                         active.add(target)
+                if _stateful_agent(node):
+                    completed_stateful.add(node.id)
             except Exception as exc:  # noqa: BLE001 - a node failure halts the run (D14)
                 rn.status = NODE_FAILED
                 rn.error = str(exc)
@@ -238,6 +286,9 @@ def debug_execute(
     # Nodes that genuinely produced an output last run (skipped/failed = none).
     produced = {rn.node_id for rn in run.nodes if rn.output_json is not None}
     ctx = _ctx_from_payload(run.trigger_payload_json or {})
+    correlation_key = resolve_correlation_key(doc, ctx)
+    if correlation_key is not None:
+        ctx["_workflow.correlationKey"] = correlation_key
     ordered = topo_order(doc)
 
     # Apply scratch config edits to the working doc. The frontend sends the
@@ -264,7 +315,9 @@ def debug_execute(
     recomputed: set = set()  # nodes whose output changed this pass
 
     touched: List[Dict[str, Any]] = []
+    completed_stateful: set[str] = set()
     for node in ordered:
+        _prepare_node_context(ctx, run, node, completed_stateful)
         is_target = node.id == target_node_id
         reached = node.id in active
         if not reached and not is_target:
@@ -298,6 +351,8 @@ def debug_execute(
             # Reuse the cached output - re-hydrate the context from it.
             output = cache[node.id]
             set_node_output(ctx, node.id, output)
+        if reached and _stateful_agent(node):
+            completed_stateful.add(node.id)
         if is_target:
             break
         # Activate the taken downstream edges (branch-aware, like run_workflow).

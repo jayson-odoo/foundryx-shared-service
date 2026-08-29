@@ -6,16 +6,17 @@ The doc is the forever-contract graph (mirror of frontend ``types/workflows.ts``
 is the save/publish gate - same rules the editor surfaces live.
 """
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-WORKFLOW_SCHEMA_VERSION = 1
+WORKFLOW_SCHEMA_VERSION = 2
 
 # Conservative ASCII identifier grammar. Output keys are inserted into merge
 # paths as ``nodes.<id>.<key>`` and must remain one merge-token segment.
 AI_OUTPUT_PARAM_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-AI_OUTPUT_PARAM_TYPES = frozenset({"string", "number", "boolean"})
+AI_OUTPUT_PARAM_TYPES = frozenset({"string", "number", "boolean", "enum"})
+CORRELATION_KEY_RE = re.compile(r"^\{\{\s*[A-Za-z_][A-Za-z0-9_.]*\s*\}\}$")
 _AI_OUTPUT_PARAM_PREFIX = 'AI Agent: "Output parameters"'
 
 
@@ -55,6 +56,23 @@ def output_param_issues(value: Any) -> List[str]:
         param_type = row.get("type")
         if not isinstance(param_type, str) or param_type not in AI_OUTPUT_PARAM_TYPES:
             issues.append(f"{_AI_OUTPUT_PARAM_PREFIX} contains a parameter with an invalid type.")
+        if param_type == "enum":
+            values = row.get("enumValues")
+            if not isinstance(values, list) or len(values) < 2:
+                issues.append(f"{_AI_OUTPUT_PARAM_PREFIX} enum parameters need at least two values.")
+            else:
+                seen_values: set[str] = set()
+                for value in values:
+                    if not isinstance(value, str) or not value.strip():
+                        issues.append(f"{_AI_OUTPUT_PARAM_PREFIX} enum values cannot be blank.")
+                    elif value in seen_values:
+                        issues.append(f"{_AI_OUTPUT_PARAM_PREFIX} enum values must be unique.")
+                    else:
+                        seen_values.add(value)
+        elif "enumValues" in row:
+            issues.append(
+                f"{_AI_OUTPUT_PARAM_PREFIX} enum values are only valid for Enum parameters."
+            )
     return issues
 
 
@@ -77,10 +95,19 @@ class WorkflowEdgeModel(BaseModel):
     sourcePort: Optional[str] = "out"
 
 
+class WorkflowExecutionModel(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    mode: Literal["parallel", "serialized"] = "parallel"
+    correlationKey: str = ""
+
+
 class WorkflowDefinitionModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     schemaVersion: int = WORKFLOW_SCHEMA_VERSION
+    # v1 documents omit this object; omission retains the parallel behavior.
+    execution: Optional[WorkflowExecutionModel] = None
     nodes: List[WorkflowNodeModel] = Field(default_factory=list)
     edges: List[WorkflowEdgeModel] = Field(default_factory=list)
 
@@ -111,6 +138,29 @@ def definition_issues(doc: WorkflowDefinitionModel) -> List[str]:
         issues.append("A workflow can have only one trigger.")
 
     trigger = triggers[0] if triggers else None
+    execution = doc.execution
+    correlation_key = (execution.correlationKey if execution else "").strip()
+    if execution and execution.mode == "serialized" and (
+        not correlation_key or CORRELATION_KEY_RE.fullmatch(correlation_key) is None
+    ):
+        issues.append("Serialized execution requires a valid Correlation key.")
+    stateful_agent = any(
+        node.type == "ai_agent.run"
+        and any(
+            isinstance(row, dict) and row.get("stateful") is True
+            for row in (node.config.get("outputParams") or [])
+        )
+        for node in doc.nodes
+    )
+    if stateful_agent and (
+        execution is None
+        or execution.mode != "serialized"
+        or not correlation_key
+        or CORRELATION_KEY_RE.fullmatch(correlation_key) is None
+    ):
+        issues.append(
+            "Stateful AI Agent outputs require serialized execution and a Correlation key."
+        )
     if trigger and any(e.target == trigger.id for e in doc.edges):
         issues.append("The trigger cannot have an incoming connection.")
 
@@ -154,6 +204,29 @@ def definition_issues(doc: WorkflowDefinitionModel) -> List[str]:
                         issues.extend(output_param_issues(value))
                 elif value is None or value == "" or value == []:
                     issues.append(f'{entry.label}: "{field.label}" is required.')
+        if n.type == "ai_agent.run":
+            params = n.config.get("outputParams")
+            if isinstance(params, list) and any(
+                isinstance(row, dict) and row.get("stateful") is True for row in params
+            ):
+                clarification_key = n.config.get("clarificationOutputKey")
+                if clarification_key is not None:
+                    clarification = next(
+                        (
+                            row
+                            for row in params
+                            if isinstance(row, dict) and row.get("key") == clarification_key
+                        ),
+                        None,
+                    )
+                    if not (
+                        isinstance(clarification, dict)
+                        and clarification.get("type") == "string"
+                        and clarification.get("stateful") is not True
+                    ):
+                        issues.append(
+                            'AI Agent: "Clarification output" must be a transient Text output.'
+                        )
     return issues
 
 

@@ -9,7 +9,7 @@ trace lives in ``WorkflowRunNode``.
 """
 import uuid
 
-from sqlalchemy import JSON, Boolean, Column, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Column, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -77,6 +77,11 @@ class Workflow(Base):
         back_populates="workflow",
         cascade="all, delete-orphan",
         order_by="WorkflowVersion.version_number",
+    )
+    agent_states = relationship(
+        "WorkflowAgentState",
+        back_populates="workflow",
+        cascade="all, delete-orphan",
     )
 
 
@@ -153,6 +158,42 @@ class WorkflowRunNode(Base):
     finished_at = Column(UTCDateTime(), nullable=True)
 
     run = relationship("WorkflowRun", back_populates="nodes")
+
+
+class WorkflowAgentState(Base):
+    """Durable accepted state for one stateful AI Agent node and key."""
+
+    __tablename__ = "workflow_agent_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "workflow_id",
+            "node_id",
+            "correlation_key",
+            name="uq_workflow_agent_state_scope",
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(
+        String, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    workflow_id = Column(
+        String, ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    node_id = Column(String, nullable=False)
+    correlation_key = Column(String, nullable=False)
+    state_json = Column(JSON(none_as_null=True), nullable=False, default=dict)
+    provenance_json = Column(JSON(none_as_null=True), nullable=False, default=dict)
+    pending_question = Column(String, nullable=True)
+    pending_field = Column(String, nullable=True)
+    revision = Column(Integer, nullable=False, default=0)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    workflow = relationship("Workflow", back_populates="agent_states")
 
 
 class WorkflowSettings(Base):

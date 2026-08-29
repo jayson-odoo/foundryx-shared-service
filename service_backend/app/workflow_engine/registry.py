@@ -372,6 +372,7 @@ def _register_core() -> None:
 
     # ---- AI Agent action (sprint-4/17) ----
     from app.workflow_engine.actions.ai_agent_actions import ai_agent_run
+    from app.workflow_engine.actions.agent_state_actions import clear_agent_state
 
     register_action(
         ActionDef(
@@ -403,10 +404,30 @@ def _register_core() -> None:
                     type="outputSchema",
                     required=True,
                 ),
+                NodeField(
+                    key="clarificationOutputKey",
+                    label="Clarification output",
+                    type="clarificationOutput",
+                ),
             ],
             # Dynamic - the frontend lists config.outputParams as nodes.<id>.<key>
             # (mirrors how entity/form triggers already inject dynamic outputs).
             outputs=[],
+        )
+    )
+    register_action(
+        ActionDef(
+            key="ai_agent.clear_state",
+            label="Clear Agent State",
+            description="Clear retained values from an earlier AI Agent.",
+            icon="Eraser",
+            category="Actions",
+            executor=clear_agent_state,
+            fields=[NodeField(key="agentNodeId", label="Agent", type="agentNode", required=True)],
+            outputs=[
+                NodeOutput("cleared", "Cleared"),
+                NodeOutput("previousRevision", "Previous revision"),
+            ],
         )
     )
 
