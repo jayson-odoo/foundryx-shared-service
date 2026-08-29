@@ -20,6 +20,7 @@ export interface WorkflowEditorTabProps {
   canManage: boolean;
   templateOptions: TemplateOption[];
   metadata: WorkflowMetadata;
+  canCode?: boolean;
   busy: boolean;
   onPublish: () => void;
   onUnpublish: () => void;
@@ -38,6 +39,7 @@ export function WorkflowEditorTab({
   canManage,
   templateOptions,
   metadata,
+  canCode = true,
   busy,
   onPublish,
   onUnpublish,
@@ -117,6 +119,7 @@ export function WorkflowEditorTab({
         editing={editing}
         templateOptions={templateOptions}
         metadata={metadata}
+        canCode={canCode}
         debug={debug}
       />
     </div>

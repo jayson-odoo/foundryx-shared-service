@@ -12,15 +12,32 @@ import type {
   WorkflowNode,
   WorkflowNodeConfig,
   WorkflowNodeKind,
+  WorkflowExecution,
 } from '@/types/workflows';
 
-export const WORKFLOW_SCHEMA_VERSION = 1;
+export const WORKFLOW_SCHEMA_VERSION = 2;
 
 // Conservative ASCII identifier grammar. Output keys are inserted into merge
 // paths as `nodes.<id>.<key>` and must remain one merge-token segment.
 export const AI_OUTPUT_PARAM_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-export const AI_OUTPUT_PARAM_TYPES = ['string', 'number', 'boolean'] as const;
+export const AI_OUTPUT_PARAM_TYPES = ['string', 'number', 'boolean', 'enum'] as const;
 const AI_OUTPUT_PARAM_PREFIX = 'AI Agent: "Output parameters"';
+export const CORRELATION_KEY_RE = /^\{\{\s*[A-Za-z_][A-Za-z0-9_.]*\s*\}\}$/;
+
+export function codeSourceIssues(source: string): string[] {
+  const issues: string[] = [];
+  const forbidden = /(^|\s)(import|from)\s|\b(exec|eval|__import__)\s*\(/;
+  const forbiddenLine = source.split(/\r?\n/).findIndex((line) => forbidden.test(line));
+  if (forbiddenLine >= 0) issues.push(`Unsupported syntax on line ${forbiddenLine + 1}.`);
+  const pairs: Array<[string, string]> = [['(', ')'], ['[', ']'], ['{', '}']];
+  for (const [opening, closing] of pairs) {
+    if (source.split('').filter((character) => character === opening).length !== source.split('').filter((character) => character === closing).length) {
+      issues.push(`Unbalanced ${opening}${closing} delimiters.`);
+    }
+  }
+  if (source.trim() && !/\bresult\s*=/.test(source)) issues.push('Code must assign a result dictionary.');
+  return issues;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -66,6 +83,25 @@ export function outputParamIssues(value: unknown): string[] {
     ) {
       issues.push(`${AI_OUTPUT_PARAM_PREFIX} contains a parameter with an invalid type.`);
     }
+    if (row.type === 'enum') {
+      const values = row.enumValues;
+      if (!Array.isArray(values) || values.length < 2) {
+        issues.push(`${AI_OUTPUT_PARAM_PREFIX} enum parameters need at least two values.`);
+      } else {
+        const enumSeen = new Set<string>();
+        for (const item of values) {
+          if (typeof item !== 'string' || !item.trim()) {
+            issues.push(`${AI_OUTPUT_PARAM_PREFIX} enum values cannot be blank.`);
+          } else if (enumSeen.has(item)) {
+            issues.push(`${AI_OUTPUT_PARAM_PREFIX} enum values must be unique.`);
+          } else {
+            enumSeen.add(item);
+          }
+        }
+      }
+    } else if (row.enumValues !== undefined) {
+      issues.push(`${AI_OUTPUT_PARAM_PREFIX} enum values are only valid for Enum parameters.`);
+    }
   }
   return issues;
 }
@@ -92,8 +128,12 @@ export function validAiOutputParams(value: unknown): WorkflowAiOutputParam[] {
     valid.push({
       key,
       type: type as WorkflowAiOutputParam['type'],
+      ...(type === 'enum' && Array.isArray(row.enumValues)
+        ? { enumValues: row.enumValues.filter((v): v is string => typeof v === 'string') }
+        : {}),
       ...(typeof row.description === 'string' ? { description: row.description } : {}),
       ...(typeof row.required === 'boolean' ? { required: row.required } : {}),
+      ...(typeof row.stateful === 'boolean' ? { stateful: row.stateful } : {}),
     });
   }
   return valid;
@@ -105,8 +145,37 @@ export function newId(prefix: string): string {
 }
 
 export function createBlankDefinition(): WorkflowDefinition {
-  return { schemaVersion: WORKFLOW_SCHEMA_VERSION, nodes: [], edges: [] };
+  return {
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    execution: { mode: 'parallel', correlationKey: '' },
+    nodes: [],
+    edges: [],
+  };
 }
+
+/** Read old drafts without mutating the source. Missing execution data keeps
+ * the v1 parallel behavior and omitted stateful flags remain transient. */
+export function migrateWorkflowDefinition(value: unknown): WorkflowDefinition {
+  if (!isRecord(value)) return createBlankDefinition();
+  const nodes = Array.isArray(value.nodes) ? value.nodes : [];
+  const edges = Array.isArray(value.edges) ? value.edges : [];
+  const execution = isRecord(value.execution)
+    ? {
+        mode: value.execution.mode === 'serialized' ? 'serialized' : 'parallel',
+        correlationKey:
+          typeof value.execution.correlationKey === 'string' ? value.execution.correlationKey : '',
+      }
+    : { mode: 'parallel', correlationKey: '' };
+  return {
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    execution: execution as WorkflowExecution,
+    nodes: nodes as WorkflowDefinition['nodes'],
+    edges: edges as WorkflowDefinition['edges'],
+  };
+}
+
+/** Alias used by callers that want to make v1 compatibility explicit. */
+export const normalizeWorkflowDefinition = migrateWorkflowDefinition;
 
 /** Default config for a freshly-dropped node of `type`. */
 function defaultConfig(type: string): WorkflowNodeConfig {
@@ -126,6 +195,16 @@ function defaultConfig(type: string): WorkflowNodeConfig {
   if (type === 'omnichannel.send_message') return { contactId: '', message: '' };
   if (type === 'ai_agent.run')
     return { agentId: '', instructions: '', inputText: '', outputParams: [] };
+  if (type === 'ai_agent.clear_state') return { agentNodeId: '' };
+  if (type === 'redis.command') return { operation: 'get', key: '' };
+  if (type === 'code.run') {
+    return {
+      language: 'python',
+      source: '',
+      inputs: [],
+      outputs: [],
+    };
+  }
   return {};
 }
 
@@ -313,13 +392,31 @@ export interface DefinitionIssue {
 
 /** Mirror of the backend `validate_definition` (D17) - surfaced live in the
  * editor so publish failures are visible before the click. */
-export function validateDefinition(doc: WorkflowDefinition): DefinitionIssue[] {
+export function validateDefinition(doc: WorkflowDefinition, metadata?: { codeRunnerAvailable?: boolean }): DefinitionIssue[] {
   const issues: DefinitionIssue[] = [];
   const triggers = doc.nodes.filter((n) => n.kind === 'trigger');
   if (triggers.length === 0) issues.push({ level: 'error', message: 'Add a trigger to start the workflow.' });
   if (triggers.length > 1) issues.push({ level: 'error', message: 'A workflow can have only one trigger.' });
 
   const trigger = triggers[0];
+  const execution = doc.execution;
+  const statefulAgent = doc.nodes.some((node) =>
+    node.type === 'ai_agent.run' &&
+    validAiOutputParams(node.config.outputParams).some((param) => param.stateful),
+  );
+  const correlationKey = execution?.correlationKey?.trim() ?? '';
+  if (execution?.mode === 'serialized' && (!correlationKey || !CORRELATION_KEY_RE.test(correlationKey))) {
+    issues.push({
+      level: 'error',
+      message: 'Serialized execution requires a valid Correlation key.',
+    });
+  }
+  if (statefulAgent && (execution?.mode !== 'serialized' || !correlationKey)) {
+    issues.push({
+      level: 'error',
+      message: 'Stateful AI Agent outputs require serialized execution and a Correlation key.',
+    });
+  }
   if (trigger && doc.edges.some((e) => e.target === trigger.id)) {
     issues.push({ level: 'error', message: 'The trigger cannot have an incoming connection.', nodeId: trigger.id });
   }
@@ -392,6 +489,18 @@ export function validateDefinition(doc: WorkflowDefinition): DefinitionIssue[] {
     }
     // Connection-resolvability warning (warn-not-block, D17) needs real
     // connection data - added in Phase B.
+    if (n.type === 'code.run' && metadata?.codeRunnerAvailable === false) {
+      issues.push({
+        level: 'error',
+        message: 'Code runner is unavailable. Publishing requires runner health.',
+        nodeId: n.id,
+      });
+    }
+    if (n.type === 'code.run' && typeof n.config.source === 'string') {
+      for (const message of codeSourceIssues(n.config.source)) {
+        issues.push({ level: 'error', message: `Code: ${message}`, nodeId: n.id });
+      }
+    }
   }
 
   return issues;

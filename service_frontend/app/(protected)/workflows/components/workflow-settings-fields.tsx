@@ -5,8 +5,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
+import { SearchSelect } from '@/components/platform/search-select';
+import { DynamicContentField, type DynamicContentGroup } from '@/components/platform/workflow-canvas/dynamic-content-picker';
+import { catalogEntry } from '@/lib/workflow-catalog';
 import { useDatetime } from '@/hooks/use-datetime';
-import type { Workflow } from '@/types/workflows';
+import type { Workflow, WorkflowDefinition, WorkflowManualInput } from '@/types/workflows';
 import type { WorkflowFormValues } from './use-workflow-form';
 
 function Row({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
@@ -28,6 +31,8 @@ export interface WorkflowSettingsFieldsProps {
   canManage: boolean;
   busy: boolean;
   onSetActive: (active: boolean) => void;
+  definition: WorkflowDefinition;
+  onDefinitionChange: (definition: WorkflowDefinition) => void;
 }
 
 export function WorkflowSettingsFields({
@@ -37,9 +42,29 @@ export function WorkflowSettingsFields({
   canManage,
   busy,
   onSetActive,
+  definition,
+  onDefinitionChange,
 }: WorkflowSettingsFieldsProps) {
   const values = form.watch();
   const { formatDateTime } = useDatetime();
+  const execution = definition.execution ?? { mode: 'parallel' as const, correlationKey: '' };
+  const trigger = definition.nodes.find((node) => node.kind === 'trigger');
+  const triggerEntry = trigger ? catalogEntry(trigger.type) : undefined;
+  const correlationGroups: DynamicContentGroup[] = trigger
+    ? [{
+        sourceLabel: triggerEntry?.label ?? 'Trigger',
+        items: [
+          ...(triggerEntry?.outputs ?? []),
+          ...((Array.isArray(trigger.config.inputs) ? trigger.config.inputs : []) as WorkflowManualInput[]).map((input) => ({ key: `trigger.input.${input.key}`, label: input.label || input.key })),
+        ],
+      }]
+    : [];
+  const updateExecution = (patch: Partial<typeof execution>) =>
+    onDefinitionChange({
+      ...definition,
+      schemaVersion: Math.max(definition.schemaVersion, 2),
+      execution: { ...execution, ...patch },
+    });
 
   return (
     <div className="flex flex-col gap-5 py-2">
@@ -87,6 +112,43 @@ export function WorkflowSettingsFields({
           <span className="text-sm text-muted-foreground">{values.description || '-'}</span>
         )}
       </Row>
+
+      <Row label="Execution mode">
+        {editing ? (
+          <SearchSelect
+            options={[
+              { value: 'parallel', label: 'Parallel' },
+              { value: 'serialized', label: 'Serialized by key' },
+            ]}
+            value={execution.mode}
+            onChange={(mode) => updateExecution({ mode: mode as 'parallel' | 'serialized' })}
+            ariaLabel="Execution mode"
+            searchPlaceholder="Search execution modes…"
+          />
+        ) : (
+          <span className="text-sm font-medium" data-testid="execution-mode-value">
+            {execution.mode === 'serialized' ? 'Serialized by key' : 'Parallel'}
+          </span>
+        )}
+      </Row>
+
+      {execution.mode === 'serialized' && (
+        <Row label="Correlation key" required>
+          {editing ? (
+            <DynamicContentField
+              value={execution.correlationKey}
+              onChange={(correlationKey) => updateExecution({ correlationKey })}
+              groups={correlationGroups}
+              placeholder="{{ trigger.conversationId }}"
+              aria-label="Correlation key"
+            />
+          ) : (
+            <span className="font-mono text-sm" data-testid="correlation-key-value">
+              {execution.correlationKey || '-'}
+            </span>
+          )}
+        </Row>
+      )}
 
       {workflow && (
         <>

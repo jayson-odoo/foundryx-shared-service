@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkflowAiOutputParam, WorkflowDefinition } from '@/types/workflows';
-import { createNode, validAiOutputParams, validateDefinition } from './workflow-doc';
+import { createBlankDefinition, createNode, migrateWorkflowDefinition, validAiOutputParams, validateDefinition } from './workflow-doc';
 
 function aiDoc(outputParams: unknown): WorkflowDefinition {
   return {
@@ -25,6 +25,22 @@ function aiDoc(outputParams: unknown): WorkflowDefinition {
 }
 
 describe('createNode defaultConfig - omnichannel + AI Agent nodes (plan sprint-4/17)', () => {
+  it('creates a schema-v2 document with parallel execution defaults', () => {
+    expect(createBlankDefinition()).toMatchObject({
+      schemaVersion: 2,
+      execution: { mode: 'parallel', correlationKey: '' },
+    });
+  });
+
+  it('migrates an old document without changing its graph', () => {
+    const old = aiDoc([{ key: 'intent', type: 'string' }]);
+    const migrated = migrateWorkflowDefinition(old);
+    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.execution).toEqual({ mode: 'parallel', correlationKey: '' });
+    expect(migrated.nodes).toEqual(old.nodes);
+    expect(migrated.edges).toEqual(old.edges);
+  });
+
   it('seeds ai_agent.run with an empty output-params list', () => {
     const node = createNode('ai_agent.run', { x: 0, y: 0 });
     expect(node.kind).toBe('action');
@@ -118,5 +134,21 @@ describe('createNode defaultConfig - omnichannel + AI Agent nodes (plan sprint-4
         { key: 'bad-key', type: 'string' },
       ]),
     ).toEqual(params);
+  });
+
+  it('accepts Enum output values and stateful flags', () => {
+    const params = [{ key: 'status', type: 'enum' as const, enumValues: ['ready', 'blocked'], stateful: true }];
+    expect(validateDefinition(aiDoc(params))).toEqual([
+      expect.objectContaining({ message: expect.stringContaining('require serialized execution') }),
+    ]);
+    expect(validAiOutputParams(params)).toEqual(params);
+  });
+
+  it('requires a valid Correlation key for serialized execution', () => {
+    const doc = aiDoc([{ key: 'intent', type: 'string' }]);
+    doc.execution = { mode: 'serialized', correlationKey: 'trigger.conversationId' };
+    expect(validateDefinition(doc).some((issue) => issue.message.includes('valid Correlation key'))).toBe(true);
+    doc.execution.correlationKey = '{{ trigger.conversationId }}';
+    expect(validateDefinition(doc)).toEqual([]);
   });
 });

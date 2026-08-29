@@ -119,6 +119,7 @@ export function useWorkflowForm(
   initialEditing: boolean,
   canManage: boolean,
   debugRunId?: string,
+  canCode = true,
 ): UseWorkflowFormResult {
   const router = useRouter();
   const actions = useWorkflowActions();
@@ -364,6 +365,12 @@ export function useWorkflowForm(
       sendsMessage: doc.nodes.some(
         (node) => node.type === 'omnichannel.send_message',
       ),
+      mutatesRedis: doc.nodes.some((node) => {
+        if (node.type !== 'redis.command') return false;
+        const operation = node.config.operation;
+        return typeof operation === 'string' && ['set', 'delete', 'increment', 'list_push', 'list_pop'].includes(operation);
+      }),
+      runsCode: doc.nodes.some((node) => node.type === 'code.run'),
     }),
     [doc],
   );
@@ -536,6 +543,7 @@ export function useWorkflowForm(
                 canManage={canManage && !isNew}
                 templateOptions={templateOptions}
                 metadata={metadata}
+                canCode={canCode}
                 busy={busy}
                 onPublish={onPublish}
                 onUnpublish={onUnpublish}
@@ -587,6 +595,8 @@ export function useWorkflowForm(
               canManage={canManage}
               busy={busy}
               onSetActive={onSetActive}
+              definition={doc}
+              onDefinitionChange={handleDocChange}
             />
           ),
         },
@@ -633,6 +643,7 @@ export function useWorkflowForm(
     actions,
     busy,
     canManage,
+    canCode,
     debugBundle,
     debugInEditor,
     doc,

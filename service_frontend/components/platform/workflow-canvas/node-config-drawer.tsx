@@ -11,7 +11,7 @@
  * Read-only unless the form's Edit toggle is on.
  */
 import { useState } from 'react';
-import { Eye, Maximize2, Play, Plus, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowDown, ArrowUp, Eye, Maximize2, Play, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import { TemplateContentEditor } from '@/components/platform/template-preview/template-content-editor';
 import { templateEngineService } from '@/services/template-service';
 import { isCanvasDoc, type TemplateDocument } from '@/types/templates';
@@ -39,6 +39,7 @@ import type { RuleFact, RuleFactType, RuleGroup } from '@/types/rules';
 import type {
   NodeFieldDef,
   WorkflowAiOutputParam,
+  WorkflowCodeInput,
   WorkflowDefinition,
   WorkflowEntityField,
   WorkflowFieldAssignment,
@@ -52,6 +53,8 @@ import type {
 } from '@/types/workflows';
 import { CronBuilder } from './cron-builder';
 import { DynamicContentField, type DynamicContentGroup } from './dynamic-content-picker';
+import { CodeEditor, CodeCapabilities } from './code-editor';
+import { CodeInputsEditor } from './code-inputs-editor';
 
 export interface TemplateOption {
   value: string;
@@ -119,6 +122,20 @@ function aiOutputParams(node: WorkflowNode): WorkflowAiOutputParam[] {
   return validAiOutputParams(params);
 }
 
+function codeOutputParams(node: WorkflowNode): WorkflowAiOutputParam[] {
+  return validAiOutputParams(node.config.outputs);
+}
+
+function hasStatefulOutput(node: WorkflowNode): boolean {
+  return aiOutputParams(node).some((param) => param.stateful === true);
+}
+
+function reachableAgentNodes(doc: WorkflowDefinition, nodeId: string): WorkflowNode[] {
+  return ancestorsByDepth(doc, nodeId)
+    .map(({ node }) => node)
+    .filter((candidate) => candidate.type === 'ai_agent.run' && hasStatefulOutput(candidate));
+}
+
 /** Ancestors of `nodeId` whose outputs are referenceable here (D7), closest
  * first, labelled by unique node name + distance. */
 function upstreamGroups(
@@ -136,6 +153,9 @@ function upstreamGroups(
     } else if (node.kind === 'action') {
       const items = entry.outputs.map((o) => ({ key: `nodes.${node.id}.${o.key}`, label: o.label }));
       for (const p of aiOutputParams(node)) {
+        items.push({ key: `nodes.${node.id}.${p.key}`, label: p.description || p.key });
+      }
+      for (const p of codeOutputParams(node)) {
         items.push({ key: `nodes.${node.id}.${p.key}`, label: p.description || p.key });
       }
       groups.push({ sourceLabel, hint: backHint(depth), items });
@@ -188,6 +208,15 @@ function runContextFacts(
         push(`nodes.${node.id}.${o.key}`, o.label, 'string', `nodes.${node.id}`, label);
       }
       for (const p of aiOutputParams(node)) {
+        push(
+          `nodes.${node.id}.${p.key}`,
+          p.description || p.key,
+          p.type === 'number' ? 'number' : p.type === 'boolean' ? 'boolean' : 'string',
+          `nodes.${node.id}`,
+          label,
+        );
+      }
+      for (const p of codeOutputParams(node)) {
         push(
           `nodes.${node.id}.${p.key}`,
           p.description || p.key,
@@ -375,7 +404,8 @@ function AssignmentsEditor({
 const AI_PARAM_TYPES: { value: WorkflowAiOutputParam['type']; label: string }[] = [
   { value: 'string', label: 'Text' },
   { value: 'number', label: 'Number' },
-  { value: 'boolean', label: 'Yes / no' },
+  { value: 'boolean', label: 'Boolean' },
+  { value: 'enum', label: 'Enum' },
 ];
 
 /** key · type · description · required rows for the AI Agent action's
@@ -385,10 +415,12 @@ export function OutputParamsEditor({
   params,
   editing,
   onChange,
+  allowStateful = true,
 }: {
   params: WorkflowAiOutputParam[];
   editing: boolean;
   onChange: (next: WorkflowAiOutputParam[]) => void;
+  allowStateful?: boolean;
 }) {
   const update = (i: number, patch: Partial<WorkflowAiOutputParam>) =>
     onChange(
@@ -415,6 +447,10 @@ export function OutputParamsEditor({
         const type = typeof row.type === 'string' ? row.type : '';
         const description = typeof row.description === 'string' ? row.description : '';
         const required = row.required === true;
+        const stateful = row.stateful === true;
+        const enumValues = Array.isArray(row.enumValues)
+          ? row.enumValues.filter((value): value is string => typeof value === 'string')
+          : [];
         const duplicate = (keyCounts.get(key) ?? 0) > 1;
         const issue = !key.trim()
           ? 'Key is required.'
@@ -443,23 +479,34 @@ export function OutputParamsEditor({
                 <SearchSelect
                   options={AI_PARAM_TYPES}
                   value={type}
-                  onChange={(v) => update(i, { type: (v ?? 'string') as WorkflowAiOutputParam['type'] })}
+                  onChange={(v) => {
+                    const nextType = (v ?? 'string') as WorkflowAiOutputParam['type'];
+                    update(i, {
+                      type: nextType,
+                      ...(nextType === 'enum' ? { enumValues: enumValues.length ? enumValues : ['', ''] } : { enumValues: undefined }),
+                    });
+                  }}
                   ariaLabel={`Parameter ${i + 1} type`}
                   placeholder="Type…"
                   disabled={!editing}
                 />
               </div>
               {editing && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 shrink-0 text-destructive"
-                  aria-label={`Remove parameter ${i + 1}`}
-                  onClick={() => onChange(params.filter((_, idx) => idx !== i))}
-                >
-                  <Trash2 className="size-3.5" />
-                </Button>
+                <div className="flex shrink-0 items-center gap-0.5">
+                  <Button type="button" variant="ghost" size="icon" className="size-8" aria-label={`Move parameter ${i + 1} up`} disabled={i === 0} onClick={() => {
+                    const next = [...params];
+                    [next[i - 1], next[i]] = [next[i], next[i - 1]];
+                    onChange(next);
+                  }}><ArrowUp className="size-3.5" /></Button>
+                  <Button type="button" variant="ghost" size="icon" className="size-8" aria-label={`Move parameter ${i + 1} down`} disabled={i === params.length - 1} onClick={() => {
+                    const next = [...params];
+                    [next[i], next[i + 1]] = [next[i + 1], next[i]];
+                    onChange(next);
+                  }}><ArrowDown className="size-3.5" /></Button>
+                  <Button type="button" variant="ghost" size="icon" className="size-8 text-destructive" aria-label={`Remove parameter ${i + 1}`} onClick={() => onChange(params.filter((_, idx) => idx !== i))}>
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                </div>
               )}
             </div>
             {issue && (
@@ -486,7 +533,62 @@ export function OutputParamsEditor({
                 />
                 Required
               </label>
+              {allowStateful && (
+                <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={stateful}
+                    disabled={!editing}
+                    aria-label={`Parameter ${i + 1} stateful`}
+                    onChange={(e) => update(i, { stateful: e.target.checked })}
+                  />
+                  Stateful
+                </label>
+              )}
             </div>
+            {type === 'enum' && (
+              <div className="flex flex-col gap-1.5 rounded-md bg-muted/40 p-2" data-testid={`enum-values-${i + 1}`}>
+                <div className="text-[11px] font-medium text-muted-foreground">Enum values</div>
+                  {enumValues.map((enumValue, enumIndex) => (
+                    <div key={enumIndex} className="flex items-center gap-1.5">
+                    <Input
+                      value={enumValue}
+                      disabled={!editing}
+                      aria-label={`Parameter ${i + 1} enum value ${enumIndex + 1}`}
+                      aria-invalid={!enumValue.trim() || enumValues.filter((item) => item === enumValue).length > 1}
+                      onChange={(event) => {
+                        const next = enumValues.map((item, itemIndex) => itemIndex === enumIndex ? event.target.value : item);
+                        update(i, { enumValues: next });
+                      }}
+                    />
+                    {editing && (
+                      <div className="flex shrink-0 items-center gap-0.5">
+                        <Button type="button" variant="ghost" size="icon" className="size-8" aria-label={`Move enum value ${enumIndex + 1} up`} disabled={enumIndex === 0} onClick={() => {
+                          const next = [...enumValues];
+                          [next[enumIndex - 1], next[enumIndex]] = [next[enumIndex], next[enumIndex - 1]];
+                          update(i, { enumValues: next });
+                        }}><ArrowUp className="size-3.5" /></Button>
+                        <Button type="button" variant="ghost" size="icon" className="size-8" aria-label={`Move enum value ${enumIndex + 1} down`} disabled={enumIndex === enumValues.length - 1} onClick={() => {
+                          const next = [...enumValues];
+                          [next[enumIndex], next[enumIndex + 1]] = [next[enumIndex + 1], next[enumIndex]];
+                          update(i, { enumValues: next });
+                        }}><ArrowDown className="size-3.5" /></Button>
+                        <Button type="button" variant="ghost" size="icon" className="size-8 text-destructive" aria-label={`Remove enum value ${enumIndex + 1}`} onClick={() => update(i, { enumValues: enumValues.filter((_, itemIndex) => itemIndex !== enumIndex) })}>
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {editing && (
+                  <Button type="button" variant="outline" size="sm" onClick={() => update(i, { enumValues: [...enumValues, ''] })}>
+                    <Plus className="size-3.5" /> Add value
+                  </Button>
+                )}
+                {enumValues.length < 2 && <p className="text-xs text-destructive">Enum needs at least two values.</p>}
+                {enumValues.some((item, itemIndex) => !item.trim() || enumValues.indexOf(item) !== itemIndex) && <p className="text-xs text-destructive">Values must be nonblank and unique.</p>}
+              </div>
+            )}
           </div>
         );
       })}
@@ -539,6 +641,7 @@ export function NodeConfigDrawer({
     entry && entry.kind === 'action' ? entry.requiresConnection : undefined;
   const missingConnection =
     requiresConnection && metadata.connections && !metadata.connections[requiresConnection];
+  const missingCodeRunner = node.type === 'code.run' && metadata.codeRunnerAvailable === false;
   const duplicateName =
     node.kind !== 'if' &&
     doc.nodes.some(
@@ -677,9 +780,72 @@ export function NodeConfigDrawer({
         <OutputParamsEditor
           params={Array.isArray(value) ? (value as WorkflowAiOutputParam[]) : []}
           editing={editing}
+          allowStateful={node.type === 'ai_agent.run'}
           onChange={(next) => onConfigChange(node.id, { [field.key]: next })}
         />,
       );
+    }
+
+    if (field.type === 'clarificationOutput') {
+      const hasState = aiOutputParams(node).some((param) => param.stateful);
+      if (!hasState) return null;
+      const options = aiOutputParams(node)
+        .filter((param) => param.type === 'string' && !param.stateful)
+        .map((param) => ({ value: param.key, label: param.description || param.key }));
+      return wrap(
+        <SearchSelect
+          options={options}
+          value={typeof value === 'string' && value ? value : null}
+          onChange={(selected) => onConfigChange(node.id, { [field.key]: selected })}
+          ariaLabel={field.label}
+          placeholder="Choose a transient Text output…"
+          searchPlaceholder="Search outputs…"
+          disabled={!editing}
+        />,
+      );
+    }
+
+    if (field.type === 'agentNode') {
+      const options = reachableAgentNodes(doc, node.id).map((candidate) => ({
+        value: candidate.id,
+        label: nodeDisplayName(candidate, catalogEntry(candidate.type)?.label ?? candidate.type),
+      }));
+      return wrap(
+        <SearchSelect
+          options={options}
+          value={typeof value === 'string' && value ? value : null}
+          onChange={(selected) => onConfigChange(node.id, { [field.key]: selected })}
+          ariaLabel={field.label}
+          placeholder="Choose an earlier AI Agent…"
+          searchPlaceholder="Search agents…"
+          disabled={!editing}
+        />,
+      );
+    }
+
+    if (field.type === 'code') {
+      return wrap(
+        <CodeEditor
+          value={typeof value === 'string' ? value : ''}
+          editing={editing}
+          onChange={(source) => onConfigChange(node.id, { [field.key]: source })}
+        />,
+      );
+    }
+
+    if (field.type === 'codeInputs') {
+      return wrap(
+        <CodeInputsEditor
+          inputs={Array.isArray(value) ? (value as WorkflowCodeInput[]) : []}
+          groups={groups}
+          editing={editing}
+          onChange={(inputs) => onConfigChange(node.id, { [field.key]: inputs })}
+        />,
+      );
+    }
+
+    if (field.type === 'codeCapabilities') {
+      return wrap(<CodeCapabilities />);
     }
 
     if (field.type === 'form') {
@@ -921,6 +1087,16 @@ export function NodeConfigDrawer({
               ? 'Outgoing mail won’t be delivered until one is connected.'
               : 'Files will fall back to local storage until one is connected.'}
           </span>
+        </div>
+      )}
+
+      {missingCodeRunner && (
+        <div
+          className="flex items-start gap-2 rounded-md border border-amber-400/50 bg-amber-50/60 p-2.5 text-xs text-amber-700 dark:bg-amber-950/20 dark:text-amber-400"
+          data-testid="code-runner-warning"
+        >
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+          <span>Code runner is unavailable. Publishing and manual execution are blocked.</span>
         </div>
       )}
 

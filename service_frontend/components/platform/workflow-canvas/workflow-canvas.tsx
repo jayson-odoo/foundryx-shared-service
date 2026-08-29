@@ -79,6 +79,7 @@ export interface WorkflowCanvasProps {
   templateOptions: TemplateOption[];
   /** Triggerable entities + statuses/fields the node drawers resolve (D6). */
   metadata: WorkflowMetadata;
+  canCode?: boolean;
   debug?: WorkflowDebugBundle | null;
 }
 
@@ -97,7 +98,7 @@ function CanvasDropZone({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metadata, debug }: WorkflowCanvasProps) {
+export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metadata, debug, canCode = true }: WorkflowCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
   const [menuView, setMenuView] = useState<'main' | 'replace'>('main');
@@ -318,7 +319,7 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
     [doc, selectedNodeId],
   );
 
-  const issues = useMemo(() => validateDefinition(doc), [doc]);
+  const issues = useMemo(() => validateDefinition(doc, metadata), [doc, metadata]);
   const errors = issues.filter((i) => i.level === 'error');
 
   const handleConfigChange = useCallback(
@@ -374,7 +375,7 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
           <aside className="w-full shrink-0 overflow-y-auto rounded-lg border border-input bg-background p-3 lg:h-[calc(100vh-19rem)] lg:min-h-[480px] lg:w-56">
           {editing ? (
-            <NodePalette hasTrigger={hasTrigger(doc)} disabled={!editing} onAdd={(t) => addNodeAt(t)} />
+            <NodePalette hasTrigger={hasTrigger(doc)} disabled={!editing} canCode={canCode} onAdd={(t) => addNodeAt(t)} />
           ) : (
             <p className="px-1 py-6 text-center text-xs text-muted-foreground">
               Enable Edit to add nodes.

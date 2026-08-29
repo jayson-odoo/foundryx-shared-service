@@ -29,6 +29,8 @@ import { SearchSelect } from '@/components/platform/search-select';
 export interface RunDialogSideEffects {
   callsAi: boolean;
   sendsMessage: boolean;
+  mutatesRedis?: boolean;
+  runsCode?: boolean;
 }
 
 export interface RunDialogProps {
@@ -44,6 +46,9 @@ export interface RunDialogProps {
 }
 
 function sideEffectWarning(sideEffects: RunDialogSideEffects): string | null {
+  if (sideEffects.mutatesRedis && sideEffects.runsCode) return 'Testing will mutate Redis data and run the configured Code action.';
+  if (sideEffects.mutatesRedis) return 'Testing will mutate Redis data.';
+  if (sideEffects.runsCode) return 'Testing will run the configured Code action.';
   if (sideEffects.callsAi && sideEffects.sendsMessage) {
     return 'Testing will call the configured AI model and send a message through the selected sandbox channel.';
   }

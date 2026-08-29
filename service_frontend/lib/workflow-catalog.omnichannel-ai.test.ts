@@ -44,12 +44,21 @@ describe('omnichannel + AI Agent catalog entries (plan sprint-4/17)', () => {
   it('the AI Agent action declares its config fields and no static outputs', () => {
     const entry = catalogEntry('ai_agent.run');
     const keys = (entry?.fields ?? []).map((f) => f.key);
-    expect(keys).toEqual(['agentId', 'instructions', 'inputText', 'outputParams']);
+    expect(keys).toEqual(['agentId', 'instructions', 'inputText', 'outputParams', 'clarificationOutputKey']);
     const outputSchemaField = entry?.fields.find((f) => f.key === 'outputParams');
     expect(outputSchemaField?.type).toBe('outputSchema');
     const agentField = entry?.fields.find((f) => f.key === 'agentId');
     expect(agentField?.type).toBe('aiAgent');
     expect(entry?.outputs).toEqual([]);
+  });
+
+  it('registers generic state, Redis, and permission-gated Code actions', () => {
+    expect(catalogEntry('ai_agent.clear_state')?.fields[0]).toMatchObject({ type: 'agentNode' });
+    const redis = catalogEntry('redis.command');
+    expect(redis?.fields.find((field) => field.key === 'operation')?.options?.map((option) => option.label)).toEqual([
+      'Get', 'Set', 'Delete', 'Increment', 'List Push', 'List Pop', 'List Length',
+    ]);
+    expect(catalogEntry('code.run')).toMatchObject({ permission: 'workflows.code' });
   });
 
   it('the incoming-message trigger exposes an omnichannelChannel field', () => {

@@ -114,7 +114,14 @@ const FORMS = [
 export const mockWorkflowMetadataService = {
   getMetadata(): Promise<WorkflowMetadata> {
     return delay(
-      { entities: ENTITIES, connections: { email: true, storage: false }, forms: FORMS },
+      {
+        entities: ENTITIES,
+        connections: { email: true, storage: false },
+        forms: FORMS,
+        codeRunnerAvailable: true,
+        omnichannelChannels: [{ id: 'chn-demo', name: 'Demo channel' }],
+        aiAgents: [{ id: 'agent-demo', name: 'Demo classifier', model: 'stub' }],
+      },
       120,
     );
   },

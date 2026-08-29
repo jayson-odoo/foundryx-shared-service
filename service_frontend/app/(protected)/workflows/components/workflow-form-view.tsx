@@ -24,6 +24,7 @@ export function WorkflowFormView({ workflowId, initialEditing, debugRunId }: Wor
     initialEditing,
     can('workflows.manage'),
     debugRunId,
+    can('workflows.code'),
   );
 
   if (isLoading) {

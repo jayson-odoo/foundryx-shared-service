@@ -13,6 +13,13 @@ import type { TemplateDocument } from './templates';
  * canvas/executor are built kind-extensible from the start). */
 export type WorkflowNodeKind = 'trigger' | 'action' | 'if';
 
+export type WorkflowExecutionMode = 'parallel' | 'serialized';
+
+export interface WorkflowExecution {
+  mode: WorkflowExecutionMode;
+  correlationKey: string;
+}
+
 /** A node's config is a free-form bag validated against its catalog entry's
  * field schema. Values are primitives, merge-templated strings, or the
  * structured bags some fields carry (manual inputs, field assignments, the IF
@@ -27,6 +34,8 @@ export type WorkflowNodeConfig = Record<
   | WorkflowManualInput[]
   | WorkflowFieldAssignment[]
   | WorkflowAiOutputParam[]
+  | WorkflowCodeInput[]
+  | WorkflowCodeOutputParam[]
   | RuleGroup
   // A copied template block document (email.send per-use design).
   | TemplateDocument
@@ -50,7 +59,22 @@ export interface WorkflowFieldAssignment {
  * (plan sprint-4/17) - becomes one JSON-Schema property server-side. */
 export interface WorkflowAiOutputParam {
   key: string;
-  type: 'string' | 'number' | 'boolean';
+  type: 'string' | 'number' | 'boolean' | 'enum';
+  enumValues?: string[];
+  description?: string;
+  required?: boolean;
+  stateful?: boolean;
+}
+
+export interface WorkflowCodeInput {
+  key: string;
+  value: string;
+}
+
+export interface WorkflowCodeOutputParam {
+  key: string;
+  type: 'string' | 'number' | 'boolean' | 'enum';
+  enumValues?: string[];
   description?: string;
   required?: boolean;
 }
@@ -74,6 +98,8 @@ export interface WorkflowEdge {
 
 export interface WorkflowDefinition {
   schemaVersion: number;
+  /** Optional in v1 documents. Omitted means parallel execution. */
+  execution?: WorkflowExecution;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
 }
@@ -102,7 +128,12 @@ export interface NodeFieldDef {
     | 'assignments'
     | 'omnichannelChannel'
     | 'aiAgent'
-    | 'outputSchema';
+    | 'outputSchema'
+    | 'clarificationOutput'
+    | 'agentNode'
+    | 'code'
+    | 'codeInputs'
+    | 'codeCapabilities';
   required?: boolean;
   placeholder?: string;
   /** For `select` - static options (dynamic ones resolve in Phase B). */
@@ -152,6 +183,10 @@ export interface ActionCatalogEntry {
   requiresConnection?: 'email' | 'storage';
   /** Real side effects that warrant a confirm before a manual/test run (D13). */
   destructive?: boolean;
+  /** Dynamic side effects for actions whose operation determines the risk. */
+  destructiveWhen?: { field: string; values: string[] };
+  /** Optional capability required to add or edit this action. */
+  permission?: string;
   /** Owning module - see `TriggerCatalogEntry.module`. */
   module?: string;
 }
@@ -223,6 +258,8 @@ export interface WorkflowMetadata {
   /** Tenant's enabled AI agents - backs the AI Agent action's agent picker
    * (plan sprint-4/17). */
   aiAgents?: { id: string; name: string; model: string }[];
+  /** Health of the external Code runner, when the capability is configured. */
+  codeRunnerAvailable?: boolean;
 }
 
 /** One backend-validated sandbox contact/channel pair for test-trigger runs. */
