@@ -302,6 +302,8 @@ export interface WorkflowVersionSummary {
   publishedAt: string;
   publishedByName: string;
   notes: string | null;
+  /** Included by the Phase 1 mock for draft-vs-published Code health checks. */
+  definition?: WorkflowDefinition;
 }
 
 /** The detail entity. Superset of WorkflowListItem so the ONE action registry

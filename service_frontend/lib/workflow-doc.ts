@@ -4,38 +4,61 @@
  * doc) so undo/redo can keep a history of snapshots, exactly like the email
  * editor's block-doc helpers.
  */
-import { catalogEntry, isTriggerType } from '@/lib/workflow-catalog';
 import type {
+  WorkflowAiOutputParam,
   WorkflowDefinition,
   WorkflowEdge,
-  WorkflowAiOutputParam,
+  WorkflowExecution,
   WorkflowNode,
   WorkflowNodeConfig,
   WorkflowNodeKind,
-  WorkflowExecution,
 } from '@/types/workflows';
+import { catalogEntry, isTriggerType } from '@/lib/workflow-catalog';
+import { pythonSyntaxIssues } from '@/lib/python-diagnostics';
 
 export const WORKFLOW_SCHEMA_VERSION = 2;
 
 // Conservative ASCII identifier grammar. Output keys are inserted into merge
 // paths as `nodes.<id>.<key>` and must remain one merge-token segment.
 export const AI_OUTPUT_PARAM_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-export const AI_OUTPUT_PARAM_TYPES = ['string', 'number', 'boolean', 'enum'] as const;
+export const AI_OUTPUT_PARAM_TYPES = [
+  'string',
+  'number',
+  'boolean',
+  'enum',
+] as const;
 const AI_OUTPUT_PARAM_PREFIX = 'AI Agent: "Output parameters"';
 export const CORRELATION_KEY_RE = /^\{\{\s*[A-Za-z_][A-Za-z0-9_.]*\s*\}\}$/;
 
 export function codeSourceIssues(source: string): string[] {
-  const issues: string[] = [];
+  const issues: string[] = pythonSyntaxIssues(source);
   const forbidden = /(^|\s)(import|from)\s|\b(exec|eval|__import__)\s*\(/;
-  const forbiddenLine = source.split(/\r?\n/).findIndex((line) => forbidden.test(line));
-  if (forbiddenLine >= 0) issues.push(`Unsupported syntax on line ${forbiddenLine + 1}.`);
-  const pairs: Array<[string, string]> = [['(', ')'], ['[', ']'], ['{', '}']];
+  const forbiddenLine = source
+    .split(/\r?\n/)
+    .findIndex((line) => forbidden.test(line));
+  if (forbiddenLine >= 0)
+    issues.push(`Unsupported syntax on line ${forbiddenLine + 1}.`);
+  const pairs: Array<[string, string]> = [
+    ['(', ')'],
+    ['[', ']'],
+    ['{', '}'],
+  ];
   for (const [opening, closing] of pairs) {
-    if (source.split('').filter((character) => character === opening).length !== source.split('').filter((character) => character === closing).length) {
+    if (
+      source.split('').filter((character) => character === opening).length !==
+      source.split('').filter((character) => character === closing).length
+    ) {
       issues.push(`Unbalanced ${opening}${closing} delimiters.`);
     }
   }
-  if (source.trim() && !/\bresult\s*=/.test(source)) issues.push('Code must assign a result dictionary.');
+  if (source.trim()) {
+    const assignment = source.match(/\bresult\s*=\s*([^\r\n]*)/);
+    if (!assignment) {
+      issues.push('Code must assign a result dictionary.');
+    } else if (!assignment[1].trim()) {
+      issues.push('Result assignment must include a value.');
+    }
+  }
   return issues;
 }
 
@@ -45,7 +68,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function outputParamIssues(value: unknown): string[] {
   if (!Array.isArray(value)) {
-    return [`${AI_OUTPUT_PARAM_PREFIX} must be a non-empty list of parameter objects.`];
+    return [
+      `${AI_OUTPUT_PARAM_PREFIX} must be a non-empty list of parameter objects.`,
+    ];
   }
   if (!value.length) {
     return [`${AI_OUTPUT_PARAM_PREFIX} must contain at least one parameter.`];
@@ -55,16 +80,22 @@ export function outputParamIssues(value: unknown): string[] {
   const seen = new Set<string>();
   for (const row of value) {
     if (!isRecord(row)) {
-      issues.push(`${AI_OUTPUT_PARAM_PREFIX} contains a parameter that is not an object.`);
+      issues.push(
+        `${AI_OUTPUT_PARAM_PREFIX} contains a parameter that is not an object.`,
+      );
       continue;
     }
     const key = row.key;
     if (typeof key !== 'string' || !key.trim()) {
-      issues.push(`${AI_OUTPUT_PARAM_PREFIX} contains a parameter without a key.`);
+      issues.push(
+        `${AI_OUTPUT_PARAM_PREFIX} contains a parameter without a key.`,
+      );
       continue;
     }
     if (key !== key.trim()) {
-      issues.push(`${AI_OUTPUT_PARAM_PREFIX} contains a key with surrounding whitespace.`);
+      issues.push(
+        `${AI_OUTPUT_PARAM_PREFIX} contains a key with surrounding whitespace.`,
+      );
       continue;
     }
     if (!AI_OUTPUT_PARAM_KEY_RE.test(key)) {
@@ -79,28 +110,40 @@ export function outputParamIssues(value: unknown): string[] {
     }
     if (
       typeof row.type !== 'string' ||
-      !AI_OUTPUT_PARAM_TYPES.includes(row.type as (typeof AI_OUTPUT_PARAM_TYPES)[number])
+      !AI_OUTPUT_PARAM_TYPES.includes(
+        row.type as (typeof AI_OUTPUT_PARAM_TYPES)[number],
+      )
     ) {
-      issues.push(`${AI_OUTPUT_PARAM_PREFIX} contains a parameter with an invalid type.`);
+      issues.push(
+        `${AI_OUTPUT_PARAM_PREFIX} contains a parameter with an invalid type.`,
+      );
     }
     if (row.type === 'enum') {
       const values = row.enumValues;
       if (!Array.isArray(values) || values.length < 2) {
-        issues.push(`${AI_OUTPUT_PARAM_PREFIX} enum parameters need at least two values.`);
+        issues.push(
+          `${AI_OUTPUT_PARAM_PREFIX} enum parameters need at least two values.`,
+        );
       } else {
         const enumSeen = new Set<string>();
         for (const item of values) {
           if (typeof item !== 'string' || !item.trim()) {
-            issues.push(`${AI_OUTPUT_PARAM_PREFIX} enum values cannot be blank.`);
+            issues.push(
+              `${AI_OUTPUT_PARAM_PREFIX} enum values cannot be blank.`,
+            );
           } else if (enumSeen.has(item)) {
-            issues.push(`${AI_OUTPUT_PARAM_PREFIX} enum values must be unique.`);
+            issues.push(
+              `${AI_OUTPUT_PARAM_PREFIX} enum values must be unique.`,
+            );
           } else {
             enumSeen.add(item);
           }
         }
       }
     } else if (row.enumValues !== undefined) {
-      issues.push(`${AI_OUTPUT_PARAM_PREFIX} enum values are only valid for Enum parameters.`);
+      issues.push(
+        `${AI_OUTPUT_PARAM_PREFIX} enum values are only valid for Enum parameters.`,
+      );
     }
   }
   return issues;
@@ -119,7 +162,9 @@ export function validAiOutputParams(value: unknown): WorkflowAiOutputParam[] {
       key !== key.trim() ||
       !AI_OUTPUT_PARAM_KEY_RE.test(key) ||
       typeof type !== 'string' ||
-      !AI_OUTPUT_PARAM_TYPES.includes(type as (typeof AI_OUTPUT_PARAM_TYPES)[number]) ||
+      !AI_OUTPUT_PARAM_TYPES.includes(
+        type as (typeof AI_OUTPUT_PARAM_TYPES)[number],
+      ) ||
       seen.has(key)
     ) {
       continue;
@@ -129,9 +174,15 @@ export function validAiOutputParams(value: unknown): WorkflowAiOutputParam[] {
       key,
       type: type as WorkflowAiOutputParam['type'],
       ...(type === 'enum' && Array.isArray(row.enumValues)
-        ? { enumValues: row.enumValues.filter((v): v is string => typeof v === 'string') }
+        ? {
+            enumValues: row.enumValues.filter(
+              (v): v is string => typeof v === 'string',
+            ),
+          }
         : {}),
-      ...(typeof row.description === 'string' ? { description: row.description } : {}),
+      ...(typeof row.description === 'string'
+        ? { description: row.description }
+        : {}),
       ...(typeof row.required === 'boolean' ? { required: row.required } : {}),
       ...(typeof row.stateful === 'boolean' ? { stateful: row.stateful } : {}),
     });
@@ -163,7 +214,9 @@ export function migrateWorkflowDefinition(value: unknown): WorkflowDefinition {
     ? {
         mode: value.execution.mode === 'serialized' ? 'serialized' : 'parallel',
         correlationKey:
-          typeof value.execution.correlationKey === 'string' ? value.execution.correlationKey : '',
+          typeof value.execution.correlationKey === 'string'
+            ? value.execution.correlationKey
+            : '',
       }
     : { mode: 'parallel', correlationKey: '' };
   return {
@@ -182,9 +235,12 @@ function defaultConfig(type: string): WorkflowNodeConfig {
   if (type === 'manual') return { inputs: [] };
   if (type === 'email.send') return { mode: 'template' };
   if (type === 'entity.field_changed') return { entityType: '', field: '' };
-  if (type === 'entity.status_changed') return { entityType: '', fromStatus: '', toStatus: '' };
-  if (type === 'entity.transition_status') return { entityType: '', recordId: '', toStatus: '' };
-  if (type === 'entity.update') return { entityType: '', recordId: '', assignments: [] };
+  if (type === 'entity.status_changed')
+    return { entityType: '', fromStatus: '', toStatus: '' };
+  if (type === 'entity.transition_status')
+    return { entityType: '', recordId: '', toStatus: '' };
+  if (type === 'entity.update')
+    return { entityType: '', recordId: '', assignments: [] };
   if (type.startsWith('entity.')) return { entityType: '' };
   if (type === 'form.submitted') return { formId: '' };
   if (type === 'schedule.cron') return { cron: '0 9 * * *', timezone: '' };
@@ -192,7 +248,8 @@ function defaultConfig(type: string): WorkflowNodeConfig {
   // Omnichannel + AI Agent nodes (plan sprint-4/17).
   if (type === 'omnichannel.message_received') return { channelId: null };
   if (type === 'omnichannel.get_contact') return { contactId: '' };
-  if (type === 'omnichannel.send_message') return { contactId: '', message: '' };
+  if (type === 'omnichannel.send_message')
+    return { contactId: '', message: '' };
   if (type === 'ai_agent.run')
     return { agentId: '', instructions: '', inputText: '', outputParams: [] };
   if (type === 'ai_agent.clear_state') return { agentNodeId: '' };
@@ -213,7 +270,8 @@ export function createNode(
   position: { x: number; y: number },
 ): WorkflowNode {
   const entry = catalogEntry(type);
-  const kind: WorkflowNodeKind = entry?.kind ?? (isTriggerType(type) ? 'trigger' : 'action');
+  const kind: WorkflowNodeKind =
+    entry?.kind ?? (isTriggerType(type) ? 'trigger' : 'action');
   return {
     id: newId(kind === 'trigger' ? 'trg' : kind === 'action' ? 'act' : 'if'),
     kind,
@@ -230,7 +288,10 @@ export function hasTrigger(doc: WorkflowDefinition): boolean {
 /** A node's display name - the user-set `config.name`, else the catalog label.
  * Names disambiguate two same-type nodes (n8n behavior); refs stay id-based so
  * a rename never breaks an expression. */
-export function nodeDisplayName(node: WorkflowNode, fallbackLabel: string): string {
+export function nodeDisplayName(
+  node: WorkflowNode,
+  fallbackLabel: string,
+): string {
   const name = node.config?.name;
   return typeof name === 'string' && name.trim() ? name.trim() : fallbackLabel;
 }
@@ -239,7 +300,9 @@ export function nodeDisplayName(node: WorkflowNode, fallbackLabel: string): stri
  * every node is identifiable in the dynamic-content picker. */
 export function uniqueNodeName(doc: WorkflowDefinition, base: string): string {
   const used = new Set(
-    doc.nodes.map((n) => nodeDisplayName(n, catalogEntry(n.type)?.label ?? n.type)),
+    doc.nodes.map((n) =>
+      nodeDisplayName(n, catalogEntry(n.type)?.label ?? n.type),
+    ),
   );
   if (!used.has(base)) return base;
   let i = 2;
@@ -247,11 +310,17 @@ export function uniqueNodeName(doc: WorkflowDefinition, base: string): string {
   return `${base} ${i}`;
 }
 
-export function addNode(doc: WorkflowDefinition, node: WorkflowNode): WorkflowDefinition {
+export function addNode(
+  doc: WorkflowDefinition,
+  node: WorkflowNode,
+): WorkflowDefinition {
   return { ...doc, nodes: [...doc.nodes, node] };
 }
 
-export function removeNode(doc: WorkflowDefinition, nodeId: string): WorkflowDefinition {
+export function removeNode(
+  doc: WorkflowDefinition,
+  nodeId: string,
+): WorkflowDefinition {
   return {
     ...doc,
     nodes: doc.nodes.filter((n) => n.id !== nodeId),
@@ -282,12 +351,18 @@ export function replaceNodeType(
   newType: string,
 ): WorkflowDefinition {
   const entry = catalogEntry(newType);
-  const kind: WorkflowNodeKind = entry?.kind ?? (isTriggerType(newType) ? 'trigger' : 'action');
+  const kind: WorkflowNodeKind =
+    entry?.kind ?? (isTriggerType(newType) ? 'trigger' : 'action');
   return {
     ...doc,
     nodes: doc.nodes.map((n) =>
       n.id === nodeId
-        ? { ...n, type: newType, kind, config: { ...defaultConfig(newType), name: n.config.name } }
+        ? {
+            ...n,
+            type: newType,
+            kind,
+            config: { ...defaultConfig(newType), name: n.config.name },
+          }
         : n,
     ),
   };
@@ -310,7 +385,9 @@ export function setPositions(
 ): WorkflowDefinition {
   return {
     ...doc,
-    nodes: doc.nodes.map((n) => (positions[n.id] ? { ...n, position: positions[n.id] } : n)),
+    nodes: doc.nodes.map((n) =>
+      positions[n.id] ? { ...n, position: positions[n.id] } : n,
+    ),
   };
 }
 
@@ -348,10 +425,16 @@ export function addEdge(
   const kept = doc.edges.filter(
     (e) => !(e.source === edge.source && (e.sourcePort ?? 'out') === port),
   );
-  return { ...doc, edges: [...kept, { ...edge, id: newId('e'), sourcePort: port }] };
+  return {
+    ...doc,
+    edges: [...kept, { ...edge, id: newId('e'), sourcePort: port }],
+  };
 }
 
-export function removeEdge(doc: WorkflowDefinition, edgeId: string): WorkflowDefinition {
+export function removeEdge(
+  doc: WorkflowDefinition,
+  edgeId: string,
+): WorkflowDefinition {
   return { ...doc, edges: doc.edges.filter((e) => e.id !== edgeId) };
 }
 
@@ -359,8 +442,11 @@ export function removeEdge(doc: WorkflowDefinition, edgeId: string): WorkflowDef
  * end (the publish validator flags those - D17). */
 export function topoOrder(doc: WorkflowDefinition): WorkflowNode[] {
   const indegree = new Map<string, number>(doc.nodes.map((n) => [n.id, 0]));
-  for (const e of doc.edges) indegree.set(e.target, (indegree.get(e.target) ?? 0) + 1);
-  const queue = doc.nodes.filter((n) => (indegree.get(n.id) ?? 0) === 0).map((n) => n.id);
+  for (const e of doc.edges)
+    indegree.set(e.target, (indegree.get(e.target) ?? 0) + 1);
+  const queue = doc.nodes
+    .filter((n) => (indegree.get(n.id) ?? 0) === 0)
+    .map((n) => n.id);
   const adjacency = new Map<string, string[]>();
   for (const e of doc.edges) {
     adjacency.set(e.source, [...(adjacency.get(e.source) ?? []), e.target]);
@@ -392,20 +478,38 @@ export interface DefinitionIssue {
 
 /** Mirror of the backend `validate_definition` (D17) - surfaced live in the
  * editor so publish failures are visible before the click. */
-export function validateDefinition(doc: WorkflowDefinition, metadata?: { codeRunnerAvailable?: boolean }): DefinitionIssue[] {
+export function validateDefinition(
+  doc: WorkflowDefinition,
+  metadata?: { codeRunnerAvailable?: boolean },
+): DefinitionIssue[] {
+  void metadata;
   const issues: DefinitionIssue[] = [];
   const triggers = doc.nodes.filter((n) => n.kind === 'trigger');
-  if (triggers.length === 0) issues.push({ level: 'error', message: 'Add a trigger to start the workflow.' });
-  if (triggers.length > 1) issues.push({ level: 'error', message: 'A workflow can have only one trigger.' });
+  if (triggers.length === 0)
+    issues.push({
+      level: 'error',
+      message: 'Add a trigger to start the workflow.',
+    });
+  if (triggers.length > 1)
+    issues.push({
+      level: 'error',
+      message: 'A workflow can have only one trigger.',
+    });
 
   const trigger = triggers[0];
   const execution = doc.execution;
-  const statefulAgent = doc.nodes.some((node) =>
-    node.type === 'ai_agent.run' &&
-    validAiOutputParams(node.config.outputParams).some((param) => param.stateful),
+  const statefulAgent = doc.nodes.some(
+    (node) =>
+      node.type === 'ai_agent.run' &&
+      validAiOutputParams(node.config.outputParams).some(
+        (param) => param.stateful,
+      ),
   );
   const correlationKey = execution?.correlationKey?.trim() ?? '';
-  if (execution?.mode === 'serialized' && (!correlationKey || !CORRELATION_KEY_RE.test(correlationKey))) {
+  if (
+    execution?.mode === 'serialized' &&
+    (!correlationKey || !CORRELATION_KEY_RE.test(correlationKey))
+  ) {
     issues.push({
       level: 'error',
       message: 'Serialized execution requires a valid Correlation key.',
@@ -414,11 +518,16 @@ export function validateDefinition(doc: WorkflowDefinition, metadata?: { codeRun
   if (statefulAgent && (execution?.mode !== 'serialized' || !correlationKey)) {
     issues.push({
       level: 'error',
-      message: 'Stateful AI Agent outputs require serialized execution and a Correlation key.',
+      message:
+        'Stateful AI Agent outputs require serialized execution and a Correlation key.',
     });
   }
   if (trigger && doc.edges.some((e) => e.target === trigger.id)) {
-    issues.push({ level: 'error', message: 'The trigger cannot have an incoming connection.', nodeId: trigger.id });
+    issues.push({
+      level: 'error',
+      message: 'The trigger cannot have an incoming connection.',
+      nodeId: trigger.id,
+    });
   }
 
   // Unique node names - refs are id-based but a duplicate name is ambiguous in
@@ -433,7 +542,11 @@ export function validateDefinition(doc: WorkflowDefinition, metadata?: { codeRun
     const nm = nodeDisplayName(n, catalogEntry(n.type)?.label ?? n.type);
     if ((nameCount.get(nm) ?? 0) > 1) {
       if (!flagged.has(nm)) {
-        issues.push({ level: 'error', message: `Two nodes are named "${nm}" - names must be unique.`, nodeId: n.id });
+        issues.push({
+          level: 'error',
+          message: `Two nodes are named "${nm}" - names must be unique.`,
+          nodeId: n.id,
+        });
         flagged.add(nm);
       }
     }
@@ -454,7 +567,11 @@ export function validateDefinition(doc: WorkflowDefinition, metadata?: { codeRun
     }
     for (const n of doc.nodes) {
       if (!reachable.has(n.id)) {
-        issues.push({ level: 'error', message: 'Node is not connected to the trigger.', nodeId: n.id });
+        issues.push({
+          level: 'error',
+          message: 'Node is not connected to the trigger.',
+          nodeId: n.id,
+        });
       }
     }
   }
@@ -464,7 +581,10 @@ export function validateDefinition(doc: WorkflowDefinition, metadata?: { codeRun
     const entry = catalogEntry(n.type);
     if (!entry) continue;
     for (const field of entry.fields) {
-      if (field.showWhen && n.config[field.showWhen.field] !== field.showWhen.value) {
+      if (
+        field.showWhen &&
+        n.config[field.showWhen.field] !== field.showWhen.value
+      ) {
         continue; // hidden field - don't require it
       }
       if (field.required) {
@@ -476,29 +596,34 @@ export function validateDefinition(doc: WorkflowDefinition, metadata?: { codeRun
           (Array.isArray(value) && value.length === 0);
         if (field.type === 'outputSchema') {
           if (value === undefined || value === null || value === '') {
-            issues.push({ level: 'error', message: `${entry.label}: "${field.label}" is required.`, nodeId: n.id });
+            issues.push({
+              level: 'error',
+              message: `${entry.label}: "${field.label}" is required.`,
+              nodeId: n.id,
+            });
           } else {
             for (const message of outputParamIssues(value)) {
               issues.push({ level: 'error', message, nodeId: n.id });
             }
           }
         } else if (empty) {
-          issues.push({ level: 'error', message: `${entry.label}: "${field.label}" is required.`, nodeId: n.id });
+          issues.push({
+            level: 'error',
+            message: `${entry.label}: "${field.label}" is required.`,
+            nodeId: n.id,
+          });
         }
       }
     }
     // Connection-resolvability warning (warn-not-block, D17) needs real
     // connection data - added in Phase B.
-    if (n.type === 'code.run' && metadata?.codeRunnerAvailable === false) {
-      issues.push({
-        level: 'error',
-        message: 'Code runner is unavailable. Publishing requires runner health.',
-        nodeId: n.id,
-      });
-    }
     if (n.type === 'code.run' && typeof n.config.source === 'string') {
       for (const message of codeSourceIssues(n.config.source)) {
-        issues.push({ level: 'error', message: `Code: ${message}`, nodeId: n.id });
+        issues.push({
+          level: 'error',
+          message: `Code: ${message}`,
+          nodeId: n.id,
+        });
       }
     }
   }

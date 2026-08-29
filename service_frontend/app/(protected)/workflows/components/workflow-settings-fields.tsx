@@ -1,18 +1,33 @@
 'use client';
 
 import type { UseFormReturn } from 'react-hook-form';
+import type {
+  Workflow,
+  WorkflowDefinition,
+  WorkflowMetadata,
+} from '@/types/workflows';
+import { useDatetime } from '@/hooks/use-datetime';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { SearchSelect } from '@/components/platform/search-select';
-import { DynamicContentField, type DynamicContentGroup } from '@/components/platform/workflow-canvas/dynamic-content-picker';
-import { catalogEntry } from '@/lib/workflow-catalog';
-import { useDatetime } from '@/hooks/use-datetime';
-import type { Workflow, WorkflowDefinition, WorkflowManualInput } from '@/types/workflows';
+import {
+  DynamicContentField,
+  type DynamicContentGroup,
+} from '@/components/platform/workflow-canvas/dynamic-content-picker';
+import { triggerOutputItems } from '@/components/platform/workflow-canvas/node-config-drawer';
 import type { WorkflowFormValues } from './use-workflow-form';
 
-function Row({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+function Row({
+  label,
+  required,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <div className="grid grid-cols-1 gap-1.5 md:grid-cols-[200px_1fr] md:items-start md:gap-4">
       <Label className="pt-2 text-sm text-muted-foreground">
@@ -33,6 +48,7 @@ export interface WorkflowSettingsFieldsProps {
   onSetActive: (active: boolean) => void;
   definition: WorkflowDefinition;
   onDefinitionChange: (definition: WorkflowDefinition) => void;
+  metadata: WorkflowMetadata;
 }
 
 export function WorkflowSettingsFields({
@@ -44,20 +60,22 @@ export function WorkflowSettingsFields({
   onSetActive,
   definition,
   onDefinitionChange,
+  metadata,
 }: WorkflowSettingsFieldsProps) {
   const values = form.watch();
   const { formatDateTime } = useDatetime();
-  const execution = definition.execution ?? { mode: 'parallel' as const, correlationKey: '' };
+  const execution = definition.execution ?? {
+    mode: 'parallel' as const,
+    correlationKey: '',
+  };
   const trigger = definition.nodes.find((node) => node.kind === 'trigger');
-  const triggerEntry = trigger ? catalogEntry(trigger.type) : undefined;
   const correlationGroups: DynamicContentGroup[] = trigger
-    ? [{
-        sourceLabel: triggerEntry?.label ?? 'Trigger',
-        items: [
-          ...(triggerEntry?.outputs ?? []),
-          ...((Array.isArray(trigger.config.inputs) ? trigger.config.inputs : []) as WorkflowManualInput[]).map((input) => ({ key: `trigger.input.${input.key}`, label: input.label || input.key })),
-        ],
-      }]
+    ? [
+        {
+          sourceLabel: 'Trigger',
+          items: triggerOutputItems(trigger, metadata),
+        },
+      ]
     : [];
   const updateExecution = (patch: Partial<typeof execution>) =>
     onDefinitionChange({
@@ -92,7 +110,9 @@ export function WorkflowSettingsFields({
             aria-label="Workflow name"
             value={values.name}
             disabled={busy}
-            onChange={(e) => form.setValue('name', e.target.value, { shouldDirty: true })}
+            onChange={(e) =>
+              form.setValue('name', e.target.value, { shouldDirty: true })
+            }
           />
         ) : (
           <span className="text-sm font-medium">{values.name || '-'}</span>
@@ -106,10 +126,16 @@ export function WorkflowSettingsFields({
             rows={3}
             value={values.description}
             disabled={busy}
-            onChange={(e) => form.setValue('description', e.target.value, { shouldDirty: true })}
+            onChange={(e) =>
+              form.setValue('description', e.target.value, {
+                shouldDirty: true,
+              })
+            }
           />
         ) : (
-          <span className="text-sm text-muted-foreground">{values.description || '-'}</span>
+          <span className="text-sm text-muted-foreground">
+            {values.description || '-'}
+          </span>
         )}
       </Row>
 
@@ -121,12 +147,17 @@ export function WorkflowSettingsFields({
               { value: 'serialized', label: 'Serialized by key' },
             ]}
             value={execution.mode}
-            onChange={(mode) => updateExecution({ mode: mode as 'parallel' | 'serialized' })}
+            onChange={(mode) =>
+              updateExecution({ mode: mode as 'parallel' | 'serialized' })
+            }
             ariaLabel="Execution mode"
             searchPlaceholder="Search execution modes…"
           />
         ) : (
-          <span className="text-sm font-medium" data-testid="execution-mode-value">
+          <span
+            className="text-sm font-medium"
+            data-testid="execution-mode-value"
+          >
             {execution.mode === 'serialized' ? 'Serialized by key' : 'Parallel'}
           </span>
         )}
@@ -143,7 +174,10 @@ export function WorkflowSettingsFields({
               aria-label="Correlation key"
             />
           ) : (
-            <span className="font-mono text-sm" data-testid="correlation-key-value">
+            <span
+              className="font-mono text-sm"
+              data-testid="correlation-key-value"
+            >
               {execution.correlationKey || '-'}
             </span>
           )}
@@ -160,7 +194,10 @@ export function WorkflowSettingsFields({
 
           <Row label="Current version">
             {workflow.currentVersion ? (
-              <span className="text-sm text-foreground" data-testid="current-version">
+              <span
+                className="text-sm text-foreground"
+                data-testid="current-version"
+              >
                 v{workflow.currentVersion.versionNumber}
                 <span className="ml-1.5 text-xs text-muted-foreground">
                   {workflow.currentVersion.publishedByName} ·{' '}
@@ -168,9 +205,13 @@ export function WorkflowSettingsFields({
                 </span>
               </span>
             ) : (
-              <span className="text-sm text-muted-foreground">Not published yet.</span>
+              <span className="text-sm text-muted-foreground">
+                Not published yet.
+              </span>
             )}
-            <p className="mt-1 text-xs text-muted-foreground">Full history is in the Versions tab.</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Full history is in the Versions tab.
+            </p>
           </Row>
         </>
       )}

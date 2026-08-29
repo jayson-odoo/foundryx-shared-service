@@ -11,31 +11,18 @@
  * Read-only unless the form's Edit toggle is on.
  */
 import { useState } from 'react';
-import { ArrowDown, ArrowUp, Eye, Maximize2, Play, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import { TemplateContentEditor } from '@/components/platform/template-preview/template-content-editor';
-import { templateEngineService } from '@/services/template-service';
-import { isCanvasDoc, type TemplateDocument } from '@/types/templates';
-import { Button } from '@/components/ui/button';
 import {
-  Dialog,
-  DialogBody,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { SearchSelect } from '@/components/platform/search-select';
-import { RuleBuilder } from '@/components/platform/rule-builder';
-import { ACTION_CATALOG, TRIGGER_CATALOG, catalogEntry } from '@/lib/workflow-catalog';
-import {
-  AI_OUTPUT_PARAM_KEY_RE,
-  AI_OUTPUT_PARAM_TYPES,
-  nodeDisplayName,
-  validAiOutputParams,
-} from '@/lib/workflow-doc';
-import { cn } from '@/lib/utils';
+  ArrowDown,
+  ArrowUp,
+  Eye,
+  Maximize2,
+  Play,
+  Plus,
+  Trash2,
+  TriangleAlert,
+} from 'lucide-react';
 import type { RuleFact, RuleFactType, RuleGroup } from '@/types/rules';
+import { isCanvasDoc, type TemplateDocument } from '@/types/templates';
 import type {
   NodeFieldDef,
   WorkflowAiOutputParam,
@@ -51,10 +38,38 @@ import type {
   WorkflowRunNode,
   WorkflowTriggerableEntity,
 } from '@/types/workflows';
-import { CronBuilder } from './cron-builder';
-import { DynamicContentField, type DynamicContentGroup } from './dynamic-content-picker';
-import { CodeEditor, CodeCapabilities } from './code-editor';
+import { cn } from '@/lib/utils';
+import {
+  ACTION_CATALOG,
+  catalogEntry,
+  TRIGGER_CATALOG,
+} from '@/lib/workflow-catalog';
+import {
+  AI_OUTPUT_PARAM_KEY_RE,
+  nodeDisplayName,
+  validAiOutputParams,
+} from '@/lib/workflow-doc';
+import { templateEngineService } from '@/services/template-service';
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { RuleBuilder } from '@/components/platform/rule-builder';
+import { SearchSelect } from '@/components/platform/search-select';
+import { TemplateContentEditor } from '@/components/platform/template-preview/template-content-editor';
+import { CodeCapabilities, CodeEditor } from './code-editor';
 import { CodeInputsEditor } from './code-inputs-editor';
+import { CronBuilder } from './cron-builder';
+import {
+  DynamicContentField,
+  type DynamicContentGroup,
+} from './dynamic-content-picker';
 
 export interface TemplateOption {
   value: string;
@@ -79,32 +94,45 @@ export interface NodeConfigDrawerProps {
   /** Debug: re-execute this node (staleness-aware). */
   onExecuteNode?: () => void;
   executeBusy?: boolean;
+  canCode?: boolean;
 }
 
 /** A trigger node's full output key list (static seed + entity record fields +
  * manual inputs) for the dynamic-content picker. */
-function triggerOutputItems(
+export function triggerOutputItems(
   node: WorkflowNode,
   metadata: WorkflowMetadata,
 ): { key: string; label: string }[] {
   const entry = catalogEntry(node.type);
-  const items = (entry?.outputs ?? []).map((o) => ({ key: o.key, label: o.label }));
+  const items = (entry?.outputs ?? []).map((o) => ({
+    key: o.key,
+    label: o.label,
+  }));
   const entity = entityFor(node, metadata);
   if (entity) {
     for (const f of entity.fields) {
-      items.push({ key: `trigger.record.${f.key}`, label: `Record · ${f.label}` });
+      items.push({
+        key: `trigger.record.${f.key}`,
+        label: `Record · ${f.label}`,
+      });
     }
   }
   const form = formFor(node, metadata);
   if (form) {
     for (const f of form.fields) {
-      items.push({ key: `trigger.answers.${f.key}`, label: `Answer · ${f.label}` });
+      items.push({
+        key: `trigger.answers.${f.key}`,
+        label: `Answer · ${f.label}`,
+      });
     }
   }
   const inputs = node.config.inputs;
   if (Array.isArray(inputs)) {
     for (const input of inputs as WorkflowManualInput[]) {
-      items.push({ key: `trigger.input.${input.key}`, label: `Input · ${input.label || input.key}` });
+      items.push({
+        key: `trigger.input.${input.key}`,
+        label: `Input · ${input.label || input.key}`,
+      });
     }
   }
   return items;
@@ -130,10 +158,16 @@ function hasStatefulOutput(node: WorkflowNode): boolean {
   return aiOutputParams(node).some((param) => param.stateful === true);
 }
 
-function reachableAgentNodes(doc: WorkflowDefinition, nodeId: string): WorkflowNode[] {
+function reachableAgentNodes(
+  doc: WorkflowDefinition,
+  nodeId: string,
+): WorkflowNode[] {
   return ancestorsByDepth(doc, nodeId)
     .map(({ node }) => node)
-    .filter((candidate) => candidate.type === 'ai_agent.run' && hasStatefulOutput(candidate));
+    .filter(
+      (candidate) =>
+        candidate.type === 'ai_agent.run' && hasStatefulOutput(candidate),
+    );
 }
 
 /** Ancestors of `nodeId` whose outputs are referenceable here (D7), closest
@@ -149,14 +183,27 @@ function upstreamGroups(
     if (!entry) continue;
     const sourceLabel = nodeDisplayName(node, entry.label);
     if (node.kind === 'trigger') {
-      groups.push({ sourceLabel, hint: backHint(depth), items: triggerOutputItems(node, metadata) });
+      groups.push({
+        sourceLabel,
+        hint: backHint(depth),
+        items: triggerOutputItems(node, metadata),
+      });
     } else if (node.kind === 'action') {
-      const items = entry.outputs.map((o) => ({ key: `nodes.${node.id}.${o.key}`, label: o.label }));
+      const items = entry.outputs.map((o) => ({
+        key: `nodes.${node.id}.${o.key}`,
+        label: o.label,
+      }));
       for (const p of aiOutputParams(node)) {
-        items.push({ key: `nodes.${node.id}.${p.key}`, label: p.description || p.key });
+        items.push({
+          key: `nodes.${node.id}.${p.key}`,
+          label: p.description || p.key,
+        });
       }
       for (const p of codeOutputParams(node)) {
-        items.push({ key: `nodes.${node.id}.${p.key}`, label: p.description || p.key });
+        items.push({
+          key: `nodes.${node.id}.${p.key}`,
+          label: p.description || p.key,
+        });
       }
       groups.push({ sourceLabel, hint: backHint(depth), items });
     }
@@ -172,46 +219,103 @@ function runContextFacts(
   metadata: WorkflowMetadata,
 ): RuleFact[] {
   const facts: RuleFact[] = [];
-  const push = (key: string, label: string, type: RuleFactType, source: string, sourceLabel: string) =>
-    facts.push({ key, label, type, source, sourceLabel });
+  const push = (
+    key: string,
+    label: string,
+    type: RuleFactType,
+    source: string,
+    sourceLabel: string,
+  ) => facts.push({ key, label, type, source, sourceLabel });
 
   for (const { node } of ancestorsByDepth(doc, nodeId)) {
     const entry = catalogEntry(node.type);
     const label = nodeDisplayName(node, entry?.label ?? node.type);
     if (node.kind === 'trigger') {
-      push('trigger.actor.name', 'Actor name', 'string', 'trigger.actor', 'Acting user');
-      push('trigger.actor.email', 'Actor email', 'string', 'trigger.actor', 'Acting user');
+      push(
+        'trigger.actor.name',
+        'Actor name',
+        'string',
+        'trigger.actor',
+        'Acting user',
+      );
+      push(
+        'trigger.actor.email',
+        'Actor email',
+        'string',
+        'trigger.actor',
+        'Acting user',
+      );
       const entity = entityFor(node, metadata);
       if (entity) {
         for (const f of entity.fields) {
-          push(`trigger.record.${f.key}`, f.label, f.type, 'trigger.record', `${entity.label} record`);
+          push(
+            `trigger.record.${f.key}`,
+            f.label,
+            f.type,
+            'trigger.record',
+            `${entity.label} record`,
+          );
         }
       }
       if (node.type === 'entity.status_changed') {
-        push('trigger.fromStatus', 'From status', 'string', 'trigger', 'Status change');
-        push('trigger.toStatus', 'To status', 'string', 'trigger', 'Status change');
+        push(
+          'trigger.fromStatus',
+          'From status',
+          'string',
+          'trigger',
+          'Status change',
+        );
+        push(
+          'trigger.toStatus',
+          'To status',
+          'string',
+          'trigger',
+          'Status change',
+        );
       }
       const form = formFor(node, metadata);
       if (form) {
         for (const f of form.fields) {
-          push(`trigger.answers.${f.key}`, f.label, 'string', 'trigger.answers', `${form.name} answers`);
+          push(
+            `trigger.answers.${f.key}`,
+            f.label,
+            'string',
+            'trigger.answers',
+            `${form.name} answers`,
+          );
         }
       }
       const inputs = node.config.inputs;
       if (Array.isArray(inputs)) {
         for (const input of inputs as WorkflowManualInput[]) {
-          push(`trigger.input.${input.key}`, input.label || input.key, 'string', 'trigger.input', 'Run input');
+          push(
+            `trigger.input.${input.key}`,
+            input.label || input.key,
+            'string',
+            'trigger.input',
+            'Run input',
+          );
         }
       }
     } else if (node.kind === 'action') {
       for (const o of entry?.outputs ?? []) {
-        push(`nodes.${node.id}.${o.key}`, o.label, 'string', `nodes.${node.id}`, label);
+        push(
+          `nodes.${node.id}.${o.key}`,
+          o.label,
+          'string',
+          `nodes.${node.id}`,
+          label,
+        );
       }
       for (const p of aiOutputParams(node)) {
         push(
           `nodes.${node.id}.${p.key}`,
           p.description || p.key,
-          p.type === 'number' ? 'number' : p.type === 'boolean' ? 'boolean' : 'string',
+          p.type === 'number'
+            ? 'number'
+            : p.type === 'boolean'
+              ? 'boolean'
+              : 'string',
           `nodes.${node.id}`,
           label,
         );
@@ -220,7 +324,11 @@ function runContextFacts(
         push(
           `nodes.${node.id}.${p.key}`,
           p.description || p.key,
-          p.type === 'number' ? 'number' : p.type === 'boolean' ? 'boolean' : 'string',
+          p.type === 'number'
+            ? 'number'
+            : p.type === 'boolean'
+              ? 'boolean'
+              : 'string',
           `nodes.${node.id}`,
           label,
         );
@@ -232,9 +340,13 @@ function runContextFacts(
 
 /** Reverse-BFS ancestors of a node with their minimum distance (closest first
  * - n8n lists nearest nodes at the top). */
-function ancestorsByDepth(doc: WorkflowDefinition, nodeId: string): { node: WorkflowNode; depth: number }[] {
+function ancestorsByDepth(
+  doc: WorkflowDefinition,
+  nodeId: string,
+): { node: WorkflowNode; depth: number }[] {
   const parents = new Map<string, string[]>();
-  for (const e of doc.edges) parents.set(e.target, [...(parents.get(e.target) ?? []), e.source]);
+  for (const e of doc.edges)
+    parents.set(e.target, [...(parents.get(e.target) ?? []), e.source]);
   const byId = new Map(doc.nodes.map((n) => [n.id, n]));
   const depthOf = new Map<string, number>();
   let frontier = parents.get(nodeId) ?? [];
@@ -256,7 +368,10 @@ function ancestorsByDepth(doc: WorkflowDefinition, nodeId: string): { node: Work
 }
 
 /** The triggerable entity a node points at via `config.entityType`. */
-function entityFor(node: WorkflowNode, metadata: WorkflowMetadata): WorkflowTriggerableEntity | undefined {
+function entityFor(
+  node: WorkflowNode,
+  metadata: WorkflowMetadata,
+): WorkflowTriggerableEntity | undefined {
   const type = node.config.entityType;
   if (typeof type !== 'string' || !type) return undefined;
   return metadata.entities.find((e) => e.type === type);
@@ -264,7 +379,10 @@ function entityFor(node: WorkflowNode, metadata: WorkflowMetadata): WorkflowTrig
 
 /** The published form a `form.submitted` trigger points at via `config.formId`
  * - backs the dynamic `trigger.answers.<key>` outputs (slice 2). */
-function formFor(node: WorkflowNode, metadata: WorkflowMetadata): WorkflowFormOption | undefined {
+function formFor(
+  node: WorkflowNode,
+  metadata: WorkflowMetadata,
+): WorkflowFormOption | undefined {
   const id = node.config.formId;
   if (typeof id !== 'string' || !id) return undefined;
   return (metadata.forms ?? []).find((f) => f.id === id);
@@ -280,7 +398,9 @@ function ManualInputsEditor({
   onChange: (next: WorkflowManualInput[]) => void;
 }) {
   const update = (i: number, patch: Partial<WorkflowManualInput>) =>
-    onChange(inputs.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
+    onChange(
+      inputs.map((row, idx) => (idx === i ? { ...row, ...patch } : row)),
+    );
   return (
     <div className="flex flex-col gap-2" data-testid="manual-inputs-editor">
       {inputs.map((row, i) => (
@@ -321,12 +441,16 @@ function ManualInputsEditor({
           variant="outline"
           size="sm"
           data-testid="add-manual-input"
-          onClick={() => onChange([...inputs, { key: '', label: '', type: 'string' }])}
+          onClick={() =>
+            onChange([...inputs, { key: '', label: '', type: 'string' }])
+          }
         >
           <Plus className="size-3.5" /> Add input
         </Button>
       )}
-      {!inputs.length && !editing && <p className="text-xs text-muted-foreground">No inputs.</p>}
+      {!inputs.length && !editing && (
+        <p className="text-xs text-muted-foreground">No inputs.</p>
+      )}
     </div>
   );
 }
@@ -346,7 +470,9 @@ function AssignmentsEditor({
   onChange: (next: WorkflowFieldAssignment[]) => void;
 }) {
   const update = (i: number, patch: Partial<WorkflowFieldAssignment>) =>
-    onChange(assignments.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
+    onChange(
+      assignments.map((row, idx) => (idx === i ? { ...row, ...patch } : row)),
+    );
   return (
     <div className="flex flex-col gap-2" data-testid="assignments-editor">
       {assignments.map((row, i) => (
@@ -378,7 +504,9 @@ function AssignmentsEditor({
               size="icon"
               className="size-8 shrink-0 text-destructive"
               aria-label={`Remove assignment ${i + 1}`}
-              onClick={() => onChange(assignments.filter((_, idx) => idx !== i))}
+              onClick={() =>
+                onChange(assignments.filter((_, idx) => idx !== i))
+              }
             >
               <Trash2 className="size-3.5" />
             </Button>
@@ -396,12 +524,17 @@ function AssignmentsEditor({
           <Plus className="size-3.5" /> Add field
         </Button>
       )}
-      {!assignments.length && !editing && <p className="text-xs text-muted-foreground">No fields set.</p>}
+      {!assignments.length && !editing && (
+        <p className="text-xs text-muted-foreground">No fields set.</p>
+      )}
     </div>
   );
 }
 
-const AI_PARAM_TYPES: { value: WorkflowAiOutputParam['type']; label: string }[] = [
+const AI_PARAM_TYPES: {
+  value: WorkflowAiOutputParam['type'];
+  label: string;
+}[] = [
   { value: 'string', label: 'Text' },
   { value: 'number', label: 'Number' },
   { value: 'boolean', label: 'Boolean' },
@@ -426,7 +559,10 @@ export function OutputParamsEditor({
     onChange(
       params.map((row, idx) =>
         idx === i
-          ? ({ ...(row as unknown as Record<string, unknown>), ...patch } as WorkflowAiOutputParam)
+          ? ({
+              ...(row as unknown as Record<string, unknown>),
+              ...patch,
+            } as WorkflowAiOutputParam)
           : row,
       ),
     );
@@ -434,7 +570,8 @@ export function OutputParamsEditor({
   for (const raw of params as unknown[]) {
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue;
     const key = (raw as Record<string, unknown>).key;
-    if (typeof key === 'string' && key) keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
+    if (typeof key === 'string' && key)
+      keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
   }
   return (
     <div className="flex flex-col gap-2" data-testid="output-params-editor">
@@ -445,11 +582,14 @@ export function OutputParamsEditor({
             : {};
         const key = typeof row.key === 'string' ? row.key : '';
         const type = typeof row.type === 'string' ? row.type : '';
-        const description = typeof row.description === 'string' ? row.description : '';
+        const description =
+          typeof row.description === 'string' ? row.description : '';
         const required = row.required === true;
         const stateful = row.stateful === true;
         const enumValues = Array.isArray(row.enumValues)
-          ? row.enumValues.filter((value): value is string => typeof value === 'string')
+          ? row.enumValues.filter(
+              (value): value is string => typeof value === 'string',
+            )
           : [];
         const duplicate = (keyCounts.get(key) ?? 0) > 1;
         const issue = !key.trim()
@@ -460,11 +600,14 @@ export function OutputParamsEditor({
               ? 'Key must start with a letter or underscore and use only letters, numbers, and underscores.'
               : duplicate
                 ? 'Key must be unique.'
-                : !AI_OUTPUT_PARAM_TYPES.includes(type as (typeof AI_OUTPUT_PARAM_TYPES)[number])
+                : !['string', 'number', 'boolean', 'enum'].includes(type)
                   ? 'Type must be string, number, or boolean.'
                   : undefined;
         return (
-          <div key={i} className="flex flex-col gap-1.5 rounded-lg border border-input p-2">
+          <div
+            key={i}
+            className="flex flex-col gap-1.5 rounded-lg border border-input p-2"
+          >
             <div className="flex items-center gap-1.5">
               <Input
                 value={key}
@@ -480,10 +623,17 @@ export function OutputParamsEditor({
                   options={AI_PARAM_TYPES}
                   value={type}
                   onChange={(v) => {
-                    const nextType = (v ?? 'string') as WorkflowAiOutputParam['type'];
+                    const nextType = (v ??
+                      'string') as WorkflowAiOutputParam['type'];
                     update(i, {
                       type: nextType,
-                      ...(nextType === 'enum' ? { enumValues: enumValues.length ? enumValues : ['', ''] } : { enumValues: undefined }),
+                      ...(nextType === 'enum'
+                        ? {
+                            enumValues: enumValues.length
+                              ? enumValues
+                              : ['', ''],
+                          }
+                        : { enumValues: undefined }),
                     });
                   }}
                   ariaLabel={`Parameter ${i + 1} type`}
@@ -493,17 +643,46 @@ export function OutputParamsEditor({
               </div>
               {editing && (
                 <div className="flex shrink-0 items-center gap-0.5">
-                  <Button type="button" variant="ghost" size="icon" className="size-8" aria-label={`Move parameter ${i + 1} up`} disabled={i === 0} onClick={() => {
-                    const next = [...params];
-                    [next[i - 1], next[i]] = [next[i], next[i - 1]];
-                    onChange(next);
-                  }}><ArrowUp className="size-3.5" /></Button>
-                  <Button type="button" variant="ghost" size="icon" className="size-8" aria-label={`Move parameter ${i + 1} down`} disabled={i === params.length - 1} onClick={() => {
-                    const next = [...params];
-                    [next[i], next[i + 1]] = [next[i + 1], next[i]];
-                    onChange(next);
-                  }}><ArrowDown className="size-3.5" /></Button>
-                  <Button type="button" variant="ghost" size="icon" className="size-8 text-destructive" aria-label={`Remove parameter ${i + 1}`} onClick={() => onChange(params.filter((_, idx) => idx !== i))}>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8"
+                    aria-label={`Move parameter ${i + 1} up`}
+                    disabled={i === 0}
+                    onClick={() => {
+                      const next = [...params];
+                      [next[i - 1], next[i]] = [next[i], next[i - 1]];
+                      onChange(next);
+                    }}
+                  >
+                    <ArrowUp className="size-3.5" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8"
+                    aria-label={`Move parameter ${i + 1} down`}
+                    disabled={i === params.length - 1}
+                    onClick={() => {
+                      const next = [...params];
+                      [next[i], next[i + 1]] = [next[i + 1], next[i]];
+                      onChange(next);
+                    }}
+                  >
+                    <ArrowDown className="size-3.5" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 text-destructive"
+                    aria-label={`Remove parameter ${i + 1}`}
+                    onClick={() =>
+                      onChange(params.filter((_, idx) => idx !== i))
+                    }
+                  >
                     <Trash2 className="size-3.5" />
                   </Button>
                 </div>
@@ -547,33 +726,83 @@ export function OutputParamsEditor({
               )}
             </div>
             {type === 'enum' && (
-              <div className="flex flex-col gap-1.5 rounded-md bg-muted/40 p-2" data-testid={`enum-values-${i + 1}`}>
-                <div className="text-[11px] font-medium text-muted-foreground">Enum values</div>
-                  {enumValues.map((enumValue, enumIndex) => (
-                    <div key={enumIndex} className="flex items-center gap-1.5">
+              <div
+                className="flex flex-col gap-1.5 rounded-md bg-muted/40 p-2"
+                data-testid={`enum-values-${i + 1}`}
+              >
+                <div className="text-[11px] font-medium text-muted-foreground">
+                  Enum values
+                </div>
+                {enumValues.map((enumValue, enumIndex) => (
+                  <div key={enumIndex} className="flex items-center gap-1.5">
                     <Input
                       value={enumValue}
                       disabled={!editing}
                       aria-label={`Parameter ${i + 1} enum value ${enumIndex + 1}`}
-                      aria-invalid={!enumValue.trim() || enumValues.filter((item) => item === enumValue).length > 1}
+                      aria-invalid={
+                        !enumValue.trim() ||
+                        enumValues.filter((item) => item === enumValue).length >
+                          1
+                      }
                       onChange={(event) => {
-                        const next = enumValues.map((item, itemIndex) => itemIndex === enumIndex ? event.target.value : item);
+                        const next = enumValues.map((item, itemIndex) =>
+                          itemIndex === enumIndex ? event.target.value : item,
+                        );
                         update(i, { enumValues: next });
                       }}
                     />
                     {editing && (
                       <div className="flex shrink-0 items-center gap-0.5">
-                        <Button type="button" variant="ghost" size="icon" className="size-8" aria-label={`Move enum value ${enumIndex + 1} up`} disabled={enumIndex === 0} onClick={() => {
-                          const next = [...enumValues];
-                          [next[enumIndex - 1], next[enumIndex]] = [next[enumIndex], next[enumIndex - 1]];
-                          update(i, { enumValues: next });
-                        }}><ArrowUp className="size-3.5" /></Button>
-                        <Button type="button" variant="ghost" size="icon" className="size-8" aria-label={`Move enum value ${enumIndex + 1} down`} disabled={enumIndex === enumValues.length - 1} onClick={() => {
-                          const next = [...enumValues];
-                          [next[enumIndex], next[enumIndex + 1]] = [next[enumIndex + 1], next[enumIndex]];
-                          update(i, { enumValues: next });
-                        }}><ArrowDown className="size-3.5" /></Button>
-                        <Button type="button" variant="ghost" size="icon" className="size-8 text-destructive" aria-label={`Remove enum value ${enumIndex + 1}`} onClick={() => update(i, { enumValues: enumValues.filter((_, itemIndex) => itemIndex !== enumIndex) })}>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="size-8"
+                          aria-label={`Move enum value ${enumIndex + 1} up`}
+                          disabled={enumIndex === 0}
+                          onClick={() => {
+                            const next = [...enumValues];
+                            [next[enumIndex - 1], next[enumIndex]] = [
+                              next[enumIndex],
+                              next[enumIndex - 1],
+                            ];
+                            update(i, { enumValues: next });
+                          }}
+                        >
+                          <ArrowUp className="size-3.5" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="size-8"
+                          aria-label={`Move enum value ${enumIndex + 1} down`}
+                          disabled={enumIndex === enumValues.length - 1}
+                          onClick={() => {
+                            const next = [...enumValues];
+                            [next[enumIndex], next[enumIndex + 1]] = [
+                              next[enumIndex + 1],
+                              next[enumIndex],
+                            ];
+                            update(i, { enumValues: next });
+                          }}
+                        >
+                          <ArrowDown className="size-3.5" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="size-8 text-destructive"
+                          aria-label={`Remove enum value ${enumIndex + 1}`}
+                          onClick={() =>
+                            update(i, {
+                              enumValues: enumValues.filter(
+                                (_, itemIndex) => itemIndex !== enumIndex,
+                              ),
+                            })
+                          }
+                        >
                           <Trash2 className="size-3.5" />
                         </Button>
                       </div>
@@ -581,12 +810,30 @@ export function OutputParamsEditor({
                   </div>
                 ))}
                 {editing && (
-                  <Button type="button" variant="outline" size="sm" onClick={() => update(i, { enumValues: [...enumValues, ''] })}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      update(i, { enumValues: [...enumValues, ''] })
+                    }
+                  >
                     <Plus className="size-3.5" /> Add value
                   </Button>
                 )}
-                {enumValues.length < 2 && <p className="text-xs text-destructive">Enum needs at least two values.</p>}
-                {enumValues.some((item, itemIndex) => !item.trim() || enumValues.indexOf(item) !== itemIndex) && <p className="text-xs text-destructive">Values must be nonblank and unique.</p>}
+                {enumValues.length < 2 && (
+                  <p className="text-xs text-destructive">
+                    Enum needs at least two values.
+                  </p>
+                )}
+                {enumValues.some(
+                  (item, itemIndex) =>
+                    !item.trim() || enumValues.indexOf(item) !== itemIndex,
+                ) && (
+                  <p className="text-xs text-destructive">
+                    Values must be nonblank and unique.
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -598,7 +845,9 @@ export function OutputParamsEditor({
           variant="outline"
           size="sm"
           data-testid="add-output-param"
-          onClick={() => onChange([...params, { key: '', type: 'string', required: true }])}
+          onClick={() =>
+            onChange([...params, { key: '', type: 'string', required: true }])
+          }
         >
           <Plus className="size-3.5" /> Add parameter
         </Button>
@@ -613,7 +862,7 @@ export function OutputParamsEditor({
 export function NodeConfigDrawer({
   node,
   doc,
-  editing,
+  editing: requestedEditing,
   templateOptions,
   metadata,
   onConfigChange,
@@ -623,6 +872,7 @@ export function NodeConfigDrawer({
   runData,
   onExecuteNode,
   executeBusy,
+  canCode = true,
 }: NodeConfigDrawerProps) {
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [templatePreviewOpen, setTemplatePreviewOpen] = useState(false);
@@ -633,6 +883,7 @@ export function NodeConfigDrawer({
       </div>
     );
   }
+  const editing = requestedEditing && (node.type !== 'code.run' || canCode);
   const entry = catalogEntry(node.type);
   const groups = upstreamGroups(doc, node.id, metadata);
   const entity = entityFor(node, metadata);
@@ -640,18 +891,28 @@ export function NodeConfigDrawer({
   const requiresConnection =
     entry && entry.kind === 'action' ? entry.requiresConnection : undefined;
   const missingConnection =
-    requiresConnection && metadata.connections && !metadata.connections[requiresConnection];
-  const missingCodeRunner = node.type === 'code.run' && metadata.codeRunnerAvailable === false;
+    requiresConnection &&
+    metadata.connections &&
+    !metadata.connections[requiresConnection];
+  const missingCodeRunner =
+    node.type === 'code.run' && metadata.codeRunnerAvailable === false;
   const duplicateName =
     node.kind !== 'if' &&
     doc.nodes.some(
-      (o) => o.id !== node.id && nodeDisplayName(o, catalogEntry(o.type)?.label ?? o.type) === displayName,
+      (o) =>
+        o.id !== node.id &&
+        nodeDisplayName(o, catalogEntry(o.type)?.label ?? o.type) ===
+          displayName,
     );
   // Quick-replace within the same kind (ports stay compatible).
-  const replaceOptions = (node.kind === 'trigger' ? TRIGGER_CATALOG : ACTION_CATALOG).map((e) => ({
-    value: e.type,
-    label: e.label,
-  }));
+  const replaceOptions = (
+    node.kind === 'trigger' ? TRIGGER_CATALOG : ACTION_CATALOG
+  )
+    .filter(
+      (e) =>
+        canCode || !('permission' in e) || e.permission !== 'workflows.code',
+    )
+    .map((e) => ({ value: e.type, label: e.label }));
 
   /** Changing the entity invalidates its dependent pickers. */
   const changeEntity = (key: string, value: string) => {
@@ -675,7 +936,9 @@ export function NodeConfigDrawer({
       <div key={field.key} className="flex flex-col gap-1.5">
         {labelEl}
         {children}
-        {field.help && <p className="text-[11px] text-muted-foreground">{field.help}</p>}
+        {field.help && (
+          <p className="text-[11px] text-muted-foreground">{field.help}</p>
+        )}
       </div>
     );
 
@@ -714,7 +977,13 @@ export function NodeConfigDrawer({
           value={typeof value === 'string' && value ? value : null}
           onChange={(v) => onConfigChange(node.id, { [field.key]: v })}
           ariaLabel={field.label}
-          placeholder={entity ? (field.required ? 'Choose a status…' : 'Any status') : 'Choose an entity first'}
+          placeholder={
+            entity
+              ? field.required
+                ? 'Choose a status…'
+                : 'Any status'
+              : 'Choose an entity first'
+          }
           searchPlaceholder="Search statuses…"
           disabled={!editing || !entity}
         />,
@@ -722,7 +991,10 @@ export function NodeConfigDrawer({
     }
 
     if (field.type === 'field') {
-      const fieldOptions = (entity?.fields ?? []).map((f) => ({ value: f.key, label: f.label }));
+      const fieldOptions = (entity?.fields ?? []).map((f) => ({
+        value: f.key,
+        label: f.label,
+      }));
       return wrap(
         <SearchSelect
           options={fieldOptions}
@@ -741,14 +1013,19 @@ export function NodeConfigDrawer({
       // a real, visible choice - not an empty picker).
       const channelOptions = [
         { value: '__all__', label: 'All channels' },
-        ...(metadata.omnichannelChannels ?? []).map((c) => ({ value: c.id, label: c.name })),
+        ...(metadata.omnichannelChannels ?? []).map((c) => ({
+          value: c.id,
+          label: c.name,
+        })),
       ];
       const selected = typeof value === 'string' && value ? value : '__all__';
       return wrap(
         <SearchSelect
           options={channelOptions}
           value={selected}
-          onChange={(v) => onConfigChange(node.id, { [field.key]: v === '__all__' ? null : v })}
+          onChange={(v) =>
+            onConfigChange(node.id, { [field.key]: v === '__all__' ? null : v })
+          }
           ariaLabel={field.label}
           placeholder="All channels"
           searchPlaceholder="Search channels…"
@@ -778,7 +1055,9 @@ export function NodeConfigDrawer({
     if (field.type === 'outputSchema') {
       return wrap(
         <OutputParamsEditor
-          params={Array.isArray(value) ? (value as WorkflowAiOutputParam[]) : []}
+          params={
+            Array.isArray(value) ? (value as WorkflowAiOutputParam[]) : []
+          }
           editing={editing}
           allowStateful={node.type === 'ai_agent.run'}
           onChange={(next) => onConfigChange(node.id, { [field.key]: next })}
@@ -791,12 +1070,17 @@ export function NodeConfigDrawer({
       if (!hasState) return null;
       const options = aiOutputParams(node)
         .filter((param) => param.type === 'string' && !param.stateful)
-        .map((param) => ({ value: param.key, label: param.description || param.key }));
+        .map((param) => ({
+          value: param.key,
+          label: param.description || param.key,
+        }));
       return wrap(
         <SearchSelect
           options={options}
           value={typeof value === 'string' && value ? value : null}
-          onChange={(selected) => onConfigChange(node.id, { [field.key]: selected })}
+          onChange={(selected) =>
+            onConfigChange(node.id, { [field.key]: selected })
+          }
           ariaLabel={field.label}
           placeholder="Choose a transient Text output…"
           searchPlaceholder="Search outputs…"
@@ -808,13 +1092,18 @@ export function NodeConfigDrawer({
     if (field.type === 'agentNode') {
       const options = reachableAgentNodes(doc, node.id).map((candidate) => ({
         value: candidate.id,
-        label: nodeDisplayName(candidate, catalogEntry(candidate.type)?.label ?? candidate.type),
+        label: nodeDisplayName(
+          candidate,
+          catalogEntry(candidate.type)?.label ?? candidate.type,
+        ),
       }));
       return wrap(
         <SearchSelect
           options={options}
           value={typeof value === 'string' && value ? value : null}
-          onChange={(selected) => onConfigChange(node.id, { [field.key]: selected })}
+          onChange={(selected) =>
+            onConfigChange(node.id, { [field.key]: selected })
+          }
           ariaLabel={field.label}
           placeholder="Choose an earlier AI Agent…"
           searchPlaceholder="Search agents…"
@@ -828,7 +1117,9 @@ export function NodeConfigDrawer({
         <CodeEditor
           value={typeof value === 'string' ? value : ''}
           editing={editing}
-          onChange={(source) => onConfigChange(node.id, { [field.key]: source })}
+          onChange={(source) =>
+            onConfigChange(node.id, { [field.key]: source })
+          }
         />,
       );
     }
@@ -839,7 +1130,9 @@ export function NodeConfigDrawer({
           inputs={Array.isArray(value) ? (value as WorkflowCodeInput[]) : []}
           groups={groups}
           editing={editing}
-          onChange={(inputs) => onConfigChange(node.id, { [field.key]: inputs })}
+          onChange={(inputs) =>
+            onConfigChange(node.id, { [field.key]: inputs })
+          }
         />,
       );
     }
@@ -849,7 +1142,10 @@ export function NodeConfigDrawer({
     }
 
     if (field.type === 'form') {
-      const formOptions = (metadata.forms ?? []).map((f) => ({ value: f.id, label: f.name }));
+      const formOptions = (metadata.forms ?? []).map((f) => ({
+        value: f.id,
+        label: f.name,
+      }));
       return wrap(
         <SearchSelect
           options={formOptions}
@@ -868,9 +1164,13 @@ export function NodeConfigDrawer({
         <CronBuilder
           key={node.id}
           cron={typeof value === 'string' ? value : ''}
-          timezone={typeof node.config.timezone === 'string' ? node.config.timezone : ''}
+          timezone={
+            typeof node.config.timezone === 'string' ? node.config.timezone : ''
+          }
           disabled={!editing}
-          onChange={(cron, timezone) => onConfigChange(node.id, { [field.key]: cron, timezone })}
+          onChange={(cron, timezone) =>
+            onConfigChange(node.id, { [field.key]: cron, timezone })
+          }
         />,
       );
     }
@@ -878,10 +1178,14 @@ export function NodeConfigDrawer({
     if (field.type === 'assignments') {
       // Only writable fields - the others fail at run time (server whitelist).
       const writable = new Set(entity?.writableFields ?? []);
-      const writableFields = (entity?.fields ?? []).filter((f) => writable.has(f.key));
+      const writableFields = (entity?.fields ?? []).filter((f) =>
+        writable.has(f.key),
+      );
       return wrap(
         <AssignmentsEditor
-          assignments={Array.isArray(value) ? (value as WorkflowFieldAssignment[]) : []}
+          assignments={
+            Array.isArray(value) ? (value as WorkflowFieldAssignment[]) : []
+          }
           fields={writableFields}
           groups={groups}
           editing={editing}
@@ -935,14 +1239,20 @@ export function NodeConfigDrawer({
                 open={templatePreviewOpen}
                 onOpenChange={setTemplatePreviewOpen}
                 doc={copiedDoc}
-                subject={typeof node.config.subject === 'string' ? node.config.subject : ''}
+                subject={
+                  typeof node.config.subject === 'string'
+                    ? node.config.subject
+                    : ''
+                }
                 contextKey={
                   typeof node.config.templateContext === 'string'
                     ? node.config.templateContext
                     : 'status.notification'
                 }
                 onDocChange={(doc) => onConfigChange(node.id, { doc })}
-                onSubjectChange={(subject) => onConfigChange(node.id, { subject })}
+                onSubjectChange={(subject) =>
+                  onConfigChange(node.id, { subject })
+                }
                 title={displayName}
                 disabled={!editing}
               />
@@ -961,7 +1271,11 @@ export function NodeConfigDrawer({
             const patch: WorkflowNodeConfig = { [field.key]: v };
             // Switching email.send away from a template → drop the copied doc
             // (the backend renders doc first, so a stale copy would override).
-            if (node.type === 'email.send' && field.key === 'mode' && v !== 'template') {
+            if (
+              node.type === 'email.send' &&
+              field.key === 'mode' &&
+              v !== 'template'
+            ) {
               patch.doc = null;
               patch.templateId = null;
             }
@@ -994,7 +1308,9 @@ export function NodeConfigDrawer({
           placeholder={field.placeholder}
           aria-label={field.label}
           data-testid={`field-${field.key}`}
-          onChange={(e) => onConfigChange(node.id, { [field.key]: e.target.value })}
+          onChange={(e) =>
+            onConfigChange(node.id, { [field.key]: e.target.value })
+          }
         />
       ),
     );
@@ -1004,21 +1320,33 @@ export function NodeConfigDrawer({
     <div className="flex flex-col gap-4" data-testid="node-config-drawer">
       <div className="flex flex-col gap-1">
         <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-          {node.kind === 'trigger' ? 'Trigger' : node.kind === 'if' ? 'Condition' : 'Action'}
+          {node.kind === 'trigger'
+            ? 'Trigger'
+            : node.kind === 'if'
+              ? 'Condition'
+              : 'Action'}
         </div>
         {editing ? (
           <Input
             value={displayName}
             aria-label="Node name"
             data-testid="node-name"
-            className={cn('h-8 font-semibold', duplicateName && 'border-destructive')}
+            className={cn(
+              'h-8 font-semibold',
+              duplicateName && 'border-destructive',
+            )}
             onChange={(e) => onConfigChange(node.id, { name: e.target.value })}
           />
         ) : (
-          <div className="text-sm font-semibold text-foreground">{displayName}</div>
+          <div className="text-sm font-semibold text-foreground">
+            {displayName}
+          </div>
         )}
         {duplicateName && (
-          <p className="text-[11px] text-destructive" data-testid="node-name-error">
+          <p
+            className="text-[11px] text-destructive"
+            data-testid="node-name-error"
+          >
             Another node already uses this name - names must be unique.
           </p>
         )}
@@ -1042,7 +1370,10 @@ export function NodeConfigDrawer({
       </div>
 
       {onExecuteNode && (
-        <div className="flex flex-col gap-2 rounded-md border border-amber-400/40 bg-amber-50/50 p-2.5 dark:bg-amber-950/20" data-testid="node-run-data">
+        <div
+          className="flex flex-col gap-2 rounded-md border border-amber-400/40 bg-amber-50/50 p-2.5 dark:bg-amber-950/20"
+          data-testid="node-run-data"
+        >
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
               Run data
@@ -1064,7 +1395,9 @@ export function NodeConfigDrawer({
               Output
             </div>
             <pre className="max-h-32 overflow-auto rounded bg-muted p-1.5 text-[11px] text-foreground">
-              {runData?.outputJson == null ? '-' : JSON.stringify(runData.outputJson, null, 2)}
+              {runData?.outputJson == null
+                ? '-'
+                : JSON.stringify(runData.outputJson, null, 2)}
             </pre>
           </div>
           {runData?.error && (
@@ -1096,13 +1429,18 @@ export function NodeConfigDrawer({
           data-testid="code-runner-warning"
         >
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-          <span>Code runner is unavailable. Publishing and manual execution are blocked.</span>
+          <span>
+            Code runner is unavailable. Publishing and manual execution are
+            blocked.
+          </span>
         </div>
       )}
 
       {node.kind === 'if' ? (
         <div className="flex flex-col gap-1.5" data-testid="if-conditions">
-          <Label className="text-xs font-medium text-foreground">Conditions</Label>
+          <Label className="text-xs font-medium text-foreground">
+            Conditions
+          </Label>
           <RuleBuilder
             key={node.id}
             facts={runContextFacts(doc, node.id, metadata)}
@@ -1132,19 +1470,33 @@ export function NodeConfigDrawer({
                   <DialogBody className="grid grid-cols-1 gap-5 lg:grid-cols-2">
                     <div className="flex flex-col gap-3">
                       <div className="flex flex-col gap-1.5">
-                        <Label className="text-xs font-medium text-muted-foreground">Subject</Label>
+                        <Label className="text-xs font-medium text-muted-foreground">
+                          Subject
+                        </Label>
                         <DynamicContentField
-                          value={typeof node.config.subject === 'string' ? node.config.subject : ''}
-                          onChange={(v) => onConfigChange(node.id, { subject: v })}
+                          value={
+                            typeof node.config.subject === 'string'
+                              ? node.config.subject
+                              : ''
+                          }
+                          onChange={(v) =>
+                            onConfigChange(node.id, { subject: v })
+                          }
                           groups={groups}
                           disabled={!editing}
                           aria-label="Subject"
                         />
                       </div>
                       <div className="flex flex-col gap-1.5">
-                        <Label className="text-xs font-medium text-muted-foreground">Body</Label>
+                        <Label className="text-xs font-medium text-muted-foreground">
+                          Body
+                        </Label>
                         <DynamicContentField
-                          value={typeof node.config.body === 'string' ? node.config.body : ''}
+                          value={
+                            typeof node.config.body === 'string'
+                              ? node.config.body
+                              : ''
+                          }
                           onChange={(v) => onConfigChange(node.id, { body: v })}
                           groups={groups}
                           multiline
@@ -1159,17 +1511,23 @@ export function NodeConfigDrawer({
                         Preview · tokens resolve at run time
                       </Label>
                       <div className="flex min-h-9 items-center rounded-md border border-dashed border-input bg-muted/40 px-3 py-1.5 text-sm font-medium text-foreground">
-                        {typeof node.config.subject === 'string' && node.config.subject ? (
+                        {typeof node.config.subject === 'string' &&
+                        node.config.subject ? (
                           node.config.subject
                         ) : (
-                          <span className="font-normal text-muted-foreground">(empty subject)</span>
+                          <span className="font-normal text-muted-foreground">
+                            (empty subject)
+                          </span>
                         )}
                       </div>
                       <div className="min-h-40 flex-1 whitespace-pre-wrap rounded-md border border-dashed border-input bg-muted/40 px-3 py-2 text-sm text-foreground">
-                        {typeof node.config.body === 'string' && node.config.body ? (
+                        {typeof node.config.body === 'string' &&
+                        node.config.body ? (
                           node.config.body
                         ) : (
-                          <span className="text-muted-foreground">(empty body)</span>
+                          <span className="text-muted-foreground">
+                            (empty body)
+                          </span>
                         )}
                       </div>
                     </div>
@@ -1179,7 +1537,11 @@ export function NodeConfigDrawer({
             </div>
           )}
           {(entry?.fields ?? [])
-            .filter((f) => !f.showWhen || node.config[f.showWhen.field] === f.showWhen.value)
+            .filter(
+              (f) =>
+                !f.showWhen ||
+                node.config[f.showWhen.field] === f.showWhen.value,
+            )
             .map(renderField)}
         </div>
       )}

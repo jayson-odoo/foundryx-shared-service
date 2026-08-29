@@ -19,7 +19,11 @@ import type {
   WorkflowRunNode,
   WorkflowRunRequest,
 } from '@/types/workflows';
-import { createBlankDefinition, topoOrder } from '@/lib/workflow-doc';
+import {
+  createBlankDefinition,
+  topoOrder,
+  validateDefinition,
+} from '@/lib/workflow-doc';
 import { workflowMetadataService } from '@/services/workflow-metadata-service';
 import { workflowService } from '@/services/workflow-service';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
@@ -107,6 +111,25 @@ function takenDescendants(
     }
   }
   return result;
+}
+
+function changedCodeNeedsRunner(
+  definition: WorkflowDefinition,
+  workflow: Workflow | null,
+  runnerAvailable: boolean | undefined,
+): boolean {
+  if (runnerAvailable !== false) return false;
+  const baseline = workflow?.currentVersion?.definition;
+  return definition.nodes.some((node) => {
+    if (node.type !== 'code.run') return false;
+    const previous = baseline?.nodes.find(
+      (candidate) => candidate.id === node.id,
+    );
+    return (
+      !previous ||
+      JSON.stringify(previous.config) !== JSON.stringify(node.config)
+    );
+  });
 }
 
 /**
@@ -262,6 +285,13 @@ export function useWorkflowForm(
       toast.error('Name is required.');
       return false;
     }
+    const definitionIssue = validateDefinition(docRef.current, metadata).find(
+      (issue) => issue.level === 'error',
+    );
+    if (definitionIssue) {
+      toast.error(definitionIssue.message);
+      return false;
+    }
     const input = {
       name: values.name.trim(),
       description: values.description.trim(),
@@ -285,7 +315,7 @@ export function useWorkflowForm(
       toast.error(e instanceof Error ? e.message : 'Save failed.');
       return false;
     }
-  }, [form, isNew, router, workflowId]);
+  }, [form, isNew, metadata, router, workflowId]);
 
   const onCancel = useCallback(() => {
     if (isNew) {
@@ -302,6 +332,25 @@ export function useWorkflowForm(
 
   const onPublish = useCallback(async () => {
     if (!workflowId) return;
+    const definitionIssue = validateDefinition(docRef.current, metadata).find(
+      (issue) => issue.level === 'error',
+    );
+    if (definitionIssue) {
+      toast.error(definitionIssue.message);
+      return;
+    }
+    if (
+      changedCodeNeedsRunner(
+        docRef.current,
+        workflow,
+        metadata.codeRunnerAvailable,
+      )
+    ) {
+      toast.error(
+        'Code runner is unavailable. Publishing changed Code nodes is blocked.',
+      );
+      return;
+    }
     setBusy(true);
     try {
       if (docDirty) {
@@ -316,7 +365,7 @@ export function useWorkflowForm(
     } finally {
       setBusy(false);
     }
-  }, [workflowId, docDirty, onSave, refresh]);
+  }, [workflowId, docDirty, metadata, onSave, refresh, workflow]);
 
   const onUnpublish = useCallback(async () => {
     if (!workflowId) return;
@@ -368,7 +417,12 @@ export function useWorkflowForm(
       mutatesRedis: doc.nodes.some((node) => {
         if (node.type !== 'redis.command') return false;
         const operation = node.config.operation;
-        return typeof operation === 'string' && ['set', 'delete', 'increment', 'list_push', 'list_pop'].includes(operation);
+        return (
+          typeof operation === 'string' &&
+          ['set', 'delete', 'increment', 'list_push', 'list_pop'].includes(
+            operation,
+          )
+        );
       }),
       runsCode: doc.nodes.some((node) => node.type === 'code.run'),
     }),
@@ -417,7 +471,11 @@ export function useWorkflowForm(
 
   const onRun = useCallback(async () => {
     if (trigger?.type !== 'omnichannel.message_received') {
-      if (triggerInputs.length > 0) {
+      if (
+        triggerInputs.length > 0 ||
+        runSideEffects.mutatesRedis ||
+        runSideEffects.runsCode
+      ) {
         setRunDialogOpen(true);
       } else {
         void doRun({ inputs: {} });
@@ -445,7 +503,16 @@ export function useWorkflowForm(
       setBusy(false);
       runPreparationRef.current = false;
     }
-  }, [trigger, triggerInputs, workflowId, docDirty, doRun, loadTestOptions, onSave]);
+  }, [
+    trigger,
+    triggerInputs,
+    workflowId,
+    docDirty,
+    doRun,
+    loadTestOptions,
+    onSave,
+    runSideEffects,
+  ]);
 
   // ---- debug execution (staleness-aware, D16) ----
   const runDebug = useCallback(
@@ -560,6 +627,7 @@ export function useWorkflowForm(
                 testOptionsLoading={testOptionsLoading}
                 testOptionsError={testOptionsError}
                 sideEffects={runSideEffects}
+                codeRunnerAvailable={metadata.codeRunnerAvailable}
                 busy={busy}
                 onRun={doRun}
               />
@@ -597,6 +665,7 @@ export function useWorkflowForm(
               onSetActive={onSetActive}
               definition={doc}
               onDefinitionChange={handleDocChange}
+              metadata={metadata}
             />
           ),
         },
