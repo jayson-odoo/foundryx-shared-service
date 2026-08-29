@@ -3,16 +3,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, ChevronLeft, ChevronRight, Pencil } from 'lucide-react';
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from '@/components/ui/breadcrumb';
-import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useCan } from '@/hooks/use-can';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -23,8 +14,17 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb';
+import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
-import { useCan } from '@/hooks/use-can';
 import { RecordNav } from './record-nav';
 import type { ResourceFormConfig } from './types';
 
@@ -39,7 +39,9 @@ export interface ResourceFormProps<T> {
  */
 export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
   const [editing, setEditing] = useState(config.initialEditing ?? false);
-  const [activeTab, setActiveTab] = useState(config.initialTabId ?? config.tabs[0]?.id);
+  const [activeTab, setActiveTab] = useState(
+    config.initialTabId ?? config.tabs[0]?.id,
+  );
   const [saving, setSaving] = useState(false);
   const { can } = useCan();
   const canEdit = !config.editPermission || can(config.editPermission);
@@ -117,13 +119,25 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
         <div className="flex items-center gap-2">
           {config.inlineNav && config.inlineNav.total > 1 && !editing && (
             <div className="flex items-center gap-1">
-              <Button variant="outline" size="icon" className="size-7" onClick={config.inlineNav.onPrev} aria-label="Previous">
+              <Button
+                variant="outline"
+                size="icon"
+                className="size-7"
+                onClick={config.inlineNav.onPrev}
+                aria-label="Previous"
+              >
                 <ChevronLeft className="size-4" />
               </Button>
               <span className="px-1 text-xs tabular-nums text-muted-foreground">
                 {config.inlineNav.index + 1} / {config.inlineNav.total}
               </span>
-              <Button variant="outline" size="icon" className="size-7" onClick={config.inlineNav.onNext} aria-label="Next">
+              <Button
+                variant="outline"
+                size="icon"
+                className="size-7"
+                onClick={config.inlineNav.onNext}
+                aria-label="Next"
+              >
                 <ChevronRight className="size-4" />
               </Button>
             </div>
@@ -138,16 +152,35 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
 
           {editing ? (
             <>
-              <Button variant="outline" size="sm" onClick={handleCancel} disabled={saving}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCancel}
+                disabled={saving}
+              >
                 Cancel
               </Button>
-              <Button variant="primary" size="sm" onClick={handleSave} disabled={saving}>
-                {config.editable ? 'Save' : (config.backLabel ? 'Create' : 'Save')}
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleSave}
+                disabled={saving}
+              >
+                {config.editable
+                  ? 'Save'
+                  : config.backLabel
+                    ? 'Create'
+                    : 'Save'}
               </Button>
             </>
           ) : (
-            config.editable && canEdit && (
-              <Button variant="primary" size="sm" onClick={() => setEditing(true)}>
+            config.editable &&
+            canEdit && (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => setEditing(true)}
+              >
                 <Pencil />
                 Edit
               </Button>
@@ -183,15 +216,24 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
       <div className="flex items-center gap-3">
         {config.avatar}
         <div className="flex flex-col">
-          <h1 className="text-xl font-semibold font-heading leading-tight">{config.title}</h1>
-          {config.subtitle && <span className="text-sm text-muted-foreground">{config.subtitle}</span>}
+          <h1 className="text-xl font-semibold font-heading leading-tight">
+            {config.title}
+          </h1>
+          {config.subtitle && (
+            <span className="text-sm text-muted-foreground">
+              {config.subtitle}
+            </span>
+          )}
         </div>
       </div>
 
       {/* Tabs - the strip scrolls horizontally on narrow screens (responsive
           mandate: five icon tabs exceed 375px; clipping would hide tabs). */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList variant="line" className="max-w-full overflow-x-auto">
+        <TabsList
+          variant="line"
+          className="w-full min-w-0 max-w-full overflow-x-auto"
+        >
           {config.tabs.map((tab) => {
             const Icon = tab.icon;
             return (

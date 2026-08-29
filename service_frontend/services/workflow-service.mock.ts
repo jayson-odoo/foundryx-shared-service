@@ -22,6 +22,7 @@ import {
   newId,
   topoOrder,
   validAiOutputParams,
+  validateDefinition,
 } from '@/lib/workflow-doc';
 import type { WorkflowService } from './workflow-service';
 
@@ -523,6 +524,10 @@ export const mockWorkflowService: WorkflowService = {
   publish(id) {
     const wf = WORKFLOWS.find((w) => w.id === id);
     if (!wf) return Promise.reject(new Error('Workflow not found.'));
+    const issue = validateDefinition(wf.draftDefinition).find(
+      (candidate) => candidate.level === 'error',
+    );
+    if (issue) return Promise.reject(new Error(issue.message));
     const versionNumber =
       (wf.versions[wf.versions.length - 1]?.versionNumber ?? 0) + 1;
     const version: StoredVersion = {

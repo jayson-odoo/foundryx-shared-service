@@ -2,11 +2,22 @@
 
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Archive, ArchiveRestore, CloudOff, CloudUpload, Copy, Pencil, Trash2 } from 'lucide-react';
+import {
+  Archive,
+  ArchiveRestore,
+  CloudOff,
+  CloudUpload,
+  Copy,
+  Pencil,
+  Trash2,
+} from 'lucide-react';
 import { toast } from 'sonner';
-import type { ResourceAction } from '@/components/platform/resource-list';
-import { workflowService } from '@/services/workflow-service';
 import type { WorkflowListItem } from '@/types/workflows';
+import { workflowPublishIssue } from '@/lib/workflow-validation';
+import { useCan } from '@/hooks/use-can';
+import { workflowMetadataService } from '@/services/workflow-metadata-service';
+import { workflowService } from '@/services/workflow-service';
+import type { ResourceAction } from '@/components/platform/resource-list';
 import { workflowPath } from './paths';
 
 const publishable = (w: WorkflowListItem) =>
@@ -16,6 +27,8 @@ const publishable = (w: WorkflowListItem) =>
  * Visibility branches on the Active vs Archived view (via `isTrashed`). */
 export function useWorkflowActions(): ResourceAction<WorkflowListItem>[] {
   const router = useRouter();
+  const { can } = useCan();
+  const canCode = can('workflows.code');
 
   return useMemo<ResourceAction<WorkflowListItem>[]>(
     () => [
@@ -35,11 +48,29 @@ export function useWorkflowActions(): ResourceAction<WorkflowListItem>[] {
         surfaces: { row: true, bulk: true },
         permission: 'workflows.manage',
         // Only when every selected row has something to publish.
-        isVisible: (rows) => rows.length > 0 && rows.every((w) => !w.isTrashed && publishable(w)),
+        isVisible: (rows) =>
+          rows.length > 0 && rows.every((w) => !w.isTrashed && publishable(w)),
         run: async (rows, runtime) => {
-          for (const w of rows) await workflowService.publish(w.id);
-          toast.success(`Published ${rows.length} workflow${rows.length === 1 ? '' : 's'}.`);
-          runtime.reload();
+          try {
+            const [fullWorkflows, metadata] = await Promise.all([
+              Promise.all(rows.map((row) => workflowService.get(row.id))),
+              workflowMetadataService.getMetadata(),
+            ]);
+            for (const workflow of fullWorkflows) {
+              if (!workflow) throw new Error('Workflow not found.');
+              const issue = workflowPublishIssue(workflow, metadata, canCode);
+              if (issue) throw new Error(issue);
+            }
+            for (const w of rows) await workflowService.publish(w.id);
+            toast.success(
+              `Published ${rows.length} workflow${rows.length === 1 ? '' : 's'}.`,
+            );
+            runtime.reload();
+          } catch (error) {
+            toast.error(
+              error instanceof Error ? error.message : 'Publish failed.',
+            );
+          }
         },
       },
       {
@@ -49,10 +80,13 @@ export function useWorkflowActions(): ResourceAction<WorkflowListItem>[] {
         surfaces: { row: true, bulk: true },
         permission: 'workflows.manage',
         isVisible: (rows) =>
-          rows.length > 0 && rows.every((w) => !w.isTrashed && w.currentVersionNumber != null),
+          rows.length > 0 &&
+          rows.every((w) => !w.isTrashed && w.currentVersionNumber != null),
         run: async (rows, runtime) => {
           for (const w of rows) await workflowService.unpublish(w.id);
-          toast.success(`Unpublished ${rows.length} workflow${rows.length === 1 ? '' : 's'}.`);
+          toast.success(
+            `Unpublished ${rows.length} workflow${rows.length === 1 ? '' : 's'}.`,
+          );
           runtime.reload();
         },
       },
@@ -78,7 +112,9 @@ export function useWorkflowActions(): ResourceAction<WorkflowListItem>[] {
         isVisible: (rows) => rows.length > 0 && rows.every((w) => !w.isTrashed),
         run: async (rows, runtime) => {
           for (const w of rows) await workflowService.archive(w.id);
-          toast.success(`Archived ${rows.length} workflow${rows.length === 1 ? '' : 's'}.`);
+          toast.success(
+            `Archived ${rows.length} workflow${rows.length === 1 ? '' : 's'}.`,
+          );
           runtime.reload();
         },
       },
@@ -91,7 +127,9 @@ export function useWorkflowActions(): ResourceAction<WorkflowListItem>[] {
         isVisible: (rows) => rows.length > 0 && rows.every((w) => w.isTrashed),
         run: async (rows, runtime) => {
           for (const w of rows) await workflowService.restore(w.id);
-          toast.success(`Restored ${rows.length} workflow${rows.length === 1 ? '' : 's'}.`);
+          toast.success(
+            `Restored ${rows.length} workflow${rows.length === 1 ? '' : 's'}.`,
+          );
           runtime.reload();
         },
       },
@@ -106,16 +144,19 @@ export function useWorkflowActions(): ResourceAction<WorkflowListItem>[] {
         isVisible: (rows) => rows.length > 0 && rows.every((w) => w.isTrashed),
         confirm: {
           title: 'Delete permanently?',
-          description: 'The workflow and its run history are removed for good. This cannot be undone.',
+          description:
+            'The workflow and its run history are removed for good. This cannot be undone.',
           confirmLabel: 'Delete',
         },
         run: async (rows, runtime) => {
           for (const w of rows) await workflowService.remove(w.id);
-          toast.success(`Deleted ${rows.length} workflow${rows.length === 1 ? '' : 's'}.`);
+          toast.success(
+            `Deleted ${rows.length} workflow${rows.length === 1 ? '' : 's'}.`,
+          );
           runtime.reload();
         },
       },
     ],
-    [router],
+    [canCode, router],
   );
 }

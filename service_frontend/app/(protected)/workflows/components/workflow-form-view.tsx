@@ -2,13 +2,13 @@
 
 import Link from 'next/link';
 import { LoaderCircleIcon } from 'lucide-react';
-import { Container } from '@/components/common/container';
+import { useCan } from '@/hooks/use-can';
 import { Button } from '@/components/ui/button';
 import { Form } from '@/components/ui/form';
+import { Container } from '@/components/common/container';
 import { ResourceForm } from '@/components/platform/resource-form';
-import { useCan } from '@/hooks/use-can';
-import { useWorkflowForm } from './use-workflow-form';
 import { WORKFLOWS_PATH } from './paths';
+import { useWorkflowForm } from './use-workflow-form';
 
 export interface WorkflowFormViewProps {
   workflowId?: string;
@@ -17,7 +17,11 @@ export interface WorkflowFormViewProps {
 }
 
 /** Loads + renders a workflow form (create when workflowId is absent). */
-export function WorkflowFormView({ workflowId, initialEditing, debugRunId }: WorkflowFormViewProps) {
+export function WorkflowFormView({
+  workflowId,
+  initialEditing,
+  debugRunId,
+}: WorkflowFormViewProps) {
   const { can } = useCan();
   const { config, form, isLoading, notFound } = useWorkflowForm(
     workflowId,

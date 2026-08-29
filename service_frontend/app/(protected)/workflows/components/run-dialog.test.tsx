@@ -6,7 +6,7 @@ import type {
   WorkflowOmnichannelTestSource,
   WorkflowRunRequest,
 } from '@/types/workflows';
-import { RunDialog } from './run-dialog';
+import { RunDialog, type RunDialogSideEffects } from './run-dialog';
 
 const SOURCES: WorkflowOmnichannelTestSource[] = [
   {
@@ -49,7 +49,7 @@ function renderDialog(
   node: WorkflowNode,
   onRun = vi.fn<(request: WorkflowRunRequest) => void>(),
   testSources: WorkflowOmnichannelTestSource[] = SOURCES,
-  sideEffects = { callsAi: false, sendsMessage: false },
+  sideEffects: RunDialogSideEffects = { callsAi: false, sendsMessage: false },
 ) {
   render(
     <RunDialog

@@ -24,6 +24,7 @@ import {
   topoOrder,
   validateDefinition,
 } from '@/lib/workflow-doc';
+import { workflowPublishIssue } from '@/lib/workflow-validation';
 import { workflowMetadataService } from '@/services/workflow-metadata-service';
 import { workflowService } from '@/services/workflow-service';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
@@ -111,25 +112,6 @@ function takenDescendants(
     }
   }
   return result;
-}
-
-function changedCodeNeedsRunner(
-  definition: WorkflowDefinition,
-  workflow: Workflow | null,
-  runnerAvailable: boolean | undefined,
-): boolean {
-  if (runnerAvailable !== false) return false;
-  const baseline = workflow?.currentVersion?.definition;
-  return definition.nodes.some((node) => {
-    if (node.type !== 'code.run') return false;
-    const previous = baseline?.nodes.find(
-      (candidate) => candidate.id === node.id,
-    );
-    return (
-      !previous ||
-      JSON.stringify(previous.config) !== JSON.stringify(node.config)
-    );
-  });
 }
 
 /**
@@ -339,16 +321,13 @@ export function useWorkflowForm(
       toast.error(definitionIssue.message);
       return;
     }
-    if (
-      changedCodeNeedsRunner(
-        docRef.current,
-        workflow,
-        metadata.codeRunnerAvailable,
-      )
-    ) {
-      toast.error(
-        'Code runner is unavailable. Publishing changed Code nodes is blocked.',
-      );
+    const publishIssue = workflowPublishIssue(
+      { ...(workflow ?? blankWorkflow()), draftDefinition: docRef.current },
+      metadata,
+      canCode,
+    );
+    if (publishIssue) {
+      toast.error(publishIssue);
       return;
     }
     setBusy(true);
@@ -365,7 +344,7 @@ export function useWorkflowForm(
     } finally {
       setBusy(false);
     }
-  }, [workflowId, docDirty, metadata, onSave, refresh, workflow]);
+  }, [canCode, workflowId, docDirty, metadata, onSave, refresh, workflow]);
 
   const onUnpublish = useCallback(async () => {
     if (!workflowId) return;
@@ -435,6 +414,15 @@ export function useWorkflowForm(
         toast.error('Save the workflow before running it.');
         return;
       }
+      if (
+        !canCode &&
+        docRef.current.nodes.some((node) => node.type === 'code.run')
+      ) {
+        toast.error(
+          'You need the workflows.code permission to run Code nodes.',
+        );
+        return;
+      }
       setBusy(true);
       try {
         if (docDirty) {
@@ -451,7 +439,7 @@ export function useWorkflowForm(
         setBusy(false);
       }
     },
-    [workflowId, docDirty, onSave],
+    [canCode, workflowId, docDirty, onSave],
   );
 
   const loadTestOptions = useCallback(async () => {
@@ -518,6 +506,15 @@ export function useWorkflowForm(
   const runDebug = useCallback(
     async (targetNodeId: string, staleIds: string[]) => {
       if (!workflowId || !debugRunId) return;
+      if (
+        !canCode &&
+        docRef.current.nodes.some((node) => node.type === 'code.run')
+      ) {
+        toast.error(
+          'You need the workflows.code permission to run Code nodes.',
+        );
+        return;
+      }
       setDebugBusy(true);
       try {
         const result = await workflowService.debugExecute(workflowId, {
@@ -544,7 +541,7 @@ export function useWorkflowForm(
         setDebugBusy(false);
       }
     },
-    [workflowId, debugRunId],
+    [canCode, workflowId, debugRunId],
   );
 
   const onExecuteAll = useCallback(() => {
