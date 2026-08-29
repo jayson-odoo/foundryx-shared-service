@@ -19,10 +19,8 @@ export function workflowPublishIssue(
     return 'You need the workflows.code permission to publish Code nodes.';
   if (metadata.codeRunnerAvailable !== false || codeNodes.length === 0)
     return null;
-  // Real backends may omit the embedded published definition. Do not falsely
-  // block an unchanged stored Code node when there is no comparison baseline.
   if (workflow.currentVersionId && !workflow.currentVersion?.definition)
-    return null;
+    return 'Code runner health could not be verified for this stored Code node.';
   const baseline = workflow.currentVersion?.definition;
   return codeNodes.some((node) => {
     const previous = baseline?.nodes.find(

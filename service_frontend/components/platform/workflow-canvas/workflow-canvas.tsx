@@ -491,7 +491,7 @@ export function WorkflowCanvas({
               />
             ) : (
               <p className="px-1 py-6 text-center text-xs text-muted-foreground">
-                Enable Edit to add nodes.
+                Read-only workflow.
               </p>
             )}
           </aside>
