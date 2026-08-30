@@ -1138,7 +1138,7 @@ export function NodeConfigDrawer({
     }
 
     if (field.type === 'codeCapabilities') {
-      return wrap(<CodeCapabilities />);
+      return wrap(<CodeCapabilities items={metadata.codeCapabilities} />);
     }
 
     if (field.type === 'form') {

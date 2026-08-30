@@ -37,6 +37,18 @@ loopback port range below (dreamz owns 8000/8010/3001/3011).
 | frontend (Next standalone) | `:3200` | `:3210` | `node server.js` |
 | db / redis / pgbackups | - | - | infra, not blue/green; db host port `5433` |
 | worker_workflow / worker_omni / beat | - | - | Celery; recreated in place each deploy |
+| code_runner | - | - | sandboxed workflow Code action; own stdlib-only image, internal-only network, recreated each deploy |
+
+**Code runner** (`service_backend/code_runner/`, image tag `code-runner-<tag>`): the
+ONLY process that executes builder-authored Python (workflow `code.run`). It is
+a separate image with no application code, no pip packages and no secrets;
+compose runs it read-only, non-root, `cap_drop: ALL`, memory/pids-capped, on
+the `internal: true` network `foundryx_ss_runner` (no egress). The API colors
+and `worker_workflow` join that network to reach it; the runner reaches
+nothing. Auth = `CODE_RUNNER_TOKEN` (GitHub Secret, rendered into `.env` for
+both the backend env and the runner). Backend `CODE_RUNNER_URL` defaults to
+`http://code_runner:8011`. If the runner is down, Code nodes fail cleanly and
+publishing a Code-bearing workflow is blocked until `/health` returns.
 
 Two Celery apps share the backend image: `app.workflow_engine.worker` (tasks +
 **beat** schedule) and `modules.omnichannel.worker` (inbound WhatsApp). Exactly

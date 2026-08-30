@@ -117,16 +117,31 @@ export function CodeEditor({ value, editing, onChange }: CodeEditorProps) {
   );
 }
 
-export function CodeCapabilities() {
+/** Mirrors the runner's language policy (`code_runner/policy.py`
+ * CAPABILITIES) - the backend serves the live list via workflow metadata so
+ * the editor never drifts from what the deployed runner actually allows. */
+export const CODE_CAPABILITIES_FALLBACK = [
+  'Read-only `input` dictionary of the mapped values',
+  'Assign a JSON dictionary to `result`',
+  'Pure builtins: abs, all, any, bool, dict, enumerate, filter, float, int, len, list, map, max, min, range, round, set, sorted, str, sum, tuple, zip, print',
+  'Helpers: json, math, re',
+  'No imports, files, network, environment, subprocesses, or reflection',
+];
+
+export interface CodeCapabilitiesProps {
+  items?: string[];
+}
+
+export function CodeCapabilities({ items }: CodeCapabilitiesProps) {
+  const list = items && items.length ? items : CODE_CAPABILITIES_FALLBACK;
   return (
     <ul
-      className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-2"
+      className="grid gap-1 text-xs text-muted-foreground"
       data-testid="code-capabilities"
     >
-      <li>Python</li>
-      <li>JSON input</li>
-      <li>Declared outputs</li>
-      <li>No network or filesystem</li>
+      {list.map((item) => (
+        <li key={item}>{item}</li>
+      ))}
     </ul>
   );
 }

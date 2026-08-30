@@ -5,6 +5,7 @@
  * (tenant) carry their statuses. Phase B swaps the binding to `GET
  * /workflow-metadata` in workflow-metadata-service.ts.
  */
+import { CODE_CAPABILITIES_FALLBACK } from '@/components/platform/workflow-canvas/code-editor';
 import type { WorkflowMetadata, WorkflowTriggerableEntity } from '@/types/workflows';
 import { delay } from './mock-query';
 
@@ -119,6 +120,7 @@ export const mockWorkflowMetadataService = {
         connections: { email: true, storage: false },
         forms: FORMS,
         codeRunnerAvailable: true,
+        codeCapabilities: CODE_CAPABILITIES_FALLBACK,
         omnichannelChannels: [{ id: 'chn-demo', name: 'Demo channel' }],
         aiAgents: [{ id: 'agent-demo', name: 'Demo classifier', model: 'stub' }],
       },
