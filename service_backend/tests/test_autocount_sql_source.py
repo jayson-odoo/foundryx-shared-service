@@ -274,6 +274,63 @@ def test_connect_args_carry_a_bounded_timeout_per_dialect(db_type, expected):
         assert args[key] == value
 
 
+# ── MySQL / MariaDB read-only session setup (S1 review) ──────────────────────
+
+
+class _FakeConn:
+    """Records the statements ``_begin_readonly`` issues; raises on any
+    statement containing one of ``fail_on``."""
+
+    def __init__(self, *fail_on: str) -> None:
+        self.fail_on = fail_on
+        self.executed: list = []
+        self.rollbacks = 0
+
+    def exec_driver_sql(self, sql: str):
+        self.executed.append(sql)
+        if any(marker in sql for marker in self.fail_on):
+            raise OperationalError(sql, {}, Exception("Unknown system variable"))
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+def test_mysql_timeout_falls_back_to_mariadb_max_statement_time():
+    from modules.autocount.sql_source.runtime import _begin_readonly
+
+    conn = _FakeConn("MAX_EXECUTION_TIME")
+    _begin_readonly(conn, "mysql", 7)
+    assert conn.executed[0] == "SET SESSION TRANSACTION READ ONLY"
+    assert "SET SESSION MAX_EXECUTION_TIME = 7000" in conn.executed
+    assert "SET SESSION max_statement_time = 7" in conn.executed  # seconds
+    assert conn.rollbacks == 1
+
+
+def test_mysql_timeout_is_best_effort_but_read_only_is_not():
+    from modules.autocount.sql_source.runtime import _begin_readonly
+
+    conn = _FakeConn("MAX_EXECUTION_TIME", "max_statement_time")
+    _begin_readonly(conn, "mysql", 7)  # both pragmas fail → no raise
+    assert conn.executed[0] == "SET SESSION TRANSACTION READ ONLY"
+    assert conn.rollbacks == 1
+
+    strict = _FakeConn("READ ONLY")
+    with pytest.raises(OperationalError):
+        _begin_readonly(strict, "mysql", 7)
+
+
+def test_mysql_timeout_stops_at_the_first_pragma_that_works():
+    from modules.autocount.sql_source.runtime import _begin_readonly
+
+    conn = _FakeConn()
+    _begin_readonly(conn, "mysql", 7)
+    assert conn.executed == [
+        "SET SESSION TRANSACTION READ ONLY",
+        "SET SESSION MAX_EXECUTION_TIME = 7000",
+    ]
+    assert conn.rollbacks == 1
+
+
 # ── sanitised errors (AC-22-30) ──────────────────────────────────────────────
 
 

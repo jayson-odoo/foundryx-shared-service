@@ -10,7 +10,8 @@ first; the session is opened read-only where the dialect has it (Postgres
 ``SET TRANSACTION READ ONLY``, MySQL ``SET SESSION TRANSACTION READ ONLY``;
 MSSQL has none - guard + login); every transaction is rolled back; and a
 per-query timeout applies on every dialect (Postgres ``statement_timeout``,
-MySQL ``MAX_EXECUTION_TIME``, pymssql ``timeout``).
+MySQL ``MAX_EXECUTION_TIME`` / MariaDB ``max_statement_time`` best-effort,
+pymssql ``timeout``).
 
     !!  Nothing here ever logs or raises a credential or a DSN.  !!
 
@@ -138,7 +139,12 @@ def connect_args_for(
 
 
 def secrets_of(config: Dict[str, Any], credentials: Dict[str, Any]) -> List[str]:
-    """Every value that must never appear in an operator message."""
+    """Every value that must never appear in an operator message.
+
+    Only credential VALUES (password etc.) are redacted - the username and
+    host live in the plain ``config`` and are deliberately NOT redacted, since
+    the operator needs them to make sense of "could not connect to <host>".
+    """
     out: List[str] = []
     for value in credentials.values():
         if isinstance(value, str) and len(value) >= 3:
@@ -219,11 +225,35 @@ def _begin_readonly(conn: Connection, dialect: str, timeout_s: int) -> None:
     elif dialect == "mysql":
         # Session-scoped: they govern the NEXT transaction, so end the implicit
         # one they ran in - the query below autobegins a fresh read-only txn.
+        # READ ONLY is mandatory (a failure propagates → SqlConnectError); the
+        # timeout pragma is best-effort - see ``_set_mysql_timeout``.
         conn.exec_driver_sql("SET SESSION TRANSACTION READ ONLY")
-        conn.exec_driver_sql(f"SET SESSION MAX_EXECUTION_TIME = {millis}")
+        _set_mysql_timeout(conn, timeout_s)
         conn.rollback()
     # mssql: no session-level read-only; the guard + the login + pymssql's
     # per-query ``timeout`` (connect_args) are the layers. sqlite (tests): none.
+
+
+def _set_mysql_timeout(conn: Connection, timeout_s: int) -> None:
+    """Best-effort per-query timeout for the MySQL family (S1 review).
+
+    MySQL 5.7+ has ``MAX_EXECUTION_TIME`` (milliseconds); MariaDB does not and
+    errors on it - it has ``max_statement_time`` (seconds) instead. Try each
+    in turn; when neither is accepted the session runs WITHOUT a server-side
+    timeout rather than failing the whole preview - pymysql's
+    ``read_timeout`` (connect_args) still bounds the wait client-side, and
+    the read-only transaction is never skipped (it is set before this runs).
+    """
+    seconds = max(1, int(timeout_s))
+    for pragma in (
+        f"SET SESSION MAX_EXECUTION_TIME = {seconds * 1000}",
+        f"SET SESSION max_statement_time = {seconds}",
+    ):
+        try:
+            conn.exec_driver_sql(pragma)
+            return
+        except Exception:  # noqa: BLE001 - unknown variable on this server flavour
+            continue
 
 
 class SqlSourceRuntime:
