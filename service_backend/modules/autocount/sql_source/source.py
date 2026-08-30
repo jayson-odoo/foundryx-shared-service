@@ -447,6 +447,23 @@ class SqlDbSource:
         # else vanished too".
         delete_refs: List[str] = []
         if full_extract and known:
+            #     !!  A ZERO-ROW FULL EXTRACT IS NEVER A GENUINE TOTAL WIPE.  !!
+            # (S3 review BLOCKER 2.) The ratio/absolute guard below is INERT on
+            # a small (<=50-row) known population: e.g. known=20 gives a
+            # threshold of max(0.2*20, 50) = 50, so 20 delete refs - EVERY known
+            # row - sails straight through. A broken query, a bad connection or
+            # an empty result set both look, structurally, identical to "the
+            # whole table vanished"; this absolute rule catches that shape
+            # regardless of population size, raised BEFORE the ratio check (and
+            # before any hash write) so nothing is staged or pushed either way.
+            if not raw_rows:
+                raise SqlDeleteGuardExceeded(
+                    f"This run returned 0 rows while {len(known)} previously-known "
+                    f"row(s) exist for this entity - nothing was staged or pushed. "
+                    f"This looks like a broken query or connection, not a genuine "
+                    f"full deletion. Check the query and the connection, then "
+                    f"re-run reconcile."
+                )
             delete_refs = sorted(ref for ref in known if ref not in current_refs)
             threshold = max(DELETE_GUARD_RATIO * len(known), DELETE_GUARD_MIN_ABSOLUTE)
             if len(delete_refs) > threshold:

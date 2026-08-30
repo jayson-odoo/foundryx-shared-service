@@ -699,6 +699,60 @@ def test_reconcile_delete_guard_permits_a_small_ratio_of_deletes(rig):
     assert result.delete_refs == [f"{DB_NAME}:300-A003"]
 
 
+def test_reconcile_delete_guard_a_zero_row_extract_trips_even_under_50_known(rig):
+    """S3 review BLOCKER 2 - `max(20%, 50)` is INERT under a 50-row known
+    population: known=20 gives threshold=50, so a broken query/connection
+    returning EVERY row absent (20 delete refs) sails under 50 and through.
+    The absolute zero-rows rule must catch this regardless of population
+    size - a full extract that reads nothing is never a genuine total wipe."""
+    db, company, config, engine = rig
+    known = {f"K{i}": "h" for i in range(20)}
+    RowHashRepository(db).upsert_many(
+        DEFAULT_TENANT_ID, company.id, ENTITY_CUSTOMER, known, seen_at=datetime.now(timezone.utc)
+    )
+    db.commit()
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DELETE FROM debtor")
+
+    source = SqlDbSource(
+        _ctx(db, company, config), entity_type=ENTITY_CUSTOMER, mode=RUN_MODE_RECONCILE
+    )
+    with pytest.raises(SqlDeleteGuardExceeded) as exc:
+        source.fetch_changes(Watermark())
+    assert "0 rows" in str(exc.value)
+    # Nothing was written, same fail-safe contract as the ratio-triggered path.
+    assert RowHashRepository(db).all_hashes(
+        DEFAULT_TENANT_ID, company.id, ENTITY_CUSTOMER
+    ) == known
+
+
+def test_reconcile_delete_guard_a_legitimate_small_shrink_still_passes(rig):
+    """The absolute zero-rows rule must not over-fire: 20 known -> 18 current
+    (2 genuine deletes, well under the 50-row floor) is a normal reconcile,
+    not a guard trip."""
+    db, company, config, engine = rig
+    with engine.begin() as conn:
+        for i in range(17):
+            conn.exec_driver_sql(
+                "INSERT INTO debtor VALUES (?, ?, ?, ?, ?)",
+                (f"300-C{i:03d}", f"Shrink {i}", f"c{i}@x.com", 1, "2026-08-05 09:00:00"),
+            )
+    # A real initial load hashes all 20 rows (3 fixture + 17 inserted) - the
+    # KNOWN population a later reconcile diffs against.
+    SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_CUSTOMER).fetch_changes(
+        Watermark()
+    )
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DELETE FROM debtor WHERE acc_no IN ('300-A003', '300-C000')")
+
+    # 18 rows still come back - not a zero-row extract, and 2 deletes is
+    # comfortably under max(0.2*20, 50)=50.
+    result = SqlDbSource(
+        _ctx(db, company, config), entity_type=ENTITY_CUSTOMER, mode=RUN_MODE_RECONCILE
+    ).fetch_changes(Watermark())
+    assert set(result.delete_refs) == {f"{DB_NAME}:300-A003", f"{DB_NAME}:300-C000"}
+
+
 # ── no-watermark "incremental" = the same diff mechanics (AC-22-12 item 6) ──
 
 
