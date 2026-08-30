@@ -719,9 +719,11 @@ class EtlService:
         """``(next_incremental_at, next_reconcile_at)`` in UTC.
 
         Armed at activation so the sweep (S3) has a due time to select on from
-        the first tick. The daily-at time is treated as UTC HERE and RE-RESOLVED
-        against the tenant timezone by the sweep - the plan's own split (§2.4),
-        and the reason this stays a pure function.
+        the first tick. The daily-at time is treated as UTC, full stop - there
+        is no tenant-level timezone setting to re-resolve against (only a
+        per-user preference, which has no natural owner for an unattended
+        scheduled task; see ``scheduler.py``'s own note). BL-SS-034 tracks
+        adding one. This stays a pure function of ``now`` either way.
         """
         now = now or datetime.now(timezone.utc)
         minutes = _clean_int(source_config.get("incrementalMinutes")) or (
