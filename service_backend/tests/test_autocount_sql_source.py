@@ -32,8 +32,11 @@ from modules.autocount.sql_source.preview import (
     run_preview,
     wrap_preview,
 )
+import modules.autocount.sql_source.runtime as runtime_module
 from modules.autocount.sql_source.runtime import (
+    EXTRACT_TIMEOUT_SECONDS,
     PREVIEW_ROW_LIMIT,
+    QUERY_TIMEOUT_SECONDS,
     SqlConnectError,
     SqlQueryError,
     SqlSourceError,
@@ -808,6 +811,61 @@ def test_runtime_put_engine_seam_serves_a_registered_engine():
     engine = _sqlite_engine()
     runtime.put_engine("c9", engine)
     assert runtime.engine_for("c9", {"dbType": "mssql"}, {}) is engine
+
+
+# ── extract vs preview timeout (S2 review SHOULD-FIX 5) ─────────────────────
+#
+# pymssql has no session-level statement timeout - its per-query budget is
+# baked into ``connect_args`` at ENGINE CREATION time (``connect_args_for``'s
+# ``timeout``), and the engine is cached per connection. A real extract must
+# not be silently capped at the 30s PREVIEW budget, and a preview-timeout
+# engine must never be handed to an extract (or vice versa) just because they
+# share a connection id.
+
+
+def test_extract_timeout_is_bigger_than_the_preview_timeout():
+    assert EXTRACT_TIMEOUT_SECONDS > QUERY_TIMEOUT_SECONDS
+
+
+def test_engine_for_threads_the_query_timeout_into_mssql_connect_args(monkeypatch):
+    captured: list = []
+    real_create_engine = sa.create_engine
+
+    def fake_create_engine(url, **kwargs):
+        captured.append(kwargs.get("connect_args"))
+        return real_create_engine("sqlite://")
+
+    monkeypatch.setattr(runtime_module.sa, "create_engine", fake_create_engine)
+    runtime = SqlSourceRuntime()
+    cfg = {"dbType": "mssql", "host": "h", "database": "d", "username": "u"}
+
+    runtime.engine_for("c1", cfg, {"password": "p"})  # default = preview budget
+    runtime.engine_for(
+        "c1", cfg, {"password": "p"}, query_timeout=EXTRACT_TIMEOUT_SECONDS
+    )
+    assert captured[0]["timeout"] == QUERY_TIMEOUT_SECONDS
+    assert captured[1]["timeout"] == EXTRACT_TIMEOUT_SECONDS
+    runtime.dispose_all()
+
+
+def test_engine_for_caches_separately_per_query_timeout():
+    """A preview-budget engine and an extract-budget engine for the SAME
+    connection must never collide in the cache - MSSQL's timeout can only be
+    changed by building a NEW connection."""
+    runtime = SqlSourceRuntime()
+    cfg = {"dbType": "mssql", "host": "h", "database": "d", "username": "u"}
+    preview_engine = runtime.engine_for("c1", cfg, {"password": "p"})
+    extract_engine = runtime.engine_for(
+        "c1", cfg, {"password": "p"}, query_timeout=EXTRACT_TIMEOUT_SECONDS
+    )
+    assert preview_engine is not extract_engine
+    # Re-asking for the same (connection, timeout) pair stays cached.
+    assert runtime.engine_for("c1", cfg, {"password": "p"}) is preview_engine
+    assert (
+        runtime.engine_for("c1", cfg, {"password": "p"}, query_timeout=EXTRACT_TIMEOUT_SECONDS)
+        is extract_engine
+    )
+    runtime.dispose_all()
 
 
 def test_runtime_connect_failure_is_a_sanitised_connect_error():

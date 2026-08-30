@@ -66,7 +66,13 @@ from .errors import SqlQueryError, SqlSourceError
 from .guard import assert_select_only, normalize_statement, top_level_words
 from .hashing import compared_columns_for, row_hash
 from .preview import json_safe
-from .runtime import RUNTIME, QUERY_TIMEOUT_SECONDS, SqlSourceRuntime, open_readonly, secrets_of
+from .runtime import (
+    RUNTIME,
+    EXTRACT_TIMEOUT_SECONDS,
+    SqlSourceRuntime,
+    open_readonly,
+    secrets_of,
+)
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -210,7 +216,12 @@ class SqlDbSource:
         persist_hashes: bool = True,
         runtime: SqlSourceRuntime = RUNTIME,
         row_limit: int = MAX_EXTRACT_ROWS,
-        timeout_s: int = QUERY_TIMEOUT_SECONDS,
+        # A real extract (this class is NEVER used for the capped raw-query
+        # preview - that path is ``preview.run_preview`` directly) must not
+        # share the 30s preview budget (S2 review SHOULD-FIX 5) - both the
+        # initial-load dry run (``EtlService.preview_task``) and every
+        # scheduled/manual RUN read a real table end to end.
+        timeout_s: int = EXTRACT_TIMEOUT_SECONDS,
         **_extra: Any,
     ) -> None:
         self.entity_type = entity_type
@@ -278,7 +289,13 @@ class SqlDbSource:
                 ) from exc
         self._secrets = secrets_of(conn_config, credentials)
         self.dialect_key = str(conn_config.get("dbType", ""))
-        self._engine: Engine = runtime.engine_for(conn.id, conn_config, credentials)
+        # The EXTRACT budget rides the engine's own connect_args (MSSQL's
+        # per-query timeout can only be set at connect time) - never the
+        # shorter preview default, even though this and a raw query preview
+        # may share the same connection id.
+        self._engine: Engine = runtime.engine_for(
+            conn.id, conn_config, credentials, query_timeout=timeout_s
+        )
 
         #     !!  DENY-FIRST, ON THE STORED TEXT, AT EXECUTION TIME.  !!
         # The save-time guard proved what was SAVED. This proves what is about

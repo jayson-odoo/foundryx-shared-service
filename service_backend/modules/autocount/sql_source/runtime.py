@@ -36,6 +36,7 @@ from .errors import SqlConnectError, SqlGuardError, SqlQueryError, SqlSourceErro
 __all__ = [
     "CONNECT_TIMEOUT_SECONDS",
     "DIALECTS",
+    "EXTRACT_TIMEOUT_SECONDS",
     "PREVIEW_ROW_LIMIT",
     "QUERY_TIMEOUT_SECONDS",
     "RUNTIME",
@@ -62,6 +63,10 @@ DIALECTS: Dict[str, Tuple[str, int, str]] = {
 PREVIEW_ROW_LIMIT = 100
 CONNECT_TIMEOUT_SECONDS = 10
 QUERY_TIMEOUT_SECONDS = 30
+# A real extract (the initial-load preview_task dry run, and every scheduled
+# or manual RUN) reads far more than a capped preview and must not share its
+# 30s budget (S2 review SHOULD-FIX 5) - a real table easily takes longer.
+EXTRACT_TIMEOUT_SECONDS = 300
 # Operator-facing messages are capped - a driver can dump a page of text.
 _MESSAGE_CAP = 300
 
@@ -174,11 +179,15 @@ def sanitize_error(exc: BaseException, *, secrets: Sequence[str] = ()) -> str:
     return raw or "The database returned an error."
 
 
-def _fingerprint(url: URL, config: Dict[str, Any]) -> str:
-    material = url.render_as_string(hide_password=False) + json.dumps(
-        {k: v for k, v in sorted(config.items()) if not str(k).startswith("_")},
-        sort_keys=True,
-        default=str,
+def _fingerprint(url: URL, config: Dict[str, Any], query_timeout: int) -> str:
+    material = (
+        url.render_as_string(hide_password=False)
+        + json.dumps(
+            {k: v for k, v in sorted(config.items()) if not str(k).startswith("_")},
+            sort_keys=True,
+            default=str,
+        )
+        + f":qt={int(query_timeout)}"
     )
     return hashlib.sha256(material.encode()).hexdigest()
 
@@ -257,27 +266,43 @@ def _set_mysql_timeout(conn: Connection, timeout_s: int) -> None:
 
 
 class SqlSourceRuntime:
-    """Engine cache keyed by connection id (plan 22 §2.2).
+    """Engine cache keyed by (connection id, query timeout) (plan 22 §2.2).
 
-    One small pooled engine per source connection, rebuilt when the config or
-    credentials change (fingerprint) and disposable on demand. ``put_engine``
-    is the injection seam tests and the provider's own probe use - the
-    routes/services never build a URL themselves.
+    One small pooled engine per (source connection, timeout budget), rebuilt
+    when the config/credentials change (fingerprint) and disposable on
+    demand. **The timeout is part of the cache key, not just an argument**
+    (S2 review SHOULD-FIX 5): pymssql has no session-level statement
+    timeout, so its per-query budget is baked into ``connect_args`` at ENGINE
+    CREATION time - a preview-budget engine (30s) and an extract-budget
+    engine (300s) for the SAME connection are genuinely DIFFERENT engines,
+    never interchangeable just because they share a connection id.
+    ``put_engine`` is the injection seam tests and the provider's own probe
+    use - it serves for ANY requested timeout (a test binds ONE fake engine,
+    regardless of which budget the code under test asks for) - the routes/
+    services never build a URL themselves.
     """
 
     def __init__(self) -> None:
-        self._engines: Dict[str, Tuple[str, Engine]] = {}
+        self._engines: Dict[Tuple[str, int], Tuple[str, Engine]] = {}
+        self._injected: Dict[str, Engine] = {}
         self._lock = threading.Lock()
 
     def engine_for(
-        self, connection_id: str, config: Dict[str, Any], credentials: Dict[str, Any]
+        self,
+        connection_id: str,
+        config: Dict[str, Any],
+        credentials: Dict[str, Any],
+        *,
+        query_timeout: int = QUERY_TIMEOUT_SECONDS,
     ) -> Engine:
         with self._lock:
-            held = self._engines.get(connection_id)
-            if held is not None and held[0] == "__injected__":
-                return held[1]
+            injected = self._injected.get(connection_id)
+            if injected is not None:
+                return injected
+            key = (connection_id, int(query_timeout))
+            held = self._engines.get(key)
             url = build_url(config, credentials)
-            fingerprint = _fingerprint(url, config)
+            fingerprint = _fingerprint(url, config, query_timeout)
             if held is not None and held[0] == fingerprint:
                 return held[1]
             if held is not None:
@@ -289,30 +314,45 @@ class SqlSourceRuntime:
                 max_overflow=3,
                 pool_timeout=CONNECT_TIMEOUT_SECONDS,
                 pool_recycle=1800,
-                connect_args=connect_args_for(str(config.get("dbType", ""))),
+                connect_args=connect_args_for(
+                    str(config.get("dbType", "")), query_timeout=query_timeout
+                ),
             )
-            self._engines[connection_id] = (fingerprint, engine)
+            self._engines[key] = (fingerprint, engine)
             return engine
 
     def put_engine(self, connection_id: str, engine: Engine) -> None:
-        """Bind a ready engine to a connection id (tests, probes)."""
+        """Bind a ready engine to a connection id (tests, probes) - served
+        for EVERY timeout variant ``engine_for`` is asked for."""
         with self._lock:
-            held = self._engines.pop(connection_id, None)
-            if held is not None and held[1] is not engine:
-                held[1].dispose()
-            self._engines[connection_id] = ("__injected__", engine)
+            for key in [k for k in self._engines if k[0] == connection_id]:
+                _fp, held_engine = self._engines.pop(key)
+                if held_engine is not engine:
+                    held_engine.dispose()
+            old = self._injected.pop(connection_id, None)
+            if old is not None and old is not engine:
+                old.dispose()
+            self._injected[connection_id] = engine
 
     def evict(self, connection_id: str) -> None:
         with self._lock:
-            held = self._engines.pop(connection_id, None)
-        if held is not None:
-            held[1].dispose()
+            removed: List[Engine] = []
+            injected = self._injected.pop(connection_id, None)
+            if injected is not None:
+                removed.append(injected)
+            for key in [k for k in self._engines if k[0] == connection_id]:
+                _fp, engine = self._engines.pop(key)
+                removed.append(engine)
+        for engine in removed:
+            engine.dispose()
 
     def dispose_all(self) -> None:
         with self._lock:
-            held = list(self._engines.values())
+            held = [engine for _fp, engine in self._engines.values()]
+            held.extend(self._injected.values())
             self._engines.clear()
-        for _fp, engine in held:
+            self._injected.clear()
+        for engine in held:
             engine.dispose()
 
     @contextmanager
@@ -324,7 +364,7 @@ class SqlSourceRuntime:
         *,
         timeout_s: int = QUERY_TIMEOUT_SECONDS,
     ) -> Iterator[Connection]:
-        engine = self.engine_for(connection_id, config, credentials)
+        engine = self.engine_for(connection_id, config, credentials, query_timeout=timeout_s)
         with open_readonly(
             engine, timeout_s=timeout_s, secrets=secrets_of(config, credentials)
         ) as conn:
