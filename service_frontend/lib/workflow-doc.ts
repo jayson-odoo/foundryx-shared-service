@@ -420,15 +420,21 @@ export function addEdge(
   doc: WorkflowDefinition,
   edge: Omit<WorkflowEdge, 'id'>,
 ): WorkflowDefinition {
-  // One outgoing edge per (source, port) for the linear v1 - replace any
-  // existing edge on the same port (n8n reconnect behavior).
+  // A source port fans out to multiple targets (the executor already runs
+  // every out-edge). Stay idempotent for an exact duplicate connection
+  // (same source + port + target) so re-dragging an existing wire never
+  // creates a second identical edge.
   const port = edge.sourcePort ?? 'out';
-  const kept = doc.edges.filter(
-    (e) => !(e.source === edge.source && (e.sourcePort ?? 'out') === port),
+  const exists = doc.edges.some(
+    (e) =>
+      e.source === edge.source &&
+      (e.sourcePort ?? 'out') === port &&
+      e.target === edge.target,
   );
+  if (exists) return doc;
   return {
     ...doc,
-    edges: [...kept, { ...edge, id: newId('e'), sourcePort: port }],
+    edges: [...doc.edges, { ...edge, id: newId('e'), sourcePort: port }],
   };
 }
 
@@ -437,6 +443,17 @@ export function removeEdge(
   edgeId: string,
 ): WorkflowDefinition {
   return { ...doc, edges: doc.edges.filter((e) => e.id !== edgeId) };
+}
+
+/** Remove multiple edges in one pass (fixes the multi-select delete bug -
+ * calling `removeEdge` per id against the same captured doc drops only the
+ * last removal). Unknown ids are ignored. */
+export function removeEdges(
+  doc: WorkflowDefinition,
+  edgeIds: string[],
+): WorkflowDefinition {
+  const ids = new Set(edgeIds);
+  return { ...doc, edges: doc.edges.filter((e) => !ids.has(e.id)) };
 }
 
 /** Topological order from the trigger; nodes unreachable from it trail at the
