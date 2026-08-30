@@ -265,6 +265,63 @@ SAVEPOINT verdicts, always-200 batches, `?dry_run=true` real-run-rollback, X-API
   hard delete only.
 - dry_run supported (reports which verdict each ref WOULD get).
 
+### A6. AS-AGREED SHAPES (Sorento session reply 2026-08-30 - these WIN over A1-A4 where they differ)
+
+Sorento branch `feat/autocount-cross-repo-contract`, plan
+`sorento_crm/.claude/worktrees/autocount-contract/documentation/plans/autocount/PLAN-autocount-cross-repo-contract.md`.
+
+Endpoints (all X-API-Key, always-200 batches, per-record SAVEPOINT, `?dry_run=true`, batch <= 1000
+else 413), entity in `product_categories | units_of_measure | warehouses | suppliers | customers |
+products | sales_agents | sales_orders | purchase_orders`:
+- `POST /api/v1/external/ingest/{entity}` body `{"companyCode": "SRT", "records": [...]}`
+- `POST /api/v1/external/read/{entity}` body `{"companyCode": "SRT", "source_refs": [...]}`
+- `POST /api/v1/external/ingest/{entity}/deletions` body `{"companyCode": "SRT", "source_refs": [...]}`
+
+Deviations from A1-A4 and what they mean for THIS repo:
+1. **`companyCode` is a top-level body field** on all three calls (matched case-insensitively on
+   `companies.code`, then `companies.autocount_ref`; fallback = the integration's
+   `config_json.company_code`). 422 codes: `COMPANY_ANCHOR_REQUIRED`, `UNKNOWN_COMPANY`,
+   `COMPANY_ANCHOR_AMBIGUOUS` (body `{"code","message"}`, exact JSON confirmed when A1 lands).
+   → `ac_company.sorento_company_code` (new column, required when `sink_impl='sorento'`);
+   `SorentoSink` sends it on every call; a 422 anchor error = run failed with that code surfaced
+   on the task (never per-record).
+2. **Document status vocabulary is fixed**: SO/PO canonical `status` in
+   `open | partial | fulfilled | closed | cancelled` (unknown = per-record failed `errors.status`).
+   Sorento maps to its own enums. → the SO/PO mapping profile ships a required `status` canonical
+   field; default mapping rows use a formula over AutoCount `Cancelled`/fulfilment columns; the
+   editor's simulator must show the resulting value.
+3. **Document lines reference masters by INTEGRATION REF, not code**: `customer_ref`,
+   `sales_agent_ref`, `supplier_ref`, line `product_ref` (required) / `warehouse_ref` = the
+   `source_ref` we pushed that master under. Unknown ref = whole record `retryable`, nothing
+   written; absent optional ref = FK NULL. → line mapping mints refs with the SAME scheme as the
+   master tasks (`{DatabaseName}:{key}`), which forces the master-task key column to be the same
+   column the document line carries (e.g. `ItemCode`). Save-time validation: a document task's ref
+   columns must be declared, and the run history surfaces `retryable` counts so a missing master
+   sync is visible.
+4. **Documents with dependents deactivate as `status='cancelled'`** (no `is_active` on documents).
+5. Dependents are found by a pg_catalog FK probe before DELETE (customers → sales_orders is ON
+   DELETE SET NULL, a bare DELETE would orphan). Verdict semantics unchanged for us.
+6. **`sales_agents` rows are SHARED (company_id NULL)**: two companies pushing the same agent code
+   under different source_refs = second is `failed`. → **decision: sales-agent source_ref is NOT
+   company-qualified** - it is `agent:{CODE}` (upper/trim), so every company's task resolves to
+   the one shared row (later pushes = `updated`). Documents' `sales_agent_ref` uses the same
+   scheme. The only entity with an unqualified ref; documented in the task editor's key hint.
+
+Record shapes (extra="forbid" everywhere; SorentoSink projects exactly these):
+- sales_agents: `{source_ref, source_doc_no?, code(1..100), description?, is_active=true, person_label?}`
+- sales_orders: `{source_ref=DocKey, so_number=DocNo (required, adopt key), customer_ref?,
+  sales_agent_ref?, doc_date?, requested_delivery_date?, status, internal_note?, lines:[{source_ref=DtlKey,
+  product_ref (required), warehouse_ref?, qty_ordered, qty_delivered?, unit_price?, discount?, line_total?,
+  uom?, required_date?}]}`
+- purchase_orders: same with `po_number`, `supplier_ref?`, `issue_date?`, `expected_date?`,
+  `currency?`; lines `{source_ref, product_ref, warehouse_ref?, qty_ordered, qty_received?, unit_cost?,
+  discount?, line_total?, uom?, currency?, expected_date?}`
+- deletions response: `{dry_run, summary:{total,deleted,deactivated,not_found,failed},
+  records:[{source_ref, outcome: deleted|deactivated|not_found|failed, entity_id, errors?}]}`
+- permission slugs: `master_data.sales_agents.{edit,view,delete}`, `scm.sales_orders.*`,
+  `scm.purchase_orders.*`; deletions need the entity's `.delete` on top of `.edit` (Sorento
+  migration 445 sweeps `.delete` onto `integration_foundryx_esb`).
+
 ### A5. Acceptance (Sorento session's own tests)
 
 Per-entity spec tests (ingest, read-back, dry-run, permission 401/403), company-anchor tests
