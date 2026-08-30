@@ -407,6 +407,12 @@ def test_get_etl_task_returns_draft_defaults_for_a_configured_entity(client, ses
         "etlStatus": "draft",
         "activatedAt": None,
         "sourceConfig": _config(),
+        # Read-only task state (plan 22 S2) - all empty on a never-saved task.
+        "resultColumns": [],
+        "lastPreviewAt": None,
+        "lastRunAt": None,
+        "lastRunError": None,
+        "lastRunErrorCode": None,
     }
 
 

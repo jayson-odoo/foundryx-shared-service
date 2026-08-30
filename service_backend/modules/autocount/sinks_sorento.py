@@ -40,6 +40,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence
 
 import httpx
@@ -85,10 +86,49 @@ def sorento_supports_entity(entity_type: str) -> bool:
     return entity_type in _ENTITY_PATH
 
 
+# ── company anchor (plan 22 Appendix A6/A7) ───────────────────────────────────
+#
+#     !!  AN ANCHOR FAILURE IS A TASK-LEVEL FAULT, NEVER A PER-RECORD ONE.  !!
+#
+# Sorento resolves the target company from the top-level ``companyCode`` on
+# EVERY ingest/read/deletion call. When that resolution fails it answers 422
+# with a FLAT body - ``{"message": ..., "detail": null, "code": ...}`` - before
+# it looks at a single record. The records are fine; the company wiring is not.
+# Reporting it against the first record would send an operator to fix data that
+# is not broken, so it is surfaced on the TASK (``last_run_error_code``).
+COMPANY_ANCHOR_REQUIRED = "COMPANY_ANCHOR_REQUIRED"
+UNKNOWN_COMPANY = "UNKNOWN_COMPANY"
+COMPANY_BINDING_INVALID = "COMPANY_BINDING_INVALID"
+COMPANY_ANCHOR_AMBIGUOUS = "COMPANY_ANCHOR_AMBIGUOUS"
+ANCHOR_ERROR_CODES = frozenset(
+    {
+        COMPANY_ANCHOR_REQUIRED,
+        UNKNOWN_COMPANY,
+        COMPANY_BINDING_INVALID,
+        COMPANY_ANCHOR_AMBIGUOUS,
+    }
+)
+
+
 class SorentoSinkError(Exception):
     """A transport- or contract-level failure that is not per-record. The whole
     batch is unresolved; the caller returns it to review rather than marking any
     record pushed."""
+
+
+class SinkAnchorError(SorentoSinkError):
+    """Sorento could not resolve the company anchor (Appendix A6/A7).
+
+    A subclass of ``SorentoSinkError`` on purpose: every existing caller already
+    treats it as "the whole batch is unresolved, nothing was written", which is
+    exactly right. What the subclass ADDS is the ``code``, so the task can show
+    WHICH wiring is wrong instead of a generic delivery failure.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.sorento_message = message
+        super().__init__(f"{code}: {message}")
 
 
 class SorentoRateLimited(SorentoSinkError):
@@ -149,12 +189,18 @@ class SorentoSink:
         base_url: str,
         api_key: str,
         entity_type: str,
+        company_code: Optional[str] = None,
         timeout: float = 30.0,
         transport: Optional[httpx.BaseTransport] = None,
         max_rate_limit_waits: int = 2,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
+        # The Sorento company this sink delivers INTO (Appendix A6). Sent as the
+        # top-level ``companyCode`` on every call; a blank one is deliberately
+        # still SENT (as absent) so Sorento answers the authoritative
+        # ``COMPANY_ANCHOR_REQUIRED`` rather than us guessing its rules locally.
+        self.company_code = (company_code or "").strip() or None
         self.entity_type = entity_type
         path = _ENTITY_PATH.get(entity_type)
         if path is None:
@@ -189,16 +235,32 @@ class SorentoSink:
 
     # ── HTTP ────────────────────────────────────────────────────────────────
 
-    def _post(self, records: List[Dict[str, Any]], *, dry_run: bool) -> Dict[str, Any]:
-        """One ingest call, with bounded waits on 429. Returns the parsed body.
+    def _body(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Every call body carries the company anchor FIRST (Appendix A6).
 
-        Raises ``SorentoSinkError`` on any non-200 that is not a handled 429 -
-        the whole batch is then unresolved and the caller must not mark anything
-        delivered.
+        One helper for ingest, read-back and deletions alike - three call sites
+        that must never drift on the one field Sorento resolves before it looks
+        at anything else.
         """
-        url = f"{self._base_url}/api/v1/external/ingest/{self._path_segment}"
+        body: Dict[str, Any] = {}
+        if self.company_code:
+            body["companyCode"] = self.company_code
+        body.update(payload)
+        return body
+
+    def _call(
+        self, path: str, payload: Dict[str, Any], *, dry_run: bool
+    ) -> Dict[str, Any]:
+        """One POST to ``/api/v1/external/{path}``, with bounded waits on 429.
+
+        Raises ``SinkAnchorError`` on an anchor 422 (a TASK-level fault, see the
+        codes above) and ``SorentoSinkError`` on any other non-200 that is not a
+        handled 429 - the whole batch is then unresolved and the caller must not
+        mark anything delivered.
+        """
+        url = f"{self._base_url}/api/v1/external/{path}"
         params = {"dry_run": "true"} if dry_run else None
-        body = {"records": records}
+        body = self._body(payload)
         headers = {
             # X-API-Key, never Bearer (AC-14-15). Never logged.
             "X-API-Key": self._api_key,
@@ -225,15 +287,27 @@ class SorentoSink:
                 time.sleep(retry_after)
                 continue
 
+            if response.status_code == 422:
+                anchor = _anchor_error(response)
+                if anchor is not None:
+                    raise anchor
+
             # Anything else is a batch-level failure. 500 may be a guard-rail
             # error until the companion Sorento fix lands; log the body (the
             # request is masked by the activity layer, not here) so it is
             # diagnosable rather than a bare status code.
             detail = _safe_body(response)
             raise SorentoSinkError(
-                f"Sorento ingest returned HTTP {response.status_code} for "
-                f"{self._path_segment}: {detail}"
+                f"Sorento returned HTTP {response.status_code} for "
+                f"{path}: {detail}"
             )
+
+    def _post(self, records: List[Dict[str, Any]], *, dry_run: bool) -> Dict[str, Any]:
+        """One ingest call. Kept as the ingest-shaped wrapper over ``_call`` so
+        every existing caller (and its tests) is unchanged."""
+        return self._call(
+            f"ingest/{self._path_segment}", {"records": records}, dry_run=dry_run
+        )
 
     # ── dry run (AC-14-20/21) ────────────────────────────────────────────────
 
@@ -246,23 +320,85 @@ class SorentoSink:
         one would be holding the safety gate.
         """
         projected = self._to_records(records)
-        if not projected:
-            return DryRunResult(
-                summary={"total": 0, "created": 0, "updated": 0, "failed": 0, "retryable": 0},
-                predictions=[],
+        summary: Dict[str, int] = {
+            "total": 0, "created": 0, "updated": 0, "failed": 0, "retryable": 0
+        }
+        predictions: List[Prediction] = []
+        # CHUNKED at the vendor ceiling exactly like ``write_batch``. A dry run
+        # of an INITIAL LOAD (the activation gate, AC-22-18) is routinely larger
+        # than one batch, and an over-size body is a 413 - which would make the
+        # gate un-passable on precisely the companies that most need it.
+        for start in range(0, len(projected), SORENTO_MAX_BATCH):
+            body = self._post(projected[start : start + SORENTO_MAX_BATCH], dry_run=True)
+            for key, value in (body.get("summary") or {}).items():
+                if isinstance(value, int):
+                    summary[key] = summary.get(key, 0) + value
+            predictions.extend(
+                Prediction(
+                    source_ref=str(r.get("source_ref") or ""),
+                    outcome=str(r.get("outcome") or ""),
+                    entity_id=r.get("entity_id"),
+                    diff=r.get("diff") or {},
+                    errors=r.get("errors") or {},
+                )
+                for r in body.get("records", [])
             )
-        body = self._post(projected, dry_run=True)
-        predictions = [
-            Prediction(
-                source_ref=str(r.get("source_ref") or ""),
-                outcome=str(r.get("outcome") or ""),
-                entity_id=r.get("entity_id"),
-                diff=r.get("diff") or {},
-                errors=r.get("errors") or {},
+        return DryRunResult(summary=summary, predictions=predictions)
+
+    # ── read-back (Appendix A7 §3/§4, A8) ────────────────────────────────────
+
+    def read_back(self, source_refs: Sequence[str]) -> Dict[str, Any]:
+        """``POST /api/v1/external/read/{entity}`` → ``{records, not_found}``.
+
+        Two contract details are handled HERE so no caller re-learns them:
+
+        * **Numbers arrive as JSON numbers** (Sorento runs Decimals through
+          FastAPI's encoder). They are parsed via ``str()`` into ``Decimal`` -
+          never through a float, which silently rounds a 4-dp quantity.
+        * The envelope is ``{"records": [...], "not_found": [...]}`` and a ref
+          under the wrong company lists as ``not_found``, not as an error.
+        """
+        refs = [str(r) for r in source_refs if str(r or "").strip()]
+        records: List[Dict[str, Any]] = []
+        not_found: List[str] = []
+        for start in range(0, len(refs), SORENTO_MAX_BATCH):
+            body = self._call(
+                f"read/{self._path_segment}",
+                {"source_refs": refs[start : start + SORENTO_MAX_BATCH]},
+                dry_run=False,
             )
-            for r in body.get("records", [])
-        ]
-        return DryRunResult(summary=body.get("summary") or {}, predictions=predictions)
+            records.extend(_decimalize(r) for r in (body.get("records") or []))
+            not_found.extend(str(r) for r in (body.get("not_found") or []))
+        return {"records": records, "not_found": not_found}
+
+    # ── deletions (Appendix A4/A6, consumed by S3's delete intents) ──────────
+
+    def delete_batch(
+        self, source_refs: Sequence[str], *, dry_run: bool = False
+    ) -> Dict[str, Any]:
+        """``POST /api/v1/external/ingest/{entity}/deletions``.
+
+        Per-ref verdict ``deleted | deactivated | not_found | failed`` - Sorento
+        tries a hard DELETE and falls back to deactivating when dependents exist
+        (it probes the FK graph first, so a customer with orders is never
+        orphaned). Returns the merged ``{summary, records}``.
+        """
+        refs = [str(r) for r in source_refs if str(r or "").strip()]
+        summary: Dict[str, int] = {
+            "total": 0, "deleted": 0, "deactivated": 0, "not_found": 0, "failed": 0
+        }
+        results: List[Dict[str, Any]] = []
+        for start in range(0, len(refs), SORENTO_MAX_BATCH):
+            body = self._call(
+                f"ingest/{self._path_segment}/deletions",
+                {"source_refs": refs[start : start + SORENTO_MAX_BATCH]},
+                dry_run=dry_run,
+            )
+            for key, value in (body.get("summary") or {}).items():
+                if isinstance(value, int):
+                    summary[key] = summary.get(key, 0) + value
+            results.extend(body.get("records") or [])
+        return {"dry_run": dry_run, "summary": summary, "records": results}
 
     # ── real push (AC-14-16/18) ──────────────────────────────────────────────
 
@@ -320,6 +456,47 @@ class SorentoSink:
         )
 
 
+def _anchor_error(response: httpx.Response) -> Optional[SinkAnchorError]:
+    """A 422 that is a COMPANY-ANCHOR failure → the typed error, else None.
+
+    The body is FLAT (Appendix A6 - ``{"message", "detail": null, "code"}``),
+    deliberately NOT FastAPI's usual ``{"detail": ...}`` wrapper, so it is read
+    at the top level. Anything else with a 422 falls through to the generic
+    batch-level error - never mislabelled as an anchor problem.
+    """
+    try:
+        body = response.json()
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    code = str(body.get("code") or "")
+    if code not in ANCHOR_ERROR_CODES:
+        return None
+    return SinkAnchorError(
+        code, str(body.get("message") or "Sorento could not resolve the company.")
+    )
+
+
+def _decimalize(value: Any) -> Any:
+    """JSON numbers → ``Decimal`` via ``str()``, recursively.
+
+    Through ``str()`` and never ``Decimal(float)``: a 4-dp quantity round-tripped
+    through binary floating point comes back as 12.340000000000000497379915032,
+    and the diff layer then reports a change that does not exist. Booleans are
+    left alone (``isinstance(True, int)`` is True).
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float) or isinstance(value, int):
+        return Decimal(str(value))
+    if isinstance(value, list):
+        return [_decimalize(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _decimalize(v) for k, v in value.items()}
+    return value
+
+
 def _retry_after_seconds(response: httpx.Response) -> int:
     raw = response.headers.get("Retry-After", "")
     try:
@@ -341,6 +518,7 @@ def sorento_sink_from_connection(
     credentials: Dict[str, Any],
     *,
     entity_type: str,
+    company_code: Optional[str] = None,
     transport: Optional[httpx.BaseTransport] = None,
 ) -> SorentoSink:
     """Build a sink from a ``consumer`` connection's config + DECRYPTED creds.
@@ -354,5 +532,11 @@ def sorento_sink_from_connection(
         base_url=str(config.get("baseUrl", "")).strip(),
         api_key=str(credentials.get("apiKey", "")).strip(),
         entity_type=entity_type,
+        # From ``ac_company.sorento_company_code`` - the per-COMPANY anchor
+        # (Appendix A6). Deliberately not read off the connection: one Sorento
+        # connection legitimately serves several AutoCount companies, so binding
+        # the code to the connection would anchor them all to one Sorento
+        # company and silently cross-post their masters.
+        company_code=company_code,
         transport=transport,
     )

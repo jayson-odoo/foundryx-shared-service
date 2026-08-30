@@ -3088,10 +3088,16 @@ def _sorento_connection(
     return conn
 
 
-def _point_at_sorento(db, company, conn) -> None:
+# Every Sorento call is company-anchored since plan 22 (Appendix A6), so the
+# fixture supplies a code - a blank one is now a per-field 422 by design.
+SORENTO_COMPANY_CODE = "SRT"
+
+
+def _point_at_sorento(db, company, conn, *, company_code=SORENTO_COMPANY_CODE) -> None:
     CompanyService(db).set_sink_target(
         company.tenant_id, company.id,
         sink_impl=SINK_IMPL_SORENTO, sink_connection_id=conn.id,
+        sorento_company_code=company_code,
     )
     db.refresh(company)
 
@@ -3153,8 +3159,16 @@ def sorento_sink(monkeypatch):
 
     rec = _SorentoRecorder()
 
-    def fake(config, credentials, *, entity_type, transport=None):
-        return real(config, credentials, entity_type=entity_type, transport=rec._transport)
+    def fake(config, credentials, *, entity_type, company_code=None, transport=None):
+        return real(
+            config,
+            credentials,
+            entity_type=entity_type,
+            # Carried through so the recorder sees the real anchored body -
+            # swallowing it here would hide a sink that stopped sending it.
+            company_code=company_code,
+            transport=rec._transport,
+        )
 
     monkeypatch.setattr(company_module, "sorento_sink_from_connection", fake)
     return rec
@@ -3262,6 +3276,7 @@ def test_set_sink_target_rejects_a_foreign_connection(db, transports):
         CompanyService(db).set_sink_target(
             DEFAULT_TENANT_ID, company.id,
             sink_impl=SINK_IMPL_SORENTO, sink_connection_id=foreign.id,
+            sorento_company_code=SORENTO_COMPANY_CODE,
         )
 
 

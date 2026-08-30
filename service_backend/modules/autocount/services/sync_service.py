@@ -55,7 +55,7 @@ from ..repositories import (
     SyncRunRepository,
 )
 from ..sinks import EntitySink, WriteResult
-from ..sinks_sorento import SorentoSinkError, sorento_supports_entity
+from ..sinks_sorento import SinkAnchorError, SorentoSinkError, sorento_supports_entity
 from ..sync import AUTOCOUNT_SYNC
 from .company_service import AutocountServiceError, CompanyService
 
@@ -467,6 +467,97 @@ class SyncService:
                 "was returned to review. Nothing was delivered - approve again."
             ) from exc
         return pushed, failures, delivered
+
+    # ── auto-push (plan 22 §2.6, AC-22-20) ───────────────────────────────────
+
+    def auto_push(
+        self, tenant_id: str, company_id: str, entity_type: str, *, job_id: str
+    ) -> Dict[str, Any]:
+        """Deliver an ACTIVE DB task's staged records with NO review gate.
+
+        Called by the sync handler, inside its own run, for a ``sql_db`` task in
+        ``etl_status='active'`` only. Three properties are what make it safe to
+        run unattended:
+
+        * **It pushes the ENTITY's undelivered rows, not just this job's.**
+          A record the consumer called ``retryable`` (a master it depends on is
+          not synced yet) stays ``STAGED`` and is re-offered by the NEXT run,
+          which is a different job (AC-22-20). Nothing is lost and nothing needs
+          a human to re-drive it.
+        * **It never raises into the run.** The batch either delivers or it does
+          not; a transport fault, an anchor 422 or an undecryptable credential
+          comes back as ``error``/``errorCode`` on the summary, which the
+          handler stamps onto the TASK (AC-22-19). Raising would fail a run that
+          genuinely fetched and staged its data correctly.
+        * **It reuses the SAME per-record delivery path as the review gate** -
+          the sink's own verdicts, never inferred from an HTTP status.
+
+        The review-gated ``approve`` path is untouched: it still claims the job,
+        still pushes per batch, and the API path still stops at ``needs_review``.
+        """
+        summary: Dict[str, Any] = {
+            "pushed": 0,
+            "pushFailures": [],
+            "delivered": False,
+            "autoPushed": True,
+            "error": None,
+            "errorCode": None,
+        }
+        try:
+            company = self.companies.get(tenant_id, company_id)
+            sink = self.companies.sink_for_company(tenant_id, company, entity_type)
+        except AutocountServiceError as exc:
+            summary["error"] = exc.message
+            return summary
+        summary["sink"] = sink.name
+
+        pending = self.staged.list_pending_for_entity(tenant_id, company_id, entity_type)
+        if not pending:
+            return summary
+
+        rows, records, failures = self._rehydrate_pushable(pending)
+        pushed: List[AcStagedRecord] = []
+        try:
+            if hasattr(sink, "write_batch"):
+                results = sink.write_batch(records, request_id=str(job_id)) if records else []
+            else:
+                results = [
+                    sink.write(record, request_id=f"{job_id}:{row.id}")
+                    for row, record in zip(rows, records)
+                ]
+            for row, result in zip(rows, results):
+                if result.ok:
+                    pushed.append(row)
+                    summary["delivered"] = summary["delivered"] or result.delivered
+                else:
+                    # A ``retryable`` verdict leaves the row STAGED - the next
+                    # run re-offers it once its dependency lands (AC-22-20).
+                    failures.append({"sourceRef": row.source_ref, "error": result.message})
+        except SinkAnchorError as exc:
+            # TASK-level, never per record (Appendix A6): the company anchor is
+            # wrong, so no record was even looked at. Everything stays STAGED.
+            self.db.rollback()
+            summary["error"] = exc.sorento_message
+            summary["errorCode"] = exc.code
+            return summary
+        except SorentoSinkError as exc:
+            self.db.rollback()
+            summary["error"] = str(exc)[:2000]
+            return summary
+        except Exception as exc:  # noqa: BLE001 - a run must never die on delivery
+            self.db.rollback()
+            logger.exception("autocount auto-push failed for job %s", job_id)
+            summary["error"] = f"The push failed before the consumer resolved it: {exc}"[:2000]
+            return summary
+
+        self.staged.mark(pushed, status=STAGED_PUSHED, pushed_at=datetime.now(timezone.utc))
+        summary["pushed"] = len(pushed)
+        summary["pushFailures"] = failures
+        if failures:
+            # Repeated delivery failures must surface on the task, never
+            # silently (AC-22-19) - the first one names itself.
+            summary["error"] = str(failures[0].get("error") or "")[:2000]
+        return summary
 
     def preview(self, tenant_id: str, job_id: str) -> Dict[str, Any]:
         """Ask the consumer what approving WOULD do, writing nothing (AC-14-20/21).

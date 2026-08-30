@@ -18,12 +18,13 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from cryptography.fernet import InvalidToken
 from sqlalchemy.orm import Session
 
+from app.jobs.service import JobService
 from app.models.connection import Connection
 from app.secrets import decrypt_secret
 
@@ -31,12 +32,20 @@ from ..activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS, record_activity
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
 from ..canonical.masters import ENTITY_CUSTOMER, ENTITY_SUPPLIER
 from ..models import (
+    ETL_STATUS_ACTIVE,
     ETL_STATUS_DRAFT,
+    ETL_STATUS_PAUSED,
+    RUN_MODE_MANUAL,
     SOURCE_IMPL_SQL_DB,
     SYNC_MODE_SCHEDULED_REVIEW,
     AcEntityConfig,
 )
-from ..repositories import ConnectionRepository, EntityConfigRepository
+from ..repositories import (
+    ConnectionRepository,
+    EntityConfigRepository,
+    SyncJobRepository,
+    SyncRunRepository,
+)
 from ..sources import INITIAL_LOAD_FULL
 from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
 from ..sql_source.errors import SqlGuardError, SqlSourceError
@@ -128,6 +137,38 @@ class SqlSchemaView:
     tree: SqlSchemaTree
 
 
+class EtlStateError(AutocountServiceError):
+    """The task is not in a state where this action makes sense (409).
+
+    Deliberately NOT a 422: the request is well-formed, the TASK is simply
+    somewhere else (already active, never previewed, a run still in flight).
+    ``running_run_id`` is set on the in-flight case so the surface can link
+    straight to the run rather than telling the operator to go hunt for it.
+    """
+
+    def __init__(self, message: str, *, running_run_id: Optional[str] = None):
+        super().__init__(message)
+        self.running_run_id = running_run_id
+
+
+class PreviewUnavailable(AutocountServiceError):
+    """The dry run itself failed (a transport / contract fault talking to the
+    consumer). The gate must SHOW this and refuse to offer Activate - nobody
+    activates blind. Nothing was written either way."""
+
+
+class EtlAnchorError(AutocountServiceError):
+    """Sorento could not resolve the company anchor (Appendix A6/A7).
+
+    A TASK-level configuration fault carrying its code, never a per-record
+    failure - the records are fine, the company wiring is not.
+    """
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 @dataclass
 class EtlTaskView:
     company_id: str
@@ -135,6 +176,16 @@ class EtlTaskView:
     etl_status: str
     activated_at: Optional[datetime]
     source_config: Dict[str, Any] = field(default_factory=dict)
+    # ── read-only task state (plan 22 S2, all stamped server-side) ───────────
+    # The SAVED query's result column names, from the validation preview every
+    # PUT runs - so the Mapping tab offers them without re-running the query.
+    result_columns: List[str] = field(default_factory=list)
+    # The activate-once gate (AC-22-18). CLEARED by every config save: a
+    # preview of a superseded query must never unlock Activate.
+    last_preview_at: Optional[datetime] = None
+    last_run_at: Optional[datetime] = None
+    last_run_error: Optional[str] = None
+    last_run_error_code: Optional[str] = None
 
 
 def default_source_config(entity_type: str, *, today: Optional[date] = None) -> Dict[str, Any]:
@@ -451,6 +502,15 @@ class EtlService:
             etl_status=(config.etl_status if config is not None else None) or ETL_STATUS_DRAFT,
             activated_at=config.activated_at if config is not None else None,
             source_config=merged,
+            result_columns=[
+                str(c) for c in ((config.result_columns if config is not None else None) or [])
+            ],
+            last_preview_at=config.last_preview_at if config is not None else None,
+            last_run_at=config.last_run_at if config is not None else None,
+            last_run_error=config.last_run_error if config is not None else None,
+            last_run_error_code=(
+                config.last_run_error_code if config is not None else None
+            ),
         )
 
     def update_task(
@@ -516,6 +576,332 @@ class EtlService:
                 )
             )
         config.source_config = clean
+        # The validation preview already proved what this query returns, so its
+        # column names are stored (AC-22-09/11) - the Mapping tab's source
+        # picker reads them instead of re-running the query per keystroke.
+        # ``None`` (no query / no connection) clears them rather than leaving a
+        # stale list pointing at a query that no longer exists.
+        config.result_columns = list(columns) if columns is not None else None
+        #     !!  EVERY SAVE INVALIDATES THE ACTIVATION GATE (AC-22-18).  !!
+        # A dry run proves what a SPECIFIC query would deliver. Editing the
+        # query, the keys or the compared columns and keeping the old stamp
+        # would let an operator activate a configuration nobody ever previewed.
+        config.last_preview_at = None
         self.db.commit()
         self.db.refresh(config)
         return self._task_view(company_id, entity_type, config)
+
+    # ── task lifecycle (plan 22 §2.6, AC-22-18/19/20) ────────────────────────
+    #
+    # Every method here is suffixed ``_task``: this service ALSO owns the raw
+    # SQL-surface methods (``preview``/``schema`` take a CONNECTION id, not a
+    # company), and an unsuffixed ``preview`` silently shadowed the query
+    # preview - the SQL route then answered 'company not found'.
+
+    def _task_config(self, tenant_id: str, company_id: str, entity_type: str):
+        """The company + its entity config, both tenant-scoped. A never-saved
+        task is a 409 rather than a 404: the entity exists, its task does not
+        yet, and "save a query first" is the actionable message."""
+        company = self._require_task_entity(tenant_id, company_id, entity_type)
+        config = self.configs.get(tenant_id, company_id, entity_type)
+        if config is None or not isinstance(config.source_config, dict):
+            raise EtlStateError(
+                "Save this task's query and key columns before using it."
+            )
+        return company, config
+
+    @staticmethod
+    def _require_runnable(config) -> None:
+        source = config.source_config or {}
+        if not str(source.get("query") or "").strip():
+            raise EtlStateError("Save a query for this task first.")
+        if not [c for c in (source.get("keyColumns") or []) if str(c).strip()]:
+            raise EtlStateError(
+                "Choose the key columns that identify a row before running this task."
+            )
+
+    @staticmethod
+    def next_run_times(
+        source_config: Dict[str, Any], *, now: Optional[datetime] = None
+    ) -> Tuple[datetime, datetime]:
+        """``(next_incremental_at, next_reconcile_at)`` in UTC.
+
+        Armed at activation so the sweep (S3) has a due time to select on from
+        the first tick. The daily-at time is treated as UTC HERE and RE-RESOLVED
+        against the tenant timezone by the sweep - the plan's own split (§2.4),
+        and the reason this stays a pure function.
+        """
+        now = now or datetime.now(timezone.utc)
+        minutes = _clean_int(source_config.get("incrementalMinutes")) or (
+            DEFAULT_INCREMENTAL_MINUTES
+        )
+        floor = (
+            MIN_INCREMENTAL_MINUTES
+            if source_config.get("watermarkColumn")
+            else MIN_INCREMENTAL_MINUTES_NO_WATERMARK
+        )
+        incremental = now + timedelta(minutes=max(minutes, floor))
+
+        if str(source_config.get("reconcileMode")) == RECONCILE_MODE_INTERVAL:
+            hours = _clean_int(source_config.get("reconcileHours")) or MIN_RECONCILE_HOURS
+            return incremental, now + timedelta(hours=max(hours, MIN_RECONCILE_HOURS))
+
+        at = str(source_config.get("reconcileAt") or DEFAULT_RECONCILE_AT)
+        if not _TIME_RE.match(at):
+            at = DEFAULT_RECONCILE_AT
+        hour, minute = (int(part) for part in at.split(":"))
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        return incremental, target
+
+    def preview_task(
+        self, tenant_id: str, company_id: str, entity_type: str
+    ) -> Tuple[EtlTaskView, Dict[str, Any]]:
+        """The initial-load dry run against the consumer - writes NOTHING.
+
+        Extract the saved query, map it through the REAL mapping engine, and
+        ask the sink what a push WOULD do (``?dry_run=true``, Sorento's own
+        resolution rolled back - never a local reconstruction, AC-14-21).
+        Nothing is staged and no row hash is written: a preview must be safe to
+        run repeatedly, and stamping hashes here would make the FIRST real run
+        report zero adds.
+
+        On success ``last_preview_at`` is stamped, which is the ONLY thing that
+        unlocks Activate (AC-22-18).
+        """
+        from ..sinks_sorento import SinkAnchorError, SorentoSinkError
+
+        company, config = self._task_config(tenant_id, company_id, entity_type)
+        self._require_runnable(config)
+
+        sink = self.companies.sink_for_company(tenant_id, company, entity_type)
+        if not hasattr(sink, "dry_run"):
+            # A logging-sink company has no consumer to ask. Reported honestly
+            # rather than as a failure - and deliberately NOT stamped, so the
+            # activation gate stays shut (a DB task auto-pushes; activating one
+            # with nowhere to push would be a task that runs and delivers
+            # nothing, forever).
+            return self._task_view(company_id, entity_type, config), {
+                "previewable": False,
+                "sink": sink.name,
+                "reason": (
+                    "No consumer is configured for this company, so there is "
+                    "nothing to dry-run. Point the company at Sorento first."
+                ),
+            }
+
+        records = self._extract_and_map(tenant_id, company, config, entity_type)
+        try:
+            result = sink.dry_run([r for r in records if r is not None])
+        except SinkAnchorError as exc:
+            raise EtlAnchorError(exc.code, exc.sorento_message) from exc
+        except SorentoSinkError as exc:
+            raise PreviewUnavailable(
+                "The dry run against the consumer failed, so no prediction is "
+                "available and this task cannot be activated yet. Nothing was "
+                "written - resolve the consumer error first."
+            ) from exc
+
+        config.last_preview_at = datetime.now(timezone.utc)
+        self.db.commit()
+        self.db.refresh(config)
+        return self._task_view(company_id, entity_type, config), {
+            "previewable": True,
+            "sink": sink.name,
+            "summary": result.summary,
+            "predictions": [
+                {
+                    "sourceRef": p.source_ref,
+                    "outcome": p.outcome,
+                    "entityId": p.entity_id,
+                    "diff": p.diff,
+                    "errors": p.errors,
+                    "changesLiveData": p.changes_live_data,
+                }
+                for p in result.predictions
+            ],
+        }
+
+    def _extract_and_map(self, tenant_id: str, company, config, entity_type: str):
+        """Run the saved query and map every row - NO staging, NO hash writes.
+
+        Deferred import: the DB source imports the mapping + repository layers,
+        and importing it at module level here would make this service part of
+        that cycle for no benefit.
+        """
+        from ..mapping import MappingEngine, flat_profile
+        from ..sources import SourceContext, Watermark
+        from ..sql_source.source import SqlDbSource
+
+        source = SqlDbSource(
+            SourceContext(
+                db=self.db,
+                tenant_id=tenant_id,
+                company=company,
+                entity_config=config,
+                company_service=self.companies,
+            ),
+            entity_type=entity_type,
+            # A dry run must leave no trace: the FIRST real run has to report
+            # its rows as adds, which it cannot do if the preview already
+            # recorded their hashes.
+            persist_hashes=False,
+        )
+        try:
+            # ``Watermark()`` = no mark, so this is the INITIAL LOAD - which is
+            # exactly what the activation gate is meant to show (AC-22-18).
+            result = source.fetch_changes(Watermark())
+        finally:
+            source.close()
+
+        engine = MappingEngine(
+            self.companies.mapping_rows(tenant_id, company.id, entity_type),
+            entity_type=entity_type,
+            profile=flat_profile(
+                entity_type, (config.source_config or {}).get("keyColumns") or []
+            ),
+            database_name=company.database_name,
+        )
+        mapped = [engine.map_document(record.raw) for record in result.records]
+        return [m.record for m in mapped if m.ok]
+
+    def activate_task(self, tenant_id: str, company_id: str, entity_type: str) -> EtlTaskView:
+        """draft|paused → active (AC-22-18).
+
+        Server-side gate, not just a disabled button: the API is the real
+        boundary, and after activation runs push with no further approval.
+        """
+        company, config = self._task_config(tenant_id, company_id, entity_type)
+        self._require_runnable(config)
+        if config.etl_status == ETL_STATUS_ACTIVE:
+            raise EtlStateError("This task is already active.")
+        if config.last_preview_at is None:
+            raise EtlStateError(
+                "Run a successful preview of the initial load before activating."
+            )
+        if not (company.sorento_company_code or "").strip():
+            raise EtlStateError(
+                "Set the Sorento company code on this company before activating - "
+                "every push is anchored to it."
+            )
+        now = datetime.now(timezone.utc)
+        config.etl_status = ETL_STATUS_ACTIVE
+        config.activated_at = now
+        # Activation IS the switch to the DB path: an active task that still
+        # read from the vendor API would auto-push records the operator
+        # previewed from a different source entirely.
+        config.source_impl = SOURCE_IMPL_SQL_DB
+        config.next_incremental_at, config.next_reconcile_at = self.next_run_times(
+            config.source_config or {}, now=now
+        )
+        self.db.commit()
+        self.db.refresh(config)
+        return self._task_view(company_id, entity_type, config)
+
+    def pause_task(self, tenant_id: str, company_id: str, entity_type: str) -> EtlTaskView:
+        """active → paused. The sweep stops dispatching; an in-flight run
+        finishes (nothing here touches a running job)."""
+        _company, config = self._task_config(tenant_id, company_id, entity_type)
+        if config.etl_status != ETL_STATUS_ACTIVE:
+            raise EtlStateError("Only an active task can be paused.")
+        config.etl_status = ETL_STATUS_PAUSED
+        config.next_incremental_at = None
+        config.next_reconcile_at = None
+        self.db.commit()
+        self.db.refresh(config)
+        return self._task_view(company_id, entity_type, config)
+
+    def resume_task(self, tenant_id: str, company_id: str, entity_type: str) -> EtlTaskView:
+        """paused → active, with NO re-preview ceremony (AC-22-19). Pausing is
+        an operational lever, not an invalidation of the gate - the config that
+        was previewed has not changed (any save would have cleared the stamp)."""
+        _company, config = self._task_config(tenant_id, company_id, entity_type)
+        if config.etl_status != ETL_STATUS_PAUSED:
+            raise EtlStateError("Only a paused task can be resumed.")
+        now = datetime.now(timezone.utc)
+        config.etl_status = ETL_STATUS_ACTIVE
+        config.next_incremental_at, config.next_reconcile_at = self.next_run_times(
+            config.source_config or {}, now=now
+        )
+        self.db.commit()
+        self.db.refresh(config)
+        return self._task_view(company_id, entity_type, config)
+
+    def run_task_now(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        *,
+        actor_user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Enqueue ONE manual run - the SAME job the sweep enqueues (AC-22-13).
+
+        Refused unless the task is active (a draft has not passed the gate and
+        would auto-push nothing) and unless no run is already in flight - two
+        workers on one (company, entity) would double-push the same staged rows.
+        """
+        from ..sync import AUTOCOUNT_SYNC
+
+        _company, config = self._task_config(tenant_id, company_id, entity_type)
+        self._require_runnable(config)
+        if config.etl_status != ETL_STATUS_ACTIVE:
+            raise EtlStateError("Activate this task before running it.")
+
+        in_flight = SyncJobRepository(self.db).first_unfinished(
+            tenant_id, AUTOCOUNT_SYNC, company_id, entity_type
+        )
+        if in_flight is not None:
+            run = SyncRunRepository(self.db).get_for_job(
+                tenant_id, company_id, in_flight.id
+            )
+            raise EtlStateError(
+                "A run for this task is still going. Wait for it to finish.",
+                running_run_id=(run.id if run is not None else None),
+            )
+
+        job = JobService(self.db).create_and_enqueue(
+            type=AUTOCOUNT_SYNC,
+            tenant_id=tenant_id,
+            actor_user_id=actor_user_id,
+            # ``manual`` is the run MODE (plan 22 §2.7) - the sweep enqueues the
+            # same job with ``incremental``/``reconcile``. One pipeline, one
+            # payload shape, one place that reads it.
+            payload={
+                "companyId": company_id,
+                "entityType": entity_type,
+                "mode": RUN_MODE_MANUAL,
+            },
+        )
+        # Eager dev/test ran the handler INLINE, so the run row already exists;
+        # under a real worker it does not yet, and ``runId`` is empty until it
+        # does (the surface polls the run history either way).
+        run = SyncRunRepository(self.db).get_for_job(tenant_id, company_id, job.id)
+        self.db.refresh(config)
+        return {
+            "run_id": run.id if run is not None else "",
+            "job_id": job.id,
+            "status": job.status,
+            "task": self._task_view(company_id, entity_type, config),
+        }
+
+    def list_task_runs(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        *,
+        page: int = 0,
+        page_size: int = 25,
+    ):
+        """This entity's run history, newest first. Tenant- AND company-scoped
+        through ``_require_task_entity`` before a single row is read."""
+        self._require_task_entity(tenant_id, company_id, entity_type)
+        return SyncRunRepository(self.db).list(
+            tenant_id,
+            company_id,
+            entity_type=entity_type,
+            page=page,
+            page_size=page_size,
+        )

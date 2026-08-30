@@ -57,13 +57,22 @@ from ..mapping_catalog import (
     sorento_field_for,
 )
 from ..models import (
+    ETL_STATUS_ACTIVE,
+    ETL_STATUS_PAUSED,
     SINK_IMPL_LOGGING,
     SINK_IMPL_SORENTO,
+    SOURCE_IMPL_AUTOCOUNT_READ,
+    SOURCE_IMPL_SQL_DB,
     SYNC_MODE_SCHEDULED_REVIEW,
     AcCompany,
     AcEntityConfig,
     AcFieldMapping,
 )
+
+# The two implementations behind the ``EntitySource`` seam an operator may pick
+# (AC-22-08). Anything else is a 422 - a silent fallback would sync a customer
+# with the wrong strategy and look like it worked.
+SOURCE_IMPLS = (SOURCE_IMPL_AUTOCOUNT_READ, SOURCE_IMPL_SQL_DB)
 from ..provider import PROVIDER_KEY, client_from_connection
 from ..repositories import (
     CompanyRepository,
@@ -161,6 +170,19 @@ class CompanyNotFound(AutocountServiceError):
 
 class CompanyAlreadyExists(AutocountServiceError):
     pass
+
+
+class SinkTargetValidationError(AutocountServiceError):
+    """A sink-target save rejected PER FIELD - the HTTP layer renders
+    ``422 {fieldErrors}`` (the same shape the task editor already consumes), so
+    the missing Sorento company code lands on its own input rather than as a
+    banner the operator has to map back to a field themselves."""
+
+    def __init__(self, field_errors: Dict[str, str]):
+        super().__init__(
+            "The push target could not be saved. Fix the highlighted fields."
+        )
+        self.field_errors = field_errors
 
 
 class EntityConfigNotFound(AutocountServiceError):
@@ -328,15 +350,26 @@ class CompanyService:
         entity_type: str,
         *,
         initial_lookback_days: Optional[int] = None,
+        source_impl: Optional[str] = None,
     ) -> EntityState:
         """Adjust one entity's sync configuration.
 
-        Only ``initial_lookback_days`` is writable today, and only because the
-        default of 30 days silently hides a customer's whole back-catalogue on a
-        newly connected company. Changing it does NOT re-fetch anything: it only
-        governs the window used when no watermark exists yet, which is why the
-        surface must say so rather than implying a backfill. The supervised full
-        initial load is D20 / slice 3.
+        ``initial_lookback_days`` is writable because the default of 30 days
+        silently hides a customer's whole back-catalogue on a newly connected
+        company. Changing it does NOT re-fetch anything: it only governs the
+        window used when no watermark exists yet, which is why the surface must
+        say so rather than implying a backfill. The supervised full initial load
+        is D20 / slice 3.
+
+        ``source_impl`` (plan 22, AC-22-08) switches the entity between the
+        vendor API path and the direct-DB task. Two rules make the switch safe:
+
+        * the task's ``source_config`` is KEPT either way - switching back to
+          the API path must never discard a query somebody built;
+        * switching an ACTIVE task to the API path PAUSES it. An active task
+          means "scheduled runs push without approval", and the sweep dispatches
+          on ``etl_status``; leaving it active under a source that no longer
+          runs it would be a task that looks live and does nothing.
         """
         self.get(tenant_id, company_id)  # tenant-scope guard before any write
         config = self.configs.get(tenant_id, company_id, entity_type)
@@ -344,6 +377,20 @@ class CompanyService:
             raise EntityConfigNotFound(
                 f"'{entity_type}' is not configured for sync on this company."
             )
+        if source_impl is not None:
+            if source_impl not in SOURCE_IMPLS:
+                raise AutocountServiceError(
+                    f"Unknown source '{source_impl}'. Choose "
+                    f"{' or '.join(SOURCE_IMPLS)}."
+                )
+            if (
+                source_impl == SOURCE_IMPL_AUTOCOUNT_READ
+                and config.etl_status == ETL_STATUS_ACTIVE
+            ):
+                config.etl_status = ETL_STATUS_PAUSED
+                config.next_incremental_at = None
+                config.next_reconcile_at = None
+            config.source_impl = source_impl
         if initial_lookback_days is not None:
             if not (MIN_LOOKBACK_DAYS <= initial_lookback_days <= MAX_LOOKBACK_DAYS):
                 raise AutocountServiceError(
@@ -460,6 +507,13 @@ class CompanyService:
                 conn.config_json or {},
                 self.credentials(conn),  # clean InvalidToken reject, never 500
                 entity_type=entity_type,
+                # The per-COMPANY anchor (plan 22 Appendix A6), read off the
+                # company and never off the connection: one Sorento connection
+                # legitimately serves several AutoCount companies, so anchoring
+                # on the connection would cross-post their masters into one
+                # Sorento company. A blank one is passed through so SORENTO
+                # answers the authoritative COMPANY_ANCHOR_REQUIRED.
+                company_code=company.sorento_company_code,
             )
         raise UnknownSinkImpl(
             f"Company '{company.database_name}' is configured with an unknown "
@@ -473,6 +527,7 @@ class CompanyService:
         *,
         sink_impl: str,
         sink_connection_id: Optional[str] = None,
+        sorento_company_code: Optional[str] = None,
     ) -> AcCompany:
         """Point a company at a push target (plan 14 hop 2 - the operator wiring).
 
@@ -481,21 +536,41 @@ class CompanyService:
         THIS tenant (tenant- and provider-scoped, never a bare id). Switching to
         ``'logging'`` clears any stale connection id so a later switch back can't
         resurrect a wrong target.
+
+        ``sorento_company_code`` (plan 22 Appendix A6) is REQUIRED with the
+        Sorento sink and is a per-field 422 when blank: without it every single
+        call answers ``COMPANY_ANCHOR_REQUIRED``, so accepting the save would
+        store a configuration that is guaranteed to fail (the foolproof-UI line
+        - never let the UI be configured into a certain runtime error).
         """
         company = self.get(tenant_id, company_id)  # tenant-scope guard
         if sink_impl == SINK_IMPL_LOGGING:
             company.sink_impl = SINK_IMPL_LOGGING
             company.sink_connection_id = None
+            # Cleared with the target: a code left behind would silently anchor
+            # a later switch back to Sorento at a company nobody re-chose.
+            company.sorento_company_code = None
         elif sink_impl == SINK_IMPL_SORENTO:
+            code = (sorento_company_code or "").strip()
             if not sink_connection_id:
                 raise AutocountServiceError(
                     "Choose a Sorento connection to push to."
+                )
+            if not code:
+                raise SinkTargetValidationError(
+                    {
+                        "sorentoCompanyCode": (
+                            "Enter the Sorento company code this company "
+                            "delivers into."
+                        )
+                    }
                 )
             # Proves the connection exists AND is a Sorento consumer for this
             # tenant - 404 otherwise, never a silently-stored dangling id.
             self._consumer_connection(tenant_id, sink_connection_id)
             company.sink_impl = SINK_IMPL_SORENTO
             company.sink_connection_id = sink_connection_id
+            company.sorento_company_code = code
         else:
             raise AutocountServiceError(
                 f"Unknown push target '{sink_impl}'. Choose 'logging' or 'sorento'."

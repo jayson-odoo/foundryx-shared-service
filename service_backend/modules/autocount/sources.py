@@ -120,6 +120,20 @@ class FetchResult:
     # this marker is computed AFTER the record cap is applied, so it is never
     # used to decide truncation.
     reported_total: Optional[int] = None
+    # ── cost + change-detection reporting (plan 22 §2.7, AC-22-17) ───────────
+    # Rows READ from the source. Distinct from ``len(records)`` in principle (a
+    # source may read more than it emits); ``None`` = "same as len(records)",
+    # which is what every API-path fetch means.
+    rows_scanned: Optional[int] = None
+    # How the fetched rows classify against the stored row hashes: a ref never
+    # seen before, or one whose COMPARED columns moved. The API path stores no
+    # hashes and reports zero - a run-history column, never a push decision.
+    added_count: int = 0
+    updated_count: int = 0
+    # A source-owned resume point persisted to ``ac_watermark.cursor_json`` on a
+    # clean batch (the DB source's own mark, which need not be a datetime).
+    # ``None`` = leave the stored cursor untouched.
+    cursor: Optional[Dict[str, Any]] = None
 
 
 class EntitySource(Protocol):

@@ -81,11 +81,17 @@ class EntityConfigUpdate(ApiModel):
 
     Deliberately narrow. Changing the lookback does NOT re-fetch history - it
     only governs the window used when no watermark exists yet.
+
+    ``sourceImpl`` (plan 22, AC-22-08) switches the entity between the vendor
+    API path and the direct-DB task. The task's ``source_config`` survives the
+    switch either way, and an ACTIVE task switched back to the API path is
+    paused (never left auto-pushing under a source that no longer runs it).
     """
 
     model_config = ConfigDict(populate_by_name=True)
 
     initialLookbackDays: Optional[int] = None
+    sourceImpl: Optional[str] = None
 
 
 class CompanyItem(ApiModel):
@@ -103,6 +109,12 @@ class CompanyItem(ApiModel):
     sinkConnectionId: Optional[str] = Field(
         default=None, validation_alias="sink_connection_id"
     )
+    # The Sorento company this company delivers INTO (plan 22 Appendix A6) -
+    # sent as the top-level ``companyCode`` on every ingest/read/deletion call.
+    # NULL for a logging-sink company and for every pre-plan-22 row.
+    sorentoCompanyCode: Optional[str] = Field(
+        default=None, validation_alias="sorento_company_code"
+    )
     createdAt: Optional[datetime] = Field(default=None, validation_alias="created_at")
 
 
@@ -111,13 +123,17 @@ class CompanySinkUpdate(ApiModel):
 
     ``sinkImpl='logging'`` clears the target (the no-op default);
     ``sinkImpl='sorento'`` requires a ``sinkConnectionId`` naming a Sorento
-    ``consumer`` connection for this tenant.
+    ``consumer`` connection for this tenant AND (plan 22 Appendix A6) a
+    ``sorentoCompanyCode`` - the anchor Sorento resolves on every call. Blank
+    with ``sorento`` is a 422 ``{fieldErrors}``, never a stored configuration
+    that is guaranteed to answer ``COMPANY_ANCHOR_REQUIRED``.
     """
 
     model_config = ConfigDict(populate_by_name=True)
 
     sinkImpl: str
     sinkConnectionId: Optional[str] = None
+    sorentoCompanyCode: Optional[str] = None
 
 
 class CompanyListResponse(ApiModel):
@@ -346,7 +362,8 @@ class SyncRunItem(ApiModel):
 
     id: str
     entityType: str = Field(validation_alias="entity_type")
-    jobId: str = Field(validation_alias="job_id")
+    # NULL for a ``skipped`` overlap tick - it never enqueued a job (AC-22-14).
+    jobId: Optional[str] = Field(default=None, validation_alias="job_id")
     windowFrom: Optional[datetime] = Field(default=None, validation_alias="window_from")
     windowTo: Optional[datetime] = Field(default=None, validation_alias="window_to")
     fetchedCount: int = Field(default=0, validation_alias="fetched_count")
@@ -363,6 +380,18 @@ class SyncRunItem(ApiModel):
     )
     startedAt: Optional[datetime] = Field(default=None, validation_alias="started_at")
     finishedAt: Optional[datetime] = Field(default=None, validation_alias="finished_at")
+    # ── cost columns (plan 22 §2.7, AC-22-17) ────────────────────────────────
+    # Volume x frequency is the thing an operator must be able to judge, so the
+    # rows READ and the wall time are first-class, not buried in a job payload.
+    # Every API-path run reports ``manual`` with zero adds/updates/deletes.
+    mode: str = "manual"
+    rowsScanned: int = Field(default=0, validation_alias="rows_scanned")
+    addedCount: int = Field(default=0, validation_alias="added_count")
+    updatedCount: int = Field(default=0, validation_alias="updated_count")
+    deletedCount: int = Field(default=0, validation_alias="deleted_count")
+    durationMs: Optional[int] = Field(default=None, validation_alias="duration_ms")
+    # Why a ``skipped`` tick never ran (the overlap guard, AC-22-14).
+    skipReason: Optional[str] = Field(default=None, validation_alias="skip_reason")
 
 
 class SyncRunListResponse(ApiModel):
@@ -470,13 +499,47 @@ class EtlTaskUpdate(ApiModel):
 
 class EtlTaskResponse(ApiModel):
     """``GET/PUT .../etl-task`` - one per-(company, entity) DB extraction task,
-    anchored on ``ac_entity_config`` (decision Q13)."""
+    anchored on ``ac_entity_config`` (decision Q13).
+
+    Everything below ``sourceConfig`` is READ-ONLY on the wire: it is state the
+    server stamps (a save, a dry run, a run), never something the editor sends.
+    """
 
     companyId: str
     entityType: str
     etlStatus: str
     activatedAt: Optional[datetime] = None
     sourceConfig: Dict[str, Any]
+    # The saved query's result columns, from the validation preview every PUT
+    # runs - the Mapping tab's source picker (AC-22-09).
+    resultColumns: List[str] = []
+    # The activate-once gate (AC-22-18); CLEARED by every config save.
+    lastPreviewAt: Optional[datetime] = None
+    lastRunAt: Optional[datetime] = None
+    # The LAST RUN's task-level failure (AC-22-19). A Sorento anchor 422 lands
+    # here with its code, never as a per-record failure (Appendix A6).
+    lastRunError: Optional[str] = None
+    lastRunErrorCode: Optional[str] = None
+
+
+class EtlPreviewResponse(ApiModel):
+    """``POST .../etl-task/preview`` - the initial-load dry run. ``preview`` is
+    the SAME shape the batch review renders; ``task`` is the task after it (its
+    ``lastPreviewAt`` stamped when the dry run completed)."""
+
+    task: EtlTaskResponse
+    preview: Dict[str, Any]
+
+
+class EtlRunStartResponse(ApiModel):
+    """``POST .../etl-task/run`` - the manual run just enqueued. ``runId`` is
+    empty until the handler creates the run row, which under a real worker
+    happens after this returns (eager dev/test runs it inline)."""
+
+    runId: str = ""
+    jobId: str
+    status: str
+    task: EtlTaskResponse
 
 
 class PreviewResponse(ApiModel):

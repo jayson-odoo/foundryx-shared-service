@@ -73,7 +73,6 @@ from .models import (
     SOURCE_IMPL_SQL_DB,
     STAGED,
     STAGED_FAILED,
-    AcRowHash,
     AcStagedRecord,
     AcSyncRun,
 )
@@ -92,6 +91,17 @@ from .sources import (
     Watermark,
     source_factory,
 )
+
+#     !!  IMPORTING THIS MODULE IS WHAT MAKES ``sql_db`` RUNNABLE.  !!
+# The DB source registers itself here rather than in ``sources.py`` (which it
+# imports from - registering there would be an import cycle). Every process
+# that can execute a sync job imports THIS module: the API process through the
+# services, the Celery worker through its explicit import. A process that had
+# the handler but not the factory would fail every DB run with "no source
+# implementation registered", which reads like a config fault and is not one.
+from .sql_source.source import register_sql_db_source
+
+register_sql_db_source()
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -289,7 +299,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             mode=mode,
         )
     except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
-        _fail(db, service, job, run, watermark_row, str(exc), started)
+        _fail(db, service, job, run, watermark_row, str(exc), started, config=config)
         return
 
     try:
@@ -329,6 +339,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             exc.message,
             started,
             truncated=isinstance(exc, TruncatedWindowError),
+            config=config,
         )
         return
     except Exception as exc:  # noqa: BLE001
@@ -340,7 +351,10 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             trace_id=trace_id,
             external_ref=company.database_name,
         )
-        _fail(db, service, job, run, watermark_row, f"Fetch failed: {exc}", started)
+        _fail(
+            db, service, job, run, watermark_row, f"Fetch failed: {exc}", started,
+            config=config,
+        )
         return
     finally:
         source.close()
@@ -388,6 +402,13 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     run.window_from = result.window_from
     run.window_to = result.window_to
     run.fetched_count = len(result.records)
+    # Cost + change-detection columns (plan 22 §2.7, AC-22-17). ``rows_scanned``
+    # falls back to the emitted count, which is what every API-path fetch means.
+    run.rows_scanned = (
+        result.rows_scanned if result.rows_scanned is not None else len(result.records)
+    )
+    run.added_count = result.added_count
+    run.updated_count = result.updated_count
     service.set_total(job, len(result.records))
     db.commit()
 
@@ -441,6 +462,11 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         if result.max_last_modified is not None:
             advanced_to = result.max_last_modified
             watermark_row.last_modified_at = advanced_to
+        # A source may keep its OWN resume point (the DB source's watermark
+        # value, which need not be a datetime). Same rule as the timestamp: it
+        # advances only on a clean batch.
+        if result.cursor is not None:
+            watermark_row.cursor_json = result.cursor
         watermark_row.consecutive_failures = 0
         watermark_row.last_error = None
         watermark_row.last_success_at = datetime.now(timezone.utc)
@@ -454,6 +480,35 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         watermark_row.last_error = (
             f"{failed_count} document(s) failed to map; watermark held."
         )
+
+    # ── auto-push (plan 22 §2.6, AC-22-20) ───────────────────────────────────
+    #
+    #     !!  AN ACTIVATED DB TASK HAS NO REVIEW GATE - BY DESIGN.  !!
+    # The activate-once ceremony (AC-22-18) IS the human approval: a successful
+    # Sorento dry-run of the initial load, then an explicit Activate. After it,
+    # scheduled runs deliver without a per-run click - otherwise a minutely task
+    # would build a queue nobody can drain. The API path's ``needs_review`` gate
+    # is untouched; this branch is entered only for an ACTIVE ``sql_db`` task.
+    pushed_count = 0
+    push_summary: Optional[Dict[str, Any]] = None
+    if (
+        config.source_impl == SOURCE_IMPL_SQL_DB
+        and config.etl_status == ETL_STATUS_ACTIVE
+    ):
+        from .services.sync_service import SyncService
+
+        push_summary = SyncService(db).auto_push(
+            tenant_id, company_id, entity_type, job_id=job.id
+        )
+        pushed_count = int(push_summary.get("pushed") or 0)
+        run.pushed_count = pushed_count
+        # A delivery failure surfaces ON THE TASK (AC-22-19) - never silently.
+        config.last_run_error = push_summary.get("error")
+        config.last_run_error_code = push_summary.get("errorCode")
+    else:
+        config.last_run_error = None
+        config.last_run_error_code = None
+    config.last_run_at = datetime.now(timezone.utc)
 
     run.outcome = RUN_SUCCESS
     run.truncated = False
@@ -478,7 +533,15 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         "vendorReportedTotal": result.reported_total,
         "initialLoad": config.initial_load,
         "unboundedInitialLoad": result.window_from is None,
+        "mode": mode,
+        "rowsScanned": run.rows_scanned,
+        "added": run.added_count,
+        "updated": run.updated_count,
     }
+    if push_summary is not None:
+        summary.update(push_summary)
+        # An auto-pushed batch was never "awaiting approval" - it is delivered.
+        summary["awaitingApproval"] = False
     service.log(
         job,
         f"Staged {staged_count} document(s), {failed_count} failed"
@@ -489,16 +552,22 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             else "."
         )
         + (
-            " Awaiting approval - nothing has been pushed."
-            if staged_count
-            else " Nothing to review."
+            f" Pushed {pushed_count} record(s) automatically (the task is active)."
+            if push_summary is not None
+            else (
+                " Awaiting approval - nothing has been pushed."
+                if staged_count
+                else " Nothing to review."
+            )
         ),
     )
     # needs_review with zero staged rows would strand a job nobody can act on
-    # (and which the pruner will never clean up), so an empty batch closes.
+    # (and which the pruner will never clean up), so an empty batch closes. An
+    # auto-pushing task has no review gate at all, so its job always closes.
+    holds_for_review = staged_count > 0 and push_summary is None
     service.finish(
         job,
-        status=JOB_NEEDS_REVIEW if staged_count else JOB_DONE,
+        status=JOB_NEEDS_REVIEW if holds_for_review else JOB_DONE,
         result=summary,
     )
     db.commit()
@@ -608,6 +677,8 @@ def _fail(
     started: float,
     *,
     truncated: bool = False,
+    config=None,
+    error_code: Optional[str] = None,
 ) -> None:
     """Run failed: watermark HOLDS, failures counted, job marked failed."""
     run.outcome = RUN_FAILED
@@ -617,6 +688,12 @@ def _fail(
     run.duration_ms = int((time.monotonic() - started) * 1000)
     watermark_row.consecutive_failures = (watermark_row.consecutive_failures or 0) + 1
     watermark_row.last_error = message[:4000]
+    if config is not None:
+        # The TASK surface must show the last failure (AC-22-19) - the watermark
+        # row is the delta bookkeeping, the task is what an operator looks at.
+        config.last_run_at = datetime.now(timezone.utc)
+        config.last_run_error = message[:4000]
+        config.last_run_error_code = error_code
     db.commit()
     # Same cooperative-abort rule as ``_abort``: an operator's committed
     # ``JOB_ABORTED`` MUST stand. An abort landing while a fetch was in flight

@@ -26,10 +26,15 @@ from ..models import (
     AcCompany,
     AcEntityConfig,
     AcFieldMapping,
+    AcRowHash,
     AcStagedRecord,
     AcSyncRun,
     AcWatermark,
 )
+
+# Chunk size for an ``IN (...)`` list - a 50k-row extract must never build one
+# enormous parameter list (several drivers cap it outright).
+_IN_CHUNK = 500
 
 
 class ConnectionRepository:
@@ -408,6 +413,37 @@ class StagedRecordRepository:
             .all()
         )
 
+    def list_pending_for_entity(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        *,
+        limit: int = 5000,
+    ) -> List[AcStagedRecord]:
+        """Every STAGED row for one (company, entity), OLDEST FIRST - across
+        jobs (plan 22 §2.6, AC-22-20).
+
+        An auto-pushing task has no per-job review gate, so "what is still
+        undelivered" is an ENTITY-level question: a record the consumer called
+        ``retryable`` (a master it depends on is not synced yet) stays STAGED
+        and must be re-offered by the NEXT run, which is a different job. The
+        per-JOB ``list_pending_for_job`` stays exactly as it is - the review
+        gate is a per-batch decision and must not widen.
+        """
+        return (
+            self.db.query(AcStagedRecord)
+            .filter(
+                AcStagedRecord.tenant_id == tenant_id,
+                AcStagedRecord.company_id == company_id,
+                AcStagedRecord.entity_type == entity_type,
+                AcStagedRecord.status == STAGED,
+            )
+            .order_by(AcStagedRecord.created_at.asc(), AcStagedRecord.id.asc())
+            .limit(limit)
+            .all()
+        )
+
     def last_pushed(
         self, tenant_id: str, company_id: str, entity_type: str, source_ref: str
     ) -> Optional[AcStagedRecord]:
@@ -440,6 +476,98 @@ class StagedRecordRepository:
             if pushed_at is not None:
                 row.pushed_at = pushed_at
         self.db.flush()
+
+
+class RowHashRepository:
+    """``ac_row_hash`` - reconcile state (plan 22 §2.4, AC-22-16).
+
+    ONE row per source record ever seen by a DB task, holding only the hash of
+    its compared columns. Every query is scoped by (tenant, company, entity) -
+    the PK's first three columns - so one company's refs can never classify
+    another's.
+    """
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def hashes_for(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        source_refs: Sequence[str],
+    ) -> dict[str, str]:
+        """``{source_ref: row_hash}`` for the refs given - batched in chunks so
+        a 50k-row extract never builds one enormous ``IN`` list."""
+        refs = [r for r in dict.fromkeys(source_refs) if r]
+        out: dict[str, str] = {}
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            rows = (
+                self.db.query(AcRowHash.source_ref, AcRowHash.row_hash)
+                .filter(
+                    AcRowHash.tenant_id == tenant_id,
+                    AcRowHash.company_id == company_id,
+                    AcRowHash.entity_type == entity_type,
+                    AcRowHash.source_ref.in_(chunk),
+                )
+                .all()
+            )
+            out.update({ref: value for ref, value in rows})
+        return out
+
+    def upsert_many(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        hashes: dict[str, str],
+        *,
+        seen_at: datetime,
+    ) -> int:
+        """Write/refresh the hash of every ref given. Returns rows touched.
+
+        Set-based: ONE read of the existing refs, then an UPDATE per changed
+        ref and a bulk INSERT for the new ones - never a SELECT per row. Does
+        not commit; the caller owns the transaction.
+        """
+        if not hashes:
+            return 0
+        existing = self.hashes_for(tenant_id, company_id, entity_type, list(hashes))
+        scope = {
+            "tenant_id": tenant_id,
+            "company_id": company_id,
+            "entity_type": entity_type,
+        }
+        updates = [
+            {**scope, "source_ref": ref, "row_hash": value, "last_seen_at": seen_at}
+            for ref, value in hashes.items()
+            if ref in existing
+        ]
+        inserts = [
+            {**scope, "source_ref": ref, "row_hash": value, "last_seen_at": seen_at}
+            for ref, value in hashes.items()
+            if ref not in existing
+        ]
+        # Both take the FULL composite PK, so SQLAlchemy batches each set into
+        # one executemany - never a statement per row.
+        if updates:
+            self.db.bulk_update_mappings(AcRowHash, updates)
+        if inserts:
+            self.db.bulk_insert_mappings(AcRowHash, inserts)
+        self.db.flush()
+        return len(hashes)
+
+    def count(self, tenant_id: str, company_id: str, entity_type: str) -> int:
+        return (
+            self.db.query(AcRowHash)
+            .filter(
+                AcRowHash.tenant_id == tenant_id,
+                AcRowHash.company_id == company_id,
+                AcRowHash.entity_type == entity_type,
+            )
+            .count()
+        )
 
 
 class SyncRunRepository:
@@ -502,6 +630,32 @@ class SyncJobRepository:
 
     def __init__(self, db: Session):
         self.db = db
+
+    def first_unfinished(
+        self, tenant_id: str, job_type: str, company_id: str, entity_type: str
+    ) -> Optional[BackgroundJob]:
+        """The oldest NON-TERMINAL job for one (company, entity), if any.
+
+        The overlap guard (AC-22-14) and the manual-run 409 both ask this same
+        question: "is a run for this task already in flight?". ``needs_review``
+        counts as in flight on purpose - it is a deliberately non-terminal
+        status the pruner never reaps, so a batch waiting on a human IS still
+        an unfinished run of this task.
+        """
+        from app.models.background_job import JOB_TERMINAL_STATUSES
+
+        return (
+            self.db.query(BackgroundJob)
+            .filter(
+                BackgroundJob.tenant_id == tenant_id,
+                BackgroundJob.type == job_type,
+                BackgroundJob.status.notin_(JOB_TERMINAL_STATUSES),
+                BackgroundJob.payload_json["companyId"].as_string() == company_id,
+                BackgroundJob.payload_json["entityType"].as_string() == entity_type,
+            )
+            .order_by(BackgroundJob.created_at.asc(), BackgroundJob.id.asc())
+            .first()
+        )
 
     def list(
         self,
