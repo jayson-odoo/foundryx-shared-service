@@ -429,6 +429,7 @@ class StagedRecordRepository:
         company_id: str,
         entity_type: str,
         *,
+        job_type: str,
         limit: int = 5000,
     ) -> List[AcStagedRecord]:
         """Every AUTO-PUSHABLE staged row for one (company, entity), oldest
@@ -454,6 +455,12 @@ class StagedRecordRepository:
             self.db.query(BackgroundJob.id)
             .filter(
                 BackgroundJob.tenant_id == tenant_id,
+                # ``background_jobs`` is a SHARED core table - pin the TYPE
+                # too (NIT, S2 review) so this can never widen onto another
+                # feature's needs_review jobs as the table grows, even though
+                # ``AcStagedRecord.job_id`` only ever references OUR job type
+                # today (defense-in-depth, not a behaviour change).
+                BackgroundJob.type == job_type,
                 BackgroundJob.status == JOB_NEEDS_REVIEW,
             )
             .subquery()

@@ -588,6 +588,52 @@ def test_a_cleared_connection_at_preview_is_a_422_not_a_500(client, session_fact
     assert response.status_code == 422, response.text
 
 
+def test_a_not_yet_extractable_entity_maps_a_clean_error_not_a_crash(
+    client, session_factory, rig
+):
+    """NIT (S2 review): ``ETL_ENTITY_TYPES`` (a DB task CAN be SAVED for
+    these) is wider than ``mapping.ENTITY_PROFILES`` (mapping actually knows
+    how to SHAPE these) - product/warehouse/... have no canonical dataclass
+    yet. In today's wiring Sorento only ingests masters, so a non-master
+    entity's preview is short-circuited by the sink-routing gate before ever
+    reaching the mapping engine (AC-14 - "deliverability, not a
+    misconfiguration") - but that gate is a SINK property, not a mapping one,
+    and ``_extract_and_map`` must not crash uncaught the day a consumer that
+    DOES support more entities exists. Exercised directly at the service
+    layer (the only place that currently reaches it)."""
+    from modules.autocount.services.etl_service import EtlService, EtlStateError
+
+    company_id, sql_id = rig
+    db = session_factory()
+    company = db.get(AcCompany, company_id)
+    config = AcEntityConfig(
+        tenant_id=DEFAULT_TENANT_ID,
+        company_id=company_id,
+        entity_type="product",
+        source_impl="sql_db",
+        source_config={
+            "connectionId": sql_id,
+            "query": QUERY,
+            "keyColumns": ["acc_no"],
+            "watermarkColumn": None,
+            "comparedColumns": [],
+            "incrementalMinutes": 15,
+            "reconcileMode": "dailyAt",
+            "reconcileAt": "02:00",
+        },
+        result_columns=list(RESULT_COLUMNS),
+    )
+    db.add(config)
+    db.commit()
+
+    with pytest.raises(EtlStateError) as excinfo:
+        EtlService(db)._extract_and_map(DEFAULT_TENANT_ID, company, config, "product")
+    message = str(excinfo.value).lower()
+    assert "product" in message
+    assert "not yet extractable" in message
+    db.close()
+
+
 def test_preview_requires_sync_run_and_404s_cross_tenant(client, session_factory, rig):
     company_id, _sql_id = rig
     db = session_factory()

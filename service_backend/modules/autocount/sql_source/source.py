@@ -313,7 +313,16 @@ class SqlDbSource:
         preparer is what makes it safe to place in SQL text.
         """
         column = self.watermark_column or ""
-        if self.result_columns and column not in self.result_columns:
+        if not self.result_columns:
+            # NIT (S2 review): the OLD ``if self.result_columns and ...``
+            # SKIPPED this whole check when empty - a task never previewed
+            # (or a corrupted row) ran with an UNCHECKED watermark column
+            # instead of failing loudly.
+            raise SqlTaskNotConfigured(
+                "This task has no cached result columns to check the watermark "
+                "column against. Re-test the query and re-save the task."
+            )
+        if column not in self.result_columns:
             raise SqlTaskNotConfigured(
                 f"The watermark column '{column}' is not one this task's query "
                 f"returns. Re-test the query and re-save the task."

@@ -512,7 +512,9 @@ class SyncService:
             return summary
         summary["sink"] = sink.name
 
-        pending = self.staged.list_pending_for_entity(tenant_id, company_id, entity_type)
+        pending = self.staged.list_pending_for_entity(
+            tenant_id, company_id, entity_type, job_type=AUTOCOUNT_SYNC
+        )
         if not pending:
             return summary
 

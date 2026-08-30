@@ -79,8 +79,10 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
       <ActivateTab company={company()} task={task()} configDirty={false} preview={preview()} lifecycle={lifecycle()} onRan={vi.fn()} />,
     );
     expect(screen.getByTestId('etl-run-preview')).toBeEnabled();
+    // Foolproof-UI (S2 review NIT): the disabled state itself carries the
+    // "not yet" signal - no procedural "Preview before activating" caption.
     expect(screen.getByTestId('etl-activate')).toBeDisabled();
-    expect(screen.getByTestId('activate-blocked')).toBeInTheDocument();
+    expect(screen.queryByTestId('activate-blocked')).not.toBeInTheDocument();
 
     rerender(
       <ActivateTab

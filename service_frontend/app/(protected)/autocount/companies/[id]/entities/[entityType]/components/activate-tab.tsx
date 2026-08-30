@@ -150,11 +150,6 @@ export function ActivateTab({
               )}
               Activate
             </Button>
-            {!previewOk && !blocked && (
-              <span className="text-xs text-muted-foreground" data-testid="activate-blocked">
-                Preview before activating
-              </span>
-            )}
           </>
         )}
 

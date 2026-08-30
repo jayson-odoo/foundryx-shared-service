@@ -46,6 +46,14 @@ from .base import CanonicalRecord
 ENTITY_SUPPLIER = "supplier"
 ENTITY_CUSTOMER = "customer"
 
+# ``sales_agent`` has NO canonical dataclass here (a plain flat DB-extract
+# entity, plan 22) - it lives in this leaf module anyway (NIT, S2 review)
+# because it's the one place BOTH ``mapping.py`` (``UNQUALIFIED_REF_ENTITIES``)
+# and ``services/etl_service.py`` (the entity catalogue) already import from
+# without a cycle - ``mapping.py`` -> ``services/etl_service.py`` would cycle
+# back through ``services/company_service.py`` -> ``mapping.py``.
+ENTITY_SALES_AGENT = "sales_agent"
+
 # The vendor entity names in the URL grammar: POST /api/{Entity}/Get{Entity}.
 VENDOR_ENTITY_SUPPLIER = "Creditor"
 VENDOR_ENTITY_CUSTOMER = "Debtor"

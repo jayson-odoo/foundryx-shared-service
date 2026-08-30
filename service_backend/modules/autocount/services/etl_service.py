@@ -31,7 +31,7 @@ from app.secrets import decrypt_secret
 
 from ..activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS, record_activity
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
-from ..canonical.masters import ENTITY_CUSTOMER, ENTITY_SUPPLIER
+from ..canonical.masters import ENTITY_CUSTOMER, ENTITY_SALES_AGENT, ENTITY_SUPPLIER
 from ..models import (
     ETL_STATUS_ACTIVE,
     ETL_STATUS_DRAFT,
@@ -79,11 +79,13 @@ logger = logging.getLogger("foundryx.autocount")
 # ── entity catalogue (plan 22 Scope) ─────────────────────────────────────────
 # Canonical keys a DB task may be configured for. Code constants, never a
 # tenant-editable key. Documents carry a from-date + a line query (Q20).
+# ``ENTITY_SALES_AGENT`` is imported (not redefined here, NIT S2 review) -
+# ``mapping.py``'s ``UNQUALIFIED_REF_ENTITIES`` needs the SAME string and
+# shares this import to avoid a second literal drifting from this one.
 ENTITY_PRODUCT = "product"
 ENTITY_WAREHOUSE = "warehouse"
 ENTITY_PRODUCT_CATEGORY = "product_category"
 ENTITY_UNIT_OF_MEASURE = "unit_of_measure"
-ENTITY_SALES_AGENT = "sales_agent"
 ENTITY_SALES_ORDER = "sales_order"
 ENTITY_PURCHASE_ORDER = "purchase_order"
 
@@ -802,7 +804,7 @@ class EtlService:
         and importing it at module level here would make this service part of
         that cycle for no benefit.
         """
-        from ..mapping import MappingEngine, flat_profile
+        from ..mapping import MappingEngine, UnknownEntityProfile, flat_profile
         from ..sources import SourceContext, Watermark
         from ..sql_source.source import SqlDbSource
 
@@ -827,12 +829,23 @@ class EtlService:
         finally:
             source.close()
 
+        try:
+            profile = flat_profile(
+                entity_type, (config.source_config or {}).get("keyColumns") or []
+            )
+        except UnknownEntityProfile as exc:
+            # NIT (S2 review): ``ETL_ENTITY_TYPES`` (a task CAN be saved for
+            # this entity) is wider than ``mapping.ENTITY_PROFILES`` (mapping
+            # actually knows how to SHAPE it). A clean, named 409 - never an
+            # unhandled crash - for an entity this build cannot extract yet.
+            raise EtlStateError(
+                f"'{entity_type}' is not yet extractable via a database task - "
+                "its AutoCount mapping is not implemented yet."
+            ) from exc
         engine = MappingEngine(
             self.companies.mapping_rows(tenant_id, company.id, entity_type),
             entity_type=entity_type,
-            profile=flat_profile(
-                entity_type, (config.source_config or {}).get("keyColumns") or []
-            ),
+            profile=profile,
             database_name=company.database_name,
         )
         mapped = [engine.map_document(record.raw) for record in result.records]

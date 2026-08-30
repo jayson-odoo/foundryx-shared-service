@@ -182,8 +182,7 @@ export const realAutocountService: AutocountService = {
   },
 
   // ── direct-DB ETL (plan 22 S1) - endpoints per the contract documented on
-  // `AutocountService`. The shipped binding routes these to the MOCK until the
-  // backend phase lands (see `autocount-service.ts`).
+  // `AutocountService`.
 
   listSqlConnections() {
     return apiFetch<AutocountSqlConnection[]>('/autocount/sql/connections');
@@ -217,8 +216,7 @@ export const realAutocountService: AutocountService = {
   },
 
   // ── direct-DB ETL (plan 22 S2) - endpoints per the contract documented on
-  // `AutocountService`. Served by the PHASE 1 MOCK overlay until the backend
-  // phase lands (see `autocount-service.ts`).
+  // `AutocountService`.
 
   previewEtlTask(companyId, entityType) {
     return apiFetch<AutocountEtlPreviewResult>(`${etlTaskPath(companyId, entityType)}/preview`, {

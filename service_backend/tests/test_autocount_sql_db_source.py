@@ -401,6 +401,21 @@ def test_a_watermark_column_the_query_no_longer_returns_fails_loudly(rig):
         source.fetch_changes(Watermark(cursor={CURSOR_COLUMN: "gone", CURSOR_MARK: "x"}))
 
 
+def test_a_watermark_column_with_no_cached_result_columns_fails_loudly(rig):
+    """NIT (S2 review): ``if self.result_columns and column not in ...`` SKIPS
+    the existence check entirely when ``result_columns`` is empty - a task
+    somehow saved/edited with a watermark column but no cached result
+    columns (never previewed, or a corrupted row) silently ran unchecked
+    instead of failing loudly."""
+    db, company, config, _engine = rig
+    config.result_columns = []
+    db.commit()
+    with pytest.raises(SqlTaskNotConfigured):
+        SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_CUSTOMER).fetch_changes(
+            Watermark()
+        )
+
+
 def test_a_row_with_a_blank_key_is_skipped_for_hashing_not_fatal(rig):
     """A blank key is a per-RECORD fault - the mapping engine stages it FAILED
     with a named error. It must not take the whole run down."""

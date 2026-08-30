@@ -41,6 +41,7 @@ from .canonical.grn import (
 )
 from .canonical.masters import (
     ENTITY_CUSTOMER,
+    ENTITY_SALES_AGENT,
     ENTITY_SUPPLIER,
     VENDOR_AUTOKEY_PATH,
     VENDOR_LAST_MODIFIED_PATH,
@@ -579,7 +580,7 @@ def company_qualified_identity(raw: Dict[str, Any], database_name: str) -> str:
 # path, and it must land on the SAME string (see below).
 
 # The one entity whose ``source_ref`` is deliberately NOT company-qualified.
-UNQUALIFIED_REF_ENTITIES = {"sales_agent"}
+UNQUALIFIED_REF_ENTITIES = {ENTITY_SALES_AGENT}
 SALES_AGENT_REF_PREFIX = "agent"
 # Separator between the parts of a COMPOSITE key. Not ``:`` - that already
 # separates the company qualifier from the key, and reusing it would make
