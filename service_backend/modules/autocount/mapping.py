@@ -573,6 +573,71 @@ def company_qualified_identity(raw: Dict[str, Any], database_name: str) -> str:
     return f"{company}:{key}"
 
 
+# ── flat (direct-DB) identity - plan 22 §2.5, AC-22-10 ───────────────────────
+# A ``sql_db`` task's rows are FLAT: the source path is a result column name and
+# there is no vendor envelope to reach into. Only IDENTITY differs from the API
+# path, and it must land on the SAME string (see below).
+
+# The one entity whose ``source_ref`` is deliberately NOT company-qualified.
+UNQUALIFIED_REF_ENTITIES = {"sales_agent"}
+SALES_AGENT_REF_PREFIX = "agent"
+# Separator between the parts of a COMPOSITE key. Not ``:`` - that already
+# separates the company qualifier from the key, and reusing it would make
+# ``("A:B", "C")`` and ``("A", "B:C")`` the same ref.
+KEY_PART_SEPARATOR = "|"
+
+
+def flat_source_ref(
+    raw: Dict[str, Any],
+    *,
+    database_name: str,
+    key_columns: Sequence[str],
+    entity_type: str,
+) -> str:
+    """``"{DatabaseName}:{key1[|key2]}"`` from a flat DB row (AC-22-10).
+
+        !!  THIS MUST EQUAL ``company_qualified_identity`` FOR THE SAME ROW.  !!
+
+    A company that already synced customers over the API path and then switches
+    to the DB path keeps its consumer records ONLY if the ref is byte-identical:
+    Sorento's uniqueness is ``(source_system, entity_type, source_ref)``, so a
+    different scheme is not a migration, it is a duplicate ``created`` wave on a
+    live consumer. The API path mints ``{DatabaseName}:{AutoKey}``; pointing a
+    DB task's key column at ``AutoKey`` therefore lands on the same string.
+
+    ``sales_agent`` is the ONE exception (Appendix A6 §6): Sorento's agent rows
+    are SHARED across companies (``company_id`` NULL), so a company-qualified
+    ref would make the second company's push ``failed``. Its ref is
+    ``agent:{CODE}``, upper-cased and trimmed, so every company resolves to the
+    one shared row.
+    """
+    columns = [str(c) for c in key_columns if str(c).strip()]
+    if not columns:
+        raise IdentityError(
+            "the task has no key columns, so its rows cannot be correlated"
+        )
+    parts: List[str] = []
+    for column in columns:
+        value = t_string(raw.get(column))
+        if not value:
+            raise IdentityError(
+                f"the row carries no '{column}', so it cannot be correlated"
+            )
+        parts.append(value)
+
+    if entity_type in UNQUALIFIED_REF_ENTITIES:
+        key = KEY_PART_SEPARATOR.join(p.upper() for p in parts)
+        return f"{SALES_AGENT_REF_PREFIX}:{key}"
+
+    company = (database_name or "").strip()
+    if not company:
+        raise IdentityError(
+            "the company database name is unknown, so the row cannot be "
+            "company-qualified and would collide with another company's records"
+        )
+    return f"{company}:{KEY_PART_SEPARATOR.join(parts)}"
+
+
 # ── entity profiles ───────────────────────────────────────────────────────────
 # What differs BETWEEN entities, in one place. Adding an entity is a profile plus
 # mapping rows; the engine below is entity-agnostic.
@@ -637,6 +702,37 @@ ENTITY_PROFILES: Dict[str, EntityProfile] = {
     SUPPLIER_PROFILE.entity_type: SUPPLIER_PROFILE,
     CUSTOMER_PROFILE.entity_type: CUSTOMER_PROFILE,
 }
+
+
+def flat_profile(entity_type: str, key_columns: Sequence[str]) -> EntityProfile:
+    """The entity's profile re-pointed at FLAT rows (plan 22 §2.5).
+
+    Only three things change from the API-path profile: identity is minted from
+    the task's key columns, the display path is the first key column, and there
+    is no nested detail array (a document task fetches its lines with a second
+    query - S5). The CANONICAL MODEL is untouched, so the sink still receives
+    exactly the shape it received over the API path.
+    """
+    base = profile_for(entity_type)
+    columns = [str(c) for c in key_columns if str(c).strip()]
+
+    def identity(raw: Dict[str, Any], database_name: str) -> str:
+        return flat_source_ref(
+            raw,
+            database_name=database_name,
+            key_columns=columns,
+            entity_type=entity_type,
+        )
+
+    return EntityProfile(
+        entity_type=base.entity_type,
+        record_model=base.record_model,
+        identity=identity,
+        display_path=columns[0] if columns else base.display_path,
+        line_model=None,
+        detail_key=None,
+        identity_path=", ".join(columns) or base.identity_path,
+    )
 
 
 class UnknownEntityProfile(Exception):
