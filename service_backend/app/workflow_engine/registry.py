@@ -372,7 +372,7 @@ def _register_core() -> None:
 
     # ---- AI Agent action (sprint-4/17) ----
     from app.workflow_engine.actions.ai_agent_actions import ai_agent_run
-    from app.workflow_engine.actions.agent_state_actions import clear_agent_state
+    from app.workflow_engine.actions.agent_state_actions import clear_agent_state, read_agent_state
 
     register_action(
         ActionDef(
@@ -427,6 +427,25 @@ def _register_core() -> None:
             outputs=[
                 NodeOutput("cleared", "Cleared"),
                 NodeOutput("previousRevision", "Previous revision"),
+            ],
+        )
+    )
+    register_action(
+        ActionDef(
+            key="ai_agent.read_state",
+            label="Read Agent State",
+            description="Read the current saved values from an earlier AI Agent.",
+            icon="BookOpen",
+            category="Actions",
+            executor=read_agent_state,
+            fields=[NodeField(key="agentNodeId", label="Agent", type="agentNode", required=True)],
+            # Per-agent stateful fields are dynamic - the frontend resolves
+            # config.agentNodeId to the referenced node's stateful output
+            # params (mirrors ai_agent.run's dynamic outputs).
+            outputs=[
+                NodeOutput("stateRevision", "State revision"),
+                NodeOutput("pendingField", "Pending field"),
+                NodeOutput("exists", "State exists"),
             ],
         )
     )

@@ -296,6 +296,11 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
 
     # The trigger (root) is always active; everything else must be reached.
     active = {n.id for n in ordered if n.kind == "trigger"}
+    # Structural set of stateful AI Agent node ids in the snapshot graph - the
+    # read-state node validates against this (order-independent, unlike the
+    # executed-this-pass reachableStatefulAgentIds the clear node uses).
+    stateful_agent_ids = sorted(n.id for n in doc.nodes if _stateful_agent(n))
+    ctx["_workflow.statefulAgentIds"] = stateful_agent_ids
 
     failed = False
     completed_stateful: set[str] = set()
@@ -400,6 +405,7 @@ def debug_execute(
         out_edges.setdefault(e.source, []).append((e.sourcePort or "out", e.target))
 
     active = {n.id for n in ordered if n.kind == "trigger"}
+    ctx["_workflow.statefulAgentIds"] = sorted(n.id for n in doc.nodes if _stateful_agent(n))
     taken_pred: Dict[str, List[str]] = {}  # node → predecessors reached via a taken edge
     recomputed: set = set()  # nodes whose output changed this pass
 
@@ -425,7 +431,25 @@ def debug_execute(
             or node.id not in produced
         )
         if must_run:
-            output = _execute_node(db, run.tenant_id, node, ctx)
+            try:
+                output = _execute_node(db, run.tenant_id, node, ctx)
+            except Exception as exc:  # noqa: BLE001 - mirror run_workflow: a node
+                # failure halts the pass here (D14), never a 500 (AC-ASR-11).
+                runtime = getattr(exc, "runtime", None)
+                input_json = _node_input_json(node, ctx)
+                if isinstance(runtime, dict):
+                    input_json = {**(input_json or {}), "runtime": runtime}
+                touched.append(
+                    {
+                        "nodeId": node.id,
+                        "nodeType": node.type,
+                        "status": NODE_FAILED,
+                        "inputJson": input_json,
+                        "outputJson": None,
+                        "error": str(exc),
+                    }
+                )
+                break
             cache[node.id] = output
             recomputed.add(node.id)
             touched.append(

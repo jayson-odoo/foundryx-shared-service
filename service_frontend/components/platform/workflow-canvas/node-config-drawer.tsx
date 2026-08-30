@@ -154,6 +154,38 @@ function codeOutputParams(node: WorkflowNode): WorkflowAiOutputParam[] {
   return validAiOutputParams(node.config.outputs);
 }
 
+/** An `ai_agent.read_state` node's outputs are DYNAMIC: the accepted stateful
+ * fields of the AI Agent it points at (so downstream reads them as
+ * `nodes.<id>.<field>`), plus the reserved diagnostics. Read-only - it never
+ * mutates state. */
+export function readStateOutputParams(
+  node: WorkflowNode,
+  doc: WorkflowDefinition,
+): WorkflowAiOutputParam[] {
+  if (node.type !== 'ai_agent.read_state') return [];
+  const targetId =
+    typeof node.config.agentNodeId === 'string' ? node.config.agentNodeId : '';
+  const target = targetId
+    ? doc.nodes.find((n) => n.id === targetId)
+    : undefined;
+  const reserved: WorkflowAiOutputParam[] = [
+    { key: 'stateRevision', type: 'number', description: 'State revision' },
+    { key: 'pendingField', type: 'string', description: 'Pending field' },
+    { key: 'exists', type: 'boolean', description: 'State exists' },
+  ];
+  const reservedKeys = new Set(reserved.map((p) => p.key));
+  // Reserved diagnostics win over a same-named accepted field at runtime
+  // (mirrors the backend's collision convention) - drop the duplicate here
+  // so the picker never lists the same dotted key twice when a builder
+  // names a stateful field `exists`, `stateRevision`, or `pendingField`.
+  const fields = target
+    ? aiOutputParams(target).filter(
+        (p) => p.stateful === true && !reservedKeys.has(p.key),
+      )
+    : [];
+  return [...fields, ...reserved];
+}
+
 function hasStatefulOutput(node: WorkflowNode): boolean {
   return aiOutputParams(node).some((param) => param.stateful === true);
 }
@@ -200,6 +232,12 @@ function upstreamGroups(
         });
       }
       for (const p of codeOutputParams(node)) {
+        items.push({
+          key: `nodes.${node.id}.${p.key}`,
+          label: p.description || p.key,
+        });
+      }
+      for (const p of readStateOutputParams(node, doc)) {
         items.push({
           key: `nodes.${node.id}.${p.key}`,
           label: p.description || p.key,
@@ -321,6 +359,19 @@ function runContextFacts(
         );
       }
       for (const p of codeOutputParams(node)) {
+        push(
+          `nodes.${node.id}.${p.key}`,
+          p.description || p.key,
+          p.type === 'number'
+            ? 'number'
+            : p.type === 'boolean'
+              ? 'boolean'
+              : 'string',
+          `nodes.${node.id}`,
+          label,
+        );
+      }
+      for (const p of readStateOutputParams(node, doc)) {
         push(
           `nodes.${node.id}.${p.key}`,
           p.description || p.key,
@@ -1098,17 +1149,28 @@ export function NodeConfigDrawer({
         ),
       }));
       return wrap(
-        <SearchSelect
-          options={options}
-          value={typeof value === 'string' && value ? value : null}
-          onChange={(selected) =>
-            onConfigChange(node.id, { [field.key]: selected })
-          }
-          ariaLabel={field.label}
-          placeholder="Choose an earlier AI Agent…"
-          searchPlaceholder="Search agents…"
-          disabled={!editing}
-        />,
+        <>
+          <SearchSelect
+            options={options}
+            value={typeof value === 'string' && value ? value : null}
+            onChange={(selected) =>
+              onConfigChange(node.id, { [field.key]: selected })
+            }
+            ariaLabel={field.label}
+            placeholder="Choose an earlier AI Agent…"
+            searchPlaceholder="Search agents…"
+            disabled={!editing}
+          />
+          {options.length === 0 && (
+            <div
+              className="flex items-start gap-2 rounded-md border border-amber-400/50 bg-amber-50/60 p-2.5 text-xs text-amber-700 dark:bg-amber-950/20 dark:text-amber-400"
+              data-testid="agent-node-warning"
+            >
+              <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+              <span>Add a stateful AI Agent upstream first.</span>
+            </div>
+          )}
+        </>,
       );
     }
 

@@ -422,6 +422,22 @@ export const ACTION_CATALOG: ActionCatalogEntry[] = [
   },
   {
     kind: 'action',
+    type: 'ai_agent.read_state',
+    label: 'Read Agent State',
+    // Identifies WHAT it is, not how to use it (foolproof-UI).
+    description: 'Read the current saved values from an earlier AI Agent.',
+    icon: 'BookOpen',
+    category: 'Actions',
+    fields: [
+      { key: 'agentNodeId', label: 'Agent', type: 'agentNode', required: true },
+    ],
+    // Outputs are DYNAMIC: the drawer lists the selected agent's stateful
+    // fields as nodes.<id>.<field> plus the reserved stateRevision /
+    // pendingField / exists diagnostics (see readStateOutputParams).
+    outputs: [],
+  },
+  {
+    kind: 'action',
     type: 'redis.command',
     label: 'Redis',
     description: 'Read or mutate a value in the workflow data store.',

@@ -6,6 +6,7 @@
 import {
   Activity,
   ArrowLeftRight,
+  BookOpen,
   CalendarClock,
   Code2,
   Database,
@@ -40,6 +41,7 @@ export const WORKFLOW_NODE_ICONS: Record<string, LucideIcon> = {
   FileX,
   PencilLine,
   Activity,
+  BookOpen,
   CalendarClock,
   Code2,
   Database,
