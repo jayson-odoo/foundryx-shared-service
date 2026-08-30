@@ -92,6 +92,7 @@ from .sources import (
     Watermark,
     source_factory,
 )
+from .sql_source.errors import SqlDeleteGuardExceeded
 
 #     !!  IMPORTING THIS MODULE IS WHAT MAKES ``sql_db`` RUNNABLE.  !!
 # The DB source registers itself here rather than in ``sources.py`` (which it
@@ -341,6 +342,45 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             started,
             truncated=isinstance(exc, TruncatedWindowError),
             config=config,
+        )
+        return
+    except SqlDeleteGuardExceeded as exc:
+        # S5 review SHOULD-FIX 5: a guard TRIP is a deliberate safety stop,
+        # not a transport/driver fault - it must never read as one. WARNING
+        # (no stack trace, unlike the generic branch below), the message
+        # UNPREFIXED (no "Fetch failed:" noise), and a distinct error code so
+        # the task surface can tell "the delete guard fired" apart from every
+        # other kind of failure.
+        logger.warning(
+            "autocount delete guard tripped for job %s: %s", job.id, exc.message
+        )
+        record_client_calls(
+            db,
+            source,
+            tenant_id=tenant_id,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        record_activity(
+            db,
+            tenant_id=tenant_id,
+            operation=f"sync {entity_type}",
+            status=ACTIVITY_ERROR,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            error_message=exc.message,
+        )
+        _fail(
+            db,
+            service,
+            job,
+            run,
+            watermark_row,
+            exc.message,
+            started,
+            config=config,
+            error_code="DELETE_GUARD",
         )
         return
     except Exception as exc:  # noqa: BLE001
