@@ -11,11 +11,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from app.models import DEFAULT_TENANT_ID
 from app.models.background_job import BackgroundJob
-from modules.autocount.canonical.masters import ENTITY_CUSTOMER, ENTITY_SUPPLIER
+from modules.autocount.canonical.masters import ENTITY_CUSTOMER
 from modules.autocount.models import (
     ETL_STATUS_ACTIVE,
     ETL_STATUS_DRAFT,
@@ -290,7 +288,7 @@ def test_one_bad_task_never_stops_the_sweep_for_a_sibling(session_factory, monke
     company = _company(db)
     bad = _task(db, company, next_incremental_at=NOW - timedelta(minutes=1))
     company2 = _company(db, name="Sweep Co 2", database_name="SWEEP_DB_2")
-    good = _task(db, company2, next_incremental_at=NOW - timedelta(minutes=1))
+    _task(db, company2, next_incremental_at=NOW - timedelta(minutes=1))
 
     import modules.autocount.scheduler as scheduler_module
 
