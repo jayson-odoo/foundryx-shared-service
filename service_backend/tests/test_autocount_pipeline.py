@@ -202,6 +202,11 @@ def _connection(db, tenant_id: str = DEFAULT_TENANT_ID, name: str = "AutoCount")
     return conn
 
 
+# The fixture company's initial lookback (see ``_company``). Wide enough that
+# this suite's fixed-date payloads never fall out of the first-run window.
+LOOKBACK_DAYS = 3650
+
+
 def _company(
     db,
     transports,
@@ -209,10 +214,22 @@ def _company(
     tenant_id: str = DEFAULT_TENANT_ID,
     database_name: str = "AED_VSOFT",
     reads: Optional[List[Any]] = None,
+    lookback_days: Optional[int] = LOOKBACK_DAYS,
 ) -> AcCompany:
     conn = _connection(db, tenant_id, name=f"AutoCount {database_name}")
     transports[conn.id] = MockTransport(reads or [], database_name=database_name)
-    return CompanyService(db).create_from_connection(tenant_id, conn.id)
+    company = CompanyService(db).create_from_connection(tenant_id, conn.id)
+    # This suite's fixture payloads carry FIXED calendar stamps (``2026/07/…``),
+    # while the seeded GRN lookback is a rolling 30 days from *today*. Once the
+    # wall clock walked past those dates every windowed run started failing the
+    # window assertion - a calendar rot, not a code regression. Widen the
+    # lookback for the fixture company so the window always contains them; a
+    # test that cares about the window's WIDTH sets its own value.
+    if lookback_days is not None:
+        for config in CompanyService(db).entity_configs(tenant_id, company.id):
+            config.initial_lookback_days = lookback_days
+        db.commit()
+    return company
 
 
 def _queue(db, transports, company: AcCompany, records: List[Any]) -> None:
@@ -574,7 +591,9 @@ def test_watermarks_are_per_company(db, transports):
 # ── the fetch seam ────────────────────────────────────────────────────────────
 
 
-def _source(reads, *, record_cap: int = 200) -> AutoCountReadSource:
+def _source(
+    reads, *, record_cap: int = 200, lookback_days: int = LOOKBACK_DAYS
+) -> AutoCountReadSource:
     client = AutoCountClient(
         base_url="https://ac.example.com",
         app_id="app-1",
@@ -583,7 +602,12 @@ def _source(reads, *, record_cap: int = 200) -> AutoCountReadSource:
         transport=MockTransport(reads),
     )
     return AutoCountReadSource(
-        client, entity_type=ENTITY_GOODS_RECEIVED_NOTE, record_cap=record_cap
+        client,
+        entity_type=ENTITY_GOODS_RECEIVED_NOTE,
+        record_cap=record_cap,
+        # Same calendar-rot guard as ``_company``: the payload stamps are fixed
+        # dates, so the window must not be a rolling 30 days from today.
+        lookback_days=lookback_days,
     )
 
 
@@ -602,7 +626,8 @@ def test_the_fetch_sends_last_modified_from_and_to(db):
 def test_a_missing_watermark_uses_a_bounded_lookback_never_everything(db):
     """An unbounded first fetch is guaranteed to hit the cap on a real customer;
     the full initial load is a separate supervised problem (D20)."""
-    source = _source([[]])
+    # The PRODUCT default (30 days) is the subject here, not the fixture width.
+    source = _source([[]], lookback_days=30)
     start, end = source.window(Watermark())
     assert timedelta(days=29) < (end - start) < timedelta(days=31)
 
@@ -1281,7 +1306,10 @@ def test_the_entity_wire_carries_the_delta_state(client, session_factory, transp
     """The Entities tab needs the watermark half on the wire, camelCase and
     Z-suffixed like everything else."""
     setup = session_factory()
-    company_id = _company(setup, transports, database_name="AED_STATE").id
+    # ``lookback_days=None`` keeps the SEEDED default - this test pins it.
+    company_id = _company(
+        setup, transports, database_name="AED_STATE", lookback_days=None
+    ).id
     setup.close()
 
     body = client.get(
@@ -1881,7 +1909,9 @@ def test_entity_states_carry_the_watermark_so_a_zero_sync_is_explicable(
     """``last_success_at``/``last_modified_at``/``consecutive_failures``/
     ``last_error`` were recorded by every run and shown to nobody - which is
     exactly why a legitimate zero-record sync read as silence."""
-    company = _company(db, transports, reads=[[_grn("1")]])
+    # ``lookback_days=None`` keeps the SEEDED default - this test pins it, then
+    # widens it before the sync so the fixture's fixed date stays in window.
+    company = _company(db, transports, reads=[[_grn("1")]], lookback_days=None)
 
     # Before any sync: configured, but never run.
     fresh = _grn_state(db, company)
@@ -1892,6 +1922,10 @@ def test_entity_states_carry_the_watermark_so_a_zero_sync_is_explicable(
     # The first-run trap is visible rather than implicit.
     assert fresh.initial_lookback_days == 30
 
+    _config_for(db, company, ENTITY_GOODS_RECEIVED_NOTE).initial_lookback_days = (
+        LOOKBACK_DAYS
+    )
+    db.commit()
     _run_sync(db, company)
     synced = _grn_state(db, company)
     assert synced.last_success_at is not None
@@ -2659,7 +2693,8 @@ def test_once_a_watermark_exists_a_full_entity_deltas_exactly_as_before():
 def test_a_windowed_entity_is_unchanged_by_the_new_policy():
     """The GRN path must not move: a document stream IS naturally time-bounded
     and its lookback is correct."""
-    source = _source([[_grn()]])
+    # The PRODUCT default (30 days) is the subject here, not the fixture width.
+    source = _source([[_grn()]], lookback_days=30)
     assert source.initial_load == INITIAL_LOAD_WINDOWED
     start, end = source.window(Watermark())
     assert start is not None
