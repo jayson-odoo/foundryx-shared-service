@@ -66,7 +66,7 @@ import {
   createNode,
   hasTrigger,
   moveNode,
-  removeEdge as removeDocEdge,
+  removeEdges as removeDocEdges,
   removeNode as removeDocNode,
   replaceNodeType,
   setPositions,
@@ -561,7 +561,12 @@ export function WorkflowCanvas({
               onEdgesDelete={
                 editing
                   ? (deleted) =>
-                      deleted.forEach((e) => emit(removeDocEdge(doc, e.id)))
+                      emit(
+                        removeDocEdges(
+                          doc,
+                          deleted.map((e) => e.id),
+                        ),
+                      )
                   : undefined
               }
             />
