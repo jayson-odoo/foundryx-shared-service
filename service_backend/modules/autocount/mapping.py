@@ -41,12 +41,21 @@ from .canonical.grn import (
 )
 from .canonical.masters import (
     ENTITY_CUSTOMER,
+    ENTITY_PRODUCT,
+    ENTITY_PRODUCT_CATEGORY,
     ENTITY_SALES_AGENT,
     ENTITY_SUPPLIER,
+    ENTITY_UNIT_OF_MEASURE,
+    ENTITY_WAREHOUSE,
     VENDOR_AUTOKEY_PATH,
     VENDOR_LAST_MODIFIED_PATH,
     CanonicalCustomer,
+    CanonicalProduct,
+    CanonicalProductCategory,
+    CanonicalSalesAgent,
     CanonicalSupplier,
+    CanonicalUnitOfMeasure,
+    CanonicalWarehouse,
 )
 
 SCOPE_HEADER = "header"
@@ -698,10 +707,63 @@ CUSTOMER_PROFILE = EntityProfile(
     identity_path=VENDOR_AUTOKEY_PATH,
 )
 
+# ── plan 22 S4 masters fan-out (AC-22-23) ─────────────────────────────────────
+# These five are DB-source ONLY - there is no confirmed AutoCount API payload
+# behind them (``services/company_service.py``'s ``SEEDED_ENTITIES`` guard), so
+# their ``identity``/``display_path``/``identity_path`` below are the profile's
+# API-path defaults ONLY in shape; every real task runs through
+# ``flat_profile()``, which re-points identity at ``flat_source_ref`` (masters:
+# company-qualified; sales_agent: the shared ``agent:{CODE}`` ref via
+# ``UNQUALIFIED_REF_ENTITIES`` below) regardless of what is registered here.
+PRODUCT_CATEGORY_PROFILE = EntityProfile(
+    entity_type=ENTITY_PRODUCT_CATEGORY,
+    record_model=CanonicalProductCategory,
+    identity=company_qualified_identity,
+    display_path="Code",
+    identity_path="Code",
+)
+
+UNIT_OF_MEASURE_PROFILE = EntityProfile(
+    entity_type=ENTITY_UNIT_OF_MEASURE,
+    record_model=CanonicalUnitOfMeasure,
+    identity=company_qualified_identity,
+    display_path="Code",
+    identity_path="Code",
+)
+
+WAREHOUSE_PROFILE = EntityProfile(
+    entity_type=ENTITY_WAREHOUSE,
+    record_model=CanonicalWarehouse,
+    identity=company_qualified_identity,
+    display_path="Code",
+    identity_path="Code",
+)
+
+PRODUCT_PROFILE = EntityProfile(
+    entity_type=ENTITY_PRODUCT,
+    record_model=CanonicalProduct,
+    identity=company_qualified_identity,
+    display_path="Code",
+    identity_path="Code",
+)
+
+SALES_AGENT_PROFILE = EntityProfile(
+    entity_type=ENTITY_SALES_AGENT,
+    record_model=CanonicalSalesAgent,
+    identity=company_qualified_identity,
+    display_path="Code",
+    identity_path="Code",
+)
+
 ENTITY_PROFILES: Dict[str, EntityProfile] = {
     GRN_PROFILE.entity_type: GRN_PROFILE,
     SUPPLIER_PROFILE.entity_type: SUPPLIER_PROFILE,
     CUSTOMER_PROFILE.entity_type: CUSTOMER_PROFILE,
+    PRODUCT_CATEGORY_PROFILE.entity_type: PRODUCT_CATEGORY_PROFILE,
+    UNIT_OF_MEASURE_PROFILE.entity_type: UNIT_OF_MEASURE_PROFILE,
+    WAREHOUSE_PROFILE.entity_type: WAREHOUSE_PROFILE,
+    PRODUCT_PROFILE.entity_type: PRODUCT_PROFILE,
+    SALES_AGENT_PROFILE.entity_type: SALES_AGENT_PROFILE,
 }
 
 

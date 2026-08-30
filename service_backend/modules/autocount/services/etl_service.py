@@ -31,7 +31,15 @@ from app.secrets import decrypt_secret
 
 from ..activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS, record_activity
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
-from ..canonical.masters import ENTITY_CUSTOMER, ENTITY_SALES_AGENT, ENTITY_SUPPLIER
+from ..canonical.masters import (
+    ENTITY_CUSTOMER,
+    ENTITY_PRODUCT,
+    ENTITY_PRODUCT_CATEGORY,
+    ENTITY_SALES_AGENT,
+    ENTITY_SUPPLIER,
+    ENTITY_UNIT_OF_MEASURE,
+    ENTITY_WAREHOUSE,
+)
 from ..models import (
     ETL_STATUS_ACTIVE,
     ETL_STATUS_DRAFT,
@@ -79,13 +87,11 @@ logger = logging.getLogger("foundryx.autocount")
 # ── entity catalogue (plan 22 Scope) ─────────────────────────────────────────
 # Canonical keys a DB task may be configured for. Code constants, never a
 # tenant-editable key. Documents carry a from-date + a line query (Q20).
-# ``ENTITY_SALES_AGENT`` is imported (not redefined here, NIT S2 review) -
-# ``mapping.py``'s ``UNQUALIFIED_REF_ENTITIES`` needs the SAME string and
-# shares this import to avoid a second literal drifting from this one.
-ENTITY_PRODUCT = "product"
-ENTITY_WAREHOUSE = "warehouse"
-ENTITY_PRODUCT_CATEGORY = "product_category"
-ENTITY_UNIT_OF_MEASURE = "unit_of_measure"
+# ``ENTITY_SALES_AGENT``/``ENTITY_PRODUCT``/``ENTITY_WAREHOUSE``/
+# ``ENTITY_PRODUCT_CATEGORY``/``ENTITY_UNIT_OF_MEASURE`` are imported (not
+# redefined here, NIT S2 review, extended S4) - ``mapping.py`` needs the SAME
+# strings (``ENTITY_PROFILES``, ``UNQUALIFIED_REF_ENTITIES``) and shares this
+# import to avoid a second literal drifting from this one.
 ENTITY_SALES_ORDER = "sales_order"
 ENTITY_PURCHASE_ORDER = "purchase_order"
 
