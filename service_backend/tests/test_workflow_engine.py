@@ -195,6 +195,33 @@ def test_run_enqueues_email(client, session_factory):
     assert rows[0].template_key.startswith("workflow.")
 
 
+def test_run_node_trace_records_the_resolved_field_values(client, session_factory):
+    """User request (plan sprint-4/19): Logs must show the RENDERED input a
+    node actually used, not just the template. The email.send `to` field is
+    mergeable, so its resolved value is stamped on the run node's input_json."""
+    from app.models.workflow import WorkflowRunNode
+
+    h = _demo_headers(client)
+    tpl = _a_template_id(client, h)
+    wid = client.post("/workflows", headers=h, json={"name": "Resolved", "description": "", "draftDefinition": _manual_email_doc(tpl)}).json()["id"]
+    client.post(f"/workflows/{wid}/run", headers=h, json={"inputs": {"email": "resolved@x.com"}})
+
+    db = session_factory()
+    node = (
+        db.query(WorkflowRunNode)
+        .filter(WorkflowRunNode.node_id == "act", WorkflowRunNode.node_type == "email.send")
+        .order_by(WorkflowRunNode.id.desc())
+        .first()
+    )
+    assert node is not None
+    # Raw template kept, rendered value added.
+    assert node.input_json["config"]["to"] == "{{ trigger.input.email }}"
+    assert node.input_json["resolved"]["to"] == "resolved@x.com"
+    # Non-mergeable fields (templateId) are never rendered into `resolved`.
+    assert "templateId" not in node.input_json.get("resolved", {})
+    db.close()
+
+
 def test_edit_after_publish_marks_unpublished(client):
     h = _demo_headers(client)
     tpl = _a_template_id(client, h)

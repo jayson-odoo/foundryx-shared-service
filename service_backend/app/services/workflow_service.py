@@ -488,12 +488,18 @@ class WorkflowService:
 
     def debug_execute(
         self, workflow_id: str, tenant_id: str, *, run_id: str, target_node_id: str,
-        scratch: Dict[str, Dict[str, Any]], stale_node_ids: List[str]
+        scratch: Dict[str, Dict[str, Any]], stale_node_ids: List[str],
+        actor: Optional[User] = None,
     ) -> List[WorkflowRunNodeOut]:
         self.get(workflow_id, tenant_id)
         run = self.repo.get_run(run_id, tenant_id)
         if run is None or run.workflow_id != workflow_id:
             raise WorkflowNotFound()
+        # Debug re-executes the snapshot with scratch config (incl. edited Code
+        # source) - the same ``workflows.code`` gate as a manual run (AC-SAR-68).
+        # Scratch can only override config on existing nodes, never add a node
+        # or change its type, so gating on the snapshot covers scratch too.
+        self.assert_code_permitted(actor, run.definition_snapshot_json)
         touched = _debug_execute(
             self.db, run, target_node_id=target_node_id, scratch=scratch, stale_node_ids=stale_node_ids
         )

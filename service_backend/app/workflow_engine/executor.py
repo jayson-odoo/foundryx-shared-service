@@ -183,6 +183,36 @@ def _execute_node(
     return output
 
 
+def _node_input_json(node: WorkflowNodeModel, ctx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The node's stored trace input: its raw ``config`` PLUS a ``resolved``
+    map of every mergeable field rendered against the run context, so Logs can
+    show what was actually SENT (e.g. the message text), not just the template
+    (user request, plan sprint-4/19). Non-mergeable fields (ids, selects) are
+    never rendered - only substitution-only string fields are. Code nodes carry
+    their own ``runtime.input`` and declare no mergeable field, so this adds
+    nothing there."""
+    if node.kind == "trigger":
+        return None
+    base: Dict[str, Any] = {"config": node.config}
+    action = get_action(node.type)
+    if action is None:
+        return base
+    resolved: Dict[str, Any] = {}
+    config = node.config or {}
+    for fld in action.fields:
+        if not fld.mergeable:
+            continue
+        # Respect show_when: a hidden field is not part of this run's input.
+        if fld.show_when is not None and str(config.get(fld.show_when[0])) != str(fld.show_when[1]):
+            continue
+        raw = config.get(fld.key)
+        if isinstance(raw, str) and raw != "":
+            resolved[fld.key] = render_field(raw, ctx)
+    if resolved:
+        base["resolved"] = resolved
+    return base
+
+
 def run_workflow(db: Session, run_id: str) -> WorkflowRun:
     """Execute a persisted run end-to-end (the Celery task body, D1).
 
@@ -200,9 +230,12 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
             WorkflowRun.tenant_id == Workflow.tenant_id,
             WorkflowRun.status == RUN_PENDING,
         )
-        # Same-key drainers deliberately block on the oldest row instead of
-        # skipping it. Even if a Redis lease expires unexpectedly, a later run
-        # cannot overtake the transaction currently executing this one.
+        # The claim is a status-guarded row lock: a duplicate wakeup finds no
+        # Pending row and returns. Overtake protection is NOT this lock - an
+        # action may commit mid-run and release it - it is the RUNNING row's
+        # heartbeat: the serialized drain refuses to advance past a fresh one
+        # (serialization._live_running_run_id) and the beat reaper fails a
+        # stale one.
         .with_for_update()
         .first()
     )
@@ -224,6 +257,7 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
 
     run.status = RUN_RUNNING
     run.started_at = _now()
+    run.heartbeat_at = run.started_at
     db.flush()
 
     # Tag the session so action writes during this run carry the loop chain (D5).
@@ -274,7 +308,7 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
                 continue
             rn.started_at = _now()
             try:
-                rn.input_json = {"config": node.config} if node.kind != "trigger" else None
+                rn.input_json = _node_input_json(node, ctx)
                 output = _execute_node(db, run.tenant_id, node, ctx)
                 rn.output_json = output
                 rn.status = NODE_SUCCESS
@@ -396,7 +430,7 @@ def debug_execute(
                     "nodeId": node.id,
                     "nodeType": node.type,
                     "status": NODE_SUCCESS,
-                    "inputJson": {"config": node.config} if node.kind != "trigger" else None,
+                    "inputJson": _node_input_json(node, ctx),
                     "outputJson": output,
                     "error": None,
                 }

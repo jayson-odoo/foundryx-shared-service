@@ -147,6 +147,11 @@ class WorkflowRun(Base):
 
     error = Column(Text, nullable=True)
     started_at = Column(UTCDateTime(), nullable=True)
+    # Stamped by the executing worker while RUNNING (serialized drains renew it
+    # with the lease). A RUNNING row with a fresh heartbeat blocks same-key
+    # overtake; a stale one is failed by the beat reaper. Needed because an
+    # action may COMMIT mid-run, so RUNNING is not "rolled back on death".
+    heartbeat_at = Column(UTCDateTime(), nullable=True)
     finished_at = Column(UTCDateTime(), nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False, index=True)
 

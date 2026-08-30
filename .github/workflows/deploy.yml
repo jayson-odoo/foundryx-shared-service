@@ -219,9 +219,10 @@ jobs:
             # a cheap /dev/tcp probe polls until it's back). ~5 min budget.
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
             wait_for_port "$H" "$P" || { echo "ssh port never came up"; exit 1; }
-            ssh $O -p "$P" "$U@$H" "mkdir -p $D/scripts"
+            ssh $O -p "$P" "$U@$H" "mkdir -p $D/scripts $D/deploy"
             scp $O -P "$P" scripts/blue_green_deploy.sh "$U@$H:$D/scripts/"
             scp $O -P "$P" docker-compose.yml "$U@$H:$D/docker-compose.yml"
+            scp $O -P "$P" deploy/code-runner-seccomp.json "$U@$H:$D/deploy/code-runner-seccomp.json"
             printf '%s' "$ENV_CONTENT" | ssh $O -p "$P" "$U@$H" "umask 077; cat > $D/.env"
             echo ".env + files synced"
 

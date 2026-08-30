@@ -184,3 +184,40 @@ def test_run_failure_skips_downstream_and_log_hides_physical_prefix(session_fact
 
     dumped = json.dumps([[n.input_json, n.output_json, n.error] for n in nodes.values()])
     assert "foundryx:workflow:data" not in dumped
+
+
+
+def test_every_workflow_data_key_carries_a_bounded_ttl(fake_redis, monkeypatch):
+    """Review should-fix: platform Redis must not grow without bound. A blank
+    TTL gets the default budget, keys born from increment / push get it too,
+    and an explicit TTL above the maximum is rejected at publish AND run."""
+    from app.config import settings
+    from app.workflow_engine.actions.redis_actions import ActionError, literal_config_issues, physical_key
+
+    monkeypatch.setattr(settings, "workflow_redis_default_ttl_seconds", 600)
+    monkeypatch.setattr(settings, "workflow_redis_max_ttl_seconds", 3600)
+
+    _cmd({"operation": "set", "key": "plain", "value": "v"})
+    assert 0 < fake_redis.ttl(physical_key(DEFAULT_TENANT_ID, "plain")) <= 600
+    _cmd({"operation": "set", "key": "explicit", "value": "v", "ttlSeconds": "120"})
+    assert 0 < fake_redis.ttl(physical_key(DEFAULT_TENANT_ID, "explicit")) <= 120
+    _cmd({"operation": "increment", "key": "counter", "amount": "2"})
+    assert 0 < fake_redis.ttl(physical_key(DEFAULT_TENANT_ID, "counter")) <= 600
+    _cmd({"operation": "list_push", "key": "queue", "value": "a"})
+    assert 0 < fake_redis.ttl(physical_key(DEFAULT_TENANT_ID, "queue")) <= 600
+    # A second push never SHORTENS a budget already running.
+    fake_redis.expire(physical_key(DEFAULT_TENANT_ID, "queue"), 50)
+    _cmd({"operation": "list_push", "key": "queue", "value": "b"})
+    assert fake_redis.ttl(physical_key(DEFAULT_TENANT_ID, "queue")) <= 50
+
+    with pytest.raises(ActionError, match="at most 3600"):
+        _cmd({"operation": "set", "key": "toolong", "value": "v", "ttlSeconds": "999999"})
+    assert not fake_redis.exists(physical_key(DEFAULT_TENANT_ID, "toolong"))
+    issues = literal_config_issues({"operation": "set", "key": "k", "value": "v", "ttlSeconds": "999999"})
+    assert issues and "at most 3600" in issues[0]
+    assert literal_config_issues({"operation": "set", "key": "k", "value": "v", "ttlSeconds": "3600"}) == []
+    # Amount parsing is a strict integer pattern (``--5`` used to slip through).
+    assert literal_config_issues({"operation": "increment", "key": "k", "amount": "--5"})
+    assert literal_config_issues({"operation": "increment", "key": "k", "amount": "-5"}) == []
+    with pytest.raises(ActionError, match="whole number"):
+        _cmd({"operation": "increment", "key": "k", "amount": "--5"})

@@ -84,7 +84,9 @@ class HttpCodeRunnerClient:
         return CodeRunResult.from_wire(payload)
 
     def health(self) -> bool:
-        request = urllib.request.Request(f"{self.base_url}/health", headers={"User-Agent": "Foundryx-Workflow/1.0"})
+        # Bearer included: "healthy" means the runner is up AND accepts OUR
+        # token (a 401 here surfaces a token mismatch at publish, not at run).
+        request = urllib.request.Request(f"{self.base_url}/health", headers=self._headers())
         try:
             with urllib.request.urlopen(request, timeout=min(self.timeout_seconds, 3.0)) as response:  # noqa: S310
                 return response.status == 200

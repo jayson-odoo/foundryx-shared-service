@@ -4,7 +4,12 @@ These tests exercise the REAL subprocess jail (``code_runner.sandbox``), the
 same code the deployed runner container executes. They need no HTTP server.
 """
 import json
+import os
+import subprocess
 import sys
+import threading
+import urllib.error
+import urllib.request
 
 import pytest
 
@@ -17,6 +22,48 @@ FAST = Limits(wall_seconds=4.0, cpu_seconds=2)
 
 def _run(source, inputs=None, limits=FAST):
     return execute(source, inputs or {}, limits)
+
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# The reviewer's escape: a generator exposes its frame, the frame chain walks
+# out of the exec'd module into the harness, whose real builtins still carried
+# ``__import__``. Every hop is now closed twice (static policy + runtime).
+FRAME_WALK_ESCAPE = (
+    "holder = {}\n"
+    "def grab(_):\n"
+    "    holder['f'] = g.gi_frame.f_back\n"
+    "    return 1\n"
+    "g = (grab(x) for x in [0]); next(g)\n"
+    "imp = holder['f'].f_back.f_builtins['__import__']\n"
+    "os = imp('os')\n"
+    "result = {'cwd': os.getcwd()}\n"
+)
+
+
+def _run_unpoliced(source, inputs=None, limits=FAST):
+    """Run the REAL harness child with the static policy stubbed out, so the
+    runtime denial layer is exercised on its own (defense in depth)."""
+    bootstrap = (
+        "import sys\n"
+        f"sys.path.insert(0, {_ROOT!r})\n"
+        "import code_runner.policy as policy\n"
+        "policy.validate_source = lambda source: []\n"
+        "from code_runner.harness import main\n"
+        "sys.exit(main())\n"
+    )
+    job = json.dumps({"source": source, "input": inputs or {}, "consoleLimit": 4096, "outputLimit": 65536})
+    proc = subprocess.run(
+        [sys.executable, "-I", "-S", "-B", "-c", bootstrap],
+        input=job.encode("utf-8"),
+        capture_output=True,
+        timeout=limits.wall_seconds,
+        env={},
+        cwd="/",
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    return json.loads(proc.stdout.decode("utf-8", "replace").strip().splitlines()[-1])
 
 
 def test_happy_path_returns_declared_dictionary_and_console():
@@ -47,12 +94,56 @@ def test_happy_path_returns_declared_dictionary_and_console():
         "result = {'b': __builtins__}",
         "class A:\n    pass\nresult = {}",
         "x = 5",  # no result
+        FRAME_WALK_ESCAPE,
+        "g = (x for x in [0])\nresult = {'f': g.gi_code}",
+        "def f():\n    return 1\nresult = {'g': f.f_globals}",
+        "def f():\n    return 1\nresult = {'k': f['__code__']}",
+        "result = {'m': int.mro()}",
+        "result = {'s': '{0.__class__}'.format(input)}",
+        "result = {'s': '{0.__class__}'.format_map({'0': input})}",
     ],
 )
 def test_policy_rejects_imports_reflection_io_and_missing_result(source):
     assert validate_source(source)
     out = _run(source)
     assert not out.ok and out.termination == "policy"
+
+
+def test_frame_walk_escape_is_closed_at_runtime_without_the_policy():
+    # Regression for the review blocker (AC-SAR-64): even with the static
+    # policy gone, the walked-to builtins carry no ``__import__``.
+    out = _run_unpoliced(FRAME_WALK_ESCAPE)
+    assert not out["ok"] and out["termination"] == "error"
+    assert "cwd" not in json.dumps(out.get("result"))
+    assert "not available" in out["error"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import os\nresult = {'env': dict(os.environ)}",
+        "result = {'x': __import__('os').getcwd()}",
+        "result = {'x': open('/etc/passwd').read()}",
+        "exec('import os')\nresult = {}",
+        "result = {'x': eval('1')}",
+        "result = {'x': compile('1', 'x', 'eval')}",
+        "holder = {}\n"
+        "def grab(_):\n"
+        "    holder['f'] = g.gi_frame.f_back\n"
+        "    return 1\n"
+        "g = (grab(x) for x in [0]); next(g)\n"
+        "mods = holder['f'].f_back.f_globals\n"
+        "result = {'leak': sorted(k for k in mods if k in ('sys', 'os', 'io', 'json', 'types', 'subprocess', 'socket'))}",
+    ],
+)
+def test_runtime_layer_denies_reach_even_if_policy_slipped(source):
+    out = _run_unpoliced(source)
+    if out["ok"]:
+        # The only permitted "success": the walked-to globals carry no module.
+        assert out["result"] == {"leak": []}
+    else:
+        assert out["termination"] == "error"
+        assert any(m in out["error"] for m in ("not available", "not defined", "not found"))
 
 
 def test_denied_capabilities_fail_at_runtime_even_if_policy_slipped():
@@ -100,14 +191,85 @@ def test_malformed_results_fail_cleanly():
 
 
 def test_child_has_no_environment_or_platform_reach():
-    # No os module, no env, no sockets: the only way to observe the outside
-    # world would be an import, which the policy + builtins table deny.
-    out = _run("result = {'names': sorted(k for k in ['json', 'math', 're'])}")
-    assert out.ok and out.result == {"names": ["json", "math", "re"]}
-    out = _run("result = {'x': input}", {"k": "v"})
-    assert out.ok and out.result == {"x": {"k": "v"}}
+    # A real reach probe: with the policy stubbed, the child still has no
+    # environment, no os/socket module and no importer to fetch one.
+    out = _run_unpoliced(
+        "holder = {}\n"
+        "def grab(_):\n"
+        "    holder['f'] = g.gi_frame.f_back\n"
+        "    return 1\n"
+        "g = (grab(x) for x in [0]); next(g)\n"
+        "b = holder['f'].f_back.f_builtins\n"
+        "names = ['__import__', 'open', 'exec', 'eval', 'compile']\n"
+        "probe = {}\n"
+        "for n in names:\n"
+        "    try:\n"
+        "        b[n]('os')\n"
+        "        probe[n] = 'reached'\n"
+        "    except Exception as exc:\n"
+        "        probe[n] = str(exc)\n"
+        "result = {'probe': probe}\n"
+    )
+    assert out["ok"], out
+    assert all("not available" in v for v in out["result"]["probe"].values()), out["result"]
+    # Sanity: the allowed surface still works end to end through the policy.
+    out2 = _run("result = {'x': input}", {"k": "v"})
+    assert out2.ok and out2.result == {"x": {"k": "v"}}
 
 
 def test_capabilities_list_is_stable():
     assert len(CAPABILITIES) == 5 and any("No imports" in row for row in CAPABILITIES)
     assert json.dumps(list(CAPABILITIES))
+
+
+def test_healthcheck_reads_listen_state_without_dialing(tmp_path):
+    # The container probe must not connect() (seccomp denies it): it reads
+    # /proc/net/tcp for a LISTEN (0A) row on the runner port.
+    from code_runner.healthcheck import _listening
+
+    table = tmp_path / "tcp"
+    table.write_text(
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+        "   0: 00000000:1F4B 00000000:0000 0A 00000000:00000000 00:00000000 00000000 10001        0 1 0 0 0\n"
+        "   1: 0100007F:1F4C 00000000:0000 01 00000000:00000000 00:00000000 00000000 10001        0 1 0 0 0\n"
+    )
+    assert _listening(8011, tables=(str(table),))
+    assert not _listening(8012, tables=(str(table),))  # established, not listening
+    assert not _listening(8011, tables=(str(tmp_path / "missing"),))
+
+
+def _serve(env):
+    from http.server import ThreadingHTTPServer
+
+    from code_runner.server import RunnerConfig, make_handler
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(RunnerConfig(env)))
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    return httpd, f"http://127.0.0.1:{httpd.server_address[1]}"
+
+
+def test_health_requires_the_bearer_when_a_token_is_configured():
+    from app.workflow_engine.code_runner import HttpCodeRunnerClient
+
+    httpd, base = _serve({"CODE_RUNNER_TOKEN": "secret"})
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(f"{base}/health", timeout=3)
+        assert exc.value.code == 401
+        # The backend probe sends its token: a mismatch is "unhealthy" (surfaces
+        # at publish as the runner warning), a match is healthy.
+        assert HttpCodeRunnerClient(base, "wrong").health() is False
+        assert HttpCodeRunnerClient(base, "").health() is False
+        assert HttpCodeRunnerClient(base, "secret").health() is True
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    # Local dev (anonymous, no token) keeps the bare probe working.
+    httpd, base = _serve({"CODE_RUNNER_ALLOW_ANONYMOUS": "1"})
+    try:
+        with urllib.request.urlopen(f"{base}/health", timeout=3) as res:
+            assert res.status == 200
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

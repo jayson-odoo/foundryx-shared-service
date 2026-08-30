@@ -9,6 +9,7 @@ node output, or error text (run logs stay redacted).
 from __future__ import annotations
 
 import contextlib
+import re
 from typing import Any, Dict, Iterator, Optional
 
 from sqlalchemy.orm import Session
@@ -29,6 +30,19 @@ _DATA_ROOT = "foundryx:workflow:data"
 _RESERVED_LOGICAL_PREFIXES = ("foundryx:",)
 MAX_LOGICAL_KEY_LENGTH = 512
 MAX_VALUE_LENGTH = 64 * 1024
+_INT_RE = re.compile(r"^-?\d+$")
+
+
+def default_ttl_seconds() -> int:
+    from app.config import settings
+
+    return int(settings.workflow_redis_default_ttl_seconds)
+
+
+def max_ttl_seconds() -> int:
+    from app.config import settings
+
+    return int(settings.workflow_redis_max_ttl_seconds)
 
 _client_override: Any = None
 
@@ -89,24 +103,36 @@ class WorkflowRedisService:
     def _k(self, logical_key: str) -> str:
         return physical_key(self.tenant_id, validate_logical_key(logical_key))
 
+    def _ensure_ttl(self, physical: str) -> None:
+        """A key created without an expiry (increment / push) gets the
+        default budget - no workflow-data key lives forever."""
+        if int(self.client.ttl(physical)) == -1:
+            self.client.expire(physical, default_ttl_seconds())
+
     def get(self, key: str) -> Optional[str]:
         return self.client.get(self._k(key))
 
     def set(self, key: str, value: str, ttl_seconds: Optional[int] = None) -> bool:
-        if ttl_seconds is not None:
-            return bool(self.client.set(self._k(key), value, ex=ttl_seconds))
-        return bool(self.client.set(self._k(key), value))
+        ttl = ttl_seconds if ttl_seconds is not None else default_ttl_seconds()
+        return bool(self.client.set(self._k(key), value, ex=ttl))
 
     def delete(self, key: str) -> bool:
         return bool(self.client.delete(self._k(key)))
 
     def increment(self, key: str, amount: int) -> int:
-        return int(self.client.incrby(self._k(key), amount))
+        physical = self._k(key)
+        value = int(self.client.incrby(physical, amount))
+        self._ensure_ttl(physical)
+        return value
 
     def list_push(self, key: str, value: str, end: str) -> int:
+        physical = self._k(key)
         if end == "left":
-            return int(self.client.lpush(self._k(key), value))
-        return int(self.client.rpush(self._k(key), value))
+            length = int(self.client.lpush(physical, value))
+        else:
+            length = int(self.client.rpush(physical, value))
+        self._ensure_ttl(physical)
+        return length
 
     def list_pop(self, key: str, end: str) -> Optional[str]:
         if end == "left":
@@ -117,14 +143,15 @@ class WorkflowRedisService:
         return int(self.client.llen(self._k(key)))
 
 
-def _int_field(raw: str, label: str, *, minimum: Optional[int] = None) -> int:
+def _int_field(raw: str, label: str, *, minimum: Optional[int] = None, maximum: Optional[int] = None) -> int:
     text = raw.strip()
-    try:
-        number = int(text)
-    except ValueError as exc:
-        raise ActionError(f"Redis: {label} must be a whole number.") from exc
+    if not _INT_RE.match(text):
+        raise ActionError(f"Redis: {label} must be a whole number.")
+    number = int(text)
     if minimum is not None and number < minimum:
         raise ActionError(f"Redis: {label} must be at least {minimum}.")
+    if maximum is not None and number > maximum:
+        raise ActionError(f"Redis: {label} must be at most {maximum}.")
     return number
 
 
@@ -150,10 +177,11 @@ def literal_config_issues(config: Dict[str, Any], label: str = "Redis") -> list[
     if op == "set" and isinstance(ttl, str) and ttl.strip() and "{{" not in ttl:
         if not ttl.strip().isdigit() or int(ttl.strip()) < 1:
             issues.append(f'{label}: "TTL seconds" must be a positive whole number.')
+        elif int(ttl.strip()) > max_ttl_seconds():
+            issues.append(f'{label}: "TTL seconds" must be at most {max_ttl_seconds()}.')
     amount = config.get("amount")
     if op == "increment" and isinstance(amount, str) and amount.strip() and "{{" not in amount:
-        stripped = amount.strip()
-        if not (stripped.lstrip("-").isdigit()):
+        if not _INT_RE.match(amount.strip()):
             issues.append(f'{label}: "Amount" must be a whole number.')
     return issues
 
@@ -178,11 +206,11 @@ def redis_command(
             if len(value) > MAX_VALUE_LENGTH:
                 raise ActionError("Redis: the value is too large.")
             ttl_raw = config.get("ttlSeconds")
-            ttl: Optional[int] = None
+            ttl: Optional[int] = None  # None = the platform default budget
             if isinstance(ttl_raw, str) and ttl_raw.strip():
-                ttl = _int_field(render_field(ttl_raw, ctx), "TTL seconds", minimum=1)
+                ttl = _int_field(render_field(ttl_raw, ctx), "TTL seconds", minimum=1, maximum=max_ttl_seconds())
             elif isinstance(ttl_raw, (int, float)) and ttl_raw:
-                ttl = _int_field(str(int(ttl_raw)), "TTL seconds", minimum=1)
+                ttl = _int_field(str(int(ttl_raw)), "TTL seconds", minimum=1, maximum=max_ttl_seconds())
             return {"stored": service.set(key, value, ttl)}
         if op == "delete":
             return {"deleted": service.delete(key)}
@@ -220,7 +248,9 @@ __all__ = [
     "LIST_ENDS",
     "OPERATIONS",
     "WorkflowRedisService",
+    "default_ttl_seconds",
     "get_workflow_data_client",
+    "max_ttl_seconds",
     "literal_config_issues",
     "physical_key",
     "redis_command",

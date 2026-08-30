@@ -56,6 +56,12 @@ def make_handler(config: RunnerConfig):
 
         def do_GET(self) -> None:  # noqa: N802
             if self.path == "/health":
+                # Same bearer as /run: an unauthenticated probe would leak the
+                # runner version to anything that can reach the port, and the
+                # backend's health check must prove its token works too.
+                if not self._authorized():
+                    self._send(401, {"ok": False, "error": "unauthorized"})
+                    return
                 self._send(200, {"ok": True, "runnerVersion": RUNNER_VERSION})
                 return
             self._send(404, {"ok": False, "error": "not found"})

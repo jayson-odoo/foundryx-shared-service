@@ -235,6 +235,41 @@ def test_http_boundary_returns_403_without_workflows_code(client, session_factor
     assert client.post("/workflows", json=body, headers=hdrs).status_code in (200, 201)
 
 
+def test_debug_route_requires_workflows_code_for_code_bearing_runs(client, session_factory):
+    """``POST /workflows/{id}/debug`` re-executes the snapshot with scratch
+    config (edited source included) - it must carry the same gate as a manual
+    run, else ``workflows.run`` alone executes arbitrary Code (review blocker)."""
+    db = session_factory()
+    _limited_editor(db)
+    workflow = Workflow(tenant_id=DEFAULT_TENANT_ID, name="Code", description="", draft_definition_json=_doc())
+    db.add(workflow)
+    db.flush()
+    run = WorkflowRun(
+        tenant_id=DEFAULT_TENANT_ID,
+        workflow_id=workflow.id,
+        status="success",
+        definition_snapshot_json=_doc(),
+        trigger_payload_json={"triggeredBy": "manual", "input": {"task": "Launch"}},
+    )
+    db.add(run)
+    db.commit()
+    workflow_id, run_id = workflow.id, run.id
+    db.close()
+
+    payload = {"runId": run_id, "targetNodeId": "code_1", "scratch": {"code_1": {"source": "result = {'summary': 'x'}"}}, "staleNodeIds": []}
+    res = client.post("/auth/login", json={"email": "editor@example.com", "password": "editor1234"})
+    limited = {"Authorization": f"Bearer {res.json()['access_token']}"}
+    with use_code_runner_client(FakeRunner(result={"summary": "x"})) as _:
+        denied = client.post(f"/workflows/{workflow_id}/debug", json=payload, headers=limited)
+        assert denied.status_code == 403 and "workflows.code" in denied.json()["detail"]
+
+        res = client.post("/auth/login", json={"email": "demo@example.com", "password": "demo1234"})
+        admin = {"Authorization": f"Bearer {res.json()['access_token']}"}
+        allowed = client.post(f"/workflows/{workflow_id}/debug", json=payload, headers=admin)
+        assert allowed.status_code == 200, allowed.text
+        assert any(n["nodeId"] == "code_1" for n in allowed.json()["nodes"])
+
+
 def test_publish_requires_runner_health_and_stamps_authorization(session_factory):
     from app.services.workflow_service import CodeRunnerRequired, WorkflowService
 

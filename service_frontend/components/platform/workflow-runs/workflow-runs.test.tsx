@@ -2,14 +2,15 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowRuns } from './workflow-runs';
 
-const { listRuns } = vi.hoisted(() => ({
+const { listRuns, getRun } = vi.hoisted(() => ({
   listRuns: vi.fn(),
+  getRun: vi.fn(),
 }));
 
 vi.mock('@/services/workflow-service', () => ({
   workflowService: {
     listRuns,
-    getRun: vi.fn(),
+    getRun,
   },
 }));
 
@@ -24,6 +25,7 @@ vi.mock('./run-replay', () => ({
 describe('WorkflowRuns status filter', () => {
   beforeEach(() => {
     listRuns.mockResolvedValue({ data: [], total: 0 });
+    getRun.mockResolvedValue(null);
   });
 
   it('searches and selects a status before querying runs', async () => {

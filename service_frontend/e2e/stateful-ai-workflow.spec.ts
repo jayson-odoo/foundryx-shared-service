@@ -59,6 +59,26 @@ function inboundPayload(phone: string, name: string, text: string, seq: number) 
   };
 }
 
+async function openInbox(page: Page) {
+  const link = page.getByRole('link', { name: 'Inbox', exact: true });
+  if (!(await link.isVisible().catch(() => false))) {
+    await page.getByRole('button', { name: 'Omnichannel', exact: true }).click();
+    await expect(link).toBeVisible();
+  }
+  await link.click();
+  await page.waitForURL(/\/omnichannel\/inbox$/);
+}
+
+async function openWorkflows(page: Page) {
+  const link = page.getByRole('link', { name: 'All workflows', exact: true });
+  if (!(await link.isVisible().catch(() => false))) {
+    await page.getByRole('button', { name: 'Workflows', exact: true }).click();
+    await expect(link).toBeVisible();
+  }
+  await link.click();
+  await page.waitForURL(/\/workflows$/);
+}
+
 async function inbound(page: Page, phone: string, name: string, text: string, seq: number) {
   const res = await page.request.post(`${API}/omnichannel/webhooks/chn-demo`, {
     data: inboundPayload(phone, name, text, seq),
@@ -67,7 +87,7 @@ async function inbound(page: Page, phone: string, name: string, text: string, se
 }
 
 async function openThread(page: Page, name: string) {
-  await page.goto('/omnichannel/inbox');
+  await openInbox(page);
   await page.getByText(name, { exact: false }).first().click();
 }
 
@@ -119,7 +139,7 @@ test.describe('Stateful AI workflow runtime - progress update proof (plan sprint
     });
 
     // Logs: every run of this conversation shows Success + the same key.
-    await page.goto('/workflows');
+    await openWorkflows(page);
     await page.getByText(WORKFLOW).first().click();
     await page.waitForURL(/\/workflows\/[^/]+/);
     await page.getByRole('tab', { name: 'Logs' }).click();
@@ -162,7 +182,7 @@ test.describe('Stateful AI workflow runtime - progress update proof (plan sprint
     page,
   }) => {
     await login(page);
-    await page.goto('/workflows');
+    await openWorkflows(page);
     await page.getByText(WORKFLOW).first().click();
     await page.waitForURL(/\/workflows\/[^/]+/);
     await expect(page.getByTestId('workflow-canvas')).toBeVisible();

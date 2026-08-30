@@ -10,6 +10,8 @@ COPY . /runner/code_runner
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 USER runner
 EXPOSE 8011
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8011/health', timeout=3).status==200 else 1)"
+# No socket dial here: the seccomp profile denies connect(), so the probe
+# checks the listening port via /proc and runs one sandbox job instead.
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+  CMD python -m code_runner.healthcheck
 ENTRYPOINT ["python", "-m", "code_runner"]

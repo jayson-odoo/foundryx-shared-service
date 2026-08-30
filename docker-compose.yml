@@ -148,7 +148,10 @@ services:
   # Hardened by deployment, not just by code: non-root, read-only rootfs,
   # no capabilities, no privilege escalation, memory/pids caps, and ONLY the
   # internal runner network (internal: true => no egress). It receives no
-  # database URL, Redis URL, Fernet key, or provider credential.
+  # database URL, Redis URL, Fernet key, or provider credential. The seccomp
+  # profile (deploy/code-runner-seccomp.json, synced by the deploy workflow)
+  # denies connect() - the runner only ever ACCEPTS, so even a jail escape
+  # cannot dial a peer on the internal network.
   code_runner:
     image: ${IMAGE_REPO:-jayson1004/foundryx-shared-service}:code-runner-${IMAGE_TAG:-latest}
     build:
@@ -162,8 +165,14 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+      - seccomp:./deploy/code-runner-seccomp.json
     mem_limit: 512m
     pids_limit: 64
+    healthcheck:
+      test: ["CMD", "python", "-m", "code_runner.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     environment:
       CODE_RUNNER_TOKEN: ${CODE_RUNNER_TOKEN:-}
       CODE_RUNNER_CONCURRENCY: ${CODE_RUNNER_CONCURRENCY:-4}

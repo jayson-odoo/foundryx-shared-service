@@ -1,9 +1,12 @@
 """Child-process harness: reads ONE job as JSON on stdin, executes it under the
 restricted builtins table, writes ONE JSON result line on stdout.
 
-Started by ``sandbox.execute`` as ``python -I -S -m code_runner.harness`` with
-an empty environment and resource limits already applied (see ``sandbox``).
-Nothing in here trusts the job: the policy runs again before execution.
+Started by ``sandbox.execute`` as ``python -I -S -B harness.py`` with an empty
+environment and resource limits already applied (see ``sandbox``). Nothing in
+here trusts the job: the policy runs again before execution, and ``_harden``
+then strips the interpreter so that even a policy bypass that reaches the
+harness frames (generator ``gi_frame`` -> ``f_back`` -> ``f_builtins``) finds
+no importer, no ``open`` and no module namespace to walk (AC-SAR-64).
 """
 from __future__ import annotations
 
@@ -14,6 +17,23 @@ import re
 import sys
 import types
 from typing import Any, Dict
+
+# Bound at import time so the post-exec code never needs the module globals
+# that ``_harden`` removes.
+_MappingProxy = types.MappingProxyType
+_json_dumps = json.dumps
+_json_loads = json.loads
+
+# Modules a walked-to ``sys`` (or a survivor import) could turn into reach.
+_EVICT_MODULES = (
+    "os", "posix", "nt", "socket", "_socket", "select", "selectors", "subprocess",
+    "ctypes", "_ctypes", "signal", "_signal", "resource", "shutil", "pathlib",
+    "tempfile", "io", "_io", "importlib", "_imp", "_frozen_importlib",
+    "_frozen_importlib_external", "zipimport", "marshal", "threading", "_thread",
+)
+
+# Harness globals that must not survive into the builder's reach.
+_STRIP_GLOBALS = ("io", "json", "math", "re", "sys", "types", "Any", "Dict", "_harden", "_safe_builtins")
 
 
 def _safe_builtins():
@@ -28,6 +48,28 @@ def _safe_builtins():
     return table
 
 
+def _denied(*_args, **_kwargs):
+    raise RuntimeError("not available in the sandbox")
+
+
+def _harden() -> None:
+    """Runtime denial layer, applied AFTER the policy passed and the job was
+    parsed, BEFORE builder code runs. Neuters the REAL builtins (the ones a
+    frame walk lands on), evicts platform modules from ``sys.modules`` and
+    strips this module's namespace down to inert helpers."""
+    import builtins
+
+    for name in ("__import__", "open", "exec", "eval", "compile", "breakpoint", "input", "help", "exit", "quit"):
+        setattr(builtins, name, _denied)
+    for name in list(sys.modules):
+        root = name.split(".", 1)[0]
+        if name in _EVICT_MODULES or root in _EVICT_MODULES:
+            sys.modules.pop(name, None)
+    module_globals = globals()
+    for name in _STRIP_GLOBALS:
+        module_globals.pop(name, None)
+
+
 class _ReadOnlyJson:
     """The ``json`` helper: loads/dumps only."""
 
@@ -36,7 +78,7 @@ class _ReadOnlyJson:
     @staticmethod
     def dumps(value, **kwargs):
         kwargs.pop("default", None)
-        return json.dumps(value, **kwargs)
+        return _json_dumps(value, **kwargs)
 
 
 def _read_only_math():
@@ -56,14 +98,14 @@ def _read_only_re():
 
 def _freeze(value: Any) -> Any:
     if isinstance(value, dict):
-        return types.MappingProxyType({k: _freeze(v) for k, v in value.items()})
+        return _MappingProxy({k: _freeze(v) for k, v in value.items()})
     if isinstance(value, list):
         return tuple(_freeze(v) for v in value)
     return value
 
 
 def _thaw(value: Any) -> Any:
-    if isinstance(value, types.MappingProxyType):
+    if isinstance(value, _MappingProxy):
         return {k: _thaw(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_thaw(v) for v in value]
@@ -95,10 +137,11 @@ def main() -> int:
     import os
 
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    del os
     real_stdout = sys.stdout
     real_stderr = sys.stderr
     sys.stdout = sys.stderr  # nothing user-visible may reach the protocol stream
-    job = json.loads(sys.stdin.read())
+    job = _json_loads(sys.stdin.read())
     source = job.get("source") or ""
     user_input = job.get("input") or {}
     console_limit = int(job.get("consoleLimit") or 4096)
@@ -118,21 +161,32 @@ def main() -> int:
             "math": _read_only_math(),
             "re": _read_only_re(),
         }
-        sys.stdout, sys.stderr = stdout, stderr
+        # Everything the harness needs after this point is bound locally or on
+        # inert module-level helpers; ``sys`` is the last thing to go.
         try:
             code = compile(source, "<code.run>", "exec")
-            exec(code, env)  # noqa: S102 - the jailed child, by design
+        except (SyntaxError, ValueError) as exc:
+            out = {"ok": False, "termination": "policy", "error": f"{type(exc).__name__}: {exc}"}
+            real_stdout.write(_json_dumps(out))
+            real_stdout.flush()
+            return 0
+        sys.stdout, sys.stderr = stdout, stderr
+        run_code = exec  # bound BEFORE the real builtin is neutered
+        _harden()
+        del job, validate_source
+        try:
+            run_code(code, env)  # noqa: S102 - the jailed child, by design
             result = env.get("result")
-            if isinstance(result, types.MappingProxyType):
+            if isinstance(result, _MappingProxy):
                 result = _thaw(result)
             if not isinstance(result, dict):
                 out = {"ok": False, "termination": "invalid_result", "error": "Code must assign a dictionary to result."}
             else:
-                encoded = json.dumps(_thaw(result))
+                encoded = _json_dumps(_thaw(result))
                 if len(encoded) > output_limit:
                     out = {"ok": False, "termination": "output_limit", "error": "Result exceeds the output size limit."}
                 else:
-                    out = {"ok": True, "termination": "completed", "result": json.loads(encoded)}
+                    out = {"ok": True, "termination": "completed", "result": _json_loads(encoded)}
         except MemoryError:
             out = {"ok": False, "termination": "memory_limit", "error": "Code exceeded the memory limit."}
         except RecursionError:
@@ -142,12 +196,10 @@ def main() -> int:
             out = {"ok": False, "termination": "error", "error": f"{type(exc).__name__}: {exc}"}
         except BaseException as exc:  # noqa: BLE001 - report, never crash silently
             out = {"ok": False, "termination": "error", "error": f"{type(exc).__name__}: {exc}"}
-        finally:
-            sys.stdout, sys.stderr = real_stderr, real_stderr
         out["stdout"] = stdout.getvalue()
         out["stderr"] = stderr.getvalue()
         out["consoleTruncated"] = stdout.truncated or stderr.truncated
-    real_stdout.write(json.dumps(out))
+    real_stdout.write(_json_dumps(out))
     real_stdout.flush()
     return 0
 

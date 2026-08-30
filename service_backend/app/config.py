@@ -132,6 +132,12 @@ class Settings(BaseSettings):
     # recovery age without changing their state.
     workflow_serialized_lease_seconds: int = 120
     workflow_serialized_recovery_age_seconds: int = 60
+    # Workflow Redis action (S3): every workflow-data key carries a TTL so a
+    # tenant's workflows can never grow platform Redis without bound. A blank
+    # TTL on `set` (and keys created by increment / list push) gets the
+    # default; an explicit TTL above the maximum is rejected at publish/run.
+    workflow_redis_default_ttl_seconds: int = 7 * 24 * 3600
+    workflow_redis_max_ttl_seconds: int = 30 * 24 * 3600
     # External Code runner (sprint-4/19 S4, D20). Unset = the Code action is
     # unavailable (editor warning, publish blocked). Builder Python NEVER runs
     # in this process - see code_runner/ and app/workflow_engine/code_runner.py.

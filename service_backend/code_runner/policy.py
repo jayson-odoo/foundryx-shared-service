@@ -36,6 +36,23 @@ FORBIDDEN_NAMES = frozenset(
     }
 )
 
+# Attribute names that expose frames, code objects, globals or the MRO - the
+# reflection routes out of the exec'd module (a generator's ``gi_frame`` walks
+# ``f_back`` into the harness and its real builtins). ``format``/``format_map``
+# on a literal are covered separately (``'{0.__class__}'.format(x)``).
+FORBIDDEN_ATTRS = frozenset(
+    {
+        "gi_frame", "gi_code", "gi_yieldfrom", "gi_running",
+        "cr_frame", "cr_code", "cr_await", "cr_running", "cr_origin",
+        "ag_frame", "ag_code", "ag_await", "ag_running",
+        "f_back", "f_globals", "f_builtins", "f_locals", "f_code", "f_trace",
+        "f_lineno", "f_lasti",
+        "tb_frame", "tb_next", "tb_lineno", "tb_lasti",
+        "co_code", "co_consts", "co_names", "co_varnames", "co_filename",
+        "mro", "format_map",
+    }
+)
+
 FORBIDDEN_NODE_TYPES = (
     ast.Import,
     ast.ImportFrom,
@@ -82,11 +99,29 @@ def validate_source(source: str) -> List[str]:
             if node.id == "result" and isinstance(node.ctx, ast.Store):
                 assigns_result = True
         elif isinstance(node, ast.Attribute):
-            if node.attr.startswith("__"):
+            if node.attr.startswith("__") or node.attr in FORBIDDEN_ATTRS:
                 issues.append(f'Attribute "{node.attr}" is not allowed (line {node.lineno}).')
+        elif isinstance(node, ast.Subscript):
+            # ``obj["__import__"]`` is attribute access in disguise.
+            key = node.slice
+            if isinstance(key, ast.Constant) and isinstance(key.value, str) and key.value.startswith("__"):
+                issues.append(f'Key "{key.value}" is not allowed (line {node.lineno}).')
+        elif isinstance(node, ast.Call):
+            # ``"{0.__class__}".format(x)`` reads attributes through the
+            # format mini-language; a dunder inside a format literal is never
+            # legitimate data.
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "format"
+                and isinstance(func.value, ast.Constant)
+                and isinstance(func.value.value, str)
+                and "__" in func.value.value
+            ):
+                issues.append(f"Format strings may not reference dunder attributes (line {node.lineno}).")
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            # Strings that spell dunder attributes are only dangerous with
-            # getattr/eval, which are already forbidden - allowed as data.
+            # Plain strings that spell dunder attributes are only dangerous
+            # with getattr/eval/format, which are handled above - allowed as data.
             continue
     if not assigns_result:
         issues.append("Code must assign a result dictionary.")

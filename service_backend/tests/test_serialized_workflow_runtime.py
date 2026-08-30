@@ -5,15 +5,17 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.models import DEFAULT_TENANT_ID
-from app.models.workflow import RUN_FAILED, RUN_PENDING, RUN_SUCCESS, Workflow, WorkflowRun
+from app.models.workflow import RUN_FAILED, RUN_PENDING, RUN_RUNNING, RUN_SUCCESS, Workflow, WorkflowRun
 from app.services.workflow_service import WorkflowError, WorkflowService
 from app.workflow_engine.serialization import (
     SerializedCoordinationUnavailable,
+    _LeaseHeartbeat,
     assign_run_correlation,
     correlation_digest,
     dispatch_persisted_run,
     drain_serialized_runs,
     redrive_pending_serialized_runs,
+    touch_run_heartbeat,
 )
 
 
@@ -504,3 +506,178 @@ def test_duplicate_direct_execution_does_not_execute_run_nodes_twice(session_fac
         .count()
         == 1
     )
+
+
+
+# ---- heartbeat: mid-run commits must not void no-overtake (review fix, AC-SAR-37/39) ----
+
+
+def _succeed(run_db, run_id):
+    row = run_db.query(WorkflowRun).filter(WorkflowRun.id == run_id).one()
+    row.status = RUN_SUCCESS
+    run_db.commit()
+    return row
+
+
+def test_live_running_row_blocks_same_key_drain_until_its_heartbeat_goes_stale(session_factory):
+    """An action that COMMITS mid-run leaves the row RUNNING if the worker
+    then dies. A fresh heartbeat means "still executing": no other drainer
+    may overtake it. Once the heartbeat is stale the beat reaper fails the
+    row and wakes the scope, and the queue moves on in order."""
+    db = session_factory()
+    workflow = _workflow(db)
+    now = datetime.now(timezone.utc)
+    running = _run(db, workflow, "conversation-a", run_id="committed-running", created_at=now - timedelta(minutes=10))
+    running.status = RUN_RUNNING
+    running.started_at = now - timedelta(minutes=10)
+    running.heartbeat_at = now  # its worker is still alive (lease may have lapsed)
+    _run(db, workflow, "conversation-a", run_id="queued-next", created_at=now - timedelta(minutes=9))
+    db.commit()
+    executed = []
+    result = drain_serialized_runs(
+        db,
+        DEFAULT_TENANT_ID,
+        workflow.id,
+        correlation_digest("conversation-a"),
+        lease_client=FakeLeaseClient(),
+        execute=lambda run_db, run_id: executed.append(run_id),
+        touch=lambda run_id: None,
+        stale_after=timedelta(minutes=2),
+    )
+    assert executed == []
+    assert result == {"admitted": True, "drained": 0, "blocked": "committed-running"}
+    db.expire_all()
+    assert db.query(WorkflowRun).filter(WorkflowRun.id == "queued-next").one().status == RUN_PENDING
+
+    # The worker died: heartbeats stop. The reaper fails the row + wakes the scope.
+    row = db.query(WorkflowRun).filter(WorkflowRun.id == "committed-running").one()
+    row.heartbeat_at = now - timedelta(minutes=10)
+    db.commit()
+    wakes = []
+    assert (
+        redrive_pending_serialized_runs(
+            db,
+            now=now,
+            minimum_age=timedelta(hours=1),  # the pending row alone is "too young" to wake
+            wake=lambda *scope: wakes.append(scope),
+            stale_after=timedelta(minutes=2),
+        )
+        == 1
+    )
+    assert wakes == [(DEFAULT_TENANT_ID, workflow.id, correlation_digest("conversation-a"))]
+    db.expire_all()
+    reaped = db.query(WorkflowRun).filter(WorkflowRun.id == "committed-running").one()
+    assert reaped.status == RUN_FAILED and "heartbeat" in reaped.error and reaped.finished_at is not None
+
+    result = drain_serialized_runs(
+        db,
+        *wakes[0],
+        lease_client=FakeLeaseClient(),
+        execute=_succeed,
+        touch=lambda run_id: None,
+        stale_after=timedelta(minutes=2),
+    )
+    assert result == {"admitted": True, "drained": 1}
+    db.expire_all()
+    assert db.query(WorkflowRun).filter(WorkflowRun.id == "queued-next").one().status == RUN_SUCCESS
+
+
+def test_in_process_crash_after_a_mid_run_commit_fails_the_running_row(session_factory):
+    db = session_factory()
+    workflow = _workflow(db)
+    base = datetime.now(timezone.utc)
+    _run(db, workflow, "conversation-a", run_id="commits-then-crashes", created_at=base)
+    _run(db, workflow, "conversation-a", run_id="after", created_at=base + timedelta(seconds=1))
+    db.commit()
+    executed = []
+
+    def execute(run_db, run_id):
+        row = run_db.query(WorkflowRun).filter(WorkflowRun.id == run_id).one()
+        executed.append(run_id)
+        if run_id == "commits-then-crashes":
+            row.status = RUN_RUNNING
+            row.heartbeat_at = datetime.now(timezone.utc)
+            run_db.commit()  # e.g. MessageService.send_message committed
+            raise RuntimeError("boom after commit")
+        return _succeed(run_db, run_id)
+
+    result = drain_serialized_runs(
+        db,
+        DEFAULT_TENANT_ID,
+        workflow.id,
+        correlation_digest("conversation-a"),
+        lease_client=FakeLeaseClient(),
+        execute=execute,
+        touch=lambda run_id: None,
+    )
+    assert result == {"admitted": True, "drained": 2}
+    assert executed == ["commits-then-crashes", "after"]
+    db.expire_all()
+    rows = {r.id: r.status for r in db.query(WorkflowRun).all()}
+    assert rows["commits-then-crashes"] == RUN_FAILED and rows["after"] == RUN_SUCCESS
+
+
+def test_lease_heartbeat_touches_the_executing_run_on_every_renewal():
+    import time
+
+    touched = []
+    heartbeat = _LeaseHeartbeat(FakeLeaseClient(), "k", "t", ttl_seconds=3, touch=touched.append)
+    heartbeat.current_run_id = "run-x"
+    heartbeat.start()
+    time.sleep(1.4)  # one renewal interval (ttl 3s -> 1s)
+    heartbeat.stop()
+    assert touched and set(touched) == {"run-x"}
+    assert not heartbeat.lost.is_set()
+
+    # A failing heartbeat write never costs the lease.
+    def broken(run_id):
+        raise OSError("db down")
+
+    heartbeat = _LeaseHeartbeat(FakeLeaseClient(), "k", "t", ttl_seconds=3, touch=broken)
+    heartbeat.current_run_id = "run-y"
+    heartbeat.start()
+    time.sleep(1.4)
+    heartbeat.stop()
+    assert not heartbeat.lost.is_set()
+
+
+def test_touch_run_heartbeat_stamps_only_running_rows(session_factory):
+    db = session_factory()
+    workflow = _workflow(db)
+    now = datetime.now(timezone.utc)
+    running = _run(db, workflow, "conversation-a", run_id="hb-running")
+    running.status = RUN_RUNNING
+    pending = _run(db, workflow, "conversation-b", run_id="hb-pending")
+    db.commit()
+    stamp = now + timedelta(seconds=5)
+    assert touch_run_heartbeat(db.get_bind(), running.id, now=stamp) is True
+    assert touch_run_heartbeat(db.get_bind(), pending.id, now=stamp) is False
+    assert touch_run_heartbeat(db.get_bind(), "missing", now=stamp) is False
+    db.expire_all()
+    assert db.query(WorkflowRun).filter(WorkflowRun.id == running.id).one().heartbeat_at == stamp
+    assert db.query(WorkflowRun).filter(WorkflowRun.id == pending.id).one().heartbeat_at is None
+
+
+def test_run_workflow_stamps_the_heartbeat_when_it_claims_the_run(session_factory):
+    db = session_factory()
+    workflow = _workflow(db)
+    run = WorkflowRun(
+        id="claim-heartbeat",
+        tenant_id=DEFAULT_TENANT_ID,
+        workflow_id=workflow.id,
+        status=RUN_PENDING,
+        definition_snapshot_json={
+            "schemaVersion": 2,
+            "execution": {"mode": "parallel", "correlationKey": ""},
+            "nodes": [{"id": "trigger", "kind": "trigger", "type": "manual", "config": {}, "position": {}}],
+            "edges": [],
+        },
+        trigger_payload_json={"triggeredBy": "manual"},
+    )
+    assign_run_correlation(run)
+    db.add(run)
+    db.commit()
+    from app.workflow_engine.executor import run_workflow
+
+    done = run_workflow(db, run.id)
+    assert done.status == RUN_SUCCESS and done.heartbeat_at is not None and done.heartbeat_at == done.started_at

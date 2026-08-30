@@ -124,8 +124,17 @@ def seed_demo_progress_workflow(db: Session, tenant_id: str, *, channel_id: str 
     AI Agent (stateful task/status/blocker, transient decision/reply) → IF on
     decision → true: Send confirmation + Clear Agent State; false: Send the
     clarification. Serialized by ``{{ trigger.conversationId }}``. The seeded
-    agent has no connection, so the dev stub LLM derives evidence-backed
-    patches deterministically (``app.ai.stub._derive_stateful``)."""
+    agent binds to the tenant's dev ``stub`` connection (or none when no LLM
+    connection exists), so the dev stub LLM derives evidence-backed patches
+    deterministically (``app.ai.stub._derive_stateful``).
+
+    Stub limits (proof-only heuristics, not language understanding): enum
+    fields match by SUBSTRING - a message merely containing "blocked" /
+    "completed" / "in progress" sets the status whatever the surrounding
+    words say; a message with no enum word and no ``key: value`` marker is
+    taken WHOLE as the first missing required text field (the task); a short
+    reply while a clarification is pending resolves that field verbatim. Real
+    agents on a real connection are not bound by any of this."""
     from app.models.ai import AiAgent
     from app.services.workflow_service import WorkflowService
 

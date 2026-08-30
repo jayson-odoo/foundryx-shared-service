@@ -405,7 +405,10 @@ def debug_execute(
             target_node_id=body.targetNodeId,
             scratch=body.scratch,
             stale_node_ids=body.staleNodeIds,
+            actor=current_user,
         )
     except WorkflowNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow or run not found.")
+    except WorkflowPermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     return WorkflowDebugResultOut(nodes=nodes)

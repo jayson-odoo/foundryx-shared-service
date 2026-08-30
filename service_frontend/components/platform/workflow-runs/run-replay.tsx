@@ -12,6 +12,7 @@ import { MarkerType, type Edge, type Node } from '@xyflow/react';
 import { Bug } from 'lucide-react';
 import type { WorkflowRunDetail } from '@/types/workflows';
 import { catalogEntry } from '@/lib/workflow-catalog';
+import { ClampedText } from '@/components/platform/clamped-text';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -93,11 +94,10 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
           </span>
           {run.correlationKey && (
             <span
-              className="max-w-full truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground sm:max-w-[16rem]"
-              title={run.correlationKey}
+              className="max-w-full rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground sm:max-w-[16rem]"
               data-testid="run-correlation-key"
             >
-              {run.correlationKey}
+              <ClampedText text={run.correlationKey} lines={1} />
             </span>
           )}
         </div>
@@ -145,6 +145,12 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
                   <NodeRunStatusBadge status={selectedData.status} />
                 )}
               </div>
+              {resolvedInput(selectedData?.inputJson) && (
+                <DataBlock
+                  label="Resolved input"
+                  value={resolvedInput(selectedData?.inputJson)}
+                />
+              )}
               <DataBlock label="Input" value={selectedData?.inputJson} />
               <DataBlock label="Output" value={selectedData?.outputJson} />
               {selectedData?.error && (
@@ -198,4 +204,23 @@ function DataBlock({ label, value }: { label: string; value: unknown }) {
       </pre>
     </div>
   );
+}
+
+
+/**
+ * The rendered field values a node actually used (executor `_node_input_json`
+ * `resolved`, and a Code node's `runtime.input`) - shown so Logs display what
+ * was SENT, not just the template (plan sprint-4/19 user request).
+ */
+function resolvedInput(inputJson: unknown): Record<string, unknown> | null {
+  if (!inputJson || typeof inputJson !== 'object') return null;
+  const obj = inputJson as Record<string, unknown>;
+  if (obj.resolved && typeof obj.resolved === 'object') {
+    return obj.resolved as Record<string, unknown>;
+  }
+  const runtime = obj.runtime as Record<string, unknown> | undefined;
+  if (runtime && runtime.input && typeof runtime.input === 'object') {
+    return runtime.input as Record<string, unknown>;
+  }
+  return null;
 }
