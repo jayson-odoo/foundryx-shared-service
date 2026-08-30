@@ -42,6 +42,7 @@ import {
   acTaskHref,
   entityLabel,
 } from '../../components/autocount-meta';
+import { AddEntityControl } from './add-entity-control';
 import { DetailRow } from './detail-row';
 import { EntityLookbackDialog } from './entity-lookback-dialog';
 import { EntitySourceDialog } from './entity-source-dialog';
@@ -246,6 +247,16 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     [companyId, router],
   );
 
+  // Plan 22 S4 (AC-22-23): a not-yet-configured entity has no row to click on
+  // in the list - "Add entity" opens its task editor directly, where the row
+  // is born on the first query save.
+  const onAddEntity = useCallback(
+    (entityType: string) => {
+      router.push(acTaskHref(companyId, entityType));
+    },
+    [companyId, router],
+  );
+
   const onRefetch = useCallback(
     async (entity: AutocountEntityConfig) => {
       try {
@@ -388,6 +399,9 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
                   Syncing {entityLabel(syncing)}…
                 </div>
               )}
+              {canManage && (
+                <AddEntityControl entities={detail?.entities ?? []} onAdd={onAddEntity} />
+              )}
               <ResourceList config={entitiesConfig} />
             </div>
           ),
@@ -422,6 +436,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     detail,
     entitiesConfig,
     formatDateTime,
+    onAddEntity,
     onCancelPushTarget,
     onSavePushTarget,
     onSinkChange,
