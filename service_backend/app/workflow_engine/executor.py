@@ -16,6 +16,7 @@ from app.models.workflow import (
     NODE_SKIPPED,
     NODE_SUCCESS,
     RUN_FAILED,
+    RUN_PENDING,
     RUN_RUNNING,
     RUN_SUCCESS,
     Workflow,
@@ -197,11 +198,29 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
         .filter(
             WorkflowRun.id == run_id,
             WorkflowRun.tenant_id == Workflow.tenant_id,
+            WorkflowRun.status == RUN_PENDING,
         )
+        # Same-key drainers deliberately block on the oldest row instead of
+        # skipping it. Even if a Redis lease expires unexpectedly, a later run
+        # cannot overtake the transaction currently executing this one.
+        .with_for_update()
         .first()
     )
     if run is None:
-        raise RuntimeError(f"Run {run_id} not found.")
+        existing = (
+            db.query(WorkflowRun)
+            .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
+            .filter(
+                WorkflowRun.id == run_id,
+                WorkflowRun.tenant_id == Workflow.tenant_id,
+            )
+            .first()
+        )
+        if existing is None:
+            raise RuntimeError(f"Run {run_id} not found.")
+        # Duplicate Celery delivery or wakeup. A terminal/running run is never
+        # executed again.
+        return existing
 
     run.status = RUN_RUNNING
     run.started_at = _now()
@@ -213,7 +232,16 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
     doc = parse_definition(run.definition_snapshot_json)
     ctx = _ctx_from_payload(run.trigger_payload_json or {})
     try:
-        correlation_key = resolve_correlation_key(doc, ctx)
+        correlation_key = run.correlation_key
+        if correlation_key is None:
+            # Compatibility for a legacy/manual row created before S2. All
+            # production creation paths snapshot before commit below.
+            correlation_key = resolve_correlation_key(doc, ctx)
+            if correlation_key is not None:
+                from app.workflow_engine.serialization import correlation_digest
+
+                run.correlation_key = correlation_key
+                run.correlation_key_digest = correlation_digest(correlation_key)
     except RuntimeError as exc:
         run.status = RUN_FAILED
         run.error = str(exc)
@@ -264,6 +292,11 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
             except Exception as exc:  # noqa: BLE001 - a node failure halts the run (D14)
                 rn.status = NODE_FAILED
                 rn.error = str(exc)
+                runtime = getattr(exc, "runtime", None)
+                if isinstance(runtime, dict):
+                    # Keep the bounded console/termination of a failed Code
+                    # node inspectable (AC-SAR-67) without marking it "produced".
+                    rn.input_json = {**(rn.input_json or {}), "runtime": runtime}
                 run.error = f"Node failed: {exc}"
                 failed = True
             rn.finished_at = _now()
@@ -305,7 +338,7 @@ def debug_execute(
     # Nodes that genuinely produced an output last run (skipped/failed = none).
     produced = {rn.node_id for rn in run.nodes if rn.output_json is not None}
     ctx = _ctx_from_payload(run.trigger_payload_json or {})
-    correlation_key = resolve_correlation_key(doc, ctx)
+    correlation_key = run.correlation_key or resolve_correlation_key(doc, ctx)
     if correlation_key is not None:
         ctx["_workflow.correlationKey"] = correlation_key
     ordered = topo_order(doc)

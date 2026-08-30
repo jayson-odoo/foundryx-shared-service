@@ -293,6 +293,7 @@ function seedRuns(): StoredRun[] {
       finishedAt: isoMinsAgo(n * 30 + 5),
       durationMs: 1240 + n * 60,
       versionNumber: 1,
+      correlationKey: null,
       error: fail ? 'Node "Send email" failed.' : null,
       createdAt: isoMinsAgo(n * 30 + 5),
       definition: def,
@@ -318,6 +319,7 @@ function toRunSummary(run: StoredRun): WorkflowRunListItem {
     finishedAt: run.finishedAt,
     durationMs: run.durationMs,
     versionNumber: run.versionNumber,
+    correlationKey: run.correlationKey,
     error: run.error,
     createdAt: run.createdAt,
   };
@@ -571,6 +573,7 @@ export const mockWorkflowService: WorkflowService = {
       finishedAt: now,
       durationMs: 1180,
       versionNumber: version?.versionNumber ?? 0, // 0 = ran the draft
+      correlationKey: null,
       error: null,
       createdAt: now,
       definition,

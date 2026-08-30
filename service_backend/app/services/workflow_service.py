@@ -69,6 +69,14 @@ class WorkflowError(Exception):
     pass
 
 
+class WorkflowPermissionError(WorkflowError):
+    """The caller lacks a permission the definition requires (403)."""
+
+
+class CodeRunnerRequired(WorkflowError):
+    """Publishing a Code-bearing graph needs a healthy external runner (422)."""
+
+
 class WorkflowNotFound(WorkflowError):
     pass
 
@@ -210,8 +218,22 @@ class WorkflowService:
 
     # ---- writes ----
 
-    def create(self, tenant_id: str, *, name: str, description: str, draft: Dict[str, Any], actor_id: str) -> Workflow:
+    @staticmethod
+    def assert_code_permitted(actor: Optional[User], doc: Any) -> None:
+        """``workflows.code`` gates adding/editing/publishing/running a graph
+        that carries a Code node (AC-SAR-68). ``actor=None`` = system path."""
+        from app.workflow_engine.schemas import has_code_nodes
+
+        if actor is None or not has_code_nodes(doc):
+            return
+        from app.dependencies import effective_permission_keys
+
+        if "workflows.code" not in effective_permission_keys(actor):
+            raise WorkflowPermissionError("Missing permission: workflows.code")
+
+    def create(self, tenant_id: str, *, name: str, description: str, draft: Dict[str, Any], actor_id: str, actor: Optional[User] = None) -> Workflow:
         parse_definition(draft)  # shape gate (422 on malformed)
+        self.assert_code_permitted(actor, draft)
         wf = Workflow(
             tenant_id=tenant_id,
             name=name.strip(),
@@ -226,9 +248,10 @@ class WorkflowService:
         self.db.refresh(wf)
         return wf
 
-    def update(self, workflow_id: str, tenant_id: str, *, name: str, description: str, draft: Dict[str, Any]) -> Workflow:
+    def update(self, workflow_id: str, tenant_id: str, *, name: str, description: str, draft: Dict[str, Any], actor: Optional[User] = None) -> Workflow:
         wf = self.get(workflow_id, tenant_id)
         parse_definition(draft)
+        self.assert_code_permitted(actor, draft)
         changes: Dict[str, Any] = {}
         if wf.name != name.strip():
             changes["name"] = {"from": wf.name, "to": name.strip()}
@@ -284,14 +307,26 @@ class WorkflowService:
         self.db.refresh(wf)
         return wf
 
-    def publish(self, workflow_id: str, tenant_id: str, actor_id: str) -> Workflow:
+    def publish(self, workflow_id: str, tenant_id: str, actor_id: str, actor: Optional[User] = None) -> Workflow:
         wf = self.get(workflow_id, tenant_id)
         doc = validate_definition(wf.draft_definition_json)  # raises on issues (422)
+        from app.workflow_engine.schemas import has_code_nodes
+
+        code_bearing = has_code_nodes(doc)
+        code_authorized_by = None
+        if code_bearing:
+            self.assert_code_permitted(actor, doc)
+            from app.workflow_engine.code_runner import code_runner_available
+
+            if not code_runner_available():
+                raise CodeRunnerRequired("The Code runner is unavailable - publishing a Code node is blocked.")
+            code_authorized_by = actor.id if actor is not None else actor_id
         version = WorkflowVersion(
             workflow_id=wf.id,
             version_number=self.repo.next_version_number(wf.id),
             definition_json=json.loads(json.dumps(wf.draft_definition_json)),
             published_by=actor_id,
+            code_authorized_by=code_authorized_by,
         )
         self.repo.add_version(version)
         wf.current_version_id = version.id
@@ -346,6 +381,7 @@ class WorkflowService:
     ) -> WorkflowRun:
         """Execute the draft manually or with registered synthetic trigger data."""
         wf = self.get(workflow_id, tenant_id)
+        self.assert_code_permitted(actor, wf.draft_definition_json)
         version_id = wf.current_version_id
         current = self.repo.get_version(version_id) if version_id else None
         version_number = current.version_number if current else 0
@@ -390,23 +426,22 @@ class WorkflowService:
             trigger_payload_json=payload,
             actor_id=actor.id,
         )
+        from app.workflow_engine.serialization import assign_run_correlation
+
+        try:
+            assign_run_correlation(run)
+        except RuntimeError as exc:
+            # A serialized manual run may not have the trigger data needed to
+            # resolve its key. Surface that as a workflow-level conflict before
+            # persisting a run, rather than returning an opaque 500.
+            raise WorkflowError(str(exc)) from exc
         self.repo.add_run(run)
         self.db.commit()
         run_id = run.id
 
-        from app.config import settings
+        from app.workflow_engine.serialization import dispatch_persisted_run
 
-        if settings.celery_task_always_eager:
-            # Dev/E2E + tests: execute inline on THIS session (a worker process
-            # would open a different DB session and not see an in-test run).
-            from app.workflow_engine.executor import run_workflow
-
-            run_workflow(self.db, run_id)
-        else:
-            # Prod: hand off to a worker (its own session, separate process).
-            from app.workflow_engine.worker import run_workflow_task
-
-            run_workflow_task.delay(run_id)
+        dispatch_persisted_run(self.db, run)
 
         self.db.expire_all()
         return self.repo.get_run(run_id, tenant_id)
@@ -532,11 +567,16 @@ class WorkflowService:
             "email": conn_repo.resolve_for_type(tenant_id, "email") is not None,
             "storage": conn_repo.resolve_for_type(tenant_id, "storage") is not None,
         }
+        from app.workflow_engine.code_runner import code_runner_available
+        from code_runner.policy import CAPABILITIES as CODE_CAPABILITIES
+
         metadata = {
             "entities": entities,
             "connections": connections,
             "forms": self._form_options(tenant_id),
             "omnichannelChannels": self._omnichannel_channel_options(tenant_id),
+            "codeRunnerAvailable": code_runner_available(),
+            "codeCapabilities": list(CODE_CAPABILITIES),
         }
         if include_ai_agents:
             metadata["aiAgents"] = self._ai_agent_options(tenant_id)

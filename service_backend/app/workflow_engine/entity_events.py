@@ -400,6 +400,13 @@ def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: in
     )
     if version is None:
         return
+    from app.workflow_engine.schemas import has_code_nodes
+
+    if has_code_nodes(version.definition_json) and not version.code_authorized_by:
+        # Automated triggers may execute a Code-bearing version ONLY when a
+        # permitted actor stamped it at publish (AC-SAR-68). Fail closed.
+        logger.warning("workflow %s: Code-bearing version lacks authorization; skipped", wf.id)
+        return
     payload = build_event_trigger_payload(ev)
     source = ev.get("source") or {}
     run = WorkflowRun(
@@ -415,19 +422,18 @@ def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: in
         depth=depth,
         actor_id=(ev.get("actor") or {}).get("id"),
     )
+    from app.workflow_engine.serialization import (
+        assign_run_correlation,
+        dispatch_persisted_run,
+    )
+
+    assign_run_correlation(run)
     session.add(run)
     session.flush()
-    run_id = run.id
 
-    if settings.celery_task_always_eager:
-        from app.workflow_engine.executor import run_workflow
-
-        run_workflow(session, run_id)
-    else:
+    if not settings.celery_task_always_eager:
         session.commit()
-        from app.workflow_engine.worker import run_workflow_task
-
-        run_workflow_task.delay(run_id)
+    dispatch_persisted_run(session, run)
 
 
 # Register once on the Session class (all sessions share the hook).

@@ -148,6 +148,14 @@ export function WorkflowRuns({
                 </span>
                 {run.isTest && <FlaskConical className="size-3" />}
               </div>
+              {run.correlationKey && (
+                <div
+                  className="truncate font-mono text-[11px] text-muted-foreground"
+                  title={run.correlationKey}
+                >
+                  {run.correlationKey}
+                </div>
+              )}
             </button>
           ))}
           {rows.length < total && (

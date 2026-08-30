@@ -53,3 +53,29 @@ describe('WorkflowRuns status filter', () => {
     );
   });
 });
+
+describe('WorkflowRuns correlation key', () => {
+  it('shows the snapshotted correlation key on a serialized run', async () => {
+    listRuns.mockResolvedValue({
+      data: [
+        {
+          id: 'run-1',
+          status: 'success',
+          triggeredBy: 'event',
+          isTest: false,
+          actorName: 'System',
+          startedAt: '2026-08-30T00:00:00Z',
+          finishedAt: '2026-08-30T00:00:01Z',
+          durationMs: 1000,
+          versionNumber: 1,
+          correlationKey: 'conversation-42',
+          error: null,
+          createdAt: '2026-08-30T00:00:00Z',
+        },
+      ],
+      total: 1,
+    });
+    render(<WorkflowRuns workflowId="workflow-1" onDebugInEditor={vi.fn()} />);
+    expect(await screen.findByText('conversation-42')).toBeInTheDocument();
+  });
+});

@@ -9,7 +9,7 @@ trace lives in ``WorkflowRunNode``.
 """
 import uuid
 
-from sqlalchemy import JSON, Boolean, Column, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Column, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -98,12 +98,26 @@ class WorkflowVersion(Base):
     published_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     published_by = Column(String, nullable=True)
     notes = Column(Text, nullable=True)
+    # Set when the publishing actor held ``workflows.code`` and the graph carries
+    # a Code node (sprint-4/19 S4). Automated triggers execute a Code-bearing
+    # version ONLY when it is stamped - no per-run end-user permission context.
+    code_authorized_by = Column(String, nullable=True)
 
     workflow = relationship("Workflow", back_populates="versions")
 
 
 class WorkflowRun(Base):
     __tablename__ = "workflow_runs"
+    __table_args__ = (
+        Index(
+            "ix_workflow_runs_serialized_pending",
+            "tenant_id",
+            "workflow_id",
+            "correlation_key_digest",
+            "status",
+            "created_at",
+        ),
+    )
 
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String, nullable=False, index=True)
@@ -121,6 +135,10 @@ class WorkflowRun(Base):
     # The EXACT graph executed - replay is faithful even after edits (D6).
     definition_snapshot_json = Column(JSON, nullable=False)
     trigger_payload_json = Column(JSON, nullable=False, default=dict)
+    # Resolved exactly once from the immutable definition + trigger payload at
+    # creation. The digest scopes Redis leases without exposing the raw key.
+    correlation_key = Column(String, nullable=True)
+    correlation_key_digest = Column(String(64), nullable=True)
 
     # Loop chain (slice 09 loop-guard).
     triggered_by_run_id = Column(String, nullable=True)

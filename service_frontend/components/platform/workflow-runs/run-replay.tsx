@@ -91,6 +91,15 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
             {run.triggeredBy}
             {run.isTest ? ' · test' : ''}
           </span>
+          {run.correlationKey && (
+            <span
+              className="max-w-[16rem] truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+              title={run.correlationKey}
+              data-testid="run-correlation-key"
+            >
+              {run.correlationKey}
+            </span>
+          )}
         </div>
         <Button
           variant="outline"

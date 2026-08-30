@@ -127,6 +127,17 @@ class Settings(BaseSettings):
     # prunes workflow_runs (+ cascade workflow_run_nodes) older than this window
     # so run history can't grow unbounded. Mirrors the email-outbox prune.
     workflow_run_retention_days: int = 30
+    # Keyed workflow serialization. Redis leases are renewed while a run is
+    # active; the beat backstop wakes durable Pending scopes older than the
+    # recovery age without changing their state.
+    workflow_serialized_lease_seconds: int = 120
+    workflow_serialized_recovery_age_seconds: int = 60
+    # External Code runner (sprint-4/19 S4, D20). Unset = the Code action is
+    # unavailable (editor warning, publish blocked). Builder Python NEVER runs
+    # in this process - see code_runner/ and app/workflow_engine/code_runner.py.
+    code_runner_url: str = ""
+    code_runner_token: str = ""
+    code_runner_timeout_seconds: float = 15.0
 
     # ── Import engine (plan sprint-3/09, F8) ────────────────────────────────
     # Global per-tenant cap defaults (import_settings row overrides). Enforced

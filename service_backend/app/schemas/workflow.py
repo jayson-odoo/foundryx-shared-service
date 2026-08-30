@@ -89,6 +89,10 @@ class WorkflowRunItemOut(ApiModel):
     finished_at: Optional[datetime] = Field(serialization_alias="finishedAt")
     duration_ms: Optional[int] = Field(serialization_alias="durationMs")
     version_number: int = Field(serialization_alias="versionNumber")
+    correlation_key: Optional[str] = Field(
+        default=None,
+        serialization_alias="correlationKey",
+    )
     error: Optional[str] = None
     created_at: datetime = Field(serialization_alias="createdAt")
 
@@ -104,6 +108,7 @@ class WorkflowRunItemOut(ApiModel):
             finished_at=r.finished_at,
             duration_ms=_duration_ms(r.started_at, r.finished_at),
             version_number=r.version_number,
+            correlation_key=r.correlation_key,
             error=r.error,
             created_at=r.created_at,
         )

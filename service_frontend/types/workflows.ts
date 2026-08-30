@@ -260,6 +260,8 @@ export interface WorkflowMetadata {
   aiAgents?: { id: string; name: string; model: string }[];
   /** Health of the external Code runner, when the capability is configured. */
   codeRunnerAvailable?: boolean;
+  /** The runner's language policy summary, rendered in the Code drawer. */
+  codeCapabilities?: string[];
 }
 
 /** One backend-validated sandbox contact/channel pair for test-trigger runs. */
@@ -353,6 +355,7 @@ export interface WorkflowRunListItem {
   finishedAt: string | null;
   durationMs: number | null;
   versionNumber: number;
+  correlationKey: string | null;
   error: string | null;
   createdAt: string;
 }
