@@ -18,6 +18,9 @@ def clear_agent_state(
     correlation_key = ctx.get("_workflow.correlationKey")
     if not node_id or not workflow_id or not isinstance(correlation_key, str) or not correlation_key.strip():
         raise ActionError("Clear Agent State requires the current workflow Correlation key.")
+    state_namespace = ctx.get("_workflow.agentStateNamespace") or (
+        "test" if ctx.get("_workflow.isTest") is True else "prod"
+    )
     allowed = ctx.get("_workflow.reachableStatefulAgentIds")
     if not isinstance(allowed, list) or node_id not in allowed:
         raise ActionError("The selected AI Agent is not reachable before this action.")
@@ -26,7 +29,7 @@ def clear_agent_state(
         workflow_id=str(workflow_id),
         node_id=str(node_id),
         correlation_key=correlation_key,
-        is_test=ctx.get("_workflow.isTest") is True,
+        namespace=state_namespace,
     )
     return {"cleared": cleared, "previousRevision": previous}
 

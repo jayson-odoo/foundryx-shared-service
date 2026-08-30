@@ -67,6 +67,32 @@ def _valid_value(value: Any, definition: Dict[str, Any]) -> bool:
     return False
 
 
+def sanitize_agent_state(
+    state: Dict[str, Any],
+    provenance: Dict[str, Dict[str, Any]],
+    schema: Any,
+) -> tuple[Dict[str, Any], Dict[str, Dict[str, Any]], List[str]]:
+    """Project retained state through the currently published field schema.
+
+    This projection runs before an LLM call as well as inside the reducer, so
+    removed, transient, type-incompatible, and obsolete Enum values are never
+    replayed to the model on the next turn.
+    """
+    definitions = _schema_map(schema)
+    accepted = {
+        key: value
+        for key, value in (state or {}).items()
+        if key in definitions and _valid_value(value, definitions[key])
+    }
+    accepted_provenance = {
+        key: value
+        for key, value in (provenance or {}).items()
+        if key in accepted and isinstance(value, dict)
+    }
+    excluded = [key for key in (state or {}) if key not in accepted]
+    return accepted, accepted_provenance, excluded
+
+
 def reduce_agent_state(
     state: Dict[str, Any],
     provenance: Dict[str, Dict[str, Any]],
@@ -82,20 +108,11 @@ def reduce_agent_state(
     # A published definition is the current state schema. Drop removed,
     # transient, type-incompatible, or obsolete Enum values before accepting
     # patches, and surface those exclusions as rejected diagnostics.
-    next_state = {
-        key: value
-        for key, value in (state or {}).items()
-        if key in definitions and _valid_value(value, definitions[key])
-    }
-    next_provenance = {
-        key: value
-        for key, value in (provenance or {}).items()
-        if key in next_state and isinstance(value, dict)
-    }
+    next_state, next_provenance, excluded = sanitize_agent_state(
+        state, provenance, schema
+    )
     changed: List[str] = []
-    rejected: List[str] = [
-        key for key in (state or {}) if key not in next_state
-    ]
+    rejected: List[str] = list(excluded)
     if not isinstance(patches, dict):
         return ReductionResult(next_state, next_provenance, changed, list(definitions))
 
@@ -138,4 +155,4 @@ def reduce_agent_state(
     return ReductionResult(next_state, next_provenance, changed, rejected)
 
 
-__all__ = ["ReductionResult", "reduce_agent_state"]
+__all__ = ["ReductionResult", "reduce_agent_state", "sanitize_agent_state"]

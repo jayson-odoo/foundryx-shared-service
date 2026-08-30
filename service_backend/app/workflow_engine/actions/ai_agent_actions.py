@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.integrations.base import LLMError
 from app.models.ai import AiAgent, AiSkill, AiSkillVersion
 from app.repositories.ai_repository import SkillRepository
+from app.workflow_engine.agent_state import sanitize_agent_state
 from app.workflow_engine.context import render_field
 from app.workflow_engine.schemas import output_param_issues
 
@@ -118,14 +119,19 @@ def _valid_value(value: Any, definition: Dict[str, Any]) -> bool:
     return False
 
 
-def _validate_flat_output(result: Dict[str, Any], params: List[Dict[str, Any]]) -> None:
+def _validated_flat_output(result: Dict[str, Any], params: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(result, dict):
         raise ActionError("AI Agent returned an invalid structured output.")
     definitions = {row["key"]: row for row in params}
+    accepted: Dict[str, Any] = {}
     for key, value in result.items():
         definition = definitions.get(key)
-        if definition is not None and not _valid_value(value, definition):
+        if definition is None:
+            continue
+        if not _valid_value(value, definition):
             raise ActionError(f'AI output "{key}" does not match its configured type.')
+        accepted[key] = value
+    return accepted
 
 
 def _build_system(db: Session, tenant_id: str, agent: AiAgent, instructions: str) -> str:
@@ -231,22 +237,31 @@ def ai_agent_run(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[
         from app.services.agent_state_service import AgentStateService
 
         state_service = AgentStateService(db)
+        state_namespace = ctx.get("_workflow.agentStateNamespace") or (
+            "test" if ctx.get("_workflow.isTest") is True else "prod"
+        )
         state_row = state_service.load(
             tenant_id,
             str(workflow_id),
             str(node_id),
-            AgentStateService.namespace_key(
-                correlation_key,
-                is_test=ctx.get("_workflow.isTest") is True,
-            ),
+            correlation_key,
+            namespace=state_namespace,
         )
-        accepted_state = state_row.state_json if state_row is not None else {}
+        accepted_state, _accepted_provenance, _excluded_fields = sanitize_agent_state(
+            state_row.state_json if state_row is not None else {},
+            state_row.provenance_json if state_row is not None else {},
+            output_params,
+        )
+        stateful_keys = {row["key"] for row in stateful_params}
         pending = (
             {
                 "question": state_row.pending_question,
                 "field": state_row.pending_field,
             }
-            if state_row is not None and state_row.pending_question
+            if state_row is not None
+            and isinstance(state_row.pending_question, str)
+            and state_row.pending_question.strip()
+            and state_row.pending_field in stateful_keys
             else None
         )
         current_message = user_text
@@ -259,6 +274,21 @@ def ai_agent_run(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[
                     {
                         "currentMessage": current_message,
                         "acceptedState": accepted_state,
+                        "outputParameters": [
+                            {
+                                key: row[key]
+                                for key in (
+                                    "key",
+                                    "type",
+                                    "description",
+                                    "enumValues",
+                                    "required",
+                                    "stateful",
+                                )
+                                if key in row
+                            }
+                            for row in output_params
+                        ],
                         "pendingClarification": pending,
                     },
                     ensure_ascii=False,
@@ -280,8 +310,7 @@ def ai_agent_run(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[
 
     if result.structured is not None:
         if not is_stateful:
-            _validate_flat_output(result.structured, output_params)
-            return result.structured
+            return _validated_flat_output(result.structured, output_params)
 
         structured = result.structured
         if not isinstance(structured, dict):
@@ -290,13 +319,33 @@ def ai_agent_run(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[
         patches = structured.get("statePatches") or {}
         if not isinstance(transient_outputs, dict) or not isinstance(patches, dict):
             raise ActionError("AI Agent returned an invalid state patch contract.")
-        _validate_flat_output(transient_outputs, [row for row in output_params if row.get("stateful") is not True])
+        transient_outputs = _validated_flat_output(
+            transient_outputs,
+            [row for row in output_params if row.get("stateful") is not True],
+        )
         pending_missing = object()
-        pending_field = structured.get("pendingField", pending_missing)
-        if pending_field is pending_missing:
+        pending_value = structured.get("pendingField", pending_missing)
+        pending_omitted = pending_value is pending_missing
+        pending_field = pending_value
+        if pending_value is pending_missing:
             pending_field = state_row.pending_field if state_row is not None else None
         if pending_field is not None and not isinstance(pending_field, str):
             raise ActionError("AI Agent returned an invalid pending field.")
+        stateful_keys = {row["key"] for row in stateful_params}
+        clarification_key = config.get("clarificationOutputKey")
+        clarification = transient_outputs.get(clarification_key) if clarification_key else None
+        if pending_field is not None:
+            if pending_field not in stateful_keys:
+                raise ActionError("AI Agent returned an invalid pending field.")
+            if (
+                not pending_omitted
+                and (
+                    not clarification_key
+                    or not isinstance(clarification, str)
+                    or not clarification.strip()
+                )
+            ):
+                raise ActionError("pending clarification requires a question and target field.")
         from app.services.agent_state_service import AgentStateService
 
         state_row, reduction = AgentStateService(db).apply(
@@ -310,13 +359,11 @@ def ai_agent_run(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[
             run_id=str(ctx.get("_workflow.runId") or ""),
             message_id=ctx.get("trigger.message.id"),
             pending_question=(
-                transient_outputs.get(config.get("clarificationOutputKey"))
+                clarification
                 or (state_row.pending_question if state_row is not None else None)
-            )
-            if config.get("clarificationOutputKey")
-            else (state_row.pending_question if state_row is not None else None),
+            ) if pending_field is not None else None,
             pending_field=pending_field,
-            is_test=ctx.get("_workflow.isTest") is True,
+            namespace=state_namespace,
         )
         return {
             **state_row.state_json,
@@ -326,6 +373,10 @@ def ai_agent_run(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[
             "stateRejectedFields": reduction.rejected_fields,
             "pendingField": state_row.pending_field,
         }
+    if is_stateful and result.text is not None:
+        raise ActionError("Stateful AI Agent requires structured output.")
+    if is_stateful:
+        raise ActionError("Stateful AI Agent requires structured output.")
     if result.text is not None:
         return {"text": result.text}
     return {}

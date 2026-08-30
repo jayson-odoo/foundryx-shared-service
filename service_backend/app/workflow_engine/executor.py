@@ -18,6 +18,7 @@ from app.models.workflow import (
     RUN_FAILED,
     RUN_RUNNING,
     RUN_SUCCESS,
+    Workflow,
     WorkflowRun,
     WorkflowRunNode,
 )
@@ -114,13 +115,23 @@ def _stateful_agent(node: WorkflowNodeModel) -> bool:
 
 
 def _prepare_node_context(
-    ctx: Dict[str, Any], run: WorkflowRun, node: WorkflowNodeModel, completed_stateful: set[str]
+    ctx: Dict[str, Any],
+    run: WorkflowRun,
+    node: WorkflowNodeModel,
+    completed_stateful: set[str],
+    *,
+    force_agent_state_test: bool = False,
 ) -> None:
     ctx["_workflow.runId"] = run.id
     ctx["_workflow.workflowId"] = run.workflow_id
     ctx["_workflow.isTest"] = run.is_test is True
     ctx["_workflow.nodeId"] = node.id
     ctx["_workflow.reachableStatefulAgentIds"] = sorted(completed_stateful)
+    ctx["_workflow.agentStateNamespace"] = (
+        "test"
+        if force_agent_state_test or run.is_test is True or run.triggered_by == "manual"
+        else "prod"
+    )
 
 
 def _execute_node(
@@ -180,7 +191,15 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
     order-based). A node failure still halts the whole run (downstream skipped)."""
     from app.workflow_engine.entity_events import clear_run_origin, set_run_origin
 
-    run = db.query(WorkflowRun).filter(WorkflowRun.id == run_id).first()
+    run = (
+        db.query(WorkflowRun)
+        .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
+        .filter(
+            WorkflowRun.id == run_id,
+            WorkflowRun.tenant_id == Workflow.tenant_id,
+        )
+        .first()
+    )
     if run is None:
         raise RuntimeError(f"Run {run_id} not found.")
 
@@ -317,7 +336,9 @@ def debug_execute(
     touched: List[Dict[str, Any]] = []
     completed_stateful: set[str] = set()
     for node in ordered:
-        _prepare_node_context(ctx, run, node, completed_stateful)
+        _prepare_node_context(
+            ctx, run, node, completed_stateful, force_agent_state_test=True
+        )
         is_target = node.id == target_node_id
         reached = node.id in active
         if not reached and not is_target:
