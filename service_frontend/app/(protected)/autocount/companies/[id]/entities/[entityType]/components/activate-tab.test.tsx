@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UseEtlTaskLifecycleResult, UseEtlTaskPreviewResult } from '@/hooks/use-autocount-etl';
 import type { AutocountCompany, AutocountEtlTask } from '@/types/autocount';
 import { ActivateTab } from './activate-tab';
@@ -11,6 +11,16 @@ vi.mock('@/hooks/use-datetime', () => ({
     formatTime: (v: string) => v,
   }),
 }));
+
+const canMock = vi.fn((): boolean => true);
+vi.mock('@/hooks/use-can', () => ({
+  useCan: () => ({ can: canMock, ready: true }),
+}));
+
+beforeEach(() => {
+  canMock.mockReset();
+  canMock.mockReturnValue(true);
+});
 
 function company(over: Partial<AutocountCompany> = {}): AutocountCompany {
   return {
@@ -177,5 +187,38 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
     );
     expect(screen.getByTestId('etl-resume')).toBeEnabled();
     expect(screen.getByTestId('task-last-run-error')).toHaveTextContent('Unknown Sorento company');
+  });
+
+  it('withholds Run preview and Run now without autocount.sync.run (backend split, S2 review SHOULD-FIX 7)', () => {
+    canMock.mockImplementation((key: string) => key !== 'autocount.sync.run');
+    const { rerender } = render(
+      <ActivateTab
+        company={company()}
+        task={task({ lastPreviewAt: '2026-08-30T06:21:00Z' })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+      />,
+    );
+    // Preview withheld even though every OTHER prerequisite passed.
+    expect(screen.getByTestId('etl-run-preview')).toBeDisabled();
+    // Activate stays governed by the page's own companies.manage gate - a
+    // user who reached this tab already holds it, so it is NOT re-gated here.
+    expect(screen.getByTestId('etl-activate')).toBeEnabled();
+
+    rerender(
+      <ActivateTab
+        company={company()}
+        task={task({ etlStatus: 'active', lastPreviewAt: '2026-08-30T06:21:00Z' })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('etl-run-now')).toBeDisabled();
+    // Pause is companies.manage, unaffected by the sync.run gate.
+    expect(screen.getByTestId('etl-pause')).toBeEnabled();
   });
 });

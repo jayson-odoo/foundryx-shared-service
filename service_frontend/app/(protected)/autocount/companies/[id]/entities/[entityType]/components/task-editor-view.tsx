@@ -25,6 +25,7 @@ import type { ResourceAction } from '@/components/platform/resource-list';
 import { ResourceList } from '@/components/platform/resource-list';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { useAutocountCompany } from '@/hooks/use-autocount-company';
+import { useCan } from '@/hooks/use-can';
 import {
   useAutocountEtlTask,
   useAutocountSqlConnections,
@@ -44,6 +45,7 @@ import {
   AC_COMPANIES_MANAGE,
   AC_COMPANIES_PATH,
   AC_ETL_STATUS_REGISTRY,
+  AC_SYNC_READ,
   AC_SYNC_RUN,
   acCompanyHref,
   entityLabel,
@@ -72,6 +74,7 @@ export interface TaskEditorViewProps {
  */
 export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: TaskEditorViewProps) {
   const form = useForm();
+  const { can } = useCan();
   const { detail } = useAutocountCompany(companyId);
   const { task, isLoading, notFound, saveError, fieldErrors, save, apply } = useAutocountEtlTask(
     companyId,
@@ -328,16 +331,25 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
             </div>
           ),
         },
-        {
-          id: 'runs',
-          label: 'Runs',
-          icon: History,
-          render: () => (
-            <div className="py-2">
-              <ResourceList key={runsKey} config={runsConfig} />
-            </div>
-          ),
-        },
+        // Backend split (S2 review SHOULD-FIX 7): reading run history is
+        // gated `autocount.sync.read` on the server (GET .../etl-task/runs)
+        // - a DIFFERENT resource than the page's own `companies.manage`, so
+        // it is omitted entirely rather than shown disabled (foolproof-UI:
+        // only offer valid options).
+        ...(can(AC_SYNC_READ)
+          ? [
+              {
+                id: 'runs' as const,
+                label: 'Runs',
+                icon: History,
+                render: () => (
+                  <div className="py-2">
+                    <ResourceList key={runsKey} config={runsConfig} />
+                  </div>
+                ),
+              },
+            ]
+          : []),
       ],
       initialTabId: initialTab,
       actions,
@@ -349,6 +361,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       onCancel,
     };
   }, [
+    can,
     companyId,
     config,
     detail,

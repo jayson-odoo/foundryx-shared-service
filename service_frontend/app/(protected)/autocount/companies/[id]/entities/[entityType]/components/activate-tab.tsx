@@ -18,10 +18,11 @@ import type {
   UseEtlTaskLifecycleResult,
   UseEtlTaskPreviewResult,
 } from '@/hooks/use-autocount-etl';
+import { useCan } from '@/hooks/use-can';
 import { useDatetime } from '@/hooks/use-datetime';
 import { activatePrerequisites, anchorErrorTitle } from '@/lib/autocount-etl';
 import type { AutocountCompany, AutocountEtlTask } from '@/types/autocount';
-import { acCompanyHref } from '../../../../../components/autocount-meta';
+import { AC_SYNC_RUN, acCompanyHref } from '../../../../../components/autocount-meta';
 
 export interface ActivateTabProps {
   company: AutocountCompany | null;
@@ -51,6 +52,14 @@ export function ActivateTab({
   onRan,
 }: ActivateTabProps) {
   const { formatDateTime } = useDatetime();
+  const { can } = useCan();
+  // Backend split (S2 review SHOULD-FIX 7): preview/run are gated
+  // `autocount.sync.run` on the server, a DIFFERENT resource than the page's
+  // own `autocount.companies.manage` - a user can reach this tab (manage)
+  // without being allowed to move data (sync.run). Activate/Pause/Resume
+  // stay ungated HERE - they are `companies.manage`, already implied by
+  // having reached the page at all.
+  const canRun = can(AC_SYNC_RUN);
   const prerequisites = activatePrerequisites({ company, task, configDirty });
   const blocked = prerequisites.length > 0;
   const status = task.etlStatus;
@@ -122,7 +131,7 @@ export function ActivateTab({
           type="button"
           variant="outline"
           size="sm"
-          disabled={blocked || busy}
+          disabled={blocked || busy || !canRun}
           onClick={() => void preview.run()}
           data-testid="etl-run-preview"
         >
@@ -173,7 +182,7 @@ export function ActivateTab({
             <Button
               type="button"
               size="sm"
-              disabled={blocked || busy}
+              disabled={blocked || busy || !canRun}
               onClick={() => void runNow()}
               data-testid="etl-run-now"
             >
