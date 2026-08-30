@@ -64,6 +64,7 @@ def register_engine_entities() -> None:
 
     from .provider import AutoCountProvider
     from .sorento_provider import SorentoProvider
+    from .sql_provider import SqlDatabaseProvider
     from .sync import register_autocount_sync_handler
 
     register_provider(AutoCountProvider())
@@ -71,6 +72,9 @@ def register_engine_entities() -> None:
     # provider so the Sorento connection is configured from the same
     # `/settings/integrations` surface (AC-14-15).
     register_provider(SorentoProvider())
+    # The direct-DB read-only source (plan 22, AC-22-01) - a second ``erp``
+    # provider, configured from the same surface.
+    register_provider(SqlDatabaseProvider())
     register_autocount_sync_handler()
 
 
@@ -128,6 +132,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     """
     from .backfill import (
         backfill_entity_config_defaults,
+        backfill_etl_defaults,
         backfill_sink_impl_defaults,
         default_schema,
     )
@@ -140,6 +145,9 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # ``'logging'`` no-op (its pre-hop-2 behaviour), not sit NULL against a
     # NOT NULL column on a create_all-first host.
     backfill_sink_impl_defaults(db, schema=schema)
+    # 0.3.0 → plan 22: every pre-existing task/staged/run row gets its ETL
+    # defaults (draft / upsert / manual) on a create_all-first host too.
+    backfill_etl_defaults(db, schema=schema)
 
     service = CompanyService(db)
     page = 0

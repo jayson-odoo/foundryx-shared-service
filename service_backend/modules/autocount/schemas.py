@@ -376,6 +376,109 @@ class ApprovalResponse(ApiModel):
     result: Dict[str, Any]
 
 
+# ── direct-DB ETL (plan 22 S1, AC-22-04..07/11) ───────────────────────────────
+# The wire shapes are pinned by the phase-1 frontend contract
+# (``service_frontend/services/autocount-service.ts`` + ``types/autocount.ts``).
+
+
+class SqlConnectionItem(ApiModel):
+    """One tenant ``sql_database`` connection the task editor may pick."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    name: str
+    dialect: str
+    database: str
+
+
+class SqlColumnOut(ApiModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    name: str
+    type: str
+
+
+class SqlTableOut(ApiModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    name: str
+    columns: List[SqlColumnOut]
+
+
+class SqlSchemaNodeOut(ApiModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    name: str
+    tables: List[SqlTableOut]
+
+
+class SqlSchemaResponse(ApiModel):
+    """``GET /autocount/sql/connections/{id}/schema`` - the cached tree."""
+
+    connectionId: str
+    dialect: str
+    database: str
+    schemas: List[SqlSchemaNodeOut]
+    introspectedAt: datetime
+
+
+class SqlPreviewRequest(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    connectionId: str
+    query: str = ""
+
+
+class SqlPreviewResponse(ApiModel):
+    """``POST /autocount/sql/preview`` - at most 100 rows; ``truncated`` is a
+    fact (a 101st row existed), so the UI never presents a capped preview as
+    the whole set (AC-22-06)."""
+
+    columns: List[SqlColumnOut]
+    rows: List[Dict[str, Any]]
+    rowCount: int
+    truncated: bool
+    durationMs: int
+
+
+class EtlSourceConfigIn(ApiModel):
+    """The task's ``source_config`` document as the editor sends it (plan 22
+    §2.4). Every field is optional on the wire - a draft may be partial; the
+    service validates + normalises (AC-22-11) and 422s with ``fieldErrors``."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    connectionId: Optional[str] = None
+    query: str = ""
+    lineQuery: Optional[str] = None
+    keyColumns: List[str] = []
+    watermarkColumn: Optional[str] = None
+    comparedColumns: List[str] = []
+    fromDate: Optional[str] = None
+    incrementalMinutes: int = 15
+    reconcileMode: str = "dailyAt"
+    reconcileHours: Optional[int] = None
+    reconcileAt: Optional[str] = None
+
+
+class EtlTaskUpdate(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    sourceConfig: EtlSourceConfigIn
+
+
+class EtlTaskResponse(ApiModel):
+    """``GET/PUT .../etl-task`` - one per-(company, entity) DB extraction task,
+    anchored on ``ac_entity_config`` (decision Q13)."""
+
+    companyId: str
+    entityType: str
+    etlStatus: str
+    activatedAt: Optional[datetime] = None
+    sourceConfig: Dict[str, Any]
+
+
 class PreviewResponse(ApiModel):
     """The dry-run verdict shown at the approval gate (AC-14-20). ``preview``
     carries either the per-record predictions + summary, or a "nothing to

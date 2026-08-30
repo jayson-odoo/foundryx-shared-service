@@ -5,6 +5,7 @@ takes the tenant from the authenticated user - NEVER from client input - and
 hands off to a service.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -19,6 +20,8 @@ from ..schemas import (
     CompanySinkUpdate,
     EntityConfigItem,
     EntityConfigUpdate,
+    EtlTaskResponse,
+    EtlTaskUpdate,
     FormulaTestRequest,
     FormulaTestResponse,
     MappingRowOut,
@@ -35,6 +38,9 @@ from ..services import (
     CompanyService,
     ConnectionNotFound,
     EntityConfigNotFound,
+    EtlService,
+    EtlTaskView,
+    EtlValidationError,
     MappingView,
     MappingWriteRow,
 )
@@ -338,3 +344,70 @@ def simulate_mapping(
     except AutocountServiceError as exc:
         _raise(exc)
     return SimulateResponse(**result)
+
+
+# ── direct-DB ETL task (plan 22 S1, AC-22-11) ─────────────────────────────────
+
+
+def _task_response(view: EtlTaskView) -> EtlTaskResponse:
+    return EtlTaskResponse(
+        companyId=view.company_id,
+        entityType=view.entity_type,
+        etlStatus=view.etl_status,
+        activatedAt=view.activated_at,
+        sourceConfig=view.source_config,
+    )
+
+
+@router.get(
+    "/{company_id}/entities/{entity_type}/etl-task", response_model=EtlTaskResponse
+)
+def get_etl_task(
+    company_id: str,
+    entity_type: str,
+    current_user: User = Depends(require_permission("autocount.companies.read")),
+    db: Session = Depends(get_db),
+) -> EtlTaskResponse:
+    """One entity's DB extraction task, anchored on ``ac_entity_config``. A
+    never-configured entity returns a DRAFT with defaults (the editor is the
+    create surface), not a 404."""
+    try:
+        view = EtlService(db).get_task(current_user.tenant_id, company_id, entity_type)
+    except AutocountServiceError as exc:
+        _raise(exc)
+    return _task_response(view)
+
+
+@router.put(
+    "/{company_id}/entities/{entity_type}/etl-task", response_model=EtlTaskResponse
+)
+def update_etl_task(
+    company_id: str,
+    entity_type: str,
+    body: EtlTaskUpdate,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+):
+    """Draft-save the task's source config (replaces it). Validation
+    (AC-22-11): picked columns must exist in a FRESH preview of the query, the
+    watermark must be orderable, documents need a from-date, interval floors
+    apply → ``422 {fieldErrors}``. ``connectionId`` is re-validated against
+    the tenant on every use. Reuses ``autocount.companies.manage``."""
+    try:
+        view = EtlService(db).update_task(
+            current_user.tenant_id,
+            company_id,
+            entity_type,
+            body.sourceConfig.model_dump(),
+        )
+    except EtlValidationError as exc:
+        # ``detail`` carries the per-field map (the hook reads
+        # ``ApiError.detail.fieldErrors``); ``message`` is the human line the
+        # api-client falls back to when ``detail`` is not a string.
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"detail": {"fieldErrors": exc.field_errors}, "message": exc.message},
+        )
+    except AutocountServiceError as exc:
+        _raise(exc)
+    return _task_response(view)

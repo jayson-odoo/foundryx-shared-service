@@ -14,6 +14,15 @@ from .company_service import (
     MappingView,
     MappingWriteRow,
 )
+from .etl_service import (
+    DOCUMENT_ENTITY_TYPES,
+    ETL_ENTITY_TYPES,
+    EtlService,
+    EtlTaskView,
+    EtlValidationError,
+    default_source_config,
+    validate_source_config,
+)
 from .sync_service import (
     EntityNotConfigured,
     JobBatch,
@@ -25,6 +34,13 @@ from .sync_service import (
 )
 
 __all__ = [
+    "DOCUMENT_ENTITY_TYPES",
+    "ETL_ENTITY_TYPES",
+    "EtlService",
+    "EtlTaskView",
+    "EtlValidationError",
+    "default_source_config",
+    "validate_source_config",
     "MAX_LOOKBACK_DAYS",
     "MIN_LOOKBACK_DAYS",
     "AutocountServiceError",

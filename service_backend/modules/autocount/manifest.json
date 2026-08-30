@@ -17,6 +17,10 @@
       "prefix": "/autocount/companies"
     },
     {
+      "name": "sql",
+      "prefix": "/autocount/sql"
+    },
+    {
       "name": "sync",
       "prefix": "/autocount"
     }

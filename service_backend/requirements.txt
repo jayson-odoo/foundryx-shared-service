@@ -3,6 +3,12 @@ uvicorn[standard]>=0.24.0
 gunicorn>=21.2.0   # prod process manager (UvicornWorker) - see Dockerfile/start.sh
 sqlalchemy>=2.0.23
 psycopg2-binary>=2.9.9
+# ---- AutoCount direct-DB ETL source dialects (plan sprint-4/22) ----
+# pip-only wheels, deliberately NO pyodbc (would need unixODBC + msodbcsql on
+# the host): pymssql bundles FreeTDS, pymysql is pure Python, Postgres reuses
+# psycopg2 above.
+pymssql>=2.3.0
+pymysql>=1.1.0
 pydantic>=2.9.0
 pydantic-settings>=2.1.0
 email-validator>=2.0.0

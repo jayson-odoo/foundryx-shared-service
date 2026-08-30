@@ -62,6 +62,20 @@ class ConnectionRepository:
             .first()
         )
 
+    def list_for_provider(self, tenant_id: str, provider: str) -> List[Connection]:
+        """Every ACTIVE connection of one provider for THIS tenant (the task
+        editor's connection picker, AC-22-29) - never a bare provider fetch."""
+        return (
+            self.db.query(Connection)
+            .filter(
+                Connection.tenant_id == tenant_id,
+                Connection.provider == provider,
+                Connection.is_active.is_(True),
+            )
+            .order_by(Connection.name.asc(), Connection.id.asc())
+            .all()
+        )
+
 
 class CompanyRepository:
     def __init__(self, db: Session):
