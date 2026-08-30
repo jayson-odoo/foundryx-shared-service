@@ -528,6 +528,66 @@ def test_an_unreachable_consumer_is_a_502(client, rig, consumer):
     ).status_code == 502
 
 
+def test_a_source_connect_failure_at_preview_is_a_502_not_a_500(client, session_factory, rig):
+    """S2 review SHOULD-FIX 4: ``EtlService.preview_task`` only caught
+    ``AutocountServiceError``, so ``SqlConnectError``/``SqlQueryError``/
+    ``SqlTaskNotConfigured`` (raised while extracting from the SOURCE, not
+    the consumer) escaped as an unhandled 500. Same translation as the raw
+    ``/sql/preview`` route (``routers/sql.py``'s ``raise_sql_error``): a
+    connect failure is a 502, never a stack trace."""
+    company_id, sql_id = rig
+    db = session_factory()
+    conn = db.get(Connection, sql_id)
+    # Port 1 is closed - refused immediately, no network wait needed (the
+    # same fixture the SQL-source runtime tests use).
+    conn.config_json = {**conn.config_json, "host": "127.0.0.1", "port": "1"}
+    db.commit()
+    db.close()
+    RUNTIME.evict(sql_id)  # drop the injected SQLite engine - force a REAL one
+
+    response = client.post(_url(company_id, "/preview"), headers=_auth(client))
+    assert response.status_code == 502, response.text
+    assert PASSWORD not in response.text
+    assert "://" not in response.json()["detail"]
+
+
+def test_a_query_the_source_rejects_at_preview_is_a_400_not_a_500(client, session_factory, rig):
+    """The SAVED query is re-run at preview time - a table dropped AFTER save
+    must surface as the source's own 400, not an unhandled 500 (mirrors the
+    ``/sql/preview`` route's ``SqlQueryError`` mapping)."""
+    company_id, _sql_id = rig
+    db = session_factory()
+    config = _config_row(db, db.get(AcCompany, company_id))
+    # A row edited straight into the JSON column - the save-time guard proved
+    # what WAS saved, this proves what happens when the source has since
+    # moved on (AC-22-03's "re-runs on the STORED query" rule).
+    config.source_config = {
+        **config.source_config,
+        "query": "SELECT acc_no FROM table_that_no_longer_exists",
+    }
+    db.commit()
+    db.close()
+
+    response = client.post(_url(company_id, "/preview"), headers=_auth(client))
+    assert response.status_code == 400, response.text
+
+
+def test_a_cleared_connection_at_preview_is_a_422_not_a_500(client, session_factory, rig):
+    """``SqlTaskNotConfigured`` (a stored ``connectionId`` no longer set) is
+    a configuration problem, same class as the static guard - 422, never an
+    unhandled 500. ``_require_runnable`` only checks query/keyColumns, so a
+    cleared connection reaches ``SqlDbSource`` itself."""
+    company_id, _sql_id = rig
+    db = session_factory()
+    config = _config_row(db, db.get(AcCompany, company_id))
+    config.source_config = {**config.source_config, "connectionId": ""}
+    db.commit()
+    db.close()
+
+    response = client.post(_url(company_id, "/preview"), headers=_auth(client))
+    assert response.status_code == 422, response.text
+
+
 def test_preview_requires_sync_run_and_404s_cross_tenant(client, session_factory, rig):
     company_id, _sql_id = rig
     db = session_factory()

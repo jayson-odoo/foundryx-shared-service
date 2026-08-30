@@ -9,6 +9,7 @@ new permission needs a grant sweep for existing tenants.
 
 Error classes → HTTP (the frontend contract in ``autocount-service.ts``):
   guard rejection (not one SELECT)      422  before the source is touched
+  the task cannot run as configured     422  no query/keys/connection saved
   the source rejected the query         400  sanitised driver message
   could not connect / open a session    502  sanitised, never a DSN
   connection not this tenant's / not
@@ -31,23 +32,41 @@ from ..schemas import (
     SqlTableOut,
 )
 from ..services import AutocountServiceError, ConnectionNotFound, EtlService
-from ..sql_source.errors import SqlConnectError, SqlGuardError, SqlQueryError
+from ..sql_source.errors import SqlConnectError, SqlGuardError, SqlQueryError, SqlSourceError
+from ..sql_source.source import SqlTaskNotConfigured
 
 router = APIRouter()
 
 
 def raise_sql_error(exc: Exception) -> None:
     """ONE translator for every SQL-source / service error → HTTP. Messages
-    are already operator-safe (no stack traces, no credentials, no DSN)."""
+    are already operator-safe (no stack traces, no credentials, no DSN).
+
+    Reused verbatim by ``routers/companies.py``'s task-lifecycle routes (S2
+    review SHOULD-FIX 4) - ``preview_task``/``run_task_now`` reach the SAME
+    source layer and must translate its errors the SAME way, not let them
+    fall through as an unhandled 500.
+    """
     if isinstance(exc, ConnectionNotFound):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
     if isinstance(exc, SqlGuardError):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message)
+    # A task that cannot run as configured (no query/keys/connection saved,
+    # or stored credentials that can no longer be decrypted) is the SAME
+    # class of problem as a guard rejection - a config fix, not a query
+    # rejected by the server or a transport fault.
+    if isinstance(exc, SqlTaskNotConfigured):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message)
     if isinstance(exc, SqlQueryError):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message)
     if isinstance(exc, SqlConnectError):
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message)
     if isinstance(exc, AutocountServiceError):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message)
+    # A defensive net for the base class itself (e.g. the row-limit-breach
+    # safety stop in ``SqlDbSource._read`` - WE stopped it, the source never
+    # rejected anything, so it reads as a config problem, not a query fault).
+    if isinstance(exc, SqlSourceError):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message)
     raise exc
 

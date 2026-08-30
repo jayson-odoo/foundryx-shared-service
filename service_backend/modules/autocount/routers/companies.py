@@ -52,6 +52,8 @@ from ..services import (
     PreviewUnavailable,
     SinkTargetValidationError,
 )
+from ..sql_source.errors import SqlSourceError
+from .sql import raise_sql_error
 
 router = APIRouter()
 
@@ -391,7 +393,7 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
     )
 
 
-def _raise_task(exc: AutocountServiceError):
+def _raise_task(exc: Exception):
     """Task-lifecycle errors → HTTP, in the ONE place they are translated.
 
     * ``EtlStateError``  → **409**. The request is well-formed; the TASK is
@@ -401,6 +403,10 @@ def _raise_task(exc: AutocountServiceError):
       Sorento's own code (Appendix A6) - the surface names the wiring that is
       wrong instead of showing a bare delivery failure.
     * ``PreviewUnavailable`` → **502**: the consumer, not us, failed.
+    * Anything else (``SqlConnectError``/``SqlQueryError``/
+      ``SqlTaskNotConfigured`` - the SOURCE side of a preview, S2 review
+      SHOULD-FIX 4) falls through to the SAME translator ``routers/sql.py``
+      uses, so a preview that fails reading the source is never a bare 500.
     """
     if isinstance(exc, EtlStateError):
         content = {"detail": exc.message, "message": exc.message}
@@ -422,7 +428,10 @@ def _raise_task(exc: AutocountServiceError):
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
         )
-    _raise(exc)
+    if isinstance(exc, AutocountServiceError):
+        _raise(exc)
+        return
+    raise_sql_error(exc)
 
 
 @router.get(
@@ -502,7 +511,7 @@ def preview_etl_task(
         view, preview = EtlService(db).preview_task(
             current_user.tenant_id, company_id, entity_type
         )
-    except AutocountServiceError as exc:
+    except (AutocountServiceError, SqlSourceError) as exc:
         return _raise_task(exc)
     return EtlPreviewResponse(task=_task_response(view), preview=preview)
 

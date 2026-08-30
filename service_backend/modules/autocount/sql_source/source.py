@@ -62,7 +62,7 @@ from ..sources import (
     register_source,
 )
 from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
-from .errors import SqlSourceError
+from .errors import SqlQueryError, SqlSourceError
 from .guard import assert_select_only, normalize_statement, top_level_words
 from .hashing import compared_columns_for, row_hash
 from .preview import json_safe
@@ -438,7 +438,13 @@ class SqlDbSource:
             except Exception as exc:  # noqa: BLE001 - every driver has its own class
                 from .runtime import sanitize_error
 
-                raise SqlSourceError(sanitize_error(exc, secrets=self._secrets)) from exc
+                # SqlQueryError (not the base class, S2 review SHOULD-FIX 4) -
+                # this IS "the source rejected the statement" (a dropped
+                # table, a permission change since save), the same class of
+                # failure ``preview.py``'s own execution path raises, and the
+                # ONLY way it maps to a 400 instead of falling through to an
+                # unhandled 500 at ``EtlService.preview_task``.
+                raise SqlQueryError(sanitize_error(exc, secrets=self._secrets)) from exc
         return rows
 
     def _source_ref(self, raw: Dict[str, Any]) -> Optional[str]:
