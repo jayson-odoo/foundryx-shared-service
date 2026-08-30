@@ -213,6 +213,20 @@ class AcEntityConfig(AutocountBase):
     next_reconcile_at = Column(UTCDateTime(), nullable=True, index=True)
     # The last run's failure, surfaced on the task (AC-22-19) - never silent.
     last_run_error = Column(Text, nullable=True)
+    # The last run's TASK-LEVEL error code (plan 22 Appendix A6/A7): a Sorento
+    # company-anchor 422 lands HERE (COMPANY_ANCHOR_REQUIRED | UNKNOWN_COMPANY |
+    # COMPANY_BINDING_INVALID | COMPANY_ANCHOR_AMBIGUOUS), never per record.
+    last_run_error_code = Column(String, nullable=True)
+    # Result column names of the SAVED query, from the validation preview each
+    # PUT runs (AC-22-11) - the Mapping tab's source picker reads them without
+    # re-running the query (AC-22-09). NULL = no query saved yet.
+    result_columns = Column(_JSON, nullable=True)
+    # When the last SUCCESSFUL dry-run preview completed (AC-22-18). CLEARED by
+    # every config save - a preview of a superseded query must never unlock
+    # Activate. NULL = Activate withheld.
+    last_preview_at = Column(UTCDateTime(), nullable=True)
+    # When the last run finished, whatever its outcome (AC-22-17).
+    last_run_at = Column(UTCDateTime(), nullable=True)
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
@@ -381,7 +395,9 @@ class AcSyncRun(AutocountBase):
     tenant_id = Column(String, nullable=False, index=True)
     company_id = Column(String, nullable=False, index=True)
     entity_type = Column(String, nullable=False)
-    job_id = Column(String, nullable=False, index=True)
+    # NULLABLE since plan 22 S2: a ``skipped`` overlap tick (AC-22-14) records
+    # a run row without ever enqueuing a job.
+    job_id = Column(String, nullable=True, index=True)
 
     window_from = Column(UTCDateTime(), nullable=True)
     window_to = Column(UTCDateTime(), nullable=True)
@@ -392,10 +408,15 @@ class AcSyncRun(AutocountBase):
     pushed_count = Column(Integer, nullable=False, default=0)
     # ── run-history cost columns (plan 22 §2.7, AC-22-17) ───────────────────
     # How the run started (``manual`` for every pre-plan-22 row); how many
-    # source rows were scanned (volume × frequency = cost); delete intents.
+    # source rows were scanned (volume × frequency = cost); adds/updates
+    # staged by the hash-diff classification; delete intents; why a skipped
+    # tick never ran.
     mode = Column(String, nullable=False, default=RUN_MODE_MANUAL, server_default="manual")
     rows_scanned = Column(Integer, nullable=False, default=0, server_default="0")
+    added_count = Column(Integer, nullable=False, default=0, server_default="0")
+    updated_count = Column(Integer, nullable=False, default=0, server_default="0")
     deleted_count = Column(Integer, nullable=False, default=0, server_default="0")
+    skip_reason = Column(Text, nullable=True)
 
     outcome = Column(String, nullable=True)  # one of RUN_OUTCOMES
     error = Column(Text, nullable=True)

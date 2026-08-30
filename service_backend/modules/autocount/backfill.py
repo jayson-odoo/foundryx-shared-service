@@ -106,6 +106,9 @@ _ETL_DEFAULTS = (
     ("ac_sync_run", "mode", "manual"),
     ("ac_sync_run", "rows_scanned", 0),
     ("ac_sync_run", "deleted_count", 0),
+    # 0008 (plan 22 S2): hash-diff add/update counters on the run row.
+    ("ac_sync_run", "added_count", 0),
+    ("ac_sync_run", "updated_count", 0),
 )
 
 
