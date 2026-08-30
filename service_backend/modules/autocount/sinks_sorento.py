@@ -453,11 +453,27 @@ class SorentoSink:
                     "investigate rather than retry."
                 ),
             )
-        errors = verdict.get("errors") or {}
+        if outcome == "failed":
+            errors = verdict.get("errors") or {}
+            return WriteResult(
+                ok=False, sink=self.name, external_id=None, delivered=False,
+                outcome="failed",
+                message=f"Sorento rejected '{ref}': {json.dumps(errors) if errors else outcome}",
+            )
+        #     !!  QUARANTINE ONLY ON THE EXPLICIT "failed" WORD.  !!
+        # A BLANK outcome or a word outside our known vocabulary (S2 review
+        # SHOULD-FIX 9 - a future Sorento outcome we haven't shipped support
+        # for yet, or a malformed record) reads the SAME safe way as no
+        # verdict at all: retryable. Defaulting an unrecognised word to
+        # "failed" would permanently quarantine a record over our own
+        # ignorance of the vocabulary, not proof the DATA was rejected.
         return WriteResult(
             ok=False, sink=self.name, external_id=None, delivered=False,
-            outcome=outcome or "failed",
-            message=f"Sorento rejected '{ref}': {json.dumps(errors) if errors else outcome}",
+            outcome="retryable",
+            message=(
+                f"Sorento returned an unrecognised outcome "
+                f"'{outcome or '(blank)'}' for '{ref}'."
+            ),
         )
 
 
