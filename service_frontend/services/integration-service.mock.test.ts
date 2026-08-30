@@ -21,7 +21,8 @@ beforeEach(() => {
 describe('provider catalog (plan 06 D2)', () => {
   it('exposes smtp + the two storage cards', async () => {
     const providers = await svc.providers();
-    expect(providers.map((p) => p.provider)).toEqual(['smtp', 's3', 'r2']);
+    // + the SQL-database provider (plan 22 S1, PHASE 1 MOCK descriptor).
+    expect(providers.map((p) => p.provider)).toEqual(['smtp', 's3', 'r2', 'sql_database']);
     expect(providers.filter((p) => p.type === 'storage')).toHaveLength(2);
   });
 

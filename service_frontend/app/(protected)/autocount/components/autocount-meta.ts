@@ -2,6 +2,7 @@ import type { StatusRegistry } from '@/components/platform/status-badge';
 import { humanizeFieldKey } from '@/lib/autocount-diff';
 import { PRESETS, TRANSFORM_PRESET } from '@/lib/autocount-formula';
 import type {
+  AutocountEtlStatus,
   AutocountJobStatus,
   AutocountRunOutcome,
   AutocountStagedStatus,
@@ -30,6 +31,11 @@ export function acReviewHref(jobId: string, from?: string): string {
 /** The per-(company, entity) field-mapping editor (AC-15-40). */
 export function acMappingHref(companyId: string, entityType: string): string {
   return `${AC_COMPANIES_PATH}/${companyId}/entities/${encodeURIComponent(entityType)}/mapping`;
+}
+
+/** The per-(company, entity) Database-mode task editor (plan 22, AC-22-07). */
+export function acTaskHref(companyId: string, entityType: string): string {
+  return `${AC_COMPANIES_PATH}/${companyId}/entities/${encodeURIComponent(entityType)}`;
 }
 
 // ── transforms (mapping editor picker; mirrors backend mapping.py TRANSFORMS) ──
@@ -144,6 +150,13 @@ export const AC_JOB_STATUS_REGISTRY: StatusRegistry<AutocountJobStatus> = {
   done: { label: 'Done', tone: 'success' },
   failed: { label: 'Failed', tone: 'destructive' },
   aborted: { label: 'Aborted', tone: 'secondary' },
+};
+
+/** DB extraction task lifecycle (plan 22 §2.4 `etl_status`). */
+export const AC_ETL_STATUS_REGISTRY: StatusRegistry<AutocountEtlStatus> = {
+  draft: { label: 'Draft', tone: 'secondary' },
+  active: { label: 'Active', tone: 'success' },
+  paused: { label: 'Paused', tone: 'warning' },
 };
 
 export const AC_STAGED_STATUS_REGISTRY: StatusRegistry<AutocountStagedStatus> = {

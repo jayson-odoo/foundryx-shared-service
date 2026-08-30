@@ -33,6 +33,26 @@ export function defaultsForProvider(provider: IntegrationProvider): ConnectionFo
   return { provider: provider.provider, name: provider.title, config, credentials };
 }
 
+/**
+ * Registry-driven dependent default (`ProviderField.defaultsFrom`, plan 22
+ * AC-22-04): the value a field should take after its driver select changed,
+ * or null when nothing should change - because the field has no dependency,
+ * the choice has no mapped default, or the operator typed a custom value
+ * (anything that is neither blank nor one of the stock defaults is theirs).
+ */
+export function dependentDefault(
+  f: ProviderField,
+  driverValue: string,
+  current: string,
+): string | null {
+  if (!f.defaultsFrom) return null;
+  const next = f.defaultsFrom.values[driverValue];
+  if (next === undefined || next === current) return null;
+  const stock = new Set(Object.values(f.defaultsFrom.values));
+  if (current.trim() !== '' && !stock.has(current)) return null;
+  return next;
+}
+
 /** Values prefilled from an existing connection (secrets stay blank = keep). */
 export function valuesForConnection(
   provider: IntegrationProvider,

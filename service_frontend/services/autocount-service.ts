@@ -19,6 +19,8 @@ import type {
   AutocountCompanyDetail,
   AutocountEntityConfig,
   AutocountEntityConfigUpdate,
+  AutocountEtlTask,
+  AutocountEtlTaskUpdate,
   AutocountFormulaTestResult,
   AutocountJobListQuery,
   AutocountMappingUpdate,
@@ -27,6 +29,9 @@ import type {
   AutocountPreviewResult,
   AutocountSimulateResult,
   AutocountSinkTargetInput,
+  AutocountSqlConnection,
+  AutocountSqlPreview,
+  AutocountSqlSchema,
   AutocountStagedList,
   AutocountStagedQuery,
   AutocountSyncJob,
@@ -34,6 +39,7 @@ import type {
   AutocountSyncRun,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
+import { mockAutocountService } from './autocount-service.mock';
 import { realAutocountService } from './autocount-service.real';
 
 export interface AutocountListQuery {
@@ -157,6 +163,77 @@ export interface AutocountService {
     record: Record<string, unknown>,
     rows?: AutocountMappingWriteRow[],
   ): Promise<AutocountSimulateResult>;
+
+  // ── direct-DB ETL (plan 22, slice S1 - AC-22-04..07/11) ────────────────────
+  //
+  // BACKEND CONTRACT (phase 2 must match this EXACTLY - the mock is the spec):
+  //
+  //   GET  /autocount/sql/connections
+  //        → AutocountSqlConnection[]  (tenant's `sql_database` connections
+  //          ONLY - resolved tenant+provider scoped, never bare get-by-id).
+  //        Gated `autocount.companies.manage`.
+  //
+  //   GET  /autocount/sql/connections/{connectionId}/schema[?refresh=true]
+  //        → AutocountSqlSchema  (schemas → tables → columns via dialect-
+  //          agnostic introspection; CACHED per connection server-side,
+  //          `refresh=true` busts the cache - AC-22-05). A connection that is
+  //          not the tenant's / not `sql_database` = 404. A connect failure =
+  //          502 with a SANITIZED message (no credentials, no DSN, no raw
+  //          driver stack - AC-22-30).
+  //        Gated `autocount.companies.manage`.
+  //
+  //   POST /autocount/sql/preview  {connectionId, query}
+  //        → AutocountSqlPreview  (≤ 100 rows, dialect-appropriate wrapping,
+  //          column names + types - AC-22-06). Non-SELECT / multi-statement =
+  //          422 BEFORE touching the source (AC-22-03); a failing query = 400
+  //          with the DB error sanitized; a bounded per-query timeout applies.
+  //        Gated `autocount.companies.manage`.
+  //
+  //   GET  /autocount/companies/{id}/entities/{entityType}/etl-task
+  //        → AutocountEtlTask  (anchored on `ac_entity_config.source_config`;
+  //          a never-configured entity returns a DRAFT task with defaults, not
+  //          a 404 - the editor is the create surface).
+  //        Gated `autocount.companies.read`.
+  //
+  //   PUT  /autocount/companies/{id}/entities/{entityType}/etl-task
+  //        {sourceConfig} → AutocountEtlTask  (draft save - replaces the
+  //          source config). Validation (AC-22-11): provided key/watermark/
+  //          compared columns must exist in a fresh preview's result columns
+  //          and the watermark must be orderable → 422 {fieldErrors}; empty
+  //          keyColumns is allowed while `etlStatus === 'draft'` (activation,
+  //          S2, is the hard gate). `connectionId` is re-validated against the
+  //          tenant on every use.
+  //        Gated `autocount.companies.manage`.
+
+  /** The tenant's SQL-database connections the task editor may pick from. */
+  listSqlConnections(): Promise<AutocountSqlConnection[]>;
+  /** Cached schema tree for one connection; `refresh` busts the cache. */
+  getSqlSchema(
+    connectionId: string,
+    opts?: { refresh?: boolean },
+  ): Promise<AutocountSqlSchema>;
+  /** Run a candidate SELECT against the source, capped at 100 rows. */
+  previewSqlQuery(connectionId: string, query: string): Promise<AutocountSqlPreview>;
+  /** One entity's DB extraction task (draft defaults when unconfigured). */
+  getEtlTask(companyId: string, entityType: string): Promise<AutocountEtlTask>;
+  /** Draft-save the task's source config (422 {fieldErrors} on bad columns). */
+  updateEtlTask(
+    companyId: string,
+    entityType: string,
+    input: AutocountEtlTaskUpdate,
+  ): Promise<AutocountEtlTask>;
 }
 
-export const autocountService: AutocountService = realAutocountService;
+/**
+ * PHASE 1 MOCK (plan 22 S1): the five direct-DB ETL methods bind the MOCK -
+ * the backend endpoints do not exist yet. Everything else stays real. Phase 2
+ * swaps this composite back to a bare `realAutocountService`.
+ */
+export const autocountService: AutocountService = {
+  ...realAutocountService,
+  listSqlConnections: mockAutocountService.listSqlConnections,
+  getSqlSchema: mockAutocountService.getSqlSchema,
+  previewSqlQuery: mockAutocountService.previewSqlQuery,
+  getEtlTask: mockAutocountService.getEtlTask,
+  updateEtlTask: mockAutocountService.updateEtlTask,
+};

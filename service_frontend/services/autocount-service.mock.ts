@@ -17,11 +17,15 @@
  */
 import { ApiError } from '@/lib/api-client';
 import { testFormula as evalFormula } from '@/lib/autocount-formula';
+import { isDocumentEntity } from '@/lib/autocount-etl';
 import type {
   AutocountApprovalResult,
   AutocountCompany,
   AutocountCompanyDetail,
   AutocountEntityConfig,
+  AutocountEtlSourceConfig,
+  AutocountEtlTask,
+  AutocountEtlTaskUpdate,
   AutocountFormulaTestResult,
   AutocountJobListQuery,
   AutocountMappingUpdate,
@@ -31,6 +35,10 @@ import type {
   AutocountSimulateFieldResult,
   AutocountSimulateResult,
   AutocountSinkTargetInput,
+  AutocountSqlConnection,
+  AutocountSqlPreview,
+  AutocountSqlSchema,
+  AutocountSqlTable,
   AutocountStagedList,
   AutocountStagedQuery,
   AutocountStagedRecord,
@@ -181,6 +189,288 @@ function mockStagedRecords(): AutocountStagedRecord[] {
 }
 
 const NOT_IMPLEMENTED = 'Not implemented in the AutoCount mock.';
+
+// ── direct-DB ETL fixtures (plan 22 S1 - PHASE 1 MOCK is the backend spec) ───
+
+/** Small pause so loading states are real (visible spinners, no flash). */
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Detach a stored fixture from what the caller mutates. */
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+/**
+ * Two connections: a healthy MSSQL source and a PostgreSQL one whose schema
+ * fetch FAILS - so the editor's connection-error state is reachable by a real
+ * click (switch the connection picker), no backend needed.
+ */
+const SQL_CONNECTIONS: AutocountSqlConnection[] = [
+  {
+    id: 'conn-sql-1',
+    name: 'AutoCount SQL Server',
+    dialect: 'mssql',
+    database: 'AED_Sorento_2024',
+  },
+  {
+    id: 'conn-sql-down',
+    name: 'Reporting PostgreSQL',
+    dialect: 'postgresql',
+    database: 'reporting',
+  },
+];
+
+/** AutoCount-shaped table catalog (name → columns) - the schema tree, the
+ * editor autocomplete and the preview generator all read from this one map. */
+const SQL_TABLES: AutocountSqlTable[] = [
+  {
+    name: 'Debtor',
+    columns: [
+      { name: 'AccNo', type: 'varchar(12)' },
+      { name: 'CompanyName', type: 'nvarchar(100)' },
+      { name: 'Phone1', type: 'nvarchar(25)' },
+      { name: 'EmailAddress', type: 'nvarchar(60)' },
+      { name: 'IsActive', type: 'char(1)' },
+      { name: 'LastModified', type: 'datetime' },
+    ],
+  },
+  {
+    name: 'Creditor',
+    columns: [
+      { name: 'AccNo', type: 'varchar(12)' },
+      { name: 'CompanyName', type: 'nvarchar(100)' },
+      { name: 'Phone1', type: 'nvarchar(25)' },
+      { name: 'EmailAddress', type: 'nvarchar(60)' },
+      { name: 'IsActive', type: 'char(1)' },
+      { name: 'LastModified', type: 'datetime' },
+    ],
+  },
+  {
+    name: 'Stock',
+    columns: [
+      { name: 'ItemCode', type: 'varchar(30)' },
+      { name: 'Description', type: 'nvarchar(100)' },
+      { name: 'ItemGroup', type: 'varchar(12)' },
+      { name: 'BaseUOM', type: 'varchar(10)' },
+      { name: 'IsActive', type: 'char(1)' },
+      { name: 'LastModified', type: 'datetime' },
+    ],
+  },
+  {
+    name: 'StockGroup',
+    columns: [
+      { name: 'ItemGroup', type: 'varchar(12)' },
+      { name: 'Description', type: 'nvarchar(60)' },
+      { name: 'IsActive', type: 'char(1)' },
+    ],
+  },
+  {
+    name: 'ItemUOM',
+    columns: [
+      { name: 'ItemCode', type: 'varchar(30)' },
+      { name: 'UOM', type: 'varchar(10)' },
+      { name: 'Rate', type: 'decimal(18,6)' },
+    ],
+  },
+  {
+    // Zero rows on purpose - the preview's EMPTY state by a real click.
+    name: 'Location',
+    columns: [
+      { name: 'Location', type: 'varchar(12)' },
+      { name: 'Description', type: 'nvarchar(60)' },
+      { name: 'IsActive', type: 'char(1)' },
+    ],
+  },
+  {
+    name: 'SalesAgent',
+    columns: [
+      { name: 'SalesAgent', type: 'varchar(12)' },
+      { name: 'Description', type: 'nvarchar(60)' },
+      { name: 'IsActive', type: 'char(1)' },
+    ],
+  },
+  {
+    name: 'SO',
+    columns: [
+      { name: 'DocKey', type: 'bigint' },
+      { name: 'DocNo', type: 'varchar(20)' },
+      { name: 'DebtorCode', type: 'varchar(12)' },
+      { name: 'Agent', type: 'varchar(12)' },
+      { name: 'DocDate', type: 'datetime' },
+      { name: 'Cancelled', type: 'char(1)' },
+      { name: 'LastModified', type: 'datetime' },
+    ],
+  },
+  {
+    name: 'SODtl',
+    columns: [
+      { name: 'DtlKey', type: 'bigint' },
+      { name: 'DocKey', type: 'bigint' },
+      { name: 'ItemCode', type: 'varchar(30)' },
+      { name: 'Qty', type: 'decimal(18,4)' },
+      { name: 'UnitPrice', type: 'decimal(18,4)' },
+      { name: 'Location', type: 'varchar(12)' },
+    ],
+  },
+  {
+    name: 'PO',
+    columns: [
+      { name: 'DocKey', type: 'bigint' },
+      { name: 'DocNo', type: 'varchar(20)' },
+      { name: 'CreditorCode', type: 'varchar(12)' },
+      { name: 'DocDate', type: 'datetime' },
+      { name: 'Cancelled', type: 'char(1)' },
+      { name: 'LastModified', type: 'datetime' },
+    ],
+  },
+  {
+    name: 'PODtl',
+    columns: [
+      { name: 'DtlKey', type: 'bigint' },
+      { name: 'DocKey', type: 'bigint' },
+      { name: 'ItemCode', type: 'varchar(30)' },
+      { name: 'Qty', type: 'decimal(18,4)' },
+      { name: 'UnitPrice', type: 'decimal(18,4)' },
+    ],
+  },
+];
+
+/** How many source rows each table "has" (>100 exercises the cap indicator). */
+const SQL_TABLE_ROWS: Record<string, number> = {
+  Debtor: 172,
+  Creditor: 12,
+  Stock: 486,
+  StockGroup: 6,
+  ItemUOM: 4,
+  Location: 0,
+  SalesAgent: 5,
+  SO: 31,
+  SODtl: 118,
+  PO: 9,
+  PODtl: 27,
+};
+
+function mockSqlSchema(connection: AutocountSqlConnection): AutocountSqlSchema {
+  return {
+    connectionId: connection.id,
+    dialect: connection.dialect,
+    database: connection.database,
+    schemas: [{ name: 'dbo', tables: SQL_TABLES }],
+    introspectedAt: '2026-08-30T06:00:00Z',
+  };
+}
+
+/** Deterministic sample value per column (name-driven, stable per row). */
+function sampleValue(column: string, type: string, row: number): unknown {
+  const names = [
+    'Aneka Elektrik Deras',
+    'Bintang Cool Air Sdn Bhd',
+    'Ceria Aircond Services',
+    'Delima Hardware Trading',
+    'Emas Jaya Enterprise',
+  ];
+  if (/char|text/i.test(type)) {
+    if (column === 'AccNo') return `3000/${String.fromCharCode(65 + (row % 26))}${String(row).padStart(2, '0')}`;
+    if (column === 'CompanyName' || column === 'Description') return names[row % names.length];
+    if (column === 'Phone1') return `03-55${String(1000 + row).slice(1)} ${String(2200 + row).slice(1)}`;
+    if (column === 'EmailAddress') return row % 7 === 3 ? null : `acc${row}@example.my`;
+    if (column === 'IsActive' || column === 'Cancelled') return row % 9 === 5 ? 'F' : 'T';
+    if (column === 'ItemCode') return `ITM-${String(row).padStart(4, '0')}`;
+    if (column === 'ItemGroup') return ['AIRCOND', 'PARTS', 'SERVICE'][row % 3];
+    if (column === 'BaseUOM' || column === 'UOM') return ['UNIT', 'BOX', 'SET'][row % 3];
+    if (column === 'Location') return ['HQ', 'PENANG'][row % 2];
+    if (column === 'SalesAgent') return `AG${String(1 + (row % 5)).padStart(2, '0')}`;
+    if (column === 'DocNo') return `SO-${String(2600 + row)}`;
+    if (column === 'DebtorCode' || column === 'CreditorCode') return `3000/A${String(row % 20).padStart(2, '0')}`;
+    if (column === 'Agent') return `AG${String(1 + (row % 5)).padStart(2, '0')}`;
+    return `Value ${row}`;
+  }
+  if (/bigint|int/i.test(type)) return 1000 + row;
+  if (/decimal|numeric|float/i.test(type)) return Number((row * 12.5 + 9.9).toFixed(2));
+  if (/date|time/i.test(type)) {
+    const day = String(1 + (row % 28)).padStart(2, '0');
+    return `2026-08-${day} ${String(8 + (row % 10)).padStart(2, '0')}:14:0${row % 10}`;
+  }
+  return null;
+}
+
+/**
+ * The mock's stand-in for the server-side SELECT-only guard + preview run.
+ * Mirrors the real behaviour classes exactly: 422 before the source for a
+ * non-SELECT, 400 sanitized for a bad object, capped rows for a big table.
+ */
+function runMockPreview(query: string): AutocountSqlPreview {
+  const text = query.trim().replace(/;\s*$/, '');
+  if (!text) {
+    throw new ApiError('Only a single SELECT statement can be previewed.', 422);
+  }
+  const first = text.split(/\s+/, 1)[0]?.toUpperCase();
+  if ((first !== 'SELECT' && first !== 'WITH') || text.includes(';')) {
+    throw new ApiError('Only a single SELECT statement can be previewed.', 422);
+  }
+  const match = /\bFROM\s+(?:\[?dbo\]?\.)?\[?(\w+)\]?/i.exec(text);
+  const tableName = match?.[1];
+  const table = SQL_TABLES.find(
+    (t) => t.name.toLowerCase() === tableName?.toLowerCase(),
+  );
+  if (!table) {
+    // The sanitized shape of a real driver error - no DSN, no stack.
+    throw new ApiError(`Invalid object name '${tableName ?? '?'}'.`, 400);
+  }
+  const total = SQL_TABLE_ROWS[table.name] ?? 0;
+  const rowCount = Math.min(total, 100);
+  const rows = Array.from({ length: rowCount }, (_, i) => {
+    const record: Record<string, unknown> = {};
+    for (const col of table.columns) {
+      record[col.name] = sampleValue(col.name, col.type, i);
+    }
+    return record;
+  });
+  return {
+    columns: table.columns.map((c) => ({ name: c.name, type: c.type })),
+    rows,
+    rowCount,
+    truncated: total > 100,
+    durationMs: 180 + rowCount * 3,
+  };
+}
+
+/** Draft defaults for a never-configured entity (documents get a from-date). */
+function defaultEtlConfig(entityType: string): AutocountEtlSourceConfig {
+  return {
+    connectionId: SQL_CONNECTIONS[0].id,
+    query: '',
+    lineQuery: isDocumentEntity(entityType) ? '' : null,
+    keyColumns: [],
+    watermarkColumn: null,
+    comparedColumns: [],
+    fromDate: isDocumentEntity(entityType) ? '2026-08-30' : null,
+    incrementalMinutes: 5,
+    reconcileMode: 'dailyAt',
+    reconcileHours: null,
+    reconcileAt: '02:00',
+  };
+}
+
+/** In-memory task store so draft saves round-trip within the session. */
+const etlTasks = new Map<string, AutocountEtlTask>();
+
+function etlTaskFor(companyId: string, entityType: string): AutocountEtlTask {
+  const key = `${companyId}:${entityType}`;
+  const existing = etlTasks.get(key);
+  if (existing) return existing;
+  const task: AutocountEtlTask = {
+    companyId,
+    entityType,
+    etlStatus: 'draft',
+    activatedAt: null,
+    sourceConfig: defaultEtlConfig(entityType),
+  };
+  etlTasks.set(key, task);
+  return task;
+}
 
 export const mockAutocountService: AutocountService = {
   listCompanies(): Promise<ListResult<AutocountCompany>> {
@@ -463,6 +753,70 @@ export const mockAutocountService: AutocountService = {
         ? []
         : headerFields.filter((f) => !f.ok).map((f) => ({ field: f.canonicalField, message: f.error })),
     });
+  },
+
+  // ── direct-DB ETL (plan 22 S1) ─────────────────────────────────────────────
+
+  async listSqlConnections(): Promise<AutocountSqlConnection[]> {
+    await pause(150);
+    return SQL_CONNECTIONS.map((c) => ({ ...c }));
+  },
+
+  async getSqlSchema(connectionId: string): Promise<AutocountSqlSchema> {
+    await pause(350);
+    const connection = SQL_CONNECTIONS.find((c) => c.id === connectionId);
+    if (!connection) throw new ApiError('Connection not found.', 404);
+    if (connection.id === 'conn-sql-down') {
+      // The sanitized failure shape (AC-22-02/30): no host, no credentials.
+      throw new ApiError(
+        'Could not connect to the database: connection refused.',
+        502,
+      );
+    }
+    return mockSqlSchema(connection);
+  },
+
+  async previewSqlQuery(
+    connectionId: string,
+    query: string,
+  ): Promise<AutocountSqlPreview> {
+    await pause(450);
+    const connection = SQL_CONNECTIONS.find((c) => c.id === connectionId);
+    if (!connection) throw new ApiError('Connection not found.', 404);
+    if (connection.id === 'conn-sql-down') {
+      throw new ApiError(
+        'Could not connect to the database: connection refused.',
+        502,
+      );
+    }
+    return runMockPreview(query);
+  },
+
+  async getEtlTask(companyId: string, entityType: string): Promise<AutocountEtlTask> {
+    await pause(200);
+    return cloneJson(etlTaskFor(companyId, entityType));
+  },
+
+  async updateEtlTask(
+    companyId: string,
+    entityType: string,
+    input: AutocountEtlTaskUpdate,
+  ): Promise<AutocountEtlTask> {
+    await pause(250);
+    const current = etlTaskFor(companyId, entityType);
+    const cfg = input.sourceConfig;
+    // Mirrors the save-time guard (AC-22-11): documents need a from-date.
+    if (isDocumentEntity(entityType) && !cfg.fromDate) {
+      throw new ApiError('From date is required for documents.', 422, null, {
+        fieldErrors: { fromDate: 'From date is required for documents.' },
+      });
+    }
+    const next: AutocountEtlTask = {
+      ...current,
+      sourceConfig: cloneJson(cfg),
+    };
+    etlTasks.set(`${companyId}:${entityType}`, next);
+    return cloneJson(next);
   },
 };
 

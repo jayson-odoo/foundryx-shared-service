@@ -38,6 +38,7 @@ const onSync = vi.fn();
 const onEditLookback = vi.fn();
 const onRefetch = vi.fn();
 const onConfigureMapping = vi.fn();
+const onConfigureTask = vi.fn();
 
 function config(entities: AutocountEntityConfig[], companyActive = true) {
   return renderHook(() =>
@@ -48,6 +49,7 @@ function config(entities: AutocountEntityConfig[], companyActive = true) {
       onEditLookback,
       onRefetch,
       onConfigureMapping,
+      onConfigureTask,
     }),
   ).result.current;
 }

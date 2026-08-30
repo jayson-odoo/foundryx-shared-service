@@ -10,6 +10,8 @@ import type {
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
   AutocountEntityConfig,
+  AutocountEtlTask,
+  AutocountEtlTaskUpdate,
   AutocountFormulaTestResult,
   AutocountJobListQuery,
   AutocountMappingUpdate,
@@ -17,6 +19,9 @@ import type {
   AutocountMappingWriteRow,
   AutocountPreviewResult,
   AutocountSimulateResult,
+  AutocountSqlConnection,
+  AutocountSqlPreview,
+  AutocountSqlSchema,
   AutocountStagedList,
   AutocountSyncJob,
   AutocountSyncJobBatch,
@@ -170,6 +175,41 @@ export const realAutocountService: AutocountService = {
     return apiFetch<AutocountSimulateResult>(
       `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/mapping/simulate`,
       { method: 'POST', body: JSON.stringify(body) },
+    );
+  },
+
+  // ── direct-DB ETL (plan 22 S1) - endpoints per the contract documented on
+  // `AutocountService`. The shipped binding routes these to the MOCK until the
+  // backend phase lands (see `autocount-service.ts`).
+
+  listSqlConnections() {
+    return apiFetch<AutocountSqlConnection[]>('/autocount/sql/connections');
+  },
+
+  getSqlSchema(connectionId, opts) {
+    const suffix = opts?.refresh ? '?refresh=true' : '';
+    return apiFetch<AutocountSqlSchema>(
+      `/autocount/sql/connections/${encodeURIComponent(connectionId)}/schema${suffix}`,
+    );
+  },
+
+  previewSqlQuery(connectionId, query) {
+    return apiFetch<AutocountSqlPreview>('/autocount/sql/preview', {
+      method: 'POST',
+      body: JSON.stringify({ connectionId, query }),
+    });
+  },
+
+  getEtlTask(companyId, entityType) {
+    return apiFetch<AutocountEtlTask>(
+      `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/etl-task`,
+    );
+  },
+
+  updateEtlTask(companyId, entityType, input: AutocountEtlTaskUpdate) {
+    return apiFetch<AutocountEtlTask>(
+      `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/etl-task`,
+      { method: 'PUT', body: JSON.stringify({ sourceConfig: input.sourceConfig }) },
     );
   },
 };

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { UseFormReturn } from 'react-hook-form';
 import { ChevronDown, LoaderCircleIcon, Send } from 'lucide-react';
 import { toast } from 'sonner';
@@ -29,7 +29,7 @@ import { integrationService } from '@/services/integration-service';
 import { useDatetime } from '@/hooks/use-datetime';
 import type { Connection, IntegrationProvider, ProviderField } from '@/types/integration';
 import { CONNECTION_STATUS_REGISTRY } from './connection-status';
-import type { ConnectionFormValues } from './connection-schema';
+import { dependentDefault, type ConnectionFormValues } from './connection-schema';
 
 const TYPE_LABELS: Record<string, string> = {
   email: 'Email',
@@ -149,6 +149,29 @@ export function ConfigurationTab({
   connection,
 }: ConfigurationTabProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Registry-driven dependent defaults (`ProviderField.defaultsFrom`): when a
+  // driver select changes, reset its dependants that still hold a stock
+  // default (the SQL provider's port follows its dialect, AC-22-04). Generic -
+  // no provider-specific branch here.
+  useEffect(() => {
+    const dependants = (provider?.fields ?? []).filter((f) => f.defaultsFrom && !f.secret);
+    if (dependants.length === 0) return;
+    const subscription = form.watch((values, { name }) => {
+      if (!name?.startsWith('config.')) return;
+      const driverKey = name.slice('config.'.length);
+      for (const f of dependants) {
+        if (f.defaultsFrom?.field !== driverKey) continue;
+        const next = dependentDefault(
+          f,
+          values.config?.[driverKey] ?? '',
+          values.config?.[f.key] ?? '',
+        );
+        if (next !== null) form.setValue(`config.${f.key}`, next, { shouldDirty: true });
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, [form, provider]);
 
   const basic = provider?.fields.filter((f) => !f.advanced) ?? [];
   const advanced = provider?.fields.filter((f) => f.advanced) ?? [];

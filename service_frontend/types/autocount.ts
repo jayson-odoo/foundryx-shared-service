@@ -493,6 +493,127 @@ export function isBlanking(change: AutocountPreviewFieldDiff): boolean {
   return emptyIncoming && hadValue;
 }
 
+// ── direct-DB ETL (plan 22, slice S1 - AC-22-01..07/11) ──────────────────────
+
+/** Supported read-only SQL source dialects (grill post-decision). */
+export type AutocountSqlDialect = 'mssql' | 'postgresql' | 'mysql';
+
+/** One tenant SQL-database connection the task editor may point at
+ * (`GET /autocount/sql/connections` - tenant + provider `sql_database` scoped,
+ * never a bare connections fetch). */
+export interface AutocountSqlConnection {
+  id: string;
+  name: string;
+  dialect: AutocountSqlDialect | string;
+  database: string;
+}
+
+/** One introspected column (name + the dialect's reported type). */
+export interface AutocountSqlColumn {
+  name: string;
+  type: string;
+}
+
+/** One introspected table. Columns arrive with the schema payload (the
+ * introspection is cached server-side per connection, AC-22-05). */
+export interface AutocountSqlTable {
+  name: string;
+  columns: AutocountSqlColumn[];
+}
+
+/** One namespace within the database (e.g. `dbo`, `public`). */
+export interface AutocountSqlSchemaNode {
+  name: string;
+  tables: AutocountSqlTable[];
+}
+
+/**
+ * `GET /autocount/sql/connections/{id}/schema[?refresh=true]` - the cached
+ * schemas → tables → columns tree (AC-22-05). `refresh=true` busts the
+ * server-side cache; the tree is NEVER fetched per keystroke.
+ */
+export interface AutocountSqlSchema {
+  connectionId: string;
+  dialect: AutocountSqlDialect | string;
+  database: string;
+  schemas: AutocountSqlSchemaNode[];
+  introspectedAt: string; // ISO Z
+}
+
+/** One result column of a preview run (name + reported type, AC-22-06). */
+export interface AutocountSqlPreviewColumn {
+  name: string;
+  type: string;
+}
+
+/**
+ * `POST /autocount/sql/preview` result. At most 100 rows (dialect-appropriate
+ * wrapping server-side); `truncated` is true when the cap cut the result - the
+ * UI must never present a capped preview as the whole set (AC-22-06).
+ */
+export interface AutocountSqlPreview {
+  columns: AutocountSqlPreviewColumn[];
+  rows: Array<Record<string, unknown>>;
+  /** Rows returned (≤ 100). */
+  rowCount: number;
+  /** True when the 100-row cap cut the result. */
+  truncated: boolean;
+  durationMs: number;
+}
+
+/** Lifecycle of a DB extraction task (plan 22 §2.4 `etl_status`). */
+export type AutocountEtlStatus = 'draft' | 'active' | 'paused';
+
+/**
+ * The `source_config` JSON of a `sql_db` task (plan 22 §2.4) - the Query tab
+ * owns connection/query/columns/fromDate; the Schedule tab (S3) owns the
+ * cadence fields, carried here so a draft save round-trips the whole document.
+ */
+export interface AutocountEtlSourceConfig {
+  /** Core `connections.id` of a `sql_database` connection (tenant-validated
+   * server-side on every use - polymorphic-stored-id rule). */
+  connectionId: string | null;
+  /** The extraction SELECT (single statement; server guard rejects anything
+   * else with 422 before touching the source, AC-22-03). */
+  query: string;
+  /** Document entities (SO/PO) only: per-changed-header line query with a
+   * `:doc_key` bound param. One task, two queries - never a separate lines task. */
+  lineQuery: string | null;
+  /** Result columns minting the source_ref (`{database}:{key1[|key2]}`). Must
+   * exist in the preview result columns at save (AC-22-11). */
+  keyColumns: string[];
+  /** Orderable result column driving incremental fetches; null = hash-diff
+   * incremental (interval floor 15 min). */
+  watermarkColumn: string | null;
+  /** "On change of which fields" - empty = all result columns minus keys. */
+  comparedColumns: string[];
+  /** Documents only (YYYY-MM-DD, default today). */
+  fromDate: string | null;
+  incrementalMinutes: number;
+  reconcileMode: 'interval' | 'dailyAt';
+  reconcileHours: number | null;
+  /** "HH:MM" in the tenant timezone (`reconcileMode === 'dailyAt'`). */
+  reconcileAt: string | null;
+}
+
+/**
+ * `GET /autocount/companies/{id}/entities/{entityType}/etl-task` - one
+ * per-(company, entity) DB extraction task, anchored on `ac_entity_config`
+ * (decision Q13 - no free-form task entity).
+ */
+export interface AutocountEtlTask {
+  companyId: string;
+  entityType: string;
+  etlStatus: AutocountEtlStatus | string;
+  activatedAt: string | null; // ISO Z
+  sourceConfig: AutocountEtlSourceConfig;
+}
+
+/** `PUT .../etl-task` body - replaces the task's source config (draft save). */
+export interface AutocountEtlTaskUpdate {
+  sourceConfig: AutocountEtlSourceConfig;
+}
+
 // ── diff view model (AC-13-12) ───────────────────────────────────────────────
 
 /** One changed field, before → after. */

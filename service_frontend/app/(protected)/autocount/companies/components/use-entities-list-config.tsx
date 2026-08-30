@@ -2,7 +2,13 @@
 
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { CalendarRange, RefreshCw, RotateCcw, SlidersHorizontal } from 'lucide-react';
+import {
+  CalendarRange,
+  Database,
+  RefreshCw,
+  RotateCcw,
+  SlidersHorizontal,
+} from 'lucide-react';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { Badge } from '@/components/ui/badge';
 import { ClampedText } from '@/components/platform/clamped-text';
@@ -73,6 +79,8 @@ export interface EntitiesListConfigOptions {
   onRefetch: (entity: AutocountEntityConfig) => void | Promise<void>;
   /** Open the entity's field-mapping editor (AC-15-40). */
   onConfigureMapping: (entity: AutocountEntityConfig) => void;
+  /** Open the entity's Database-mode task editor (plan 22, AC-22-07). */
+  onConfigureTask: (entity: AutocountEntityConfig) => void;
 }
 
 export function useAutocountEntitiesListConfig({
@@ -82,6 +90,7 @@ export function useAutocountEntitiesListConfig({
   onEditLookback,
   onRefetch,
   onConfigureMapping,
+  onConfigureTask,
 }: EntitiesListConfigOptions): ResourceListConfig<AutocountEntityConfig> {
   const { formatDateTime } = useDatetime();
 
@@ -147,6 +156,19 @@ export function useAutocountEntitiesListConfig({
         run: (rows) => {
           const row = rows[0];
           if (row) onConfigureMapping(row);
+        },
+      },
+      {
+        // The Database-mode task editor (plan 22 S1). Offered on every row this
+        // slice; S2 (source switch API ⇄ Database) gates it on `sourceImpl`.
+        id: 'configure-task',
+        label: 'Configure database query',
+        icon: Database,
+        surfaces: { row: true },
+        permission: AC_COMPANIES_MANAGE,
+        run: (rows) => {
+          const row = rows[0];
+          if (row) onConfigureTask(row);
         },
       },
     ];
@@ -344,6 +366,7 @@ export function useAutocountEntitiesListConfig({
     entities,
     formatDateTime,
     onConfigureMapping,
+    onConfigureTask,
     onEditLookback,
     onRefetch,
     onSync,
