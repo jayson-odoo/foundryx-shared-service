@@ -5,6 +5,7 @@
 import type {
   AutocountAnchorErrorCode,
   AutocountCompany,
+  AutocountEtlSourceConfig,
   AutocountEtlTask,
   AutocountEtlTaskError,
   AutocountSqlPreview,
@@ -165,6 +166,103 @@ export function formatDurationMs(ms: number | null | undefined): string {
  * (so a stored mapping renders instead of silently blanking). Order-preserving,
  * de-duplicated.
  */
+// ── plan 22 S3 - schedule (AC-22-12) ─────────────────────────────────────────
+//
+// Mirrors the backend's own floors/format exactly (`etl_service.py`
+// `validate_source_config`/`next_run_times`) so the tab's live feedback never
+// diverges from the save-time 422 the server is authoritative for.
+
+/** Incremental floor with a watermark column (AC-22-12). */
+export const MIN_INCREMENTAL_MINUTES = 1;
+/** Incremental floor WITHOUT one - the task runs hash-diff as its incremental. */
+export const MIN_INCREMENTAL_MINUTES_NO_WATERMARK = 15;
+/** Reconcile "every N hours" floor. */
+export const MIN_RECONCILE_HOURS = 1;
+
+const RECONCILE_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** The incremental floor for a task (AC-22-12): 1 minute with a watermark
+ * column, 15 without (hash-diff incremental). */
+export function incrementalFloorMinutes(hasWatermark: boolean): number {
+  return hasWatermark ? MIN_INCREMENTAL_MINUTES : MIN_INCREMENTAL_MINUTES_NO_WATERMARK;
+}
+
+/** Live mirror of the save-time floor guard - the server re-validates on
+ * save regardless (422 `fieldErrors.incrementalMinutes`). */
+export function validateIncrementalMinutes(
+  minutes: number | null | undefined,
+  hasWatermark: boolean,
+): string | null {
+  const floor = incrementalFloorMinutes(hasWatermark);
+  if (minutes === null || minutes === undefined || !Number.isFinite(minutes)) {
+    return 'Enter the incremental interval in minutes.';
+  }
+  if (minutes < floor) {
+    return hasWatermark
+      ? `At least ${floor} minute.`
+      : `At least ${floor} minutes without a watermark column.`;
+  }
+  return null;
+}
+
+/** Live mirror of the reconcile "every N hours" floor guard. */
+export function validateReconcileHours(hours: number | null | undefined): string | null {
+  if (hours === null || hours === undefined || !Number.isFinite(hours)) {
+    return 'Enter the reconcile interval in hours.';
+  }
+  if (hours < MIN_RECONCILE_HOURS) return `At least ${MIN_RECONCILE_HOURS} hour.`;
+  return null;
+}
+
+/** Live mirror of the daily-at HH:MM format guard. */
+export function validateReconcileAt(value: string | null | undefined): string | null {
+  if (!value || !RECONCILE_TIME_RE.test(value)) {
+    return 'Enter the daily reconcile time as HH:MM.';
+  }
+  return null;
+}
+
+/** The reconcile-mode picker's ONLY two options (foolproof-UI). */
+export const RECONCILE_MODE_OPTIONS: { label: string; value: AutocountEtlSourceConfig['reconcileMode'] }[] = [
+  { label: 'Daily at', value: 'dailyAt' },
+  { label: 'Every N hours', value: 'interval' },
+];
+
+/**
+ * PHASE 1 MOCK (plan 22 S3): stand-in for the not-yet-wired
+ * `nextIncrementalAt`/`nextReconcileAt`. Mirrors `EtlService.next_run_times`
+ * exactly - minutes floor by watermark presence for the incremental leg;
+ * `interval` mode = now + N hours; `dailyAt` = the next occurrence of HH:MM,
+ * treated as UTC (the backend's own documented simplification - re-resolved
+ * against the tenant timezone by the S3 sweep, so this stays a pure function
+ * here too).
+ */
+export function computeMockNextRunTimes(
+  sourceConfig: AutocountEtlSourceConfig,
+  now: Date = new Date(),
+): { nextIncrementalAt: string; nextReconcileAt: string } {
+  const floor = incrementalFloorMinutes(Boolean(sourceConfig.watermarkColumn));
+  const minutes = Math.max(sourceConfig.incrementalMinutes || 0, floor);
+  const nextIncrementalAt = new Date(now.getTime() + minutes * 60_000).toISOString();
+
+  let nextReconcileAt: string;
+  if (sourceConfig.reconcileMode === 'interval') {
+    const hours = Math.max(sourceConfig.reconcileHours ?? MIN_RECONCILE_HOURS, MIN_RECONCILE_HOURS);
+    nextReconcileAt = new Date(now.getTime() + hours * 3_600_000).toISOString();
+  } else {
+    const at =
+      sourceConfig.reconcileAt && RECONCILE_TIME_RE.test(sourceConfig.reconcileAt)
+        ? sourceConfig.reconcileAt
+        : '02:00';
+    const [hour, minute] = at.split(':').map(Number);
+    const target = new Date(now);
+    target.setUTCHours(hour, minute, 0, 0);
+    if (target.getTime() <= now.getTime()) target.setUTCDate(target.getUTCDate() + 1);
+    nextReconcileAt = target.toISOString();
+  }
+  return { nextIncrementalAt, nextReconcileAt };
+}
+
 export function mappingSourceColumns(
   resultColumns: string[],
   previewColumns: string[],

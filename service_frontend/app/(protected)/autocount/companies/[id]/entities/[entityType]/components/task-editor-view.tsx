@@ -56,6 +56,7 @@ import { MappingEditorBody } from '../mapping/components/mapping-editor-body';
 import { useMappingDraft } from '../mapping/components/use-mapping-draft';
 import { ActivateTab } from './activate-tab';
 import { QueryTab } from './query-tab';
+import { ScheduleTab } from './schedule-tab';
 
 export interface TaskEditorViewProps {
   companyId: string;
@@ -310,8 +311,19 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
           id: 'schedule',
           label: 'Schedule',
           icon: CalendarClock,
-          disabled: true,
-          render: () => null,
+          disabled: !querySaved,
+          render: ({ editing }) => (
+            <div className="py-2">
+              <ScheduleTab
+                editing={editing}
+                entityType={entityType}
+                config={config}
+                onChange={onChange}
+                task={task}
+                fieldErrors={fieldErrors}
+              />
+            </div>
+          ),
         },
         {
           id: 'activate',

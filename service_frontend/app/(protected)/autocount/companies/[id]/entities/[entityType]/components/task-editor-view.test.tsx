@@ -24,8 +24,16 @@ vi.mock('@/hooks/use-can', () => ({
 }));
 
 vi.mock('@/components/platform/resource-form', () => ({
-  ResourceForm: ({ config }: { config: { tabs: { id: string }[] } }) => (
-    <div data-testid="tabs">{config.tabs.map((t) => t.id).join(',')}</div>
+  ResourceForm: ({ config }: { config: { tabs: { id: string; disabled?: boolean }[] } }) => (
+    <div>
+      <div data-testid="tabs">{config.tabs.map((t) => t.id).join(',')}</div>
+      <div data-testid="disabled-tabs">
+        {config.tabs
+          .filter((t) => t.disabled)
+          .map((t) => t.id)
+          .join(',')}
+      </div>
+    </div>
   ),
 }));
 
@@ -53,6 +61,8 @@ function task(over: Partial<AutocountEtlTask> = {}): AutocountEtlTask {
     lastRunAt: null,
     lastRunError: null,
     lastRunErrorCode: null,
+    nextIncrementalAt: null,
+    nextReconcileAt: null,
     ...over,
   };
 }
@@ -61,9 +71,14 @@ vi.mock('@/hooks/use-autocount-company', () => ({
   useAutocountCompany: () => ({ detail: null, isLoading: false, notFound: false, reload: vi.fn() }),
 }));
 
+// A `vi.hoisted` mutable box - so a test can override the task the mocked
+// hook returns (e.g. an unsaved-query task, to exercise the Schedule/Mapping
+// tabs' `disabled: !querySaved` gate) before rendering.
+const taskBox = vi.hoisted(() => ({ current: null as unknown }));
+
 vi.mock('@/hooks/use-autocount-etl', () => ({
   useAutocountEtlTask: () => ({
-    task: task(),
+    task: taskBox.current,
     isLoading: false,
     notFound: false,
     saveError: null,
@@ -108,6 +123,7 @@ vi.mock('../../../../components/use-runs-list-config', () => ({
 beforeEach(() => {
   canMock.mockReset();
   canMock.mockReturnValue(true);
+  taskBox.current = task();
 });
 
 describe('TaskEditorView (S2 review SHOULD-FIX 7 - Runs tab permission gate)', () => {
@@ -125,5 +141,21 @@ describe('TaskEditorView (S2 review SHOULD-FIX 7 - Runs tab permission gate)', (
     expect(tabs).toContain('query');
     expect(tabs).toContain('mapping');
     expect(tabs).toContain('activate');
+  });
+});
+
+describe('TaskEditorView (plan 22 S3 - Schedule tab gating)', () => {
+  it('offers Schedule enabled once a query is saved (the default fixture)', () => {
+    render(<TaskEditorView companyId="c1" entityType="customer" />);
+    expect(screen.getByTestId('tabs')).toHaveTextContent('schedule');
+    expect(screen.getByTestId('disabled-tabs')).not.toHaveTextContent('schedule');
+  });
+
+  it('withholds Schedule (like Mapping) until a query is saved - a dead end otherwise', () => {
+    taskBox.current = task({ sourceConfig: { ...task().sourceConfig, query: '   ' } });
+    render(<TaskEditorView companyId="c1" entityType="customer" />);
+    const disabled = screen.getByTestId('disabled-tabs').textContent ?? '';
+    expect(disabled.split(',')).toContain('schedule');
+    expect(disabled.split(',')).toContain('mapping');
   });
 });

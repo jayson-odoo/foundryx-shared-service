@@ -4,10 +4,13 @@
  * contract: `modules/autocount/routers/{companies,sync}.py`.
  *
  * The shipped binding is `.real` - the whole surface, S2 included, is backed
- * by FastAPI. A `.mock` sibling exists ONLY as frontend-first scaffolding for
- * the dry-run review states (previewable / not-previewable / failure) and the
- * Vitest suite; flip the export at the bottom to `mockAutocountService` to
- * build against it, back to `.real` to ship (the house service-trio pattern).
+ * by FastAPI - wrapped in ONE tiny, tagged PHASE 1 MOCK overlay
+ * (`withPhase1NextRunMock`, plan 22 S3) for the two read-only fields the
+ * backend has not put on the wire yet (see the doc block above `listSqlConnections`
+ * for what it does and does not touch). A `.mock` sibling also exists as
+ * frontend-first scaffolding for the dry-run review states (previewable /
+ * not-previewable / failure) and the Vitest suite (the house service-trio
+ * pattern).
  *
  * Permission gates (module CSV, granted to tenant Admin by `AppStoreService`
  * on install): `autocount.companies.read/manage`, `autocount.sync.read/run`.
@@ -42,6 +45,7 @@ import type {
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
 import { realAutocountService } from './autocount-service.real';
+import { withPhase1NextRunMock } from './autocount-service.mock';
 
 export interface AutocountListQuery {
   page?: number; // 0-based
@@ -252,6 +256,16 @@ export interface AutocountService {
   //        (the task-level error of the latest run - anchor 422s land here,
   //        never per record).
   //
+  //   GET/PUT .../etl-task (plan 22 S3, AC-22-12..17) → AutocountEtlTask ALSO
+  //        gains `nextIncrementalAt`/`nextReconcileAt` (read-only, recomputed
+  //        by every PUT/activate/pause/resume/run - `EtlService.next_run_times`
+  //        ALREADY computes + stores them server-side, `EtlTaskResponse` just
+  //        does not carry them on the wire yet; the schedule fields themselves
+  //        (`incrementalMinutes`/`reconcileMode`/`reconcileHours`/`reconcileAt`)
+  //        already round-trip through the existing PUT + its 422 fieldErrors -
+  //        `services/autocount-service.mock.ts withPhase1NextRunMock` is the
+  //        tiny stand-in for the two missing read-only fields only).
+  //
   //   GET  /autocount/companies/{id}/runs  →  AutocountSyncRun gains the §2.7
   //        cost columns `mode`, `rowsScanned`, `addedCount`, `updatedCount`,
   //        `deletedCount`, `durationMs`, `skipReason` (API-path runs report
@@ -314,8 +328,11 @@ export interface AutocountService {
   ): Promise<ListResult<AutocountSyncRun>>;
 }
 
-// The S2 backend is LIVE, so the phase-1 overlay is gone from the shipped
-// binding (the swap the Definition-of-Done gate demands). `autocount-service.mock`
-// survives only as Vitest scaffolding - importing it here again would put a
-// mock back in front of real data.
-export const autocountService: AutocountService = realAutocountService;
+// The S2 backend is LIVE, so the full phase-1 overlay (`withPhase1EtlMock`) is
+// gone from the shipped binding (the swap the Definition-of-Done gate
+// demands). PHASE 1 MOCK (plan 22 S3, tiny + tagged - see the doc block
+// above): `withPhase1NextRunMock` stamps ONLY `nextIncrementalAt`/
+// `nextReconcileAt` on top of every real response; everything else is real
+// data untouched. Delete this wrapper the moment the S3 backend adds the two
+// fields to `EtlTaskResponse`.
+export const autocountService: AutocountService = withPhase1NextRunMock(realAutocountService);

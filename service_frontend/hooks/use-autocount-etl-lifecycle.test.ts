@@ -44,6 +44,8 @@ function task(over: Partial<AutocountEtlTask> = {}): AutocountEtlTask {
     lastRunAt: null,
     lastRunError: null,
     lastRunErrorCode: null,
+    nextIncrementalAt: null,
+    nextReconcileAt: null,
     ...over,
   };
 }

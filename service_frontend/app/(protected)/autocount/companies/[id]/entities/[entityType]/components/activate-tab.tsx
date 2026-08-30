@@ -232,6 +232,21 @@ export function ActivateTab({
         </div>
       </div>
 
+      {status === 'active' && (task.nextIncrementalAt || task.nextReconcileAt) && (
+        <div className="flex flex-wrap items-center gap-2" data-testid="etl-next-runs">
+          {task.nextIncrementalAt && (
+            <Badge variant="secondary" appearance="light" size="sm">
+              Next incremental {formatDateTime(task.nextIncrementalAt)}
+            </Badge>
+          )}
+          {task.nextReconcileAt && (
+            <Badge variant="secondary" appearance="light" size="sm">
+              Next reconcile {formatDateTime(task.nextReconcileAt)}
+            </Badge>
+          )}
+        </div>
+      )}
+
       {taskError && (
         <Alert variant="destructive" appearance="light" data-testid="etl-task-error">
           <AlertIcon>
