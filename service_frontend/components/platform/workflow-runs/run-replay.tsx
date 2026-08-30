@@ -9,7 +9,7 @@
  */
 import { useMemo, useState } from 'react';
 import { MarkerType, type Edge, type Node } from '@xyflow/react';
-import { Bug } from 'lucide-react';
+import { Bug, Check, Copy } from 'lucide-react';
 import type { WorkflowRunDetail } from '@/types/workflows';
 import { catalogEntry } from '@/lib/workflow-catalog';
 import { ClampedText } from '@/components/platform/clamped-text';
@@ -154,14 +154,7 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
               <DataBlock label="Input" value={selectedData?.inputJson} />
               <DataBlock label="Output" value={selectedData?.outputJson} />
               {selectedData?.error && (
-                <div>
-                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    Error
-                  </div>
-                  <pre className="overflow-auto rounded-md bg-destructive/10 p-2 text-[11px] text-destructive">
-                    {selectedData.error}
-                  </pre>
-                </div>
+                <ErrorBlock error={selectedData.error} />
               )}
             </div>
           )}
@@ -193,14 +186,100 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
   );
 }
 
-function DataBlock({ label, value }: { label: string; value: unknown }) {
+interface DataBlockProps {
+  label: string;
+  value: unknown;
+}
+
+function DataBlock({ label, value }: DataBlockProps) {
+  const [copied, setCopied] = useState(false);
+
+  const textToCopy = value == null ? '' : JSON.stringify(value, null, 2);
+
+  const handleCopy = async () => {
+    if (!textToCopy || typeof navigator === 'undefined' || !navigator.clipboard) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(textToCopy);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Silently fail if clipboard write is not allowed
+    }
+  };
+
   return (
     <div>
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-        {label}
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          {label}
+        </span>
+        {value != null && (
+          <button
+            type="button"
+            onClick={handleCopy}
+            aria-label={`Copy ${label}`}
+            className="hover:text-foreground text-muted-foreground transition-colors"
+          >
+            {copied ? (
+              <Check className="size-3.5" />
+            ) : (
+              <Copy className="size-3.5" />
+            )}
+          </button>
+        )}
       </div>
       <pre className="max-h-40 overflow-auto rounded-md bg-muted p-2 text-[11px] text-foreground">
-        {value == null ? '-' : JSON.stringify(value, null, 2)}
+        {value == null ? '-' : textToCopy}
+      </pre>
+    </div>
+  );
+}
+
+interface ErrorBlockProps {
+  error: string;
+}
+
+function ErrorBlock({ error }: ErrorBlockProps) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    if (typeof navigator === 'undefined' || !navigator.clipboard) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(error);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Silently fail if clipboard write is not allowed
+    }
+  };
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Error
+        </span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          aria-label="Copy Error"
+          className="hover:text-destructive text-muted-foreground transition-colors"
+        >
+          {copied ? (
+            <Check className="size-3.5" />
+          ) : (
+            <Copy className="size-3.5" />
+          )}
+        </button>
+      </div>
+      <pre className="overflow-auto rounded-md bg-destructive/10 p-2 text-[11px] text-destructive">
+        {error}
       </pre>
     </div>
   );
