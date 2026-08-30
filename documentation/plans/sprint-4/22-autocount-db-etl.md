@@ -281,7 +281,14 @@ Deviations from A1-A4 and what they mean for THIS repo:
 1. **`companyCode` is a top-level body field** on all three calls (matched case-insensitively on
    `companies.code`, then `companies.autocount_ref`; fallback = the integration's
    `config_json.company_code`). 422 codes: `COMPANY_ANCHOR_REQUIRED`, `UNKNOWN_COMPANY`,
-   `COMPANY_ANCHOR_AMBIGUOUS` (body `{"code","message"}`, exact JSON confirmed when A1 lands).
+   `COMPANY_ANCHOR_AMBIGUOUS`. **Exact 422 body (A1 landed, Sorento commit 18e8dc1d0) is
+   top-level, NO `detail` wrapper**: `{"message": "...", "detail": null, "code": "COMPANY_ANCHOR_REQUIRED"}`
+   (same shape for `UNKNOWN_COMPANY`, `COMPANY_ANCHOR_AMBIGUOUS`). Ingest guard order: 404 unknown
+   entity -> 422 `INVALID_BODY` (no `records` array) -> 413 batch > 1000 -> anchor 422s. A source_ref
+   already linked to another company's row = per-record `failed` with
+   `errors.source_ref = "source_ref '...' is linked to a record in another company"`; read under the
+   wrong company lists the ref under `not_found`. Shared tables (`sales_agents`) are exempt from the
+   cross-company check.
    → `ac_company.sorento_company_code` (new column, required when `sink_impl='sorento'`);
    `SorentoSink` sends it on every call; a 422 anchor error = run failed with that code surfaced
    on the task (never per-record).
