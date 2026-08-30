@@ -130,6 +130,11 @@ class FetchResult:
     # hashes and reports zero - a run-history column, never a push decision.
     added_count: int = 0
     updated_count: int = 0
+    # Source-refs the reconcile diff found MISSING from a full extract that
+    # were previously known (plan 22 §2.5/S3, AC-22-16) - delete intents. Empty
+    # for every incremental fetch (a partial extract cannot prove absence) and
+    # for the API path (which stores no hashes at all).
+    delete_refs: List[str] = field(default_factory=list)
     # A source-owned resume point persisted to ``ac_watermark.cursor_json`` on a
     # clean batch (the DB source's own mark, which need not be a datetime).
     # ``None`` = leave the stored cursor untouched.

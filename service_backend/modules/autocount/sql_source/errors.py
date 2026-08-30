@@ -26,3 +26,11 @@ class SqlConnectError(SqlSourceError):
 
 class SqlQueryError(SqlSourceError):
     """The source rejected the statement (sanitised driver message, AC-22-06)."""
+
+
+class SqlDeleteGuardExceeded(SqlSourceError):
+    """A reconcile (or no-watermark) diff found more delete intents than the
+    safety threshold allows (AC-22-22) - raised from ``fetch_changes`` itself,
+    BEFORE any hash write, so the run fails with nothing staged and nothing
+    pushed (fail-safe means the adds/updates in the same extract are held
+    too, not just the deletes)."""

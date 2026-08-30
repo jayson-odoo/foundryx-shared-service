@@ -50,6 +50,7 @@ from ..client import CallRecord
 from ..mapping import IdentityError, flat_source_ref
 from ..models import (
     RUN_MODE_MANUAL,
+    RUN_MODE_RECONCILE,
     SOURCE_IMPL_SQL_DB,
     AcRowHash,  # noqa: F401 - documents what ``persist_hashes`` writes
 )
@@ -62,7 +63,7 @@ from ..sources import (
     register_source,
 )
 from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
-from .errors import SqlQueryError, SqlSourceError
+from .errors import SqlDeleteGuardExceeded, SqlQueryError, SqlSourceError
 from .guard import assert_select_only, normalize_statement, top_level_words
 from .hashing import compared_columns_for, row_hash
 from .preview import json_safe
@@ -89,6 +90,15 @@ __all__ = [
 # deliberate act, not a silent degradation (the house line on the record cap).
 STREAM_BATCH = 1000
 MAX_EXTRACT_ROWS = 200_000
+
+# ── delete guard (plan 22 §2.5, AC-22-22) ────────────────────────────────────
+# A reconcile that would delete more than this fraction (or this many rows,
+# whichever is larger) of the known population fails SAFE instead of pushing
+# nothing-was-there. A broken query / a connection that returned early both
+# look, structurally, exactly like "everything vanished" - the guard is the
+# only thing standing between that and a mass unintended delete.
+DELETE_GUARD_RATIO = 0.2
+DELETE_GUARD_MIN_ABSOLUTE = 50
 
 # The cursor key the DB source keeps its own mark under. It lives in
 # ``ac_watermark.cursor_json`` rather than ``last_modified_at`` because the
@@ -355,12 +365,24 @@ class SqlDbSource:
         cursor = since.cursor if isinstance(since.cursor, dict) else {}
         stored_mark = cursor.get(CURSOR_MARK) if cursor.get(CURSOR_COLUMN) == self.watermark_column else None
         mark = _decode_mark(stored_mark) if stored_mark is not None else None
-        incremental = bool(self.watermark_column) and mark is not None
+
+        #     !!  RECONCILE (AND A NO-WATERMARK TASK) ALWAYS FULL-EXTRACTS.  !!
+        # Reconcile explicitly ignores the stored mark for FILTERING (plan §2.5
+        # "full <query> extract, ignore watermark") - it still ADVANCES the
+        # watermark from whatever it reads, if the column is configured (below).
+        # A task with no watermark column has nothing to filter by in the first
+        # place, so every one of its "incremental" runs is mechanically this
+        # same full-extract diff (AC-22-12/S3 item 6) - the MODE recorded on the
+        # run stays whatever the caller asked for (``incremental``), only the
+        # MECHANICS change here.
+        full_extract = self.mode == RUN_MODE_RECONCILE or not self.watermark_column
+        read_mark = None if full_extract else mark
+        incremental = bool(self.watermark_column) and read_mark is not None
 
         started = time.monotonic()
         window_to = datetime.now(timezone.utc)
         try:
-            raw_rows = self._read(mark)
+            raw_rows = self._read(read_mark)
         except SqlSourceError as exc:
             self._record_call(started, rows=0, incremental=incremental, error=exc.message)
             raise
@@ -372,7 +394,17 @@ class SqlDbSource:
         max_seen: Optional[datetime] = None
         new_mark: Any = stored_mark
 
-        prior = self._prior_hashes(raw_rows)
+        # A full extract diffs against the WHOLE known population (a ref
+        # never seen in THIS batch is exactly how a delete becomes visible);
+        # a partial incremental only ever needs the refs it actually touched.
+        known = (
+            RowHashRepository(self._ctx.db).all_hashes(
+                self._ctx.tenant_id, self._ctx.company.id, self.entity_type
+            )
+            if full_extract
+            else self._prior_hashes(raw_rows)
+        )
+        current_refs: set[str] = set()
         for raw in raw_rows:
             stamp = None
             if self.watermark_column:
@@ -383,7 +415,9 @@ class SqlDbSource:
                 # here (S2 review SHOULD-FIX 3): Postgres sorts NULLS LAST by
                 # default, so a NULL trailing row would otherwise overwrite a
                 # real mark with None and strand the cursor - the next run
-                # would initial-load forever.
+                # would initial-load forever. This also covers reconcile's
+                # "the watermark also advances when the column is present"
+                # (plan §2.5 item 3) - the loop is unconditioned on mode.
                 if value is not None:
                     new_mark = _encode_mark(value)
                 stamp = _as_utc(value)
@@ -398,12 +432,30 @@ class SqlDbSource:
                 # must not take the whole run down, and it has no ref to key a
                 # hash on either.
                 continue
+            current_refs.add(ref)
             value_hash = row_hash(raw, self.compared_columns)
             hashes[ref] = value_hash
-            if ref not in prior:
+            if ref not in known:
                 added += 1
-            elif prior[ref] != value_hash:
+            elif known[ref] != value_hash:
                 updated += 1
+
+        #     !!  DELETE GUARD - FAIL SAFE, NOTHING PROPAGATES (AC-22-22).  !!
+        # Raised BEFORE any hash write below, so a run this catches stages and
+        # pushes NOTHING at all (not just the deletes) - a broken query or a
+        # connection that dropped mid-extract must never read as "everything
+        # else vanished too".
+        delete_refs: List[str] = []
+        if full_extract and known:
+            delete_refs = sorted(ref for ref in known if ref not in current_refs)
+            threshold = max(DELETE_GUARD_RATIO * len(known), DELETE_GUARD_MIN_ABSOLUTE)
+            if len(delete_refs) > threshold:
+                raise SqlDeleteGuardExceeded(
+                    f"This run would delete {len(delete_refs)} of {len(known)} "
+                    f"previously-known row(s) - over the safety threshold "
+                    f"({threshold:.0f}). Nothing was staged or pushed. Check the "
+                    f"query and the connection, then re-run reconcile."
+                )
 
         if self.persist_hashes and hashes:
             RowHashRepository(self._ctx.db).upsert_many(
@@ -421,12 +473,13 @@ class SqlDbSource:
         return FetchResult(
             records=records,
             max_last_modified=max_seen,
-            window_from=_as_utc(mark) if incremental else None,
+            window_from=_as_utc(read_mark) if incremental else None,
             window_to=window_to,
             reported_total=None,
             rows_scanned=len(raw_rows),
             added_count=added,
             updated_count=updated,
+            delete_refs=delete_refs,
             cursor=(
                 {CURSOR_COLUMN: self.watermark_column, CURSOR_MARK: new_mark}
                 if self.watermark_column and new_mark is not None

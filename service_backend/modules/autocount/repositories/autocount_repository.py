@@ -604,6 +604,56 @@ class RowHashRepository:
             .count()
         )
 
+    def all_hashes(
+        self, tenant_id: str, company_id: str, entity_type: str
+    ) -> dict[str, str]:
+        """Every stored ``{source_ref: row_hash}`` for one (tenant, company,
+        entity) - plan 22 S3's reconcile diff needs the WHOLE known population,
+        not just the refs a partial fetch happened to touch (that is the only
+        way a ref absent from an extract becomes visible at all, AC-22-16).
+
+        Bounded the same way a full extract is - a reconcile task's hash
+        population is the same order of magnitude as the table it mirrors.
+        """
+        rows = (
+            self.db.query(AcRowHash.source_ref, AcRowHash.row_hash)
+            .filter(
+                AcRowHash.tenant_id == tenant_id,
+                AcRowHash.company_id == company_id,
+                AcRowHash.entity_type == entity_type,
+            )
+            .all()
+        )
+        return {ref: value for ref, value in rows}
+
+    def delete_many(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        source_refs: Sequence[str],
+    ) -> int:
+        """Remove the hash rows for CONFIRMED-DELETED refs (AC-22-21) - so a
+        later re-appearance at source has no prior hash to compare against and
+        stages as a fresh add, not a phantom update. Chunked like every other
+        ``IN`` list here. Does not commit; the caller owns the transaction."""
+        refs = [r for r in dict.fromkeys(source_refs) if r]
+        deleted = 0
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            deleted += (
+                self.db.query(AcRowHash)
+                .filter(
+                    AcRowHash.tenant_id == tenant_id,
+                    AcRowHash.company_id == company_id,
+                    AcRowHash.entity_type == entity_type,
+                    AcRowHash.source_ref.in_(chunk),
+                )
+                .delete(synchronize_session=False)
+            )
+        self.db.flush()
+        return deleted
+
 
 class SyncRunRepository:
     def __init__(self, db: Session):
