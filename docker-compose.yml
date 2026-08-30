@@ -148,10 +148,11 @@ services:
   # Hardened by deployment, not just by code: non-root, read-only rootfs,
   # no capabilities, no privilege escalation, memory/pids caps, and ONLY the
   # internal runner network (internal: true => no egress). It receives no
-  # database URL, Redis URL, Fernet key, or provider credential. The seccomp
-  # profile (deploy/code-runner-seccomp.json, synced by the deploy workflow)
-  # denies connect() - the runner only ever ACCEPTS, so even a jail escape
-  # cannot dial a peer on the internal network.
+  # database URL, Redis URL, Fernet key, or provider credential. Egress is
+  # blocked by the internal-only network itself (internal: true), so the
+  # runner cannot dial any peer even if a jailed script tried - no seccomp
+  # profile needed (an external profile broke container start on hosts whose
+  # libseccomp rejected newer syscall names; the network is the real boundary).
   code_runner:
     image: ${IMAGE_REPO:-jayson1004/foundryx-shared-service}:code-runner-${IMAGE_TAG:-latest}
     build:
@@ -165,7 +166,6 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
-      - seccomp:./deploy/code-runner-seccomp.json
     mem_limit: 512m
     pids_limit: 64
     healthcheck:
