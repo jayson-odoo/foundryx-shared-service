@@ -669,16 +669,9 @@ export interface AutocountEtlTask {
   lastRunErrorCode: AutocountAnchorErrorCode | string | null;
   /**
    * When the scheduler will next fire each cadence (plan 22 §2.6, slice S3).
-   * Read-only, server-stamped; null while the task is not `active` (draft and
-   * paused carry no next run - PUT/pause clears them, activate/resume arms
-   * them). Recomputed whenever the task is active.
-   *
-   * PHASE 1 MOCK: the backend already stores `next_incremental_at`/
-   * `next_reconcile_at` (armed by `EtlService.next_run_times` at activate) but
-   * does not put them on the wire yet - `services/autocount-service.mock.ts
-   * withPhase1NextRunMock` computes an equivalent stand-in client-side over
-   * every real task response. Swap is a no-op once the S3 backend adds them to
-   * `EtlTaskResponse`.
+   * Read-only, server-stamped (`EtlService.next_run_times`); null while the
+   * task is not `active` (draft and paused carry no next run - pause clears
+   * them, activate/resume arms them); recomputed on every PUT while active.
    */
   nextIncrementalAt: string | null; // ISO Z
   nextReconcileAt: string | null; // ISO Z
