@@ -29,7 +29,10 @@ def main() -> None:
     if settings.environment == "development":
         from app.models.tenant import DEFAULT_TENANT_ID
         from modules.omnichannel.bootstrap import seed_demo_conversations
-        from modules.omnichannel.services.seed_demo_workflow import seed_demo_ai_workflow
+        from modules.omnichannel.services.seed_demo_workflow import (
+            seed_demo_ai_workflow,
+            seed_demo_progress_workflow,
+        )
 
         db = SessionLocal()
         try:
@@ -37,6 +40,8 @@ def main() -> None:
             print("omnichannel: demo conversations seeded")
             seed_demo_ai_workflow(db, DEFAULT_TENANT_ID)
             print("omnichannel: demo AI workflow seeded")
+            seed_demo_progress_workflow(db, DEFAULT_TENANT_ID)
+            print("omnichannel: demo progress-update workflow seeded")
         finally:
             db.close()
 
