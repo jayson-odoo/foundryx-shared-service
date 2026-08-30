@@ -339,6 +339,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 preview={etlPreview}
                 lifecycle={lifecycle}
                 onRan={onRan}
+                entities={detail?.entities ?? []}
               />
             </div>
           ),

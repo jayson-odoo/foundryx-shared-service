@@ -20,8 +20,8 @@ import type {
 } from '@/hooks/use-autocount-etl';
 import { useCan } from '@/hooks/use-can';
 import { useDatetime } from '@/hooks/use-datetime';
-import { activatePrerequisites, anchorErrorTitle } from '@/lib/autocount-etl';
-import type { AutocountCompany, AutocountEtlTask } from '@/types/autocount';
+import { activatePrerequisites, anchorErrorTitle, productDependencyWarning } from '@/lib/autocount-etl';
+import type { AutocountCompany, AutocountEntityConfig, AutocountEtlTask } from '@/types/autocount';
 import { AC_SYNC_RUN, acCompanyHref } from '../../../../../components/autocount-meta';
 
 export interface ActivateTabProps {
@@ -33,6 +33,10 @@ export interface ActivateTabProps {
   lifecycle: UseEtlTaskLifecycleResult;
   /** A manual run finished - the Runs tab should reload. */
   onRan: () => void;
+  /** The company's already-fetched entity list (plan 22 S4, AC-22-23) - lets
+   * this tab derive the product/category/UOM dependency heads-up with no
+   * extra request. Optional so existing callers are unaffected. */
+  entities?: AutocountEntityConfig[];
 }
 
 /**
@@ -50,6 +54,7 @@ export function ActivateTab({
   preview,
   lifecycle,
   onRan,
+  entities = [],
 }: ActivateTabProps) {
   const { formatDateTime } = useDatetime();
   const { can } = useCan();
@@ -62,6 +67,10 @@ export function ActivateTab({
   const canRun = can(AC_SYNC_RUN);
   const prerequisites = activatePrerequisites({ company, task, configDirty });
   const blocked = prerequisites.length > 0;
+  // A WARNING, never a block (AC-22-23): the retryable/carry-over mechanism
+  // makes activating a `product` task before its category/UOM dependency
+  // perfectly safe - it just resolves on a later run instead of the next one.
+  const dependencyWarning = productDependencyWarning(task.entityType, entities);
   const status = task.etlStatus;
   const busy = lifecycle.busy !== null || preview.state.status === 'loading';
   const previewOk = Boolean(task.lastPreviewAt);
@@ -103,6 +112,15 @@ export function ActivateTab({
           </AlertTitle>
         </Alert>
       ))}
+
+      {dependencyWarning && (
+        <Alert variant="warning" appearance="light" data-testid="activate-dependency-warning">
+          <AlertIcon>
+            <TriangleAlert />
+          </AlertIcon>
+          <AlertTitle>{dependencyWarning}</AlertTitle>
+        </Alert>
+      )}
 
       {lifecycle.error && (
         <Alert variant="destructive" appearance="light" data-testid="lifecycle-error">

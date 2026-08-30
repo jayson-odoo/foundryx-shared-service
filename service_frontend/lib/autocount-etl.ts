@@ -5,6 +5,7 @@
 import type {
   AutocountAnchorErrorCode,
   AutocountCompany,
+  AutocountEntityConfig,
   AutocountEtlSourceConfig,
   AutocountEtlTask,
   AutocountEtlTaskError,
@@ -120,6 +121,36 @@ export function activatePrerequisites(input: {
     out.push({ kind: 'keys', message: 'No key columns picked yet.' });
   }
   return out;
+}
+
+// ── plan 22 S4 - dependency-order heads-up (AC-22-23) ────────────────────────
+// A `product` task can be activated with no category/UOM task active - the
+// mechanism (retryable stays staged, re-offered next run) makes this SAFE, so
+// this is a WARNING chip, never a block (foolproof-UI: warn on missing
+// prerequisites, don't refuse a valid action). Derived from the company's
+// ALREADY-FETCHED entity list - no extra request.
+const PRODUCT_DEPENDENCIES: { entityType: string; label: string }[] = [
+  { entityType: 'product_category', label: 'category' },
+  { entityType: 'unit_of_measure', label: 'unit of measure' },
+];
+
+/**
+ * Non-null only for a `product` task whose company has no ACTIVE category
+ * and/or unit-of-measure task yet - such a product lands `retryable` on
+ * Sorento until that dependency syncs (AC-22-23), which resolves on its own
+ * on the next run once it does.
+ */
+export function productDependencyWarning(
+  entityType: string,
+  entities: Pick<AutocountEntityConfig, 'entityType' | 'etlStatus'>[],
+): string | null {
+  if (entityType !== 'product') return null;
+  const missing = PRODUCT_DEPENDENCIES.filter(
+    (dep) => !entities.some((e) => e.entityType === dep.entityType && e.etlStatus === 'active'),
+  );
+  if (missing.length === 0) return null;
+  const names = missing.map((d) => d.label).join(' and ');
+  return `No active ${names} task on this company yet - this product may land retryable until it does.`;
 }
 
 const ANCHOR_TITLES: Record<AutocountAnchorErrorCode, string> = {
