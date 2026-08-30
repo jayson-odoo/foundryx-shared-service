@@ -44,6 +44,14 @@ class WriteResult:
     # True when nothing actually left the process. The approval surface reads
     # this rather than guessing from ``ok``.
     delivered: bool = False
+    #     !!  ``retryable`` AND ``failed`` NEED OPPOSITE HANDLING.  !!
+    # The consumer's own verdict word, carried STRUCTURALLY rather than left
+    # buried in ``message``: ``retryable`` means nothing was written and a
+    # dependency is missing, so the record must be re-offered on the next
+    # unattended run; ``failed`` means the DATA was rejected, so re-offering it
+    # just re-fails forever and pins the task's health signal red. Empty for a
+    # sink with no verdict vocabulary (the logging no-op).
+    outcome: str = ""
 
 
 class EntitySink(Protocol):

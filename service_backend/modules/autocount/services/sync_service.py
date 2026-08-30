@@ -43,6 +43,7 @@ from ..models import (
     SINK_IMPL_LOGGING,
     SINK_IMPL_SORENTO,
     STAGED_DISCARDED,
+    STAGED_FAILED,
     STAGED_PUSHED,
     AcStagedRecord,
     AcSyncRun,
@@ -525,14 +526,23 @@ class SyncService:
                     sink.write(record, request_id=f"{job_id}:{row.id}")
                     for row, record in zip(rows, records)
                 ]
+            quarantined: List[AcStagedRecord] = []
             for row, result in zip(rows, results):
                 if result.ok:
                     pushed.append(row)
                     summary["delivered"] = summary["delivered"] or result.delivered
-                else:
-                    # A ``retryable`` verdict leaves the row STAGED - the next
-                    # run re-offers it once its dependency lands (AC-22-20).
-                    failures.append({"sourceRef": row.source_ref, "error": result.message})
+                    continue
+                failures.append({"sourceRef": row.source_ref, "error": result.message})
+                #     !!  RETRY ``retryable``; QUARANTINE ``failed``.  !!
+                # A ``retryable`` verdict means nothing was written and a
+                # dependency is missing, so the row stays STAGED and the next
+                # run re-offers it (AC-22-20). A ``failed`` verdict means the
+                # DATA was rejected - re-offering it re-fails on every run
+                # forever and pins the task permanently red (seen live: a
+                # customer code already linked to another source in Sorento).
+                # Quarantining matches D13's "FAILED is never pushable".
+                if result.outcome and result.outcome != "retryable":
+                    quarantined.append(row)
         except SinkAnchorError as exc:
             # TASK-level, never per record (Appendix A6): the company anchor is
             # wrong, so no record was even looked at. Everything stays STAGED.
@@ -551,7 +561,10 @@ class SyncService:
             return summary
 
         self.staged.mark(pushed, status=STAGED_PUSHED, pushed_at=datetime.now(timezone.utc))
+        if quarantined:
+            self.staged.mark(quarantined, status=STAGED_FAILED)
         summary["pushed"] = len(pushed)
+        summary["quarantined"] = len(quarantined)
         summary["pushFailures"] = failures
         if failures:
             # Repeated delivery failures must surface on the task, never

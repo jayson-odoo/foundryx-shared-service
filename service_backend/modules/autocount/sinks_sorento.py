@@ -430,6 +430,9 @@ class SorentoSink:
             # batch-level anomaly for this row, never as a silent success.
             return WriteResult(
                 ok=False, sink=self.name, external_id=None, delivered=False,
+                # No verdict at all is a batch-level ANOMALY, not a data
+                # rejection - re-offering it next run is the safe reading.
+                outcome="retryable",
                 message=f"Sorento returned no verdict for {ref}.",
             )
         outcome = str(verdict.get("outcome") or "")
@@ -437,12 +440,13 @@ class SorentoSink:
         if delivered:
             return WriteResult(
                 ok=True, sink=self.name, external_id=verdict.get("entity_id"),
-                delivered=True, message=outcome,
+                delivered=True, message=outcome, outcome=outcome,
             )
         if outcome == "retryable":
             # Must not happen for masters (AC-14-24). Loud, not re-queued.
             return WriteResult(
                 ok=False, sink=self.name, external_id=None, delivered=False,
+                outcome=outcome,
                 message=(
                     f"Sorento reported '{ref}' retryable - a referenced master is "
                     "unsynced. This should be unreachable for suppliers/customers; "
@@ -452,6 +456,7 @@ class SorentoSink:
         errors = verdict.get("errors") or {}
         return WriteResult(
             ok=False, sink=self.name, external_id=None, delivered=False,
+            outcome=outcome or "failed",
             message=f"Sorento rejected '{ref}': {json.dumps(errors) if errors else outcome}",
         )
 

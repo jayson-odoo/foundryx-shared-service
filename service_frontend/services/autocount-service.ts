@@ -3,11 +3,11 @@
  * `/autocount/*` surfaces talk to via hooks. The interface IS the backend
  * contract: `modules/autocount/routers/{companies,sync}.py`.
  *
- * The shipped binding is `.real` - the backend is live. A `.mock` sibling
- * exists ONLY as frontend-first scaffolding for the dry-run review states
- * (previewable / not-previewable / failure) and the Vitest suite; flip the
- * export at the bottom to `mockAutocountService` to build against it, back to
- * `.real` to ship (the house service-trio pattern).
+ * The shipped binding is `.real` - the whole surface, S2 included, is backed
+ * by FastAPI. A `.mock` sibling exists ONLY as frontend-first scaffolding for
+ * the dry-run review states (previewable / not-previewable / failure) and the
+ * Vitest suite; flip the export at the bottom to `mockAutocountService` to
+ * build against it, back to `.real` to ship (the house service-trio pattern).
  *
  * Permission gates (module CSV, granted to tenant Admin by `AppStoreService`
  * on install): `autocount.companies.read/manage`, `autocount.sync.read/run`.
@@ -41,7 +41,6 @@ import type {
   AutocountSyncRun,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
-import { withPhase1EtlMock } from './autocount-service.mock';
 import { realAutocountService } from './autocount-service.real';
 
 export interface AutocountListQuery {
@@ -315,13 +314,8 @@ export interface AutocountService {
   ): Promise<ListResult<AutocountSyncRun>>;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// PHASE 1 MOCK (plan 22 S2) - the S1 endpoints are real; the S2 additions
-// (preview / activate / pause / resume / run / runs, the `sourceImpl` switch,
-// `sorentoCompanyCode`, and the task's new read-only fields) are served by an
-// in-memory OVERLAY on top of the real service so every S2 state is tunable
-// with no backend while the rest of the AutoCount surfaces keep their real
-// data. Phase 2 swap = `export const autocountService = realAutocountService`.
-// Backlog on merge if it survives the slice.
-// ═══════════════════════════════════════════════════════════════════════════
-export const autocountService: AutocountService = withPhase1EtlMock(realAutocountService);
+// The S2 backend is LIVE, so the phase-1 overlay is gone from the shipped
+// binding (the swap the Definition-of-Done gate demands). `autocount-service.mock`
+// survives only as Vitest scaffolding - importing it here again would put a
+// mock back in front of real data.
+export const autocountService: AutocountService = realAutocountService;

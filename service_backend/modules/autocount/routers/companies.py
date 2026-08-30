@@ -570,6 +570,9 @@ def run_etl_task(
     company_id: str,
     entity_type: str,
     current_user: User = Depends(require_permission("autocount.sync.run")),
+    # The REAL user under impersonation (writes are never attributed to the
+    # target) - a dependency, so FastAPI supplies the request it needs.
+    actor_id: str = Depends(get_actor_user_id),
     db: Session = Depends(get_db),
 ):
     """Enqueue ONE manual run - the SAME job the sweep enqueues (AC-22-13).
@@ -580,7 +583,7 @@ def run_etl_task(
             current_user.tenant_id,
             company_id,
             entity_type,
-            actor_user_id=get_actor_user_id(current_user),
+            actor_user_id=actor_id,
         )
     except AutocountServiceError as exc:
         return _raise_task(exc)

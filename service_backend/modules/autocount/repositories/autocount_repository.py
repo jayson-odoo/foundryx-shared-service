@@ -15,10 +15,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Sequence, Tuple
 
-from sqlalchemy import Text, cast, or_
+from sqlalchemy import Text, cast, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.background_job import BackgroundJob
+from app.models.background_job import (
+    JOB_NEEDS_REVIEW,
+    JOB_PENDING,
+    JOB_RUNNING,
+    BackgroundJob,
+)
 from app.models.connection import Connection
 
 from ..models import (
@@ -31,6 +36,11 @@ from ..models import (
     AcSyncRun,
     AcWatermark,
 )
+
+# A job that is ACTUALLY EXECUTING. ``needs_review`` is deliberately absent -
+# it is non-terminal but parked on a human, not running (see
+# ``SyncJobRepository.first_unfinished``).
+RUNNING_JOB_STATUSES = (JOB_PENDING, JOB_RUNNING)
 
 # Chunk size for an ``IN (...)`` list - a 50k-row extract must never build one
 # enormous parameter list (several drivers cap it outright).
@@ -421,16 +431,33 @@ class StagedRecordRepository:
         *,
         limit: int = 5000,
     ) -> List[AcStagedRecord]:
-        """Every STAGED row for one (company, entity), OLDEST FIRST - across
-        jobs (plan 22 §2.6, AC-22-20).
+        """Every AUTO-PUSHABLE staged row for one (company, entity), oldest
+        first - across jobs (plan 22 §2.6, AC-22-20).
 
-        An auto-pushing task has no per-job review gate, so "what is still
-        undelivered" is an ENTITY-level question: a record the consumer called
-        ``retryable`` (a master it depends on is not synced yet) stays STAGED
-        and must be re-offered by the NEXT run, which is a different job. The
-        per-JOB ``list_pending_for_job`` stays exactly as it is - the review
-        gate is a per-batch decision and must not widen.
+        Two rules, and the second one is a safety gate:
+
+        * **Across jobs**, because an auto-pushing task has no per-job review
+          gate and "what is still undelivered" is an ENTITY-level question: a
+          record the consumer called ``retryable`` stays STAGED and must be
+          re-offered by the NEXT run, which is a different job.
+        * **NEVER a row belonging to a batch that is still awaiting review.**
+          An entity switched from the API path to a DB task can carry old
+          ``needs_review`` batches (the API path parks them there by design).
+          Auto-pushing those would deliver records a human explicitly still
+          owns - the review gate bypassed by a source switch. Those rows stay
+          exactly where they are until somebody approves or discards them.
+
+        The per-JOB ``list_pending_for_job`` is untouched: the review gate is a
+        per-batch decision and must not widen.
         """
+        parked = (
+            self.db.query(BackgroundJob.id)
+            .filter(
+                BackgroundJob.tenant_id == tenant_id,
+                BackgroundJob.status == JOB_NEEDS_REVIEW,
+            )
+            .subquery()
+        )
         return (
             self.db.query(AcStagedRecord)
             .filter(
@@ -438,6 +465,7 @@ class StagedRecordRepository:
                 AcStagedRecord.company_id == company_id,
                 AcStagedRecord.entity_type == entity_type,
                 AcStagedRecord.status == STAGED,
+                AcStagedRecord.job_id.notin_(select(parked.c.id)),
             )
             .order_by(AcStagedRecord.created_at.asc(), AcStagedRecord.id.asc())
             .limit(limit)
@@ -634,22 +662,26 @@ class SyncJobRepository:
     def first_unfinished(
         self, tenant_id: str, job_type: str, company_id: str, entity_type: str
     ) -> Optional[BackgroundJob]:
-        """The oldest NON-TERMINAL job for one (company, entity), if any.
+        """The oldest job for one (company, entity) that is ACTUALLY EXECUTING.
 
-        The overlap guard (AC-22-14) and the manual-run 409 both ask this same
-        question: "is a run for this task already in flight?". ``needs_review``
-        counts as in flight on purpose - it is a deliberately non-terminal
-        status the pruner never reaps, so a batch waiting on a human IS still
-        an unfinished run of this task.
+        The overlap guard (AC-22-14) and the manual-run 409 both ask the same
+        question: "is a run for this task already in flight?" - so the answer
+        is ``pending``/``running`` only.
+
+            !!  ``needs_review`` IS NOT IN FLIGHT.  !!
+
+        It is a deliberately non-terminal status the pruner never reaps, and a
+        batch parked there is not executing - it is waiting on a human, maybe
+        forever. Counting it as in-flight would let an old API-path batch
+        permanently refuse every run of the DB task that replaced it (found in
+        live verify: four July batches blocked Run now outright).
         """
-        from app.models.background_job import JOB_TERMINAL_STATUSES
-
         return (
             self.db.query(BackgroundJob)
             .filter(
                 BackgroundJob.tenant_id == tenant_id,
                 BackgroundJob.type == job_type,
-                BackgroundJob.status.notin_(JOB_TERMINAL_STATUSES),
+                BackgroundJob.status.in_(RUNNING_JOB_STATUSES),
                 BackgroundJob.payload_json["companyId"].as_string() == company_id,
                 BackgroundJob.payload_json["entityType"].as_string() == entity_type,
             )

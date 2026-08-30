@@ -63,7 +63,7 @@ from .canonical.masters import (
     VENDOR_LAST_MODIFIED_PATH,
 )
 from .client import AutoCountError
-from .mapping import MappedDocument, MappingEngine
+from .mapping import MappedDocument, MappingEngine, flat_profile
 from .models import (
     ETL_STATUS_ACTIVE,
     RUN_ABORTED,
@@ -422,6 +422,17 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         # ``None`` = the entity profile's own key (masters have none, being flat).
         detail_key=VENDOR_DETAIL_KEYS.get(entity_type),
         entity_type=entity_type,
+        #     !!  THE PROFILE MUST MATCH THE SOURCE THAT PRODUCED THE ROWS.  !!
+        # The API path's rows are the vendor envelope, so identity reads
+        # ``Data.0.AutoKey``; a DB task's rows are FLAT, so identity is minted
+        # from the task's key columns (AC-22-09/10). Using the API profile on
+        # flat rows fails EVERY record with "carries no Data.0.AutoKey" - which
+        # reads like a mapping mistake and is not one.
+        profile=(
+            flat_profile(entity_type, (config.source_config or {}).get("keyColumns") or [])
+            if config.source_impl == SOURCE_IMPL_SQL_DB
+            else None
+        ),
         # Masters mint a COMPANY-QUALIFIED ``source_ref`` (AC-14-10). The name
         # comes from the discovered company, never from operator input - and it
         # is what stops company B's ``AutoKey=1`` overwriting company A's.
