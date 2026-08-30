@@ -4,7 +4,9 @@ import { PRESETS, TRANSFORM_PRESET } from '@/lib/autocount-formula';
 import type {
   AutocountEtlStatus,
   AutocountJobStatus,
+  AutocountRunMode,
   AutocountRunOutcome,
+  AutocountSourceImpl,
   AutocountStagedStatus,
 } from '@/types/autocount';
 
@@ -33,9 +35,25 @@ export function acMappingHref(companyId: string, entityType: string): string {
   return `${AC_COMPANIES_PATH}/${companyId}/entities/${encodeURIComponent(entityType)}/mapping`;
 }
 
+/** The task editor's tabs (plan 22 §3) - `?tab=` deep-links one. */
+export type AcTaskTab = 'query' | 'mapping' | 'schedule' | 'activate' | 'runs';
+
 /** The per-(company, entity) Database-mode task editor (plan 22, AC-22-07). */
-export function acTaskHref(companyId: string, entityType: string): string {
-  return `${AC_COMPANIES_PATH}/${companyId}/entities/${encodeURIComponent(entityType)}`;
+export function acTaskHref(companyId: string, entityType: string, tab?: AcTaskTab): string {
+  const base = `${AC_COMPANIES_PATH}/${companyId}/entities/${encodeURIComponent(entityType)}`;
+  return tab && tab !== 'query' ? `${base}?tab=${tab}` : base;
+}
+
+// ── entity source (plan 22 S2, AC-22-08) ─────────────────────────────────────
+
+/** The two sources an entity can read from - the picker's ONLY options. */
+export const AC_SOURCE_IMPL_OPTIONS: { value: AutocountSourceImpl; label: string }[] = [
+  { value: 'autocount_read', label: 'AutoCount API' },
+  { value: 'sql_db', label: 'Database' },
+];
+
+export function sourceImplLabel(impl: string): string {
+  return AC_SOURCE_IMPL_OPTIONS.find((o) => o.value === impl)?.label ?? humanizeFieldKey(impl);
 }
 
 // ── transforms (mapping editor picker; mirrors backend mapping.py TRANSFORMS) ──
@@ -141,6 +159,15 @@ export const AC_RUN_OUTCOME_REGISTRY: StatusRegistry<AutocountRunOutcome> = {
   SUCCESS: { label: 'Success', tone: 'success' },
   FAILED: { label: 'Failed', tone: 'destructive' },
   ABORTED: { label: 'Aborted', tone: 'warning' },
+  SKIPPED: { label: 'Skipped', tone: 'secondary' },
+};
+
+/** How a run started (plan 22 §2.7) - the Runs tab's mode badge (AC-22-17). */
+export const AC_RUN_MODE_REGISTRY: StatusRegistry<AutocountRunMode> = {
+  manual: { label: 'Manual', tone: 'primary' },
+  incremental: { label: 'Incremental', tone: 'success' },
+  reconcile: { label: 'Reconcile', tone: 'info' },
+  skipped: { label: 'Skipped', tone: 'warning' },
 };
 
 export const AC_JOB_STATUS_REGISTRY: StatusRegistry<AutocountJobStatus> = {

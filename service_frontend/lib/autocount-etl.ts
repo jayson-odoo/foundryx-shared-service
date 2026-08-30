@@ -3,6 +3,10 @@
  * editor, the SQL editor and the mock service. No React, no fetch.
  */
 import type {
+  AutocountAnchorErrorCode,
+  AutocountCompany,
+  AutocountEtlTask,
+  AutocountEtlTaskError,
   AutocountSqlPreview,
   AutocountSqlSchema,
 } from '@/types/autocount';
@@ -76,4 +80,98 @@ export function todayDateString(): string {
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
   return `${now.getFullYear()}-${month}-${day}`;
+}
+
+// ── plan 22 S2 - activation gate, anchor errors, run cost ────────────────────
+
+/** Why Activate / Run preview is withheld (foolproof-UI: stated, never silent). */
+export type EtlPrerequisiteKind = 'company' | 'sink' | 'companyCode' | 'query' | 'keys' | 'unsaved';
+
+export interface EtlPrerequisite {
+  kind: EtlPrerequisiteKind;
+  message: string;
+}
+
+/**
+ * The prerequisite warnings the Review & Activate tab shows in place of a
+ * guaranteed-to-fail Run preview / Activate (AC-22-18). Order = the order an
+ * operator fixes them: company delivery first, then the task itself.
+ */
+export function activatePrerequisites(input: {
+  company: AutocountCompany | null;
+  task: AutocountEtlTask;
+  configDirty: boolean;
+}): EtlPrerequisite[] {
+  const { company, task, configDirty } = input;
+  const out: EtlPrerequisite[] = [];
+  if (!company) {
+    out.push({ kind: 'company', message: 'Company details are still loading.' });
+  } else if (company.sinkImpl !== 'sorento') {
+    out.push({ kind: 'sink', message: 'This company has no delivery target (logging only).' });
+  } else if (!(company.sorentoCompanyCode ?? '').trim()) {
+    out.push({ kind: 'companyCode', message: 'This company has no Sorento company code.' });
+  }
+  if (configDirty) {
+    out.push({ kind: 'unsaved', message: 'Save the task first.' });
+  } else if (!task.sourceConfig.query.trim()) {
+    out.push({ kind: 'query', message: 'No query saved yet.' });
+  } else if (task.sourceConfig.keyColumns.length === 0) {
+    out.push({ kind: 'keys', message: 'No key columns picked yet.' });
+  }
+  return out;
+}
+
+const ANCHOR_TITLES: Record<AutocountAnchorErrorCode, string> = {
+  COMPANY_ANCHOR_REQUIRED: 'Sorento company code required',
+  UNKNOWN_COMPANY: 'Unknown Sorento company',
+  COMPANY_ANCHOR_AMBIGUOUS: 'Sorento company code is ambiguous',
+};
+
+/** True for one of Sorento's three company-anchor codes (Appendix A6). */
+export function isAnchorErrorCode(code: string | null | undefined): code is AutocountAnchorErrorCode {
+  return Boolean(code) && Object.prototype.hasOwnProperty.call(ANCHOR_TITLES, code as string);
+}
+
+/** The alert title for a task-level error code. */
+export function anchorErrorTitle(code: string | null | undefined): string {
+  return isAnchorErrorCode(code) ? ANCHOR_TITLES[code] : 'Task error';
+}
+
+/** Read the structured `{code, message}` detail of a task-level 422; null otherwise. */
+export function readTaskError(detail: unknown): AutocountEtlTaskError | null {
+  if (!detail || typeof detail !== 'object') return null;
+  const bag = detail as { code?: unknown; message?: unknown };
+  if (typeof bag.code !== 'string' || typeof bag.message !== 'string') return null;
+  return { code: bag.code, message: bag.message };
+}
+
+/** Run duration for the history list (cost per run, AC-22-17). */
+export function formatDurationMs(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return '-';
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return `${minutes} min ${seconds} s`;
+}
+
+/**
+ * The Mapping tab's source-column picker for a DB task (AC-22-09): the saved
+ * query's result columns, plus the columns of a preview run in THIS session
+ * (an unsaved query edit), plus whatever the existing rows already reference
+ * (so a stored mapping renders instead of silently blanking). Order-preserving,
+ * de-duplicated.
+ */
+export function mappingSourceColumns(
+  resultColumns: string[],
+  previewColumns: string[],
+  mappedPaths: string[],
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const name of [...resultColumns, ...previewColumns, ...mappedPaths]) {
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
 }

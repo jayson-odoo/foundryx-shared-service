@@ -31,6 +31,7 @@ import {
   type AutocountCompany,
   type AutocountEntityConfig,
   type AutocountSinkImpl,
+  type AutocountSourceImpl,
 } from '@/types/autocount';
 import {
   AC_COMPANIES_MANAGE,
@@ -43,6 +44,7 @@ import {
 } from '../../components/autocount-meta';
 import { DetailRow } from './detail-row';
 import { EntityLookbackDialog } from './entity-lookback-dialog';
+import { EntitySourceDialog } from './entity-source-dialog';
 import { SinkTargetSection } from './sink-target-section';
 import { useAutocountEntitiesListConfig } from './use-entities-list-config';
 import { useAutocountRunsListConfig } from './use-runs-list-config';
@@ -68,6 +70,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   const [runsKey, setRunsKey] = useState(0);
   const [outcome, setOutcome] = useState<SyncOutcome | null>(null);
   const [editing, setEditing] = useState<AutocountEntityConfig | null>(null);
+  const [switching, setSwitching] = useState<AutocountEntityConfig | null>(null);
 
   // Push-target working state - lifted here so the ONE Overview Resource form
   // owns its dirty flag + single save (AC-15-20), not a detached card button.
@@ -75,8 +78,10 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   const persistedSink: AutocountSinkImpl =
     loadedCompany?.sinkImpl === 'sorento' ? 'sorento' : 'logging';
   const persistedConnectionId = loadedCompany?.sinkConnectionId ?? null;
+  const persistedCompanyCode = loadedCompany?.sorentoCompanyCode ?? '';
   const [sinkImpl, setSinkImpl] = useState<AutocountSinkImpl>('logging');
   const [sinkConnectionId, setSinkConnectionId] = useState<string | null>(null);
+  const [companyCode, setCompanyCode] = useState('');
 
   // Re-seed from the persisted values whenever THEY change (after a save/reload).
   // Keyed on the persisted fields, not the whole `detail` object, so a
@@ -85,7 +90,8 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   useEffect(() => {
     setSinkImpl(persistedSink);
     setSinkConnectionId(persistedConnectionId);
-  }, [persistedSink, persistedConnectionId]);
+    setCompanyCode(persistedCompanyCode);
+  }, [persistedSink, persistedConnectionId, persistedCompanyCode]);
 
   const onSinkChange = useCallback((impl: AutocountSinkImpl) => {
     setSinkImpl(impl);
@@ -96,18 +102,26 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
 
   const sinkDirty =
     sinkImpl !== persistedSink ||
-    (sinkImpl === 'sorento' && sinkConnectionId !== persistedConnectionId);
+    (sinkImpl === 'sorento' &&
+      (sinkConnectionId !== persistedConnectionId ||
+        companyCode.trim() !== persistedCompanyCode.trim()));
 
   const onSavePushTarget = useCallback(async (): Promise<boolean> => {
-    // Foolproof-UI: a Sorento delivery cannot be saved without a connection.
+    // Foolproof-UI: a Sorento delivery cannot be saved without a connection,
+    // nor without the company code every Sorento call is anchored on (A6).
     if (sinkImpl === 'sorento' && !sinkConnectionId) {
       toast.error('Choose a Sorento connection before saving.');
+      return false;
+    }
+    if (sinkImpl === 'sorento' && !companyCode.trim()) {
+      toast.error('Enter the Sorento company code before saving.');
       return false;
     }
     try {
       await autocountService.updateSinkTarget(companyId, {
         sinkImpl,
         sinkConnectionId: sinkImpl === 'sorento' ? sinkConnectionId : null,
+        sorentoCompanyCode: sinkImpl === 'sorento' ? companyCode.trim() : null,
       });
       toast.success('Push target updated.');
       reload();
@@ -118,12 +132,13 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
       );
       return false;
     }
-  }, [companyId, sinkConnectionId, sinkImpl, reload]);
+  }, [companyCode, companyId, sinkConnectionId, sinkImpl, reload]);
 
   const onCancelPushTarget = useCallback(() => {
     setSinkImpl(persistedSink);
     setSinkConnectionId(persistedConnectionId);
-  }, [persistedSink, persistedConnectionId]);
+    setCompanyCode(persistedCompanyCode);
+  }, [persistedSink, persistedConnectionId, persistedCompanyCode]);
 
   const onSync = useCallback(
     async (entityType: string) => {
@@ -189,9 +204,39 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
 
   const onConfigureMapping = useCallback(
     (entity: AutocountEntityConfig) => {
+      // A database-sourced entity maps its preview columns inside the task
+      // editor (plan 22 S2); the API path keeps the standalone mapping page.
+      if (entity.sourceImpl === 'sql_db') {
+        router.push(acTaskHref(companyId, entity.entityType, 'mapping'));
+        return;
+      }
       router.push(acMappingHref(companyId, entity.entityType));
     },
     [companyId, router],
+  );
+
+  const onChangeSource = useCallback((entity: AutocountEntityConfig) => {
+    setSwitching(entity);
+  }, []);
+
+  const onSaveSource = useCallback(
+    async (entityType: string, sourceImpl: AutocountSourceImpl) => {
+      try {
+        await autocountService.updateEntityConfig(companyId, entityType, { sourceImpl });
+        toast.success(
+          sourceImpl === 'sql_db'
+            ? 'Source switched to the database task.'
+            : 'Source switched to the AutoCount API.',
+        );
+        setSwitching(null);
+        reload();
+      } catch (error) {
+        toast.error(
+          error instanceof ApiError ? error.message : 'That source could not be switched.',
+        );
+      }
+    },
+    [companyId, reload],
   );
 
   const onConfigureTask = useCallback(
@@ -246,6 +291,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     onRefetch,
     onConfigureMapping,
     onConfigureTask,
+    onChangeSource,
   });
 
   const config = useMemo<ResourceFormConfig<AutocountCompany> | null>(() => {
@@ -303,6 +349,8 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
                 connectionId={sinkConnectionId}
                 onSinkChange={onSinkChange}
                 onConnectionChange={setSinkConnectionId}
+                companyCode={companyCode}
+                onCompanyCodeChange={setCompanyCode}
               />
             </div>
           ),
@@ -370,6 +418,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     };
   }, [
     can,
+    companyCode,
     detail,
     entitiesConfig,
     formatDateTime,
@@ -422,6 +471,11 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
         entity={editing}
         onClose={() => setEditing(null)}
         onSave={onSaveLookback}
+      />
+      <EntitySourceDialog
+        entity={switching}
+        onClose={() => setSwitching(null)}
+        onSave={onSaveSource}
       />
     </Container>
   );

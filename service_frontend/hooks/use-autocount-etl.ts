@@ -2,10 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '@/lib/api-client';
+import { readTaskError } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type {
   AutocountEtlSourceConfig,
   AutocountEtlTask,
+  AutocountEtlTaskError,
+  AutocountPreview,
   AutocountSqlConnection,
   AutocountSqlPreview,
   AutocountSqlSchema,
@@ -29,6 +32,8 @@ export interface UseAutocountEtlTaskResult {
   isSaving: boolean;
   /** Draft-save the source config. False (with `saveError`) on rejection. */
   save: (sourceConfig: AutocountEtlSourceConfig) => Promise<boolean>;
+  /** Adopt a task returned by a lifecycle call (activate/pause/resume/run/preview). */
+  apply: (task: AutocountEtlTask) => void;
   reload: () => void;
 }
 
@@ -105,7 +110,139 @@ export function useAutocountEtlTask(
     [companyId, entityType],
   );
 
-  return { task, isLoading, notFound, saveError, fieldErrors, isSaving, save, reload };
+  const apply = useCallback((next: AutocountEtlTask) => setTask(next), []);
+
+  return { task, isLoading, notFound, saveError, fieldErrors, isSaving, save, apply, reload };
+}
+
+// ── activation gate (plan 22 S2, AC-22-18, Appendix A6) ──────────────────────
+
+/**
+ * The dry-run states the Review & Activate tab designs: `error` is the dry
+ * run itself failing (502 - Activate stays withheld), `taskError` is a Sorento
+ * anchor 422 - a TASK-level configuration error (fix the company code), never
+ * a per-record failure.
+ */
+export type EtlPreviewState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'taskError'; error: AutocountEtlTaskError }
+  | { status: 'success'; preview: AutocountPreview };
+
+export interface UseEtlTaskPreviewResult {
+  state: EtlPreviewState;
+  /** Run the initial-load dry run. Never throws - every outcome lands in state. */
+  run: () => Promise<void>;
+  reset: () => void;
+}
+
+export function useEtlTaskPreview(
+  companyId: string,
+  entityType: string,
+  onTask: (task: AutocountEtlTask) => void,
+): UseEtlTaskPreviewResult {
+  const [state, setState] = useState<EtlPreviewState>({ status: 'idle' });
+  const runId = useRef(0);
+
+  const run = useCallback(async () => {
+    const id = ++runId.current;
+    setState({ status: 'loading' });
+    try {
+      const result = await autocountService.previewEtlTask(companyId, entityType);
+      if (id !== runId.current) return;
+      onTask(result.task);
+      setState({ status: 'success', preview: result.preview });
+    } catch (e) {
+      if (id !== runId.current) return;
+      const taskError = e instanceof ApiError && e.status === 422 ? readTaskError(e.detail) : null;
+      if (taskError) {
+        setState({ status: 'taskError', error: taskError });
+        return;
+      }
+      setState({
+        status: 'error',
+        message: e instanceof ApiError ? e.message : 'The dry run could not be completed.',
+      });
+    }
+  }, [companyId, entityType, onTask]);
+
+  const reset = useCallback(() => {
+    runId.current += 1;
+    setState({ status: 'idle' });
+  }, []);
+
+  return { state, run, reset };
+}
+
+// ── lifecycle: activate / pause / resume / run now (AC-22-18/19) ──────────────
+
+export type EtlLifecycleAction = 'activate' | 'pause' | 'resume' | 'run';
+
+export interface UseEtlTaskLifecycleResult {
+  /** The action in flight, if any (one at a time - the buttons disable together). */
+  busy: EtlLifecycleAction | null;
+  /** Last lifecycle failure (409s from the server-side gate), surfaced inline. */
+  error: string | null;
+  activate: () => Promise<boolean>;
+  pause: () => Promise<boolean>;
+  resume: () => Promise<boolean>;
+  /** Manual run now; resolves to the run id (null on failure). */
+  runNow: () => Promise<string | null>;
+  clearError: () => void;
+}
+
+export function useEtlTaskLifecycle(
+  companyId: string,
+  entityType: string,
+  onTask: (task: AutocountEtlTask) => void,
+): UseEtlTaskLifecycleResult {
+  const [busy, setBusy] = useState<EtlLifecycleAction | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const perform = useCallback(
+    async (action: EtlLifecycleAction, call: () => Promise<AutocountEtlTask>): Promise<boolean> => {
+      setBusy(action);
+      setError(null);
+      try {
+        onTask(await call());
+        return true;
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : 'That action could not be completed.');
+        return false;
+      } finally {
+        setBusy(null);
+      }
+    },
+    [onTask],
+  );
+
+  const activate = useCallback(
+    () => perform('activate', () => autocountService.activateEtlTask(companyId, entityType)),
+    [companyId, entityType, perform],
+  );
+  const pause = useCallback(
+    () => perform('pause', () => autocountService.pauseEtlTask(companyId, entityType)),
+    [companyId, entityType, perform],
+  );
+  const resume = useCallback(
+    () => perform('resume', () => autocountService.resumeEtlTask(companyId, entityType)),
+    [companyId, entityType, perform],
+  );
+
+  const runNow = useCallback(async (): Promise<string | null> => {
+    let runId: string | null = null;
+    await perform('run', async () => {
+      const started = await autocountService.runEtlTaskNow(companyId, entityType);
+      runId = started.runId;
+      return started.task;
+    });
+    return runId;
+  }, [companyId, entityType, perform]);
+
+  const clearError = useCallback(() => setError(null), []);
+
+  return { busy, error, activate, pause, resume, runNow, clearError };
 }
 
 // ── connections ──────────────────────────────────────────────────────────────

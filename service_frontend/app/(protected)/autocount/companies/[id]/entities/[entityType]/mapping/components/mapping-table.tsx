@@ -52,6 +52,14 @@ export function unmappedRequiredFields(
     .map((f) => f.field);
 }
 
+/**
+ * Where a row's source comes from. `path` = the API path's vendor JSON: known
+ * paths offered, a free dotted path still allowed. `column` (plan 22 S2,
+ * AC-22-09) = a DB task's flat preview result columns and NOTHING else - a
+ * typed name that is not a result column would fail every run.
+ */
+export type MappingSourceMode = 'path' | 'column';
+
 export interface MappingTableProps {
   editing: boolean;
   rows: MappingEditableRow[];
@@ -59,8 +67,9 @@ export interface MappingTableProps {
   provenanceRows: AutocountMappingRow[];
   /** The ONLY Sorento targets the picker offers (AC-15-42). */
   sorentoFields: AutocountSorentoField[];
-  /** Known AutoCount source paths; a free dotted path is still allowed. */
+  /** Known AutoCount source paths (`path`) or the result columns (`column`). */
   acFields: string[];
+  sourceMode?: MappingSourceMode;
   onChangeRow: (index: number, patch: Partial<MappingEditableRow>) => void;
   onAddRow: () => void;
   onRemoveRow: (index: number) => void;
@@ -81,11 +90,13 @@ export function MappingTable({
   provenanceRows,
   sorentoFields,
   acFields,
+  sourceMode = 'path',
   onChangeRow,
   onAddRow,
   onRemoveRow,
   onBuildRow,
 }: MappingTableProps) {
+  const columnMode = sourceMode === 'column';
   const sourceOptions = acFields.map((f) => ({ label: f, value: f }));
   const usedTargets = new Set(rows.map((r) => r.sorentoField).filter(Boolean));
   const allTargetsUsed = sorentoFields.every((f) => usedTargets.has(f.field));
@@ -96,7 +107,9 @@ export function MappingTable({
         <table className="w-full min-w-[640px] text-sm">
           <thead>
             <tr className="border-b text-start text-xs font-medium text-muted-foreground">
-              <th className="px-2 py-2 text-start font-medium">AutoCount field</th>
+              <th className="px-2 py-2 text-start font-medium">
+                {columnMode ? 'Source column' : 'AutoCount field'}
+              </th>
               <th className="px-2 py-2 text-start font-medium">Transform</th>
               <th className="w-6 px-2 py-2" aria-hidden />
               <th className="px-2 py-2 text-start font-medium">Sorento field</th>
@@ -131,10 +144,19 @@ export function MappingTable({
                         options={sourceOptions}
                         value={row.sourcePath}
                         onChange={(value) => onChangeRow(index, { sourcePath: value })}
-                        placeholder="Select or type a path"
-                        searchPlaceholder="Search or type a dotted path"
-                        allowCustom
-                        ariaLabel={`AutoCount source for row ${index + 1}`}
+                        placeholder={
+                          columnMode
+                            ? sourceOptions.length > 0
+                              ? 'Select a column'
+                              : 'No columns yet'
+                            : 'Select or type a path'
+                        }
+                        searchPlaceholder={
+                          columnMode ? 'Search columns' : 'Search or type a dotted path'
+                        }
+                        allowCustom={!columnMode}
+                        disabled={columnMode && sourceOptions.length === 0}
+                        ariaLabel={`${columnMode ? 'Source column' : 'AutoCount source'} for row ${index + 1}`}
                       />
                     ) : (
                       <code className="text-xs">{row.sourcePath}</code>

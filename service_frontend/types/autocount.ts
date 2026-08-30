@@ -14,6 +14,13 @@
 export type AutocountSyncMode = 'AUTO' | 'SCHEDULED_REVIEW' | 'MANUAL';
 
 /**
+ * Where an entity's records are READ from (`ac_entity_config.source_impl`,
+ * plan 22 §2): the vendor HTTP API (the plan-13 path, untouched) or a direct
+ * read-only SQL extraction task. Switching changes how every sync runs.
+ */
+export type AutocountSourceImpl = 'autocount_read' | 'sql_db';
+
+/**
  * Per-entity sync configuration seeded when a company is registered, PLUS the
  * entity's live delta state.
  *
@@ -26,7 +33,7 @@ export interface AutocountEntityConfig {
   id: string;
   entityType: string;
   syncMode: AutocountSyncMode | string;
-  sourceImpl: string;
+  sourceImpl: AutocountSourceImpl | string;
   recordCap: number;
   /**
    * How far back the FIRST sync reaches when no watermark exists yet
@@ -46,9 +53,16 @@ export interface AutocountEntityConfig {
   lastError: string | null;
 }
 
-/** `PATCH /autocount/companies/{id}/entities/{entityType}` - narrow by design. */
+/**
+ * `PATCH /autocount/companies/{id}/entities/{entityType}` - narrow by design.
+ * `sourceImpl` (plan 22 S2) switches the entity between the API path and the
+ * DB task; the backend keeps the task's `source_config` either way (switching
+ * back to the API never discards a configured query) and an ACTIVE task
+ * switched to the API path is paused first (never left auto-pushing).
+ */
 export interface AutocountEntityConfigUpdate {
   initialLookbackDays?: number;
+  sourceImpl?: AutocountSourceImpl;
 }
 
 /**
@@ -72,6 +86,13 @@ export interface AutocountCompany {
   sinkImpl: AutocountSinkImpl | string;
   /** Core `connections.id` of the `consumer` connection; null for `logging`. */
   sinkConnectionId: string | null;
+  /**
+   * The Sorento company this AutoCount company delivers INTO
+   * (`ac_company.sorento_company_code`, plan 22 Appendix A6). Sent as the
+   * top-level `companyCode` on every ingest/read/deletion call; REQUIRED when
+   * `sinkImpl === 'sorento'` - blank = every push fails with an anchor 422.
+   */
+  sorentoCompanyCode: string | null;
   createdAt: string | null; // ISO Z
 }
 
@@ -92,6 +113,8 @@ export type AutocountSinkImpl = 'logging' | 'sorento';
 export interface AutocountSinkTargetInput {
   sinkImpl: AutocountSinkImpl;
   sinkConnectionId?: string | null;
+  /** Required with `sorento` (trimmed, matched case-insensitively by Sorento). */
+  sorentoCompanyCode?: string | null;
 }
 
 /** `POST /autocount/companies` - the operator supplies ONLY a connection. */
@@ -159,14 +182,19 @@ export function parseSyncSummary(
   };
 }
 
-/** Terminal state of one sync run. */
-export type AutocountRunOutcome = 'SUCCESS' | 'FAILED' | 'ABORTED';
+/** Terminal state of one sync run. `SKIPPED` = an overlap-guarded tick that
+ * never ran (AC-22-14) - recorded, never queued behind. */
+export type AutocountRunOutcome = 'SUCCESS' | 'FAILED' | 'ABORTED' | 'SKIPPED';
+
+/** How a run was started (`ac_sync_run.mode`, plan 22 §2.7). */
+export type AutocountRunMode = 'manual' | 'incremental' | 'reconcile' | 'skipped';
 
 /** One executed sync run - the visible run state on a company. */
 export interface AutocountSyncRun {
   id: string;
   entityType: string;
-  jobId: string;
+  /** Null for a skipped tick (nothing was enqueued). */
+  jobId: string | null;
   windowFrom: string | null; // ISO Z
   windowTo: string | null; // ISO Z
   fetchedCount: number;
@@ -181,6 +209,17 @@ export interface AutocountSyncRun {
   watermarkAdvancedTo: string | null; // ISO Z
   startedAt: string | null; // ISO Z
   finishedAt: string | null; // ISO Z
+  // ── plan 22 §2.7 cost columns (AC-22-17) - `manual` for every API-path run ──
+  mode: AutocountRunMode | string;
+  /** Source rows read (the volume × frequency signal). */
+  rowsScanned: number;
+  addedCount: number;
+  updatedCount: number;
+  /** Delete intents pushed (reconcile only). */
+  deletedCount: number;
+  durationMs: number | null;
+  /** Why a `skipped` tick did not run (e.g. the previous run was still going). */
+  skipReason: string | null;
 }
 
 /** Disposition of one staged record. */
@@ -607,11 +646,73 @@ export interface AutocountEtlTask {
   etlStatus: AutocountEtlStatus | string;
   activatedAt: string | null; // ISO Z
   sourceConfig: AutocountEtlSourceConfig;
+  /**
+   * Result column names of the SAVED query - derived server-side from the
+   * validation preview each save runs (AC-22-11), so the Mapping tab can offer
+   * them as the source picker (AC-22-09) without re-running the query. Empty
+   * until a query has been saved.
+   */
+  resultColumns: string[];
+  /**
+   * When the last SUCCESSFUL dry-run preview completed (AC-22-18). Cleared by
+   * every config save - a preview of a superseded query must never unlock
+   * Activate. Null = Activate withheld.
+   */
+  lastPreviewAt: string | null; // ISO Z
+  lastRunAt: string | null; // ISO Z
+  /**
+   * The last run's TASK-LEVEL error (AC-22-19 - repeated delivery failures
+   * surface here, never silently). A Sorento anchor 422 lands here with its
+   * code, never as a per-record failure (Appendix A6).
+   */
+  lastRunError: string | null;
+  lastRunErrorCode: AutocountAnchorErrorCode | string | null;
 }
 
 /** `PUT .../etl-task` body - replaces the task's source config (draft save). */
 export interface AutocountEtlTaskUpdate {
   sourceConfig: AutocountEtlSourceConfig;
+}
+
+// ── activation gate + runs (plan 22, slice S2 - AC-22-17/18/19, Appendix A6) ──
+
+/**
+ * Sorento's company-anchor 422 codes (Appendix A6). Any of these on a preview
+ * or a run is a TASK-level configuration error - fix the company's Sorento
+ * company code - and is never attributed to a record.
+ */
+export type AutocountAnchorErrorCode =
+  | 'COMPANY_ANCHOR_REQUIRED'
+  | 'UNKNOWN_COMPANY'
+  | 'COMPANY_ANCHOR_AMBIGUOUS';
+
+/**
+ * The structured `detail` of a task-level 422 from `POST .../etl-task/preview`
+ * (`ApiError.detail`) - the anchor error translated 1:1 from Sorento's body.
+ */
+export interface AutocountEtlTaskError {
+  code: AutocountAnchorErrorCode | string;
+  message: string;
+}
+
+/**
+ * `POST .../etl-task/preview` - the initial-load dry run against Sorento
+ * (writes nothing). `preview` is the SAME shape the batch review renders
+ * (`PreviewPanel`); `task` is the task after the preview (its `lastPreviewAt`
+ * stamped when the dry run completed).
+ */
+export interface AutocountEtlPreviewResult {
+  task: AutocountEtlTask;
+  preview: AutocountPreview;
+}
+
+/** `POST .../etl-task/run` - the manual run just enqueued (eager inline in dev). */
+export interface AutocountEtlRunStart {
+  runId: string;
+  jobId: string;
+  status: AutocountJobStatus | string;
+  /** The task after the run (status/last-error refreshed when it ran inline). */
+  task: AutocountEtlTask;
 }
 
 // ── diff view model (AC-13-12) ───────────────────────────────────────────────

@@ -8,6 +8,8 @@ import {
   Database,
   History,
   LoaderCircleIcon,
+  Pause,
+  Play,
   SlidersHorizontal,
   TriangleAlert,
 } from 'lucide-react';
@@ -19,14 +21,20 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Form } from '@/components/ui/form';
 import { ResourceForm, type ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ResourceAction } from '@/components/platform/resource-list';
+import { ResourceList } from '@/components/platform/resource-list';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { useAutocountCompany } from '@/hooks/use-autocount-company';
 import {
   useAutocountEtlTask,
   useAutocountSqlConnections,
   useAutocountSqlSchema,
+  useEtlTaskLifecycle,
+  useEtlTaskPreview,
   useSqlPreview,
 } from '@/hooks/use-autocount-etl';
+import { useAutocountMapping } from '@/hooks/use-autocount-mapping';
+import { mappingSourceColumns } from '@/lib/autocount-etl';
 import type {
   AutocountEtlSourceConfig,
   AutocountEtlStatus,
@@ -36,32 +44,46 @@ import {
   AC_COMPANIES_MANAGE,
   AC_COMPANIES_PATH,
   AC_ETL_STATUS_REGISTRY,
+  AC_SYNC_RUN,
   acCompanyHref,
   entityLabel,
+  type AcTaskTab,
 } from '../../../../../components/autocount-meta';
+import { useAutocountRunsListConfig } from '../../../../components/use-runs-list-config';
+import { MappingEditorBody } from '../mapping/components/mapping-editor-body';
+import { useMappingDraft } from '../mapping/components/use-mapping-draft';
+import { ActivateTab } from './activate-tab';
 import { QueryTab } from './query-tab';
 
 export interface TaskEditorViewProps {
   companyId: string;
   entityType: string;
+  /** Tab to open (the entities list deep-links Mapping; default Query). */
+  initialTab?: AcTaskTab;
 }
 
 /**
  * The Database-mode task editor (plan 22 §3): ONE surface, five tabs - Query ·
- * Mapping · Schedule · Review & Activate · Runs. Slice S1 ships the Query tab;
- * the others are present but disabled until their slices land (S2-S3), so the
- * structure is visible without offering a dead-end. Read-only by default,
- * editable under the shell's global Edit toggle, saved through its single
- * dirty-guarded save.
+ * Mapping · Schedule · Review & Activate · Runs. Read-only by default, editable
+ * under the shell's global Edit toggle; the Query config AND the Mapping rows
+ * save through its single dirty-guarded save. Schedule stays disabled until S3;
+ * Mapping and Review & Activate open once a query is saved (before that they
+ * would be dead-ends), Runs is always there (empty until the task runs).
  */
-export function TaskEditorView({ companyId, entityType }: TaskEditorViewProps) {
+export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: TaskEditorViewProps) {
   const form = useForm();
   const { detail } = useAutocountCompany(companyId);
-  const { task, isLoading, notFound, saveError, fieldErrors, save } = useAutocountEtlTask(
+  const { task, isLoading, notFound, saveError, fieldErrors, save, apply } = useAutocountEtlTask(
     companyId,
     entityType,
   );
   const sqlConnections = useAutocountSqlConnections();
+  const mapping = useAutocountMapping(companyId, entityType);
+  const draft = useMappingDraft(mapping.view);
+  const etlPreview = useEtlTaskPreview(companyId, entityType, apply);
+  const lifecycle = useEtlTaskLifecycle(companyId, entityType, apply);
+  const runsConfig = useAutocountRunsListConfig(companyId, { variant: 'task', entityType });
+  const [runsKey, setRunsKey] = useState(0);
 
   const [config, setConfig] = useState<AutocountEtlSourceConfig | null>(null);
 
@@ -77,7 +99,8 @@ export function TaskEditorView({ companyId, entityType }: TaskEditorViewProps) {
   const schema = useAutocountSqlSchema(config?.connectionId ?? null);
   const preview = useSqlPreview();
 
-  const dirty = useMemo(() => JSON.stringify(config) !== baselineKey, [config, baselineKey]);
+  const configDirty = useMemo(() => JSON.stringify(config) !== baselineKey, [config, baselineKey]);
+  const dirty = configDirty || draft.dirty;
 
   const onChange = useCallback((patch: Partial<AutocountEtlSourceConfig>) => {
     setConfig((prev) => (prev ? { ...prev, ...patch } : prev));
@@ -85,14 +108,45 @@ export function TaskEditorView({ companyId, entityType }: TaskEditorViewProps) {
 
   const onSave = useCallback(async (): Promise<boolean> => {
     if (!config) return false;
-    const ok = await save({ ...config, query: config.query.trim() });
-    if (ok) toast.success('Task saved.');
-    return ok;
-  }, [config, save]);
+    if (configDirty) {
+      const ok = await save({ ...config, query: config.query.trim() });
+      if (!ok) return false;
+    }
+    if (draft.dirty) {
+      const problem = draft.validate();
+      if (problem) {
+        toast.error(problem);
+        return false;
+      }
+      const ok = await mapping.save(draft.writeRows());
+      if (!ok) return false;
+    }
+    toast.success('Task saved.');
+    return true;
+  }, [config, configDirty, draft, mapping, save]);
 
   const onCancel = useCallback(() => {
     setConfig(baseline ? { ...baseline } : null);
-  }, [baseline]);
+    draft.reset();
+  }, [baseline, draft]);
+
+  const onRan = useCallback(() => setRunsKey((k) => k + 1), []);
+
+  // The Mapping tab's source picker: the saved query's columns, plus a preview
+  // run this session, plus whatever the rows already reference (AC-22-09).
+  const previewColumns = useMemo(
+    () => (preview.state.status === 'success' ? preview.state.preview.columns.map((c) => c.name) : []),
+    [preview.state],
+  );
+  const sourceColumns = useMemo(
+    () =>
+      mappingSourceColumns(
+        task?.resultColumns ?? [],
+        previewColumns,
+        draft.rows.map((r) => r.sourcePath),
+      ),
+    [draft.rows, previewColumns, task?.resultColumns],
+  );
 
   const resourceConfig = useMemo<ResourceFormConfig<AutocountEtlTask> | null>(() => {
     if (!task || !config) return null;
@@ -101,6 +155,59 @@ export function TaskEditorView({ companyId, entityType }: TaskEditorViewProps) {
     // A query with no key columns cannot mint source_refs - shown as a
     // prerequisite warning (foolproof), never a silent later failure.
     const keysMissing = config.query.trim().length > 0 && config.keyColumns.length === 0;
+    const querySaved = task.sourceConfig.query.trim().length > 0;
+    const status = task.etlStatus as AutocountEtlStatus;
+
+    // The lifecycle in the form "…" so it is reachable from every tab; the
+    // Review & Activate tab carries the same buttons beside the preview.
+    const actions: ResourceAction<AutocountEtlTask>[] = [
+      {
+        id: 'run-now',
+        label: 'Run now',
+        icon: Play,
+        surfaces: { form: true },
+        permission: AC_SYNC_RUN,
+        isVisible: () => status === 'active',
+        isDisabled: () => lifecycle.busy !== null,
+        run: async () => {
+          const runId = await lifecycle.runNow();
+          if (runId) {
+            toast.success('Run finished.');
+            onRan();
+          }
+        },
+      },
+      {
+        id: 'pause',
+        label: 'Pause',
+        icon: Pause,
+        surfaces: { form: true },
+        permission: AC_COMPANIES_MANAGE,
+        isVisible: () => status === 'active',
+        isDisabled: () => lifecycle.busy !== null,
+        confirm: {
+          title: 'Pause this task?',
+          description:
+            'Scheduled runs stop until it is resumed. A run already in progress finishes.',
+          confirmLabel: 'Pause',
+        },
+        run: async () => {
+          if (await lifecycle.pause()) toast.success('Task paused.');
+        },
+      },
+      {
+        id: 'resume',
+        label: 'Resume',
+        icon: Play,
+        surfaces: { form: true },
+        permission: AC_COMPANIES_MANAGE,
+        isVisible: () => status === 'paused',
+        isDisabled: () => lifecycle.busy !== null,
+        run: async () => {
+          if (await lifecycle.resume()) toast.success('Task resumed.');
+        },
+      },
+    ];
 
     return {
       breadcrumb: [
@@ -118,10 +225,12 @@ export function TaskEditorView({ companyId, entityType }: TaskEditorViewProps) {
             <Database className="size-3" />
             Database
           </Badge>
-          <StatusBadge
-            status={task.etlStatus as AutocountEtlStatus}
-            registry={AC_ETL_STATUS_REGISTRY}
-          />
+          <StatusBadge status={status} registry={AC_ETL_STATUS_REGISTRY} />
+          {task.lastRunError && (
+            <Badge variant="destructive" appearance="light" size="sm" data-testid="task-header-error">
+              Last run failed
+            </Badge>
+          )}
         </span>
       ),
       tabs: [
@@ -165,8 +274,34 @@ export function TaskEditorView({ companyId, entityType }: TaskEditorViewProps) {
           id: 'mapping',
           label: 'Mapping',
           icon: SlidersHorizontal,
-          disabled: true,
-          render: () => null,
+          disabled: !querySaved,
+          render: ({ editing }) => (
+            <div className="py-2">
+              {mapping.isLoading && !mapping.view ? (
+                <div className="flex items-center justify-center py-12 text-muted-foreground">
+                  <LoaderCircleIcon className="size-5 animate-spin" />
+                </div>
+              ) : mapping.notFound || !mapping.view ? (
+                <Alert variant="destructive" appearance="light" data-testid="task-mapping-error">
+                  <AlertIcon>
+                    <TriangleAlert />
+                  </AlertIcon>
+                  <AlertTitle>The mapping could not be loaded.</AlertTitle>
+                </Alert>
+              ) : (
+                <MappingEditorBody
+                  editing={editing}
+                  draft={draft}
+                  saveError={mapping.saveError}
+                  sourceMode="column"
+                  sourceOptions={sourceColumns}
+                  onServerTest={mapping.testFormula}
+                  onSimulate={mapping.simulate}
+                  entityLabel={label}
+                />
+              )}
+            </div>
+          ),
         },
         {
           id: 'schedule',
@@ -179,19 +314,33 @@ export function TaskEditorView({ companyId, entityType }: TaskEditorViewProps) {
           id: 'activate',
           label: 'Review & Activate',
           icon: CircleCheck,
-          disabled: true,
-          render: () => null,
+          disabled: !querySaved,
+          render: () => (
+            <div className="py-2">
+              <ActivateTab
+                company={detail?.company ?? null}
+                task={task}
+                configDirty={dirty}
+                preview={etlPreview}
+                lifecycle={lifecycle}
+                onRan={onRan}
+              />
+            </div>
+          ),
         },
         {
           id: 'runs',
           label: 'Runs',
           icon: History,
-          disabled: true,
-          render: () => null,
+          render: () => (
+            <div className="py-2">
+              <ResourceList key={runsKey} config={runsConfig} />
+            </div>
+          ),
         },
       ],
-      initialTabId: 'query',
-      actions: [],
+      initialTabId: initialTab,
+      actions,
       actionRows: [task],
       editable: true,
       editPermission: AC_COMPANIES_MANAGE,
@@ -204,14 +353,23 @@ export function TaskEditorView({ companyId, entityType }: TaskEditorViewProps) {
     config,
     detail,
     dirty,
+    draft,
     entityType,
+    etlPreview,
     fieldErrors,
+    initialTab,
+    lifecycle,
+    mapping,
     onCancel,
     onChange,
+    onRan,
     onSave,
     preview,
+    runsConfig,
+    runsKey,
     saveError,
     schema,
+    sourceColumns,
     sqlConnections.connections,
     sqlConnections.isLoading,
     task,

@@ -1,0 +1,53 @@
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import type { AutocountEntityConfig } from '@/types/autocount';
+import { EntitySourceDialog } from './entity-source-dialog';
+
+function entity(over: Partial<AutocountEntityConfig> = {}): AutocountEntityConfig {
+  return {
+    id: 'e1',
+    entityType: 'customer',
+    syncMode: 'SCHEDULED_REVIEW',
+    sourceImpl: 'autocount_read',
+    recordCap: 200,
+    initialLookbackDays: 30,
+    enabled: true,
+    lastSuccessAt: null,
+    lastAttemptAt: null,
+    watermarkAt: null,
+    consecutiveFailures: 0,
+    lastError: null,
+    ...over,
+  };
+}
+
+describe('EntitySourceDialog (plan 22 S2, AC-22-08 - a guarded switch)', () => {
+  it('opens on the current source with the switch withheld until it changes', () => {
+    render(<EntitySourceDialog entity={entity()} onClose={vi.fn()} onSave={vi.fn()} />);
+    expect(screen.getByRole('combobox', { name: 'Entity source' })).toHaveTextContent('AutoCount API');
+    expect(screen.getByTestId('save-source')).toBeDisabled();
+    expect(screen.queryByTestId('source-switch-warning')).not.toBeInTheDocument();
+  });
+
+  it('states the consequence and confirms with the target source named', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<EntitySourceDialog entity={entity()} onClose={vi.fn()} onSave={onSave} />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'Entity source' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Database' }));
+    expect(screen.getByTestId('source-switch-warning')).toHaveTextContent(/database task/i);
+    const confirm = screen.getByTestId('save-source');
+    expect(confirm).toBeEnabled();
+    expect(confirm).toHaveTextContent('Switch to Database');
+    fireEvent.click(confirm);
+    expect(onSave).toHaveBeenCalledWith('customer', 'sql_db');
+  });
+
+  it('warns that an active task is paused when switching back to the API', async () => {
+    render(
+      <EntitySourceDialog entity={entity({ sourceImpl: 'sql_db' })} onClose={vi.fn()} onSave={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole('combobox', { name: 'Entity source' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'AutoCount API' }));
+    expect(screen.getByTestId('source-switch-warning')).toHaveTextContent(/paused/i);
+  });
+});

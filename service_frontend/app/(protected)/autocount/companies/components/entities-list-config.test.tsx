@@ -39,6 +39,7 @@ const onEditLookback = vi.fn();
 const onRefetch = vi.fn();
 const onConfigureMapping = vi.fn();
 const onConfigureTask = vi.fn();
+const onChangeSource = vi.fn();
 
 function config(entities: AutocountEntityConfig[], companyActive = true) {
   return renderHook(() =>
@@ -50,6 +51,7 @@ function config(entities: AutocountEntityConfig[], companyActive = true) {
       onRefetch,
       onConfigureMapping,
       onConfigureTask,
+      onChangeSource,
     }),
   ).result.current;
 }
@@ -59,6 +61,8 @@ beforeEach(() => {
   onEditLookback.mockReset();
   onRefetch.mockReset();
   onConfigureMapping.mockReset();
+  onConfigureTask.mockReset();
+  onChangeSource.mockReset();
 });
 
 describe('entities list config', () => {
@@ -78,6 +82,8 @@ describe('entities list config', () => {
     expect(ids).toContain('watermarkAt');
     expect(ids).toContain('initialLookbackDays');
     expect(ids).toContain('health');
+    // Plan 22 S2: where the entity reads from is visible on the row.
+    expect(ids).toContain('sourceImpl');
   });
 
   it('has no detail page, so a row click never dead-ends', () => {
@@ -164,6 +170,29 @@ describe('entities actions', () => {
     const row = entity();
     mapping.run([row], { reload: vi.fn() });
     expect(onConfigureMapping).toHaveBeenCalledWith(row);
+  });
+});
+
+describe('entity source (plan 22 S2, AC-22-08)', () => {
+  it('offers "Configure database query" ONLY on a database-sourced entity', () => {
+    const c = config([entity()]);
+    const task = c.actions.find((a) => a.id === 'configure-task')!;
+    expect(task.permission).toBe('autocount.companies.manage');
+    expect(task.isVisible?.([entity({ sourceImpl: 'autocount_read' })])).toBe(false);
+    expect(task.isVisible?.([entity({ sourceImpl: 'sql_db' })])).toBe(true);
+    const row = entity({ sourceImpl: 'sql_db' });
+    task.run([row], { reload: vi.fn() });
+    expect(onConfigureTask).toHaveBeenCalledWith(row);
+  });
+
+  it('offers the guarded "Change source" on every row, gated on manage', () => {
+    const c = config([entity()]);
+    const change = c.actions.find((a) => a.id === 'change-source')!;
+    expect(change.permission).toBe('autocount.companies.manage');
+    expect(change.isVisible).toBeUndefined();
+    const row = entity();
+    change.run([row], { reload: vi.fn() });
+    expect(onChangeSource).toHaveBeenCalledWith(row);
   });
 });
 

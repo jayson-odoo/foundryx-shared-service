@@ -23,9 +23,13 @@ import type {
   AutocountCompany,
   AutocountCompanyDetail,
   AutocountEntityConfig,
+  AutocountEntityConfigUpdate,
+  AutocountEtlPreviewResult,
+  AutocountEtlRunStart,
   AutocountEtlSourceConfig,
   AutocountEtlTask,
   AutocountEtlTaskUpdate,
+  AutocountPreview,
   AutocountFormulaTestResult,
   AutocountJobListQuery,
   AutocountMappingUpdate,
@@ -35,6 +39,7 @@ import type {
   AutocountSimulateFieldResult,
   AutocountSimulateResult,
   AutocountSinkTargetInput,
+  AutocountSourceImpl,
   AutocountSqlConnection,
   AutocountSqlPreview,
   AutocountSqlSchema,
@@ -47,7 +52,7 @@ import type {
   AutocountSyncRun,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
-import type { AutocountService } from './autocount-service';
+import type { AutocountListQuery, AutocountService } from './autocount-service';
 
 function mockCompany(overrides: Partial<AutocountCompany> = {}): AutocountCompany {
   return {
@@ -59,15 +64,19 @@ function mockCompany(overrides: Partial<AutocountCompany> = {}): AutocountCompan
     isActive: true,
     sinkImpl: 'logging',
     sinkConnectionId: null,
+    sorentoCompanyCode: null,
     createdAt: '2026-07-01T00:00:00Z',
     ...overrides,
   };
 }
 
 function previewablePayload(jobId: string): AutocountPreviewResult {
+  return { jobId, preview: previewableBlock() };
+}
+
+/** The realistic previewable dry-run block (batch review AND the S2 task gate). */
+function previewableBlock(): AutocountPreview {
   return {
-    jobId,
-    preview: {
       previewable: true,
       sink: 'sorento',
       summary: { total: 172, created: 134, updated: 38, failed: 0, retryable: 0 },
@@ -113,7 +122,6 @@ function previewablePayload(jobId: string): AutocountPreviewResult {
           errors: {},
         },
       ],
-    },
   };
 }
 
@@ -187,8 +195,6 @@ function mockStagedRecords(): AutocountStagedRecord[] {
   }));
   return [...changed, ...noChange];
 }
-
-const NOT_IMPLEMENTED = 'Not implemented in the AutoCount mock.';
 
 // ── direct-DB ETL fixtures (plan 22 S1 - PHASE 1 MOCK is the backend spec) ───
 
@@ -467,9 +473,370 @@ function etlTaskFor(companyId: string, entityType: string): AutocountEtlTask {
     etlStatus: 'draft',
     activatedAt: null,
     sourceConfig: defaultEtlConfig(entityType),
+    resultColumns: [],
+    lastPreviewAt: null,
+    lastRunAt: null,
+    lastRunError: null,
+    lastRunErrorCode: null,
   };
   etlTasks.set(key, task);
   return task;
+}
+
+// ── plan 22 S2 fixtures (PHASE 1 MOCK is the backend spec) ───────────────────
+//
+// Every S2 state is reachable by a real click, selected from data the operator
+// already controls:
+//   company delivery `logging`            → preview "nothing to preview"
+//   sorento + blank company code          → preview 422 COMPANY_ANCHOR_REQUIRED
+//   sorento + code `UNKNOWN`              → preview 422 UNKNOWN_COMPANY
+//   sorento + code starting `AMBIG`       → preview 422 COMPANY_ANCHOR_AMBIGUOUS
+//   sorento + code `DOWN`                 → preview 502 (consumer unreachable)
+//   sorento + any other code              → previewable payload → Activate
+//   Run now after changing the code to `UNKNOWN` → a FAILED run + task-level
+//   `lastRunError` (the anchor error on a scheduled run, never per record).
+
+/** What ONE session's task lifecycle stores beyond the S1 draft config. */
+interface EtlTaskOverlay {
+  etlStatus: AutocountEtlTask['etlStatus'];
+  activatedAt: string | null;
+  resultColumns: string[];
+  lastPreviewAt: string | null;
+  lastRunAt: string | null;
+  lastRunError: string | null;
+  lastRunErrorCode: string | null;
+}
+
+const etlOverlays = new Map<string, EtlTaskOverlay>();
+const companyCodes = new Map<string, string | null>();
+/** Pure-mock only: the persisted sink target per company (the overlay reads
+ * the REAL company's sink instead). */
+const mockSinks = new Map<string, Pick<AutocountCompany, 'sinkImpl' | 'sinkConnectionId'>>();
+const sourceImpls = new Map<string, AutocountSourceImpl>();
+/** Result columns of every preview run this session, by normalized query. */
+const previewColumnsByQuery = new Map<string, string[]>();
+const etlRuns = new Map<string, AutocountSyncRun[]>();
+
+function taskKey(companyId: string, entityType: string): string {
+  return `${companyId}:${entityType}`;
+}
+
+function normalizeQuery(query: string): string {
+  return query.trim().replace(/\s+/g, ' ').replace(/;$/, '').toLowerCase();
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function overlayFor(companyId: string, entityType: string): EtlTaskOverlay {
+  const key = taskKey(companyId, entityType);
+  const existing = etlOverlays.get(key);
+  if (existing) return existing;
+  const fresh: EtlTaskOverlay = {
+    etlStatus: 'draft',
+    activatedAt: null,
+    resultColumns: [],
+    lastPreviewAt: null,
+    lastRunAt: null,
+    lastRunError: null,
+    lastRunErrorCode: null,
+  };
+  etlOverlays.set(key, fresh);
+  return fresh;
+}
+
+/** Lay the session's lifecycle state over a (real or mock) task. */
+function applyTaskOverlay(task: AutocountEtlTask): AutocountEtlTask {
+  const o = overlayFor(task.companyId, task.entityType);
+  return { ...task, ...o, sourceConfig: task.sourceConfig };
+}
+
+/** The columns a saved query yields - from the session's preview of it, else
+ * the saved picks (so an existing task still lists something to map). */
+function resultColumnsFor(cfg: AutocountEtlSourceConfig): string[] {
+  const seen = previewColumnsByQuery.get(normalizeQuery(cfg.query));
+  if (seen) return [...seen];
+  const picks = [...cfg.keyColumns, ...(cfg.watermarkColumn ? [cfg.watermarkColumn] : []), ...cfg.comparedColumns];
+  return Array.from(new Set(picks));
+}
+
+/** A config save supersedes any earlier preview (the gate must re-run). */
+function noteTaskSaved(companyId: string, entityType: string, cfg: AutocountEtlSourceConfig): void {
+  const o = overlayFor(companyId, entityType);
+  o.resultColumns = resultColumnsFor(cfg);
+  o.lastPreviewAt = null;
+}
+
+/**
+ * The pure mock's company: a `*legacy*` id models a row that delivered to
+ * Sorento BEFORE the company code existed (backfilled NULL) - the only way a
+ * sorento sink with a blank code can exist, since the save guard refuses it.
+ */
+function mockCompanyState(id: string): AutocountCompany {
+  const legacy = id.includes('legacy');
+  const sink = mockSinks.get(id);
+  return mockCompany({
+    id,
+    sinkImpl: sink?.sinkImpl ?? (legacy ? 'sorento' : 'logging'),
+    sinkConnectionId: sink?.sinkConnectionId ?? (legacy ? 'conn-9' : null),
+  });
+}
+
+function applyCompanyOverlay(company: AutocountCompany): AutocountCompany {
+  return {
+    ...company,
+    sorentoCompanyCode: companyCodes.has(company.id)
+      ? companyCodes.get(company.id) ?? null
+      : company.sorentoCompanyCode ?? null,
+  };
+}
+
+function applyEntityOverlay(companyId: string, entity: AutocountEntityConfig): AutocountEntityConfig {
+  const impl = sourceImpls.get(taskKey(companyId, entity.entityType));
+  return impl ? { ...entity, sourceImpl: impl } : entity;
+}
+
+function applyDetailOverlay(detail: AutocountCompanyDetail): AutocountCompanyDetail {
+  return {
+    company: applyCompanyOverlay(detail.company),
+    entities: detail.entities.map((e) => applyEntityOverlay(detail.company.id, e)),
+  };
+}
+
+/** The sink-target save-time guard the backend must mirror (Appendix A6). */
+function guardSinkTarget(input: AutocountSinkTargetInput): void {
+  if (input.sinkImpl !== 'sorento') return;
+  if (!input.sinkConnectionId) {
+    throw new ApiError('Choose a Sorento connection.', 422, null, {
+      fieldErrors: { sinkConnectionId: 'Choose a Sorento connection.' },
+    });
+  }
+  if (!(input.sorentoCompanyCode ?? '').trim()) {
+    throw new ApiError('Sorento company code is required.', 422, null, {
+      fieldErrors: { sorentoCompanyCode: 'Sorento company code is required.' },
+    });
+  }
+}
+
+function noteSinkTarget(companyId: string, input: AutocountSinkTargetInput): void {
+  companyCodes.set(
+    companyId,
+    input.sinkImpl === 'sorento' ? (input.sorentoCompanyCode ?? '').trim() : null,
+  );
+}
+
+/** Switching source: never discards the query; an active task is paused. */
+function noteSourceImpl(companyId: string, entityType: string, impl: AutocountSourceImpl): void {
+  sourceImpls.set(taskKey(companyId, entityType), impl);
+  if (impl === 'autocount_read') {
+    const o = overlayFor(companyId, entityType);
+    if (o.etlStatus === 'active') o.etlStatus = 'paused';
+  }
+}
+
+/** The anchor verdict Sorento would return for a company code (A6 codes). */
+function anchorError(code: string | null): { code: string; message: string } | null {
+  const c = (code ?? '').trim();
+  if (!c) {
+    return {
+      code: 'COMPANY_ANCHOR_REQUIRED',
+      message: 'A company anchor is required: set the Sorento company code on this company.',
+    };
+  }
+  if (c.toUpperCase() === 'UNKNOWN') {
+    return { code: 'UNKNOWN_COMPANY', message: `No Sorento company matches code '${c}'.` };
+  }
+  if (c.toUpperCase().startsWith('AMBIG')) {
+    return {
+      code: 'COMPANY_ANCHOR_AMBIGUOUS',
+      message: `Code '${c}' matches more than one Sorento company.`,
+    };
+  }
+  return null;
+}
+
+/** The mock's dry-run: the same behaviour classes the real endpoint must reproduce. */
+async function mockPreviewEtlTask(
+  company: AutocountCompany,
+  task: AutocountEtlTask,
+): Promise<AutocountEtlPreviewResult> {
+  await pause(350);
+  if (!task.sourceConfig.query.trim() || task.sourceConfig.keyColumns.length === 0) {
+    throw new ApiError('Save a query with key columns before previewing.', 409);
+  }
+  const o = overlayFor(task.companyId, task.entityType);
+  if (company.sinkImpl !== 'sorento') {
+    return {
+      task: applyTaskOverlay(task),
+      preview: {
+        previewable: false,
+        sink: 'logging',
+        reason: 'No consumer is configured for this company, so there is nothing to preview.',
+      },
+    };
+  }
+  const anchor = anchorError(company.sorentoCompanyCode);
+  if (anchor) {
+    throw new ApiError(anchor.message, 422, null, anchor);
+  }
+  if ((company.sorentoCompanyCode ?? '').trim().toUpperCase() === 'DOWN') {
+    throw new ApiError(
+      'The dry run against the consumer failed. Nothing was written - resolve the consumer error first.',
+      502,
+    );
+  }
+  o.lastPreviewAt = nowIso();
+  return { task: applyTaskOverlay(task), preview: previewableBlock() };
+}
+
+function mockRun(over: Partial<AutocountSyncRun> & { id: string; entityType: string }): AutocountSyncRun {
+  return {
+    jobId: `job-${over.id}`,
+    windowFrom: null,
+    windowTo: null,
+    fetchedCount: 0,
+    stagedCount: 0,
+    failedCount: 0,
+    pushedCount: 0,
+    outcome: 'SUCCESS',
+    error: null,
+    truncated: false,
+    watermarkAdvancedTo: null,
+    startedAt: '2026-08-30T06:32:00Z',
+    finishedAt: '2026-08-30T06:32:00Z',
+    mode: 'incremental',
+    rowsScanned: 0,
+    addedCount: 0,
+    updatedCount: 0,
+    deletedCount: 0,
+    durationMs: 200,
+    skipReason: null,
+    ...over,
+  };
+}
+
+/** The realistic history an activated task accrues (mockup §06): a delivered
+ * incremental, a no-change tick, an overlap-skipped tick, a reconcile with a
+ * delete, a delete-guard fail-safe, and the initial manual load. Newest first. */
+function seedRunHistory(companyId: string, entityType: string, activatedAt: string): void {
+  const base = Date.parse(activatedAt);
+  const at = (offsetMs: number) => new Date(base + offsetMs).toISOString();
+  const rows: AutocountSyncRun[] = [
+    mockRun({
+      id: `${entityType}-r6`, entityType, mode: 'incremental', rowsScanned: 2, updatedCount: 2,
+      fetchedCount: 2, stagedCount: 2, pushedCount: 2, durationMs: 400,
+      startedAt: at(5 * 60_000), finishedAt: at(5 * 60_000 + 400),
+    }),
+    mockRun({
+      id: `${entityType}-r5`, entityType, mode: 'incremental', durationMs: 200,
+      startedAt: at(4 * 60_000), finishedAt: at(4 * 60_000 + 200),
+    }),
+    mockRun({
+      id: `${entityType}-r4`, entityType, mode: 'skipped', jobId: null, outcome: 'SKIPPED',
+      durationMs: null, skipReason: 'The previous run was still executing.',
+      startedAt: at(3 * 60_000), finishedAt: at(3 * 60_000),
+    }),
+    mockRun({
+      id: `${entityType}-r3`, entityType, mode: 'reconcile', rowsScanned: 172, addedCount: 1,
+      updatedCount: 3, deletedCount: 1, fetchedCount: 172, stagedCount: 5, pushedCount: 5,
+      durationMs: 6100, startedAt: at(2 * 60_000), finishedAt: at(2 * 60_000 + 6100),
+    }),
+    mockRun({
+      id: `${entityType}-r2`, entityType, mode: 'reconcile', rowsScanned: 171, deletedCount: 38,
+      fetchedCount: 171, outcome: 'FAILED', durationMs: 1900,
+      error: 'Delete guard: 38 delete intents exceed 20% of 172 known rows. Nothing was pushed.',
+      startedAt: at(60_000), finishedAt: at(60_000 + 1900),
+    }),
+    mockRun({
+      id: `${entityType}-r1`, entityType, mode: 'manual', rowsScanned: 172, addedCount: 134,
+      updatedCount: 38, fetchedCount: 172, stagedCount: 172, pushedCount: 172, durationMs: 8200,
+      startedAt: at(0), finishedAt: at(8200),
+    }),
+  ];
+  etlRuns.set(taskKey(companyId, entityType), rows);
+}
+
+function mockActivate(company: AutocountCompany, task: AutocountEtlTask): AutocountEtlTask {
+  const o = overlayFor(task.companyId, task.entityType);
+  if (o.etlStatus === 'active') throw new ApiError('This task is already active.', 409);
+  if (!o.lastPreviewAt) {
+    throw new ApiError('Run a successful preview before activating.', 409);
+  }
+  if (company.sinkImpl !== 'sorento' || !(company.sorentoCompanyCode ?? '').trim()) {
+    throw new ApiError('Set a Sorento company code on the company before activating.', 409);
+  }
+  const wasPaused = o.etlStatus === 'paused';
+  o.etlStatus = 'active';
+  o.activatedAt = nowIso();
+  if (!wasPaused) seedRunHistory(task.companyId, task.entityType, o.activatedAt);
+  return applyTaskOverlay(task);
+}
+
+function mockPause(task: AutocountEtlTask): AutocountEtlTask {
+  const o = overlayFor(task.companyId, task.entityType);
+  if (o.etlStatus !== 'active') throw new ApiError('Only an active task can be paused.', 409);
+  o.etlStatus = 'paused';
+  return applyTaskOverlay(task);
+}
+
+function mockResume(task: AutocountEtlTask): AutocountEtlTask {
+  const o = overlayFor(task.companyId, task.entityType);
+  if (o.etlStatus !== 'paused') throw new ApiError('Only a paused task can be resumed.', 409);
+  o.etlStatus = 'active';
+  return applyTaskOverlay(task);
+}
+
+function mockRunNow(company: AutocountCompany, task: AutocountEtlTask): AutocountEtlRunStart {
+  const o = overlayFor(task.companyId, task.entityType);
+  if (o.etlStatus !== 'active') throw new ApiError('Only an active task can be run.', 409);
+  const key = taskKey(task.companyId, task.entityType);
+  const history = etlRuns.get(key) ?? [];
+  const id = `${task.entityType}-m${history.length + 1}`;
+  const started = nowIso();
+  const anchor = anchorError(company.sorentoCompanyCode);
+  const run = anchor
+    ? mockRun({
+        id, entityType: task.entityType, mode: 'manual', rowsScanned: 172, fetchedCount: 172,
+        stagedCount: 172, outcome: 'FAILED', error: `${anchor.code}: ${anchor.message}`,
+        durationMs: 900, startedAt: started, finishedAt: started,
+      })
+    : mockRun({
+        id, entityType: task.entityType, mode: 'manual', rowsScanned: 172, updatedCount: 3,
+        fetchedCount: 172, stagedCount: 3, pushedCount: 3, durationMs: 1400,
+        startedAt: started, finishedAt: started,
+      });
+  etlRuns.set(key, [run, ...history]);
+  o.lastRunAt = started;
+  o.lastRunError = anchor ? anchor.message : null;
+  o.lastRunErrorCode = anchor ? anchor.code : null;
+  return { runId: run.id, jobId: run.jobId ?? `job-${run.id}`, status: 'done', task: applyTaskOverlay(task) };
+}
+
+function mockListEtlRuns(
+  companyId: string,
+  entityType: string,
+  query: AutocountListQuery = {},
+): ListResult<AutocountSyncRun> {
+  const all = etlRuns.get(taskKey(companyId, entityType)) ?? [];
+  const page = query.page ?? 0;
+  const pageSize = query.pageSize ?? 25;
+  return {
+    data: all.slice(page * pageSize, page * pageSize + pageSize).map((r) => ({ ...r })),
+    total: all.length,
+    page,
+  };
+}
+
+/** Test seam: forget every S2 session state (the Vitest suite isolates cases). */
+export function resetEtlMockState(): void {
+  etlOverlays.clear();
+  companyCodes.clear();
+  mockSinks.clear();
+  sourceImpls.clear();
+  previewColumnsByQuery.clear();
+  etlRuns.clear();
+  etlTasks.clear();
 }
 
 export const mockAutocountService: AutocountService = {
@@ -478,15 +845,49 @@ export const mockAutocountService: AutocountService = {
   },
 
   getCompany(id: string): Promise<AutocountCompanyDetail> {
-    return Promise.resolve({ company: mockCompany({ id }), entities: [] });
+    return Promise.resolve(
+      applyDetailOverlay({
+        company: mockCompanyState(id),
+        entities: [
+          {
+            id: `${id}-customer`,
+            entityType: 'customer',
+            syncMode: 'SCHEDULED_REVIEW',
+            sourceImpl: 'autocount_read',
+            recordCap: 200,
+            initialLookbackDays: 30,
+            enabled: true,
+            lastSuccessAt: null,
+            lastAttemptAt: null,
+            watermarkAt: null,
+            consecutiveFailures: 0,
+            lastError: null,
+          },
+        ],
+      }),
+    );
   },
 
   createCompany(): Promise<AutocountCompany> {
     return Promise.resolve(mockCompany());
   },
 
-  updateEntityConfig(): Promise<AutocountEntityConfig> {
-    return Promise.reject(new Error(NOT_IMPLEMENTED));
+  async updateEntityConfig(
+    companyId: string,
+    entityType: string,
+    input: AutocountEntityConfigUpdate,
+  ): Promise<AutocountEntityConfig> {
+    if (input.sourceImpl && input.sourceImpl !== 'autocount_read' && input.sourceImpl !== 'sql_db') {
+      throw new ApiError('Unknown source.', 422);
+    }
+    if (input.sourceImpl) noteSourceImpl(companyId, entityType, input.sourceImpl);
+    const detail = await this.getCompany(companyId);
+    const entity = detail.entities.find((e) => e.entityType === entityType);
+    if (!entity) throw new ApiError('Entity not found.', 404);
+    return {
+      ...entity,
+      initialLookbackDays: input.initialLookbackDays ?? entity.initialLookbackDays,
+    };
   },
 
   syncNow(): Promise<AutocountSyncJob> {
@@ -636,13 +1037,13 @@ export const mockAutocountService: AutocountService = {
     companyId: string,
     input: AutocountSinkTargetInput,
   ): Promise<AutocountCompany> {
-    return Promise.resolve(
-      mockCompany({
-        id: companyId,
-        sinkImpl: input.sinkImpl,
-        sinkConnectionId: input.sinkImpl === 'sorento' ? input.sinkConnectionId ?? null : null,
-      }),
-    );
+    guardSinkTarget(input);
+    noteSinkTarget(companyId, input);
+    mockSinks.set(companyId, {
+      sinkImpl: input.sinkImpl,
+      sinkConnectionId: input.sinkImpl === 'sorento' ? input.sinkConnectionId ?? null : null,
+    });
+    return Promise.resolve(applyCompanyOverlay(mockCompanyState(companyId)));
   },
 
   getMapping(_companyId: string, entityType: string): Promise<AutocountMappingView> {
@@ -789,12 +1190,14 @@ export const mockAutocountService: AutocountService = {
         502,
       );
     }
-    return runMockPreview(query);
+    const preview = runMockPreview(query);
+    previewColumnsByQuery.set(normalizeQuery(query), preview.columns.map((c) => c.name));
+    return preview;
   },
 
   async getEtlTask(companyId: string, entityType: string): Promise<AutocountEtlTask> {
     await pause(200);
-    return cloneJson(etlTaskFor(companyId, entityType));
+    return cloneJson(applyTaskOverlay(etlTaskFor(companyId, entityType)));
   },
 
   async updateEtlTask(
@@ -816,9 +1219,149 @@ export const mockAutocountService: AutocountService = {
       sourceConfig: cloneJson(cfg),
     };
     etlTasks.set(`${companyId}:${entityType}`, next);
-    return cloneJson(next);
+    noteTaskSaved(companyId, entityType, cfg);
+    return cloneJson(applyTaskOverlay(next));
+  },
+
+  // ── direct-DB ETL (plan 22 S2) ─────────────────────────────────────────────
+
+  async previewEtlTask(companyId, entityType) {
+    const [detail, task] = await Promise.all([
+      this.getCompany(companyId),
+      this.getEtlTask(companyId, entityType),
+    ]);
+    return mockPreviewEtlTask(detail.company, task);
+  },
+
+  async activateEtlTask(companyId, entityType) {
+    await pause(200);
+    const [detail, task] = await Promise.all([
+      this.getCompany(companyId),
+      this.getEtlTask(companyId, entityType),
+    ]);
+    return mockActivate(detail.company, task);
+  },
+
+  async pauseEtlTask(companyId, entityType) {
+    await pause(250);
+    return mockPause(await this.getEtlTask(companyId, entityType));
+  },
+
+  async resumeEtlTask(companyId, entityType) {
+    await pause(250);
+    return mockResume(await this.getEtlTask(companyId, entityType));
+  },
+
+  async runEtlTaskNow(companyId, entityType) {
+    await pause(500);
+    const [detail, task] = await Promise.all([
+      this.getCompany(companyId),
+      this.getEtlTask(companyId, entityType),
+    ]);
+    return mockRunNow(detail.company, task);
+  },
+
+  async listEtlRuns(companyId, entityType, query) {
+    await pause(200);
+    return mockListEtlRuns(companyId, entityType, query);
   },
 };
+
+/**
+ * PHASE 1 MOCK OVERLAY (plan 22 S2). Wraps the REAL service so the S1
+ * endpoints keep serving real data while the S2 additions (lifecycle, preview,
+ * runs, `sourceImpl`, `sorentoCompanyCode`, the task's new read-only fields)
+ * come from this session's in-memory state. The real backend ignores the
+ * extra request fields it does not know yet; this overlay remembers them and
+ * lays them back over the real responses. Phase 2 deletes this binding.
+ */
+export function withPhase1EtlMock(real: AutocountService): AutocountService {
+  const overlaid: AutocountService = {
+    ...real,
+
+    async getCompany(id) {
+      return applyDetailOverlay(await real.getCompany(id));
+    },
+
+    async updateSinkTarget(companyId, input) {
+      guardSinkTarget(input);
+      const saved = await real.updateSinkTarget(companyId, input);
+      noteSinkTarget(companyId, input);
+      return applyCompanyOverlay(saved);
+    },
+
+    async updateEntityConfig(companyId, entityType, input) {
+      const { sourceImpl, ...rest } = input;
+      if (sourceImpl && sourceImpl !== 'autocount_read' && sourceImpl !== 'sql_db') {
+        throw new ApiError('Unknown source.', 422);
+      }
+      const saved = await real.updateEntityConfig(companyId, entityType, rest);
+      if (sourceImpl) noteSourceImpl(companyId, entityType, sourceImpl);
+      return applyEntityOverlay(companyId, saved);
+    },
+
+    async previewSqlQuery(connectionId, query) {
+      const preview = await real.previewSqlQuery(connectionId, query);
+      previewColumnsByQuery.set(normalizeQuery(query), preview.columns.map((c) => c.name));
+      return preview;
+    },
+
+    async getEtlTask(companyId, entityType) {
+      const task = await real.getEtlTask(companyId, entityType);
+      const o = overlayFor(companyId, entityType);
+      if (o.resultColumns.length === 0) o.resultColumns = resultColumnsFor(task.sourceConfig);
+      return applyTaskOverlay(task);
+    },
+
+    async updateEtlTask(companyId, entityType, input) {
+      const saved = await real.updateEtlTask(companyId, entityType, input);
+      noteTaskSaved(companyId, entityType, saved.sourceConfig);
+      return applyTaskOverlay(saved);
+    },
+
+    async previewEtlTask(companyId, entityType) {
+      const [detail, task] = await Promise.all([
+        overlaid.getCompany(companyId),
+        overlaid.getEtlTask(companyId, entityType),
+      ]);
+      return mockPreviewEtlTask(detail.company, task);
+    },
+
+    async activateEtlTask(companyId, entityType) {
+      await pause(200);
+      const [detail, task] = await Promise.all([
+        overlaid.getCompany(companyId),
+        overlaid.getEtlTask(companyId, entityType),
+      ]);
+      return mockActivate(detail.company, task);
+    },
+
+    async pauseEtlTask(companyId, entityType) {
+      await pause(250);
+      return mockPause(await overlaid.getEtlTask(companyId, entityType));
+    },
+
+    async resumeEtlTask(companyId, entityType) {
+      await pause(250);
+      return mockResume(await overlaid.getEtlTask(companyId, entityType));
+    },
+
+    async runEtlTaskNow(companyId, entityType) {
+      await pause(500);
+      const [detail, task] = await Promise.all([
+        overlaid.getCompany(companyId),
+        overlaid.getEtlTask(companyId, entityType),
+      ]);
+      return mockRunNow(detail.company, task);
+    },
+
+    async listEtlRuns(companyId, entityType, query) {
+      await pause(200);
+      return mockListEtlRuns(companyId, entityType, query);
+    },
+  };
+  return overlaid;
+}
 
 /** A realistic supplier/customer mapping view for the editor's tunable states. */
 function mockMappingView(entityType: string): AutocountMappingView {

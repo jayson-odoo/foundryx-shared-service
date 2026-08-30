@@ -169,3 +169,27 @@ describe('MappingTable formula display (AC-16-10)', () => {
     expect(screen.getByText('Text')).toBeInTheDocument();
   });
 });
+
+describe('column source mode (plan 22 S2, AC-22-09)', () => {
+  it('offers ONLY the result columns - no free-typed path, no custom item', () => {
+    renderTable(true, { sourceMode: 'column', acFields: ['AccNo', 'CompanyName'] });
+    expect(screen.getByText('Source column')).toBeInTheDocument();
+    const picker = screen.getByRole('combobox', { name: 'Source column for row 1' });
+    fireEvent.click(picker);
+    fireEvent.change(screen.getByPlaceholderText('Search columns'), {
+      target: { value: 'Data.0.Nope' },
+    });
+    expect(screen.queryByText(/Use "Data\.0\.Nope"/)).not.toBeInTheDocument();
+  });
+
+  it('is disabled until the task has result columns to offer', () => {
+    renderTable(true, { sourceMode: 'column', acFields: [] });
+    expect(screen.getByRole('combobox', { name: 'Source column for row 1' })).toBeDisabled();
+  });
+
+  it('keeps the API path mode unchanged by default', () => {
+    renderTable(true);
+    expect(screen.getByText('AutoCount field')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'AutoCount source for row 1' })).toBeInTheDocument();
+  });
+});
