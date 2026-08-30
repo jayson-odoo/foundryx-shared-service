@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+import sqlalchemy as sa
 from cryptography.fernet import InvalidToken
 from sqlalchemy.orm import Session
 
@@ -56,8 +57,16 @@ from ..sql_source.introspect import (
     SqlSchemaTree,
     introspect_schema,
 )
-from ..sql_source.preview import PreviewResult, is_orderable_type, run_preview
-from ..sql_source.runtime import RUNTIME, SqlSourceRuntime, secrets_of
+from ..sql_source.preview import PreviewResult, is_orderable_type, run_preview, wrap_preview
+from ..sql_source.runtime import (
+    RUNTIME,
+    QUERY_TIMEOUT_SECONDS,
+    SqlSourceRuntime,
+    open_readonly,
+    sanitize_error,
+    secrets_of,
+)
+from ..sql_source.source import build_incremental_wrap
 from .company_service import (
     AutocountServiceError,
     CompanyService,
@@ -513,6 +522,33 @@ class EtlService:
             ),
         )
 
+    def _probe_incremental_wrap(
+        self, engine, secrets: List[str], query: str, watermark_column: str
+    ) -> None:
+        """Execute the ACTUAL runtime statement shape once, capped, read-only
+        (S2 review BLOCKER 2).
+
+        ``SqlDbSource`` always runs an incremental (or mark-less initial)
+        fetch as a derived-table wrap (``build_incremental_wrap`` - the SAME
+        function, so this probes exactly what a real run would send). The
+        ORDER-BY-stripping fix closes the one KNOWN-bad shape; this probe is
+        the safety net for whatever it does not cover (an unaliased
+        ``COUNT(*)`` or a duplicate column name - MSSQL error 8155, a query
+        paired with ``OFFSET``/``FETCH`` we deliberately leave un-stripped) -
+        so a wrap-incompatible query is a 422 on SAVE, never a run-time
+        surprise the first time the task actually fires. Capped to 1 row via
+        the SAME per-dialect rewriter the query preview uses (``wrap_preview``)
+        so validating a huge table costs a bounded fetch, not a full extract.
+        A dedicated method (not inlined) so a test can stub it without a real
+        MSSQL/MySQL driver.
+        """
+        quoted = engine.dialect.identifier_preparer.quote(watermark_column)
+        probe_sql = wrap_preview(
+            build_incremental_wrap(query, quoted, None), engine.dialect.name, 1
+        )
+        with open_readonly(engine, timeout_s=QUERY_TIMEOUT_SECONDS, secrets=secrets) as conn:
+            conn.execute(sa.text(probe_sql)).close()
+
     def update_task(
         self, tenant_id: str, company_id: str, entity_type: str, raw: Dict[str, Any]
     ) -> EtlTaskView:
@@ -522,7 +558,9 @@ class EtlService:
         connection tenant+provider scoped; (3) static-guard the query; (4) run
         a FRESH preview so column picks are checked against what the query
         actually returns (and the query itself is proven to execute); (5)
-        normalise + validate the rest. Every failure names its field.
+        normalise + validate the rest; (6) with a watermark column and no
+        errors so far, PROBE the exact incremental statement shape the real
+        run will execute (BLOCKER 2) - every failure names its field.
         """
         self._require_task_entity(tenant_id, company_id, entity_type)
         errors: Dict[str, str] = {}
@@ -537,6 +575,8 @@ class EtlService:
 
         query = normalize_statement(str(raw.get("query") or ""))
         columns: Optional[Dict[str, str]] = None
+        engine = None
+        secrets: List[str] = []
         if query:
             if conn is None and "connectionId" not in errors:
                 errors["connectionId"] = "Choose the connection this query runs on."
@@ -551,10 +591,22 @@ class EtlService:
                         columns = run_preview(engine, query, secrets=secrets).column_types
                     except (SqlSourceError, AutocountServiceError) as exc:
                         errors["query"] = exc.message
+                        engine = None
 
         clean, more = validate_source_config(entity_type, raw, columns)
         for key, message in more.items():
             errors.setdefault(key, message)
+
+        watermark = clean.get("watermarkColumn")
+        if not errors and watermark and engine is not None:
+            try:
+                self._probe_incremental_wrap(engine, secrets, query, watermark)
+            except Exception as exc:  # noqa: BLE001 - every driver raises its own class
+                errors["watermarkColumn"] = (
+                    "This query cannot be run incrementally on this database: "
+                    + sanitize_error(exc, secrets=secrets)
+                )
+
         if errors:
             raise EtlValidationError(errors)
 

@@ -63,14 +63,19 @@ from ..sources import (
 )
 from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
 from .errors import SqlSourceError
-from .guard import assert_select_only, normalize_statement
+from .guard import assert_select_only, normalize_statement, top_level_words
 from .hashing import compared_columns_for, row_hash
 from .preview import json_safe
 from .runtime import RUNTIME, QUERY_TIMEOUT_SECONDS, SqlSourceRuntime, open_readonly, secrets_of
 
 logger = logging.getLogger("foundryx.autocount")
 
-__all__ = ["SqlDbSource", "SqlTaskNotConfigured", "register_sql_db_source"]
+__all__ = [
+    "SqlDbSource",
+    "SqlTaskNotConfigured",
+    "build_incremental_wrap",
+    "register_sql_db_source",
+]
 
 # Rows are streamed from the server in blocks of this size; the extract is
 # still materialised in memory for mapping, so a hard ceiling fails LOUDLY
@@ -132,6 +137,65 @@ def _as_utc(value: Any) -> Optional[datetime]:
     return (
         value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
     ).astimezone(timezone.utc)
+
+
+# ── incremental-fetch statement building (S2 review BLOCKER 2) ──────────────
+#
+#     !!  MSSQL REJECTS ORDER BY (1033) AND UNNAMED COLUMNS (8155) INSIDE A
+#         DERIVED TABLE - AUTOCOUNT IS MSSQL.  !!
+# The preview cap (``preview.wrap_preview``) rewrites the user's OWN outermost
+# statement rather than wrapping it in a derived table for exactly this
+# reason. The incremental predicate is harder to rewrite that way in general
+# (it must ADD a WHERE clause, AND-ed with whatever the query already has,
+# not just inject a keyword after SELECT) - the derived-table wrap stays, but
+# TWO changes close the two known-bad shapes:
+#
+# 1. A top-level TRAILING ``ORDER BY`` on the saved query is stripped before
+#    wrapping - it is meaningless once wrapped (the OUTER statement re-orders
+#    by the watermark column) and is exactly what triggers MSSQL error 1033.
+#    Left untouched when paired with ``OFFSET``/``FETCH`` (stripping only the
+#    ORDER BY there would break that syntax) - documented, not silently
+#    "handled": that shape is caught by the save-time validation probe below
+#    instead of surprising a live run.
+# 2. ``EtlService.update_task`` EXECUTES this exact wrapped statement once at
+#    save time (see there) - a query whose SELECT list still trips something
+#    the strip does not cover (an unaliased ``COUNT(*)``, duplicate column
+#    names) fails as a 422 on save, never a run-time surprise.
+_ROW_CLAUSES_AFTER_ORDER = frozenset({"OFFSET", "FETCH"})
+
+
+def _strip_trailing_order_by(statement: str) -> str:
+    """Drop a top-level trailing ``ORDER BY`` - see the module note above."""
+    words = top_level_words(statement)
+    if {word for word, _, _ in words} & _ROW_CLAUSES_AFTER_ORDER:
+        return statement
+    order_at: Optional[int] = None
+    for i in range(len(words) - 1):
+        if words[i][0] == "ORDER" and words[i + 1][0] == "BY":
+            order_at = i
+    if order_at is None:
+        return statement
+    return statement[: words[order_at][1]].rstrip()
+
+
+def build_incremental_wrap(query: str, quoted_column: str, mark: Any) -> str:
+    """The exact statement text an incremental (``mark`` given) or mark-less
+    initial (``mark is None``) DB-source fetch executes.
+
+    ``mark`` only decides which of the two shapes to build - the actual bound
+    value (when there is one) is never spliced into the text, it rides as the
+    SQLAlchemy bind parameter ``:mark``. ONE function builds this shape for
+    both the real run (``SqlDbSource._statement``) and the save-time
+    validation probe (``EtlService.update_task``) - never two copies to drift
+    apart.
+    """
+    inner = _strip_trailing_order_by(query).replace(":", r"\:")
+    if mark is None:
+        return f"SELECT * FROM ({inner}) AS t ORDER BY t.{quoted_column}"
+    return (
+        f"SELECT * FROM ({inner}) AS t "
+        f"WHERE t.{quoted_column} > :mark ORDER BY t.{quoted_column}"
+    )
 
 
 class SqlDbSource:
@@ -246,24 +310,18 @@ class SqlDbSource:
         ``exec_driver_sql`` exactly as the preview does, so the user's own text
         is never re-parsed).
 
-        With one, the query becomes a derived table so the bound comparison and
-        the ordering apply to ITS result columns rather than being spliced into
-        the user's own clauses. Colons in the inner text are backslash-escaped
-        because SQLAlchemy's ``text()`` would otherwise read a Postgres ``::``
-        cast or a ``'12:30'`` literal as a bind parameter.
+        With one, the query becomes a derived table (``build_incremental_wrap``)
+        so the bound comparison and the ordering apply to ITS result columns
+        rather than being spliced into the user's own clauses. Colons in the
+        inner text are backslash-escaped because SQLAlchemy's ``text()`` would
+        otherwise read a Postgres ``::`` cast or a ``'12:30'`` literal as a
+        bind parameter.
         """
         if not self.watermark_column:
             return self.query, None
         column = self._quoted_watermark()
-        inner = self.query.replace(":", r"\:")
-        if mark is None:
-            sql = f"SELECT * FROM ({inner}) AS t ORDER BY t.{column}"
-            return sa.text(sql), {}
-        sql = (
-            f"SELECT * FROM ({inner}) AS t "
-            f"WHERE t.{column} > :mark ORDER BY t.{column}"
-        )
-        return sa.text(sql), {"mark": mark}
+        sql = build_incremental_wrap(self.query, column, mark)
+        return sa.text(sql), ({} if mark is None else {"mark": mark})
 
     # ── fetch ────────────────────────────────────────────────────────────────
 

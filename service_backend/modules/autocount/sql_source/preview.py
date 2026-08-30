@@ -44,7 +44,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from sqlalchemy.engine import Engine
 
 from .errors import SqlQueryError
-from .guard import assert_select_only, mask_quoted
+from .guard import assert_select_only, mask_quoted, top_level_words
 from .runtime import PREVIEW_ROW_LIMIT, QUERY_TIMEOUT_SECONDS, open_readonly, sanitize_error
 
 __all__ = [
@@ -79,28 +79,8 @@ class PreviewResult:
         return {c.name: c.type for c in self.columns}
 
 
-# Identifiers plus the two parentheses - the only things the rewriter needs to
-# see once literals and quoted identifiers are masked out.
-_WORD_OR_PAREN = re.compile(r"[A-Za-z_][A-Za-z0-9_$#@]*|\(|\)")
 # Row-limiting clauses that cannot be combined with a second cap.
 _ROW_CLAUSES = frozenset({"LIMIT", "OFFSET", "FETCH"})
-
-
-def _top_level_words(statement: str) -> List[Tuple[str, int, int]]:
-    """``(UPPER_WORD, start, end)`` for every identifier at parenthesis depth
-    0 of ``statement`` - literals and quoted identifiers masked, so offsets
-    apply to the original text."""
-    words: List[Tuple[str, int, int]] = []
-    depth = 0
-    for match in _WORD_OR_PAREN.finditer(mask_quoted(statement)):
-        token = match.group(0)
-        if token == "(":
-            depth += 1
-        elif token == ")":
-            depth = max(0, depth - 1)
-        elif depth == 0:
-            words.append((token.upper(), match.start(), match.end()))
-    return words
 
 
 def _inject_top(statement: str, n: int) -> str:
@@ -108,7 +88,7 @@ def _inject_top(statement: str, n: int) -> str:
     skipping a leading CTE list (its bodies sit inside parentheses). Left
     untouched when the statement already has a TOP, or an OFFSET/FETCH (TOP
     cannot be combined with either)."""
-    words = _top_level_words(statement)
+    words = top_level_words(statement)
     kinds = {word for word, _, _ in words}
     if kinds & {"OFFSET", "FETCH"}:
         return statement
@@ -127,7 +107,7 @@ def _inject_top(statement: str, n: int) -> str:
 def _append_limit(statement: str, n: int) -> str:
     """Postgres / MySQL / anything else: append ``LIMIT n``; a statement that
     already carries a top-level LIMIT/OFFSET/FETCH is wrapped instead."""
-    kinds = {word for word, _, _ in _top_level_words(statement)}
+    kinds = {word for word, _, _ in top_level_words(statement)}
     if kinds & _ROW_CLAUSES:
         return f"SELECT * FROM ({statement}) AS _preview LIMIT {n}"
     return f"{statement} LIMIT {n}"

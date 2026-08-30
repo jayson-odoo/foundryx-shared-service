@@ -848,9 +848,10 @@ def test_an_anchor_422_on_a_RUN_lands_on_the_task_not_the_records(
     # lost cursor would re-scan both rows from scratch (a full re-extract).
     consumer.responder = Consumer.created
     second = client.post(_url(company_id, "/run"), headers=_auth(client)).json()
-    runs = client.get(
-        _url(company_id, "/runs?page=0&page_size=1"), headers=_auth(client)
-    ).json()["data"]
+    # Addressed by ID, not by position (two runs a fraction of a second apart
+    # share a ``started_at`` second on SQLite - see the sibling incremental
+    # test's note).
+    runs = client.get(_url(company_id, "/runs"), headers=_auth(client)).json()["data"]
     latest = next(r for r in runs if r["id"] == second["runId"])
     assert latest["rowsScanned"] == 0
 

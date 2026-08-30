@@ -594,6 +594,82 @@ def test_put_etl_task_422_matrix_names_the_field(client, session_factory):
     )
 
 
+def test_put_etl_task_422s_when_the_incremental_wrap_cannot_run(client, session_factory, monkeypatch):
+    """S2 review BLOCKER 2: the exact runtime statement shape (the derived-
+    table wrap around the watermark column ``SqlDbSource`` will execute on
+    every real run) is probed ONCE at save time - a query the target
+    database rejects there (MSSQL 8155 unnamed columns, duplicate column
+    names, ...) must be a 422 on THIS field, not a run-time surprise the
+    first time the task actually fires. No real MSSQL driver runs in this
+    suite, so the probe itself is stubbed to fail (simulating the DB's own
+    rejection) - what is under test is the WIRING: ``update_task`` actually
+    calls it and turns whatever it raises into a named field error, never a
+    500, and never persists the rejected config."""
+    import modules.autocount.services.etl_service as etl_service_module
+
+    def _boom(self, engine, secrets, query, watermark_column):
+        raise RuntimeError("The multi-part identifier could not be bound.")
+
+    monkeypatch.setattr(etl_service_module.EtlService, "_probe_incremental_wrap", _boom)
+
+    db = session_factory()
+    company = _company(db)
+    conn = _sql_connection(db, db_type="postgresql")
+    before = (
+        db.query(AcEntityConfig)
+        .filter_by(tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type="customer")
+        .one()
+    )
+    assert before.source_impl == "autocount_read"  # the seeded default
+    db.close()
+
+    good = "SELECT acc_no, company_name, balance, last_modified FROM debtor"
+    response = _put(
+        client, company, _config(connectionId=conn.id, query=good, watermarkColumn="balance")
+    )
+    assert response.status_code == 422, response.text
+    errors = response.json()["detail"]["fieldErrors"]
+    assert "watermarkColumn" in errors
+    assert "cannot be run incrementally" in errors["watermarkColumn"]
+
+    # Nothing was saved - a rejected probe must not persist a task that is
+    # guaranteed to fail on its very first run.
+    db = session_factory()
+    after = (
+        db.query(AcEntityConfig)
+        .filter_by(tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type="customer")
+        .one()
+    )
+    assert after.source_impl == "autocount_read"
+    db.close()
+
+
+def test_put_etl_task_probes_the_wrap_only_when_a_watermark_column_is_set(
+    client, session_factory, monkeypatch
+):
+    """No watermark column = no incremental fetch = nothing to probe - the
+    probe must not run (and so cannot spuriously 422) on a full-extract-only
+    task."""
+    import modules.autocount.services.etl_service as etl_service_module
+
+    calls: List[str] = []
+
+    def _boom(self, engine, secrets, query, watermark_column):
+        calls.append(watermark_column)
+        raise RuntimeError("must not be called")
+
+    monkeypatch.setattr(etl_service_module.EtlService, "_probe_incremental_wrap", _boom)
+
+    db = session_factory()
+    company = _company(db)
+    conn = _sql_connection(db, db_type="postgresql")
+    db.close()
+    good = "SELECT acc_no, company_name, balance, last_modified FROM debtor"
+    response = _put(client, company, _config(connectionId=conn.id, query=good))
+    assert response.status_code == 200, response.text
+    assert calls == []
+
+
 def test_put_etl_task_requires_manage_and_404s_cross_tenant(client, session_factory):
     db = session_factory()
     _other_tenant(db)

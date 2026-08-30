@@ -42,6 +42,7 @@ from modules.autocount.sql_source.runtime import (
     connect_args_for,
     sanitize_error,
 )
+from modules.autocount.sql_source.source import build_incremental_wrap
 from modules.autocount.sql_provider import (
     SQL_DATABASE_PROVIDER_KEY,
     SqlDatabaseProvider,
@@ -476,6 +477,133 @@ def test_wrap_preview_cap_is_limit_plus_one():
 def test_wrap_preview_refuses_a_non_select_before_any_wrapping():
     with pytest.raises(SqlGuardError):
         wrap_preview("DELETE FROM Debtor", "postgresql", 100)
+
+
+# ── incremental-fetch derived-table wrap (S2 review BLOCKER 2) ──────────────
+#
+# AutoCount IS MSSQL, which rejects an ``ORDER BY`` INSIDE a derived table
+# (error 1033). ``SqlDbSource`` always ran incremental fetches through a
+# derived-table wrap carrying its OWN ``ORDER BY`` - a saved query that ALSO
+# ends in its own top-level ``ORDER BY`` produced ``SELECT * FROM (... ORDER
+# BY x) AS t ...`` (two nested ORDER BYs), which MSSQL refuses outright. The
+# fix strips a top-level TRAILING ``ORDER BY`` before wrapping - it was always
+# meaningless there (the outer statement re-orders by the watermark column
+# regardless of what order the derived table's own rows arrive in).
+
+
+def _dialect_preparer(name: str):
+    if name == "mssql":
+        from sqlalchemy.dialects.mssql import pymssql as dialect_module
+    elif name == "mysql":
+        from sqlalchemy.dialects.mysql import pymysql as dialect_module
+    else:
+        from sqlalchemy.dialects.postgresql import psycopg2 as dialect_module
+    return dialect_module.dialect().identifier_preparer
+
+
+@pytest.mark.parametrize("dialect", ["mssql", "postgresql", "mysql"])
+def test_build_incremental_wrap_plain_query(dialect):
+    quoted = _dialect_preparer(dialect).quote("last_modified")
+    sql = build_incremental_wrap("SELECT acc_no, last_modified FROM Debtor", quoted, "2026-01-01")
+    assert sql == (
+        f"SELECT * FROM (SELECT acc_no, last_modified FROM Debtor) AS t "
+        f"WHERE t.{quoted} > :mark ORDER BY t.{quoted}"
+    )
+    assert "ORDER BY" not in sql.split("WHERE", 1)[0]  # no double ORDER BY
+
+
+@pytest.mark.parametrize("dialect", ["mssql", "postgresql", "mysql"])
+def test_build_incremental_wrap_mark_less_initial_load(dialect):
+    quoted = _dialect_preparer(dialect).quote("last_modified")
+    sql = build_incremental_wrap("SELECT acc_no, last_modified FROM Debtor", quoted, None)
+    assert sql == (
+        f"SELECT * FROM (SELECT acc_no, last_modified FROM Debtor) AS t "
+        f"ORDER BY t.{quoted}"
+    )
+    assert ":mark" not in sql
+
+
+@pytest.mark.parametrize("dialect", ["mssql", "postgresql", "mysql"])
+def test_build_incremental_wrap_strips_a_trailing_order_by(dialect):
+    """The exact MSSQL-1033 trigger: a saved query already ending in its OWN
+    ``ORDER BY`` must not produce a NESTED ``ORDER BY`` inside the derived
+    table - the trailing clause is dropped, the OUTER wrap supplies the only
+    ordering that matters (the watermark column)."""
+    quoted = _dialect_preparer(dialect).quote("last_modified")
+    sql = build_incremental_wrap(
+        "SELECT acc_no, last_modified FROM Debtor ORDER BY acc_no", quoted, "2026-01-01"
+    )
+    assert sql == (
+        f"SELECT * FROM (SELECT acc_no, last_modified FROM Debtor) AS t "
+        f"WHERE t.{quoted} > :mark ORDER BY t.{quoted}"
+    )
+    # Only ONE ORDER BY survives - the outer wrap's.
+    assert sql.count("ORDER BY") == 1
+
+
+def test_build_incremental_wrap_strips_order_by_case_insensitively_and_multiline():
+    quoted = '"last_modified"'
+    sql = build_incremental_wrap(
+        "select acc_no\nfrom debtor\norder by\n  acc_no", quoted, None
+    )
+    assert sql == f'SELECT * FROM (select acc_no\nfrom debtor) AS t ORDER BY t.{quoted}'
+
+
+def test_build_incremental_wrap_leaves_order_by_paired_with_offset_fetch_alone():
+    """MSSQL's OFFSET/FETCH pagination REQUIRES its own ORDER BY - stripping
+    just the ORDER BY there would break the syntax a different way, so this
+    shape is left untouched. It fails at SAVE time instead (the validation
+    probe actually executes the wrap), never as a live-run surprise."""
+    quoted = "[last_modified]"
+    query = (
+        "SELECT acc_no, last_modified FROM Debtor "
+        "ORDER BY acc_no OFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY"
+    )
+    sql = build_incremental_wrap(query, quoted, None)
+    assert sql == f"SELECT * FROM ({query}) AS t ORDER BY t.{quoted}"
+
+
+def test_build_incremental_wrap_is_cte_aware():
+    """A CTE's OWN trailing ``ORDER BY`` (inside its parentheses) is NOT the
+    outer statement's - only a depth-0 trailing ORDER BY is stripped."""
+    quoted = '"last_modified"'
+    query = (
+        "WITH recent AS (SELECT * FROM Debtor ORDER BY acc_no) "
+        "SELECT acc_no, last_modified FROM recent ORDER BY last_modified"
+    )
+    sql = build_incremental_wrap(query, quoted, "2026-01-01")
+    expected_inner = (
+        "WITH recent AS (SELECT * FROM Debtor ORDER BY acc_no) "
+        "SELECT acc_no, last_modified FROM recent"
+    )
+    assert sql == (
+        f"SELECT * FROM ({expected_inner}) AS t "
+        f"WHERE t.{quoted} > :mark ORDER BY t.{quoted}"
+    )
+
+
+def test_build_incremental_wrap_preserves_the_querys_own_existing_where():
+    """The user's own ``WHERE`` rides inside the derived table untouched - the
+    incremental predicate is added at the OUTER level, ANDed implicitly by
+    being a separate WHERE on ``t`` (the inner WHERE already filtered rows
+    before they ever reached ``t``)."""
+    quoted = '"last_modified"'
+    query = "SELECT acc_no, last_modified FROM Debtor WHERE is_active = 1"
+    sql = build_incremental_wrap(query, quoted, "2026-01-01")
+    assert sql == (
+        f"SELECT * FROM ({query}) AS t "
+        f"WHERE t.{quoted} > :mark ORDER BY t.{quoted}"
+    )
+
+
+def test_build_incremental_wrap_escapes_colons_for_text_bind_parsing():
+    """SQLAlchemy's ``text()`` reads a bare ``:`` as a bind marker - a
+    Postgres ``::`` cast or a ``'12:30'`` literal in the SAVED query must
+    survive un-mangled."""
+    quoted = '"last_modified"'
+    query = "SELECT acc_no, last_modified::text AS lm FROM Debtor"
+    sql = build_incremental_wrap(query, quoted, None)
+    assert r"last_modified\:\:text" in sql
 
 
 def test_run_preview_caps_rows_reports_truncation_and_types():

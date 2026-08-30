@@ -29,10 +29,17 @@ read-only too.
 from __future__ import annotations
 
 import re
+from typing import List, Tuple
 
 from .errors import SqlGuardError
 
-__all__ = ["assert_select_only", "mask_quoted", "normalize_statement", "SqlGuardError"]
+__all__ = [
+    "assert_select_only",
+    "mask_quoted",
+    "normalize_statement",
+    "top_level_words",
+    "SqlGuardError",
+]
 
 _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 _LINE_COMMENT = re.compile(r"--[^\n]*")
@@ -153,6 +160,33 @@ def _strip_comments(sql: str) -> str:
 
 def _blank(match: "re.Match[str]") -> str:
     return " " * len(match.group(0))
+
+
+_WORD_OR_PAREN = re.compile(r"[A-Za-z_][A-Za-z0-9_$#@]*|\(|\)")
+
+
+def top_level_words(statement: str) -> List[Tuple[str, int, int]]:
+    """``(UPPER_WORD, start, end)`` for every identifier at parenthesis depth
+    0 of ``statement`` - literals and quoted identifiers masked first, so
+    offsets apply to the ORIGINAL text. Depth-0 means "a clause of the
+    OUTERMOST statement, never a CTE body or a subquery's own clause".
+
+    Shared by the preview row-cap rewriter (``preview.wrap_preview``) and the
+    DB-source incremental-fetch statement builder (``source.py`` - stripping
+    a meaningless trailing ``ORDER BY`` before the derived-table wrap, S2
+    review BLOCKER 2). One tokeniser, not two copies drifting apart.
+    """
+    words: List[Tuple[str, int, int]] = []
+    depth = 0
+    for match in _WORD_OR_PAREN.finditer(mask_quoted(statement)):
+        token = match.group(0)
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            words.append((token.upper(), match.start(), match.end()))
+    return words
 
 
 def mask_quoted(text: str) -> str:
