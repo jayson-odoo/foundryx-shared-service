@@ -686,6 +686,14 @@ class RowHashRepository:
 
         Bounded the same way a full extract is - a reconcile task's hash
         population is the same order of magnitude as the table it mirrors.
+
+        N8: this is a genuinely UNBOUNDED load - every row for the (tenant,
+        company, entity) comes back in one query, no chunking, no LIMIT. That
+        is deliberate at today's scale (mirrors ``MAX_EXTRACT_ROWS`` in
+        ``sql_source/source.py`` - a table too big to hash-diff in memory is
+        already too big for the extract that populates this table to
+        succeed). Revisit with a streamed/paged diff if a reconciled entity
+        ever needs to exceed that ceiling.
         """
         rows = (
             self.db.query(AcRowHash.source_ref, AcRowHash.row_hash)
