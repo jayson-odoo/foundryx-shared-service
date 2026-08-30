@@ -129,6 +129,17 @@ def reduce_agent_state(
             rejected.append(key)
             continue
         evidence = _evidence_slice(message, patch.get("evidence"))
+        if evidence is None and operation == "set":
+            # Real models frequently omit `evidence` when the value is quoted
+            # verbatim in the message. Salvage that case by deriving the
+            # provenance evidence from the VALUE itself - but only when it is
+            # literally present in the current message (AC-SC-05). This never
+            # weakens the anti-fabrication guarantee (AC-SC-06): a value that
+            # is neither supplied as evidence nor found in the message still
+            # falls through to the rejection below.
+            fallback_value = patch.get("value")
+            if isinstance(fallback_value, str):
+                evidence = _evidence_slice(message, fallback_value)
         if evidence is None:
             rejected.append(key)
             continue
