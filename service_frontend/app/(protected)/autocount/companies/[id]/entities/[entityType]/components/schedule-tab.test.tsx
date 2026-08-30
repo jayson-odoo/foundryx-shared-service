@@ -48,7 +48,7 @@ function task(over: Partial<AutocountEtlTask> = {}): AutocountEtlTask {
 }
 
 describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
-  it('states the watermark-driven incremental floor', () => {
+  it('carries the watermark-driven incremental floor on the input (foolproof-UI: no hint copy, N6)', () => {
     const { rerender } = render(
       <ScheduleTab
         editing
@@ -59,7 +59,7 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
         fieldErrors={{}}
       />,
     );
-    expect(screen.getByText(/minimum 15 minutes/i)).toBeInTheDocument();
+    expect(screen.getByTestId('etl-incremental-minutes')).toHaveAttribute('min', '15');
 
     rerender(
       <ScheduleTab
@@ -71,7 +71,7 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
         fieldErrors={{}}
       />,
     );
-    expect(screen.getByText(/minimum 1 minute/i)).toBeInTheDocument();
+    expect(screen.getByTestId('etl-incremental-minutes')).toHaveAttribute('min', '1');
   });
 
   it('shows a floor-violation inline error live, no save required', () => {
@@ -102,7 +102,7 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
     expect(screen.getByTestId('etl-incremental-error')).toHaveTextContent('Server-side rejection.');
   });
 
-  it('dailyAt mode renders a time input, the session timezone, and an invalid-time error', () => {
+  it('dailyAt mode renders a time input, the literal UTC (the backend resolves it, not the session timezone), and an invalid-time error', () => {
     render(
       <ScheduleTab
         editing
@@ -114,7 +114,8 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
       />,
     );
     expect(screen.getByTestId('etl-reconcile-at')).toBeInTheDocument();
-    expect(screen.getByText('Asia/Kuala_Lumpur')).toBeInTheDocument();
+    expect(screen.getByText('UTC')).toBeInTheDocument();
+    expect(screen.queryByText('Asia/Kuala_Lumpur')).not.toBeInTheDocument();
     expect(screen.getByTestId('etl-reconcile-at-error')).toHaveTextContent(/HH:MM/);
     expect(screen.queryByTestId('etl-reconcile-hours')).not.toBeInTheDocument();
   });
@@ -194,7 +195,7 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
         fieldErrors={{}}
       />,
     );
-    expect(screen.getByTestId('etl-delete-guard-threshold')).toHaveTextContent('20%');
+    expect(screen.getByTestId('etl-delete-guard-threshold')).toHaveTextContent('20% of known rows (minimum 50)');
     expect(screen.queryByTestId('etl-schedule-from-date')).not.toBeInTheDocument();
 
     rerender(

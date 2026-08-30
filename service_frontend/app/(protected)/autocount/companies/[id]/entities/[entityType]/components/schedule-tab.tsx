@@ -38,7 +38,7 @@ export interface ScheduleTabProps {
  * server re-validates on save regardless.
  */
 export function ScheduleTab({ editing, entityType, config, onChange, task, fieldErrors }: ScheduleTabProps) {
-  const { formatDateTime, timeZone } = useDatetime();
+  const { formatDateTime } = useDatetime();
   const hasWatermark = Boolean(config.watermarkColumn);
   const floor = incrementalFloorMinutes(hasWatermark);
   const incrementalError =
@@ -52,7 +52,7 @@ export function ScheduleTab({ editing, entityType, config, onChange, task, field
       ? (fieldErrors.reconcileHours ?? validateReconcileHours(config.reconcileHours))
       : null;
   const isActive = task.etlStatus === 'active';
-  const document = isDocumentEntity(entityType);
+  const isDocument = isDocumentEntity(entityType);
 
   return (
     <div className="grid gap-4 md:grid-cols-3">
@@ -90,11 +90,6 @@ export function ScheduleTab({ editing, entityType, config, onChange, task, field
               )}
               <span className="text-sm text-muted-foreground">minutes</span>
             </div>
-            <span className="text-xs text-muted-foreground">
-              {hasWatermark
-                ? 'Minimum 1 minute (watermark column set).'
-                : 'Minimum 15 minutes (no watermark column).'}
-            </span>
             {incrementalError && (
               <p className="text-xs text-destructive" data-testid="etl-incremental-error">
                 {incrementalError}
@@ -151,7 +146,7 @@ export function ScheduleTab({ editing, entityType, config, onChange, task, field
               ) : (
                 <span className="text-sm font-medium">{config.reconcileAt ?? '-'}</span>
               )}
-              <span className="text-xs text-muted-foreground">{timeZone}</span>
+              <span className="text-xs text-muted-foreground">UTC</span>
               {reconcileAtError && (
                 <p className="text-xs text-destructive" data-testid="etl-reconcile-at-error">
                   {reconcileAtError}
@@ -208,9 +203,9 @@ export function ScheduleTab({ editing, entityType, config, onChange, task, field
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <Badge variant="secondary" appearance="light" size="sm" data-testid="etl-delete-guard-threshold">
-            20% of known rows
+            20% of known rows (minimum 50)
           </Badge>
-          {document && (
+          {isDocument && (
             <div className="flex flex-col gap-1">
               <Label>From date</Label>
               <span className="text-sm font-medium" data-testid="etl-schedule-from-date">
