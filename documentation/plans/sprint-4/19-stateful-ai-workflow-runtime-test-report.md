@@ -110,3 +110,35 @@ Slices: S0 (frontend contract + mocks) and S1 (stateful outputs + explicit clear
 - Memory-limit escape test runs only on Linux (the deployed runner); compose additionally caps the container.
 - A browser-driven AC-SAR-55 would need a deliberately failing node in the seed; covered by the backend proof instead.
 - The `fix/workflow-worker-module-boot` commit was cherry-picked (`-x`) so the live proof could run; merging that branch later is a no-op for this file set.
+
+## Code review round 2 - findings and fixes (2026-08-30)
+
+The slice went through the `reviewer` agent (REQUEST CHANGES: 2 blockers + 6 should-fixes). All are closed on this branch; each fix ships with a red-first regression.
+
+### Blockers
+
+- **B1 - Code sandbox escape (AC-SAR-64).** A generator exposed `gi_frame`; the `f_back` chain walked out of the exec'd module into the harness, whose real builtins still held `__import__`, reaching `os.getcwd()`. Closed in depth: `code_runner/policy.py` now forbids frame/code/globals attribute names, `__`-prefixed subscripts (`obj["__import__"]`) and dunder format strings; `code_runner/harness.py` hardens at runtime before executing (neuters `__import__/open/exec/eval/compile`, evicts `os/posix/socket/subprocess/ctypes/importlib/...` from `sys.modules`, strips its own module globals); `deploy/code-runner-seccomp.json` denies `connect()` on the internal-only runner. Regressions: `test_frame_walk_escape_is_closed_at_runtime_without_the_policy`, `test_runtime_layer_denies_reach_even_if_policy_slipped`, a real-reach `test_child_has_no_environment_or_platform_reach`, and the escape sources added to the policy matrix.
+- **B2 - `POST /workflows/{id}/debug` bypassed `workflows.code` (AC-SAR-68).** Debug re-executes the snapshot with scratch config (edited Code source included) under `workflows.run` alone. `WorkflowService.debug_execute` now takes the actor and `assert_code_permitted`s the snapshot; the router maps `WorkflowPermissionError -> 403`. Regression `test_debug_route_requires_workflows_code_for_code_bearing_runs`.
+
+### Should-fixes
+
+- **S3 - mid-run commits voided no-overtake (AC-SAR-37/39).** An action can COMMIT mid-run (`MessageService.send_message` does), so a hard death leaves the row RUNNING, not rolled back to Pending. Added `workflow_runs.heartbeat_at` (migration `run_heartbeat_s4`), renewed with the lease from `_LeaseHeartbeat`; the drain refuses to advance past a same-scope RUNNING row with a fresh heartbeat and a beat reaper (`reap_stale_running_serialized_runs`, wired into `redrive_pending_serialized_runs`) fails a stale one then wakes the scope. Regressions in `test_serialized_workflow_runtime.py` (live-running block, mid-run-commit crash, heartbeat renewal/write-failure isolation, claim stamps the heartbeat).
+- **S4 - Redis key growth.** Every workflow-data key now carries a TTL: `set` defaults to `workflow_redis_default_ttl_seconds` (7d), keys born from increment/list-push get the default if unbounded, and an explicit TTL above `workflow_redis_max_ttl_seconds` (30d) is rejected at publish AND run. Amount parsing is a strict `^-?\d+$`. Documented in `docs/reference/workflow-engine.md`. Regression `test_every_workflow_data_key_carries_a_bounded_ttl`.
+- **S5 - stub fallback in prod.** `resolve_for_agent`'s connection-less stub is gated to `environment == "development"`; other environments raise `LLMError`. The `dev`-cred path is unchanged. Regressions `test_connectionless_agent_stubs_only_in_development`, `test_agent_with_dev_credentials_still_stubs_in_production`.
+- **S8 - runner `/health` was anonymous.** `/health` now requires the bearer; the backend probe sends its token (so "healthy" proves the token). The container healthcheck reads `/proc/net/tcp` + runs one sandbox job (it can no longer dial a socket under seccomp). Regression `test_health_requires_the_bearer_when_a_token_is_configured` + `test_healthcheck_reads_listen_state_without_dialing`.
+- **S6/S7 - frontend.** `ClampedText` on the correlation key in `run-replay.tsx` and `workflow-runs.tsx`; `e2e/stateful-ai-workflow.spec.ts` navigates via sidebar clicks (`openInbox`/`openWorkflows`), not `page.goto`.
+- **Nits.** `getRun` mocked in `workflow-runs.test.tsx`; `redis_actions` amount regex; the `seed_demo_progress_workflow` docstring now states the stub's substring/whole-message limits.
+
+### User request implemented in this round
+
+- **Rendered node input in Logs.** The executor stamps `input_json = {config, resolved}` where `resolved` is every `NodeField(mergeable=True)` rendered against the run context (Code nodes keep `runtime.input`); `debug_execute` does the same. Run replay shows a "Resolved input" block above Input. So Send Message now shows the sent text ("Update recorded - task: ..., status: completed"), not `{{ nodes.ai_progress.task }}`. Regression `test_run_node_trace_records_the_resolved_field_values`.
+
+### Still open (handed to the user, not a review blocker)
+
+- **Agent-state panel in the omnichannel conversation drawer** (user request while testing). A net-new read-only surface (`GET .../agent-state` + drawer panel) that needs its own UAC + plan addendum and the frontend-first cycle; deliberately NOT built inside the review-fix pass. Tracked for a follow-up slice.
+
+### Re-verification after the fixes
+
+- Plan-19 backend suites: `test_serialized_workflow_runtime` (+6), `test_redis_workflow_action` (+1), `test_code_runner_sandbox` (+5, 1 skip macOS), `test_code_workflow_action` (+1), `test_stateful_ai_runtime`, `test_stub_stateful_derivation`, `test_progress_update_proof`, `test_worker_module_boot`, `test_workflow_engine` (+1), `test_workflow_triggers`, `test_omnichannel_workflow_triggers` - **183 passed, 1 skipped**. `test_ai_core` (+2) - **87 passed**.
+- Frontend vitest `components/platform/workflow-runs` + `workflow-canvas` + `lib/workflow-doc` - **59 passed**.
+- `origin/main` merged in (the `test_worker_module_boot.py` add/add conflict resolved keeping our extra `wake_serialized` test); `docker compose config` renders the seccomp profile + the /proc healthcheck.
