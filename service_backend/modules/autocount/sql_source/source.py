@@ -497,6 +497,11 @@ class SqlDbSource:
             added_count=added,
             updated_count=updated,
             delete_refs=delete_refs,
+            # Threaded out alongside `delete_refs` (S3 review BLOCKER 1) so the
+            # caller can cancel a STALE parked delete intent the instant its
+            # ref reappears - always populated (not gated on `full_extract`),
+            # so an incremental run's reappearance cancels a stale intent too.
+            current_refs=sorted(current_refs),
             cursor=(
                 {CURSOR_COLUMN: self.watermark_column, CURSOR_MARK: new_mark}
                 if self.watermark_column and new_mark is not None

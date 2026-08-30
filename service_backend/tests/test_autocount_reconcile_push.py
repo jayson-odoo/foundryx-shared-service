@@ -29,7 +29,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.jobs.service import JobService
 from app.models import DEFAULT_TENANT_ID
-from app.models.background_job import JOB_DONE, JOB_FAILED, BackgroundJob
+from app.models.background_job import JOB_DONE, JOB_FAILED, JOB_NEEDS_REVIEW, BackgroundJob
 from app.models.connection import Connection
 from app.secrets import encrypt_secret
 from modules.autocount.canonical.masters import ENTITY_CUSTOMER
@@ -37,6 +37,7 @@ from modules.autocount.models import (
     ETL_STATUS_ACTIVE,
     RUN_MODE_RECONCILE,
     STAGED,
+    STAGED_DISCARDED,
     STAGED_FAILED,
     STAGED_OP_DELETE,
     STAGED_PUSHED,
@@ -441,6 +442,175 @@ def test_a_retryable_ie_no_verdict_delete_stays_staged(session_factory, rig, con
     db.close()
 
 
+# ── stale delete intents (S3 review BLOCKER 1) ────────────────────────────────
+
+
+def test_a_reappearing_ref_cancels_its_own_stale_parked_delete_intent(
+    session_factory, rig, consumer
+):
+    """A delete intent must not outlive the evidence that produced it: the ref
+    is deleted (parks a STAGED delete intent), then REAPPEARS at source with
+    the SAME data (unchanged hash - nothing new is staged for it). The stale
+    intent must be discarded, never pushed - a live record must never be
+    deleted just because it once looked absent."""
+    company_id = rig
+    db = session_factory()
+    conn_id = _conn_for(db, company_id)
+    engine = RUNTIME.engine_for(conn_id, {}, {})
+    _seed(db, company_id)
+
+    # Silence the consumer's delete endpoint so the intent stays STAGED
+    # (unresolved) rather than resolving away before we can inspect it.
+    def silent_on_deletes(path, body):
+        if path.endswith("/deletions"):
+            return httpx.Response(200, json={"summary": {}, "records": []})
+        return Consumer.ok(path, body)
+
+    consumer.responder = silent_on_deletes
+    with engine.begin() as conn:
+        row = conn.exec_driver_sql(
+            "SELECT acc_no, company_name, email, last_modified FROM debtor "
+            "WHERE acc_no = '300-A003'"
+        ).fetchone()
+        conn.exec_driver_sql("DELETE FROM debtor WHERE acc_no = '300-A003'")
+
+    _reconcile(db, company_id)
+    parked = (
+        db.query(AcStagedRecord)
+        .filter(
+            AcStagedRecord.tenant_id == DEFAULT_TENANT_ID,
+            AcStagedRecord.company_id == company_id,
+            AcStagedRecord.op == STAGED_OP_DELETE,
+        )
+        .one()
+    )
+    assert parked.status == STAGED
+
+    # The ref REAPPEARS with the exact same data.
+    with engine.begin() as conn:
+        conn.exec_driver_sql("INSERT INTO debtor VALUES (?, ?, ?, ?)", tuple(row))
+    consumer.requests.clear()
+    _reconcile(db, company_id)
+
+    db.refresh(parked)
+    assert parked.status == STAGED_DISCARDED
+    # And nothing took its place.
+    assert (
+        db.query(AcStagedRecord)
+        .filter(
+            AcStagedRecord.tenant_id == DEFAULT_TENANT_ID,
+            AcStagedRecord.company_id == company_id,
+            AcStagedRecord.op == STAGED_OP_DELETE,
+            AcStagedRecord.status == STAGED,
+        )
+        .count()
+        == 0
+    )
+    # The reappearance was never pushed as a delete either.
+    assert not any(r["path"].endswith("/deletions") for r in consumer.requests)
+    db.close()
+
+
+def test_a_draft_tasks_parked_delete_is_discarded_before_it_can_fire_at_activation(
+    session_factory, rig, consumer
+):
+    """A draft/paused task's push is gated, but reconcile still runs and can
+    still park a delete intent (e.g. a dry-run reconcile before Activate).
+    That intent must be cancelled the same way once its ref reappears - it
+    must never survive to fire the instant the task is later activated."""
+    from modules.autocount.models import ETL_STATUS_DRAFT
+
+    company_id = rig
+    db = session_factory()
+    conn_id = _conn_for(db, company_id)
+    engine = RUNTIME.engine_for(conn_id, {}, {})
+    _seed(db, company_id)
+
+    config = (
+        db.query(AcEntityConfig)
+        .filter(
+            AcEntityConfig.tenant_id == DEFAULT_TENANT_ID,
+            AcEntityConfig.company_id == company_id,
+            AcEntityConfig.entity_type == ENTITY_CUSTOMER,
+        )
+        .one()
+    )
+    config.etl_status = ETL_STATUS_DRAFT
+    db.commit()
+
+    with engine.begin() as conn:
+        row = conn.exec_driver_sql(
+            "SELECT acc_no, company_name, email, last_modified FROM debtor "
+            "WHERE acc_no = '300-A003'"
+        ).fetchone()
+        conn.exec_driver_sql("DELETE FROM debtor WHERE acc_no = '300-A003'")
+
+    job = _reconcile(db, company_id)
+    # A draft task never auto-pushes - the batch parks for review instead.
+    assert job.status == JOB_NEEDS_REVIEW
+    parked = (
+        db.query(AcStagedRecord)
+        .filter(
+            AcStagedRecord.tenant_id == DEFAULT_TENANT_ID,
+            AcStagedRecord.company_id == company_id,
+            AcStagedRecord.op == STAGED_OP_DELETE,
+        )
+        .one()
+    )
+    assert parked.status == STAGED
+
+    with engine.begin() as conn:
+        conn.exec_driver_sql("INSERT INTO debtor VALUES (?, ?, ?, ?)", tuple(row))
+    _reconcile(db, company_id)
+    db.refresh(parked)
+    assert parked.status == STAGED_DISCARDED
+
+    # Activate the task and run again - the stale intent must never fire.
+    config.etl_status = ETL_STATUS_ACTIVE
+    db.commit()
+    consumer.requests.clear()
+    _reconcile(db, company_id)
+    assert not any(r["path"].endswith("/deletions") for r in consumer.requests)
+    db.close()
+
+
+def test_two_reconciles_with_the_same_missing_ref_stage_only_one_delete_row(
+    session_factory, rig, consumer
+):
+    """S6 - a reconcile that runs again before the first delete intent
+    resolves must not pile up a second row for the same ref."""
+    company_id = rig
+    db = session_factory()
+    conn_id = _conn_for(db, company_id)
+    engine = RUNTIME.engine_for(conn_id, {}, {})
+    _seed(db, company_id)
+
+    def silent_on_deletes(path, body):
+        if path.endswith("/deletions"):
+            return httpx.Response(200, json={"summary": {}, "records": []})
+        return Consumer.ok(path, body)
+
+    consumer.responder = silent_on_deletes
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DELETE FROM debtor WHERE acc_no = '300-A003'")
+
+    _reconcile(db, company_id)
+    _reconcile(db, company_id)
+
+    rows = (
+        db.query(AcStagedRecord)
+        .filter(
+            AcStagedRecord.tenant_id == DEFAULT_TENANT_ID,
+            AcStagedRecord.company_id == company_id,
+            AcStagedRecord.op == STAGED_OP_DELETE,
+        )
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].status == STAGED
+    db.close()
+
+
 # ── delete guard (AC-22-22) ───────────────────────────────────────────────────
 
 
@@ -465,7 +635,9 @@ def test_the_delete_guard_fails_the_whole_run_and_pushes_nothing(
 
     job = _reconcile(db, company_id)
     assert job.status == JOB_FAILED
-    assert "safety threshold" in (job.error or "").lower() or job.error
+    # N2: was a tautology (`X or job.error` is truthy whenever job.error is
+    # truthy, regardless of X) - assert the message content for real.
+    assert "safety threshold" in (job.error or "").lower()
 
     # Nothing pushed, nothing staged for this job - fail-safe means NOTHING
     # propagates, not just the deletes.
@@ -473,4 +645,82 @@ def test_the_delete_guard_fails_the_whole_run_and_pushes_nothing(
     assert staged == []
     # The known population is untouched (no hash writes happened either).
     assert len(_known_refs(db, company_id)) == 200
+    db.close()
+
+
+def test_a_zero_row_full_extract_trips_the_guard_even_under_50_known(
+    session_factory, rig, consumer
+):
+    """S3 review BLOCKER 2 - the ratio/absolute guard (max(20%, 50)) is INERT
+    on a small known population: known=20 gives a threshold of 50, so a
+    zero-row extract's 20 delete refs sail straight through the ratio check.
+    The absolute zero-row rule must catch this regardless of population
+    size."""
+    from datetime import datetime, timezone
+
+    from modules.autocount.repositories import RowHashRepository
+
+    company_id = rig
+    db = session_factory()
+    RowHashRepository(db).upsert_many(
+        DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER,
+        {f"K{i}": "h" for i in range(20)}, seen_at=datetime.now(timezone.utc),
+    )
+    db.commit()
+    # Empty the fixture table so the full extract genuinely returns 0 rows.
+    conn_id = _conn_for(db, company_id)
+    engine = RUNTIME.engine_for(conn_id, {}, {})
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DELETE FROM debtor")
+
+    job = _reconcile(db, company_id)
+    assert job.status == JOB_FAILED
+    assert "0 rows" in (job.error or "")
+    staged = db.query(AcStagedRecord).filter(AcStagedRecord.job_id == job.id).all()
+    assert staged == []
+    assert len(_known_refs(db, company_id)) == 20
+    db.close()
+
+
+def test_delete_guard_trip_is_a_distinct_error_code_unprefixed_and_no_stack(
+    session_factory, rig, consumer, caplog
+):
+    """S5: a guard TRIP is not a generic fetch fault - distinct error code,
+    the message carried verbatim (no "Fetch failed:" noise), and a WARNING
+    log (no stack trace, unlike the generic exception branch)."""
+    import logging
+
+    from datetime import datetime, timezone
+
+    from modules.autocount.repositories import RowHashRepository
+
+    company_id = rig
+    db = session_factory()
+    RowHashRepository(db).upsert_many(
+        DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER,
+        {f"K{i}": "h" for i in range(200)}, seen_at=datetime.now(timezone.utc),
+    )
+    db.commit()
+
+    with caplog.at_level(logging.WARNING, logger="foundryx.autocount"):
+        job = _reconcile(db, company_id)
+
+    assert job.status == JOB_FAILED
+    assert not (job.error or "").startswith("Fetch failed:")
+    assert "safety threshold" in (job.error or "").lower()
+    config = (
+        db.query(AcEntityConfig)
+        .filter(
+            AcEntityConfig.tenant_id == DEFAULT_TENANT_ID,
+            AcEntityConfig.company_id == company_id,
+            AcEntityConfig.entity_type == ENTITY_CUSTOMER,
+        )
+        .one()
+    )
+    assert config.last_run_error_code == "DELETE_GUARD"
+    assert any(
+        r.levelno == logging.WARNING and "delete guard" in r.message.lower()
+        for r in caplog.records
+    )
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
     db.close()

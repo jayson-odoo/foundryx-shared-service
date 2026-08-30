@@ -502,6 +502,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         tenant_id=tenant_id,
         company_id=company_id,
         entity_type=entity_type,
+        current_refs=result.current_refs,
     )
     run.staged_count = staged_count + delete_staged
     run.failed_count = failed_count
@@ -759,33 +760,59 @@ def _stage_deletes(
     tenant_id: str,
     company_id: str,
     entity_type: str,
+    current_refs: List[str],
 ) -> int:
     """Stage a reconcile's delete intents (plan 22 §2.5/§2.6, AC-22-16/21) -
     ONE ``AcStagedRecord`` per ref, ``op='delete'``, no canonical payload (a
-    delete carries nothing to map). Per-record commit + abort checkpoint,
-    mirroring ``_stage_documents``."""
+    delete carries nothing to map).
+
+    Two safety passes run BEFORE any new intent is staged (S3 review):
+
+    * **BLOCKER 1 - stale-intent discard.** Any existing STAGED delete intent
+      whose ref reappeared in THIS extract (``current_refs``) is cancelled
+      first - a delete intent must not outlive the evidence that produced it.
+      Runs on every call, including a draft/paused task whose push is gated,
+      so a stale intent never survives to fire once the task is activated.
+    * **S6 - no duplicate intents.** A ref that already carries a non-terminal
+      delete intent (STAGED or STAGED_FAILED) is skipped - a reconcile that
+      runs again before the first intent resolves must not pile up a second
+      row for the same ref.
+
+    N7: a SINGLE commit for the whole batch (mirrors the auto-push upsert
+    path) rather than one per row - the caller commits again immediately
+    after this returns, so a per-row commit here bought nothing but extra
+    round trips.
+    """
     staged_repo = StagedRecordRepository(db)
+    staged_repo.discard_stale_deletes(tenant_id, company_id, entity_type, current_refs)
+
     count = 0
-    for ref in delete_refs:
-        if _aborted(db, job.id):
-            break
-        staged_repo.add(
-            AcStagedRecord(
-                tenant_id=tenant_id,
-                company_id=company_id,
-                entity_type=entity_type,
-                job_id=job.id,
-                source_ref=ref,
-                doc_no=None,
-                source_last_modified=None,
-                raw_json=None,
-                canonical_json=None,
-                status=STAGED,
-                op=STAGED_OP_DELETE,
-            )
+    if delete_refs:
+        skip = staged_repo.pending_delete_refs(
+            tenant_id, company_id, entity_type, delete_refs
         )
-        count += 1
-        db.commit()
+        for ref in delete_refs:
+            if ref in skip:
+                continue
+            if _aborted(db, job.id):
+                break
+            staged_repo.add(
+                AcStagedRecord(
+                    tenant_id=tenant_id,
+                    company_id=company_id,
+                    entity_type=entity_type,
+                    job_id=job.id,
+                    source_ref=ref,
+                    doc_no=None,
+                    source_last_modified=None,
+                    raw_json=None,
+                    canonical_json=None,
+                    status=STAGED,
+                    op=STAGED_OP_DELETE,
+                )
+            )
+            count += 1
+    db.commit()
     return count
 
 

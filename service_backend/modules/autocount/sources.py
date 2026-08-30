@@ -135,6 +135,12 @@ class FetchResult:
     # for every incremental fetch (a partial extract cannot prove absence) and
     # for the API path (which stores no hashes at all).
     delete_refs: List[str] = field(default_factory=list)
+    # Every source-ref SEEN in this extract (plan 22 S3 review BLOCKER 1). A
+    # delete intent must not outlive the evidence that produced it: when a ref
+    # already carrying a STAGED delete intent reappears here, the caller
+    # discards that stale intent BEFORE staging anything new. Empty for the
+    # API path (which stores no hashes and stages no delete intents at all).
+    current_refs: List[str] = field(default_factory=list)
     # A source-owned resume point persisted to ``ac_watermark.cursor_json`` on a
     # clean batch (the DB source's own mark, which need not be a datetime).
     # ``None`` = leave the stored cursor untouched.

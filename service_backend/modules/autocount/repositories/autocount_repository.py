@@ -28,6 +28,9 @@ from app.models.connection import Connection
 
 from ..models import (
     STAGED,
+    STAGED_DISCARDED,
+    STAGED_FAILED,
+    STAGED_OP_DELETE,
     AcCompany,
     AcEntityConfig,
     AcFieldMapping,
@@ -511,6 +514,75 @@ class StagedRecordRepository:
             if pushed_at is not None:
                 row.pushed_at = pushed_at
         self.db.flush()
+
+    def discard_stale_deletes(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        current_refs: Sequence[str],
+    ) -> int:
+        """Cancel any pending delete intent whose ref REAPPEARED at source
+        (plan 22 S3 review BLOCKER 1). A delete intent must not outlive the
+        evidence that produced it: marks every STAGED ``op='delete'`` row for
+        a ref now present in ``current_refs`` as ``STAGED_DISCARDED`` - so a
+        ref that reappears with an UNCHANGED hash (nothing new staged for it)
+        still cancels its own stale intent, and one parked on a draft/paused
+        task never survives to fire once the task is later activated (this
+        runs on every extract, not just ones whose push is live). Does not
+        commit; the caller owns the transaction."""
+        refs = [r for r in dict.fromkeys(current_refs) if r]
+        if not refs:
+            return 0
+        discarded = 0
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            discarded += (
+                self.db.query(AcStagedRecord)
+                .filter(
+                    AcStagedRecord.tenant_id == tenant_id,
+                    AcStagedRecord.company_id == company_id,
+                    AcStagedRecord.entity_type == entity_type,
+                    AcStagedRecord.source_ref.in_(chunk),
+                    AcStagedRecord.op == STAGED_OP_DELETE,
+                    AcStagedRecord.status == STAGED,
+                )
+                .update({"status": STAGED_DISCARDED}, synchronize_session=False)
+            )
+        self.db.flush()
+        return discarded
+
+    def pending_delete_refs(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        source_refs: Sequence[str],
+    ) -> set[str]:
+        """Refs among ``source_refs`` that already carry a NON-TERMINAL delete
+        intent (``STAGED`` or ``STAGED_FAILED``, ``op='delete'``) - S6/S3
+        review: a reconcile that runs again before the first intent is
+        resolved must never pile up a second row for the same ref."""
+        refs = [r for r in dict.fromkeys(source_refs) if r]
+        if not refs:
+            return set()
+        out: set[str] = set()
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            rows = (
+                self.db.query(AcStagedRecord.source_ref)
+                .filter(
+                    AcStagedRecord.tenant_id == tenant_id,
+                    AcStagedRecord.company_id == company_id,
+                    AcStagedRecord.entity_type == entity_type,
+                    AcStagedRecord.source_ref.in_(chunk),
+                    AcStagedRecord.op == STAGED_OP_DELETE,
+                    AcStagedRecord.status.in_((STAGED, STAGED_FAILED)),
+                )
+                .all()
+            )
+            out.update(ref for (ref,) in rows)
+        return out
 
 
 class RowHashRepository:
