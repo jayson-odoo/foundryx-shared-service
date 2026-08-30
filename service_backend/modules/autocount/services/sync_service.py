@@ -518,7 +518,24 @@ class SyncService:
 
         rows, records, failures = self._rehydrate_pushable(pending)
         pushed: List[AcStagedRecord] = []
+        quarantined: List[AcStagedRecord] = []
         try:
+            #     !!  NO ROLLBACK HERE - THIS METHOD DOES NOT OWN THE SESSION.  !!
+            # ``auto_push`` runs INSIDE the caller's (``run_autocount_sync``)
+            # still-open session, which already carries an UNCOMMITTED
+            # watermark/cursor advance from the fetch that just succeeded
+            # (S2 review BLOCKER 1). A bare ``self.db.rollback()`` on a sink
+            # failure discarded that advance too, making a failing sink (e.g.
+            # a wrong ``sorento_company_code``) pin the task at a full
+            # initial extract forever. The sink call below writes NOTHING
+            # local (it is a network round-trip; the only local writes are
+            # the ``staged.mark(...)`` calls AFTER this block, once results
+            # are known) - so there is nothing of ITS OWN to roll back here.
+            # (A ``begin_nested()`` savepoint was tried first, but
+            # ``begin_nested()`` autoflushes pending session state - including
+            # the caller's watermark write - INTO the savepoint, so a later
+            # rollback-to-savepoint reverted it anyway; a bare try/except with
+            # no rollback at all is the correct fix, not just the simpler one.)
             if hasattr(sink, "write_batch"):
                 results = sink.write_batch(records, request_id=str(job_id)) if records else []
             else:
@@ -526,7 +543,6 @@ class SyncService:
                     sink.write(record, request_id=f"{job_id}:{row.id}")
                     for row, record in zip(rows, records)
                 ]
-            quarantined: List[AcStagedRecord] = []
             for row, result in zip(rows, results):
                 if result.ok:
                     pushed.append(row)
@@ -546,16 +562,13 @@ class SyncService:
         except SinkAnchorError as exc:
             # TASK-level, never per record (Appendix A6): the company anchor is
             # wrong, so no record was even looked at. Everything stays STAGED.
-            self.db.rollback()
             summary["error"] = exc.sorento_message
             summary["errorCode"] = exc.code
             return summary
         except SorentoSinkError as exc:
-            self.db.rollback()
             summary["error"] = str(exc)[:2000]
             return summary
         except Exception as exc:  # noqa: BLE001 - a run must never die on delivery
-            self.db.rollback()
             logger.exception("autocount auto-push failed for job %s", job_id)
             summary["error"] = f"The push failed before the consumer resolved it: {exc}"[:2000]
             return summary
@@ -563,6 +576,12 @@ class SyncService:
         self.staged.mark(pushed, status=STAGED_PUSHED, pushed_at=datetime.now(timezone.utc))
         if quarantined:
             self.staged.mark(quarantined, status=STAGED_FAILED)
+        # Commit the marks (and whatever the caller left pending - the
+        # watermark advance rides the SAME commit, plan-22 S2 NIT). A push
+        # failure returned above WITHOUT committing, leaving the caller's own
+        # `db.commit()` at the end of `run_autocount_sync` to persist its
+        # (untouched) watermark advance honestly.
+        self.db.commit()
         summary["pushed"] = len(pushed)
         summary["quarantined"] = len(quarantined)
         summary["pushFailures"] = failures

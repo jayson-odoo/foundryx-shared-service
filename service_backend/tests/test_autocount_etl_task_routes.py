@@ -42,6 +42,7 @@ from modules.autocount.models import (
     AcFieldMapping,
     AcStagedRecord,
     AcSyncRun,
+    AcWatermark,
 )
 from modules.autocount.services.company_service import CompanyService
 from modules.autocount.sql_source.runtime import RUNTIME
@@ -156,6 +157,18 @@ def _company(db, *, tenant_id=DEFAULT_TENANT_ID, database_name=DB_NAME) -> AcCom
     db.refresh(company)
     db.expunge(company)  # usable after the session closes
     return company
+
+
+def _watermark_row(db, company, tenant_id=DEFAULT_TENANT_ID) -> AcWatermark:
+    return (
+        db.query(AcWatermark)
+        .filter(
+            AcWatermark.tenant_id == tenant_id,
+            AcWatermark.company_id == company.id,
+            AcWatermark.entity_type == ENTITY_CUSTOMER,
+        )
+        .one()
+    )
 
 
 def _config_row(db, company, tenant_id=DEFAULT_TENANT_ID) -> AcEntityConfig:
@@ -802,6 +815,9 @@ def test_a_retryable_verdict_stays_staged_and_re_pushes_on_the_next_run(
 def test_an_anchor_422_on_a_RUN_lands_on_the_task_not_the_records(
     client, session_factory, rig, consumer
 ):
+    """BLOCKER 1 (S2 review): a failing sink must not roll back the fetch's
+    own uncommitted watermark/cursor advance - only the push failed, the
+    fetch+stage genuinely succeeded, so the next run must NOT full-reload."""
     company_id, _sql_id = rig
     _activated(client, company_id)
     consumer.responder = lambda _body: httpx.Response(
@@ -811,13 +827,32 @@ def test_an_anchor_422_on_a_RUN_lands_on_the_task_not_the_records(
     client.post(_url(company_id, "/run"), headers=_auth(client))
 
     db = session_factory()
-    config = _config_row(db, db.get(AcCompany, company_id))
+    company = db.get(AcCompany, company_id)
+    config = _config_row(db, company)
     assert config.last_run_error_code == "COMPANY_BINDING_INVALID"
     assert config.last_run_error == "no binding"
     assert config.last_run_at is not None
     # Nothing was attributed to a record; every row is still staged.
     assert {row.status for row in db.query(AcStagedRecord).all()} == {STAGED}
+    # The fetch's own resume point (this SQL-DB source tracks its own cursor,
+    # not a timestamp column) must survive the sink failure - only the PUSH
+    # failed, the fetch+stage genuinely succeeded.
+    watermark = _watermark_row(db, company)
+    assert watermark.cursor_json is not None
+    assert watermark.cursor_json["sqlWatermark"] == "2026-08-02 09:00:00"
+    assert watermark.consecutive_failures == 0
     db.close()
+
+    # A second run must be idempotent: it re-reads nothing new because the
+    # cursor truly advanced past both existing rows on the first run - a
+    # lost cursor would re-scan both rows from scratch (a full re-extract).
+    consumer.responder = Consumer.created
+    second = client.post(_url(company_id, "/run"), headers=_auth(client)).json()
+    runs = client.get(
+        _url(company_id, "/runs?page=0&page_size=1"), headers=_auth(client)
+    ).json()["data"]
+    latest = next(r for r in runs if r["id"] == second["runId"])
+    assert latest["rowsScanned"] == 0
 
 
 def test_run_requires_sync_run_and_404s_cross_tenant(client, session_factory, rig):
