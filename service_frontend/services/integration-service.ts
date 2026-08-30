@@ -16,7 +16,6 @@ import type {
   TestConnectionResult,
 } from '@/types/integration';
 import type { ListQuery, ListResult } from '@/types/resource';
-import { SQL_DATABASE_PROVIDER } from './integration-service.mock';
 import { realIntegrationService } from './integration-service.real';
 
 export interface IntegrationService {
@@ -53,17 +52,7 @@ export interface IntegrationService {
 }
 
 // Phase B swap done - mock retained in integration-service.mock.ts for tests.
-//
-// PHASE 1 MOCK (plan 22 S1, AC-22-04): until the backend registers the
-// `sql_database` provider, its descriptor is appended to the real catalog so
-// the registry-driven connections form can be verified rendering it. Saving
-// such a connection is NOT possible this phase (the backend rejects the
-// unknown provider). Phase 2 deletes this composite - back to the bare real.
-export const integrationService: IntegrationService = {
-  ...realIntegrationService,
-  async providers(): Promise<IntegrationProvider[]> {
-    const real = await realIntegrationService.providers();
-    if (real.some((p) => p.provider === SQL_DATABASE_PROVIDER.provider)) return real;
-    return [...real, SQL_DATABASE_PROVIDER];
-  },
-};
+// The plan-22 `sql_database` provider now comes from the backend registry
+// (`modules/autocount/sql_provider.py`); the mock's descriptor is the parity
+// pin for its test only.
+export const integrationService: IntegrationService = realIntegrationService;

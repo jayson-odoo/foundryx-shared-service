@@ -39,7 +39,6 @@ import type {
   AutocountSyncRun,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
-import { mockAutocountService } from './autocount-service.mock';
 import { realAutocountService } from './autocount-service.real';
 
 export interface AutocountListQuery {
@@ -224,16 +223,7 @@ export interface AutocountService {
   ): Promise<AutocountEtlTask>;
 }
 
-/**
- * PHASE 1 MOCK (plan 22 S1): the five direct-DB ETL methods bind the MOCK -
- * the backend endpoints do not exist yet. Everything else stays real. Phase 2
- * swaps this composite back to a bare `realAutocountService`.
- */
-export const autocountService: AutocountService = {
-  ...realAutocountService,
-  listSqlConnections: mockAutocountService.listSqlConnections,
-  getSqlSchema: mockAutocountService.getSqlSchema,
-  previewSqlQuery: mockAutocountService.previewSqlQuery,
-  getEtlTask: mockAutocountService.getEtlTask,
-  updateEtlTask: mockAutocountService.updateEtlTask,
-};
+// Plan 22 S1 phase 2 swap done - the direct-DB ETL endpoints are live
+// (`modules/autocount/routers/{sql,companies}.py`); the mock stays in
+// `autocount-service.mock.ts` for the Vitest suite only.
+export const autocountService: AutocountService = realAutocountService;
