@@ -1,7 +1,8 @@
 """DEV-ONLY: a source table for the direct-DB ETL demo (plan 22 S2/E2E).
 
-    python -m scripts.seed_etl_demo_source            # create + fill (idempotent)
-    python -m scripts.seed_etl_demo_source --touch 3  # bump 1 row's watermark
+    python -m scripts.seed_etl_demo_source                 # create + fill (idempotent)
+    python -m scripts.seed_etl_demo_source --touch 3        # bump 1 row's watermark
+    python -m scripts.seed_etl_demo_source --delete-row 5   # remove 1 row (plan 22 S3)
 
 Creates ``public.etl_demo_customers`` **inside the Foundryx database itself**,
 so a `sql_database` connection pointed back at `foundryx_service` gives a real
@@ -19,6 +20,11 @@ Drop it with ``DROP TABLE public.etl_demo_customers`` whenever you like.
 ``--touch N`` mutates row N's ``company_name`` and stamps ``last_modified``,
 which is how the incremental leg is exercised: the next run must fetch exactly
 that one row.
+
+``--delete-row N`` (plan 22 S3) hard-deletes row N from the source table - the
+next RECONCILE run must report it as a delete intent (there is no UI
+affordance yet to force reconcile mode; drive it via a direct job enqueue, see
+the plan's S3 live-verify notes).
 """
 from __future__ import annotations
 
@@ -111,6 +117,19 @@ def touch(row: int) -> str:
     return acc_no
 
 
+def delete_row(row: int) -> str:
+    """Hard-delete ONE row - the reconcile leg's trigger (plan 22 S3,
+    AC-22-16/32): a later reconcile finds this ref previously known but
+    absent from the extract and stages a delete intent."""
+    acc_no = ROWS[(row - 1) % len(ROWS)][0]
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"DELETE FROM public.{TABLE} WHERE acc_no = :acc_no"),
+            {"acc_no": acc_no},
+        )
+    return acc_no
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -119,12 +138,25 @@ def main() -> None:
         metavar="N",
         help="mutate row N (1-based) and stamp its watermark now",
     )
+    parser.add_argument(
+        "--delete-row",
+        type=int,
+        metavar="N",
+        help="hard-delete row N (1-based) - the next reconcile stages a delete intent",
+    )
     args = parser.parse_args()
     _guard()
 
     if args.touch:
         acc_no = touch(args.touch)
         print(f"touched public.{TABLE} row {acc_no} - its watermark is now.")
+        return
+    if args.delete_row:
+        acc_no = delete_row(args.delete_row)
+        print(
+            f"deleted public.{TABLE} row {acc_no} - the next RECONCILE run "
+            "should stage it as a delete intent."
+        )
         return
     total = seed()
     print(f"public.{TABLE}: {total} row(s) ready.")
