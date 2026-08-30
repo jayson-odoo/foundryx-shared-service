@@ -30,6 +30,7 @@ function entity(over: Partial<AutocountEntityConfig> = {}): AutocountEntityConfi
     watermarkAt: null,
     consecutiveFailures: 0,
     lastError: null,
+    etlStatus: 'draft',
     ...over,
   };
 }

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UseEtlTaskLifecycleResult, UseEtlTaskPreviewResult } from '@/hooks/use-autocount-etl';
-import type { AutocountCompany, AutocountEtlTask } from '@/types/autocount';
+import type { AutocountCompany, AutocountEntityConfig, AutocountEtlTask } from '@/types/autocount';
 import { ActivateTab } from './activate-tab';
 
 vi.mock('@/hooks/use-datetime', () => ({
@@ -70,6 +70,25 @@ function task(over: Partial<AutocountEtlTask> = {}): AutocountEtlTask {
 
 function preview(state: UseEtlTaskPreviewResult['state'] = { status: 'idle' }): UseEtlTaskPreviewResult {
   return { state, run: vi.fn().mockResolvedValue(undefined), reset: vi.fn() };
+}
+
+function entityConfig(over: Partial<AutocountEntityConfig> = {}): AutocountEntityConfig {
+  return {
+    id: 'e1',
+    entityType: 'product_category',
+    syncMode: 'SCHEDULED_REVIEW',
+    sourceImpl: 'sql_db',
+    recordCap: 200,
+    initialLookbackDays: 30,
+    enabled: true,
+    lastSuccessAt: null,
+    lastAttemptAt: null,
+    watermarkAt: null,
+    consecutiveFailures: 0,
+    lastError: null,
+    etlStatus: 'active',
+    ...over,
+  };
 }
 
 function lifecycle(over: Partial<UseEtlTaskLifecycleResult> = {}): UseEtlTaskLifecycleResult {
@@ -222,5 +241,76 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
     expect(screen.getByTestId('etl-run-now')).toBeDisabled();
     // Pause is companies.manage, unaffected by the sync.run gate.
     expect(screen.getByTestId('etl-pause')).toBeEnabled();
+  });
+
+  // ── plan 22 S4 - product/category/UOM dependency warning (AC-22-23) ───────
+
+  it('warns, but does NOT block, a product task with no active category/UOM task', () => {
+    render(
+      <ActivateTab
+        company={company()}
+        task={task({ entityType: 'product', lastPreviewAt: '2026-08-30T06:21:00Z' })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+        entities={[]}
+      />,
+    );
+    expect(screen.getByTestId('activate-dependency-warning')).toHaveTextContent(
+      /category and unit of measure/,
+    );
+    // A warning, never a block - Activate stays governed by its OWN gate.
+    expect(screen.getByTestId('etl-activate')).toBeEnabled();
+  });
+
+  it('names only the still-missing dependency once one lands', () => {
+    render(
+      <ActivateTab
+        company={company()}
+        task={task({ entityType: 'product', lastPreviewAt: '2026-08-30T06:21:00Z' })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+        entities={[entityConfig({ id: 'cat', entityType: 'product_category', etlStatus: 'active' })]}
+      />,
+    );
+    const warning = screen.getByTestId('activate-dependency-warning');
+    expect(warning).toHaveTextContent(/unit of measure/);
+    expect(warning).not.toHaveTextContent(/category and/);
+  });
+
+  it('shows no warning once category and UOM are both active', () => {
+    render(
+      <ActivateTab
+        company={company()}
+        task={task({ entityType: 'product', lastPreviewAt: '2026-08-30T06:21:00Z' })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+        entities={[
+          entityConfig({ id: 'cat', entityType: 'product_category', etlStatus: 'active' }),
+          entityConfig({ id: 'uom', entityType: 'unit_of_measure', etlStatus: 'active' }),
+        ]}
+      />,
+    );
+    expect(screen.queryByTestId('activate-dependency-warning')).not.toBeInTheDocument();
+  });
+
+  it('shows no dependency warning for a non-product entity', () => {
+    render(
+      <ActivateTab
+        company={company()}
+        task={task({ entityType: 'customer', lastPreviewAt: '2026-08-30T06:21:00Z' })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+        entities={[]}
+      />,
+    );
+    expect(screen.queryByTestId('activate-dependency-warning')).not.toBeInTheDocument();
   });
 });

@@ -7,6 +7,7 @@ import {
   isDocumentEntity,
   mappingSourceColumns,
   pickerColumnOptions,
+  productDependencyWarning,
   readTaskError,
   previewBadgeText,
   schemaCompletionConfig,
@@ -294,5 +295,41 @@ describe('validateReconcileAt (AC-22-12)', () => {
     expect(validateReconcileAt('9:00')).toMatch(/HH:MM/);
     expect(validateReconcileAt('')).toMatch(/HH:MM/);
     expect(validateReconcileAt(null)).toMatch(/HH:MM/);
+  });
+});
+
+describe('productDependencyWarning (plan 22 S4, AC-22-23)', () => {
+  it('is null for a non-product entity regardless of siblings', () => {
+    expect(productDependencyWarning('customer', [])).toBeNull();
+  });
+
+  it('names both dependencies when neither is active', () => {
+    expect(productDependencyWarning('product', [])).toMatch(/category and unit of measure/);
+  });
+
+  it('names only the missing one once the other lands', () => {
+    const msg = productDependencyWarning('product', [
+      { entityType: 'product_category', etlStatus: 'active' },
+    ]);
+    expect(msg).toMatch(/unit of measure/);
+    expect(msg).not.toMatch(/category and/);
+  });
+
+  it('ignores a DRAFT/PAUSED sibling task - only ACTIVE resolves the dependency', () => {
+    expect(
+      productDependencyWarning('product', [
+        { entityType: 'product_category', etlStatus: 'draft' },
+        { entityType: 'unit_of_measure', etlStatus: 'paused' },
+      ]),
+    ).toMatch(/category and unit of measure/);
+  });
+
+  it('is null once both category and unit of measure are active', () => {
+    expect(
+      productDependencyWarning('product', [
+        { entityType: 'product_category', etlStatus: 'active' },
+        { entityType: 'unit_of_measure', etlStatus: 'active' },
+      ]),
+    ).toBeNull();
   });
 });

@@ -17,6 +17,7 @@ function entity(over: Partial<AutocountEntityConfig> = {}): AutocountEntityConfi
     watermarkAt: null,
     consecutiveFailures: 0,
     lastError: null,
+    etlStatus: 'draft',
     ...over,
   };
 }
@@ -49,5 +50,33 @@ describe('EntitySourceDialog (plan 22 S2, AC-22-08 - a guarded switch)', () => {
     fireEvent.click(screen.getByRole('combobox', { name: 'Entity source' }));
     fireEvent.click(await screen.findByRole('option', { name: 'AutoCount API' }));
     expect(screen.getByTestId('source-switch-warning')).toHaveTextContent(/paused/i);
+  });
+
+  // ── plan 22 S4 - a DB-only entity never offers the API path (AC-22-23) ────
+
+  it('offers ONLY Database for a masters-fan-out entity with no vendor payload', async () => {
+    render(
+      <EntitySourceDialog
+        entity={entity({ entityType: 'product', sourceImpl: 'sql_db' })}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('combobox', { name: 'Entity source' }));
+    expect(await screen.findByRole('option', { name: 'Database' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'AutoCount API' })).not.toBeInTheDocument();
+  });
+
+  it('still offers both sources for the existing API-capable entities', async () => {
+    render(
+      <EntitySourceDialog
+        entity={entity({ entityType: 'goods_received_note', sourceImpl: 'autocount_read' })}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('combobox', { name: 'Entity source' }));
+    expect(await screen.findByRole('option', { name: 'Database' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'AutoCount API' })).toBeInTheDocument();
   });
 });
