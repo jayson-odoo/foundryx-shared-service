@@ -718,6 +718,82 @@ def test_omitted_pending_field_retains_the_existing_exact_pair(session_factory):
     assert row.pending_question == "What is the task?" and row.pending_field == "task"
 
 
+@pytest.mark.parametrize("schema_change", ["remove_target", "remove_clarification_output"])
+def test_schema_change_clears_an_incompatible_pending_pair(
+    session_factory,
+    schema_change,
+):
+    db = session_factory()
+    agent = _agent(db)
+    workflow = Workflow(
+        tenant_id=DEFAULT_TENANT_ID,
+        name="Pending schema evolution",
+        description="",
+        draft_definition_json={"schemaVersion": 2, "nodes": [], "edges": []},
+    )
+    db.add(workflow)
+    db.flush()
+    service = AgentStateService(db)
+    service.save_initial(
+        DEFAULT_TENANT_ID,
+        workflow.id,
+        "agent_1",
+        "conversation_1",
+        {"task": "Launch page", "status": "in_progress"},
+        {},
+        pending_question="What is the task?",
+        pending_field="task",
+        namespace="test",
+    )
+    output_params = [
+        {"key": "status", "type": "string", "stateful": True},
+        {"key": "reply", "type": "string"},
+    ]
+    clarification_output_key = "reply"
+    if schema_change == "remove_clarification_output":
+        output_params.insert(0, {"key": "task", "type": "string", "stateful": True})
+        output_params = [row for row in output_params if row["key"] != "reply"]
+        clarification_output_key = None
+    config = {
+        "agentId": agent.id,
+        "instructions": "Collect",
+        "inputText": "{{ trigger.message.text }}",
+        "outputParams": output_params,
+    }
+    if clarification_output_key is not None:
+        config["clarificationOutputKey"] = clarification_output_key
+    ctx = {
+        "trigger.message.text": "No new detail.",
+        "_workflow.runId": f"run_{schema_change}",
+        "_workflow.workflowId": workflow.id,
+        "_workflow.nodeId": "agent_1",
+        "_workflow.correlationKey": "conversation_1",
+        "_workflow.agentStateNamespace": "test",
+    }
+    patches = {
+        row["key"]: {"operation": "no_change"}
+        for row in output_params
+        if row.get("stateful") is True
+    }
+    with stub_fixtures(
+        StubResponse(structured={"outputs": {}, "statePatches": patches})
+    ):
+        ai_agent_run(db, DEFAULT_TENANT_ID, config, ctx)
+
+    row = service.load(
+        DEFAULT_TENANT_ID,
+        workflow.id,
+        "agent_1",
+        "conversation_1",
+        namespace="test",
+    )
+    assert row is not None
+    assert row.pending_question is None and row.pending_field is None
+    span = db.query(AiSpan).order_by(AiSpan.started_at.desc()).first()
+    prompt = json.loads(span.input_json["messages"][0]["content"])
+    assert prompt["pendingClarification"] is None
+
+
 def test_run_lookup_requires_workflow_tenant_match(session_factory):
     db = session_factory()
     workflow = Workflow(

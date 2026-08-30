@@ -259,6 +259,7 @@ def ai_agent_run(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[
                 "field": state_row.pending_field,
             }
             if state_row is not None
+            and clarification_key is not None
             and isinstance(state_row.pending_question, str)
             and state_row.pending_question.strip()
             and state_row.pending_field in stateful_keys
@@ -328,7 +329,7 @@ def ai_agent_run(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[
         pending_omitted = pending_value is pending_missing
         pending_field = pending_value
         if pending_value is pending_missing:
-            pending_field = state_row.pending_field if state_row is not None else None
+            pending_field = pending["field"] if pending is not None else None
         if pending_field is not None and not isinstance(pending_field, str):
             raise ActionError("AI Agent returned an invalid pending field.")
         stateful_keys = {row["key"] for row in stateful_params}
@@ -360,7 +361,7 @@ def ai_agent_run(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[
             message_id=ctx.get("trigger.message.id"),
             pending_question=(
                 clarification
-                or (state_row.pending_question if state_row is not None else None)
+                or (pending["question"] if pending is not None else None)
             ) if pending_field is not None else None,
             pending_field=pending_field,
             namespace=state_namespace,
