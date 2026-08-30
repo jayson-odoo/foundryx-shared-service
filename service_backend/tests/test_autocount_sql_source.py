@@ -139,6 +139,72 @@ def test_guard_rejects_everything_that_is_not_one_select(sql):
         assert_select_only(sql)
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # S1 review: file-system / sleep / out-of-process reach that a bare
+        # SELECT can carry. Each of these passed the guard before the fix.
+        "SELECT pg_read_file('/etc/passwd')",
+        "SELECT pg_catalog.pg_read_file('/etc/passwd')",  # schema-qualified
+        "SELECT PG_READ_BINARY_FILE('/etc/passwd')",  # case-insensitive
+        "SELECT pg_ls_dir('/')",
+        "SELECT * FROM pg_stat_file('/etc/passwd')",
+        "SELECT lo_import('/etc/passwd')",
+        "SELECT lo_export(1234, '/tmp/x')",
+        "SELECT lo_get(1234)",
+        "SELECT pg_sleep(30)",
+        "SELECT pg_sleep_for('30 seconds')",
+        "SELECT pg_sleep_until('2030-01-01')",
+        "SELECT LOAD_FILE('/etc/passwd')",
+        "SELECT SLEEP(30)",
+        "SELECT BENCHMARK(100000000, MD5('x'))",
+        "SELECT * FROM dblink('host=x', 'SELECT 1') AS t(a int)",
+        "SELECT dblink_connect('host=x')",
+        "SELECT pg_terminate_backend(1)",
+        "SELECT pg_cancel_backend(1)",
+        "SELECT * FROM xp_regread",
+        "SELECT xp_dirtree('C:\\')",
+        "SELECT xp_fileexist('C:\\x')",
+        "SELECT sp_oacreate('x')",
+        "SELECT sp_oamethod(1, 'x')",
+        "SELECT * FROM Debtor INTO OUTFILE '/tmp/x'",
+        "SELECT * FROM Debtor INTO DUMPFILE '/tmp/x'",
+        "SELECT 1 WAITFOR DELAY '0:0:30'",
+        "SELECT do FROM t",  # bare DO as an identifier - deny-first, quote it
+        "SELECT exec FROM t",
+        "SELECT call FROM t",
+        "SELECT sleep FROM t",
+        "SELECT copy FROM t",
+    ],
+)
+def test_guard_rejects_file_sleep_and_out_of_process_functions(sql):
+    with pytest.raises(SqlGuardError):
+        assert_select_only(sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # A forbidden word inside a STRING LITERAL is data, not a token.
+        "SELECT * FROM Debtor WHERE CompanyName LIKE '%sleep%'",
+        "SELECT * FROM Debtor WHERE Note = 'exec do call copy into'",
+        "SELECT * FROM Debtor WHERE Path = 'pg_read_file(''/etc/passwd'')'",
+        # A forbidden word as PART of a longer identifier is a different token.
+        "SELECT into_qty, sleep_minutes, copy_count, do_flag FROM Stock",
+        "SELECT t.exec_status FROM Tasks t",
+        # Quoted identifiers are always data.
+        'SELECT "sleep", [exec], `do` FROM t',
+        # CTE + plain shapes keep passing.
+        "WITH x AS (SELECT 1) SELECT * FROM x",
+        "WITH x AS (SELECT 1 AS n) SELECT n FROM x ORDER BY n",
+        "SELECT DISTINCT AccNo FROM Debtor",
+        "SELECT COUNT(*) FROM Debtor",
+    ],
+)
+def test_guard_keeps_accepting_legitimate_selects_after_the_deny_list_grew(sql):
+    assert assert_select_only(sql)
+
+
 def test_guard_error_is_a_source_error_with_an_operator_message():
     with pytest.raises(SqlSourceError) as excinfo:
         assert_select_only("DELETE FROM Debtor")

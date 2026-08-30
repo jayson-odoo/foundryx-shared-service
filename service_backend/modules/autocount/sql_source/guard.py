@@ -9,16 +9,22 @@ even opened. The rules, in order:
    string literal / quoted identifier means a second statement → rejected.
 3. The first token must be ``SELECT`` or ``WITH``.
 4. No token anywhere may be a DML/DDL/execution keyword (``INSERT``,
-   ``UPDATE``, ``DELETE``, ``DROP``, ``EXEC``, ``INTO``, ...). String literals
-   and quoted identifiers are scrubbed first, so ``WHERE note = 'DROP TABLE'``
-   and ``SELECT [Update]`` are fine while ``SELECT ... INTO`` and ``FOR UPDATE``
-   are not.
+   ``UPDATE``, ``DELETE``, ``DROP``, ``EXEC``, ``INTO``, ...) or a function
+   that reads the file system, sleeps, or reaches another session/process
+   (``pg_read_file``, ``LOAD_FILE``, ``pg_sleep``, ``SLEEP``, ``dblink``,
+   ``xp_*``, ...). Tokens are whole identifiers, matched case-insensitively;
+   a schema prefix is a separate token so ``pg_catalog.pg_read_file`` is
+   caught while ``into_qty`` is not. String literals and quoted identifiers
+   are scrubbed first, so ``WHERE note = 'DROP TABLE'``, ``LIKE '%sleep%'``
+   and ``SELECT [Update]`` are fine while ``SELECT ... INTO`` and ``FOR
+   UPDATE`` are not.
 
 Deny-first means a legitimate but unusual SELECT can be refused (a bare column
-named ``copy``, a ``;`` inside a literal). That is the accepted trade: quote the
-identifier, and never store the literal. The guard is NOT the only line of
-defence - the session is read-only where the dialect supports it, every
-transaction is rolled back, and the login should be read-only too.
+named ``copy``, ``do`` or ``sleep``, a ``;`` inside a literal). That is the
+accepted trade: quote the identifier, and never store the literal. The guard is
+NOT the only line of defence - the session is read-only where the dialect
+supports it, every transaction is rolled back, and the login should be
+read-only too.
 """
 from __future__ import annotations
 
@@ -85,6 +91,35 @@ _FORBIDDEN_TOKENS = frozenset(
         "KILL",
         "RECONFIGURE",
         "WAITFOR",
+        "XP_REGREAD",
+        "XP_DIRTREE",
+        "XP_FILEEXIST",
+        "SP_OACREATE",
+        "SP_OAMETHOD",
+        # file system / large objects / out-of-process reach (S1 review). A
+        # plain SELECT can call these; the token match is on the bare
+        # identifier so a schema-qualified ``pg_catalog.pg_read_file`` is
+        # caught too (the tokeniser splits on ``.``).
+        "PG_READ_FILE",
+        "PG_READ_BINARY_FILE",
+        "PG_LS_DIR",
+        "PG_STAT_FILE",
+        "LO_IMPORT",
+        "LO_EXPORT",
+        "LO_GET",
+        "LOAD_FILE",
+        "OUTFILE",
+        "DUMPFILE",
+        "DBLINK",
+        "DBLINK_CONNECT",
+        # sleep / DoS / other sessions
+        "PG_SLEEP",
+        "PG_SLEEP_FOR",
+        "PG_SLEEP_UNTIL",
+        "SLEEP",
+        "BENCHMARK",
+        "PG_TERMINATE_BACKEND",
+        "PG_CANCEL_BACKEND",
         # grants / sessions / transactions / locks
         "GRANT",
         "REVOKE",
