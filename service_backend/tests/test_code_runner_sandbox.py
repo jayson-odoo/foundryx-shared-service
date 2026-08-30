@@ -118,6 +118,11 @@ def test_frame_walk_escape_is_closed_at_runtime_without_the_policy():
     assert "not available" in out["error"]
 
 
+# The runtime _harden() layer is DEFENSE IN DEPTH, not the boundary: it closes
+# the CASUAL bypass routes (neutered builtins, a frame walk to
+# f_builtins['__import__'], the sys.meta_path re-import). It does NOT make an
+# in-process interpreter safe against arbitrary bytecode - the static policy is
+# the gate (see test_static_policy_is_the_gate_for_reflection_escapes below).
 @pytest.mark.parametrize(
     "source",
     [
@@ -136,7 +141,7 @@ def test_frame_walk_escape_is_closed_at_runtime_without_the_policy():
         "result = {'leak': sorted(k for k in mods if k in ('sys', 'os', 'io', 'json', 'types', 'subprocess', 'socket'))}",
     ],
 )
-def test_runtime_layer_denies_reach_even_if_policy_slipped(source):
+def test_hardening_closes_the_casual_bypass_routes(source):
     out = _run_unpoliced(source)
     if out["ok"]:
         # The only permitted "success": the walked-to globals carry no module.
@@ -144,6 +149,40 @@ def test_runtime_layer_denies_reach_even_if_policy_slipped(source):
     else:
         assert out["termination"] == "error"
         assert any(m in out["error"] for m in ("not available", "not defined", "not found"))
+
+
+# The subclass-walk to BuiltinImporter (object.__subclasses__() ->
+# BuiltinImporter.load_module('posix')) is the route _harden CANNOT close in
+# process. This test pins the honest security model: the STATIC POLICY blocks
+# it (that is the gate), and - deliberately - the runtime layer alone does not,
+# so no one may re-add a "runtime layer holds even if the policy slipped" claim.
+_SUBCLASS_WALK_ESCAPE = (
+    "subs = ().__class__.__base__.__subclasses__()\n"
+    "posix = None\n"
+    "for c in subs:\n"
+    "    if c.__name__ == 'BuiltinImporter':\n"
+    "        posix = c.load_module('posix')\n"
+    "        break\n"
+    "result = {'cwd': posix.getcwd()}\n"
+)
+
+
+def test_static_policy_is_the_gate_for_reflection_escapes():
+    # Production path: the static policy rejects the dunder walk outright.
+    issues = validate_source(_SUBCLASS_WALK_ESCAPE)
+    assert any("__subclasses__" in i for i in issues)
+    out = _run(_SUBCLASS_WALK_ESCAPE)
+    assert not out.ok and out.termination == "policy"
+
+
+def test_runtime_layer_alone_does_not_stop_the_subclass_walk():
+    # With the policy stubbed, _harden's meta_path clearing is not enough: the
+    # importer CLASS is still reachable via __subclasses__. This asserts the
+    # DOCUMENTED limitation - the static policy is what makes production safe,
+    # not the runtime layer. If a future change makes _harden actually block
+    # this, tighten the assertion; do NOT claim the runtime layer is a boundary.
+    out = _run_unpoliced(_SUBCLASS_WALK_ESCAPE)
+    assert out["ok"] and out["result"] == {"cwd": "/"}
 
 
 def test_denied_capabilities_fail_at_runtime_even_if_policy_slipped():

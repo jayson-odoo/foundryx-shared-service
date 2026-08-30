@@ -207,7 +207,10 @@ def _node_input_json(node: WorkflowNodeModel, ctx: Dict[str, Any]) -> Optional[D
             continue
         raw = config.get(fld.key)
         if isinstance(raw, str) and raw != "":
-            resolved[fld.key] = render_field(raw, ctx)
+            try:
+                resolved[fld.key] = render_field(raw, ctx)
+            except Exception:  # noqa: BLE001 - a TRACE render must never fail the node
+                continue
     if resolved:
         base["resolved"] = resolved
     return base

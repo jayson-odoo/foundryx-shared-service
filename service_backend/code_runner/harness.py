@@ -2,11 +2,26 @@
 restricted builtins table, writes ONE JSON result line on stdout.
 
 Started by ``sandbox.execute`` as ``python -I -S -B harness.py`` with an empty
-environment and resource limits already applied (see ``sandbox``). Nothing in
-here trusts the job: the policy runs again before execution, and ``_harden``
-then strips the interpreter so that even a policy bypass that reaches the
-harness frames (generator ``gi_frame`` -> ``f_back`` -> ``f_builtins``) finds
-no importer, no ``open`` and no module namespace to walk (AC-SAR-64).
+environment and resource limits already applied (see ``sandbox``).
+
+SECURITY MODEL (AC-SAR-64), stated honestly:
+
+* The GATE is the static AST policy (``policy.validate_source``, re-run here
+  before execution). It denies every dunder attribute, ``__``-subscript and
+  reflection route, so a builder script cannot walk ``().__class__`` /
+  ``__subclasses__`` / ``gi_frame`` to reach an importer in the first place.
+* The BOUNDARY is the OS jail around this process (``sandbox.execute``): empty
+  environment, cwd ``/``, ``RLIMIT_CPU/AS/FSIZE=0/NPROC=1/NOFILE``, a
+  wall-clock kill, and in the deployed container a read-only non-root rootfs
+  on an internal-only network with a seccomp profile that denies ``connect``.
+* ``_harden`` below is DEFENSE IN DEPTH, not a guarantee. It neuters the
+  dangerous builtins and evicts platform modules so the CASUAL bypass routes
+  (a frame walk to ``f_builtins['__import__']``) fail. It does NOT and cannot
+  make an in-process CPython interpreter safe against arbitrary bytecode: a
+  script that defeats the static policy could still reach ``BuiltinImporter``
+  via ``object.__subclasses__()`` and re-create a builtin module. That is why
+  the static policy is load-bearing and the subprocess jail is the real
+  boundary - never rely on ``_harden`` alone.
 """
 from __future__ import annotations
 
@@ -53,10 +68,12 @@ def _denied(*_args, **_kwargs):
 
 
 def _harden() -> None:
-    """Runtime denial layer, applied AFTER the policy passed and the job was
-    parsed, BEFORE builder code runs. Neuters the REAL builtins (the ones a
-    frame walk lands on), evicts platform modules from ``sys.modules`` and
-    strips this module's namespace down to inert helpers."""
+    """Best-effort defense-in-depth applied AFTER the policy passed and the job
+    was parsed, BEFORE builder code runs. This RAISES THE BAR on the casual
+    bypass routes; it is NOT the security boundary (see the module docstring).
+    Neuters the dangerous builtins a frame walk would land on, evicts platform
+    modules from ``sys.modules`` and the import machinery, and strips this
+    module's namespace down to inert helpers."""
     import builtins
 
     for name in ("__import__", "open", "exec", "eval", "compile", "breakpoint", "input", "help", "exit", "quit"):
@@ -65,6 +82,17 @@ def _harden() -> None:
         root = name.split(".", 1)[0]
         if name in _EVICT_MODULES or root in _EVICT_MODULES:
             sys.modules.pop(name, None)
+    # Close the sys.meta_path/import-hook route to re-creating an evicted
+    # builtin (``sys.meta_path[i].load_module('posix')``). This does not stop a
+    # determined subclass-walk to the importer CLASS - only the static policy
+    # does - but it removes the cheapest re-import path.
+    try:
+        sys.meta_path[:] = []
+        sys.path_hooks[:] = []
+        sys.path[:] = []
+        sys.path_importer_cache.clear()
+    except Exception:  # noqa: BLE001 - hardening must never itself raise
+        pass
     module_globals = globals()
     for name in _STRIP_GLOBALS:
         module_globals.pop(name, None)
