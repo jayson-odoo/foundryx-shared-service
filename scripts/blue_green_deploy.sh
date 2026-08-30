@@ -53,17 +53,14 @@ echo "==> Active=${ACTIVE} New=${NEW} IMAGE_TAG=${IMAGE_TAG}"
 # 1. Pull new images for the incoming color + the shared backend image (workers).
 echo "==> Pulling images"
 docker compose --profile "${NEW}" pull "backend_${NEW}" "frontend_${NEW}"
-docker compose pull worker_workflow worker_omni beat code_runner
+docker compose pull worker_workflow worker_omni beat
 
 # 1b. Ensure shared infra is up (db/redis/pgbackups are profile-less, NOT
 #     blue/green). The color is started with --no-deps below, so its depends_on
 #     does NOT auto-start these - without this the API container waits on `db`
 #     forever ("db not ready"). Idempotent: already-running = no-op.
-echo "==> Ensuring infra (db/redis/pgbackups/code_runner) is up"
+echo "==> Ensuring infra (db/redis/pgbackups) is up"
 docker compose up -d db redis pgbackups
-# The Code runner is stateless + versioned with the release: recreate it on
-# the new image before the API color comes up (publish health-checks it).
-docker compose up -d --force-recreate --no-deps code_runner
 
 # 2. Bring up the new color. The API container's start.sh runs
 #    `python -m scripts.bootstrap_db` (alembic upgrade + seed + modules) before
@@ -143,7 +140,7 @@ docker compose up -d --force-recreate --no-deps worker_workflow worker_omni beat
 # 6b. Verify the celery containers settle (running, no crash-loop). They have no
 #     HTTP healthcheck - liveness is the process + restart policy.
 echo "==> Verifying Celery containers"
-for svc in worker_workflow worker_omni beat code_runner; do
+for svc in worker_workflow worker_omni beat; do
   cid=$(docker compose ps -q "$svc")
   if [ -z "$cid" ]; then echo "ERROR: $svc not found after recreate"; exit 1; fi
   i=0; ok=""

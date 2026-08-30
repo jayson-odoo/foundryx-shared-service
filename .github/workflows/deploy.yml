@@ -128,18 +128,6 @@ jobs:
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
 
-      - name: Build and push code runner (sandboxed workflow Code action)
-        uses: docker/build-push-action@v5
-        with:
-          context: ./service_backend/code_runner
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ env.IMAGE_REPO }}:code-runner-${{ env.RELEASE_TAG }}
-            ${{ env.IMAGE_REPO }}:code-runner-${{ github.sha }}
-          cache-from: type=gha,scope=code-runner
-          cache-to: type=gha,mode=max,scope=code-runner
-
       - name: Build and push frontend
         uses: docker/build-push-action@v5
         with:
@@ -182,7 +170,6 @@ jobs:
             JWT_ALGORITHM=${{ vars.JWT_ALGORITHM || 'HS256' }}
             ACCESS_TOKEN_EXPIRE_MINUTES=${{ vars.ACCESS_TOKEN_EXPIRE_MINUTES || '1440' }}
             FERNET_KEY=${{ secrets.FERNET_KEY }}
-            CODE_RUNNER_TOKEN=${{ secrets.CODE_RUNNER_TOKEN }}
             OMNICHANNEL_FERNET_KEY=${{ secrets.OMNICHANNEL_FERNET_KEY }}
             BACKEND_WORKERS=${{ vars.BACKEND_WORKERS || '4' }}
             TRUST_PROXY_HEADERS=true
@@ -219,11 +206,14 @@ jobs:
             # a cheap /dev/tcp probe polls until it's back). ~5 min budget.
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
             wait_for_port "$H" "$P" || { echo "ssh port never came up"; exit 1; }
-            ssh $O -p "$P" "$U@$H" "mkdir -p $D/scripts"
-            scp $O -P "$P" scripts/blue_green_deploy.sh "$U@$H:$D/scripts/"
-            scp $O -P "$P" docker-compose.yml "$U@$H:$D/docker-compose.yml"
-            printf '%s' "$ENV_CONTENT" | ssh $O -p "$P" "$U@$H" "umask 077; cat > $D/.env"
-            echo ".env + files synced"
+            ssh $O -p "$P" "$U@$H" "mkdir -p $D/scripts" || { echo "::error::cannot mkdir $D/scripts - the deploy user cannot write DEPLOY_PATH. On the host run: sudo chown -R $U $D"; exit 1; }
+            scp $O -P "$P" scripts/blue_green_deploy.sh "$U@$H:$D/scripts/" || { echo "::error::scp deploy script failed - DEPLOY_PATH not writable by $U (sudo chown -R $U $D on the host)"; exit 1; }
+            # Compose MUST land or the host keeps a stale compose - fatal + diagnostic.
+            scp $O -P "$P" docker-compose.yml "$U@$H:$D/docker-compose.yml" || { echo "::error::scp docker-compose.yml failed - $D/docker-compose.yml not writable by $U. Fix on the host: sudo chown $U $D/docker-compose.yml (or sudo chown -R $U $D)"; exit 1; }
+            # .env: warn but do not block - the host keeps its existing .env if this
+            # write is refused (e.g. a root-owned .env from an earlier run).
+            printf '%s' "$ENV_CONTENT" | ssh $O -p "$P" "$U@$H" "umask 077; cat > $D/.env" || echo "::warning::.env write refused (permission) - host keeps its existing .env. Fix: sudo chown $U $D/.env on the host"
+            echo "files synced (see any warnings above)"
 
       - name: Deploy blue/green via Caddy (retry)
         uses: nick-fields/retry@v3
