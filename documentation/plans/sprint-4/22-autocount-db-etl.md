@@ -329,6 +329,29 @@ Record shapes (extra="forbid" everywhere; SorentoSink projects exactly these):
   `scm.purchase_orders.*`; deletions need the entity's `.delete` on top of `.edit` (Sorento
   migration 445 sweeps `.delete` onto `integration_foundryx_esb`).
 
+### A7. AMENDMENTS after Sorento A2-A4 review (2026-08-30; commits 219374d08 / 232d6fefc / 8773f8fdd)
+
+1. **Document line removal = "remove, or cancel in place when referenced"**: a line absent from a
+   re-push is deleted only when nothing references it; when a Sorento row depends on it the line is
+   kept with `line_status='cancelled'`, quantities untouched. Read-back can therefore return lines we
+   never sent, carrying a cancelled `line_status`. Header verdict stays `updated`. → the sink's
+   diff/dry-run rendering must not treat an unexpected cancelled line as drift.
+2. **Fourth anchor 422 code `COMPANY_BINDING_INVALID`**: the calling integration's
+   `config_json.company_code` names a company that does not resolve, regardless of body.
+   `UNKNOWN_COMPANY` is now only about the body's `companyCode`. An `autocount_ref` shared by two
+   companies = `COMPANY_ANCHOR_AMBIGUOUS`. → sink treats all four codes as task-level anchor errors.
+3. **Numbers come back as JSON numbers** (Decimal through FastAPI's encoder) in read-back for
+   quantities/money → parse into `Decimal` via `str()`, never round-trip a 4-dp quantity through a
+   float; the comparable/diff layer compares Decimals.
+4. Read-back shapes as built: SO `{source_ref, entity_id, so_number, doc_date, requested_delivery_date,
+   internal_note, status (canonical word), customer_ref, sales_agent_ref, lines:[{source_ref, entity_id,
+   product_ref, warehouse_ref, qty_ordered, qty_delivered, unit_price, discount, line_total, uom,
+   required_date}]}`; PO `{source_ref, entity_id, po_number, issue_date, expected_date, currency, status,
+   supplier_ref, lines:[{source_ref, entity_id, product_ref, warehouse_ref, qty_ordered, qty_received,
+   unit_cost, discount, line_total, uom, currency, expected_date}]}`.
+5. Deletions response as built: `errors` present only on `failed` records; dependents found by a
+   pg_catalog FK probe before DELETE (customer with orders = `deactivated`, never orphaning).
+
 ### A5. Acceptance (Sorento session's own tests)
 
 Per-entity spec tests (ingest, read-back, dry-run, permission 401/403), company-anchor tests
