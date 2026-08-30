@@ -253,6 +253,7 @@ function defaultConfig(type: string): WorkflowNodeConfig {
   if (type === 'ai_agent.run')
     return { agentId: '', instructions: '', inputText: '', outputParams: [] };
   if (type === 'ai_agent.clear_state') return { agentNodeId: '' };
+  if (type === 'ai_agent.read_state') return { agentNodeId: '' };
   if (type === 'redis.command') return { operation: 'get', key: '' };
   if (type === 'code.run') {
     return {
@@ -629,6 +630,28 @@ export function validateDefinition(
     if (n.type === 'redis.command') {
       for (const message of redisConfigIssues(n.config)) {
         issues.push({ level: 'error', message, nodeId: n.id });
+      }
+    }
+    // Read Agent State must point at a stateful AI Agent that exists in the
+    // graph (parity with backend definition_issues; the required check above
+    // already blocks an empty selection).
+    if (n.type === 'ai_agent.read_state') {
+      const targetId = n.config.agentNodeId;
+      if (typeof targetId === 'string' && targetId) {
+        const target = doc.nodes.find((t) => t.id === targetId);
+        const ok =
+          target?.type === 'ai_agent.run' &&
+          validAiOutputParams(target.config.outputParams).some(
+            (param) => param.stateful,
+          );
+        if (!ok) {
+          issues.push({
+            level: 'error',
+            message:
+              'Read Agent State must reference a stateful AI Agent in this workflow.',
+            nodeId: n.id,
+          });
+        }
       }
     }
   }

@@ -227,6 +227,21 @@ def definition_issues(doc: WorkflowDefinitionModel) -> List[str]:
                         issues.append(
                             'AI Agent: "Clarification output" must be a transient Text output.'
                         )
+        if n.type == "ai_agent.read_state":
+            # Read Agent State must point at a stateful AI Agent that exists
+            # in the graph (parity with the frontend validateDefinition; the
+            # required-field check above already blocks an empty selection).
+            target_id = n.config.get("agentNodeId")
+            if isinstance(target_id, str) and target_id:
+                target = next((t for t in doc.nodes if t.id == target_id), None)
+                is_stateful_target = target is not None and target.type == "ai_agent.run" and any(
+                    isinstance(row, dict) and row.get("stateful") is True
+                    for row in (target.config.get("outputParams") or [])
+                )
+                if not is_stateful_target:
+                    issues.append(
+                        "Read Agent State must reference a stateful AI Agent in this workflow."
+                    )
         if n.type == "redis.command":
             from app.workflow_engine.actions.redis_actions import literal_config_issues
 
