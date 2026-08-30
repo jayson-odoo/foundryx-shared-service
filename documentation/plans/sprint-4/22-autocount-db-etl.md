@@ -352,6 +352,21 @@ Record shapes (extra="forbid" everywhere; SorentoSink projects exactly these):
 5. Deletions response as built: `errors` present only on `failed` records; dependents found by a
    pg_catalog FK probe before DELETE (customer with orders = `deactivated`, never orphaning).
 
+### A8. FINAL (Sorento PR https://github.com/jayson-odoo/sorento-crm/pull/406, 2026-08-30)
+
+Branch `feat/autocount-cross-repo-contract` (A1 18e8dc1d0, A2 219374d08, A3 232d6fefc, A4 8773f8fdd,
+review pass f2e6b55eb). Full deviation list = section 7 of
+`sorento_crm/.claude/worktrees/autocount-contract/documentation/plans/autocount/PLAN-autocount-cross-repo-contract.md`.
+- Guard order per call: 404 unknown entity -> 422 `INVALID_BODY` -> 413 `BATCH_TOO_LARGE` -> anchor 422
+  (`COMPANY_ANCHOR_REQUIRED | UNKNOWN_COMPANY | COMPANY_BINDING_INVALID | COMPANY_ANCHOR_AMBIGUOUS`).
+- Read-back envelope: `{"records": [...], "not_found": [...]}`.
+- Summary counters: ingest `{total, created, updated, failed, retryable}`; deletions
+  `{total, deleted, deactivated, not_found, failed}`.
+- ESB integration role slugs: `master_data.*.{edit,view,delete}` (incl. sales_agents),
+  `scm.sales_orders.*`, `scm.purchase_orders.*`; Sorento migration 445 grants the missing `.delete`.
+- Local live-verify of the shared-service sink runs against a Sorento server started from that
+  worktree (NOT the `:8010` main-checkout server, which predates the contract).
+
 ### A5. Acceptance (Sorento session's own tests)
 
 Per-entity spec tests (ingest, read-back, dry-run, permission 401/403), company-anchor tests
