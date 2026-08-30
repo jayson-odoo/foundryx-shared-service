@@ -58,6 +58,7 @@ from ..mapping_catalog import (
 )
 from ..models import (
     ETL_STATUS_ACTIVE,
+    ETL_STATUS_DRAFT,
     ETL_STATUS_PAUSED,
     SINK_IMPL_LOGGING,
     SINK_IMPL_SORENTO,
@@ -226,6 +227,11 @@ class EntityState:
     watermark_at: Optional[datetime] = None
     consecutive_failures: int = 0
     last_error: Optional[str] = None
+    # The DB-task lifecycle (plan 22 §2.4, ``draft|active|paused``) - surfaced
+    # on the entities LIST (not just the task editor) so the Review & Activate
+    # tab can warn a `product` task's activation of a missing category/UOM
+    # dependency without a second fetch (AC-22-23, FE-only prerequisite chip).
+    etl_status: str = ETL_STATUS_DRAFT
 
 
 @dataclass(frozen=True)
@@ -337,6 +343,7 @@ class CompanyService:
                     watermark_at=mark.last_modified_at if mark else None,
                     consecutive_failures=(mark.consecutive_failures or 0) if mark else 0,
                     last_error=mark.last_error if mark else None,
+                    etl_status=config.etl_status or ETL_STATUS_DRAFT,
                 )
             )
         return states
@@ -382,6 +389,21 @@ class CompanyService:
                 raise AutocountServiceError(
                     f"Unknown source '{source_impl}'. Choose "
                     f"{' or '.join(SOURCE_IMPLS)}."
+                )
+            #     !!  NEVER OFFER "AutoCount API" FOR AN ENTITY WITH NO PROBED
+            #         VENDOR PAYLOAD.  !!
+            # (Plan 22 S4.) ``SEEDED_ENTITIES`` is exactly the entity catalogue
+            # this build has a confirmed, observed vendor route for (see its own
+            # docstring above); the S4 masters fan-out entities (product,
+            # warehouse, product_category, unit_of_measure, sales_agent) are
+            # DB-source only. Switching one to ``autocount_read`` would build the
+            # vendor HTTP client with the WRONG vendor entity name (``sync.py``'s
+            # ``VENDOR_ENTITIES`` has no entry either) - a guaranteed-to-fail
+            # sync the backend must refuse, not just the frontend hide.
+            if source_impl == SOURCE_IMPL_AUTOCOUNT_READ and entity_type not in SEEDED_ENTITIES:
+                raise AutocountServiceError(
+                    f"'{entity_type}' has no AutoCount API path - it can only "
+                    "be synced from a database task."
                 )
             if (
                 source_impl == SOURCE_IMPL_AUTOCOUNT_READ

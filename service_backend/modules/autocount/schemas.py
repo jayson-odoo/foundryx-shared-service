@@ -74,6 +74,10 @@ class EntityConfigItem(ApiModel):
     watermarkAt: Optional[datetime] = Field(default=None, validation_alias="watermark_at")
     consecutiveFailures: int = Field(default=0, validation_alias="consecutive_failures")
     lastError: Optional[str] = Field(default=None, validation_alias="last_error")
+    # The DB-task lifecycle (plan 22 §2.4, AC-22-23) - surfaced on the LIST so
+    # the task editor's Review & Activate tab can warn a `product` task's
+    # activation of a missing category/UOM prerequisite without a second fetch.
+    etlStatus: str = Field(default="draft", validation_alias="etl_status")
 
 
 class EntityConfigUpdate(ApiModel):
