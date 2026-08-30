@@ -670,6 +670,52 @@ def test_put_etl_task_probes_the_wrap_only_when_a_watermark_column_is_set(
     assert calls == []
 
 
+def test_put_etl_task_422s_when_the_connection_database_does_not_match_the_company(
+    client, session_factory
+):
+    """S2 review SHOULD-FIX 6: nothing stopped a task from pointing at a SQL
+    connection whose ``database`` config is a DIFFERENT database than the
+    company's own ``database_name`` - a silent cross-company overwrite path
+    (foolproof-UI: 422 always, no confirm-and-proceed escape hatch)."""
+    db = session_factory()
+    company = _company(db, database_name="AED_2024")
+    wrong_db = _sql_connection(db, db_type="postgresql")
+    wrong_db_conn = db.get(Connection, wrong_db.id)
+    wrong_db_conn.config_json = {**wrong_db_conn.config_json, "database": "OTHER_2025"}
+    db.commit()
+    db.close()
+
+    good = "SELECT acc_no, company_name, balance, last_modified FROM debtor"
+    response = _put(client, company, _config(connectionId=wrong_db.id, query=good))
+    assert response.status_code == 422, response.text
+    errors = response.json()["detail"]["fieldErrors"]
+    assert "connectionId" in errors
+    assert "AED_2024" in errors["connectionId"]
+
+    # Nothing was saved.
+    db = session_factory()
+    row = (
+        db.query(AcEntityConfig)
+        .filter_by(tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type="customer")
+        .one()
+    )
+    assert row.source_impl == "autocount_read"
+    db.close()
+
+
+def test_put_etl_task_allows_a_connection_whose_database_matches_the_company(
+    client, session_factory
+):
+    db = session_factory()
+    company = _company(db, database_name="AED_2024")
+    conn = _sql_connection(db, db_type="postgresql")  # config database = AED_2024
+    db.close()
+
+    good = "SELECT acc_no, company_name, balance, last_modified FROM debtor"
+    response = _put(client, company, _config(connectionId=conn.id, query=good))
+    assert response.status_code == 200, response.text
+
+
 def test_put_etl_task_requires_manage_and_404s_cross_tenant(client, session_factory):
     db = session_factory()
     _other_tenant(db)

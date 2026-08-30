@@ -555,14 +555,16 @@ class EtlService:
         """Draft-save the task's ``source_config`` (AC-22-11).
 
         Order matters: (1) tenant-scope the company + entity; (2) resolve the
-        connection tenant+provider scoped; (3) static-guard the query; (4) run
-        a FRESH preview so column picks are checked against what the query
-        actually returns (and the query itself is proven to execute); (5)
-        normalise + validate the rest; (6) with a watermark column and no
-        errors so far, PROBE the exact incremental statement shape the real
-        run will execute (BLOCKER 2) - every failure names its field.
+        connection tenant+provider scoped; (2b) refuse a connection whose OWN
+        database does not match the company's (S2 review SHOULD-FIX 6); (3)
+        static-guard the query; (4) run a FRESH preview so column picks are
+        checked against what the query actually returns (and the query
+        itself is proven to execute); (5) normalise + validate the rest; (6)
+        with a watermark column and no errors so far, PROBE the exact
+        incremental statement shape the real run will execute (BLOCKER 2) -
+        every failure names its field.
         """
-        self._require_task_entity(tenant_id, company_id, entity_type)
+        company = self._require_task_entity(tenant_id, company_id, entity_type)
         errors: Dict[str, str] = {}
 
         connection_id = str(raw.get("connectionId") or "").strip() or None
@@ -572,6 +574,24 @@ class EtlService:
                 conn = self._connection(tenant_id, connection_id)
             except ConnectionNotFound as exc:
                 errors["connectionId"] = exc.message
+            else:
+                #     !!  NO SILENT CROSS-COMPANY OVERWRITE PATH.  !!
+                # A DB task writes canonical rows keyed by THIS company's
+                # ``database_name`` (AC-14-10's company-qualified source_ref)
+                # - a connection pointed at a DIFFERENT database would extract
+                # someone else's data under this company's identity. Always a
+                # 422 (foolproof-UI: no confirm-and-proceed escape hatch) -
+                # the operator fixes the company's database name or picks the
+                # right connection.
+                conn_database = str((conn.config_json or {}).get("database") or "").strip()
+                company_database = str(company.database_name or "").strip()
+                if company_database and conn_database and conn_database != company_database:
+                    errors["connectionId"] = (
+                        f"This connection reads '{conn_database}', but the company is "
+                        f"'{company_database}'. Choose the connection for "
+                        f"'{company_database}', or fix the company's database name."
+                    )
+                    conn = None
 
         query = normalize_statement(str(raw.get("query") or ""))
         columns: Optional[Dict[str, str]] = None
