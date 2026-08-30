@@ -26,7 +26,7 @@ import json
 import re
 import threading
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Sequence, Tuple
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine, URL
