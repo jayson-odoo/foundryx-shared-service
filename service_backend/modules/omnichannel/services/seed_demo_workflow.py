@@ -132,13 +132,28 @@ def seed_demo_progress_workflow(db: Session, tenant_id: str, *, channel_id: str 
     if db.query(AiAgent).filter(AiAgent.tenant_id == tenant_id, AiAgent.key == PROGRESS_AGENT_KEY).first():
         return
 
+    # Bi-D21: an agent with NO connection stubs only while the tenant has no
+    # LLM connection at all. Bind to an existing dev `stub` connection when
+    # one exists so the proof keeps running offline next to real providers.
+    from app.models.connection import Connection
+
+    stub_connection = (
+        db.query(Connection)
+        .filter(
+            Connection.type == "llm",
+            Connection.provider == "stub",
+            Connection.tenant_id == tenant_id,
+            Connection.is_active.is_(True),
+        )
+        .first()
+    )
     agent = AiAgent(
         tenant_id=tenant_id,
         key=PROGRESS_AGENT_KEY,
         name="Progress Updater",
         description="Collects a task's status update over several short WhatsApp messages.",
         is_system=True,
-        connection_id=None,
+        connection_id=stub_connection.id if stub_connection is not None else None,
         model="stub-model-1",
         temperature=0.0,
     )

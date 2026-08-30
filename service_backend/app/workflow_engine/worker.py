@@ -201,6 +201,9 @@ def wake_serialized_task(tenant_id: str, workflow_id: str, digest: str) -> dict:
         drain_serialized_runs,
     )
 
+    # Same module-node boot as run_workflow_task: the drain executes runs
+    # in THIS process, so module actions must be registered here too.
+    _ensure_module_nodes()
     db = SessionLocal()
     try:
         return drain_serialized_runs(db, tenant_id, workflow_id, digest)

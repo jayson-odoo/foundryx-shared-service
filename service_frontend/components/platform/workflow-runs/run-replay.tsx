@@ -84,7 +84,7 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
   return (
     <div className="flex flex-col gap-3" data-testid="run-replay">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <RunStatusBadge status={run.status} />
           <span className="text-xs text-muted-foreground">
             {run.versionNumber > 0 ? `v${run.versionNumber}` : 'draft'} ·{' '}
@@ -93,7 +93,7 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
           </span>
           {run.correlationKey && (
             <span
-              className="max-w-[16rem] truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+              className="max-w-full truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground sm:max-w-[16rem]"
               title={run.correlationKey}
               data-testid="run-correlation-key"
             >

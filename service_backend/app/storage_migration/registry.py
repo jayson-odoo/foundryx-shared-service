@@ -236,6 +236,10 @@ _NON_STORAGE_KEY_COLUMNS = frozenset(
         # behind them, so there is nothing for a bucket migration to move:
         "skill_key",  # ai_traces - the skill's registry key, denormalised for display
         "grill_definition_key",  # ai_conversations - GrillDefinition registry key
+        # Workflow runtime (plan sprint-4/19): the rendered correlation IDENTITY
+        # of related runs / Agent-state rows (workflow_runs, workflow_agent_states).
+        # A logical key, no blob behind it - nothing for a bucket migration to move.
+        "correlation_key",
         # NOTE: `media_sample_key` (WhatsApp draft media-header sample) IS a
         # storage key - registered by omnichannel at install (Slice 3), so it is
         # deliberately NOT excluded here; the drift test now enforces it.

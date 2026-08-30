@@ -59,3 +59,16 @@ def test_run_workflow_task_boots_module_nodes_before_executing(monkeypatch):
     body = inspect.getsource(worker.run_workflow_task.run if hasattr(worker.run_workflow_task, "run") else worker.run_workflow_task)
     assert "_ensure_module_nodes()" in body
     assert body.index("_ensure_module_nodes()") < body.index("run_workflow(db, run_id)")
+
+
+def test_wake_serialized_task_boots_module_nodes_before_draining():
+    """The serialized drain executes runs in the worker process too (sprint-4/19
+    S2) - it must boot module nodes exactly like run_workflow_task."""
+    import inspect
+
+    from app.workflow_engine import worker
+
+    task = worker.wake_serialized_task
+    body = inspect.getsource(task.run if hasattr(task, "run") else task)
+    assert "_ensure_module_nodes()" in body
+    assert body.index("_ensure_module_nodes()") < body.index("drain_serialized_runs(db")
