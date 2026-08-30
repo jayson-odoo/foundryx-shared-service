@@ -17,7 +17,12 @@
  */
 import { ApiError } from '@/lib/api-client';
 import { testFormula as evalFormula } from '@/lib/autocount-formula';
-import { computeMockNextRunTimes, isDocumentEntity } from '@/lib/autocount-etl';
+import {
+  MIN_RECONCILE_HOURS,
+  RECONCILE_TIME_RE,
+  incrementalFloorMinutes,
+  isDocumentEntity,
+} from '@/lib/autocount-etl';
 import type {
   AutocountApprovalResult,
   AutocountCompany,
@@ -549,10 +554,46 @@ function overlayFor(companyId: string, entityType: string): EtlTaskOverlay {
 }
 
 /**
+ * Mirrors `EtlService.next_run_times` exactly - minutes floor by watermark
+ * presence for the incremental leg; `interval` mode = now + N hours;
+ * `dailyAt` = the next occurrence of HH:MM, treated as UTC (there is no
+ * tenant-level timezone setting to re-resolve against - only a per-user
+ * preference, which has no natural owner for an unattended scheduled task;
+ * BL-SS-034 tracks adding one). Mock-only + test-only: the real backend now
+ * puts `nextIncrementalAt`/`nextReconcileAt` on the wire (plan 22 S3), so
+ * this stands in only for `mockAutocountService`.
+ */
+export function computeMockNextRunTimes(
+  sourceConfig: AutocountEtlSourceConfig,
+  now: Date = new Date(),
+): { nextIncrementalAt: string; nextReconcileAt: string } {
+  const floor = incrementalFloorMinutes(Boolean(sourceConfig.watermarkColumn));
+  const minutes = Math.max(sourceConfig.incrementalMinutes || 0, floor);
+  const nextIncrementalAt = new Date(now.getTime() + minutes * 60_000).toISOString();
+
+  let nextReconcileAt: string;
+  if (sourceConfig.reconcileMode === 'interval') {
+    const hours = Math.max(sourceConfig.reconcileHours ?? MIN_RECONCILE_HOURS, MIN_RECONCILE_HOURS);
+    nextReconcileAt = new Date(now.getTime() + hours * 3_600_000).toISOString();
+  } else {
+    const at =
+      sourceConfig.reconcileAt && RECONCILE_TIME_RE.test(sourceConfig.reconcileAt)
+        ? sourceConfig.reconcileAt
+        : '02:00';
+    const [hour, minute] = at.split(':').map(Number);
+    const target = new Date(now);
+    target.setUTCHours(hour, minute, 0, 0);
+    if (target.getTime() <= now.getTime()) target.setUTCDate(target.getUTCDate() + 1);
+    nextReconcileAt = target.toISOString();
+  }
+  return { nextIncrementalAt, nextReconcileAt };
+}
+
+/**
  * The next-run pair a task carries while active (plan 22 S3, PHASE 1 MOCK -
- * `lib/autocount-etl.ts computeMockNextRunTimes` stands in for the not-yet-
- * wired backend fields). Null the instant the task is not active - a paused
- * or draft task shows no next runs.
+ * `computeMockNextRunTimes` above stands in for the not-yet-wired backend
+ * fields). Null the instant the task is not active - a paused or draft task
+ * shows no next runs.
  */
 function nextRunsFor(etlStatus: AutocountEtlTask['etlStatus'], sourceConfig: AutocountEtlSourceConfig) {
   if (etlStatus !== 'active') return { nextIncrementalAt: null, nextReconcileAt: null };

@@ -179,7 +179,7 @@ export const MIN_INCREMENTAL_MINUTES_NO_WATERMARK = 15;
 /** Reconcile "every N hours" floor. */
 export const MIN_RECONCILE_HOURS = 1;
 
-const RECONCILE_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+export const RECONCILE_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /** The incremental floor for a task (AC-22-12): 1 minute with a watermark
  * column, 15 without (hash-diff incremental). */
@@ -227,41 +227,6 @@ export const RECONCILE_MODE_OPTIONS: { label: string; value: AutocountEtlSourceC
   { label: 'Daily at', value: 'dailyAt' },
   { label: 'Every N hours', value: 'interval' },
 ];
-
-/**
- * PHASE 1 MOCK (plan 22 S3): stand-in for the not-yet-wired
- * `nextIncrementalAt`/`nextReconcileAt`. Mirrors `EtlService.next_run_times`
- * exactly - minutes floor by watermark presence for the incremental leg;
- * `interval` mode = now + N hours; `dailyAt` = the next occurrence of HH:MM,
- * treated as UTC (the backend's own documented simplification - re-resolved
- * against the tenant timezone by the S3 sweep, so this stays a pure function
- * here too).
- */
-export function computeMockNextRunTimes(
-  sourceConfig: AutocountEtlSourceConfig,
-  now: Date = new Date(),
-): { nextIncrementalAt: string; nextReconcileAt: string } {
-  const floor = incrementalFloorMinutes(Boolean(sourceConfig.watermarkColumn));
-  const minutes = Math.max(sourceConfig.incrementalMinutes || 0, floor);
-  const nextIncrementalAt = new Date(now.getTime() + minutes * 60_000).toISOString();
-
-  let nextReconcileAt: string;
-  if (sourceConfig.reconcileMode === 'interval') {
-    const hours = Math.max(sourceConfig.reconcileHours ?? MIN_RECONCILE_HOURS, MIN_RECONCILE_HOURS);
-    nextReconcileAt = new Date(now.getTime() + hours * 3_600_000).toISOString();
-  } else {
-    const at =
-      sourceConfig.reconcileAt && RECONCILE_TIME_RE.test(sourceConfig.reconcileAt)
-        ? sourceConfig.reconcileAt
-        : '02:00';
-    const [hour, minute] = at.split(':').map(Number);
-    const target = new Date(now);
-    target.setUTCHours(hour, minute, 0, 0);
-    if (target.getTime() <= now.getTime()) target.setUTCDate(target.getUTCDate() + 1);
-    nextReconcileAt = target.toISOString();
-  }
-  return { nextIncrementalAt, nextReconcileAt };
-}
 
 export function mappingSourceColumns(
   resultColumns: string[],
