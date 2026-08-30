@@ -35,9 +35,19 @@ from ..activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS, record_activity
 from ..canonical.grn import CanonicalGrn, ENTITY_GOODS_RECEIVED_NOTE
 from ..canonical.masters import (
     ENTITY_CUSTOMER,
+    ENTITY_PRODUCT,
+    ENTITY_PRODUCT_CATEGORY,
+    ENTITY_SALES_AGENT,
     ENTITY_SUPPLIER,
+    ENTITY_UNIT_OF_MEASURE,
+    ENTITY_WAREHOUSE,
     CanonicalCustomer,
+    CanonicalProduct,
+    CanonicalProductCategory,
+    CanonicalSalesAgent,
     CanonicalSupplier,
+    CanonicalUnitOfMeasure,
+    CanonicalWarehouse,
 )
 from ..models import (
     SINK_IMPL_LOGGING,
@@ -66,11 +76,17 @@ logger = logging.getLogger("foundryx.autocount")
 
 # Canonical entity → its canonical model, so a staged record's ``canonical_json``
 # can be rehydrated into the typed shape the sink needs (``sink_payload`` /
-# ``source_ref``). Hop 2 adds the two master shapes beside slice 1's GRN.
+# ``source_ref``). Hop 2 adds the two master shapes beside slice 1's GRN; plan
+# 22 S4 (AC-22-23) adds the five masters fan-out shapes.
 CANONICAL_MODELS = {
     ENTITY_GOODS_RECEIVED_NOTE: CanonicalGrn,
     ENTITY_SUPPLIER: CanonicalSupplier,
     ENTITY_CUSTOMER: CanonicalCustomer,
+    ENTITY_PRODUCT_CATEGORY: CanonicalProductCategory,
+    ENTITY_UNIT_OF_MEASURE: CanonicalUnitOfMeasure,
+    ENTITY_WAREHOUSE: CanonicalWarehouse,
+    ENTITY_PRODUCT: CanonicalProduct,
+    ENTITY_SALES_AGENT: CanonicalSalesAgent,
 }
 
 

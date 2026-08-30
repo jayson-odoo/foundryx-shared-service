@@ -37,9 +37,19 @@ from typing import Dict, List, Optional, Tuple
 from .canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
 from .canonical.masters import (
     ENTITY_CUSTOMER,
+    ENTITY_PRODUCT,
+    ENTITY_PRODUCT_CATEGORY,
+    ENTITY_SALES_AGENT,
     ENTITY_SUPPLIER,
+    ENTITY_UNIT_OF_MEASURE,
+    ENTITY_WAREHOUSE,
     CanonicalCustomer,
+    CanonicalProduct,
+    CanonicalProductCategory,
+    CanonicalSalesAgent,
     CanonicalSupplier,
+    CanonicalUnitOfMeasure,
+    CanonicalWarehouse,
 )
 
 # Identity is minted, never mapped (masters.py) - so it is not a mappable target.
@@ -76,6 +86,15 @@ SORENTO_FIELDS: Dict[str, Tuple[SorentoFieldDef, ...]] = {
     # GRN is a document (lines nested), not a master sink - it has no accepted
     # master-field set, so the mapping editor's Sorento picker is empty for it.
     ENTITY_GOODS_RECEIVED_NOTE: (),
+    # Plan 22 S4 masters fan-out (AC-22-23) - without an entry here the PUT
+    # mapping guard's `accepted_field_names` is empty and EVERY row a database
+    # task's Mapping tab tries to save 422s "not a Sorento field accepted for
+    # <entity>" (the accepted set is entity-agnostic code, DB-source or not).
+    ENTITY_PRODUCT_CATEGORY: _accepted(CanonicalProductCategory.SINK_FIELDS),
+    ENTITY_UNIT_OF_MEASURE: _accepted(CanonicalUnitOfMeasure.SINK_FIELDS),
+    ENTITY_WAREHOUSE: _accepted(CanonicalWarehouse.SINK_FIELDS),
+    ENTITY_PRODUCT: _accepted(CanonicalProduct.SINK_FIELDS),
+    ENTITY_SALES_AGENT: _accepted(CanonicalSalesAgent.SINK_FIELDS),
 }
 
 

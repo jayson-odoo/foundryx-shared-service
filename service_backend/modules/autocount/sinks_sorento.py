@@ -46,7 +46,15 @@ from typing import Any, Dict, List, Optional, Sequence
 import httpx
 
 from .canonical.base import CanonicalRecord
-from .canonical.masters import ENTITY_CUSTOMER, ENTITY_SUPPLIER
+from .canonical.masters import (
+    ENTITY_CUSTOMER,
+    ENTITY_PRODUCT,
+    ENTITY_PRODUCT_CATEGORY,
+    ENTITY_SALES_AGENT,
+    ENTITY_SUPPLIER,
+    ENTITY_UNIT_OF_MEASURE,
+    ENTITY_WAREHOUSE,
+)
 from .sinks import WriteResult
 
 logger = logging.getLogger("foundryx.autocount")
@@ -57,31 +65,45 @@ SINK_SORENTO = "sorento"
 # over is a 413 (or, until their fix lands, a 500), never a silent truncation.
 SORENTO_MAX_BATCH = 1000
 
-# The canonical entity_type → Sorento's ingest path segment. A canonical entity
-# with no mapping here CANNOT be delivered to Sorento - raised loudly rather
-# than guessed, because a wrong path is a 404 that looks like an outage.
+# The canonical entity_type → Sorento's ingest path segment (Appendix A6/A8 -
+# ``product_categories | units_of_measure | warehouses | suppliers | customers
+# | products | sales_agents``). A canonical entity with no mapping here CANNOT
+# be delivered to Sorento - raised loudly rather than guessed, because a wrong
+# path is a 404 that looks like an outage.
 _ENTITY_PATH: Dict[str, str] = {
     ENTITY_SUPPLIER: "suppliers",
     ENTITY_CUSTOMER: "customers",
+    ENTITY_PRODUCT_CATEGORY: "product_categories",
+    ENTITY_UNIT_OF_MEASURE: "units_of_measure",
+    ENTITY_WAREHOUSE: "warehouses",
+    ENTITY_PRODUCT: "products",
+    ENTITY_SALES_AGENT: "sales_agents",
 }
 
 # Outcomes Sorento may report per record. `created`/`updated` = delivered;
 # `failed` = bad data (quarantine, do not retry); `retryable` = a referenced
-# master isn't synced yet and NOTHING was written (must not occur for
-# suppliers/customers - AC-14-24).
+# master isn't synced yet and NOTHING was written.
 _OUTCOME_DELIVERED = {"created", "updated"}
+
+# Masters whose ``retryable`` is EXPECTED, not a defect (AC-22-23): a product's
+# ``category_code``/``uom_code`` may legitimately not have synced yet, and the
+# record resolves automatically once it does (dependency order - categories +
+# UOM before products). Every OTHER master here carries no such reference, so
+# for them ``retryable`` stays the AC-14-24 "must be unreachable" defect signal.
+_DEPENDENT_ENTITIES = {ENTITY_PRODUCT}
 
 
 def sorento_supports_entity(entity_type: str) -> bool:
     """Whether Sorento's ingest API accepts this canonical entity yet.
 
-    Sorento ingests MASTERS only (suppliers, customers). Documents (GRN, PO, …)
-    have no ingest endpoint on the consumer yet, so a document entity is absent
-    from ``_ENTITY_PATH``. A company set to push to Sorento falls back to the
-    logging sink for such an entity (it stages + logs, delivering nothing) rather
-    than erroring on a missing path - this is *deliverability*, an expected
-    not-yet-built state, not a misconfiguration. Delivering documents end-to-end
-    is a separate cross-repo cluster (Sorento has no document ingest today).
+    Sorento ingests MASTERS only (suppliers, customers, product categories,
+    units of measure, warehouses, products, sales agents - plan 22 S4). Documents
+    (GRN, SO, PO, …) have no ingest endpoint on the consumer yet, so a document
+    entity is absent from ``_ENTITY_PATH``. A company set to push to Sorento
+    falls back to the logging sink for such an entity (it stages + logs,
+    delivering nothing) rather than erroring on a missing path - this is
+    *deliverability*, an expected not-yet-built state, not a misconfiguration.
+    Delivering SO/PO end-to-end is plan 22 S5.
     """
     return entity_type in _ENTITY_PATH
 
@@ -443,13 +465,27 @@ class SorentoSink:
                 delivered=True, message=outcome, outcome=outcome,
             )
         if outcome == "retryable":
-            # Must not happen for masters (AC-14-24). Loud, not re-queued.
+            if self.entity_type in _DEPENDENT_ENTITIES:
+                # EXPECTED for a product whose category/UOM has not synced yet
+                # (AC-22-23) - stays STAGED and re-offers on the next run, never
+                # quarantined (``SyncService._auto_push_upserts``).
+                return WriteResult(
+                    ok=False, sink=self.name, external_id=None, delivered=False,
+                    outcome=outcome,
+                    message=(
+                        f"Sorento reported '{ref}' retryable - its category or "
+                        "unit of measure has not synced yet. It resolves "
+                        "automatically once that dependency lands."
+                    ),
+                )
+            # Must not happen for masters with no dependency reference
+            # (AC-14-24). Loud, not re-queued.
             return WriteResult(
                 ok=False, sink=self.name, external_id=None, delivered=False,
                 outcome=outcome,
                 message=(
                     f"Sorento reported '{ref}' retryable - a referenced master is "
-                    "unsynced. This should be unreachable for suppliers/customers; "
+                    "unsynced. This should be unreachable for this entity; "
                     "investigate rather than retry."
                 ),
             )
