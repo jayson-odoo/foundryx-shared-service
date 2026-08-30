@@ -1133,6 +1133,12 @@ def test_a_failed_verdict_is_QUARANTINED_while_retryable_carries_over(
     db.close()
     assert sorted(rows.values()) == ["FAILED", "STAGED"]
 
+    # S2 review SHOULD-FIX 10: a quarantined push failure must be VISIBLE on
+    # the run row, not just buried in the job result JSON - it folds into
+    # failedCount (0 documents failed to MAP, 1 record failed to PUSH).
+    runs = client.get(_url(company_id, "/runs"), headers=_auth(client)).json()["data"]
+    assert runs[0]["failedCount"] == 1
+
     # The quarantined one is NOT re-offered; the retryable one is.
     consumer.responder = Consumer.created
     consumer.requests.clear()

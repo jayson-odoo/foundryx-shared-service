@@ -516,6 +516,16 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         # A delivery failure surfaces ON THE TASK (AC-22-19) - never silently.
         config.last_run_error = push_summary.get("error")
         config.last_run_error_code = push_summary.get("errorCode")
+        # S2 review SHOULD-FIX 10: a quarantined push failure must be VISIBLE
+        # on the RUN ROW, not just buried in the job's result JSON - the Runs
+        # list has no other failure column. Extends failed_count (a document
+        # that fails to MAP and a record that fails to PUSH are both "this
+        # run did not fully succeed") rather than adding a new column, for
+        # frontend simplicity - the count that was 0 documents-failed-to-map
+        # is now ALSO carrying quarantined-records-failed-to-push.
+        quarantined_count = int(push_summary.get("quarantined") or 0)
+        if quarantined_count:
+            run.failed_count = (run.failed_count or 0) + quarantined_count
     else:
         config.last_run_error = None
         config.last_run_error_code = None
