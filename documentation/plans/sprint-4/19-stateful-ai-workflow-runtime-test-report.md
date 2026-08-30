@@ -135,7 +135,7 @@ The slice went through the `reviewer` agent (REQUEST CHANGES: 2 blockers + 6 sho
 
 ### Still open (handed to the user, not a review blocker)
 
-- **Agent-state panel in the omnichannel conversation drawer** (user request while testing). A net-new read-only surface (`GET .../agent-state` + drawer panel) that needs its own UAC + plan addendum and the frontend-first cycle; deliberately NOT built inside the review-fix pass. Tracked for a follow-up slice.
+- **Read-only "Agent State" workflow node** (user request while testing, scope settled 2026-08-30 - BL-SS-032). A generic canvas node that outputs the current accepted Agent state for the run's Correlation key (`nodes.<id>.<field>` + `stateRevision`/`pendingField`) so a builder can inspect/route it into IF / Code / Send Message. READ-ONLY by decision: writes stay through the evidence-checked AI Agent reducer (plan 19 line 29). Pairs with the existing `ai_agent.clear_state` node. Correction: this is a CANVAS NODE, not the "drawer panel" an earlier draft of this note described; and the stored state is per-field structured state keyed by conversationId, NOT last-N-turns transcript (transcript memory stays out of scope per D11 / line 434). Its own slice - UAC + plan addendum, frontend-first - to be built AFTER this branch merges to main. Not built inside the review-fix pass.
 
 ### Re-verification after the fixes
 
