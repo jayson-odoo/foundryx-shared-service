@@ -73,6 +73,7 @@ from .models import (
     SOURCE_IMPL_SQL_DB,
     STAGED,
     STAGED_FAILED,
+    STAGED_OP_DELETE,
     AcStagedRecord,
     AcSyncRun,
 )
@@ -448,7 +449,21 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         company_id=company_id,
         entity_type=entity_type,
     )
-    run.staged_count = staged_count
+    # Reconcile's delete intents (plan 22 §2.5, AC-22-16) - absent-but-known
+    # refs stage as their OWN op='delete' rows, no canonical payload. Counted
+    # into `staged_count` (an entity-level "records this run put in front of
+    # the sink", the same meaning adds/updates already carry); the run row's
+    # `deleted_count` is reserved for PUSH VERDICTS (deleted/deactivated),
+    # stamped once auto-push resolves them below.
+    delete_staged = _stage_deletes(
+        db,
+        job,
+        result.delete_refs,
+        tenant_id=tenant_id,
+        company_id=company_id,
+        entity_type=entity_type,
+    )
+    run.staged_count = staged_count + delete_staged
     run.failed_count = failed_count
     db.commit()
 
@@ -526,6 +541,14 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         quarantined_count = int(push_summary.get("quarantined") or 0)
         if quarantined_count:
             run.failed_count = (run.failed_count or 0) + quarantined_count
+        # Delete-push verdicts (AC-22-21): `deletedHandled` = deleted +
+        # deactivated + not_found (all three mean "the sink resolved it", per
+        # the schema comment on `AcSyncRun.deleted_count`). A `failed` verdict
+        # quarantines the same way an upsert failure does.
+        run.deleted_count = int(push_summary.get("deletedHandled") or 0)
+        delete_failed_count = len(push_summary.get("deleteFailures") or [])
+        if delete_failed_count:
+            run.failed_count = (run.failed_count or 0) + delete_failed_count
     else:
         config.last_run_error = None
         config.last_run_error_code = None
@@ -686,6 +709,44 @@ def _stage_documents(
         db.commit()
 
     return staged, failed
+
+
+def _stage_deletes(
+    db: Session,
+    job: BackgroundJob,
+    delete_refs: List[str],
+    *,
+    tenant_id: str,
+    company_id: str,
+    entity_type: str,
+) -> int:
+    """Stage a reconcile's delete intents (plan 22 §2.5/§2.6, AC-22-16/21) -
+    ONE ``AcStagedRecord`` per ref, ``op='delete'``, no canonical payload (a
+    delete carries nothing to map). Per-record commit + abort checkpoint,
+    mirroring ``_stage_documents``."""
+    staged_repo = StagedRecordRepository(db)
+    count = 0
+    for ref in delete_refs:
+        if _aborted(db, job.id):
+            break
+        staged_repo.add(
+            AcStagedRecord(
+                tenant_id=tenant_id,
+                company_id=company_id,
+                entity_type=entity_type,
+                job_id=job.id,
+                source_ref=ref,
+                doc_no=None,
+                source_last_modified=None,
+                raw_json=None,
+                canonical_json=None,
+                status=STAGED,
+                op=STAGED_OP_DELETE,
+            )
+        )
+        count += 1
+        db.commit()
+    return count
 
 
 def _fail(

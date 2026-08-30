@@ -44,6 +44,7 @@ from ..models import (
     SINK_IMPL_SORENTO,
     STAGED_DISCARDED,
     STAGED_FAILED,
+    STAGED_OP_DELETE,
     STAGED_PUSHED,
     AcStagedRecord,
     AcSyncRun,
@@ -51,6 +52,7 @@ from ..models import (
 from ..repositories import (
     CompanyRepository,
     EntityConfigRepository,
+    RowHashRepository,
     StagedRecordRepository,
     SyncJobRepository,
     SyncRunRepository,
@@ -503,6 +505,9 @@ class SyncService:
             "autoPushed": True,
             "error": None,
             "errorCode": None,
+            # ── delete-push verdicts (plan 22 S3, AC-22-21) ──────────────────
+            "deletedHandled": 0,
+            "deleteFailures": [],
         }
         try:
             company = self.companies.get(tenant_id, company_id)
@@ -518,6 +523,40 @@ class SyncService:
         if not pending:
             return summary
 
+        # A reconcile delete intent carries NO canonical payload (op='delete',
+        # models.py) - it must never reach `_rehydrate_pushable`, which would
+        # misclassify it as "not pushable" (it has no `canonical_json`). Split
+        # FIRST, route each half to its own sink call.
+        upserts = [row for row in pending if row.op != STAGED_OP_DELETE]
+        deletes = [row for row in pending if row.op == STAGED_OP_DELETE]
+
+        if upserts and not self._auto_push_upserts(upserts, sink=sink, job_id=job_id, summary=summary):
+            return summary
+        if deletes and not self._auto_push_deletes(
+            deletes,
+            sink=sink,
+            tenant_id=tenant_id,
+            company_id=company_id,
+            entity_type=entity_type,
+            summary=summary,
+        ):
+            return summary
+
+        self.db.commit()
+        return summary
+
+    def _auto_push_upserts(
+        self,
+        pending: List[AcStagedRecord],
+        *,
+        sink: EntitySink,
+        job_id: str,
+        summary: Dict[str, Any],
+    ) -> bool:
+        """The upsert half of ``auto_push``. Returns ``False`` on a BATCH-level
+        fault (``summary["error"]`` already set) - the caller returns the
+        summary immediately without committing, same as before this method was
+        split out."""
         rows, records, failures = self._rehydrate_pushable(pending)
         pushed: List[AcStagedRecord] = []
         quarantined: List[AcStagedRecord] = []
@@ -566,24 +605,23 @@ class SyncService:
             # wrong, so no record was even looked at. Everything stays STAGED.
             summary["error"] = exc.sorento_message
             summary["errorCode"] = exc.code
-            return summary
+            return False
         except SorentoSinkError as exc:
             summary["error"] = str(exc)[:2000]
-            return summary
+            return False
         except Exception as exc:  # noqa: BLE001 - a run must never die on delivery
             logger.exception("autocount auto-push failed for job %s", job_id)
             summary["error"] = f"The push failed before the consumer resolved it: {exc}"[:2000]
-            return summary
+            return False
 
         self.staged.mark(pushed, status=STAGED_PUSHED, pushed_at=datetime.now(timezone.utc))
         if quarantined:
             self.staged.mark(quarantined, status=STAGED_FAILED)
         # Commit the marks (and whatever the caller left pending - the
-        # watermark advance rides the SAME commit, plan-22 S2 NIT). A push
-        # failure returned above WITHOUT committing, leaving the caller's own
-        # `db.commit()` at the end of `run_autocount_sync` to persist its
-        # (untouched) watermark advance honestly.
-        self.db.commit()
+        # watermark advance rides the SAME commit, plan-22 S2 NIT). The
+        # OUTER `auto_push` commits once, after upserts AND deletes both
+        # resolve, so a batch-level fault in either half never commits a
+        # half-finished push.
         summary["pushed"] = len(pushed)
         summary["quarantined"] = len(quarantined)
         summary["pushFailures"] = failures
@@ -591,7 +629,74 @@ class SyncService:
             # Repeated delivery failures must surface on the task, never
             # silently (AC-22-19) - the first one names itself.
             summary["error"] = str(failures[0].get("error") or "")[:2000]
-        return summary
+        return True
+
+    def _auto_push_deletes(
+        self,
+        pending: List[AcStagedRecord],
+        *,
+        sink: EntitySink,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        summary: Dict[str, Any],
+    ) -> bool:
+        """The delete half of ``auto_push`` (plan 22 S3, AC-22-21). Routes
+        ``op='delete'`` staged rows to the sink's ``delete_batch`` (both
+        ``SorentoSink`` and the ``LoggingSink`` no-op carry one); per-ref
+        verdict ``deleted|deactivated|not_found`` marks the row PUSHED and
+        drops its row-hash (a later re-appearance at source stages as a fresh
+        add); ``failed`` quarantines it (D13's rule, mirrored for deletes); no
+        verdict at all (an unrecognised outcome, or a sink with no delete
+        support) leaves the row STAGED to retry next run - the same
+        ``retryable`` posture an upsert gets. Returns ``False`` on a
+        BATCH-level fault, same contract as the upsert half."""
+        refs = [row.source_ref for row in pending]
+        try:
+            result = sink.delete_batch(refs) if hasattr(sink, "delete_batch") else None
+        except SinkAnchorError as exc:
+            summary["error"] = exc.sorento_message
+            summary["errorCode"] = exc.code
+            return False
+        except SorentoSinkError as exc:
+            summary["error"] = str(exc)[:2000]
+            return False
+        except Exception as exc:  # noqa: BLE001 - a run must never die on delivery
+            logger.exception("autocount auto-push delete failed for %s/%s", company_id, entity_type)
+            summary["error"] = f"The delete push failed before the consumer resolved it: {exc}"[:2000]
+            return False
+
+        if result is None:
+            # No delete support on this sink at all - every ref stays STAGED,
+            # same posture as a `retryable` upsert.
+            return True
+
+        by_ref = {str(r.get("source_ref") or ""): r for r in (result.get("records") or [])}
+        handled: List[AcStagedRecord] = []
+        failed: List[AcStagedRecord] = []
+        for row in pending:
+            outcome = str((by_ref.get(row.source_ref) or {}).get("outcome") or "")
+            if outcome in ("deleted", "deactivated", "not_found"):
+                handled.append(row)
+            elif outcome == "failed":
+                failed.append(row)
+            # else: no / unrecognised verdict → leave STAGED, retry next run.
+
+        self.staged.mark(handled, status=STAGED_PUSHED, pushed_at=datetime.now(timezone.utc))
+        if failed:
+            self.staged.mark(failed, status=STAGED_FAILED)
+        if handled:
+            RowHashRepository(self.db).delete_many(
+                tenant_id, company_id, entity_type, [row.source_ref for row in handled]
+            )
+        summary["deletedHandled"] = len(handled)
+        summary["deleteFailures"] = [
+            {"sourceRef": row.source_ref, "error": "the consumer rejected this delete"}
+            for row in failed
+        ]
+        if failed and not summary["error"]:
+            summary["error"] = summary["deleteFailures"][0]["error"]
+        return True
 
     def preview(self, tenant_id: str, job_id: str) -> Dict[str, Any]:
         """Ask the consumer what approving WOULD do, writing nothing (AC-14-20/21).
