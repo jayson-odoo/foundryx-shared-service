@@ -684,7 +684,8 @@ export interface AutocountEtlTaskUpdate {
 export type AutocountAnchorErrorCode =
   | 'COMPANY_ANCHOR_REQUIRED'
   | 'UNKNOWN_COMPANY'
-  | 'COMPANY_ANCHOR_AMBIGUOUS';
+  | 'COMPANY_ANCHOR_AMBIGUOUS'
+  | 'COMPANY_BINDING_INVALID';
 
 /**
  * The structured `detail` of a task-level 422 from `POST .../etl-task/preview`

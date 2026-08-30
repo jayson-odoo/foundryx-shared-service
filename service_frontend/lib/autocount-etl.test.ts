@@ -203,6 +203,11 @@ describe('anchor errors (Appendix A6)', () => {
     expect(anchorErrorTitle('COMPANY_ANCHOR_REQUIRED')).toBe('Sorento company code required');
     expect(anchorErrorTitle('UNKNOWN_COMPANY')).toBe('Unknown Sorento company');
     expect(anchorErrorTitle('COMPANY_ANCHOR_AMBIGUOUS')).toBe('Sorento company code is ambiguous');
+    // S2 review SHOULD-FIX 8: the fourth Appendix A6 code (the integration's
+    // OWN company binding is broken - a backend-side fault, not a save the
+    // operator can fix by re-entering the company code) was missing from the
+    // FE vocabulary and fell back to the generic "Task error" title.
+    expect(anchorErrorTitle('COMPANY_BINDING_INVALID')).toBe('Sorento company binding is invalid');
     expect(anchorErrorTitle('SOMETHING_ELSE')).toBe('Task error');
     expect(anchorErrorTitle(null)).toBe('Task error');
   });

@@ -125,6 +125,10 @@ const ANCHOR_TITLES: Record<AutocountAnchorErrorCode, string> = {
   COMPANY_ANCHOR_REQUIRED: 'Sorento company code required',
   UNKNOWN_COMPANY: 'Unknown Sorento company',
   COMPANY_ANCHOR_AMBIGUOUS: 'Sorento company code is ambiguous',
+  // The integration's OWN company binding is broken (Appendix A6's fourth
+  // code) - never attributed to a record, and not something re-entering the
+  // company code alone necessarily fixes (S2 review SHOULD-FIX 8).
+  COMPANY_BINDING_INVALID: 'Sorento company binding is invalid',
 };
 
 /** True for one of Sorento's three company-anchor codes (Appendix A6). */
