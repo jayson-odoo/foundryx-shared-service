@@ -51,6 +51,13 @@ export interface AutocountEntityConfig {
   /** Consecutive failed runs - the stale-sync signal (AC-13-19). */
   consecutiveFailures: number;
   lastError: string | null;
+  /**
+   * The DB-task lifecycle (`draft|active|paused`, plan 22 §2.4, AC-22-23) -
+   * carried on the LIST (not just the task editor) so the Review & Activate
+   * tab can warn a `product` task's activation of a missing category/UOM
+   * prerequisite without a second fetch.
+   */
+  etlStatus: AutocountEtlStatus | string;
 }
 
 /**

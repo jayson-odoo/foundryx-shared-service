@@ -921,6 +921,7 @@ export const mockAutocountService: AutocountService = {
             watermarkAt: null,
             consecutiveFailures: 0,
             lastError: null,
+            etlStatus: 'draft',
           },
         ],
       }),
@@ -1058,6 +1059,7 @@ export const mockAutocountService: AutocountService = {
       watermarkAt: null, // the reset - the first-run window is live again
       consecutiveFailures: 0,
       lastError: null,
+      etlStatus: 'draft',
     });
   },
 

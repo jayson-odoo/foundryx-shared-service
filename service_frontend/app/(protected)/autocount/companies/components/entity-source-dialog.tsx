@@ -17,6 +17,7 @@ import { Label } from '@/components/ui/label';
 import { SearchSelect } from '@/components/platform/search-select';
 import type { AutocountEntityConfig, AutocountSourceImpl } from '@/types/autocount';
 import {
+  AC_API_CAPABLE_ENTITY_TYPES,
   AC_SOURCE_IMPL_OPTIONS,
   entityLabel,
   sourceImplLabel,
@@ -48,6 +49,13 @@ export function EntitySourceDialog({ entity, onClose, onSave }: EntitySourceDial
 
   const current = entity ? asSourceImpl(entity.sourceImpl) : 'autocount_read';
   const changed = Boolean(entity) && value !== current;
+  // Foolproof-UI: an entity with no confirmed AutoCount API payload (plan 22
+  // S4's masters fan-out) offers ONE valid option, never a guaranteed-to-fail
+  // switch the backend would refuse anyway (`CompanyService.update_entity_config`).
+  const apiCapable = entity !== null && AC_API_CAPABLE_ENTITY_TYPES.includes(entity.entityType);
+  const sourceOptions = apiCapable
+    ? AC_SOURCE_IMPL_OPTIONS
+    : AC_SOURCE_IMPL_OPTIONS.filter((o) => o.value === 'sql_db');
 
   async function submit() {
     if (!entity || !changed) return;
@@ -71,7 +79,7 @@ export function EntitySourceDialog({ entity, onClose, onSave }: EntitySourceDial
             <div className="flex flex-col gap-2">
               <Label>Source</Label>
               <SearchSelect
-                options={AC_SOURCE_IMPL_OPTIONS}
+                options={sourceOptions}
                 value={value}
                 onChange={(v) => setValue(asSourceImpl(v))}
                 ariaLabel="Entity source"

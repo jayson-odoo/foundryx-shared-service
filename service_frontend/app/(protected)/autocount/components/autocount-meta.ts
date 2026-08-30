@@ -56,6 +56,31 @@ export function sourceImplLabel(impl: string): string {
   return AC_SOURCE_IMPL_OPTIONS.find((o) => o.value === impl)?.label ?? humanizeFieldKey(impl);
 }
 
+/**
+ * The entities backed by a confirmed, observed AutoCount API payload (mirrors
+ * the backend's own `SEEDED_ENTITIES` guard, `services/company_service.py`) -
+ * the ONLY entities the source-switch dialog may offer "AutoCount API" for.
+ * The plan 22 S4 masters fan-out entities below have no vendor route at all,
+ * so offering that option for them would be a guaranteed-to-fail sync
+ * (foolproof-UI: only offer valid options).
+ */
+export const AC_API_CAPABLE_ENTITY_TYPES: string[] = ['goods_received_note', 'supplier', 'customer'];
+
+/**
+ * The masters plan 22 S4 (AC-22-23) added, in DEPENDENCY order - categories
+ * and units of measure before products (a product referencing an unsynced
+ * category/UOM lands `retryable` until the dependency lands). This is the
+ * Entities tab's "Add entity" picker's ONLY candidate list: every one of
+ * these is DB-source only, so the task editor is where its config is born.
+ */
+export const AC_NEW_MASTER_ENTITY_TYPES: string[] = [
+  'product_category',
+  'unit_of_measure',
+  'warehouse',
+  'product',
+  'sales_agent',
+];
+
 // ── transforms (mapping editor picker; mirrors backend mapping.py TRANSFORMS) ──
 
 /**
