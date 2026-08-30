@@ -65,11 +65,15 @@ from .canonical.masters import (
 from .client import AutoCountError
 from .mapping import MappedDocument, MappingEngine
 from .models import (
+    ETL_STATUS_ACTIVE,
     RUN_ABORTED,
     RUN_FAILED,
+    RUN_MODE_MANUAL,
     RUN_SUCCESS,
+    SOURCE_IMPL_SQL_DB,
     STAGED,
     STAGED_FAILED,
+    AcRowHash,
     AcStagedRecord,
     AcSyncRun,
 )
@@ -82,6 +86,7 @@ from .repositories import (
 )
 from .sources import (
     FetchResult,
+    SourceContext,
     SourceRecord,
     TruncatedWindowError,
     Watermark,
@@ -202,6 +207,10 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     tenant_id = job.tenant_id
     company_id = str(payload.get("companyId") or "")
     entity_type = str(payload.get("entityType") or ENTITY_GOODS_RECEIVED_NOTE)
+    # How this run started (plan 22 §2.7, AC-22-17): ``manual`` for every
+    # operator-triggered run (and every pre-plan-22 payload, which carries no
+    # mode at all); the S3 sweep enqueues ``incremental``/``reconcile``.
+    mode = str(payload.get("mode") or RUN_MODE_MANUAL)
     started = time.monotonic()
     # ONE trace ties every leg of this run together - the login, the read, and
     # the run summary - so the Developer Logs console can show the whole
@@ -237,6 +246,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             company_id=company_id,
             entity_type=entity_type,
             job_id=job.id,
+            mode=mode,
         )
     )
     watermark_row.last_attempt_at = datetime.now(timezone.utc)
@@ -250,15 +260,21 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     from .services.company_service import CompanyService
 
     companies = CompanyService(db)
-    try:
-        client = companies.client_for(tenant_id, company)
-    except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
-        _fail(db, service, job, run, watermark_row, str(exc), started)
-        return
-
+    # The factory contract (plan 22 §2.1, AC-22-08): each implementation builds
+    # its OWN transport from the context - the HTTP client is constructed inside
+    # ``autocount_read``, the DB engine inside ``sql_db``. A construction fault
+    # (bad credentials, unknown impl, unconfigured task) is a SETUP fault,
+    # reported cleanly with the watermark held.
+    ctx = SourceContext(
+        db=db,
+        tenant_id=tenant_id,
+        company=company,
+        entity_config=config,
+        company_service=companies,
+    )
     try:
         source = source_factory(config.source_impl)(
-            client,
+            ctx,
             entity_type=entity_type,
             vendor_entity=VENDOR_ENTITIES.get(entity_type, VENDOR_ENTITY),
             record_cap=config.record_cap,
@@ -270,7 +286,13 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             last_modified_path=VENDOR_LAST_MODIFIED_PATHS.get(
                 entity_type, "LastModified"
             ),
+            mode=mode,
         )
+    except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
+        _fail(db, service, job, run, watermark_row, str(exc), started)
+        return
+
+    try:
         result: FetchResult = source.fetch_changes(watermark)
     except AutoCountError as exc:
         # Includes TruncatedWindowError - a truncated read must NEVER read as a
@@ -283,7 +305,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         # all. Safe here - the last write committed above, nothing is pending.
         record_client_calls(
             db,
-            client,
+            source,
             tenant_id=tenant_id,
             trace_id=trace_id,
             external_ref=company.database_name,
@@ -313,7 +335,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         logger.exception("autocount sync fetch failed for job %s", job.id)
         record_client_calls(
             db,
-            client,
+            source,
             tenant_id=tenant_id,
             trace_id=trace_id,
             external_ref=company.database_name,
@@ -321,12 +343,12 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         _fail(db, service, job, run, watermark_row, f"Fetch failed: {exc}", started)
         return
     finally:
-        client.close()
+        source.close()
 
-    # The real request/response of every HTTP leg (masked + bounded).
+    # The real request/response of every transport leg (masked + bounded).
     record_client_calls(
         db,
-        client,
+        source,
         tenant_id=tenant_id,
         trace_id=trace_id,
         external_ref=company.database_name,

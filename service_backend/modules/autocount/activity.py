@@ -107,13 +107,18 @@ def record_activity(
 
 def record_client_calls(
     db: Session,
-    client: "AutoCountClient",
+    client: Any,
     *,
     tenant_id: str,
     trace_id: Optional[str] = None,
     external_ref: Optional[str] = None,
 ) -> int:
-    """Drain a client's buffered HTTP calls into activity rows. Never raises.
+    """Drain a client's OR a source's buffered calls into activity rows.
+    Never raises.
+
+    Accepts an ``AutoCountClient`` (``drain_calls``) or any ``EntitySource``
+    exposing the optional duck-typed ``drain_activity`` (plan 22 §2.1) - both
+    yield ``CallRecord``-shaped objects. An object with neither records nothing.
 
     ONE row per real request/response, carrying the ACTUAL masked payloads plus
     ``status_code``, ``latency_ms`` and the run's ``trace_id`` - which is what
@@ -130,7 +135,10 @@ def record_client_calls(
     duplicate a row. Returns the number of rows attempted.
     """
     try:
-        calls = client.drain_calls()
+        drain = getattr(client, "drain_activity", None) or getattr(
+            client, "drain_calls", None
+        )
+        calls = drain() if drain is not None else []
     except Exception:  # noqa: BLE001
         logger.exception("failed to drain autocount client calls")
         return 0
