@@ -51,7 +51,7 @@ every source factory. Refactor:
 | `runtime.py` | engine cache per connection id (SQLAlchemy `create_engine`, pool_pre_ping, small pool), dialect URL builder, read-only session setup, statement timeout |
 | `guard.py` | SELECT-only static guard: strip comments → exactly one statement → first token SELECT/WITH → reject `;`, INTO, FOR UPDATE. Deny-first, tested by accept/reject matrix |
 | `introspect.py` | `sqlalchemy.inspect(engine)`: schemas → tables → columns(name, type). Cached (per connection, TTL + manual refresh) |
-| `preview.py` | wrap query as `SELECT * FROM (<q>) AS _preview` + dialect limit (TOP/LIMIT), timeout, sanitized errors |
+| `preview.py` | cap the query per dialect - mssql: inject `TOP (n)` into the outermost SELECT (no derived-table wrap: ORDER BY / unnamed columns fail there); others: append `LIMIT n`, wrap only when the statement carries its own LIMIT/OFFSET/FETCH - plus timeout, sanitized errors |
 | `source.py` | `SqlDbSource(EntitySource)`: `fetch_changes(since)` two modes (§2.5) |
 | `hashing.py` | canonical row-hash: compared columns sorted by name, values normalized (None, Decimal, datetime→UTC ISO, bytes→hex), sha256 |
 

@@ -32,7 +32,7 @@ import re
 
 from .errors import SqlGuardError
 
-__all__ = ["assert_select_only", "normalize_statement", "SqlGuardError"]
+__all__ = ["assert_select_only", "mask_quoted", "normalize_statement", "SqlGuardError"]
 
 _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 _LINE_COMMENT = re.compile(r"--[^\n]*")
@@ -151,6 +151,18 @@ def _strip_comments(sql: str) -> str:
     return _LINE_COMMENT.sub(" ", _BLOCK_COMMENT.sub(" ", sql))
 
 
+def _blank(match: "re.Match[str]") -> str:
+    return " " * len(match.group(0))
+
+
+def mask_quoted(text: str) -> str:
+    """``text`` with every string literal and quoted identifier replaced by
+    the SAME number of spaces - positions are preserved, so an offset found
+    in the masked text can be applied to the original (the preview rewriter
+    relies on that)."""
+    return _QUOTED_IDENT.sub(_blank, _STRING_LITERAL.sub(_blank, text))
+
+
 def normalize_statement(sql: str) -> str:
     """The statement as STORED: outer whitespace and ONE trailing ``;`` removed,
     comments kept (they are the operator's text). Does not validate."""
@@ -173,7 +185,7 @@ def assert_select_only(sql: str) -> str:
     if not text:
         raise SqlGuardError(_EMPTY)
 
-    scrubbed = _QUOTED_IDENT.sub(" ", _STRING_LITERAL.sub(" ", text))
+    scrubbed = mask_quoted(text)
     if ";" in scrubbed:
         raise SqlGuardError(_ONLY_ONE)
 

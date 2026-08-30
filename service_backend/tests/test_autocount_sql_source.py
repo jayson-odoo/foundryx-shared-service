@@ -304,17 +304,116 @@ def test_sanitize_error_strips_sqlalchemy_wrapping_and_caps_length():
 # ── preview wrapping per dialect (AC-22-06) ──────────────────────────────────
 
 
-def test_wrap_preview_uses_top_on_mssql_and_limit_elsewhere():
-    assert (
-        wrap_preview("SELECT * FROM Debtor", "mssql", 100)
-        == "SELECT TOP (101) * FROM (SELECT * FROM Debtor) AS _preview"
-    )
-    assert (
-        wrap_preview("SELECT * FROM debtor;", "postgresql", 100)
-        == "SELECT * FROM (SELECT * FROM debtor) AS _preview LIMIT 101"
-    )
-    assert wrap_preview("SELECT * FROM debtor", "mysql", 100).endswith("LIMIT 101")
-    assert wrap_preview("SELECT * FROM debtor", "sqlite", 100).endswith("LIMIT 101")
+@pytest.mark.parametrize(
+    "sql,expected",
+    [
+        # S1 review: SQL Server rejects ORDER BY (1033) and unnamed columns
+        # (8155) inside a derived table, so the cap is injected as TOP into
+        # the user's own outermost SELECT instead of wrapping.
+        ("SELECT * FROM Debtor", "SELECT TOP (101) * FROM Debtor"),
+        (
+            "SELECT * FROM Debtor ORDER BY LastModified",
+            "SELECT TOP (101) * FROM Debtor ORDER BY LastModified",
+        ),
+        ("SELECT COUNT(*) FROM Debtor", "SELECT TOP (101) COUNT(*) FROM Debtor"),
+        ("SELECT DISTINCT AccNo FROM Debtor", "SELECT DISTINCT TOP (101) AccNo FROM Debtor"),
+        ("select distinct AccNo from Debtor", "select distinct TOP (101) AccNo from Debtor"),
+        ("SELECT ALL AccNo FROM Debtor", "SELECT ALL TOP (101) AccNo FROM Debtor"),
+        (
+            "WITH recent AS (SELECT * FROM Debtor) SELECT * FROM recent ORDER BY AccNo",
+            "WITH recent AS (SELECT * FROM Debtor) SELECT TOP (101) * FROM recent ORDER BY AccNo",
+        ),
+        (
+            "WITH a AS (SELECT 1 AS n), b AS (SELECT n FROM a) SELECT n FROM b",
+            "WITH a AS (SELECT 1 AS n), b AS (SELECT n FROM a) SELECT TOP (101) n FROM b",
+        ),
+        # A statement that already carries its own TOP is left alone (the
+        # client still fetches n+1 and truncates).
+        ("SELECT TOP 10 * FROM Debtor", "SELECT TOP 10 * FROM Debtor"),
+        ("SELECT TOP (10) * FROM Debtor", "SELECT TOP (10) * FROM Debtor"),
+        ("SELECT DISTINCT TOP 5 AccNo FROM Debtor", "SELECT DISTINCT TOP 5 AccNo FROM Debtor"),
+        # TOP and OFFSET/FETCH are mutually exclusive on SQL Server.
+        (
+            "SELECT * FROM Debtor ORDER BY AccNo OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY",
+            "SELECT * FROM Debtor ORDER BY AccNo OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY",
+        ),
+        # A TOP inside a subquery is not the outer statement's TOP.
+        (
+            "SELECT * FROM (SELECT TOP 5 * FROM Debtor) AS s",
+            "SELECT TOP (101) * FROM (SELECT TOP 5 * FROM Debtor) AS s",
+        ),
+        # Keywords inside literals / quoted identifiers never steer the rewrite.
+        (
+            "SELECT [top], 'select top 3' AS note FROM Debtor",
+            "SELECT TOP (101) [top], 'select top 3' AS note FROM Debtor",
+        ),
+        # Trailing terminator + comments are stripped by the guard first.
+        ("SELECT * FROM Debtor; -- all", "SELECT TOP (101) * FROM Debtor"),
+        # Multi-line: injected right after the SELECT keyword, layout kept.
+        ("SELECT\n  AccNo\nFROM Debtor", "SELECT TOP (101)\n  AccNo\nFROM Debtor"),
+    ],
+)
+def test_wrap_preview_mssql_injects_top_into_the_outermost_select(sql, expected):
+    assert wrap_preview(sql, "mssql", 100) == expected
+
+
+@pytest.mark.parametrize(
+    "dialect",
+    ["postgresql", "mysql", "sqlite"],
+)
+@pytest.mark.parametrize(
+    "sql,expected",
+    [
+        # LIMIT is appended to the user's statement (ORDER BY, COUNT(*),
+        # duplicate column names and CTEs all stay valid on MySQL/Postgres).
+        ("SELECT * FROM debtor;", "SELECT * FROM debtor LIMIT 101"),
+        (
+            "SELECT * FROM debtor ORDER BY last_modified",
+            "SELECT * FROM debtor ORDER BY last_modified LIMIT 101",
+        ),
+        ("SELECT COUNT(*) FROM debtor", "SELECT COUNT(*) FROM debtor LIMIT 101"),
+        ("SELECT DISTINCT acc_no FROM debtor", "SELECT DISTINCT acc_no FROM debtor LIMIT 101"),
+        (
+            "WITH recent AS (SELECT * FROM debtor) SELECT * FROM recent ORDER BY acc_no",
+            "WITH recent AS (SELECT * FROM debtor) SELECT * FROM recent ORDER BY acc_no LIMIT 101",
+        ),
+        (
+            "SELECT d.acc_no, c.acc_no FROM debtor d JOIN creditor c ON 1 = 1",
+            "SELECT d.acc_no, c.acc_no FROM debtor d JOIN creditor c ON 1 = 1 LIMIT 101",
+        ),
+        # A statement with its own top-level LIMIT / OFFSET / FETCH cannot take
+        # a second one - wrap it as a derived table instead.
+        (
+            "SELECT * FROM debtor LIMIT 10",
+            "SELECT * FROM (SELECT * FROM debtor LIMIT 10) AS _preview LIMIT 101",
+        ),
+        (
+            "SELECT * FROM debtor ORDER BY acc_no LIMIT 10 OFFSET 5",
+            "SELECT * FROM (SELECT * FROM debtor ORDER BY acc_no LIMIT 10 OFFSET 5) AS _preview LIMIT 101",
+        ),
+        (
+            "SELECT * FROM debtor FETCH FIRST 10 ROWS ONLY",
+            "SELECT * FROM (SELECT * FROM debtor FETCH FIRST 10 ROWS ONLY) AS _preview LIMIT 101",
+        ),
+        # A LIMIT inside a subquery is not the outer statement's LIMIT.
+        (
+            "SELECT * FROM (SELECT * FROM debtor LIMIT 5) AS s",
+            "SELECT * FROM (SELECT * FROM debtor LIMIT 5) AS s LIMIT 101",
+        ),
+        # Keywords inside literals / quoted identifiers never steer the rewrite.
+        (
+            "SELECT \"limit\", 'limit 3' AS note FROM debtor",
+            "SELECT \"limit\", 'limit 3' AS note FROM debtor LIMIT 101",
+        ),
+    ],
+)
+def test_wrap_preview_appends_limit_or_wraps_elsewhere(dialect, sql, expected):
+    assert wrap_preview(sql, dialect, 100) == expected
+
+
+def test_wrap_preview_cap_is_limit_plus_one():
+    assert wrap_preview("SELECT 1", "mssql", 5) == "SELECT TOP (6) 1"
+    assert wrap_preview("SELECT 1", "postgresql", 5) == "SELECT 1 LIMIT 6"
 
 
 def test_wrap_preview_refuses_a_non_select_before_any_wrapping():
@@ -342,6 +441,21 @@ def test_run_preview_caps_rows_reports_truncation_and_types():
     assert result.duration_ms >= 0
     # Every cell is JSON-safe (a datetime/Decimal never reaches the wire raw).
     assert all(isinstance(v, (str, int, float, bool, type(None))) for v in result.rows[0].values())
+
+
+def test_run_preview_runs_order_by_count_and_own_limit_statements():
+    """The rewritten statement must still execute: ORDER BY at the top level,
+    an unnamed aggregate column, and a user-supplied LIMIT (wrapped)."""
+    engine = _sqlite_engine()
+    ordered = run_preview(engine, "SELECT acc_no FROM debtor ORDER BY acc_no DESC", timeout_s=5)
+    assert ordered.rows[0]["acc_no"] == "3000/A149"
+    assert ordered.truncated is True
+    counted = run_preview(engine, "SELECT COUNT(*) FROM debtor", timeout_s=5)
+    assert counted.rows == [{"COUNT(*)": 150}]
+    assert counted.truncated is False
+    capped = run_preview(engine, "SELECT acc_no FROM debtor LIMIT 5", timeout_s=5)
+    assert capped.row_count == 5
+    assert capped.truncated is False
 
 
 def test_run_preview_reports_zero_rows_without_truncation():

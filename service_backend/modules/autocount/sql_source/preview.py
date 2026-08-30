@@ -1,8 +1,26 @@
-"""Query preview (AC-22-06): guard → wrap as a derived table with a dialect
-cap → run read-only under a timeout → JSON-safe rows + column names/types.
+"""Query preview (AC-22-06): guard → cap the statement per dialect → run
+read-only under a timeout → JSON-safe rows + column names/types.
 
 The cap fetches ``limit + 1`` rows so ``truncated`` is a FACT (there was a
 101st row), not a guess from ``len == limit``.
+
+Capping rewrites the user's OWN outermost statement rather than wrapping it
+as a derived table (S1 review): SQL Server rejects ``ORDER BY`` (1033) and
+unnamed columns such as ``COUNT(*)`` (8155) inside a derived table, and MySQL
+rejects duplicate column names there. So:
+
+* ``mssql`` - ``TOP (n)`` is injected right after the outermost ``SELECT``
+  (or ``SELECT DISTINCT`` / ``SELECT ALL``), past any leading ``WITH`` CTE
+  list. A statement that already carries its own ``TOP`` or an
+  ``OFFSET``/``FETCH`` (mutually exclusive with ``TOP``) is left untouched.
+* everything else - `` LIMIT n`` is appended; a statement that already has a
+  top-level ``LIMIT``/``OFFSET``/``FETCH`` is wrapped as a derived table
+  instead (two LIMITs are a syntax error).
+
+Whatever the server does, the client fetches ``n`` rows at most and
+truncates, so an untouched statement is still capped - just not server-side.
+Keywords inside string literals / quoted identifiers and inside parentheses
+(subqueries, CTE bodies) never steer the rewrite.
 
 Column types come from the rows themselves when there are any (the Python
 value type is the most faithful thing the driver hands back), falling back to
@@ -15,6 +33,7 @@ reasons about it is the watermark check ("is this orderable?").
 from __future__ import annotations
 
 import base64
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -25,7 +44,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from sqlalchemy.engine import Engine
 
 from .errors import SqlQueryError
-from .guard import assert_select_only
+from .guard import assert_select_only, mask_quoted
 from .runtime import PREVIEW_ROW_LIMIT, QUERY_TIMEOUT_SECONDS, open_readonly, sanitize_error
 
 __all__ = [
@@ -60,13 +79,67 @@ class PreviewResult:
         return {c.name: c.type for c in self.columns}
 
 
+# Identifiers plus the two parentheses - the only things the rewriter needs to
+# see once literals and quoted identifiers are masked out.
+_WORD_OR_PAREN = re.compile(r"[A-Za-z_][A-Za-z0-9_$#@]*|\(|\)")
+# Row-limiting clauses that cannot be combined with a second cap.
+_ROW_CLAUSES = frozenset({"LIMIT", "OFFSET", "FETCH"})
+
+
+def _top_level_words(statement: str) -> List[Tuple[str, int, int]]:
+    """``(UPPER_WORD, start, end)`` for every identifier at parenthesis depth
+    0 of ``statement`` - literals and quoted identifiers masked, so offsets
+    apply to the original text."""
+    words: List[Tuple[str, int, int]] = []
+    depth = 0
+    for match in _WORD_OR_PAREN.finditer(mask_quoted(statement)):
+        token = match.group(0)
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            words.append((token.upper(), match.start(), match.end()))
+    return words
+
+
+def _inject_top(statement: str, n: int) -> str:
+    """SQL Server: ``TOP (n)`` after the outermost ``SELECT [DISTINCT|ALL]``,
+    skipping a leading CTE list (its bodies sit inside parentheses). Left
+    untouched when the statement already has a TOP, or an OFFSET/FETCH (TOP
+    cannot be combined with either)."""
+    words = _top_level_words(statement)
+    kinds = {word for word, _, _ in words}
+    if kinds & {"OFFSET", "FETCH"}:
+        return statement
+    select_at = next((i for i, (word, _, _) in enumerate(words) if word == "SELECT"), None)
+    if select_at is None:
+        return statement
+    anchor = select_at
+    if anchor + 1 < len(words) and words[anchor + 1][0] in ("DISTINCT", "ALL"):
+        anchor += 1
+    if anchor + 1 < len(words) and words[anchor + 1][0] == "TOP":
+        return statement
+    end = words[anchor][2]
+    return f"{statement[:end]} TOP ({n}){statement[end:]}"
+
+
+def _append_limit(statement: str, n: int) -> str:
+    """Postgres / MySQL / anything else: append ``LIMIT n``; a statement that
+    already carries a top-level LIMIT/OFFSET/FETCH is wrapped instead."""
+    kinds = {word for word, _, _ in _top_level_words(statement)}
+    if kinds & _ROW_CLAUSES:
+        return f"SELECT * FROM ({statement}) AS _preview LIMIT {n}"
+    return f"{statement} LIMIT {n}"
+
+
 def wrap_preview(sql: str, dialect: str, limit: int) -> str:
-    """Guard, then wrap. MSSQL takes ``TOP``; everything else ``LIMIT``."""
+    """Guard, then cap the statement for ``dialect`` (see the module doc)."""
     statement = assert_select_only(sql)
     n = int(limit) + 1
     if dialect == "mssql":
-        return f"SELECT TOP ({n}) * FROM ({statement}) AS _preview"
-    return f"SELECT * FROM ({statement}) AS _preview LIMIT {n}"
+        return _inject_top(statement, n)
+    return _append_limit(statement, n)
 
 
 def describe_type(value: Any) -> str:
