@@ -197,6 +197,9 @@ class EtlTaskView:
     last_run_at: Optional[datetime] = None
     last_run_error: Optional[str] = None
     last_run_error_code: Optional[str] = None
+    # ── schedule (plan 22 S3, AC-22-12/13) ───────────────────────────────────
+    next_incremental_at: Optional[datetime] = None
+    next_reconcile_at: Optional[datetime] = None
 
 
 def default_source_config(entity_type: str, *, today: Optional[date] = None) -> Dict[str, Any]:
@@ -522,6 +525,12 @@ class EtlService:
             last_run_error_code=(
                 config.last_run_error_code if config is not None else None
             ),
+            next_incremental_at=(
+                config.next_incremental_at if config is not None else None
+            ),
+            next_reconcile_at=(
+                config.next_reconcile_at if config is not None else None
+            ),
         )
 
     def _probe_incremental_wrap(
@@ -661,6 +670,15 @@ class EtlService:
         # query, the keys or the compared columns and keeping the old stamp
         # would let an operator activate a configuration nobody ever previewed.
         config.last_preview_at = None
+        # A save on an ALREADY-ACTIVE task re-arms its schedule (plan 22 S3,
+        # AC-22-12) - the interval/reconcile fields just changed, so the next
+        # fire time must reflect them rather than the one computed under the
+        # old config. A draft/paused task has no schedule to arm (NULL until
+        # activate/resume).
+        if config.etl_status == ETL_STATUS_ACTIVE:
+            config.next_incremental_at, config.next_reconcile_at = self.next_run_times(
+                clean, now=datetime.now(timezone.utc)
+            )
         self.db.commit()
         self.db.refresh(config)
         return self._task_view(company_id, entity_type, config)

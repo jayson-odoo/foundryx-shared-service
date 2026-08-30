@@ -694,6 +694,62 @@ def test_activate_after_a_preview_arms_the_task(client, session_factory, rig, co
     db.close()
 
 
+def test_activate_arms_the_schedule_ON_THE_WIRE(client, rig, consumer):
+    """Plan 22 S3 - `EtlTaskResponse` carries the read-only schedule fields
+    (the S3 frontend swap deleted its mock overlay for exactly these two)."""
+    company_id, _sql_id = rig
+    client.post(_url(company_id, "/preview"), headers=_auth(client))
+    body = _activate(client, company_id).json()
+    assert body["nextIncrementalAt"] is not None
+    assert body["nextReconcileAt"] is not None
+
+
+def test_a_draft_tasks_wire_schedule_is_null(client, rig):
+    company_id, _sql_id = rig
+    body = client.get(_url(company_id), headers=_auth(client)).json()
+    assert body["nextIncrementalAt"] is None
+    assert body["nextReconcileAt"] is None
+
+
+def test_a_PUT_on_an_ACTIVE_task_recomputes_the_schedule(
+    client, session_factory, rig, consumer
+):
+    """A save on an already-active task re-arms the times against the JUST
+    edited interval - not the stale ones computed under the old config."""
+    company_id, sql_id = rig
+    client.post(_url(company_id, "/preview"), headers=_auth(client))
+    _activate(client, company_id)
+    db = session_factory()
+    before = _config_row(db, db.get(AcCompany, company_id)).next_reconcile_at
+    db.close()
+
+    # The fixture's watermark column previews as a string (SQLite TEXT), so
+    # this save keeps it unset (same as the sibling gate test) and instead
+    # switches the RECONCILE cadence from "dailyAt 02:00" to an hourly
+    # interval - a change the recomputed `nextReconcileAt` must reflect.
+    saved = client.put(
+        _url(company_id),
+        json={
+            "sourceConfig": {
+                "connectionId": sql_id,
+                "query": QUERY,
+                "keyColumns": ["acc_no"],
+                "watermarkColumn": None,
+                "comparedColumns": [],
+                "incrementalMinutes": 15,
+                "reconcileMode": "interval",
+                "reconcileHours": 3,
+            }
+        },
+        headers=_auth(client),
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["etlStatus"] == ETL_STATUS_ACTIVE
+    after = saved.json()["nextReconcileAt"]
+    assert after is not None
+    assert after != before.isoformat().replace("+00:00", "Z").replace(".000000Z", "Z")
+
+
 def test_saving_the_config_again_RE_CLOSES_the_gate(client, rig, consumer, session_factory):
     """A preview proves what a SPECIFIC query would deliver - an edit must
     re-open the gate or an operator activates something nobody previewed."""

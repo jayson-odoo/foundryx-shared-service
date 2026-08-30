@@ -520,6 +520,12 @@ class EtlTaskResponse(ApiModel):
     # here with its code, never as a per-record failure (Appendix A6).
     lastRunError: Optional[str] = None
     lastRunErrorCode: Optional[str] = None
+    # ── schedule (plan 22 S3, AC-22-12/13) ───────────────────────────────────
+    # When the sweep will next fire each cadence - armed at activate/resume,
+    # recomputed on every PUT. NULL for a draft/paused task (the sweep never
+    # dispatches it).
+    nextIncrementalAt: Optional[datetime] = None
+    nextReconcileAt: Optional[datetime] = None
 
 
 class EtlPreviewResponse(ApiModel):

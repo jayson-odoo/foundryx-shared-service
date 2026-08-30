@@ -1381,52 +1381,6 @@ export function withPhase1EtlMock(real: AutocountService): AutocountService {
   return overlaid;
 }
 
-/**
- * PHASE 1 MOCK OVERLAY (plan 22 S3, tiny by design). The S2 backend is LIVE
- * for everything else on this task, so `withPhase1EtlMock` above stays
- * unused - re-enabling its full session state would fight the real
- * `etlStatus`/`activatedAt`/etc the backend already returns. This overlay
- * touches ONLY the two not-yet-wired fields (`nextIncrementalAt`/
- * `nextReconcileAt` - the backend already computes + stores them, see
- * `EtlService.next_run_times`, it just has not put them on the wire): every
- * read/lifecycle call is passed straight to `real`, then the task in the
- * response is stamped with the client-computed stand-in
- * (`computeMockNextRunTimes`). Deleted the moment `EtlTaskResponse` carries
- * the real fields.
- */
-export function withPhase1NextRunMock(real: AutocountService): AutocountService {
-  function stampTask(task: AutocountEtlTask): AutocountEtlTask {
-    return { ...task, ...nextRunsFor(task.etlStatus, task.sourceConfig) };
-  }
-
-  return {
-    ...real,
-    async getEtlTask(companyId, entityType) {
-      return stampTask(await real.getEtlTask(companyId, entityType));
-    },
-    async updateEtlTask(companyId, entityType, input) {
-      return stampTask(await real.updateEtlTask(companyId, entityType, input));
-    },
-    async previewEtlTask(companyId, entityType) {
-      const result = await real.previewEtlTask(companyId, entityType);
-      return { ...result, task: stampTask(result.task) };
-    },
-    async activateEtlTask(companyId, entityType) {
-      return stampTask(await real.activateEtlTask(companyId, entityType));
-    },
-    async pauseEtlTask(companyId, entityType) {
-      return stampTask(await real.pauseEtlTask(companyId, entityType));
-    },
-    async resumeEtlTask(companyId, entityType) {
-      return stampTask(await real.resumeEtlTask(companyId, entityType));
-    },
-    async runEtlTaskNow(companyId, entityType) {
-      const result = await real.runEtlTaskNow(companyId, entityType);
-      return { ...result, task: stampTask(result.task) };
-    },
-  };
-}
-
 /** A realistic supplier/customer mapping view for the editor's tunable states. */
 function mockMappingView(entityType: string): AutocountMappingView {
   return {
