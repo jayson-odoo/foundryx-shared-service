@@ -58,8 +58,6 @@ def _published_trigger_config(db: Session, wf: Workflow) -> Dict[str, Any]:
 def run_due_workflows(db: Session, *, now: Optional[datetime] = None) -> int:
     """Fire every scheduled workflow whose ``next_run_at`` has passed. Returns
     the number of runs enqueued."""
-    from app.config import settings
-
     now = now or datetime.now(timezone.utc)
     due = (
         db.query(Workflow)
@@ -90,20 +88,22 @@ def run_due_workflows(db: Session, *, now: Optional[datetime] = None) -> int:
         if not claimed:
             continue
         version = db.query(WorkflowVersion).filter(WorkflowVersion.id == wf.current_version_id).first()
+        if version is None:
+            continue
+        from app.workflow_engine.schemas import has_code_nodes
+
+        if has_code_nodes(version.definition_json) and not version.code_authorized_by:
+            # Same fail-closed rule as the event path (AC-SAR-68).
+            db.commit()
+            continue
         run = _make_run(wf, version, now)
         db.add(run)
         db.flush()
-        run_id = run.id
         db.commit()
         fired += 1
-        if settings.celery_task_always_eager:
-            from app.workflow_engine.executor import run_workflow
+        from app.workflow_engine.serialization import dispatch_persisted_run
 
-            run_workflow(db, run_id)
-        else:
-            from app.workflow_engine.worker import run_workflow_task
-
-            run_workflow_task.delay(run_id)
+        dispatch_persisted_run(db, run)
     return fired
 
 
@@ -249,8 +249,9 @@ def simulate_entity_sweep(db, entity_type, tenant_id, as_of, apply=False):
 
 def _make_run(wf: Workflow, version: WorkflowVersion, now: datetime):
     from app.models.workflow import WorkflowRun
+    from app.workflow_engine.serialization import assign_run_correlation
 
-    return WorkflowRun(
+    run = WorkflowRun(
         tenant_id=wf.tenant_id,
         workflow_id=wf.id,
         version_id=wf.current_version_id,
@@ -261,3 +262,5 @@ def _make_run(wf: Workflow, version: WorkflowVersion, now: datetime):
         trigger_payload_json={"triggeredBy": TRIGGER_SCHEDULE, "firedAt": now.isoformat()},
         depth=0,
     )
+    assign_run_correlation(run)
+    return run

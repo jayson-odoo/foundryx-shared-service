@@ -6,7 +6,7 @@ import type {
   WorkflowOmnichannelTestSource,
   WorkflowRunRequest,
 } from '@/types/workflows';
-import { RunDialog } from './run-dialog';
+import { RunDialog, type RunDialogSideEffects } from './run-dialog';
 
 const SOURCES: WorkflowOmnichannelTestSource[] = [
   {
@@ -49,7 +49,7 @@ function renderDialog(
   node: WorkflowNode,
   onRun = vi.fn<(request: WorkflowRunRequest) => void>(),
   testSources: WorkflowOmnichannelTestSource[] = SOURCES,
-  sideEffects = { callsAi: false, sendsMessage: false },
+  sideEffects: RunDialogSideEffects = { callsAi: false, sendsMessage: false },
 ) {
   render(
     <RunDialog
@@ -206,5 +206,47 @@ describe('RunDialog', () => {
     );
     expect(screen.getByLabelText('Contact')).toBeDisabled();
     expect(screen.getByLabelText('Message')).toHaveValue('');
+  });
+
+  it('requires confirmation for a mutating Redis run even with no inputs', async () => {
+    const user = userEvent.setup();
+    const onRun = renderDialog(trigger('manual'), vi.fn(), SOURCES, {
+      callsAi: false,
+      sendsMessage: false,
+      mutatesRedis: true,
+    });
+
+    await user.click(screen.getByTestId('run-dialog-submit'));
+    expect(onRun).not.toHaveBeenCalled();
+    expect(screen.getByRole('alertdialog')).toHaveTextContent(
+      'This run will change Redis data.',
+    );
+    await user.click(screen.getByTestId('redis-confirm-run'));
+    expect(onRun).toHaveBeenCalledWith({ inputs: {} });
+  });
+
+  it('blocks manual Code execution when the runner is unavailable', async () => {
+    const user = userEvent.setup();
+    const onRun = vi.fn<(request: WorkflowRunRequest) => void>();
+    render(
+      <RunDialog
+        open
+        onOpenChange={vi.fn()}
+        trigger={trigger('manual')}
+        testSources={[]}
+        testOptionsLoading={false}
+        testOptionsError={false}
+        sideEffects={{ callsAi: false, sendsMessage: false, runsCode: true }}
+        codeRunnerAvailable={false}
+        busy={false}
+        onRun={onRun}
+      />,
+    );
+
+    expect(screen.getByTestId('code-runner-blocked')).toHaveTextContent(
+      'Manual execution is blocked.',
+    );
+    await user.click(screen.getByTestId('run-dialog-submit'));
+    expect(onRun).not.toHaveBeenCalled();
   });
 });

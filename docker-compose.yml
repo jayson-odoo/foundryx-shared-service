@@ -49,6 +49,10 @@ x-backend-env: &backend-env
   PLATFORM_SMTP_PASSWORD: ${PLATFORM_SMTP_PASSWORD:-}
   PLATFORM_SMTP_FROM_EMAIL: ${PLATFORM_SMTP_FROM_EMAIL:-}
   PLATFORM_SMTP_FROM_NAME: ${PLATFORM_SMTP_FROM_NAME:-Foundryx EMS}
+  # External Code runner (workflow ``code.run`` action, sprint-4/19 S4). The
+  # runner lives on the internal-only network and holds NONE of these vars.
+  CODE_RUNNER_URL: ${CODE_RUNNER_URL:-http://code_runner:8011}
+  CODE_RUNNER_TOKEN: ${CODE_RUNNER_TOKEN:-}
 
 x-backend-base: &backend-base
   image: ${IMAGE_REPO:-jayson1004/foundryx-shared-service}:backend-${IMAGE_TAG:-latest}
@@ -135,6 +139,48 @@ services:
     command: ["celery", "-A", "app.workflow_engine.worker", "worker", "-Q", "workflow", "--loglevel", "info"]
     healthcheck:
       disable: true
+    networks:
+      - foundryx_ss_network
+      - foundryx_ss_runner
+
+  # ---------------- Code runner (sandboxed builder Python) ----------------
+  # A separate, stdlib-only image (service_backend/code_runner/Dockerfile).
+  # Hardened by deployment, not just by code: non-root, read-only rootfs,
+  # no capabilities, no privilege escalation, memory/pids caps, and ONLY the
+  # internal runner network (internal: true => no egress). It receives no
+  # database URL, Redis URL, Fernet key, or provider credential. The seccomp
+  # profile (deploy/code-runner-seccomp.json, synced by the deploy workflow)
+  # denies connect() - the runner only ever ACCEPTS, so even a jail escape
+  # cannot dial a peer on the internal network.
+  code_runner:
+    image: ${IMAGE_REPO:-jayson1004/foundryx-shared-service}:code-runner-${IMAGE_TAG:-latest}
+    build:
+      context: ./service_backend/code_runner
+      dockerfile: Dockerfile
+    container_name: foundryx_ss_code_runner
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:./deploy/code-runner-seccomp.json
+    mem_limit: 512m
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "python", "-m", "code_runner.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    environment:
+      CODE_RUNNER_TOKEN: ${CODE_RUNNER_TOKEN:-}
+      CODE_RUNNER_CONCURRENCY: ${CODE_RUNNER_CONCURRENCY:-4}
+      CODE_RUNNER_WALL_SECONDS: ${CODE_RUNNER_WALL_SECONDS:-5}
+      CODE_RUNNER_CPU_SECONDS: ${CODE_RUNNER_CPU_SECONDS:-3}
+      CODE_RUNNER_MEMORY_BYTES: ${CODE_RUNNER_MEMORY_BYTES:-134217728}
+    networks:
+      - foundryx_ss_runner
 
   worker_omni:
     <<: *backend-base
@@ -162,6 +208,7 @@ services:
       foundryx_ss_network:
         aliases:
           - backend
+      foundryx_ss_runner: {}
     ports:
       - "127.0.0.1:8200:8001"
 
@@ -174,6 +221,7 @@ services:
       foundryx_ss_network:
         aliases:
           - backend
+      foundryx_ss_runner: {}
     ports:
       - "127.0.0.1:8210:8001"
 
@@ -230,5 +278,8 @@ volumes:
     driver: local
 
 networks:
+  # Internal-only (no egress): the Code runner + whoever must call it.
+  foundryx_ss_runner:
+    internal: true
   foundryx_ss_network:
     driver: bridge

@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { SearchSelect } from '@/components/platform/search-select';
 import { RunReplay } from './run-replay';
 import { RunStatusBadge } from './run-status-badge';
+import { ClampedText } from '@/components/platform/clamped-text';
 
 const PAGE_SIZE = 25;
 const SEGMENTS = [
@@ -148,6 +149,11 @@ export function WorkflowRuns({
                 </span>
                 {run.isTest && <FlaskConical className="size-3" />}
               </div>
+              {run.correlationKey && (
+                <div className="font-mono text-[11px] text-muted-foreground">
+                  <ClampedText text={run.correlationKey} lines={1} />
+                </div>
+              )}
             </button>
           ))}
           {rows.length < total && (

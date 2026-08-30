@@ -19,7 +19,12 @@ import type {
   WorkflowRunNode,
   WorkflowRunRequest,
 } from '@/types/workflows';
-import { createBlankDefinition, topoOrder } from '@/lib/workflow-doc';
+import {
+  createBlankDefinition,
+  topoOrder,
+  validateDefinition,
+} from '@/lib/workflow-doc';
+import { workflowPublishIssue } from '@/lib/workflow-validation';
 import { workflowMetadataService } from '@/services/workflow-metadata-service';
 import { workflowService } from '@/services/workflow-service';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
@@ -119,6 +124,7 @@ export function useWorkflowForm(
   initialEditing: boolean,
   canManage: boolean,
   debugRunId?: string,
+  canCode = true,
 ): UseWorkflowFormResult {
   const router = useRouter();
   const actions = useWorkflowActions();
@@ -261,6 +267,13 @@ export function useWorkflowForm(
       toast.error('Name is required.');
       return false;
     }
+    const definitionIssue = validateDefinition(docRef.current, metadata).find(
+      (issue) => issue.level === 'error',
+    );
+    if (definitionIssue) {
+      toast.error(definitionIssue.message);
+      return false;
+    }
     const input = {
       name: values.name.trim(),
       description: values.description.trim(),
@@ -284,7 +297,7 @@ export function useWorkflowForm(
       toast.error(e instanceof Error ? e.message : 'Save failed.');
       return false;
     }
-  }, [form, isNew, router, workflowId]);
+  }, [form, isNew, metadata, router, workflowId]);
 
   const onCancel = useCallback(() => {
     if (isNew) {
@@ -301,6 +314,22 @@ export function useWorkflowForm(
 
   const onPublish = useCallback(async () => {
     if (!workflowId) return;
+    const definitionIssue = validateDefinition(docRef.current, metadata).find(
+      (issue) => issue.level === 'error',
+    );
+    if (definitionIssue) {
+      toast.error(definitionIssue.message);
+      return;
+    }
+    const publishIssue = workflowPublishIssue(
+      { ...(workflow ?? blankWorkflow()), draftDefinition: docRef.current },
+      metadata,
+      canCode,
+    );
+    if (publishIssue) {
+      toast.error(publishIssue);
+      return;
+    }
     setBusy(true);
     try {
       if (docDirty) {
@@ -315,7 +344,7 @@ export function useWorkflowForm(
     } finally {
       setBusy(false);
     }
-  }, [workflowId, docDirty, onSave, refresh]);
+  }, [canCode, workflowId, docDirty, metadata, onSave, refresh, workflow]);
 
   const onUnpublish = useCallback(async () => {
     if (!workflowId) return;
@@ -364,6 +393,17 @@ export function useWorkflowForm(
       sendsMessage: doc.nodes.some(
         (node) => node.type === 'omnichannel.send_message',
       ),
+      mutatesRedis: doc.nodes.some((node) => {
+        if (node.type !== 'redis.command') return false;
+        const operation = node.config.operation;
+        return (
+          typeof operation === 'string' &&
+          ['set', 'delete', 'increment', 'list_push', 'list_pop'].includes(
+            operation,
+          )
+        );
+      }),
+      runsCode: doc.nodes.some((node) => node.type === 'code.run'),
     }),
     [doc],
   );
@@ -372,6 +412,15 @@ export function useWorkflowForm(
     async (request: WorkflowRunRequest) => {
       if (!workflowId) {
         toast.error('Save the workflow before running it.');
+        return;
+      }
+      if (
+        !canCode &&
+        docRef.current.nodes.some((node) => node.type === 'code.run')
+      ) {
+        toast.error(
+          'You need the workflows.code permission to run Code nodes.',
+        );
         return;
       }
       setBusy(true);
@@ -390,7 +439,7 @@ export function useWorkflowForm(
         setBusy(false);
       }
     },
-    [workflowId, docDirty, onSave],
+    [canCode, workflowId, docDirty, onSave],
   );
 
   const loadTestOptions = useCallback(async () => {
@@ -410,7 +459,11 @@ export function useWorkflowForm(
 
   const onRun = useCallback(async () => {
     if (trigger?.type !== 'omnichannel.message_received') {
-      if (triggerInputs.length > 0) {
+      if (
+        triggerInputs.length > 0 ||
+        runSideEffects.mutatesRedis ||
+        runSideEffects.runsCode
+      ) {
         setRunDialogOpen(true);
       } else {
         void doRun({ inputs: {} });
@@ -438,12 +491,30 @@ export function useWorkflowForm(
       setBusy(false);
       runPreparationRef.current = false;
     }
-  }, [trigger, triggerInputs, workflowId, docDirty, doRun, loadTestOptions, onSave]);
+  }, [
+    trigger,
+    triggerInputs,
+    workflowId,
+    docDirty,
+    doRun,
+    loadTestOptions,
+    onSave,
+    runSideEffects,
+  ]);
 
   // ---- debug execution (staleness-aware, D16) ----
   const runDebug = useCallback(
     async (targetNodeId: string, staleIds: string[]) => {
       if (!workflowId || !debugRunId) return;
+      if (
+        !canCode &&
+        docRef.current.nodes.some((node) => node.type === 'code.run')
+      ) {
+        toast.error(
+          'You need the workflows.code permission to run Code nodes.',
+        );
+        return;
+      }
       setDebugBusy(true);
       try {
         const result = await workflowService.debugExecute(workflowId, {
@@ -470,7 +541,7 @@ export function useWorkflowForm(
         setDebugBusy(false);
       }
     },
-    [workflowId, debugRunId],
+    [canCode, workflowId, debugRunId],
   );
 
   const onExecuteAll = useCallback(() => {
@@ -536,6 +607,7 @@ export function useWorkflowForm(
                 canManage={canManage && !isNew}
                 templateOptions={templateOptions}
                 metadata={metadata}
+                canCode={canCode}
                 busy={busy}
                 onPublish={onPublish}
                 onUnpublish={onUnpublish}
@@ -552,6 +624,7 @@ export function useWorkflowForm(
                 testOptionsLoading={testOptionsLoading}
                 testOptionsError={testOptionsError}
                 sideEffects={runSideEffects}
+                codeRunnerAvailable={metadata.codeRunnerAvailable}
                 busy={busy}
                 onRun={doRun}
               />
@@ -587,6 +660,9 @@ export function useWorkflowForm(
               canManage={canManage}
               busy={busy}
               onSetActive={onSetActive}
+              definition={doc}
+              onDefinitionChange={handleDocChange}
+              metadata={metadata}
             />
           ),
         },
@@ -633,6 +709,7 @@ export function useWorkflowForm(
     actions,
     busy,
     canManage,
+    canCode,
     debugBundle,
     debugInEditor,
     doc,

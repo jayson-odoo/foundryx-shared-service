@@ -1,12 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import type { WorkflowAiOutputParam, WorkflowDefinition } from '@/types/workflows';
-import { createNode, validAiOutputParams, validateDefinition } from './workflow-doc';
+import type {
+  WorkflowAiOutputParam,
+  WorkflowDefinition,
+} from '@/types/workflows';
+import {
+  codeSourceIssues,
+  createBlankDefinition,
+  createNode,
+  migrateWorkflowDefinition,
+  validAiOutputParams,
+  validateDefinition,
+} from './workflow-doc';
 
 function aiDoc(outputParams: unknown): WorkflowDefinition {
   return {
     schemaVersion: 1,
     nodes: [
-      { id: 'trg_1', kind: 'trigger', type: 'manual', config: { inputs: [] }, position: { x: 0, y: 0 } },
+      {
+        id: 'trg_1',
+        kind: 'trigger',
+        type: 'manual',
+        config: { inputs: [] },
+        position: { x: 0, y: 0 },
+      },
       {
         id: 'ai_1',
         kind: 'action',
@@ -25,6 +41,25 @@ function aiDoc(outputParams: unknown): WorkflowDefinition {
 }
 
 describe('createNode defaultConfig - omnichannel + AI Agent nodes (plan sprint-4/17)', () => {
+  it('creates a schema-v2 document with parallel execution defaults', () => {
+    expect(createBlankDefinition()).toMatchObject({
+      schemaVersion: 2,
+      execution: { mode: 'parallel', correlationKey: '' },
+    });
+  });
+
+  it('migrates an old document without changing its graph', () => {
+    const old = aiDoc([{ key: 'intent', type: 'string' }]);
+    const migrated = migrateWorkflowDefinition(old);
+    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.execution).toEqual({
+      mode: 'parallel',
+      correlationKey: '',
+    });
+    expect(migrated.nodes).toEqual(old.nodes);
+    expect(migrated.edges).toEqual(old.edges);
+  });
+
   it('seeds ai_agent.run with an empty output-params list', () => {
     const node = createNode('ai_agent.run', { x: 0, y: 0 });
     expect(node.kind).toBe('action');
@@ -53,9 +88,14 @@ describe('createNode defaultConfig - omnichannel + AI Agent nodes (plan sprint-4
   });
 
   it('rejects a nonempty AI output-parameter list with a blank key', () => {
-    expect(validateDefinition(aiDoc([{ key: '   ', type: 'string', required: true }]))).toContainEqual({
+    expect(
+      validateDefinition(
+        aiDoc([{ key: '   ', type: 'string', required: true }]),
+      ),
+    ).toContainEqual({
       level: 'error',
-      message: 'AI Agent: "Output parameters" contains a parameter without a key.',
+      message:
+        'AI Agent: "Output parameters" contains a parameter without a key.',
       nodeId: 'ai_1',
     });
   });
@@ -87,18 +127,26 @@ describe('createNode defaultConfig - omnichannel + AI Agent nodes (plan sprint-4
     },
   ])('rejects $name', ({ params, message }) => {
     const issues = validateDefinition(aiDoc(params));
-    expect(issues).toContainEqual({ level: 'error', message: `AI Agent: "Output parameters" ${message}`, nodeId: 'ai_1' });
+    expect(issues).toContainEqual({
+      level: 'error',
+      message: `AI Agent: "Output parameters" ${message}`,
+      nodeId: 'ai_1',
+    });
   });
 
   it('requires a non-empty list of parameter objects', () => {
     expect(validateDefinition(aiDoc([]))).toContainEqual({
       level: 'error',
-      message: 'AI Agent: "Output parameters" must contain at least one parameter.',
+      message:
+        'AI Agent: "Output parameters" must contain at least one parameter.',
       nodeId: 'ai_1',
     });
-    expect(validateDefinition(aiDoc({ key: 'intent', type: 'string' }))).toContainEqual({
+    expect(
+      validateDefinition(aiDoc({ key: 'intent', type: 'string' })),
+    ).toContainEqual({
       level: 'error',
-      message: 'AI Agent: "Output parameters" must be a non-empty list of parameter objects.',
+      message:
+        'AI Agent: "Output parameters" must be a non-empty list of parameter objects.',
       nodeId: 'ai_1',
     });
   });
@@ -118,5 +166,46 @@ describe('createNode defaultConfig - omnichannel + AI Agent nodes (plan sprint-4
         { key: 'bad-key', type: 'string' },
       ]),
     ).toEqual(params);
+  });
+
+  it('accepts Enum output values and stateful flags', () => {
+    const params = [
+      {
+        key: 'status',
+        type: 'enum' as const,
+        enumValues: ['ready', 'blocked'],
+        stateful: true,
+      },
+    ];
+    expect(validateDefinition(aiDoc(params))).toEqual([
+      expect.objectContaining({
+        message: expect.stringContaining('require serialized execution'),
+      }),
+    ]);
+    expect(validAiOutputParams(params)).toEqual(params);
+  });
+
+  it('requires a valid Correlation key for serialized execution', () => {
+    const doc = aiDoc([{ key: 'intent', type: 'string' }]);
+    doc.execution = {
+      mode: 'serialized',
+      correlationKey: 'trigger.conversationId',
+    };
+    expect(
+      validateDefinition(doc).some((issue) =>
+        issue.message.includes('valid Correlation key'),
+      ),
+    ).toBe(true);
+    doc.execution.correlationKey = '{{ trigger.conversationId }}';
+    expect(validateDefinition(doc)).toEqual([]);
+  });
+
+  it('reports parser diagnostics and incomplete result assignments', () => {
+    expect(codeSourceIssues('result =')).toContain(
+      'Result assignment must include a value.',
+    );
+    expect(codeSourceIssues('def broken(:\n  result = {}')[0]).toMatch(
+      /Python syntax error/,
+    );
   });
 });

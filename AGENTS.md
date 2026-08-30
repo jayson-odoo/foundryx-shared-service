@@ -419,6 +419,20 @@ An inbound WhatsApp message can start a workflow, flow through an AI Agent node 
 - **Dev demo**: `seed_demo_ai_workflow` (`modules/omnichannel/services/seed_demo_workflow.py`, both dev seed scripts, `ENVIRONMENT=development` only) - system agent `omnichannel_demo_classifier` (no connection → stub LLM, zero key) + published "Demo: classify & reply" on `chn-demo`. Inbound demo message → stub classifies → reply in thread.
 - Tests: `tests/test_omnichannel_workflow_triggers.py` (12 - trigger match/filter/isolation, actions, ai_agent.run via `stub_fixtures`, publish denorm, end-to-end); FE vitest additions; `e2e/omnichannel-ai-workflow.spec.ts` (seeded-demo journey + build-via-clicks journey).
 
+## Agent skills
+
+### Issue tracker
+
+Engineering issues live in GitHub Issues for `jayson-odoo/foundryx-shared-service`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The tracker uses the canonical five-role triage vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository with root `CONTEXT.md` and ADRs under `documentation/adr/`. See `docs/agents/domain.md`.
+
 ## Skill routing (installed agent skills)
 
 Skills auto-fire on description match - these rules disambiguate overlap and force-on the non-obvious. Stack reality: **FastAPI owns auth, native Postgres, Next.js web (no React Native).**

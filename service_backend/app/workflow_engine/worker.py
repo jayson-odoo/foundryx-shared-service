@@ -60,6 +60,18 @@ def run_due_workflows_task() -> dict:
     db = SessionLocal()
     try:
         fired = run_due_workflows(db)
+        # Durable serialized runs are re-woken from Postgres. A Redis outage is
+        # isolated here and never converts them to parallel execution.
+        redriven = 0
+        try:
+            from app.workflow_engine.serialization import (
+                redrive_pending_serialized_runs,
+            )
+
+            redriven = redrive_pending_serialized_runs(db)
+        except Exception:  # noqa: BLE001
+            logger.exception("serialized workflow recovery failed")
+            db.rollback()
         # Housekeeping pass (plan 10 D4) - bound run-history growth. Isolated so
         # a prune failure never masks a successful fire.
         pruned = 0
@@ -96,11 +108,11 @@ def run_due_workflows_task() -> dict:
         except Exception:  # noqa: BLE001
             logger.exception("AI trace prune failed")
             db.rollback()
-        return {"fired": fired, "pruned": pruned}
+        return {"fired": fired, "pruned": pruned, "redriven": redriven}
     except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
         logger.exception("scheduled-workflow tick failed")
         db.rollback()
-        return {"fired": 0, "pruned": 0}
+        return {"fired": 0, "pruned": 0, "redriven": 0}
     finally:
         db.close()
 
@@ -176,6 +188,35 @@ def run_workflow_task(run_id: str) -> dict:
             run.error = "Run crashed unexpectedly."
             db.commit()
         return {"runId": run_id, "status": RUN_FAILED}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="workflows.wake_serialized")
+def wake_serialized_task(tenant_id: str, workflow_id: str, digest: str) -> dict:
+    """Idempotent wakeup for one durable Postgres FIFO scope."""
+    from app.database import SessionLocal
+    from app.workflow_engine.serialization import (
+        SerializedCoordinationUnavailable,
+        drain_serialized_runs,
+    )
+
+    # Same module-node boot as run_workflow_task: the drain executes runs
+    # in THIS process, so module actions must be registered here too.
+    _ensure_module_nodes()
+    db = SessionLocal()
+    try:
+        return drain_serialized_runs(db, tenant_id, workflow_id, digest)
+    except SerializedCoordinationUnavailable as exc:
+        logger.error("serialized workflow coordination unavailable: %s", exc)
+        db.rollback()
+        return {"admitted": False, "drained": 0, "error": str(exc)}
+    except Exception:  # noqa: BLE001
+        # A crash rolls the active transaction back to Pending. Recovery beat or
+        # a duplicate wakeup will retry it after the lease is available.
+        logger.exception("serialized workflow drain crashed")
+        db.rollback()
+        return {"admitted": True, "drained": 0, "error": "Drain crashed."}
     finally:
         db.close()
 

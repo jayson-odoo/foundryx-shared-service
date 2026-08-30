@@ -28,6 +28,39 @@ const BASE_METADATA: WorkflowMetadata = {
 };
 
 describe('NodeConfigDrawer - omnichannel + AI Agent field paths', () => {
+  it('filters Clarification output to transient Text outputs when state exists', async () => {
+    const user = userEvent.setup();
+    const node = {
+      ...createNode('ai_agent.run', { x: 0, y: 0 }),
+      id: 'ai',
+      config: {
+        ...createNode('ai_agent.run', { x: 0, y: 0 }).config,
+        outputParams: [
+          { key: 'task', type: 'string' as const, stateful: true },
+          { key: 'reply', type: 'string' as const, stateful: false },
+          { key: 'decision', type: 'enum' as const, enumValues: ['ready', 'wait'], stateful: false },
+        ],
+      },
+    };
+    const doc: WorkflowDefinition = { schemaVersion: 2, nodes: [node], edges: [] };
+    render(<NodeConfigDrawer node={node} doc={doc} editing templateOptions={[]} metadata={BASE_METADATA} onConfigChange={vi.fn()} onDelete={vi.fn()} />);
+    const picker = screen.getByLabelText('Clarification output');
+    await user.click(picker);
+    expect(screen.getByText('reply')).toBeInTheDocument();
+    expect(screen.queryByText('task')).not.toBeInTheDocument();
+    expect(screen.queryByText('decision')).not.toBeInTheDocument();
+  });
+
+  it('renders the Code drawer and runner prerequisite warning', () => {
+    const { doc } = docWith('code.run');
+    const node = doc.nodes[0];
+    render(<NodeConfigDrawer node={node} doc={doc} editing templateOptions={[]} metadata={{ ...BASE_METADATA, codeRunnerAvailable: false }} onConfigChange={vi.fn()} onDelete={vi.fn()} />);
+    expect(screen.getByTestId('code-editor')).toBeInTheDocument();
+    expect(screen.getByTestId('code-inputs-editor')).toBeInTheDocument();
+    expect(screen.getByTestId('code-capabilities')).toBeInTheDocument();
+    expect(screen.getByTestId('code-runner-warning')).toBeInTheDocument();
+  });
+
   it('renders the channel picker for omnichannel.message_received, "All channels" first', async () => {
     const user = userEvent.setup();
     const { doc, nodeId } = docWith('omnichannel.message_received');

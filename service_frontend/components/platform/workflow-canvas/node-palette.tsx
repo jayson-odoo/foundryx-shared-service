@@ -15,6 +15,7 @@ import { ChevronDown, Search, Zap } from 'lucide-react';
 import { ACTION_CATALOG, IF_CATALOG, TRIGGER_CATALOG } from '@/lib/workflow-catalog';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
+import { ClampedText } from '@/components/platform/clamped-text';
 import { useInstalledModules } from '@/hooks/use-app-store';
 import type { NodeCatalogEntry } from '@/types/workflows';
 import { WORKFLOW_NODE_ICONS } from './workflow-icons';
@@ -64,9 +65,7 @@ function PaletteItem({ entry, disabled, onAdd }: PaletteItemProps) {
       </span>
       <span className="min-w-0">
         <span className="block text-xs font-medium text-foreground">{entry.label}</span>
-        <span className="block truncate text-[11px] leading-tight text-muted-foreground">
-          {entry.description}
-        </span>
+        <ClampedText text={entry.description} lines={2} className="text-[11px] leading-tight text-muted-foreground" />
       </span>
     </button>
   );
@@ -92,9 +91,11 @@ export interface NodePaletteProps {
   hasTrigger: boolean;
   disabled: boolean;
   onAdd: (type: string) => void;
+  /** Permission snapshot supplied by the page. Defaults true for isolated UI use. */
+  canCode?: boolean;
 }
 
-export function NodePalette({ hasTrigger, disabled, onAdd }: NodePaletteProps) {
+export function NodePalette({ hasTrigger, disabled, onAdd, canCode = true }: NodePaletteProps) {
   const [query, setQuery] = useState('');
   // Sections collapsed by default - the catalog is long; expand on click/search.
   const [open, setOpen] = useState<Record<string, boolean>>({});
@@ -152,10 +153,14 @@ export function NodePalette({ hasTrigger, disabled, onAdd }: NodePaletteProps) {
             </button>
             {expanded &&
               entries.map((entry) => (
-                <PaletteItem
-                  key={entry.type}
-                  entry={entry}
-                  disabled={disabled || (section.itemsDisabled ?? false)}
+                  <PaletteItem
+                    key={entry.type}
+                    entry={entry}
+                    disabled={
+                      disabled ||
+                      (section.itemsDisabled ?? false) ||
+                      (entry.kind === 'action' && entry.permission === 'workflows.code' ? !canCode : false)
+                    }
                   onAdd={onAdd}
                 />
               ))}
