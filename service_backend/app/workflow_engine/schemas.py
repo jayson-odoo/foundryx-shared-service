@@ -227,7 +227,25 @@ def definition_issues(doc: WorkflowDefinitionModel) -> List[str]:
                         issues.append(
                             'AI Agent: "Clarification output" must be a transient Text output.'
                         )
+        if n.type == "redis.command":
+            from app.workflow_engine.actions.redis_actions import literal_config_issues
+
+            issues.extend(literal_config_issues(n.config))
+        if n.type == "code.run":
+            from app.workflow_engine.actions.code_actions import code_config_issues
+
+            issues.extend(code_config_issues(n.config))
     return issues
+
+
+def has_code_nodes(doc: Any) -> bool:
+    """True when a raw or parsed definition carries a ``code.run`` node."""
+    nodes = doc.nodes if isinstance(doc, WorkflowDefinitionModel) else (doc or {}).get("nodes") or []
+    for node in nodes:
+        node_type = node.type if isinstance(node, WorkflowNodeModel) else (node or {}).get("type")
+        if node_type == "code.run":
+            return True
+    return False
 
 
 def _node_label(node: WorkflowNodeModel) -> str:

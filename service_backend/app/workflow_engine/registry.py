@@ -431,5 +431,74 @@ def _register_core() -> None:
         )
     )
 
+    # ---- Generic Redis data action (sprint-4/19 S3) ----
+    from app.workflow_engine.actions.redis_actions import redis_command
+
+    _list_end_options = [{"value": "left", "label": "Left"}, {"value": "right", "label": "Right"}]
+    register_action(
+        ActionDef(
+            key="redis.command",
+            label="Redis",
+            description="Read or mutate a value in the workflow data store.",
+            icon="Database",
+            category="Actions",
+            executor=redis_command,
+            fields=[
+                NodeField(
+                    key="operation",
+                    label="Operation",
+                    type="select",
+                    required=True,
+                    options=[
+                        {"value": "get", "label": "Get"},
+                        {"value": "set", "label": "Set"},
+                        {"value": "delete", "label": "Delete"},
+                        {"value": "increment", "label": "Increment"},
+                        {"value": "list_push", "label": "List Push"},
+                        {"value": "list_pop", "label": "List Pop"},
+                        {"value": "list_length", "label": "List Length"},
+                    ],
+                ),
+                NodeField(key="key", label="Key", type="text", required=True, mergeable=True),
+                # A field may be listed once per operation that shows it - the
+                # publish gate skips entries whose show_when does not match.
+                NodeField(key="value", label="Value", type="text", required=True, mergeable=True, show_when=("operation", "set")),
+                NodeField(key="value", label="Value", type="text", required=True, mergeable=True, show_when=("operation", "list_push")),
+                NodeField(key="amount", label="Amount", type="text", required=True, mergeable=True, show_when=("operation", "increment")),
+                NodeField(key="end", label="List end", type="select", options=_list_end_options, show_when=("operation", "list_push")),
+                NodeField(key="end", label="List end", type="select", options=_list_end_options, show_when=("operation", "list_pop")),
+                NodeField(key="ttlSeconds", label="TTL seconds", type="text", mergeable=True, show_when=("operation", "set")),
+            ],
+            outputs=[
+                NodeOutput("value", "Value"),
+                NodeOutput("stored", "Stored"),
+                NodeOutput("deleted", "Deleted"),
+                NodeOutput("length", "Length"),
+            ],
+        )
+    )
+
+    # ---- Sandboxed Code action (sprint-4/19 S4) ----
+    from app.workflow_engine.actions.code_actions import code_run
+
+    register_action(
+        ActionDef(
+            key="code.run",
+            label="Code",
+            description="Transform mapped values with restricted Python.",
+            icon="Code2",
+            category="Actions",
+            executor=code_run,
+            fields=[
+                NodeField(key="language", label="Language", type="select", required=True, options=[{"value": "python", "label": "Python"}]),
+                NodeField(key="source", label="Python", type="code", required=True),
+                NodeField(key="inputs", label="Input mappings", type="codeInputs"),
+                NodeField(key="outputs", label="Output parameters", type="outputSchema", required=True),
+            ],
+            # Dynamic - the frontend lists config.outputs as nodes.<id>.<key>.
+            outputs=[],
+        )
+    )
+
 
 _ensure_core = lazy_once(_register_core)

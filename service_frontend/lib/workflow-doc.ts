@@ -626,7 +626,84 @@ export function validateDefinition(
         });
       }
     }
+    if (n.type === 'redis.command') {
+      for (const message of redisConfigIssues(n.config)) {
+        issues.push({ level: 'error', message, nodeId: n.id });
+      }
+    }
   }
 
+  return issues;
+}
+
+export const REDIS_OPERATIONS = [
+  'get',
+  'set',
+  'delete',
+  'increment',
+  'list_push',
+  'list_pop',
+  'list_length',
+] as const;
+const REDIS_LIST_ENDS = ['left', 'right'];
+const REDIS_RESERVED_KEY_PREFIXES = ['foundryx:'];
+const REDIS_MAX_KEY_LENGTH = 512;
+
+function isMerge(value: unknown): boolean {
+  return typeof value === 'string' && value.includes('{{');
+}
+
+/**
+ * Publish-time checks on LITERAL Redis config (merge expressions resolve at
+ * run time). Mirror of the backend `literal_config_issues` - keep in parity.
+ */
+export function redisConfigIssues(config: Record<string, unknown>): string[] {
+  const issues: string[] = [];
+  const op = config.operation;
+  if (typeof op !== 'string' || !(REDIS_OPERATIONS as readonly string[]).includes(op)) {
+    issues.push('Redis: "Operation" must be one of the supported commands.');
+    return issues;
+  }
+  const key = config.key;
+  if (typeof key === 'string' && key.trim() && !isMerge(key)) {
+    const trimmed = key.trim();
+    if (trimmed.length > REDIS_MAX_KEY_LENGTH) {
+      issues.push(`Redis: the key exceeds ${REDIS_MAX_KEY_LENGTH} characters.`);
+    } else if (/[\r\n\u0000]/.test(trimmed)) {
+      issues.push('Redis: the key contains an invalid character.');
+    } else if (
+      REDIS_RESERVED_KEY_PREFIXES.some((p) => trimmed.toLowerCase().startsWith(p))
+    ) {
+      issues.push('Redis: that key prefix is reserved.');
+    }
+  }
+  const end = config.end;
+  if (
+    (op === 'list_push' || op === 'list_pop') &&
+    end !== undefined &&
+    end !== null &&
+    end !== '' &&
+    !REDIS_LIST_ENDS.includes(String(end))
+  ) {
+    // A missing end defaults to Right at run time; only a wrong value fails.
+    issues.push('Redis: "List end" must be Left or Right.');
+  }
+  const ttl = config.ttlSeconds;
+  if (op === 'set' && typeof ttl === 'string' && ttl.trim() && !isMerge(ttl)) {
+    if (!/^\d+$/.test(ttl.trim()) || Number(ttl.trim()) < 1) {
+      issues.push('Redis: "TTL seconds" must be a positive whole number.');
+    }
+  }
+  const amount = config.amount;
+  if (
+    op === 'increment' &&
+    typeof amount === 'string' &&
+    amount.trim() &&
+    !isMerge(amount)
+  ) {
+    if (!/^-?\d+$/.test(amount.trim())) {
+      issues.push('Redis: "Amount" must be a whole number.');
+    }
+  }
   return issues;
 }
