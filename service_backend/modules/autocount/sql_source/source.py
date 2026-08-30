@@ -353,8 +353,13 @@ class SqlDbSource:
                 value = raw.get(self.watermark_column)
                 # ORDER BY means the LAST row carries the max - the DATABASE's
                 # own ordering, never a Python comparison across types the
-                # driver may have decoded inconsistently.
-                new_mark = _encode_mark(value)
+                # driver may have decoded inconsistently. A NULL is skipped
+                # here (S2 review SHOULD-FIX 3): Postgres sorts NULLS LAST by
+                # default, so a NULL trailing row would otherwise overwrite a
+                # real mark with None and strand the cursor - the next run
+                # would initial-load forever.
+                if value is not None:
+                    new_mark = _encode_mark(value)
                 stamp = _as_utc(value)
                 if stamp is not None and (max_seen is None or stamp > max_seen):
                     max_seen = stamp

@@ -322,6 +322,29 @@ def test_a_mark_left_by_a_DIFFERENT_watermark_column_is_ignored(rig):
     assert len(result.records) == 3  # a full initial load, not a filtered one
 
 
+def test_a_NULLS_LAST_watermark_row_does_not_lose_the_mark(rig, monkeypatch):
+    """S2 review SHOULD-FIX 3: ``new_mark`` was reassigned from EVERY row's
+    watermark value, so a NULL on the LAST row (Postgres sorts NULLS LAST by
+    default on ``ORDER BY t.<wm> ASC``) overwrote a real mark with ``None`` -
+    the cursor came back empty and the NEXT run initial-loaded forever. The
+    ``ORDER BY``'s own row order is what a real Postgres source would hand
+    back; ``_read`` is stubbed here because SQLite (this suite's throwaway
+    source) sorts NULLS FIRST, the opposite convention, so it cannot
+    reproduce the failing row order on its own."""
+    db, company, config, _engine = rig
+    source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_CUSTOMER)
+    raw_rows = [
+        {"acc_no": "300-A001", "company_name": "Acme", "email": "a@x.com",
+         "is_active": 1, "last_modified": "2026-08-01 09:00:00"},
+        {"acc_no": "300-A002", "company_name": "Bolt", "email": "b@x.com",
+         "is_active": 1, "last_modified": None},
+    ]
+    monkeypatch.setattr(source, "_read", lambda mark: raw_rows)
+    result = source.fetch_changes(Watermark())
+    assert result.cursor is not None
+    assert result.cursor[CURSOR_MARK] == "2026-08-01 09:00:00"
+
+
 def test_a_task_without_a_watermark_column_always_reads_everything(rig):
     db, company, config, _engine = rig
     config.source_config = {**config.source_config, "watermarkColumn": None}
