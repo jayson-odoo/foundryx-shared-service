@@ -591,16 +591,15 @@ def test_a_cleared_connection_at_preview_is_a_422_not_a_500(client, session_fact
 def test_a_not_yet_extractable_entity_maps_a_clean_error_not_a_crash(
     client, session_factory, rig
 ):
-    """NIT (S2 review): ``ETL_ENTITY_TYPES`` (a DB task CAN be SAVED for
-    these) is wider than ``mapping.ENTITY_PROFILES`` (mapping actually knows
-    how to SHAPE these) - product/warehouse/... have no canonical dataclass
-    yet. In today's wiring Sorento only ingests masters, so a non-master
-    entity's preview is short-circuited by the sink-routing gate before ever
-    reaching the mapping engine (AC-14 - "deliverability, not a
-    misconfiguration") - but that gate is a SINK property, not a mapping one,
-    and ``_extract_and_map`` must not crash uncaught the day a consumer that
-    DOES support more entities exists. Exercised directly at the service
-    layer (the only place that currently reaches it)."""
+    """NIT (S2 review, entity updated for S4): ``ETL_ENTITY_TYPES`` (a DB task
+    CAN be SAVED for these) is wider than ``mapping.ENTITY_PROFILES`` (mapping
+    actually knows how to SHAPE these). Plan 22 S4 (AC-22-23) closed the gap
+    for the five masters (product/warehouse/product_category/unit_of_measure/
+    sales_agent); ``sales_order``/``purchase_order`` remain genuinely
+    unmapped until S5 (AC-22-24), so THIS is the entity that still proves
+    ``_extract_and_map`` fails clean rather than crashing uncaught the day a
+    consumer that DOES support documents exists. Exercised directly at the
+    service layer (the only place that currently reaches it)."""
     from modules.autocount.services.etl_service import EtlService, EtlStateError
 
     company_id, sql_id = rig
@@ -609,7 +608,7 @@ def test_a_not_yet_extractable_entity_maps_a_clean_error_not_a_crash(
     config = AcEntityConfig(
         tenant_id=DEFAULT_TENANT_ID,
         company_id=company_id,
-        entity_type="product",
+        entity_type="sales_order",
         source_impl="sql_db",
         source_config={
             "connectionId": sql_id,
@@ -627,9 +626,9 @@ def test_a_not_yet_extractable_entity_maps_a_clean_error_not_a_crash(
     db.commit()
 
     with pytest.raises(EtlStateError) as excinfo:
-        EtlService(db)._extract_and_map(DEFAULT_TENANT_ID, company, config, "product")
+        EtlService(db)._extract_and_map(DEFAULT_TENANT_ID, company, config, "sales_order")
     message = str(excinfo.value).lower()
-    assert "product" in message
+    assert "sales_order" in message
     assert "not yet extractable" in message
     db.close()
 
