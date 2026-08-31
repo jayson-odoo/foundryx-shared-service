@@ -61,7 +61,11 @@ from modules.autocount.repositories import RowHashRepository
 from modules.autocount.services.company_service import CompanyService
 from modules.autocount.services.etl_service import EtlService
 from modules.autocount.services.sync_service import CANONICAL_MODELS
-from modules.autocount.sinks_sorento import SorentoSink, sorento_supports_entity
+from modules.autocount.sinks_sorento import (
+    SorentoSink,
+    sorento_supported_entities_label,
+    sorento_supports_entity,
+)
 from modules.autocount.sources import SourceContext, Watermark
 from modules.autocount.sql_source.runtime import RUNTIME
 from modules.autocount.sql_source.errors import SqlDocumentCapExceeded
@@ -351,6 +355,31 @@ def test_entity_path_maps_to_the_plural_document_route(entity_type, segment):
 def test_sorento_supports_both_documents():
     assert sorento_supports_entity(ENTITY_SALES_ORDER)
     assert sorento_supports_entity(ENTITY_PURCHASE_ORDER)
+
+
+def test_sorento_supported_entities_label_is_derived_from_the_entity_path_map():
+    """S6 merge-gate review NIT 7 - the preview 'not previewable' reason used
+    to hardcode 'suppliers and customers only', which went stale the moment
+    documents joined ``_ENTITY_PATH`` (plan 22 S5). The label is generated
+    FROM the map so it can never drift again - every current entry (masters
+    AND documents) appears, in the map's own order, joined with a trailing
+    'and' (no serial comma), and GRN (absent from the map) does not."""
+    label = sorento_supported_entities_label()
+    for entity_type in (
+        "supplier",
+        "customer",
+        "product category",
+        "unit of measure",
+        "warehouse",
+        "product",
+        "sales agent",
+        "sales order",
+        "purchase order",
+    ):
+        assert entity_type in label
+    assert label.endswith("sales agent, sales order and purchase order")
+    assert "goods received note" not in label
+    assert "grn" not in label.lower()
 
 
 def test_an_unknown_master_ref_is_retryable_not_a_defect_signal():

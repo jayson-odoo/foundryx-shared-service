@@ -74,7 +74,12 @@ from ..repositories import (
     SyncRunRepository,
 )
 from ..sinks import EntitySink, WriteResult
-from ..sinks_sorento import SinkAnchorError, SorentoSinkError, sorento_supports_entity
+from ..sinks_sorento import (
+    SinkAnchorError,
+    SorentoSinkError,
+    sorento_supported_entities_label,
+    sorento_supports_entity,
+)
 from ..sync import AUTOCOUNT_SYNC
 from .company_service import AutocountServiceError, CompanyService
 
@@ -750,9 +755,9 @@ class SyncService:
             ):
                 reason = (
                     f"Sorento does not yet ingest '{entity_type}' records - it "
-                    "currently accepts suppliers and customers only. There is "
-                    "nothing to dry-run; these records are staged and logged, "
-                    "not delivered to Sorento."
+                    f"currently accepts {sorento_supported_entities_label()} "
+                    "only. There is nothing to dry-run; these records are "
+                    "staged and logged, not delivered to Sorento."
                 )
             else:
                 reason = (

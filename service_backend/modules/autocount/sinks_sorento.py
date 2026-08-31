@@ -115,6 +115,21 @@ def sorento_supports_entity(entity_type: str) -> bool:
     return entity_type in _ENTITY_PATH
 
 
+def sorento_supported_entities_label() -> str:
+    """A human, comma-joined phrase naming every entity ``_ENTITY_PATH``
+    currently maps (S6 merge-gate review NIT 7).
+
+    Generated FROM the map itself - never a hand-maintained sentence - so a
+    future entity join (another document, another master) can never leave
+    the operator-facing "not previewable" reason stale again the way "it
+    currently accepts suppliers and customers only" did the moment documents
+    joined the map (plan 22 S5)."""
+    names = [entity_type.replace("_", " ") for entity_type in _ENTITY_PATH]
+    if len(names) <= 1:
+        return names[0] if names else ""
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
 # ── company anchor (plan 22 Appendix A6/A7) ───────────────────────────────────
 #
 #     !!  AN ANCHOR FAILURE IS A TASK-LEVEL FAULT, NEVER A PER-RECORD ONE.  !!

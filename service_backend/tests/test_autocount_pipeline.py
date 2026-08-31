@@ -3438,7 +3438,11 @@ def test_preview_of_a_non_deliverable_entity_explains_it_is_not_ingested(
     assert result["sink"] == SINK_IMPL_LOGGING
     reason = result["reason"].lower()
     assert "does not yet ingest" in reason
-    assert "suppliers and customers" in reason
+    # S6 merge-gate review NIT 7 - the supported-entity list is DERIVED from
+    # ``_ENTITY_PATH`` (never hardcoded again), so it names every current
+    # entry, masters and documents alike, not just the original two masters.
+    assert "supplier" in reason and "customer" in reason
+    assert "sales order" in reason and "purchase order" in reason
     assert "no consumer is configured" not in reason
 
 
