@@ -4,6 +4,23 @@
     python -m scripts.seed_etl_demo_source --touch 3                  # bump customers row 3's watermark
     python -m scripts.seed_etl_demo_source --touch 3 --table products # bump products row 3's watermark
     python -m scripts.seed_etl_demo_source --delete-row 5             # remove customers row 5 (plan 22 S3)
+    python -m scripts.seed_etl_demo_source --company                  # create/find the dedicated demo AcCompany
+
+``--company`` (plan 22 S4 review B1.e) creates - or finds, idempotently - a
+DEDICATED ``ac_company`` row for this demo rig: ``database_name='ETL_DEMO'``,
+``sink_impl='logging'`` (never a real consumer). **Use this for every future
+live-verify of the DB-ETL path** - a prior session instead reused the REAL
+"V Soft Trading" company (a genuine Sorento-bound, ERP-discovered company from
+plan 13/14) for DB-ETL live-verify, and a since-fixed live-verify DB mutation
+on ITS ``database_name`` briefly poisoned its ref namespace (every master's
+``source_ref`` is qualified by ``database_name``, AC-14-10 - see plan 22 S4
+review B1). ``ETL_DEMO`` has its own namespace and its own sink ("logging" -
+delivers nothing anywhere), so nothing a demo run does here can ever touch a
+real company's Sorento state again. After creating it, configure entities the
+normal way (Entities tab -> Add entity -> SQL Database source, pointed at this
+same Postgres / ``public.etl_demo_<table>``) - this script only ensures the
+company ROW exists; it does not seed entity configs (masters fan-out entities
+are added on demand via the "Add entity" affordance, plan 22 S4 AC-22-23).
 
 Creates ``public.etl_demo_<entity>`` tables **inside the Foundryx database
 itself**, so a `sql_database` connection pointed back at `foundryx_service`
@@ -45,12 +62,17 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 
 from app.config import settings
-from app.database import engine
+from app.database import SessionLocal, engine
+from app.models.tenant import Tenant
+from app.secrets import encrypt_secret
+
+DEMO_COMPANY_DATABASE_NAME = "ETL_DEMO"
 
 
 @dataclass(frozen=True)
@@ -289,6 +311,87 @@ def delete_row(table_key: str, row: int) -> str:
     return str(pk_value)
 
 
+def ensure_demo_company(tenant_slug: str = "default") -> str:
+    """Create - or find, idempotently - the dedicated ``ETL_DEMO`` company.
+
+    Deliberately built with plain ORM writes rather than the real onboarding
+    ceremony (``CompanyService.create_from_connection``): that path SIGNS IN
+    to a real AutoCount API to DISCOVER ``database_name`` (AC-13-01, "a
+    company is discovered, never typed") - there is no AutoCount server for
+    this dev-only DB-ETL rig to sign in to. This is fixture code, the same
+    spirit as the demo tables above, not a product code path.
+
+    Returns the company id. Import lazily (module-level import would pull the
+    whole autocount package into every ``--touch``/``--delete-row`` run).
+    """
+    from modules.autocount.models import SINK_IMPL_LOGGING, AcCompany
+    from modules.autocount.repositories import CompanyRepository
+    from modules.autocount.sql_provider import (
+        SQL_DATABASE_CONNECTION_TYPE,
+        SQL_DATABASE_PROVIDER_KEY,
+    )
+    from app.models.connection import Connection
+
+    db = SessionLocal()
+    try:
+        tenant = db.query(Tenant).filter(Tenant.slug == tenant_slug).first()
+        if tenant is None:
+            raise SystemExit(f"No tenant with slug '{tenant_slug}'.")
+
+        companies = CompanyRepository(db)
+        existing = companies.get_by_database_name(tenant.id, DEMO_COMPANY_DATABASE_NAME)
+        if existing is not None:
+            print(
+                f"Company '{DEMO_COMPANY_DATABASE_NAME}' already exists: {existing.id} "
+                f"(sink={existing.sink_impl})."
+            )
+            return existing.id
+
+        # A same-Postgres ``sql_database`` connection pointed at THIS database -
+        # the demo tables above live in ``public`` on the very engine this
+        # script already runs against, so the URL is derived, never re-typed.
+        url = make_url(settings.database_url)
+        conn = Connection(
+            tenant_id=tenant.id,
+            provider=SQL_DATABASE_PROVIDER_KEY,
+            type=SQL_DATABASE_CONNECTION_TYPE,
+            name="ETL Demo Source (local Postgres)",
+            config_json={
+                "dbType": "postgresql",
+                "host": url.host or "localhost",
+                "port": url.port or 5432,
+                "database": url.database or "",
+                "username": url.username or "",
+            },
+            credentials_json=encrypt_secret({"password": url.password or ""}),
+        )
+        db.add(conn)
+        db.flush()
+
+        company = AcCompany(
+            tenant_id=tenant.id,
+            connection_id=conn.id,
+            database_name=DEMO_COMPANY_DATABASE_NAME,
+            company_name="ETL Demo Co",
+            name="ETL Demo Co",
+            is_active=True,
+            # Never a real consumer (plan 22 S4 review B1.e) - this company's
+            # whole point is that nothing it does can reach Sorento.
+            sink_impl=SINK_IMPL_LOGGING,
+        )
+        companies.add(company)
+        db.commit()
+        print(
+            f"Created company '{DEMO_COMPANY_DATABASE_NAME}': {company.id} "
+            f"(sink=logging, connection={conn.id}).\n"
+            "Next: AutoCount -> this company -> Entities tab -> Add entity -> "
+            "SQL Database source, pointed at 'public.etl_demo_<table>' above."
+        )
+        return company.id
+    finally:
+        db.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -309,9 +412,25 @@ def main() -> None:
         metavar="N",
         help="hard-delete row N (1-based) - the next reconcile stages a delete intent",
     )
+    parser.add_argument(
+        "--company",
+        action="store_true",
+        help=(
+            "create/find the dedicated ETL_DEMO company (sink=logging) so "
+            "live verifies never touch a real company's ref namespace"
+        ),
+    )
+    parser.add_argument(
+        "--tenant-slug",
+        default="default",
+        help="tenant slug for --company (default: 'default')",
+    )
     args = parser.parse_args()
     _guard()
 
+    if args.company:
+        ensure_demo_company(args.tenant_slug)
+        return
     if args.touch:
         pk_value = touch(args.table, args.touch)
         print(f"touched public.{TABLES[args.table].table} row {pk_value} - its watermark is now.")

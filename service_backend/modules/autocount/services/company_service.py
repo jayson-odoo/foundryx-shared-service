@@ -402,8 +402,8 @@ class CompanyService:
             # sync the backend must refuse, not just the frontend hide.
             if source_impl == SOURCE_IMPL_AUTOCOUNT_READ and entity_type not in SEEDED_ENTITIES:
                 raise AutocountServiceError(
-                    f"'{entity_type}' has no AutoCount API path - it can only "
-                    "be synced from a database task."
+                    f"This build has no working AutoCount API route for "
+                    f"'{entity_type}' - it can only be synced from a database task."
                 )
             if (
                 source_impl == SOURCE_IMPL_AUTOCOUNT_READ
@@ -597,6 +597,49 @@ class CompanyService:
             raise AutocountServiceError(
                 f"Unknown push target '{sink_impl}'. Choose 'logging' or 'sorento'."
             )
+        self.db.commit()
+        self.db.refresh(company)
+        return company
+
+    def update_database_name(
+        self, tenant_id: str, company_id: str, database_name: str
+    ) -> AcCompany:
+        """Rename the source database a company reads from - locked once the
+        company has minted state under its CURRENT name (plan 22 S4 review
+        B1.d).
+
+        Company identity IS ``database_name`` (module docstring) and every
+        master's ``source_ref`` is qualified with it (AC-14-10). A company
+        already carrying reconcile state (an ``ac_row_hash`` row) or a
+        delivered record (a ``PUSHED`` staged row) has real refs living under
+        that qualifier; renaming out from under them mints a DIFFERENT ref
+        namespace on the very next run - the sink sees brand-new refs (a
+        duplicate "created" wave) and reconcile, finding the OLD refs
+        vanished, stages them as deletes. That is exactly the live-verify
+        incident this guard closes - a fresh company (no state yet) stays
+        freely editable, e.g. to fix a typo before the first sync ever runs.
+        """
+        company = self.get(tenant_id, company_id)  # tenant-scope guard
+        new_name = (database_name or "").strip()
+        if not new_name:
+            raise AutocountServiceError("Enter a database name.")
+        if new_name == company.database_name:
+            return company
+        if self.companies.has_ref_namespace_state(tenant_id, company_id):
+            raise AutocountServiceError(
+                f"'{company.database_name}' cannot be renamed - it already has "
+                "synced state under this name. Every ref this company has "
+                f"staged or pushed is qualified '{company.database_name}:<key>'; "
+                "renaming would mint a different namespace on the next run, "
+                "causing duplicate creates and reconcile deletes downstream. "
+                "Connect a fresh company instead."
+            )
+        if self.companies.get_by_database_name(tenant_id, new_name) is not None:
+            raise AutocountServiceError(
+                f"Company '{new_name}' is already connected. Each AutoCount "
+                "company can only be registered once per tenant."
+            )
+        company.database_name = new_name
         self.db.commit()
         self.db.refresh(company)
         return company

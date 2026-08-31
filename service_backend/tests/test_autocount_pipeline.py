@@ -3058,6 +3058,8 @@ from modules.autocount.backfill import (  # noqa: E402
 from modules.autocount.models import (  # noqa: E402
     SINK_IMPL_LOGGING,
     SINK_IMPL_SORENTO,
+    STAGED_PUSHED,
+    AcRowHash,
 )
 from modules.autocount.services import (  # noqa: E402
     AutocountServiceError,
@@ -3291,6 +3293,73 @@ def test_switching_back_to_logging_clears_the_connection(db, transports):
     db.refresh(company)
     assert company.sink_impl == SINK_IMPL_LOGGING
     assert company.sink_connection_id is None
+
+
+# ── database_name is locked once ref-namespace state exists (S4 review B1.d) ──
+#
+# A demo/live-verify convenience edit that renames ``database_name`` out from
+# under a company already holding reconcile state or delivered rows mints a
+# DIFFERENT ref namespace on the very next run - the sink sees brand-new refs
+# (a duplicate "created" wave) and reconcile, seeing the OLD refs vanish,
+# stages them as deletes. This is exactly the incident the plan 22 S4 review
+# found live on "V Soft Trading" - closed here so it can never happen from
+# code again (the prior mutation was a raw, un-guarded DB edit outside any
+# code path).
+
+
+def test_update_database_name_rejects_a_company_with_row_hash_state(db, transports):
+    company = _company(db, transports)
+    db.add(
+        AcRowHash(
+            tenant_id=company.tenant_id,
+            company_id=company.id,
+            entity_type=ENTITY_CUSTOMER,
+            source_ref="AED_VSOFT:1",
+            row_hash="h1",
+            last_seen_at=datetime.now(timezone.utc),
+        )
+    )
+    db.commit()
+    with pytest.raises(AutocountServiceError):
+        CompanyService(db).update_database_name(
+            DEFAULT_TENANT_ID, company.id, "RENAMED_DB"
+        )
+    db.refresh(company)
+    assert company.database_name == "AED_VSOFT"
+
+
+def test_update_database_name_rejects_a_company_with_a_pushed_row(db, transports):
+    company = _company(db, transports)
+    job = _staged_supplier_job(db, company)
+    row = db.query(AcStagedRecord).filter(AcStagedRecord.job_id == job.id).first()
+    row.status = STAGED_PUSHED
+    db.commit()
+    with pytest.raises(AutocountServiceError):
+        CompanyService(db).update_database_name(
+            DEFAULT_TENANT_ID, company.id, "RENAMED_DB"
+        )
+    db.refresh(company)
+    assert company.database_name == "AED_VSOFT"
+
+
+def test_update_database_name_allows_a_fresh_company(db, transports):
+    """No row_hash, no PUSHED row - nothing downstream has minted a ref under
+    the old name yet, so a rename (e.g. fixing a typo before the first sync)
+    stays safe and allowed."""
+    company = _company(db, transports)
+    updated = CompanyService(db).update_database_name(
+        DEFAULT_TENANT_ID, company.id, "RENAMED_DB"
+    )
+    assert updated.database_name == "RENAMED_DB"
+
+
+def test_update_database_name_rejects_a_duplicate_within_the_tenant(db, transports):
+    company = _company(db, transports)
+    other = _company(db, transports, database_name="OTHER_DB")
+    with pytest.raises(AutocountServiceError):
+        CompanyService(db).update_database_name(
+            DEFAULT_TENANT_ID, company.id, other.database_name
+        )
 
 
 # ── dry-run preview (Task D, AC-14-20/21) ─────────────────────────────────────

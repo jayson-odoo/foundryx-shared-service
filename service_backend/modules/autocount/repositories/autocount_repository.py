@@ -31,6 +31,7 @@ from ..models import (
     STAGED_DISCARDED,
     STAGED_FAILED,
     STAGED_OP_DELETE,
+    STAGED_PUSHED,
     AcCompany,
     AcEntityConfig,
     AcFieldMapping,
@@ -186,6 +187,41 @@ class CompanyRepository:
             .all()
         )
         return rows, total
+
+    def has_ref_namespace_state(self, tenant_id: str, company_id: str) -> bool:
+        """Whether this company has minted ANY ref under its current
+        ``database_name`` yet - a reconcile row-hash OR a delivered
+        (``PUSHED``) staged row (plan 22 S4 review B1.d).
+
+        Masters mint a COMPANY-QUALIFIED ``source_ref`` from ``database_name``
+        (AC-14-10); a rename after either of these exists mints a DIFFERENT
+        namespace on the very next run, which reads to the sink as a batch of
+        brand-new records - and, once reconcile notices the OLD refs are
+        "gone", a batch of deletes for what was never actually removed. This
+        is the guard that closes that incident class; the caller is
+        ``CompanyService.update_database_name``.
+        """
+        has_hash = (
+            self.db.query(AcRowHash.company_id)
+            .filter(
+                AcRowHash.tenant_id == tenant_id,
+                AcRowHash.company_id == company_id,
+            )
+            .first()
+            is not None
+        )
+        if has_hash:
+            return True
+        return (
+            self.db.query(AcStagedRecord.id)
+            .filter(
+                AcStagedRecord.tenant_id == tenant_id,
+                AcStagedRecord.company_id == company_id,
+                AcStagedRecord.status == STAGED_PUSHED,
+            )
+            .first()
+            is not None
+        )
 
 
 class EntityConfigRepository:
