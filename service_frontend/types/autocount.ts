@@ -57,7 +57,7 @@ export interface AutocountEntityConfig {
    * tab can warn a `product` task's activation of a missing category/UOM
    * prerequisite without a second fetch.
    */
-  etlStatus: AutocountEtlStatus | string;
+  etlStatus: AutocountEtlStatus;
 }
 
 /**
@@ -650,7 +650,7 @@ export interface AutocountEtlSourceConfig {
 export interface AutocountEtlTask {
   companyId: string;
   entityType: string;
-  etlStatus: AutocountEtlStatus | string;
+  etlStatus: AutocountEtlStatus;
   activatedAt: string | null; // ISO Z
   sourceConfig: AutocountEtlSourceConfig;
   /**

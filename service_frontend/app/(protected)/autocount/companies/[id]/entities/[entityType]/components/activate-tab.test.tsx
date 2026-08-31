@@ -258,13 +258,13 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
       />,
     );
     expect(screen.getByTestId('activate-dependency-warning')).toHaveTextContent(
-      /category and unit of measure/,
+      'No active category or unit-of-measure task yet - products may not sync until one runs.',
     );
     // A warning, never a block - Activate stays governed by its OWN gate.
     expect(screen.getByTestId('etl-activate')).toBeEnabled();
   });
 
-  it('names only the still-missing dependency once one lands', () => {
+  it('still warns with the same fixed copy once only ONE dependency lands', () => {
     render(
       <ActivateTab
         company={company()}
@@ -277,8 +277,9 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
       />,
     );
     const warning = screen.getByTestId('activate-dependency-warning');
-    expect(warning).toHaveTextContent(/unit of measure/);
-    expect(warning).not.toHaveTextContent(/category and/);
+    expect(warning).toHaveTextContent(
+      'No active category or unit-of-measure task yet - products may not sync until one runs.',
+    );
   });
 
   it('shows no warning once category and UOM are both active', () => {

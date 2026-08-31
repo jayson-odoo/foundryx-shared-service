@@ -145,12 +145,11 @@ export function productDependencyWarning(
   entities: Pick<AutocountEntityConfig, 'entityType' | 'etlStatus'>[],
 ): string | null {
   if (entityType !== 'product') return null;
-  const missing = PRODUCT_DEPENDENCIES.filter(
+  const missing = PRODUCT_DEPENDENCIES.some(
     (dep) => !entities.some((e) => e.entityType === dep.entityType && e.etlStatus === 'active'),
   );
-  if (missing.length === 0) return null;
-  const names = missing.map((d) => d.label).join(' and ');
-  return `No active ${names} task on this company yet - this product may land retryable until it does.`;
+  if (!missing) return null;
+  return 'No active category or unit-of-measure task yet - products may not sync until one runs.';
 }
 
 const ANCHOR_TITLES: Record<AutocountAnchorErrorCode, string> = {

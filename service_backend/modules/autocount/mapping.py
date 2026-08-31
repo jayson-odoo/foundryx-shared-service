@@ -619,7 +619,10 @@ def flat_source_ref(
     are SHARED across companies (``company_id`` NULL), so a company-qualified
     ref would make the second company's push ``failed``. Its ref is
     ``agent:{CODE}``, upper-cased and trimmed, so every company resolves to the
-    one shared row.
+    one shared row. ``CanonicalSalesAgent.code`` normalizes the SAME way on
+    construction (S4 review NIT) - so the payload's ``code`` can never
+    disagree with the ref it is filed under, regardless of which mapping
+    transform an operator picked for the source column.
     """
     columns = [str(c) for c in key_columns if str(c).strip()]
     if not columns:

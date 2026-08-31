@@ -115,7 +115,9 @@ describe('todayDateString', () => {
 // ── plan 22 S2 - activation gate, anchor errors, run cost (AC-22-17/18/19) ────
 
 
-function task(over: Partial<import('@/types/autocount').AutocountEtlTask> = {}) {
+function task(
+  over: Partial<import('@/types/autocount').AutocountEtlTask> = {},
+): import('@/types/autocount').AutocountEtlTask {
   return {
     companyId: 'c1',
     entityType: 'customer',
@@ -303,16 +305,17 @@ describe('productDependencyWarning (plan 22 S4, AC-22-23)', () => {
     expect(productDependencyWarning('customer', [])).toBeNull();
   });
 
-  it('names both dependencies when neither is active', () => {
-    expect(productDependencyWarning('product', [])).toMatch(/category and unit of measure/);
+  const WARNING = 'No active category or unit-of-measure task yet - products may not sync until one runs.';
+
+  it('warns with the fixed copy when neither dependency is active', () => {
+    expect(productDependencyWarning('product', [])).toBe(WARNING);
   });
 
-  it('names only the missing one once the other lands', () => {
+  it('still warns when only ONE dependency lands (the copy names neither by design)', () => {
     const msg = productDependencyWarning('product', [
       { entityType: 'product_category', etlStatus: 'active' },
     ]);
-    expect(msg).toMatch(/unit of measure/);
-    expect(msg).not.toMatch(/category and/);
+    expect(msg).toBe(WARNING);
   });
 
   it('ignores a DRAFT/PAUSED sibling task - only ACTIVE resolves the dependency', () => {
@@ -321,7 +324,7 @@ describe('productDependencyWarning (plan 22 S4, AC-22-23)', () => {
         { entityType: 'product_category', etlStatus: 'draft' },
         { entityType: 'unit_of_measure', etlStatus: 'paused' },
       ]),
-    ).toMatch(/category and unit of measure/);
+    ).toBe(WARNING);
   });
 
   it('is null once both category and unit of measure are active', () => {
