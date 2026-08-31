@@ -484,6 +484,7 @@ function etlTaskFor(companyId: string, entityType: string): AutocountEtlTask {
     sourceConfig: defaultEtlConfig(entityType),
     resultColumns: [],
     lastPreviewAt: null,
+    lastPreviewFailedCount: null,
     lastRunAt: null,
     lastRunError: null,
     lastRunErrorCode: null,
@@ -513,6 +514,7 @@ interface EtlTaskOverlay {
   activatedAt: string | null;
   resultColumns: string[];
   lastPreviewAt: string | null;
+  lastPreviewFailedCount: number | null;
   lastRunAt: string | null;
   lastRunError: string | null;
   lastRunErrorCode: string | null;
@@ -549,6 +551,7 @@ function overlayFor(companyId: string, entityType: string): EtlTaskOverlay {
     activatedAt: null,
     resultColumns: [],
     lastPreviewAt: null,
+    lastPreviewFailedCount: null,
     lastRunAt: null,
     lastRunError: null,
     lastRunErrorCode: null,
@@ -629,6 +632,7 @@ function noteTaskSaved(companyId: string, entityType: string, cfg: AutocountEtlS
   const o = overlayFor(companyId, entityType);
   o.resultColumns = resultColumnsFor(cfg);
   o.lastPreviewAt = null;
+  o.lastPreviewFailedCount = null;
 }
 
 /**
@@ -750,6 +754,11 @@ async function mockPreviewEtlTask(
     );
   }
   o.lastPreviewAt = nowIso();
+  // The mock never models a genuinely-failed prediction (only the anchor/
+  // consumer-down error classes above) - 0, never left null, so the
+  // activation gate (S5 review SHOULD-FIX 4b) reads a completed preview
+  // that reported nothing to fix.
+  o.lastPreviewFailedCount = 0;
   return { task: applyTaskOverlay(task), preview: previewableBlock() };
 }
 

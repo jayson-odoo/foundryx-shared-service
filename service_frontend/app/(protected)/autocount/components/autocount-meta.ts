@@ -131,12 +131,51 @@ export const AC_PRESET_TRANSFORM: Record<string, string> = {
   custom: 'string',
 };
 
-/** The 6 presets offered in the Transform cell (Text/Boolean/Decimal/Integer/
- *  Date/Custom) - the picker's option list, from the canonical `PRESETS`. */
+/** The full preset catalog (Text/Boolean/Decimal/Integer/Date/the 5 ref
+ *  presets/Custom), from the canonical `PRESETS` - NOT what any one row's
+ *  Transform cell offers (see `presetOptionsForField`, S5 review BLOCKER 2
+ *  FE half: a picker must offer ONLY valid options). */
 export const AC_PRESET_OPTIONS: { value: string; label: string }[] = PRESETS.map((p) => ({
   value: p.key,
   label: p.label,
 }));
+
+/**
+ * Sorento field → the ONE ref preset valid for it (mirrors the backend's
+ * `mapping.FIELD_REF_TRANSFORMS`, S5 review BLOCKER 2). `product_ref`/
+ * `warehouse_ref` are deliberately absent - those line fields are
+ * code-generated (`document_line_rows`), never an operator-authored row.
+ */
+export const AC_FIELD_REF_PRESET: Record<string, string> = {
+  customer_ref: 'ref_customer',
+  supplier_ref: 'ref_supplier',
+  sales_agent_ref: 'ref_sales_agent',
+};
+
+// ALL 5 ref presets (not just the 3 pairable to a field) - `ref_product`/
+// `ref_warehouse` have no entry in `AC_FIELD_REF_PRESET` at all (their
+// fields are never operator-mapped), but they must be excluded from every
+// OTHER field's options exactly the same as the 3 that do.
+const AC_REF_PRESET_KEYS = new Set(
+  AC_PRESET_OPTIONS.filter((o) => o.value.startsWith('ref_')).map((o) => o.value),
+);
+
+/**
+ * The Transform-preset options valid for a mapping row's CHOSEN Sorento
+ * field (S5 review BLOCKER 2, FE half - foolproof-UI: only offer valid
+ * options, the picker must never let an operator select a combination the
+ * server rejects). A `*_ref` field offers ONLY its own matching ref preset;
+ * every other field never sees a ref preset at all - the backend enforces
+ * both directions (`company_service.replace_mapping`), this keeps the UI
+ * from ever presenting the choice that would fail.
+ */
+export function presetOptionsForField(sorentoField: string): { value: string; label: string }[] {
+  const refPreset = AC_FIELD_REF_PRESET[sorentoField];
+  if (refPreset) {
+    return AC_PRESET_OPTIONS.filter((o) => o.value === refPreset);
+  }
+  return AC_PRESET_OPTIONS.filter((o) => !AC_REF_PRESET_KEYS.has(o.value));
+}
 
 /** The canonical formula for a preset (the Build dialog pre-fills from it). */
 export function presetFormula(key: string): string {

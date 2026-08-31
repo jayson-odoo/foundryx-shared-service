@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { SearchSelect } from '@/components/platform/search-select';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { humanizeFieldKey } from '@/lib/autocount-diff';
+import { statusFormulaSeed } from '@/lib/autocount-etl';
 import type {
   AutocountMappingRow,
   AutocountSorentoField,
@@ -14,6 +15,7 @@ import {
   AC_PRESET_OPTIONS,
   applyPreset,
   presetForRow,
+  presetOptionsForField,
 } from '../../../../../../components/autocount-meta';
 
 /** One deliverable mapping row in the editor's working state. */
@@ -75,6 +77,15 @@ export interface MappingTableProps {
   onRemoveRow: (index: number) => void;
   /** Open the formula builder for a row (AC-16-11). */
   onBuildRow: (index: number) => void;
+  /** The task's canonical entity key (drives the `status` seed-formula
+   * below, S5 review SHOULD-FIX 4c) - blank on the API-path editor, where
+   * a document entity never routes (DB source only). */
+  entityType?: string;
+  /** Source-column name → reported type (from the current query preview,
+   * when one has been run this session) - the SAME vocabulary
+   * `describe_type`/`is_orderable_type` use ("boolean", "string", …).
+   * Absent/unknown types simply skip the seed - never guessed. */
+  columnTypes?: Record<string, string>;
 }
 
 /**
@@ -95,11 +106,27 @@ export function MappingTable({
   onAddRow,
   onRemoveRow,
   onBuildRow,
+  entityType = '',
+  columnTypes = {},
 }: MappingTableProps) {
   const columnMode = sourceMode === 'column';
   const sourceOptions = acFields.map((f) => ({ label: f, value: f }));
   const usedTargets = new Set(rows.map((r) => r.sorentoField).filter(Boolean));
   const allTargetsUsed = sorentoFields.every((f) => usedTargets.has(f.field));
+
+  /** Pre-fill the `status` seed formula (S5 review SHOULD-FIX 4c) the moment
+   * a row's source+target COMBINE into "a boolean column feeding `status`" -
+   * from either edit direction (source picked first, or target picked
+   * first). Never overwrites a formula the operator already set. */
+  function withStatusSeed(
+    row: MappingEditableRow,
+    patch: Partial<MappingEditableRow>,
+  ): Partial<MappingEditableRow> {
+    if (row.formula) return patch;
+    const merged = { ...row, ...patch };
+    const seed = statusFormulaSeed(entityType, merged.sorentoField, columnTypes[merged.sourcePath]);
+    return seed ? { ...patch, formula: seed } : patch;
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -143,7 +170,9 @@ export function MappingTable({
                       <SearchSelect
                         options={sourceOptions}
                         value={row.sourcePath}
-                        onChange={(value) => onChangeRow(index, { sourcePath: value })}
+                        onChange={(value) =>
+                          onChangeRow(index, withStatusSeed(row, { sourcePath: value }))
+                        }
                         placeholder={
                           columnMode
                             ? sourceOptions.length > 0
@@ -167,7 +196,7 @@ export function MappingTable({
                       <div className="flex items-center gap-1">
                         <div className="min-w-28 flex-1">
                           <SearchSelect
-                            options={AC_PRESET_OPTIONS}
+                            options={presetOptionsForField(row.sorentoField)}
                             value={presetForRow(row.transform, row.formula)}
                             onChange={(key) => onChangeRow(index, applyPreset(key))}
                             ariaLabel={`Transform for row ${index + 1}`}
@@ -206,7 +235,9 @@ export function MappingTable({
                       <SearchSelect
                         options={targetOptions}
                         value={row.sorentoField}
-                        onChange={(value) => onChangeRow(index, { sorentoField: value })}
+                        onChange={(value) =>
+                          onChangeRow(index, withStatusSeed(row, { sorentoField: value }))
+                        }
                         placeholder="Select a Sorento field"
                         disabled={sorentoFields.length === 0}
                         ariaLabel={`Sorento field for row ${index + 1}`}

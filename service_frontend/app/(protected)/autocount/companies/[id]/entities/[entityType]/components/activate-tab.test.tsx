@@ -63,6 +63,7 @@ function task(over: Partial<AutocountEtlTask> = {}): AutocountEtlTask {
     },
     resultColumns: ['AccNo'],
     lastPreviewAt: null,
+    lastPreviewFailedCount: null,
     lastRunAt: null,
     lastRunError: null,
     lastRunErrorCode: null,
@@ -131,6 +132,39 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
     );
     expect(screen.getByTestId('etl-activate')).toBeEnabled();
     expect(screen.getByTestId('etl-preview-passed')).toBeInTheDocument();
+  });
+
+  it('blocks Activate but keeps Run preview enabled when the last preview reported failed rows (S5 review SHOULD-FIX 4b)', () => {
+    render(
+      <ActivateTab
+        company={company()}
+        task={task({ lastPreviewAt: '2026-08-30T06:21:00Z', lastPreviewFailedCount: 2 })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+      />,
+    );
+    // Fixing this MEANS re-running preview after editing the mapping - that
+    // button must never be trapped by the same gate it is the fix for.
+    expect(screen.getByTestId('etl-run-preview')).toBeEnabled();
+    expect(screen.getByTestId('etl-activate')).toBeDisabled();
+    expect(screen.getByTestId('etl-preview-failed')).toHaveTextContent('2 failed row');
+  });
+
+  it('re-enables Activate once a re-run preview reports zero failed rows', () => {
+    render(
+      <ActivateTab
+        company={company()}
+        task={task({ lastPreviewAt: '2026-08-30T06:21:00Z', lastPreviewFailedCount: 0 })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('etl-activate')).toBeEnabled();
+    expect(screen.queryByTestId('etl-preview-failed')).not.toBeInTheDocument();
   });
 
   it('withholds both buttons with a stated prerequisite when the company has no Sorento code', () => {

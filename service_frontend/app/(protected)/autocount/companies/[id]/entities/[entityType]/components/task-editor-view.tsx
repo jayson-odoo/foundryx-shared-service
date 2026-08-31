@@ -145,6 +145,17 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     () => (preview.state.status === 'success' ? preview.state.preview.columns.map((c) => c.name) : []),
     [preview.state],
   );
+  // Source-column name -> reported type, from the SAME preview - drives the
+  // Mapping tab's `status` seed-formula pre-fill (S5 review SHOULD-FIX 4c).
+  // Empty until a preview has been run this session; a missing type simply
+  // skips the seed (never guessed).
+  const columnTypes = useMemo(
+    () =>
+      preview.state.status === 'success'
+        ? Object.fromEntries(preview.state.preview.columns.map((c) => [c.name, c.type]))
+        : {},
+    [preview.state],
+  );
   const sourceColumns = useMemo(
     () =>
       mappingSourceColumns(
@@ -306,6 +317,8 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                   onServerTest={mapping.testFormula}
                   onSimulate={mapping.simulate}
                   entityLabel={label}
+                  entityType={entityType}
+                  columnTypes={columnTypes}
                 />
               )}
             </div>
@@ -379,6 +392,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     };
   }, [
     can,
+    columnTypes,
     companyId,
     config,
     detail,

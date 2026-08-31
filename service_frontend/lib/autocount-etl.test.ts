@@ -10,8 +10,10 @@ import {
   productDependencyWarning,
   readTaskError,
   previewBadgeText,
+  previewFailedBlocksActivation,
   schemaCompletionConfig,
   starterQuery,
+  statusFormulaSeed,
   todayDateString,
   validateIncrementalMinutes,
   validateReconcileAt,
@@ -142,6 +144,7 @@ function task(
     },
     resultColumns: ['AccNo', 'CompanyName'],
     lastPreviewAt: null,
+    lastPreviewFailedCount: null,
     lastRunAt: null,
     lastRunError: null,
     lastRunErrorCode: null,
@@ -211,6 +214,17 @@ describe('activatePrerequisites (foolproof gate, AC-22-18)', () => {
   });
 });
 
+describe('previewFailedBlocksActivation (S5 review SHOULD-FIX 4b)', () => {
+  it('blocks when the last preview reported failed rows', () => {
+    expect(previewFailedBlocksActivation(task({ lastPreviewFailedCount: 2 }))).toBe(true);
+  });
+
+  it('never blocks on retryable-only (a legitimate dependency-order carry-over)', () => {
+    expect(previewFailedBlocksActivation(task({ lastPreviewFailedCount: 0 }))).toBe(false);
+    expect(previewFailedBlocksActivation(task({ lastPreviewFailedCount: null }))).toBe(false);
+  });
+});
+
 describe('anchor errors (Appendix A6)', () => {
   it('titles every Sorento anchor code and falls back for the rest', () => {
     expect(anchorErrorTitle('COMPANY_ANCHOR_REQUIRED')).toBe('Sorento company code required');
@@ -254,6 +268,32 @@ describe('mappingSourceColumns (AC-22-09 source picker)', () => {
 
   it('is empty when nothing is known yet', () => {
     expect(mappingSourceColumns([], [], [])).toEqual([]);
+  });
+});
+
+// ── plan 22 S5 review SHOULD-FIX 4c - status seed formula (a VALUE, not copy) ─
+
+describe('statusFormulaSeed', () => {
+  it('seeds the boolean-flag formula for status on a document entity + boolean column', () => {
+    expect(statusFormulaSeed('sales_order', 'status', 'boolean')).toBe(
+      'if(value == true, "cancelled", "open")',
+    );
+    expect(statusFormulaSeed('purchase_order', 'status', 'boolean')).toBe(
+      'if(value == true, "cancelled", "open")',
+    );
+  });
+
+  it('leaves it empty for a non-document entity', () => {
+    expect(statusFormulaSeed('customer', 'status', 'boolean')).toBeNull();
+  });
+
+  it('leaves it empty for a field other than status', () => {
+    expect(statusFormulaSeed('sales_order', 'so_number', 'boolean')).toBeNull();
+  });
+
+  it('leaves it empty when the source column is not boolean-typed', () => {
+    expect(statusFormulaSeed('sales_order', 'status', 'string')).toBeNull();
+    expect(statusFormulaSeed('sales_order', 'status', undefined)).toBeNull();
   });
 });
 

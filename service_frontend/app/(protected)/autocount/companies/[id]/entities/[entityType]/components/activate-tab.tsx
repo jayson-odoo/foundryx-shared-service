@@ -20,7 +20,12 @@ import type {
 } from '@/hooks/use-autocount-etl';
 import { useCan } from '@/hooks/use-can';
 import { useDatetime } from '@/hooks/use-datetime';
-import { activatePrerequisites, anchorErrorTitle, productDependencyWarning } from '@/lib/autocount-etl';
+import {
+  activatePrerequisites,
+  anchorErrorTitle,
+  previewFailedBlocksActivation,
+  productDependencyWarning,
+} from '@/lib/autocount-etl';
 import type { AutocountCompany, AutocountEntityConfig, AutocountEtlTask } from '@/types/autocount';
 import { AC_SYNC_RUN, acCompanyHref } from '../../../../../components/autocount-meta';
 
@@ -74,6 +79,10 @@ export function ActivateTab({
   const status = task.etlStatus;
   const busy = lifecycle.busy !== null || preview.state.status === 'loading';
   const previewOk = Boolean(task.lastPreviewAt);
+  // S5 review SHOULD-FIX 4b - SEPARATE from `prerequisites`: that list also
+  // gates Run preview, and fixing this means re-running preview after
+  // editing the mapping, so Run preview must stay available.
+  const previewFailed = previewFailedBlocksActivation(task);
 
   const previewState = preview.state;
   const hasRun = previewState.status !== 'idle';
@@ -144,6 +153,21 @@ export function ActivateTab({
         </Alert>
       )}
 
+      {previewFailed && (
+        <Alert variant="destructive" appearance="light" data-testid="etl-preview-failed">
+          <AlertIcon>
+            <TriangleAlert />
+          </AlertIcon>
+          <AlertTitle>
+            The last preview reported {task.lastPreviewFailedCount} failed row
+            {task.lastPreviewFailedCount === 1 ? '' : 's'}.
+          </AlertTitle>
+          <AlertDescription>
+            Fix the mapping, then re-run preview before activating.
+          </AlertDescription>
+        </Alert>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         <Button
           type="button"
@@ -166,7 +190,7 @@ export function ActivateTab({
             <Button
               type="button"
               size="sm"
-              disabled={blocked || busy || !previewOk}
+              disabled={blocked || busy || !previewOk || previewFailed}
               onClick={() => void lifecycle.activate()}
               data-testid="etl-activate"
             >

@@ -678,6 +678,13 @@ export interface AutocountEtlTask {
    * Activate. Null = Activate withheld.
    */
   lastPreviewAt: string | null; // ISO Z
+  /**
+   * The last preview's genuinely-FAILED prediction count (S5 review
+   * SHOULD-FIX 4b) - distinct from `retryable`, which stays activatable (a
+   * dependency-order carry-over, AC-22-23). A preview that COMPLETES is not
+   * by itself proof the task is safe to activate.
+   */
+  lastPreviewFailedCount: number | null;
   lastRunAt: string | null; // ISO Z
   /**
    * The last run's TASK-LEVEL error (AC-22-19 - repeated delivery failures

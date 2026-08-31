@@ -123,6 +123,21 @@ export function activatePrerequisites(input: {
   return out;
 }
 
+/**
+ * Whether the last preview's genuinely-FAILED rows block Activate (S5 review
+ * SHOULD-FIX 4b - mirrors `EtlService.activate_task`'s server gate). Kept
+ * SEPARATE from `activatePrerequisites` on purpose: those also gate Run
+ * preview, and the fix for a failed preview IS re-running preview after
+ * editing the mapping - blocking that button would trap the operator with
+ * no way out. `retryable` rows never trip this (a dependency-order
+ * carry-over, AC-22-23, resolves itself on a later run).
+ */
+export function previewFailedBlocksActivation(
+  task: Pick<AutocountEtlTask, 'lastPreviewFailedCount'>,
+): boolean {
+  return Boolean(task.lastPreviewFailedCount);
+}
+
 // ── plan 22 S4 - dependency-order heads-up (AC-22-23) ────────────────────────
 // A `product` task can be activated with no category/UOM task active - the
 // mechanism (retryable stays staged, re-offered next run) makes this SAFE, so
@@ -271,4 +286,33 @@ export function mappingSourceColumns(
     out.push(name);
   }
   return out;
+}
+
+// ── plan 22 S5 review SHOULD-FIX 4c - a `status` seed formula, VALUE not copy ─
+
+/**
+ * A document's `status` target has a fixed 5-word vocabulary server-side
+ * (open/partial/fulfilled/closed/cancelled) - AutoCount's real-world shape is
+ * usually a boolean flag (`IsCancelled`/`IsClosed`), so a mapping row that
+ * targets `status` on a boolean-typed SOURCE column gets an EDITABLE starting
+ * formula pre-filled rather than an operator hand-writing it from nothing.
+ *
+ * A VALUE pre-fill, never on-screen instructional copy (foolproof-UI, user
+ * mandate): the row's `formula` field is populated with what would actually
+ * be SAVED, editable like any other formula - not a caption explaining what
+ * to type. Never overwrites a formula the operator already set (an existing
+ * non-empty formula is left alone); a non-boolean/unknown column type or a
+ * non-document entity leaves the formula untouched (empty), never guessed.
+ */
+export const STATUS_BOOLEAN_SEED_FORMULA = 'if(value == true, "cancelled", "open")';
+
+export function statusFormulaSeed(
+  entityType: string,
+  sorentoField: string,
+  sourceColumnType: string | undefined,
+): string | null {
+  if (!isDocumentEntity(entityType)) return null;
+  if (sorentoField !== 'status') return null;
+  if ((sourceColumnType ?? '').toLowerCase() !== 'boolean') return null;
+  return STATUS_BOOLEAN_SEED_FORMULA;
 }

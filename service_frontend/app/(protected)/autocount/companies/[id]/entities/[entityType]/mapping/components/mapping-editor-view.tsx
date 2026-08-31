@@ -82,6 +82,7 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
                 onServerTest={testFormula}
                 onSimulate={simulate}
                 entityLabel={entityLabel(entityType)}
+                entityType={entityType}
               />
             </div>
           ),

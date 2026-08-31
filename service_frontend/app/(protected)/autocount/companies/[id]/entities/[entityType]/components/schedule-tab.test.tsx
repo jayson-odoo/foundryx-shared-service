@@ -42,6 +42,7 @@ function task(over: Partial<AutocountEtlTask> = {}): AutocountEtlTask {
     sourceConfig: config(),
     resultColumns: ['AccNo'],
     lastPreviewAt: null,
+    lastPreviewFailedCount: null,
     lastRunAt: null,
     lastRunError: null,
     lastRunErrorCode: null,

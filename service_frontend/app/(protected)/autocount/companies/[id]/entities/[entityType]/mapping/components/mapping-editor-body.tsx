@@ -32,6 +32,11 @@ export interface MappingEditorBodyProps {
     rows: AutocountMappingWriteRow[],
   ) => Promise<AutocountSimulateResult>;
   entityLabel: string;
+  /** The task's canonical entity key + the current preview's column types -
+   * drives the `status` seed-formula pre-fill (S5 review SHOULD-FIX 4c).
+   * Both optional so the API-path editor (no typed columns) is unaffected. */
+  entityType?: string;
+  columnTypes?: Record<string, string>;
 }
 
 /**
@@ -49,6 +54,8 @@ export function MappingEditorBody({
   onServerTest,
   onSimulate,
   entityLabel,
+  entityType = '',
+  columnTypes = {},
 }: MappingEditorBodyProps) {
   const builderRow = draft.builderIndex !== null ? draft.rows[draft.builderIndex] : null;
   const builderPreset = builderRow
@@ -100,6 +107,8 @@ export function MappingEditorBody({
         onAddRow={draft.onAddRow}
         onRemoveRow={draft.onRemoveRow}
         onBuildRow={draft.setBuilderIndex}
+        entityType={entityType}
+        columnTypes={columnTypes}
       />
 
       {builderRow && (
