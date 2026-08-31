@@ -78,6 +78,28 @@ RUN_FAILED = "FAILED"
 RUN_ABORTED = "ABORTED"
 RUN_OUTCOMES = (RUN_SUCCESS, RUN_FAILED, RUN_ABORTED)
 
+# ── direct-DB ETL (plan 22 §2.4/2.5/2.7) ──────────────────────────────────────
+# Source implementations behind the ``EntitySource`` seam.
+SOURCE_IMPL_AUTOCOUNT_READ = "autocount_read"  # HTTP wrapper (plans 13-16)
+SOURCE_IMPL_SQL_DB = "sql_db"  # direct read-only SQL source (plan 22)
+# Task lifecycle of a DB extraction (AC-22-18/19): configured but never
+# activated → activate-once gate passed, scheduled runs push → held.
+ETL_STATUS_DRAFT = "draft"
+ETL_STATUS_ACTIVE = "active"
+ETL_STATUS_PAUSED = "paused"
+ETL_STATUSES = (ETL_STATUS_DRAFT, ETL_STATUS_ACTIVE, ETL_STATUS_PAUSED)
+# What a staged record asks the sink to do (AC-22-21). ``delete`` rows are
+# reconcile's delete intents; everything before plan 22 was an upsert.
+STAGED_OP_UPSERT = "upsert"
+STAGED_OP_DELETE = "delete"
+STAGED_OPS = (STAGED_OP_UPSERT, STAGED_OP_DELETE)
+# How a run was started (AC-22-17). Every pre-plan-22 run was ``manual``.
+RUN_MODE_MANUAL = "manual"
+RUN_MODE_INCREMENTAL = "incremental"
+RUN_MODE_RECONCILE = "reconcile"
+RUN_MODE_SKIPPED = "skipped"
+RUN_MODES = (RUN_MODE_MANUAL, RUN_MODE_INCREMENTAL, RUN_MODE_RECONCILE, RUN_MODE_SKIPPED)
+
 
 class AcCompany(AutocountBase):
     """One AutoCount company database.
@@ -120,6 +142,11 @@ class AcCompany(AutocountBase):
     # Core ``connections.id`` of the ``consumer`` connection to push to - plain
     # indexed column, not an FK (BL-030). NULL when ``sink_impl='logging'``.
     sink_connection_id = Column(String, nullable=True, index=True)
+    # The Sorento ``companies.code`` this company is anchored to (plan 22
+    # Appendix A6 - every ingest/read/delete call is company-anchored).
+    # Required when ``sink_impl='sorento'`` (validated at activation, S2);
+    # NULL for the logging sink and for every pre-plan-22 row.
+    sorento_company_code = Column(String, nullable=True)
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
@@ -168,8 +195,73 @@ class AcEntityConfig(AutocountBase):
     initial_lookback_days = Column(Integer, nullable=False, default=30)
     enabled = Column(Boolean, nullable=False, default=True)
 
+    # ── direct-DB ETL task (plan 22 §2.4) - the per-(company, entity) task IS
+    # this row (decision Q13: no free-form task entity). ───────────────────
+    # For ``source_impl='sql_db'``: ``{connectionId, query, lineQuery?,
+    # keyColumns[], watermarkColumn?, comparedColumns[], fromDate?,
+    # incrementalMinutes, reconcileMode, reconcileHours?, reconcileAt?}``.
+    # camelCase keys (the wire shape is stored as-is); NULL = never configured.
+    source_config = Column(_JSON, nullable=True)
+    # ``draft`` until the activate-once gate passes (AC-22-18). A
+    # ``server_default`` so existing rows land on ``draft`` on the ADD.
+    etl_status = Column(
+        String, nullable=False, default=ETL_STATUS_DRAFT, server_default="draft"
+    )
+    activated_at = Column(UTCDateTime(), nullable=True)
+    # The sweep's due-selection keys (AC-22-13) - INDEXED, one query per tick.
+    next_incremental_at = Column(UTCDateTime(), nullable=True, index=True)
+    next_reconcile_at = Column(UTCDateTime(), nullable=True, index=True)
+    # The last run's failure, surfaced on the task (AC-22-19) - never silent.
+    last_run_error = Column(Text, nullable=True)
+    # The last run's TASK-LEVEL error code (plan 22 Appendix A6/A7): a Sorento
+    # company-anchor 422 lands HERE (COMPANY_ANCHOR_REQUIRED | UNKNOWN_COMPANY |
+    # COMPANY_BINDING_INVALID | COMPANY_ANCHOR_AMBIGUOUS), never per record.
+    last_run_error_code = Column(String, nullable=True)
+    # Result column names of the SAVED query, from the validation preview each
+    # PUT runs (AC-22-11) - the Mapping tab's source picker reads them without
+    # re-running the query (AC-22-09). NULL = no query saved yet.
+    result_columns = Column(_JSON, nullable=True)
+    # When the last SUCCESSFUL dry-run preview completed (AC-22-18). CLEARED by
+    # every config save - a preview of a superseded query must never unlock
+    # Activate. NULL = Activate withheld.
+    last_preview_at = Column(UTCDateTime(), nullable=True)
+    # The last preview's genuinely-``failed`` prediction count (S5 review
+    # SHOULD-FIX 4b) - a preview that COMPLETES but reports failed rows still
+    # stamps ``last_preview_at`` (the dry run itself worked), so that alone is
+    # not proof the task is safe to activate. ``retryable`` rows are NOT
+    # counted here - a legitimate dependency-order carry-over (AC-22-23) must
+    # stay activatable. NULL alongside a NULL ``last_preview_at`` = never
+    # previewed; CLEARED (like ``last_preview_at``) by every config save.
+    last_preview_failed_count = Column(Integer, nullable=True)
+    # When the last run finished, whatever its outcome (AC-22-17).
+    last_run_at = Column(UTCDateTime(), nullable=True)
+
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
+
+
+class AcRowHash(AutocountBase):
+    """Reconcile state (plan 22 §2.4/2.5, AC-22-16): ONE row per source
+    record ever seen by a DB task, holding only the hash of its compared
+    columns - never a copy of the row.
+
+    The diff on a reconcile run is hash-vs-hash: a new ``source_ref`` stages an
+    add, a changed hash an update, an equal hash nothing, and a ref absent from
+    the extract becomes a delete intent. A confirmed delete removes the row so
+    a later re-appearance at source stages as an add again (AC-22-21).
+    """
+
+    __tablename__ = "ac_row_hash"
+    __table_args__ = (
+        Index("ix_ac_row_hash_scope", "tenant_id", "company_id", "entity_type"),
+    )
+
+    tenant_id = Column(String, primary_key=True)
+    company_id = Column(String, primary_key=True)
+    entity_type = Column(String, primary_key=True)
+    source_ref = Column(String, primary_key=True)
+    row_hash = Column(String, nullable=False)
+    last_seen_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
 
 class AcWatermark(AutocountBase):
@@ -285,6 +377,9 @@ class AcStagedRecord(AutocountBase):
 
     status = Column(String, nullable=False, default=STAGED)
     error = Column(Text, nullable=True)
+    # ``upsert`` (every pre-plan-22 row) or ``delete`` (a reconcile delete
+    # intent, AC-22-21). Push routes on this - a delete carries no canonical.
+    op = Column(String, nullable=False, default=STAGED_OP_UPSERT, server_default="upsert")
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     pushed_at = Column(UTCDateTime(), nullable=True)
@@ -308,7 +403,9 @@ class AcSyncRun(AutocountBase):
     tenant_id = Column(String, nullable=False, index=True)
     company_id = Column(String, nullable=False, index=True)
     entity_type = Column(String, nullable=False)
-    job_id = Column(String, nullable=False, index=True)
+    # NULLABLE since plan 22 S2: a ``skipped`` overlap tick (AC-22-14) records
+    # a run row without ever enqueuing a job.
+    job_id = Column(String, nullable=True, index=True)
 
     window_from = Column(UTCDateTime(), nullable=True)
     window_to = Column(UTCDateTime(), nullable=True)
@@ -317,6 +414,17 @@ class AcSyncRun(AutocountBase):
     staged_count = Column(Integer, nullable=False, default=0)
     failed_count = Column(Integer, nullable=False, default=0)
     pushed_count = Column(Integer, nullable=False, default=0)
+    # ── run-history cost columns (plan 22 §2.7, AC-22-17) ───────────────────
+    # How the run started (``manual`` for every pre-plan-22 row); how many
+    # source rows were scanned (volume × frequency = cost); adds/updates
+    # staged by the hash-diff classification; delete intents; why a skipped
+    # tick never ran.
+    mode = Column(String, nullable=False, default=RUN_MODE_MANUAL, server_default="manual")
+    rows_scanned = Column(Integer, nullable=False, default=0, server_default="0")
+    added_count = Column(Integer, nullable=False, default=0, server_default="0")
+    updated_count = Column(Integer, nullable=False, default=0, server_default="0")
+    deleted_count = Column(Integer, nullable=False, default=0, server_default="0")
+    skip_reason = Column(Text, nullable=True)
 
     outcome = Column(String, nullable=True)  # one of RUN_OUTCOMES
     error = Column(Text, nullable=True)

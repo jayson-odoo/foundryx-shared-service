@@ -237,7 +237,7 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
           {config.tabs.map((tab) => {
             const Icon = tab.icon;
             return (
-              <TabsTrigger key={tab.id} value={tab.id}>
+              <TabsTrigger key={tab.id} value={tab.id} disabled={tab.disabled}>
                 {Icon && <Icon />}
                 {tab.label}
               </TabsTrigger>

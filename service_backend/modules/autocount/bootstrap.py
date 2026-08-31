@@ -13,6 +13,7 @@ job handler are filled in by later slices - the hooks are wired now so the
 module contract is complete from day one.
 """
 from pathlib import Path
+from typing import Any, Dict
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -26,6 +27,36 @@ from .db import AUTOCOUNT_SCHEMA, AutocountBase
 
 MODULE_NAME = "autocount"
 MODULE_CSV = Path(__file__).resolve().parent / "permissions" / "permissions.csv"
+
+
+def _evict_deleted_connection(session: Session, ev: Dict[str, Any]) -> None:
+    """CRUD event-bus subscriber (S6 merge-gate review SHOULD-FIX 4).
+
+    ``sql_source.runtime.SqlSourceRuntime.evict`` existed with no production
+    caller: deleting a ``sql_database`` connection left its cached engine (up
+    to 5 live pooled sessions to the CUSTOMER's own database) and its
+    ``SCHEMA_CACHE`` entry alive until the process restarted. There is no
+    core connection-deleted hook to import into (core must never import a
+    module) - but the core CRUD event bus already emits ``connection``/
+    ``deleted`` on every delete (``IntegrationService.delete``), so this
+    registers as an ordinary subscriber (``register_event_subscriber``,
+    plan sprint-2/10 D5 - the audit-log seam, generic to any consumer) at
+    boot instead of a bespoke hook. Runs for EVERY connection delete, any
+    provider - harmless no-op when the id was never a SQL-source engine
+    (nothing cached for it).
+    """
+    if ev.get("entity_type") != "connection" or ev.get("action") != "deleted":
+        return
+    connection_id = ev.get("record_id")
+    if not connection_id:
+        return
+    from .sql_source.introspect import SCHEMA_CACHE
+    from .sql_source.runtime import RUNTIME
+
+    RUNTIME.evict(connection_id)
+    tenant_id = ev.get("tenant_id")
+    if tenant_id:
+        SCHEMA_CACHE.invalidate(f"{tenant_id}:{connection_id}")
 
 
 def register_capabilities() -> None:
@@ -61,9 +92,11 @@ def register_engine_entities() -> None:
     describe in later slices.
     """
     from app.integrations import register_provider
+    from app.workflow_engine.entity_events import register_event_subscriber
 
     from .provider import AutoCountProvider
     from .sorento_provider import SorentoProvider
+    from .sql_provider import SqlDatabaseProvider
     from .sync import register_autocount_sync_handler
 
     register_provider(AutoCountProvider())
@@ -71,7 +104,14 @@ def register_engine_entities() -> None:
     # provider so the Sorento connection is configured from the same
     # `/settings/integrations` surface (AC-14-15).
     register_provider(SorentoProvider())
+    # The direct-DB read-only source (plan 22, AC-22-01) - a second ``erp``
+    # provider, configured from the same surface.
+    register_provider(SqlDatabaseProvider())
     register_autocount_sync_handler()
+    # S6 review SHOULD-FIX 4 - drop the cached engine + schema cache the
+    # instant a ``sql_database`` connection is deleted (see the subscriber's
+    # own docstring). Idempotent (the bus dedupes by function identity).
+    register_event_subscriber(_evict_deleted_connection)
 
 
 def create_schema_and_tables(engine: Engine) -> None:
@@ -128,6 +168,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     """
     from .backfill import (
         backfill_entity_config_defaults,
+        backfill_etl_defaults,
         backfill_sink_impl_defaults,
         default_schema,
     )
@@ -140,6 +181,9 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # ``'logging'`` no-op (its pre-hop-2 behaviour), not sit NULL against a
     # NOT NULL column on a create_all-first host.
     backfill_sink_impl_defaults(db, schema=schema)
+    # 0.3.0 → plan 22: every pre-existing task/staged/run row gets its ETL
+    # defaults (draft / upsert / manual) on a create_all-first host too.
+    backfill_etl_defaults(db, schema=schema)
 
     service = CompanyService(db)
     page = 0

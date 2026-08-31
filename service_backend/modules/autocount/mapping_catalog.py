@@ -37,9 +37,25 @@ from typing import Dict, List, Optional, Tuple
 from .canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
 from .canonical.masters import (
     ENTITY_CUSTOMER,
+    ENTITY_PRODUCT,
+    ENTITY_PRODUCT_CATEGORY,
+    ENTITY_SALES_AGENT,
     ENTITY_SUPPLIER,
+    ENTITY_UNIT_OF_MEASURE,
+    ENTITY_WAREHOUSE,
     CanonicalCustomer,
+    CanonicalProduct,
+    CanonicalProductCategory,
+    CanonicalSalesAgent,
     CanonicalSupplier,
+    CanonicalUnitOfMeasure,
+    CanonicalWarehouse,
+)
+from .canonical.documents import (
+    ENTITY_PURCHASE_ORDER,
+    ENTITY_SALES_ORDER,
+    CanonicalPurchaseOrder,
+    CanonicalSalesOrder,
 )
 
 # Identity is minted, never mapped (masters.py) - so it is not a mappable target.
@@ -48,12 +64,20 @@ _MINTED_FIELDS = ("source_ref",)
 # From Sorento's canonical_masters.py (code, name) + masters.py (is_active).
 _REQUIRED_MASTER_FIELDS = frozenset({"code", "name", "is_active"})
 
+# Sorento's canonical_documents.py marks `so_number`/`po_number` and `status`
+# required (plan 22 S5, Appendix A6 item 2/3) - the mapping editor's Sorento
+# picker must say so for a document exactly like it already does for a master.
+_REQUIRED_DOCUMENT_FIELDS: Dict[str, frozenset] = {
+    ENTITY_SALES_ORDER: frozenset({"so_number", "status"}),
+    ENTITY_PURCHASE_ORDER: frozenset({"po_number", "status"}),
+}
+
 
 @dataclass(frozen=True)
 class SorentoFieldDef:
     """One accepted Sorento target: its canonical/Sorento name + required-ness.
 
-    For masters the canonical field name IS the Sorento-facing name (masters.py),
+    For masters/documents the canonical field name IS the Sorento-facing name,
     so this single value serves both the wire label and the storage key.
     """
 
@@ -61,9 +85,11 @@ class SorentoFieldDef:
     required: bool
 
 
-def _accepted(sink_fields: Tuple[str, ...]) -> Tuple[SorentoFieldDef, ...]:
+def _accepted(
+    sink_fields: Tuple[str, ...], required: frozenset = _REQUIRED_MASTER_FIELDS
+) -> Tuple[SorentoFieldDef, ...]:
     return tuple(
-        SorentoFieldDef(field=name, required=name in _REQUIRED_MASTER_FIELDS)
+        SorentoFieldDef(field=name, required=name in required)
         for name in sink_fields
         if name not in _MINTED_FIELDS
     )
@@ -76,6 +102,24 @@ SORENTO_FIELDS: Dict[str, Tuple[SorentoFieldDef, ...]] = {
     # GRN is a document (lines nested), not a master sink - it has no accepted
     # master-field set, so the mapping editor's Sorento picker is empty for it.
     ENTITY_GOODS_RECEIVED_NOTE: (),
+    # Plan 22 S4 masters fan-out (AC-22-23) - without an entry here the PUT
+    # mapping guard's `accepted_field_names` is empty and EVERY row a database
+    # task's Mapping tab tries to save 422s "not a Sorento field accepted for
+    # <entity>" (the accepted set is entity-agnostic code, DB-source or not).
+    ENTITY_PRODUCT_CATEGORY: _accepted(CanonicalProductCategory.SINK_FIELDS),
+    ENTITY_UNIT_OF_MEASURE: _accepted(CanonicalUnitOfMeasure.SINK_FIELDS),
+    ENTITY_WAREHOUSE: _accepted(CanonicalWarehouse.SINK_FIELDS),
+    ENTITY_PRODUCT: _accepted(CanonicalProduct.SINK_FIELDS),
+    ENTITY_SALES_AGENT: _accepted(CanonicalSalesAgent.SINK_FIELDS),
+    # Plan 22 S5 (AC-22-24) - HEADER fields only; a document's LINE fields are
+    # a fixed column-name convention, never operator-mapped (mapping.py's
+    # `document_line_rows`), so they carry no entry here.
+    ENTITY_SALES_ORDER: _accepted(
+        CanonicalSalesOrder.SINK_FIELDS, _REQUIRED_DOCUMENT_FIELDS[ENTITY_SALES_ORDER]
+    ),
+    ENTITY_PURCHASE_ORDER: _accepted(
+        CanonicalPurchaseOrder.SINK_FIELDS, _REQUIRED_DOCUMENT_FIELDS[ENTITY_PURCHASE_ORDER]
+    ),
 }
 
 

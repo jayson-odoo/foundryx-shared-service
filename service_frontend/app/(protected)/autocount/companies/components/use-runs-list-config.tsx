@@ -9,28 +9,102 @@ import { StatusBadge } from '@/components/platform/status-badge';
 import { embeddedListConfig } from '@/components/platform/resource-list/embedded-list-config';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
 import { useDatetime } from '@/hooks/use-datetime';
+import { formatDurationMs } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
-import type { AutocountRunOutcome, AutocountSyncRun } from '@/types/autocount';
+import type {
+  AutocountRunMode,
+  AutocountRunOutcome,
+  AutocountSyncRun,
+} from '@/types/autocount';
 import type { ListQuery } from '@/types/resource';
 import {
+  AC_RUN_MODE_REGISTRY,
   AC_RUN_OUTCOME_REGISTRY,
   acCompanyHref,
   acReviewHref,
+  acTaskHref,
   entityLabel,
 } from '../../components/autocount-meta';
 
+export interface RunsListOptions {
+  /**
+   * `company` (default) = every entity's runs on the company's Runs tab.
+   * `task` (plan 22 S2, AC-22-17) = ONE entity's history on its task editor:
+   * the cost columns (mode, rows scanned, added/updated/deleted/failed,
+   * duration) so volume × frequency is judgeable per run; a skipped tick
+   * renders its reason, a failed run its error. Requires `entityType`.
+   */
+  variant?: 'company' | 'task';
+  entityType?: string;
+}
+
+/** A count cell; `-` where the number does not apply (e.g. deletes on an
+ * incremental run, anything on a skipped tick). */
+function Count({ value, muted = false }: { value: number; muted?: boolean }) {
+  return (
+    <span
+      className={
+        value > 0 && !muted ? 'text-sm tabular-nums text-foreground' : 'text-sm tabular-nums text-muted-foreground'
+      }
+    >
+      {muted ? '-' : value}
+    </span>
+  );
+}
+
 /**
- * Sync run history embedded on a company's Runs tab. A row opens the batch's
- * review surface - for a decided batch that surface is read-only, which is the
- * honest way to show what was pushed.
+ * Sync run history embedded on a company's Runs tab (and, in `task` mode, on
+ * the DB task editor's Runs tab). A row opens the batch's review surface - the
+ * per-record verdicts live there - for a decided batch that surface is
+ * read-only, which is the honest way to show what was pushed.
  */
 export function useAutocountRunsListConfig(
   companyId: string,
+  options: RunsListOptions = {},
 ): ResourceListConfig<AutocountSyncRun> {
   const { formatDateTime } = useDatetime();
+  const variant = options.variant ?? 'company';
+  const entityType = options.entityType;
 
   return useMemo<ResourceListConfig<AutocountSyncRun>>(() => {
-    const columns: ColumnDef<AutocountSyncRun>[] = [
+    const outcomeCell = (r: AutocountSyncRun) => (
+      <div className="flex min-w-0 flex-col items-start gap-1">
+        <div className="flex flex-wrap items-start gap-1">
+          {r.outcome ? (
+            <StatusBadge
+              status={r.outcome as AutocountRunOutcome}
+              registry={AC_RUN_OUTCOME_REGISTRY}
+              size="sm"
+            />
+          ) : (
+            <Badge variant="info" appearance="light" size="sm">
+              Running
+            </Badge>
+          )}
+          {/* A truncated sync must never read as a complete one (AC-13-46). */}
+          {r.truncated && (
+            <Badge variant="warning" appearance="light" size="sm">
+              Truncated
+            </Badge>
+          )}
+          {variant === 'task' &&
+            r.outcome === 'SUCCESS' &&
+            r.addedCount + r.updatedCount + r.deletedCount + r.failedCount === 0 && (
+              <Badge variant="secondary" appearance="light" size="sm">
+                No changes
+              </Badge>
+            )}
+        </div>
+        {/* Why a tick was skipped / why a run failed - stated on the row, never
+            buried in a detail page (AC-22-14/19). */}
+        {r.skipReason && (
+          <ClampedText text={r.skipReason} lines={2} className="text-xs text-muted-foreground" />
+        )}
+        {r.error && <ClampedText text={r.error} lines={2} className="text-xs text-destructive" />}
+      </div>
+    );
+
+    const companyColumns: ColumnDef<AutocountSyncRun>[] = [
       {
         id: 'entityType',
         accessorFn: (row) => row.entityType,
@@ -49,27 +123,7 @@ export function useAutocountRunsListConfig(
         accessorFn: (row) => row.outcome ?? '',
         meta: { headerTitle: 'Outcome' },
         header: ({ column }) => <DataGridColumnHeader title="Outcome" column={column} />,
-        cell: ({ row }) => (
-          <div className="flex flex-wrap items-start gap-1">
-            {row.original.outcome ? (
-              <StatusBadge
-                status={row.original.outcome as AutocountRunOutcome}
-                registry={AC_RUN_OUTCOME_REGISTRY}
-                size="sm"
-              />
-            ) : (
-              <Badge variant="info" appearance="light" size="sm">
-                Running
-              </Badge>
-            )}
-            {/* A truncated sync must never read as a complete one (AC-13-46). */}
-            {row.original.truncated && (
-              <Badge variant="warning" appearance="light" size="sm">
-                Truncated
-              </Badge>
-            )}
-          </div>
-        ),
+        cell: ({ row }) => outcomeCell(row.original),
         size: 170,
         enableSorting: false,
       },
@@ -123,19 +177,106 @@ export function useAutocountRunsListConfig(
       },
     ];
 
+    const countColumn = (
+      id: 'rowsScanned' | 'addedCount' | 'updatedCount' | 'deletedCount' | 'failedCount',
+      title: string,
+      appliesTo: (r: AutocountSyncRun) => boolean,
+    ): ColumnDef<AutocountSyncRun> => ({
+      id,
+      accessorFn: (row) => row[id],
+      meta: { headerTitle: title },
+      header: ({ column }) => <DataGridColumnHeader title={title} column={column} />,
+      cell: ({ row }) => <Count value={row.original[id]} muted={!appliesTo(row.original)} />,
+      size: 76,
+      enableSorting: false,
+    });
+    const ran = (r: AutocountSyncRun) => r.mode !== 'skipped';
+
+    const taskColumns: ColumnDef<AutocountSyncRun>[] = [
+      {
+        id: 'startedAt',
+        accessorFn: (row) => row.startedAt,
+        meta: { headerTitle: 'Started', reorderable: false },
+        header: ({ column }) => <DataGridColumnHeader title="Started" column={column} />,
+        cell: ({ row }) => (
+          <span className="text-sm text-foreground">
+            {row.original.startedAt ? formatDateTime(row.original.startedAt) : '-'}
+          </span>
+        ),
+        size: 160,
+        enableSorting: false,
+      },
+      {
+        id: 'mode',
+        accessorFn: (row) => row.mode,
+        meta: { headerTitle: 'Mode' },
+        header: ({ column }) => <DataGridColumnHeader title="Mode" column={column} />,
+        cell: ({ row }) => (
+          <div className="flex items-start">
+            <StatusBadge
+              status={row.original.mode as AutocountRunMode}
+              registry={AC_RUN_MODE_REGISTRY}
+              size="sm"
+            />
+          </div>
+        ),
+        size: 116,
+        enableSorting: false,
+      },
+      countColumn('rowsScanned', 'Scanned', ran),
+      countColumn('addedCount', 'Added', ran),
+      countColumn('updatedCount', 'Updated', ran),
+      countColumn('deletedCount', 'Deleted', (r) => r.mode === 'reconcile'),
+      countColumn('failedCount', 'Failed', ran),
+      {
+        id: 'durationMs',
+        accessorFn: (row) => row.durationMs ?? 0,
+        meta: { headerTitle: 'Duration' },
+        header: ({ column }) => <DataGridColumnHeader title="Duration" column={column} />,
+        cell: ({ row }) => (
+          <span className="text-sm tabular-nums text-muted-foreground">
+            {formatDurationMs(row.original.durationMs)}
+          </span>
+        ),
+        size: 90,
+        enableSorting: false,
+      },
+      {
+        id: 'outcome',
+        accessorFn: (row) => row.outcome ?? '',
+        meta: { headerTitle: 'Outcome' },
+        header: ({ column }) => <DataGridColumnHeader title="Outcome" column={column} />,
+        cell: ({ row }) => outcomeCell(row.original),
+        size: 220,
+        enableSorting: false,
+      },
+    ];
+
+    const backHref =
+      variant === 'task' && entityType
+        ? acTaskHref(companyId, entityType, 'runs')
+        : acCompanyHref(companyId);
+
     return {
       ...embeddedListConfig<AutocountSyncRun>({
-        viewKey: 'autocount.runs.list',
-        columns,
+        viewKey: variant === 'task' ? 'autocount.task-runs.list' : 'autocount.runs.list',
+        columns: variant === 'task' ? taskColumns : companyColumns,
         getRowId: (r) => r.id,
-        rowHref: (r) => acReviewHref(r.jobId, acCompanyHref(companyId)),
+        // A skipped tick enqueued nothing - there is no batch to open ('#' =
+        // the shell's no-navigation contract).
+        rowHref: (r) => (r.jobId ? acReviewHref(r.jobId, backHref) : '#'),
         fetcher: (q: ListQuery) =>
-          autocountService.listRuns(companyId, {
-            page: q.page,
-            pageSize: q.pageSize,
-          }),
+          variant === 'task' && entityType
+            ? autocountService.listEtlRuns(companyId, entityType, {
+                page: q.page,
+                pageSize: q.pageSize,
+              })
+            : autocountService.listRuns(companyId, {
+                page: q.page,
+                pageSize: q.pageSize,
+              }),
       }),
       enableStatusViews: false,
     };
-  }, [companyId, formatDateTime]);
+  }, [companyId, entityType, formatDateTime, variant]);
 }

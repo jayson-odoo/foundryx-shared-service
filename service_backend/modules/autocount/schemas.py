@@ -74,6 +74,10 @@ class EntityConfigItem(ApiModel):
     watermarkAt: Optional[datetime] = Field(default=None, validation_alias="watermark_at")
     consecutiveFailures: int = Field(default=0, validation_alias="consecutive_failures")
     lastError: Optional[str] = Field(default=None, validation_alias="last_error")
+    # The DB-task lifecycle (plan 22 §2.4, AC-22-23) - surfaced on the LIST so
+    # the task editor's Review & Activate tab can warn a `product` task's
+    # activation of a missing category/UOM prerequisite without a second fetch.
+    etlStatus: str = Field(default="draft", validation_alias="etl_status")
 
 
 class EntityConfigUpdate(ApiModel):
@@ -81,11 +85,17 @@ class EntityConfigUpdate(ApiModel):
 
     Deliberately narrow. Changing the lookback does NOT re-fetch history - it
     only governs the window used when no watermark exists yet.
+
+    ``sourceImpl`` (plan 22, AC-22-08) switches the entity between the vendor
+    API path and the direct-DB task. The task's ``source_config`` survives the
+    switch either way, and an ACTIVE task switched back to the API path is
+    paused (never left auto-pushing under a source that no longer runs it).
     """
 
     model_config = ConfigDict(populate_by_name=True)
 
     initialLookbackDays: Optional[int] = None
+    sourceImpl: Optional[str] = None
 
 
 class CompanyItem(ApiModel):
@@ -103,6 +113,12 @@ class CompanyItem(ApiModel):
     sinkConnectionId: Optional[str] = Field(
         default=None, validation_alias="sink_connection_id"
     )
+    # The Sorento company this company delivers INTO (plan 22 Appendix A6) -
+    # sent as the top-level ``companyCode`` on every ingest/read/deletion call.
+    # NULL for a logging-sink company and for every pre-plan-22 row.
+    sorentoCompanyCode: Optional[str] = Field(
+        default=None, validation_alias="sorento_company_code"
+    )
     createdAt: Optional[datetime] = Field(default=None, validation_alias="created_at")
 
 
@@ -111,13 +127,17 @@ class CompanySinkUpdate(ApiModel):
 
     ``sinkImpl='logging'`` clears the target (the no-op default);
     ``sinkImpl='sorento'`` requires a ``sinkConnectionId`` naming a Sorento
-    ``consumer`` connection for this tenant.
+    ``consumer`` connection for this tenant AND (plan 22 Appendix A6) a
+    ``sorentoCompanyCode`` - the anchor Sorento resolves on every call. Blank
+    with ``sorento`` is a 422 ``{fieldErrors}``, never a stored configuration
+    that is guaranteed to answer ``COMPANY_ANCHOR_REQUIRED``.
     """
 
     model_config = ConfigDict(populate_by_name=True)
 
     sinkImpl: str
     sinkConnectionId: Optional[str] = None
+    sorentoCompanyCode: Optional[str] = None
 
 
 class CompanyListResponse(ApiModel):
@@ -346,7 +366,8 @@ class SyncRunItem(ApiModel):
 
     id: str
     entityType: str = Field(validation_alias="entity_type")
-    jobId: str = Field(validation_alias="job_id")
+    # NULL for a ``skipped`` overlap tick - it never enqueued a job (AC-22-14).
+    jobId: Optional[str] = Field(default=None, validation_alias="job_id")
     windowFrom: Optional[datetime] = Field(default=None, validation_alias="window_from")
     windowTo: Optional[datetime] = Field(default=None, validation_alias="window_to")
     fetchedCount: int = Field(default=0, validation_alias="fetched_count")
@@ -363,6 +384,18 @@ class SyncRunItem(ApiModel):
     )
     startedAt: Optional[datetime] = Field(default=None, validation_alias="started_at")
     finishedAt: Optional[datetime] = Field(default=None, validation_alias="finished_at")
+    # ── cost columns (plan 22 §2.7, AC-22-17) ────────────────────────────────
+    # Volume x frequency is the thing an operator must be able to judge, so the
+    # rows READ and the wall time are first-class, not buried in a job payload.
+    # Every API-path run reports ``manual`` with zero adds/updates/deletes.
+    mode: str = "manual"
+    rowsScanned: int = Field(default=0, validation_alias="rows_scanned")
+    addedCount: int = Field(default=0, validation_alias="added_count")
+    updatedCount: int = Field(default=0, validation_alias="updated_count")
+    deletedCount: int = Field(default=0, validation_alias="deleted_count")
+    durationMs: Optional[int] = Field(default=None, validation_alias="duration_ms")
+    # Why a ``skipped`` tick never ran (the overlap guard, AC-22-14).
+    skipReason: Optional[str] = Field(default=None, validation_alias="skip_reason")
 
 
 class SyncRunListResponse(ApiModel):
@@ -374,6 +407,174 @@ class SyncRunListResponse(ApiModel):
 class ApprovalResponse(ApiModel):
     jobId: str
     result: Dict[str, Any]
+
+
+# ── direct-DB ETL (plan 22 S1, AC-22-04..07/11) ───────────────────────────────
+# The wire shapes are pinned by the phase-1 frontend contract
+# (``service_frontend/services/autocount-service.ts`` + ``types/autocount.ts``).
+
+
+class SqlConnectionItem(ApiModel):
+    """One tenant ``sql_database`` connection the task editor may pick."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    name: str
+    dialect: str
+    database: str
+
+
+class SqlColumnOut(ApiModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    name: str
+    type: str
+
+
+class SqlTableOut(ApiModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    name: str
+    columns: List[SqlColumnOut]
+
+
+class SqlSchemaNodeOut(ApiModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    name: str
+    tables: List[SqlTableOut]
+
+
+class SqlSchemaResponse(ApiModel):
+    """``GET /autocount/sql/connections/{id}/schema`` - the cached tree."""
+
+    connectionId: str
+    dialect: str
+    database: str
+    schemas: List[SqlSchemaNodeOut]
+    introspectedAt: datetime
+
+
+class SqlPreviewRequest(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    connectionId: str
+    query: str = ""
+    # Plan 22 S5 - previewing a document's ``lineQuery`` (which carries a
+    # ``:doc_key`` bound param). ``bindDocKey=false`` (every non-document
+    # preview) runs the query exactly as before; ``true`` binds ``docKey``
+    # (blank/None = a harmless NULL bind, just enough to let the query
+    # execute for column discovery) - a SEPARATE flag from the value itself
+    # because an ordinary header-query preview also sends no ``docKey`` and
+    # must NOT be treated as parameterized.
+    bindDocKey: bool = False
+    docKey: Optional[str] = None
+
+
+class SqlPreviewResponse(ApiModel):
+    """``POST /autocount/sql/preview`` - at most 100 rows; ``truncated`` is a
+    fact (a 101st row existed), so the UI never presents a capped preview as
+    the whole set (AC-22-06)."""
+
+    columns: List[SqlColumnOut]
+    rows: List[Dict[str, Any]]
+    rowCount: int
+    truncated: bool
+    durationMs: int
+
+
+class EtlSourceConfigIn(ApiModel):
+    """The task's ``source_config`` document as the editor sends it (plan 22
+    §2.4). Every field is optional on the wire - a draft may be partial; the
+    service validates + normalises (AC-22-11) and 422s with ``fieldErrors``."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    connectionId: Optional[str] = None
+    query: str = ""
+    lineQuery: Optional[str] = None
+    keyColumns: List[str] = []
+    watermarkColumn: Optional[str] = None
+    comparedColumns: List[str] = []
+    fromDate: Optional[str] = None
+    # ── documents only (plan 22 S5) ───────────────────────────────────────
+    # The header column the from-date filters (a document's OWN date, e.g.
+    # `DocDate` - deliberately separate from `watermarkColumn`/`LastModified`,
+    # which drives change detection, not the sync's date floor).
+    docDateColumn: Optional[str] = None
+    # The lineQuery result column carrying the line's own key (AutoCount's
+    # DtlKey) - composed into the line's `source_ref`.
+    lineKeyColumn: Optional[str] = None
+    # The lineQuery result columns minting the two master refs a line can
+    # carry (Appendix A6 item 3) - `product_ref` (required by Sorento) and
+    # `warehouse_ref` (optional).
+    lineProductColumn: Optional[str] = None
+    lineWarehouseColumn: Optional[str] = None
+    incrementalMinutes: int = 15
+    reconcileMode: str = "dailyAt"
+    reconcileHours: Optional[int] = None
+    reconcileAt: Optional[str] = None
+
+
+class EtlTaskUpdate(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    sourceConfig: EtlSourceConfigIn
+
+
+class EtlTaskResponse(ApiModel):
+    """``GET/PUT .../etl-task`` - one per-(company, entity) DB extraction task,
+    anchored on ``ac_entity_config`` (decision Q13).
+
+    Everything below ``sourceConfig`` is READ-ONLY on the wire: it is state the
+    server stamps (a save, a dry run, a run), never something the editor sends.
+    """
+
+    companyId: str
+    entityType: str
+    etlStatus: str
+    activatedAt: Optional[datetime] = None
+    sourceConfig: Dict[str, Any]
+    # The saved query's result columns, from the validation preview every PUT
+    # runs - the Mapping tab's source picker (AC-22-09).
+    resultColumns: List[str] = []
+    # The activate-once gate (AC-22-18); CLEARED by every config save.
+    lastPreviewAt: Optional[datetime] = None
+    # The last preview's genuinely-``failed`` count (S5 review SHOULD-FIX 4b) -
+    # NOT ``retryable``. ``activate_task`` refuses while this is truthy.
+    lastPreviewFailedCount: Optional[int] = None
+    lastRunAt: Optional[datetime] = None
+    # The LAST RUN's task-level failure (AC-22-19). A Sorento anchor 422 lands
+    # here with its code, never as a per-record failure (Appendix A6).
+    lastRunError: Optional[str] = None
+    lastRunErrorCode: Optional[str] = None
+    # ── schedule (plan 22 S3, AC-22-12/13) ───────────────────────────────────
+    # When the sweep will next fire each cadence - armed at activate/resume,
+    # recomputed on every PUT. NULL for a draft/paused task (the sweep never
+    # dispatches it).
+    nextIncrementalAt: Optional[datetime] = None
+    nextReconcileAt: Optional[datetime] = None
+
+
+class EtlPreviewResponse(ApiModel):
+    """``POST .../etl-task/preview`` - the initial-load dry run. ``preview`` is
+    the SAME shape the batch review renders; ``task`` is the task after it (its
+    ``lastPreviewAt`` stamped when the dry run completed)."""
+
+    task: EtlTaskResponse
+    preview: Dict[str, Any]
+
+
+class EtlRunStartResponse(ApiModel):
+    """``POST .../etl-task/run`` - the manual run just enqueued. ``runId`` is
+    empty until the handler creates the run row, which under a real worker
+    happens after this returns (eager dev/test runs it inline)."""
+
+    runId: str = ""
+    jobId: str
+    status: str
+    task: EtlTaskResponse
 
 
 class PreviewResponse(ApiModel):

@@ -116,6 +116,51 @@ def test_duplicate_provider_conflicts(client):
     assert res.status_code == 409
 
 
+SQL_DATABASE_PAYLOAD = {
+    "provider": "sql_database",
+    "name": "AED 2024",
+    "config": {
+        "dbType": "mssql",
+        "host": "db.acme.com",
+        "port": "1433",
+        "database": "AED_2024",
+        "username": "readonly_user",
+    },
+    "credentials": {"password": "s3cret"},
+}
+
+
+def test_erp_provider_allows_several_connections_per_tenant(client):
+    """``uq_connection_tenant_provider`` carves ``type='erp'`` out of the
+    one-per-provider rule (plan 22: one SQL connection per AutoCount company
+    database) - the service's 409 must mirror the index, not pre-empt it."""
+    h = _demo_headers(client)
+    first = _create(client, h, SQL_DATABASE_PAYLOAD)
+    second = _create(
+        client,
+        h,
+        {
+            **SQL_DATABASE_PAYLOAD,
+            "name": "AED 2025",
+            "config": {**SQL_DATABASE_PAYLOAD["config"], "database": "AED_2025"},
+        },
+    )
+    assert first["id"] != second["id"]
+    assert first["type"] == second["type"] == "erp"
+    ids = [c["id"] for c in client.get("/integrations/connections", headers=h).json()["data"]]
+    assert first["id"] in ids and second["id"] in ids
+    # Update never changes provider/type, and names are not unique - renaming
+    # the second onto the first's name is a plain 200.
+    res = client.patch(
+        f"/integrations/connections/{second['id']}", json={"name": "AED 2024"}, headers=h
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["name"] == "AED 2024"
+    # Non-erp providers keep the one-per-provider rule untouched.
+    _create(client, h)  # smtp
+    assert client.post("/integrations/connections", json=SMTP_PAYLOAD, headers=h).status_code == 409
+
+
 def test_unknown_provider_rejected(client):
     h = _demo_headers(client)
     res = client.post(

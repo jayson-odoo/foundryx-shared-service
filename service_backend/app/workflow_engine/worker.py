@@ -49,6 +49,10 @@ celery_app.conf.beat_schedule = {
     # self-reschedule was lost to a crash (omnichannel Slice 4). Defined in this
     # worker (the sole beat host); guarded so a missing module is a no-op.
     "retry-due-webhooks": {"task": "webhooks.retry_due", "schedule": 60.0},
+    # AutoCount direct-DB ETL sweep (plan 22 S3, AC-22-13) - selects due
+    # ACTIVE sql_db tasks and enqueues the SAME `autocount_sync` job the
+    # manual Run-now button uses. Same 60s tick; does no extraction itself.
+    "autocount-etl-sweep": {"task": "autocount.etl_sweep", "schedule": 60.0},
 }
 
 
@@ -135,6 +139,24 @@ def retry_due_webhooks_task() -> dict:
         logger.exception("webhook retry tick failed")
         db.rollback()
         return {"redriven": 0}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="autocount.etl_sweep")
+def autocount_etl_sweep_task() -> dict:
+    """The AutoCount ETL beat sweep (plan 22 S3, AC-22-13). Failure-isolated
+    like every other tick on this beat - a bad sweep never kills the loop."""
+    from app.database import SessionLocal
+    from modules.autocount.scheduler import sweep_etl_tasks
+
+    db = SessionLocal()
+    try:
+        return sweep_etl_tasks(db)
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("autocount ETL sweep tick failed")
+        db.rollback()
+        return {"fired": 0, "skipped": 0, "failed": 0}
     finally:
         db.close()
 

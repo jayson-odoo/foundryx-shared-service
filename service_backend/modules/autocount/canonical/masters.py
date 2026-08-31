@@ -39,12 +39,30 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from .base import CanonicalRecord
 
 ENTITY_SUPPLIER = "supplier"
 ENTITY_CUSTOMER = "customer"
+
+# Plan 22 S4 (AC-22-23) - masters fan-out. Every one of these is DB-source
+# ONLY (no confirmed AutoCount API payload backs them, unlike GRN/supplier/
+# customer - see ``services/company_service.py``'s ``SEEDED_ENTITIES`` guard),
+# and all five live in THIS leaf module for the same reason ``ENTITY_SALES_AGENT``
+# already did: it is the one place BOTH ``mapping.py`` (``ENTITY_PROFILES``,
+# ``UNQUALIFIED_REF_ENTITIES``) and ``services/etl_service.py`` (the entity
+# catalogue) import from without a cycle - ``mapping.py`` ->
+# ``services/etl_service.py`` would cycle back through
+# ``services/company_service.py`` -> ``mapping.py``.
+ENTITY_PRODUCT_CATEGORY = "product_category"
+ENTITY_UNIT_OF_MEASURE = "unit_of_measure"
+ENTITY_WAREHOUSE = "warehouse"
+ENTITY_PRODUCT = "product"
+# Sales agent DID start as a plain flat DB-extract entity with no canonical
+# dataclass (S2/S3); S4 gives it one (``CanonicalSalesAgent`` below) now that
+# it actually pushes to Sorento (Appendix A6 §6/A8).
+ENTITY_SALES_AGENT = "sales_agent"
 
 # The vendor entity names in the URL grammar: POST /api/{Entity}/Get{Entity}.
 VENDOR_ENTITY_SUPPLIER = "Creditor"
@@ -69,11 +87,20 @@ class CanonicalMaster(CanonicalRecord):
 
     ``last_modified`` is carried for staging, diffing and the watermark - it is
     NOT a Sorento field and is excluded from ``sink_payload`` below.
+
+    ``code``/``name`` carry the SAME length bounds as Sorento's own
+    ``CanonicalProductCategory``/``CanonicalUnitOfMeasure``/…
+    (``sorento_crm/.../app/schemas/canonical_masters.py`` - copied verbatim,
+    plan 22 S4 review S3): a value that would 422 there must fail HERE, at
+    mapping/preview time (``mapping.map_document`` already turns a pydantic
+    ``ValidationError`` into a per-field ``mapped.errors`` entry - see the
+    ``record_model(**header)`` guard), not arrive as a surprise push-time
+    quarantine an operator has no field-level explanation for.
     """
 
     source_doc_no: Optional[str] = None
-    code: Optional[str] = None
-    name: Optional[str] = None
+    code: Optional[str] = Field(None, max_length=100)
+    name: Optional[str] = Field(None, max_length=255)
     email: Optional[str] = None
     is_active: Optional[bool] = None
 
@@ -142,4 +169,168 @@ class CanonicalCustomer(CanonicalMaster):
     )
 
 
-MASTER_ENTITIES: List[str] = [ENTITY_SUPPLIER, ENTITY_CUSTOMER]
+class CanonicalProductCategory(CanonicalMaster):
+    """AutoCount stock category → Sorento ``product_categories`` (Appendix A6).
+
+    Products cannot be created without a category (``products.category_id`` is
+    NOT NULL on the consumer), so this must land before products or every
+    product reports ``retryable`` forever (AC-22-23's dependency order).
+    """
+
+    entity_type: str = ENTITY_PRODUCT_CATEGORY
+
+    description: Optional[str] = Field(None, max_length=255)
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "source_doc_no",
+        "code",
+        "name",
+        "description",
+        "is_active",
+    )
+
+
+class CanonicalUnitOfMeasure(CanonicalMaster):
+    """AutoCount UOM → Sorento ``units_of_measure``. Likewise a product
+    dependency (``products.base_uom_id`` is NOT NULL)."""
+
+    entity_type: str = ENTITY_UNIT_OF_MEASURE
+
+    description: Optional[str] = Field(None, max_length=255)
+    # Canonical divisibility, 0..4 (Sorento's own default is 0 - an upstream
+    # master that never expressed precision counts in whole units).
+    decimal_places: int = Field(0, ge=0, le=4)
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "source_doc_no",
+        "code",
+        "name",
+        "decimal_places",
+        "description",
+        "is_active",
+    )
+
+
+class CanonicalWarehouse(CanonicalMaster):
+    """AutoCount location/warehouse → Sorento ``warehouses``."""
+
+    entity_type: str = ENTITY_WAREHOUSE
+
+    location: Optional[str] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "source_doc_no",
+        "code",
+        "name",
+        "location",
+        "is_active",
+    )
+
+
+class CanonicalProduct(CanonicalMaster):
+    """AutoCount stock item → Sorento ``products`` (Appendix A6).
+
+    ``category_code``/``uom_code`` are Sorento's OWN ``product_categories.
+    category_code``/``units_of_measure.uom_code`` - resolved by CODE, never by
+    ESB integration ref (unlike a document line's ``product_ref``/
+    ``warehouse_ref``, which resolve by the pushed ``source_ref``). An
+    unresolvable code is a per-record ``retryable`` on Sorento's side, not a
+    422 here - the category/UOM may simply not have synced yet (AC-22-23), and
+    it drains automatically once it does.
+    """
+
+    entity_type: str = ENTITY_PRODUCT
+
+    description: Optional[str] = Field(None, max_length=255)
+    category_code: Optional[str] = None
+    uom_code: Optional[str] = None
+    brand_code: Optional[str] = None
+    list_price: Optional[Decimal] = Field(None, ge=0)
+    cost_price: Optional[Decimal] = Field(None, ge=0)
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "source_doc_no",
+        "code",
+        "name",
+        "description",
+        "category_code",
+        "uom_code",
+        "brand_code",
+        "list_price",
+        "cost_price",
+        "is_active",
+    )
+
+
+class CanonicalSalesAgent(CanonicalMaster):
+    """AutoCount sales agent → Sorento ``sales_agents`` (Appendix A6 §6/A8).
+
+    The only SHARED master (Sorento's row carries no ``company_id``): every
+    company's task resolves to the ONE row, via the unqualified
+    ``agent:{CODE}`` ref (``mapping.UNQUALIFIED_REF_ENTITIES``,
+    ``flat_source_ref``) - minted upper-cased and trimmed there, matching how
+    ``sales_agent_service`` stores and matches the code on Sorento's side.
+
+    No ``email``/``credit_limit``/``phone_number`` - Sorento's own
+    ``CanonicalSalesAgent`` carries none of those; only ``code``/
+    ``description``/``is_active``/``person_label``. ``name`` is inherited from
+    ``CanonicalMaster`` but is never sent (absent from ``SINK_FIELDS``) - the
+    agent has no name field on Sorento's side, only ``person_label``.
+
+    **A shared row is never deleted by one company's reconcile (plan 22 S4
+    review B2, Appendix A6 item 6).** Because the ref carries no company
+    qualifier, a company's extract missing a ref is not proof the agent is
+    gone globally - a sibling company may still use it. ``sync._stage_deletes``
+    therefore stages NO delete intent at all for this entity: it only drops
+    the reporting company's own ``ac_row_hash`` row for the missing ref (so a
+    later re-appearance stages as a fresh add, never a phantom update). An
+    agent that is genuinely retired must be removed in Sorento directly, out
+    of band - there is deliberately no path from a company's reconcile to a
+    shared agent's deletion.
+    """
+
+    entity_type: str = ENTITY_SALES_AGENT
+
+    description: Optional[str] = Field(None, max_length=255)
+    person_label: Optional[str] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "source_doc_no",
+        "code",
+        "description",
+        "is_active",
+        "person_label",
+    )
+
+    @field_validator("code")
+    @classmethod
+    def _upper_trim_code(cls, value: Optional[str]) -> Optional[str]:
+        """Normalized HERE, not left to the operator's mapping transform
+        (S4 review NIT): the shared ref (``mapping.flat_source_ref``,
+        ``UNQUALIFIED_REF_ENTITIES``) upper-cases and trims the SAME source
+        column that maps to this field, matching how Sorento's
+        ``sales_agent_service`` stores and matches the code. A plain "string"
+        mapping row (no operator-chosen "upper" transform) would otherwise
+        leave the PAYLOAD's ``code`` disagreeing with the REF it is filed
+        under - normalizing on construction makes that disagreement
+        impossible regardless of which transform a mapping row uses.
+        """
+        if value is None:
+            return value
+        return value.strip().upper()
+
+
+MASTER_ENTITIES: List[str] = [
+    ENTITY_SUPPLIER,
+    ENTITY_CUSTOMER,
+    ENTITY_PRODUCT_CATEGORY,
+    ENTITY_UNIT_OF_MEASURE,
+    ENTITY_WAREHOUSE,
+    ENTITY_PRODUCT,
+    ENTITY_SALES_AGENT,
+]

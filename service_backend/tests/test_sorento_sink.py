@@ -154,6 +154,40 @@ def test_failed_record_is_not_delivered_and_names_the_error():
     assert "Field required" in result.message
 
 
+def test_an_unrecognised_outcome_word_reads_retryable_never_failed():
+    """S2 review SHOULD-FIX 9: a NOVEL/blank outcome word (Sorento adds a
+    value we don't know about yet, or omits the field) must read the SAME
+    safe way as no verdict at all - quarantine (permanent) is reserved for
+    the EXPLICIT ``"failed"`` word (D13). Reading an unknown word as failed
+    would permanently quarantine a record over a future Sorento vocabulary
+    change we haven't even shipped support for."""
+    def responder(request):
+        ref = json.loads(request.content)["records"][0]["source_ref"]
+        return httpx.Response(200, json={
+            "summary": {"total": 1, "created": 0, "updated": 0, "failed": 0, "retryable": 0},
+            "records": [{"source_ref": ref, "outcome": "processing", "entity_id": None}]})
+    rec = _Recorder(responder)
+    sink = SorentoSink(base_url="http://x", api_key="k",
+                       entity_type="supplier", transport=rec.transport())
+    [result] = sink.write_batch([_supplier()], request_id="t")
+    assert result.delivered is False
+    assert result.ok is False
+    assert result.outcome == "retryable"
+
+
+def test_a_blank_outcome_word_reads_retryable_never_failed():
+    def responder(request):
+        ref = json.loads(request.content)["records"][0]["source_ref"]
+        return httpx.Response(200, json={
+            "summary": {"total": 1, "created": 0, "updated": 0, "failed": 0, "retryable": 0},
+            "records": [{"source_ref": ref, "outcome": "", "entity_id": None}]})
+    rec = _Recorder(responder)
+    sink = SorentoSink(base_url="http://x", api_key="k",
+                       entity_type="supplier", transport=rec.transport())
+    [result] = sink.write_batch([_supplier()], request_id="t")
+    assert result.outcome == "retryable"
+
+
 def test_retryable_is_a_loud_failure_not_a_silent_requeue():
     """AC-14-24: retryable cannot occur for masters. If Sorento ever reports it,
     it is a defect signal, surfaced as a non-delivered failure - never quietly

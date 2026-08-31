@@ -2,7 +2,15 @@
 
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { CalendarRange, RefreshCw, RotateCcw, SlidersHorizontal } from 'lucide-react';
+import {
+  ArrowLeftRight,
+  CalendarRange,
+  Database,
+  Globe,
+  RefreshCw,
+  RotateCcw,
+  SlidersHorizontal,
+} from 'lucide-react';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { Badge } from '@/components/ui/badge';
 import { ClampedText } from '@/components/platform/clamped-text';
@@ -16,6 +24,7 @@ import {
   AC_COMPANIES_MANAGE,
   AC_SYNC_RUN,
   entityLabel,
+  sourceImplLabel,
   syncModeLabel,
 } from '../../components/autocount-meta';
 
@@ -73,6 +82,10 @@ export interface EntitiesListConfigOptions {
   onRefetch: (entity: AutocountEntityConfig) => void | Promise<void>;
   /** Open the entity's field-mapping editor (AC-15-40). */
   onConfigureMapping: (entity: AutocountEntityConfig) => void;
+  /** Open the entity's Database-mode task editor (plan 22, AC-22-07). */
+  onConfigureTask: (entity: AutocountEntityConfig) => void;
+  /** Open the guarded API ⇄ Database source switch (plan 22 S2, AC-22-08). */
+  onChangeSource: (entity: AutocountEntityConfig) => void;
 }
 
 export function useAutocountEntitiesListConfig({
@@ -82,6 +95,8 @@ export function useAutocountEntitiesListConfig({
   onEditLookback,
   onRefetch,
   onConfigureMapping,
+  onConfigureTask,
+  onChangeSource,
 }: EntitiesListConfigOptions): ResourceListConfig<AutocountEntityConfig> {
   const { formatDateTime } = useDatetime();
 
@@ -149,6 +164,34 @@ export function useAutocountEntitiesListConfig({
           if (row) onConfigureMapping(row);
         },
       },
+      {
+        // The Database-mode task editor (plan 22). Offered ONLY on a
+        // database-sourced entity - on an API entity the editor would
+        // configure a query nothing runs (foolproof: only valid options).
+        id: 'configure-task',
+        label: 'Configure database query',
+        icon: Database,
+        surfaces: { row: true },
+        permission: AC_COMPANIES_MANAGE,
+        isVisible: (rows) => rows[0]?.sourceImpl === 'sql_db',
+        run: (rows) => {
+          const row = rows[0];
+          if (row) onConfigureTask(row);
+        },
+      },
+      {
+        // The guarded source switch (plan 22 S2, AC-22-08): a confirm dialog
+        // with the picker, since it changes how every later sync runs.
+        id: 'change-source',
+        label: 'Change source',
+        icon: ArrowLeftRight,
+        surfaces: { row: true },
+        permission: AC_COMPANIES_MANAGE,
+        run: (rows) => {
+          const row = rows[0];
+          if (row) onChangeSource(row);
+        },
+      },
     ];
 
     const columns: ColumnDef<AutocountEntityConfig>[] = [
@@ -168,6 +211,25 @@ export function useAutocountEntitiesListConfig({
           </div>
         ),
         size: 180,
+        enableSorting: false,
+      },
+      {
+        id: 'sourceImpl',
+        accessorFn: (row) => row.sourceImpl,
+        meta: { headerTitle: 'Source' },
+        header: ({ column }) => <DataGridColumnHeader title="Source" column={column} />,
+        cell: ({ row }) => {
+          const db = row.original.sourceImpl === 'sql_db';
+          return (
+            <div className="flex items-start">
+              <Badge variant={db ? 'primary' : 'secondary'} appearance="light" size="sm">
+                {db ? <Database className="size-3" /> : <Globe className="size-3" />}
+                {sourceImplLabel(row.original.sourceImpl)}
+              </Badge>
+            </div>
+          );
+        },
+        size: 140,
         enableSorting: false,
       },
       {
@@ -343,7 +405,9 @@ export function useAutocountEntitiesListConfig({
     companyActive,
     entities,
     formatDateTime,
+    onChangeSource,
     onConfigureMapping,
+    onConfigureTask,
     onEditLookback,
     onRefetch,
     onSync,

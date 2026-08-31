@@ -146,6 +146,82 @@ describe('MappingTable edit mode', () => {
   });
 });
 
+describe('MappingTable transform picker - ref-preset filtering (S5 review BLOCKER 2)', () => {
+  it('offers ONLY the matching ref preset for a *_ref field row', () => {
+    renderTable(true, {
+      rows: [{ sourcePath: 'CustomerCode', transform: 'ref_customer', formula: null, sorentoField: 'customer_ref' }],
+      sorentoFields: [{ field: 'customer_ref', required: false }],
+    });
+    fireEvent.click(screen.getByRole('combobox', { name: 'Transform for row 1' }));
+    const items = within(screen.getByRole('listbox')).getAllByRole('option').map((o) => o.textContent);
+    expect(items).toEqual(['Customer ref']);
+  });
+
+  it('never offers a ref preset for a non-ref field row', () => {
+    renderTable(true);
+    // row 1 targets `code` (not a ref field).
+    fireEvent.click(screen.getByRole('combobox', { name: 'Transform for row 1' }));
+    const items = within(screen.getByRole('listbox')).getAllByRole('option').map((o) => o.textContent);
+    expect(items.some((t) => (t ?? '').toLowerCase().includes('ref'))).toBe(false);
+  });
+});
+
+describe('MappingTable status seed formula (S5 review SHOULD-FIX 4c - a VALUE, not on-screen copy)', () => {
+  const DOC_SORENTO: AutocountSorentoField[] = [
+    { field: 'status', required: true },
+    { field: 'so_number', required: true },
+  ];
+
+  it('pre-fills the boolean seed when the target is status on a document entity and the source column is boolean', () => {
+    const onChangeRow = vi.fn();
+    renderTable(true, {
+      rows: [{ sourcePath: 'IsCancelled', transform: 'string', formula: null, sorentoField: '' }],
+      sorentoFields: DOC_SORENTO,
+      entityType: 'sales_order',
+      columnTypes: { IsCancelled: 'boolean' },
+      onChangeRow,
+    });
+    const trigger = screen.getByRole('combobox', { name: 'Sorento field for row 1' });
+    fireEvent.click(trigger);
+    fireEvent.click(within(screen.getByRole('listbox')).getByText('Status *'));
+    expect(onChangeRow).toHaveBeenCalledWith(
+      0,
+      expect.objectContaining({
+        sorentoField: 'status',
+        formula: 'if(value == true, "cancelled", "open")',
+      }),
+    );
+  });
+
+  it('never overwrites a formula the operator already set', () => {
+    const onChangeRow = vi.fn();
+    renderTable(true, {
+      rows: [{ sourcePath: 'IsCancelled', transform: 'string', formula: 'value', sorentoField: '' }],
+      sorentoFields: DOC_SORENTO,
+      entityType: 'sales_order',
+      columnTypes: { IsCancelled: 'boolean' },
+      onChangeRow,
+    });
+    fireEvent.click(screen.getByRole('combobox', { name: 'Sorento field for row 1' }));
+    fireEvent.click(within(screen.getByRole('listbox')).getByText('Status *'));
+    expect(onChangeRow).toHaveBeenCalledWith(0, { sorentoField: 'status' });
+  });
+
+  it('leaves the formula empty when the source column is not boolean-typed', () => {
+    const onChangeRow = vi.fn();
+    renderTable(true, {
+      rows: [{ sourcePath: 'StatusText', transform: 'string', formula: null, sorentoField: '' }],
+      sorentoFields: DOC_SORENTO,
+      entityType: 'sales_order',
+      columnTypes: { StatusText: 'string' },
+      onChangeRow,
+    });
+    fireEvent.click(screen.getByRole('combobox', { name: 'Sorento field for row 1' }));
+    fireEvent.click(within(screen.getByRole('listbox')).getByText('Status *'));
+    expect(onChangeRow).toHaveBeenCalledWith(0, { sorentoField: 'status' });
+  });
+});
+
 describe('MappingTable formula display (AC-16-10)', () => {
   it('shows an authored formula under its preset in read mode', () => {
     renderTable(false, {
@@ -167,5 +243,29 @@ describe('MappingTable formula display (AC-16-10)', () => {
       rows: [{ sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code' }],
     });
     expect(screen.getByText('Text')).toBeInTheDocument();
+  });
+});
+
+describe('column source mode (plan 22 S2, AC-22-09)', () => {
+  it('offers ONLY the result columns - no free-typed path, no custom item', () => {
+    renderTable(true, { sourceMode: 'column', acFields: ['AccNo', 'CompanyName'] });
+    expect(screen.getByText('Source column')).toBeInTheDocument();
+    const picker = screen.getByRole('combobox', { name: 'Source column for row 1' });
+    fireEvent.click(picker);
+    fireEvent.change(screen.getByPlaceholderText('Search columns'), {
+      target: { value: 'Data.0.Nope' },
+    });
+    expect(screen.queryByText(/Use "Data\.0\.Nope"/)).not.toBeInTheDocument();
+  });
+
+  it('is disabled until the task has result columns to offer', () => {
+    renderTable(true, { sourceMode: 'column', acFields: [] });
+    expect(screen.getByRole('combobox', { name: 'Source column for row 1' })).toBeDisabled();
+  });
+
+  it('keeps the API path mode unchanged by default', () => {
+    renderTable(true);
+    expect(screen.getByText('AutoCount field')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'AutoCount source for row 1' })).toBeInTheDocument();
   });
 });

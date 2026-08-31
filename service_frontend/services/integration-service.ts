@@ -52,4 +52,7 @@ export interface IntegrationService {
 }
 
 // Phase B swap done - mock retained in integration-service.mock.ts for tests.
+// The plan-22 `sql_database` provider now comes from the backend registry
+// (`modules/autocount/sql_provider.py`); the mock's descriptor is the parity
+// pin for its test only.
 export const integrationService: IntegrationService = realIntegrationService;

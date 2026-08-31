@@ -294,7 +294,12 @@ async function loginTenantAdmin(page: Page, t: TenantAdmin) {
 async function openViaSidebar(page: Page, section: string, child: string, urlRe: RegExp) {
   const link = page.getByRole('link', { name: child, exact: true });
   if (!(await link.isVisible().catch(() => false))) {
-    await page.getByText(section, { exact: true }).first().click();
+    // `force: true` - Next dev mode's `<nextjs-portal>` build-activity overlay
+    // can transiently sit over this click target during a hot-reload/compile
+    // tick and fail the actionability check even though the element is fully
+    // visible; the click itself is still real (CDP-dispatched at the element's
+    // coordinates), not a shortcut around a genuine UI block.
+    await page.getByText(section, { exact: true }).first().click({ force: true });
     // Generous: the first render against a cold server (or a just-restarted
     // backend) can exceed the 5s default while the layout hydrates.
     await expect(link).toBeVisible({ timeout: 15_000 });
@@ -383,10 +388,17 @@ async function openEntitiesTab(page: Page) {
  * dev runs the job inline, so when the batch has records the app itself
  * navigates to the review surface - a click-driven navigation, not a URL
  * shortcut.
+ *
+ * Scoped to the GRN row by its visible entity label rather than `.first()` -
+ * entity rows are `ORDER BY entity_type ASC`, so which row lands first shifts
+ * as more entities are added ("Customer" now sorts before "Goods received
+ * note"). Locating by row keeps the spec correct regardless of catalogue
+ * order.
  */
 async function clickSyncNow(page: Page) {
   await openEntitiesTab(page);
-  await page.getByRole('button', { name: 'Actions' }).first().click();
+  const row = page.getByRole('row', { name: /Goods received note/i });
+  await row.getByRole('button', { name: 'Actions' }).click();
   await page.getByRole('menuitem', { name: 'Sync now' }).click();
 }
 
@@ -473,7 +485,7 @@ test.describe('AutoCount ESB - slice 1 read pipeline', () => {
       expect(filter.LastModifiedTo, 'no LastModifiedTo sent').toBeTruthy();
       expect(Array.isArray(filter.DocNo), 'DocNo must be a LIST').toBe(true);
 
-      await expect(page.getByText('2 records · 2 awaiting approval')).toBeVisible();
+      await expect(page.getByText('2 records · 2 changed')).toBeVisible();
 
       // AC-13-11 - the job stops at needs_review and NOTHING is pushed.
       const before = await readStaged(request, token, job1);
@@ -485,6 +497,13 @@ test.describe('AutoCount ESB - slice 1 read pipeline', () => {
       ).toBe(true);
 
       await assertResponsive(page, 'review (new records)', page.getByTestId('approve-batch'));
+
+      // AC-14-20 - approval is gated behind a dry-run preview (never approve
+      // blind). This connection's sink is the slice-1 logging no-op, so the
+      // preview reports `previewable: false` - which still satisfies the gate
+      // (hasRun flips true, no error) and unblocks Approve.
+      await page.getByTestId('preview-push').click();
+      await expect(page.getByTestId('approve-batch')).toBeEnabled({ timeout: 15_000 });
 
       // Approve → both records PUSHED, job done.
       await page.getByTestId('approve-batch').click();
@@ -532,18 +551,20 @@ test.describe('AutoCount ESB - slice 1 read pipeline', () => {
       expect(newRow, 'GRN-0003 not staged').toBeTruthy();
 
       // ── 5. AC-13-12 - the diff shows ONLY the changed fields ─────────────
-      const changedCard = page.getByTestId(`staged-${changedRow!.id}`);
-      await expect(changedCard).toBeVisible();
+      // The staged list is a Resource-shell table (AC-15-10/11) - a row opens
+      // its full diff in a detail drawer rather than rendering it inline, so
+      // the diff is reached by opening the row, not a per-record card testid.
+      await page.getByRole('row', { name: new RegExp(changedRow!.docNo!) }).click();
+      const changeRows = page.getByTestId('record-diff').locator('[data-testid^="diff-row-"]');
 
       // Exactly FOUR canonical fields moved: description, net_total, total and
       // the nested lines (qty + sub_total). A scoped COUNT, so an
       // over-rendering regression that dumps every field fails here.
-      const changeRows = changedCard.locator('[data-testid^="diff-row-"]');
       await expect(changeRows).toHaveCount(4);
-      await expect(changedCard.getByTestId('diff-row-description')).toBeVisible();
-      await expect(changedCard.getByTestId('diff-row-net_total')).toBeVisible();
-      await expect(changedCard.getByTestId('diff-row-total')).toBeVisible();
-      await expect(changedCard.getByTestId('diff-row-lines')).toBeVisible();
+      await expect(page.getByTestId('diff-row-description')).toBeVisible();
+      await expect(page.getByTestId('diff-row-net_total')).toBeVisible();
+      await expect(page.getByTestId('diff-row-total')).toBeVisible();
+      await expect(page.getByTestId('diff-row-lines')).toBeVisible();
 
       // Untouched fields are absent - including `last_modified`, which changes
       // on EVERY re-fetch and is deliberately excluded as tautological noise.
@@ -558,22 +579,30 @@ test.describe('AutoCount ESB - slice 1 read pipeline', () => {
         'last_modified',
       ]) {
         await expect(
-          changedCard.getByTestId(`diff-row-${absent}`),
+          page.getByTestId(`diff-row-${absent}`),
           `unchanged field ${absent} rendered as a change (AC-13-12)`,
         ).toHaveCount(0);
       }
 
       // Before → after values are the real ones, not placeholders.
-      await expect(changedCard.getByText('July delivery (revised)')).toBeVisible();
-      await expect(changedCard.getByText('July delivery', { exact: true })).toBeVisible();
+      await expect(page.getByText('July delivery (revised)')).toBeVisible();
+      await expect(page.getByText('July delivery', { exact: true })).toBeVisible();
 
-      // A first-seen record is marked New rather than diffed against nothing.
-      const newCard = page.getByTestId(`staged-${newRow!.id}`);
-      await expect(newCard.getByText('New record')).toBeVisible();
+      await assertResponsive(page, 'review (diff)', page.getByTestId('record-diff'));
+      await page.keyboard.press('Escape');
 
-      await assertResponsive(page, 'review (diff)', changedCard);
+      // A first-seen record expands its FULL payload as the diff (nothing →
+      // value for every canonical field) rather than being diffed against
+      // nothing - proof it renders real content, not an empty/error state.
+      await page.getByRole('row', { name: new RegExp(newRow!.docNo!) }).click();
+      await expect(page.getByTestId('record-diff')).toBeVisible();
+      await expect(page.getByTestId('diff-no-changes')).toHaveCount(0);
+      await page.keyboard.press('Escape');
 
       // ── 6. Approve → PUSHED + done ───────────────────────────────────────
+      // AC-14-20 - same dry-run-before-approve gate as sync 1.
+      await page.getByTestId('preview-push').click();
+      await expect(page.getByTestId('approve-batch')).toBeEnabled({ timeout: 15_000 });
       await page.getByTestId('approve-batch').click();
       // Wait for the DECIDED state, not merely the in-flight disable - the
       // submitting flag flips before the POST resolves and would race the

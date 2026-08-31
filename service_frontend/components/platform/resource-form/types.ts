@@ -9,6 +9,12 @@ export interface FormTab {
   icon?: LucideIcon;
   /** Render tab content; `editing` flips fields read ↔ editable (global edit). */
   render: (ctx: { editing: boolean }) => ReactNode;
+  /**
+   * Shown but not selectable - a tab whose surface is not yet available on
+   * this record (e.g. a task's Schedule before its query exists). Keeps the
+   * full structure visible without offering a dead-end (foolproof-UI).
+   */
+  disabled?: boolean;
 }
 
 export interface BreadcrumbStep {

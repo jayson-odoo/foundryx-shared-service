@@ -84,7 +84,14 @@ def session_factory():
         # names; no collisions) - module tables stay isolated from core's.
         # autocount (sprint-4/13) maps onto the same attached db: its tables are
         # ``ac_``-prefixed, so they cannot collide with omnichannel's.
-        schema_translate_map={OMNI_SCHEMA: "omni", AUTOCOUNT_SCHEMA: "omni"}
+        # ideation (sprint-4/18) maps onto the same attached db too: its tables
+        # are distinct names, and without the mapping ``bootstrap_modules``'s
+        # ideation install raises "unknown database app_ideation" mid-suite.
+        schema_translate_map={
+            OMNI_SCHEMA: "omni",
+            AUTOCOUNT_SCHEMA: "omni",
+            "app_ideation": "omni",
+        }
     )
     with engine.connect() as conn:
         conn.exec_driver_sql("ATTACH ':memory:' AS omni")

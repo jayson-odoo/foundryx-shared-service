@@ -232,7 +232,14 @@ class IntegrationService:
         # RELAXED for ``llm`` too (Bi-D21 / AC-BI-03b) - agents resolve by
         # connection_id, so Anthropic + OpenAI + Gemini coexist. The exempt set
         # is shared with the DB index so the 409 and the constraint agree.
-        if provider.type in EXEMPT_FROM_ONE_PER_TYPE:
+        # ``erp`` is exempt from the per-PROVIDER rule as well: the
+        # ``uq_connection_tenant_provider`` index (app/models/connection.py)
+        # carries ``type != 'erp'`` in its predicate because one AutoCount
+        # company = one ``autocount``/``sql_database`` connection (sprint-4/13
+        # D16/D17, plan 22). Mirror the index exactly - no 409 for erp.
+        if provider.type == "erp":
+            pass
+        elif provider.type in EXEMPT_FROM_ONE_PER_TYPE:
             dup = self.repo.get_by_provider(tenant_id, provider.provider)
             if dup is not None:
                 raise HTTPException(

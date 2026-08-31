@@ -14,6 +14,13 @@
 export type AutocountSyncMode = 'AUTO' | 'SCHEDULED_REVIEW' | 'MANUAL';
 
 /**
+ * Where an entity's records are READ from (`ac_entity_config.source_impl`,
+ * plan 22 §2): the vendor HTTP API (the plan-13 path, untouched) or a direct
+ * read-only SQL extraction task. Switching changes how every sync runs.
+ */
+export type AutocountSourceImpl = 'autocount_read' | 'sql_db';
+
+/**
  * Per-entity sync configuration seeded when a company is registered, PLUS the
  * entity's live delta state.
  *
@@ -26,7 +33,7 @@ export interface AutocountEntityConfig {
   id: string;
   entityType: string;
   syncMode: AutocountSyncMode | string;
-  sourceImpl: string;
+  sourceImpl: AutocountSourceImpl | string;
   recordCap: number;
   /**
    * How far back the FIRST sync reaches when no watermark exists yet
@@ -44,11 +51,25 @@ export interface AutocountEntityConfig {
   /** Consecutive failed runs - the stale-sync signal (AC-13-19). */
   consecutiveFailures: number;
   lastError: string | null;
+  /**
+   * The DB-task lifecycle (`draft|active|paused`, plan 22 §2.4, AC-22-23) -
+   * carried on the LIST (not just the task editor) so the Review & Activate
+   * tab can warn a `product` task's activation of a missing category/UOM
+   * prerequisite without a second fetch.
+   */
+  etlStatus: AutocountEtlStatus;
 }
 
-/** `PATCH /autocount/companies/{id}/entities/{entityType}` - narrow by design. */
+/**
+ * `PATCH /autocount/companies/{id}/entities/{entityType}` - narrow by design.
+ * `sourceImpl` (plan 22 S2) switches the entity between the API path and the
+ * DB task; the backend keeps the task's `source_config` either way (switching
+ * back to the API never discards a configured query) and an ACTIVE task
+ * switched to the API path is paused first (never left auto-pushing).
+ */
 export interface AutocountEntityConfigUpdate {
   initialLookbackDays?: number;
+  sourceImpl?: AutocountSourceImpl;
 }
 
 /**
@@ -72,6 +93,13 @@ export interface AutocountCompany {
   sinkImpl: AutocountSinkImpl | string;
   /** Core `connections.id` of the `consumer` connection; null for `logging`. */
   sinkConnectionId: string | null;
+  /**
+   * The Sorento company this AutoCount company delivers INTO
+   * (`ac_company.sorento_company_code`, plan 22 Appendix A6). Sent as the
+   * top-level `companyCode` on every ingest/read/deletion call; REQUIRED when
+   * `sinkImpl === 'sorento'` - blank = every push fails with an anchor 422.
+   */
+  sorentoCompanyCode: string | null;
   createdAt: string | null; // ISO Z
 }
 
@@ -92,6 +120,8 @@ export type AutocountSinkImpl = 'logging' | 'sorento';
 export interface AutocountSinkTargetInput {
   sinkImpl: AutocountSinkImpl;
   sinkConnectionId?: string | null;
+  /** Required with `sorento` (trimmed, matched case-insensitively by Sorento). */
+  sorentoCompanyCode?: string | null;
 }
 
 /** `POST /autocount/companies` - the operator supplies ONLY a connection. */
@@ -159,14 +189,19 @@ export function parseSyncSummary(
   };
 }
 
-/** Terminal state of one sync run. */
-export type AutocountRunOutcome = 'SUCCESS' | 'FAILED' | 'ABORTED';
+/** Terminal state of one sync run. `SKIPPED` = an overlap-guarded tick that
+ * never ran (AC-22-14) - recorded, never queued behind. */
+export type AutocountRunOutcome = 'SUCCESS' | 'FAILED' | 'ABORTED' | 'SKIPPED';
+
+/** How a run was started (`ac_sync_run.mode`, plan 22 §2.7). */
+export type AutocountRunMode = 'manual' | 'incremental' | 'reconcile' | 'skipped';
 
 /** One executed sync run - the visible run state on a company. */
 export interface AutocountSyncRun {
   id: string;
   entityType: string;
-  jobId: string;
+  /** Null for a skipped tick (nothing was enqueued). */
+  jobId: string | null;
   windowFrom: string | null; // ISO Z
   windowTo: string | null; // ISO Z
   fetchedCount: number;
@@ -181,6 +216,17 @@ export interface AutocountSyncRun {
   watermarkAdvancedTo: string | null; // ISO Z
   startedAt: string | null; // ISO Z
   finishedAt: string | null; // ISO Z
+  // ── plan 22 §2.7 cost columns (AC-22-17) - `manual` for every API-path run ──
+  mode: AutocountRunMode | string;
+  /** Source rows read (the volume × frequency signal). */
+  rowsScanned: number;
+  addedCount: number;
+  updatedCount: number;
+  /** Delete intents pushed (reconcile only). */
+  deletedCount: number;
+  durationMs: number | null;
+  /** Why a `skipped` tick did not run (e.g. the previous run was still going). */
+  skipReason: string | null;
 }
 
 /** Disposition of one staged record. */
@@ -491,6 +537,217 @@ export function isBlanking(change: AutocountPreviewFieldDiff): boolean {
   const hadValue =
     change.current !== null && change.current !== undefined && change.current !== '';
   return emptyIncoming && hadValue;
+}
+
+// ── direct-DB ETL (plan 22, slice S1 - AC-22-01..07/11) ──────────────────────
+
+/** Supported read-only SQL source dialects (grill post-decision). */
+export type AutocountSqlDialect = 'mssql' | 'postgresql' | 'mysql';
+
+/** One tenant SQL-database connection the task editor may point at
+ * (`GET /autocount/sql/connections` - tenant + provider `sql_database` scoped,
+ * never a bare connections fetch). */
+export interface AutocountSqlConnection {
+  id: string;
+  name: string;
+  dialect: AutocountSqlDialect | string;
+  database: string;
+}
+
+/** One introspected column (name + the dialect's reported type). */
+export interface AutocountSqlColumn {
+  name: string;
+  type: string;
+}
+
+/** One introspected table. Columns arrive with the schema payload (the
+ * introspection is cached server-side per connection, AC-22-05). */
+export interface AutocountSqlTable {
+  name: string;
+  columns: AutocountSqlColumn[];
+}
+
+/** One namespace within the database (e.g. `dbo`, `public`). */
+export interface AutocountSqlSchemaNode {
+  name: string;
+  tables: AutocountSqlTable[];
+}
+
+/**
+ * `GET /autocount/sql/connections/{id}/schema[?refresh=true]` - the cached
+ * schemas → tables → columns tree (AC-22-05). `refresh=true` busts the
+ * server-side cache; the tree is NEVER fetched per keystroke.
+ */
+export interface AutocountSqlSchema {
+  connectionId: string;
+  dialect: AutocountSqlDialect | string;
+  database: string;
+  schemas: AutocountSqlSchemaNode[];
+  introspectedAt: string; // ISO Z
+}
+
+/** One result column of a preview run (name + reported type, AC-22-06). */
+export interface AutocountSqlPreviewColumn {
+  name: string;
+  type: string;
+}
+
+/**
+ * `POST /autocount/sql/preview` result. At most 100 rows (dialect-appropriate
+ * wrapping server-side); `truncated` is true when the cap cut the result - the
+ * UI must never present a capped preview as the whole set (AC-22-06).
+ */
+export interface AutocountSqlPreview {
+  columns: AutocountSqlPreviewColumn[];
+  rows: Array<Record<string, unknown>>;
+  /** Rows returned (≤ 100). */
+  rowCount: number;
+  /** True when the 100-row cap cut the result. */
+  truncated: boolean;
+  durationMs: number;
+}
+
+/** Lifecycle of a DB extraction task (plan 22 §2.4 `etl_status`). */
+export type AutocountEtlStatus = 'draft' | 'active' | 'paused';
+
+/**
+ * The `source_config` JSON of a `sql_db` task (plan 22 §2.4) - the Query tab
+ * owns connection/query/columns/fromDate; the Schedule tab (S3) owns the
+ * cadence fields, carried here so a draft save round-trips the whole document.
+ */
+export interface AutocountEtlSourceConfig {
+  /** Core `connections.id` of a `sql_database` connection (tenant-validated
+   * server-side on every use - polymorphic-stored-id rule). */
+  connectionId: string | null;
+  /** The extraction SELECT (single statement; server guard rejects anything
+   * else with 422 before touching the source, AC-22-03). */
+  query: string;
+  /** Document entities (SO/PO) only: per-changed-header line query with a
+   * `:doc_key` bound param. One task, two queries - never a separate lines task. */
+  lineQuery: string | null;
+  /** Result columns minting the source_ref (`{database}:{key1[|key2]}`). Must
+   * exist in the preview result columns at save (AC-22-11). */
+  keyColumns: string[];
+  /** Orderable result column driving incremental fetches; null = hash-diff
+   * incremental (interval floor 15 min). */
+  watermarkColumn: string | null;
+  /** "On change of which fields" - empty = all result columns minus keys. */
+  comparedColumns: string[];
+  /** Documents only (YYYY-MM-DD, default today). */
+  fromDate: string | null;
+  /** Documents only (plan 22 S5) - the header column the from-date floor
+   * filters (the document's OWN date, e.g. DocDate - deliberately separate
+   * from `watermarkColumn`/LastModified, which drives change detection). */
+  docDateColumn: string | null;
+  /** Documents only - the line query's result column carrying the line's own
+   * key (AutoCount's DtlKey), composed into the line's source_ref. */
+  lineKeyColumn: string | null;
+  /** Documents only - the line query's result columns minting the two
+   * master refs a line can carry (Appendix A6 item 3). `productColumn` is
+   * required (Sorento requires `product_ref`); `warehouseColumn` optional. */
+  lineProductColumn: string | null;
+  lineWarehouseColumn: string | null;
+  incrementalMinutes: number;
+  reconcileMode: 'interval' | 'dailyAt';
+  reconcileHours: number | null;
+  /** "HH:MM" in the tenant timezone (`reconcileMode === 'dailyAt'`). */
+  reconcileAt: string | null;
+}
+
+/**
+ * `GET /autocount/companies/{id}/entities/{entityType}/etl-task` - one
+ * per-(company, entity) DB extraction task, anchored on `ac_entity_config`
+ * (decision Q13 - no free-form task entity).
+ */
+export interface AutocountEtlTask {
+  companyId: string;
+  entityType: string;
+  etlStatus: AutocountEtlStatus;
+  activatedAt: string | null; // ISO Z
+  sourceConfig: AutocountEtlSourceConfig;
+  /**
+   * Result column names of the SAVED query - derived server-side from the
+   * validation preview each save runs (AC-22-11), so the Mapping tab can offer
+   * them as the source picker (AC-22-09) without re-running the query. Empty
+   * until a query has been saved.
+   */
+  resultColumns: string[];
+  /**
+   * When the last SUCCESSFUL dry-run preview completed (AC-22-18). Cleared by
+   * every config save - a preview of a superseded query must never unlock
+   * Activate. Null = Activate withheld.
+   */
+  lastPreviewAt: string | null; // ISO Z
+  /**
+   * The last preview's genuinely-FAILED prediction count (S5 review
+   * SHOULD-FIX 4b) - distinct from `retryable`, which stays activatable (a
+   * dependency-order carry-over, AC-22-23). A preview that COMPLETES is not
+   * by itself proof the task is safe to activate.
+   */
+  lastPreviewFailedCount: number | null;
+  lastRunAt: string | null; // ISO Z
+  /**
+   * The last run's TASK-LEVEL error (AC-22-19 - repeated delivery failures
+   * surface here, never silently). A Sorento anchor 422 lands here with its
+   * code, never as a per-record failure (Appendix A6).
+   */
+  lastRunError: string | null;
+  lastRunErrorCode: AutocountAnchorErrorCode | string | null;
+  /**
+   * When the scheduler will next fire each cadence (plan 22 §2.6, slice S3).
+   * Read-only, server-stamped (`EtlService.next_run_times`); null while the
+   * task is not `active` (draft and paused carry no next run - pause clears
+   * them, activate/resume arms them); recomputed on every PUT while active.
+   */
+  nextIncrementalAt: string | null; // ISO Z
+  nextReconcileAt: string | null; // ISO Z
+}
+
+/** `PUT .../etl-task` body - replaces the task's source config (draft save). */
+export interface AutocountEtlTaskUpdate {
+  sourceConfig: AutocountEtlSourceConfig;
+}
+
+// ── activation gate + runs (plan 22, slice S2 - AC-22-17/18/19, Appendix A6) ──
+
+/**
+ * Sorento's company-anchor 422 codes (Appendix A6). Any of these on a preview
+ * or a run is a TASK-level configuration error - fix the company's Sorento
+ * company code - and is never attributed to a record.
+ */
+export type AutocountAnchorErrorCode =
+  | 'COMPANY_ANCHOR_REQUIRED'
+  | 'UNKNOWN_COMPANY'
+  | 'COMPANY_ANCHOR_AMBIGUOUS'
+  | 'COMPANY_BINDING_INVALID';
+
+/**
+ * The structured `detail` of a task-level 422 from `POST .../etl-task/preview`
+ * (`ApiError.detail`) - the anchor error translated 1:1 from Sorento's body.
+ */
+export interface AutocountEtlTaskError {
+  code: AutocountAnchorErrorCode | string;
+  message: string;
+}
+
+/**
+ * `POST .../etl-task/preview` - the initial-load dry run against Sorento
+ * (writes nothing). `preview` is the SAME shape the batch review renders
+ * (`PreviewPanel`); `task` is the task after the preview (its `lastPreviewAt`
+ * stamped when the dry run completed).
+ */
+export interface AutocountEtlPreviewResult {
+  task: AutocountEtlTask;
+  preview: AutocountPreview;
+}
+
+/** `POST .../etl-task/run` - the manual run just enqueued (eager inline in dev). */
+export interface AutocountEtlRunStart {
+  runId: string;
+  jobId: string;
+  status: AutocountJobStatus | string;
+  /** The task after the run (status/last-error refreshed when it ran inline). */
+  task: AutocountEtlTask;
 }
 
 // ── diff view model (AC-13-12) ───────────────────────────────────────────────

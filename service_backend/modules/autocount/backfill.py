@@ -95,3 +95,43 @@ def backfill_entity_config_defaults(
         )
         touched += result.rowcount or 0
     return touched
+
+
+# Plan 22 (direct-DB ETL): the NOT NULL columns added to EXISTING tables and
+# the value every pre-plan-22 row must end up with. Stated as a backfill, not
+# left to a server default a create_all-first host would never apply.
+_ETL_DEFAULTS = (
+    ("ac_entity_config", "etl_status", "draft"),
+    ("ac_staged_record", "op", "upsert"),
+    ("ac_sync_run", "mode", "manual"),
+    ("ac_sync_run", "rows_scanned", 0),
+    ("ac_sync_run", "deleted_count", 0),
+    # 0008 (plan 22 S2): hash-diff add/update counters on the run row.
+    ("ac_sync_run", "added_count", 0),
+    ("ac_sync_run", "updated_count", 0),
+)
+
+
+def backfill_etl_defaults(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA) -> int:
+    """Give every pre-plan-22 row its ETL defaults: a ``draft`` task status, an
+    ``upsert`` staged op, a ``manual`` run mode with zero cost counters.
+    Returns the number of rows touched.
+
+    Same two-order safety as the backfills above: fills only rows that lack a
+    value, safe to run repeatedly, does **not** commit (Alembic's connection or
+    ``update_tenant`` owns that).
+    """
+    prefix = f'"{schema}".' if schema else ""
+    touched = 0
+    for table, column, value in _ETL_DEFAULTS:
+        # ``table``/``column`` come from the fixed tuple above, never from input.
+        blank = f" OR {column} = ''" if isinstance(value, str) else ""
+        result = bind.execute(
+            sa.text(
+                f"UPDATE {prefix}{table} SET {column} = :value "
+                f"WHERE {column} IS NULL{blank}"
+            ),
+            {"value": value},
+        )
+        touched += result.rowcount or 0
+    return touched

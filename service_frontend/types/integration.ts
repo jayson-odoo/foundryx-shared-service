@@ -32,6 +32,15 @@ export interface ProviderField {
   defaultValue?: string;
   /** Collapsed under the wizard's "Advanced" section. */
   advanced?: boolean;
+  /**
+   * Registry-driven dependent default (plan 22, AC-22-04): when the named
+   * sibling `select` field changes, this field is reset to `values[<choice>]`
+   * PROVIDED it still holds a stock default (blank or one of `values`) - an
+   * operator-typed value is never clobbered. First use: the SQL provider's
+   * port following its dialect (1433 / 5432 / 3306). Emitted by the backend
+   * provider's `fields()`; the form handles it generically.
+   */
+  defaultsFrom?: { field: string; values: Record<string, string> };
 }
 
 /** Catalog entry (GET /integrations/providers) - config schema drives the wizard. */

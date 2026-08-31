@@ -50,6 +50,7 @@ from .activity import (
     record_client_calls,
     trace_id_for_job,
 )
+from .canonical.documents import DOCUMENT_ENTITY_TYPES
 from .canonical.grn import (
     ENTITY_GOODS_RECEIVED_NOTE,
     VENDOR_DETAIL_KEY,
@@ -63,30 +64,54 @@ from .canonical.masters import (
     VENDOR_LAST_MODIFIED_PATH,
 )
 from .client import AutoCountError
-from .mapping import MappedDocument, MappingEngine
+from .mapping import (
+    UNQUALIFIED_REF_ENTITIES,
+    MappedDocument,
+    MappingEngine,
+    build_mapping_rows_for_run,
+    flat_profile,
+)
 from .models import (
+    ETL_STATUS_ACTIVE,
     RUN_ABORTED,
     RUN_FAILED,
+    RUN_MODE_MANUAL,
     RUN_SUCCESS,
+    SOURCE_IMPL_SQL_DB,
     STAGED,
     STAGED_FAILED,
+    STAGED_OP_DELETE,
     AcStagedRecord,
     AcSyncRun,
 )
 from .repositories import (
     CompanyRepository,
     EntityConfigRepository,
+    RowHashRepository,
     StagedRecordRepository,
     SyncRunRepository,
     WatermarkRepository,
 )
 from .sources import (
     FetchResult,
+    SourceContext,
     SourceRecord,
     TruncatedWindowError,
     Watermark,
     source_factory,
 )
+from .sql_source.errors import SqlDeleteGuardExceeded, SqlDocumentCapExceeded
+
+#     !!  IMPORTING THIS MODULE IS WHAT MAKES ``sql_db`` RUNNABLE.  !!
+# The DB source registers itself here rather than in ``sources.py`` (which it
+# imports from - registering there would be an import cycle). Every process
+# that can execute a sync job imports THIS module: the API process through the
+# services, the Celery worker through its explicit import. A process that had
+# the handler but not the factory would fail every DB run with "no source
+# implementation registered", which reads like a config fault and is not one.
+from .sql_source.source import register_sql_db_source
+
+register_sql_db_source()
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -202,6 +227,10 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     tenant_id = job.tenant_id
     company_id = str(payload.get("companyId") or "")
     entity_type = str(payload.get("entityType") or ENTITY_GOODS_RECEIVED_NOTE)
+    # How this run started (plan 22 §2.7, AC-22-17): ``manual`` for every
+    # operator-triggered run (and every pre-plan-22 payload, which carries no
+    # mode at all); the S3 sweep enqueues ``incremental``/``reconcile``.
+    mode = str(payload.get("mode") or RUN_MODE_MANUAL)
     started = time.monotonic()
     # ONE trace ties every leg of this run together - the login, the read, and
     # the run summary - so the Developer Logs console can show the whole
@@ -237,6 +266,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             company_id=company_id,
             entity_type=entity_type,
             job_id=job.id,
+            mode=mode,
         )
     )
     watermark_row.last_attempt_at = datetime.now(timezone.utc)
@@ -250,15 +280,21 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     from .services.company_service import CompanyService
 
     companies = CompanyService(db)
-    try:
-        client = companies.client_for(tenant_id, company)
-    except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
-        _fail(db, service, job, run, watermark_row, str(exc), started)
-        return
-
+    # The factory contract (plan 22 §2.1, AC-22-08): each implementation builds
+    # its OWN transport from the context - the HTTP client is constructed inside
+    # ``autocount_read``, the DB engine inside ``sql_db``. A construction fault
+    # (bad credentials, unknown impl, unconfigured task) is a SETUP fault,
+    # reported cleanly with the watermark held.
+    ctx = SourceContext(
+        db=db,
+        tenant_id=tenant_id,
+        company=company,
+        entity_config=config,
+        company_service=companies,
+    )
     try:
         source = source_factory(config.source_impl)(
-            client,
+            ctx,
             entity_type=entity_type,
             vendor_entity=VENDOR_ENTITIES.get(entity_type, VENDOR_ENTITY),
             record_cap=config.record_cap,
@@ -270,7 +306,13 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             last_modified_path=VENDOR_LAST_MODIFIED_PATHS.get(
                 entity_type, "LastModified"
             ),
+            mode=mode,
         )
+    except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
+        _fail(db, service, job, run, watermark_row, str(exc), started, config=config)
+        return
+
+    try:
         result: FetchResult = source.fetch_changes(watermark)
     except AutoCountError as exc:
         # Includes TruncatedWindowError - a truncated read must NEVER read as a
@@ -283,7 +325,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         # all. Safe here - the last write committed above, nothing is pending.
         record_client_calls(
             db,
-            client,
+            source,
             tenant_id=tenant_id,
             trace_id=trace_id,
             external_ref=company.database_name,
@@ -307,26 +349,106 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             exc.message,
             started,
             truncated=isinstance(exc, TruncatedWindowError),
+            config=config,
+        )
+        return
+    except SqlDeleteGuardExceeded as exc:
+        # S5 review SHOULD-FIX 5: a guard TRIP is a deliberate safety stop,
+        # not a transport/driver fault - it must never read as one. WARNING
+        # (no stack trace, unlike the generic branch below), the message
+        # UNPREFIXED (no "Fetch failed:" noise), and a distinct error code so
+        # the task surface can tell "the delete guard fired" apart from every
+        # other kind of failure.
+        logger.warning(
+            "autocount delete guard tripped for job %s: %s", job.id, exc.message
+        )
+        record_client_calls(
+            db,
+            source,
+            tenant_id=tenant_id,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        record_activity(
+            db,
+            tenant_id=tenant_id,
+            operation=f"sync {entity_type}",
+            status=ACTIVITY_ERROR,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            error_message=exc.message,
+        )
+        _fail(
+            db,
+            service,
+            job,
+            run,
+            watermark_row,
+            exc.message,
+            started,
+            config=config,
+            error_code="DELETE_GUARD",
+        )
+        return
+    except SqlDocumentCapExceeded as exc:
+        # S5 review SHOULD-FIX 3 - same treatment as the delete guard above:
+        # a document task's per-header line-query fan-out cap tripped is a
+        # deliberate safety stop, not a transport/driver fault. WARNING (no
+        # stack trace), the message UNPREFIXED, a distinct error code.
+        logger.warning(
+            "autocount document cap tripped for job %s: %s", job.id, exc.message
+        )
+        record_client_calls(
+            db,
+            source,
+            tenant_id=tenant_id,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        record_activity(
+            db,
+            tenant_id=tenant_id,
+            operation=f"sync {entity_type}",
+            status=ACTIVITY_ERROR,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            error_message=exc.message,
+        )
+        _fail(
+            db,
+            service,
+            job,
+            run,
+            watermark_row,
+            exc.message,
+            started,
+            config=config,
+            error_code="DOCUMENT_CAP",
         )
         return
     except Exception as exc:  # noqa: BLE001
         logger.exception("autocount sync fetch failed for job %s", job.id)
         record_client_calls(
             db,
-            client,
+            source,
             tenant_id=tenant_id,
             trace_id=trace_id,
             external_ref=company.database_name,
         )
-        _fail(db, service, job, run, watermark_row, f"Fetch failed: {exc}", started)
+        _fail(
+            db, service, job, run, watermark_row, f"Fetch failed: {exc}", started,
+            config=config,
+        )
         return
     finally:
-        client.close()
+        source.close()
 
-    # The real request/response of every HTTP leg (masked + bounded).
+    # The real request/response of every transport leg (masked + bounded).
     record_client_calls(
         db,
-        client,
+        source,
         tenant_id=tenant_id,
         trace_id=trace_id,
         external_ref=company.database_name,
@@ -366,6 +488,13 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     run.window_from = result.window_from
     run.window_to = result.window_to
     run.fetched_count = len(result.records)
+    # Cost + change-detection columns (plan 22 §2.7, AC-22-17). ``rows_scanned``
+    # falls back to the emitted count, which is what every API-path fetch means.
+    run.rows_scanned = (
+        result.rows_scanned if result.rows_scanned is not None else len(result.records)
+    )
+    run.added_count = result.added_count
+    run.updated_count = result.updated_count
     service.set_total(job, len(result.records))
     db.commit()
 
@@ -374,11 +503,33 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         return
 
     # ── map + stage, ONE DOCUMENT AT A TIME ──────────────────────────────────
-    engine = MappingEngine(
+    # A document's LINE rows are code-generated from its source_config (plan
+    # 22 S5's "FIXED column-name convention", ``mapping.document_line_rows``),
+    # never read from ``ac_field_mapping`` - ``mapping_rows`` stays HEADER-only.
+    # ``build_mapping_rows_for_run`` is the ONE gate for this (S5 review NIT -
+    # shared with ``etl_service.py``'s preview path so the two can never drift).
+    mapping_rows = build_mapping_rows_for_run(
+        entity_type,
         companies.mapping_rows(tenant_id, company_id, entity_type),
+        is_sql_db_source=config.source_impl == SOURCE_IMPL_SQL_DB,
+        source_config=config.source_config,
+    )
+    engine = MappingEngine(
+        mapping_rows,
         # ``None`` = the entity profile's own key (masters have none, being flat).
         detail_key=VENDOR_DETAIL_KEYS.get(entity_type),
         entity_type=entity_type,
+        #     !!  THE PROFILE MUST MATCH THE SOURCE THAT PRODUCED THE ROWS.  !!
+        # The API path's rows are the vendor envelope, so identity reads
+        # ``Data.0.AutoKey``; a DB task's rows are FLAT, so identity is minted
+        # from the task's key columns (AC-22-09/10). Using the API profile on
+        # flat rows fails EVERY record with "carries no Data.0.AutoKey" - which
+        # reads like a mapping mistake and is not one.
+        profile=(
+            flat_profile(entity_type, (config.source_config or {}).get("keyColumns") or [])
+            if config.source_impl == SOURCE_IMPL_SQL_DB
+            else None
+        ),
         # Masters mint a COMPANY-QUALIFIED ``source_ref`` (AC-14-10). The name
         # comes from the discovered company, never from operator input - and it
         # is what stops company B's ``AutoKey=1`` overwriting company A's.
@@ -394,7 +545,22 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         company_id=company_id,
         entity_type=entity_type,
     )
-    run.staged_count = staged_count
+    # Reconcile's delete intents (plan 22 §2.5, AC-22-16) - absent-but-known
+    # refs stage as their OWN op='delete' rows, no canonical payload. Counted
+    # into `staged_count` (an entity-level "records this run put in front of
+    # the sink", the same meaning adds/updates already carry); the run row's
+    # `deleted_count` is reserved for PUSH VERDICTS (deleted/deactivated),
+    # stamped once auto-push resolves them below.
+    delete_staged = _stage_deletes(
+        db,
+        job,
+        result.delete_refs,
+        tenant_id=tenant_id,
+        company_id=company_id,
+        entity_type=entity_type,
+        current_refs=result.current_refs,
+    )
+    run.staged_count = staged_count + delete_staged
     run.failed_count = failed_count
     db.commit()
 
@@ -419,6 +585,11 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         if result.max_last_modified is not None:
             advanced_to = result.max_last_modified
             watermark_row.last_modified_at = advanced_to
+        # A source may keep its OWN resume point (the DB source's watermark
+        # value, which need not be a datetime). Same rule as the timestamp: it
+        # advances only on a clean batch.
+        if result.cursor is not None:
+            watermark_row.cursor_json = result.cursor
         watermark_row.consecutive_failures = 0
         watermark_row.last_error = None
         watermark_row.last_success_at = datetime.now(timezone.utc)
@@ -432,6 +603,53 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         watermark_row.last_error = (
             f"{failed_count} document(s) failed to map; watermark held."
         )
+
+    # ── auto-push (plan 22 §2.6, AC-22-20) ───────────────────────────────────
+    #
+    #     !!  AN ACTIVATED DB TASK HAS NO REVIEW GATE - BY DESIGN.  !!
+    # The activate-once ceremony (AC-22-18) IS the human approval: a successful
+    # Sorento dry-run of the initial load, then an explicit Activate. After it,
+    # scheduled runs deliver without a per-run click - otherwise a minutely task
+    # would build a queue nobody can drain. The API path's ``needs_review`` gate
+    # is untouched; this branch is entered only for an ACTIVE ``sql_db`` task.
+    pushed_count = 0
+    push_summary: Optional[Dict[str, Any]] = None
+    if (
+        config.source_impl == SOURCE_IMPL_SQL_DB
+        and config.etl_status == ETL_STATUS_ACTIVE
+    ):
+        from .services.sync_service import SyncService
+
+        push_summary = SyncService(db).auto_push(
+            tenant_id, company_id, entity_type, job_id=job.id
+        )
+        pushed_count = int(push_summary.get("pushed") or 0)
+        run.pushed_count = pushed_count
+        # A delivery failure surfaces ON THE TASK (AC-22-19) - never silently.
+        config.last_run_error = push_summary.get("error")
+        config.last_run_error_code = push_summary.get("errorCode")
+        # S2 review SHOULD-FIX 10: a quarantined push failure must be VISIBLE
+        # on the RUN ROW, not just buried in the job's result JSON - the Runs
+        # list has no other failure column. Extends failed_count (a document
+        # that fails to MAP and a record that fails to PUSH are both "this
+        # run did not fully succeed") rather than adding a new column, for
+        # frontend simplicity - the count that was 0 documents-failed-to-map
+        # is now ALSO carrying quarantined-records-failed-to-push.
+        quarantined_count = int(push_summary.get("quarantined") or 0)
+        if quarantined_count:
+            run.failed_count = (run.failed_count or 0) + quarantined_count
+        # Delete-push verdicts (AC-22-21): `deletedHandled` = deleted +
+        # deactivated + not_found (all three mean "the sink resolved it", per
+        # the schema comment on `AcSyncRun.deleted_count`). A `failed` verdict
+        # quarantines the same way an upsert failure does.
+        run.deleted_count = int(push_summary.get("deletedHandled") or 0)
+        delete_failed_count = len(push_summary.get("deleteFailures") or [])
+        if delete_failed_count:
+            run.failed_count = (run.failed_count or 0) + delete_failed_count
+    else:
+        config.last_run_error = None
+        config.last_run_error_code = None
+    config.last_run_at = datetime.now(timezone.utc)
 
     run.outcome = RUN_SUCCESS
     run.truncated = False
@@ -456,7 +674,15 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         "vendorReportedTotal": result.reported_total,
         "initialLoad": config.initial_load,
         "unboundedInitialLoad": result.window_from is None,
+        "mode": mode,
+        "rowsScanned": run.rows_scanned,
+        "added": run.added_count,
+        "updated": run.updated_count,
     }
+    if push_summary is not None:
+        summary.update(push_summary)
+        # An auto-pushed batch was never "awaiting approval" - it is delivered.
+        summary["awaitingApproval"] = False
     service.log(
         job,
         f"Staged {staged_count} document(s), {failed_count} failed"
@@ -467,16 +693,22 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             else "."
         )
         + (
-            " Awaiting approval - nothing has been pushed."
-            if staged_count
-            else " Nothing to review."
+            f" Pushed {pushed_count} record(s) automatically (the task is active)."
+            if push_summary is not None
+            else (
+                " Awaiting approval - nothing has been pushed."
+                if staged_count
+                else " Nothing to review."
+            )
         ),
     )
     # needs_review with zero staged rows would strand a job nobody can act on
-    # (and which the pruner will never clean up), so an empty batch closes.
+    # (and which the pruner will never clean up), so an empty batch closes. An
+    # auto-pushing task has no review gate at all, so its job always closes.
+    holds_for_review = staged_count > 0 and push_summary is None
     service.finish(
         job,
-        status=JOB_NEEDS_REVIEW if staged_count else JOB_DONE,
+        status=JOB_NEEDS_REVIEW if holds_for_review else JOB_DONE,
         result=summary,
     )
     db.commit()
@@ -576,6 +808,118 @@ def _stage_documents(
     return staged, failed
 
 
+def _stage_deletes(
+    db: Session,
+    job: BackgroundJob,
+    delete_refs: List[str],
+    *,
+    tenant_id: str,
+    company_id: str,
+    entity_type: str,
+    current_refs: List[str],
+) -> int:
+    """Stage a reconcile's delete intents (plan 22 §2.5/§2.6, AC-22-16/21) -
+    ONE ``AcStagedRecord`` per ref, ``op='delete'``, no canonical payload (a
+    delete carries nothing to map).
+
+    Two safety passes run BEFORE any new intent is staged (S3 review):
+
+    * **BLOCKER 1 - stale-intent discard.** Any existing STAGED delete intent
+      whose ref reappeared in THIS extract (``current_refs``) is cancelled
+      first - a delete intent must not outlive the evidence that produced it.
+      Runs on every call, including a draft/paused task whose push is gated,
+      so a stale intent never survives to fire once the task is activated.
+    * **S6 - no duplicate intents.** A ref that already carries a non-terminal
+      delete intent (STAGED or STAGED_FAILED) is skipped - a reconcile that
+      runs again before the first intent resolves must not pile up a second
+      row for the same ref.
+
+    **B2 (plan 22 S4 review, option (a)) - a SHARED entity is never deleted by
+    ONE company's reconcile.** ``sales_agent`` rows are shared across
+    companies in Sorento (``mapping.UNQUALIFIED_REF_ENTITIES`` - the ref
+    itself carries no company qualifier), so a ref missing from THIS
+    company's extract is not proof the agent is gone globally; another
+    company may still use it. Staging (and eventually auto-pushing) a delete
+    here would let one company silently retire a row a sibling depends on.
+    So for those entities NO delete intent is staged at all - only this
+    company's local ``ac_row_hash`` row for the missing ref is dropped, so
+    local state stays honest about what THIS company's extract currently
+    contains and a later re-appearance stages as a fresh add (never a
+    phantom update). Retiring a shared agent is an operator action taken
+    directly against Sorento, out of band - see ``canonical/masters.py``'s
+    ``CanonicalSalesAgent`` docstring and plan 22 Appendix A6 item 6.
+
+    **Plan 22 S5 - a DOCUMENT is never deleted by reconcile either, for a
+    DIFFERENT reason than the shared-entity one above.** A document header's
+    ``fromDate`` floor means the extract's known population is a WINDOW, not
+    the whole standing set - a header that has simply aged out of the window
+    (or was pushed before ``fromDate`` moved forward) is indistinguishable,
+    from inside this diff, from one that genuinely no longer exists at the
+    source. Reconcile therefore stages NO delete intent for a document at
+    all - the same "drop only this extract's own hash row" treatment as a
+    shared entity, so a re-appearance (the window widening, or the document
+    coming back into range) stages as a fresh add, never a phantom update.
+    Cancel-at-source arrives as an ordinary STATUS UPDATE instead (plan
+    2.8/Appendix A6 item 4 - "documents with dependents deactivate as
+    status='cancelled'"), which the header's own ``status`` mapping already
+    carries through on every re-push - no special-casing needed there.
+
+    N7: a SINGLE commit for the whole batch (mirrors the auto-push upsert
+    path) rather than one per row - the caller commits again immediately
+    after this returns, so a per-row commit here bought nothing but extra
+    round trips.
+    """
+    staged_repo = StagedRecordRepository(db)
+    staged_repo.discard_stale_deletes(tenant_id, company_id, entity_type, current_refs)
+
+    if entity_type in UNQUALIFIED_REF_ENTITIES or entity_type in DOCUMENT_ENTITY_TYPES:
+        if delete_refs:
+            dropped = RowHashRepository(db).delete_many(
+                tenant_id, company_id, entity_type, delete_refs
+            )
+            reason = (
+                "is a shared entity"
+                if entity_type in UNQUALIFIED_REF_ENTITIES
+                else "is a document (a fromDate window, not a standing set)"
+            )
+            logger.info(
+                "autocount reconcile: %s %s - dropped %d local hash row(s) "
+                "for missing ref(s) instead of staging deletes (%s).",
+                entity_type, reason, dropped, ", ".join(delete_refs),
+            )
+        db.commit()
+        return 0
+
+    count = 0
+    if delete_refs:
+        skip = staged_repo.pending_delete_refs(
+            tenant_id, company_id, entity_type, delete_refs
+        )
+        for ref in delete_refs:
+            if ref in skip:
+                continue
+            if _aborted(db, job.id):
+                break
+            staged_repo.add(
+                AcStagedRecord(
+                    tenant_id=tenant_id,
+                    company_id=company_id,
+                    entity_type=entity_type,
+                    job_id=job.id,
+                    source_ref=ref,
+                    doc_no=None,
+                    source_last_modified=None,
+                    raw_json=None,
+                    canonical_json=None,
+                    status=STAGED,
+                    op=STAGED_OP_DELETE,
+                )
+            )
+            count += 1
+    db.commit()
+    return count
+
+
 def _fail(
     db: Session,
     service: JobService,
@@ -586,6 +930,8 @@ def _fail(
     started: float,
     *,
     truncated: bool = False,
+    config=None,
+    error_code: Optional[str] = None,
 ) -> None:
     """Run failed: watermark HOLDS, failures counted, job marked failed."""
     run.outcome = RUN_FAILED
@@ -595,6 +941,12 @@ def _fail(
     run.duration_ms = int((time.monotonic() - started) * 1000)
     watermark_row.consecutive_failures = (watermark_row.consecutive_failures or 0) + 1
     watermark_row.last_error = message[:4000]
+    if config is not None:
+        # The TASK surface must show the last failure (AC-22-19) - the watermark
+        # row is the delta bookkeeping, the task is what an operator looks at.
+        config.last_run_at = datetime.now(timezone.utc)
+        config.last_run_error = message[:4000]
+        config.last_run_error_code = error_code
     db.commit()
     # Same cooperative-abort rule as ``_abort``: an operator's committed
     # ``JOB_ABORTED`` MUST stand. An abort landing while a fetch was in flight

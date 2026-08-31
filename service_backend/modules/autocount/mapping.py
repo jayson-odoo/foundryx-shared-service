@@ -41,11 +41,31 @@ from .canonical.grn import (
 )
 from .canonical.masters import (
     ENTITY_CUSTOMER,
+    ENTITY_PRODUCT,
+    ENTITY_PRODUCT_CATEGORY,
+    ENTITY_SALES_AGENT,
     ENTITY_SUPPLIER,
+    ENTITY_UNIT_OF_MEASURE,
+    ENTITY_WAREHOUSE,
     VENDOR_AUTOKEY_PATH,
     VENDOR_LAST_MODIFIED_PATH,
     CanonicalCustomer,
+    CanonicalProduct,
+    CanonicalProductCategory,
+    CanonicalSalesAgent,
     CanonicalSupplier,
+    CanonicalUnitOfMeasure,
+    CanonicalWarehouse,
+)
+from .canonical.documents import (
+    ENTITY_PURCHASE_ORDER,
+    ENTITY_SALES_ORDER,
+    SQL_DOC_LINES_KEY,
+    CanonicalPurchaseOrder,
+    CanonicalPurchaseOrderLine,
+    CanonicalSalesOrder,
+    CanonicalSalesOrderLine,
+    is_document_entity,
 )
 
 SCOPE_HEADER = "header"
@@ -447,7 +467,12 @@ class MappingRow:
     # authoritative and the named transform is ignored for value production.
     formula: Optional[str] = None
 
-    def coerce(self, value: Any) -> Any:
+    def coerce(self, value: Any, transforms: Optional[Dict[str, Callable[[Any], Any]]] = None) -> Any:
+        """``transforms`` overrides the module-level ``TRANSFORMS`` lookup -
+        ``MappingEngine`` passes its own INSTANCE-bound table (plan 22 S5) so a
+        ``ref_*`` transform can close over the engine's ``database_name``.
+        ``None`` (every pre-S5 caller) falls back to the plain module table -
+        byte-identical to before."""
         if self.formula:
             # A BLANK source value short-circuits to None WITHOUT evaluating -
             # exactly as every named transform treats blank (``_blank`` → None).
@@ -463,7 +488,8 @@ class MappingRow:
                 # A runtime formula fault becomes a NAMED per-field error via the
                 # engine's existing ``except TransformError`` path (AC-16-03).
                 raise TransformError(str(exc)) from exc
-        fn = TRANSFORMS.get(self.transform)
+        table = transforms if transforms is not None else TRANSFORMS
+        fn = table.get(self.transform)
         if fn is None:
             raise TransformError(f"unknown transform '{self.transform}'")
         return fn(value)
@@ -573,6 +599,164 @@ def company_qualified_identity(raw: Dict[str, Any], database_name: str) -> str:
     return f"{company}:{key}"
 
 
+# ── flat (direct-DB) identity - plan 22 §2.5, AC-22-10 ───────────────────────
+# A ``sql_db`` task's rows are FLAT: the source path is a result column name and
+# there is no vendor envelope to reach into. Only IDENTITY differs from the API
+# path, and it must land on the SAME string (see below).
+
+# The one entity whose ``source_ref`` is deliberately NOT company-qualified.
+UNQUALIFIED_REF_ENTITIES = {ENTITY_SALES_AGENT}
+SALES_AGENT_REF_PREFIX = "agent"
+# Separator between the parts of a COMPOSITE key. Not ``:`` - that already
+# separates the company qualifier from the key, and reusing it would make
+# ``("A:B", "C")`` and ``("A", "B:C")`` the same ref.
+KEY_PART_SEPARATOR = "|"
+
+
+def flat_source_ref(
+    raw: Dict[str, Any],
+    *,
+    database_name: str,
+    key_columns: Sequence[str],
+    entity_type: str,
+) -> str:
+    """``"{DatabaseName}:{key1[|key2]}"`` from a flat DB row (AC-22-10).
+
+        !!  THIS MUST EQUAL ``company_qualified_identity`` FOR THE SAME ROW.  !!
+
+    A company that already synced customers over the API path and then switches
+    to the DB path keeps its consumer records ONLY if the ref is byte-identical:
+    Sorento's uniqueness is ``(source_system, entity_type, source_ref)``, so a
+    different scheme is not a migration, it is a duplicate ``created`` wave on a
+    live consumer. The API path mints ``{DatabaseName}:{AutoKey}``; pointing a
+    DB task's key column at ``AutoKey`` therefore lands on the same string.
+
+    ``sales_agent`` is the ONE exception (Appendix A6 §6): Sorento's agent rows
+    are SHARED across companies (``company_id`` NULL), so a company-qualified
+    ref would make the second company's push ``failed``. Its ref is
+    ``agent:{CODE}``, upper-cased and trimmed, so every company resolves to the
+    one shared row. ``CanonicalSalesAgent.code`` normalizes the SAME way on
+    construction (S4 review NIT) - so the payload's ``code`` can never
+    disagree with the ref it is filed under, regardless of which mapping
+    transform an operator picked for the source column.
+    """
+    columns = [str(c) for c in key_columns if str(c).strip()]
+    if not columns:
+        raise IdentityError(
+            "the task has no key columns, so its rows cannot be correlated"
+        )
+    parts: List[str] = []
+    for column in columns:
+        value = t_string(raw.get(column))
+        if not value:
+            raise IdentityError(
+                f"the row carries no '{column}', so it cannot be correlated"
+            )
+        parts.append(value)
+
+    if entity_type in UNQUALIFIED_REF_ENTITIES:
+        key = KEY_PART_SEPARATOR.join(p.upper() for p in parts)
+        return f"{SALES_AGENT_REF_PREFIX}:{key}"
+
+    company = (database_name or "").strip()
+    if not company:
+        raise IdentityError(
+            "the company database name is unknown, so the row cannot be "
+            "company-qualified and would collide with another company's records"
+        )
+    return f"{company}:{KEY_PART_SEPARATOR.join(parts)}"
+
+
+# ── master reference minting (plan 22 S5, Appendix A6 item 3) ────────────────
+# A document field like ``customer_ref``/``product_ref`` must carry the EXACT
+# ``source_ref`` the referenced master was pushed under - never invented here.
+# ``mint_master_ref`` reuses ``flat_source_ref`` itself (the SAME function a
+# master task uses for its own identity, single-column) so the two schemes can
+# never drift apart. Named "ref_<entity>" TRANSFORMS below let an operator pick
+# one in the mapping editor for a HEADER ref field (``customer_ref``,
+# ``sales_agent_ref``, ``supplier_ref``); a document's LINE ref fields
+# (``product_ref``/``warehouse_ref``) are minted the SAME way but via
+# ``document_line_rows`` (below), never operator-mapped (plan §Scope item 3 -
+# "FIXED column-name convention").
+
+_REF_COLUMN = "_ref"
+
+
+def mint_master_ref(value: Any, *, database_name: str, entity_type: str) -> Optional[str]:
+    """``value`` (a master's own code column, raw) -> that master's
+    ``source_ref`` scheme. Blank passes through as None (absent is not
+    unconvertible, the house rule every named transform follows)."""
+    if _blank(value):
+        return None
+    try:
+        return flat_source_ref(
+            {_REF_COLUMN: value},
+            database_name=database_name,
+            key_columns=[_REF_COLUMN],
+            entity_type=entity_type,
+        )
+    except IdentityError as exc:
+        raise TransformError(str(exc)) from exc
+
+
+# transform name -> the master entity_type it mints a ref for. Registered as
+# INSTANCE-bound transforms on ``MappingEngine`` (they need ``database_name``,
+# which a module-level pure function cannot close over) - see
+# ``MappingEngine._transforms``.
+REF_TRANSFORM_ENTITIES: Dict[str, str] = {
+    "ref_customer": ENTITY_CUSTOMER,
+    "ref_supplier": ENTITY_SUPPLIER,
+    "ref_product": ENTITY_PRODUCT,
+    "ref_warehouse": ENTITY_WAREHOUSE,
+    "ref_sales_agent": ENTITY_SALES_AGENT,
+}
+
+
+def _unbound_ref_transform(entity_type: str) -> Callable[[Any], Any]:
+    """The ``TRANSFORMS``-dict entry for a ``ref_*`` name - present ONLY so
+    ``company_service.replace_mapping``'s "is this a known transform?" save
+    guard accepts the name. A real coercion always goes through
+    ``MappingEngine._transforms`` (bound to a ``database_name`` at
+    construction) - reaching this unbound version is a wiring bug, so it fails
+    loudly rather than minting an un-company-qualified ref."""
+
+    def _unbound(value: Any) -> Any:
+        raise TransformError(
+            f"'{entity_type}' reference minting needs a company context and "
+            "cannot run outside a MappingEngine."
+        )
+
+    return _unbound
+
+
+# Registered into the module-level TRANSFORMS dict below (import order: this
+# runs after TRANSFORMS is defined) purely for the save-time "is this a known
+# transform name" check - never invoked for real coercion (see the docstring
+# above).
+TRANSFORMS.update(
+    {name: _unbound_ref_transform(entity) for name, entity in REF_TRANSFORM_ENTITIES.items()}
+)
+
+
+# ── field <-> ref-transform pairing (S5 review BLOCKER 2) ────────────────────
+# Which canonical field REQUIRES which ``ref_*`` transform - the save-time
+# guard (``company_service.replace_mapping``) enforces BOTH directions: a
+# ``ref_*`` transform may only be used on ITS matching field (never smuggled
+# onto an unrelated one - the field-level equivalent of the accepted-target
+# guard), and a ``*_ref`` field may ONLY be saved with its own ref transform
+# (a plain/string transform would ship the bare AutoCount code as the "ref" -
+# Sorento cannot resolve it as a reference, and the row is stuck retrying
+# forever with no error naming why). ``product_ref``/``warehouse_ref`` are
+# deliberately absent: they are code-generated by ``document_line_rows``,
+# never an operator-authored mapping row, so ``replace_mapping`` never sees
+# them at all.
+FIELD_REF_TRANSFORMS: Dict[str, str] = {
+    "customer_ref": "ref_customer",
+    "supplier_ref": "ref_supplier",
+    "sales_agent_ref": "ref_sales_agent",
+}
+
+
 # ── entity profiles ───────────────────────────────────────────────────────────
 # What differs BETWEEN entities, in one place. Adding an entity is a profile plus
 # mapping rows; the engine below is entity-agnostic.
@@ -596,6 +780,13 @@ class EntityProfile:
     detail_key: Optional[str] = None
     # The path the identity function reads, named so a failure can point at it.
     identity_path: str = "DocKey"
+    # Documents only (plan 22 S5): a mapped line's ``source_ref`` (the raw
+    # DtlKey-equivalent a mapping row produced) is composed into
+    # ``{header_source_ref}:{line_source_ref}`` AFTER mapping, never before -
+    # the header's OWN ref is not known until identity resolves. False for
+    # every non-document profile (a GRN line's ``source_ref`` stays the bare
+    # DtlKey it always was - unchanged behaviour, S1 regression pin).
+    line_ref_prefix: bool = False
 
     def record_fields(self) -> set:
         return set(self.record_model.model_fields) - {"lines", "extras"}
@@ -632,11 +823,131 @@ CUSTOMER_PROFILE = EntityProfile(
     identity_path=VENDOR_AUTOKEY_PATH,
 )
 
+# ── plan 22 S4 masters fan-out (AC-22-23) ─────────────────────────────────────
+# These five are DB-source ONLY - there is no confirmed AutoCount API payload
+# behind them (``services/company_service.py``'s ``SEEDED_ENTITIES`` guard), so
+# their ``identity``/``display_path``/``identity_path`` below are the profile's
+# API-path defaults ONLY in shape; every real task runs through
+# ``flat_profile()``, which re-points identity at ``flat_source_ref`` (masters:
+# company-qualified; sales_agent: the shared ``agent:{CODE}`` ref via
+# ``UNQUALIFIED_REF_ENTITIES`` below) regardless of what is registered here.
+PRODUCT_CATEGORY_PROFILE = EntityProfile(
+    entity_type=ENTITY_PRODUCT_CATEGORY,
+    record_model=CanonicalProductCategory,
+    identity=company_qualified_identity,
+    display_path="Code",
+    identity_path="Code",
+)
+
+UNIT_OF_MEASURE_PROFILE = EntityProfile(
+    entity_type=ENTITY_UNIT_OF_MEASURE,
+    record_model=CanonicalUnitOfMeasure,
+    identity=company_qualified_identity,
+    display_path="Code",
+    identity_path="Code",
+)
+
+WAREHOUSE_PROFILE = EntityProfile(
+    entity_type=ENTITY_WAREHOUSE,
+    record_model=CanonicalWarehouse,
+    identity=company_qualified_identity,
+    display_path="Code",
+    identity_path="Code",
+)
+
+PRODUCT_PROFILE = EntityProfile(
+    entity_type=ENTITY_PRODUCT,
+    record_model=CanonicalProduct,
+    identity=company_qualified_identity,
+    display_path="Code",
+    identity_path="Code",
+)
+
+SALES_AGENT_PROFILE = EntityProfile(
+    entity_type=ENTITY_SALES_AGENT,
+    record_model=CanonicalSalesAgent,
+    identity=company_qualified_identity,
+    display_path="Code",
+    identity_path="Code",
+)
+
+# ── plan 22 S5 documents (AC-22-24) - DB-source ONLY, same reasoning as the S4
+# masters fan-out above: no confirmed AutoCount API payload backs a document
+# task, so `identity`/`display_path`/`identity_path` below are API-path-shape
+# defaults ONLY; every real task runs through `flat_profile`, which re-points
+# identity at `flat_source_ref` regardless of what is registered here. What
+# DOES carry through `flat_profile` unchanged is `line_model`/`detail_key`/
+# `line_ref_prefix` - a document's lines are real, fetched by a second query
+# (`sql_source.source.SqlDbSource`), nested under `SQL_DOC_LINES_KEY`.
+SALES_ORDER_PROFILE = EntityProfile(
+    entity_type=ENTITY_SALES_ORDER,
+    record_model=CanonicalSalesOrder,
+    identity=doc_key_identity,
+    display_path="DocNo",
+    line_model=CanonicalSalesOrderLine,
+    detail_key=SQL_DOC_LINES_KEY,
+    identity_path="DocKey",
+    line_ref_prefix=True,
+)
+
+PURCHASE_ORDER_PROFILE = EntityProfile(
+    entity_type=ENTITY_PURCHASE_ORDER,
+    record_model=CanonicalPurchaseOrder,
+    identity=doc_key_identity,
+    display_path="DocNo",
+    line_model=CanonicalPurchaseOrderLine,
+    detail_key=SQL_DOC_LINES_KEY,
+    identity_path="DocKey",
+    line_ref_prefix=True,
+)
+
 ENTITY_PROFILES: Dict[str, EntityProfile] = {
     GRN_PROFILE.entity_type: GRN_PROFILE,
     SUPPLIER_PROFILE.entity_type: SUPPLIER_PROFILE,
     CUSTOMER_PROFILE.entity_type: CUSTOMER_PROFILE,
+    PRODUCT_CATEGORY_PROFILE.entity_type: PRODUCT_CATEGORY_PROFILE,
+    UNIT_OF_MEASURE_PROFILE.entity_type: UNIT_OF_MEASURE_PROFILE,
+    WAREHOUSE_PROFILE.entity_type: WAREHOUSE_PROFILE,
+    PRODUCT_PROFILE.entity_type: PRODUCT_PROFILE,
+    SALES_AGENT_PROFILE.entity_type: SALES_AGENT_PROFILE,
+    SALES_ORDER_PROFILE.entity_type: SALES_ORDER_PROFILE,
+    PURCHASE_ORDER_PROFILE.entity_type: PURCHASE_ORDER_PROFILE,
 }
+
+
+def flat_profile(entity_type: str, key_columns: Sequence[str]) -> EntityProfile:
+    """The entity's profile re-pointed at FLAT rows (plan 22 §2.5).
+
+    Identity is minted from the task's key columns and the display path is the
+    first key column. ``line_model``/``detail_key``/``line_ref_prefix`` carry
+    through UNCHANGED from the base profile (S5) - a master's are all
+    None/False (masters are flat, no change from before S5); a document's
+    point at ``SQL_DOC_LINES_KEY`` so `SqlDbSource`'s per-header line fetch
+    (nested there) maps through the SAME engine a nested API envelope would.
+    The CANONICAL MODEL is untouched either way, so the sink still receives
+    exactly the shape it would over an API path.
+    """
+    base = profile_for(entity_type)
+    columns = [str(c) for c in key_columns if str(c).strip()]
+
+    def identity(raw: Dict[str, Any], database_name: str) -> str:
+        return flat_source_ref(
+            raw,
+            database_name=database_name,
+            key_columns=columns,
+            entity_type=entity_type,
+        )
+
+    return EntityProfile(
+        entity_type=base.entity_type,
+        record_model=base.record_model,
+        identity=identity,
+        display_path=columns[0] if columns else base.display_path,
+        line_model=base.line_model,
+        detail_key=base.detail_key,
+        identity_path=", ".join(columns) or base.identity_path,
+        line_ref_prefix=base.line_ref_prefix,
+    )
 
 
 class UnknownEntityProfile(Exception):
@@ -681,13 +992,32 @@ class MappingEngine:
         # be fixed from config.
         self.detail_key = detail_key if detail_key is not None else self.profile.detail_key
         # The company this engine maps FOR. Masters mint a company-qualified
-        # ``source_ref`` from it (AC-14-10); documents ignore it.
+        # ``source_ref`` from it (AC-14-10); a document's ``ref_*`` transforms
+        # (plan 22 S5) use it the SAME way to mint the master refs a line/
+        # header points AT.
         self.database_name = database_name
+        # INSTANCE-bound transform table (plan 22 S5): the module-level
+        # ``TRANSFORMS`` entries plus this engine's own ``ref_*`` closures -
+        # everything else about ``MappingRow.coerce`` is unchanged.
+        self._transforms: Dict[str, Callable[[Any], Any]] = dict(TRANSFORMS)
+        for transform_name, ref_entity_type in REF_TRANSFORM_ENTITIES.items():
+            self._transforms[transform_name] = self._ref_transform(ref_entity_type)
         self._record_fields = self.profile.record_fields()
         self._line_fields = self.profile.line_fields()
         # Declared field types, for coercing a FORMULA row's output (AC-16-04).
         self._record_field_types = _field_type_tokens(self.profile.record_model)
         self._line_field_types = _field_type_tokens(self.profile.line_model)
+
+    def _ref_transform(self, ref_entity_type: str) -> Callable[[Any], Any]:
+        """Bind ``mint_master_ref`` to THIS engine's ``database_name`` - the
+        thing a module-level pure transform cannot do (plan 22 S5)."""
+
+        def transform(value: Any) -> Optional[str]:
+            return mint_master_ref(
+                value, database_name=self.database_name, entity_type=ref_entity_type
+            )
+
+        return transform
 
     # ── one document ──────────────────────────────────────────────────────
 
@@ -769,6 +1099,16 @@ class MappingEngine:
             )
             values.setdefault("line_no", index)
             values["extras"] = extras
+            #     !!  LINE REF COMPOSITION - DOCUMENTS ONLY (plan 22 S5).  !!
+            # The mapped ``source_ref`` above is the bare line key (DtlKey);
+            # here it becomes ``{header_source_ref}:{line_key}`` (Appendix A6)
+            # - composed AFTER mapping (the header's own ref is not known
+            # until identity resolves above) and ONLY when the profile opts in
+            # (``line_ref_prefix`` - a GRN line's ref stays untouched, S1
+            # regression pin). A blank/missing line key is left alone; the
+            # canonical line model's own validation names it if required.
+            if self.profile.line_ref_prefix and doc_key and values.get("source_ref"):
+                values["source_ref"] = f"{doc_key}:{values['source_ref']}"
             try:
                 lines.append(self.profile.line_model(**values))
             except Exception as exc:  # noqa: BLE001 - a model reject is a field error
@@ -908,7 +1248,7 @@ class MappingEngine:
                 out.append(entry)
                 continue
             try:
-                coerced = row.coerce(raw_value)
+                coerced = row.coerce(raw_value, self._transforms)
                 if row.formula and row.canonical_field in fields:
                     coerced = coerce_output(coerced, types.get(row.canonical_field))
             except TransformError as exc:
@@ -962,7 +1302,7 @@ class MappingEngine:
                 continue
 
             try:
-                coerced = row.coerce(raw_value)
+                coerced = row.coerce(raw_value, self._transforms)
                 # A FORMULA row's output is coerced/validated to the target
                 # field's declared type (AC-16-04). Named-transform rows already
                 # return the right type, so they skip this. Extras (undeclared
@@ -1112,3 +1452,122 @@ DEFAULT_MAPPINGS: Dict[str, Tuple[MappingRow, ...]] = {
     ENTITY_SUPPLIER: DEFAULT_SUPPLIER_MAPPING,
     ENTITY_CUSTOMER: DEFAULT_CUSTOMER_MAPPING,
 }
+
+
+# ── document LINE mapping - a FIXED column-name convention, not data (plan 22
+# S5, Appendix A6 item 3) ──────────────────────────────────────────────────
+#
+# Everything above this point (`DEFAULT_MAPPINGS`, the mapping editor,
+# `ac_field_mapping`) is HEADER-scope only for a document - matching how the
+# rest of the DB-task editor already works (the mapping editor writes
+# `scope=SCOPE_HEADER` unconditionally; see `company_service.replace_mapping`).
+# A document's LINES are deliberately NOT operator-mapped: the lineQuery's
+# result columns are read by a FIXED convention instead - most canonical line
+# fields must be named EXACTLY like the column the lineQuery returns them
+# under (`qty_ordered`, `unit_price`, …), and the two fields that need MINTING
+# (the line key, the master refs) are picked via three `source_config` columns
+# (`lineKeyColumn`/`lineProductColumn`/`lineWarehouseColumn`) instead of a
+# mapping row. This still runs through the ordinary `MappingEngine` (decimal/
+# date coercion, per-field named errors) - only the ROWS are generated here
+# instead of read from `ac_field_mapping`.
+#
+# so_number/customer_ref/sales_agent_ref/doc_date/requested_delivery_date/
+# status/internal_note (SO) and po_number/supplier_ref/issue_date/
+# expected_date/currency/status/internal_note (PO) stay ordinary HEADER
+# mapping rows, saved through the SAME mapping editor masters already use -
+# `mapping_catalog.SORENTO_FIELDS` gained entries for both entities so the
+# editor's Sorento-field picker offers them (`customer_ref`/`sales_agent_ref`/
+# `supplier_ref` pick the `ref_customer`/`ref_sales_agent`/`ref_supplier`
+# transform above).
+
+# canonical line field -> (transform name, is required per Sorento's own
+# `_CanonicalLine.qty_ordered` - Appendix A6 §3). Per entity, since SO and PO
+# line fields only partly overlap.
+_SO_LINE_FIXED_FIELDS: Tuple[Tuple[str, str, bool], ...] = (
+    ("qty_ordered", "decimal", True),
+    ("qty_delivered", "decimal", False),
+    ("unit_price", "decimal", False),
+    ("discount", "decimal", False),
+    ("line_total", "decimal", False),
+    ("uom", "string", False),
+    ("required_date", "date", False),
+)
+_PO_LINE_FIXED_FIELDS: Tuple[Tuple[str, str, bool], ...] = (
+    ("qty_ordered", "decimal", True),
+    ("qty_received", "decimal", False),
+    ("unit_cost", "decimal", False),
+    ("discount", "decimal", False),
+    ("line_total", "decimal", False),
+    ("uom", "string", False),
+    ("currency", "string", False),
+    ("expected_date", "date", False),
+)
+DOCUMENT_LINE_FIXED_FIELDS: Dict[str, Tuple[Tuple[str, str, bool], ...]] = {
+    ENTITY_SALES_ORDER: _SO_LINE_FIXED_FIELDS,
+    ENTITY_PURCHASE_ORDER: _PO_LINE_FIXED_FIELDS,
+}
+
+# canonical line ref field -> (source_config key naming the lineQuery column,
+# the ref transform that mints it, whether Sorento requires it - Appendix A6:
+# `product_ref` is required on every line, `warehouse_ref` is optional).
+DOCUMENT_LINE_REF_COLUMNS: Tuple[Tuple[str, str, str, bool], ...] = (
+    ("product_ref", "lineProductColumn", "ref_product", True),
+    ("warehouse_ref", "lineWarehouseColumn", "ref_warehouse", False),
+)
+
+
+def document_line_rows(
+    entity_type: str, source_config: Optional[Dict[str, Any]]
+) -> List[MappingRow]:
+    """The FIXED, code-generated line rows for a document ``sql_db`` task
+    (plan 22 S5) - never persisted to ``ac_field_mapping``, never operator-
+    edited. Built fresh from the task's ``source_config`` on every extract/
+    preview/push so a picker change takes effect immediately.
+
+    Empty (not an error) when the task has no ``lineKeyColumn`` configured yet
+    - a document task mid-setup simply maps no lines, exactly like an empty
+    ``ac_field_mapping`` for a header.
+    """
+    cfg = source_config or {}
+    rows: List[MappingRow] = []
+    key_column = str(cfg.get("lineKeyColumn") or "").strip()
+    if not key_column:
+        return rows
+    # The line's bare key (DtlKey) - `MappingEngine` composes the FULL
+    # `{header_ref}:{DtlKey}` ref post-mapping via `EntityProfile.line_ref_prefix`.
+    rows.append(MappingRow(key_column, "source_ref", "string", SCOPE_LINE, is_required=True))
+    for canonical_field, config_key, transform, required in DOCUMENT_LINE_REF_COLUMNS:
+        column = str(cfg.get(config_key) or "").strip()
+        if column:
+            rows.append(MappingRow(column, canonical_field, transform, SCOPE_LINE, is_required=required))
+    for canonical_field, transform, required in DOCUMENT_LINE_FIXED_FIELDS.get(entity_type, ()):
+        # FIXED column-name convention: the lineQuery must return a column
+        # named EXACTLY like the canonical field it feeds.
+        rows.append(
+            MappingRow(canonical_field, canonical_field, transform, SCOPE_LINE, is_required=required)
+        )
+    return rows
+
+
+def build_mapping_rows_for_run(
+    entity_type: str,
+    header_rows: Sequence[MappingRow],
+    *,
+    is_sql_db_source: bool,
+    source_config: Optional[Dict[str, Any]],
+) -> List[MappingRow]:
+    """The FULL engine row set for one extract/preview/push: the operator's
+    saved HEADER mapping as given, plus - for a document entity running on
+    the ``sql_db`` source ONLY - the FIXED, code-generated LINE rows
+    (``document_line_rows``, plan 22 S5 NIT).
+
+    ONE function so ``sync.py`` (the real run) and ``etl_service.py``'s
+    ``_extract_and_map`` (the activation-gate preview) gate the line rows
+    IDENTICALLY - two separately-maintained copies of this "if document AND
+    sql_db" condition is exactly how they would quietly drift (one gating on
+    ``source_impl``, the other forgetting to).
+    """
+    rows = list(header_rows)
+    if is_sql_db_source and is_document_entity(entity_type):
+        rows.extend(document_line_rows(entity_type, source_config))
+    return rows

@@ -32,17 +32,35 @@ from app.models.background_job import (
 )
 
 from ..activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS, record_activity
+from ..canonical.documents import (
+    ENTITY_PURCHASE_ORDER,
+    ENTITY_SALES_ORDER,
+    CanonicalPurchaseOrder,
+    CanonicalSalesOrder,
+)
 from ..canonical.grn import CanonicalGrn, ENTITY_GOODS_RECEIVED_NOTE
 from ..canonical.masters import (
     ENTITY_CUSTOMER,
+    ENTITY_PRODUCT,
+    ENTITY_PRODUCT_CATEGORY,
+    ENTITY_SALES_AGENT,
     ENTITY_SUPPLIER,
+    ENTITY_UNIT_OF_MEASURE,
+    ENTITY_WAREHOUSE,
     CanonicalCustomer,
+    CanonicalProduct,
+    CanonicalProductCategory,
+    CanonicalSalesAgent,
     CanonicalSupplier,
+    CanonicalUnitOfMeasure,
+    CanonicalWarehouse,
 )
 from ..models import (
     SINK_IMPL_LOGGING,
     SINK_IMPL_SORENTO,
     STAGED_DISCARDED,
+    STAGED_FAILED,
+    STAGED_OP_DELETE,
     STAGED_PUSHED,
     AcStagedRecord,
     AcSyncRun,
@@ -50,12 +68,18 @@ from ..models import (
 from ..repositories import (
     CompanyRepository,
     EntityConfigRepository,
+    RowHashRepository,
     StagedRecordRepository,
     SyncJobRepository,
     SyncRunRepository,
 )
 from ..sinks import EntitySink, WriteResult
-from ..sinks_sorento import SorentoSinkError, sorento_supports_entity
+from ..sinks_sorento import (
+    SinkAnchorError,
+    SorentoSinkError,
+    sorento_supported_entities_label,
+    sorento_supports_entity,
+)
 from ..sync import AUTOCOUNT_SYNC
 from .company_service import AutocountServiceError, CompanyService
 
@@ -63,11 +87,19 @@ logger = logging.getLogger("foundryx.autocount")
 
 # Canonical entity → its canonical model, so a staged record's ``canonical_json``
 # can be rehydrated into the typed shape the sink needs (``sink_payload`` /
-# ``source_ref``). Hop 2 adds the two master shapes beside slice 1's GRN.
+# ``source_ref``). Hop 2 adds the two master shapes beside slice 1's GRN; plan
+# 22 S4 (AC-22-23) adds the five masters fan-out shapes.
 CANONICAL_MODELS = {
     ENTITY_GOODS_RECEIVED_NOTE: CanonicalGrn,
     ENTITY_SUPPLIER: CanonicalSupplier,
     ENTITY_CUSTOMER: CanonicalCustomer,
+    ENTITY_PRODUCT_CATEGORY: CanonicalProductCategory,
+    ENTITY_UNIT_OF_MEASURE: CanonicalUnitOfMeasure,
+    ENTITY_WAREHOUSE: CanonicalWarehouse,
+    ENTITY_PRODUCT: CanonicalProduct,
+    ENTITY_SALES_AGENT: CanonicalSalesAgent,
+    ENTITY_SALES_ORDER: CanonicalSalesOrder,
+    ENTITY_PURCHASE_ORDER: CanonicalPurchaseOrder,
 }
 
 
@@ -468,6 +500,233 @@ class SyncService:
             ) from exc
         return pushed, failures, delivered
 
+    # ── auto-push (plan 22 §2.6, AC-22-20) ───────────────────────────────────
+
+    def auto_push(
+        self, tenant_id: str, company_id: str, entity_type: str, *, job_id: str
+    ) -> Dict[str, Any]:
+        """Deliver an ACTIVE DB task's staged records with NO review gate.
+
+        Called by the sync handler, inside its own run, for a ``sql_db`` task in
+        ``etl_status='active'`` only. Three properties are what make it safe to
+        run unattended:
+
+        * **It pushes the ENTITY's undelivered rows, not just this job's.**
+          A record the consumer called ``retryable`` (a master it depends on is
+          not synced yet) stays ``STAGED`` and is re-offered by the NEXT run,
+          which is a different job (AC-22-20). Nothing is lost and nothing needs
+          a human to re-drive it.
+        * **It never raises into the run.** The batch either delivers or it does
+          not; a transport fault, an anchor 422 or an undecryptable credential
+          comes back as ``error``/``errorCode`` on the summary, which the
+          handler stamps onto the TASK (AC-22-19). Raising would fail a run that
+          genuinely fetched and staged its data correctly.
+        * **It reuses the SAME per-record delivery path as the review gate** -
+          the sink's own verdicts, never inferred from an HTTP status.
+
+        The review-gated ``approve`` path is untouched: it still claims the job,
+        still pushes per batch, and the API path still stops at ``needs_review``.
+        """
+        summary: Dict[str, Any] = {
+            "pushed": 0,
+            "pushFailures": [],
+            "delivered": False,
+            "autoPushed": True,
+            "error": None,
+            "errorCode": None,
+            # ── delete-push verdicts (plan 22 S3, AC-22-21) ──────────────────
+            "deletedHandled": 0,
+            "deleteFailures": [],
+        }
+        try:
+            company = self.companies.get(tenant_id, company_id)
+            sink = self.companies.sink_for_company(tenant_id, company, entity_type)
+        except AutocountServiceError as exc:
+            summary["error"] = exc.message
+            return summary
+        summary["sink"] = sink.name
+
+        pending = self.staged.list_pending_for_entity(
+            tenant_id, company_id, entity_type, job_type=AUTOCOUNT_SYNC
+        )
+        if not pending:
+            return summary
+
+        # A reconcile delete intent carries NO canonical payload (op='delete',
+        # models.py) - it must never reach `_rehydrate_pushable`, which would
+        # misclassify it as "not pushable" (it has no `canonical_json`). Split
+        # FIRST, route each half to its own sink call.
+        upserts = [row for row in pending if row.op != STAGED_OP_DELETE]
+        deletes = [row for row in pending if row.op == STAGED_OP_DELETE]
+
+        if upserts and not self._auto_push_upserts(upserts, sink=sink, job_id=job_id, summary=summary):
+            return summary
+        if deletes and not self._auto_push_deletes(
+            deletes,
+            sink=sink,
+            tenant_id=tenant_id,
+            company_id=company_id,
+            entity_type=entity_type,
+            summary=summary,
+        ):
+            return summary
+
+        self.db.commit()
+        return summary
+
+    def _auto_push_upserts(
+        self,
+        pending: List[AcStagedRecord],
+        *,
+        sink: EntitySink,
+        job_id: str,
+        summary: Dict[str, Any],
+    ) -> bool:
+        """The upsert half of ``auto_push``. Returns ``False`` on a BATCH-level
+        fault (``summary["error"]`` already set) - the caller returns the
+        summary immediately without committing, same as before this method was
+        split out."""
+        rows, records, failures = self._rehydrate_pushable(pending)
+        pushed: List[AcStagedRecord] = []
+        quarantined: List[AcStagedRecord] = []
+        try:
+            #     !!  NO ROLLBACK HERE - THIS METHOD DOES NOT OWN THE SESSION.  !!
+            # ``auto_push`` runs INSIDE the caller's (``run_autocount_sync``)
+            # still-open session, which already carries an UNCOMMITTED
+            # watermark/cursor advance from the fetch that just succeeded
+            # (S2 review BLOCKER 1). A bare ``self.db.rollback()`` on a sink
+            # failure discarded that advance too, making a failing sink (e.g.
+            # a wrong ``sorento_company_code``) pin the task at a full
+            # initial extract forever. The sink call below writes NOTHING
+            # local (it is a network round-trip; the only local writes are
+            # the ``staged.mark(...)`` calls AFTER this block, once results
+            # are known) - so there is nothing of ITS OWN to roll back here.
+            # (A ``begin_nested()`` savepoint was tried first, but
+            # ``begin_nested()`` autoflushes pending session state - including
+            # the caller's watermark write - INTO the savepoint, so a later
+            # rollback-to-savepoint reverted it anyway; a bare try/except with
+            # no rollback at all is the correct fix, not just the simpler one.)
+            if hasattr(sink, "write_batch"):
+                results = sink.write_batch(records, request_id=str(job_id)) if records else []
+            else:
+                results = [
+                    sink.write(record, request_id=f"{job_id}:{row.id}")
+                    for row, record in zip(rows, records)
+                ]
+            for row, result in zip(rows, results):
+                if result.ok:
+                    pushed.append(row)
+                    summary["delivered"] = summary["delivered"] or result.delivered
+                    continue
+                failures.append({"sourceRef": row.source_ref, "error": result.message})
+                #     !!  RETRY ``retryable``; QUARANTINE ``failed``.  !!
+                # A ``retryable`` verdict means nothing was written and a
+                # dependency is missing, so the row stays STAGED and the next
+                # run re-offers it (AC-22-20). A ``failed`` verdict means the
+                # DATA was rejected - re-offering it re-fails on every run
+                # forever and pins the task permanently red (seen live: a
+                # customer code already linked to another source in Sorento).
+                # Quarantining matches D13's "FAILED is never pushable".
+                if result.outcome and result.outcome != "retryable":
+                    quarantined.append(row)
+        except SinkAnchorError as exc:
+            # TASK-level, never per record (Appendix A6): the company anchor is
+            # wrong, so no record was even looked at. Everything stays STAGED.
+            summary["error"] = exc.sorento_message
+            summary["errorCode"] = exc.code
+            return False
+        except SorentoSinkError as exc:
+            summary["error"] = str(exc)[:2000]
+            return False
+        except Exception as exc:  # noqa: BLE001 - a run must never die on delivery
+            logger.exception("autocount auto-push failed for job %s", job_id)
+            summary["error"] = f"The push failed before the consumer resolved it: {exc}"[:2000]
+            return False
+
+        self.staged.mark(pushed, status=STAGED_PUSHED, pushed_at=datetime.now(timezone.utc))
+        if quarantined:
+            self.staged.mark(quarantined, status=STAGED_FAILED)
+        # Commit the marks (and whatever the caller left pending - the
+        # watermark advance rides the SAME commit, plan-22 S2 NIT). The
+        # OUTER `auto_push` commits once, after upserts AND deletes both
+        # resolve, so a batch-level fault in either half never commits a
+        # half-finished push.
+        summary["pushed"] = len(pushed)
+        summary["quarantined"] = len(quarantined)
+        summary["pushFailures"] = failures
+        if failures:
+            # Repeated delivery failures must surface on the task, never
+            # silently (AC-22-19) - the first one names itself.
+            summary["error"] = str(failures[0].get("error") or "")[:2000]
+        return True
+
+    def _auto_push_deletes(
+        self,
+        pending: List[AcStagedRecord],
+        *,
+        sink: EntitySink,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        summary: Dict[str, Any],
+    ) -> bool:
+        """The delete half of ``auto_push`` (plan 22 S3, AC-22-21). Routes
+        ``op='delete'`` staged rows to the sink's ``delete_batch`` (both
+        ``SorentoSink`` and the ``LoggingSink`` no-op carry one); per-ref
+        verdict ``deleted|deactivated|not_found`` marks the row PUSHED and
+        drops its row-hash (a later re-appearance at source stages as a fresh
+        add); ``failed`` quarantines it (D13's rule, mirrored for deletes); no
+        verdict at all (an unrecognised outcome, or a sink with no delete
+        support) leaves the row STAGED to retry next run - the same
+        ``retryable`` posture an upsert gets. Returns ``False`` on a
+        BATCH-level fault, same contract as the upsert half."""
+        refs = [row.source_ref for row in pending]
+        try:
+            result = sink.delete_batch(refs) if hasattr(sink, "delete_batch") else None
+        except SinkAnchorError as exc:
+            summary["error"] = exc.sorento_message
+            summary["errorCode"] = exc.code
+            return False
+        except SorentoSinkError as exc:
+            summary["error"] = str(exc)[:2000]
+            return False
+        except Exception as exc:  # noqa: BLE001 - a run must never die on delivery
+            logger.exception("autocount auto-push delete failed for %s/%s", company_id, entity_type)
+            summary["error"] = f"The delete push failed before the consumer resolved it: {exc}"[:2000]
+            return False
+
+        if result is None:
+            # No delete support on this sink at all - every ref stays STAGED,
+            # same posture as a `retryable` upsert.
+            return True
+
+        by_ref = {str(r.get("source_ref") or ""): r for r in (result.get("records") or [])}
+        handled: List[AcStagedRecord] = []
+        failed: List[AcStagedRecord] = []
+        for row in pending:
+            outcome = str((by_ref.get(row.source_ref) or {}).get("outcome") or "")
+            if outcome in ("deleted", "deactivated", "not_found"):
+                handled.append(row)
+            elif outcome == "failed":
+                failed.append(row)
+            # else: no / unrecognised verdict → leave STAGED, retry next run.
+
+        self.staged.mark(handled, status=STAGED_PUSHED, pushed_at=datetime.now(timezone.utc))
+        if failed:
+            self.staged.mark(failed, status=STAGED_FAILED)
+        if handled:
+            RowHashRepository(self.db).delete_many(
+                tenant_id, company_id, entity_type, [row.source_ref for row in handled]
+            )
+        summary["deletedHandled"] = len(handled)
+        summary["deleteFailures"] = [
+            {"sourceRef": row.source_ref, "error": "the consumer rejected this delete"}
+            for row in failed
+        ]
+        if failed and not summary["error"]:
+            summary["error"] = summary["deleteFailures"][0]["error"]
+        return True
+
     def preview(self, tenant_id: str, job_id: str) -> Dict[str, Any]:
         """Ask the consumer what approving WOULD do, writing nothing (AC-14-20/21).
 
@@ -496,9 +755,9 @@ class SyncService:
             ):
                 reason = (
                     f"Sorento does not yet ingest '{entity_type}' records - it "
-                    "currently accepts suppliers and customers only. There is "
-                    "nothing to dry-run; these records are staged and logged, "
-                    "not delivered to Sorento."
+                    f"currently accepts {sorento_supported_entities_label()} "
+                    "only. There is nothing to dry-run; these records are "
+                    "staged and logged, not delivered to Sorento."
                 )
             else:
                 reason = (

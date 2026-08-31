@@ -3,11 +3,12 @@
  * `/autocount/*` surfaces talk to via hooks. The interface IS the backend
  * contract: `modules/autocount/routers/{companies,sync}.py`.
  *
- * The shipped binding is `.real` - the backend is live. A `.mock` sibling
- * exists ONLY as frontend-first scaffolding for the dry-run review states
- * (previewable / not-previewable / failure) and the Vitest suite; flip the
- * export at the bottom to `mockAutocountService` to build against it, back to
- * `.real` to ship (the house service-trio pattern).
+ * The shipped binding is the BARE `.real` service - the whole surface (S1-S3)
+ * is backed by FastAPI end to end, including the schedule fields
+ * (`nextIncrementalAt`/`nextReconcileAt`, plan 22 S3). A `.mock` sibling also
+ * exists as frontend-first scaffolding for the dry-run review states
+ * (previewable / not-previewable / failure) and the Vitest suite (the house
+ * service-trio pattern).
  *
  * Permission gates (module CSV, granted to tenant Admin by `AppStoreService`
  * on install): `autocount.companies.read/manage`, `autocount.sync.read/run`.
@@ -19,6 +20,10 @@ import type {
   AutocountCompanyDetail,
   AutocountEntityConfig,
   AutocountEntityConfigUpdate,
+  AutocountEtlPreviewResult,
+  AutocountEtlRunStart,
+  AutocountEtlTask,
+  AutocountEtlTaskUpdate,
   AutocountFormulaTestResult,
   AutocountJobListQuery,
   AutocountMappingUpdate,
@@ -27,6 +32,9 @@ import type {
   AutocountPreviewResult,
   AutocountSimulateResult,
   AutocountSinkTargetInput,
+  AutocountSqlConnection,
+  AutocountSqlPreview,
+  AutocountSqlSchema,
   AutocountStagedList,
   AutocountStagedQuery,
   AutocountSyncJob,
@@ -55,8 +63,8 @@ export interface AutocountService {
   /**
    * Adjust one entity's sync configuration
    * (`PATCH /autocount/companies/{id}/entities/{entityType}`). Narrow by
-   * design - the initial lookback window only, and changing it re-fetches
-   * nothing.
+   * design - the initial lookback window, and (plan 22 S2) the `sourceImpl`
+   * switch between the API path and the DB task.
    */
   updateEntityConfig(
     companyId: string,
@@ -110,7 +118,9 @@ export interface AutocountService {
   /**
    * Point a company at a push target
    * (`PATCH /autocount/companies/{id}/sink-target`). `logging` clears the
-   * target; `sorento` requires a `sinkConnectionId`.
+   * target; `sorento` requires a `sinkConnectionId` AND (plan 22 S2, Appendix
+   * A6) a `sorentoCompanyCode` - the company anchor Sorento demands on every
+   * call; blank with `sorento` = 422 `{fieldErrors: {sorentoCompanyCode}}`.
    */
   updateSinkTarget(
     companyId: string,
@@ -157,6 +167,175 @@ export interface AutocountService {
     record: Record<string, unknown>,
     rows?: AutocountMappingWriteRow[],
   ): Promise<AutocountSimulateResult>;
+
+  // ── direct-DB ETL (plan 22, slice S1 - AC-22-04..07/11) ────────────────────
+  //
+  // BACKEND CONTRACT (phase 2 must match this EXACTLY - the mock is the spec):
+  //
+  //   GET  /autocount/sql/connections
+  //        → AutocountSqlConnection[]  (tenant's `sql_database` connections
+  //          ONLY - resolved tenant+provider scoped, never bare get-by-id).
+  //        Gated `autocount.companies.manage`.
+  //
+  //   GET  /autocount/sql/connections/{connectionId}/schema[?refresh=true]
+  //        → AutocountSqlSchema  (schemas → tables → columns via dialect-
+  //          agnostic introspection; CACHED per connection server-side,
+  //          `refresh=true` busts the cache - AC-22-05). A connection that is
+  //          not the tenant's / not `sql_database` = 404. A connect failure =
+  //          502 with a SANITIZED message (no credentials, no DSN, no raw
+  //          driver stack - AC-22-30).
+  //        Gated `autocount.companies.manage`.
+  //
+  //   POST /autocount/sql/preview  {connectionId, query}
+  //        → AutocountSqlPreview  (≤ 100 rows, dialect-appropriate wrapping,
+  //          column names + types - AC-22-06). Non-SELECT / multi-statement =
+  //          422 BEFORE touching the source (AC-22-03); a failing query = 400
+  //          with the DB error sanitized; a bounded per-query timeout applies.
+  //        Gated `autocount.companies.manage`.
+  //
+  //   GET  /autocount/companies/{id}/entities/{entityType}/etl-task
+  //        → AutocountEtlTask  (anchored on `ac_entity_config.source_config`;
+  //          a never-configured entity returns a DRAFT task with defaults, not
+  //          a 404 - the editor is the create surface).
+  //        Gated `autocount.companies.read`.
+  //
+  //   PUT  /autocount/companies/{id}/entities/{entityType}/etl-task
+  //        {sourceConfig} → AutocountEtlTask  (draft save - replaces the
+  //          source config). Validation (AC-22-11): provided key/watermark/
+  //          compared columns must exist in a fresh preview's result columns
+  //          and the watermark must be orderable → 422 {fieldErrors}; empty
+  //          keyColumns is allowed while `etlStatus === 'draft'` (activation,
+  //          S2, is the hard gate). `connectionId` is re-validated against the
+  //          tenant on every use.
+  //        Gated `autocount.companies.manage`.
+
+  /** The tenant's SQL-database connections the task editor may pick from. */
+  listSqlConnections(): Promise<AutocountSqlConnection[]>;
+  /** Cached schema tree for one connection; `refresh` busts the cache. */
+  getSqlSchema(
+    connectionId: string,
+    opts?: { refresh?: boolean },
+  ): Promise<AutocountSqlSchema>;
+  /**
+   * Run a candidate SELECT against the source, capped at 100 rows.
+   *
+   * `opts.bindDocKey` (plan 22 S5) - previewing a document's `lineQuery`
+   * (which carries a `:doc_key` bound param): `true` binds `opts.docKey`
+   * (a harmless sample, or `null`/omitted for a NULL bind - just enough to
+   * let the query execute for column discovery). Omitted/`false` runs the
+   * query exactly as before.
+   */
+  previewSqlQuery(
+    connectionId: string,
+    query: string,
+    opts?: { bindDocKey?: boolean; docKey?: string | null },
+  ): Promise<AutocountSqlPreview>;
+  /** One entity's DB extraction task (draft defaults when unconfigured). */
+  getEtlTask(companyId: string, entityType: string): Promise<AutocountEtlTask>;
+  /** Draft-save the task's source config (422 {fieldErrors} on bad columns). */
+  updateEtlTask(
+    companyId: string,
+    entityType: string,
+    input: AutocountEtlTaskUpdate,
+  ): Promise<AutocountEtlTask>;
+
+  // ── direct-DB ETL (plan 22, slice S2 - AC-22-08..11/17/18/19, Appendix A6) ──
+  //
+  // BACKEND CONTRACT (phase 2 must match this EXACTLY - the mock is the spec).
+  // Additions to EXISTING routes first:
+  //
+  //   PATCH /autocount/companies/{id}/entities/{entityType}
+  //        body gains `sourceImpl: 'autocount_read' | 'sql_db'` (AC-22-08).
+  //        Switching keeps the task's `source_config` (a configured query is
+  //        never discarded); switching an ACTIVE task to `autocount_read`
+  //        pauses it (never left auto-pushing under a source that no longer
+  //        runs it). Unknown value = 422.
+  //
+  //   PATCH /autocount/companies/{id}/sink-target
+  //        body gains `sorentoCompanyCode` (→ `ac_company.sorento_company_code`,
+  //        new column, backfill NULL). REQUIRED with `sinkImpl='sorento'`
+  //        (422 `{fieldErrors: {sorentoCompanyCode}}`); stored trimmed; nulled
+  //        with `logging`. `CompanyItem` echoes it as `sorentoCompanyCode`.
+  //        `SorentoSink` sends it as the top-level `companyCode` on EVERY call.
+  //
+  //   GET/PUT .../etl-task  →  AutocountEtlTask gains (all read-only on the wire):
+  //        `resultColumns[]` (the validation preview's column names, stored
+  //        at PUT), `lastPreviewAt` (stamped by a completed dry run, CLEARED
+  //        by every PUT), `lastRunAt`, `lastRunError`, `lastRunErrorCode`
+  //        (the task-level error of the latest run - anchor 422s land here,
+  //        never per record).
+  //
+  //   GET/PUT .../etl-task (plan 22 S3, AC-22-12..17) → AutocountEtlTask ALSO
+  //        carries `nextIncrementalAt`/`nextReconcileAt` (read-only, recomputed
+  //        by every PUT/activate/resume - `EtlService.next_run_times` computes
+  //        + stores them server-side, `EtlTaskResponse` carries them on the
+  //        wire). The schedule fields themselves (`incrementalMinutes`/
+  //        `reconcileMode`/`reconcileHours`/`reconcileAt`) round-trip through
+  //        the existing PUT + its 422 fieldErrors.
+  //
+  //   GET  /autocount/companies/{id}/runs  →  AutocountSyncRun gains the §2.7
+  //        cost columns `mode`, `rowsScanned`, `addedCount`, `updatedCount`,
+  //        `deletedCount`, `durationMs`, `skipReason` (API-path runs report
+  //        `mode='manual'`, zero deletes). `jobId` becomes nullable (skipped).
+  //
+  // New routes (all under /autocount/companies/{id}/entities/{entityType}/etl-task):
+  //
+  //   POST .../preview
+  //        → AutocountEtlPreviewResult  (initial-load dry run: extract the
+  //          saved query, map, `SorentoSink` `?dry_run=true`; writes NOTHING;
+  //          `preview` = the SAME shape as `POST /autocount/jobs/{id}/preview`;
+  //          `task.lastPreviewAt` stamped when the dry run completed).
+  //          Logging sink → `previewable: false`. Unreachable consumer → 502.
+  //          Sorento anchor 422 (COMPANY_ANCHOR_REQUIRED / UNKNOWN_COMPANY /
+  //          COMPANY_ANCHOR_AMBIGUOUS) → 422 `{detail: {code, message}, message}`
+  //          - a TASK-level error, never a per-record `failed` (Appendix A6).
+  //          No query / no key columns → 409.
+  //        Gated `autocount.sync.run`.
+  //
+  //   POST .../activate
+  //        → AutocountEtlTask  (`draft|paused` → `active`, `activatedAt`
+  //          stamped, next-run times armed). 409 unless `lastPreviewAt` is set
+  //          (AC-22-18 - the gate is server-side too) or the company has no
+  //          Sorento company code.
+  //        Gated `autocount.companies.manage`.
+  //
+  //   POST .../pause    → AutocountEtlTask  (`active` → `paused`; sweep stops
+  //          dispatching, in-flight runs finish; 409 unless active).
+  //   POST .../resume   → AutocountEtlTask  (`paused` → `active`, NO
+  //          re-preview needed - AC-22-19; 409 unless paused).
+  //        Both gated `autocount.companies.manage`.
+  //
+  //   POST .../run
+  //        → AutocountEtlRunStart  (enqueue ONE `autocount_sync` job with
+  //          `mode='manual'` - the same pipeline the sweep uses; eager inline
+  //          in dev so `task` comes back refreshed). 409 unless `active`, or
+  //          while a run for this (company, entity) is still executing.
+  //        Gated `autocount.sync.run`.
+  //
+  //   GET  .../runs?page=&page_size=
+  //        → ListResult<AutocountSyncRun>  (this entity's history, newest
+  //          first, page_size ≤ 200; skipped ticks included with `skipReason`).
+  //        Gated `autocount.sync.read`.
+
+  /** Initial-load dry run against Sorento (writes nothing). */
+  previewEtlTask(companyId: string, entityType: string): Promise<AutocountEtlPreviewResult>;
+  /** The activate-once gate: draft/paused → active (409 without a preview). */
+  activateEtlTask(companyId: string, entityType: string): Promise<AutocountEtlTask>;
+  /** active → paused (in-flight runs finish). */
+  pauseEtlTask(companyId: string, entityType: string): Promise<AutocountEtlTask>;
+  /** paused → active, no re-activation ceremony. */
+  resumeEtlTask(companyId: string, entityType: string): Promise<AutocountEtlTask>;
+  /** Enqueue a manual run now (active tasks only). */
+  runEtlTaskNow(companyId: string, entityType: string): Promise<AutocountEtlRunStart>;
+  /** This entity's run history, newest first. */
+  listEtlRuns(
+    companyId: string,
+    entityType: string,
+    query?: AutocountListQuery,
+  ): Promise<ListResult<AutocountSyncRun>>;
 }
 
+// The S3 backend now puts `nextIncrementalAt`/`nextReconcileAt` on the wire
+// (`EtlTaskResponse`, plan 22 S3) - the `withPhase1NextRunMock` overlay this
+// comment used to describe is gone; every field is real data end to end.
 export const autocountService: AutocountService = realAutocountService;

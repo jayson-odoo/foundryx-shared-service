@@ -44,6 +44,14 @@ class WriteResult:
     # True when nothing actually left the process. The approval surface reads
     # this rather than guessing from ``ok``.
     delivered: bool = False
+    #     !!  ``retryable`` AND ``failed`` NEED OPPOSITE HANDLING.  !!
+    # The consumer's own verdict word, carried STRUCTURALLY rather than left
+    # buried in ``message``: ``retryable`` means nothing was written and a
+    # dependency is missing, so the record must be re-offered on the next
+    # unattended run; ``failed`` means the DATA was rejected, so re-offering it
+    # just re-fails forever and pins the task's health signal red. Empty for a
+    # sink with no verdict vocabulary (the logging no-op).
+    outcome: str = ""
 
 
 class EntitySink(Protocol):
@@ -101,6 +109,30 @@ class LoggingSink:
             ),
             delivered=False,
         )
+
+    def delete_batch(self, source_refs: List[str], *, dry_run: bool = False) -> Dict[str, Any]:
+        """Plan 22 S3 (AC-22-21) - a company with no real consumer wired still
+        needs its reconcile delete intents to resolve to SOMETHING, or they
+        would sit STAGED forever. Logged, never delivered (``deleted`` here
+        means "handled locally", the same honesty ``write`` already carries
+        for upserts) - the moment a real sink is configured the SAME refs
+        route to it instead."""
+        refs = [str(r) for r in source_refs if str(r or "").strip()]
+        for ref in refs:
+            logger.info(
+                "[autocount sink:%s] would delete %s - slice-1 no-op sink, "
+                "nothing was delivered to a consumer.",
+                self.name,
+                ref,
+            )
+        return {
+            "dry_run": dry_run,
+            "summary": {
+                "total": len(refs), "deleted": len(refs),
+                "deactivated": 0, "not_found": 0, "failed": 0,
+            },
+            "records": [{"source_ref": ref, "outcome": "deleted"} for ref in refs],
+        }
 
 
 # ── sink registry ─────────────────────────────────────────────────────────────

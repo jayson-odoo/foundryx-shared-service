@@ -120,14 +120,50 @@ class FetchResult:
     # this marker is computed AFTER the record cap is applied, so it is never
     # used to decide truncation.
     reported_total: Optional[int] = None
+    # ── cost + change-detection reporting (plan 22 §2.7, AC-22-17) ───────────
+    # Rows READ from the source. Distinct from ``len(records)`` in principle (a
+    # source may read more than it emits); ``None`` = "same as len(records)",
+    # which is what every API-path fetch means.
+    rows_scanned: Optional[int] = None
+    # How the fetched rows classify against the stored row hashes: a ref never
+    # seen before, or one whose COMPARED columns moved. The API path stores no
+    # hashes and reports zero - a run-history column, never a push decision.
+    added_count: int = 0
+    updated_count: int = 0
+    # Source-refs the reconcile diff found MISSING from a full extract that
+    # were previously known (plan 22 §2.5/S3, AC-22-16) - delete intents. Empty
+    # for every incremental fetch (a partial extract cannot prove absence) and
+    # for the API path (which stores no hashes at all).
+    delete_refs: List[str] = field(default_factory=list)
+    # Every source-ref SEEN in this extract (plan 22 S3 review BLOCKER 1). A
+    # delete intent must not outlive the evidence that produced it: when a ref
+    # already carrying a STAGED delete intent reappears here, the caller
+    # discards that stale intent BEFORE staging anything new. Empty for the
+    # API path (which stores no hashes and stages no delete intents at all).
+    current_refs: List[str] = field(default_factory=list)
+    # A source-owned resume point persisted to ``ac_watermark.cursor_json`` on a
+    # clean batch (the DB source's own mark, which need not be a datetime).
+    # ``None`` = leave the stored cursor untouched.
+    cursor: Optional[Dict[str, Any]] = None
 
 
 class EntitySource(Protocol):
-    """One entity, one company. Returns records changed since the watermark."""
+    """One entity, one company. Returns records changed since the watermark.
+
+    Two OPTIONAL duck-typed members (mirroring ``write_batch`` on sinks):
+
+    * ``drain_activity()`` - buffered observability records (the shape of
+      ``client.CallRecord``) consumed by ``record_client_calls``. A source
+      without it simply records nothing extra.
+    * ``close()`` - release the source's transport. The sync handler calls it
+      in its ``finally`` (it replaced the old ``client.close()``).
+    """
 
     entity_type: str
 
     def fetch_changes(self, since: Watermark) -> FetchResult: ...
+
+    def close(self) -> None: ...
 
 
 class AutoCountReadSource:
@@ -263,6 +299,38 @@ class AutoCountReadSource:
             reported_total=unwrapped.reported_total,
         )
 
+    def drain_activity(self):
+        """The buffered HTTP legs (masked ``CallRecord``s) - the optional
+        observability seam ``record_client_calls`` consumes."""
+        return self.client.drain_calls()
+
+    def close(self) -> None:
+        self.client.close()
+
+
+# ── source context (plan 22 §2.1, AC-22-08) ──────────────────────────────────
+# The factory contract is ``factory(ctx, **cfg)``: each implementation builds
+# its OWN transport from the context (the HTTP client is no longer constructed
+# unconditionally in ``sync.py`` - a DB task must never sign in to the vendor
+# API it does not use).
+
+
+@dataclass
+class SourceContext:
+    """What every source implementation may need to build itself.
+
+    ``company_service`` is the handle for connection resolution (tenant- and
+    provider-scoped, the polymorphic-stored-id rule) and vendor-client
+    construction; ``entity_config`` carries the per-entity task config
+    (``source_config`` for the DB source).
+    """
+
+    db: Any
+    tenant_id: str
+    company: Any
+    entity_config: Any
+    company_service: Any
+
 
 # ── source registry (D6) ──────────────────────────────────────────────────────
 # ``ac_entity_config.source_impl`` selects the implementation PER ENTITY, PER
@@ -294,7 +362,7 @@ def source_factory(name: str) -> SourceFactory:
 
 
 def _autocount_read_factory(
-    client: AutoCountClient,
+    ctx: SourceContext,
     *,
     entity_type: str,
     vendor_entity: str = VENDOR_ENTITY,
@@ -304,9 +372,12 @@ def _autocount_read_factory(
     initial_load: str = INITIAL_LOAD_WINDOWED,
     identifier_key: str = "DocNo",
     last_modified_path: str = "LastModified",
+    **_extra: Any,
 ) -> EntitySource:
+    # The HTTP client is built HERE, by the implementation that uses it -
+    # exactly the client ``sync.py`` used to build unconditionally (AC-22-08).
     return AutoCountReadSource(
-        client,
+        ctx.company_service.client_for(ctx.tenant_id, ctx.company),
         entity_type=entity_type,
         vendor_entity=vendor_entity,
         record_cap=record_cap,

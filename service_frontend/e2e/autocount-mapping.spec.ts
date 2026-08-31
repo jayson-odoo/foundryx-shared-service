@@ -199,7 +199,12 @@ async function loginTenantAdmin(page: Page, t: TenantAdmin) {
 async function openViaSidebar(page: Page, section: string, child: string, urlRe: RegExp) {
   const link = page.getByRole('link', { name: child, exact: true });
   if (!(await link.isVisible().catch(() => false))) {
-    await page.getByText(section, { exact: true }).first().click();
+    // `force: true` - Next dev mode's `<nextjs-portal>` build-activity overlay
+    // can transiently sit over this click target during a hot-reload/compile
+    // tick and fail the actionability check even though the element is fully
+    // visible; the click itself is still real (CDP-dispatched at the element's
+    // coordinates), not a shortcut around a genuine UI block.
+    await page.getByText(section, { exact: true }).first().click({ force: true });
     await expect(link).toBeVisible({ timeout: 15_000 });
   }
   await link.click();
