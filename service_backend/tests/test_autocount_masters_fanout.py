@@ -707,7 +707,10 @@ def test_replace_mapping_saves_a_product_row_that_would_have_422d_before_s4(db):
             MappingWriteRow("item_name", "string", "name"),
             MappingWriteRow("cat_code", "string", "category_code"),
             MappingWriteRow("uom_code", "string", "uom_code"),
+            # is_active is required (S5 review SHOULD-FIX 4a checks coverage
+            # now) - every master's required set is {code, name, is_active}.
+            MappingWriteRow("is_active_flag", "t_f_bool", "is_active"),
         ],
     )
     fields = {row.sorento_field for row in view.rows if row.sorento_field}
-    assert {"code", "name", "category_code", "uom_code"} <= fields
+    assert {"code", "name", "category_code", "uom_code", "is_active"} <= fields

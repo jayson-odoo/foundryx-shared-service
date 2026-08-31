@@ -993,6 +993,25 @@ class CompanyService:
                 MappingWriteRow(source_path, row.transform, target, formula=formula)
             )
 
+        #     !!  A REQUIRED FIELD LEFT UNMAPPED SLIPS THROUGH ACTIVATION.  !!
+        # (S5 review SHOULD-FIX 4a.) ``activate_task`` gates only on a
+        # successful preview, not on whether every required Sorento field
+        # HAS a row - a missing ``status`` on a document (or a missing
+        # ``code``/``name``/``is_active`` on a master) previously sailed
+        # straight through to an active task. Applies to every ``sql_db``
+        # entity, not just documents. Checked ONLY when the operator has
+        # actually STARTED mapping (a non-empty save) - an intentional wipe
+        # to zero rows is a separate, already-legitimate action (GRN's empty
+        # accepted set relies on exactly this: `replace_mapping(..., [])`
+        # must stay a no-op sweep, never a spurious 422) and must not be
+        # blocked here.
+        if rows:
+            missing_required = sorted(required - {row.sorento_field for row in clean})
+            if missing_required:
+                raise AutocountServiceError(
+                    f"The required Sorento field '{missing_required[0]}' is not mapped."
+                )
+
         # Replace only the deliverable rows; provenance rows survive.
         self.mappings.delete_by_canonical(tenant_id, company_id, entity_type, accepted)
         if accepted:

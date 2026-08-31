@@ -4014,12 +4014,58 @@ def test_replace_mapping_accepts_supplier_ref_with_ref_supplier(db, transports):
     _document_entity_config(db, company, ENTITY_PURCHASE_ORDER)
     rows = [
         MappingWriteRow(source_path="SupplierCode", transform="ref_supplier", sorento_field="supplier_ref"),
+        # PO's required fields (S5 review SHOULD-FIX 4a checks coverage now).
+        MappingWriteRow(source_path="DocNo", transform="string", sorento_field="po_number"),
+        MappingWriteRow(source_path="Status", transform="string", sorento_field="status"),
     ]
     view = CompanyService(db).replace_mapping(
         DEFAULT_TENANT_ID, company.id, ENTITY_PURCHASE_ORDER, rows
     )
     by_field = {r.sorento_field: r for r in view.rows if r.sorento_field}
     assert by_field["supplier_ref"].transform == "ref_supplier"
+
+
+# ── replace_mapping: a required field left unmapped (S5 review SHOULD-FIX 4a) ─
+
+
+def test_replace_mapping_rejects_a_master_missing_a_required_field(db, transports):
+    """A supplier/customer's required set is {code, name, is_active} - a save
+    that starts mapping but never covers all three must not slip through."""
+    company = _company(db, transports)
+    rows = [
+        MappingWriteRow(source_path="AccNo", transform="string", sorento_field="code"),
+        MappingWriteRow(source_path="CompanyName", transform="string", sorento_field="name"),
+        # is_active deliberately left unmapped.
+    ]
+    with pytest.raises(AutocountServiceError) as exc:
+        CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, rows)
+    assert "is_active" in str(exc.value)
+
+
+def test_replace_mapping_rejects_a_document_missing_its_required_status(db, transports):
+    from modules.autocount.canonical.documents import ENTITY_SALES_ORDER
+
+    company = _company(db, transports)
+    _document_entity_config(db, company, ENTITY_SALES_ORDER)
+    rows = [
+        MappingWriteRow(source_path="DocNo", transform="string", sorento_field="so_number"),
+        # status deliberately left unmapped.
+    ]
+    with pytest.raises(AutocountServiceError) as exc:
+        CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, rows)
+    assert "status" in str(exc.value)
+
+
+def test_replace_mapping_wiping_to_zero_rows_is_never_blocked_by_the_required_check(db, transports):
+    """A save that starts EMPTY (an intentional wipe, or GRN's permanently-
+    empty accepted set) is a separate, already-legitimate action - the
+    required-coverage gate only engages once the operator has started
+    mapping (S5 review SHOULD-FIX 4a: "run the check only when the saved row
+    set is non-empty")."""
+    company = _company(db, transports)
+    view = CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, [])
+    # Nothing raised; the deliverable rows were simply cleared.
+    assert not any(r.sorento_field for r in view.rows)
 
 
 # ── re-fetch history (AC-15-30) ───────────────────────────────────────────────
