@@ -102,6 +102,10 @@ logger = logging.getLogger("foundryx.autocount")
 #
 # This is a STANDING guard, not a one-off: an entity is added only after its real
 # payload has been captured, never designed from inference.
+#
+# PARITY-PINNED with the frontend's own copy (S4 review S2):
+# `AC_API_CAPABLE_ENTITY_TYPES` in `autocount-meta.ts`, drift-checked by
+# `tests/test_autocount_entity_parity.py`.
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE  # noqa: E402
 from ..canonical.masters import ENTITY_CUSTOMER, ENTITY_SUPPLIER  # noqa: E402
 from ..envelopes import ENVELOPE_ROW_ARRAY, ENVELOPE_STATUS_DICT  # noqa: E402

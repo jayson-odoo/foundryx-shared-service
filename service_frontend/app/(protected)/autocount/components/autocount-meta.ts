@@ -63,6 +63,10 @@ export function sourceImplLabel(impl: string): string {
  * The plan 22 S4 masters fan-out entities below have no vendor route at all,
  * so offering that option for them would be a guaranteed-to-fail sync
  * (foolproof-UI: only offer valid options).
+ *
+ * PARITY-PINNED (S4 review S2): `tests/test_autocount_entity_parity.py`
+ * reads this literal straight out of this file and fails if it drifts from
+ * `SEEDED_ENTITIES` - edit both sides together.
  */
 export const AC_API_CAPABLE_ENTITY_TYPES: string[] = ['goods_received_note', 'supplier', 'customer'];
 
