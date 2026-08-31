@@ -223,7 +223,7 @@ async function deleteConnectionsNamed(
 // ── UI helpers (real clicks) ─────────────────────────────────────────────────
 
 async function signIn(page: Page) {
-  await page.goto('http://localhost:3002/signin');
+  await page.goto('/signin');
   await page.getByPlaceholder('Your email').fill('demo@example.com');
   await page.getByPlaceholder('Your password').fill('demo1234');
   await page.getByRole('button', { name: /sign in/i }).click();
@@ -237,7 +237,12 @@ async function openViaSidebar(page: Page, section: string, child: string, urlRe:
   // otherwise strict-mode-violate alongside the sidebar's.
   const link = page.getByRole('link', { name: child, exact: true }).first();
   if (!(await link.isVisible().catch(() => false))) {
-    await page.getByText(section, { exact: true }).first().click();
+    // `force: true` - Next dev mode's `<nextjs-portal>` build-activity overlay
+    // can transiently sit over this click target during a hot-reload/compile
+    // tick and fail the actionability check even though the element is fully
+    // visible; the click itself is still real (CDP-dispatched at the element's
+    // coordinates), not a shortcut around a genuine UI block.
+    await page.getByText(section, { exact: true }).first().click({ force: true });
     await expect(link).toBeVisible({ timeout: 15_000 });
   }
   await link.click();

@@ -86,7 +86,14 @@ function subscribe(listener: () => void): () => void {
 }
 
 const getSnapshot = (): PublicState => publicState;
-const getServerSnapshot = (): PublicState => ({ branding: null });
+// A stable module-level constant, never a fresh literal per call - React's
+// `useSyncExternalStore` requires `getServerSnapshot` to return a
+// referentially-STABLE value when nothing changed, or it re-renders forever
+// ("The result of getServerSnapshot should be cached to avoid an infinite
+// loop"). Surfaced live: two fresh tenant-subdomain hydrations back to back
+// (real E2E flow) tripped it and locked the page on the unbranded fallback.
+const SERVER_SNAPSHOT: PublicState = { branding: null };
+const getServerSnapshot = (): PublicState => SERVER_SNAPSHOT;
 
 export interface UseTenantBrandingResult {
   /** Resolved branding - Foundryx defaults while loading / when unbranded. */
