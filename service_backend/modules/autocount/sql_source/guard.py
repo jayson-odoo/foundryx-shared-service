@@ -31,12 +31,15 @@ from __future__ import annotations
 import re
 from typing import List, Tuple
 
+import sqlalchemy as sa
+
 from .errors import SqlGuardError
 
 __all__ = [
     "assert_select_only",
     "mask_quoted",
     "normalize_statement",
+    "query_binds_param",
     "top_level_words",
     "SqlGuardError",
 ]
@@ -235,3 +238,29 @@ def assert_select_only(sql: str) -> str:
             f"Only a single SELECT statement is allowed - '{forbidden}' is not permitted."
         )
     return text
+
+
+def query_binds_param(sql: str, name: str) -> bool:
+    """Whether ``sql`` declares a SQLAlchemy bound parameter named ``name``
+    (``:name``) - via the SAME parser ``sa.text()`` uses to translate the
+    placeholder at real execution time (``source.py``/``preview.py``), never a
+    substring search. A substring check would false-positive on a comment or
+    a quoted literal that merely MENTIONS the name (S5 review BLOCKER 1) -
+    and so, subtly, would ``sa.text()`` ITSELF: its own bind-param regex is
+    not comment/literal aware either (it textually substitutes ``:name``
+    wherever it appears, comment included, which still "executes" with no
+    real filter). So comments are stripped and literals/quoted identifiers
+    masked FIRST, the same scrub ``assert_select_only`` applies, before
+    handing the text to the compiler.
+
+    This is the "the query actually filters on it" half of the pairing - the
+    other half is that SQLAlchemy silently ignores an EXTRA param passed to
+    ``execute`` that the statement never references, so a ``lineQuery`` with
+    no real ``WHERE ... = :doc_key`` previews and saves clean, then runs with
+    the bind quietly dropped, attaching the WHOLE table to every header.
+    """
+    scrubbed = mask_quoted(_strip_comments(sql or ""))
+    try:
+        return name in sa.text(scrubbed).compile().params
+    except Exception:  # noqa: BLE001 - a compile fault is not this check's job
+        return False

@@ -490,6 +490,39 @@ def test_a_document_task_line_columns_are_checked_against_the_line_preview():
     assert "lineProductColumn" in errors
 
 
+def test_a_document_task_requires_the_line_query_to_bind_doc_key():
+    """S5 review BLOCKER 1: a lineQuery with no ``:doc_key`` bind previews and
+    would otherwise save clean (SQLAlchemy silently ignores an unused param),
+    then attach the WHOLE line table to every header at run time."""
+    from modules.autocount.services.etl_service import validate_source_config
+
+    clean, errors = validate_source_config(
+        ENTITY_SALES_ORDER,
+        _base_so_config(lineQuery="SELECT DtlKey, ItemCode FROM SODetail"),
+        _HEADER_COLUMNS,
+        line_columns=_LINE_COLUMNS,
+    )
+    assert "lineQuery" in errors
+    assert "doc_key" in errors["lineQuery"]
+
+
+def test_a_document_task_line_query_bind_check_ignores_a_mention_in_a_comment():
+    """A comment or literal merely MENTIONING ``:doc_key`` must not count -
+    the check runs the real compiler, never a substring search."""
+    from modules.autocount.services.etl_service import validate_source_config
+
+    clean, errors = validate_source_config(
+        ENTITY_SALES_ORDER,
+        _base_so_config(
+            lineQuery="SELECT DtlKey, ItemCode FROM SODetail -- filter by :doc_key later"
+        ),
+        _HEADER_COLUMNS,
+        line_columns=_LINE_COLUMNS,
+    )
+    assert "lineQuery" in errors
+    assert "doc_key" in errors["lineQuery"]
+
+
 def test_a_valid_document_config_saves_clean():
     from modules.autocount.services.etl_service import validate_source_config
 
@@ -659,6 +692,20 @@ def test_a_construction_time_backstop_requires_a_watermark_column(rig):
 def test_a_construction_time_backstop_requires_a_line_query(rig):
     db, company, config, _engine = rig
     config.source_config = {**config.source_config, "lineQuery": ""}
+    db.commit()
+    with pytest.raises(SqlTaskNotConfigured):
+        SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_SALES_ORDER)
+
+
+def test_a_construction_time_backstop_requires_the_line_query_to_bind_doc_key(rig):
+    """S5 review BLOCKER 1 - a row edited straight into the JSON column with
+    a lineQuery that never filters on ``:doc_key`` must not sail through at
+    run time (SQLAlchemy silently ignores an unused param)."""
+    db, company, config, _engine = rig
+    config.source_config = {
+        **config.source_config,
+        "lineQuery": "SELECT dtl_key, item_code, qty_ordered FROM so_line",
+    }
     db.commit()
     with pytest.raises(SqlTaskNotConfigured):
         SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_SALES_ORDER)

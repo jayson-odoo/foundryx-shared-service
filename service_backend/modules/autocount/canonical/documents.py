@@ -65,6 +65,16 @@ def is_document_entity(entity_type: str) -> bool:
 # the API path's nested vendor envelope) reads it with zero engine changes.
 SQL_DOC_LINES_KEY = "_lines"
 
+# The line query's bound-parameter name (plan 22 S5 review BLOCKER 1). Every
+# document task's ``lineQuery`` MUST filter on exactly this bind - checked
+# both at save time (``EtlService.validate_source_config``) and again at
+# construction time (``SqlDbSource.__init__``) via ``guard.query_binds_param``.
+# SQLAlchemy silently ignores a param passed to ``execute`` that the
+# statement never references, so a ``lineQuery`` missing the bind would
+# preview clean, save clean, then attach the WHOLE line table to every header
+# at run time instead of just that header's own rows.
+LINE_QUERY_DOC_KEY_PARAM = "doc_key"
+
 # Appendix A6 item 2 - the FIXED five-word vocabulary. An unrecognised value is
 # a per-field ``mapped.errors`` rejection (the `status` field_validator below),
 # never a value we forward and let Sorento reject as `errors.status`.

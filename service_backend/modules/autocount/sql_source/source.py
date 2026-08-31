@@ -46,7 +46,11 @@ from sqlalchemy.engine import Engine
 
 from app.secrets import decrypt_secret
 
-from ..canonical.documents import SQL_DOC_LINES_KEY, is_document_entity
+from ..canonical.documents import (
+    LINE_QUERY_DOC_KEY_PARAM,
+    SQL_DOC_LINES_KEY,
+    is_document_entity,
+)
 from ..client import CallRecord
 from ..mapping import IdentityError, flat_source_ref
 from ..models import (
@@ -65,7 +69,12 @@ from ..sources import (
 )
 from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
 from .errors import SqlDeleteGuardExceeded, SqlQueryError, SqlSourceError
-from .guard import assert_select_only, normalize_statement, top_level_words
+from .guard import (
+    assert_select_only,
+    normalize_statement,
+    query_binds_param,
+    top_level_words,
+)
 from .hashing import compared_columns_for, row_hash
 from .preview import json_safe
 from .runtime import (
@@ -341,6 +350,20 @@ class SqlDbSource:
                     "This document task has no line query saved yet."
                 )
             assert_select_only(self.line_query)
+            #     !!  THE LINE QUERY MUST FILTER ON :doc_key.  !!
+            # (S5 review BLOCKER 1.) Save-time validation already refuses a
+            # lineQuery without the bind; this is the construction-time
+            # backstop for a row edited straight into the JSON column.
+            # SQLAlchemy silently ignores an UNUSED param passed to
+            # ``execute`` - a query missing the bind would otherwise run
+            # "successfully" and attach the WHOLE line table to every header.
+            if not query_binds_param(self.line_query, LINE_QUERY_DOC_KEY_PARAM):
+                raise SqlTaskNotConfigured(
+                    "This document task's line query does not filter on the "
+                    f"header's key (:{LINE_QUERY_DOC_KEY_PARAM}) - it would run "
+                    "once per header against the whole line table instead of "
+                    "just that header's own rows."
+                )
             self.doc_date_column = str(config.get("docDateColumn") or "").strip() or None
             if not self.doc_date_column:
                 raise SqlTaskNotConfigured(

@@ -34,6 +34,7 @@ from ..canonical.documents import (
     DOCUMENT_ENTITY_TYPES,
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
+    LINE_QUERY_DOC_KEY_PARAM,
     is_document_entity,
 )
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
@@ -64,7 +65,7 @@ from ..repositories import (
 from ..sources import INITIAL_LOAD_FULL
 from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
 from ..sql_source.errors import SqlGuardError, SqlSourceError
-from ..sql_source.guard import assert_select_only, normalize_statement
+from ..sql_source.guard import assert_select_only, normalize_statement, query_binds_param
 from ..sql_source.introspect import (
     SCHEMA_CACHE,
     SchemaCache,
@@ -351,6 +352,21 @@ def validate_source_config(
                 assert_select_only(line_query)
             except SqlGuardError as exc:
                 errors["lineQuery"] = exc.message
+            else:
+                #     !!  THE LINE QUERY MUST FILTER ON :doc_key.  !!
+                # (S5 review BLOCKER 1.) It runs once PER header, bound to
+                # that header's key - a query with no such WHERE clause
+                # previews and saves clean (SQLAlchemy silently ignores an
+                # unused param), then attaches the WHOLE line table to EVERY
+                # header at run time. Checked via the same compiler
+                # ``sa.text()`` uses at execution, never a substring search.
+                if not query_binds_param(line_query, LINE_QUERY_DOC_KEY_PARAM):
+                    errors["lineQuery"] = (
+                        "The line query must filter on the header's key via "
+                        f"WHERE ... = :{LINE_QUERY_DOC_KEY_PARAM} - it runs once "
+                        "per header, bound to that header's key, never the "
+                        "whole table."
+                    )
 
         # The from-date floor applies to the document's OWN date column -
         # deliberately separate from `watermarkColumn` (LastModified drives
