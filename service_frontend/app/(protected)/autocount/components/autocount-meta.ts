@@ -76,6 +76,8 @@ export const AC_API_CAPABLE_ENTITY_TYPES: string[] = ['goods_received_note', 'su
  * category/UOM lands `retryable` until the dependency lands). This is the
  * Entities tab's "Add entity" picker's ONLY candidate list: every one of
  * these is DB-source only, so the task editor is where its config is born.
+ * Documents (plan 22 S5) ride the same picker - lines are part of the
+ * document task (header query + line query), never a separate entity.
  */
 export const AC_NEW_MASTER_ENTITY_TYPES: string[] = [
   'product_category',
@@ -83,6 +85,8 @@ export const AC_NEW_MASTER_ENTITY_TYPES: string[] = [
   'warehouse',
   'product',
   'sales_agent',
+  'sales_order',
+  'purchase_order',
 ];
 
 // ── transforms (mapping editor picker; mirrors backend mapping.py TRANSFORMS) ──

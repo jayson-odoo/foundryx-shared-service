@@ -45,9 +45,18 @@ describe('AddEntityControl (plan 22 S4, AC-22-23)', () => {
     expect(onAdd).toHaveBeenCalledWith('product');
   });
 
-  it('renders nothing once every masters entity is already configured', () => {
+  it('offers the two document entities (plan 22 S5) alongside the masters', () => {
+    render(<AddEntityControl entities={[]} onAdd={vi.fn()} />);
+    expect(screen.getByRole('combobox')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('combobox'));
+    expect(screen.getByText('Sales order')).toBeInTheDocument();
+    expect(screen.getByText('Purchase order')).toBeInTheDocument();
+  });
+
+  it('renders nothing once every DB-source entity is already configured', () => {
     const all: AutocountEntityConfig[] = [
       'product_category', 'unit_of_measure', 'warehouse', 'product', 'sales_agent',
+      'sales_order', 'purchase_order',
     ].map((entityType) => entity({ id: entityType, entityType }));
     const { container } = render(<AddEntityControl entities={all} onAdd={vi.fn()} />);
     expect(container).toBeEmptyDOMElement();
