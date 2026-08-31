@@ -528,7 +528,8 @@ def delete_row(table_key: str, row: int) -> str:
 
 
 def ensure_demo_company(tenant_slug: str = "default") -> str:
-    """Create - or find, idempotently - the dedicated ``ETL_DEMO`` company.
+    """Create - or find, idempotently - the dedicated demo company (label
+    "ETL Demo Co").
 
     Deliberately built with plain ORM writes rather than the real onboarding
     ceremony (``CompanyService.create_from_connection``): that path SIGNS IN
@@ -536,6 +537,23 @@ def ensure_demo_company(tenant_slug: str = "default") -> str:
     company is discovered, never typed") - there is no AutoCount server for
     this dev-only DB-ETL rig to sign in to. This is fixture code, the same
     spirit as the demo tables above, not a product code path.
+
+    ``database_name`` MUST equal the real Postgres database a ``sql_db``
+    task's connection reads (plan 22 S2 review SHOULD-FIX 6,
+    ``EtlService.update_task``'s cross-check: "a connection pointed at a
+    DIFFERENT database would extract someone else's data under this
+    company's identity" - 422 ``connectionId`` otherwise) - discovered live
+    via plan 22 S6's E2E, which is the first thing to ever drive this
+    company through the REAL ``update_task`` service path (unit tests
+    construct ``AcEntityConfig`` rows directly and never hit the check). A
+    fixed label like ``ETL_DEMO`` would never match the real Postgres
+    database this rig's own connection points at (this same process' own
+    ``DATABASE_URL``), so a customer task pointed at that database could
+    never save. ``DEMO_COMPANY_DATABASE_NAME`` stays the LOOKUP key (a
+    dev-only Postgres database is never renamed mid-session); the company's
+    row is migrated onto the real physical name on find, one ORM UPDATE, so
+    a company created before this fix self-heals on the next
+    ``--company`` run instead of leaving a permanently-broken demo fixture.
 
     Returns the company id. Import lazily (module-level import would pull the
     whole autocount package into every ``--touch``/``--delete-row`` run).
@@ -554,19 +572,33 @@ def ensure_demo_company(tenant_slug: str = "default") -> str:
         if tenant is None:
             raise SystemExit(f"No tenant with slug '{tenant_slug}'.")
 
+        # The real physical Postgres database this process' own DATABASE_URL
+        # names - the demo tables live in `public` on this very engine, so a
+        # `sql_database` connection pointed at it is a REAL, working source
+        # (never a second server, never customer data).
+        url = make_url(settings.database_url)
+        real_db_name = url.database or DEMO_COMPANY_DATABASE_NAME
+
         companies = CompanyRepository(db)
-        existing = companies.get_by_database_name(tenant.id, DEMO_COMPANY_DATABASE_NAME)
+        existing = companies.get_by_database_name(tenant.id, real_db_name)
+        if existing is None:
+            # Legacy row from before this fix - same company, wrong
+            # `database_name`. Migrate in place (its OWN connection's
+            # `config.database` was ALWAYS the real name - only the company
+            # row's label was stale) rather than leaving a dead duplicate.
+            existing = companies.get_by_database_name(tenant.id, DEMO_COMPANY_DATABASE_NAME)
+            if existing is not None:
+                existing.database_name = real_db_name
+                db.commit()
+                db.refresh(existing)
+                print(
+                    f"Migrated company database_name '{DEMO_COMPANY_DATABASE_NAME}' -> "
+                    f"'{real_db_name}' on {existing.id} (S2 review SHOULD-FIX 6)."
+                )
         if existing is not None:
-            print(
-                f"Company '{DEMO_COMPANY_DATABASE_NAME}' already exists: {existing.id} "
-                f"(sink={existing.sink_impl})."
-            )
+            print(f"Company '{real_db_name}' already exists: {existing.id} (sink={existing.sink_impl}).")
             return existing.id
 
-        # A same-Postgres ``sql_database`` connection pointed at THIS database -
-        # the demo tables above live in ``public`` on the very engine this
-        # script already runs against, so the URL is derived, never re-typed.
-        url = make_url(settings.database_url)
         conn = Connection(
             tenant_id=tenant.id,
             provider=SQL_DATABASE_PROVIDER_KEY,
@@ -576,7 +608,7 @@ def ensure_demo_company(tenant_slug: str = "default") -> str:
                 "dbType": "postgresql",
                 "host": url.host or "localhost",
                 "port": url.port or 5432,
-                "database": url.database or "",
+                "database": real_db_name,
                 "username": url.username or "",
             },
             credentials_json=encrypt_secret({"password": url.password or ""}),
@@ -587,7 +619,7 @@ def ensure_demo_company(tenant_slug: str = "default") -> str:
         company = AcCompany(
             tenant_id=tenant.id,
             connection_id=conn.id,
-            database_name=DEMO_COMPANY_DATABASE_NAME,
+            database_name=real_db_name,
             company_name="ETL Demo Co",
             name="ETL Demo Co",
             is_active=True,
@@ -596,14 +628,84 @@ def ensure_demo_company(tenant_slug: str = "default") -> str:
             sink_impl=SINK_IMPL_LOGGING,
         )
         companies.add(company)
+        db.flush()
+
+        # Standard onboarding seeds the goods-received-note/supplier/customer
+        # entity configs (source_impl='autocount_read') + their DEFAULT_MAPPINGS
+        # - `create_from_connection` does this, but this rig deliberately
+        # bypasses that ceremony (no real AutoCount to sign in to), so it is
+        # replicated here directly (plan 22 S6 - E2E needs "Customer" reachable
+        # via the SAME "Change source" flow the S2 live-verify used on a real
+        # company, never a bespoke path). Seed-if-absent, so a re-run against an
+        # already-provisioned company is a no-op.
+        from modules.autocount.services.company_service import CompanyService
+
+        CompanyService(db).seed_company_defaults(tenant.id, company.id)
         db.commit()
         print(
-            f"Created company '{DEMO_COMPANY_DATABASE_NAME}': {company.id} "
-            f"(sink=logging, connection={conn.id}).\n"
-            "Next: AutoCount -> this company -> Entities tab -> Add entity -> "
-            "SQL Database source, pointed at 'public.etl_demo_<table>' above."
+            f"Created company '{real_db_name}': {company.id} "
+            f"(sink=logging, connection={conn.id}), with the standard "
+            "goods_received_note/supplier/customer entity configs seeded.\n"
+            "Next: AutoCount -> this company -> Entities tab -> Customer -> "
+            "'...' -> Change source -> Database -> Configure database query, "
+            "pointed at 'public.etl_demo_<table>' above."
         )
         return company.id
+    finally:
+        db.close()
+
+
+def trigger_run(
+    company_database_name: str,
+    entity_type: str,
+    mode: str,
+    *,
+    tenant_slug: str = "default",
+) -> Dict[str, Any]:
+    """Directly enqueue ONE ``autocount_sync`` job - the SAME
+    ``JobService.create_and_enqueue`` call the backend's own "Run now" button
+    makes, just with an explicit ``mode`` override.
+
+    Plan 22 S3/S6: there is deliberately NO UI affordance to force a RECONCILE
+    run (it is schedule- or beat-driven in production; "Run now" always enqueues
+    ``manual``, which behaves as an incremental fetch whenever the task has a
+    watermark column - see ``SqlDbSource.fetch_changes``'s ``full_extract``
+    gate). E2E's change-detection journey (AC-22-32) needs a reconcile run on
+    demand to prove delete-intent detection, so this is that "small backend
+    helper" - it does not skip or shortcut anything the product itself does not
+    already do; it only supplies the mode a human would otherwise wait for the
+    scheduler to pick.
+
+    Runs INLINE under ``CELERY_TASK_ALWAYS_EAGER=true`` (local dev/E2E), so this
+    returns only once the run has actually finished.
+    """
+    from app.jobs.service import JobService
+    from app.models.tenant import Tenant
+    from modules.autocount.repositories import CompanyRepository
+
+    # Import side effect: registers the `sql_db` source factory (see the
+    # module-level comment above `register_sql_db_source()` in `sync.py`) - a
+    # process that enqueues a `sql_db` run without this import fails loudly
+    # with "no source implementation registered", not silently.
+    from modules.autocount.sync import AUTOCOUNT_SYNC  # noqa: F401
+
+    db = SessionLocal()
+    try:
+        tenant = db.query(Tenant).filter(Tenant.slug == tenant_slug).first()
+        if tenant is None:
+            raise SystemExit(f"No tenant with slug '{tenant_slug}'.")
+        company = CompanyRepository(db).get_by_database_name(tenant.id, company_database_name)
+        if company is None:
+            raise SystemExit(f"No company '{company_database_name}' for tenant '{tenant_slug}'.")
+
+        job = JobService(db).create_and_enqueue(
+            type=AUTOCOUNT_SYNC,
+            tenant_id=tenant.id,
+            payload={"companyId": company.id, "entityType": entity_type, "mode": mode},
+        )
+        db.commit()
+        db.refresh(job)
+        return {"jobId": job.id, "status": job.status, "error": job.error}
     finally:
         db.close()
 
@@ -656,11 +758,41 @@ def main() -> None:
         metavar="DOC_KEY",
         help="plan 22 S5 - mark a header cancelled + touch its watermark (status update, never a delete)",
     )
+    parser.add_argument(
+        "--trigger-run",
+        metavar="ENTITY_TYPE",
+        help=(
+            "plan 22 S6 - directly enqueue ONE autocount_sync job for this "
+            "entity (e.g. 'customer'), bypassing the UI's 'Run now' (which "
+            "always enqueues mode=manual). Pair with --run-mode."
+        ),
+    )
+    parser.add_argument(
+        "--run-mode",
+        choices=("manual", "incremental", "reconcile"),
+        default="reconcile",
+        help="the mode --trigger-run enqueues (default: reconcile - the mode with no UI affordance)",
+    )
+    parser.add_argument(
+        "--company-database",
+        # The demo company's `database_name` is the REAL physical Postgres
+        # database (see `ensure_demo_company`'s docstring) - this process' own
+        # `DATABASE_URL` names it, so the default is derived, never the stale
+        # `ETL_DEMO` label.
+        default=make_url(settings.database_url).database or DEMO_COMPANY_DATABASE_NAME,
+        help="which company's task --trigger-run targets (default: this process' own database - the demo company)",
+    )
     args = parser.parse_args()
     _guard()
 
     if args.company:
         ensure_demo_company(args.tenant_slug)
+        return
+    if args.trigger_run:
+        result = trigger_run(
+            args.company_database, args.trigger_run, args.run_mode, tenant_slug=args.tenant_slug
+        )
+        print(f"triggered {args.run_mode} run for '{args.trigger_run}': {result}")
         return
     if args.touch_line:
         if not args.doc_table:
