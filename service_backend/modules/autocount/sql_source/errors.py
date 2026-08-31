@@ -34,3 +34,11 @@ class SqlDeleteGuardExceeded(SqlSourceError):
     BEFORE any hash write, so the run fails with nothing staged and nothing
     pushed (fail-safe means the adds/updates in the same extract are held
     too, not just the deletes)."""
+
+
+class SqlDocumentCapExceeded(SqlSourceError):
+    """A document task's per-header ``lineQuery`` fan-out exceeded one of its
+    two safety caps (S5 review SHOULD-FIX 3) - either too many changed
+    headers in a single run, or one header's own line count. Raised from
+    ``SqlDbSource._read`` BEFORE any hash write, same fail-safe contract as
+    ``SqlDeleteGuardExceeded``: nothing is staged or pushed."""

@@ -65,6 +65,7 @@ from .canonical.documents import (
     CanonicalPurchaseOrderLine,
     CanonicalSalesOrder,
     CanonicalSalesOrderLine,
+    is_document_entity,
 )
 
 SCOPE_HEADER = "header"
@@ -1545,4 +1546,28 @@ def document_line_rows(
         rows.append(
             MappingRow(canonical_field, canonical_field, transform, SCOPE_LINE, is_required=required)
         )
+    return rows
+
+
+def build_mapping_rows_for_run(
+    entity_type: str,
+    header_rows: Sequence[MappingRow],
+    *,
+    is_sql_db_source: bool,
+    source_config: Optional[Dict[str, Any]],
+) -> List[MappingRow]:
+    """The FULL engine row set for one extract/preview/push: the operator's
+    saved HEADER mapping as given, plus - for a document entity running on
+    the ``sql_db`` source ONLY - the FIXED, code-generated LINE rows
+    (``document_line_rows``, plan 22 S5 NIT).
+
+    ONE function so ``sync.py`` (the real run) and ``etl_service.py``'s
+    ``_extract_and_map`` (the activation-gate preview) gate the line rows
+    IDENTICALLY - two separately-maintained copies of this "if document AND
+    sql_db" condition is exactly how they would quietly drift (one gating on
+    ``source_impl``, the other forgetting to).
+    """
+    rows = list(header_rows)
+    if is_sql_db_source and is_document_entity(entity_type):
+        rows.extend(document_line_rows(entity_type, source_config))
     return rows

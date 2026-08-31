@@ -50,7 +50,7 @@ from .activity import (
     record_client_calls,
     trace_id_for_job,
 )
-from .canonical.documents import DOCUMENT_ENTITY_TYPES, is_document_entity
+from .canonical.documents import DOCUMENT_ENTITY_TYPES
 from .canonical.grn import (
     ENTITY_GOODS_RECEIVED_NOTE,
     VENDOR_DETAIL_KEY,
@@ -68,7 +68,7 @@ from .mapping import (
     UNQUALIFIED_REF_ENTITIES,
     MappedDocument,
     MappingEngine,
-    document_line_rows,
+    build_mapping_rows_for_run,
     flat_profile,
 )
 from .models import (
@@ -100,7 +100,7 @@ from .sources import (
     Watermark,
     source_factory,
 )
-from .sql_source.errors import SqlDeleteGuardExceeded
+from .sql_source.errors import SqlDeleteGuardExceeded, SqlDocumentCapExceeded
 
 #     !!  IMPORTING THIS MODULE IS WHAT MAKES ``sql_db`` RUNNABLE.  !!
 # The DB source registers itself here rather than in ``sources.py`` (which it
@@ -391,6 +391,43 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             error_code="DELETE_GUARD",
         )
         return
+    except SqlDocumentCapExceeded as exc:
+        # S5 review SHOULD-FIX 3 - same treatment as the delete guard above:
+        # a document task's per-header line-query fan-out cap tripped is a
+        # deliberate safety stop, not a transport/driver fault. WARNING (no
+        # stack trace), the message UNPREFIXED, a distinct error code.
+        logger.warning(
+            "autocount document cap tripped for job %s: %s", job.id, exc.message
+        )
+        record_client_calls(
+            db,
+            source,
+            tenant_id=tenant_id,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        record_activity(
+            db,
+            tenant_id=tenant_id,
+            operation=f"sync {entity_type}",
+            status=ACTIVITY_ERROR,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            error_message=exc.message,
+        )
+        _fail(
+            db,
+            service,
+            job,
+            run,
+            watermark_row,
+            exc.message,
+            started,
+            config=config,
+            error_code="DOCUMENT_CAP",
+        )
+        return
     except Exception as exc:  # noqa: BLE001
         logger.exception("autocount sync fetch failed for job %s", job.id)
         record_client_calls(
@@ -469,9 +506,14 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     # A document's LINE rows are code-generated from its source_config (plan
     # 22 S5's "FIXED column-name convention", ``mapping.document_line_rows``),
     # never read from ``ac_field_mapping`` - ``mapping_rows`` stays HEADER-only.
-    mapping_rows = list(companies.mapping_rows(tenant_id, company_id, entity_type))
-    if config.source_impl == SOURCE_IMPL_SQL_DB and is_document_entity(entity_type):
-        mapping_rows.extend(document_line_rows(entity_type, config.source_config))
+    # ``build_mapping_rows_for_run`` is the ONE gate for this (S5 review NIT -
+    # shared with ``etl_service.py``'s preview path so the two can never drift).
+    mapping_rows = build_mapping_rows_for_run(
+        entity_type,
+        companies.mapping_rows(tenant_id, company_id, entity_type),
+        is_sql_db_source=config.source_impl == SOURCE_IMPL_SQL_DB,
+        source_config=config.source_config,
+    )
     engine = MappingEngine(
         mapping_rows,
         # ``None`` = the entity profile's own key (masters have none, being flat).

@@ -37,6 +37,7 @@ from .errors import SqlGuardError
 
 __all__ = [
     "assert_select_only",
+    "escape_incidental_binds",
     "mask_quoted",
     "normalize_statement",
     "query_binds_param",
@@ -264,3 +265,32 @@ def query_binds_param(sql: str, name: str) -> bool:
         return name in sa.text(scrubbed).compile().params
     except Exception:  # noqa: BLE001 - a compile fault is not this check's job
         return False
+
+
+_BIND_TOKEN = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def escape_incidental_binds(sql: str, keep: str) -> str:
+    """``sql`` with every ``:name``-shaped colon escaped EXCEPT the genuine
+    ``:keep`` bind reference (S5 review NIT - mirrors the header-query colon
+    escape ``source.py``'s derived-table wrap already applies).
+
+    SQLAlchemy's own ``text()`` bind-param scanner is comment/literal-BLIND
+    (the same reason ``query_binds_param`` above has to scrub first) - a
+    ``:word``-shaped colon sitting inside a comment or a string literal (a
+    contact note, an email-style address) is otherwise misread as an
+    ADDITIONAL required bound parameter, and the statement fails "a value is
+    required for bind parameter ..." instead of running at all.
+    """
+    text = sql or ""
+    scrubbed = mask_quoted(_strip_comments(text))
+    out: List[str] = []
+    last = 0
+    for match in _BIND_TOKEN.finditer(text):
+        start = match.start()
+        genuine = match.group(1) == keep and scrubbed[start:match.end()] == match.group(0)
+        out.append(text[last:start])
+        out.append(match.group(0) if genuine else f"\\{match.group(0)}")
+        last = match.end()
+    out.append(text[last:])
+    return "".join(out)

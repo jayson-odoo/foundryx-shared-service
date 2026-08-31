@@ -64,7 +64,9 @@ from modules.autocount.services.sync_service import CANONICAL_MODELS
 from modules.autocount.sinks_sorento import SorentoSink, sorento_supports_entity
 from modules.autocount.sources import SourceContext, Watermark
 from modules.autocount.sql_source.runtime import RUNTIME
+from modules.autocount.sql_source.errors import SqlDocumentCapExceeded
 from modules.autocount.sql_source.source import SqlDbSource, SqlTaskNotConfigured
+from modules.autocount.sql_source import source as sql_db_source_module
 
 DB = "AED_VSOFT"
 
@@ -770,6 +772,71 @@ def test_only_a_changed_header_re_fetches_its_lines(rig):
     ).fetch_changes(Watermark(cursor=cursor))
     assert [r.raw["doc_key"] for r in result.records] == ["D001"]
     assert len(result.records[0].raw["_lines"]) == 2  # the new line is picked up
+
+
+# ── document N+1 caps (S5 review SHOULD-FIX 3) ───────────────────────────────
+
+
+def test_too_many_changed_headers_trips_the_named_document_cap(rig, monkeypatch):
+    """A run fanning out to more changed headers than the safety cap fails
+    the WHOLE run (nothing staged/pushed), naming the DOCUMENT_CAP guard -
+    never a silent unbounded round-trip storm."""
+    db, company, config, _engine = rig
+    monkeypatch.setattr(sql_db_source_module, "MAX_DOCUMENT_HEADERS_PER_RUN", 1)
+    source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_SALES_ORDER)
+    with pytest.raises(SqlDocumentCapExceeded) as exc:
+        source.fetch_changes(Watermark())
+    assert "2" in str(exc.value)  # the rig has 2 headers, over the cap of 1
+
+
+def test_under_the_header_cap_runs_normally(rig, monkeypatch):
+    db, company, config, _engine = rig
+    monkeypatch.setattr(sql_db_source_module, "MAX_DOCUMENT_HEADERS_PER_RUN", 100)
+    source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_SALES_ORDER)
+    result = source.fetch_changes(Watermark())
+    assert len(result.records) == 2
+
+
+def test_a_header_with_too_many_line_rows_trips_the_named_document_cap(rig, monkeypatch):
+    """A ``lineQuery`` matching far more than its own header's rows (a loose
+    WHERE clause, or none at all) must not silently attach thousands of
+    unrelated rows to one document."""
+    db, company, config, _engine = rig
+    monkeypatch.setattr(sql_db_source_module, "MAX_DOCUMENT_LINES_PER_HEADER", 1)
+    source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_SALES_ORDER)
+    with pytest.raises(SqlDocumentCapExceeded) as exc:
+        source.fetch_changes(Watermark())
+    assert "D002" in str(exc.value)  # D002 has 2 lines, over the cap of 1
+
+
+def test_under_the_line_cap_runs_normally(rig, monkeypatch):
+    db, company, config, _engine = rig
+    monkeypatch.setattr(sql_db_source_module, "MAX_DOCUMENT_LINES_PER_HEADER", 100)
+    source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_SALES_ORDER)
+    result = source.fetch_changes(Watermark())
+    by_doc_key = {r.raw["doc_key"]: r.raw for r in result.records}
+    assert len(by_doc_key["D002"]["_lines"]) == 2
+
+
+def test_a_document_cap_trip_surfaces_as_a_named_error_code_through_sync(rig, monkeypatch):
+    """End to end through the real job handler (mirrors the DELETE_GUARD
+    sync-level test in test_autocount_reconcile_push.py): the run FAILS with
+    a distinct, unprefixed ``DOCUMENT_CAP`` error code - never a generic
+    ``Fetch failed:``."""
+    from app.models.background_job import JOB_FAILED
+
+    from modules.autocount.services.sync_service import SyncService
+
+    db, company, config, _engine = rig
+    monkeypatch.setattr(sql_db_source_module, "MAX_DOCUMENT_HEADERS_PER_RUN", 1)
+    job = SyncService(db).sync_now(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, actor_user_id=None
+    )
+    db.refresh(job)
+    assert job.status == JOB_FAILED
+    assert not (job.error or "").startswith("Fetch failed:")
+    db.refresh(config)
+    assert config.last_run_error_code == "DOCUMENT_CAP"
 
 
 def test_reconcile_reports_no_delete_refs_even_when_a_header_is_missing(rig):

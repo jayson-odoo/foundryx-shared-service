@@ -68,9 +68,15 @@ from ..sources import (
     register_source,
 )
 from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
-from .errors import SqlDeleteGuardExceeded, SqlQueryError, SqlSourceError
+from .errors import (
+    SqlDeleteGuardExceeded,
+    SqlDocumentCapExceeded,
+    SqlQueryError,
+    SqlSourceError,
+)
 from .guard import (
     assert_select_only,
+    escape_incidental_binds,
     normalize_statement,
     query_binds_param,
     top_level_words,
@@ -101,6 +107,19 @@ __all__ = [
 # deliberate act, not a silent degradation (the house line on the record cap).
 STREAM_BATCH = 1000
 MAX_EXTRACT_ROWS = 200_000
+
+# ── document line-fan-out caps (S5 review SHOULD-FIX 3) ──────────────────────
+# A document task runs ONE bound ``lineQuery`` PER CHANGED HEADER, in the same
+# read-only session - an N+1 by design (§2.8: the operator authors a scalar
+# ``WHERE ... = :doc_key``, so rewriting it into a batched ``IN`` is fragile
+# string surgery and was rejected; the batched-``IN`` approach is a backlog
+# item instead). Two hard, NAMED caps stand in for it: too many changed
+# headers in one pass, and one header carrying an unreasonable number of
+# lines (a WHERE clause matching more than its own header, most likely). Both
+# fail the WHOLE run - same fail-safe contract as the delete guard above:
+# nothing is staged or pushed, and the run's error names which cap tripped.
+MAX_DOCUMENT_HEADERS_PER_RUN = 2000
+MAX_DOCUMENT_LINES_PER_HEADER = 5000
 
 # ── delete guard (plan 22 §2.5, AC-22-22) ────────────────────────────────────
 # A reconcile that would delete more than this fraction (or this many rows,
@@ -364,6 +383,15 @@ class SqlDbSource:
                     "once per header against the whole line table instead of "
                     "just that header's own rows."
                 )
+            # Colons OTHER than the genuine ``:doc_key`` bind (a comment, a
+            # literal note or time-of-day) are escaped ONCE here, exactly
+            # like the header query's own inner text is escaped before being
+            # wrapped (S5 review NIT) - SQLAlchemy's bind scanner is
+            # comment/literal-blind, so an unescaped ``:word`` inside one
+            # would otherwise demand an extra param the run never supplies.
+            self._line_query_exec = escape_incidental_binds(
+                self.line_query, LINE_QUERY_DOC_KEY_PARAM
+            )
             self.doc_date_column = str(config.get("docDateColumn") or "").strip() or None
             if not self.doc_date_column:
                 raise SqlTaskNotConfigured(
@@ -713,6 +741,18 @@ class SqlDbSource:
             # detail mechanism (built for the API path's vendor envelope)
             # reads it with zero engine changes - see ``mapping.flat_profile``.
             if self.is_document:
+                #     !!  CAP THE FAN-OUT (S5 review SHOULD-FIX 3).  !!
+                # This is an N+1 by design (module doc) - a run with an
+                # unbounded number of changed headers would hold that many
+                # extra round trips open in one pass. Fails the WHOLE run
+                # (nothing staged/pushed), same as the delete guard.
+                if len(rows) > MAX_DOCUMENT_HEADERS_PER_RUN:
+                    raise SqlDocumentCapExceeded(
+                        f"This run would fetch lines for {len(rows):,} documents in "
+                        f"one pass - over the safety cap "
+                        f"({MAX_DOCUMENT_HEADERS_PER_RUN:,}). Nothing was staged or "
+                        f"pushed. Narrow the from-date window and re-run."
+                    )
                 key_column = self.key_columns[0]
                 for header in rows:
                     doc_key_value = header.get(key_column)
@@ -730,14 +770,28 @@ class SqlDbSource:
         must not raise for it.
         """
         try:
-            result = conn.execute(sa.text(self.line_query), {"doc_key": doc_key_value})
-            return [dict(row._mapping) for row in result.fetchall()]
+            result = conn.execute(
+                sa.text(self._line_query_exec), {"doc_key": doc_key_value}
+            )
+            rows = [dict(row._mapping) for row in result.fetchall()]
         except Exception as exc:  # noqa: BLE001 - every driver has its own class
             from .runtime import sanitize_error
 
             raise SqlQueryError(
                 sanitize_error(exc, secrets=self._secrets)
             ) from exc
+        #     !!  CAP ONE HEADER'S OWN LINE COUNT (S5 review SHOULD-FIX 3).  !!
+        # A ``lineQuery`` matching far more than its own header's rows (a
+        # ``WHERE`` clause that is too loose, or missing entirely) is caught
+        # here rather than silently attaching thousands of unrelated rows to
+        # one document. Same fail-safe contract: nothing is staged or pushed.
+        if len(rows) > MAX_DOCUMENT_LINES_PER_HEADER:
+            raise SqlDocumentCapExceeded(
+                f"Document '{doc_key_value}' has {len(rows):,} line rows - over "
+                f"the safety cap ({MAX_DOCUMENT_LINES_PER_HEADER:,}). Nothing was "
+                f"staged or pushed. Check the line query's WHERE clause."
+            )
+        return rows
 
     def _source_ref(self, raw: Dict[str, Any]) -> Optional[str]:
         try:

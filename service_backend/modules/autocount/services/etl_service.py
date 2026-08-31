@@ -960,7 +960,12 @@ class EtlService:
         and importing it at module level here would make this service part of
         that cycle for no benefit.
         """
-        from ..mapping import MappingEngine, UnknownEntityProfile, document_line_rows, flat_profile
+        from ..mapping import (
+            MappingEngine,
+            UnknownEntityProfile,
+            build_mapping_rows_for_run,
+            flat_profile,
+        )
         from ..sources import SourceContext, Watermark
         from ..sql_source.source import SqlDbSource
 
@@ -1002,9 +1007,16 @@ class EtlService:
         # (plan 22 S5's "FIXED column-name convention", ``mapping.
         # document_line_rows``), never read from ``ac_field_mapping`` -
         # ``mapping_rows`` stays HEADER-only, same as before this slice.
-        rows = list(self.companies.mapping_rows(tenant_id, company.id, entity_type))
-        if is_document_entity(entity_type):
-            rows.extend(document_line_rows(entity_type, config.source_config))
+        # ``build_mapping_rows_for_run`` is the ONE gate for this (S5 review
+        # NIT - shared with ``sync.py``'s real-run path so the two can never
+        # drift). This method only ever runs against a freshly-built
+        # ``SqlDbSource`` above - always the DB source, never the API path.
+        rows = build_mapping_rows_for_run(
+            entity_type,
+            self.companies.mapping_rows(tenant_id, company.id, entity_type),
+            is_sql_db_source=True,
+            source_config=config.source_config,
+        )
         engine = MappingEngine(
             rows,
             entity_type=entity_type,
