@@ -177,7 +177,7 @@ const ANCHOR_TITLES: Record<AutocountAnchorErrorCode, string> = {
   COMPANY_BINDING_INVALID: 'Sorento company binding is invalid',
 };
 
-/** True for one of Sorento's three company-anchor codes (Appendix A6). */
+/** True for one of Sorento's four company-anchor codes (Appendix A6). */
 export function isAnchorErrorCode(code: string | null | undefined): code is AutocountAnchorErrorCode {
   return Boolean(code) && Object.prototype.hasOwnProperty.call(ANCHOR_TITLES, code as string);
 }
