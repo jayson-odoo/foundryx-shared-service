@@ -41,6 +41,7 @@ from datetime import date, datetime, time as dt_time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
 from .errors import SqlQueryError
@@ -316,8 +317,6 @@ def _execute_preview_unguarded(
     with open_readonly(engine, timeout_s=timeout_s, secrets=secrets) as conn:
         try:
             if params is not None:
-                import sqlalchemy as sa
-
                 result = conn.execute(sa.text(statement), params)
             else:
                 result = conn.exec_driver_sql(statement)

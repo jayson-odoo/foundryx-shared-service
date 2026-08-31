@@ -144,6 +144,77 @@ mapped (`status` canonical field + mapping formula); cancel = status update (AC-
 `SorentoSink._ENTITY_PATH` gains `sales_orders`, `purchase_orders`, `sales_agents` + deletion
 paths per Appendix A.
 
+#### 2.8.1 The header-LastModified-bumps-on-line-edit assumption (S5 review)
+
+Line-only-edit detection leans ENTIRELY on the AutoCount convention that editing a line (add,
+change, remove a detail row) always bumps its header's `LastModified` - so "the header changed" IS
+"a line may have changed", and an incremental run can diff HEADER hashes only, never re-fetching
+every document's lines to notice a line-only edit. This is validated at save time (a document task
+without a watermark column is refused, §2.4/S5) but the convention ITSELF is never verified against
+the live source - it is trusted.
+
+**Failure mode:** a source that does NOT honour the convention (a customisation, or a future
+document source with different semantics) makes a line-only edit invisible to incremental sync
+forever - there is no fallback that would catch it. Reconcile does not help either: it diffs the
+same header hash. Backlog: **BL-SS-036** (a lines-digest fallback - hash the header's own line set,
+compare on reconcile, for a source that cannot be trusted to bump the header watermark).
+
+#### 2.8.2 Fixed line column-name convention
+
+A document's LINE fields are NEVER an operator-authored mapping row (unlike the header, which uses
+the ordinary mapping editor). Instead, `mapping.document_line_rows` builds the line mapping rows
+IN CODE from a FIXED convention: the `lineQuery` MUST return its result columns named EXACTLY like
+the canonical line field they feed - `qty_ordered`, `qty_delivered`, `unit_price`, `discount`,
+`line_total`, `uom`, `required_date` (SO) / `qty_received`, `unit_cost`, `currency`, `expected_date`
+(PO), per `mapping.DOCUMENT_LINE_FIXED_FIELDS`. The line's own key and the two master refs
+(`product_ref`/`warehouse_ref`) are the three exceptions - picked via `source_config`'s
+`lineKeyColumn`/`lineProductColumn`/`lineWarehouseColumn` pickers, not a bare column-name match.
+This is the contract: renaming a `lineQuery` output column silently drops that canonical field
+(never a save-time error, since the mapping is generated fresh from `source_config` on every
+extract/preview/push) - operators author the alias, not us.
+
+#### 2.8.3 `docDateColumn` vs `watermarkColumn`
+
+Two DIFFERENT columns, never conflated:
+
+- **`watermarkColumn`** drives CHANGE DETECTION (`WHERE t.<wm> > :mark`) - required for every
+  document task (§2.8.1's LastModified convention).
+- **`docDateColumn`** drives the `fromDate` FLOOR (`WHERE t.<docDate> >= :from_date`), ANDed into
+  every read (initial load included) - it bounds WHICH documents are in scope at all, permanently,
+  not a one-time lookback.
+
+A document with an old `docDateColumn` value but a recent `watermarkColumn` bump (e.g. a line added
+to an old order) still syncs - the from-date floor is evaluated against the DOCUMENT's own date, the
+watermark advance is evaluated against LastModified; the two predicates are independent.
+
+#### 2.8.4 Documents never stage deletes
+
+`fromDate` bounds the extract to a WINDOW, not the whole standing set that exists in AutoCount - a
+header outside today's window is, from inside a diff, indistinguishable from one genuinely gone at
+the source. Computing (and delete-guarding) delete intents for a windowed population would be
+actively wrong, not just unnecessary - `SqlDbSource.fetch_changes` skips the whole delete-intent
+block for documents, and `sync._stage_deletes` mirrors the same skip at staging. A document that
+falls out of scope (cancelled at source, or simply outside the window) is never deleted downstream
+by this pipeline - only ever updated by its own `status` field, mapped explicitly (§2.8 above).
+
+#### 2.8.5 One line query per changed header, and its caps (S5 review SHOULD-FIX 3)
+
+`SqlDbSource._read` runs the task's bound `lineQuery` ONCE PER CHANGED HEADER, in the same read-only
+session - an N+1 by design (the operator authors a scalar `WHERE ... = :doc_key`; rewriting it into
+a batched `IN` expansion is fragile string surgery and was rejected in favour of the `sql_source`
+guard's existing deny-first posture - backlogged as **BL-SS-037**, chunk changed-header keys into
+pages and rewrite the predicate to `IN` once that class of query-text rewrite is worth the risk).
+
+Two hard, NAMED caps stand in for batching meanwhile, both failing the WHOLE run (nothing
+staged/pushed, same fail-safe contract as the delete guard, `error_code="DOCUMENT_CAP"`):
+`MAX_DOCUMENT_HEADERS_PER_RUN` (too many changed headers fetched in one pass) and
+`MAX_DOCUMENT_LINES_PER_HEADER` (one header's own `lineQuery` matching far more than its own rows -
+most likely a `WHERE` clause that is too loose). **Operational guidance, not on-screen copy**: a
+company with a large historical backlog should load documents in WINDOWS - activate with a
+recent `fromDate` first, then widen it gradually across several runs, rather than starting with a
+`fromDate` spanning years of history in one pass; over a slow link to the source database, start
+with roughly a 30-day window and widen from there once the first loads land cleanly.
+
 ## 3. Frontend
 
 Surfaces (all Resource-shell / existing autocount components; lavish mockup accompanies this plan):
@@ -295,8 +366,19 @@ Deviations from A1-A4 and what they mean for THIS repo:
 2. **Document status vocabulary is fixed**: SO/PO canonical `status` in
    `open | partial | fulfilled | closed | cancelled` (unknown = per-record failed `errors.status`).
    Sorento maps to its own enums. → the SO/PO mapping profile ships a required `status` canonical
-   field; default mapping rows use a formula over AutoCount `Cancelled`/fulfilment columns; the
-   editor's simulator must show the resulting value.
+   field; the editor's simulator shows the resulting value. **What shipped (S5 review SHOULD-FIX
+   4c, revised from the original "default mapping rows" wording above): there is NO seeded default
+   row for `status` (a `sql_db` task has no `DEFAULT_MAPPINGS` at all - §2.5 - the mapping starts
+   from the preview column list, never a code default an operator did not choose). Instead, the
+   Mapping tab pre-fills an EDITABLE starting formula - `if(value == true, "cancelled", "open")` -
+   the moment an operator maps a row to `status` on a document entity AND the chosen source column
+   is reported boolean-typed (from the current query preview's column types); any other source type
+   leaves the formula empty, never guessed. This is a VALUE pre-fill (what would actually be saved),
+   never on-screen instructional copy - foolproof-UI in the "don't leave the operator to hand-write
+   the whole thing from scratch" sense, not the "seed unrequested data" sense. Save-time validation
+   also requires `status` (and `so_number`/`po_number`) to have SOME mapping row once the operator
+   has started mapping at all (`company_service.replace_mapping`, S5 review SHOULD-FIX 4a) - an
+   unmapped required field can no longer slip through to activation.**
 3. **Document lines reference masters by INTEGRATION REF, not code**: `customer_ref`,
    `sales_agent_ref`, `supplier_ref`, line `product_ref` (required) / `warehouse_ref` = the
    `source_ref` we pushed that master under. Unknown ref = whole record `retryable`, nothing
