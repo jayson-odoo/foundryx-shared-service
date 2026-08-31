@@ -81,7 +81,7 @@ from ..sql_source.runtime import (
     sanitize_error,
     secrets_of,
 )
-from ..sql_source.source import build_incremental_wrap
+from ..sql_source.source import build_document_header_wrap, build_incremental_wrap
 from .company_service import (
     AutocountServiceError,
     CompanyService,
@@ -682,6 +682,41 @@ class EtlService:
         with open_readonly(engine, timeout_s=QUERY_TIMEOUT_SECONDS, secrets=secrets) as conn:
             conn.execute(sa.text(probe_sql)).close()
 
+    def _probe_document_wrap(
+        self,
+        engine,
+        secrets: List[str],
+        query: str,
+        watermark_column: str,
+        doc_date_column: str,
+    ) -> None:
+        """Document counterpart of ``_probe_incremental_wrap`` (S6 review
+        SHOULD-FIX 3).
+
+        A document task's real run NEVER executes ``build_incremental_wrap``
+        - ``SqlDbSource._statement`` always builds ``build_document_header_wrap``
+        for a document entity (the SAME derived-table wrap PLUS the always-on
+        ``fromDate`` floor on ``docDateColumn``, plan 22 S5). Probing the
+        plain shape at save time proves nothing about the shape that will
+        actually run - a header query whose SELECT list survives the simple
+        wrap can still be rejected once the date predicate/column joins it
+        (an ambiguous/duplicate column the date comparison now touches, for
+        instance). So a document entity is probed with THIS exact shape,
+        mark-less (matching an initial load), with a harmless SAMPLE
+        ``:from_date`` (today - never real data) bound the same way the real
+        run binds it. Capped to 1 row via the SAME per-dialect
+        ``wrap_preview`` rewriter the plain probe and the query preview use.
+        """
+        quoted_watermark = engine.dialect.identifier_preparer.quote(watermark_column)
+        quoted_date = engine.dialect.identifier_preparer.quote(doc_date_column)
+        probe_sql = wrap_preview(
+            build_document_header_wrap(query, quoted_watermark, quoted_date, None),
+            engine.dialect.name,
+            1,
+        )
+        with open_readonly(engine, timeout_s=QUERY_TIMEOUT_SECONDS, secrets=secrets) as conn:
+            conn.execute(sa.text(probe_sql), {"from_date": date.today()}).close()
+
     def update_task(
         self, tenant_id: str, company_id: str, entity_type: str, raw: Dict[str, Any]
     ) -> EtlTaskView:
@@ -773,10 +808,24 @@ class EtlService:
 
         watermark = clean.get("watermarkColumn")
         if not errors and watermark and engine is not None:
+            document = is_document_entity(entity_type)
             try:
-                self._probe_incremental_wrap(engine, secrets, query, watermark)
+                if document:
+                    # A document task's real run wraps the header query WITH
+                    # the always-on ``fromDate`` predicate - probe THAT
+                    # shape, not the plain incremental one (SHOULD-FIX 3).
+                    self._probe_document_wrap(
+                        engine, secrets, query, watermark, clean["docDateColumn"]
+                    )
+                else:
+                    self._probe_incremental_wrap(engine, secrets, query, watermark)
             except Exception as exc:  # noqa: BLE001 - every driver raises its own class
-                errors["watermarkColumn"] = (
+                # Documents name the failure on ``query`` - it is the header
+                # statement that does not survive being wrapped with the
+                # extra date predicate/column, not the watermark column
+                # itself (already proven present + orderable above).
+                field = "query" if document else "watermarkColumn"
+                errors[field] = (
                     "This query cannot be run incrementally on this database: "
                     + sanitize_error(exc, secrets=secrets)
                 )

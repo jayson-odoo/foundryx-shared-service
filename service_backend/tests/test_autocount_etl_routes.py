@@ -686,6 +686,79 @@ def test_put_etl_task_probes_the_wrap_only_when_a_watermark_column_is_set(
     assert calls == []
 
 
+def test_put_etl_task_422s_when_the_document_wrap_cannot_run(client, session_factory, monkeypatch):
+    """S6 merge-gate review SHOULD-FIX 3: a document task's REAL run always
+    executes ``build_document_header_wrap`` (``SqlDbSource._statement`` -
+    the header query wrapped WITH the always-on ``fromDate`` predicate on
+    ``docDateColumn``), never the plain ``build_incremental_wrap`` shape a
+    non-document task uses. A header query that survives the SIMPLE probe
+    can still be rejected once the extra predicate/column is added, so the
+    save-time probe must exercise the DOCUMENT shape for a document entity -
+    proven here by stubbing the plain probe to blow up if it is ever called
+    (it must not be, for a document entity) while the document-shape probe
+    is stubbed to fail as the target database would. The failure names
+    ``query`` (the header statement itself does not survive wrapping - the
+    document task already requires a watermark column and a date column to
+    exist and be present in the query's own result, so those are proven
+    fine before this probe ever runs)."""
+    import modules.autocount.services.etl_service as etl_service_module
+
+    def _incremental_boom(self, engine, secrets, query, watermark_column):
+        raise AssertionError(
+            "a document task must probe the DOCUMENT wrap shape, never the "
+            "plain incremental one"
+        )
+
+    def _document_boom(self, engine, secrets, query, watermark_column, doc_date_column):
+        raise RuntimeError("Ambiguous column name 'last_modified'.")
+
+    monkeypatch.setattr(
+        etl_service_module.EtlService, "_probe_incremental_wrap", _incremental_boom
+    )
+    monkeypatch.setattr(
+        etl_service_module.EtlService, "_probe_document_wrap", _document_boom
+    )
+
+    db = session_factory()
+    company = _company(db)
+    conn = _sql_connection(db, db_type="postgresql")
+    db.close()
+
+    url = f"/autocount/companies/{company.id}/entities/sales_order/etl-task"
+    body = {
+        "sourceConfig": _config(
+            connectionId=conn.id,
+            query="SELECT acc_no AS doc_key, balance, last_modified FROM debtor",
+            lineQuery=(
+                "SELECT acc_no, company_name AS item_code FROM debtor "
+                "WHERE acc_no = :doc_key"
+            ),
+            keyColumns=["doc_key"],
+            watermarkColumn="balance",
+            fromDate="2026-01-01",
+            docDateColumn="last_modified",
+            lineKeyColumn="acc_no",
+            lineProductColumn="item_code",
+        )
+    }
+    response = client.put(url, json=body, headers=_auth(client))
+    assert response.status_code == 422, response.text
+    errors = response.json()["detail"]["fieldErrors"]
+    assert "query" in errors
+    assert "cannot be run incrementally" in errors["query"]
+
+    # A rejected probe must not persist a task guaranteed to fail on its
+    # very first run - no anchor row is created for this never-saved entity.
+    db = session_factory()
+    row = (
+        db.query(AcEntityConfig)
+        .filter_by(tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type="sales_order")
+        .one_or_none()
+    )
+    assert row is None
+    db.close()
+
+
 def test_put_etl_task_422s_when_the_connection_database_does_not_match_the_company(
     client, session_factory
 ):
