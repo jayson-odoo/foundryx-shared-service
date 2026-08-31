@@ -588,18 +588,13 @@ def test_a_cleared_connection_at_preview_is_a_422_not_a_500(client, session_fact
     assert response.status_code == 422, response.text
 
 
-def test_a_not_yet_extractable_entity_maps_a_clean_error_not_a_crash(
-    client, session_factory, rig
-):
-    """NIT (S2 review, entity updated for S4): ``ETL_ENTITY_TYPES`` (a DB task
-    CAN be SAVED for these) is wider than ``mapping.ENTITY_PROFILES`` (mapping
-    actually knows how to SHAPE these). Plan 22 S4 (AC-22-23) closed the gap
-    for the five masters (product/warehouse/product_category/unit_of_measure/
-    sales_agent); ``sales_order``/``purchase_order`` remain genuinely
-    unmapped until S5 (AC-22-24), so THIS is the entity that still proves
-    ``_extract_and_map`` fails clean rather than crashing uncaught the day a
-    consumer that DOES support documents exists. Exercised directly at the
-    service layer (the only place that currently reaches it)."""
+def test_sales_order_is_no_longer_the_not_yet_extractable_entity(client, session_factory, rig):
+    """Plan 22 S5 (AC-22-24) closes the gap this test used to exercise:
+    ``sales_order``/``purchase_order`` now have real ``mapping.ENTITY_PROFILES``
+    entries, so ``_extract_and_map`` no longer 409s on them - it reaches the
+    REAL document extraction path (and fails there for an unrelated reason -
+    this fixture's saved task has no watermark/line-query config, which S5
+    requires - never the generic "not yet extractable" guard)."""
     from modules.autocount.services.etl_service import EtlService, EtlStateError
 
     company_id, sql_id = rig
@@ -625,12 +620,25 @@ def test_a_not_yet_extractable_entity_maps_a_clean_error_not_a_crash(
     db.add(config)
     db.commit()
 
-    with pytest.raises(EtlStateError) as excinfo:
+    with pytest.raises(Exception) as excinfo:
         EtlService(db)._extract_and_map(DEFAULT_TENANT_ID, company, config, "sales_order")
-    message = str(excinfo.value).lower()
-    assert "sales_order" in message
-    assert "not yet extractable" in message
-    db.close()
+    # NOT the "not yet extractable" 409 (mapping.UnknownEntityProfile /
+    # EtlStateError with that exact message) - a document profile now exists.
+    from modules.autocount.services.etl_service import EtlStateError as _EtlStateError
+
+    if isinstance(excinfo.value, _EtlStateError):
+        assert "not yet extractable" not in str(excinfo.value).lower()
+
+
+def test_the_generic_unknown_profile_guard_still_exists_for_a_real_gap():
+    """The guard ``_extract_and_map`` translates (``mapping.UnknownEntityProfile``
+    -> a clean ``EtlStateError``, never an uncaught crash) is generic code -
+    proven directly against a bogus entity key that genuinely has no profile,
+    now that every real ``ETL_ENTITY_TYPES`` member does."""
+    from modules.autocount.mapping import UnknownEntityProfile, flat_profile
+
+    with pytest.raises(UnknownEntityProfile):
+        flat_profile("not_a_real_entity", ["k"])
 
 
 def test_preview_requires_sync_run_and_404s_cross_tenant(client, session_factory, rig):

@@ -461,6 +461,10 @@ class SqlPreviewRequest(ApiModel):
 
     connectionId: str
     query: str = ""
+    # Plan 22 S5 - previewing a document's ``lineQuery`` (which carries a
+    # ``:doc_key`` bound param). ``None`` = an ordinary query, run exactly as
+    # before; any string (incl. "") binds it so the query can execute at all.
+    docKey: Optional[str] = None
 
 
 class SqlPreviewResponse(ApiModel):
@@ -489,6 +493,19 @@ class EtlSourceConfigIn(ApiModel):
     watermarkColumn: Optional[str] = None
     comparedColumns: List[str] = []
     fromDate: Optional[str] = None
+    # ── documents only (plan 22 S5) ───────────────────────────────────────
+    # The header column the from-date filters (a document's OWN date, e.g.
+    # `DocDate` - deliberately separate from `watermarkColumn`/`LastModified`,
+    # which drives change detection, not the sync's date floor).
+    docDateColumn: Optional[str] = None
+    # The lineQuery result column carrying the line's own key (AutoCount's
+    # DtlKey) - composed into the line's `source_ref`.
+    lineKeyColumn: Optional[str] = None
+    # The lineQuery result columns minting the two master refs a line can
+    # carry (Appendix A6 item 3) - `product_ref` (required by Sorento) and
+    # `warehouse_ref` (optional).
+    lineProductColumn: Optional[str] = None
+    lineWarehouseColumn: Optional[str] = None
     incrementalMinutes: int = 15
     reconcileMode: str = "dailyAt"
     reconcileHours: Optional[int] = None

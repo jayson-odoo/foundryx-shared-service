@@ -32,6 +32,12 @@ from app.models.background_job import (
 )
 
 from ..activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS, record_activity
+from ..canonical.documents import (
+    ENTITY_PURCHASE_ORDER,
+    ENTITY_SALES_ORDER,
+    CanonicalPurchaseOrder,
+    CanonicalSalesOrder,
+)
 from ..canonical.grn import CanonicalGrn, ENTITY_GOODS_RECEIVED_NOTE
 from ..canonical.masters import (
     ENTITY_CUSTOMER,
@@ -87,6 +93,8 @@ CANONICAL_MODELS = {
     ENTITY_WAREHOUSE: CanonicalWarehouse,
     ENTITY_PRODUCT: CanonicalProduct,
     ENTITY_SALES_AGENT: CanonicalSalesAgent,
+    ENTITY_SALES_ORDER: CanonicalSalesOrder,
+    ENTITY_PURCHASE_ORDER: CanonicalPurchaseOrder,
 }
 
 

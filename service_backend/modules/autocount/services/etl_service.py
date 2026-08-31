@@ -30,6 +30,12 @@ from app.models.connection import Connection
 from app.secrets import decrypt_secret
 
 from ..activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS, record_activity
+from ..canonical.documents import (
+    DOCUMENT_ENTITY_TYPES,
+    ENTITY_PURCHASE_ORDER,
+    ENTITY_SALES_ORDER,
+    is_document_entity,
+)
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
 from ..canonical.masters import (
     ENTITY_CUSTOMER,
@@ -88,14 +94,11 @@ logger = logging.getLogger("foundryx.autocount")
 # Canonical keys a DB task may be configured for. Code constants, never a
 # tenant-editable key. Documents carry a from-date + a line query (Q20).
 # ``ENTITY_SALES_AGENT``/``ENTITY_PRODUCT``/``ENTITY_WAREHOUSE``/
-# ``ENTITY_PRODUCT_CATEGORY``/``ENTITY_UNIT_OF_MEASURE`` are imported (not
-# redefined here, NIT S2 review, extended S4) - ``mapping.py`` needs the SAME
-# strings (``ENTITY_PROFILES``, ``UNQUALIFIED_REF_ENTITIES``) and shares this
-# import to avoid a second literal drifting from this one.
-ENTITY_SALES_ORDER = "sales_order"
-ENTITY_PURCHASE_ORDER = "purchase_order"
-
-DOCUMENT_ENTITY_TYPES = (ENTITY_SALES_ORDER, ENTITY_PURCHASE_ORDER)
+# ``ENTITY_PRODUCT_CATEGORY``/``ENTITY_UNIT_OF_MEASURE``/``ENTITY_SALES_ORDER``/
+# ``ENTITY_PURCHASE_ORDER`` are imported (not redefined here, NIT S2 review,
+# extended S4/S5) - ``mapping.py``/``mapping_catalog.py``/``sinks_sorento.py``
+# need the SAME strings and share this import to avoid a second literal
+# drifting from this one.
 ETL_ENTITY_TYPES = (
     ENTITY_SUPPLIER,
     ENTITY_CUSTOMER,
@@ -121,10 +124,6 @@ DEFAULT_RECONCILE_AT = "02:00"
 
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _QUERY_HEAD = 120
-
-
-def is_document_entity(entity_type: str) -> bool:
-    return entity_type in DOCUMENT_ENTITY_TYPES
 
 
 class EtlValidationError(AutocountServiceError):
@@ -210,7 +209,8 @@ class EtlTaskView:
 
 def default_source_config(entity_type: str, *, today: Optional[date] = None) -> Dict[str, Any]:
     """The draft a never-configured entity starts from (the editor is the
-    create surface). Documents get today's from-date + a line-query slot."""
+    create surface). Documents get today's from-date + a line-query slot +
+    the S5 line/ref column slots (all null until the operator picks them)."""
     document = is_document_entity(entity_type)
     return {
         "connectionId": None,
@@ -220,6 +220,10 @@ def default_source_config(entity_type: str, *, today: Optional[date] = None) -> 
         "watermarkColumn": None,
         "comparedColumns": [],
         "fromDate": (today or date.today()).isoformat() if document else None,
+        "docDateColumn": None,
+        "lineKeyColumn": None,
+        "lineProductColumn": None,
+        "lineWarehouseColumn": None,
         "incrementalMinutes": DEFAULT_INCREMENTAL_MINUTES,
         "reconcileMode": RECONCILE_MODE_DAILY_AT,
         "reconcileHours": None,
@@ -254,6 +258,8 @@ def validate_source_config(
     entity_type: str,
     raw: Dict[str, Any],
     columns: Optional[Dict[str, str]],
+    *,
+    line_columns: Optional[Dict[str, str]] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, str]]:
     """Normalise + validate a task's ``source_config`` (AC-22-11/12).
 
@@ -262,9 +268,15 @@ def validate_source_config(
     against it; a pick with no preview to check against is an error on the
     query, not a silent accept.
 
+    ``line_columns`` (plan 22 S5, documents only) = the SAME shape from a
+    FRESH preview of ``lineQuery`` (a sample ``:doc_key`` bound) - the line-
+    column pickers (``lineKeyColumn``/``lineProductColumn``/
+    ``lineWarehouseColumn``) are checked against it exactly like the header
+    pickers are checked against ``columns``.
+
     Returns ``(clean, field_errors)``. Pure - no DB, no source. The caller
-    (``EtlService.update_task``) resolves the connection, runs the preview and
-    guards the query itself, then merges its own errors in.
+    (``EtlService.update_task``) resolves the connection, runs both previews
+    and guards both queries itself, then merges its own errors in.
     """
     errors: Dict[str, str] = {}
     document = is_document_entity(entity_type)
@@ -299,8 +311,12 @@ def validate_source_config(
     # Compared columns never include a key (a key change is a new record).
     compared = [c for c in compared if c not in key_columns]
 
-    # ── documents: line query + from-date (Q20) ──────────────────────────────
+    # ── documents: line query + from-date + line/ref columns (S5) ────────────
     from_date: Optional[str] = None
+    doc_date_column: Optional[str] = None
+    line_key_column: Optional[str] = None
+    line_product_column: Optional[str] = None
+    line_warehouse_column: Optional[str] = None
     if document:
         raw_from = str(raw.get("fromDate") or "").strip()
         if not raw_from:
@@ -310,11 +326,63 @@ def validate_source_config(
                 from_date = date.fromisoformat(raw_from).isoformat()
             except ValueError:
                 errors["fromDate"] = "Enter the from-date as YYYY-MM-DD."
-        if line_query:
+
+        #     !!  A DOCUMENT TASK REQUIRES A HEADER WATERMARK COLUMN.  !!
+        # This is the S5 line-change-detection decision: AutoCount stamps a
+        # SO/PO header's `LastModified` on ANY line edit (add/change/remove a
+        # detail row), so "the header changed" IS "a line may have changed" -
+        # reconcile can diff HEADER hashes only and never re-fetch every
+        # document's lines to notice a line-only edit. Without a watermark
+        # column there is no honest way to detect a line-only change short of
+        # re-fetching every document's lines on every run, which defeats the
+        # whole point of the per-header line query. Validated here (save-time
+        # 422), not discovered at run-time.
+        if not watermark:
+            errors["watermarkColumn"] = (
+                "A watermark column is required for documents - AutoCount "
+                "updates a header's LastModified whenever a line changes, "
+                "which is how a line-only edit is detected."
+            )
+
+        if not line_query:
+            errors["lineQuery"] = "A line query is required for documents."
+        else:
             try:
                 assert_select_only(line_query)
             except SqlGuardError as exc:
                 errors["lineQuery"] = exc.message
+
+        # The from-date floor applies to the document's OWN date column -
+        # deliberately separate from `watermarkColumn` (LastModified drives
+        # change detection, not how far back the sync looks).
+        doc_date_column = str(raw.get("docDateColumn") or "").strip() or None
+        if doc_date_column is None:
+            errors.setdefault("docDateColumn", "Choose the document's date column.")
+        elif columns is not None and doc_date_column not in columns:
+            errors.setdefault(
+                "docDateColumn", f"'{doc_date_column}' is not in the query result."
+            )
+
+        line_key_column = str(raw.get("lineKeyColumn") or "").strip() or None
+        line_product_column = str(raw.get("lineProductColumn") or "").strip() or None
+        line_warehouse_column = str(raw.get("lineWarehouseColumn") or "").strip() or None
+        if line_key_column is None:
+            errors.setdefault("lineKeyColumn", "Choose the line query's key column.")
+        if line_product_column is None:
+            errors.setdefault("lineProductColumn", "Choose the line query's product column.")
+        picked_line = bool(line_key_column or line_product_column or line_warehouse_column)
+        if picked_line and line_query and "lineQuery" not in errors and line_columns is None:
+            errors.setdefault(
+                "lineQuery", "Test the line query first - the picked columns are checked against its result."
+            )
+        elif line_columns is not None:
+            for field, value in (
+                ("lineKeyColumn", line_key_column),
+                ("lineProductColumn", line_product_column),
+                ("lineWarehouseColumn", line_warehouse_column),
+            ):
+                if value is not None and value not in line_columns:
+                    errors.setdefault(field, f"'{value}' is not in the line query result.")
 
     # ── schedule floors (AC-22-12) ───────────────────────────────────────────
     minutes = _clean_int(raw.get("incrementalMinutes"))
@@ -353,6 +421,10 @@ def validate_source_config(
         "watermarkColumn": watermark,
         "comparedColumns": compared,
         "fromDate": from_date if document else None,
+        "docDateColumn": doc_date_column if document else None,
+        "lineKeyColumn": line_key_column if document else None,
+        "lineProductColumn": line_product_column if document else None,
+        "lineWarehouseColumn": line_warehouse_column if document else None,
         "incrementalMinutes": minutes,
         "reconcileMode": mode,
         "reconcileHours": hours,
@@ -445,14 +517,31 @@ class EtlService:
 
     # ── preview (AC-22-06) ───────────────────────────────────────────────────
 
-    def preview(self, tenant_id: str, connection_id: str, query: str) -> PreviewResult:
+    def preview(
+        self,
+        tenant_id: str,
+        connection_id: str,
+        query: str,
+        *,
+        doc_key: Optional[str] = None,
+    ) -> PreviewResult:
+        """Run a candidate SELECT capped at 100 rows (AC-22-06).
+
+        ``doc_key`` (plan 22 S5) - a document's ``lineQuery`` carries a
+        ``:doc_key`` bound param; supplying a value (even a harmless sample,
+        never real filtered data at picker-config time) lets the query
+        EXECUTE at all so its result COLUMNS can populate the line-column
+        pickers. ``None`` runs the query driver-native exactly as before -
+        every non-document preview is unaffected.
+        """
         conn = self._connection(tenant_id, connection_id)
         # Guard BEFORE anything touches the source (AC-22-03) - and before the
         # engine is even built.
         assert_select_only(query)
         engine, secrets = self._engine(conn)
+        params = {"doc_key": doc_key} if doc_key is not None else None
         try:
-            result = run_preview(engine, query, secrets=secrets)
+            result = run_preview(engine, query, secrets=secrets, params=params)
         except SqlSourceError as exc:
             self._record_preview(tenant_id, conn, query, status=ACTIVITY_ERROR, error=exc.message)
             raise
@@ -630,7 +719,28 @@ class EtlService:
                         errors["query"] = exc.message
                         engine = None
 
-        clean, more = validate_source_config(entity_type, raw, columns)
+        # ── documents: line-query preview, so the line/ref column pickers
+        # (S5) are checked against what the lineQuery actually returns - the
+        # SAME "test then pick" discipline the header query already applies.
+        # A harmless SAMPLE ``:doc_key`` (never real data) is bound purely to
+        # let the query execute at all; the picked columns are what matters.
+        line_columns: Optional[Dict[str, str]] = None
+        if is_document_entity(entity_type):
+            line_query = normalize_statement(str(raw.get("lineQuery") or ""))
+            if line_query and conn is not None:
+                try:
+                    assert_select_only(line_query)
+                    if engine is None:
+                        engine, secrets = self._engine(conn)
+                    line_columns = run_preview(
+                        engine, line_query, secrets=secrets, params={"doc_key": None}
+                    ).column_types
+                except (SqlSourceError, AutocountServiceError) as exc:
+                    errors.setdefault("lineQuery", exc.message)
+
+        clean, more = validate_source_config(
+            entity_type, raw, columns, line_columns=line_columns
+        )
         for key, message in more.items():
             errors.setdefault(key, message)
 
@@ -830,7 +940,7 @@ class EtlService:
         and importing it at module level here would make this service part of
         that cycle for no benefit.
         """
-        from ..mapping import MappingEngine, UnknownEntityProfile, flat_profile
+        from ..mapping import MappingEngine, UnknownEntityProfile, document_line_rows, flat_profile
         from ..sources import SourceContext, Watermark
         from ..sql_source.source import SqlDbSource
 
@@ -868,8 +978,15 @@ class EtlService:
                 f"'{entity_type}' is not yet extractable via a database task - "
                 "its AutoCount mapping is not implemented yet."
             ) from exc
+        # A document's LINE rows are code-generated from its source_config
+        # (plan 22 S5's "FIXED column-name convention", ``mapping.
+        # document_line_rows``), never read from ``ac_field_mapping`` -
+        # ``mapping_rows`` stays HEADER-only, same as before this slice.
+        rows = list(self.companies.mapping_rows(tenant_id, company.id, entity_type))
+        if is_document_entity(entity_type):
+            rows.extend(document_line_rows(entity_type, config.source_config))
         engine = MappingEngine(
-            self.companies.mapping_rows(tenant_id, company.id, entity_type),
+            rows,
             entity_type=entity_type,
             profile=profile,
             database_name=company.database_name,

@@ -177,6 +177,12 @@ def _config(**overrides) -> Dict[str, object]:
         "watermarkColumn": None,
         "comparedColumns": [],
         "fromDate": None,
+        # Plan 22 S5 - documents-only, always present (None for a non-document
+        # entity, exactly like `lineQuery`/`fromDate` above).
+        "docDateColumn": None,
+        "lineKeyColumn": None,
+        "lineProductColumn": None,
+        "lineWarehouseColumn": None,
         "incrementalMinutes": 15,
         "reconcileMode": "dailyAt",
         "reconcileHours": None,
@@ -508,10 +514,16 @@ def test_put_etl_task_creates_the_anchor_row_for_a_new_entity(client, session_fa
         "sourceConfig": _config(
             connectionId=conn.id,
             query="SELECT acc_no AS doc_key, balance, last_modified FROM debtor",
-            lineQuery="SELECT acc_no FROM debtor WHERE acc_no = :doc_key",
+            lineQuery=(
+                "SELECT acc_no, company_name AS item_code FROM debtor "
+                "WHERE acc_no = :doc_key"
+            ),
             keyColumns=["doc_key"],
             watermarkColumn="balance",
             fromDate="2026-01-01",
+            docDateColumn="last_modified",
+            lineKeyColumn="acc_no",
+            lineProductColumn="item_code",
         )
     }
     response = client.put(url, json=body, headers=_auth(client))

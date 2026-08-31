@@ -127,7 +127,9 @@ def preview_sql(
     """Run a candidate SELECT capped at 100 rows (AC-22-06). Non-SELECT /
     multi-statement = 422 before the source; a failing query = 400 sanitised."""
     try:
-        result = EtlService(db).preview(current_user.tenant_id, body.connectionId, body.query)
+        result = EtlService(db).preview(
+            current_user.tenant_id, body.connectionId, body.query, doc_key=body.docKey
+        )
     except Exception as exc:  # noqa: BLE001 - translated, never a 500 with a DSN
         raise_sql_error(exc)
     return SqlPreviewResponse(

@@ -46,6 +46,7 @@ from typing import Any, Dict, List, Optional, Sequence
 import httpx
 
 from .canonical.base import CanonicalRecord
+from .canonical.documents import ENTITY_PURCHASE_ORDER, ENTITY_SALES_ORDER
 from .canonical.masters import (
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
@@ -78,6 +79,9 @@ _ENTITY_PATH: Dict[str, str] = {
     ENTITY_WAREHOUSE: "warehouses",
     ENTITY_PRODUCT: "products",
     ENTITY_SALES_AGENT: "sales_agents",
+    # Plan 22 S5 (AC-22-24, Appendix A6/A8) - documents land end to end.
+    ENTITY_SALES_ORDER: "sales_orders",
+    ENTITY_PURCHASE_ORDER: "purchase_orders",
 }
 
 # Outcomes Sorento may report per record. `created`/`updated` = delivered;
@@ -96,14 +100,14 @@ _DEPENDENT_ENTITIES = {ENTITY_PRODUCT}
 def sorento_supports_entity(entity_type: str) -> bool:
     """Whether Sorento's ingest API accepts this canonical entity yet.
 
-    Sorento ingests MASTERS only (suppliers, customers, product categories,
-    units of measure, warehouses, products, sales agents - plan 22 S4). Documents
-    (GRN, SO, PO, …) have no ingest endpoint on the consumer yet, so a document
-    entity is absent from ``_ENTITY_PATH``. A company set to push to Sorento
-    falls back to the logging sink for such an entity (it stages + logs,
-    delivering nothing) rather than erroring on a missing path - this is
-    *deliverability*, an expected not-yet-built state, not a misconfiguration.
-    Delivering SO/PO end-to-end is plan 22 S5.
+    Sorento ingests masters (suppliers, customers, product categories, units
+    of measure, warehouses, products, sales agents - plan 22 S4) and the two
+    documents sales/purchase orders (plan 22 S5, Appendix A6/A8). GRN has no
+    ingest endpoint on the consumer yet, so it stays absent from
+    ``_ENTITY_PATH`` - a company set to push to Sorento falls back to the
+    logging sink for it (stages + logs, delivering nothing) rather than
+    erroring on a missing path - *deliverability*, an expected not-yet-built
+    state, not a misconfiguration.
     """
     return entity_type in _ENTITY_PATH
 

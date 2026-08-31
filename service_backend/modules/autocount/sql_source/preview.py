@@ -298,15 +298,29 @@ def _execute_preview_unguarded(
     limit: int = PREVIEW_ROW_LIMIT,
     timeout_s: int = QUERY_TIMEOUT_SECONDS,
     secrets: Sequence[str] = (),
+    params: Optional[Dict[str, Any]] = None,
 ) -> PreviewResult:
     """Run ``statement`` AS GIVEN inside a read-only, always-rolled-back
     transaction and shape the result. Internal: callers go through
-    ``run_preview`` (which guards + wraps first)."""
+    ``run_preview`` (which guards + wraps first).
+
+    ``params`` (plan 22 S5) - a document's ``lineQuery`` carries a ``:doc_key``
+    bound param (guard-checked the same as any other query, never spliced) -
+    executed via SQLAlchemy's ``text()`` so the placeholder is translated per
+    dialect exactly like a real run's ``build_incremental_wrap`` does.
+    ``None`` (every pre-S5 caller) keeps the plain driver-native execution,
+    byte-identical to before.
+    """
     started = time.monotonic()
     dialect = engine.dialect.name
     with open_readonly(engine, timeout_s=timeout_s, secrets=secrets) as conn:
         try:
-            result = conn.exec_driver_sql(statement)
+            if params is not None:
+                import sqlalchemy as sa
+
+                result = conn.execute(sa.text(statement), params)
+            else:
+                result = conn.exec_driver_sql(statement)
             description = None
             cursor = getattr(result, "cursor", None)
             if cursor is not None:
@@ -336,9 +350,14 @@ def run_preview(
     limit: int = PREVIEW_ROW_LIMIT,
     timeout_s: int = QUERY_TIMEOUT_SECONDS,
     secrets: Sequence[str] = (),
+    params: Optional[Dict[str, Any]] = None,
 ) -> PreviewResult:
-    """Guard (422 before the source), wrap per dialect, run capped + timed."""
+    """Guard (422 before the source), wrap per dialect, run capped + timed.
+
+    ``params`` (plan 22 S5) binds a ``:doc_key``-style placeholder for a
+    document's line-query preview - see ``_execute_preview_unguarded``.
+    """
     wrapped = wrap_preview(sql, engine.dialect.name, limit)
     return _execute_preview_unguarded(
-        engine, wrapped, limit=limit, timeout_s=timeout_s, secrets=secrets
+        engine, wrapped, limit=limit, timeout_s=timeout_s, secrets=secrets, params=params
     )

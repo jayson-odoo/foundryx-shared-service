@@ -50,6 +50,7 @@ from .activity import (
     record_client_calls,
     trace_id_for_job,
 )
+from .canonical.documents import DOCUMENT_ENTITY_TYPES, is_document_entity
 from .canonical.grn import (
     ENTITY_GOODS_RECEIVED_NOTE,
     VENDOR_DETAIL_KEY,
@@ -67,6 +68,7 @@ from .mapping import (
     UNQUALIFIED_REF_ENTITIES,
     MappedDocument,
     MappingEngine,
+    document_line_rows,
     flat_profile,
 )
 from .models import (
@@ -464,8 +466,14 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         return
 
     # ── map + stage, ONE DOCUMENT AT A TIME ──────────────────────────────────
+    # A document's LINE rows are code-generated from its source_config (plan
+    # 22 S5's "FIXED column-name convention", ``mapping.document_line_rows``),
+    # never read from ``ac_field_mapping`` - ``mapping_rows`` stays HEADER-only.
+    mapping_rows = list(companies.mapping_rows(tenant_id, company_id, entity_type))
+    if config.source_impl == SOURCE_IMPL_SQL_DB and is_document_entity(entity_type):
+        mapping_rows.extend(document_line_rows(entity_type, config.source_config))
     engine = MappingEngine(
-        companies.mapping_rows(tenant_id, company_id, entity_type),
+        mapping_rows,
         # ``None`` = the entity profile's own key (masters have none, being flat).
         detail_key=VENDOR_DETAIL_KEYS.get(entity_type),
         entity_type=entity_type,
@@ -799,6 +807,21 @@ def _stage_deletes(
     directly against Sorento, out of band - see ``canonical/masters.py``'s
     ``CanonicalSalesAgent`` docstring and plan 22 Appendix A6 item 6.
 
+    **Plan 22 S5 - a DOCUMENT is never deleted by reconcile either, for a
+    DIFFERENT reason than the shared-entity one above.** A document header's
+    ``fromDate`` floor means the extract's known population is a WINDOW, not
+    the whole standing set - a header that has simply aged out of the window
+    (or was pushed before ``fromDate`` moved forward) is indistinguishable,
+    from inside this diff, from one that genuinely no longer exists at the
+    source. Reconcile therefore stages NO delete intent for a document at
+    all - the same "drop only this extract's own hash row" treatment as a
+    shared entity, so a re-appearance (the window widening, or the document
+    coming back into range) stages as a fresh add, never a phantom update.
+    Cancel-at-source arrives as an ordinary STATUS UPDATE instead (plan
+    2.8/Appendix A6 item 4 - "documents with dependents deactivate as
+    status='cancelled'"), which the header's own ``status`` mapping already
+    carries through on every re-push - no special-casing needed there.
+
     N7: a SINGLE commit for the whole batch (mirrors the auto-push upsert
     path) rather than one per row - the caller commits again immediately
     after this returns, so a per-row commit here bought nothing but extra
@@ -807,17 +830,20 @@ def _stage_deletes(
     staged_repo = StagedRecordRepository(db)
     staged_repo.discard_stale_deletes(tenant_id, company_id, entity_type, current_refs)
 
-    if entity_type in UNQUALIFIED_REF_ENTITIES:
+    if entity_type in UNQUALIFIED_REF_ENTITIES or entity_type in DOCUMENT_ENTITY_TYPES:
         if delete_refs:
             dropped = RowHashRepository(db).delete_many(
                 tenant_id, company_id, entity_type, delete_refs
             )
+            reason = (
+                "is a shared entity"
+                if entity_type in UNQUALIFIED_REF_ENTITIES
+                else "is a document (a fromDate window, not a standing set)"
+            )
             logger.info(
-                "autocount reconcile: %s is a shared entity - dropped %d local "
-                "hash row(s) for missing ref(s) instead of staging deletes "
-                "(%s). Retire a shared row in Sorento directly if it is "
-                "genuinely gone.",
-                entity_type, dropped, ", ".join(delete_refs),
+                "autocount reconcile: %s %s - dropped %d local hash row(s) "
+                "for missing ref(s) instead of staging deletes (%s).",
+                entity_type, reason, dropped, ", ".join(delete_refs),
             )
         db.commit()
         return 0

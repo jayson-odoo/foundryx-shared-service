@@ -46,6 +46,7 @@ from sqlalchemy.engine import Engine
 
 from app.secrets import decrypt_secret
 
+from ..canonical.documents import SQL_DOC_LINES_KEY, is_document_entity
 from ..client import CallRecord
 from ..mapping import IdentityError, flat_source_ref
 from ..models import (
@@ -80,6 +81,7 @@ logger = logging.getLogger("foundryx.autocount")
 __all__ = [
     "SqlDbSource",
     "SqlTaskNotConfigured",
+    "build_document_header_wrap",
     "build_incremental_wrap",
     "register_sql_db_source",
 ]
@@ -214,6 +216,35 @@ def build_incremental_wrap(query: str, quoted_column: str, mark: Any) -> str:
     )
 
 
+def build_document_header_wrap(
+    query: str, quoted_watermark: str, quoted_date_column: str, mark: Any
+) -> str:
+    """A document header task's statement shape (plan 22 S5) - the SAME
+    derived-table wrap as ``build_incremental_wrap``, plus an ALWAYS-ON
+    ``fromDate`` floor on the document's own date column.
+
+    ``fromDate`` is a permanent scope boundary ("only sync documents from this
+    cutover date onward"), not a one-time first-run lookback - so it is ANDed
+    into the predicate on EVERY read, mark-less initial load included. A
+    document task always carries a watermark column (validated at save time -
+    documents cannot activate without one, S5 decision), so - unlike
+    ``build_incremental_wrap`` - there is no watermark-less shape to build
+    here.
+    """
+    inner = _strip_trailing_order_by(query).replace(":", r"\:")
+    date_predicate = f"t.{quoted_date_column} >= :from_date"
+    if mark is None:
+        return (
+            f"SELECT * FROM ({inner}) AS t WHERE {date_predicate} "
+            f"ORDER BY t.{quoted_watermark}"
+        )
+    return (
+        f"SELECT * FROM ({inner}) AS t "
+        f"WHERE t.{quoted_watermark} > :mark AND {date_predicate} "
+        f"ORDER BY t.{quoted_watermark}"
+    )
+
+
 class SqlDbSource:
     """One entity, one company, one saved query."""
 
@@ -271,6 +302,72 @@ class SqlDbSource:
             or [str(c) for c in (config.get("comparedColumns") or [])],
             key_columns=self.key_columns,
         )
+
+        # ── documents only (plan 22 S5) ───────────────────────────────────────
+        self.is_document = is_document_entity(entity_type)
+        self.line_query: Optional[str] = None
+        self.doc_date_column: Optional[str] = None
+        self.from_date: Optional[date] = None
+        self.line_key_column: Optional[str] = None
+        self.line_product_column: Optional[str] = None
+        self.line_warehouse_column: Optional[str] = None
+        if self.is_document:
+            #     !!  A DOCUMENT TASK REQUIRES A HEADER WATERMARK COLUMN.  !!
+            # Save-time validation already refuses to persist a document task
+            # without one (S5 decision - see `EtlService.validate_source_config`);
+            # this is the execution-time backstop for a row edited straight
+            # into the JSON column (the same "save-time proved what was
+            # SAVED, this proves what is about to RUN" rule the guard re-check
+            # above follows).
+            if not self.watermark_column:
+                raise SqlTaskNotConfigured(
+                    "This document task has no watermark column - AutoCount "
+                    "updates a header's LastModified whenever a line changes, "
+                    "which is how a line-only edit is detected."
+                )
+            # A document's header key is exactly ONE column - it doubles as
+            # the ``:doc_key`` bound value the line query runs with, so a
+            # composite header key would be ambiguous about which part to
+            # bind (documented design decision, plan 22 S5).
+            if len(self.key_columns) != 1:
+                raise SqlTaskNotConfigured(
+                    "A document task's key must be exactly one column (the "
+                    "header's DocKey-equivalent) - it is also what the line "
+                    "query's :doc_key binds to."
+                )
+            self.line_query = normalize_statement(str(config.get("lineQuery") or ""))
+            if not self.line_query:
+                raise SqlTaskNotConfigured(
+                    "This document task has no line query saved yet."
+                )
+            assert_select_only(self.line_query)
+            self.doc_date_column = str(config.get("docDateColumn") or "").strip() or None
+            if not self.doc_date_column:
+                raise SqlTaskNotConfigured(
+                    "This document task has no date column chosen for the "
+                    "from-date floor."
+                )
+            raw_from_date = str(config.get("fromDate") or "").strip()
+            if not raw_from_date:
+                raise SqlTaskNotConfigured(
+                    "This document task has no from-date saved yet."
+                )
+            try:
+                # A real ``date`` object, not the ISO string - so the bind
+                # carries the type the driver expects for a date comparison
+                # (a bare string param is a MSSQL/pymssql footgun).
+                self.from_date = date.fromisoformat(raw_from_date)
+            except ValueError as exc:
+                raise SqlTaskNotConfigured(
+                    "This document task's from-date is not a valid date."
+                ) from exc
+            self.line_key_column = str(config.get("lineKeyColumn") or "").strip() or None
+            self.line_product_column = str(config.get("lineProductColumn") or "").strip() or None
+            self.line_warehouse_column = str(config.get("lineWarehouseColumn") or "").strip() or None
+            if not self.line_key_column:
+                raise SqlTaskNotConfigured(
+                    "This document task has no line key column chosen."
+                )
 
         # A STORED connection id, re-resolved tenant- AND provider-scoped on
         # every run (AC-22-29) - never a bare get-by-id.
@@ -339,6 +436,22 @@ class SqlDbSource:
             )
         return self._engine.dialect.identifier_preparer.quote(column)
 
+    def _quoted_doc_date_column(self) -> str:
+        """The document's date-floor column - same checked-then-quoted rule
+        as ``_quoted_watermark`` (plan 22 S5)."""
+        column = self.doc_date_column or ""
+        if not self.result_columns:
+            raise SqlTaskNotConfigured(
+                "This task has no cached result columns to check the date "
+                "column against. Re-test the query and re-save the task."
+            )
+        if column not in self.result_columns:
+            raise SqlTaskNotConfigured(
+                f"The date column '{column}' is not one this task's query "
+                f"returns. Re-test the query and re-save the task."
+            )
+        return self._engine.dialect.identifier_preparer.quote(column)
+
     def _statement(self, mark: Any) -> Tuple[Any, Optional[Dict[str, Any]]]:
         """``(executable, params)`` for this run.
 
@@ -352,7 +465,20 @@ class SqlDbSource:
         inner text are backslash-escaped because SQLAlchemy's ``text()`` would
         otherwise read a Postgres ``::`` cast or a ``'12:30'`` literal as a
         bind parameter.
+
+        A DOCUMENT header task (plan 22 S5) always carries a watermark column
+        (validated at construction) AND an always-on ``fromDate`` floor -
+        ``build_document_header_wrap`` ANDs both into the ONE derived-table
+        predicate.
         """
+        if self.is_document:
+            wm_column = self._quoted_watermark()
+            date_column = self._quoted_doc_date_column()
+            sql = build_document_header_wrap(self.query, wm_column, date_column, mark)
+            params = {"from_date": self.from_date}
+            if mark is not None:
+                params["mark"] = mark
+            return sa.text(sql), params
         if not self.watermark_column:
             return self.query, None
         column = self._quoted_watermark()
@@ -445,8 +571,16 @@ class SqlDbSource:
         # pushes NOTHING at all (not just the deletes) - a broken query or a
         # connection that dropped mid-extract must never read as "everything
         # else vanished too".
+        #
+        #     !!  A DOCUMENT NEVER COMPUTES DELETE INTENTS AT ALL (plan 22 S5).  !!
+        # ``fromDate`` bounds the extract to a WINDOW, not the whole standing
+        # set - a header outside today's window is indistinguishable, from
+        # inside this diff, from one genuinely gone at the source. Computing
+        # (and guarding) delete_refs for a windowed population would be
+        # actively wrong, not just unnecessary, so documents skip this whole
+        # block; ``sync._stage_deletes`` mirrors the same skip at staging.
         delete_refs: List[str] = []
-        if full_extract and known:
+        if full_extract and known and not self.is_document:
             #     !!  A ZERO-ROW FULL EXTRACT IS NEVER A GENUINE TOTAL WIPE.  !!
             # (S3 review BLOCKER 2.) The ratio/absolute guard below is INERT on
             # a small (<=50-row) known population: e.g. known=20 gives a
@@ -546,7 +680,41 @@ class SqlDbSource:
                 # ONLY way it maps to a 400 instead of falling through to an
                 # unhandled 500 at ``EtlService.preview_task``.
                 raise SqlQueryError(sanitize_error(exc, secrets=self._secrets)) from exc
+
+            #     !!  LINES - ONE lineQuery PER CHANGED HEADER, SAME SESSION.  !!
+            # (plan 22 S5, AC-22-24.) ``rows`` above IS exactly the "changed
+            # headers" set - the incremental WHERE clause already filtered to
+            # it, or (initial/reconcile) it is every header in the fromDate
+            # window, which needs its lines regardless. Nested under
+            # ``SQL_DOC_LINES_KEY`` so ``MappingEngine``'s EXISTING nested-
+            # detail mechanism (built for the API path's vendor envelope)
+            # reads it with zero engine changes - see ``mapping.flat_profile``.
+            if self.is_document:
+                key_column = self.key_columns[0]
+                for header in rows:
+                    doc_key_value = header.get(key_column)
+                    header[SQL_DOC_LINES_KEY] = self._read_lines(conn, doc_key_value)
         return rows
+
+    def _read_lines(self, conn: Any, doc_key_value: Any) -> List[Dict[str, Any]]:
+        """One guarded, bound SELECT for a single header's lines (plan 22 S5).
+
+        A second, independently-guarded statement - NEVER concatenated onto
+        the header query. A blank/None ``doc_key_value`` (a header whose key
+        column somehow came back empty) still runs the query bound to None -
+        it is expected to match nothing, and the header itself is a per-
+        record identity failure the mapping engine will name; this method
+        must not raise for it.
+        """
+        try:
+            result = conn.execute(sa.text(self.line_query), {"doc_key": doc_key_value})
+            return [dict(row._mapping) for row in result.fetchall()]
+        except Exception as exc:  # noqa: BLE001 - every driver has its own class
+            from .runtime import sanitize_error
+
+            raise SqlQueryError(
+                sanitize_error(exc, secrets=self._secrets)
+            ) from exc
 
     def _source_ref(self, raw: Dict[str, Any]) -> Optional[str]:
         try:
