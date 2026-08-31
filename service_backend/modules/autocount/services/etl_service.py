@@ -523,23 +523,27 @@ class EtlService:
         connection_id: str,
         query: str,
         *,
+        bind_doc_key: bool = False,
         doc_key: Optional[str] = None,
     ) -> PreviewResult:
         """Run a candidate SELECT capped at 100 rows (AC-22-06).
 
-        ``doc_key`` (plan 22 S5) - a document's ``lineQuery`` carries a
-        ``:doc_key`` bound param; supplying a value (even a harmless sample,
-        never real filtered data at picker-config time) lets the query
-        EXECUTE at all so its result COLUMNS can populate the line-column
-        pickers. ``None`` runs the query driver-native exactly as before -
-        every non-document preview is unaffected.
+        ``bind_doc_key`` (plan 22 S5) - a document's ``lineQuery`` carries a
+        ``:doc_key`` bound param; ``True`` binds ``doc_key`` (even a blank
+        sample - never real filtered data at picker-config time - is enough
+        to let the query EXECUTE at all so its result COLUMNS can populate
+        the line-column pickers). ``False`` runs the query driver-native
+        exactly as before - a SEPARATE flag from the value itself, because an
+        ordinary header-query preview also carries no ``doc_key`` and must
+        NOT be treated as parameterized (a bare `None` would be ambiguous
+        between the two).
         """
         conn = self._connection(tenant_id, connection_id)
         # Guard BEFORE anything touches the source (AC-22-03) - and before the
         # engine is even built.
         assert_select_only(query)
         engine, secrets = self._engine(conn)
-        params = {"doc_key": doc_key} if doc_key is not None else None
+        params = {"doc_key": doc_key} if bind_doc_key else None
         try:
             result = run_preview(engine, query, secrets=secrets, params=params)
         except SqlSourceError as exc:

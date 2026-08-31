@@ -635,6 +635,18 @@ export interface AutocountEtlSourceConfig {
   comparedColumns: string[];
   /** Documents only (YYYY-MM-DD, default today). */
   fromDate: string | null;
+  /** Documents only (plan 22 S5) - the header column the from-date floor
+   * filters (the document's OWN date, e.g. DocDate - deliberately separate
+   * from `watermarkColumn`/LastModified, which drives change detection). */
+  docDateColumn: string | null;
+  /** Documents only - the line query's result column carrying the line's own
+   * key (AutoCount's DtlKey), composed into the line's source_ref. */
+  lineKeyColumn: string | null;
+  /** Documents only - the line query's result columns minting the two
+   * master refs a line can carry (Appendix A6 item 3). `productColumn` is
+   * required (Sorento requires `product_ref`); `warehouseColumn` optional. */
+  lineProductColumn: string | null;
+  lineWarehouseColumn: string | null;
   incrementalMinutes: number;
   reconcileMode: 'interval' | 'dailyAt';
   reconcileHours: number | null;

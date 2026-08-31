@@ -462,8 +462,13 @@ class SqlPreviewRequest(ApiModel):
     connectionId: str
     query: str = ""
     # Plan 22 S5 - previewing a document's ``lineQuery`` (which carries a
-    # ``:doc_key`` bound param). ``None`` = an ordinary query, run exactly as
-    # before; any string (incl. "") binds it so the query can execute at all.
+    # ``:doc_key`` bound param). ``bindDocKey=false`` (every non-document
+    # preview) runs the query exactly as before; ``true`` binds ``docKey``
+    # (blank/None = a harmless NULL bind, just enough to let the query
+    # execute for column discovery) - a SEPARATE flag from the value itself
+    # because an ordinary header-query preview also sends no ``docKey`` and
+    # must NOT be treated as parameterized.
+    bindDocKey: bool = False
     docKey: Optional[str] = None
 
 

@@ -353,8 +353,18 @@ export type SqlPreviewState =
 
 export interface UseSqlPreviewResult {
   state: SqlPreviewState;
-  /** Run the candidate SELECT (≤ 100 rows). Never throws - errors land in state. */
-  run: (connectionId: string, query: string) => Promise<void>;
+  /**
+   * Run the candidate SELECT (≤ 100 rows). Never throws - errors land in
+   * state. `opts.bindDocKey` (plan 22 S5) - a document's `lineQuery` carries
+   * a `:doc_key` bound param; `true` binds `opts.docKey` (a harmless sample,
+   * or omitted for a NULL bind - just enough for the query to execute so its
+   * columns can populate the line-column pickers).
+   */
+  run: (
+    connectionId: string,
+    query: string,
+    opts?: { bindDocKey?: boolean; docKey?: string | null },
+  ) => Promise<void>;
   reset: () => void;
 }
 
@@ -364,11 +374,15 @@ export function useSqlPreview(): UseSqlPreviewResult {
   // overwrite a newer result.
   const runId = useRef(0);
 
-  const run = useCallback(async (connectionId: string, query: string) => {
+  const run = useCallback(async (
+    connectionId: string,
+    query: string,
+    opts?: { bindDocKey?: boolean; docKey?: string | null },
+  ) => {
     const id = ++runId.current;
     setState({ status: 'loading' });
     try {
-      const preview = await autocountService.previewSqlQuery(connectionId, query);
+      const preview = await autocountService.previewSqlQuery(connectionId, query, opts);
       if (id === runId.current) setState({ status: 'success', preview });
     } catch (e) {
       if (id !== runId.current) return;

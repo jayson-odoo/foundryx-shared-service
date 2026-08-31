@@ -216,8 +216,20 @@ export interface AutocountService {
     connectionId: string,
     opts?: { refresh?: boolean },
   ): Promise<AutocountSqlSchema>;
-  /** Run a candidate SELECT against the source, capped at 100 rows. */
-  previewSqlQuery(connectionId: string, query: string): Promise<AutocountSqlPreview>;
+  /**
+   * Run a candidate SELECT against the source, capped at 100 rows.
+   *
+   * `opts.bindDocKey` (plan 22 S5) - previewing a document's `lineQuery`
+   * (which carries a `:doc_key` bound param): `true` binds `opts.docKey`
+   * (a harmless sample, or `null`/omitted for a NULL bind - just enough to
+   * let the query execute for column discovery). Omitted/`false` runs the
+   * query exactly as before.
+   */
+  previewSqlQuery(
+    connectionId: string,
+    query: string,
+    opts?: { bindDocKey?: boolean; docKey?: string | null },
+  ): Promise<AutocountSqlPreview>;
   /** One entity's DB extraction task (draft defaults when unconfigured). */
   getEtlTask(companyId: string, entityType: string): Promise<AutocountEtlTask>;
   /** Draft-save the task's source config (422 {fieldErrors} on bad columns). */

@@ -37,6 +37,9 @@ export interface QueryTabProps {
   connectionsLoading: boolean;
   schema: UseAutocountSqlSchemaResult;
   preview: UseSqlPreviewResult;
+  /** Documents only (plan 22 S5) - a SEPARATE preview instance for the line
+   * query, so testing it never clobbers the header preview's state. */
+  linePreview: UseSqlPreviewResult;
   /** Per-field 422 errors from the last save (AC-22-11). */
   fieldErrors: Record<string, string>;
 }
@@ -74,6 +77,7 @@ export function QueryTab({
   connectionsLoading,
   schema,
   preview,
+  linePreview,
   fieldErrors,
 }: QueryTabProps) {
   const isDocument = isDocumentEntity(entityType);
@@ -81,6 +85,18 @@ export function QueryTab({
   const previewColumns = useMemo(
     () => (preview.state.status === 'success' ? preview.state.preview.columns.map((c) => c.name) : []),
     [preview.state],
+  );
+  const linePreviewColumns = useMemo(
+    () => (linePreview.state.status === 'success' ? linePreview.state.preview.columns.map((c) => c.name) : []),
+    [linePreview.state],
+  );
+  const lineColumnOptions = useMemo(
+    () => linePreviewColumns.map((c) => ({ label: c, value: c })),
+    [linePreviewColumns],
+  );
+  const docDateOptions = useMemo(
+    () => previewColumns.map((c) => ({ label: c, value: c })),
+    [previewColumns],
   );
 
   const savedPicks = useMemo(
@@ -101,18 +117,33 @@ export function QueryTab({
     [columnOptions, config.keyColumns],
   );
   const watermarkOptions = useMemo(
-    () => [{ label: 'None', value: NO_WATERMARK }, ...columnOptions],
-    [columnOptions],
+    // A document task REQUIRES a watermark column (AutoCount stamps a
+    // header's LastModified on any line edit - the S5 line-change-detection
+    // decision), so "None" is never a valid choice for one (foolproof-UI -
+    // only offer options that can actually work).
+    () => (isDocument ? columnOptions : [{ label: 'None', value: NO_WATERMARK }, ...columnOptions]),
+    [columnOptions, isDocument],
   );
   const pickersEnabled = editing && columnOptions.length > 0;
+  const linePickersEnabled = editing && lineColumnOptions.length > 0;
 
   const canTest = Boolean(config.connectionId) && config.query.trim().length > 0 &&
     preview.state.status !== 'loading';
+  const canTestLine = Boolean(config.connectionId) && Boolean(config.lineQuery?.trim()) &&
+    linePreview.state.status !== 'loading';
 
   const onTest = useCallback(() => {
     if (!config.connectionId) return;
     void preview.run(config.connectionId, config.query);
   }, [config.connectionId, config.query, preview]);
+
+  const onTestLine = useCallback(() => {
+    if (!config.connectionId || !config.lineQuery) return;
+    // A harmless NULL bind (never real filtered data at picker-config time)
+    // - just enough for the query to execute so its columns populate the
+    // line-column pickers below.
+    void linePreview.run(config.connectionId, config.lineQuery, { bindDocKey: true, docKey: null });
+  }, [config.connectionId, config.lineQuery, linePreview]);
 
   const onInsertStarter = useCallback(
     (schemaName: string, tableName: string) => {
@@ -125,8 +156,9 @@ export function QueryTab({
     (id: string) => {
       onChange({ connectionId: id });
       preview.reset();
+      linePreview.reset();
     },
-    [onChange, preview],
+    [onChange, preview, linePreview],
   );
 
   const onKeyColumnsChange = useCallback(
@@ -226,40 +258,146 @@ export function QueryTab({
           </div>
 
           {isDocument && (
-            <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_12rem]">
-              <div className="flex min-w-0 flex-col gap-1.5">
-                <Label>Line query</Label>
-                <SqlEditor
-                  value={config.lineQuery ?? ''}
-                  onChange={(lineQuery) => onChange({ lineQuery })}
-                  editing={editing}
-                  schema={schema.schema}
-                  dialect={connection?.dialect ?? schema.schema?.dialect ?? null}
-                  ariaLabel="Line query"
-                  testId="sql-line-editor"
-                />
-                {fieldErrors.lineQuery && (
-                  <p className="text-xs text-destructive">{fieldErrors.lineQuery}</p>
+            <div className="flex flex-col gap-4 rounded-lg border border-border p-4">
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                  <Label>Line query</Label>
+                  <SqlEditor
+                    value={config.lineQuery ?? ''}
+                    onChange={(lineQuery) => onChange({ lineQuery })}
+                    editing={editing}
+                    schema={schema.schema}
+                    dialect={connection?.dialect ?? schema.schema?.dialect ?? null}
+                    ariaLabel="Line query"
+                    testId="sql-line-editor"
+                  />
+                  {fieldErrors.lineQuery && (
+                    <p className="text-xs text-destructive">{fieldErrors.lineQuery}</p>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  onClick={onTestLine}
+                  disabled={!canTestLine}
+                  data-testid="sql-test-line-query"
+                >
+                  <Play className="size-3.5" />
+                  Test line query
+                </Button>
+                {linePreview.state.status === 'success' && (
+                  <Badge
+                    variant={linePreview.state.preview.rowCount === 0 ? 'secondary' : 'success'}
+                    appearance="light"
+                    data-testid="sql-line-preview-badge"
+                  >
+                    {previewBadgeText(linePreview.state.preview)}
+                  </Badge>
                 )}
               </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="etl-from-date">
-                  From date <span className="text-destructive">*</span>
-                </Label>
-                {editing ? (
-                  <Input
-                    id="etl-from-date"
-                    type="date"
-                    value={config.fromDate ?? ''}
-                    onChange={(e) => onChange({ fromDate: e.target.value || null })}
-                    aria-invalid={Boolean(fieldErrors.fromDate)}
-                  />
-                ) : (
-                  <span className="text-sm">{config.fromDate ?? '-'}</span>
-                )}
-                {fieldErrors.fromDate && (
-                  <p className="text-xs text-destructive">{fieldErrors.fromDate}</p>
-                )}
+              <SqlPreviewGrid state={linePreview.state} />
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="flex min-w-0 flex-col gap-1.5">
+                  <Label htmlFor="etl-from-date">
+                    From date <span className="text-destructive">*</span>
+                  </Label>
+                  {editing ? (
+                    <Input
+                      id="etl-from-date"
+                      type="date"
+                      value={config.fromDate ?? ''}
+                      onChange={(e) => onChange({ fromDate: e.target.value || null })}
+                      aria-invalid={Boolean(fieldErrors.fromDate)}
+                    />
+                  ) : (
+                    <span className="text-sm">{config.fromDate ?? '-'}</span>
+                  )}
+                  {fieldErrors.fromDate && (
+                    <p className="text-xs text-destructive">{fieldErrors.fromDate}</p>
+                  )}
+                </div>
+                <div className="flex min-w-0 flex-col gap-1.5">
+                  <Label>
+                    Document date column <span className="text-destructive">*</span>
+                  </Label>
+                  {editing ? (
+                    <SearchSelect
+                      options={docDateOptions}
+                      value={config.docDateColumn ?? ''}
+                      onChange={(v) => onChange({ docDateColumn: v || null })}
+                      placeholder={pickersEnabled ? 'Pick a column' : 'Run Test query first'}
+                      disabled={!pickersEnabled}
+                      ariaLabel="Document date column"
+                    />
+                  ) : (
+                    <ColumnChips values={config.docDateColumn ? [config.docDateColumn] : []} empty="-" />
+                  )}
+                  {fieldErrors.docDateColumn && (
+                    <p className="text-xs text-destructive">{fieldErrors.docDateColumn}</p>
+                  )}
+                </div>
+                <div className="flex min-w-0 flex-col gap-1.5">
+                  <Label>
+                    Line key column <span className="text-destructive">*</span>
+                  </Label>
+                  {editing ? (
+                    <SearchSelect
+                      options={lineColumnOptions}
+                      value={config.lineKeyColumn ?? ''}
+                      onChange={(v) => onChange({ lineKeyColumn: v || null })}
+                      placeholder={linePickersEnabled ? 'Pick a column' : 'Run Test line query first'}
+                      disabled={!linePickersEnabled}
+                      ariaLabel="Line key column"
+                    />
+                  ) : (
+                    <ColumnChips values={config.lineKeyColumn ? [config.lineKeyColumn] : []} empty="-" />
+                  )}
+                  {fieldErrors.lineKeyColumn && (
+                    <p className="text-xs text-destructive">{fieldErrors.lineKeyColumn}</p>
+                  )}
+                </div>
+                <div className="flex min-w-0 flex-col gap-1.5">
+                  <Label>
+                    Line product column <span className="text-destructive">*</span>
+                  </Label>
+                  {editing ? (
+                    <SearchSelect
+                      options={lineColumnOptions}
+                      value={config.lineProductColumn ?? ''}
+                      onChange={(v) => onChange({ lineProductColumn: v || null })}
+                      placeholder={linePickersEnabled ? 'Pick a column' : 'Run Test line query first'}
+                      disabled={!linePickersEnabled}
+                      ariaLabel="Line product column"
+                    />
+                  ) : (
+                    <ColumnChips values={config.lineProductColumn ? [config.lineProductColumn] : []} empty="-" />
+                  )}
+                  {fieldErrors.lineProductColumn && (
+                    <p className="text-xs text-destructive">{fieldErrors.lineProductColumn}</p>
+                  )}
+                </div>
+                <div className="flex min-w-0 flex-col gap-1.5">
+                  <Label>Line warehouse column</Label>
+                  {editing ? (
+                    <SearchSelect
+                      options={[{ label: 'None', value: '' }, ...lineColumnOptions]}
+                      value={config.lineWarehouseColumn ?? ''}
+                      onChange={(v) => onChange({ lineWarehouseColumn: v || null })}
+                      placeholder="None"
+                      disabled={!linePickersEnabled}
+                      ariaLabel="Line warehouse column"
+                    />
+                  ) : (
+                    <ColumnChips values={config.lineWarehouseColumn ? [config.lineWarehouseColumn] : []} empty="None" />
+                  )}
+                  {fieldErrors.lineWarehouseColumn && (
+                    <p className="text-xs text-destructive">{fieldErrors.lineWarehouseColumn}</p>
+                  )}
+                </div>
               </div>
             </div>
           )}

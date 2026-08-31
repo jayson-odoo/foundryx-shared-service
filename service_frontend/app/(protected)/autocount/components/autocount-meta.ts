@@ -120,6 +120,14 @@ export const AC_PRESET_TRANSFORM: Record<string, string> = {
   decimal: 'decimal',
   integer: 'int',
   date: 'slash_datetime',
+  // Plan 22 S5 - a document header ref field's named server-side transform
+  // (see `lib/autocount-formula.ts` PRESETS for why this is a transform, not
+  // a formula).
+  ref_customer: 'ref_customer',
+  ref_supplier: 'ref_supplier',
+  ref_product: 'ref_product',
+  ref_warehouse: 'ref_warehouse',
+  ref_sales_agent: 'ref_sales_agent',
   custom: 'string',
 };
 

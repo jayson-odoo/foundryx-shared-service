@@ -102,6 +102,9 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
 
   const schema = useAutocountSqlSchema(config?.connectionId ?? null);
   const preview = useSqlPreview();
+  // A SEPARATE preview instance for a document's line query (plan 22 S5) -
+  // its own loading/error/success state, independent of the header preview.
+  const linePreview = useSqlPreview();
 
   const configDirty = useMemo(() => JSON.stringify(config) !== baselineKey, [config, baselineKey]);
   const dirty = configDirty || draft.dirty;
@@ -269,6 +272,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 connectionsLoading={sqlConnections.isLoading}
                 schema={schema}
                 preview={preview}
+                linePreview={linePreview}
                 fieldErrors={fieldErrors}
               />
             </div>
@@ -385,6 +389,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     fieldErrors,
     initialTab,
     lifecycle,
+    linePreview,
     mapping,
     onCancel,
     onChange,

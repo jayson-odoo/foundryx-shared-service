@@ -89,12 +89,15 @@ _ENTITY_PATH: Dict[str, str] = {
 # master isn't synced yet and NOTHING was written.
 _OUTCOME_DELIVERED = {"created", "updated"}
 
-# Masters whose ``retryable`` is EXPECTED, not a defect (AC-22-23): a product's
-# ``category_code``/``uom_code`` may legitimately not have synced yet, and the
-# record resolves automatically once it does (dependency order - categories +
-# UOM before products). Every OTHER master here carries no such reference, so
-# for them ``retryable`` stays the AC-14-24 "must be unreachable" defect signal.
-_DEPENDENT_ENTITIES = {ENTITY_PRODUCT}
+# Entities whose ``retryable`` is EXPECTED, not a defect (AC-22-23, extended
+# S5/AC-22-24): a product's ``category_code``/``uom_code`` may legitimately
+# not have synced yet, and a document ALWAYS carries at least one master
+# reference (``customer_ref``/``product_ref``/…) that may not have synced yet
+# either (Appendix A6 item 3 - "unknown ref = whole record retryable"), so
+# both resolve automatically once the dependency lands. Every OTHER master
+# here carries no such reference, so for them ``retryable`` stays the
+# AC-14-24 "must be unreachable" defect signal.
+_DEPENDENT_ENTITIES = {ENTITY_PRODUCT, ENTITY_SALES_ORDER, ENTITY_PURCHASE_ORDER}
 
 
 def sorento_supports_entity(entity_type: str) -> bool:
@@ -471,15 +474,23 @@ class SorentoSink:
         if outcome == "retryable":
             if self.entity_type in _DEPENDENT_ENTITIES:
                 # EXPECTED for a product whose category/UOM has not synced yet
-                # (AC-22-23) - stays STAGED and re-offers on the next run, never
-                # quarantined (``SyncService._auto_push_upserts``).
+                # (AC-22-23), or for a document referencing a master (customer/
+                # supplier/product/warehouse/sales agent) that has not synced
+                # yet (AC-22-24, Appendix A6 item 3) - stays STAGED and
+                # re-offers on the next run, never quarantined
+                # (``SyncService._auto_push_upserts``).
+                dependency = (
+                    "its category or unit of measure"
+                    if self.entity_type == ENTITY_PRODUCT
+                    else "a referenced master (customer/supplier/product/warehouse/agent)"
+                )
                 return WriteResult(
                     ok=False, sink=self.name, external_id=None, delivered=False,
                     outcome=outcome,
                     message=(
-                        f"Sorento reported '{ref}' retryable - its category or "
-                        "unit of measure has not synced yet. It resolves "
-                        "automatically once that dependency lands."
+                        f"Sorento reported '{ref}' retryable - {dependency} has "
+                        "not synced yet. It resolves automatically once that "
+                        "dependency lands."
                     ),
                 )
             # Must not happen for masters with no dependency reference

@@ -211,7 +211,14 @@ class CanonicalPurchaseOrder(CanonicalDocument):
     currency: Optional[str] = Field(None, max_length=3)
     lines: List[CanonicalPurchaseOrderLine] = Field(default_factory=list)
 
+    #     !!  NO `internal_note` HERE - LIVE-VERIFY CAUGHT THIS (plan 22 S5).  !!
+    # Sorento's `_CanonicalDocument` base carries no `internal_note` field at
+    # all; only `CanonicalSalesOrder` declares its own. Sending it for a PO
+    # trips their `extra="forbid"` guard - "Extra inputs are not permitted" -
+    # and quarantines every purchase order. `internal_note` stays on OUR
+    # shared `CanonicalDocument` (an operator may still map it locally) but is
+    # excluded from the wire payload here.
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref", "po_number", "supplier_ref", "issue_date",
-        "expected_date", "currency", "status", "internal_note",
+        "expected_date", "currency", "status",
     )

@@ -128,7 +128,8 @@ def preview_sql(
     multi-statement = 422 before the source; a failing query = 400 sanitised."""
     try:
         result = EtlService(db).preview(
-            current_user.tenant_id, body.connectionId, body.query, doc_key=body.docKey
+            current_user.tenant_id, body.connectionId, body.query,
+            bind_doc_key=body.bindDocKey, doc_key=body.docKey,
         )
     except Exception as exc:  # noqa: BLE001 - translated, never a 500 with a DSN
         raise_sql_error(exc)

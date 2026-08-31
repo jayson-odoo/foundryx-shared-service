@@ -123,7 +123,14 @@ describe('mock autocount ETL service', () => {
     let caught: unknown;
     try {
       await service.updateEtlTask('company-doc', 'sales_order', {
-        sourceConfig: { ...task.sourceConfig, fromDate: null },
+        sourceConfig: {
+          ...task.sourceConfig,
+          watermarkColumn: 'LastModified',
+          docDateColumn: 'DocDate',
+          lineKeyColumn: 'DtlKey',
+          lineProductColumn: 'ItemCode',
+          fromDate: null,
+        },
       });
     } catch (e) {
       caught = e;
@@ -132,6 +139,27 @@ describe('mock autocount ETL service', () => {
     expect((caught as ApiError).status).toBe(422);
     expect((caught as ApiError).detail).toEqual({
       fieldErrors: { fromDate: expect.any(String) },
+    });
+  });
+
+  it('422s naming every S5 field a document task is still missing (AC-22-11)', async () => {
+    const task = await service.getEtlTask('company-doc2', 'sales_order');
+    let caught: unknown;
+    try {
+      await service.updateEtlTask('company-doc2', 'sales_order', {
+        sourceConfig: { ...task.sourceConfig, fromDate: '2026-08-30' },
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ApiError);
+    expect((caught as ApiError).detail).toEqual({
+      fieldErrors: {
+        watermarkColumn: expect.any(String),
+        docDateColumn: expect.any(String),
+        lineKeyColumn: expect.any(String),
+        lineProductColumn: expect.any(String),
+      },
     });
   });
 });

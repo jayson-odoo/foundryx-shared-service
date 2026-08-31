@@ -385,6 +385,19 @@ export const PRESETS: readonly PresetDef[] = [
     label: 'Date',
     formula: 'formatDate(parseDate(value, "yyyy/MM/dd HH:mm:ss"), "yyyy-MM-ddTHH:mm:ssZ")',
   },
+  // Plan 22 S5 (AC-22-24, Appendix A6 item 3) - a document header ref field
+  // (customer_ref/sales_agent_ref/supplier_ref) mints a MASTER's integration
+  // ref (`{database}:{code}`, or `agent:{CODE}` for sales_agent) from a raw
+  // master-code column. A NAMED server-side transform (`mapping.mint_master_ref`,
+  // reusing the SAME `flat_source_ref` scheme a master task mints its own
+  // identity with, so the two schemes can never drift) - not a formula, since
+  // the company-qualifying prefix is server context a formula has no business
+  // authoring by hand.
+  { key: 'ref_customer', label: 'Customer ref', formula: '' },
+  { key: 'ref_supplier', label: 'Supplier ref', formula: '' },
+  { key: 'ref_product', label: 'Product ref', formula: '' },
+  { key: 'ref_warehouse', label: 'Warehouse ref', formula: '' },
+  { key: 'ref_sales_agent', label: 'Sales agent ref', formula: '' },
   { key: 'custom', label: 'Custom', formula: '' },
 ];
 
@@ -399,6 +412,11 @@ export const TRANSFORM_PRESET: Record<string, string> = {
   date: 'date',
   datetime: 'date',
   slash_datetime: 'date',
+  ref_customer: 'ref_customer',
+  ref_supplier: 'ref_supplier',
+  ref_product: 'ref_product',
+  ref_warehouse: 'ref_warehouse',
+  ref_sales_agent: 'ref_sales_agent',
 };
 
 // ── parser ────────────────────────────────────────────────────────────────────

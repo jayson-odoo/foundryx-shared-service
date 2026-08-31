@@ -244,6 +244,222 @@ TABLES: Dict[str, DemoTable] = {
 }
 
 
+# ── plan 22 S5 documents (AC-22-24) - header + line demo rig ─────────────────
+#
+# Two tables per document type (headers don't fit the flat single-table
+# `DemoTable` shape above - a document task's line query is a SECOND query,
+# never joined into the header). `last_modified` on the HEADER is the
+# watermark; AutoCount's real behaviour (documented at
+# `sql_source.source.SqlDbSource` construction) is that it stamps a header's
+# `LastModified` whenever ANY of its lines change - `touch_document_line`
+# below simulates this explicitly by touching BOTH the line and the header,
+# never the line alone, so a live-verify run proves the S5 line-change-
+# detection design rather than accidentally relying on watermark drift.
+
+
+@dataclass(frozen=True)
+class DemoDocument:
+    key: str  # the --doc-table value
+    header_table: str
+    line_table: str
+    header_ddl: str
+    line_ddl: str
+    header_columns: Tuple[str, ...]
+    line_columns: Tuple[str, ...]
+    header_rows: Sequence[Tuple[Any, ...]]  # doc_key first
+    # doc_key -> [(dtl_key, ...line cols...), ...]
+    lines_by_doc: Dict[str, Sequence[Tuple[Any, ...]]]
+
+
+DOCUMENTS: Dict[str, DemoDocument] = {
+    "sales_orders": DemoDocument(
+        key="sales_orders",
+        header_table="etl_demo_so_headers",
+        line_table="etl_demo_so_lines",
+        header_ddl="""
+            CREATE TABLE IF NOT EXISTS public.etl_demo_so_headers (
+                doc_key       text PRIMARY KEY,
+                doc_no        text NOT NULL,
+                debtor_code   text,
+                agent_code    text,
+                doc_date      date NOT NULL,
+                cancelled     boolean NOT NULL DEFAULT false,
+                last_modified timestamptz NOT NULL DEFAULT now()
+            )
+        """,
+        line_ddl="""
+            CREATE TABLE IF NOT EXISTS public.etl_demo_so_lines (
+                dtl_key    text PRIMARY KEY,
+                doc_key    text NOT NULL REFERENCES public.etl_demo_so_headers(doc_key),
+                item_code  text NOT NULL,
+                qty        numeric(12,4) NOT NULL,
+                unit_price numeric(12,4),
+                location   text
+            )
+        """,
+        header_columns=("doc_key", "doc_no", "debtor_code", "agent_code", "doc_date", "cancelled"),
+        line_columns=("dtl_key", "doc_key", "item_code", "qty", "unit_price", "location"),
+        header_rows=[
+            ("SO-D001", "SO-2601", "300-C001", "SEAN I", "2026-08-01", False),
+            ("SO-D002", "SO-2602", "300-C002", "LCL", "2026-08-05", False),
+            ("SO-D003", "SO-2603", "300-C003", "SEAN I", "2026-08-10", False),
+        ],
+        lines_by_doc={
+            "SO-D001": [
+                ("SO-D001-1", "SO-D001", "ITEM-001", "24", "1.50", "WH-KL"),
+                ("SO-D001-2", "SO-D001", "ITEM-002", "100", "0.35", "WH-KL"),
+            ],
+            "SO-D002": [
+                ("SO-D002-1", "SO-D002", "ITEM-003", "10", "6.90", "WH-JB"),
+                ("SO-D002-2", "SO-D002", "ITEM-004", "48", "3.20", "WH-JB"),
+                ("SO-D002-3", "SO-D002", "ITEM-005", "6", "18.00", "WH-JB"),
+            ],
+            "SO-D003": [
+                ("SO-D003-1", "SO-D003", "ITEM-001", "12", "1.50", "WH-PEN"),
+                ("SO-D003-2", "SO-D003", "ITEM-002", "50", "0.35", "WH-PEN"),
+            ],
+        },
+    ),
+    "purchase_orders": DemoDocument(
+        key="purchase_orders",
+        header_table="etl_demo_po_headers",
+        line_table="etl_demo_po_lines",
+        header_ddl="""
+            CREATE TABLE IF NOT EXISTS public.etl_demo_po_headers (
+                doc_key       text PRIMARY KEY,
+                doc_no        text NOT NULL,
+                creditor_code text,
+                doc_date      date NOT NULL,
+                cancelled     boolean NOT NULL DEFAULT false,
+                last_modified timestamptz NOT NULL DEFAULT now()
+            )
+        """,
+        line_ddl="""
+            CREATE TABLE IF NOT EXISTS public.etl_demo_po_lines (
+                dtl_key    text PRIMARY KEY,
+                doc_key    text NOT NULL REFERENCES public.etl_demo_po_headers(doc_key),
+                item_code  text NOT NULL,
+                qty        numeric(12,4) NOT NULL,
+                unit_price numeric(12,4),
+                location   text
+            )
+        """,
+        header_columns=("doc_key", "doc_no", "creditor_code", "doc_date", "cancelled"),
+        line_columns=("dtl_key", "doc_key", "item_code", "qty", "unit_price", "location"),
+        header_rows=[
+            ("PO-D001", "PO-2601", "300-S001", "2026-08-02", False),
+            ("PO-D002", "PO-2602", "300-S002", "2026-08-06", False),
+            ("PO-D003", "PO-2603", "300-S001", "2026-08-11", False),
+        ],
+        lines_by_doc={
+            "PO-D001": [
+                ("PO-D001-1", "PO-D001", "ITEM-001", "200", "1.10", "WH-KL"),
+                ("PO-D001-2", "PO-D001", "ITEM-002", "500", "0.22", "WH-KL"),
+            ],
+            "PO-D002": [
+                ("PO-D002-1", "PO-D002", "ITEM-003", "80", "5.10", "WH-JB"),
+            ],
+            "PO-D003": [
+                ("PO-D003-1", "PO-D003", "ITEM-004", "150", "2.40", "WH-PEN"),
+                ("PO-D003-2", "PO-D003", "ITEM-005", "40", "13.50", "WH-PEN"),
+            ],
+        },
+    ),
+}
+
+
+def seed_documents() -> Dict[str, Dict[str, int]]:
+    counts: Dict[str, Dict[str, int]] = {}
+    with engine.begin() as conn:
+        for spec in DOCUMENTS.values():
+            conn.execute(text(spec.header_ddl))
+            conn.execute(text(spec.line_ddl))
+            base = datetime.now(timezone.utc) - timedelta(days=len(spec.header_rows))
+            hcols = ", ".join(spec.header_columns)
+            hplaceholders = ", ".join(f":{c}" for c in spec.header_columns)
+            for index, values in enumerate(spec.header_rows):
+                params: Dict[str, Any] = dict(zip(spec.header_columns, values))
+                params["stamp"] = base + timedelta(days=index)
+                conn.execute(
+                    text(
+                        f"INSERT INTO public.{spec.header_table} "
+                        f"({hcols}, last_modified) VALUES ({hplaceholders}, :stamp) "
+                        f"ON CONFLICT (doc_key) DO NOTHING"
+                    ),
+                    params,
+                )
+            lcols = ", ".join(spec.line_columns)
+            lplaceholders = ", ".join(f":{c}" for c in spec.line_columns)
+            for lines in spec.lines_by_doc.values():
+                for values in lines:
+                    conn.execute(
+                        text(
+                            f"INSERT INTO public.{spec.line_table} ({lcols}) "
+                            f"VALUES ({lplaceholders}) ON CONFLICT (dtl_key) DO NOTHING"
+                        ),
+                        dict(zip(spec.line_columns, values)),
+                    )
+            counts[spec.key] = {
+                "headers": conn.execute(
+                    text(f"SELECT count(*) FROM public.{spec.header_table}")
+                ).scalar_one(),
+                "lines": conn.execute(
+                    text(f"SELECT count(*) FROM public.{spec.line_table}")
+                ).scalar_one(),
+            }
+    return counts
+
+
+def touch_document_line(doc_table: str, doc_key: str, *, qty_delta: str = "1") -> None:
+    """Mutate ONE line's qty AND touch its header's ``last_modified`` -
+    simulating AutoCount's real behaviour (a header's LastModified updates on
+    ANY line edit, which is why the S5 design detects a line-only change by
+    watching the HEADER watermark, never a per-line one)."""
+    spec = DOCUMENTS[doc_table]
+    with engine.begin() as conn:
+        line_pk = conn.execute(
+            text(f"SELECT dtl_key FROM public.{spec.line_table} WHERE doc_key = :dk LIMIT 1"),
+            {"dk": doc_key},
+        ).scalar_one_or_none()
+        if line_pk is None:
+            raise SystemExit(f"No line found for {doc_key} in {spec.line_table}.")
+        conn.execute(
+            text(
+                f"UPDATE public.{spec.line_table} SET qty = qty + :delta "
+                f"WHERE dtl_key = :pk"
+            ),
+            {"delta": qty_delta, "pk": line_pk},
+        )
+        conn.execute(
+            text(
+                f"UPDATE public.{spec.header_table} SET last_modified = now() "
+                f"WHERE doc_key = :dk"
+            ),
+            {"dk": doc_key},
+        )
+    print(
+        f"public.{spec.line_table}: bumped {line_pk}'s qty by {qty_delta} and "
+        f"touched public.{spec.header_table} '{doc_key}'.last_modified."
+    )
+
+
+def cancel_document(doc_table: str, doc_key: str) -> None:
+    """Cancel-at-source (Appendix A6 item 4) - the header's ``cancelled`` flag
+    flips and its watermark advances, so the NEXT run re-pushes it as a
+    STATUS UPDATE (never a delete - documents are never deleted by reconcile,
+    plan 22 S5)."""
+    spec = DOCUMENTS[doc_table]
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                f"UPDATE public.{spec.header_table} SET cancelled = true, "
+                f"last_modified = now() WHERE doc_key = :dk"
+            ),
+            {"dk": doc_key},
+        )
+    print(f"public.{spec.header_table}: '{doc_key}' marked cancelled + watermark touched.")
+
+
 def _guard() -> None:
     """Refuse to run outside development. A demo table is harmless, but a
     script that plants rows in a production database on a typo is not."""
@@ -425,11 +641,36 @@ def main() -> None:
         default="default",
         help="tenant slug for --company (default: 'default')",
     )
+    parser.add_argument(
+        "--doc-table",
+        choices=sorted(DOCUMENTS),
+        help="plan 22 S5 - which document (sales_orders|purchase_orders) --touch-line/--cancel-doc act on",
+    )
+    parser.add_argument(
+        "--touch-line",
+        metavar="DOC_KEY",
+        help="plan 22 S5 - bump one line's qty + touch its header's watermark (simulates AutoCount)",
+    )
+    parser.add_argument(
+        "--cancel-doc",
+        metavar="DOC_KEY",
+        help="plan 22 S5 - mark a header cancelled + touch its watermark (status update, never a delete)",
+    )
     args = parser.parse_args()
     _guard()
 
     if args.company:
         ensure_demo_company(args.tenant_slug)
+        return
+    if args.touch_line:
+        if not args.doc_table:
+            raise SystemExit("--touch-line needs --doc-table sales_orders|purchase_orders.")
+        touch_document_line(args.doc_table, args.touch_line)
+        return
+    if args.cancel_doc:
+        if not args.doc_table:
+            raise SystemExit("--cancel-doc needs --doc-table sales_orders|purchase_orders.")
+        cancel_document(args.doc_table, args.cancel_doc)
         return
     if args.touch:
         pk_value = touch(args.table, args.touch)
@@ -445,6 +686,10 @@ def main() -> None:
     counts = seed()
     for spec in TABLES.values():
         print(f"public.{spec.table}: {counts[spec.key]} row(s) ready.")
+    doc_counts = seed_documents()
+    for spec in DOCUMENTS.values():
+        c = doc_counts[spec.key]
+        print(f"public.{spec.header_table}: {c['headers']} row(s), public.{spec.line_table}: {c['lines']} row(s) ready.")
     print(
         "Point a `sql_database` connection at this database "
         "(postgresql / localhost / 5432 / foundryx_service) and query "

@@ -458,6 +458,10 @@ function defaultEtlConfig(entityType: string): AutocountEtlSourceConfig {
     watermarkColumn: null,
     comparedColumns: [],
     fromDate: isDocumentEntity(entityType) ? '2026-08-30' : null,
+    docDateColumn: null,
+    lineKeyColumn: null,
+    lineProductColumn: null,
+    lineWarehouseColumn: null,
     incrementalMinutes: 5,
     reconcileMode: 'dailyAt',
     reconcileHours: null,
@@ -1238,10 +1242,10 @@ export const mockAutocountService: AutocountService = {
     return mockSqlSchema(connection);
   },
 
-  async previewSqlQuery(
-    connectionId: string,
-    query: string,
-  ): Promise<AutocountSqlPreview> {
+  // `opts` (bindDocKey/docKey) is part of the interface (plan 22 S5) but the
+  // mock's table-name-regex preview needs no real parameter binding to
+  // return realistic columns for a `:doc_key`-carrying line query.
+  async previewSqlQuery(connectionId: string, query: string): Promise<AutocountSqlPreview> {
     await pause(450);
     const connection = SQL_CONNECTIONS.find((c) => c.id === connectionId);
     if (!connection) throw new ApiError('Connection not found.', 404);
@@ -1269,11 +1273,26 @@ export const mockAutocountService: AutocountService = {
     await pause(250);
     const current = etlTaskFor(companyId, entityType);
     const cfg = input.sourceConfig;
-    // Mirrors the save-time guard (AC-22-11): documents need a from-date.
-    if (isDocumentEntity(entityType) && !cfg.fromDate) {
-      throw new ApiError('From date is required for documents.', 422, null, {
-        fieldErrors: { fromDate: 'From date is required for documents.' },
-      });
+    // Mirrors the save-time guard (AC-22-11/S5): documents need a from-date,
+    // a watermark column (line-change detection - AutoCount stamps a
+    // header's LastModified on any line edit), a date-floor column and the
+    // line key/product columns.
+    if (isDocumentEntity(entityType)) {
+      const fieldErrors: Record<string, string> = {};
+      if (!cfg.fromDate) fieldErrors.fromDate = 'From date is required for documents.';
+      if (!cfg.watermarkColumn) {
+        fieldErrors.watermarkColumn = 'A watermark column is required for documents.';
+      }
+      if (!cfg.docDateColumn) fieldErrors.docDateColumn = "Choose the document's date column.";
+      if (!cfg.lineKeyColumn) fieldErrors.lineKeyColumn = "Choose the line query's key column.";
+      if (!cfg.lineProductColumn) {
+        fieldErrors.lineProductColumn = "Choose the line query's product column.";
+      }
+      if (Object.keys(fieldErrors).length > 0) {
+        throw new ApiError('The task could not be saved. Fix the highlighted fields.', 422, null, {
+          fieldErrors,
+        });
+      }
     }
     const next: AutocountEtlTask = {
       ...current,

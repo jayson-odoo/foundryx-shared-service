@@ -195,10 +195,15 @@ export const realAutocountService: AutocountService = {
     );
   },
 
-  previewSqlQuery(connectionId, query) {
+  previewSqlQuery(connectionId, query, opts) {
     return apiFetch<AutocountSqlPreview>('/autocount/sql/preview', {
       method: 'POST',
-      body: JSON.stringify({ connectionId, query }),
+      body: JSON.stringify({
+        connectionId,
+        query,
+        bindDocKey: opts?.bindDocKey ?? false,
+        docKey: opts?.docKey ?? null,
+      }),
     });
   },
 
