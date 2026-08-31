@@ -271,6 +271,17 @@ class CanonicalSalesAgent(CanonicalMaster):
     ``description``/``is_active``/``person_label``. ``name`` is inherited from
     ``CanonicalMaster`` but is never sent (absent from ``SINK_FIELDS``) - the
     agent has no name field on Sorento's side, only ``person_label``.
+
+    **A shared row is never deleted by one company's reconcile (plan 22 S4
+    review B2, Appendix A6 item 6).** Because the ref carries no company
+    qualifier, a company's extract missing a ref is not proof the agent is
+    gone globally - a sibling company may still use it. ``sync._stage_deletes``
+    therefore stages NO delete intent at all for this entity: it only drops
+    the reporting company's own ``ac_row_hash`` row for the missing ref (so a
+    later re-appearance stages as a fresh add, never a phantom update). An
+    agent that is genuinely retired must be removed in Sorento directly, out
+    of band - there is deliberately no path from a company's reconcile to a
+    shared agent's deletion.
     """
 
     entity_type: str = ENTITY_SALES_AGENT

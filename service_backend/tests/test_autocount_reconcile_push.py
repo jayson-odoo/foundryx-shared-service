@@ -29,7 +29,13 @@ from sqlalchemy.pool import StaticPool
 
 from app.jobs.service import JobService
 from app.models import DEFAULT_TENANT_ID
-from app.models.background_job import JOB_DONE, JOB_FAILED, JOB_NEEDS_REVIEW, BackgroundJob
+from app.models.background_job import (
+    JOB_DONE,
+    JOB_FAILED,
+    JOB_NEEDS_REVIEW,
+    JOB_RUNNING,
+    BackgroundJob,
+)
 from app.models.connection import Connection
 from app.secrets import encrypt_secret
 from modules.autocount.canonical.masters import ENTITY_CUSTOMER
@@ -723,4 +729,151 @@ def test_delete_guard_trip_is_a_distinct_error_code_unprefixed_and_no_stack(
         for r in caplog.records
     )
     assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    db.close()
+
+
+# ── B2: a SHARED entity (sales_agent) is never deleted by one company's
+# reconcile (plan 22 S4 review, option (a) - the honest low-churn behaviour) ──
+#
+# ``sales_agent`` rows are SHARED across companies in Sorento (``company_id``
+# NULL, ``mapping.UNQUALIFIED_REF_ENTITIES`` - the ref itself carries no
+# company qualifier). A missing ref in ONE company's extract is not proof the
+# AGENT is gone globally - another company may still use it - so staging a
+# delete intent here would eventually retire a row a sibling company still
+# depends on. The fix: never stage a delete for a shared entity; just drop
+# THIS company's local hash row for the missing ref (so local state stays
+# consistent with what this company's extract actually contains) and let a
+# re-appearance stage as a fresh add next time, same as any other ref this
+# company has never seen. Retiring an agent in Sorento is an operator action
+# taken directly against Sorento, out of band (see ``canonical/masters.py``'s
+# ``CanonicalSalesAgent`` docstring and plan 22 Appendix A6 item 6).
+
+
+def _bg_job(db, company_id: str, entity_type: str) -> BackgroundJob:
+    job = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID,
+        type=AUTOCOUNT_SYNC,
+        status=JOB_RUNNING,
+        payload_json={"companyId": company_id, "entityType": entity_type},
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def test_a_shared_entitys_missing_ref_stages_no_delete_and_drops_the_hash(
+    session_factory,
+):
+    """sales_agent (a SHARED entity, plan 22 Appendix A6 item 6): a ref
+    missing from the extract stages NO delete intent - only its local
+    ``ac_row_hash`` row is dropped, so a later re-appearance reads as a fresh
+    add (``ref not in known`` in ``sql_source/source.py``), never a phantom
+    update against state this company never actually holds authority over."""
+    from datetime import datetime, timezone
+
+    from modules.autocount.canonical.masters import ENTITY_SALES_AGENT
+    from modules.autocount.repositories import RowHashRepository
+    from modules.autocount.sync import _stage_deletes
+
+    db = session_factory()
+    company = _company(db)
+    job = _bg_job(db, company.id, ENTITY_SALES_AGENT)
+    ref = "agent:MISSING"
+    RowHashRepository(db).upsert_many(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_AGENT,
+        {ref: "h1"}, seen_at=datetime.now(timezone.utc),
+    )
+    db.commit()
+
+    staged_count = _stage_deletes(
+        db, job, [ref],
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+        entity_type=ENTITY_SALES_AGENT, current_refs=[],
+    )
+
+    assert staged_count == 0
+    staged = (
+        db.query(AcStagedRecord)
+        .filter(
+            AcStagedRecord.tenant_id == DEFAULT_TENANT_ID,
+            AcStagedRecord.company_id == company.id,
+            AcStagedRecord.entity_type == ENTITY_SALES_AGENT,
+        )
+        .all()
+    )
+    assert staged == []
+    # Hash row dropped - a later run with no prior knowledge of this ref
+    # counts it as `added`, never `updated`/a phantom delete-then-recreate.
+    assert RowHashRepository(db).hashes_for(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_AGENT, [ref]
+    ) == {}
+    db.close()
+
+
+def test_a_shared_entity_with_no_missing_refs_stages_and_drops_nothing(
+    session_factory,
+):
+    """No delete_refs at all - the common case on every run where nothing
+    vanished - is a no-op: nothing staged, existing hash rows untouched."""
+    from datetime import datetime, timezone
+
+    from modules.autocount.canonical.masters import ENTITY_SALES_AGENT
+    from modules.autocount.repositories import RowHashRepository
+    from modules.autocount.sync import _stage_deletes
+
+    db = session_factory()
+    company = _company(db)
+    job = _bg_job(db, company.id, ENTITY_SALES_AGENT)
+    ref = "agent:STILL-THERE"
+    RowHashRepository(db).upsert_many(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_AGENT,
+        {ref: "h1"}, seen_at=datetime.now(timezone.utc),
+    )
+    db.commit()
+
+    staged_count = _stage_deletes(
+        db, job, [],
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+        entity_type=ENTITY_SALES_AGENT, current_refs=[ref],
+    )
+
+    assert staged_count == 0
+    assert RowHashRepository(db).hashes_for(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_AGENT, [ref]
+    ) == {ref: "h1"}
+    db.close()
+
+
+def test_a_non_shared_entitys_missing_ref_still_stages_a_delete_intent(
+    session_factory,
+):
+    """Regression guard: customer (NOT in ``UNQUALIFIED_REF_ENTITIES``) keeps
+    the existing behaviour - a missing ref stages a real ``op=delete`` intent,
+    unaffected by the shared-entity carve-out."""
+    from modules.autocount.sync import _stage_deletes
+
+    db = session_factory()
+    company = _company(db)
+    job = _bg_job(db, company.id, ENTITY_CUSTOMER)
+    ref = f"{DB_NAME}:VANISHED"
+
+    staged_count = _stage_deletes(
+        db, job, [ref],
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+        entity_type=ENTITY_CUSTOMER, current_refs=[],
+    )
+
+    assert staged_count == 1
+    [row] = (
+        db.query(AcStagedRecord)
+        .filter(
+            AcStagedRecord.tenant_id == DEFAULT_TENANT_ID,
+            AcStagedRecord.company_id == company.id,
+            AcStagedRecord.entity_type == ENTITY_CUSTOMER,
+        )
+        .all()
+    )
+    assert row.op == STAGED_OP_DELETE
+    assert row.source_ref == ref
     db.close()

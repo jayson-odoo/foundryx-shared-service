@@ -63,7 +63,12 @@ from .canonical.masters import (
     VENDOR_LAST_MODIFIED_PATH,
 )
 from .client import AutoCountError
-from .mapping import MappedDocument, MappingEngine, flat_profile
+from .mapping import (
+    UNQUALIFIED_REF_ENTITIES,
+    MappedDocument,
+    MappingEngine,
+    flat_profile,
+)
 from .models import (
     ETL_STATUS_ACTIVE,
     RUN_ABORTED,
@@ -80,6 +85,7 @@ from .models import (
 from .repositories import (
     CompanyRepository,
     EntityConfigRepository,
+    RowHashRepository,
     StagedRecordRepository,
     SyncRunRepository,
     WatermarkRepository,
@@ -778,6 +784,21 @@ def _stage_deletes(
       runs again before the first intent resolves must not pile up a second
       row for the same ref.
 
+    **B2 (plan 22 S4 review, option (a)) - a SHARED entity is never deleted by
+    ONE company's reconcile.** ``sales_agent`` rows are shared across
+    companies in Sorento (``mapping.UNQUALIFIED_REF_ENTITIES`` - the ref
+    itself carries no company qualifier), so a ref missing from THIS
+    company's extract is not proof the agent is gone globally; another
+    company may still use it. Staging (and eventually auto-pushing) a delete
+    here would let one company silently retire a row a sibling depends on.
+    So for those entities NO delete intent is staged at all - only this
+    company's local ``ac_row_hash`` row for the missing ref is dropped, so
+    local state stays honest about what THIS company's extract currently
+    contains and a later re-appearance stages as a fresh add (never a
+    phantom update). Retiring a shared agent is an operator action taken
+    directly against Sorento, out of band - see ``canonical/masters.py``'s
+    ``CanonicalSalesAgent`` docstring and plan 22 Appendix A6 item 6.
+
     N7: a SINGLE commit for the whole batch (mirrors the auto-push upsert
     path) rather than one per row - the caller commits again immediately
     after this returns, so a per-row commit here bought nothing but extra
@@ -785,6 +806,21 @@ def _stage_deletes(
     """
     staged_repo = StagedRecordRepository(db)
     staged_repo.discard_stale_deletes(tenant_id, company_id, entity_type, current_refs)
+
+    if entity_type in UNQUALIFIED_REF_ENTITIES:
+        if delete_refs:
+            dropped = RowHashRepository(db).delete_many(
+                tenant_id, company_id, entity_type, delete_refs
+            )
+            logger.info(
+                "autocount reconcile: %s is a shared entity - dropped %d local "
+                "hash row(s) for missing ref(s) instead of staging deletes "
+                "(%s). Retire a shared row in Sorento directly if it is "
+                "genuinely gone.",
+                entity_type, dropped, ", ".join(delete_refs),
+            )
+        db.commit()
+        return 0
 
     count = 0
     if delete_refs:

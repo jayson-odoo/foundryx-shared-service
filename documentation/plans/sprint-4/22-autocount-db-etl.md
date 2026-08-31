@@ -313,6 +313,12 @@ Deviations from A1-A4 and what they mean for THIS repo:
    company-qualified** - it is `agent:{CODE}` (upper/trim), so every company's task resolves to
    the one shared row (later pushes = `updated`). Documents' `sales_agent_ref` uses the same
    scheme. The only entity with an unqualified ref; documented in the task editor's key hint.
+   **The same sharing rules out reconcile-driven deletion (S4 review B2, the honest low-churn
+   behaviour): a ref missing from ONE company's extract is not proof the agent is gone globally -
+   a sibling company may still use it - so `sync._stage_deletes` stages NO delete intent at all for
+   this entity. It only drops the reporting company's own `ac_row_hash` row for the missing ref (a
+   later re-appearance stages as a fresh add). A shared row is never deleted by one company's
+   reconcile; retiring an agent is an operator action taken directly against Sorento, out of band.**
 
 Record shapes (extra="forbid" everywhere; SorentoSink projects exactly these):
 - sales_agents: `{source_ref, source_doc_no?, code(1..100), description?, is_active=true, person_label?}`
