@@ -759,6 +759,46 @@ def test_put_etl_task_422s_when_the_document_wrap_cannot_run(client, session_fac
     db.close()
 
 
+def test_delete_sql_connection_evicts_the_cached_engine_and_schema_cache(
+    client, session_factory, monkeypatch
+):
+    """S6 merge-gate review SHOULD-FIX 4: ``sql_source.runtime.RUNTIME.evict``
+    had no production caller - deleting a ``sql_database`` connection left
+    its cached engine (up to 5 live pooled sessions to the CUSTOMER's own
+    database) and its schema-introspection cache entry alive until the
+    process restarted. AutoCount registers a subscriber on the core CRUD
+    event bus (``connection``/``deleted``, emitted by
+    ``IntegrationService.delete``) rather than core importing anything
+    module-specific - proven end to end through the real HTTP delete route:
+    the engine's ``dispose`` actually fires and a REAL schema-cache entry
+    (seeded the same way the SQL editor populates one) is actually gone."""
+    import modules.autocount.sql_source.introspect as introspect_module
+
+    db = session_factory()
+    engine = _sqlite_engine()
+    conn = _sql_connection(db, db_type="postgresql", engine=engine)
+    db.close()
+
+    disposed = {"called": False}
+    real_dispose = engine.dispose
+
+    def _tracking_dispose():
+        disposed["called"] = True
+        real_dispose()
+
+    monkeypatch.setattr(engine, "dispose", _tracking_dispose)
+
+    cache_key = f"{DEFAULT_TENANT_ID}:{conn.id}"
+    introspect_module.SCHEMA_CACHE.get(cache_key, lambda: "tree-placeholder")
+    assert introspect_module.SCHEMA_CACHE.peek(cache_key) == "tree-placeholder"
+
+    response = client.delete(f"/integrations/connections/{conn.id}", headers=_auth(client))
+    assert response.status_code == 204, response.text
+
+    assert disposed["called"] is True
+    assert introspect_module.SCHEMA_CACHE.peek(cache_key) is None
+
+
 def test_put_etl_task_422s_when_the_connection_database_does_not_match_the_company(
     client, session_factory
 ):
