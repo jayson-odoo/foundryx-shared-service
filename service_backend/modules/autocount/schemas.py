@@ -541,6 +541,9 @@ class EtlTaskResponse(ApiModel):
     resultColumns: List[str] = []
     # The activate-once gate (AC-22-18); CLEARED by every config save.
     lastPreviewAt: Optional[datetime] = None
+    # The last preview's genuinely-``failed`` count (S5 review SHOULD-FIX 4b) -
+    # NOT ``retryable``. ``activate_task`` refuses while this is truthy.
+    lastPreviewFailedCount: Optional[int] = None
     lastRunAt: Optional[datetime] = None
     # The LAST RUN's task-level failure (AC-22-19). A Sorento anchor 422 lands
     # here with its code, never as a per-record failure (Appendix A6).

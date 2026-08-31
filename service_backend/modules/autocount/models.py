@@ -225,6 +225,14 @@ class AcEntityConfig(AutocountBase):
     # every config save - a preview of a superseded query must never unlock
     # Activate. NULL = Activate withheld.
     last_preview_at = Column(UTCDateTime(), nullable=True)
+    # The last preview's genuinely-``failed`` prediction count (S5 review
+    # SHOULD-FIX 4b) - a preview that COMPLETES but reports failed rows still
+    # stamps ``last_preview_at`` (the dry run itself worked), so that alone is
+    # not proof the task is safe to activate. ``retryable`` rows are NOT
+    # counted here - a legitimate dependency-order carry-over (AC-22-23) must
+    # stay activatable. NULL alongside a NULL ``last_preview_at`` = never
+    # previewed; CLEARED (like ``last_preview_at``) by every config save.
+    last_preview_failed_count = Column(Integer, nullable=True)
     # When the last run finished, whatever its outcome (AC-22-17).
     last_run_at = Column(UTCDateTime(), nullable=True)
 

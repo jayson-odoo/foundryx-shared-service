@@ -200,6 +200,10 @@ class EtlTaskView:
     # The activate-once gate (AC-22-18). CLEARED by every config save: a
     # preview of a superseded query must never unlock Activate.
     last_preview_at: Optional[datetime] = None
+    # The last preview's genuinely-``failed`` count (S5 review SHOULD-FIX 4b) -
+    # NOT ``retryable`` (a legitimate dependency-order carry-over stays fine).
+    # ``activate_task`` refuses while this is truthy.
+    last_preview_failed_count: Optional[int] = None
     last_run_at: Optional[datetime] = None
     last_run_error: Optional[str] = None
     last_run_error_code: Optional[str] = None
@@ -635,6 +639,9 @@ class EtlService:
                 str(c) for c in ((config.result_columns if config is not None else None) or [])
             ],
             last_preview_at=config.last_preview_at if config is not None else None,
+            last_preview_failed_count=(
+                config.last_preview_failed_count if config is not None else None
+            ),
             last_run_at=config.last_run_at if config is not None else None,
             last_run_error=config.last_run_error if config is not None else None,
             last_run_error_code=(
@@ -806,6 +813,7 @@ class EtlService:
         # query, the keys or the compared columns and keeping the old stamp
         # would let an operator activate a configuration nobody ever previewed.
         config.last_preview_at = None
+        config.last_preview_failed_count = None
         # A save on an ALREADY-ACTIVE task re-arms its schedule (plan 22 S3,
         # AC-22-12) - the interval/reconcile fields just changed, so the next
         # fire time must reflect them rather than the one computed under the
@@ -934,6 +942,12 @@ class EtlService:
             ) from exc
 
         config.last_preview_at = datetime.now(timezone.utc)
+        # S5 review SHOULD-FIX 4b: the genuinely-``failed`` count, NOT
+        # ``retryable`` - ``activate_task`` reads this to refuse an
+        # activation whose own preview already showed rows that will never
+        # resolve on their own (a dependency-order carry-over is retryable,
+        # not failed, and must stay activatable, AC-22-23).
+        config.last_preview_failed_count = int(result.summary.get("failed") or 0)
         self.db.commit()
         self.db.refresh(config)
         return self._task_view(company_id, entity_type, config), {
@@ -1039,6 +1053,19 @@ class EtlService:
         if config.last_preview_at is None:
             raise EtlStateError(
                 "Run a successful preview of the initial load before activating."
+            )
+        #     !!  A PREVIEW THAT COMPLETED IS NOT THE SAME AS ONE THAT PASSED.  !!
+        # (S5 review SHOULD-FIX 4b.) The dry run itself succeeding only proves
+        # the CONSUMER was reachable - a row can still come back genuinely
+        # ``failed`` (a required field the mapping never covers, a value
+        # Sorento rejects outright). ``retryable`` stays allowed on purpose:
+        # a dependency-order carry-over (AC-22-23) resolves itself on a later
+        # run and must not block activation.
+        if config.last_preview_failed_count:
+            raise EtlStateError(
+                f"The last preview reported {config.last_preview_failed_count} "
+                f"failed row(s) - re-run preview after fixing the mapping "
+                f"before activating."
             )
         if not (company.sorento_company_code or "").strip():
             raise EtlStateError(

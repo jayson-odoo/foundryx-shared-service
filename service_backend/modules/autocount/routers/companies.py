@@ -387,6 +387,7 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
         sourceConfig=view.source_config,
         resultColumns=view.result_columns,
         lastPreviewAt=view.last_preview_at,
+        lastPreviewFailedCount=view.last_preview_failed_count,
         lastRunAt=view.last_run_at,
         lastRunError=view.last_run_error,
         lastRunErrorCode=view.last_run_error_code,

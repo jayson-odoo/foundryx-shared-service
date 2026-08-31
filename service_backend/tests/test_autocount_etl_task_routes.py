@@ -474,6 +474,34 @@ def test_preview_writes_nothing_local(client, session_factory, rig, consumer):
     db.close()
 
 
+def test_preview_stamps_the_failed_count_on_the_wire(client, rig, consumer):
+    """S5 review SHOULD-FIX 4b: the preview stamps genuinely-``failed``
+    separately from ``retryable`` - a completed dry run is not by itself
+    proof the task is safe to activate."""
+    company_id, _sql_id = rig
+
+    def failing(body: Dict[str, Any]) -> httpx.Response:
+        records = body.get("records") or []
+        return httpx.Response(
+            200,
+            json={
+                "summary": {
+                    "total": len(records), "created": 0, "updated": 0,
+                    "failed": len(records), "retryable": 0,
+                },
+                "records": [
+                    {"source_ref": r["source_ref"], "outcome": "failed",
+                     "errors": {"email": "invalid"}}
+                    for r in records
+                ],
+            },
+        )
+
+    consumer.responder = failing
+    body = client.post(_url(company_id, "/preview"), headers=_auth(client)).json()
+    assert body["task"]["lastPreviewFailedCount"] == 2  # both ROWS failed
+
+
 def test_preview_on_a_logging_sink_company_is_not_previewable(client, rig, consumer):
     company_id, _sql_id = rig
     client.patch(
@@ -683,6 +711,66 @@ def test_activate_is_refused_without_a_sorento_company_code(
     response = _activate(client, company_id)
     assert response.status_code == 409
     assert "company code" in response.json()["detail"].lower()
+
+
+def test_activate_is_refused_when_the_preview_reported_failed_rows(
+    client, rig, consumer
+):
+    """S5 review SHOULD-FIX 4b: a preview that COMPLETES is not the same as
+    one that PASSED - a genuinely-failed row must block activation."""
+    company_id, _sql_id = rig
+
+    def failing(body: Dict[str, Any]) -> httpx.Response:
+        records = body.get("records") or []
+        return httpx.Response(
+            200,
+            json={
+                "summary": {
+                    "total": len(records), "created": 0, "updated": 0,
+                    "failed": len(records), "retryable": 0,
+                },
+                "records": [
+                    {"source_ref": r["source_ref"], "outcome": "failed",
+                     "errors": {"email": "invalid"}}
+                    for r in records
+                ],
+            },
+        )
+
+    consumer.responder = failing
+    preview = client.post(_url(company_id, "/preview"), headers=_auth(client))
+    assert preview.status_code == 200, preview.text
+    response = _activate(client, company_id)
+    assert response.status_code == 409, response.text
+    assert "failed" in response.json()["detail"].lower()
+
+
+def test_activate_allows_retryable_only_rows(client, rig, consumer):
+    """A dependency-order carry-over (AC-22-23) is ``retryable``, not
+    ``failed`` - it resolves itself on a later run and must stay
+    activatable."""
+    company_id, _sql_id = rig
+
+    def retryable(body: Dict[str, Any]) -> httpx.Response:
+        records = body.get("records") or []
+        return httpx.Response(
+            200,
+            json={
+                "summary": {
+                    "total": len(records), "created": 0, "updated": 0,
+                    "failed": 0, "retryable": len(records),
+                },
+                "records": [
+                    {"source_ref": r["source_ref"], "outcome": "retryable"}
+                    for r in records
+                ],
+            },
+        )
+
+    consumer.responder = retryable
+    client.post(_url(company_id, "/preview"), headers=_auth(client))
+    response = _activate(client, company_id)
+    assert response.status_code == 200, response.text
 
 
 def test_activate_after_a_preview_arms_the_task(client, session_factory, rig, consumer):
