@@ -3926,6 +3926,102 @@ def test_replace_mapping_survives_a_reseed(db, transports):
     assert by_field["email"].source_path == "Email"  # not reverted to EmailAddress
 
 
+# ── replace_mapping: ref_* transform <-> field pairing (S5 review BLOCKER 2) ──
+
+
+def _document_entity_config(db, company: AcCompany, entity_type: str) -> None:
+    """A document task's ``AcEntityConfig`` is never part of ``_company``'s
+    seeded set (GRN/Supplier/Customer only, plan 22 §Scope) - so a mapping
+    test targeting SO/PO needs its own row, mirroring
+    ``test_autocount_masters_fanout._product_company``."""
+    from modules.autocount.models import AcEntityConfig
+
+    db.add(
+        AcEntityConfig(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=entity_type,
+            source_impl="sql_db",
+        )
+    )
+    db.commit()
+
+
+def test_replace_mapping_accepts_a_ref_transform_on_its_matching_field(db, transports):
+    from modules.autocount.canonical.documents import ENTITY_SALES_ORDER
+
+    company = _company(db, transports)
+    _document_entity_config(db, company, ENTITY_SALES_ORDER)
+    rows = [
+        MappingWriteRow(source_path="CustomerCode", transform="ref_customer", sorento_field="customer_ref"),
+        MappingWriteRow(source_path="AgentCode", transform="ref_sales_agent", sorento_field="sales_agent_ref"),
+        MappingWriteRow(source_path="DocNo", transform="string", sorento_field="so_number"),
+        MappingWriteRow(source_path="Status", transform="string", sorento_field="status"),
+    ]
+    view = CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, rows)
+    by_field = {r.sorento_field: r for r in view.rows if r.sorento_field}
+    assert by_field["customer_ref"].transform == "ref_customer"
+    assert by_field["sales_agent_ref"].transform == "ref_sales_agent"
+
+
+def test_replace_mapping_rejects_a_ref_transform_on_the_wrong_field(db, transports):
+    """A ``ref_*`` transform must only be usable on the ONE field it mints a
+    reference for - smuggled onto an unrelated field it would mint an
+    identity string for the wrong entity type entirely."""
+    from modules.autocount.canonical.documents import ENTITY_SALES_ORDER
+
+    company = _company(db, transports)
+    _document_entity_config(db, company, ENTITY_SALES_ORDER)
+    rows = [
+        MappingWriteRow(source_path="DocNo", transform="ref_customer", sorento_field="so_number"),
+    ]
+    with pytest.raises(AutocountServiceError) as exc:
+        CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, rows)
+    assert "so_number" in str(exc.value)
+
+
+def test_replace_mapping_rejects_a_ref_field_mapped_without_its_ref_transform(db, transports):
+    """A ``*_ref`` field saved with a plain transform would send the bare
+    AutoCount code as the "reference" - Sorento cannot resolve it, and the
+    row would retry forever with no error naming why (S5 review BLOCKER 2)."""
+    from modules.autocount.canonical.documents import ENTITY_SALES_ORDER
+
+    company = _company(db, transports)
+    _document_entity_config(db, company, ENTITY_SALES_ORDER)
+    rows = [
+        MappingWriteRow(source_path="CustomerCode", transform="string", sorento_field="customer_ref"),
+    ]
+    with pytest.raises(AutocountServiceError) as exc:
+        CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, rows)
+    assert "customer_ref" in str(exc.value)
+
+
+def test_replace_mapping_rejects_a_supplier_ref_without_ref_supplier(db, transports):
+    from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER
+
+    company = _company(db, transports)
+    _document_entity_config(db, company, ENTITY_PURCHASE_ORDER)
+    rows = [
+        MappingWriteRow(source_path="SupplierCode", transform="string", sorento_field="supplier_ref"),
+    ]
+    with pytest.raises(AutocountServiceError) as exc:
+        CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_PURCHASE_ORDER, rows)
+    assert "supplier_ref" in str(exc.value)
+
+
+def test_replace_mapping_accepts_supplier_ref_with_ref_supplier(db, transports):
+    from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER
+
+    company = _company(db, transports)
+    _document_entity_config(db, company, ENTITY_PURCHASE_ORDER)
+    rows = [
+        MappingWriteRow(source_path="SupplierCode", transform="ref_supplier", sorento_field="supplier_ref"),
+    ]
+    view = CompanyService(db).replace_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PURCHASE_ORDER, rows
+    )
+    by_field = {r.sorento_field: r for r in view.rows if r.sorento_field}
+    assert by_field["supplier_ref"].transform == "ref_supplier"
+
+
 # ── re-fetch history (AC-15-30) ───────────────────────────────────────────────
 
 

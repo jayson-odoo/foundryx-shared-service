@@ -35,6 +35,8 @@ from ..activity import (
 from ..client import AutoCountClient, AutoCountError
 from ..mapping import (
     DEFAULT_MAPPINGS,
+    FIELD_REF_TRANSFORMS,
+    REF_TRANSFORM_ENTITIES,
     SCOPE_HEADER,
     TRANSFORMS,
     MappingEngine,
@@ -961,6 +963,24 @@ class CompanyService:
                     f"The Sorento field '{target}' is mapped more than once."
                 )
             seen.add(target)
+            #     !!  A ``ref_*`` TRANSFORM AND ITS FIELD ARE A PAIR.  !!
+            # (S5 review BLOCKER 2 - both directions, foolproof server-side.)
+            # (a) a ref transform smuggled onto a field it does not mint a
+            #     reference for; (b) a ``*_ref`` field saved WITHOUT its ref
+            #     transform - a plain/string transform would send the bare
+            #     AutoCount code, which Sorento cannot resolve as a reference,
+            #     and the row retries forever with no error naming why.
+            if row.transform in REF_TRANSFORM_ENTITIES and FIELD_REF_TRANSFORMS.get(target) != row.transform:
+                raise AutocountServiceError(
+                    f"'{row.transform}' cannot be used for '{target}' - it mints a "
+                    f"reference for a different field."
+                )
+            if target in FIELD_REF_TRANSFORMS and row.transform != FIELD_REF_TRANSFORMS[target]:
+                raise AutocountServiceError(
+                    f"'{target}' must be mapped with the '{FIELD_REF_TRANSFORMS[target]}' "
+                    f"transform - a plain value would send the raw AutoCount code, which "
+                    f"Sorento cannot resolve as a reference."
+                )
             formula = (row.formula or "").strip() or None
             if formula is not None:
                 try:
@@ -1105,6 +1125,20 @@ class CompanyService:
                     f"The Sorento field '{target}' is mapped more than once."
                 )
             seen.add(target)
+            # Same ref-transform pairing as ``replace_mapping`` (S5 review
+            # BLOCKER 2) - a simulate must not preview a mapping the save
+            # gate would reject.
+            if row.transform in REF_TRANSFORM_ENTITIES and FIELD_REF_TRANSFORMS.get(target) != row.transform:
+                raise AutocountServiceError(
+                    f"'{row.transform}' cannot be used for '{target}' - it mints a "
+                    f"reference for a different field."
+                )
+            if target in FIELD_REF_TRANSFORMS and row.transform != FIELD_REF_TRANSFORMS[target]:
+                raise AutocountServiceError(
+                    f"'{target}' must be mapped with the '{FIELD_REF_TRANSFORMS[target]}' "
+                    f"transform - a plain value would send the raw AutoCount code, which "
+                    f"Sorento cannot resolve as a reference."
+                )
             formula = (row.formula or "").strip() or None
             if formula is not None:
                 try:
