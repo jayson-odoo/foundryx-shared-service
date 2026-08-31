@@ -87,11 +87,20 @@ class CanonicalMaster(CanonicalRecord):
 
     ``last_modified`` is carried for staging, diffing and the watermark - it is
     NOT a Sorento field and is excluded from ``sink_payload`` below.
+
+    ``code``/``name`` carry the SAME length bounds as Sorento's own
+    ``CanonicalProductCategory``/``CanonicalUnitOfMeasure``/…
+    (``sorento_crm/.../app/schemas/canonical_masters.py`` - copied verbatim,
+    plan 22 S4 review S3): a value that would 422 there must fail HERE, at
+    mapping/preview time (``mapping.map_document`` already turns a pydantic
+    ``ValidationError`` into a per-field ``mapped.errors`` entry - see the
+    ``record_model(**header)`` guard), not arrive as a surprise push-time
+    quarantine an operator has no field-level explanation for.
     """
 
     source_doc_no: Optional[str] = None
-    code: Optional[str] = None
-    name: Optional[str] = None
+    code: Optional[str] = Field(None, max_length=100)
+    name: Optional[str] = Field(None, max_length=255)
     email: Optional[str] = None
     is_active: Optional[bool] = None
 
@@ -170,7 +179,7 @@ class CanonicalProductCategory(CanonicalMaster):
 
     entity_type: str = ENTITY_PRODUCT_CATEGORY
 
-    description: Optional[str] = None
+    description: Optional[str] = Field(None, max_length=255)
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref",
@@ -188,10 +197,10 @@ class CanonicalUnitOfMeasure(CanonicalMaster):
 
     entity_type: str = ENTITY_UNIT_OF_MEASURE
 
-    description: Optional[str] = None
+    description: Optional[str] = Field(None, max_length=255)
     # Canonical divisibility, 0..4 (Sorento's own default is 0 - an upstream
     # master that never expressed precision counts in whole units).
-    decimal_places: int = 0
+    decimal_places: int = Field(0, ge=0, le=4)
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref",
@@ -235,12 +244,12 @@ class CanonicalProduct(CanonicalMaster):
 
     entity_type: str = ENTITY_PRODUCT
 
-    description: Optional[str] = None
+    description: Optional[str] = Field(None, max_length=255)
     category_code: Optional[str] = None
     uom_code: Optional[str] = None
     brand_code: Optional[str] = None
-    list_price: Optional[Decimal] = None
-    cost_price: Optional[Decimal] = None
+    list_price: Optional[Decimal] = Field(None, ge=0)
+    cost_price: Optional[Decimal] = Field(None, ge=0)
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref",
@@ -286,7 +295,7 @@ class CanonicalSalesAgent(CanonicalMaster):
 
     entity_type: str = ENTITY_SALES_AGENT
 
-    description: Optional[str] = None
+    description: Optional[str] = Field(None, max_length=255)
     person_label: Optional[str] = None
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (

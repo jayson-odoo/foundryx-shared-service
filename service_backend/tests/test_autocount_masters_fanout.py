@@ -257,6 +257,57 @@ def test_product_maps_through_the_real_engine_with_a_formula_row():
     assert mapped.record.list_price == Decimal("9.99")
 
 
+# ── canonical models mirror Sorento's own value constraints (S4 review S3) ──
+#
+# Copied verbatim from `sorento_crm/.../app/schemas/canonical_masters.py`:
+# `code` max_length=100, `name`/`description` max_length=255, UOM
+# `decimal_places` 0..4, product `list_price`/`cost_price` >= 0. A violating
+# mapped record must surface in `mapped.errors` at PREVIEW time - never as a
+# surprise push-time quarantine an operator has no field-level explanation
+# for. `MappingEngine.map_document` already turns a pydantic `ValidationError`
+# on `record_model(**header)` into a per-field error, so adding the `Field`
+# bound is the whole fix - these tests prove it actually surfaces that way,
+# one violation per constraint CLASS (range, length).
+
+
+def test_a_range_violating_decimal_places_surfaces_in_mapped_errors_not_a_500():
+    engine = MappingEngine(
+        _rows(
+            ("uom_code", "code", "string", None),
+            ("uom_name", "name", "string", None),
+            ("dp", "decimal_places", "int", "value * 1"),
+        ),
+        entity_type=ENTITY_UNIT_OF_MEASURE,
+        profile=flat_profile(ENTITY_UNIT_OF_MEASURE, ["uom_code"]),
+        database_name=DB,
+    )
+    # Sorento bounds `decimal_places` 0..4 (canonical_masters.py) - 5 is one
+    # past the ceiling.
+    mapped = engine.map_document({"uom_code": "PCS", "uom_name": "Pieces", "dp": 5})
+    assert not mapped.ok
+    assert mapped.record is None
+    assert any("decimal_places" in e.message() or "document" in e.field for e in mapped.errors)
+
+
+def test_a_length_violating_code_surfaces_in_mapped_errors_not_a_500():
+    engine = MappingEngine(
+        _rows(
+            ("category_code", "code", "string", None),
+            ("category_name", "name", "string", None),
+        ),
+        entity_type=ENTITY_PRODUCT_CATEGORY,
+        profile=flat_profile(ENTITY_PRODUCT_CATEGORY, ["category_code"]),
+        database_name=DB,
+    )
+    # Sorento bounds `code` max_length=100 - 101 chars is one past it.
+    mapped = engine.map_document(
+        {"category_code": "X" * 101, "category_name": "Beverages"}
+    )
+    assert not mapped.ok
+    assert mapped.record is None
+    assert any("code" in e.message() or "document" in e.field for e in mapped.errors)
+
+
 # ── sales-agent unqualified ref + upper/trim, end to end (Appendix A6 §6) ────
 
 
