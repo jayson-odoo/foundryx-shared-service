@@ -52,10 +52,15 @@ export function EntitySourceDialog({ entity, onClose, onSave }: EntitySourceDial
   // Foolproof-UI: an entity with no confirmed AutoCount API payload (plan 22
   // S4's masters fan-out) offers ONE valid option, never a guaranteed-to-fail
   // switch the backend would refuse anyway (`CompanyService.update_entity_config`).
+  // The CURRENT value stays in the list even when it is not otherwise
+  // offered (S4 review S1): a legacy row that predates the capable-set
+  // narrowing may still carry `sourceImpl: 'autocount_read'` - dropping it
+  // from the options would show a blank "Select..." for its REAL value
+  // instead of the value it actually has.
   const apiCapable = entity !== null && AC_API_CAPABLE_ENTITY_TYPES.includes(entity.entityType);
   const sourceOptions = apiCapable
     ? AC_SOURCE_IMPL_OPTIONS
-    : AC_SOURCE_IMPL_OPTIONS.filter((o) => o.value === 'sql_db');
+    : AC_SOURCE_IMPL_OPTIONS.filter((o) => o.value === 'sql_db' || o.value === current);
 
   async function submit() {
     if (!entity || !changed) return;

@@ -67,6 +67,23 @@ describe('EntitySourceDialog (plan 22 S2, AC-22-08 - a guarded switch)', () => {
     expect(screen.queryByRole('option', { name: 'AutoCount API' })).not.toBeInTheDocument();
   });
 
+  it('shows the CURRENT value for a legacy autocount_read entity outside the capable set (S1)', () => {
+    // A `product` row that predates masters-fan-out (this build has no
+    // AutoCount API route for it, `AC_API_CAPABLE_ENTITY_TYPES`) but still
+    // carries `sourceImpl: 'autocount_read'` from before that changed - the
+    // picker must show its REAL current value, never a blank placeholder.
+    render(
+      <EntitySourceDialog
+        entity={entity({ entityType: 'product', sourceImpl: 'autocount_read' })}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+    const combobox = screen.getByRole('combobox', { name: 'Entity source' });
+    expect(combobox).toHaveTextContent('AutoCount API');
+    expect(combobox).not.toHaveTextContent('Select');
+  });
+
   it('still offers both sources for the existing API-capable entities', async () => {
     render(
       <EntitySourceDialog

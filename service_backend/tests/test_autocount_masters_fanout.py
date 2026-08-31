@@ -564,10 +564,15 @@ def test_a_failed_product_verdict_is_quarantined_not_carried_over(db, sorento_co
 
 def test_switching_a_db_only_entity_to_the_api_path_is_refused(db):
     company = _product_company(db)
-    with pytest.raises(AutocountServiceError):
+    with pytest.raises(AutocountServiceError) as excinfo:
         CompanyService(db).update_entity_config(
             DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, source_impl="autocount_read",
         )
+    # S4 review S1: name the REASON, not just the refusal - an operator
+    # reading this must not have to guess whether it is a config mistake or a
+    # genuine build limitation.
+    assert "build has no working AutoCount API route" in excinfo.value.message
+    assert ENTITY_PRODUCT in excinfo.value.message
 
 
 def test_switching_a_seeded_entity_to_the_api_path_still_works(db):
