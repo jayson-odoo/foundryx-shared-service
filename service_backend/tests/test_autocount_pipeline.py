@@ -3824,6 +3824,52 @@ def test_replace_mapping_round_trips(db, transports):
     assert any(r.canonical_field == "last_modified" for r in view.rows)
 
 
+def test_replace_mapping_sweeps_a_stale_unknown_canonical_field_row(db, transports):
+    """S4 review S4: a row whose ``canonical_field`` is neither an accepted
+    Sorento target nor the preserved ``last_modified`` provenance field is a
+    STALE leftover (e.g. a catalogue field that no longer exists) - a save
+    must sweep it, not leave it lingering forever invisible to the editor."""
+    company = _company(db, transports)
+    stale = AcFieldMapping(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+        entity_type=ENTITY_SUPPLIER, scope=SCOPE_HEADER,
+        source_path="SomeOldColumn", canonical_field="retired_field",
+        transform="string", is_required=False, is_enabled=True, sort_order=99,
+    )
+    db.add(stale)
+    db.commit()
+
+    rows = [
+        MappingWriteRow(source_path="AccNo", transform="string", sorento_field="code"),
+        MappingWriteRow(source_path="CompanyName", transform="string", sorento_field="name"),
+        MappingWriteRow(source_path="IsActive", transform="t_f_bool", sorento_field="is_active"),
+    ]
+    view = CompanyService(db).replace_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, rows
+    )
+    assert not any(r.canonical_field == "retired_field" for r in view.rows)
+    # The legitimate provenance row still survives the sweep.
+    assert any(r.canonical_field == "last_modified" for r in view.rows)
+
+
+def test_replace_mapping_never_sweeps_grn_which_has_no_accepted_fields(db, transports):
+    """GRN's Sorento-accepted set is deliberately EMPTY (no ingest path yet) -
+    the sweep must be skipped entirely for it, or every one of GRN's default
+    mapping rows (doc_no, supplier_code, …) would be wiped as "unknown"."""
+    company = _company(db, transports)
+    before = CompanyService(db).mapping_view(
+        DEFAULT_TENANT_ID, company.id, ENTITY_GOODS_RECEIVED_NOTE
+    )
+    assert len(before.rows) > 0
+
+    view = CompanyService(db).replace_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_GOODS_RECEIVED_NOTE, []
+    )
+    assert {r.canonical_field for r in view.rows} == {
+        r.canonical_field for r in before.rows
+    }
+
+
 def test_replace_mapping_rejects_a_non_accepted_field(db, transports):
     """AC-15-42: a target Sorento would reject (extra=forbid) is a 422, naming
     the bad field - never silently dropped."""

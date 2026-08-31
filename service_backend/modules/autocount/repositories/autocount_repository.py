@@ -369,6 +369,44 @@ class FieldMappingRepository:
         self.db.flush()
         return deleted
 
+    def delete_unknown(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        keep: Sequence[str],
+    ) -> int:
+        """Sweep STALE rows on a mapping save (plan 22 S4 review S4) - a row
+        whose ``canonical_field`` is neither an accepted Sorento target NOR an
+        explicitly-preserved provenance field (``keep``). Left behind by a
+        catalogue that changed shape since the row was written (a field
+        renamed/removed from ``SORENTO_FIELDS``, or a mapping row planted with
+        a garbage target), these rows are otherwise invisible - the mapping
+        editor only shows/writes ``accepted`` targets, so nothing surfaces
+        them, and they linger forever accumulating.
+
+        The caller is responsible for ``keep`` covering EVERY legitimate
+        non-deliverable field (``last_modified`` for masters); calling this
+        with an empty ``keep`` on an entity with no accepted Sorento fields at
+        all (GRN, whose ``SORENTO_FIELDS`` entry is deliberately empty) would
+        wipe its entire default mapping, so ``CompanyService.replace_mapping``
+        only calls this when the entity has a non-empty accepted set."""
+        names = list(keep)
+        if not names:
+            return 0
+        deleted = (
+            self.db.query(AcFieldMapping)
+            .filter(
+                AcFieldMapping.tenant_id == tenant_id,
+                AcFieldMapping.company_id == company_id,
+                AcFieldMapping.entity_type == entity_type,
+                AcFieldMapping.canonical_field.notin_(names),
+            )
+            .delete(synchronize_session=False)
+        )
+        self.db.flush()
+        return deleted
+
 
 class StagedRecordRepository:
     def __init__(self, db: Session):

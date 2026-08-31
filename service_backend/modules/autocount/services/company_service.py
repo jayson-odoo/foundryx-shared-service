@@ -202,6 +202,17 @@ class EntityConfigNotFound(AutocountServiceError):
 MIN_LOOKBACK_DAYS = 1
 MAX_LOOKBACK_DAYS = 3650
 
+# Canonical fields ``replace_mapping`` preserves even though they are NOT in
+# the entity's accepted (deliverable-to-Sorento) set (plan 22 S4 review S4).
+# Grepped from ``mapping.py``'s ``DEFAULT_MAPPINGS``: every master's ONLY
+# non-deliverable row is the watermark ``last_modified`` (``_MASTER_COMMON``);
+# GRN carries three more (``last_modified_user_id``/``created_at_source``/
+# ``created_user_id``, ``DEFAULT_GRN_MAPPING``) but GRN's accepted set is
+# EMPTY (it has no Sorento ingest path yet) - ``replace_mapping`` skips the
+# sweep entirely for an entity with no accepted fields at all, so those never
+# need listing here (see the guard at the call site).
+PRESERVED_CANONICAL_FIELDS = frozenset({"last_modified"})
+
 
 @dataclass
 class EntityState:
@@ -913,6 +924,15 @@ class CompanyService:
         can never silently break delta sync. This persists to ``ac_field_mapping``
         and is seed-if-absent-safe: ``seed_company_defaults`` only seeds when the
         entity has ZERO rows, so a later ``update_tenant`` never reverts it.
+
+        A STALE row - one whose ``canonical_field`` is neither an accepted
+        target nor a preserved provenance field (``PRESERVED_CANONICAL_FIELDS``)
+        - is swept here too (S4 review S4): a catalogue that changed shape
+        since the row was written otherwise leaves it behind forever, invisible
+        to the mapping editor (it only shows/writes accepted targets). Skipped
+        entirely for an entity with an EMPTY accepted set (GRN, no Sorento
+        ingest path yet) - sweeping there with nothing accepted would wipe its
+        whole default mapping instead of pruning stale rows.
         """
         self._require_entity(tenant_id, company_id, entity_type)
 
@@ -955,6 +975,14 @@ class CompanyService:
 
         # Replace only the deliverable rows; provenance rows survive.
         self.mappings.delete_by_canonical(tenant_id, company_id, entity_type, accepted)
+        if accepted:
+            # S4 review S4: prune any row that is neither about to be
+            # recreated (accepted) nor an explicit provenance keeper - a
+            # stale leftover from a catalogue that has since changed shape.
+            self.mappings.delete_unknown(
+                tenant_id, company_id, entity_type,
+                accepted | PRESERVED_CANONICAL_FIELDS,
+            )
         for order, row in enumerate(clean):
             self.mappings.add(
                 AcFieldMapping(
