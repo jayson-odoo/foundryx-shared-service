@@ -327,6 +327,22 @@ def test_sales_agent_maps_through_the_real_engine_with_a_formula_row_and_unquali
     # different companies' tasks resolve to the SAME shared row.
     assert mapped.record.source_ref == "agent:SEAN I"
     assert mapped.record.person_label == "Sean"
+    # NIT (S4 review): the ``code`` field on the PAYLOAD must agree with the
+    # ref's key component even though the mapping row above used a plain
+    # "string" transform (no operator-chosen "upper" transform) - normalized
+    # at canonical construction so ref and payload can never disagree.
+    assert mapped.record.code == "SEAN I"
+
+
+def test_sales_agent_code_is_upper_trimmed_regardless_of_the_mapping_transform():
+    """The normalization does not depend on the operator picking an "upper"
+    transform - CanonicalSalesAgent normalizes its OWN ``code`` field, so a
+    plain "string" mapping (the common default) can never drift from the
+    shared ``agent:{CODE}`` ref (``mapping.flat_source_ref``)."""
+    from modules.autocount.canonical.masters import CanonicalSalesAgent
+
+    rec = CanonicalSalesAgent(source_ref="agent:LCL", code="  lcl  ", is_active=True)
+    assert rec.code == "LCL"
 
 
 def test_two_companies_sales_agent_tasks_mint_the_same_shared_ref():

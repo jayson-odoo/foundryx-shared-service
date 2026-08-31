@@ -39,7 +39,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from .base import CanonicalRecord
 
@@ -306,6 +306,23 @@ class CanonicalSalesAgent(CanonicalMaster):
         "is_active",
         "person_label",
     )
+
+    @field_validator("code")
+    @classmethod
+    def _upper_trim_code(cls, value: Optional[str]) -> Optional[str]:
+        """Normalized HERE, not left to the operator's mapping transform
+        (S4 review NIT): the shared ref (``mapping.flat_source_ref``,
+        ``UNQUALIFIED_REF_ENTITIES``) upper-cases and trims the SAME source
+        column that maps to this field, matching how Sorento's
+        ``sales_agent_service`` stores and matches the code. A plain "string"
+        mapping row (no operator-chosen "upper" transform) would otherwise
+        leave the PAYLOAD's ``code`` disagreeing with the REF it is filed
+        under - normalizing on construction makes that disagreement
+        impossible regardless of which transform a mapping row uses.
+        """
+        if value is None:
+            return value
+        return value.strip().upper()
 
 
 MASTER_ENTITIES: List[str] = [
