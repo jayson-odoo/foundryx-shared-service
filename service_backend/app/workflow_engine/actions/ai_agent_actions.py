@@ -84,15 +84,33 @@ def _stateful_schema_from_params(params: List[Dict[str, Any]]) -> Dict[str, Any]
         }
         if row["type"] == "enum":
             value_schema["enum"] = row.get("enumValues", [])
+        value_schema["description"] = (
+            "The new value for this field, valid only when operation is "
+            "\"set\". For enum fields, use one of the declared enum values, "
+            "mapped from whatever wording the message uses."
+        )
         patch_properties[row["key"]] = {
             "type": "object",
             "properties": {
                 "operation": {
                     "type": "string",
                     "enum": ["set", "clear", "no_change", "ambiguous"],
+                    "description": (
+                        "\"set\" to record a new value, \"clear\" to remove a "
+                        "previously recorded value, \"no_change\" when the "
+                        "current message says nothing new about this field, "
+                        "\"ambiguous\" when the message touches this field but "
+                        "the intended value is unclear."
+                    ),
                 },
                 "value": value_schema,
-                "evidence": {"type": "string"},
+                "evidence": {
+                    "type": "string",
+                    "description": (
+                        "Exact substring copied from the current message that "
+                        "justifies this change; required for set and clear."
+                    ),
+                },
             },
             "required": ["operation"],
         }
@@ -132,6 +150,75 @@ def _validated_flat_output(result: Dict[str, Any], params: List[Dict[str, Any]])
             raise ActionError(f'AI output "{key}" does not match its configured type.')
         accepted[key] = value
     return accepted
+
+
+def _state_contract(output_params: List[Dict[str, Any]]) -> str:
+    """The platform-generated STATE CONTRACT (plan sprint-4/19 §4, fixed by
+    plan 22) - taught to the model for every STATEFUL run, in addition to the
+    agent's own skills and this node's instructions.
+
+    A real LLM is never shown the platform's internal reducer rules unless we
+    say so explicitly; the dev stub hardcodes evidence and so never needed
+    this, which is exactly why the bug was invisible until a real model ran.
+    Kept plain text (no markdown assumptions) - provider-agnostic.
+    """
+    stateful_keys = sorted(
+        {
+            str(row.get("key"))
+            for row in output_params
+            if isinstance(row, dict) and row.get("stateful") is True and row.get("key")
+        }
+    )
+    fields_line = ", ".join(stateful_keys) if stateful_keys else "(none configured)"
+    return (
+        "You are operating under this platform's stateful field contract. "
+        "Read it carefully - your JSON reply is consumed by a strict, "
+        "code-side reducer that will silently drop anything that does not "
+        "follow these rules.\n\n"
+        "INPUT: the user message is a JSON object with these keys: "
+        "`currentMessage` (the single message you must react to - not a "
+        "transcript), `acceptedState` (the fields already confirmed on prior "
+        "turns), `outputParameters` (the full field catalog: key, type, "
+        "description, and for enums the allowed `enumValues`), and "
+        "`pendingClarification` (a previously asked question and the field it "
+        "targets, or null).\n\n"
+        "OUTPUT SHAPE: reply with a JSON object with three top-level keys: "
+        "`outputs` (values for TRANSIENT, non-stateful fields such as a reply "
+        "message), `statePatches` (one patch object per STATEFUL field - "
+        f"here: {fields_line}), and `pendingField` (the key of the stateful "
+        "field you are still waiting to learn, or null when nothing is "
+        "pending).\n\n"
+        "STATE PATCHES: every stateful field gets EXACTLY ONE patch object "
+        "`{\"operation\": ..., \"value\": ..., \"evidence\": ...}` with one of "
+        "four operations:\n"
+        "  - \"set\": the current message establishes a new value for the "
+        "field.\n"
+        "  - \"clear\": the current message explicitly removes a previously "
+        "recorded value.\n"
+        "  - \"no_change\": the current message says nothing new about this "
+        "field (the safe default for most fields on most turns).\n"
+        "  - \"ambiguous\": the message touches this field but the intended "
+        "value cannot be determined.\n\n"
+        "THE EVIDENCE RULE (critical - patches that break this are dropped): "
+        "every \"set\" and \"clear\" patch MUST include `evidence` - an EXACT "
+        "verbatim substring copied character-for-character from "
+        "`currentMessage` (for an enum, the exact word or words in the "
+        "message that indicate the chosen value). A patch whose `evidence` is "
+        "not found in `currentMessage` is dropped and the field is left "
+        "unchanged. NEVER copy `evidence` from `acceptedState` or from an "
+        "earlier turn - it must come from the CURRENT message only. "
+        "\"no_change\" and \"ambiguous\" do not need evidence.\n\n"
+        "ENUM MAPPING: when a field's type is enum, map the message's free "
+        "text to exactly one of its declared `enumValues` as the `value`, but "
+        "still set `evidence` to the actual wording in the message that "
+        "implies that value (they do not need to be identical strings).\n\n"
+        "READINESS: only report a field as ready/decided when every REQUIRED "
+        "stateful field is known (already accepted or set this turn). If a "
+        "required field is still unknown, ask a short, specific question "
+        "about it in the relevant transient output and set `pendingField` to "
+        "that field's key - never guess or fabricate a value to move things "
+        "along."
+    )
 
 
 def _build_system(db: Session, tenant_id: str, agent: AiAgent, instructions: str) -> str:
@@ -208,6 +295,10 @@ def ai_agent_run(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[
     ]
     is_stateful = bool(stateful_params)
     if is_stateful:
+        # AC-SC-01/02/03: the state contract is prepended ONLY for stateful
+        # runs, clearly delimited from the agent's own skills + instructions
+        # (which stay unchanged for a non-stateful run).
+        system = f"{_state_contract(output_params)}\n\n---\n\n{system}"
         workflow_id = ctx.get("_workflow.workflowId")
         node_id = ctx.get("_workflow.nodeId")
         correlation_key = ctx.get("_workflow.correlationKey")
