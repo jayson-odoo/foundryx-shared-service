@@ -12,7 +12,12 @@ export type IntegrationType =
   | 'llm'
   | 'erp'
   | 'payment'
-  | 'consumer';
+  | 'consumer'
+  // Meetings module (S0): the calendar reader and the notetaker bot account.
+  // Two categories, not one, because the one-active-per-type invariant must
+  // let a tenant hold BOTH at once.
+  | 'calendar'
+  | 'meeting_bot';
 
 /** Connection health - UNVERIFIED until a test passes, ERROR on failures. */
 export type ConnectionStatus = 'ACTIVE' | 'UNVERIFIED' | 'ERROR';

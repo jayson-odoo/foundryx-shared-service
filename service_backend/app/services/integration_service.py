@@ -361,6 +361,15 @@ class IntegrationService:
         provider = get_provider(connection.provider)
         if provider is None:  # provider unregistered (module uninstalled)
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Provider is not available.")
+        # A provider may legitimately offer NO test (the meetings notetaker
+        # account: verifying it means a real interactive sign-in). Refuse rather
+        # than run something weaker and stamp the connection ACTIVE on the
+        # strength of it - the row stays UNVERIFIED, which is the truth.
+        if not getattr(provider, "test_label", ""):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "This connection has no test.",
+            )
         credentials = _decrypt_or_none(connection.credentials_json)
         if credentials is None:
             # Key rotation made the stored secret unreadable - surface a clean,

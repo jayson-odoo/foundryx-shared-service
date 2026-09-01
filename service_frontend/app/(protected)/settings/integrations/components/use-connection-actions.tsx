@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { usePathname } from 'next/navigation';
 import { CircleCheck, HardDriveDownload, Pencil, PlugZap, Unplug } from 'lucide-react';
@@ -20,6 +20,21 @@ export function useConnectionActions(): ResourceAction<Connection>[] {
   const router = useRouter();
   const pathname = usePathname();
   const { openMigration } = useJobsActivity();
+
+  // Providers that offer NO test declare it with an empty `testLabel` (the
+  // meetings notetaker account: verifying it means a real interactive sign-in).
+  // Offering Test anyway would either lie about the result or always fail.
+  const [noTestProviders, setNoTestProviders] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    integrationService
+      .providers()
+      .then((list) =>
+        setNoTestProviders(
+          new Set(list.filter((p) => !p.testLabel).map((p) => p.provider)),
+        ),
+      )
+      .catch(() => setNoTestProviders(new Set()));
+  }, []);
 
   return useMemo<ResourceAction<Connection>[]>(
     () => [
@@ -42,7 +57,7 @@ export function useConnectionActions(): ResourceAction<Connection>[] {
         icon: PlugZap,
         permission: 'integrations.manage',
         surfaces: { row: true, form: true },
-        isVisible: (rows) => rows.length === 1,
+        isVisible: (rows) => rows.length === 1 && !noTestProviders.has(rows[0].provider),
         run: async ([connection], rt) => {
           if (!connection) return;
           const result = await integrationService.test(connection.id);
@@ -113,6 +128,6 @@ export function useConnectionActions(): ResourceAction<Connection>[] {
         },
       },
     ],
-    [router, pathname, openMigration],
+    [router, pathname, openMigration, noTestProviders],
   );
 }

@@ -34,6 +34,7 @@ export interface UseConnectionFormResult {
 export function useConnectionForm(
   connectionId: string | undefined,
   initialEditing: boolean,
+  initialProvider?: string,
 ): UseConnectionFormResult {
   const router = useRouter();
   const actions = useConnectionActions();
@@ -84,6 +85,17 @@ export function useConnectionForm(
       active = false;
     };
   }, [connectionId, creating, form]);
+
+  // Create with a provider already chosen (a module's settings page deep-links
+  // straight to its own connection kind, so the operator is never offered a
+  // provider that is wrong for the page they came from). Runs once, and only
+  // while the picker is still untouched.
+  useEffect(() => {
+    if (!creating || !initialProvider) return;
+    if (form.getValues('provider')) return;
+    const p = providers.find((x) => x.provider === initialProvider);
+    if (p) form.reset(defaultsForProvider(p));
+  }, [creating, initialProvider, providers, form]);
 
   // Prefill once BOTH the record and its provider schema are known.
   useEffect(() => {

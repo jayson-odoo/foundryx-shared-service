@@ -36,6 +36,8 @@ const TYPE_LABELS: Record<string, string> = {
   storage: 'Storage',
   llm: 'LLM',
   erp: 'ERP',
+  calendar: 'Calendar',
+  meeting_bot: 'Meeting bot',
 };
 
 export interface ConfigurationTabProps {
