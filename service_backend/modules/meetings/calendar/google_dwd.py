@@ -72,7 +72,7 @@ def _service_account_credentials(
     what makes a calendar shared with it readable without any delegation."""
     try:
         from google.oauth2 import service_account  # type: ignore
-    except ImportError as exc:  # pragma: no cover — dependency guard
+    except ImportError as exc:  # pragma: no cover - dependency guard
         raise CalendarSourceError(
             "The Google API client is not installed on this server "
             "(pip install google-api-python-client google-auth)."
@@ -84,14 +84,14 @@ def _service_account_credentials(
     try:
         creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
         return creds.with_subject(subject) if subject else creds
-    except Exception as exc:  # noqa: BLE001 — surfaced verbatim to the operator
+    except Exception as exc:  # noqa: BLE001 - surfaced verbatim to the operator
         raise CalendarSourceError(str(exc)) from exc
 
 
 def _build(api: str, version: str, credentials):
     try:
         from googleapiclient.discovery import build  # type: ignore
-    except ImportError as exc:  # pragma: no cover — dependency guard
+    except ImportError as exc:  # pragma: no cover - dependency guard
         raise CalendarSourceError(
             "The Google API client is not installed on this server "
             "(pip install google-api-python-client google-auth)."
@@ -131,7 +131,7 @@ def list_directory_users(
         raise
     except (TypeError, ValueError) as exc:
         raise CalendarSourceError(str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001 — Google's message, verbatim
+    except Exception as exc:  # noqa: BLE001 - Google's message, verbatim
         raise CalendarSourceError(_google_message(exc)) from exc
     return [u.get("primaryEmail", "") for u in (response.get("users") or [])][:limit]
 
@@ -252,7 +252,7 @@ def parse_event(item: Dict[str, Any]) -> RawEvent:
 
     The conference link comes from ``conferenceData`` when Google attached a Meet
     itself, and otherwise from a regex over ``hangoutLink`` / ``location`` /
-    ``description`` — which is where a Zoom or Teams invite actually lives (S0
+    ``description`` - which is where a Zoom or Teams invite actually lives (S0
     plan §3)."""
     conference_url = _conference_from_data(item.get("conferenceData")) or find_conference_url(
         item.get("hangoutLink"), item.get("location"), item.get("description")

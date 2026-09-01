@@ -1,5 +1,5 @@
 /**
- * Meetings module wire types (S0 — calendar opt-in).
+ * Meetings module wire types (S0 - calendar opt-in).
  *
  * These mirror the backend schemas one-for-one (`modules/meetings/schemas.py`);
  * the wire is camelCase and every timestamp is a Z-suffixed UTC ISO-8601 string
