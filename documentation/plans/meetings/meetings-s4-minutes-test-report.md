@@ -10,7 +10,7 @@ never exposed to agents).
 - Registry: `tests/test_ai_prompt_registry.py` 22/22 (post-P3).
 - Minutes: `tests/test_meetings_minutes_service.py` + `_routes.py` + extended `test_meetings_stt_jobs.py` 62/62 (post-P3).
 - Scoped: `pytest -k "meetings or prompt"` 299 passed (post-P3).
-- Full unscoped suite after P2a: 2714 passed, 1 skipped. Post-P2b full run: 2749 passed, 1 skipped (25m19s).
+- Full unscoped suite after P2a: 2714 passed, 1 skipped. Post-P2b full run: 2749 passed, 1 skipped. Final post-P3 full run: 2763 passed, 1 skipped, 0 failures (24m33s).
 - FE vitest (prompt editor): 6/6. tsc/eslint clean on touched files.
 
 ## Live evidence (AC references)
