@@ -15,6 +15,18 @@ from app.services import ai_prompt_registry as registry
 from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD, PLATFORM_EMAIL, PLATFORM_PASSWORD
 
 
+@pytest.fixture(autouse=True)
+def _reset_prompt_cache():
+    """N3 review: ``get_prompt``'s TTL cache is a module-level dict, shared
+    by every test in this process - without a bust, a `production` label set
+    (or left unset) by an earlier test can leak into this one's `get_prompt`
+    call within the 60s TTL window, regardless of which per-test DB it
+    reads from."""
+    registry.bust_cache()
+    yield
+    registry.bust_cache()
+
+
 def _login(client, email, password, tenant_slug=None):
     payload = {"email": email, "password": password}
     if tenant_slug is not None:
@@ -248,6 +260,88 @@ def test_tenant_admin_forbidden(client):
     headers = _tenant_headers(client)
     res = client.get("/ai-prompts", headers=headers)
     assert res.status_code == 403, res.text
+
+
+def test_tenant_admin_forbidden_on_every_route(client):
+    """T1 review: all four routes, not just the list one."""
+    headers = _tenant_headers(client)
+    assert client.get("/ai-prompts", headers=headers).status_code == 403
+    assert client.get("/ai-prompts/meetings_minutes", headers=headers).status_code == 403
+    assert (
+        client.post(
+            "/ai-prompts/meetings_minutes/versions",
+            json={"template": "x", "commitMessage": "c"},
+            headers=headers,
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/ai-prompts/meetings_minutes/publish",
+            json={"versionId": "x", "label": "production"},
+            headers=headers,
+        ).status_code
+        == 403
+    )
+
+
+def test_holding_the_permission_in_a_non_platform_tenant_is_still_403(client, session_factory):
+    """T1 review - the double lock's second half (`require_platform_permission`
+    in `app/dependencies.py`): the FIRST half already blocks a tenant admin
+    with no grant at all (the tests above); this proves the SECOND half -
+    platform-tenant membership - is independently enforced even for a role
+    that somehow holds the `ai_prompts.manage` key."""
+    from sqlalchemy.sql import func
+
+    from app.models import DEFAULT_TENANT_ID
+    from app.models.permission import Permission
+    from app.models.role import Role
+    from app.models.user import User, UserStatus
+    from app.security import hash_password
+
+    db = session_factory()
+    try:
+        role = Role(
+            tenant_id=DEFAULT_TENANT_ID, name="Rogue AI Prompts Grant", description="test-only"
+        )
+        role.permissions = [
+            db.query(Permission).filter(Permission.key == "ai_prompts.manage").one()
+        ]
+        db.add(role)
+        db.flush()
+        user = User(
+            tenant_id=DEFAULT_TENANT_ID,
+            email="rogue-prompts@example.com",
+            password=hash_password("demo1234"),
+            name="Rogue",
+            status=UserStatus.ACTIVE.value,
+            email_verified_at=func.now(),
+        )
+        user.roles = [role]
+        db.add(user)
+        db.commit()
+    finally:
+        db.close()
+
+    headers = _login(client, "rogue-prompts@example.com", "demo1234")
+    assert client.get("/ai-prompts", headers=headers).status_code == 403
+    assert client.get("/ai-prompts/meetings_minutes", headers=headers).status_code == 403
+    assert (
+        client.post(
+            "/ai-prompts/meetings_minutes/versions",
+            json={"template": "x", "commitMessage": "c"},
+            headers=headers,
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/ai-prompts/meetings_minutes/publish",
+            json={"versionId": "x", "label": "production"},
+            headers=headers,
+        ).status_code
+        == 403
+    )
 
 
 def test_unauthenticated_rejected(client):

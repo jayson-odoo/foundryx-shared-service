@@ -143,48 +143,57 @@ export function PromptDetailView({ name }: PromptDetailViewProps) {
             Version history
           </p>
           <div className="divide-y divide-border rounded-lg border border-border">
-            {prompt.versions.map((v) => {
-              const isSelected = v.id === selected?.id;
-              const isProduction = v.labels.includes('production');
-              return (
-                <button
-                  type="button"
-                  key={v.id}
-                  data-testid={`version-row-${v.version}`}
-                  disabled={editing}
-                  onClick={() => setSelectedVersionId(v.id)}
-                  className={cn(
-                    'flex w-full flex-col gap-1 px-3 py-2.5 text-left transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-60',
-                    isSelected ? 'bg-muted/60' : 'hover:bg-muted/40',
-                  )}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-medium tracking-[-0.01em] text-foreground">
-                      v{v.version}
-                    </span>
-                    <div className="flex gap-1">
-                      {isProduction && (
-                        <Badge variant="success" appearance="light" size="sm">
-                          Production
-                        </Badge>
-                      )}
-                      {v.labels.includes('staging') && (
-                        <Badge variant="warning" appearance="light" size="sm">
-                          Staging
-                        </Badge>
-                      )}
+            {prompt.versions.length === 0 ? (
+              <div className="flex flex-col items-center gap-1 px-3 py-6 text-center">
+                <p className="text-xs font-medium text-foreground">No versions yet.</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Use &quot;New version&quot; to create the first one.
+                </p>
+              </div>
+            ) : (
+              prompt.versions.map((v) => {
+                const isSelected = v.id === selected?.id;
+                const isProduction = v.labels.includes('production');
+                return (
+                  <button
+                    type="button"
+                    key={v.id}
+                    data-testid={`version-row-${v.version}`}
+                    disabled={editing}
+                    onClick={() => setSelectedVersionId(v.id)}
+                    className={cn(
+                      'flex w-full flex-col gap-1 px-3 py-2.5 text-left transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-60',
+                      isSelected ? 'bg-muted/60' : 'hover:bg-muted/40',
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium tracking-[-0.01em] text-foreground">
+                        v{v.version}
+                      </span>
+                      <div className="flex gap-1">
+                        {isProduction && (
+                          <Badge variant="success" appearance="light" size="sm">
+                            Production
+                          </Badge>
+                        )}
+                        {v.labels.includes('staging') && (
+                          <Badge variant="warning" appearance="light" size="sm">
+                            Staging
+                          </Badge>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                  <p className="truncate text-xs text-muted-foreground" title={v.commitMessage ?? ''}>
-                    {v.commitMessage || <span className="italic">(no commit message)</span>}
-                  </p>
-                  <p className="text-[11px] text-muted-foreground">
-                    {v.createdByName ?? 'unknown'}
-                    {v.createdAt ? ` · ${formatDateTime(v.createdAt)}` : ''}
-                  </p>
-                </button>
-              );
-            })}
+                    <p className="truncate text-xs text-muted-foreground" title={v.commitMessage ?? ''}>
+                      {v.commitMessage || <span className="italic">(no commit message)</span>}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {v.createdByName ?? 'unknown'}
+                      {v.createdAt ? ` · ${formatDateTime(v.createdAt)}` : ''}
+                    </p>
+                  </button>
+                );
+              })
+            )}
           </div>
         </div>
 
@@ -192,7 +201,13 @@ export function PromptDetailView({ name }: PromptDetailViewProps) {
         <div className="flex flex-col gap-3 rounded-lg border border-border p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-[0.72rem] font-medium uppercase tracking-[0.05em] text-muted-foreground">
-              {editing ? `New version (base: v${selected?.version})` : `Template · v${selected?.version}`}
+              {editing
+                ? selected
+                  ? `New version (base: v${selected.version})`
+                  : 'New version'
+                : selected
+                  ? `Template · v${selected.version}`
+                  : 'No template yet'}
             </p>
             {!editing && (
               <div className="flex gap-2">

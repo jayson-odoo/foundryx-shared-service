@@ -28,6 +28,18 @@ NOW = utc(2026, 9, 1, 2, 0)
 _SEQUENCE = {"n": 0}
 
 
+@pytest.fixture(autouse=True)
+def _reset_prompt_cache():
+    """N3 review: ``regenerate`` runs the real job inline (eager celery),
+    which calls ``get_prompt`` - the registry's module-level TTL cache must
+    not leak an entry across tests."""
+    from app.services.ai_prompt_registry import bust_cache
+
+    bust_cache()
+    yield
+    bust_cache()
+
+
 @pytest.fixture
 def meetings_client(meetings_session_factory):
     def override_get_db():
@@ -130,7 +142,7 @@ def test_get_minutes_returns_every_field_of_the_latest_version(meetings_client):
     assert body["createdBy"] == "llm"
     assert body["llmProvider"] == "gemini"
     assert body["llmModel"] == "gemini-3.5-flash"
-    assert body["promptVersion"] is None
+    assert body["promptVersionId"] is None
     assert body["summary"] == "We discussed the roadmap."
     assert body["decisions"] == ["Ship S4"]
     assert body["openQuestions"] == ["Who owns S5?"]
@@ -327,6 +339,69 @@ def test_put_requires_manage_not_just_view(meetings_client):
     assert res.status_code == 403
 
 
+def test_put_carries_a_ticked_item_forward_by_matching_text(meetings_client):
+    """S2 review: PUT must not silently reset a ticked item just because the
+    editor re-submitted it under the same text."""
+    session = meetings_client._factory()
+    try:
+        meeting = _meeting(session)
+        minutes_row = _minutes(session, meeting, version=1)
+        item_id = (
+            session.query(ActionItem).filter(ActionItem.minutes_id == minutes_row.id).one().id
+        )
+        meeting_id = meeting.id
+    finally:
+        session.close()
+
+    headers = _auth(meetings_client)
+    toggled = meetings_client.post(f"/meetings/action-items/{item_id}/toggle", headers=headers)
+    assert toggled.status_code == 200, toggled.text
+    assert toggled.json()["doneAt"] is not None
+
+    body = _put_body(
+        summary="Edited summary, same action item text.",
+        actionItems=[
+            {
+                "text": "Write the deploy note",  # matches _DEFAULT_SECTIONS exactly
+                "ownerEmail": "alice@example.com",
+                "dueOn": "2026-09-10",
+            }
+        ],
+    )
+    res = meetings_client.put(f"/meetings/{meeting_id}/minutes", json=body, headers=headers)
+    assert res.status_code == 200, res.text
+    assert res.json()["actionItems"][0]["doneAt"] is not None
+
+    fetched = meetings_client.get(f"/meetings/{meeting_id}/minutes", headers=headers)
+    assert fetched.json()["actionItems"][0]["doneAt"] is not None
+
+
+def test_put_a_renamed_item_comes_back_unticked(meetings_client):
+    """S2 review: a genuinely renamed item has no prior text to match -
+    unticked is correct, never a stale match."""
+    session = meetings_client._factory()
+    try:
+        meeting = _meeting(session)
+        minutes_row = _minutes(session, meeting, version=1)
+        item_id = (
+            session.query(ActionItem).filter(ActionItem.minutes_id == minutes_row.id).one().id
+        )
+        meeting_id = meeting.id
+    finally:
+        session.close()
+
+    headers = _auth(meetings_client)
+    meetings_client.post(f"/meetings/action-items/{item_id}/toggle", headers=headers)
+
+    body = _put_body(
+        summary="Renamed the action item.",
+        actionItems=[{"text": "A completely different task", "ownerEmail": None, "dueOn": None}],
+    )
+    res = meetings_client.put(f"/meetings/{meeting_id}/minutes", json=body, headers=headers)
+    assert res.status_code == 200, res.text
+    assert res.json()["actionItems"][0]["doneAt"] is None
+
+
 # ── toggle (AC-S4-3) ──────────────────────────────────────────────────────────
 
 
@@ -430,3 +505,48 @@ def test_regenerate_requires_manage_not_just_view(meetings_client):
     headers = _auth(meetings_client, email="viewer2@example.com", password="demo1234")
     res = meetings_client.post(f"/meetings/{meeting_id}/minutes/regenerate", headers=headers)
     assert res.status_code == 403
+
+
+# ── cross-tenant negatives (T2 review) ───────────────────────────────────────
+
+
+def test_a_meeting_in_another_tenant_404s(meetings_client):
+    from app.services.app_store_service import AppStoreService
+    from tests.meetings_helpers import make_tenant
+
+    other_id = "77777777-7777-7777-7777-777777777777"
+    session = meetings_client._factory()
+    try:
+        make_tenant(session, other_id, "Other Co")
+        AppStoreService(session).install(other_id, "meetings")
+        meeting = _meeting(session, tenant_id=other_id)
+        _minutes(session, meeting)
+        meeting_id = meeting.id
+    finally:
+        session.close()
+
+    res = meetings_client.get(f"/meetings/{meeting_id}/minutes", headers=_auth(meetings_client))
+    assert res.status_code == 404
+
+
+def test_an_action_item_in_another_tenant_404s(meetings_client):
+    from app.services.app_store_service import AppStoreService
+    from tests.meetings_helpers import make_tenant
+
+    other_id = "88888888-8888-8888-8888-888888888888"
+    session = meetings_client._factory()
+    try:
+        make_tenant(session, other_id, "Other Co 2")
+        AppStoreService(session).install(other_id, "meetings")
+        meeting = _meeting(session, tenant_id=other_id)
+        minutes_row = _minutes(session, meeting)
+        item_id = (
+            session.query(ActionItem).filter(ActionItem.minutes_id == minutes_row.id).one().id
+        )
+    finally:
+        session.close()
+
+    res = meetings_client.post(
+        f"/meetings/action-items/{item_id}/toggle", headers=_auth(meetings_client)
+    )
+    assert res.status_code == 404

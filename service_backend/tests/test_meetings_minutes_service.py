@@ -48,14 +48,32 @@ def db(meetings_session_factory):
     session.close()
 
 
+@pytest.fixture(autouse=True)
+def _reset_prompt_cache():
+    """N3 review: ``ai_prompt_registry``'s TTL cache is a module-level dict,
+    shared by every test in this process regardless of which per-test DB it
+    reads from - a `get_prompt` call in an earlier test can otherwise leak a
+    stale (or absent) cache entry into this one within the 60s TTL window."""
+    from app.services.ai_prompt_registry import bust_cache
+
+    bust_cache()
+    yield
+    bust_cache()
+
+
 class _FakeLLMProvider:
     """A scripted ``IntegrationProvider`` of ``type='llm'`` - the ``.complete``
     call shape every real adapter (gemini/anthropic/openai) shares."""
 
     type = "llm"
 
-    def __init__(self, *, texts=None, error=None):
+    def __init__(self, *, texts=None, error=None, finish_reasons=None):
         self.texts = list(texts or [])
+        # Parallel to ``texts`` - None (normal stop) unless a test needs to
+        # simulate truncation (S1 review).
+        self.finish_reasons = (
+            list(finish_reasons) if finish_reasons is not None else [None] * len(self.texts)
+        )
         self.error = error
         self.calls = []
 
@@ -74,7 +92,9 @@ class _FakeLLMProvider:
         )
         if self.error is not None:
             raise self.error
-        return LLMResult(text=self.texts.pop(0))
+        text = self.texts.pop(0)
+        finish_reason = self.finish_reasons.pop(0) if self.finish_reasons else None
+        return LLMResult(text=text, finish_reason=finish_reason)
 
 
 def _patch_provider(monkeypatch, provider, *, expect_name="gemini"):
@@ -143,11 +163,13 @@ def _participant(db, meeting, *, email="alice@example.com", display_name="Alice"
     return row
 
 
-def _connection(db, *, provider="anthropic", model=None, is_active=True, api_key="test-key"):
+def _connection(
+    db, *, provider="anthropic", model=None, is_active=True, api_key="test-key", type="llm"
+):
     conn = Connection(
         tenant_id=DEFAULT_TENANT_ID,
         provider=provider,
-        type="llm",
+        type=type,
         name=f"{provider} minutes",
         config_json={"model": model} if model else {},
         credentials_json=encrypt_secret({"apiKey": api_key}),
@@ -307,6 +329,20 @@ def test_resolve_llm_fails_on_an_inactive_connection_rather_than_falling_back(db
         resolve_llm(db, DEFAULT_TENANT_ID)
 
 
+def test_resolve_llm_fails_cleanly_on_a_non_llm_connection(db, monkeypatch):
+    """S3 review: a `llm_connection_id` pointed at (say) a storage connection
+    must raise the typed error, never an `AttributeError` when the code
+    later tries to use it as an LLM credential."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "meetings_llm_api_key", "platform-key")
+    connection = _connection(db, provider="s3", type="storage")
+    MeetingsSettingsService(db).update(DEFAULT_TENANT_ID, {"llmConnectionId": connection.id})
+
+    with pytest.raises(MinutesResolutionError):
+        resolve_llm(db, DEFAULT_TENANT_ID)
+
+
 def test_an_undecryptable_connection_stamps_it_error_and_fails(db, monkeypatch):
     connection = _connection(db)
     MeetingsSettingsService(db).update(DEFAULT_TENANT_ID, {"llmConnectionId": connection.id})
@@ -387,6 +423,39 @@ def test_a_missing_section_is_also_a_shape_failure(db, monkeypatch):
     assert len(provider.calls) == 2
 
 
+# ── _strip_fence edge cases (T3 review - documents current behavior) ────────
+
+
+def test_strip_fence_a_normal_multiline_fenced_block():
+    from modules.meetings.services.minutes import _strip_fence
+
+    assert _strip_fence('```json\n{"a": 1}\n```') == '{"a": 1}'
+
+
+def test_strip_fence_a_single_line_fence_is_stripped_to_empty():
+    """Documents current behavior, not a fix (T3): a fence with no interior
+    newline has no ``\\n`` for the function to split the body from, so
+    everything between the two ```` ``` ```` markers is discarded rather
+    than recovered. The prompt asks for a multi-line body, so this has never
+    been observed live; recorded here so a future change is deliberate."""
+    from modules.meetings.services.minutes import _strip_fence
+
+    assert _strip_fence('```{"a": 1}```') == ""
+
+
+def test_strip_fence_prose_before_the_fence_is_left_untouched():
+    """Documents current behavior (T3): the check is `startswith("```")`,
+    so prose ahead of a fenced block skips the strip entirely and the raw
+    text (fence markers included) passes through to `json.loads`, which
+    then fails and drives the normal corrective-retry path - the prompt
+    explicitly forbids prose, so this is a shape failure, not silent data
+    loss."""
+    from modules.meetings.services.minutes import _strip_fence
+
+    raw = 'Here is the JSON:\n```json\n{"a": 1}\n```'
+    assert _strip_fence(raw) == raw
+
+
 def test_a_transport_failure_never_retries(db, monkeypatch):
     """A bad key / network error is not "the shape was wrong" - no
     corrective retry, one clean failure."""
@@ -407,6 +476,46 @@ def test_a_transport_failure_never_retries(db, monkeypatch):
     assert rows[0].status == "error"
     db.refresh(meeting)
     assert meeting.status == STATUS_TRANSCRIBED
+
+
+def test_a_truncated_response_fails_immediately_never_enters_the_json_retry(db, monkeypatch):
+    """S1 review: this call is free-text (no `output_schema`), so none of
+    the adapters' own MAX_TOKENS refusal runs. A response cut off at the
+    token cap is never valid JSON to retry against - one clean failure, not
+    a corrective retry burned on an identical truncation."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "meetings_llm_api_key", "platform-key")
+    meeting = _meeting(db)
+    _transcript(db, meeting)
+    provider = _FakeLLMProvider(
+        texts=['{"summary": "partial and cut off h'], finish_reasons=["MAX_TOKENS"]
+    )
+    _patch_provider(monkeypatch, provider)
+
+    with pytest.raises(MinutesGenerationError, match="token limit"):
+        generate_minutes(db, meeting)
+
+    assert len(provider.calls) == 1  # no corrective retry
+    rows = _activity_rows(db, meeting.id)
+    assert len(rows) == 1
+    assert rows[0].status == "error"
+    db.refresh(meeting)
+    assert meeting.status == STATUS_TRANSCRIBED
+    assert db.query(Minutes).filter(Minutes.meeting_id == meeting.id).count() == 0
+
+
+def test_a_normal_finish_reason_is_never_treated_as_truncation(db, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "meetings_llm_api_key", "platform-key")
+    meeting = _meeting(db)
+    _transcript(db, meeting)
+    provider = _FakeLLMProvider(texts=[_valid_json()], finish_reasons=["STOP"])
+    _patch_provider(monkeypatch, provider)
+
+    minutes_row = generate_minutes(db, meeting)
+    assert minutes_row.version == 1
 
 
 def test_a_meeting_with_no_transcript_fails_loudly(db, monkeypatch):
@@ -444,6 +553,57 @@ def test_a_rerun_appends_the_next_version_and_keeps_the_first(db, monkeypatch):
     first_still_there = db.query(Minutes).filter(Minutes.id == first.id).one()
     assert first_still_there.sections_json["summary"] == "First pass"
     assert db.query(Minutes).filter(Minutes.meeting_id == meeting.id).count() == 2
+
+
+def test_a_version_collision_at_write_time_is_a_friendly_error_not_a_500(db, monkeypatch):
+    """N1 review: the SELECT-max-then-INSERT for the next version is not
+    itself atomic - two runs racing on `(meeting_id, version)` must land as
+    a clean, re-runnable typed error, not a raw IntegrityError / 500."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "meetings_llm_api_key", "platform-key")
+    meeting = _meeting(db)
+    _transcript(db, meeting)
+    _patch_provider(monkeypatch, _FakeLLMProvider(texts=[_valid_json()]))
+
+    def _boom():
+        raise IntegrityError("insert", {}, Exception("uq_meetings_minutes_version"))
+
+    monkeypatch.setattr(db, "commit", _boom)
+
+    with pytest.raises(MinutesGenerationError, match="finished first"):
+        generate_minutes(db, meeting)
+
+    # Neither read below calls `.commit()`, so the patch stays in place -
+    # the rollback inside `generate_minutes` already undid the write.
+    assert db.query(Minutes).filter(Minutes.meeting_id == meeting.id).count() == 0
+    db.refresh(meeting)
+    assert meeting.status == STATUS_TRANSCRIBED
+
+
+def test_create_version_collision_at_write_time_raises_409(db, monkeypatch):
+    """N1 review, PUT path: the same race, surfaced as a 409 the router can
+    pass straight through (``MinutesService`` raises ``HTTPException``
+    directly elsewhere in this class, so this matches its own convention)."""
+    from fastapi import HTTPException
+    from sqlalchemy.exc import IntegrityError
+
+    from modules.meetings.services.minutes import MinutesService
+
+    meeting = _meeting(db)
+    service = MinutesService(db)
+
+    def _boom():
+        raise IntegrityError("insert", {}, Exception("uq_meetings_minutes_version"))
+
+    monkeypatch.setattr(db, "commit", _boom)
+
+    sections = json.loads(_valid_json())
+    with pytest.raises(HTTPException) as exc_info:
+        service.create_version(meeting.tenant_id, meeting.id, sections, "user-1")
+    assert exc_info.value.status_code == 409
 
 
 # ── empty prompt registry still succeeds (AC-S4-9) ───────────────────────────

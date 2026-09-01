@@ -1,6 +1,6 @@
 # PLAN - Meetings S4: Minutes (LLM, prompt registry + editor, action items)
 
-**Status:** APPROVED 2026-09-01 (captain, via lavish review) - Phase 2a (prompt registry backend + FE wiring + browser gate) DONE, uncommitted. Minutes job/API/enqueue (3.1/3.2) not yet built - that is a separate P2 slice. Captain governs the P1-P3 gates; subagents execute. Spine: `PLAN-meetings-program.md` M13/M14 (+M19 reuse). UAC: `meetings-s4-minutes-acceptance-criteria.md`.
+**Status:** DONE 2026-09-02 - P1-P3 complete, opus review applied, live-verified on the pilot (3 real meetings ready, zh case proven). PR pending final full-suite run. Open volume gate: AC-S4-11 ten meetings (Sep 2-4 recordings).
 **Branch:** stacks on `sprint-5/meetings-s3-codeswitch` (PR #38, CI green) or on main once #38 merges.
 
 ## Grill rulings (2026-09-01, captain)
@@ -182,3 +182,21 @@ only gemini is exercised by the gate).
   a one-time dev-server restart to take effect (`NEXT_PUBLIC_*` is inlined into the browser bundle
   at server-start, not read per-request). Without this fix every AI settings page, not just this
   one, was silently calling the wrong backend / flapping auth.
+- 2026-09-02 P3 (S1): `generate_minutes` calls `provider.complete(...)` with no `output_schema` -
+  free text + our own JSON parse/retry, not each adapter's native structured-output mode (§3.1
+  step 4's "corrective retry, append the validation error" maps onto a textual response, not a
+  vendor-specific schema mechanism). Consequence caught in review: none of the three adapters'
+  own MAX_TOKENS truncation refusal runs on this path (that check lives inside each adapter's
+  `output_schema is not None` branch only), so `generate_minutes` now carries its own
+  `_TRUNCATION_FINISH_REASONS` check instead. No max-tokens override seam exists on
+  `IntegrationProvider.complete()` today (`DEFAULT_MAX_TOKENS = 4096` is a module constant baked
+  into each adapter, not a parameter) - not added here (no adapter edits in a review-fix pass).
+  Trigger to move to `output_schema` (or add a max-tokens seam): the first real MAX_TOKENS
+  failure on an actual meeting - until then this is theoretical (no meeting has hit it; the
+  pilot's `gemini-3.5-flash` batch runs have stayed well under 4096 output tokens).
+- 2026-09-02 P3 (S8): `prompts-list-view.tsx` stayed a hand-rolled hairline list rather than
+  moving to the Resource shell / a `ClampedText` swap the review offered as an alternative -
+  the file's own comment already states why (a handful of platform-seeded prompt rows, not a
+  growing tenant collection), so `title=` on the two `truncate` spans was the matching-scope fix.
+  Trigger to migrate to a real list shell: the registry gains tenant-facing rows or pagination -
+  neither is true today (R5's per-tenant-fork trigger hasn't fired either).

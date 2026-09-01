@@ -15,7 +15,7 @@ from app.models.user import User
 from app.schemas.job import JobOut
 
 from ..jobs import enqueue_minutes, minutes_in_flight
-from ..models import ActionItem, Meeting, Minutes
+from ..models import ActionItem, Minutes
 from ..schemas import (
     ActionItemOut,
     MinutesOut,
@@ -36,7 +36,7 @@ def _out(
         version=minutes_row.version,
         createdBy=minutes_row.created_by,
         createdAt=minutes_row.created_at,
-        promptVersion=minutes_row.prompt_version_id,
+        promptVersionId=minutes_row.prompt_version_id,
         llmProvider=minutes_row.llm_provider,
         llmModel=minutes_row.llm_model,
         summary=str(sections.get("summary") or ""),
@@ -126,13 +126,7 @@ def regenerate_minutes(
     actor_id: str = Depends(get_actor_user_id),
     db: Session = Depends(get_db),
 ) -> JobOut:
-    meeting = (
-        db.query(Meeting)
-        .filter(Meeting.tenant_id == current_user.tenant_id, Meeting.id == meeting_id)
-        .first()
-    )
-    if meeting is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Meeting not found")
+    meeting = MinutesService(db).require_meeting(current_user.tenant_id, meeting_id)
     if minutes_in_flight(db, current_user.tenant_id, meeting_id):
         raise HTTPException(
             status.HTTP_409_CONFLICT, "A minutes job is already running for this meeting."

@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from cryptography.fernet import InvalidToken
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 
@@ -44,6 +45,7 @@ from ..models import (
     Meeting,
     MeetingParticipant,
     Minutes,
+    MeetingsTenantSettings,
     Transcript,
     TranscriptSegment,
 )
@@ -55,6 +57,13 @@ PROMPT_NAME = "meetings_minutes"
 _OPERATION = "minutes_generate"
 _REQUIRED_KEYS = ("summary", "decisions", "action_items", "open_questions", "topic_notes")
 _TOKEN_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
+# Truncation signal, one spelling per adapter (S1 review): Gemini's
+# `finishReason` is `"MAX_TOKENS"`, Anthropic's `stop_reason` is
+# `"max_tokens"`, OpenAI's `finish_reason` is `"length"`. This call is
+# free-text (no `output_schema` - see plan §5 deviation), so none of the
+# adapters' own structured-output MAX_TOKENS refusal runs; this is the
+# equivalent check for the free-text path.
+_TRUNCATION_FINISH_REASONS = {"MAX_TOKENS", "max_tokens", "length"}
 
 
 class MinutesError(Exception):
@@ -86,19 +95,24 @@ class ResolvedLLM:
 # ── LLM resolution (R1, AC-S4-5) ─────────────────────────────────────────────
 
 
-def resolve_llm(db: Session, tenant_id: str) -> ResolvedLLM:
+def resolve_llm(
+    db: Session, tenant_id: str, tenant_settings: Optional[MeetingsTenantSettings] = None
+) -> ResolvedLLM:
     """``tenant_settings.llm_connection_id`` if set, else the platform env
     default; raises ``MinutesResolutionError`` when neither is usable.
 
-    A SET connection id that is missing/inactive/undecryptable is a
-    misconfiguration, not a "fall through to the platform key" case - the
-    tenant made an explicit choice and it must fail loudly rather than
-    silently substitute another provider (mirrors ``run_calendar_sync``'s
-    Google InvalidToken handling for the same reason).
+    A SET connection id that is missing/inactive/undecryptable/not-an-LLM
+    connection is a misconfiguration, not a "fall through to the platform
+    key" case - the tenant made an explicit choice and it must fail loudly
+    rather than silently substitute another provider (mirrors
+    ``run_calendar_sync``'s Google InvalidToken handling for the same
+    reason). ``tenant_settings`` lets a caller that already loaded the row
+    (``generate_minutes``) skip a second query for it (N7 review).
     """
     from app.config import settings
 
-    tenant_settings = MeetingsSettingsService(db).get(tenant_id)
+    if tenant_settings is None:
+        tenant_settings = MeetingsSettingsService(db).get(tenant_id)
     connection_id = tenant_settings.llm_connection_id
     if connection_id:
         connection = (
@@ -106,10 +120,11 @@ def resolve_llm(db: Session, tenant_id: str) -> ResolvedLLM:
             .filter(Connection.tenant_id == tenant_id, Connection.id == connection_id)
             .first()
         )
-        if connection is None or not connection.is_active:
+        if connection is None or not connection.is_active or connection.type != "llm":
             raise MinutesResolutionError(
-                "The AI connection configured for meeting minutes is missing or "
-                "inactive - pick another connection in Meetings Settings."
+                "The AI connection configured for meeting minutes is missing, "
+                "inactive, or not an AI connection - pick a valid LLM "
+                "connection in Meetings Settings."
             )
         try:
             credentials = decrypt_secret(connection.credentials_json)
@@ -322,7 +337,8 @@ def generate_minutes(db: Session, meeting: Meeting) -> Minutes:
         .all()
     )
 
-    resolved = resolve_llm(db, meeting.tenant_id)
+    tenant_settings = MeetingsSettingsService(db).get(meeting.tenant_id)
+    resolved = resolve_llm(db, meeting.tenant_id, tenant_settings)
     provider = get_provider(resolved.provider_name)
     if provider is None:
         raise MinutesResolutionError(
@@ -330,7 +346,6 @@ def generate_minutes(db: Session, meeting: Meeting) -> Minutes:
             f'"{resolved.provider_name}".'
         )
 
-    tenant_settings = MeetingsSettingsService(db).get(meeting.tenant_id)
     prompt = get_prompt(db, PROMPT_NAME)
     base_prompt = _render(
         prompt.text,
@@ -381,6 +396,30 @@ def generate_minutes(db: Session, meeting: Meeting) -> Minutes:
             raise MinutesGenerationError(str(exc)) from exc
 
         latency_ms = int((time.monotonic() - started) * 1000)
+
+        if result.finish_reason in _TRUNCATION_FINISH_REASONS:
+            # A truncated response is never valid JSON to retry against - the
+            # 4096-token cap (`DEFAULT_MAX_TOKENS`, no override seam exists
+            # today - plan §5 deviation) would truncate it identically on a
+            # corrective retry, burning the one retry on the same failure.
+            error = (
+                "The model's response was cut off at the token limit before "
+                "the minutes were complete (finish_reason="
+                f"{result.finish_reason}) - try a shorter meeting or a model "
+                "with a larger output limit."
+            )
+            _log_call(
+                db,
+                meeting=meeting,
+                provider=resolved.provider_name,
+                model=resolved.model,
+                latency_ms=latency_ms,
+                status=ACTIVITY_ERROR,
+                error=error,
+                response={"raw": (result.text or "")[:2000]},
+            )
+            raise MinutesGenerationError(error)
+
         try:
             parsed = _parse_sections(result.text or "")
         except MinutesShapeError as exc:
@@ -413,7 +452,11 @@ def generate_minutes(db: Session, meeting: Meeting) -> Minutes:
         )
         break
 
-    assert parsed is not None  # every path above raises or sets it
+    if parsed is None:
+        # Unreachable (every loop iteration above either raises or sets
+        # `parsed`) - an explicit raise rather than `assert`, which vanishes
+        # under `-O` (N2 review).
+        raise MinutesGenerationError("Minutes generation ended without a parsed response.")
 
     version_row = (
         db.query(AIPromptVersion)
@@ -439,20 +482,31 @@ def generate_minutes(db: Session, meeting: Meeting) -> Minutes:
         llm_provider=resolved.provider_name,
         llm_model=resolved.model,
     )
-    db.add(minutes_row)
-    db.flush()
-    for item in parsed["action_items"]:
-        db.add(
-            ActionItem(
-                tenant_id=meeting.tenant_id,
-                minutes_id=minutes_row.id,
-                text=item["text"],
-                owner_email=item["owner_email"],
-                due_on=_parse_due_on(item["due_on"]),
+    try:
+        db.add(minutes_row)
+        db.flush()
+        for item in parsed["action_items"]:
+            db.add(
+                ActionItem(
+                    tenant_id=meeting.tenant_id,
+                    minutes_id=minutes_row.id,
+                    text=item["text"],
+                    owner_email=item["owner_email"],
+                    due_on=_parse_due_on(item["due_on"]),
+                )
             )
-        )
-    meeting.status = STATUS_READY
-    db.commit()
+        meeting.status = STATUS_READY
+        db.commit()
+    except IntegrityError as exc:
+        # Two runs for the same meeting raced on `(meeting_id, version)`
+        # (auto-chain + a manual regenerate, say) - the SELECT-then-INSERT
+        # above is not itself atomic (N1 review). The other run won; this one
+        # writes nothing and says so plainly rather than 500ing.
+        db.rollback()
+        raise MinutesGenerationError(
+            "Another minutes run for this meeting finished first - re-run to "
+            "append your version."
+        ) from exc
     db.refresh(minutes_row)
     return minutes_row
 
@@ -480,9 +534,10 @@ class MinutesService:
             is not None
         )
 
-    def _scoped_meeting(
-        self, tenant_id: str, meeting_id: str, user_id: str, *, can_manage: bool
-    ) -> Meeting:
+    def require_meeting(self, tenant_id: str, meeting_id: str) -> Meeting:
+        """Existence + tenant scope only, no own-scope narrowing - what a
+        ``meetings.manage`` route needs (B1 review: routers are HTTP/Pydantic
+        only, so the lookup lives here, not in ``routers/minutes.py``)."""
         meeting = (
             self.db.query(Meeting)
             .filter(Meeting.tenant_id == tenant_id, Meeting.id == meeting_id)
@@ -490,6 +545,12 @@ class MinutesService:
         )
         if meeting is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Meeting not found")
+        return meeting
+
+    def _scoped_meeting(
+        self, tenant_id: str, meeting_id: str, user_id: str, *, can_manage: bool
+    ) -> Meeting:
+        meeting = self.require_meeting(tenant_id, meeting_id)
         if not can_manage and not self._is_participant(tenant_id, meeting_id, user_id):
             # Same own-scope convention as transcripts.py: not-yours reads
             # exactly like not-found.
@@ -544,14 +605,22 @@ class MinutesService:
     def create_version(
         self, tenant_id: str, meeting_id: str, sections: Dict[str, Any], user_id: str
     ) -> Tuple[Minutes, List[ActionItem], List[Minutes]]:
-        """A human edit - the NEXT version, original(s) untouched (AC-S4-8)."""
-        meeting = (
-            self.db.query(Meeting)
-            .filter(Meeting.tenant_id == tenant_id, Meeting.id == meeting_id)
-            .first()
-        )
-        if meeting is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Meeting not found")
+        """A human edit - the NEXT version, original(s) untouched (AC-S4-8).
+
+        A ticked action item must not silently reset just because the human
+        editor re-submitted it (S2 review): a previous item's `done_at`
+        carries forward onto the new version's row for the same `text`
+        (case-insensitive exact match, first match wins, each prior item
+        consumed at most once - a renamed item comes back unticked, which is
+        correct, the old text is simply gone).
+        """
+        self.require_meeting(tenant_id, meeting_id)
+        existing_versions = self._versions(meeting_id)  # desc order; [0] = current latest
+        previous_items = self._action_items(existing_versions[0].id) if existing_versions else []
+        done_at_pool: Dict[str, List[Optional[datetime]]] = {}
+        for prior in previous_items:
+            done_at_pool.setdefault(prior.text.strip().lower(), []).append(prior.done_at)
+
         next_version = (
             self.db.query(func.coalesce(func.max(Minutes.version), 0))
             .filter(Minutes.meeting_id == meeting_id)
@@ -565,19 +634,32 @@ class MinutesService:
             sections_json=sections,
             created_by=user_id,
         )
-        self.db.add(row)
-        self.db.flush()
-        for item in sections.get("action_items", []):
-            self.db.add(
-                ActionItem(
-                    tenant_id=tenant_id,
-                    minutes_id=row.id,
-                    text=item["text"],
-                    owner_email=item.get("owner_email"),
-                    due_on=_parse_due_on(item.get("due_on")),
+        try:
+            self.db.add(row)
+            self.db.flush()
+            for item in sections.get("action_items", []):
+                bucket = done_at_pool.get(str(item.get("text") or "").strip().lower())
+                done_at = bucket.pop(0) if bucket else None
+                self.db.add(
+                    ActionItem(
+                        tenant_id=tenant_id,
+                        minutes_id=row.id,
+                        text=item["text"],
+                        owner_email=item.get("owner_email"),
+                        due_on=_parse_due_on(item.get("due_on")),
+                        done_at=done_at,
+                    )
                 )
-            )
-        self.db.commit()
+            self.db.commit()
+        except IntegrityError as exc:
+            # Same race as `generate_minutes` (N1 review): two version
+            # creations collided on `(meeting_id, version)`.
+            self.db.rollback()
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Another minutes version was just created for this meeting - "
+                "refresh and try again.",
+            ) from exc
         self.db.refresh(row)
         return row, self._action_items(row.id), self._versions(meeting_id)
 

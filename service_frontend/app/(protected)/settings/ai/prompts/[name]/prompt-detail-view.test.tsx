@@ -111,6 +111,19 @@ describe('AI prompt detail', () => {
     expect(screen.getByText('Updated {{title}} body')).toBeInTheDocument();
   });
 
+  it('shows an explicit empty state when there are no versions yet (P3 review S7 - a fresh DB)', async () => {
+    detail.versions = [];
+    detail.labels = { production: null, staging: null };
+    render(<PromptDetailView name="meetings_minutes" />);
+
+    expect(await screen.findByText('No versions yet.')).toBeInTheDocument();
+    expect(screen.getByText('No template yet')).toBeInTheDocument();
+    expect(screen.getByTestId('new-version-button')).toBeInTheDocument();
+    // The bug this guards against: `Template · v${selected?.version}` with
+    // no version renders the literal string "vundefined".
+    expect(screen.queryByText(/vundefined/)).not.toBeInTheDocument();
+  });
+
   it('Publish opens a confirm dialog and repoints the production badge on confirm', async () => {
     detail.versions = [
       version({ id: 'v1', version: 1, labels: ['production'] }),

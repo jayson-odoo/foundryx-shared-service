@@ -55,32 +55,40 @@ export function PromptsListView() {
         <span className="hidden w-44 shrink-0 sm:block">Last updated</span>
       </div>
       <div className="divide-y divide-border">
-        {prompts.map((prompt) => (
-          <Link
-            key={prompt.name}
-            href={promptPath(prompt.name)}
-            data-testid={`prompt-row-${prompt.name}`}
-            className="flex items-center gap-4 px-4 py-3.5 transition-colors duration-150 ease-out hover:bg-muted/50 active:bg-muted"
-          >
-            <span className="min-w-0 flex-1 truncate font-mono text-sm font-medium tracking-[-0.01em] text-foreground">
-              {prompt.name}
-            </span>
-            <span className="w-20 shrink-0">
-              {prompt.productionVersion != null ? (
-                <Badge variant="success" appearance="light" size="sm">
-                  v{prompt.productionVersion}
-                </Badge>
-              ) : (
-                <span className="text-xs text-muted-foreground">Unpublished</span>
-              )}
-            </span>
-            <span className="hidden w-44 shrink-0 truncate text-sm text-muted-foreground sm:block">
-              {prompt.updatedAt ? formatDateTime(prompt.updatedAt) : '-'}
-              {prompt.updatedByName ? ` · ${prompt.updatedByName}` : ''}
-            </span>
-            <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-          </Link>
-        ))}
+        {prompts.map((prompt) => {
+          const updated = `${prompt.updatedAt ? formatDateTime(prompt.updatedAt) : '-'}${prompt.updatedByName ? ` · ${prompt.updatedByName}` : ''}`;
+          return (
+            <Link
+              key={prompt.name}
+              href={promptPath(prompt.name)}
+              data-testid={`prompt-row-${prompt.name}`}
+              className="flex items-center gap-4 px-4 py-3.5 transition-colors duration-150 ease-out hover:bg-muted/50 active:bg-muted"
+            >
+              <span
+                title={prompt.name}
+                className="min-w-0 flex-1 truncate font-mono text-sm font-medium tracking-[-0.01em] text-foreground"
+              >
+                {prompt.name}
+              </span>
+              <span className="w-20 shrink-0">
+                {prompt.productionVersion != null ? (
+                  <Badge variant="success" appearance="light" size="sm">
+                    v{prompt.productionVersion}
+                  </Badge>
+                ) : (
+                  <span className="text-xs text-muted-foreground">Unpublished</span>
+                )}
+              </span>
+              <span
+                title={updated}
+                className="hidden w-44 shrink-0 truncate text-sm text-muted-foreground sm:block"
+              >
+                {updated}
+              </span>
+              <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+            </Link>
+          );
+        })}
       </div>
     </div>
   );

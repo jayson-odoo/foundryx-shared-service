@@ -181,7 +181,7 @@ class MinutesOut(ApiModel):
     version: int
     createdBy: str
     createdAt: datetime
-    promptVersion: Optional[str] = None
+    promptVersionId: Optional[str] = None
     llmProvider: Optional[str] = None
     llmModel: Optional[str] = None
     summary: str

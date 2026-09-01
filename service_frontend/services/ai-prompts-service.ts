@@ -2,10 +2,10 @@
  * AI prompt registry service boundary (Meetings S4, R4/R5). UI → hook →
  * THIS → api-client.
  *
- * Phase 2a: wired to the real backend (`ai-prompts-service.real.ts`, the
- * core `ai_prompt_versions` / `ai_prompt_labels` routes). `ai-prompts-service
- * .mock` remains importable for the Phase 1 vitest files only - a surviving
- * mock behind a "done" slice would be debt.
+ * Wired to the real backend (`ai-prompts-service.real.ts`, the core
+ * `ai_prompt_versions` / `ai_prompt_labels` routes). No mock module exists
+ * (P3 review, S5) - the two vitest files (`page.test.tsx`,
+ * `prompt-detail-view.test.tsx`) `vi.mock` this module inline instead.
  */
 import type {
   AiPromptDetail,
