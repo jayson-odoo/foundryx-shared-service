@@ -102,8 +102,14 @@ tenant's volume demands it, M21).
 Pure function, no I/O: `assign_speakers(segments, captions, start_epoch)`.
 
 - Caption event -> interval: block FINALIZED at `ts`; its span is approximated as ending at `ts`
-  and starting at the previous caption's ts (floor: 2 s minimum). Good enough because Meet
-  finalizes blocks per speaker turn (S1 run 7: 20/20 blocks carried the right name).
+  and starting at the previous caption's ts (floor: 2 s minimum) - except the FIRST caption, whose
+  span starts at the recording start, not `ts - 2s`. Good enough because Meet finalizes blocks per
+  speaker turn (S1 run 7: 20/20 blocks carried the right name). The first-caption rule was fixed
+  post-implementation: a 2026-09-01 live evidence run (134 s single-speaker meeting) showed Meet
+  finalizing a continuous monologue as ONE caption block only on leave, at ts 130.65 s, while the
+  last speech segment ended at 113.52 s - 15.13 s outside the 15 s nearest-caption window under the
+  original `ts - 2s` rule, so every segment named nobody; the fix widens the first caption's span
+  back to the recording start so it covers everything spoken since captures began.
 - Whisper segment -> the speaker whose caption interval overlaps it most; no overlap -> nearest
   caption within 15 s; still nothing -> `NULL` (renders as "Speaker" later, never a guess).
 - Text similarity is deliberately NOT used - names ride TIME, captions and Whisper disagree on

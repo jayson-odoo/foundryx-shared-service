@@ -53,20 +53,26 @@ def _intervals(captions: Sequence[CaptionEvent], start_epoch: float) -> List[_In
     first found - chronologically earliest, since this list is built in
     caption order - rather than the last.
 
-    Caption i's span ends at its own ``ts`` and starts at caption i-1's
-    ``ts`` - except the first caption, whose start is ``max(recording start,
-    ts - MIN_SPAN_S)``, and any caption whose predecessor landed less than
-    ``MIN_SPAN_S`` ago, whose start is pulled back to ``ts - MIN_SPAN_S`` (the
-    2 s floor)."""
+    The FIRST caption's span starts at the recording start (``start_epoch``),
+    never ``ts - MIN_SPAN_S`` - it is treated as if a caption had been
+    finalized at ``start_epoch`` itself, so the SAME prev-ts rule as every
+    later caption applies (live evidence run, 2026-09-01: Meet finalizes a
+    continuous monologue as ONE caption block only on pause or leave, so a
+    caption whose own ``ts`` lands minutes in must still cover everything
+    spoken since captures began - the old ``ts - MIN_SPAN_S`` rule covered
+    only its own trailing 2s and named nothing).
+
+    Caption i's span otherwise ends at its own ``ts`` and starts at caption
+    i-1's ``ts`` - except any caption (the first included) whose predecessor
+    (or, for the first, the recording start) landed less than ``MIN_SPAN_S``
+    ago, whose start is pulled back to ``ts - MIN_SPAN_S`` (the 2 s floor),
+    and never earlier than the recording start."""
     ordered = sorted(captions, key=lambda c: c.ts)
     intervals: List[_Interval] = []
-    prev_ts: Optional[float] = None
+    prev_ts: float = start_epoch
     for cap in ordered:
         floor_ts = cap.ts - MIN_SPAN_S
-        if prev_ts is None:
-            start_ts = max(start_epoch, floor_ts)
-        else:
-            start_ts = min(prev_ts, floor_ts)
+        start_ts = max(start_epoch, min(prev_ts, floor_ts))
         intervals.append(
             _Interval(
                 start_ms=(start_ts - start_epoch) * 1000.0,
