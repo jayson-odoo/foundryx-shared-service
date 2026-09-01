@@ -176,6 +176,7 @@ from app.models.ai import (
     AiTrace,
     ai_agent_skills,
 )
+from app.models.ai_prompt import AIPromptLabel, AIPromptVersion
 from app.models.catalog import Product, ProductCategory
 from app.models.numbering import NumberCounter, NumberFormat
 from app.models.tenant_settings import DEFAULT_CURRENCY, TenantSettings
@@ -340,4 +341,7 @@ __all__ = [
     "ROLE_USER",
     "ROLE_ASSISTANT",
     "MESSAGE_ROLES",
+    # AI prompt registry (Meetings S4, R4).
+    "AIPromptVersion",
+    "AIPromptLabel",
 ]

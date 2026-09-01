@@ -1,6 +1,6 @@
 # PLAN - Meetings S4: Minutes (LLM, prompt registry + editor, action items)
 
-**Status:** APPROVED 2026-09-01 (captain, via lavish review) - Phase 1 in progress. Captain governs the P1-P3 gates; subagents execute. Spine: `PLAN-meetings-program.md` M13/M14 (+M19 reuse). UAC: `meetings-s4-minutes-acceptance-criteria.md`.
+**Status:** APPROVED 2026-09-01 (captain, via lavish review) - Phase 2a (prompt registry backend + FE wiring + browser gate) DONE, uncommitted. Minutes job/API/enqueue (3.1/3.2) not yet built - that is a separate P2 slice. Captain governs the P1-P3 gates; subagents execute. Spine: `PLAN-meetings-program.md` M13/M14 (+M19 reuse). UAC: `meetings-s4-minutes-acceptance-criteria.md`.
 **Branch:** stacks on `sprint-5/meetings-s3-codeswitch` (PR #38, CI green) or on main once #38 merges.
 
 ## Grill rulings (2026-09-01, captain)
@@ -151,4 +151,34 @@ only gemini is exercised by the gate).
 
 ## 5. Deviations
 
-(recorded as they happen)
+- 2026-09-01 P1: browser evidence deferred into P2a step 0. The editor is gated on
+  `ai_prompts.manage`, a permission that only exists once the backend catalog sync registers
+  it; seeding the live pilot DB by hand was correctly refused. Vitest (5/5) stands in for the
+  interaction surface until then. Also fixed in passing: the worktree FE `.env.local` pointed
+  NEXTAUTH_URL/BASE_URL at a dead :3051 (stale lane port) - now :3001, dev server restarted.
+- 2026-09-01 P1: permission slug invented as `ai_prompts.manage` (mirrors `ai_agents.manage`);
+  P2a must register exactly this key and grant it to the seeded Platform Admin role.
+- 2026-09-01 P2a: `ai_prompts.manage` is registered in `app/permissions/platform_permissions.csv`
+  (module `platform`, not `core`) - it rides `PermissionService.sync_platform()`, which
+  `seed_permissions`/`seed_platform_admin` run on every `scripts.bootstrap_db` call, which every
+  container boot performs via `start.sh`. This is the existing, established mechanism for a
+  platform-only key in this repo (confirmed by reading `start.sh` + `app/seed.py`); no bespoke
+  grant migration was needed (unlike `ai_perms_s1b_grant_sweep.py`, which exists because CORE
+  permissions must reach every independently-provisioned tenant's Admin role - a platform-only key
+  only ever needs the one seeded Platform Admin role, which `seed_platform_admin` recomputes as
+  the full catalog on every bootstrap run). Verified live on the pilot DB (`bootstrap_db` run +
+  backend restart): `permissions` row + `role_permissions` grant to `Platform Admin` only present
+  after the run, and `GET /ai-prompts` returns 200 for the platform admin / 403 for a tenant
+  Admin / 401 unauthenticated.
+- 2026-09-01 P2a: the two-table mechanism was ported as ONE merged module
+  (`app/services/ai_prompt_registry.py`, resolver + admin CRUD together) rather than sorento's
+  two files (`ai_prompt_registry.py` resolver + `ai_prompt_service.py` CRUD) - shared-service has
+  a single consumer (`meetings_minutes`), not sorento's ~20-key `PROMPT_KEYS` registry; a second
+  consumer is the trigger to split them back apart. The per-label `provider`/`model` override
+  columns were dropped per R1/§3.3 (LLM resolution lives in `tenant_settings`/platform env).
+- 2026-09-01 P2a: the worktree FE `.env.local` also had `NEXT_PUBLIC_BACKEND_API_URL` /
+  `BACKEND_API_URL` pointing at a dead `:8051` (should be `:8001`, the pilot backend's actual
+  port) and `NEXTAUTH_SECRET` not matching the backend's `JWT_SECRET` - both fixed, both required
+  a one-time dev-server restart to take effect (`NEXT_PUBLIC_*` is inlined into the browser bundle
+  at server-start, not read per-request). Without this fix every AI settings page, not just this
+  one, was silently calling the wrong backend / flapping auth.

@@ -408,6 +408,16 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/settings/ai/traces',
         permission: 'ai_traces.read',
       },
+      // AI prompt registry (sprint-5 Meetings S4, R4/R5) - platform infra, not a
+      // tenant surface: the two-table `ai_prompt_versions`/`ai_prompt_labels`
+      // mechanism lives in core and this editor is platform-admin only, same
+      // gate expression as `showPlatform` (sidebar-menu.tsx:37).
+      {
+        title: 'AI prompts',
+        path: '/settings/ai/prompts',
+        platformOnly: true,
+        permission: 'ai_prompts.manage',
+      },
     ],
   },
   {
