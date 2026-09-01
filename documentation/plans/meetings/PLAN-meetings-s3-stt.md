@@ -1,6 +1,6 @@
 # PLAN - Meetings S3: STT (transcript + speaker names)
 
-**Status:** Planned 2026-09-01. Spine: `PLAN-meetings-program.md` M12 (amended 2026-08-25), M19.
+**Status:** Grilled + confirmed 2026-09-01 (R1-R8 below). Spine: `PLAN-meetings-program.md` M12 (amended 2026-08-25), M19.
 **Branch:** `sprint-5/meetings-s3-stt`. UAC: `meetings-s3-stt-acceptance-criteria.md`.
 
 ## 1. What S3 delivers
@@ -10,10 +10,26 @@ The `meetings.transcribe` job stops being a stub. After S2 registers `recording.
 1. runs Whisper over the audio (pilot = `mlx-whisper` on the Mac Mini, M12),
 2. reads the caption timeline the bot recorded (`events.jsonl` `caption` events, proven S1 run 7),
 3. assigns each Whisper segment a speaker NAME from the overlapping captions,
-4. writes one `transcripts` row + `transcript_segments` rows, sets the meeting `ready`.
+4. writes one `transcripts` row + `transcript_segments` rows, sets the meeting `transcribed`.
 
-No UI beyond a minimal read endpoint (S5 owns the surface). No minutes (S4). No pyannote - names
-come from captions; diarization only if captions prove insufficient (M12 names the trigger).
+No UI beyond a minimal read endpoint + the new status badge (S5 owns the surface). No minutes
+(S4). No pyannote - names come from captions; diarization only if captions prove insufficient
+(M12 names the trigger).
+
+## Grill rulings (2026-09-01)
+
+- **R1** Transcription runs on the existing workflow queue; the `mlx_local` driver holds a
+  host-level flock so at most ONE transcription runs at a time (16 GB host shares Metal with
+  live bot containers). No fourth worker.
+- **R2/R7/R8** Status chain grows one value: `recording -> processing -> transcribed -> ready`.
+  S3 ends at **`transcribed`** (badge "Transcript ready"); `ready` means minutes exist and is
+  S4's to set - no stub job that fakes it. Spine data model + S2 FE badges updated in this PR.
+- **R3** `transcript_segments.language` stays NULL (Whisper turbo reports one language per file;
+  never store a guessed per-segment value). Transcript-level `language` carries the detection.
+- **R4** Re-run = the existing core `/jobs/{id}/retry`; no bespoke retranscribe endpoint.
+- **R5** Provider selection is a platform setting, not per-tenant (M21 trigger stands).
+- **R6** `scripts/setup_stt_venv.sh` creates/pins `~/foundryx-stt/venv` (mlx-whisper==0.4.3)
+  idempotently - a reboot or new host rebuilds it deterministically.
 
 ## 2. Inputs available at transcribe time (measured, not assumed)
 
@@ -39,7 +55,8 @@ class SttProvider(Protocol):
 ```
 
 **v1 driver `mlx_local`** (`stt/mlx_local.py`): subprocess exec of a small runner script through
-a dedicated python (`MEETINGS_STT_PYTHON`, default `~/foundryx-stt/venv/bin/python`), model
+a dedicated python (`MEETINGS_STT_PYTHON`, default `~/foundryx-stt/venv/bin/python`; built by
+`scripts/setup_stt_venv.sh`, R6), serialized by a host flock (R1), model
 `MEETINGS_STT_MODEL` (default `mlx-community/whisper-large-v3-turbo`), with
 `condition_on_previous_text=False` and a `no_speech_threshold` - both proven necessary on run-7
 audio (trailing-silence hallucination). Subprocess, not import: mlx runs on Metal in its own venv
@@ -74,8 +91,9 @@ Pure function, no I/O: `assign_speakers(segments, captions, start_epoch)`.
    `service.log` says captions were absent - a host disabling captions must not kill the job).
 4. Replace-on-rerun: delete existing `transcripts` row for the meeting (cascade segments), insert
    one `transcripts` row (`stt_provider`, `model`, `created_at`) + `transcript_segments`
-   (`speaker`, `start_ms`, `end_ms`, `text`, `language`) - the S0 tables, no schema change.
-5. `meeting.status = ready`, `background_jobs` result carries counts + timing.
+   (`speaker`, `start_ms`, `end_ms`, `text`, `language` NULL per R3) - the S0 tables, no schema
+   change beyond the status enum value (R2).
+5. `meeting.status = transcribed` (R2), `background_jobs` result carries counts + timing.
 6. Failure -> job `FAILED` + `meeting.status = failed` with the error logged; the job stays
    re-runnable (idempotent via 4).
 
@@ -85,7 +103,7 @@ it; cheap now, and prod deploy path runs module migrations already).
 ### 3.4 Read endpoint (evidence surface until S5)
 
 `GET /meetings/{meeting_id}/transcript` (permission `meetings.view`, tenant-scoped, 404 until
-ready): `{ sttProvider, model, language, segments: [{speaker, startMs, endMs, text}] }`.
+`transcribed`): `{ sttProvider, model, language, segments: [{speaker, startMs, endMs, text}] }`.
 
 ## 4. Files
 
@@ -96,7 +114,10 @@ modules/meetings/stt/mlx_runner.py      # the script exec'd inside the STT venv
 modules/meetings/stt/align.py           # caption -> segment speaker assignment
 modules/meetings/jobs.py                # run_transcribe real body
 modules/meetings/routers/transcripts.py # GET transcript
-modules/meetings/alembic/versions/0004_transcript_trgm.py
+modules/meetings/alembic/versions/0004_transcript_trgm.py  # + CREATE EXTENSION IF NOT EXISTS pg_trgm
+modules/meetings/models.py              # STATUS_TRANSCRIBED
+service_frontend (status badges)        # "Transcript ready" badge for the new value
+scripts/setup_stt_venv.sh               # R6
 app/config.py                           # MEETINGS_STT_* settings
 ```
 
@@ -104,13 +125,14 @@ app/config.py                           # MEETINGS_STT_* settings
 
 - `align.py` pure-function table: overlap wins, nearest-within-15s, no-caption NULL, empty list.
 - `mlx_local` driver with a fake subprocess (JSON contract, timeout kill, non-zero exit).
-- `run_transcribe` with a fake provider + fake artifacts: rows written, replace-on-rerun, ready
-  status, captions-missing path, failure path marks meeting failed.
+- `run_transcribe` with a fake provider + fake artifacts: rows written, replace-on-rerun,
+  `transcribed` status, captions-missing path, failure path marks meeting failed.
 - Router: transcript shape, 404 before ready, cross-tenant 404.
 - ONE live evidence run (not pytest): run-7 audio + its real events.jsonl through the real
   mlx venv -> named transcript (the UAC gate).
 
 ## 6. Out of scope
 
-Minutes (S4), transcript UI (S5), Deepgram driver body, pyannote, live transcript, per-segment
-language detection beyond what Whisper emits, search endpoint (index ships, endpoint later).
+Minutes (S4 - it adds the minutes job + the `ready` hop), transcript UI (S5), Deepgram driver
+body, pyannote, live transcript, per-segment language values (R3), search endpoint (index
+ships, endpoint later).

@@ -67,7 +67,7 @@ Google Calendar (domain-wide delegation)
 | `shares` | user-to-user | `meeting_id`, `user_id`, `shared_by` |
 | `tenant_settings` | module settings | `tenant_id` pk, `minutes_language`, `audio_retention_days`, `llm_connection_id`, `bot_display_name`, `consent_message` |
 
-Meeting `status`: `scheduled | joining | in_lobby | recording | processing | ready | failed | not_admitted | skipped`.
+Meeting `status`: `scheduled | joining | in_lobby | recording | processing | transcribed | ready | failed | not_admitted | skipped` (`transcribed` = transcript exists, S3; `ready` = minutes exist, S4).
 
 Core rows the module writes: `connections` (kinds `google_dwd`, `meet_bot`, `llm`), `files` + `file_versions` (audio, folder "Meetings"), `background_jobs` (types `meetings.calendar_sync`, `meetings.bot_run`, `meetings.transcribe`, `meetings.minutes`, `meetings.retention`, `meetings.canary`), `notification_specs`, `integration_activity`.
 

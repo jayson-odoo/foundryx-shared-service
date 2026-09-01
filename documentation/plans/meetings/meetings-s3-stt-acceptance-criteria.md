@@ -6,7 +6,7 @@ meeting transcribed.
 **AC-S3-1** - Given a meeting with a registered `recording.ogg` and an `events.jsonl` containing
 caption events, when `meetings.transcribe` runs, then one `transcripts` row and its
 `transcript_segments` rows exist, every segment has `start_ms < end_ms` and non-empty `text`, and
-the meeting status is `ready`.
+the meeting status is `transcribed`.
 
 **AC-S3-2** - Given the caption timeline names a speaker for the span a Whisper segment covers,
 when alignment runs, then that segment's `speaker` is the caption's display name; a segment no
@@ -14,7 +14,7 @@ caption covers (none within 15 s) has `speaker = NULL`, never a guessed or copie
 
 **AC-S3-3** - Given `events.jsonl` is missing or contains no caption events, when the job runs,
 then the transcript is still produced with all speakers NULL, the job log says captions were
-absent, and the meeting still reaches `ready`.
+absent, and the meeting still reaches `transcribed`.
 
 **AC-S3-4** - Given transcription fails (subprocess non-zero, timeout, unreadable audio), when the
 job finishes, then the job is `FAILED`, `meeting.status = failed`, the error is in the job log,
@@ -30,11 +30,12 @@ lands in under 5 minutes (spine gate; mlx-whisper measured 11x realtime).
 
 **AC-S3-7** - Given a meeting whose speech mixes languages (the spine names Malay / English /
 Chinese), when transcribed, then each spoken passage appears in its own language in the segment
-text (no wholesale translation into one language).
+TEXT (no wholesale translation into one language); `transcript_segments.language` is NULL (R3 -
+the provider reports one language per file, and we never store a guessed per-segment value).
 
 **AC-S3-8** - Given a user with `meetings.view` in the meeting's tenant, when they GET
-`/meetings/{id}/transcript` after `ready`, then they receive provider, model, language and the
-ordered segments; before `ready` the endpoint 404s; a user from another tenant 404s always.
+`/meetings/{id}/transcript` once `transcribed`, then they receive provider, model, language and
+the ordered segments; before that the endpoint 404s; a user from another tenant 404s always.
 
 **AC-S3-9** - Given a re-run of `meetings.transcribe` on a meeting that already has a transcript,
 when it completes, then exactly one `transcripts` row exists for the meeting (the new one).
@@ -42,6 +43,16 @@ when it completes, then exactly one `transcripts` row exists for the meeting (th
 **AC-S3-10** - Given the settings name a provider that is not built (`deepgram`), when the job
 runs, then it fails loudly naming the unbuilt provider - it does not silently fall back to
 `mlx_local`.
+
+**AC-S3-11** - Given a meeting in `transcribed`, when the meetings list / bot-runs surfaces render
+it, then the badge reads "Transcript ready" and is distinct from `ready` (which stays reserved
+for minutes, S4).
+
+**AC-S3-12** - Given two transcribe jobs due at once on one host, when they run, then the second
+waits for the first's flock - at no point do two mlx subprocesses run concurrently (R1).
+
+**AC-S3-13** - Given a fresh host (or a wiped `~/foundryx-stt`), when `scripts/setup_stt_venv.sh`
+runs, then the venv exists with mlx-whisper pinned and a re-run is a no-op (R6).
 
 **Evidence run (stands in for a live browser run - no UI in this slice):** one real gate-meeting
 recording processed end-to-end on the pilot stack (bot -> recording -> transcribe -> named
