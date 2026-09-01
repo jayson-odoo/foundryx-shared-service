@@ -120,6 +120,9 @@ class TranscriptSegmentOut(ApiModel):
     startMs: int
     endMs: Optional[int] = None
     text: str
+    # R3 amended 2026-09-01: the chunked runner detects language PER CHUNK,
+    # so this is the segment's own real detected language, never a guess.
+    language: Optional[str] = None
 
 
 class TranscriptOut(ApiModel):
@@ -127,6 +130,7 @@ class TranscriptOut(ApiModel):
 
     sttProvider: str
     model: Optional[str] = None
-    # The meeting's detected language (R3) - one value, not per segment.
+    # The meeting's file-level detected language - the majority chunk
+    # language (R3 amended 2026-09-01), ties broken by first occurrence.
     language: Optional[str] = None
     segments: List[TranscriptSegmentOut] = Field(default_factory=list)

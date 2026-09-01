@@ -30,13 +30,19 @@ class SttSegment:
     start_ms: int
     end_ms: int
     text: str
+    # R3 AMENDED (S3 code-switch fix, 2026-09-01): the chunked mlx_runner
+    # detects language PER CHUNK, so this carries the real detected language
+    # for the chunk this segment came from - never a guess. None only for an
+    # older runner payload / a provider that has not adopted per-segment
+    # language yet.
+    language: Optional[str] = None
 
 
 @dataclass
 class SttResult:
-    """One provider call's whole output - one language, many segments (R3: a
-    provider reports language ONCE per file, never a guessed per-segment
-    value)."""
+    """One provider call's whole output - many segments, each with its own
+    detected language (R3 AMENDED), plus a file-level ``language`` that is
+    the majority chunk language (ties broken by first occurrence)."""
 
     language: Optional[str]
     segments: List[SttSegment] = field(default_factory=list)

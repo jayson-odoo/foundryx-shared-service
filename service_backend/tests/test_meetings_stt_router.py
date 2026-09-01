@@ -77,6 +77,7 @@ def _transcribed_meeting(session, *, tenant_id=DEFAULT_TENANT_ID):
                 start_ms=0,
                 end_ms=1200,
                 text="hello there",
+                language="en",
             ),
             TranscriptSegment(
                 tenant_id=tenant_id,
@@ -85,6 +86,7 @@ def _transcribed_meeting(session, *, tenant_id=DEFAULT_TENANT_ID):
                 start_ms=1200,
                 end_ms=2400,
                 text="how are you",
+                language=None,
             ),
         ]
     )
@@ -107,9 +109,13 @@ def test_a_transcribed_meeting_returns_provider_model_language_and_segments(meet
     assert body["sttProvider"] == "mlx_local"
     assert body["model"] == "whisper-large-v3-turbo"
     assert body["language"] == "en"
-    assert [(s["speaker"], s["startMs"], s["endMs"], s["text"]) for s in body["segments"]] == [
-        ("Alice", 0, 1200, "hello there"),
-        (None, 1200, 2400, "how are you"),
+    # R3 amended 2026-09-01: response_model silently drops undeclared
+    # fields, so assert per-segment language explicitly (AC-S3-7/S3-8).
+    assert [
+        (s["speaker"], s["startMs"], s["endMs"], s["text"], s["language"]) for s in body["segments"]
+    ] == [
+        ("Alice", 0, 1200, "hello there", "en"),
+        (None, 1200, 2400, "how are you", None),
     ]
 
 

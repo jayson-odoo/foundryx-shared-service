@@ -245,13 +245,15 @@ class Transcript(MeetingsBase):
 
 
 class TranscriptSegment(MeetingsBase):
-    """One aligned Whisper segment (S3). ``language`` stays NULL (R3, grilled
-    2026-09-01): the provider reports language ONCE per file - see
-    ``Meeting.language`` - and this column would otherwise hold a guessed
-    per-segment value nothing ever wrote correctly. The column is kept
-    (schema was fixed in rev 0001) so a future per-segment detector has
-    somewhere to land without a migration. ``ix_meetings_segments_text_trgm``
-    (Postgres-only, ``pg_trgm``) is created by rev 0001.
+    """One aligned Whisper segment (S3). ``language`` (R3, grilled
+    2026-09-01, AMENDED same day): the chunked ``mlx_runner`` detects
+    language PER CHUNK (an ``{en, ms, zh}`` allowlist), so this column now
+    holds that chunk's real detected language, never a guess - the original
+    R3 objection (only one language per file, so any per-segment value would
+    be fabricated) no longer applies once detection itself runs per chunk.
+    ``Meeting.language`` stays the file-level summary (majority chunk
+    language). ``ix_meetings_segments_text_trgm`` (Postgres-only,
+    ``pg_trgm``) is created by rev 0001.
     """
 
     __tablename__ = "transcript_segments"

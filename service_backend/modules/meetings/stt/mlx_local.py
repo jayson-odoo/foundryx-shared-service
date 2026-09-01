@@ -66,7 +66,14 @@ class MlxLocalProvider:
     ) -> subprocess.CompletedProcess:
         try:
             return subprocess.run(
-                [python, str(RUNNER_PATH), str(audio_path), model],
+                [
+                    python,
+                    str(RUNNER_PATH),
+                    str(audio_path),
+                    model,
+                    str(settings.meetings_stt_chunk_s),
+                    settings.meetings_stt_languages,
+                ],
                 capture_output=True,
                 text=True,
                 timeout=timeout_s,
@@ -101,6 +108,7 @@ class MlxLocalProvider:
                 start_ms=int(seg["start_ms"]),
                 end_ms=int(seg["end_ms"]),
                 text=str(seg["text"]),
+                language=seg.get("language"),  # absent (older runner) -> None
             )
             for seg in payload.get("segments", [])
         ]

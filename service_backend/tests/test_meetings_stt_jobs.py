@@ -138,7 +138,9 @@ def _events(*rows) -> dict:
 def _default_result():
     return SttResult(
         language="en",
-        segments=[SttSegment(start_ms=1000, end_ms=3000, text="hello there")],
+        segments=[
+            SttSegment(start_ms=1000, end_ms=3000, text="hello there", language="en")
+        ],
     )
 
 
@@ -181,7 +183,8 @@ def test_a_successful_run_writes_the_transcript_and_reaches_transcribed(
     assert seg.start_ms < seg.end_ms
     assert seg.text == "hello there"
     assert seg.speaker == "Alice"
-    assert seg.language is None  # R3 - never a guessed per-segment value
+    # R3 AMENDED: the provider's real per-segment language lands on the row.
+    assert seg.language == "en"
 
 
 def test_a_rerun_leaves_exactly_one_transcript_row(db, storage, monkeypatch):
@@ -317,6 +320,9 @@ def test_invalid_provider_segments_are_dropped_and_logged(db, storage, monkeypat
         db.query(TranscriptSegment).filter(TranscriptSegment.transcript_id == transcript.id).all()
     )
     assert [s.text for s in segments] == ["hello there"]
+    # This provider segment carried no language - the write path tolerates
+    # None rather than requiring every provider to set it.
+    assert segments[0].language is None
     assert finished.result_json["segments"] == 1
     messages = " ".join(entry["message"] for entry in (finished.logs_json or []))
     assert "invalid" in messages.lower()
