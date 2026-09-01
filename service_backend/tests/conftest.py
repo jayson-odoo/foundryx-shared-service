@@ -85,7 +85,9 @@ def session_factory():
         # names; no collisions) - module tables stay isolated from core's.
         # autocount (sprint-4/13) maps onto the same attached db: its tables are
         # ``ac_``-prefixed, so they cannot collide with omnichannel's.
-<<<<<<< HEAD
+        # ideation (sprint-4/18) maps onto the same attached db too: its tables
+        # are distinct names, and without the mapping ``bootstrap_modules``'s
+        # ideation install raises "unknown database app_ideation" mid-suite.
         # meetings (sprint-5 S0) gets its OWN attached db - every module on disk
         # is globally installed by ``bootstrap_modules`` below, so a module whose
         # schema maps nowhere would fail its create_all and land in
@@ -93,16 +95,8 @@ def session_factory():
         schema_translate_map={
             OMNI_SCHEMA: "omni",
             AUTOCOUNT_SCHEMA: "omni",
-            MEETINGS_SCHEMA: "meetings",
-=======
-        # ideation (sprint-4/18) maps onto the same attached db too: its tables
-        # are distinct names, and without the mapping ``bootstrap_modules``'s
-        # ideation install raises "unknown database app_ideation" mid-suite.
-        schema_translate_map={
-            OMNI_SCHEMA: "omni",
-            AUTOCOUNT_SCHEMA: "omni",
             "app_ideation": "omni",
->>>>>>> sprint-5/meetings-s1-bot-spike
+            MEETINGS_SCHEMA: "meetings",
         }
     )
     with engine.connect() as conn:

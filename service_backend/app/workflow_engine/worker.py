@@ -49,17 +49,14 @@ celery_app.conf.beat_schedule = {
     # self-reschedule was lost to a crash (omnichannel Slice 4). Defined in this
     # worker (the sole beat host); guarded so a missing module is a no-op.
     "retry-due-webhooks": {"task": "webhooks.retry_due", "schedule": 60.0},
-<<<<<<< HEAD
     # Meetings calendar sync (sprint-5 S0) - a new event with a conference link
     # must surface within 60 s, so this is a minute tick like the rest. It only
     # enqueues for tenants that have the module active AND someone opted in.
     "meetings-calendar-sync": {"task": "meetings.calendar_sync_due", "schedule": 60.0},
-=======
     # AutoCount direct-DB ETL sweep (plan 22 S3, AC-22-13) - selects due
     # ACTIVE sql_db tasks and enqueues the SAME `autocount_sync` job the
     # manual Run-now button uses. Same 60s tick; does no extraction itself.
     "autocount-etl-sweep": {"task": "autocount.etl_sweep", "schedule": 60.0},
->>>>>>> sprint-5/meetings-s1-bot-spike
 }
 
 
@@ -275,15 +272,8 @@ def wake_serialized_task(tenant_id: str, workflow_id: str, digest: str) -> dict:
 # ── Cross-package task + handler registration (worker has no FastAPI lifespan) ─
 # `-A app.workflow_engine.worker` only sees tasks/handlers whose module is
 # imported. Without these the worker DISCARDS `jobs.run` as an unregistered task
-<<<<<<< HEAD
 # (silent stall - the storage-migration job hangs Pending forever).
 import app.jobs.worker  # noqa: E402,F401 - registers the `jobs.run` Celery task
 import app.storage_migration.service  # noqa: E402,F401 - module-level register_storage_migration_handler()
 import modules.autocount.sync  # noqa: E402,F401 - registers the `autocount_sync` job handler
 import modules.meetings.jobs  # noqa: E402,F401 - registers the `meetings.calendar_sync` handler
-=======
-# (silent stall - the storage-migration job hangs Pending forever).
-import app.jobs.worker  # noqa: E402,F401 - registers the `jobs.run` Celery task
-import app.storage_migration.service  # noqa: E402,F401 - module-level register_storage_migration_handler()
-import modules.autocount.sync  # noqa: E402,F401 - registers the `autocount_sync` job handler
->>>>>>> sprint-5/meetings-s1-bot-spike
