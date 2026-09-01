@@ -29,11 +29,11 @@ One container = one meeting. Inputs by env / CLI. Outputs = chunks + `events.jso
 7. **Leave** when participant count has been 0 for 60 s, or the "You've been removed" dialog appears, or a hard 4 h cap. Flush ffmpeg, upload the tail, write `left`, exit 0.
 8. **Failure path**: any unexpected state -> screenshot to storage, `error` event, exit 1 with reason.
 9. **Measure memory**: `run.sh join` samples `docker stats` every 15 s into `stats.log`; the report states peak RSS per run. Turn off incoming video in Meet if a selector for it is found (largest saving).
-10. **Run it five times** on scheduled FoundryX Meets, once on an external-hosted Meet (AC-S1-3). Write `meetings-s1-bot-spike-test-report.md`.
+10. **Run it five times** on scheduled Foundryx Meets, once on an external-hosted Meet (AC-S1-3). Write `meetings-s1-bot-spike-test-report.md`.
 
 ## 3. Runs on
 
-Mac Mini, Docker Desktop, `docker run` by hand. Storage target = a FoundryX R2 bucket via `AWS_*`-style env (the tenant storage connection replaces this in S2).
+Mac Mini, Docker Desktop, `docker run` by hand. Storage target = a Foundryx R2 bucket via `AWS_*`-style env (the tenant storage connection replaces this in S2).
 
 ## 4. Not in this slice
 

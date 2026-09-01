@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-24 to 2026-08-25. **Runs:** 7 on the Mac Mini (colima, arm64 Linux, Playwright Chromium `--headless=new`).
 **Identity used:** `jayson@foundryx.my` (own session via one VNC login). `notetaker@foundryx.my` not yet created.
-**Meetings:** `him-bwpx-vyi` (FoundryX-hosted by the same account) and `kfp-sofm-cnr` and `pxd-kacm-hqg` (hosted by Jayson's personal Gmail, bot external).
+**Meetings:** `him-bwpx-vyi` (Foundryx-hosted by the same account) and `kfp-sofm-cnr` and `pxd-kacm-hqg` (hosted by Jayson's personal Gmail, bot external).
 
 ## UAC status
 
@@ -17,7 +17,7 @@
 | AC-S1-7 leave within 60 s of empty room | **pass** | Run 6b: human left at +58 s, bot left at +244 s = 180 s floor (now 60 s) + 60 s empty. |
 | AC-S1-8 removed by host | **pass** | Run 7: host removed the bot at +55 s; exit `removed`, the 49 s segment kept. |
 | AC-S1-9 failure exits with reason + screenshot | **pass** | `error:join_button_not_found`, `error:not_logged_in_and_no_credentials`, `denied` all produced `last.png` + `events.jsonl`. |
-| AC-S1-10 5/5 scheduled FoundryX Meets | **pending** | Needs the notetaker account (same account cannot be host and bot) and the 5 scheduled links. |
+| AC-S1-10 5/5 scheduled Foundryx Meets | **pending** | Needs the notetaker account (same account cannot be host and bot) and the 5 scheduled links. |
 | AC-S1-11 peak memory recorded | **pass** | 636-790 MiB per container without captions, 765-845 MiB with captions on; CPU 10-190 % (spikes = incoming video decode). |
 
 ## What broke and what was learned
