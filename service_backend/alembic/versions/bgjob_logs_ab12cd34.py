@@ -3,7 +3,7 @@
 Adds a milestone log column to background_jobs so a job (storage migration first)
 surfaces human-readable troubleshooting logs on its detail page.
 
-Revision id length: 18 chars (≤ 32 — alembic_version.version_num is VARCHAR(32)).
+Revision id length: 18 chars (≤ 32 - alembic_version.version_num is VARCHAR(32)).
 
 Revision ID: bgjob_logs_ab12cd34
 Revises: migrate_storage_perm410

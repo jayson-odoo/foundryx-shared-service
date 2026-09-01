@@ -1,4 +1,4 @@
-"""Opt-in service (S0 plan §5) — the caller's own master toggle (spine M6).
+"""Opt-in service (S0 plan §5) - the caller's own master toggle (spine M6).
 
 Every method takes the tenant from the caller's JWT; there is no path here that
 reads or writes another tenant's row.

@@ -1,5 +1,5 @@
 /**
- * Mock-phase renderer (plan sprint-2/07) — merge substitution semantics (D5):
+ * Mock-phase renderer (plan sprint-2/07) - merge substitution semantics (D5):
  * {{dotted.path}} only, HTML-escaped values, missing = '' on send / loud in
  * preview. The production renderer is the Phase-B backend pipeline.
  */
@@ -28,10 +28,10 @@ describe('renderMergeTokens', () => {
     expect(renderMergeTokens('A{{missing}}B', {}, 'preview')).toContain('missing');
   });
 
-  it('does NOT evaluate expressions — substitution only (D5, no SSTI surface)', () => {
+  it('does NOT evaluate expressions - substitution only (D5, no SSTI surface)', () => {
     // A Jinja-style escalation probe is just an unknown fact key: blanked.
     expect(renderMergeTokens('{{__class__.__init__}}', {}, 'send')).toBe('');
-    // Operators/filters are not even tokenized — left verbatim.
+    // Operators/filters are not even tokenized - left verbatim.
     expect(renderMergeTokens('{{ 7 * 7 }}', {}, 'send')).toBe('{{ 7 * 7 }}');
     expect(renderMergeTokens('{{name|upper}}', { name: 'x' }, 'send')).toBe('{{name|upper}}');
   });

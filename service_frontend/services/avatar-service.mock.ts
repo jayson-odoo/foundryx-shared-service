@@ -1,5 +1,5 @@
 /**
- * Mock avatar service (Phase A) — keeps cropped blobs as data-URLs in memory
+ * Mock avatar service (Phase A) - keeps cropped blobs as data-URLs in memory
  * so every state (upload, replace, remove, slow network, failure) is tunable
  * with no backend running. State is per-session (module scope).
  */

@@ -1,12 +1,12 @@
 'use client';
 
 /**
- * Form-builder settings panel (plan sprint-3/01 D7) — contextual on selection:
+ * Form-builder settings panel (plan sprint-3/01 D7) - contextual on selection:
  * nothing → status line; page → title; section → title/description/two-column/
  * conditions; field → label/key/required/placeholder/help + per-type config +
  * a quick type-switch + visibility conditions. Every dropdown is a
  * SearchSelect/MultiSelect (house mandate); conditions use the shared
- * RuleBuilder (remounted via key on selection change). No instructional copy —
+ * RuleBuilder (remounted via key on selection change). No instructional copy -
  * labels + a duplicate-key warning (state, not instruction) only.
  */
 import { useMemo, useState } from 'react';
@@ -302,7 +302,7 @@ function TypeConfig(props: FieldConfigProps) {
 
 // ---- repeater sub-field editor ----
 
-/** Sortable wrapper (render-prop) — provides the drag handle so a row's
+/** Sortable wrapper (render-prop) - provides the drag handle so a row's
  * existing JSX can keep its layout (table columns + repeater sub-fields). */
 function SortableShell({ id, children }: { id: string; children: (handle: React.ReactNode) => React.ReactNode }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
@@ -529,7 +529,7 @@ function TableConfig({ field, onPatch }: FieldConfigProps) {
     patchTable({ columns: arrayMove(columns, from, to) });
   };
   const addCol = () => {
-    // Unique key vs the existing set — `length + 1` collides after a middle
+    // Unique key vs the existing set - `length + 1` collides after a middle
     // column was removed (publish-gate dup-key reject; code-review).
     const used = new Set(columns.map((c) => c.key));
     let n = columns.length + 1;

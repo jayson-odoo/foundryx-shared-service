@@ -1,6 +1,6 @@
 'use client';
 
-/** Author preview (plan sprint-3/01 D9) — renders the DRAFT through the one
+/** Author preview (plan sprint-3/01 D9) - renders the DRAFT through the one
  * runtime renderer in a roomy dialog. Interactive (conditions/computed run
  * live) but never submits; answers are throwaway. */
 import { useEffect, useState } from 'react';
@@ -30,7 +30,7 @@ export function FormPreviewDialog({
 }: FormPreviewDialogProps) {
   const [answers, setAnswers] = useState<FormAnswers>({});
 
-  // Fresh sheet per open — a preview session's answers are not state.
+  // Fresh sheet per open - a preview session's answers are not state.
   useEffect(() => {
     if (open) setAnswers({});
   }, [open]);
@@ -39,7 +39,7 @@ export function FormPreviewDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[90vh] w-[min(960px,95vw)] max-w-none flex-col overflow-hidden">
         <DialogHeader>
-          <DialogTitle>{name} — preview</DialogTitle>
+          <DialogTitle>{name} - preview</DialogTitle>
         </DialogHeader>
         <div className="grow overflow-y-auto pe-1" data-testid="form-preview">
           {definition && (

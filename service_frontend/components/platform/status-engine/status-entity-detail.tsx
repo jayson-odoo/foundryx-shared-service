@@ -1,11 +1,11 @@
 'use client';
 
 /**
- * Entity detail (sprint-2/01 rework) — the ResourceForm shell over one
+ * Entity detail (sprint-2/01 rework) - the ResourceForm shell over one
  * entity's status machine: Flow tab (graph canvas) + Statuses tab (reorder
  * list). The global Edit toggle gates every canvas/list mutation (read-only
  * by default, per the form design language). Drawer saves commit instantly,
- * so the form itself is never dirty — Save simply exits edit mode.
+ * so the form itself is never dirty - Save simply exits edit mode.
  */
 import Link from 'next/link';
 import { useMemo, useRef, useState } from 'react';
@@ -39,7 +39,7 @@ export function StatusEntityDetail({
 }: StatusEntityDetailProps) {
   const { entities, loading: entitiesLoading } = useStatusEntities();
   const engine = useStatusGraph(entityType);
-  // ResourceForm rides an RHF context; the engine has no plain fields — the
+  // ResourceForm rides an RHF context; the engine has no plain fields - the
   // form exists for the shell chrome (breadcrumb/tabs/Edit toggle) only.
   const form = useForm();
 
@@ -62,7 +62,7 @@ export function StatusEntityDetail({
       subtitle:
         engine.graph?.source === 'tenant'
           ? 'Customized for this workspace'
-          : 'Platform defaults — tenants inherit until they customize',
+          : 'Platform defaults - tenants inherit until they customize',
       tabs: [
         {
           id: 'flow',
@@ -94,7 +94,7 @@ export function StatusEntityDetail({
           ),
         },
       ],
-      // "Simulate date" — only for time-capable entities (sprint-4/03 Slice 6):
+      // "Simulate date" - only for time-capable entities (sprint-4/03 Slice 6):
       // fast-forward/backtrack "now" to test time-based auto edges.
       actions: (
         entity.hasTimeAutoEdges

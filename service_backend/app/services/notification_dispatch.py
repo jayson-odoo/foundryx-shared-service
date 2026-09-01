@@ -2,11 +2,11 @@
 
 Resolves a spec's recipients (USER / ROLE / DYNAMIC), renders the inline
 merge-field template, and enqueues EMAIL via the plan-09 outbox. ``IN_APP`` is
-modeled but inert (no-op + log — inbox UI is follow-up backlog). Never sends
-directly — outbox always.
+modeled but inert (no-op + log - inbox UI is follow-up backlog). Never sends
+directly - outbox always.
 
 Merge fields: ``{{entityLabel}} {{recordLabel}} {{fromStatus}} {{toStatus}}
-{{transitionLabel}} {{actorName}}`` — unknown fields render empty.
+{{transitionLabel}} {{actorName}}`` - unknown fields render empty.
 """
 import logging
 import re
@@ -40,7 +40,7 @@ def render_inline(template: str, context: Dict[str, Any]) -> str:
 
 
 def _active_user(db: Session, user_id: Optional[str], tenant_id: str) -> Optional[User]:
-    """Tenant-scoped on purpose — recipient resolution must never cross a
+    """Tenant-scoped on purpose - recipient resolution must never cross a
     tenant boundary, even off a corrupt/planted id (code-review fix)."""
     if not user_id:
         return None
@@ -60,7 +60,7 @@ def resolve_recipients(
     record: Any,
     actor: Optional[User],
 ) -> List[User]:
-    """Recipient users for a spec — deduped, ACTIVE only, unresolvable skipped.
+    """Recipient users for a spec - deduped, ACTIVE only, unresolvable skipped.
 
     Scoping (defense-in-depth; the service also validates at save):
       USER/ROLE → the spec AUTHOR's tier (platform tier = the platform tenant);
@@ -116,7 +116,7 @@ def dispatch_specs(
     tenant_id: str,
     context: Dict[str, Any],
 ) -> int:
-    """Render + enqueue every spec. Returns emails enqueued. No commit — the
+    """Render + enqueue every spec. Returns emails enqueued. No commit - the
     status machine owns the transaction (transition + emails land together)."""
     enqueued = 0
     for spec in specs:
@@ -124,7 +124,7 @@ def dispatch_specs(
         if not recipients:
             continue
         if spec.channel != CHANNEL_EMAIL:
-            # IN_APP modeled inert (D6) — inbox dispatch is follow-up backlog.
+            # IN_APP modeled inert (D6) - inbox dispatch is follow-up backlog.
             logger.info(
                 "in-app notification skipped (inert channel): spec=%s recipients=%d",
                 spec.id,
@@ -132,7 +132,7 @@ def dispatch_specs(
             )
             continue
         # Per-use template copy (plan 10 follow-up): the operator picked a
-        # template and edited the wording — render the stored doc branded.
+        # template and edited the wording - render the stored doc branded.
         if spec.doc_json:
             from app.template_engine import render_email_doc
 
@@ -148,7 +148,7 @@ def dispatch_specs(
                         facts=facts,
                         rule_objects={"recipient": user, "actor": actor},
                     )
-                except Exception:  # noqa: BLE001 — never block the transition
+                except Exception:  # noqa: BLE001 - never block the transition
                     logger.exception("per-use doc render failed (spec=%s)", spec.id)
                     continue
                 email_service.enqueue_raw(
@@ -207,7 +207,7 @@ def dispatch_specs(
 
 
 def _spec_template(db: Session, spec: NotificationSpec, tenant_id: str):
-    """Resolve the spec's engine template — by KEY through the two-tier read
+    """Resolve the spec's engine template - by KEY through the two-tier read
     (a tenant fork must shadow the platform row the spec was authored
     against), tenant-scoped (polymorphic target_id rule). Render failures
     fall back to the inline body rather than blocking the transition."""
@@ -223,9 +223,9 @@ def _spec_template(db: Session, spec: NotificationSpec, tenant_id: str):
         # Visibility check: the referenced row must be platform-tier or
         # belong to THIS tenant (never another tenant's fork).
         if row.tenant_id is not None and row.tenant_id != tenant_id:
-            logger.warning("spec %s references foreign-tenant template — ignored", spec.id)
+            logger.warning("spec %s references foreign-tenant template - ignored", spec.id)
             return None
         return TemplateService(db).resolve_by_key(row.key, tenant_id)
-    except Exception:  # noqa: BLE001 — notification must not block the transition
+    except Exception:  # noqa: BLE001 - notification must not block the transition
         logger.exception("spec template resolution failed (spec=%s)", spec.id)
         return None

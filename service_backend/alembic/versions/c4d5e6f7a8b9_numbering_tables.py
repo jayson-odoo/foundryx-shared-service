@@ -1,9 +1,9 @@
-"""Numbering tables (sprint-4/07, Cluster F) — gapless document numbering.
+"""Numbering tables (sprint-4/07, Cluster F) - gapless document numbering.
 
 Creates the two core tables backing the numbering engine:
-- ``number_formats`` — per-tenant override of a doc type's prefix / format /
+- ``number_formats`` - per-tenant override of a doc type's prefix / format /
   reset cadence (absence = code-side ``NumberSequenceDef`` default).
-- ``number_counters`` — the gapless running counter, one row per
+- ``number_counters`` - the gapless running counter, one row per
   (tenant, doc_type, period_key).
 
 Columns/constraints mirror ``app/models/numbering.py`` exactly (create_all parity).

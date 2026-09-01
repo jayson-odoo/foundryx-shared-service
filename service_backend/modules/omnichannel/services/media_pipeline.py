@@ -20,7 +20,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import Optional
 
-# ── WhatsApp Cloud API hard ceilings (bytes) — never exceed these ────────────
+# ── WhatsApp Cloud API hard ceilings (bytes) - never exceed these ────────────
 # https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media
 META_CEILINGS = {
     "IMAGE": 5 * 1024 * 1024,
@@ -31,7 +31,7 @@ META_CEILINGS = {
     "STICKER": 500 * 1024,  # animated cap (static is 100KB)
 }
 
-# Accepted mimes per kind — Meta's fixed set (NOT tenant-configurable). For VOICE
+# Accepted mimes per kind - Meta's fixed set (NOT tenant-configurable). For VOICE
 # the browser sends webm; the accepted set here is what we upload AFTER transcode.
 ACCEPTED_MIMES = {
     "IMAGE": {"image/jpeg", "image/png"},
@@ -72,7 +72,7 @@ class SniffedMedia:
 
 def detect_media_mime(content: bytes, filename: Optional[str] = None) -> Optional[str]:
     """Sniff a WhatsApp media blob by magic bytes. Returns the detected mime or
-    None (= reject). The declared content-type is IGNORED — browsers derive it
+    None (= reject). The declared content-type is IGNORED - browsers derive it
     from the extension, which lies."""
     if not content:
         return None
@@ -94,7 +94,7 @@ def detect_media_mime(content: bytes, filename: Optional[str] = None) -> Optiona
         return "audio/mpeg"
     if content[:2] in (b"\xff\xf1", b"\xff\xf9"):
         return "audio/aac"
-    # EBML (webm / matroska) — the browser MediaRecorder voice/video format.
+    # EBML (webm / matroska) - the browser MediaRecorder voice/video format.
     if content[:4] == b"\x1aE\xdf\xa3":
         return "video/webm"
     # ISO Base Media File Format (mp4 / m4a / 3gp): 'ftyp' box at offset 4.
@@ -118,7 +118,7 @@ def detect_media_mime(content: bytes, filename: Optional[str] = None) -> Optiona
     if content[:2] == b"MZ" or content[:4] == b"\x7fELF":
         return None
     head = content[:512].lstrip().lower()
-    if head.startswith(b"<") :  # SVG/HTML/XML — script-bearing markup
+    if head.startswith(b"<") :  # SVG/HTML/XML - script-bearing markup
         return None
     try:
         content.decode("utf-8")
@@ -181,7 +181,7 @@ def _ffmpeg_exe() -> str:
 def transcode_voice(content: bytes) -> bytes:
     """Transcode a browser voice recording (webm/opus) → ogg/opus via ffmpeg so
     WhatsApp treats it as a true voice note (AC-12-04). A failure raises
-    ``MediaRejected('transcode_failed')`` — never a silent no-op. Tests monkey-
+    ``MediaRejected('transcode_failed')`` - never a silent no-op. Tests monkey-
     patch this."""
     with tempfile.TemporaryDirectory() as tmp:
         src = os.path.join(tmp, "in")

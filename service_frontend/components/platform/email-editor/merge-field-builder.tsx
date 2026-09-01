@@ -1,10 +1,10 @@
 'use client';
 
 /**
- * Merge-field builder dialog — same shell idiom as the form engine's
+ * Merge-field builder dialog - same shell idiom as the form engine's
  * `FormulaBuilder` (searchable variable list + an expression input + live
  * status), but for `{{ token }}` insertion rather than arithmetic. The
- * variable list is SEARCHABLE (scales to any context vocabulary — replaces the
+ * variable list is SEARCHABLE (scales to any context vocabulary - replaces the
  * old always-on chip wall, which grew unbounded). A preview line renders the
  * value with the context's sample facts so the merged result is visible.
  *
@@ -143,7 +143,7 @@ export function MergeFieldBuilder({
           <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
             <Braces className="mt-0.5 size-3.5 shrink-0" />
             <span>
-              Preview: <span className="text-foreground">{preview || '—'}</span>
+              Preview: <span className="text-foreground">{preview || '-'}</span>
             </span>
           </div>
         </DialogBody>

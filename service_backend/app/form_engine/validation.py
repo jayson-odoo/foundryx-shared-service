@@ -1,14 +1,14 @@
-"""Form submission validation pipeline (plan sprint-3/01 D14) — the SERVER
+"""Form submission validation pipeline (plan sprint-3/01 D14) - the SERVER
 boundary. ``validate_submission`` is the authoritative twin of the client mirror
 (``lib/form-validate.ts``): it re-derives the visible set, drops hidden answers,
 applies required-if-visible, runs per-type constraints, recomputes computed
-fields, and returns ``(clean_answers, errors)`` — the per-field error map being
+fields, and returns ``(clean_answers, errors)`` - the per-field error map being
 the 422 contract.
 
 Never trust the client (D14): options-membership, type, regex and computed values
 are ALL re-validated/re-derived here.
 
-Pure functions — no DB/ORM imports. Visibility evaluates the rule-engine trees
+Pure functions - no DB/ORM imports. Visibility evaluates the rule-engine trees
 against ``{'answers.<key>': value}`` facts via ``evaluate`` (fail-closed, so a
 stale/garbage condition simply hides the field). Hidden field answers are
 silently DROPPED (never stored, never an error); ``required`` therefore applies
@@ -33,12 +33,12 @@ from app.form_engine.schemas import (
 )
 from app.rule_engine.evaluator import evaluate as rule_eval
 
-# Pragmatic email shape — matches the client (deliverability never asserted).
+# Pragmatic email shape - matches the client (deliverability never asserted).
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
-# Permissive phone — digits/space/+-() , 7..20 chars.
+# Permissive phone - digits/space/+-() , 7..20 chars.
 _PHONE_RE = re.compile(r"^[0-9+\-()\s]{7,20}$")
 
-# Address composite — whitelist of allowed sub-keys (D14).
+# Address composite - whitelist of allowed sub-keys (D14).
 _ADDRESS_KEYS = ("line1", "line2", "city", "state", "postcode", "country")
 _ADDRESS_REQUIRED = ("line1", "city", "country")
 
@@ -46,8 +46,8 @@ _REQUIRED_MSG = "This field is required."
 
 # The full set of "this was left blank" messages every validator emits. Used to
 # strip required-only errors when ``enforce_required=False`` (AC-BI-24b): AI
-# extraction is allowed a PARTIAL emit — a legitimately-blank field is left blank
-# for the human, never a 422 — while type/format/choice errors still surface.
+# extraction is allowed a PARTIAL emit - a legitimately-blank field is left blank
+# for the human, never a 422 - while type/format/choice errors still surface.
 # ``required`` is enforced ONLY at the promote completeness gate, a separate check.
 _REQUIRED_MESSAGES = frozenset(
     {
@@ -71,14 +71,14 @@ def validate_submission(
     """Validate a raw answer map against the form doc.
 
     Returns ``(clean_answers, errors)``:
-    - ``clean_answers`` — the stored payload: visible answers only, hidden
+    - ``clean_answers`` - the stored payload: visible answers only, hidden
       dropped, unknown keys dropped, computed fields recomputed.
-    - ``errors`` — per-field ``{fieldKey: message}`` (repeater rows keyed
+    - ``errors`` - per-field ``{fieldKey: message}`` (repeater rows keyed
       ``<key>.<rowIndex>.<subKey>``). Empty ⇒ valid.
 
     ``enforce_required`` (default ``True``) keeps the submit-boundary contract
     unchanged. Passing ``False`` (AI extraction, AC-BI-24b) validates
-    type/format/choice-membership ONLY and drops required-only errors — a
+    type/format/choice-membership ONLY and drops required-only errors - a
     partial emit is success (a blank field is left for the human, never a 422);
     ``required`` is enforced separately at the promote completeness gate.
     """
@@ -91,7 +91,7 @@ def validate_submission(
     # Conditions evaluate against the VISIBLE set accumulated so far, NOT the
     # raw client map (D14): conditions reference earlier fields only (publish
     # gate), and we walk in document order, so a hidden upstream field
-    # contributes no fact — its leaf fails closed. This means curl can't
+    # contributes no fact - its leaf fails closed. This means curl can't
     # force-feed a hidden field's value to flip a downstream field's
     # visibility (the hidden value is dropped from both storage AND facts).
     def _facts() -> Dict[str, Any]:
@@ -100,12 +100,12 @@ def validate_submission(
     for page in form.pages:
         for section in page.sections:
             if not rule_eval(section.conditions_json, _facts()):
-                continue  # whole section hidden — every field within drops
+                continue  # whole section hidden - every field within drops
             for field in section.fields:
                 if field.type not in INPUT_FIELD_TYPES or not field.key:
                     continue  # display field (no answer) / keyless
                 if not rule_eval(field.conditions_json, _facts()):
-                    continue  # field hidden — drop its answer, never an error
+                    continue  # field hidden - drop its answer, never an error
 
                 if field.type == "computed":
                     # Server RECOMPUTES; the client value is ignored entirely.
@@ -188,7 +188,7 @@ def _validate_field(
         return _validate_rating(field, value)
     if ftype == "signature":
         # Presence checked above; a non-empty value is an opaque data-URL /
-        # storage-key string — accept any non-empty str.
+        # storage-key string - accept any non-empty str.
         if not isinstance(value, str) or not value.strip():
             return _REQUIRED_MSG if field.required else None
         return None
@@ -208,7 +208,7 @@ def _validate_text(field: FormField, value: str) -> Optional[str]:
             compiled = re.compile(cfg.pattern)
         except re.error:
             compiled = None  # invalid author pattern → fail open (publish gate)
-        # JS `.test()` semantics = search (not fullmatch) — mirror the client.
+        # JS `.test()` semantics = search (not fullmatch) - mirror the client.
         if compiled is not None and not compiled.search(value):
             return (cfg.pattern_message or "").strip() or (
                 "This value is not in the expected format."
@@ -353,7 +353,7 @@ def _validate_repeater(
 
 def _validate_table(field: FormField, value: Any, errors: Dict[str, str]) -> Optional[str]:
     """Validate Table rows. Computed columns are NOT validated (derived, read-
-    only — recomputed in _clean_value). Per-cell errors keyed key.rowIndex.col."""
+    only - recomputed in _clean_value). Per-cell errors keyed key.rowIndex.col."""
     rows = [r for r in (value if isinstance(value, list) else []) if isinstance(r, dict)]
     cfg = field.table
     cols = cfg.columns if cfg else []
@@ -377,7 +377,7 @@ def _validate_table(field: FormField, value: Any, errors: Dict[str, str]) -> Opt
     for row_index, row in enumerate(rows):
         for col in cols:
             if col.type in ("computed", "fixed"):
-                continue  # derived / server-stamped — not user input
+                continue  # derived / server-stamped - not user input
             cell_error = _validate_table_cell(col, row.get(col.key))
             if cell_error:
                 errors[f"{key}.{row_index}.{col.key}"] = cell_error
@@ -461,12 +461,12 @@ def _validate_sub_field(sub: FormSubField, value: Any) -> Optional[str]:
 
 def _recompute(field: FormField, clean: Dict[str, Any]) -> Optional[float]:
     """Recompute a computed field against the already-cleaned numeric answers
-    (visible only — clean holds only visible upstream values). Fail-closed."""
+    (visible only - clean holds only visible upstream values). Fail-closed."""
     expr = (field.computed.expression or "").strip() if field.computed else ""
     if not expr:
         return None
     result = compute_eval(expr, clean)
-    # Even finite inputs can overflow to inf (huge * huge) — inf/nan serialize
+    # Even finite inputs can overflow to inf (huge * huge) - inf/nan serialize
     # as invalid JSON, so fail closed to None (code-review finding).
     if result is None or not math.isfinite(result):
         return None
@@ -510,7 +510,7 @@ def _clean_value(field: FormField, value: Any) -> Any:
         return cleaned_rows
     if field.type == "file" and isinstance(value, list):
         return [f for f in value if _is_file_shape(f)]
-    # Choice answers store the STRING option value — membership accepts a
+    # Choice answers store the STRING option value - membership accepts a
     # numeric 0 against option "0" (str()-compared), so coerce to match what
     # equality conditions / CSV export / label lookup expect (code-review).
     if field.type in ("select", "radio") and value is not None:
@@ -570,7 +570,7 @@ def _is_date(value: str) -> bool:
 
 
 def _is_datetime(value: str) -> bool:
-    """ISO-8601 parseable (date-only also accepted — a calendar instant)."""
+    """ISO-8601 parseable (date-only also accepted - a calendar instant)."""
     if not isinstance(value, str) or not value.strip():
         return False
     candidate = value.strip().replace("Z", "+00:00")

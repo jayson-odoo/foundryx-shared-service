@@ -4,7 +4,7 @@ Workspace-key-authenticated (NOT session/JWT): every route depends on
 `get_api_workspace`, which derives (tenant, workspace) from the `fxw_live_…`
 Bearer key. Errors use the structured `{error:{code,message}}` envelope
 (`ApiError`). Marked `"public": true` in the manifest so the loader skips the
-JWT `require_module` gate — service-active is re-checked inside the dependency.
+JWT `require_module` gate - service-active is re-checked inside the dependency.
 """
 import json
 from typing import Optional, Union
@@ -62,7 +62,7 @@ def wire_format(
     ),
 ) -> str:
     """`?format=` switch for the read endpoints. Unknown value is a typed 422
-    rather than a silent fallback — a consumer that typos the format must not
+    rather than a silent fallback - a consumer that typos the format must not
     quietly receive the other shape and mis-parse it."""
     fmt = (format or FORMAT_GUIDE).strip().lower()
     if fmt not in WIRE_FORMATS:
@@ -217,7 +217,7 @@ def update_contact(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ):
-    """Partial update — only sent fields change. Send ``assignedUserId``/
+    """Partial update - only sent fields change. Send ``assignedUserId``/
     ``customFields`` as null to clear; omit to leave unchanged."""
     sent = payload.model_fields_set
     _S = ...  # sentinel = "not provided"
@@ -241,13 +241,13 @@ def list_contact_messages(
     request: Request,
     identifier: str,
     limit: int = Query(50, ge=1, le=200),
-    before: Optional[str] = Query(default=None, description="Message id — page into OLDER history"),
-    after: Optional[str] = Query(default=None, description="Message id — page toward NEWER messages"),
+    before: Optional[str] = Query(default=None, description="Message id - page into OLDER history"),
+    after: Optional[str] = Query(default=None, description="Message id - page toward NEWER messages"),
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ):
-    """A contact's message history — ALL types, always oldest→newest, read-only
+    """A contact's message history - ALL types, always oldest→newest, read-only
     (never marks the thread read). Media: the default shape returns a RELATIVE,
     Bearer-authed `mediaUrl`; `?format=rio` returns an absolute pre-signed
     `message.url` that opens without a header (see §8).
@@ -265,7 +265,7 @@ def list_contact_messages(
         # cursor. Short page = we reached the beginning, so null.
         #
         # `after=` pages FORWARD, so items[0] is the row just past the caller's
-        # own anchor — emitting it as `nextBefore` would send them backwards
+        # own anchor - emitting it as `nextBefore` would send them backwards
         # over ground they already have. The guide documents `before` only for
         # this shape, so the honest answer is "no older-direction cursor".
         next_before = (
@@ -337,7 +337,7 @@ def close_conversation(
     )
 
 
-# ── Comments (internal notes — never sent to the customer) ────────────────────
+# ── Comments (internal notes - never sent to the customer) ────────────────────
 @router.post("/contacts/{identifier}/comments", response_model=MessageItem, status_code=201)
 def add_comment(
     identifier: str,
@@ -355,7 +355,7 @@ def add_comment(
 # callbacks: webhooks are the intended inbound path, and until now registration
 # was dashboard-only (session JWT + `webhooks.manage`), so a key-holder could
 # neither create nor even LIST its endpoints. These mirror the operator routes
-# but are scoped to the key's workspace and its active channel — a consumer can
+# but are scoped to the key's workspace and its active channel - a consumer can
 # never see or touch another workspace's endpoints.
 def _webhook_service(db: Session):
     from ..services.webhook_service import WebhookService
@@ -382,7 +382,7 @@ def list_webhooks(
 ) -> WebhookEndpointListResponse:
     """Your workspace's registered callbacks (secrets are never echoed).
 
-    Workspace-scoped, matching what the per-id routes can mutate — listing by
+    Workspace-scoped, matching what the per-id routes can mutate - listing by
     active channel would hide an endpoint that `PATCH`/`DELETE` still reach."""
     rows = _webhook_service(db).list_for_workspace(api_ws.tenant_id, api_ws.workspace_id)
     return WebhookEndpointListResponse(data=[_wh_item(r) for r in rows])
@@ -395,7 +395,7 @@ def create_webhook(
     db: Session = Depends(get_db),
 ) -> WebhookEndpointMintResponse:
     """Register a callback on your workspace's active channel. The signing
-    secret is returned ONCE — store it; it is never shown again."""
+    secret is returned ONCE - store it; it is never shown again."""
     from ..services.webhook_service import WebhookError
 
     svc = PublicGatewayService(db)
@@ -403,7 +403,7 @@ def create_webhook(
     try:
         row, secret = _webhook_service(db).create(
             api_ws.tenant_id, channel.id, payload.name, payload.url, payload.events,
-            # No user behind an API key — record WHICH key, matching the
+            # No user behind an API key - record WHICH key, matching the
             # `apikey:<id>` actor convention used elsewhere in this service.
             # The activity log is pruned per tenant; this row is permanent.
             created_by=f"apikey:{api_ws.key_id}",
@@ -453,7 +453,7 @@ def rotate_webhook_secret(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ) -> WebhookSecretResponse:
-    """New signing secret, returned ONCE. The old one stops verifying at once —
+    """New signing secret, returned ONCE. The old one stops verifying at once -
     deploy the new secret before rotating."""
     _own_endpoint(db, api_ws, endpoint_id)
     _row, secret = _webhook_service(db).rotate_secret(api_ws.tenant_id, endpoint_id)

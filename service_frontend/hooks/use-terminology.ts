@@ -7,14 +7,14 @@ import { terminologyService } from '@/services/terminology-service';
 /**
  * Terminology hooks (sprint-3/08, F10).
  *
- * `useTerminology()` — the single resolver every relabelable surface uses.
+ * `useTerminology()` - the single resolver every relabelable surface uses.
  * `label('form')` → "Survey", `labelPlural('form')` → "Surveys",
  * `t('form', count)` → count-aware. Missing key falls back to a humanized form
- * of the key (never blank — D7). Fetch-once module store (mirrors branding);
+ * of the key (never blank - D7). Fetch-once module store (mirrors branding);
  * an override edit calls `refreshTerminology()` so every surface updates with
  * NO reload / re-login (D6).
  *
- * `useTerminologyAdmin()` — the settings-page catalog + set/reset.
+ * `useTerminologyAdmin()` - the settings-page catalog + set/reset.
  */
 
 /* ─────────────── merged-map store (consumption surfaces) ─────────────── */
@@ -36,7 +36,7 @@ function fetchTerminology(): Promise<void> {
       state = { map };
     })
     .catch(() => {
-      // Degrade to humanized fallbacks — never block render.
+      // Degrade to humanized fallbacks - never block render.
       state = { map: state.map ?? {} };
     })
     .finally(() => {

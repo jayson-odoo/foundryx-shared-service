@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 /**
  * Change-email request form (plan sprint-2/04). Password is re-entered as
- * fresh proof of possession — its STRENGTH is not validated here (it's the
+ * fresh proof of possession - its STRENGTH is not validated here (it's the
  * existing password, not a new one).
  */
 export const getChangeEmailSchema = () => {

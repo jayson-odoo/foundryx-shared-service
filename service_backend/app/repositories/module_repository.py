@@ -52,7 +52,7 @@ class ModuleRepository:
         return {name for (name,) in rows}
 
     def installed_module_names(self, tenant_id: str) -> Set[str]:
-        """ACTIVE + INACTIVE — installed at all (grants stay while deactivated)."""
+        """ACTIVE + INACTIVE - installed at all (grants stay while deactivated)."""
         rows = (
             self.db.query(Module.name)
             .join(TenantModule, TenantModule.module_id == Module.id)

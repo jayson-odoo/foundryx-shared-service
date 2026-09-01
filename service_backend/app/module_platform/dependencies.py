@@ -6,7 +6,7 @@ Reverse-dependency guard on BOTH uninstall AND deactivate (a required provider
 can't go away / go inactive while a dependent is ACTIVE). Cycle detection at
 boot → loud failure.
 
-``optional``/``enhances`` (soft): ZERO guards — the consumer discovers the
+``optional``/``enhances`` (soft): ZERO guards - the consumer discovers the
 capability at runtime; an absent provider self-disables (foolproof warn).
 """
 from typing import Dict, List, Optional, Tuple
@@ -73,7 +73,7 @@ def check_requires(db: Session, tenant_id: str, manifest: dict) -> dict:
     ``{"ok": bool, "missing": [...], "inactive": [...], "cascade": [names]}``.
 
     - ``missing``: not installed (offer cascade-with-consent, topo order).
-    - ``inactive``: installed but INACTIVE (block "activate X first" — no silent
+    - ``inactive``: installed but INACTIVE (block "activate X first" - no silent
       reactivation).
     - version mismatch counts as ``missing`` (needs install/update).
     """

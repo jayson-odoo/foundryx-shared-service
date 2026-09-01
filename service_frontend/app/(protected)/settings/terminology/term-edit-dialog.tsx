@@ -17,7 +17,7 @@ import type { TermCatalogItem, TermLabels } from '@/types/terminology';
 
 /**
  * Inline rename dialog (plan sprint-3/08 D9). Both singular AND plural required
- * (D3 — no auto-pluralize); Save blocked until both are non-blank.
+ * (D3 - no auto-pluralize); Save blocked until both are non-blank.
  */
 export function TermEditDialog({
   item,

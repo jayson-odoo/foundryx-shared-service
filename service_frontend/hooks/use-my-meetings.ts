@@ -8,7 +8,7 @@ export interface UseMyMeetings {
   optIn: MeetingsOptIn | null;
   events: MeetingsEvent[];
   loading: boolean;
-  /** True while a toggle write is in flight — the switches disable themselves. */
+  /** True while a toggle write is in flight - the switches disable themselves. */
   saving: boolean;
   error: string | null;
   reload: () => Promise<void>;
@@ -19,7 +19,7 @@ export interface UseMyMeetings {
 /**
  * The caller's master toggle plus their upcoming events (S0 plan §4).
  *
- * The page reads meetings ONLY through this hook — no component touches the
+ * The page reads meetings ONLY through this hook - no component touches the
  * service or api-client. The events read is skipped while the master toggle is
  * off, because nothing is synced for an opted-out user (AC-S0-9).
  */

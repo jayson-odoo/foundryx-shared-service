@@ -25,9 +25,9 @@ declare module '@tanstack/react-table' {
   }
 }
 
-/** Runtime passed to an action's `run` — lets row actions preserve nav ctx + refresh. */
+/** Runtime passed to an action's `run` - lets row actions preserve nav ctx + refresh. */
 export interface ResourceActionRuntime {
-  /** Encoded list query (row surface only) — for preserving record-nav on navigation. */
+  /** Encoded list query (row surface only) - for preserving record-nav on navigation. */
   ctx?: string;
   /** Global index of the row within the current query (row surface only). */
   index?: number;
@@ -43,7 +43,7 @@ export interface ResourceAction<T> {
   id: string;
   /**
    * Menu label. A function receives the target rows so the label can be derived
-   * from state — e.g. a status_engine "advance" action reads the row's allowed
+   * from state - e.g. a status_engine "advance" action reads the row's allowed
    * next transition and renders "Move to Triaged" instead of a static verb.
    */
   label: string | ((rows: T[]) => string);
@@ -62,7 +62,7 @@ export interface ResourceAction<T> {
     description?: string;
     confirmLabel?: string;
     /**
-     * Typed confirmation (sprint-2/02 — module-uninstall UX): the confirm
+     * Typed confirmation (sprint-2/02 - module-uninstall UX): the confirm
      * button stays disabled until the user types `expected(rows)` exactly.
      * For irreversible actions (hard delete).
      */
@@ -83,7 +83,7 @@ export interface ResourceListConfig<T extends object> {
   columns: ColumnDef<T>[];
   /**
    * Optional card renderer. When set, the list offers a card/list view toggle
-   * (persisted per `viewKey`); this returns the card BODY — the shell wraps it
+   * (persisted per `viewKey`); this returns the card BODY - the shell wraps it
    * with the selection checkbox + row action menu chrome. The card grid reuses
    * the same data/search/filter/segment/pagination as the table.
    */
@@ -103,7 +103,7 @@ export interface ResourceListConfig<T extends object> {
   /**
    * Inline master-detail: when set, a row click calls this instead of navigating
    * (rowHref is ignored). Receives the row, its index on the page, and the page
-   * rows — used by `<MasterDetail>` to open a detail panel with record-nav.
+   * rows - used by `<MasterDetail>` to open a detail panel with record-nav.
    */
   onRowSelect?: (row: T, index: number, rows: T[]) => void;
   fetcher: (query: ListQuery) => Promise<ListResult<T>>;
@@ -126,7 +126,7 @@ export interface ResourceListConfig<T extends object> {
   enableStatusViews?: boolean;
   /**
    * Per-entity labels for the status-view toggle (default Active | Trashed).
-   * The underlying StatusView semantics stay 'active' | 'trashed' — e.g.
+   * The underlying StatusView semantics stay 'active' | 'trashed' - e.g.
    * tenants relabel 'trashed' as "Archived" (soft archive, plan 07 §4).
    */
   statusViewLabels?: { active: string; trashed: string };

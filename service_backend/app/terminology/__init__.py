@@ -1,4 +1,4 @@
-"""Terminology engine (sprint-3/08, F10) — per-tenant entity relabeling.
+"""Terminology engine (sprint-3/08, F10) - per-tenant entity relabeling.
 
 Core, general, horizontal: any module registers its entities' default labels
 (``register_term``); any tenant overrides the display word. Mirrors the

@@ -1,10 +1,10 @@
-"""Adapter-kind registry (AC-A-07) — code-side, metadata-only.
+"""Adapter-kind registry (AC-A-07) - code-side, metadata-only.
 
 Mirrors the product-kind (``app/catalog/kinds.py``) / status-entity registry
 pattern: an adapter ``kind`` is a validated label, never a behavior branch. A
 software Product's ``ProductAdapter`` rows carry a ``kind`` validated here.
 
-Phase A wires ONLY ``embed_connection`` (the embed-exchange binding — the other
+Phase A wires ONLY ``embed_connection`` (the embed-exchange binding - the other
 end of the product-domain link, AC-A-09/A-39). ``github`` / ``agent_runner`` /
 ``deploy`` are **registered-but-dormant** (Phase C build/deploy plane): the kinds
 are known and validate, but nothing acts on them yet.
@@ -24,7 +24,7 @@ _REGISTRY: dict[str, AdapterKind] = {}
 
 
 def register_adapter_kind(kind: AdapterKind) -> None:
-    """Idempotent — last registration for a key wins (boot re-runs are safe)."""
+    """Idempotent - last registration for a key wins (boot re-runs are safe)."""
     _REGISTRY[kind.key] = kind
 
 

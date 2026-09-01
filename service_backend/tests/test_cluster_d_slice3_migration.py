@@ -1,4 +1,4 @@
-"""Cluster D slice-3 — migration regression (tester-authored, BUG GUARD).
+"""Cluster D slice-3 - migration regression (tester-authored, BUG GUARD).
 
 BUG FOUND IN QA (sprint-4/05 slice 3): the slice-3 EMS migration revision id
 ``0005_cluster_d_ticket_status_checkpoints`` is 40 characters, but Alembic's
@@ -13,7 +13,7 @@ Consequence: the slice-3 columns (``tickets.qr_nonce`` / ``tickets.status_id``)
 + the checkpoints tables never apply on a real Postgres deployment; the public
 GA/RESERVED checkout + every slice-3 flow 500s ("column tickets.qr_nonce does
 not exist"). The full pytest suite is GREEN only because conftest builds the
-schema via ``create_all`` (no Alembic) — so the broken migration is invisible to
+schema via ``create_all`` (no Alembic) - so the broken migration is invisible to
 the existing tests.
 
 These tests were written to FAIL until the coder shortened the revision id (and
@@ -50,7 +50,7 @@ def _revision_ids():
 
 def test_module_migration_revision_ids_fit_alembic_column():
     """Every module migration revision id must fit Alembic's VARCHAR(32) version
-    column — else `run_module_migrations` 500s at stamp time on Postgres.
+    column - else `run_module_migrations` 500s at stamp time on Postgres.
 
     FIXED: the slice-3 EMS migration id was shortened to
     `0005_ticket_status_checkpoints` (30 chars). Permanent regression guard."""
@@ -65,7 +65,7 @@ def test_module_migration_revision_ids_fit_alembic_column():
     )
 
 
-# NOTE: the former `test_slice3_ems_migration_id_specifically_fits` was removed —
+# NOTE: the former `test_slice3_ems_migration_id_specifically_fits` was removed -
 # it pinned an EMS-specific migration (`modules/ems/.../0005_*`), and the EMS
 # domain module is stripped from this shared-service fork. The generic guard
 # above still covers every remaining module migration (e.g. omnichannel).

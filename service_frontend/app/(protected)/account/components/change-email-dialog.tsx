@@ -36,7 +36,7 @@ export interface ChangeEmailDialogProps {
   currentEmail: string;
   isProcessing: boolean;
   error: string | null;
-  /** Resolves true on success — the dialog flips to its "check your inbox" state. */
+  /** Resolves true on success - the dialog flips to its "check your inbox" state. */
   onRequest: (newEmail: string, password: string) => Promise<boolean>;
   clearError: () => void;
 }
@@ -108,7 +108,7 @@ export function ChangeEmailDialog({
           </>
         ) : (
           <Form {...form}>
-            {/* noValidate: zod owns validation — native email validation would
+            {/* noValidate: zod owns validation - native email validation would
                 block submit (and differ from the schema's messages). */}
             <form onSubmit={form.handleSubmit(onSubmit)} noValidate>
               <DialogHeader>

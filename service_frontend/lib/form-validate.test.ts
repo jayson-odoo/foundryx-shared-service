@@ -1,5 +1,5 @@
 /**
- * Form runtime validation + visibility (plan sprint-3/01, D14) — required-if-
+ * Form runtime validation + visibility (plan sprint-3/01, D14) - required-if-
  * visible, hidden-key dropping, the per-type validator matrix, repeater rows,
  * address, and computed live recompute + exclusion of hidden refs.
  */

@@ -3,7 +3,7 @@
 Publishers (API send path, Celery worker) call ``publish(workspace_id, event)``;
 the FastAPI WS endpoint subscribes to ``omnichannel:ws:{workspace_id}`` and
 relays to connected sockets. Publish is BEST-EFFORT: a dead Redis must never
-fail a send or a webhook task — events are a delivery nicety, the DB is truth.
+fail a send or a webhook task - events are a delivery nicety, the DB is truth.
 """
 import json
 import logging
@@ -30,7 +30,7 @@ def _get_client() -> redis.Redis:
 
 
 def set_client(client: Optional[redis.Redis]) -> None:
-    """Test seam — inject a fakeredis client (None resets to lazy real client)."""
+    """Test seam - inject a fakeredis client (None resets to lazy real client)."""
     global _client
     _client = client
 
@@ -39,5 +39,5 @@ def publish(workspace_id: str, event: Dict[str, Any]) -> None:
     """Fire-and-forget publish of one event dict (camelCase payloads)."""
     try:
         _get_client().publish(channel_for(workspace_id), json.dumps(event, default=str))
-    except Exception as exc:  # noqa: BLE001 — see module docstring
+    except Exception as exc:  # noqa: BLE001 - see module docstring
         logger.warning("omnichannel realtime publish failed: %s", exc)

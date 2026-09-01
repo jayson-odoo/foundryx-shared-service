@@ -56,7 +56,7 @@ describe('tenantUpdateSchema', () => {
   it('accepts empty admin block + arbitrary (immutable) slug', () => {
     const r = tenantUpdateSchema.safeParse({
       ...validProvision,
-      slug: 'platform', // read-only display value — not re-validated on update
+      slug: 'platform', // read-only display value - not re-validated on update
       adminName: '',
       adminEmail: '',
       adminPassword: '',

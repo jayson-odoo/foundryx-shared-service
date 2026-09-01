@@ -1,4 +1,4 @@
-"""Import engine tables (sprint-3/09, F8) — import_jobs + import_settings.
+"""Import engine tables (sprint-3/09, F8) - import_jobs + import_settings.
 
 Revision ID: d5e6f7a8b9c0
 Revises: c3d4e5f6a7b8

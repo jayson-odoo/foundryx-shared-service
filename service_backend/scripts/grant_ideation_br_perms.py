@@ -1,7 +1,7 @@
 """Grant sweep for the Phase B-i slice 2 BR permissions (DoD #4, AC-BI-19).
 
 A new module permission is computed at install/provision, so it does NOT reach
-tenants that already have ideation installed — they would silently 403 the new
+tenants that already have ideation installed - they would silently 403 the new
 Business-Requirement surface until re-granted. This idempotent sweep:
 
   1. re-syncs the ideation permission catalog from the module CSV (so the new

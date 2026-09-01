@@ -1,9 +1,10 @@
-"""AutoCount repositories — pure SQLAlchemy, ALWAYS tenant- AND company-scoped."""
+"""AutoCount repositories - pure SQLAlchemy, ALWAYS tenant- AND company-scoped."""
 from .autocount_repository import (
     CompanyRepository,
     ConnectionRepository,
     EntityConfigRepository,
     FieldMappingRepository,
+    RowHashRepository,
     StagedRecordRepository,
     SyncJobRepository,
     SyncRunRepository,
@@ -15,6 +16,7 @@ __all__ = [
     "ConnectionRepository",
     "EntityConfigRepository",
     "FieldMappingRepository",
+    "RowHashRepository",
     "StagedRecordRepository",
     "SyncJobRepository",
     "SyncRunRepository",

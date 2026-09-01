@@ -12,7 +12,7 @@ import { RequirePermission } from '@/components/common/require-permission';
 import { MediaCapsForm } from './media-caps-form';
 
 /**
- * Omnichannel media limits (plan 12 Slice 3, AC-12-23) — per-type max upload
+ * Omnichannel media limits (plan 12 Slice 3, AC-12-23) - per-type max upload
  * sizes for WhatsApp media. Gated by channels.manage. v1 edits the tenant
  * default scope. BL: an optional per-workspace scope selector is a follow-up.
  */

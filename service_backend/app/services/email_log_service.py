@@ -1,7 +1,7 @@
-"""Email log — outbox surfacing + retry/cancel (plan 07 D14).
+"""Email log - outbox surfacing + retry/cancel (plan 07 D14).
 
 Tenant-scoped: a workspace sees ONLY its own outbox rows (bodies carry live
-reset/invite links — capability-bearing). Cross-tenant operator view is
+reset/invite links - capability-bearing). Cross-tenant operator view is
 deliberately not v1.
 """
 
@@ -26,7 +26,7 @@ class EmailLogError(Exception):
 
 
 class EmailLogConflict(Exception):
-    """409 — lost the race against the dispatcher (or wrong state)."""
+    """409 - lost the race against the dispatcher (or wrong state)."""
 
 
 class EmailLogNotFound(Exception):
@@ -50,7 +50,7 @@ _SORT_MAP = {
     "sentAt": EmailOutbox.sent_at,
 }
 
-# Wire segment ids (lowercase) — 'all' = no status filter.
+# Wire segment ids (lowercase) - 'all' = no status filter.
 SEGMENTS = {"pending", "sending", "sent", "failed", "cancelled"}
 
 
@@ -114,7 +114,7 @@ class EmailLogService:
 
     def retry(self, email_id: str, tenant_id: str) -> EmailOutbox:
         """FAILED|CANCELLED → PENDING, next attempt now; attempts PRESERVED
-        (history honest — each manual retry buys one more dispatcher pass)."""
+        (history honest - each manual retry buys one more dispatcher pass)."""
         row = self.get(email_id, tenant_id)
         if row.status not in (OUTBOX_FAILED, OUTBOX_CANCELLED):
             raise EmailLogError("Only failed or cancelled emails can be retried.")
@@ -126,7 +126,7 @@ class EmailLogService:
         return row
 
     def cancel(self, email_id: str, tenant_id: str) -> EmailOutbox:
-        """PENDING → CANCELLED via atomic conditional UPDATE — if the
+        """PENDING → CANCELLED via atomic conditional UPDATE - if the
         dispatcher's lease claim already flipped the row to SENDING, the
         rowcount is 0 and the caller gets a 409 (it was too late)."""
         row = self.get(email_id, tenant_id)  # 404 before 409
@@ -137,13 +137,13 @@ class EmailLogService:
                 EmailOutbox.tenant_id == tenant_id,
                 EmailOutbox.status == OUTBOX_PENDING,
             )
-            # next_attempt_at stays (NOT NULL column) — only PENDING rows are
+            # next_attempt_at stays (NOT NULL column) - only PENDING rows are
             # ever claimed, so a cancelled row's timestamp is inert.
             .values(status=OUTBOX_CANCELLED)
         )
         if result.rowcount == 0:
             self.db.rollback()
-            raise EmailLogConflict("Email is already sending or sent — too late to cancel.")
+            raise EmailLogConflict("Email is already sending or sent - too late to cancel.")
         self.db.commit()
         self.db.refresh(row)
         return row

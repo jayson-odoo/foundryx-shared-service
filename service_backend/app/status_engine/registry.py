@@ -1,4 +1,4 @@
-"""Status-entity registry (sprint-2/01 D3) — which tables ride the engine.
+"""Status-entity registry (sprint-2/01 D3) - which tables ride the engine.
 
 Code-side, like the permissions CSV: an entity binds by registering here with
 a flat ``entity_type`` and a ``status_id`` FK on its table. Core registers
@@ -20,7 +20,7 @@ class StatusEntity:
     """One engine-managed entity.
 
     ``platform_owned``: the status set belongs to the platform (e.g. tenant
-    lifecycle — records span tenants); only operators configure it and there
+    lifecycle - records span tenants); only operators configure it and there
     is no tenant fork. Tenant-owned entities two-tier instead (D7).
 
     ``count_records(db, status_id, tenant_id)`` / ``migrate_records(db,
@@ -28,7 +28,7 @@ class StatusEntity:
     block-delete-if-referenced + migrate-records (D8). ``tenant_id`` is None
     for platform-owned entities (cross-tenant by design).
 
-    ``scoped`` (sprint-3/01 D4): one graph PER OWNING RECORD — statuses are
+    ``scoped`` (sprint-3/01 D4): one graph PER OWNING RECORD - statuses are
     materialized at scope creation with ``(tenant_id, scope_id)`` set,
     tenant-owned from birth (no two-tier fork). ``scope_attr`` names the
     record attribute holding the scope id (e.g. ``form_id``);
@@ -52,18 +52,18 @@ class StatusEntity:
     scoped: bool = False
     # Record attribute carrying the scope id (required when scoped).
     scope_attr: Optional[str] = None
-    # Display noun for the scope owner ("Form") — error copy + UI.
+    # Display noun for the scope owner ("Form") - error copy + UI.
     scope_label: str = ""
-    # ``scope_exists(db, tenant_id, scope_id)`` — does the owning record
+    # ``scope_exists(db, tenant_id, scope_id)`` - does the owning record
     # exist in the caller's tenant? (polymorphic guard class; required for
     # API-driven scoped writes).
     scope_exists: Optional[Callable[[Session, str, str], bool]] = None
     # ---- derived / computed status (sprint-4/03 G4) ----
     # True when this entity has TIME-conditioned auto edges (e.g. invoice
-    # Overdue when due_date < now) — event-driven re-eval can't catch the clock
+    # Overdue when due_date < now) - event-driven re-eval can't catch the clock
     # advancing, so the scheduler sweep re-evaluates its candidates each tick.
     has_time_auto_edges: bool = False
-    # ``time_candidates(db) -> [records]`` — a COARSE, tenant-spanning query of
+    # ``time_candidates(db) -> [records]`` - a COARSE, tenant-spanning query of
     # the records the sweep should re-evaluate (e.g. unpaid invoices with a past
     # due_date). reevaluate fail-closes anything that doesn't actually qualify.
     # Required when ``has_time_auto_edges`` is set.
@@ -76,11 +76,11 @@ class StatusEntity:
     # ``record:<type>`` rule fact source (so auto-edge conditions can reference
     # the record's own fields, not just ``actor.*``).
     model: Optional[Any] = None
-    # Whitelisted columns exposed as ``record:<type>`` rule facts (D7 — never
+    # Whitelisted columns exposed as ``record:<type>`` rule facts (D7 - never
     # auto-expose the whole schema). Empty = no record facts registered.
     fact_attrs: Sequence[str] = field(default_factory=tuple)
     # Aggregate facts (count/sum/… over child rows, sprint-4/03 G3) appended to
-    # the same ``record:<type>`` source — each a code-declared, tenant-scoped
+    # the same ``record:<type>`` source - each a code-declared, tenant-scoped
     # ``aggregate_fact`` (the relation/op is whitelisted; the threshold is
     # authored in the RuleBuilder like any other fact). The ESCAPE HATCH for
     # one-off / ``where=``-filtered aggregates; prefer ``aggregatable_relations``.
@@ -118,7 +118,7 @@ _REGISTRY: Dict[str, StatusEntity] = {}
 
 
 def register_status_entity(entity: StatusEntity) -> None:
-    """Idempotent — modules re-register on every bootstrap.
+    """Idempotent - modules re-register on every bootstrap.
 
     When the entity declares ``fact_attrs`` and/or ``aggregate_facts``, also
     register a ``record:<type>`` rule fact source so its auto-edge / transition
@@ -136,7 +136,7 @@ def register_status_entity(entity: StatusEntity) -> None:
         source = f"record:{entity.entity_type}"
 
         # Relations expand to facts + a child→owner DerivedTrigger. Triggers are
-        # always (re)registered — register_derived_trigger is idempotent — so a
+        # always (re)registered - register_derived_trigger is idempotent - so a
         # re-bootstrap that skips the source rebuild still wires the trigger.
         relation_facts: list = []
         if entity.aggregatable_relations:
@@ -242,7 +242,7 @@ def _register_core() -> None:
             required_flags=["is_initial", "blocks_access", "is_archived"],
         )
     )
-    # Form submissions (sprint-3/01 D4) — the first SCOPED entity: one graph
+    # Form submissions (sprint-3/01 D4) - the first SCOPED entity: one graph
     # per form, materialized at form creation.
     register_status_entity(
         StatusEntity(

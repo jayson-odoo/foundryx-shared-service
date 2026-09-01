@@ -75,7 +75,7 @@ def opts(*values):
 
 def test_hidden_field_answer_is_dropped_no_error():
     # `why` is visible only when `agree` is true. Submit agree=False but still
-    # send a `why` answer — it must be dropped, and no required error fires.
+    # send a `why` answer - it must be dropped, and no required error fires.
     d = two_section_doc(
         [field("yesno", key="agree")],
         [field("text", key="why", required=True, conditionsJson=cond("answers.agree", True))],
@@ -286,7 +286,7 @@ def test_computed_overflow_is_none_not_inf():
         field("number", key="b"),
         field("computed", key="c", computed={"expression": "a * b"}),
     )
-    # a*b overflows to inf — must fail closed to None, never store inf.
+    # a*b overflows to inf - must fail closed to None, never store inf.
     clean, _errors = validate_submission(d, {"a": 1e308, "b": 1e308})
     assert clean["c"] is None
 

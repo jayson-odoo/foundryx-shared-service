@@ -1,9 +1,9 @@
-"""Review/Approval workflow ActionDefs (plan sprint-4/06 Part B) — ``review.allocate``
+"""Review/Approval workflow ActionDefs (plan sprint-4/06 Part B) - ``review.allocate``
 and ``review.escalate``.
 
 These are CORE workflow actions (the review engine is core). They run inside the
 workflow executor, which is already failure-isolated relative to the triggering
-request (a broken/slow allocate can never 500 the submit/transition — AC-06-40).
+request (a broken/slow allocate can never 500 the submit/transition - AC-06-40).
 We additionally wrap the per-assignee notify so one bad contact never aborts the
 whole allocation.
 
@@ -12,9 +12,9 @@ Trigger contract (AC-06-04/32): the canonical allocate workflow is wired to the
 ``toStatus = review_start_status_id``. So the triggering record is the SUBMISSION
 that just moved into review-start, and the flat run-context carries:
 
-- ``trigger.record.id`` — the submission id (``status_machine.transition`` emits
+- ``trigger.record.id`` - the submission id (``status_machine.transition`` emits
   the record id; the executor maps ``recordId`` → ``trigger.record.id``);
-- ``trigger.toStatus`` / ``trigger.fromStatus`` — the status edge.
+- ``trigger.toStatus`` / ``trigger.fromStatus`` - the status edge.
 
 The submission's ``reviewed_submission_group_id`` + ``revision_number`` derive
 from the submission row (loaded tenant-scoped). The action MUST NOT transition
@@ -47,7 +47,7 @@ def _now() -> datetime:
 
 def _load_submission(db: Session, tenant_id: str, ctx: Dict[str, Any]) -> Optional[FormSubmission]:
     """Resolve the triggering submission from the run-context, TENANT-SCOPED
-    (never resolve a stored/contextual id unscoped — the polymorphic-target_id
+    (never resolve a stored/contextual id unscoped - the polymorphic-target_id
     rule). The status_changed trigger seeds ``trigger.record.id`` with the
     submission id."""
     sub_id = ctx.get("trigger.record.id") or ctx.get("trigger.submissionId")
@@ -103,7 +103,7 @@ def _notify_assignee(
             template_key="review.assignment",
             commit=False,
         )
-    except Exception:  # noqa: BLE001 — a notify failure never breaks allocation
+    except Exception:  # noqa: BLE001 - a notify failure never breaks allocation
         logger.exception("review assignment notify failed for %s:%s", actor_kind, actor_id)
 
 
@@ -126,7 +126,7 @@ def _prior_reviewers(
     db: Session, tenant_id: str, config_id: str, group_id: str, revision: int
 ) -> List[Tuple[str, str]]:
     """The (actor_kind, actor_id) reviewers of the IMMEDIATELY PRIOR revision, in
-    assignment order — preferred when re-allocating a revision (AC-06-09/32)."""
+    assignment order - preferred when re-allocating a revision (AC-06-09/32)."""
     if revision <= 1:
         return []
     rows = (
@@ -175,7 +175,7 @@ def _allocate(
     svc = ReviewConfigService(db)
 
     existing = _existing_for_revision(db, tenant_id, config.id, group_id, revision)
-    # Actors already holding an assignment this revision (any status) — never
+    # Actors already holding an assignment this revision (any status) - never
     # double-assign (UNIQUE backstops, but we want a clean idempotent skip).
     already: Set[Tuple[str, str]] = {(a.actor_kind, a.actor_id) for a in existing}
     # Slots still filled = PENDING or COMPLETED assignments (an ESCALATED or
@@ -233,10 +233,10 @@ def _allocate(
             needed -= 1
             new_count += 1
             _notify_assignee(db, tenant_id, config, actor_kind, actor_id)
-            # AC-06-22 — a freshly-assigned PROFILE reviewer auto-acquires the
+            # AC-06-22 - a freshly-assigned PROFILE reviewer auto-acquires the
             # reviewer persona (→ my_reviews.read), so an EXPLICIT/RULE/PERSONA
             # profile reviewer can see the assignment in their portal. user-kind
-            # actors use the staff surface (core perms) — never persona-granted.
+            # actors use the staff surface (core perms) - never persona-granted.
             if actor_kind == "profile":
                 grant_actor_surface(
                     db,
@@ -280,7 +280,7 @@ def review_escalate(
 
     The submission group is resolved from the run-context the same way as allocate
     (the escalate workflow is typically a schedule.cron that sweeps; here we
-    support the per-submission trigger path — a scheduled sweep variant would loop
+    support the per-submission trigger path - a scheduled sweep variant would loop
     over open groups, slice-2 surface)."""
     cfg = _config(db, tenant_id, config.get("reviewConfigurationId"))
     if cfg is None:
@@ -325,7 +325,7 @@ def review_escalate(
 
 def register_review_actions() -> None:
     """Register the review ActionDefs into the workflow registry. Called at core
-    boot (idempotent — register_action overwrites by key)."""
+    boot (idempotent - register_action overwrites by key)."""
     from app.workflow_engine.registry import ActionDef, NodeField, NodeOutput, register_action
 
     register_action(

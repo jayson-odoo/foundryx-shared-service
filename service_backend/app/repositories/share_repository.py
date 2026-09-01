@@ -1,7 +1,7 @@
-"""Document-sharing persistence (plan sprint-3/05) — pure SQLAlchemy, ALWAYS
+"""Document-sharing persistence (plan sprint-3/05) - pure SQLAlchemy, ALWAYS
 tenant-scoped (the multi-tenancy invariant). The PUBLIC resolve path looks a
 share up by its globally-unique ``token`` (the bearer capability self-identifies
-the tenant — D9), then every downstream query re-scopes by the resolved
+the tenant - D9), then every downstream query re-scopes by the resolved
 ``share.tenant_id``. The service owns the transaction (flush, not commit)."""
 from typing import List, Optional, Tuple
 
@@ -18,7 +18,7 @@ class ShareRepository:
     # ---- shares ----
 
     def get_by_token(self, token: str) -> Optional[FileShare]:
-        """The ONE non-tenant-scoped lookup — the token is the global capability."""
+        """The ONE non-tenant-scoped lookup - the token is the global capability."""
         return self.db.query(FileShare).filter(FileShare.token == token).first()
 
     def get(self, tenant_id: str, share_id: str) -> Optional[FileShare]:
@@ -43,7 +43,7 @@ class ShareRepository:
         )
 
     def active_in_tenant(self, tenant_id: str) -> List[FileShare]:
-        """All non-disabled shares in a tenant — for the 'Shared with me' filter
+        """All non-disabled shares in a tenant - for the 'Shared with me' filter
         (authorization is applied in the service per-user)."""
         return (
             self.db.query(FileShare)

@@ -115,7 +115,7 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
               return;
             }
           }
-          toast.error('Could not save the profile. Your changes are kept — please retry.');
+          toast.error('Could not save the profile. Your changes are kept - please retry.');
         }
       })();
       return ok;
@@ -123,7 +123,7 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
 
     const onCancel = () => form.reset(toFormValues(channel, profile));
 
-    // Sync Profile pulls fresh data from Meta — reflect it in the editable
+    // Sync Profile pulls fresh data from Meta - reflect it in the editable
     // inputs too (not just the read view), else a later Edit shows stale values
     // and a Save would clobber the freshly-synced profile. Preserve any pending
     // channel-name / active edits.

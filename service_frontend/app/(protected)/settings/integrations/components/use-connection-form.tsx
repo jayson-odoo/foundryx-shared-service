@@ -108,7 +108,7 @@ export function useConnectionForm(
   const onProviderChange = (key: string) => {
     const p = providers.find((x) => x.provider === key);
     if (!p) return;
-    // Re-seed the whole form — field sets differ per provider.
+    // Re-seed the whole form - field sets differ per provider.
     form.reset(defaultsForProvider(p));
   };
 
@@ -130,7 +130,7 @@ export function useConnectionForm(
       const input = toConnectionInput(values);
       if (creating) {
         const created = await integrationService.create(input);
-        toast.success(`${created.name} connected — run a test to verify it.`);
+        toast.success(`${created.name} connected - run a test to verify it.`);
         router.push(connectionFormPath(created.id));
         return true;
       }
@@ -191,7 +191,7 @@ export function useConnectionForm(
       ],
       actions,
       actionRows: connection ? [connection] : [],
-      // Form-surface Test flips status/lastTestedAt — re-pull the record so
+      // Form-surface Test flips status/lastTestedAt - re-pull the record so
       // the Health card reflects it without a page refresh.
       onReload: () => {
         if (!connection) return;

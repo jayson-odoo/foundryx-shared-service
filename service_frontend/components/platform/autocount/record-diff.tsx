@@ -58,7 +58,7 @@ export function DiffValue({ value, tone = 'after' }: DiffValueProps) {
 }
 
 export interface RecordDiffProps {
-  /** The staged record's raw `diff` — CHANGED FIELDS ONLY, as the server sends it. */
+  /** The staged record's raw `diff` - CHANGED FIELDS ONLY, as the server sends it. */
   diff: Record<string, unknown> | null;
   /** Canonical payload, used only to expand a first-seen record's "nothing → value". */
   canonical?: Record<string, unknown> | null;
@@ -68,7 +68,7 @@ export interface RecordDiffProps {
 /**
  * Per-record before → after diff (AC-13-12).
  *
- * Renders ONLY the fields that actually changed — the server omits the rest and
+ * Renders ONLY the fields that actually changed - the server omits the rest and
  * nothing here re-derives them. A record with no changes says so plainly rather
  * than rendering an empty grid.
  *

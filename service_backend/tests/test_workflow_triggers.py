@@ -1,4 +1,4 @@
-"""Workflow engine — triggers/actions breadth (plan sprint-2/09 Phase B TDD).
+"""Workflow engine - triggers/actions breadth (plan sprint-2/09 Phase B TDD).
 
 Covers: the CRUD event bus (emit→match→enqueue), field_changed refinement,
 loop-guard chain exclusion, cron next_run_at + timezone, the scheduler tick,
@@ -13,7 +13,8 @@ import pytest
 from sqlalchemy import Boolean, Column, String
 
 from app.database import Base
-from app.models import DEFAULT_TENANT_ID, User
+from app.models import DEFAULT_TENANT_ID, PLATFORM_TENANT_ID, User
+from app.models.ai import AiAgent
 from app.models.status import Status
 from app.models.status_transition import StatusTransition
 from app.models.workflow import WorkflowRun
@@ -83,7 +84,7 @@ def _edge(src, tgt, port="out"):
 
 
 def _email(nid, to="a@b.com"):
-    # Unique name per node id — names must be unique within a workflow.
+    # Unique name per node id - names must be unique within a workflow.
     return _node(nid, "action", "email.send", {"mode": "custom", "to": to, "subject": "S", "body": "B", "name": f"Email {nid}"})
 
 
@@ -153,7 +154,7 @@ def test_if_routes_true_branch(session_factory):
 
 
 def test_debug_staleness_propagates_through_taken_if_branch(session_factory):
-    """D6 — editing an upstream node re-runs it AND its active descendants on the
+    """D6 - editing an upstream node re-runs it AND its active descendants on the
     TAKEN branch (staleness propagates), while the IF (unchanged) is reused and
     the untaken branch is never touched."""
     from app.workflow_engine.executor import debug_execute
@@ -188,14 +189,14 @@ def test_debug_staleness_propagates_through_taken_if_branch(session_factory):
     assert "cond" not in ids  # unchanged IF reused from cache
     assert "c" not in ids  # untaken (false) branch never re-runs
 
-    # A stale id on the UNTAKEN branch is ignored — it isn't active.
+    # A stale id on the UNTAKEN branch is ignored - it isn't active.
     touched2 = debug_execute(
         db, run, target_node_id="a", scratch={}, stale_node_ids=["c"]
     )
     assert "c" not in {t["nodeId"] for t in touched2}
 
     # Full UNCHANGED scratch (the real frontend sends every node's config) must
-    # NOT blanket-stale every node — only the explicit target re-runs, the rest
+    # NOT blanket-stale every node - only the explicit target re-runs, the rest
     # reuse cache (else side effects re-fire for the whole chain every Execute).
     full_scratch = {n["id"]: n["config"] for n in run.definition_snapshot_json["nodes"]}
     touched3 = debug_execute(
@@ -204,7 +205,7 @@ def test_debug_staleness_propagates_through_taken_if_branch(session_factory):
     assert {t["nodeId"] for t in touched3} == {"b"}
 
     # Explicit "execute this node" on an OFF-PATH target (false branch) still
-    # runs it — the n8n affordance, never a silent no-op.
+    # runs it - the n8n affordance, never a silent no-op.
     touched4 = debug_execute(
         db, run, target_node_id="c", scratch={}, stale_node_ids=[]
     )
@@ -226,6 +227,32 @@ def test_if_routes_false_branch(session_factory):
     by_node = {n.node_id: n.status for n in db.query(WorkflowRun).filter(WorkflowRun.id == run.id).first().nodes}
     assert by_node["no"] == "success"
     assert by_node["yes"] == "skipped"
+
+
+def test_if_true_port_fans_out_to_two_targets(session_factory):
+    """AC-FAN-06 (plan sprint-4/21) - an IF node's `true` port can fan out to
+    MULTIPLE targets: both run when the condition is true, and the `false`
+    port's target is never reached."""
+    db = session_factory()
+    doc = {"schemaVersion": 1, "nodes": [
+        _node("trg", "trigger", "manual", {"inputs": [{"key": "score", "label": "Score", "type": "number"}]}),
+        _node("cond", "if", "if", {"conditions": _gt_tree("trigger.input.score", 10)}),
+        _email("yes1", "yes1@x.com"),
+        _email("yes2", "yes2@x.com"),
+        _email("no", "no@x.com"),
+    ], "edges": [
+        _edge("trg", "cond"),
+        # Fan-out: TWO edges on the same "true" port.
+        _edge("cond", "yes1", "true"),
+        _edge("cond", "yes2", "true"),
+        _edge("cond", "no", "false"),
+    ]}
+    wid = _publish(db, doc)
+    run = WorkflowService(db).run(wid, DEFAULT_TENANT_ID, inputs={"score": 20}, is_test=False, actor=_actor(db))
+    by_node = {n.node_id: n.status for n in db.query(WorkflowRun).filter(WorkflowRun.id == run.id).first().nodes}
+    assert by_node["yes1"] == "success"
+    assert by_node["yes2"] == "success"
+    assert by_node["no"] == "skipped"
 
 
 # ---- CRUD event bus → match → enqueue --------------------------------------
@@ -304,7 +331,7 @@ def test_self_updating_workflow_does_not_storm(session_factory):
                       changes={"name": {"from": "A", "to": "B"}})
     db.commit()
 
-    # Exactly ONE run — the action's own write can't re-trigger the same workflow.
+    # Exactly ONE run - the action's own write can't re-trigger the same workflow.
     assert len(_runs_for(db, wid)) == 1
 
 
@@ -312,7 +339,7 @@ def test_self_updating_workflow_does_not_storm(session_factory):
 
 
 def test_user_create_with_datetime_fact_dispatches_cleanly(session_factory):
-    """Regression: user.created carries a datetime fact (createdAt) — the run
+    """Regression: user.created carries a datetime fact (createdAt) - the run
     payload (a JSON column) must serialize it, and a dispatch failure must never
     propagate to the create request."""
     from app.models.role import Role
@@ -469,12 +496,55 @@ def test_metadata_lists_entities_statuses_and_fields(session_factory):
     by_type = {e["type"]: e for e in meta["entities"]}
     assert {"user", "role", "tenant", "connection", "template", "workflow"} <= set(by_type)
     assert any(f["key"] == "email" for f in by_type["user"]["fields"])
-    # entity.update may only write the whitelist — email is NOT writable.
+    # entity.update may only write the whitelist - email is NOT writable.
     assert "name" in by_type["user"]["writableFields"]
     assert "email" not in by_type["user"]["writableFields"]
     # wfticket adopts the status engine → real status rows surface as options.
     assert by_type["wfticket"]["hasStatus"] is True
     assert any(s["value"] == open_s.id for s in by_type["wfticket"]["statuses"])
+
+
+def test_workflow_metadata_omits_ai_agents_without_read_permission(client, session_factory):
+    db = session_factory()
+    role = db.query(User).filter(User.email == "demo@example.com").first().roles[0]
+    role.permissions = [
+        permission
+        for permission in role.permissions
+        if permission.key not in {"ai_agents.read", "ai_agents.manage"}
+    ]
+    db.add(AiAgent(tenant_id=DEFAULT_TENANT_ID, name="Hidden agent", model="stub-model-1"))
+    db.commit()
+    db.close()
+
+    login = client.post("/auth/login", json={"email": "demo@example.com", "password": "demo1234"})
+    assert login.status_code == 200, login.text
+    response = client.get(
+        "/workflows/metadata",
+        headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert "aiAgents" not in response.json()
+
+
+def test_workflow_metadata_ai_agents_is_tenant_scoped(client, session_factory):
+    db = session_factory()
+    own = AiAgent(tenant_id=DEFAULT_TENANT_ID, name="Own agent", model="stub-model-1")
+    foreign = AiAgent(tenant_id=PLATFORM_TENANT_ID, name="Foreign agent", model="stub-model-2")
+    db.add_all([own, foreign])
+    db.commit()
+    own_item = {"id": own.id, "name": own.name, "model": own.model}
+    db.close()
+
+    login = client.post("/auth/login", json={"email": "demo@example.com", "password": "demo1234"})
+    assert login.status_code == 200, login.text
+    response = client.get(
+        "/workflows/metadata",
+        headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["aiAgents"] == [own_item]
 
 
 # ---- scheduler -------------------------------------------------------------
@@ -613,7 +683,7 @@ def test_workflow_settings_get_and_set(session_factory):
 
 
 def test_emit_seam_notifies_registered_subscriber(session_factory):
-    """D5 — the audit-log subscription seam is stable: a registered subscriber
+    """D5 - the audit-log subscription seam is stable: a registered subscriber
     receives every domain event after commit, with the documented shape
     (entity_type/action/tenant_id/actor/changes old-new/record_facts)."""
     from app.workflow_engine import entity_events as ee

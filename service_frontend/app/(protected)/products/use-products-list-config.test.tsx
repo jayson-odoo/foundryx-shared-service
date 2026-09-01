@@ -71,7 +71,7 @@ describe('useProductsListConfig', () => {
     expect(h.onDelete).toHaveBeenCalledTimes(2);
   });
 
-  it('fetcher delegates to productService.listProducts — data state', async () => {
+  it('fetcher delegates to productService.listProducts - data state', async () => {
     listProducts.mockResolvedValue({ data: [aProduct()], total: 1, page: 0 });
     const { result } = renderHook(() => useProductsListConfig(handlers()));
     const res = await result.current.fetcher({ page: 0, pageSize: 25 });

@@ -105,7 +105,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
       } else if (
         event.type === 'message.reaction' &&
         event.contactId === contactId &&
-        // An AGENT reaction is applied optimistically by the acting client — its
+        // An AGENT reaction is applied optimistically by the acting client - its
         // own WS echo would race that update (a late add re-applying after a
         // remove), so only CONTACT reactions update live here. Cross-agent live
         // reaction sync is a follow-up; another agent's reaction shows on reload.
@@ -137,7 +137,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
       // Optimistic bubble: render the agent's message the instant they hit
       // Enter, before the (synchronous) Graph round-trip. deliveryStatus=null
       // shows no tick (a "sending" look); we swap it for the real message on
-      // success or flag it FAILED on error. (Send no longer blocks the input —
+      // success or flag it FAILED on error. (Send no longer blocks the input -
       // isSending only flips the composer's spinner, not the bubble.)
       const tempId = `temp-${crypto.randomUUID()}`;
       const optimistic: ConversationMessage = {
@@ -213,7 +213,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     async (input: SendMediaInput): Promise<boolean> => {
       if (!contactId) return false;
       setSendError(null);
-      // Optimistic bubble with a local preview (object URL — useMediaBlob uses
+      // Optimistic bubble with a local preview (object URL - useMediaBlob uses
       // blob: URLs directly; the real message swaps in the backend path).
       const tempId = `temp-${crypto.randomUUID()}`;
       const previewUrl = URL.createObjectURL(input.file);
@@ -263,7 +263,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     [contactId],
   );
 
-  // Structured sends (interactive/location/contacts) — append the created bubble.
+  // Structured sends (interactive/location/contacts) - append the created bubble.
   const runStructured = useCallback(
     async (fn: () => Promise<ConversationMessage>): Promise<boolean> => {
       if (!contactId) return false;

@@ -1,5 +1,5 @@
 /**
- * Conversation service — boundary the inbox UI talks to (plan 05).
+ * Conversation service - boundary the inbox UI talks to (plan 05).
  *
  * Phase A binds the MOCK (threads, messages, a timer-driven emitter that
  * simulates inbound messages + delivery receipts). Phase B swaps
@@ -36,7 +36,7 @@ export interface ConversationService {
   /** Send an approved template (BODY + TEXT-header + URL-button vars + optional
    *  header media). Multipart when a header file is attached (AC-12-22). */
   sendTemplate(contactId: string, input: SendTemplateInput): Promise<ConversationMessage>;
-  /** Send a media file (image/video/audio/voice/document/sticker) — multipart.
+  /** Send a media file (image/video/audio/voice/document/sticker) - multipart.
    *  Backend sniff-gates + cap-checks then queues the async upload-by-id send. */
   sendMedia(contactId: string, input: SendMediaInput): Promise<ConversationMessage>;
   /** Send an interactive message (reply-buttons/list/CTA-URL/location-request). */
@@ -47,11 +47,11 @@ export interface ConversationService {
   sendContacts(contactId: string, input: SendContactsInput): Promise<ConversationMessage>;
   /** React to a message by its durable id (empty emoji removes). */
   react(contactId: string, messageId: string, emoji: string): Promise<ReactionResult>;
-  /** Internal note (SYSTEM bubble) — never delivered to the contact. */
+  /** Internal note (SYSTEM bubble) - never delivered to the contact. */
   addInternalNote(contactId: string, body: string): Promise<ConversationMessage>;
   /** Assign/reassign (userId) or unassign (null). */
   assign(contactId: string, userId: string | null): Promise<ConversationThread>;
-  /** Self-claim — assignee = the authenticated actor (server-resolved in Phase B). */
+  /** Self-claim - assignee = the authenticated actor (server-resolved in Phase B). */
   assignToMe(contactId: string): Promise<ConversationThread>;
   /** Open / snooze / close lifecycle. */
   setStatus(contactId: string, status: ThreadStatus): Promise<ConversationThread>;

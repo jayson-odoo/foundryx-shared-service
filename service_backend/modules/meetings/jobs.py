@@ -1,7 +1,7 @@
 """Calendar-sync background job (S0 plan §3).
 
 Rides the EXISTING ``background_jobs`` table + ``register_job_handler`` (spine
-M19) — the module adds no queue, no scheduler and no runner of its own.
+M19) - the module adds no queue, no scheduler and no runner of its own.
 
 The beat tick (``enqueue_due_calendar_syncs``) is deliberately narrow: it creates
 a job only for a tenant that has the module ACTIVE, an ACTIVE Google connection,
@@ -59,7 +59,7 @@ def _google_connection(db: Session, tenant_id: str) -> Optional[Connection]:
 
 
 def run_calendar_sync(db: Session, job: BackgroundJob) -> None:
-    """Handler for ``meetings.calendar_sync`` — one tenant, one pass."""
+    """Handler for ``meetings.calendar_sync`` - one tenant, one pass."""
     from app.jobs.service import JobService
 
     service = JobService(db)
@@ -74,7 +74,7 @@ def run_calendar_sync(db: Session, job: BackgroundJob) -> None:
     try:
         credentials = decrypt_secret(connection.credentials_json)
     except InvalidToken:
-        # A stale ciphertext is an operator problem, not a crash — say which
+        # A stale ciphertext is an operator problem, not a crash - say which
         # connection to re-enter and stop.
         connection.status = CONNECTION_STATUS_ERROR
         connection.last_error = (
@@ -173,7 +173,7 @@ def enqueue_due_calendar_syncs(db: Session) -> int:
                 continue
             service.create_and_enqueue(type=CALENDAR_SYNC, tenant_id=tenant_id)
             enqueued += 1
-        except Exception:  # noqa: BLE001 — one tenant never breaks the tick
+        except Exception:  # noqa: BLE001 - one tenant never breaks the tick
             logger.exception("meetings calendar sync enqueue failed for %s", tenant_id)
             db.rollback()
     return enqueued

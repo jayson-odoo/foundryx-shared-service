@@ -1,7 +1,7 @@
 import type { RuleGroup } from '@/types/rules';
 
 /**
- * Template Engine block document — plan sprint-2/07 D2/D3.
+ * Template Engine block document - plan sprint-2/07 D2/D3.
  *
  * THE FOREVER-CONTRACT: this JSON shape is editor-agnostic and outlives any
  * editor implementation (research: Mailchimp's classic↔new migration wall).
@@ -9,7 +9,7 @@ import type { RuleGroup } from '@/types/rules';
  */
 export const TEMPLATE_SCHEMA_VERSION = 1;
 
-/** Section column layouts — fixed ratios only (email clients; D3). */
+/** Section column layouts - fixed ratios only (email clients; D3). */
 export type SectionLayout = '100' | '50/50' | '33/33/33' | '67/33';
 
 export const SECTION_LAYOUT_COLUMNS: Record<SectionLayout, number[]> = {
@@ -49,7 +49,7 @@ export interface HeadingBlock extends BaseBlock {
 export interface TextBlock extends BaseBlock {
   type: 'text';
   /**
-   * Rich-lite HTML (b/i/u/a/ul/ol/li only — sanitized server-side at save);
+   * Rich-lite HTML (b/i/u/a/ul/ol/li only - sanitized server-side at save);
    * merge-enabled.
    */
   html: string;
@@ -138,7 +138,7 @@ export interface CustomHtmlBlock extends BaseBlock {
   html: string;
 }
 
-/** QR block (flowing email/document surface) — a centred QR image, fixed px. */
+/** QR block (flowing email/document surface) - a centred QR image, fixed px. */
 export interface QrBlock extends BaseBlock {
   type: 'qr';
   /** Merge-enabled payload (e.g. {{ticketLink}}). */
@@ -181,7 +181,7 @@ export interface TableBlock extends BaseBlock {
   footer: TableFooterRow[] | null;
 }
 
-/** Leaf blocks legal inside a repeater body — single level, no nesting. */
+/** Leaf blocks legal inside a repeater body - single level, no nesting. */
 export type RepeaterBodyBlock =
   | HeadingBlock
   | TextBlock
@@ -255,13 +255,13 @@ export interface TemplateDocument {
 }
 
 // ---------------------------------------------------------------------------
-// F2 slice 2 — fixed-canvas document (badge / ticket / certificate)
+// F2 slice 2 - fixed-canvas document (badge / ticket / certificate)
 // ---------------------------------------------------------------------------
 // A SECOND doc shape, polymorphic by template `type`: block-doc when
 // email/document, canvas-doc when badge. Absolute-positioned elements over a
 // fixed physical page (plan sprint-3/03 D14). Coordinates are stored in mm
 // (print-authoritative); `canvas.unit` is the editor's DISPLAY/input unit only
-// — render is always mm. `z` = array order (no explicit field). Context lives
+// - render is always mm. `z` = array order (no explicit field). Context lives
 // on the Template row (`context`), as with every other doc shape.
 
 /** Editor display/input unit. Stored geometry is always mm. */
@@ -331,12 +331,12 @@ export type QrErrorCorrection = 'L' | 'M' | 'Q' | 'H';
 
 export interface CanvasQrElement extends BaseCanvasElement {
   type: 'qr';
-  /** Merge-enabled — the encoded payload (e.g. {{ticketCode}}). */
+  /** Merge-enabled - the encoded payload (e.g. {{ticketCode}}). */
   data: string;
   ecLevel: QrErrorCorrection;
 }
 
-/** Cross-surface parity — flowing-block elements positioned on the fixed card. */
+/** Cross-surface parity - flowing-block elements positioned on the fixed card. */
 export interface CanvasDividerElement extends BaseCanvasElement {
   type: 'divider';
   color: string;
@@ -358,7 +358,7 @@ export interface CanvasHtmlElement extends BaseCanvasElement {
   html: string;
 }
 
-/** Auto-logo bar — branding-driven, live-follows a rebrand. */
+/** Auto-logo bar - branding-driven, live-follows a rebrand. */
 export interface CanvasBrandHeaderElement extends BaseCanvasElement {
   type: 'brandHeader';
   overrides: { logoSrc?: string | null; backgroundColor?: string | null } | null;
@@ -401,7 +401,7 @@ export interface CanvasSize {
   bleed: number;
 }
 
-/** Polymorphic doc for `type==='badge'` (forever-contract — D14). */
+/** Polymorphic doc for `type==='badge'` (forever-contract - D14). */
 export interface CanvasDocument {
   schemaVersion: typeof TEMPLATE_SCHEMA_VERSION;
   canvas: CanvasSize;
@@ -410,7 +410,7 @@ export interface CanvasDocument {
 }
 
 // ---------------------------------------------------------------------------
-// Template entity (two-tier — D6)
+// Template entity (two-tier - D6)
 // ---------------------------------------------------------------------------
 
 export type TemplateType = 'email' | 'document' | 'badge';
@@ -441,7 +441,7 @@ export interface TemplateListItem {
 }
 
 export interface Template extends TemplateListItem {
-  /** Block-doc (email/document) or canvas-doc (badge) — narrow by `type`. */
+  /** Block-doc (email/document) or canvas-doc (badge) - narrow by `type`. */
   doc: AnyTemplateDoc;
 }
 
@@ -455,7 +455,7 @@ export interface TemplateInput {
 }
 
 // ---------------------------------------------------------------------------
-// Template contexts (code-side registry — D11)
+// Template contexts (code-side registry - D11)
 // ---------------------------------------------------------------------------
 
 export interface TemplateContextFact {
@@ -465,7 +465,7 @@ export interface TemplateContextFact {
   sample: string;
 }
 
-/** A list fact — bound by a table/repeater `source`; rows expose `row.<key>`. */
+/** A list fact - bound by a table/repeater `source`; rows expose `row.<key>`. */
 export interface TemplateListFact {
   key: string;
   label: string;
@@ -482,12 +482,12 @@ export interface TemplateContext {
   facts: TemplateContextFact[];
   /** List facts bindable by table/repeater blocks (document surface). */
   listFacts?: TemplateListFact[];
-  /** Fact keys that MUST appear in the doc/subject (save-time 422 — D7). */
+  /** Fact keys that MUST appear in the doc/subject (save-time 422 - D7). */
   requiredFacts: string[];
 }
 
 // ---------------------------------------------------------------------------
-// Email outbox (Email log — D14)
+// Email outbox (Email log - D14)
 // ---------------------------------------------------------------------------
 
 export type EmailOutboxStatus =

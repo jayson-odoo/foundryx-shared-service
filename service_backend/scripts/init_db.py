@@ -17,7 +17,7 @@ def main() -> None:
         print("seeded: tenant + roles + demo users")
     finally:
         db.close()
-    # Module catalog + global installs + backfill (plan 08) — without this a
+    # Module catalog + global installs + backfill (plan 08) - without this a
     # fresh init_db DB has an empty App Store and no module tables.
     bootstrap_modules()
     print("modules: catalog synced + installed")
@@ -29,11 +29,19 @@ def main() -> None:
     if settings.environment == "development":
         from app.models.tenant import DEFAULT_TENANT_ID
         from modules.omnichannel.bootstrap import seed_demo_conversations
+        from modules.omnichannel.services.seed_demo_workflow import (
+            seed_demo_ai_workflow,
+            seed_demo_progress_workflow,
+        )
 
         db = SessionLocal()
         try:
             seed_demo_conversations(db, DEFAULT_TENANT_ID)
             print("omnichannel: demo conversations seeded")
+            seed_demo_ai_workflow(db, DEFAULT_TENANT_ID)
+            print("omnichannel: demo AI workflow seeded")
+            seed_demo_progress_workflow(db, DEFAULT_TENANT_ID)
+            print("omnichannel: demo progress-update workflow seeded")
         finally:
             db.close()
 

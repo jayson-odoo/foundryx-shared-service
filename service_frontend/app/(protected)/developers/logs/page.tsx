@@ -23,7 +23,7 @@ export default function DeveloperLogsPage() {
             <ToolbarHeading>
               <ToolbarPageTitle />
               <ToolbarDescription>
-                Every integration interaction this workspace handled — status, latency and
+                Every integration interaction this workspace handled - status, latency and
                 redacted payloads for troubleshooting.
               </ToolbarDescription>
             </ToolbarHeading>

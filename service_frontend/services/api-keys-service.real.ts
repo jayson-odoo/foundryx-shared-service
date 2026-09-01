@@ -1,5 +1,5 @@
 /**
- * Real API-keys service — talks to FastAPI via the shared api-client. Bound by
+ * Real API-keys service - talks to FastAPI via the shared api-client. Bound by
  * the `api-keys-service.ts` barrel. Endpoints per omnichannel Slice 3.
  */
 import { apiFetch } from '@/lib/api-client';

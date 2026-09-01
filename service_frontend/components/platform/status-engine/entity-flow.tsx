@@ -5,7 +5,7 @@
  * controlled nodes/edges (drag applies locally = smooth; position saves are
  * silent), click an edge to SELECT it (floating Edit/Delete toolbar +
  * Delete key), click a node to edit it in the drawer. The form's global Edit
- * toggle gates every mutation — read-only flow view by default.
+ * toggle gates every mutation - read-only flow view by default.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
@@ -67,9 +67,9 @@ export interface EntityFlowProps {
   /** Display label of the entity (drawer template previews). */
   entityLabel?: string;
   engine: UseStatusGraphResult;
-  /** Form global Edit toggle state — false = read-only flow view. */
+  /** Form global Edit toggle state - false = read-only flow view. */
   editing: boolean;
-  /** True when the layout draft has unsaved moves — feeds the form dirty-guard. */
+  /** True when the layout draft has unsaved moves - feeds the form dirty-guard. */
   onDirtyChange?: (dirty: boolean) => void;
   /** The form's Save persists the layout; Cancel discards it (revert positions). */
   layoutController?: React.MutableRefObject<LayoutController | null>;
@@ -89,20 +89,20 @@ export function EntityFlow({
 
   // A cosmetic drag must NEVER trigger the fork-on-first-edit (code-review
   // fix): persist positions only when the visible tier is already the
-  // caller's to write — platform operators own the platform tier; tenants
+  // caller's to write - platform operators own the platform tier; tenants
   // own their fork. A tenant dragging on inherited defaults keeps the layout
   // locally for the session, nothing persists.
   const canPersistPositions =
     Boolean(session?.user?.isPlatformTenant) || graph?.source === 'tenant';
 
-  // Controlled canvas state — drags/selection apply locally (no jank).
+  // Controlled canvas state - drags/selection apply locally (no jank).
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
 
   // ---- layout draft + undo/redo (BL-064) -----------------------------------
-  // Positions are a CLIENT DRAFT — drags and Tidy mutate `layout` through the
+  // Positions are a CLIENT DRAFT - drags and Tidy mutate `layout` through the
   // shared history hook (undo/redo), and persist only on "Save layout" (or are
   // discarded). `baseline` = the server-saved positions; a node is "dirty"
   // purely by `layout` differing from `baseline`, so undo / dragging a node
@@ -132,7 +132,7 @@ export function EntityFlow({
   const [templateOptions, setTemplateOptions] = useState<MultiSelectOption[]>([]);
   const [ruleFacts, setRuleFacts] = useState<RuleFact[]>([]);
 
-  // Pickers for edge roles + USER recipients + notification templates — load
+  // Pickers for edge roles + USER recipients + notification templates - load
   // once, fail quiet.
   useEffect(() => {
     rolesService
@@ -151,7 +151,7 @@ export function EntityFlow({
       .catch(() => undefined);
   }, []);
 
-  // Whitelisted rule facts for edge conditions (sprint-2/02) — the consumer
+  // Whitelisted rule facts for edge conditions (sprint-2/02) - the consumer
   // declares its sources: the acting user + this entity's record (D2).
   useEffect(() => {
     ruleEngineService
@@ -164,7 +164,7 @@ export function EntityFlow({
   // becomes the new server truth; an UNSAVED drag (layout ≠ old baseline)
   // survives the refetch, every other node snaps to its server position.
   // Reseeding through setLayout (not the history setter) resets the undo
-  // timeline — a structural change is a new editing session.
+  // timeline - a structural change is a new editing session.
   useEffect(() => {
     const serverMap: Record<string, Pos> = {};
     statuses.forEach((status, index) => {
@@ -216,7 +216,7 @@ export function EntityFlow({
         const hasReverse = edgeKeys.has(
           `${transition.toStatusId}->${transition.fromStatusId}`,
         );
-        // Derived status (sprint-4/03) — auto edges are system-fired: render
+        // Derived status (sprint-4/03) - auto edges are system-fired: render
         // distinctly (dashed, primary, ⚡ prefix) and never as an action button.
         const isAuto = transition.triggerMode === 'auto';
         return {
@@ -231,7 +231,7 @@ export function EntityFlow({
             : { strokeWidth: 1.5 },
           data: {
             offset: hasReverse ? 45 : 0,
-            // Label clicks bypass RF's pane handling — mirror the selection
+            // Label clicks bypass RF's pane handling - mirror the selection
             // into RF state too, so the stroke highlights and the Delete key
             // targets the edge (code-review fix).
             onSelect: (edgeId: string) => {
@@ -265,7 +265,7 @@ export function EntityFlow({
   );
 
   // Keyboard undo/redo for the layout draft (skips while typing in a field or
-  // on an interactive control — same guard as the workflow canvas).
+  // on an interactive control - same guard as the workflow canvas).
   useEffect(() => {
     if (!editing) return;
     const handler = (e: KeyboardEvent) => {
@@ -282,7 +282,7 @@ export function EntityFlow({
     return () => document.removeEventListener('keydown', handler);
   }, [editing, layoutHistory]);
 
-  // Re-fit the viewport when the node COUNT changes (a status added/removed) —
+  // Re-fit the viewport when the node COUNT changes (a status added/removed) -
   // React Flow only fits at mount, so a freshly-created node (grid-positioned,
   // outside the initial fit) would otherwise land off-screen. Position-only
   // drags don't change the count, so this never fights a manual layout.
@@ -324,10 +324,10 @@ export function EntityFlow({
     notifications.map((n) => ({ ...n, recipients: n.recipients.map((r) => ({ ...r })) }));
 
   // Copy a template's block doc (+ subject, + flattened body fallback) for
-  // per-use editing — branded, but the wording is editable on the transition.
+  // per-use editing - branded, but the wording is editable on the transition.
   const loadTemplate = useCallback(async (id: string) => {
     const template = await templateEngineService.getTemplate(id);
-    // The notification picker lists only EMAIL templates — a canvas (badge) doc
+    // The notification picker lists only EMAIL templates - a canvas (badge) doc
     // can't back a transition mail.
     if (!template || isCanvasDoc(template.doc)) return null;
     return {
@@ -344,7 +344,7 @@ export function EntityFlow({
     [layoutHistory],
   );
 
-  /** "Tidy" — layered auto-layout (initial → terminal, left to right). Now a
+  /** "Tidy" - layered auto-layout (initial → terminal, left to right). Now a
    * PREVIEW: it updates the draft (undoable) and never persists until Save. */
   const tidy = useCallback(() => {
     const arranged = layoutGraph(nodes, edges);
@@ -498,7 +498,7 @@ export function EntityFlow({
       {editing && dirtyCount > 0 && (
         <p className="text-xs text-muted-foreground">
           {canPersistPositions
-            ? `Unsaved layout — ${dirtyCount} ${dirtyCount === 1 ? 'node' : 'nodes'} moved.`
+            ? `Unsaved layout - ${dirtyCount} ${dirtyCount === 1 ? 'node' : 'nodes'} moved.`
             : 'Layout changes apply to this view only (inherited defaults).'}
         </p>
       )}

@@ -1,5 +1,5 @@
 /**
- * Cluster E canonical E2E — AC-06-64.
+ * Cluster E canonical E2E - AC-06-64.
  *
  * The full peer-review lifecycle through REAL portal clicks at BOTH 1280px and
  * 375px: author OTP login → submit → 2 reviewers grade (draft-save + resume) →
@@ -49,7 +49,7 @@ async function newActor(browser: any): Promise<{ context: BrowserContext; page: 
   return { context, page };
 }
 
-/** A profile JWT via OTP (API only) — for the isolation/staff assertions. */
+/** A profile JWT via OTP (API only) - for the isolation/staff assertions. */
 async function profileToken(email: string): Promise<string> {
   await fetch(`${API}/portal/auth/request-otp`, {
     method: 'POST',
@@ -66,7 +66,7 @@ async function profileToken(email: string): Promise<string> {
   return data.access_token;
 }
 
-test.describe('Cluster E — canonical peer-review lifecycle (AC-06-64)', () => {
+test.describe('Cluster E - canonical peer-review lifecycle (AC-06-64)', () => {
   test.setTimeout(480_000);
 
   let scenario: ClusterEScenario;
@@ -86,7 +86,7 @@ test.describe('Cluster E — canonical peer-review lifecycle (AC-06-64)', () => 
 
     // The Submit action for THIS run's event (window open, holds can_submit).
     // The participant persona is tenant-scoped, so the author sees a Submit
-    // button per open event — target the STAMPED name so residual events from
+    // button per open event - target the STAMPED name so residual events from
     // prior runs can never be picked (non-deterministic `.first()` was the bug).
     const submitBtn = author.page.getByRole('button', {
       name: new RegExp(`E2E Event Reviews ${scenario.stamp}\\b`),
@@ -214,13 +214,13 @@ test.describe('Cluster E — canonical peer-review lifecycle (AC-06-64)', () => 
     await dm2.page.getByRole('button', { name: 'Decide' }).first().click();
     await dm2.page.getByRole('combobox', { name: 'Decision' }).click();
     await dm2.page.getByRole('option', { name: 'Accept' }).click();
-    await dm2.page.getByPlaceholder('Optional').fill('Accepted — see you on stage.');
+    await dm2.page.getByPlaceholder('Optional').fill('Accepted - see you on stage.');
     await dm2.page.getByRole('button', { name: 'Record decision' }).click();
     await expect(dm2.page.getByText('Decision recorded.')).toBeVisible({ timeout: 10_000 });
 
     // Author sees Accepted + feedback.
     await author.page.reload();
-    await expect(author.page.getByText('Accepted — see you on stage.')).toBeVisible({ timeout: 15_000 });
+    await expect(author.page.getByText('Accepted - see you on stage.')).toBeVisible({ timeout: 15_000 });
 
     await Promise.all(
       [author, rev1, rev2, dm, rev1b, rev2b, dm2].map((a) => a.context.close()),
@@ -274,7 +274,7 @@ test.describe('Cluster E — canonical peer-review lifecycle (AC-06-64)', () => 
     expect(found, 'staff surface must show the user-kind assignment').toBeTruthy();
 
     // A reviewer PROFILE's portal My Reviews must NOT show this user-kind
-    // assignment (identity routing — actor_kind decides the surface).
+    // assignment (identity routing - actor_kind decides the surface).
     const revTok = await profileToken(scenario.reviewers[0].email);
     const portalReviews = await (
       await fetch(`${API}/portal/reviews`, {

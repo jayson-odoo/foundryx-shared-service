@@ -1,5 +1,5 @@
 /**
- * Branding editor component tests (sprint-2/03 §TDD — frontend):
+ * Branding editor component tests (sprint-2/03 §TDD - frontend):
  * token editor renders groups · picker override marks the row + emits a diff ·
  * reset clears · template upload rejects bad files with named errors ·
  * read-only mode hides manage controls · asset card validates type/size.
@@ -39,7 +39,7 @@ describe('ThemeTokenEditor', () => {
     });
   });
 
-  it('typing the FoundryX default back clears the override (null document)', () => {
+  it('typing the Foundryx default back clears the override (null document)', () => {
     const onChange = vi.fn();
     const tokens: BrandingTokens = { light: { primary: '#0050ff' }, dark: {} };
     render(<ThemeTokenEditor tokens={tokens} onChange={onChange} canManage />);

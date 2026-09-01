@@ -1,4 +1,4 @@
-"""Document sharing — file_shares + file_share_users + file_links (plan sprint-3/05)
+"""Document sharing - file_shares + file_share_users + file_links (plan sprint-3/05)
 
 Google-Drive model: ONE stable share per target (unique tenant+kind+id), an
 editable ``general_access`` (restricted|workspace|public) + ``general_capability``,
@@ -12,7 +12,7 @@ Create Date: 2026-06-13
 from alembic import op
 import sqlalchemy as sa
 
-import app.models.utc_datetime  # noqa: F401 — UTCDateTime columns
+import app.models.utc_datetime  # noqa: F401 - UTCDateTime columns
 from app.models.utc_datetime import UTCDateTime
 
 revision = "e5f6a7b8c9d0"

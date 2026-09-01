@@ -1,8 +1,8 @@
-"""Consumer webhook endpoints — CRUD + signing-secret issuance (Slice 4, AC-01-22).
+"""Consumer webhook endpoints - CRUD + signing-secret issuance (Slice 4, AC-01-22).
 
 A consumer registers one or more callback URLs per CHANNEL (number). We POST a
 signed event to each on inbound messages / delivery receipts / contact updates.
-The signing secret is Fernet-encrypted at rest (reversible — we sign every
+The signing secret is Fernet-encrypted at rest (reversible - we sign every
 delivery with it) and revealed to the consumer ONLY on create + rotate.
 
 Security invariants:
@@ -31,7 +31,7 @@ AUTO_DISABLE_THRESHOLD = 10
 
 # Max endpoints per channel. Every inbound message and status receipt fans out
 # to ALL of them, so an unbounded count is self-inflicted worker amplification
-# — and, on the key-authed public surface, an outbound-request amplifier.
+# - and, on the key-authed public surface, an outbound-request amplifier.
 MAX_ENDPOINTS_PER_CHANNEL = 10
 
 
@@ -63,7 +63,7 @@ def validate_callback_url(url: str, *, strict_dns: bool = False) -> str:
     reserved IPs whether given as a literal, a numeric/hex-encoded IP, OR a
     hostname that RESOLVES to one (e.g. an A record pointing at 169.254.169.254).
     ``strict_dns`` also rejects a host we cannot resolve. REGISTRATION stays
-    lenient on purpose — a transient DNS failure must not reject a legitimate
+    lenient on purpose - a transient DNS failure must not reject a legitimate
     callback, and making registration depend on live resolution breaks offline
     CI. The authoritative guard is `assert_deliverable`, which runs with
     ``strict_dns=True`` before EVERY delivery attempt, so an unresolvable or
@@ -79,7 +79,7 @@ def validate_callback_url(url: str, *, strict_dns: bool = False) -> str:
     if lowered == "localhost" or lowered.endswith(".localhost") or lowered.endswith(".local"):
         raise WebhookError("Callback URL cannot target localhost.")
 
-    # IP literal (dotted, numeric like 2130706433, or hex like 0x7f000001 — the
+    # IP literal (dotted, numeric like 2130706433, or hex like 0x7f000001 - the
     # latter two fail ip_address, so resolve them below).
     try:
         ip = ipaddress.ip_address(host)
@@ -112,13 +112,13 @@ def assert_deliverable(url: str) -> None:
 
     Registration-time validation is not sufficient alone: DNS can be re-pointed
     afterwards (rebinding), and the callback URL is now settable by any
-    workspace-API-key holder — so a fail-open registration would otherwise let
+    workspace-API-key holder - so a fail-open registration would otherwise let
     an external caller aim the delivery worker at a link-local or RFC1918
     address (a blind SSRF pivot into the deployment's network). Raises
     `WebhookError`; the caller records a failed attempt and never sends.
 
     NOT strict on resolution failure. Blocking an UNRESOLVABLE host buys no
-    security — there is nothing to connect to, and httpx fails on its own — but
+    security - there is nothing to connect to, and httpx fails on its own - but
     it does turn every transient DNS blip into a refused delivery. What matters
     is that a host resolving to an internal address is never POSTed to."""
     validate_callback_url(url, strict_dns=False)
@@ -199,7 +199,7 @@ class WebhookService:
         created_by: Optional[str],
         strict_dns: bool = False,
     ) -> Tuple[WebhookEndpoint, str]:
-        """Register an endpoint. Returns (row, plaintext_secret) — the secret is
+        """Register an endpoint. Returns (row, plaintext_secret) - the secret is
         shown ONCE for the consumer to configure signature verification."""
         channel = self._channel(tenant_id, channel_id)
         existing = (
@@ -237,12 +237,12 @@ class WebhookService:
     def get_for_workspace(
         self, tenant_id: str, workspace_id: str, endpoint_id: str
     ) -> WebhookEndpoint:
-        """Tenant + WORKSPACE scoped fetch — the authorization invariant for any
+        """Tenant + WORKSPACE scoped fetch - the authorization invariant for any
         caller scoped to one workspace (the gateway's API key).
 
         `_get` is tenant-scoped only, so a tenant with several workspaces could
         otherwise reach across. This lives in the SERVICE so the guard travels
-        with the data access — a future non-HTTP caller inherits it instead of
+        with the data access - a future non-HTTP caller inherits it instead of
         re-implementing it. Mismatch raises the SAME `WebhookNotFound` as a
         genuine miss, so the two are indistinguishable (no enumeration)."""
         row = self._get(tenant_id, endpoint_id)
@@ -251,7 +251,7 @@ class WebhookService:
         return row
 
     def list_for_workspace(self, tenant_id: str, workspace_id: str) -> List[WebhookEndpoint]:
-        """Every endpoint in the workspace, across ALL its channels — matching
+        """Every endpoint in the workspace, across ALL its channels - matching
         what `get_for_workspace` can mutate. Listing by the workspace's active
         channel would hide an endpoint that the per-id routes still reach."""
         return (

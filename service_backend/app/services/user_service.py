@@ -48,7 +48,7 @@ _USER_FILTER_COLUMNS = {
 
 
 def _user_special(cond: FilterCondition):
-    """Roles are many-to-many — filter via membership (not a plain column)."""
+    """Roles are many-to-many - filter via membership (not a plain column)."""
     if cond.field != "role":
         return None
     op, val = cond.operator, cond.value
@@ -196,10 +196,10 @@ class UserService:
             user.name = name
         old_email: Optional[str] = None
         if email is not None and email.strip().lower() != (user.email or "").lower():
-            # Admin instant path (plan sprint-2/04): actor ≠ target only — own
+            # Admin instant path (plan sprint-2/04): actor ≠ target only - own
             # email goes through the dual-confirmation ceremony. FAIL CLOSED:
             # a caller that can't name the actor doesn't get the instant path
-            # (review fix — an omitted Optional kwarg must not bypass the guard).
+            # (review fix - an omitted Optional kwarg must not bypass the guard).
             if actor_id is None or actor_id == user.id:
                 raise SelfEmailChange()
             normalized = email.strip().lower()
@@ -209,12 +209,12 @@ class UserService:
             old_email = user.email
             changes["email"] = {"from": old_email, "to": normalized}
             user.email = normalized
-            # The new mailbox never proved deliverability — the Verified badge
+            # The new mailbox never proved deliverability - the Verified badge
             # must not carry over from the previous address (review fix).
             user.email_verified_at = None
         if role_ids is not None:
             user.roles = self.roles.get_many(role_ids, tenant_id)
-        # INVITED is system-managed — a profile save must not change it.
+        # INVITED is system-managed - a profile save must not change it.
         if status is not None and user.status != UserStatus.INVITED.value and user.status != status:
             changes["status"] = {"from": user.status, "to": status}
             user.status = status
@@ -258,7 +258,7 @@ class UserService:
 
     def forgot_password(self, email: str, tenant_slug: Optional[str] = None) -> None:
         """Public forgot-password (plan 10 §3). Enumeration-safe by design:
-        EVERY outcome returns silently — unknown tenant/email, inactive or
+        EVERY outcome returns silently - unknown tenant/email, inactive or
         trashed user all do the same dummy token-generation work and send
         nothing. The router replies with the uniform message regardless.
         """
@@ -352,7 +352,7 @@ class UserService:
 
 def _column_value(user: User, column: str) -> str:
     if column == "id":
-        return user.id  # the import match key — enables export → edit → update
+        return user.id  # the import match key - enables export → edit → update
     if column in ("user", "name"):
         return user.name or ""
     if column == "email":

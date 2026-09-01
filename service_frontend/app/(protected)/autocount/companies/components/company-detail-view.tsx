@@ -31,6 +31,7 @@ import {
   type AutocountCompany,
   type AutocountEntityConfig,
   type AutocountSinkImpl,
+  type AutocountSourceImpl,
 } from '@/types/autocount';
 import {
   AC_COMPANIES_MANAGE,
@@ -38,10 +39,13 @@ import {
   acCompanyHref,
   acMappingHref,
   acReviewHref,
+  acTaskHref,
   entityLabel,
 } from '../../components/autocount-meta';
+import { AddEntityControl } from './add-entity-control';
 import { DetailRow } from './detail-row';
 import { EntityLookbackDialog } from './entity-lookback-dialog';
+import { EntitySourceDialog } from './entity-source-dialog';
 import { SinkTargetSection } from './sink-target-section';
 import { useAutocountEntitiesListConfig } from './use-entities-list-config';
 import { useAutocountRunsListConfig } from './use-runs-list-config';
@@ -49,8 +53,8 @@ import { useAutocountRunsListConfig } from './use-runs-list-config';
 /**
  * The outcome of the sync the operator just ran, stated where they are looking.
  *
- * A run that fetched nothing is a SUCCESSFUL no-op — the vendor genuinely had
- * no changes since the watermark — and it previously produced silence, which
+ * A run that fetched nothing is a SUCCESSFUL no-op - the vendor genuinely had
+ * no changes since the watermark - and it previously produced silence, which
  * reads as a broken button. Short empty-state status copy like this is
  * explicitly allowed by the foolproof-UI rule; procedural how-to copy is not.
  */
@@ -67,15 +71,18 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   const [runsKey, setRunsKey] = useState(0);
   const [outcome, setOutcome] = useState<SyncOutcome | null>(null);
   const [editing, setEditing] = useState<AutocountEntityConfig | null>(null);
+  const [switching, setSwitching] = useState<AutocountEntityConfig | null>(null);
 
-  // Push-target working state — lifted here so the ONE Overview Resource form
+  // Push-target working state - lifted here so the ONE Overview Resource form
   // owns its dirty flag + single save (AC-15-20), not a detached card button.
   const loadedCompany = detail?.company;
   const persistedSink: AutocountSinkImpl =
     loadedCompany?.sinkImpl === 'sorento' ? 'sorento' : 'logging';
   const persistedConnectionId = loadedCompany?.sinkConnectionId ?? null;
+  const persistedCompanyCode = loadedCompany?.sorentoCompanyCode ?? '';
   const [sinkImpl, setSinkImpl] = useState<AutocountSinkImpl>('logging');
   const [sinkConnectionId, setSinkConnectionId] = useState<string | null>(null);
+  const [companyCode, setCompanyCode] = useState('');
 
   // Re-seed from the persisted values whenever THEY change (after a save/reload).
   // Keyed on the persisted fields, not the whole `detail` object, so a
@@ -84,29 +91,38 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   useEffect(() => {
     setSinkImpl(persistedSink);
     setSinkConnectionId(persistedConnectionId);
-  }, [persistedSink, persistedConnectionId]);
+    setCompanyCode(persistedCompanyCode);
+  }, [persistedSink, persistedConnectionId, persistedCompanyCode]);
 
   const onSinkChange = useCallback((impl: AutocountSinkImpl) => {
     setSinkImpl(impl);
-    // Switching back to logging clears the target — a stale connection id must
+    // Switching back to logging clears the target - a stale connection id must
     // not linger on a no-delivery company.
     if (impl === 'logging') setSinkConnectionId(null);
   }, []);
 
   const sinkDirty =
     sinkImpl !== persistedSink ||
-    (sinkImpl === 'sorento' && sinkConnectionId !== persistedConnectionId);
+    (sinkImpl === 'sorento' &&
+      (sinkConnectionId !== persistedConnectionId ||
+        companyCode.trim() !== persistedCompanyCode.trim()));
 
   const onSavePushTarget = useCallback(async (): Promise<boolean> => {
-    // Foolproof-UI: a Sorento delivery cannot be saved without a connection.
+    // Foolproof-UI: a Sorento delivery cannot be saved without a connection,
+    // nor without the company code every Sorento call is anchored on (A6).
     if (sinkImpl === 'sorento' && !sinkConnectionId) {
       toast.error('Choose a Sorento connection before saving.');
+      return false;
+    }
+    if (sinkImpl === 'sorento' && !companyCode.trim()) {
+      toast.error('Enter the Sorento company code before saving.');
       return false;
     }
     try {
       await autocountService.updateSinkTarget(companyId, {
         sinkImpl,
         sinkConnectionId: sinkImpl === 'sorento' ? sinkConnectionId : null,
+        sorentoCompanyCode: sinkImpl === 'sorento' ? companyCode.trim() : null,
       });
       toast.success('Push target updated.');
       reload();
@@ -117,12 +133,13 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
       );
       return false;
     }
-  }, [companyId, sinkConnectionId, sinkImpl, reload]);
+  }, [companyCode, companyId, sinkConnectionId, sinkImpl, reload]);
 
   const onCancelPushTarget = useCallback(() => {
     setSinkImpl(persistedSink);
     setSinkConnectionId(persistedConnectionId);
-  }, [persistedSink, persistedConnectionId]);
+    setCompanyCode(persistedCompanyCode);
+  }, [persistedSink, persistedConnectionId, persistedCompanyCode]);
 
   const onSync = useCallback(
     async (entityType: string) => {
@@ -133,7 +150,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
         // A batch to review routes the operator to the review surface. A batch
         // with nothing in it must NOT pretend there is something to review.
         if (job.status === 'needs_review') {
-          toast.success('Sync finished — the batch is awaiting approval.');
+          toast.success('Sync finished - the batch is awaiting approval.');
           router.push(acReviewHref(job.id, acCompanyHref(companyId)));
           return;
         }
@@ -166,7 +183,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
             title: `${label}: ${summary.fetched} record(s) fetched.`,
           });
         } else {
-          // No result yet — a real worker has the job queued.
+          // No result yet - a real worker has the job queued.
           setOutcome({ tone: 'success', title: `${label} sync started.` });
         }
         setRunsKey((k) => k + 1);
@@ -188,7 +205,54 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
 
   const onConfigureMapping = useCallback(
     (entity: AutocountEntityConfig) => {
+      // A database-sourced entity maps its preview columns inside the task
+      // editor (plan 22 S2); the API path keeps the standalone mapping page.
+      if (entity.sourceImpl === 'sql_db') {
+        router.push(acTaskHref(companyId, entity.entityType, 'mapping'));
+        return;
+      }
       router.push(acMappingHref(companyId, entity.entityType));
+    },
+    [companyId, router],
+  );
+
+  const onChangeSource = useCallback((entity: AutocountEntityConfig) => {
+    setSwitching(entity);
+  }, []);
+
+  const onSaveSource = useCallback(
+    async (entityType: string, sourceImpl: AutocountSourceImpl) => {
+      try {
+        await autocountService.updateEntityConfig(companyId, entityType, { sourceImpl });
+        toast.success(
+          sourceImpl === 'sql_db'
+            ? 'Source switched to the database task.'
+            : 'Source switched to the AutoCount API.',
+        );
+        setSwitching(null);
+        reload();
+      } catch (error) {
+        toast.error(
+          error instanceof ApiError ? error.message : 'That source could not be switched.',
+        );
+      }
+    },
+    [companyId, reload],
+  );
+
+  const onConfigureTask = useCallback(
+    (entity: AutocountEntityConfig) => {
+      router.push(acTaskHref(companyId, entity.entityType));
+    },
+    [companyId, router],
+  );
+
+  // Plan 22 S4 (AC-22-23): a not-yet-configured entity has no row to click on
+  // in the list - "Add entity" opens its task editor directly, where the row
+  // is born on the first query save.
+  const onAddEntity = useCallback(
+    (entityType: string) => {
+      router.push(acTaskHref(companyId, entityType));
     },
     [companyId, router],
   );
@@ -197,7 +261,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     async (entity: AutocountEntityConfig) => {
       try {
         await autocountService.refetchHistory(companyId, entity.entityType);
-        toast.success('History re-fetch scheduled — the next sync re-reads the window.');
+        toast.success('History re-fetch scheduled - the next sync re-reads the window.');
         reload();
       } catch (error) {
         toast.error(
@@ -237,6 +301,8 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     onEditLookback,
     onRefetch,
     onConfigureMapping,
+    onConfigureTask,
+    onChangeSource,
   });
 
   const config = useMemo<ResourceFormConfig<AutocountCompany> | null>(() => {
@@ -262,7 +328,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
             <div className="flex flex-col py-2">
               {/* Identity is DISCOVERED and read-only in either mode (AC-13-01). */}
               <DetailRow label="Company name">
-                <ClampedText text={company.companyName || '—'} lines={2} />
+                <ClampedText text={company.companyName || '-'} lines={2} />
               </DetailRow>
               <DetailRow label="Company database">
                 <code className="text-xs">{company.databaseName}</code>
@@ -284,9 +350,9 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
                 </Link>
               </DetailRow>
               <DetailRow label="Connected">
-                {company.createdAt ? formatDateTime(company.createdAt) : '—'}
+                {company.createdAt ? formatDateTime(company.createdAt) : '-'}
               </DetailRow>
-              {/* Push target — read-only until the form's Edit toggle. */}
+              {/* Push target - read-only until the form's Edit toggle. */}
               <SinkTargetSection
                 company={company}
                 editing={editing && canManage}
@@ -294,6 +360,8 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
                 connectionId={sinkConnectionId}
                 onSinkChange={onSinkChange}
                 onConnectionChange={setSinkConnectionId}
+                companyCode={companyCode}
+                onCompanyCodeChange={setCompanyCode}
               />
             </div>
           ),
@@ -331,6 +399,9 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
                   Syncing {entityLabel(syncing)}…
                 </div>
               )}
+              {canManage && (
+                <AddEntityControl entities={detail?.entities ?? []} onAdd={onAddEntity} />
+              )}
               <ResourceList config={entitiesConfig} />
             </div>
           ),
@@ -350,7 +421,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
       actions: [],
       actionRows: [company],
       onReload: reload,
-      // Company identity stays read-only, but the push target is editable — so
+      // Company identity stays read-only, but the push target is editable - so
       // the form offers the global Edit toggle (gated on manage) and saves the
       // push target through its single, dirty-guarded save (AC-15-20).
       editable: true,
@@ -361,9 +432,11 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     };
   }, [
     can,
+    companyCode,
     detail,
     entitiesConfig,
     formatDateTime,
+    onAddEntity,
     onCancelPushTarget,
     onSavePushTarget,
     onSinkChange,
@@ -413,6 +486,11 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
         entity={editing}
         onClose={() => setEditing(null)}
         onSave={onSaveLookback}
+      />
+      <EntitySourceDialog
+        entity={switching}
+        onClose={() => setSwitching(null)}
+        onSave={onSaveSource}
       />
     </Container>
   );

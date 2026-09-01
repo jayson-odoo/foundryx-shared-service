@@ -1,6 +1,6 @@
-"""Tenant repository — platform-console tenant queries (plan 07 §9).
+"""Tenant repository - platform-console tenant queries (plan 07 §9).
 
-Pure SQLAlchemy; no business rules. These queries are CROSS-tenant by design —
+Pure SQLAlchemy; no business rules. These queries are CROSS-tenant by design -
 they exist only behind ``require_platform_permission`` (the platform console).
 Every query joins the lifecycle status so list/filter/sort see the category.
 """
@@ -51,7 +51,7 @@ class TenantRepository:
 
         # Status views: 'trashed' = archived tenants, 'active' = the rest.
         # Behavior reads the is_archived TRAIT FLAG (sprint-2/01 D2), never a
-        # category enum — custom archived-like statuses hide correctly too.
+        # category enum - custom archived-like statuses hide correctly too.
         if status_view == "trashed":
             q = q.filter(Status.is_archived.is_(True))
         else:

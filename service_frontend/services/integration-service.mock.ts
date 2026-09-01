@@ -22,7 +22,55 @@ import { delay, runQuery, type QueryAdapter } from './mock-query';
 const DEFAULT_TENANT = 'default';
 const EPOCH = Date.parse('2026-06-01T09:00:00Z');
 
-/** Provider catalog — SMTP (plan 09) + the storage pair (plan 06 D2/D3):
+/**
+ * PHASE 1 MOCK (plan 22 S1, AC-22-01/04): the generic SQL-database provider
+ * descriptor EXACTLY as the backend `SqlDatabaseProvider.fields()` must emit
+ * it (`modules/autocount/sql_provider.py`, provider `sql_database`, type
+ * `erp`). The connections form renders it from the registry - zero
+ * provider-specific form code. `port.defaultsFrom` drives the per-dialect
+ * default (1433 / 5432 / 3306). `password` is Fernet write-only (blank = keep).
+ */
+export const SQL_DATABASE_PROVIDER: IntegrationProvider = {
+  provider: 'sql_database',
+  type: 'erp',
+  title: 'SQL Database',
+  description:
+    'Read directly from an accounting database over a read-only login. Microsoft SQL Server, PostgreSQL or MySQL.',
+  icon: 'database',
+  testLabel: 'Test connection',
+  testTarget: null,
+  fields: [
+    {
+      key: 'dbType',
+      label: 'Database type',
+      type: 'select',
+      required: true,
+      defaultValue: 'mssql',
+      options: [
+        { value: 'mssql', label: 'Microsoft SQL Server' },
+        { value: 'postgresql', label: 'PostgreSQL' },
+        { value: 'mysql', label: 'MySQL' },
+      ],
+    },
+    { key: 'host', label: 'Host', type: 'text', required: true, placeholder: 'db.yourcompany.com' },
+    {
+      key: 'port',
+      label: 'Port',
+      type: 'number',
+      required: true,
+      defaultValue: '1433',
+      defaultsFrom: {
+        field: 'dbType',
+        values: { mssql: '1433', postgresql: '5432', mysql: '3306' },
+      },
+    },
+    { key: 'database', label: 'Database', type: 'text', required: true, placeholder: 'AED_Company_2024' },
+    { key: 'username', label: 'Username', type: 'text', required: true, placeholder: 'readonly_user' },
+    { key: 'password', label: 'Password', type: 'password', required: true, secret: true },
+  ],
+};
+
+/** Provider catalog - SMTP (plan 09) + the storage pair (plan 06 D2/D3):
  *  TWO cards, one S3-compatible adapter underneath. R2 derives its endpoint
  *  from the Account ID; the S3 card's optional endpoint covers MinIO/Wasabi. */
 const PROVIDERS: IntegrationProvider[] = [
@@ -31,7 +79,7 @@ const PROVIDERS: IntegrationProvider[] = [
     type: 'email',
     title: 'Email (SMTP)',
     description:
-      'Send invites, password resets and verifications from your own mail server. Works with any SMTP provider — Gmail, SES, Resend, Mailgun or self-hosted.',
+      'Send invites, password resets and verifications from your own mail server. Works with any SMTP provider - Gmail, SES, Resend, Mailgun or self-hosted.',
     icon: 'mail',
     testLabel: 'Send test email',
     testTarget: { label: 'Send a test email to', placeholder: 'you@yourcompany.com' },
@@ -61,7 +109,7 @@ const PROVIDERS: IntegrationProvider[] = [
     type: 'storage',
     title: 'Amazon S3',
     description:
-      'Store uploads (avatars, branding, media) in your own S3 bucket. Any S3-compatible service works — AWS, MinIO, Wasabi — via the optional endpoint.',
+      'Store uploads (avatars, branding, media) in your own S3 bucket. Any S3-compatible service works - AWS, MinIO, Wasabi - via the optional endpoint.',
     icon: 'database',
     testLabel: 'Verify storage',
     testTarget: null,
@@ -93,7 +141,7 @@ const PROVIDERS: IntegrationProvider[] = [
     type: 'storage',
     title: 'Cloudflare R2',
     description:
-      'Store uploads in Cloudflare R2 — S3-compatible, zero egress fees. The endpoint is derived from your Account ID; add a custom domain as the CDN base URL for fast public delivery.',
+      'Store uploads in Cloudflare R2 - S3-compatible, zero egress fees. The endpoint is derived from your Account ID; add a custom domain as the CDN base URL for fast public delivery.',
     icon: 'cloud',
     testLabel: 'Verify storage',
     testTarget: null,
@@ -112,12 +160,13 @@ const PROVIDERS: IntegrationProvider[] = [
       },
     ],
   },
+  SQL_DATABASE_PROVIDER,
 ];
 
 let connections: Connection[] = [];
 let seq = 0;
 
-/** Test helper — reset the in-memory store between specs. */
+/** Test helper - reset the in-memory store between specs. */
 export function __resetIntegrationMock(): void {
   connections = [];
   secrets.clear();
@@ -176,13 +225,13 @@ function simulateTest(c: Connection, target?: string): TestConnectionResult {
     return { ok: false, message: 'Storage authentication failed (403 SignatureDoesNotMatch).', checkedAt };
   }
   if (c.type === 'storage') {
-    // Plan 06 D3 — the storage check is a probe-object round-trip, fetched
+    // Plan 06 D3 - the storage check is a probe-object round-trip, fetched
     // back through the CDN when one is configured.
     return {
       ok: true,
       message: c.config.cdnBaseUrl
-        ? `Bucket verified — probe object round-tripped via ${c.config.cdnBaseUrl}.`
-        : 'Bucket verified — probe object uploaded, fetched back and deleted.',
+        ? `Bucket verified - probe object round-tripped via ${c.config.cdnBaseUrl}.`
+        : 'Bucket verified - probe object uploaded, fetched back and deleted.',
       checkedAt,
     };
   }
@@ -263,12 +312,12 @@ export const mockIntegrationService: IntegrationService = {
   async create(input: ConnectionInput) {
     const provider = findProvider(input.provider);
     if (input.name === 'Fail Save') throw new Error('The server rejected the connection. Please try again.');
-    // ONE active connection per TYPE (plan 06 D7) — resolution must stay
+    // ONE active connection per TYPE (plan 06 D7) - resolution must stay
     // deterministic (which bucket does StorageService write to?).
     const sameType = connections.find((c) => c.type === provider.type);
     if (sameType) {
       throw new Error(
-        `A ${sameType.type} connection ("${sameType.name}") already exists — disconnect it first.`,
+        `A ${sameType.type} connection ("${sameType.name}") already exists - disconnect it first.`,
       );
     }
     seq += 1;
@@ -341,7 +390,7 @@ export const mockIntegrationService: IntegrationService = {
       lastError: result.ok ? null : result.message,
     };
     connections = connections.map((x) => (x.id === id ? settled : x));
-    // A touch slower than list calls — a real handshake takes a moment.
+    // A touch slower than list calls - a real handshake takes a moment.
     return delay(result, 700);
   },
 };

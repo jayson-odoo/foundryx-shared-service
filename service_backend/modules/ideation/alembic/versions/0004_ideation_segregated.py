@@ -1,9 +1,9 @@
-"""ideation — add segregated intake columns to ``ideas``.
+"""ideation - add segregated intake columns to ``ideas``.
 
 Promote the captured intake answers to first-class Idea columns so the operator
 surface + serializer read them directly (not lumped as problem + raw notes):
 ``proposed_solution`` / ``impact`` (Text) and ``department`` (String). All
-nullable — they fill in as the intake collects them; ``problem`` stays the
+nullable - they fill in as the intake collects them; ``problem`` stays the
 required headline.
 
 Idempotent ``ADD COLUMN IF NOT EXISTS`` because the live DB's ``app_ideation``
@@ -11,7 +11,7 @@ tables predate module Alembic (built by ``create_all``, stamped at baseline), so
 the columns may already have been added out-of-band before this revision runs.
 
 Postgres-only DDL; a no-op on the SQLite test engine (per-module Alembic runs
-only on Postgres — see ``app/module_platform/migrations.run_module_migrations``).
+only on Postgres - see ``app/module_platform/migrations.run_module_migrations``).
 
 Revision ID: 0004_ideation_segregated
 Revises: 0003_ideation_submitter

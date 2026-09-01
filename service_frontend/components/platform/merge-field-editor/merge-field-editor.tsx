@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Merge-field template editor (sprint-2/01 review mandate) — subject + body
+ * Merge-field template editor (sprint-2/01 review mandate) - subject + body
  * with CLICK-TO-INSERT variable chips (no typing {{tokens}} by hand) and a
  * live PREVIEW rendered with the provided context. Generic on purpose: the
  * notification sub-form uses it today; the Template engine (BL-024) adopts
@@ -27,7 +27,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 
 export interface MergeField {
-  /** Token key — inserted as {{key}}. */
+  /** Token key - inserted as {{key}}. */
   key: string;
   /** Chip label shown to the user. */
   label: string;
@@ -35,7 +35,7 @@ export interface MergeField {
 
 const TOKEN_RE = /\{\{\s*(\w+)\s*\}\}/g;
 
-/** Same semantics as the backend's render_inline — unknown fields go empty. */
+/** Same semantics as the backend's render_inline - unknown fields go empty. */
 export function renderTemplate(template: string, context: Record<string, string>): string {
   return (template ?? '').replace(TOKEN_RE, (_, key: string) => context[key] ?? '');
 }
@@ -79,7 +79,7 @@ export function MergeFieldEditor({
     const intoSubject = lastFocused === 'subject';
     const element = intoSubject ? subjectRef.current : bodyRef.current;
     const value = intoSubject ? subject : body;
-    // Caret position only means something while the field is focused —
+    // Caret position only means something while the field is focused -
     // otherwise append at the end (clicking a chip cold shouldn't prepend).
     const hasCaret = element != null && document.activeElement === element;
     const start = hasCaret ? (element.selectionStart ?? value.length) : value.length;

@@ -34,8 +34,8 @@ export interface MockEmbeddedSignupDialogProps {
  * this whole component is replaced by the real SDK launch (the wizard's state
  * machine and the backend exchange stay the same).
  *
- * Note: in production the number is registered/selected *inside Meta's popup* —
- * never typed into a FoundryX form. The "register a number" mode here only
+ * Note: in production the number is registered/selected *inside Meta's popup* -
+ * never typed into a Foundryx form. The "register a number" mode here only
  * simulates that Meta step so the prototype is self-contained.
  */
 export function MockEmbeddedSignupDialog({
@@ -150,7 +150,7 @@ export function MockEmbeddedSignupDialog({
               <div className="flex flex-col gap-1.5">
                 <label className="text-sm text-muted-foreground">Business display name</label>
                 <Input
-                  placeholder="e.g. FoundryX VIP Desk"
+                  placeholder="e.g. Foundryx VIP Desk"
                   value={businessName}
                   onChange={(e) => setBusinessName(e.target.value)}
                 />

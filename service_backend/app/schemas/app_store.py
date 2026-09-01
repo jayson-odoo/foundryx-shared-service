@@ -1,4 +1,4 @@
-"""App Store wire shapes (plan 08 §7) — camelCase out, matching types/app-store.ts."""
+"""App Store wire shapes (plan 08 §7) - camelCase out, matching types/app-store.ts."""
 from datetime import datetime
 from typing import List, Optional
 

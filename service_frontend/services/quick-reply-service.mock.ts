@@ -1,5 +1,5 @@
 /**
- * PHASE 1 MOCK — in-memory quick replies (plan sprint-3/12). Retained for tests
+ * PHASE 1 MOCK - in-memory quick replies (plan sprint-3/12). Retained for tests
  * + tunable frontend states; the shipped page binds the REAL service. Delete
  * once no longer referenced.
  */
@@ -16,7 +16,7 @@ let seq = 0;
 function seed(): QuickReply[] {
   return [
     { id: 'qr-1', workspaceId: 'wsp-1', shortcut: '/hi', body: 'Hi! How can I help?' },
-    { id: 'qr-2', workspaceId: 'wsp-1', shortcut: '/hours', body: 'We are open Mon–Fri 9–6.' },
+    { id: 'qr-2', workspaceId: 'wsp-1', shortcut: '/hours', body: 'We are open Mon-Fri 9-6.' },
   ];
 }
 

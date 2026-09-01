@@ -23,7 +23,7 @@ function Initials({ name, email }: { name: string | null; email: string }) {
 
 /**
  * Roles-list "Users" cell: shows the count and, on click, expands an inline
- * popover listing the assigned users — each name links to that user's form view
+ * popover listing the assigned users - each name links to that user's form view
  * (the Roles → Users drill-through, plan 03 follow-up).
  */
 export function RoleUsersCell({ roleId, count }: { roleId: string; count: number }) {
@@ -85,7 +85,7 @@ export function RoleUsersCell({ roleId, count }: { roleId: string; count: number
                 <Initials name={u.name} email={u.email} />
                 <div className="flex min-w-0 flex-col">
                   <span className="truncate text-sm font-medium text-foreground leading-tight">
-                    {u.name ?? '—'}
+                    {u.name ?? '-'}
                   </span>
                   <span className="truncate text-xs text-muted-foreground">{u.email}</span>
                 </div>

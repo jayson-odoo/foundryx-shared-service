@@ -1,11 +1,11 @@
 /**
- * Ideation embed service — the chrome-less iframe's data boundary, authenticated
+ * Ideation embed service - the chrome-less iframe's data boundary, authenticated
  * by the short-lived EMBED token (NOT a NextAuth session): the token is placed in
  * `embedAuthStore` by the embed session gate, and `lib/api-client` attaches it as
  * the Bearer + never `signOut()`s on a 401 (a 401 is a clean expiry, handled by
  * the silent re-mint handshake).
  *
- * WS-C / AC-CAP-9..13 — FULL operator-grid parity: this object implements the
+ * WS-C / AC-CAP-9..13 - FULL operator-grid parity: this object implements the
  * SAME `IdeaService` interface the operator surface uses (so ONE component set
  * serves both modes), but every call hits the `/embed/*` routes. The backend
  * scopes every read/write to the token's tenant AND product, so the iframe can
@@ -33,7 +33,7 @@ export interface EmbedTokenScope {
 
 // Cached from the last `validateToken` so `listProducts` can surface the
 // connection's single scoped product for the create/edit form picker (there is
-// no `/embed/products` — the product is fixed by the token server-side).
+// no `/embed/products` - the product is fixed by the token server-side).
 let lastScope: EmbedTokenScope | null = null;
 
 const embedIdea = (id: string) => `/embed/ideas/${encodeURIComponent(id)}`;
@@ -54,7 +54,7 @@ export const ideationEmbedService: IdeaService & {
   /**
    * The connection's product(s). The embed is product-scoped server-side, so this
    * surfaces the ONE scoped product (id from the token; name resolved from any
-   * existing idea, else a generic label) — enough for the capture/edit picker,
+   * existing idea, else a generic label) - enough for the capture/edit picker,
    * which the backend overrides anyway. An unscoped connection derives the
    * distinct products from the visible ideas.
    */
@@ -96,7 +96,7 @@ export const ideationEmbedService: IdeaService & {
     return apiFetch<Idea>(embedIdea(id));
   },
 
-  /** Create an idea — the backend FORCES the connection's product (the body
+  /** Create an idea - the backend FORCES the connection's product (the body
    * `productId` is ignored server-side). */
   createIdea(input: IdeaCreateInput): Promise<Idea> {
     return apiFetch<Idea>('/embed/ideas', {
@@ -158,7 +158,7 @@ export const ideationEmbedService: IdeaService & {
   },
 
   /** The chrome-less embed never offers clustering (operator-only, gated by
-   * `ideation.clusters.manage`) — a no-op keeps the shared `IdeaService`
+   * `ideation.clusters.manage`) - a no-op keeps the shared `IdeaService`
    * contract satisfied. */
   async suggestClusters(): Promise<IdeaClusterSuggestions> {
     return { clusters: [], degraded: false };

@@ -27,7 +27,7 @@ import { AC_COMPANIES_PATH, acCompanyHref } from '../../components/autocount-met
  * The operator supplies ONLY a connection: the vendor API resolves the company
  * from the AppId header, so the company database name is DISCOVERED at sign-in
  * and never entered (AC-13-01). The picker lists only connections that can
- * actually succeed — already-registered ones are excluded (foolproof-UI).
+ * actually succeed - already-registered ones are excluded (foolproof-UI).
  */
 export function ConnectCompanyView() {
   const router = useRouter();

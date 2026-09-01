@@ -21,7 +21,7 @@ const ICONS = WORKFLOW_NODE_ICONS;
 export interface WorkflowNodeData {
   node: WorkflowNode;
   catalog?: NodeCatalogEntry;
-  /** Run-replay tint (D16) — omitted in the editor. */
+  /** Run-replay tint (D16) - omitted in the editor. */
   runStatus?: WorkflowNodeRunStatus;
   [key: string]: unknown;
 }
@@ -44,7 +44,7 @@ export function WorkflowFlowNode({ data, selected }: NodeProps & { data: Workflo
   const baseSummary = nodeSummary(node);
   // When the node carries a CUSTOM name (≠ its type label), surface the actual
   // type in the subtitle so a name like "Record created" can never masquerade
-  // as a different trigger type (foolproof-UI — the card states what it IS).
+  // as a different trigger type (foolproof-UI - the card states what it IS).
   const summary =
     label !== typeLabel
       ? [typeLabel, baseSummary].filter(Boolean).join(' · ')
@@ -133,6 +133,20 @@ function nodeSummary(node: WorkflowNode): string {
       return str('key') || 'no key set';
     case 'if':
       return node.config.conditions ? 'conditional' : 'always true';
+    case 'ai_agent.run': {
+      const outputs = node.config.outputParams;
+      const count = Array.isArray(outputs) ? outputs.length : 0;
+      return count ? `${count} output${count === 1 ? '' : 's'}` : 'no outputs';
+    }
+    case 'ai_agent.clear_state':
+      return 'retained values';
+    case 'redis.command':
+      return `${str('operation') || 'get'}${str('key') ? ` · ${str('key')}` : ''}`;
+    case 'code.run': {
+      const outputs = node.config.outputs;
+      const count = Array.isArray(outputs) ? outputs.length : 0;
+      return `${str('language') || 'python'} · ${count} output${count === 1 ? '' : 's'}`;
+    }
     default:
       return node.type.startsWith('entity.') ? str('entityType') || 'pick an entity' : '';
   }

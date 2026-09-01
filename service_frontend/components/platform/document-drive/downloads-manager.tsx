@@ -78,7 +78,7 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
         a.rel = 'noopener';
         a.click();
         // Free the object URL (the ZIP blob can be large) once the download has
-        // started — without this every download leaks the archive for the page
+        // started - without this every download leaks the archive for the page
         // lifetime. Delay so the browser has read the blob.
         if (url.startsWith('blob:')) setTimeout(() => URL.revokeObjectURL(url), 30_000);
       }

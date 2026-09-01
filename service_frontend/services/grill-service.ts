@@ -1,5 +1,5 @@
 /**
- * Grill service — the boundary the Grill tab talks to (Phase B-i slice 3). The
+ * Grill service - the boundary the Grill tab talks to (Phase B-i slice 3). The
  * interface IS the backend contract (modules/ideation/routers/grill.py).
  *
  * Enforced layering: UI → hooks → this service → lib/api-client → FastAPI.

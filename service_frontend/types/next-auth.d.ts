@@ -9,7 +9,7 @@ declare module 'next-auth' {
     user: {
       id: string;
       tenantId: string;
-      /** Platform-tenant member — gates the Platform Console menu (UX only). */
+      /** Platform-tenant member - gates the Platform Console menu (UX only). */
       isPlatformTenant: boolean;
       name: string;
       email: string;

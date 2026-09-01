@@ -8,4 +8,4 @@ ideation.clusters,Idea Clusters,manage,Manage,Accept/reject suggested idea clust
 ideation.bindings,Workspace Bindings,manage,Manage,Bind respond.io workspaces to products (Maintainer)
 ideation.business_requirements,Business Requirements,read,Read,View business requirements & detail
 ideation.business_requirements,Business Requirements,manage,Manage,Create/edit BRs, link ideas & run the grill (Triager)
-ideation.business_requirements,Business Requirements,promote,Promote,Promote a draft BR to ready — the Gate-0 human action (Maintainer)
+ideation.business_requirements,Business Requirements,promote,Promote,Promote a draft BR to ready - the Gate-0 human action (Maintainer)

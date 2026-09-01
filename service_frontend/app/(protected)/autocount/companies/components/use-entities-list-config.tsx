@@ -2,7 +2,15 @@
 
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { CalendarRange, RefreshCw, RotateCcw, SlidersHorizontal } from 'lucide-react';
+import {
+  ArrowLeftRight,
+  CalendarRange,
+  Database,
+  Globe,
+  RefreshCw,
+  RotateCcw,
+  SlidersHorizontal,
+} from 'lucide-react';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { Badge } from '@/components/ui/badge';
 import { ClampedText } from '@/components/platform/clamped-text';
@@ -16,6 +24,7 @@ import {
   AC_COMPANIES_MANAGE,
   AC_SYNC_RUN,
   entityLabel,
+  sourceImplLabel,
   syncModeLabel,
 } from '../../components/autocount-meta';
 
@@ -65,7 +74,7 @@ function paginate(
 
 export interface EntitiesListConfigOptions {
   entities: AutocountEntityConfig[];
-  /** False when the company is inactive — a sync could not succeed. */
+  /** False when the company is inactive - a sync could not succeed. */
   companyActive: boolean;
   onSync: (entityType: string) => void | Promise<void>;
   onEditLookback: (entity: AutocountEntityConfig) => void;
@@ -73,6 +82,10 @@ export interface EntitiesListConfigOptions {
   onRefetch: (entity: AutocountEntityConfig) => void | Promise<void>;
   /** Open the entity's field-mapping editor (AC-15-40). */
   onConfigureMapping: (entity: AutocountEntityConfig) => void;
+  /** Open the entity's Database-mode task editor (plan 22, AC-22-07). */
+  onConfigureTask: (entity: AutocountEntityConfig) => void;
+  /** Open the guarded API ⇄ Database source switch (plan 22 S2, AC-22-08). */
+  onChangeSource: (entity: AutocountEntityConfig) => void;
 }
 
 export function useAutocountEntitiesListConfig({
@@ -82,6 +95,8 @@ export function useAutocountEntitiesListConfig({
   onEditLookback,
   onRefetch,
   onConfigureMapping,
+  onConfigureTask,
+  onChangeSource,
 }: EntitiesListConfigOptions): ResourceListConfig<AutocountEntityConfig> {
   const { formatDateTime } = useDatetime();
 
@@ -108,7 +123,7 @@ export function useAutocountEntitiesListConfig({
         surfaces: { row: true },
         permission: AC_COMPANIES_MANAGE,
         // Only offered BEFORE the first sync. Once a watermark exists the window
-        // is spent and editing it is a guaranteed no-op — offering a dialog that
+        // is spent and editing it is a guaranteed no-op - offering a dialog that
         // cannot take effect is the dead-control violation (AC-15-30). The
         // superseded state is shown read-only in the "Synced up to" column.
         isVisible: (rows) => !rows[0]?.watermarkAt,
@@ -149,6 +164,34 @@ export function useAutocountEntitiesListConfig({
           if (row) onConfigureMapping(row);
         },
       },
+      {
+        // The Database-mode task editor (plan 22). Offered ONLY on a
+        // database-sourced entity - on an API entity the editor would
+        // configure a query nothing runs (foolproof: only valid options).
+        id: 'configure-task',
+        label: 'Configure database query',
+        icon: Database,
+        surfaces: { row: true },
+        permission: AC_COMPANIES_MANAGE,
+        isVisible: (rows) => rows[0]?.sourceImpl === 'sql_db',
+        run: (rows) => {
+          const row = rows[0];
+          if (row) onConfigureTask(row);
+        },
+      },
+      {
+        // The guarded source switch (plan 22 S2, AC-22-08): a confirm dialog
+        // with the picker, since it changes how every later sync runs.
+        id: 'change-source',
+        label: 'Change source',
+        icon: ArrowLeftRight,
+        surfaces: { row: true },
+        permission: AC_COMPANIES_MANAGE,
+        run: (rows) => {
+          const row = rows[0];
+          if (row) onChangeSource(row);
+        },
+      },
     ];
 
     const columns: ColumnDef<AutocountEntityConfig>[] = [
@@ -168,6 +211,25 @@ export function useAutocountEntitiesListConfig({
           </div>
         ),
         size: 180,
+        enableSorting: false,
+      },
+      {
+        id: 'sourceImpl',
+        accessorFn: (row) => row.sourceImpl,
+        meta: { headerTitle: 'Source' },
+        header: ({ column }) => <DataGridColumnHeader title="Source" column={column} />,
+        cell: ({ row }) => {
+          const db = row.original.sourceImpl === 'sql_db';
+          return (
+            <div className="flex items-start">
+              <Badge variant={db ? 'primary' : 'secondary'} appearance="light" size="sm">
+                {db ? <Database className="size-3" /> : <Globe className="size-3" />}
+                {sourceImplLabel(row.original.sourceImpl)}
+              </Badge>
+            </div>
+          );
+        },
+        size: 140,
         enableSorting: false,
       },
       {
@@ -233,7 +295,7 @@ export function useAutocountEntitiesListConfig({
         header: ({ column }) => (
           <DataGridColumnHeader title="First-run window" column={column} />
         ),
-        // The value governs the first run ONLY — once a watermark exists the
+        // The value governs the first run ONLY - once a watermark exists the
         // watermark wins. That is shown as STATE (an "In effect" / "Superseded"
         // badge paired with the "Synced up to" column) rather than explained in
         // prose, per the no-instructional-copy rule.
@@ -304,7 +366,7 @@ export function useAutocountEntitiesListConfig({
       },
       {
         // The table view renders the row `…` menu from an explicit column (the
-        // shell only auto-wraps it in CARD view) — the same shape Terminology,
+        // shell only auto-wraps it in CARD view) - the same shape Terminology,
         // Connections and Workflows use.
         id: 'actions',
         meta: { reorderable: false },
@@ -330,7 +392,7 @@ export function useAutocountEntitiesListConfig({
         viewKey: 'autocount.entities.list',
         columns,
         getRowId: (row) => row.id,
-        // No per-entity detail page in slice 1 — '#' opts the list out of row
+        // No per-entity detail page in slice 1 - '#' opts the list out of row
         // navigation entirely (shell contract), so a click never dead-ends.
         rowHref: () => '#',
         searchPlaceholder: 'Search entities',
@@ -343,7 +405,9 @@ export function useAutocountEntitiesListConfig({
     companyActive,
     entities,
     formatDateTime,
+    onChangeSource,
     onConfigureMapping,
+    onConfigureTask,
     onEditLookback,
     onRefetch,
     onSync,

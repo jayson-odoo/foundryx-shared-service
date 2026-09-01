@@ -1,8 +1,8 @@
-"""Iterator expansion pass (plan sprint-3/03 D4/D5) — table + repeater.
+"""Iterator expansion pass (plan sprint-3/03 D4/D5) - table + repeater.
 
 Repetition is STRUCTURAL: a table/repeater block iterates a LIST fact and the
 expand pass stamps out concrete blocks BEFORE either compiler runs (MJML email
-or PDF). The merge renderer stays substitution-only — this module produces the
+or PDF). The merge renderer stays substitution-only - this module produces the
 repeated STRUCTURE; ``render_tokens`` fills the values downstream.
 
 Run order in both render seams: prune-by-conditions → **expand** → compile.
@@ -13,7 +13,7 @@ template is unchanged).
   (thead from columns, one tbody row per source item, tfoot from footer rows).
   A single pre-rendered HTML block is the simplest representation both
   compilers already understand (PDF emits it directly; MJML wraps it in
-  ``mj-raw``). Row/footer cells keep their merge tokens — they substitute at
+  ``mj-raw``). Row/footer cells keep their merge tokens - they substitute at
   compile time against the row/context facts.
 - ``RepeaterBlock`` → its body leaf blocks deep-copied once per source item,
   with every ``{{ row.<k> }}`` token rewritten to a per-item context key so the
@@ -21,7 +21,7 @@ template is unchanged).
   ``__row_<id>.<k>`` key injected into the facts).
 
 Single level only (the schema forbids table/repeater nesting). Rows are plain
-dicts (merge-only — no per-row rule conditions; that bridge is backlogged).
+dicts (merge-only - no per-row rule conditions; that bridge is backlogged).
 """
 
 import html as html_mod
@@ -40,14 +40,14 @@ from app.template_engine.schemas import (
 
 # Reserved facts namespace for repeater row scope (see _expand_repeater).
 _ROW_FACT_PREFIX = "__row"
-# Matches a merge token whose key starts with ``row.`` — scopes the per-item
+# Matches a merge token whose key starts with ``row.`` - scopes the per-item
 # rebind to tokens only (never literal text / unrelated tokens).
 _ROW_TOKEN_RE = re.compile(r"\{\{(\s*)row\.([\w.]*\s*)\}\}")
 
 
 def has_iterators(doc: TemplateDocumentModel) -> bool:
     """True if any block needs the expansion pass (cheap guard for the email
-    seam — docs without iterators skip expansion entirely)."""
+    seam - docs without iterators skip expansion entirely)."""
     for _s, _c, block in doc.iter_blocks():
         if isinstance(block, (TableBlock, RepeaterBlock)):
             return True
@@ -74,7 +74,7 @@ def _table_html(
     """Build the table markup with cell values ALREADY merged + HTML-escaped.
 
     Rendering values here (not as leftover tokens) keeps the substitution-only
-    contract AND ensures attendee/row-controlled values are escaped — the
+    contract AND ensures attendee/row-controlled values are escaped - the
     surrounding CustomHtmlBlock compiles with escape=False (table tags must
     survive), so an un-escaped value would inject markup. Body cells merge
     against the row dict; footer cells merge scalar context facts (totals)."""
@@ -112,7 +112,7 @@ def _table_html(
 def _rewrite_row_tokens(value: str, idx: int) -> str:
     """``{{ row.<k> }}`` → ``{{ __row<idx>.<k> }}`` (per-item context key).
 
-    Scoped to MERGE TOKENS only (and only the ``row.`` prefix) — a blanket
+    Scoped to MERGE TOKENS only (and only the ``row.`` prefix) - a blanket
     ``str.replace("row.", …)`` corrupts literal copy like ``tomorrow.`` or an
     unrelated token like ``{{ arrow.size }}`` (code-review fix)."""
     return _ROW_TOKEN_RE.sub(
@@ -153,7 +153,7 @@ def _expand_table(
     block: TableBlock, rows: Sequence[Dict[str, Any]], facts: Dict[str, Any], mode: str
 ) -> CustomHtmlBlock:
     """Table → a pre-rendered CustomHtmlBlock with cell values fully merged +
-    escaped (no leftover tokens — the compiler emits the markup verbatim)."""
+    escaped (no leftover tokens - the compiler emits the markup verbatim)."""
     return CustomHtmlBlock(
         id=f"{block.id}__expanded",
         type="customHtml",
@@ -171,7 +171,7 @@ def expand_iterators(
     per-row ``__row<idx>.<k>`` entries the expanded blocks reference). The
     augmented facts are what the compiler must render against.
 
-    The list-fact sample is the fallback source for preview — callers inject it
+    The list-fact sample is the fallback source for preview - callers inject it
     into ``facts`` under the list-fact key (so this pass sees a live binding or
     a sample identically). Whole-table/repeater visibility (a condition on the
     block itself) is preserved: tables carry it onto the pre-rendered block;

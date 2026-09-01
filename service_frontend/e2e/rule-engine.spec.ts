@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Rule Engine E2E (sprint-2/02) — real user clicks against the LIVE stack.
+ * Rule Engine E2E (sprint-2/02) - real user clicks against the LIVE stack.
  * Requires backend up + bootstrapped.
  *
  * Covers the full loop: build a condition on a transition edge (drawer
@@ -10,7 +10,7 @@ import { expect, test, type Page } from '@playwright/test';
  * while qualifying records still pass → cleanup.
  *
  * Parallel-safety: the condition is `Slug is not <e2e-tenant-slug>` on the
- * platform Active → Suspended edge — TRUE for every record except the
+ * platform Active → Suspended edge - TRUE for every record except the
  * spec's own timestamped tenant, so concurrent specs that suspend their own
  * tenants are unaffected. Cleanup removes the condition either way.
  */
@@ -77,7 +77,7 @@ async function openSuspendEdgeDrawer(page: Page) {
     .getByTestId('edge-toolbar')
     .getByRole('button', { name: 'Edit' })
     .click();
-  await expect(page.getByText(/Transition — Active → Suspended/)).toBeVisible();
+  await expect(page.getByText(/Transition - Active → Suspended/)).toBeVisible();
 }
 
 test.describe('Rule Engine (live stack)', () => {
@@ -101,7 +101,7 @@ test.describe('Rule Engine (live stack)', () => {
     await page.getByRole('combobox', { name: 'Fact' }).click();
     await page.getByPlaceholder('Search fields…').fill('Slug');
     await page.getByRole('option', { name: 'Slug' }).click();
-    // Operator: "is not" — passes for everyone EXCEPT the e2e tenant.
+    // Operator: "is not" - passes for everyone EXCEPT the e2e tenant.
     await page.getByRole('combobox', { name: 'Operator' }).click();
     await page.getByRole('option', { name: 'is not', exact: true }).click();
     await page.getByPlaceholder('Value').fill(slug);
@@ -111,7 +111,7 @@ test.describe('Rule Engine (live stack)', () => {
       .click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
-    // Round-trip: reopen — the condition persisted server-side.
+    // Round-trip: reopen - the condition persisted server-side.
     await page
       .getByText('Suspend', { exact: true })
       .first()
@@ -154,7 +154,7 @@ test.describe('Rule Engine (live stack)', () => {
     await openSuspendEdgeDrawer(page);
     await page.getByRole('button', { name: 'Remove condition' }).click();
     await expect(
-      page.getByText('No conditions — always allowed', { exact: false }),
+      page.getByText('No conditions - always allowed', { exact: false }),
     ).toBeVisible();
     await page
       .getByRole('button', { name: 'Save', exact: true })
@@ -187,7 +187,7 @@ test.describe('Rule Engine (live stack)', () => {
     await page.getByText('Settings', { exact: true }).click();
     await page.getByRole('link', { name: 'Rules', exact: true }).click();
     await expect(page).toHaveURL(/\/settings\/rules$/);
-    // No tenant-owned conditioned edges exist — empty list, not NoPermission.
+    // No tenant-owned conditioned edges exist - empty list, not NoPermission.
     await expect(
       page.getByText('You don’t have access to this page'),
     ).toHaveCount(0);

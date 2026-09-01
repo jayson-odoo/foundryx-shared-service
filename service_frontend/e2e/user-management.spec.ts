@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * User Management E2E — real user clicks against the live stack
+ * User Management E2E - real user clicks against the live stack
  * (Next :3001 → FastAPI :8001 → Postgres). Navigates by clicking the UI;
  * never URL-jumps into protected pages (per governance). Requires the backend
  * up + seeded (`python -m scripts.bootstrap_db`).
@@ -17,7 +17,7 @@ async function login(page: Page) {
 
 async function gotoUsers(page: Page) {
   // "User Management" is a collapsible parent; expand it (if needed) then click
-  // the "Users" submenu link — all real clicks, no URL jumping.
+  // the "Users" submenu link - all real clicks, no URL jumping.
   const usersLink = page.getByRole('link', { name: 'Users', exact: true });
   if (!(await usersLink.isVisible().catch(() => false))) {
     await page.getByText('User Management', { exact: true }).click();

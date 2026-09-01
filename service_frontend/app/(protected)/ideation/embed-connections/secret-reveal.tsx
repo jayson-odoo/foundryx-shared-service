@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 
 /**
  * One-time signing-secret reveal (create + rotate). The plaintext exists
- * client-side only for this moment — the backend stores it Fernet-encrypted and
+ * client-side only for this moment - the backend stores it Fernet-encrypted and
  * never returns it. The admin copies it now and pastes the SAME value into the
  * host's (sorento's) embed config.
  */
@@ -41,7 +41,7 @@ export function SecretReveal({ secret }: { secret: string }) {
         </Button>
       </div>
       <p className="text-sm font-medium text-destructive">
-        Copy this secret now — it won&apos;t be shown again. Paste the SAME value into the host
+        Copy this secret now - it won&apos;t be shown again. Paste the SAME value into the host
         app&apos;s embed config.
       </p>
     </div>

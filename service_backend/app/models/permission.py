@@ -1,7 +1,7 @@
 """Permission catalog model + the role_permissions association (RBAC, plan 03).
 
 A permission is a flat key ``"<resource>.<action>"`` (e.g. ``users.create``,
-``orders.approve``). The catalog is **global** (not tenant-scoped) — it's what the
+``orders.approve``). The catalog is **global** (not tenant-scoped) - it's what the
 platform core + installed App-Store modules declare via their permissions CSV.
 **Grants** (``role_permissions``) are tenant-scoped through the owning role.
 
@@ -22,7 +22,7 @@ def tenant_id_from_role(context) -> str:
     """Context-sensitive default for association ``tenant_id`` (BL-015 fix).
 
     Association rows are written by relationship appends, which only populate
-    the FK columns — so the column default must derive the tenant from the
+    the FK columns - so the column default must derive the tenant from the
     owning role at insert time instead of stamping a static value.
     """
     role_id = context.get_current_parameters().get("role_id")
@@ -55,9 +55,9 @@ class Permission(Base):
     __tablename__ = "permissions"
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    # Globally-unique flat key — `<resource>.<action>`.
+    # Globally-unique flat key - `<resource>.<action>`.
     key = Column(String, nullable=False, unique=True, index=True)
-    # Owning module — `core` or an App-Store module name (groups + uninstall scope).
+    # Owning module - `core` or an App-Store module name (groups + uninstall scope).
     module = Column(String, nullable=False, index=True)
     resource = Column(String, nullable=False)
     resource_label = Column(String, nullable=False)

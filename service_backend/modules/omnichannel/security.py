@@ -2,7 +2,7 @@
 
 ``channels.credentials_json`` (access tokens etc) is encrypted at rest. The key
 comes from ``settings.omnichannel_fernet_key``; if unset a throwaway key is
-generated per-process (dev only — a restart invalidates previously-stored
+generated per-process (dev only - a restart invalidates previously-stored
 ciphertext, which is fine for dev but MUST be set in prod).
 """
 import json
@@ -18,7 +18,7 @@ from app.config import settings
 def _fernet() -> Fernet:
     key = settings.omnichannel_fernet_key
     if not key:
-        # Dev fallback: ephemeral key (warn-by-design — see module docstring).
+        # Dev fallback: ephemeral key (warn-by-design - see module docstring).
         key = Fernet.generate_key().decode()
     return Fernet(key.encode() if isinstance(key, str) else key)
 
@@ -48,7 +48,7 @@ def decrypt_secret(token: str) -> str:
 # For external consumers we hand back an ABSOLUTE, HMAC-signed, time-limited URL
 # that carries its own authorization (``exp`` + ``sig``) so a raw browser click
 # works with no Authorization header. The signature binds the message id + expiry
-# under ``settings.jwt_secret`` — unforgeable, and the media route resolves the
+# under ``settings.jwt_secret`` - unforgeable, and the media route resolves the
 # message GLOBALLY (the valid signature IS the authz) once verified.
 import hashlib
 import hmac

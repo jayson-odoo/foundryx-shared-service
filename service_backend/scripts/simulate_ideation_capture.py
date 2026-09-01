@@ -7,7 +7,7 @@ prints a transcript for each turn: the USER message (+ the brain-extracted
 ``status``, ``captured``, ``missing`` and ``reply_text``.
 
 This is a demonstration of D-CONFIRM (a fully-complete intake still returns
-``review`` until an explicit confirm) — it does NOT change any feature code and it
+``review`` until an explicit confirm) - it does NOT change any feature code and it
 runs entirely on an in-memory SQLite copy of the module stack (no live Postgres,
 no LLM).
 
@@ -189,7 +189,7 @@ def emit(text: str = "") -> None:
 
 
 def render_turn(n, title, user_msg, extracted, resp, db_status=None):
-    emit(f"### Turn {n} — {title}")
+    emit(f"### Turn {n} - {title}")
     emit("")
     emit(f"**User (WhatsApp):** {user_msg}")
     emit(f"**Brain-extracted →** {extracted}")
@@ -272,7 +272,7 @@ def main() -> int:
                     failures.append(msg)
                     emit(f"!! ASSERTION FAILED: {msg}")
 
-            emit("# Ideation Capture — end-to-end simulation transcript")
+            emit("# Ideation Capture - end-to-end simulation transcript")
             emit("")
             emit(
                 "Deterministic Conversational-Intake (NO LLM). Product **Sorento CRM** "
@@ -286,10 +286,10 @@ def main() -> int:
             emit("")
 
             # ── MAIN CONVERSATION ─────────────────────────────────────────────
-            emit("## Conversation A — build → confirm (7 turns)")
+            emit("## Conversation A - build → confirm (7 turns)")
             emit("")
 
-            # Turn 1 — incomplete (only the problem, seeded from message_text).
+            # Turn 1 - incomplete (only the problem, seeded from message_text).
             msg1 = "I wish the CRM reminded me before a DO's SLA breaches"
             r1 = call(message_text=msg1)
             draft_id = r1["draft_id"]
@@ -300,7 +300,7 @@ def main() -> int:
             expect(set(r1["missing"]) == {"module", "who", "impact"},
                    "T1 missing should be module/who/impact")
 
-            # Turn 2 — supplies SOME missing (module).
+            # Turn 2 - supplies SOME missing (module).
             msg2 = "It's about the Orders module"
             r2 = call(message_text=msg2, draft_id=draft_id, fields={"module": "Orders"})
             render_turn(2, "SOME missing filled (module)", msg2,
@@ -310,7 +310,7 @@ def main() -> int:
             expect(set(r2["missing"]) == {"who", "impact"},
                    "T2 missing should shrink to who/impact")
 
-            # Turn 3 — supplies the REST → review (does NOT auto-complete).
+            # Turn 3 - supplies the REST → review (does NOT auto-complete).
             msg3 = "It'd help the CS team and save them about 30 minutes a day"
             r3 = call(
                 message_text=msg3,
@@ -326,32 +326,32 @@ def main() -> int:
             expect("link" not in r3, "T3 should NOT carry a link (not complete)")
             expect(st3 == "draft", "T3 draft must STAY draft (D-CONFIRM)")
 
-            # Turn 4 — revision: change the team.
+            # Turn 4 - revision: change the team.
             msg4 = "Actually, change the team to Operations"
             r4 = call(message_text=msg4, draft_id=draft_id, fields={"who": "Operations"})
-            render_turn(4, "REVISION — change team", msg4,
+            render_turn(4, "REVISION - change team", msg4,
                         'fields={"who":"Operations"}', r4)
             expect(r4["status"] == "review", "T4 status should stay review")
             expect(r4["captured"].get("who") == "Operations",
                    "T4 should reflect who=Operations")
 
-            # Turn 5 — revision: remove the impact line (required → collecting).
+            # Turn 5 - revision: remove the impact line (required → collecting).
             msg5 = "Actually remove the impact line"
             r5 = call(message_text=msg5, draft_id=draft_id, remove=["impact"])
-            render_turn(5, "REVISION — remove impact (required)", msg5,
+            render_turn(5, "REVISION - remove impact (required)", msg5,
                         'remove=["impact"]', r5)
             expect(r5["status"] == "collecting",
                    "T5 status should drop to collecting (impact is required)")
             expect("impact" in r5["missing"], "T5 missing should include impact")
             emit(
                 "> _`impact` is a REQUIRED field in the intake schema, so removing it "
-                "drops the intake back to **collecting** — the confirm gate cannot be "
+                "drops the intake back to **collecting** - the confirm gate cannot be "
                 "reached until every required field is answered again._"
             )
             emit("")
 
-            # Turn 6 — add more info that merges back in → review.
-            msg6 = "Put the impact back — it saves about an hour a day"
+            # Turn 6 - add more info that merges back in → review.
+            msg6 = "Put the impact back - it saves about an hour a day"
             r6 = call(
                 message_text=msg6,
                 draft_id=draft_id,
@@ -364,7 +364,7 @@ def main() -> int:
                    "T6 should merge the new impact")
             expect(r6["missing"] == [], "T6 missing should be empty")
 
-            # Turn 7 — explicit confirm → complete + link; DB now captured.
+            # Turn 7 - explicit confirm → complete + link; DB now captured.
             msg7 = "Yes, submit it"
             r7 = call(message_text=msg7, draft_id=draft_id, confirm=True)
             st7 = idea_status_key(factory, draft_id)
@@ -379,7 +379,7 @@ def main() -> int:
             expect(st7 == "captured", "T7 Idea should now be captured in the DB")
 
             # ── ONE-SHOT CASE ─────────────────────────────────────────────────
-            emit("## Conversation B — one-shot complete STILL reviews first")
+            emit("## Conversation B - one-shot complete STILL reviews first")
             emit("")
             msg_os = ("Let me bulk-edit product prices by uploading a spreadsheet "
                       "instead of one row at a time")
@@ -402,7 +402,7 @@ def main() -> int:
             expect(os_status == "draft", "One-shot draft must stay draft until confirm")
             emit(
                 "> _Even though every required field was answered in the very first "
-                "message, the intake returns **review** — the D-CONFIRM gate means "
+                "message, the intake returns **review** - the D-CONFIRM gate means "
                 "nothing is captured without an explicit confirm._"
             )
             emit("")
@@ -419,7 +419,7 @@ def main() -> int:
             emit("## Result")
             emit("")
             if failures:
-                emit(f"**FAILED** — {len(failures)} assertion(s) did not match:")
+                emit(f"**FAILED** - {len(failures)} assertion(s) did not match:")
                 for f in failures:
                     emit(f"- {f}")
             else:

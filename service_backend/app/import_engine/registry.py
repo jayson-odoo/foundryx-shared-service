@@ -1,13 +1,13 @@
-"""ImporterDef registry (sprint-3/09 D1/D2/D6) — code-side, opt-in, per entity.
+"""ImporterDef registry (sprint-3/09 D1/D2/D6) - code-side, opt-in, per entity.
 
 A separate registry of ``ImporterDef`` keyed by ``entity_type`` (house parallel-
 registry style). Core entities register at ``lazy_once``; modules at install.
-Importable columns are a subset of the server-writable whitelist (D2) —
+Importable columns are a subset of the server-writable whitelist (D2) -
 ``infer_import_columns(model, writable)`` seeds defaults from the SQLAlchemy
 columns (mirrors ``rule_engine.infer_facts``); the ``ImporterDef`` overrides only
 the special bits (resolver/options/validators/multiValue/transform).
 
-``match_on`` is universally ``id`` (D5) — not declared per entity.
+``match_on`` is universally ``id`` (D5) - not declared per entity.
 """
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.lazy_registry import lazy_once
 from app.workflow_engine.entities import attr_for
 
-# Column value types — coerced; a bad parse = a cell error with the expected fmt.
+# Column value types - coerced; a bad parse = a cell error with the expected fmt.
 ColumnType = str  # 'string'|'integer'|'decimal'|'boolean'|'date'|'datetime'|'enum'
 
 # Static option list, or callable(db, user) for tenant-scoped options (drives the
@@ -36,7 +36,7 @@ RESOLVE_FIND_OR_CREATE = "find_or_create"
 @dataclass(frozen=True)
 class ResolverDef:
     """FK/reference resolution for a column (D6/D18). ``lookup(db, tenant_id,
-    values) -> {value: id}`` is BATCHED (set-based — one query for the page).
+    values) -> {value: id}`` is BATCHED (set-based - one query for the page).
     ``options(db, user)`` optionally bounds the cell to a dropdown (≤25).
     ``create(db, tenant_id, row, ctx) -> id`` is required iff mode is
     find_or_create (existing match → link, no match → create; NEVER update)."""
@@ -85,9 +85,9 @@ class ImporterDef:
     create_rows: Optional[Callable[[Session, str, List[dict], dict], List[str]]] = None
     update_rows: Optional[Callable[[Session, str, List[dict], dict], List[str]]] = None
     existing_ids: Optional[Callable[[Session, str, List[str]], set]] = None
-    # Imperative cross-column escape hatch (D6) — returns {colKey: msg} or {}.
+    # Imperative cross-column escape hatch (D6) - returns {colKey: msg} or {}.
     validate_row: Optional[Callable[[dict, dict], Dict[str, str]]] = None
-    # Aggregate/set-based validation hook (sprint-4/05) — runs ONCE over the whole
+    # Aggregate/set-based validation hook (sprint-4/05) - runs ONCE over the whole
     # valid prepared set (zero writes) in BOTH Test and commit, so a batch-level
     # constraint (e.g. GA capacity ``sold + held + import_qty <= capacity``) blocks
     # the commit, never oversells. Returns a list of error dicts
@@ -115,7 +115,7 @@ _REGISTRY: Dict[str, ImporterDef] = {}
 
 
 def register_importer(importer: ImporterDef) -> None:
-    """Idempotent — re-registration on bootstrap overwrites."""
+    """Idempotent - re-registration on bootstrap overwrites."""
     _REGISTRY[importer.entity_type] = importer
 
 

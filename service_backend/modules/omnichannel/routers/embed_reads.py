@@ -1,4 +1,4 @@
-"""Embed-reachable READ helpers — plan 11H follow-up.
+"""Embed-reachable READ helpers - plan 11H follow-up.
 
 The reused ``ConversationDrawer`` + composer fetch three workspace/channel
 catalogs while rendering a thread: the send-picker template list, the workspace
@@ -8,11 +8,11 @@ embed access token 401'd on them. This PUBLIC router hosts the SAME three reads
 behind the unified ``get_conversation_principal`` resolver so BOTH schemes reach
 them:
 
-- **Native** — the pre-embed permission gate is preserved verbatim
+- **Native** - the pre-embed permission gate is preserved verbatim
   (``conversations.reply`` for templates, ``conversations.read`` for
   quick-replies, ``workspaces.read`` for members) via ``require_native_read``;
   the module-active check + tenant scoping come from the principal + service.
-- **Embed** — no write cap needed (these are reads), but the token is confined
+- **Embed** - no write cap needed (these are reads), but the token is confined
   to ITS OWN workspace: ``enforce_workspace`` / ``enforce_channel_workspace``
   refuse a token that names workspace A from reading workspace B's catalog
   (backend is the boundary, never the widget). A ``thread:<contactId>`` token
@@ -20,7 +20,7 @@ them:
   to see assignees).
 
 Mounted PUBLIC (no ``require_module`` router gate) with FULL paths + an empty
-prefix — the ONE handler per path lives here, removed from the gated routers to
+prefix - the ONE handler per path lives here, removed from the gated routers to
 avoid a duplicate registration. The module-active gate is re-applied inside
 ``get_conversation_principal`` for both schemes.
 """
@@ -87,7 +87,7 @@ def list_members(
     db: Session = Depends(get_db),
     search: str = "",
 ) -> List[WorkspaceMemberItem]:
-    """Workspace members — the assignee picker."""
+    """Workspace members - the assignee picker."""
     from ..services.workspace_service import WorkspaceService
 
     principal.require_native_read("workspaces.read")

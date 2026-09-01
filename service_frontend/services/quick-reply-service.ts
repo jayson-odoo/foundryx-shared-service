@@ -1,5 +1,5 @@
 /**
- * Quick-reply (canned response) service — the boundary the UI talks to (plan
+ * Quick-reply (canned response) service - the boundary the UI talks to (plan
  * sprint-3/12). The composer's ★ picker consumes the same rows via
  * `conversation-service`; this service manages them (create/edit/delete).
  * Frontend-first bound the mock; the shipped page binds the REAL api-client impl

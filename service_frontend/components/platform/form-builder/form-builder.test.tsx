@@ -1,9 +1,9 @@
 /**
- * FormBuilder component tests (plan sprint-3/01) — palette click-to-add per
+ * FormBuilder component tests (plan sprint-3/01) - palette click-to-add per
  * category, field-config edits flowing into the doc, duplicate-key warning,
  * options/repeater editors, computed-expression error, conditions RuleBuilder
  * mount, undo/redo, and the read-only (editing=false) render. dnd-kit
- * pointer-sensor drags aren't drivable in jsdom — the reorder logic is covered
+ * pointer-sensor drags aren't drivable in jsdom - the reorder logic is covered
  * by doc-ops.test.ts.
  */
 import { useState } from 'react';
@@ -29,7 +29,7 @@ function docWithTextField(): FormDocument {
 describe('FormBuilder palette', () => {
   it('expands a category and click-adds a field of that type', () => {
     render(<Host />);
-    // Number category collapsed by default — expand it.
+    // Number category collapsed by default - expand it.
     fireEvent.click(screen.getByTestId('palette-category-number'));
     fireEvent.click(screen.getByTestId('palette-number'));
     // A number field row now exists on the canvas.

@@ -1,11 +1,11 @@
 """Datetime hygiene (plan sprint-2/05, BL-012): every core DateTime column →
 timestamptz, + users.timezone preference.
 
-Existing values are naive UTC BY CONVENTION — `USING <col> AT TIME ZONE 'UTC'`
+Existing values are naive UTC BY CONVENTION - `USING <col> AT TIME ZONE 'UTC'`
 pins that interpretation explicitly (an implicit cast would read them in the
 SESSION timezone and silently shift every historical timestamp).
 
-Omnichannel tables were created `timezone=True` from day one (create_all) —
+Omnichannel tables were created `timezone=True` from day one (create_all) -
 nothing to do there.
 
 Revision ID: 9d2e3f4a5b6c
@@ -59,7 +59,7 @@ def upgrade() -> None:
                     type_=sa.DateTime(timezone=True),
                     postgresql_using=f"{column} AT TIME ZONE 'UTC'",
                 )
-    # SQLite (tests/dev fallback) stores datetimes as text — no type change.
+    # SQLite (tests/dev fallback) stores datetimes as text - no type change.
 
     op.add_column("users", sa.Column("timezone", sa.String(length=64), nullable=True))
 

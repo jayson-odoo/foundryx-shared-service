@@ -77,7 +77,7 @@ function IdeaCardBody({ idea, ghost }: { idea: Idea; ghost?: boolean }) {
 }
 
 /**
- * The triage Kanban board — the SINGLE board component used by BOTH the operator
+ * The triage Kanban board - the SINGLE board component used by BOTH the operator
  * page and the chrome-less host iframe (WS-C1 / AC-CAP-9). Drag across columns →
  * status change; drag within a column → reorder priority. The backend + card
  * URLs come from `useIdeationRuntime()` (operator default or embed).

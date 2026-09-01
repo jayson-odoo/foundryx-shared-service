@@ -2,7 +2,7 @@
 DoD #2/#4).
 
 ``install_tenant`` seeds the ``Ideation grill`` agent only when a tenant installs
-the module — it does NOT reach tenants that already have ideation ACTIVE. This
+the module - it does NOT reach tenants that already have ideation ACTIVE. This
 idempotent sweep:
 
   1. seeds the platform-tier ``grill-me-business`` skill (insert-if-missing), then

@@ -14,23 +14,23 @@ import {
 } from '@/components/ui/card';
 import { useTimezonePreference } from '@/hooks/use-timezone-preference';
 
-/** Sentinel option — clears the preference back to the browser tz. */
+/** Sentinel option - clears the preference back to the browser tz. */
 const BROWSER_DEFAULT = '__browser__';
 
 /**
- * Timezone preference card (plan sprint-2/05) — timestamps everywhere render
+ * Timezone preference card (plan sprint-2/05) - timestamps everywhere render
  * in this timezone via useDatetime; no preference = browser tz.
  */
 export function TimezoneCard() {
   const { timezone, browserTimeZone, isSaving, error, save } =
     useTimezonePreference();
 
-  // ~400 Intl formatter constructions — compute once.
+  // ~400 Intl formatter constructions - compute once.
   const options = useMemo(
     () => [
       {
         value: BROWSER_DEFAULT,
-        label: `Browser default — ${browserTimeZone.replace(/_/g, ' ')}`,
+        label: `Browser default - ${browserTimeZone.replace(/_/g, ' ')}`,
       },
       ...getTimeZones(),
     ],

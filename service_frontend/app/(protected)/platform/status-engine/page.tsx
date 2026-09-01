@@ -13,7 +13,7 @@ import { ResourceList } from '@/components/platform/resource-list';
 import { useStatusEntitiesListConfig } from '@/components/platform/status-engine';
 
 /**
- * Operator surface of the Status Engine (sprint-2/01) — entity LIST (the
+ * Operator surface of the Status Engine (sprint-2/01) - entity LIST (the
  * Resource shell); row click opens the entity's detail form (Flow + Statuses
  * tabs) editing the PLATFORM DEFAULT sets every un-forked tenant inherits.
  */
@@ -28,7 +28,7 @@ export default function PlatformStatusEnginePage() {
             <ToolbarHeading>
               <ToolbarPageTitle />
               <ToolbarDescription>
-                Platform default statuses and transition flows — tenants inherit these until
+                Platform default statuses and transition flows - tenants inherit these until
                 they customize.
               </ToolbarDescription>
             </ToolbarHeading>

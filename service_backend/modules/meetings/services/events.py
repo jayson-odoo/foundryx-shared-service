@@ -1,8 +1,8 @@
-"""Events service (S0 plan §5) — the caller's own upcoming meetings.
+"""Events service (S0 plan §5) - the caller's own upcoming meetings.
 
 Two scopes apply to every query and neither is negotiable: the tenant comes from
 the JWT, and the calendar is the CALLER'S. A colleague's mirrored row is not the
-caller's to read or to switch off, so a foreign id is a 404 rather than a 403 —
+caller's to read or to switch off, so a foreign id is a 404 rather than a 403 -
 the caller has no business learning it exists.
 """
 from datetime import datetime, timedelta, timezone

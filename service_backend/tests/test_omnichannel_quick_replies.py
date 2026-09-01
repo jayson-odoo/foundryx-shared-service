@@ -1,4 +1,4 @@
-"""Quick-reply (canned response) CRUD tests — plan sprint-3/12.
+"""Quick-reply (canned response) CRUD tests - plan sprint-3/12.
 
 Covers create/list/update/delete happy paths, tenant + workspace scoping,
 shortcut-collision 409, empty-body 422, and the `workspaces.manage` perm gate.
@@ -169,7 +169,7 @@ def test_quick_reply_workspace_scoping_404(client, session_factory):
         headers=h,
         json={"body": "In A"},
     ).json()
-    # The row lives in workspace A — addressing it via workspace B is a 404.
+    # The row lives in workspace A - addressing it via workspace B is a 404.
     res = client.patch(
         f"/omnichannel/workspaces/{ws_b}/quick-replies/{qr['id']}",
         headers=h,

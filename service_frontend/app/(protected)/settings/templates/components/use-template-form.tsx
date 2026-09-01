@@ -37,7 +37,7 @@ export interface TemplateFormValues {
   name: string;
   subject: string;
   context: string;
-  /** Surface type — editable in CREATE mode only (immutable after). */
+  /** Surface type - editable in CREATE mode only (immutable after). */
   type: TemplateType;
 }
 
@@ -62,7 +62,7 @@ export function useTemplateForm(
   const [visibilityFacts, setVisibilityFacts] = useState<RuleFact[]>([]);
   const [doc, setDoc] = useState<AnyTemplateDoc>(() => createBlankDocument());
   const [docDirty, setDocDirty] = useState(false);
-  // Freshest doc for onSave: clicking Save blurs an inline editor first —
+  // Freshest doc for onSave: clicking Save blurs an inline editor first -
   // its commit lands in state AFTER the closure the click handler captured.
   const docRef = useRef(doc);
   const [isLoading, setIsLoading] = useState(!isNew);
@@ -137,7 +137,7 @@ export function useTemplateForm(
   }, [typeKey, isNew, form]);
 
   const handleDocChange = useCallback((next: AnyTemplateDoc) => {
-    docRef.current = next; // sync BEFORE the state flush — Save reads this
+    docRef.current = next; // sync BEFORE the state flush - Save reads this
     setDoc(next);
     setDocDirty(true);
   }, []);
@@ -197,7 +197,7 @@ export function useTemplateForm(
       return false;
     }
     if (!values.context) {
-      toast.error('Pick a context — it defines the available merge fields.');
+      toast.error('Pick a context - it defines the available merge fields.');
       return false;
     }
     const input = {
@@ -219,7 +219,7 @@ export function useTemplateForm(
         form.reset({ name: updated.name, subject: updated.subject, context: updated.context });
         toast.success('Template saved.');
         if (updated.id !== templateId) {
-          // First edit of a platform default FORKED a tenant copy (D6) —
+          // First edit of a platform default FORKED a tenant copy (D6) -
           // follow the fork or the URL would reload the platform row.
           router.replace(templatePath(updated.id));
         }

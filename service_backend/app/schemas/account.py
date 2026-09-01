@@ -1,4 +1,4 @@
-"""Account self-service schemas — the change-email ceremony (plan sprint-2/04)."""
+"""Account self-service schemas - the change-email ceremony (plan sprint-2/04)."""
 from datetime import datetime
 
 from pydantic import ConfigDict, EmailStr, Field
@@ -8,7 +8,7 @@ from app.schemas.base import ApiModel
 
 class ChangeEmailRequest(ApiModel):
     newEmail: EmailStr
-    # The EXISTING password (fresh proof of possession) — no strength policy.
+    # The EXISTING password (fresh proof of possession) - no strength policy.
     password: str = Field(min_length=1)
 
 
@@ -32,7 +32,7 @@ class AvatarOut(ApiModel):
 
 
 class ProfileUpdateRequest(ApiModel):
-    """Self-editable profile fields (plan 06) — name only; email rides the
+    """Self-editable profile fields (plan 06) - name only; email rides the
     ceremony, never this."""
 
     name: str = Field(min_length=1, max_length=200)

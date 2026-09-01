@@ -1,4 +1,4 @@
-"""Terminology overrides (sprint-3/08, F10) — per-tenant entity relabeling.
+"""Terminology overrides (sprint-3/08, F10) - per-tenant entity relabeling.
 
 The DB table + code names stay fixed (an immutable contract); only the
 **display label** is configurable. A row exists only when a tenant has
@@ -7,7 +7,7 @@ default. Reset = delete the row.
 
 Two-form storage (D3): English irregulars (Person/People) make naive
 pluralization wrong, so an override supplies BOTH ``singular`` and ``plural``.
-Per-tenant only (D4) — no platform-tier fork; the "default" is the code value.
+Per-tenant only (D4) - no platform-tier fork; the "default" is the code value.
 """
 import uuid
 
@@ -31,7 +31,7 @@ class TerminologyOverride(Base):
         String, ForeignKey("tenants.id"), nullable=False, index=True
     )
     # The registered TermDef key (e.g. "form"). Validated against the registry
-    # at write time — an unknown key is a 422 (must be registered).
+    # at write time - an unknown key is a 422 (must be registered).
     entity_key = Column(String, nullable=False)
     singular = Column(String, nullable=False)
     plural = Column(String, nullable=False)

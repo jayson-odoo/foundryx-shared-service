@@ -1,4 +1,4 @@
-"""Fact registry (sprint-2/02 D7) — whitelist + schema inference, NEVER
+"""Fact registry (sprint-2/02 D7) - whitelist + schema inference, NEVER
 auto-expose a model's schema (would leak ``password_hash``/credentials).
 
 A fact source (``actor``, ``record:<entity>``) is a named bundle of
@@ -6,7 +6,7 @@ A fact source (``actor``, ``record:<entity>``) is a named bundle of
 ["name", "is_platform"])`` derives type/label/resolver from the SQLAlchemy
 column; computed/enum/list facts use an explicit ``FactDef`` with a resolver
 callable. Modules register sources in code at install (callables can't live
-in a manifest) — the permissions.csv lifecycle, code-side, exactly like
+in a manifest) - the permissions.csv lifecycle, code-side, exactly like
 ``app/status_engine/registry.py``.
 """
 from dataclasses import dataclass
@@ -29,7 +29,7 @@ OptionsProvider = Union[
 @dataclass(frozen=True)
 class FactDef:
     """One whitelisted fact. ``resolver(obj, db)`` produces the runtime value
-    from the source object (None-safe — missing/None fails closed, D5)."""
+    from the source object (None-safe - missing/None fails closed, D5)."""
 
     key: str
     label: str
@@ -49,7 +49,7 @@ _REGISTRY: Dict[str, FactSource] = {}
 
 
 def register_fact_source(name: str, label: str, facts: Sequence[FactDef]) -> None:
-    """Idempotent — modules re-register on every bootstrap."""
+    """Idempotent - modules re-register on every bootstrap."""
     _REGISTRY[name] = FactSource(name=name, label=label, facts=tuple(facts))
 
 
@@ -78,9 +78,9 @@ def resolve_facts(
 ) -> Dict[str, Any]:
     """Flat fact dict for the evaluator: ``{source_name: source_object}`` →
     ``{fact_key: value}``. A None object or a raising resolver yields None
-    (fail-closed downstream, D5) — stale rules never explode at runtime.
+    (fail-closed downstream, D5) - stale rules never explode at runtime.
 
-    ``only_keys`` (code-review perf fix): resolve just these fact keys —
+    ``only_keys`` (code-review perf fix): resolve just these fact keys -
     computed facts (e.g. record.userCount's COUNT query) aren't paid for
     rules that never read them. None = resolve everything."""
     ensure_core()
@@ -97,7 +97,7 @@ def resolve_facts(
                 continue
             try:
                 values[fact.key] = fact.resolver(obj, db)
-            except Exception:  # noqa: BLE001 — D5: no runtime errors from stale rules
+            except Exception:  # noqa: BLE001 - D5: no runtime errors from stale rules
                 values[fact.key] = None
     return values
 
@@ -116,7 +116,7 @@ def _title(snake: str) -> str:
 
 def _column_fact_type(column) -> FactType:
     # TypeDecorators (UTCDateTime, plan sprint-2/05) hide the real type behind
-    # `.impl` — unwrap before matching.
+    # `.impl` - unwrap before matching.
     col_type = getattr(column.type, "impl", column.type)
     if isinstance(col_type, Boolean):
         return "boolean"
@@ -159,7 +159,7 @@ def infer_facts(
         )
         # Relative-to-now day-count facts (sprint-4/03 Slice 6): every date field
         # also exposes "Days since"/"Days until <field>" as NUMBER facts computed
-        # against the injectable clock — so time windows are authored with the
+        # against the injectable clock - so time windows are authored with the
         # existing >/≥/</≤ operators and re-checked by the time sweep.
         if col_type == "date":
             label = patch.get("label", _title(attr))
@@ -263,5 +263,5 @@ def _register_core() -> None:
     )
 
 
-# Call before any registry read — core registers exactly once.
+# Call before any registry read - core registers exactly once.
 ensure_core = lazy_once(_register_core)

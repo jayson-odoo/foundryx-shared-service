@@ -42,9 +42,9 @@ const TICKET_MODE_OPTIONS: { value: TicketMode; label: string }[] = [
 ];
 
 /**
- * Import: map · test · import — ONE page (sprint-3/09, redesigned). File headers
+ * Import: map · test · import - ONE page (sprint-3/09, redesigned). File headers
  * and system columns sit close together on the left; Test (dry-run) and Import
- * (commit) both run here with results shown inline below — no separate results
+ * (commit) both run here with results shown inline below - no separate results
  * page. A successful import redirects back to where the upload began; the job is
  * trackable in the Imports drawer.
  */
@@ -65,7 +65,7 @@ export default function ImportPage({ params }: { params: Promise<{ jobId: string
   const [triggerAutomations, setTriggerAutomations] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Ticket mode (sprint-4/05, R3-5) — only for the project-scoped participant
+  // Ticket mode (sprint-4/05, R3-5) - only for the project-scoped participant
   // importer. Comp/Paid need a GA offering; Paid needs a bill-to Client.
   const [ticketMode, setTicketMode] = useState<TicketMode>('participants_only');
   const [offeringId, setOfferingId] = useState<string | null>(null);
@@ -207,7 +207,7 @@ export default function ImportPage({ params }: { params: Promise<{ jobId: string
       if (j.status === 'done') {
         router.push(from); // back to where the upload began
       } else {
-        setError('Import did not complete — see the rows below.');
+        setError('Import did not complete - see the rows below.');
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Import failed.');
@@ -247,7 +247,7 @@ export default function ImportPage({ params }: { params: Promise<{ jobId: string
           </CardHeading>
         </CardHeader>
         <CardContent className="space-y-5">
-          {/* Mapping — compact, left-aligned (file header ↔ system column). */}
+          {/* Mapping - compact, left-aligned (file header ↔ system column). */}
           <div className="max-w-2xl space-y-3">
             {preview.sheets.length > 1 && (
               <div className="max-w-xs space-y-1.5">
@@ -359,7 +359,7 @@ export default function ImportPage({ params }: { params: Promise<{ jobId: string
 
           {error && <p className="text-destructive text-sm">{error}</p>}
 
-          {/* Inline results — after Test or a failed Import. */}
+          {/* Inline results - after Test or a failed Import. */}
           {tested && (
             <div className="space-y-3 border-t pt-5">
               <div className="flex flex-wrap items-center gap-3">
@@ -383,7 +383,7 @@ export default function ImportPage({ params }: { params: Promise<{ jobId: string
                   </div>
                   {job!.invalidRows > errors.length && (
                     <p className="text-muted-foreground text-xs">
-                      Showing first {errors.length} of {job!.invalidRows} — download the error file for all.
+                      Showing first {errors.length} of {job!.invalidRows} - download the error file for all.
                     </p>
                   )}
                   <div className="overflow-x-auto rounded-lg border">
@@ -410,7 +410,7 @@ export default function ImportPage({ params }: { params: Promise<{ jobId: string
               )}
               {errors.length === 0 && job!.status === 'validated' && (
                 <p className="text-muted-foreground text-sm">
-                  All {job!.validRows} rows look good — click Import to bring them in.
+                  All {job!.validRows} rows look good - click Import to bring them in.
                 </p>
               )}
             </div>

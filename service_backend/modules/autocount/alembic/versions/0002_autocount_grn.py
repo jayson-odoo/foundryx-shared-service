@@ -1,4 +1,4 @@
-"""autocount GRN read pipeline — companies, config, watermarks, mappings, staging
+"""autocount GRN read pipeline - companies, config, watermarks, mappings, staging
 
 Creates the slice-1 persistence model (plan §7) inside the module's own schema
 ``app_autocount``. Core ``public`` is NEVER touched by a module migration.
@@ -12,13 +12,13 @@ row can be stranded without a value.
 
     !!  IDEMPOTENT BY NECESSITY, NOT BY TASTE.  !!
 
-``bootstrap_modules`` runs each module's ``install()`` — which is ``create_all``
-— BEFORE ``run_module_migrations``. So on a deployment already stamped at 0001,
+``bootstrap_modules`` runs each module's ``install()`` - which is ``create_all``
+- BEFORE ``run_module_migrations``. So on a deployment already stamped at 0001,
 ``create_all`` builds these tables and THEN Alembic runs this revision, which
 would explode with ``DuplicateTable``. pytest never sees it (conftest is pure
 ``create_all``, and module Alembic is a Postgres-only no-op), so it would
 surface for the first time on a real deploy. Hence every create below is
-existence-checked — the same fix the ideation module needed for the same
+existence-checked - the same fix the ideation module needed for the same
 ordering.
 
 Revision ID: 0002_autocount_grn
@@ -30,7 +30,7 @@ from typing import Any, List, Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-# Revision ids MUST be <= 32 chars — ``alembic_version.version_num`` is
+# Revision ids MUST be <= 32 chars - ``alembic_version.version_num`` is
 # VARCHAR(32). A longer id passes the create_all test suite and then breaks
 # every real Postgres deploy.
 revision: str = "0002_autocount_grn"
@@ -55,7 +55,7 @@ def _indexes(table: str) -> set:
     return {ix["name"] for ix in inspector.get_indexes(table, schema=SCHEMA)}
 
 
-#     !!  THESE GUARDS ARE NOT COVERED BY pytest — AND STRUCTURALLY CANNOT BE.  !!
+#     !!  THESE GUARDS ARE NOT COVERED BY pytest - AND STRUCTURALLY CANNOT BE.  !!
 #
 # conftest builds the schema with ``create_all`` and module Alembic is a
 # Postgres-only NO-OP, so NOTHING in the test suite ever executes this file.
@@ -66,7 +66,7 @@ def _indexes(table: str) -> set:
 #
 # So the ONLY gate on this file is CODE REVIEW plus a manual
 # ``alembic upgrade head`` against live Postgres. Every create in this revision
-# must go through ``make_table``/``make_index`` — a reviewer seeing a bare
+# must go through ``make_table``/``make_index`` - a reviewer seeing a bare
 # ``op.create_table``/``op.create_index`` below should reject it on sight.
 
 
@@ -252,7 +252,7 @@ def upgrade() -> None:
         sa.Column("pushed_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("outcome", sa.String(), nullable=True),
         sa.Column("error", sa.Text(), nullable=True),
-        # True when the record cap was hit — a truncated sync must NEVER read as
+        # True when the record cap was hit - a truncated sync must NEVER read as
         # a complete one (AC-13-46).
         sa.Column(
             "truncated", sa.Boolean(), nullable=False, server_default=sa.text("false")

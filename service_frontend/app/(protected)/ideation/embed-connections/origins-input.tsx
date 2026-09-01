@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 /**
  * Multi-origin chip input for the embed connection's parent-origin allow-list.
  * Type an origin + Enter (or comma) to add a chip; the X removes one. Kept simple
- * and self-contained — the list is short (one or two host origins per tenant).
+ * and self-contained - the list is short (one or two host origins per tenant).
  */
 export function OriginsInput({
   value,
@@ -38,7 +38,7 @@ export function OriginsInput({
       <Input
         id={id}
         value={draft}
-        placeholder="https://app.example.com — press Enter to add"
+        placeholder="https://app.example.com - press Enter to add"
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ',') {

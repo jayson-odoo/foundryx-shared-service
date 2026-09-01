@@ -48,8 +48,8 @@ function attendeeLabel(a: MeetingAttendee): string {
 /**
  * Upcoming-events list config (S0 plan §4, AC-S0-7/8).
  *
- * The dataset is one user's next fortnight — small, already in memory from
- * `useMyMeetings` — so the fetcher pages over it client-side, the same
+ * The dataset is one user's next fortnight - small, already in memory from
+ * `useMyMeetings` - so the fetcher pages over it client-side, the same
  * client-adapter pattern the quick-replies list uses. There is no detail page in
  * S0: the only per-row action is the capture switch, which is a control in the
  * row rather than an action-menu entry so the state is visible without opening
@@ -86,7 +86,7 @@ export function useUpcomingEventsListConfig(
         header: ({ column }) => <DataGridColumnHeader title="Meeting" column={column} />,
         cell: ({ row }) => (
           <span className={row.original.optedOut ? 'text-muted-foreground' : undefined}>
-            <ClampedText text={row.original.title ?? '—'} lines={2} />
+            <ClampedText text={row.original.title ?? '-'} lines={2} />
           </span>
         ),
         size: 175,
@@ -114,7 +114,7 @@ export function useUpcomingEventsListConfig(
         meta: { headerTitle: 'Organiser' },
         header: ({ column }) => <DataGridColumnHeader title="Organiser" column={column} />,
         cell: ({ row }) => (
-          <ClampedText text={row.original.organiserEmail ?? '—'} lines={1} />
+          <ClampedText text={row.original.organiserEmail ?? '-'} lines={1} />
         ),
         size: 165,
         enableSorting: true,
@@ -214,7 +214,7 @@ export function useUpcomingEventsListConfig(
           <span
             className={`text-sm font-medium ${row.optedOut ? 'text-muted-foreground' : ''}`}
           >
-            <ClampedText text={row.title ?? '—'} lines={2} />
+            <ClampedText text={row.title ?? '-'} lines={2} />
           </span>
           <div onClick={stop}>
             <Switch
@@ -227,7 +227,7 @@ export function useUpcomingEventsListConfig(
         </div>
         <div className="text-sm text-muted-foreground">{whenRange(row)}</div>
         <div className="text-sm">
-          <ClampedText text={row.organiserEmail ?? '—'} lines={1} />
+          <ClampedText text={row.organiserEmail ?? '-'} lines={1} />
         </div>
         <OverflowPills
           items={row.attendees}
@@ -250,7 +250,7 @@ export function useUpcomingEventsListConfig(
       viewKey: 'meetings.upcoming-events',
       cardRender,
       getRowId: (row) => row.id,
-      rowHref: () => pathname, // no detail page in S0 — the row IS the control
+      rowHref: () => pathname, // no detail page in S0 - the row IS the control
       fetcher,
       exporter,
       searchPlaceholder: 'Search meetings…',

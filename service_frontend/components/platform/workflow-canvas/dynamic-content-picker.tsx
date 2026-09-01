@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Dynamic-content field (plan sprint-2/08 D7) — n8n-style. A text/textarea
+ * Dynamic-content field (plan sprint-2/08 D7) - n8n-style. A text/textarea
  * input plus a picker that lists every upstream node's declared output schema,
  * grouped by source; choosing one inserts the correct `{{ ref }}` at the caret.
  * Flat run-context underneath, typed picker on top.
@@ -20,7 +20,7 @@ import { Textarea } from '@/components/ui/textarea';
 export interface DynamicContentGroup {
   /** Source node's unique display name, e.g. "Send email 2". */
   sourceLabel: string;
-  /** Distance hint, e.g. "1 node back" (n8n) — disambiguates same-type nodes. */
+  /** Distance hint, e.g. "1 node back" (n8n) - disambiguates same-type nodes. */
   hint?: string;
   items: { key: string; label: string }[];
 }

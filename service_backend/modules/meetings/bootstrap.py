@@ -1,4 +1,4 @@
-"""Meetings bootstrap — the App-Store module contract (plan 08 §4).
+"""Meetings bootstrap - the App-Store module contract (plan 08 §4).
 
 ``install`` is GLOBAL and idempotent (schema + tables + permission-catalog sync);
 the per-tenant hooks (``install_tenant`` / ``update_tenant`` / ``uninstall_tenant``)
@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.repositories.permission_repository import PermissionRepository
 from app.services.permission_service import load_csv
 
-from . import models  # noqa: F401 — register module tables on MeetingsBase.metadata
+from . import models  # noqa: F401 - register module tables on MeetingsBase.metadata
 from .db import MEETINGS_SCHEMA, MeetingsBase
 
 MODULE_NAME = "meetings"
@@ -30,19 +30,19 @@ def register_engine_entities() -> None:
 
     Registers:
       * the two connection providers (``google_dwd``, ``meet_bot``) so both are
-        configured from the standard ``/settings/integrations`` surface — no
+        configured from the standard ``/settings/integrations`` surface - no
         bespoke connection UI (AC-S0-4 / AC-S0-5);
       * the ``meetings.calendar_sync`` background-job handler.
 
     The job handler must be registered in EVERY process that touches a sync job:
     the API process creates jobs (``JobService.create`` validates the type is
-    registered) and — under eager dev/test — runs them inline. The Celery worker
+    registered) and - under eager dev/test - runs them inline. The Celery worker
     boots no FastAPI lifespan, so it gets the handler from an explicit import in
     ``app/workflow_engine/worker.py``. Missing EITHER path leaves the job Pending
     forever with no error.
 
     The meeting lifecycle is a plain enum column, not a status entity (spine M19)
-    — nothing to register on the status engine."""
+    - nothing to register on the status engine."""
     from app.integrations import register_provider
 
     from .jobs import register_calendar_sync_handler
@@ -84,7 +84,7 @@ def install_tenant(db: Session, tenant_id: str) -> None:
 def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     """Per-tenant data migration between provisioned versions (plan 08 D3).
 
-    All of meetings is 0.1.0 — nothing to backfill yet. A tenant provisioned
+    All of meetings is 0.1.0 - nothing to backfill yet. A tenant provisioned
     before the settings row existed is still covered: ``ensure`` is
     seed-if-absent and runs on every settings read."""
     from .services.settings import MeetingsSettingsService
@@ -96,7 +96,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
 def uninstall_tenant(db: Session, tenant_id: str) -> None:
     """Wipe THIS tenant's rows from every module table (plan 08 §5, AC-S0-3).
 
-    The module SCHEMA and every other tenant's rows are untouched — uninstall is
+    The module SCHEMA and every other tenant's rows are untouched - uninstall is
     per-tenant, never global. Reverse dependency order avoids FK violations."""
     for table in reversed(MeetingsBase.metadata.sorted_tables):
         if "tenant_id" in table.c:

@@ -3,7 +3,7 @@
 /** Public (anonymous) fill page (plan sprint-3/02, D11). Pre-auth, branded by
  * the public layout; tenant resolved from the subdomain frontend-side and
  * carried in the service path. Renders the SAME `FormRenderer` as the internal
- * fill — this surface IS the future embed contract (website builder, F5). */
+ * fill - this surface IS the future embed contract (website builder, F5). */
 import { useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import { CheckCircle2, LoaderCircleIcon, AlertCircle } from 'lucide-react';
@@ -34,7 +34,7 @@ export default function PublicFormFillPage() {
     );
   }
 
-  // Uniform "not available" — never disclose whether the form, tenant, or
+  // Uniform "not available" - never disclose whether the form, tenant, or
   // published state is the reason (no enumeration, D11).
   if (fill.notFound || !fill.view) {
     return shell(
@@ -97,7 +97,7 @@ export default function PublicFormFillPage() {
         onSubmit={fill.submit}
       />
 
-      {/* Honeypot — visually + accessibly hidden; a real user never fills it,
+      {/* Honeypot - visually + accessibly hidden; a real user never fills it,
           a naive bot does → server rejects (D12). Not `display:none` (some bots
           skip those); off-screen + aria-hidden + no tab stop. */}
       <div aria-hidden="true" className="absolute -left-[9999px] top-0 h-0 w-0 overflow-hidden">

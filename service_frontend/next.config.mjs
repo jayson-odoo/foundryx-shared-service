@@ -7,7 +7,7 @@ const nextConfig = {
   // This file will be overwritten during deployment with the appropriate basePath
   images: {},
   // Dev-only: allow the Cloudflare quick tunnel (Meta Embedded Signup needs a
-  // public HTTPS origin — see plan 04 runbook) to hit the dev server's assets.
+  // public HTTPS origin - see plan 04 runbook) to hit the dev server's assets.
   allowedDevOrigins: ['*.trycloudflare.com'],
 };
 

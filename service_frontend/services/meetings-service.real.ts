@@ -1,5 +1,5 @@
 /**
- * Real meetings service — talks to FastAPI via the shared api-client.
+ * Real meetings service - talks to FastAPI via the shared api-client.
  *
  * Reads/writes on the caller's own opt-in and events are gated `meetings.view`;
  * the tenant settings are gated `meetings.settings.manage`.

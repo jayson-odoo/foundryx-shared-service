@@ -1,13 +1,13 @@
 """Stripe payment provider (sprint-4/07 Cluster F slice 3, AC-07-26/29/32/36).
 
 Implements ``create_checkout`` (Checkout Session), ``verify_webhook`` (signing
-secret + timestamp tolerance), ``refund`` and a ``test`` (balance ping) — all
+secret + timestamp tolerance), ``refund`` and a ``test`` (balance ping) - all
 over the Stripe REST API via the dependency-free HTTP helper (no SDK; the
 network calls are mocked at this boundary in tests).
 
 THE CENTS BOUNDARY (AC-07-51): Stripe transacts in the smallest currency unit
 (integer cents). This adapter is the ONLY place ``Decimal`` (major units) ↔
-integer minor-units conversion happens — ``_to_minor`` / ``_from_minor``.
+integer minor-units conversion happens - ``_to_minor`` / ``_from_minor``.
 """
 import hashlib
 import hmac
@@ -53,7 +53,7 @@ def _post(secret_key: str, path: str, form: Dict[str, Any]) -> Dict[str, Any]:
     req = urllib.request.Request(f"{_API_BASE}{path}", data=data, method="POST")
     req.add_header("Authorization", f"Bearer {secret_key}")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    req.add_header("User-Agent", "FoundryXEMS/1.0 (+payments)")
+    req.add_header("User-Agent", "FoundryxEMS/1.0 (+payments)")
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
             return json.loads(resp.read().decode())
@@ -67,7 +67,7 @@ def _post(secret_key: str, path: str, form: Dict[str, Any]) -> Dict[str, Any]:
 def _get(secret_key: str, path: str) -> Dict[str, Any]:
     req = urllib.request.Request(f"{_API_BASE}{path}", method="GET")
     req.add_header("Authorization", f"Bearer {secret_key}")
-    req.add_header("User-Agent", "FoundryXEMS/1.0 (+payments)")
+    req.add_header("User-Agent", "FoundryxEMS/1.0 (+payments)")
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
             return json.loads(resp.read().decode())

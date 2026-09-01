@@ -1,7 +1,7 @@
 /** Shared display formatters. Locale-stable, null-safe.
  *
  * Datetime formatting moved to `lib/datetime.ts` + `hooks/use-datetime.ts`
- * (plan sprint-2/05) — timestamps render in the user's timezone there; never
+ * (plan sprint-2/05) - timestamps render in the user's timezone there; never
  * re-add tz-blind date formatters here. */
 
 /** Initials from a name ("Durbex Verifier" -> "DV"); falls back to "?" */

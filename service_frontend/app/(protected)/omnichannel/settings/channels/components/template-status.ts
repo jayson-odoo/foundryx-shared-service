@@ -2,7 +2,7 @@ import type { StatusRegistry } from '@/components/platform/status-badge';
 import type { TemplateStatus } from '@/types/whatsapp-template';
 
 /**
- * WhatsApp template status pills (plan 07 UX-3) — frontend-only registry, NOT
+ * WhatsApp template status pills (plan 07 UX-3) - frontend-only registry, NOT
  * the status engine (Meta owns the enum + drives transitions externally, T2).
  */
 export const TEMPLATE_STATUS_REGISTRY: StatusRegistry<TemplateStatus> = {

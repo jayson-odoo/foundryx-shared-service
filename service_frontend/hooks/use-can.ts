@@ -6,10 +6,10 @@ import { useImpersonationSession } from '@/lib/impersonation-store';
 
 /**
  * Permission gate for the UI (plan 03 §3.4). Reads the effective permission keys
- * from the NextAuth session (a login-time snapshot) — or the impersonation
- * target's keys while impersonating — and answers `can(key)`.
+ * from the NextAuth session (a login-time snapshot) - or the impersonation
+ * target's keys while impersonating - and answers `can(key)`.
  *
- * UX ONLY — the backend `require_permission` is the real boundary. This just
+ * UX ONLY - the backend `require_permission` is the real boundary. This just
  * hides/disables controls the user would get a 403 from. Session keys refresh on
  * re-login, so a mid-session RBAC change to the current user isn't reflected in
  * the UI until they sign in again (the backend still enforces it immediately).

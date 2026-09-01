@@ -1,26 +1,26 @@
-# Sprint 2 · Plan 09 — Phase C Test Execution Report
+# Sprint 2 · Plan 09 - Phase C Test Execution Report
 
-Workflow engine triggers/actions breadth — full-stack QA (real clicks).
+Workflow engine triggers/actions breadth - full-stack QA (real clicks).
 
 **Stack:** frontend `:3001` (prod build) + backend `:8001` (uvicorn, Celery
 eager so event runs execute inline). Each spec provisions a **dedicated tenant**
 via the operator API; names timestamped (methodology §7).
 
 **Automated coverage backing this report:**
-- Backend `tests/test_workflow_triggers.py` — 16 cases: IF true/false routing,
+- Backend `tests/test_workflow_triggers.py` - 16 cases: IF true/false routing,
   emit→match→enqueue, field_changed refinement, loop-guard chain exclusion,
   cron `next_run_at` + timezone, the scheduler minute-tick, status_changed
   subscription, storage/transition/update executors, the metadata endpoint, and
   the datetime-fact dispatch regression. Full backend suite **410 passed**.
-- Frontend `lib/workflow-doc.test.ts` / `lib/cron.test.ts` — doc helpers,
+- Frontend `lib/workflow-doc.test.ts` / `lib/cron.test.ts` - doc helpers,
   validation (incl. duplicate-name + IF branching), replaceNodeType, cron
   compile/parse/describe.
 - E2E `e2e/workflows.spec.ts` (slice 08, updated) + `e2e/workflow-triggers.spec.ts`
-  (slice 09) — **3 passed**.
+  (slice 09) - **3 passed**.
 
 ---
 
-## US-1 — A real domain event fires a published workflow
+## US-1 - A real domain event fires a published workflow
 
 | | |
 |---|---|
@@ -32,7 +32,7 @@ via the operator API; names timestamped (methodology §7).
 | **Actual** | Run shows **Success** in Logs; run replay canvas opens. ✅ |
 | **Remarks** | Earlier false-pass (loose `/roles/[^/]+` regex matched `/roles/new`) fixed by asserting navigation away from `/new`. The event path was independently confirmed via API (role create → 1 run). |
 
-## US-2 — Build a workflow in the editor, publish, run
+## US-2 - Build a workflow in the editor, publish, run
 
 | | |
 |---|---|
@@ -43,7 +43,7 @@ via the operator API; names timestamped (methodology §7).
 | **Actual** | Edge created by drag (1 edge asserted); publish clears the unpublished badge; run logs **Success**. ✅ |
 | **Remarks** | Updated for slice-09 UX: palette sections are collapsed (search to surface), nodes drop **unwired** (no auto-connect → explicit handle drag), and the Email-type field is a searchable SearchSelect. |
 
-## US-3 — Workflow lifecycle on the list
+## US-3 - Workflow lifecycle on the list
 
 | | |
 |---|---|
@@ -56,9 +56,9 @@ via the operator API; names timestamped (methodology §7).
 
 ## Not driven via UI (covered by backend tests)
 
-- **Scheduled trigger firing** — `schedule.cron` arms `next_run_at` on publish;
+- **Scheduled trigger firing** - `schedule.cron` arms `next_run_at` on publish;
   the minute-tick (`run_due_workflows`) drains it. Not UI-triggerable (no Celery
-  beat/worker in the eager dev stack) — covered by
+  beat/worker in the eager dev stack) - covered by
   `test_scheduler_tick_fires_due_workflow` + `test_compute_next_run_at_respects_timezone`.
-- **Loop guard** — a self-updating workflow doesn't storm; covered by
+- **Loop guard** - a self-updating workflow doesn't storm; covered by
   `test_self_updating_workflow_does_not_storm` (chain-exclusion at depth 1).

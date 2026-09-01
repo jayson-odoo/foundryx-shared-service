@@ -1,6 +1,6 @@
-"""Connection repository (plan 09 §3) — pure SQLAlchemy, tenant-scoped.
+"""Connection repository (plan 09 §3) - pure SQLAlchemy, tenant-scoped.
 
-The PLATFORM tenant's row doubles as the deployment default — `get_default`
+The PLATFORM tenant's row doubles as the deployment default - `get_default`
 resolves tenant → platform for the dispatcher/EmailService fallback chain.
 """
 from typing import List, Optional, Tuple
@@ -48,7 +48,7 @@ class ConnectionRepository:
         """Server-side Resource list (plan 06 D6): search + filter + sort +
         paginate. Returns (rows, total).
 
-        ``providers`` (when given) restricts to those provider keys — the
+        ``providers`` (when given) restricts to those provider keys - the
         Integrations UI passes the registered-provider set so infrastructure
         rows in the same table (e.g. the embed ``omnichannel_shared`` connection)
         never surface where a Disconnect would silently destroy them.
@@ -115,7 +115,7 @@ class ConnectionRepository:
         )
 
     def get_by_id(self, connection_id: str) -> Optional[Connection]:
-        """Unscoped lookup — ONLY for resolving server-written `conn:` storage
+        """Unscoped lookup - ONLY for resolving server-written `conn:` storage
         keys, and the caller MUST verify tenant ownership (storage.py does)."""
         return self.db.query(Connection).filter(Connection.id == connection_id).first()
 
@@ -134,7 +134,7 @@ class ConnectionRepository:
     def resolve_for_send(self, tenant_id: str, provider: str) -> Optional[Connection]:
         """Fallback chain (plan 09 D6): tenant's connection → platform default.
 
-        ERROR connections are skipped — a known-bad tenant connection must not
+        ERROR connections are skipped - a known-bad tenant connection must not
         absorb 3 retries (~31 min) before the working platform default gets a
         turn. UNVERIFIED stays usable (saved-but-untested is usually fine).
         """
@@ -150,7 +150,7 @@ class ConnectionRepository:
     def mark_active(self, connection_id: str, active: bool) -> None:
         """Flip a connection's write-target flag (sprint-4/10 D10). Used by the
         storage-migration engine to retire ``A`` / promote ``B`` (and reverse
-        on abort). Unscoped by id — the caller owns the tenant check."""
+        on abort). Unscoped by id - the caller owns the tenant check."""
         conn = self.db.query(Connection).filter(Connection.id == connection_id).first()
         if conn is not None:
             conn.is_active = active

@@ -1,4 +1,4 @@
-"""Shared builders for the meetings suite — a second tenant, users, opt-ins and
+"""Shared builders for the meetings suite - a second tenant, users, opt-ins and
 a fake calendar source. Kept out of ``conftest.py`` so it is importable as a
 plain module and obvious at the call site.
 """
@@ -22,7 +22,7 @@ from modules.meetings.calendar.base import (
 
 
 def utc(*args) -> datetime:
-    """Aware-UTC datetime — the only kind this codebase stores or compares."""
+    """Aware-UTC datetime - the only kind this codebase stores or compares."""
     return datetime(*args, tzinfo=timezone.utc)
 
 
@@ -87,7 +87,7 @@ def opt_in(db: Session, tenant_id: str, user_id: str, *, enabled: bool = True):
 
 
 class FakeCalendarSource:
-    """A scripted ``CalendarSource`` — the stand-in for Google in every test.
+    """A scripted ``CalendarSource`` - the stand-in for Google in every test.
 
     ``pages`` maps a user's email to the list of ``SyncPage``s successive reads
     return; the last page repeats once the script runs out. Set

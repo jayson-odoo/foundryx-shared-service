@@ -1,4 +1,4 @@
-"""Form submission persistence (plan sprint-3/01) — pure SQLAlchemy, ALWAYS
+"""Form submission persistence (plan sprint-3/01) - pure SQLAlchemy, ALWAYS
 tenant + form scoped (a submission only exists within one form, owned by one
 tenant). Search spans the answer payload (cast to text) and the respondent's
 name; the segment filter narrows by the form's OWN scoped status KEY (the graph
@@ -37,7 +37,7 @@ class FormSubmissionRepository:
             FormSubmission.form_id == form_id,
         )
         if group_id is not None:
-            # The revision chain for ONE group — newest revision first, every
+            # The revision chain for ONE group - newest revision first, every
             # revision (not just the current). `current_only` is ignored here.
             query = query.filter(FormSubmission.submission_group_id == group_id)
             total = query.count()
@@ -49,7 +49,7 @@ class FormSubmissionRepository:
             )
             return rows, total
         if current_only:
-            # Lists default to one row per group — the live revision (R3).
+            # Lists default to one row per group - the live revision (R3).
             query = query.filter(FormSubmission.is_current.is_(True))
         if segment and segment != "all":
             # segment = a scope status KEY → resolve that form's status id(s).
@@ -102,7 +102,7 @@ class FormSubmissionRepository:
         return submission
 
     def count_for_form(self, tenant_id: str, form_id: str) -> int:
-        # Caps count logical submissions — one per group (the current revision),
+        # Caps count logical submissions - one per group (the current revision),
         # so revising never consumes the form's quota (plan sprint-4/04).
         return (
             self.db.query(func.count(FormSubmission.id))
@@ -117,7 +117,7 @@ class FormSubmissionRepository:
 
     def count_for_user(self, tenant_id: str, form_id: str, user_id: str) -> int:
         """Submissions a given identity already made to this form (D10
-        per-user cap — only meaningful for an authenticated respondent).
+        per-user cap - only meaningful for an authenticated respondent).
         Counts current revisions only (a revision is not a new submission)."""
         return (
             self.db.query(func.count(FormSubmission.id))
@@ -132,7 +132,7 @@ class FormSubmissionRepository:
         )
 
     def max_revision_number(self, tenant_id: str, group_id: str) -> int:
-        """Highest revision_number in a group — the authoritative base for the
+        """Highest revision_number in a group - the authoritative base for the
         next revision (never trust the loaded current row's number alone)."""
         return (
             self.db.query(func.max(FormSubmission.revision_number))
@@ -147,7 +147,7 @@ class FormSubmissionRepository:
     def get_current_in_group(
         self, tenant_id: str, group_id: str
     ) -> Optional[FormSubmission]:
-        """The live revision of a group — external refs resolve through here."""
+        """The live revision of a group - external refs resolve through here."""
         return (
             self.db.query(FormSubmission)
             .filter(

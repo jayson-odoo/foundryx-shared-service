@@ -78,7 +78,7 @@ def _assertion(
     exp=None,
     alg=None,
 ):
-    """Mirrors sorento ``mint_embed_assertion`` — the cross-repo contract."""
+    """Mirrors sorento ``mint_embed_assertion`` - the cross-repo contract."""
     now = datetime.now(timezone.utc)
     payload = {
         "typ": typ,
@@ -431,7 +431,7 @@ def test_admin_mutations_404_on_unknown_connection(ideation_client):
 
 # ── dispatcher: omnichannel widget embed still works ──────────────────────────
 def test_omnichannel_embed_session_still_reachable(ideation_client):
-    """A body WITHOUT connection_id is delegated to the omnichannel handler — an
+    """A body WITHOUT connection_id is delegated to the omnichannel handler - an
     empty/omni request is NOT swallowed by the ideation path (regression guard)."""
     # No connection_id, no valid omni assertion → omnichannel rejects it (401),
     # proving the request reached the omnichannel handler (not ideation's 401).

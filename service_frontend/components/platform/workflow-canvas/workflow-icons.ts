@@ -1,12 +1,16 @@
 /**
- * Shared lucide icon registry for workflow nodes (plan sprint-2/09) — the
+ * Shared lucide icon registry for workflow nodes (plan sprint-2/09) - the
  * palette and the canvas node both resolve `catalog.icon` through this map so
  * the names stay in one place. Add a catalog `icon` → add it here.
  */
 import {
   Activity,
   ArrowLeftRight,
+  BookOpen,
   CalendarClock,
+  Code2,
+  Database,
+  Eraser,
   FilePenLine,
   FilePlus2,
   FileX,
@@ -14,9 +18,13 @@ import {
   HardDriveDownload,
   HardDriveUpload,
   Mail,
+  MessageCircle,
   MousePointerClick,
   PencilLine,
+  Send,
+  Sparkles,
   Trash2,
+  UserRound,
   Workflow as WorkflowIcon,
   Zap,
   type LucideIcon,
@@ -33,9 +41,17 @@ export const WORKFLOW_NODE_ICONS: Record<string, LucideIcon> = {
   FileX,
   PencilLine,
   Activity,
+  BookOpen,
   CalendarClock,
+  Code2,
+  Database,
+  Eraser,
   HardDriveUpload,
   HardDriveDownload,
   Trash2,
   ArrowLeftRight,
+  MessageCircle,
+  UserRound,
+  Send,
+  Sparkles,
 };

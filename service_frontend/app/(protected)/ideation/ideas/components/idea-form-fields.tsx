@@ -75,7 +75,7 @@ export function DetailsTab({ form, editing, creating, idea, products }: DetailsT
               )}
             />
           ) : (
-            <span className="whitespace-pre-wrap">{idea?.problem || '—'}</span>
+            <span className="whitespace-pre-wrap">{idea?.problem || '-'}</span>
           )}
         </FormRow>
 
@@ -95,7 +95,7 @@ export function DetailsTab({ form, editing, creating, idea, products }: DetailsT
             />
           ) : (
             <span className="whitespace-pre-wrap text-muted-foreground">
-              {idea?.proposedSolution || '—'}
+              {idea?.proposedSolution || '-'}
             </span>
           )}
         </FormRow>
@@ -116,7 +116,7 @@ export function DetailsTab({ form, editing, creating, idea, products }: DetailsT
             />
           ) : (
             <span className="whitespace-pre-wrap text-muted-foreground">
-              {idea?.impact || '—'}
+              {idea?.impact || '-'}
             </span>
           )}
         </FormRow>
@@ -136,7 +136,7 @@ export function DetailsTab({ form, editing, creating, idea, products }: DetailsT
               )}
             />
           ) : (
-            (idea?.department || '—')
+            (idea?.department || '-')
           )}
         </FormRow>
 
@@ -162,7 +162,7 @@ export function DetailsTab({ form, editing, creating, idea, products }: DetailsT
           ) : idea ? (
             <Badge variant="secondary">{idea.productName}</Badge>
           ) : (
-            '—'
+            '-'
           )}
         </FormRow>
 
@@ -195,7 +195,7 @@ export function DetailsTab({ form, editing, creating, idea, products }: DetailsT
           )}
         </FormRow>
 
-        <FormRow label="Submitter">{idea?.submitterName ?? '—'}</FormRow>
+        <FormRow label="Submitter">{idea?.submitterName ?? '-'}</FormRow>
 
         <FormRow label="Channel">
           {idea ? (
@@ -203,7 +203,7 @@ export function DetailsTab({ form, editing, creating, idea, products }: DetailsT
               {IDEA_SOURCE_LABEL[idea.source]}
             </Badge>
           ) : (
-            '—'
+            '-'
           )}
         </FormRow>
 
@@ -220,12 +220,12 @@ export function DetailsTab({ form, editing, creating, idea, products }: DetailsT
               </span>
             </span>
           ) : (
-            '—'
+            '-'
           )}
         </FormRow>
 
         <FormRow label="Priority">
-          {idea ? <span className="tabular-nums">#{idea.priority}</span> : '—'}
+          {idea ? <span className="tabular-nums">#{idea.priority}</span> : '-'}
         </FormRow>
 
         <FormRow label="Raw notes">
@@ -244,13 +244,13 @@ export function DetailsTab({ form, editing, creating, idea, products }: DetailsT
             />
           ) : (
             <span className="whitespace-pre-wrap text-muted-foreground">
-              {idea?.rawText || '—'}
+              {idea?.rawText || '-'}
             </span>
           )}
         </FormRow>
 
         <FormRow label="Captured">
-          {idea ? new Date(idea.createdAt).toLocaleString() : '—'}
+          {idea ? new Date(idea.createdAt).toLocaleString() : '-'}
         </FormRow>
       </CardContent>
     </Card>

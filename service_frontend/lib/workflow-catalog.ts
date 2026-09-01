@@ -1,10 +1,10 @@
 /**
  * Frontend node catalog (plan sprint-2/08 D8, fanned out in sprint-2/09 D7/D8)
- * — mirror of the backend `app/workflow_engine/registry.py` TriggerDef/
+ * - mirror of the backend `app/workflow_engine/registry.py` TriggerDef/
  * ActionDef. Drives the palette, the config drawer (field schema), and the
  * dynamic-content picker (output schema). The entity triggers expose dynamic
  * `trigger.record.*` outputs resolved from the chosen entity's metadata (the
- * drawer injects them — the catalog lists only the static seed).
+ * drawer injects them - the catalog lists only the static seed).
  */
 import type {
   ActionCatalogEntry,
@@ -130,6 +130,28 @@ export const TRIGGER_CATALOG: TriggerCatalogEntry[] = [
     outputs: [
       { key: 'trigger.formId', label: 'Form id' },
       { key: 'trigger.submissionId', label: 'Submission id' },
+    ],
+  },
+  {
+    kind: 'trigger',
+    type: 'omnichannel.message_received',
+    label: 'Incoming omnichannel message',
+    description: 'Fires when a WhatsApp message arrives on a chosen channel (or any channel).',
+    icon: 'MessageCircle',
+    category: 'Triggers',
+    module: 'omnichannel',
+    fields: [{ key: 'channelId', label: 'Channel', type: 'omnichannelChannel' }],
+    outputs: [
+      { key: 'trigger.message.id', label: 'Message · id' },
+      { key: 'trigger.message.text', label: 'Message · text' },
+      { key: 'trigger.message.type', label: 'Message · type' },
+      { key: 'trigger.message.mediaUrl', label: 'Message · media URL' },
+      { key: 'trigger.contact.id', label: 'Contact · id' },
+      { key: 'trigger.contact.name', label: 'Contact · name' },
+      { key: 'trigger.contact.phone', label: 'Contact · phone' },
+      { key: 'trigger.channel.id', label: 'Channel · id' },
+      { key: 'trigger.channel.name', label: 'Channel · name' },
+      { key: 'trigger.conversationId', label: 'Conversation id' },
     ],
   },
 ];
@@ -301,16 +323,191 @@ export const ACTION_CATALOG: ActionCatalogEntry[] = [
     ],
     outputs: [{ key: 'recordId', label: 'Record id' }],
   },
+  {
+    kind: 'action',
+    type: 'omnichannel.get_contact',
+    label: 'Get Contact',
+    description: 'Load a contact by id into the workflow context.',
+    icon: 'UserRound',
+    category: 'Actions',
+    module: 'omnichannel',
+    fields: [
+      {
+        key: 'contactId',
+        label: 'Contact',
+        type: 'text',
+        required: true,
+        mergeable: true,
+        placeholder: '{{ trigger.contact.id }}',
+      },
+    ],
+    outputs: [
+      { key: 'id', label: 'Contact id' },
+      { key: 'name', label: 'Name' },
+      { key: 'phone', label: 'Phone' },
+      { key: 'email', label: 'Email' },
+      { key: 'workspaceId', label: 'Workspace id' },
+      { key: 'statusId', label: 'Status id' },
+      { key: 'status', label: 'Status' },
+    ],
+  },
+  {
+    kind: 'action',
+    type: 'omnichannel.send_message',
+    label: 'Send Message',
+    description: 'Send a text reply into the triggering conversation.',
+    icon: 'Send',
+    category: 'Actions',
+    module: 'omnichannel',
+    fields: [
+      {
+        key: 'contactId',
+        label: 'Contact',
+        type: 'text',
+        required: true,
+        mergeable: true,
+        placeholder: '{{ trigger.contact.id }}',
+      },
+      { key: 'message', label: 'Message', type: 'textarea', required: true, mergeable: true },
+    ],
+    outputs: [
+      { key: 'messageId', label: 'Message id' },
+      { key: 'status', label: 'Send status' },
+    ],
+  },
+  {
+    kind: 'action',
+    type: 'ai_agent.run',
+    label: 'AI Agent',
+    description: 'Send content to an AI agent and capture structured output.',
+    icon: 'Sparkles',
+    category: 'Actions',
+    fields: [
+      { key: 'agentId', label: 'Agent', type: 'aiAgent', required: true },
+      {
+        key: 'instructions',
+        label: 'Instructions',
+        type: 'textarea',
+        required: true,
+        mergeable: true,
+      },
+      {
+        key: 'inputText',
+        label: 'Message',
+        type: 'textarea',
+        required: true,
+        mergeable: true,
+        placeholder: '{{ trigger.message.text }}',
+      },
+      { key: 'outputParams', label: 'Output parameters', type: 'outputSchema', required: true },
+      { key: 'clarificationOutputKey', label: 'Clarification output', type: 'clarificationOutput' },
+    ],
+    // Dynamic - the drawer lists config.outputParams as nodes.<id>.<key>.
+    outputs: [],
+  },
+  {
+    kind: 'action',
+    type: 'ai_agent.clear_state',
+    label: 'Clear Agent State',
+    description: 'Clear retained values from an earlier AI Agent.',
+    icon: 'Eraser',
+    category: 'Actions',
+    fields: [
+      { key: 'agentNodeId', label: 'Agent', type: 'agentNode', required: true },
+    ],
+    outputs: [
+      { key: 'cleared', label: 'Cleared' },
+      { key: 'previousRevision', label: 'Previous revision' },
+    ],
+  },
+  {
+    kind: 'action',
+    type: 'ai_agent.read_state',
+    label: 'Read Agent State',
+    // Identifies WHAT it is, not how to use it (foolproof-UI).
+    description: 'Read the current saved values from an earlier AI Agent.',
+    icon: 'BookOpen',
+    category: 'Actions',
+    fields: [
+      { key: 'agentNodeId', label: 'Agent', type: 'agentNode', required: true },
+    ],
+    // Outputs are DYNAMIC: the drawer lists the selected agent's stateful
+    // fields as nodes.<id>.<field> plus the reserved stateRevision /
+    // pendingField / exists diagnostics (see readStateOutputParams).
+    outputs: [],
+  },
+  {
+    kind: 'action',
+    type: 'redis.command',
+    label: 'Redis',
+    description: 'Read or mutate a value in the workflow data store.',
+    icon: 'Database',
+    category: 'Actions',
+    destructiveWhen: { field: 'operation', values: ['set', 'delete', 'increment', 'list_push', 'list_pop'] },
+    fields: [
+      {
+        key: 'operation',
+        label: 'Operation',
+        type: 'select',
+        options: [
+          { value: 'get', label: 'Get' },
+          { value: 'set', label: 'Set' },
+          { value: 'delete', label: 'Delete' },
+          { value: 'increment', label: 'Increment' },
+          { value: 'list_push', label: 'List Push' },
+          { value: 'list_pop', label: 'List Pop' },
+          { value: 'list_length', label: 'List Length' },
+        ],
+      },
+      { key: 'key', label: 'Key', type: 'text', required: true, mergeable: true },
+      { key: 'value', label: 'Value', type: 'text', required: true, mergeable: true, showWhen: { field: 'operation', value: 'set' } },
+      { key: 'amount', label: 'Amount', type: 'text', required: true, mergeable: true, showWhen: { field: 'operation', value: 'increment' } },
+      { key: 'value', label: 'Value', type: 'text', required: true, mergeable: true, showWhen: { field: 'operation', value: 'list_push' } },
+      {
+        key: 'end',
+        label: 'List end',
+        type: 'select',
+        options: [{ value: 'left', label: 'Left' }, { value: 'right', label: 'Right' }],
+        showWhen: { field: 'operation', value: 'list_push' },
+      },
+      {
+        key: 'end',
+        label: 'List end',
+        type: 'select',
+        options: [{ value: 'left', label: 'Left' }, { value: 'right', label: 'Right' }],
+        showWhen: { field: 'operation', value: 'list_pop' },
+      },
+      { key: 'ttlSeconds', label: 'TTL seconds', type: 'text', mergeable: true, showWhen: { field: 'operation', value: 'set' } },
+    ],
+    outputs: [{ key: 'value', label: 'Value' }, { key: 'deleted', label: 'Deleted' }, { key: 'length', label: 'Length' }],
+  },
+  {
+    kind: 'action',
+    type: 'code.run',
+    label: 'Code',
+    description: 'Transform mapped values with restricted Python.',
+    icon: 'Code2',
+    category: 'Actions',
+    permission: 'workflows.code',
+    fields: [
+      { key: 'language', label: 'Language', type: 'select', options: [{ value: 'python', label: 'Python' }], required: true },
+      { key: 'source', label: 'Python', type: 'code', required: true },
+      { key: 'inputs', label: 'Input mappings', type: 'codeInputs' },
+      { key: 'outputs', label: 'Output parameters', type: 'outputSchema', required: true },
+      { key: 'capabilities', label: 'Runtime capabilities', type: 'codeCapabilities' },
+    ],
+    outputs: [],
+  },
 ];
 
-/** The IF node (built-in — D8). One catalog row so the palette/createNode/node
+/** The IF node (built-in - D8). One catalog row so the palette/createNode/node
  * card treat it uniformly; its config (the rule tree) renders specially. */
 export const IF_CATALOG: IfCatalogEntry[] = [
   {
     kind: 'if',
     type: 'if',
     label: 'Condition',
-    description: 'Branch the flow — matching runs take the true path.',
+    description: 'Branch the flow - matching runs take the true path.',
     icon: 'GitBranch',
     category: 'Logic',
     fields: [],

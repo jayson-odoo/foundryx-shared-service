@@ -19,7 +19,7 @@ const isPdf = (name: string, url: string) =>
   name.toLowerCase().endsWith('.pdf') || url.toLowerCase().split('?')[0].endsWith('.pdf');
 
 /**
- * Inline preview for an idea's captured media — mirrors the Documents drive
+ * Inline preview for an idea's captured media - mirrors the Documents drive
  * preview UX (Dialog + header with download), but keyed off the attachment's
  * already-durable ``url`` (sorento snapshotted the Respond CDN bytes to R2), so
  * there is no per-id signed-url fetch. Image/video/audio render inline; a PDF

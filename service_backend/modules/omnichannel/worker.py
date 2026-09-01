@@ -23,7 +23,7 @@ celery_app.conf.update(
     task_always_eager=settings.celery_task_always_eager,
     task_eager_propagates=True,
     broker_connection_retry_on_startup=True,
-    # Dedicated queue — worker_omni consumes ONLY this. Both Celery apps share the
+    # Dedicated queue - worker_omni consumes ONLY this. Both Celery apps share the
     # Redis broker; without per-app queues the workflow beat's tasks land on this
     # worker (unregistered → discarded) and vice-versa. process_inbound_webhook +
     # deliver_webhook publish here; worker runs with `-Q omni`.
@@ -67,7 +67,7 @@ def omnichannel_send_message(message_id: str, trace_id: Optional[str] = None) ->
     inline instead (see ``send_runner``).
 
     ``trace_id`` carries the inbound gateway request's correlation id ACROSS the
-    Celery process boundary (sprint-4/12 Slice 2, AC-DLC-15) — the worker's
+    Celery process boundary (sprint-4/12 Slice 2, AC-DLC-15) - the worker's
     ``trace_id_var`` defaults to None, so without this the outbound Meta row would
     lose the trace in prod. ``run_send`` re-seeds the contextvar from it."""
     from app.database import SessionLocal

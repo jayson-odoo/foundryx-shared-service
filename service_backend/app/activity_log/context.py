@@ -8,7 +8,7 @@ their trace ids into one another.
 import contextvars
 from typing import Optional
 
-# Default None — most code paths (background jobs, seed, tests) have no trace.
+# Default None - most code paths (background jobs, seed, tests) have no trace.
 trace_id_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "integration_trace_id", default=None
 )

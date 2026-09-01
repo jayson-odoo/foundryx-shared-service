@@ -1,4 +1,4 @@
-"""Meetings HTTP surface — AC-S0-6, AC-S0-7, AC-S0-8, AC-S0-9, AC-S0-13.
+"""Meetings HTTP surface - AC-S0-6, AC-S0-7, AC-S0-8, AC-S0-9, AC-S0-13.
 
 Everything here goes through the real routes with a real token, so what is
 pinned is the contract the frontend binds to: the master toggle, the caller's
@@ -42,7 +42,7 @@ def meetings_client(meetings_session_factory):
 
 def _auth(client, email=ACTIVE_EMAIL, password=ACTIVE_PASSWORD, slug=None) -> dict:
     # Login resolves the tenant from its slug, so a second tenant's user must
-    # name theirs — exactly as a real subdomain sign-in does.
+    # name theirs - exactly as a real subdomain sign-in does.
     body = {"email": email, "password": password}
     if slug:
         body["tenantSlug"] = slug
@@ -173,7 +173,7 @@ def test_events_carry_everything_the_row_renders(meetings_client):
 
 
 def test_events_are_scoped_to_the_calling_user(meetings_client):
-    """A colleague's calendar row is not the caller's business — same tenant or not."""
+    """A colleague's calendar row is not the caller's business - same tenant or not."""
     headers = _auth(meetings_client)
     db = meetings_client._factory()
     try:
@@ -230,7 +230,7 @@ def test_event_opt_out_sticks_and_the_row_stays(meetings_client):
 
 
 def test_event_opt_out_rejects_someone_elses_event(meetings_client):
-    """The opt-out is a write — it must not reach another user's calendar row."""
+    """The opt-out is a write - it must not reach another user's calendar row."""
     headers = _auth(meetings_client)
     db = meetings_client._factory()
     try:

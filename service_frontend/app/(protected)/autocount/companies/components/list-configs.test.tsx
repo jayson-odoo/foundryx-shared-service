@@ -55,6 +55,7 @@ describe('companies list config', () => {
         isActive: true,
         sinkImpl: 'logging',
         sinkConnectionId: null,
+        sorentoCompanyCode: null,
         createdAt: null,
       }),
     ).toBe('/autocount/companies/c1');
@@ -67,7 +68,7 @@ describe('companies list config', () => {
     expect(push).toHaveBeenCalledWith('/autocount/companies/new');
   });
 
-  it('has no Active|Trashed views — companies are not soft-trashed', () => {
+  it('has no Active|Trashed views - companies are not soft-trashed', () => {
     const { result } = renderHook(() => useAutocountCompaniesListConfig());
     expect(result.current.enableStatusViews).toBe(false);
   });
@@ -98,6 +99,13 @@ describe('runs list config', () => {
       watermarkAdvancedTo: null,
       startedAt: null,
       finishedAt: null,
+      mode: 'manual',
+      rowsScanned: 3,
+      addedCount: 0,
+      updatedCount: 0,
+      deletedCount: 0,
+      durationMs: 1200,
+      skipReason: null,
     });
     expect(href).toBe(
       `/autocount/review/job-9?from=${encodeURIComponent('/autocount/companies/c1')}`,

@@ -12,7 +12,7 @@ export interface NoPermissionProps {
 }
 
 /**
- * Friendly "you don't have access" page — shown instead of a raw 403/technical
+ * Friendly "you don't have access" page - shown instead of a raw 403/technical
  * error when a user lacks the permission for a route (plan 03 §3.4).
  */
 export function NoPermission({

@@ -1,9 +1,9 @@
-"""E2E seed helper — embed connection for an ARBITRARY (dedicated) tenant.
+"""E2E seed helper - embed connection for an ARBITRARY (dedicated) tenant.
 
 Sibling of ``seed_embed_connection.py`` (which is hardcoded to the ``default``
 tenant + the demo inbox). This one resolves a tenant by SLUG and inserts a single
 ``omnichannel_shared`` core connection carrying a KNOWN ``embedSecret``
-(Fernet-encrypted) + ``allowedOrigins`` — used by the Developer-Logs Slice-3 E2E
+(Fernet-encrypted) + ``allowedOrigins`` - used by the Developer-Logs Slice-3 E2E
 (AC-DLC-24) to drive a real failing ``POST /embed/session`` exchange (→ an
 ``embed_session`` error activity row) on a DEDICATED tenant, so the default
 tenant's live embed-config connection (depended on by other specs) is never

@@ -1,15 +1,15 @@
-"""Calendar sync (S0 plan §3) — mirror each opted-in user's calendar.
+"""Calendar sync (S0 plan §3) - mirror each opted-in user's calendar.
 
 One pass per tenant:
 
 1. every user whose master toggle is ON, one read each through the tenant's
    ``CalendarSource``;
 2. incremental where Google gave us a ``syncToken`` last time, a full 14-day
-   window when it did not — when it rejects the token (HTTP 410), which is the
+   window when it did not - when it rejects the token (HTTP 410), which is the
    only recovery Google documents, or every ``FULL_RESYNC_AFTER_HOURS`` so the
    window actually rolls forward (AC-S0-11);
 3. upsert the events that carry a conference link, delete the ones that were
-   cancelled or lost their link, and — on a FULL read only — delete the rows in
+   cancelled or lost their link, and - on a FULL read only - delete the rows in
    the window the calendar stopped returning at all, which is the only way a
    cancellation shows up outside an incremental page (AC-S0-10). ``opted_out``
    is never touched: the user's decision outranks the calendar (AC-S0-8);
@@ -57,7 +57,7 @@ WINDOW_DAYS = 14
 # never rolls and a meeting first seen beyond 14 days never arrives at all.
 FULL_RESYNC_AFTER_HOURS = 6
 
-# One activity row per run (AC-S0-11). The source value is the module's own —
+# One activity row per run (AC-S0-11). The source value is the module's own -
 # see ``app/models/integration_activity.ACTIVITY_SOURCES``.
 ACTIVITY_SOURCE = "meetings"
 ACTIVITY_OPERATION = "calendar.sync"
@@ -65,7 +65,7 @@ ACTIVITY_OPERATION = "calendar.sync"
 
 @dataclass
 class SyncResult:
-    """What one tenant's pass did — the payload of the activity row."""
+    """What one tenant's pass did - the payload of the activity row."""
 
     users_synced: int = 0
     events_upserted: int = 0
@@ -213,7 +213,7 @@ def _read_calendar(
                 opt_in.sync_token = page.next_sync_token
             return _CalendarRead(events=page.events, full_window=False)
         except SyncTokenInvalid:
-            # Google expired the token — the documented recovery is a full read.
+            # Google expired the token - the documented recovery is a full read.
             pass
 
     # Full read: clear the token FIRST so a page that returns none leaves us
@@ -238,7 +238,7 @@ def _prune_missing(
     """Delete this user's rows INSIDE the read window that the page omitted.
 
     ``events.list`` defaults to ``showDeleted=false``, so a full read never
-    reports a cancellation — it simply stops returning the event. Scoping the
+    reports a cancellation - it simply stops returning the event. Scoping the
     delete to the window that was actually read is what stops it eating rows the
     calendar was never asked about (a meeting that has since started)."""
     stale = (
@@ -281,7 +281,7 @@ def _apply_event(
     )
 
     # Cancelled, or no longer a meeting at all: the mirror drops it (AC-S0-10).
-    # The `meetings` row is deliberately left alone — once S2 has scheduled or
+    # The `meetings` row is deliberately left alone - once S2 has scheduled or
     # run a bot for it, deleting it is that slice's decision, not this one's.
     if raw.cancelled or not raw.conference_url or not raw.starts_at:
         if existing is not None:
@@ -399,7 +399,7 @@ def _ensure_participants(
 def record_sync_activity(db: Session, tenant_id: str, result: SyncResult) -> None:
     """One ``integration_activity`` row per run, with the counts (AC-S0-11).
 
-    The write is failure-isolated inside ``ActivityLogService`` — a logging
+    The write is failure-isolated inside ``ActivityLogService`` - a logging
     problem can never be what breaks a sync."""
     from app.activity_log.service import ActivityLogService
 

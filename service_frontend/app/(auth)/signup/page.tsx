@@ -35,7 +35,7 @@ export default function Page() {
   const [success, setSuccess] = useState<boolean | null>(false);
 
   // Parked behind the signup flag until real tenant provisioning (plan 10 D3,
-  // BL-032) — a kill-switch, not a deletion.
+  // BL-032) - a kill-switch, not a deletion.
   if (!signupEnabled) notFound();
 
   const form = useForm<SignupSchemaType>({
@@ -49,7 +49,7 @@ export default function Page() {
     },
   });
 
-  // reCAPTCHA stripped (plan 10 D7): the backend never verified the token —
+  // reCAPTCHA stripped (plan 10 D7): the backend never verified the token -
   // security theater. Real backend-verified captcha = BL-041.
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();

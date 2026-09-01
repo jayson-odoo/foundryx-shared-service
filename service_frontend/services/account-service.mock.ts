@@ -1,5 +1,5 @@
 /**
- * Mock account service (Phase A) — echoes the update after a short latency.
+ * Mock account service (Phase A) - echoes the update after a short latency.
  * Failure knob: name `Fail Save` rejects (server-error state).
  */
 import type { AccountService } from './account-service';

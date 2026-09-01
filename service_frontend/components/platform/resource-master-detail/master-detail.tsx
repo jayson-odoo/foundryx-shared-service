@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Inline master-detail (form-in-form) — sprint-4/05. Renders a `<ResourceList>`;
+ * Inline master-detail (form-in-form) - sprint-4/05. Renders a `<ResourceList>`;
  * clicking a row opens the detail IN PLACE. The consumer renders the detail as an
  * embedded `<ResourceForm>` (same chrome as a page form: icon tabs, FormRow,
  * top-right Back + record-nav + "…" actions) using the `nav` passed in. Reusable:

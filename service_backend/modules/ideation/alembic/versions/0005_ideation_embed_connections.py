@@ -1,20 +1,20 @@
-"""ideation — embed-connection registry (iframe SSO).
+"""ideation - embed-connection registry (iframe SSO).
 
-Create ``app_ideation.embed_connections`` — the DB registry of host applications
+Create ``app_ideation.embed_connections`` - the DB registry of host applications
 authorised to embed a tenant's Ideas workspace over SSO (PLAN-ideation-embed-sso
 §7, AC-E-5/12). One row per connection: the non-secret ``connection_id`` (PK),
 the Fernet-encrypted shared signing secret, the parent-origin allow-list, an
 optional product scope, and an ``is_active`` flag.
 
-CRITICAL (deploy lesson — the module builds tables via ``create_all`` and the
+CRITICAL (deploy lesson - the module builds tables via ``create_all`` and the
 per-module Alembic runner may STAMP head without running migrations on an
 existing DB): this migration is idempotent (``CREATE TABLE IF NOT EXISTS``) AND
 the same table lands via ``IdeationBase.metadata.create_all`` in the module's
-``install()`` — so a fresh install always gets the table whether the stamp-path
+``install()`` - so a fresh install always gets the table whether the stamp-path
 or the upgrade-path runs (see LESSONS: pg_trgm + idea statuses skipped on prod).
 
 Postgres-only DDL; a no-op on the SQLite test engine (per-module Alembic runs
-only on Postgres — see ``app/module_platform/migrations.run_module_migrations``;
+only on Postgres - see ``app/module_platform/migrations.run_module_migrations``;
 the test suite creates the table via ``create_all``).
 
 Revision ID: 0005_ideation_embed_connections

@@ -41,7 +41,7 @@ import {
 } from '@/types/app-store';
 
 /**
- * One App Store card (plan 08 §8) — icon, title, description, version,
+ * One App Store card (plan 08 §8) - icon, title, description, version,
  * StatusBadge + lifecycle actions. Shared verbatim between the tenant
  * storefront (/app-store) and the console tenant-detail Modules tab; the
  * caller decides WHICH actions the viewer may take via `canAct` (tenant =
@@ -65,7 +65,7 @@ const MODULE_ICONS: Record<string, ComponentType<{ className?: string }>> = {
 
 export interface ModuleCardProps {
   module: StoreModule;
-  /** May the viewer take this action? (UX gate — backend re-checks.) */
+  /** May the viewer take this action? (UX gate - backend re-checks.) */
   canAct: (action: StoreAction | 'uninstall') => boolean;
   /** True while ANY action runs on this module (disables the card's buttons). */
   busy: boolean;
@@ -106,7 +106,7 @@ export function ModuleCard({ module, canAct, busy, onAction, onUninstall }: Modu
         </div>
         <ClampedText text={module.description} className="text-sm text-muted-foreground" />
 
-        {/* Module platform v2 (plan sprint-3/10) — dependency + errored UX. */}
+        {/* Module platform v2 (plan sprint-3/10) - dependency + errored UX. */}
         {(module.requires?.length || module.optional?.length) && (
           <div className="flex flex-wrap gap-1.5">
             {module.requires?.map((r) => (
@@ -134,7 +134,7 @@ export function ModuleCard({ module, canAct, busy, onAction, onUninstall }: Modu
         )}
         {!installed && !module.errored && module.availabilityOk === false && (
           <p className="text-xs text-amber-600 dark:text-amber-500">
-            Needs required modules installed first — installing will offer to add them.
+            Needs required modules installed first - installing will offer to add them.
           </p>
         )}
       </CardContent>
@@ -193,13 +193,13 @@ export function ModuleCard({ module, canAct, busy, onAction, onUninstall }: Modu
         )}
       </CardFooter>
 
-      {/* Deactivate — plain confirm: data kept, routes 403, menu hidden (plan 08 §5). */}
+      {/* Deactivate - plain confirm: data kept, routes 403, menu hidden (plan 08 §5). */}
       <AlertDialog open={confirmDeactivate} onOpenChange={setConfirmDeactivate}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Deactivate {module.title}?</AlertDialogTitle>
             <AlertDialogDescription>
-              {module.title} will be switched off for this workspace — its pages and API stop
+              {module.title} will be switched off for this workspace - its pages and API stop
               working until reactivated. All data is kept and permission assignments are
               preserved.
             </AlertDialogDescription>
@@ -213,7 +213,7 @@ export function ModuleCard({ module, canAct, busy, onAction, onUninstall }: Modu
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Uninstall — typed confirmation, irreversible data wipe (plan 08 §5).
+      {/* Uninstall - typed confirmation, irreversible data wipe (plan 08 §5).
           Deliberately NOT the shared ConfirmActionDialog (resource-actions):
           this one needs busy-state + stay-open-on-failure (server rejects a
           wrong confirm), which the fire-and-close action contract doesn't

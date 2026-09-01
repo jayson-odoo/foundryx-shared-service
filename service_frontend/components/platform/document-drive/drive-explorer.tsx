@@ -130,7 +130,7 @@ export function DriveExplorer() {
       await drive.moveTo(target, items);
       setTreeKey((k) => k + 1);
     } catch {
-      /* cycle guard — item stays put */
+      /* cycle guard - item stays put */
     }
   };
 
@@ -199,7 +199,7 @@ export function DriveExplorer() {
       .finally(() => setSharedLoading(false));
   };
 
-  // A workspace/named-people link routes here as `/documents?shared=<token>` —
+  // A workspace/named-people link routes here as `/documents?shared=<token>` -
   // open the Shared-with-me section with that item already browsing in place.
   useEffect(() => {
     const shared = searchParams.get('shared');

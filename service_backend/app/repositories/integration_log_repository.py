@@ -1,4 +1,4 @@
-"""Integration log repository (sprint-4/07 Cluster F slice 3) — pure SQLAlchemy,
+"""Integration log repository (sprint-4/07 Cluster F slice 3) - pure SQLAlchemy,
 tenant-scoped. The idempotency ledger + masked webhook audit trail.
 """
 from typing import Optional
@@ -15,7 +15,7 @@ class IntegrationLogRepository:
     def get_by_event(
         self, tenant_id: str, provider: str, external_event_id: str
     ) -> Optional[IntegrationLog]:
-        """Idempotency lookup (AC-07-30) — tenant-scoped."""
+        """Idempotency lookup (AC-07-30) - tenant-scoped."""
         return (
             self.db.query(IntegrationLog)
             .filter(

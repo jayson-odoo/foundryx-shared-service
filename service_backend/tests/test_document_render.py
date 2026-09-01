@@ -1,4 +1,4 @@
-"""Document render tests (plan sprint-3/03 slice 1) — table/repeater expansion,
+"""Document render tests (plan sprint-3/03 slice 1) - table/repeater expansion,
 PDF compiler HTML-intermediate goldens (never byte-golden the PDF),
 render_document smoke, validate_doc document-branch matrix, url_fetcher asset
 resolution, and the /templates/preview?format=pdf endpoint."""
@@ -299,7 +299,7 @@ def test_validate_invalid_page_setup():
         page_setup={"size": "A3", "orientation": "portrait", "margins": {"top": 15, "bottom": 15, "left": 15, "right": 15}},
     )
     problems = _validate(doc)
-    assert problems  # A3 is not in the Literal — Pydantic rejects
+    assert problems  # A3 is not in the Literal - Pydantic rejects
 
 
 def test_email_path_skips_list_checks_but_catches_scope_leak():
@@ -419,7 +419,7 @@ def test_preview_pdf_invalid_doc_422(client):
 # --- code-review fixes (SSRF guard + row-token literal safety) -------------
 
 def test_row_token_rewrite_is_token_scoped():
-    """Only ``{{ row.<k> }}`` rebinds — literal copy + unrelated tokens stay."""
+    """Only ``{{ row.<k> }}`` rebinds - literal copy + unrelated tokens stay."""
     from app.template_engine.expand import _rewrite_row_tokens
 
     assert _rewrite_row_tokens("See you tomorrow. {{ row.amount }}", 0) == (
@@ -434,7 +434,7 @@ def test_row_token_rewrite_is_token_scoped():
 
 
 def test_url_fetcher_blocks_ssrf():
-    """The render fetches tenant-authored <img src> server-side — internal hosts
+    """The render fetches tenant-authored <img src> server-side - internal hosts
     must be refused (SSRF), public https + data: allowed."""
     from app.template_engine.renderer import _is_blocked_fetch_url as blocked
 

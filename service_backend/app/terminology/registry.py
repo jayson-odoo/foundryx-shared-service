@@ -1,8 +1,8 @@
-"""TermDef registry (sprint-3/08 D2) — code-side, mirrors rule/status engines.
+"""TermDef registry (sprint-3/08 D2) - code-side, mirrors rule/status engines.
 
 ``register_term(TermDef)`` declares an entity's default labels. Core registers
 its relabelable entities at ``lazy_once`` (``core_terms.py``); a module
-registers its own at install — same contract as the permissions.csv sync. The
+registers its own at install - same contract as the permissions.csv sync. The
 ``key`` aligns with existing registry entity keys (``form``, ``workflow``, …)
 so ONE vocabulary spans status / trigger / terminology (D2).
 
@@ -32,7 +32,7 @@ _REGISTRY: Dict[str, TermDef] = {}
 
 
 def register_term(term: TermDef) -> None:
-    """Idempotent — re-registration on every bootstrap simply overwrites."""
+    """Idempotent - re-registration on every bootstrap simply overwrites."""
     _REGISTRY[term.key] = term
 
 
@@ -55,7 +55,7 @@ def is_registered(key: str) -> bool:
 
 
 def defaults_map() -> Dict[str, Dict[str, str]]:
-    """``{key: {singular, plural}}`` of code defaults — the base the merged
+    """``{key: {singular, plural}}`` of code defaults - the base the merged
     map overlays tenant overrides onto (D6)."""
     ensure_core()
     return {
@@ -64,7 +64,7 @@ def defaults_map() -> Dict[str, Dict[str, str]]:
     }
 
 
-# Call before any registry read — core registers exactly once.
+# Call before any registry read - core registers exactly once.
 def _register_core() -> None:
     from app.terminology.core_terms import register_core_terms
 

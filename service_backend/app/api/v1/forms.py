@@ -1,4 +1,4 @@
-"""Form engine endpoints (plan sprint-3/01) — HTTP only (Router → Service →
+"""Form engine endpoints (plan sprint-3/01) - HTTP only (Router → Service →
 Repository). Two routers wired in ``main.py``:
 
 - ``router`` (``/forms``): definition CRUD + lifecycle (publish/unpublish/
@@ -7,7 +7,7 @@ Repository). Two routers wired in ``main.py``:
   ``submissions.read``.
 - ``submissions_router`` (``/submissions``): single submission read + transition.
 
-Two endpoints are gated by ``get_current_user`` ONLY (D19 — any authed user
+Two endpoints are gated by ``get_current_user`` ONLY (D19 - any authed user
 fills/submits an internal form, no ``forms.read`` required): ``GET /{id}/fill``
 and ``POST /{id}/submissions``. The 422 contracts the frontend service pins:
 publish → ``{"problems": [...]}``, submit → ``{"fieldErrors": {...}}``; 409s
@@ -62,7 +62,7 @@ from app.services.throttle import Throttled, ThrottleService, client_ip
 
 
 # Submit accepts EITHER application/json ({answers, honeypot}) OR multipart
-# (a `payload` JSON part + `file:<fieldKey>` parts) — the file path (D12). Files
+# (a `payload` JSON part + `file:<fieldKey>` parts) - the file path (D12). Files
 # are read with a CAPPED read so an oversize body is never buffered whole.
 async def _read_submission(request: Request) -> Tuple[Dict[str, Any], str, List[UploadedFormFile]]:
     ctype = request.headers.get("content-type", "")
@@ -339,7 +339,7 @@ def get_version_definition(
     current_user: User = Depends(require_permission("submissions.read")),
     db: Session = Depends(get_db),
 ) -> FormVersionDefinitionOut:
-    """One version's immutable definition — the submission detail page
+    """One version's immutable definition - the submission detail page
     re-renders answers against their PINNED version forever (D9)."""
     service = FormService(db)
     version = service.get_version(current_user.tenant_id, form_id, version_id)
@@ -430,7 +430,7 @@ def list_submissions(
     service = FormService(db)
     try:
         if group:
-            # The revision chain for one group (R3 history) — every revision,
+            # The revision chain for one group (R3 history) - every revision,
             # newest first, each pinned to its own version.
             items = service.list_revisions(current_user.tenant_id, form_id, group, current_user)
             return SubmissionListResponse(data=items, total=len(items), page=0)
@@ -488,7 +488,7 @@ def submission_graph(
     current_user: User = Depends(require_permission("submissions.read")),
     db: Session = Depends(get_db),
 ) -> FormSubmissionGraphOut:
-    """The form's scope-filtered status graph — the Submissions tab transition
+    """The form's scope-filtered status graph - the Submissions tab transition
     buttons need it WITHOUT statuses.read (gated submissions.read, D15)."""
     service = FormService(db)
     try:
@@ -523,7 +523,7 @@ def submission_file(
 ):
     """Serve an uploaded file/signature from a submission (D12). Authed +
     tenant-scoped; CSP-sandboxed + nosniff (a quarantined upload may be a
-    script-bearing SVG/HTML — sandbox keeps it inert on direct navigation, the
+    script-bearing SVG/HTML - sandbox keeps it inert on direct navigation, the
     branding-asset hardening). Presigned URLs expire → never immutable-cache."""
     from app.services.storage import storage_for_tenant
 
@@ -535,7 +535,7 @@ def submission_file(
     storage_key, mime, filename = found
     try:
         location, value = storage_for_tenant(db, current_user.tenant_id).resolve(storage_key)
-    except Exception:  # noqa: BLE001 — unresolvable key (connection gone)
+    except Exception:  # noqa: BLE001 - unresolvable key (connection gone)
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
     headers = {
         "Content-Disposition": f'inline; filename="{filename}"',
@@ -577,7 +577,7 @@ def transition_submission(
 
 # ---- revisions (plan sprint-4/04) ----
 #
-# Gated by ``get_current_user`` ONLY — a submission's OWNER may revise/resubmit
+# Gated by ``get_current_user`` ONLY - a submission's OWNER may revise/resubmit
 # even without ``submissions.manage`` (filling/correcting ≠ administering, D19);
 # the service authorizes owner-OR-manage as the real boundary.
 
@@ -644,7 +644,7 @@ async def resubmit_revision(
 # ---- public (pre-auth) surface (plan sprint-3/02, D11/D12) ----
 #
 # Tenant is resolved from the subdomain frontend-side and carried in the path
-# (the /public/branding precedent — the browser hits the API origin directly, so
+# (the /public/branding precedent - the browser hits the API origin directly, so
 # the subdomain can't survive on the Host header). Unknown tenant / non-public /
 # unpublished form = a UNIFORM 404 (no enumeration). The POST is throttled
 # per-IP in its OWN bucket, honeypotted, and submits anonymously (user=None).

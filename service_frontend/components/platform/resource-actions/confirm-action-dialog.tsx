@@ -1,10 +1,10 @@
 'use client';
 
 /**
- * ONE confirm dialog for the action registry (code-review consolidation —
+ * ONE confirm dialog for the action registry (code-review consolidation -
  * was duplicated verbatim in action-menu and bulk-actions). Supports the
  * typed-confirmation contract (`confirm.input`): the confirm button stays
- * disabled until the user types `expected(rows)` exactly — irreversible
+ * disabled until the user types `expected(rows)` exactly - irreversible
  * actions (hard delete) gate on it.
  */
 import { useState } from 'react';
@@ -23,7 +23,7 @@ import { Input } from '@/components/ui/input';
 import type { ResourceAction } from '@/components/platform/resource-list/types';
 
 export interface ConfirmActionDialogProps<T> {
-  /** The action awaiting confirmation — null renders the dialog closed. */
+  /** The action awaiting confirmation - null renders the dialog closed. */
   pending: ResourceAction<T> | null;
   rows: T[];
   onClose: () => void;
@@ -36,7 +36,7 @@ export function ConfirmActionDialog<T>({
   onClose,
   onConfirm,
 }: ConfirmActionDialogProps<T>) {
-  // Typed confirmation (irreversible actions) — must match expected exactly.
+  // Typed confirmation (irreversible actions) - must match expected exactly.
   const [confirmText, setConfirmText] = useState('');
 
   const close = () => {

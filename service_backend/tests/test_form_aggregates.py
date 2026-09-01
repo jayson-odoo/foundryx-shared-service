@@ -1,6 +1,6 @@
 """Computed aggregate functions over repeater columns (sprint-3/02 follow-up).
 
-`sum/avg/min/max(repeater.column)` + `count(repeater)` — eval matrix, arithmetic
+`sum/avg/min/max(repeater.column)` + `count(repeater)` - eval matrix, arithmetic
 composition, fail-closed, and the publish-gate validation (the repeater must be
 an earlier repeater field; the column must be numeric; count needs no column).
 """

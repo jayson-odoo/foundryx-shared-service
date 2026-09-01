@@ -40,7 +40,7 @@ function DataGridTableDndHeader<TData>({ header }: { header: Header<TData, unkno
     id: header.column.id,
   });
 
-  // Columns can opt out of reordering (e.g. select, actions) — no grip, fixed.
+  // Columns can opt out of reordering (e.g. select, actions) - no grip, fixed.
   const reorderable = column.columnDef.meta?.reorderable !== false;
 
   const style: CSSProperties = {

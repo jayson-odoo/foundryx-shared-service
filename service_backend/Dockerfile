@@ -1,4 +1,4 @@
-# Multi-stage build for the FoundryX EMS FastAPI backend.
+# Multi-stage build for the Foundryx EMS FastAPI backend.
 # Same image serves the API, the Celery workers, and Celery beat (command override).
 FROM python:3.12-slim AS builder
 

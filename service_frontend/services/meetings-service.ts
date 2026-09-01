@@ -1,9 +1,9 @@
 /**
- * Meetings service — the boundary the UI talks to (S0 plan §4/§5).
+ * Meetings service - the boundary the UI talks to (S0 plan §4/§5).
  *
  * The interface IS the backend contract (`/meetings/optin`, `/meetings/events`,
  * `/meetings/settings`). Frontend-first was built against `meetings-service.mock`;
- * the shipped pages bind the REAL api-client implementation — the swap is the ONE
+ * the shipped pages bind the REAL api-client implementation - the swap is the ONE
  * line at the bottom of this file.
  */
 import type {
@@ -34,5 +34,5 @@ export interface MeetingsService {
   saveSettings(input: MeetingsSettingsInput): Promise<MeetingsSettings>;
 }
 
-// Phase 2 swap done — the mock is retained in *.mock.ts for tunable states.
+// Phase 2 swap done - the mock is retained in *.mock.ts for tunable states.
 export const meetingsService: MeetingsService = realMeetingsService;

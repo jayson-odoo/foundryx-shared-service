@@ -1,10 +1,10 @@
 """Numbering routes (sprint-4/07, Cluster F). Thin: validate, delegate, shape HTTP.
 
-- GET    /numbering              — numbering.read. Catalog (defaults ⊕ overrides
-                                     ⊕ live next-val) — drives the settings page.
-- PUT    /numbering/{docType}    — numbering.manage. Upsert format override.
-- PUT    /numbering/{docType}/next-val — numbering.manage. Set next running value.
-- DELETE /numbering/{docType}    — numbering.manage. Reset (delete override). 204.
+- GET    /numbering              - numbering.read. Catalog (defaults ⊕ overrides
+                                     ⊕ live next-val) - drives the settings page.
+- PUT    /numbering/{docType}    - numbering.manage. Upsert format override.
+- PUT    /numbering/{docType}/next-val - numbering.manage. Set next running value.
+- DELETE /numbering/{docType}    - numbering.manage. Reset (delete override). 204.
 
 No DB logic here (house rule); NumberingService owns it.
 """

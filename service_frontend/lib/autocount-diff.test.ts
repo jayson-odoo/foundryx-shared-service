@@ -12,7 +12,7 @@ describe('parseRecordDiff', () => {
     expect(parseRecordDiff(null)).toEqual({ isNew: false, changes: [] });
   });
 
-  it('returns no changes for an empty diff — nothing changed is not everything changed', () => {
+  it('returns no changes for an empty diff - nothing changed is not everything changed', () => {
     expect(parseRecordDiff({})).toEqual({ isNew: false, changes: [] });
   });
 
@@ -65,7 +65,7 @@ describe('diffForDisplay', () => {
     ]);
   });
 
-  it('does NOT re-add last_modified — it moves on every fetch by definition', () => {
+  it('does NOT re-add last_modified - it moves on every fetch by definition', () => {
     const result = diffForDisplay(
       { __new__: true },
       { doc_no: 'GRN-001', last_modified: '2026-07-01T00:00:00Z' },
@@ -98,9 +98,9 @@ describe('diffForDisplay', () => {
 
 describe('formatDiffValue', () => {
   it('renders an em dash for nothing', () => {
-    expect(formatDiffValue(null)).toEqual({ kind: 'empty', text: '—' });
-    expect(formatDiffValue(undefined)).toEqual({ kind: 'empty', text: '—' });
-    expect(formatDiffValue('')).toEqual({ kind: 'empty', text: '—' });
+    expect(formatDiffValue(null)).toEqual({ kind: 'empty', text: '-' });
+    expect(formatDiffValue(undefined)).toEqual({ kind: 'empty', text: '-' });
+    expect(formatDiffValue('')).toEqual({ kind: 'empty', text: '-' });
   });
 
   it('renders booleans as Yes/No', () => {
@@ -118,8 +118,8 @@ describe('formatDiffValue', () => {
   });
 
   it('renders an empty collection as nothing, not as a bare [] block', () => {
-    expect(formatDiffValue([])).toEqual({ kind: 'empty', text: '—' });
-    expect(formatDiffValue({})).toEqual({ kind: 'empty', text: '—' });
+    expect(formatDiffValue([])).toEqual({ kind: 'empty', text: '-' });
+    expect(formatDiffValue({})).toEqual({ kind: 'empty', text: '-' });
   });
 });
 

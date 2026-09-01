@@ -112,14 +112,14 @@ def test_old_keys_resolve_through_their_writing_connection(
     the WRITING connection; resolve loads THAT row even after a different
     connection becomes the write target. Real-world shape: blobs written via
     the PLATFORM default, then the tenant connects its OWN bucket (the
-    same-tenant variant can't exist — UNIQUE(tenant_id, type))."""
+    same-tenant variant can't exist - UNIQUE(tenant_id, type))."""
     db = session_factory()
     platform = _storage_connection(db, PLATFORM_TENANT_ID, cdn="https://platform-cdn.acme.com")
     storage = storage_for_tenant(db, DEFAULT_TENANT_ID)
     key = storage.save("avatars/u1", b"X", "image/png")
     assert key.startswith(f"conn:{platform.id}:")
 
-    # The tenant brings its own bucket — NEW writes go there…
+    # The tenant brings its own bucket - NEW writes go there…
     own = _storage_connection(db, cdn="https://own-cdn.acme.com")
     storage_module.clear_adapter_cache()
     fresh = storage_for_tenant(db, DEFAULT_TENANT_ID)

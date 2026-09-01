@@ -1,9 +1,9 @@
-"""Meetings connection kinds — AC-S0-4, AC-S0-5.
+"""Meetings connection kinds - AC-S0-4, AC-S0-5.
 
 Both kinds are ordinary core ``connections`` rows behind the standard
 ``/integrations`` surface, so what is pinned here is the provider contract:
 which fields exist, which of them are secret (encrypted at rest, never echoed
-back), and what the Test button does — the Google error VERBATIM on failure, the
+back), and what the Test button does - the Google error VERBATIM on failure, the
 first five directory users on success.
 """
 import pytest
@@ -117,7 +117,7 @@ def test_google_dwd_test_lists_the_first_five_directory_users(monkeypatch):
 
 
 def test_google_dwd_test_reports_the_google_error_verbatim(monkeypatch):
-    """AC-S0-4: no "connection failed" catch-all — the operator needs the reason."""
+    """AC-S0-4: no "connection failed" catch-all - the operator needs the reason."""
     from modules.meetings import providers as providers_module
     from modules.meetings.calendar.base import CalendarSourceError
 
@@ -139,7 +139,7 @@ def test_google_dwd_test_rejects_a_malformed_key_before_calling_google(monkeypat
     """A key that is not JSON is a local mistake, not a Google round trip."""
     from modules.meetings import providers as providers_module
 
-    def never(**kw):  # pragma: no cover — must not be reached
+    def never(**kw):  # pragma: no cover - must not be reached
         raise AssertionError("Google must not be called for a malformed key")
 
     monkeypatch.setattr(providers_module, "list_directory_users", never)
@@ -229,7 +229,7 @@ def test_meet_bot_offers_no_test_at_all(meetings_client):
 
 def test_a_tenant_can_hold_both_kinds_at_once(meetings_client):
     """The two kinds are separate connection TYPES, so one-active-per-type does
-    not make the second one unsavable — the trap the payment/erp carve-outs
+    not make the second one unsavable - the trap the payment/erp carve-outs
     exist for."""
     headers = _auth(meetings_client)
     first = meetings_client.post(

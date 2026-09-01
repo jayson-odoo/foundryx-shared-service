@@ -1,4 +1,4 @@
-"""Rule-engine wire schemas (sprint-2/02) — camelCase."""
+"""Rule-engine wire schemas (sprint-2/02) - camelCase."""
 from typing import List, Optional
 
 from pydantic import BaseModel
@@ -27,7 +27,7 @@ class RuleSiteRowItem(BaseModel):
     siteLabel: str
     context: str
     summary: str
-    # Site-specific locator (e.g. the entity_type for status_transition) —
+    # Site-specific locator (e.g. the entity_type for status_transition) -
     # the FRONTEND maps (site, target) to its deep-link route; the backend
     # never hardcodes frontend paths (code-review fix).
     target: str

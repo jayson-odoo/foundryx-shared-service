@@ -16,7 +16,7 @@ import { useNumberingListConfig } from './use-numbering-list-config';
 import { NumberEditDialog } from './number-edit-dialog';
 
 /**
- * Numbering settings (sprint-4/07, Cluster F — AC-07-07) — the per-tenant
+ * Numbering settings (sprint-4/07, Cluster F - AC-07-07) - the per-tenant
  * document-numbering catalog on the full config-driven Resource shell. Read +
  * edit gated numbering.read / numbering.manage. Edit is an inline dialog (no
  * detail page): change prefix / format / reset / next-val → the next generated

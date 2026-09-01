@@ -35,7 +35,7 @@ class TargetNotImpersonatable(ImpersonationError):
 
 
 class TargetMorePrivileged(ImpersonationError):
-    """Target holds permissions the impersonator lacks — would be an escalation."""
+    """Target holds permissions the impersonator lacks - would be an escalation."""
 
 
 def _now() -> datetime:

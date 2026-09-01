@@ -76,7 +76,7 @@ export interface UseWebhookListResult {
 }
 
 /**
- * Channel consumer-webhook list config (omnichannel Slice 4) — endpoints on the
+ * Channel consumer-webhook list config (omnichannel Slice 4) - endpoints on the
  * full Resource shell embedded in the channel detail's Webhooks tab. The set per
  * channel is small, so the fetcher pulls it whole and applies
  * search/filter/sort/paginate client-side (mirrors the API-keys tab). No detail
@@ -172,7 +172,7 @@ export function useWebhookList(
         confirm: {
           title: 'Delete endpoint?',
           description:
-            'FoundryX stops sending events to this endpoint immediately. This cannot be undone.',
+            'Foundryx stops sending events to this endpoint immediately. This cannot be undone.',
           confirmLabel: 'Delete',
         },
         run: async (rows, rt) => {

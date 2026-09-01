@@ -21,13 +21,13 @@ export interface User {
   status: UserStatus;
   avatar: string | null;
   roles: Role[];
-  createdAt: string; // ISO — "Joined"
+  createdAt: string; // ISO - "Joined"
   lastSignInAt: string | null;
   emailVerifiedAt: string | null;
   isTrashed: boolean;
 }
 
-/** Payload to create a user (invite flow — no password; status becomes INVITED). */
+/** Payload to create a user (invite flow - no password; status becomes INVITED). */
 export interface CreateUserInput {
   name: string;
   email: string;
@@ -36,7 +36,7 @@ export interface CreateUserInput {
 }
 
 /** Patch payload for the single global form save. Email = admin instant path
- * (plan sprint-2/04): actor ≠ target only — own email rides the /account
+ * (plan sprint-2/04): actor ≠ target only - own email rides the /account
  * ceremony (backend 409s a self-change). */
 export interface UpdateUserInput {
   name?: string;

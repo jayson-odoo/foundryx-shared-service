@@ -92,7 +92,7 @@ export function useTemplateList(
             toast.success(`Submitted ${rows.length} template(s) for review.`);
             rt.reload();
           } catch {
-            toast.error('Could not submit. Your drafts are kept — please retry.');
+            toast.error('Could not submit. Your drafts are kept - please retry.');
           }
         },
       },
@@ -193,7 +193,7 @@ export function useTemplateList(
         header: ({ column }) => <DataGridColumnHeader title="Category" column={column} />,
         cell: ({ row }) => (
           <span className="text-sm capitalize text-muted-foreground">
-            {row.original.category ? row.original.category.toLowerCase() : '—'}
+            {row.original.category ? row.original.category.toLowerCase() : '-'}
           </span>
         ),
         size: 130,
@@ -216,7 +216,7 @@ export function useTemplateList(
         meta: { headerTitle: 'Language' },
         header: ({ column }) => <DataGridColumnHeader title="Language" column={column} />,
         cell: ({ row }) => (
-          <span className="text-sm text-muted-foreground">{row.original.language ?? '—'}</span>
+          <span className="text-sm text-muted-foreground">{row.original.language ?? '-'}</span>
         ),
         size: 110,
         enableSorting: false,

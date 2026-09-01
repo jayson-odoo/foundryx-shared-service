@@ -4,7 +4,7 @@
  * Reusable formula-builder popup (sprint-3/02 follow-up). A SHELL: initialise it
  * with the supported variables + operators; the operator buttons + variable list
  * insert tokens at the caret, and a `validate` callback gives live feedback.
- * Used by the computed FIELD and the table computed COLUMN — the host owns the
+ * Used by the computed FIELD and the table computed COLUMN - the host owns the
  * variable list + the semantic validation, so the builder stays generic.
  *
  * Anti-SSTI: this only EDITS an expression string; evaluation stays in the
@@ -37,7 +37,7 @@ export interface FormulaBuilderProps {
   variables: FormulaVariable[];
   /** Display labels → inserted symbols. Defaults to + − × ÷ ( ). */
   operators?: { label: string; insert: string }[];
-  /** Host semantic check — return an error string or null when valid. */
+  /** Host semantic check - return an error string or null when valid. */
   validate?: (expr: string) => string | null;
   title?: string;
 }

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Shared Rules observability page (sprint-2/02 D12, deduped in code review) —
+ * Shared Rules observability page (sprint-2/02 D12, deduped in code review) -
  * the operator and tenant surfaces render this with their own copy and
  * status-engine base path (used for row deep-links).
  */

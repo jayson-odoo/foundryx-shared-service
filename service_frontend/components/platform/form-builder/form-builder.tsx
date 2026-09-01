@@ -1,14 +1,14 @@
 'use client';
 
 /**
- * FormBuilder (plan sprint-3/01 D6/D7/D18) — the drag-drop form designer. The
+ * FormBuilder (plan sprint-3/01 D6/D7/D18) - the drag-drop form designer. The
  * 5th core engine's authoring surface; mirrors the EmailEditor composition
  * skeleton (Palette · Canvas · SettingsPanel, dnd-kit, the container owns
  * selection + undo/redo via the shared `useHistory`). Editor-agnostic:
  * `FormDocument` in/out is the only contract (types/forms.ts). Every mutation
- * is gated by the global `editing` toggle (ResourceForm Edit) — read-only
+ * is gated by the global `editing` toggle (ResourceForm Edit) - read-only
  * render otherwise. Pure component (no fetch/services). No instructional copy
- * (foolproof-UI mandate) — labels + state warnings only.
+ * (foolproof-UI mandate) - labels + state warnings only.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -76,7 +76,7 @@ const collisionDetection: CollisionDetection = (args) => {
 export interface FormBuilderProps {
   doc: FormDocument;
   onChange: (doc: FormDocument) => void;
-  /** Global Edit toggle (ResourceForm) gates EVERY mutation — read-only render otherwise. */
+  /** Global Edit toggle (ResourceForm) gates EVERY mutation - read-only render otherwise. */
   editing: boolean;
 }
 
@@ -90,7 +90,7 @@ export function FormBuilder({ doc, onChange, editing }: FormBuilderProps) {
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
-  // ⌘Z / ⇧⌘Z / Ctrl+Y — skip when focus is in any interactive control so the
+  // ⌘Z / ⇧⌘Z / Ctrl+Y - skip when focus is in any interactive control so the
   // native text-undo and dropdown navigation keep working (house guard).
   useEffect(() => {
     if (!editing) return;

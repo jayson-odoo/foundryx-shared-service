@@ -1,7 +1,7 @@
 """Volume guard (sprint-4/12 Slice 3, AC-DLC-26).
 
 Under a burst beyond the per-process cap the writer DROPS the row (returns None,
-no DB write) rather than blocking or hammering the DB — best-effort graceful
+no DB write) rather than blocking or hammering the DB - best-effort graceful
 degradation. Proven deterministically with a tiny cap.
 """
 import app.activity_log.service as svc_mod

@@ -1,4 +1,4 @@
-"""Google Calendar through domain-wide delegation — the only ``CalendarSource``
+"""Google Calendar through domain-wide delegation - the only ``CalendarSource``
 in S0 (spine M4).
 
 One platform-owned service account, granted domain-wide delegation by each
@@ -28,7 +28,7 @@ from .base import (
 # the sync (spine §5.3 step 2).
 CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 # The connection TEST lists the domain's first users, which is the Directory
-# API, not Calendar — a tenant must grant this second scope for the Test button
+# API, not Calendar - a tenant must grant this second scope for the Test button
 # to answer (AC-S0-4).
 DIRECTORY_SCOPES = ["https://www.googleapis.com/auth/admin.directory.user.readonly"]
 
@@ -40,7 +40,7 @@ def _service_account_credentials(service_account_json: str, scopes: List[str], s
     """Delegated credentials for ONE impersonated user. Lazy Google import."""
     try:
         from google.oauth2 import service_account  # type: ignore
-    except ImportError as exc:  # pragma: no cover — dependency guard
+    except ImportError as exc:  # pragma: no cover - dependency guard
         raise CalendarSourceError(
             "The Google API client is not installed on this server "
             "(pip install google-api-python-client google-auth)."
@@ -52,14 +52,14 @@ def _service_account_credentials(service_account_json: str, scopes: List[str], s
     try:
         creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
         return creds.with_subject(subject)
-    except Exception as exc:  # noqa: BLE001 — surfaced verbatim to the operator
+    except Exception as exc:  # noqa: BLE001 - surfaced verbatim to the operator
         raise CalendarSourceError(str(exc)) from exc
 
 
 def _build(api: str, version: str, credentials):
     try:
         from googleapiclient.discovery import build  # type: ignore
-    except ImportError as exc:  # pragma: no cover — dependency guard
+    except ImportError as exc:  # pragma: no cover - dependency guard
         raise CalendarSourceError(
             "The Google API client is not installed on this server "
             "(pip install google-api-python-client google-auth)."
@@ -80,7 +80,7 @@ def _status_of(exc: Exception) -> Optional[int]:
 def list_directory_users(
     *, service_account_json: str, impersonate_email: str, limit: int = 5
 ) -> List[str]:
-    """The domain's first ``limit`` user emails — what the Test button proves.
+    """The domain's first ``limit`` user emails - what the Test button proves.
 
     Raises ``CalendarSourceError`` carrying Google's own message, because
     "connection failed" tells the operator nothing about whether to fix the key,
@@ -99,7 +99,7 @@ def list_directory_users(
         raise
     except (TypeError, ValueError) as exc:
         raise CalendarSourceError(str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001 — Google's message, verbatim
+    except Exception as exc:  # noqa: BLE001 - Google's message, verbatim
         raise CalendarSourceError(_google_message(exc)) from exc
     return [u.get("primaryEmail", "") for u in (response.get("users") or [])][:limit]
 
@@ -187,7 +187,7 @@ def parse_event(item: Dict[str, Any]) -> RawEvent:
 
     The conference link comes from ``conferenceData`` when Google attached a Meet
     itself, and otherwise from a regex over ``hangoutLink`` / ``location`` /
-    ``description`` — which is where a Zoom or Teams invite actually lives (S0
+    ``description`` - which is where a Zoom or Teams invite actually lives (S0
     plan §3)."""
     conference_url = _conference_from_data(item.get("conferenceData")) or find_conference_url(
         item.get("hangoutLink"), item.get("location"), item.get("description")

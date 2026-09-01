@@ -2,7 +2,7 @@
 
 ``record(...)`` is the generic, failure-isolated WRITE seam every
 instrumentation point calls. The read side (``list``/``get``) backs the
-Developers → Logs console via a WHITELISTED filter translator — a client can
+Developers → Logs console via a WHITELISTED filter translator - a client can
 never reach an arbitrary column.
 """
 from __future__ import annotations
@@ -33,12 +33,12 @@ logger = logging.getLogger("foundryx.activity_log")
 # A lightweight, cheap, per-PROCESS token counter: at most
 # ``integration_activity_max_writes_per_second`` rows are written per 1s window;
 # beyond that a write is DROPPED (not blocked) and a counter is logged. This
-# bounds the DB blast radius of a burst/error storm without any coordination —
+# bounds the DB blast radius of a burst/error storm without any coordination -
 # the write is already off the request critical path (prod BackgroundTask) +
 # swallow-isolated, so dropping is graceful degradation, not data-loss on the
 # hot path. Trade-off: the cap is per-process (N workers ⇒ N×cap aggregate) and
 # best-effort; a Celery/background_jobs-backed async buffer is the true scale
-# path (backlog BL — logged in the plan). ``max=0`` disables the guard.
+# path (backlog BL - logged in the plan). ``max=0`` disables the guard.
 _guard_lock = threading.Lock()
 _guard_window_start = 0.0
 _guard_window_count = 0
@@ -49,7 +49,7 @@ _guard_dropped_since_log = 0
 def _volume_guard_admits() -> bool:
     """Return True if a write is admitted this 1s window; False to drop (over the
     per-process cap). Logs a running dropped-counter every 100 drops so the drop
-    is never silent (no silent cap — AC-DLC-26)."""
+    is never silent (no silent cap - AC-DLC-26)."""
     cap = settings.integration_activity_max_writes_per_second
     if not cap or cap <= 0:
         return True
@@ -66,7 +66,7 @@ def _volume_guard_admits() -> bool:
             if _guard_dropped_since_log >= 100:
                 logger.warning(
                     "integration-activity volume guard dropped %d rows "
-                    "(cap=%d/s, total dropped=%d) — a write burst is degrading "
+                    "(cap=%d/s, total dropped=%d) - a write burst is degrading "
                     "to drop-not-block",
                     _guard_dropped_since_log,
                     cap,
@@ -77,7 +77,7 @@ def _volume_guard_admits() -> bool:
         _guard_window_count += 1
         return True
 
-# Whitelisted filter columns (source/status/time/workspace) — the translator
+# Whitelisted filter columns (source/status/time/workspace) - the translator
 # never touches anything outside this map.
 _FILTER_COLUMNS = {
     "source": IntegrationActivity.source,
@@ -129,7 +129,7 @@ class ActivityLogService:
     ) -> Optional[IntegrationActivity]:
         """Write ONE activity row, own commit, swallow-and-log any failure.
 
-        NEVER raises to the caller — a logging failure must not break, slow, or
+        NEVER raises to the caller - a logging failure must not break, slow, or
         500 the observed request. Returns the row on success, ``None`` on either
         a swallowed error or a skip (no attributable tenant)."""
         try:
@@ -137,7 +137,7 @@ class ActivityLogService:
             # and the table is NOT NULL on tenant_id by design (documented).
             if not tenant_id:
                 return None
-            # Volume guard (AC-DLC-26) — under a burst beyond the per-process cap,
+            # Volume guard (AC-DLC-26) - under a burst beyond the per-process cap,
             # DROP this row (logged counter) rather than block or hammer the DB.
             if not _volume_guard_admits():
                 return None
@@ -161,7 +161,7 @@ class ActivityLogService:
                 ),
             )
             # An inbound_api row is written post-response but its interaction
-            # STARTED before the outbound legs it caused — stamp it at
+            # STARTED before the outbound legs it caused - stamp it at
             # request-start so the trace timeline reads in causal order (else a
             # pure created_at sort inverts inbound vs outbound). Set only when
             # provided; otherwise the column's server_default(now()) applies.
@@ -170,7 +170,7 @@ class ActivityLogService:
             self.repo.add(row)
             self.db.commit()
             return row
-        except Exception:  # noqa: BLE001 — full isolation, never propagate.
+        except Exception:  # noqa: BLE001 - full isolation, never propagate.
             logger.exception("integration-activity record failed (source=%s)", source)
             try:
                 self.db.rollback()
@@ -210,8 +210,8 @@ class ActivityLogService:
     def list_by_trace(
         self, tenant_id: str, trace_id: str
     ) -> List[IntegrationActivity]:
-        """Ordered legs (oldest→newest) of ONE consumption — inbound API →
-        outbound Meta → webhook delivery — for the trace timeline (AC-DLC-17).
+        """Ordered legs (oldest→newest) of ONE consumption - inbound API →
+        outbound Meta → webhook delivery - for the trace timeline (AC-DLC-17).
         Tenant-scoped."""
         return self.repo.list_by_trace(tenant_id, trace_id)
 

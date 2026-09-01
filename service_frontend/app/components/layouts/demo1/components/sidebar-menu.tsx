@@ -33,12 +33,12 @@ export function SidebarMenu() {
   const menuLabel = (item: MenuItem): string | undefined =>
     item.termKey ? labelPlural(item.termKey) : item.title;
   // Platform Console entries: platform-tenant members with tenants.read only
-  // (UX gate — require_platform_permission is the real boundary, plan 07 §5).
+  // (UX gate - require_platform_permission is the real boundary, plan 07 §5).
   const showPlatform = session?.user?.isPlatformTenant === true && can('tenants.read');
   // Module-tagged entries: visible only while the module is ACTIVE for the
-  // tenant (UX gate — require_module is the real boundary, plan 08 §6/§8).
+  // tenant (UX gate - require_module is the real boundary, plan 08 §6/§8).
   const installed = useInstalledModules();
-  // ONE recursive visibility pass — platformOnly + module + permission at
+  // ONE recursive visibility pass - platformOnly + module + permission at
   // every level; emptied parents/headings disappear (BL-014, plan sprint-2/05).
   // Memoized: the config is ~hundreds of nodes and the sidebar re-renders on
   // every navigation; all dep identities are stable (their hooks useMemo).

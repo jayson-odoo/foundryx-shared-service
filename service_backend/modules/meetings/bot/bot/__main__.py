@@ -144,6 +144,9 @@ def run(a: argparse.Namespace) -> int:
             recorder.start()
             events.emit("recording_started")
             session.post_consent()
+            session.enable_captions()
+            last_caption: tuple[str, str] | None = None
+            caption_done = 0
             probe_at = time.time() + 20  # first DOM probe once tiles have settled
 
             started = time.time()
@@ -166,6 +169,15 @@ def run(a: argparse.Namespace) -> int:
                     last_names, last_humans = p.names, p.humans
                 if p.speaking:
                     events.emit("active_speaker", names=p.speaking)
+                blocks = session.captions()
+                if blocks:
+                    # Meet rewrites the current block as speech continues; emit a block only once it is
+                    # final, i.e. when a newer block has appeared below it. The last block flushes on exit.
+                    while len(blocks) > 1 and caption_done < len(blocks) - 1:
+                        b = blocks[caption_done]
+                        events.emit("caption", speaker=b["speaker"], text=b["text"])
+                        caption_done += 1
+                    last_caption = (blocks[-1]["speaker"], blocks[-1]["text"])
                 if p.humans == 0 and time.time() - started > a.min_seconds:
                     empty_since = empty_since or time.time()
                     if time.time() - empty_since >= a.empty_room_seconds:
@@ -185,6 +197,8 @@ def run(a: argparse.Namespace) -> int:
                     events.emit("dom_probe", buttons=len(probe["buttons"]), listitems=len(probe["listitems"]), tiles=len(probe["tiles"]))
                     probe_at = time.time() + 60
                 time.sleep(1)
+            if last_caption:
+                events.emit("caption", speaker=last_caption[0], text=last_caption[1])
             session.leave()
             code = 0
         except BotError as exc:

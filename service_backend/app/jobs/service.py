@@ -1,4 +1,4 @@
-"""Background-job service (sprint-4/10) — create · claim · enqueue · progress.
+"""Background-job service (sprint-4/10) - create · claim · enqueue · progress.
 
 Mirrors the import-engine service: eager-inline in dev/test (``celery_task_
 always_eager``) vs Celery ``.delay`` in prod; an atomic status-claim admits
@@ -124,7 +124,7 @@ class JobService:
     def log(self, job: BackgroundJob, message: str, *, level: str = "info") -> None:
         """Append a milestone log line to the job (surfaced on the detail page).
         Reassigns a FRESH list so SQLAlchemy tracks the change (a plain JSON
-        column drops in-place mutation — the house gotcha). Milestones only."""
+        column drops in-place mutation - the house gotcha). Milestones only."""
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "level": level,
@@ -176,13 +176,13 @@ def run_job(db: Session, job_id: str) -> Optional[BackgroundJob]:
         if not service.claim(job_id):  # lost the race → another worker owns it
             return repo.get_unscoped(job_id)
     elif job.status != JOB_RUNNING:
-        # terminal / needs_review — nothing to run here.
+        # terminal / needs_review - nothing to run here.
         return job
 
     job = repo.get_unscoped(job_id)
     try:
         handler_def = handler_for(job.type)
-    except Exception:  # noqa: BLE001 — unknown type, mark failed + log
+    except Exception:  # noqa: BLE001 - unknown type, mark failed + log
         logger.exception("no handler for job %s (type=%s)", job_id, job.type)
         db.rollback()
         job = repo.get_unscoped(job_id)
@@ -192,7 +192,7 @@ def run_job(db: Session, job_id: str) -> Optional[BackgroundJob]:
 
     try:
         handler_def.handler(db, job)
-    except Exception as exc:  # noqa: BLE001 — full isolation, never propagate
+    except Exception as exc:  # noqa: BLE001 - full isolation, never propagate
         logger.exception("background job %s (type=%s) crashed", job_id, job.type)
         db.rollback()
         job = repo.get_unscoped(job_id)
@@ -202,5 +202,5 @@ def run_job(db: Session, job_id: str) -> Optional[BackgroundJob]:
 
 
 def prune_jobs(db: Session, *, now: Optional[datetime] = None) -> int:
-    """Beat housekeeping — delete terminal jobs past the retention window."""
+    """Beat housekeeping - delete terminal jobs past the retention window."""
     return JobService(db).prune(now=now)

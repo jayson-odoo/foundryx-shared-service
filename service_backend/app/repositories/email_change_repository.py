@@ -28,7 +28,7 @@ class EmailChangeRepository:
             self.db.commit()
             self.db.refresh(row)
         else:
-            # Caller owns the transaction — the service commits each ceremony
+            # Caller owns the transaction - the service commits each ceremony
             # step atomically via the outbox enqueue (review fix: a crash
             # between separate commits stranded the ceremony).
             self.db.flush()
@@ -59,7 +59,7 @@ class EmailChangeRepository:
         )
 
     def get_by_old_token(self, token: str) -> Optional[EmailChangeRequest]:
-        """Redeemable old-side row. Looked up by token alone — the 256-bit
+        """Redeemable old-side row. Looked up by token alone - the 256-bit
         secret is the capability (invite-token convention); the service
         re-scopes the user lookup with row.tenant_id afterwards."""
         return self._redeemable(EmailChangeRequest.old_token, token, CHANGE_PENDING_OLD)
@@ -70,7 +70,7 @@ class EmailChangeRepository:
     def _redeemable(self, column, token: str, expected_status: str):
         if not token:
             return None
-        # Expiry in the WHERE clause — same idiom as get_pending_for_user
+        # Expiry in the WHERE clause - same idiom as get_pending_for_user
         # (expired vs missing is indistinguishable to callers anyway).
         return (
             self.db.query(EmailChangeRequest)
@@ -86,7 +86,7 @@ class EmailChangeRepository:
         self, user_id: str, tenant_id: str, *, commit: bool = True
     ) -> int:
         """A new request (or an explicit cancel) supersedes every prior
-        outstanding one — mirrors invite_token.invalidate_for_user."""
+        outstanding one - mirrors invite_token.invalidate_for_user."""
         updated = (
             self.db.query(EmailChangeRequest)
             .filter(

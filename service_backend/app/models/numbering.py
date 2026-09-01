@@ -1,14 +1,14 @@
-"""Numbering core tables (sprint-4/07, Cluster F) — gapless document numbering.
+"""Numbering core tables (sprint-4/07, Cluster F) - gapless document numbering.
 
 THREE pieces (the terminology_overrides pattern + a counter):
 - The code-side ``NumberSequenceDef`` registry holds DEFAULTS (app/numbering).
-- ``number_formats`` — a per-tenant OVERRIDE row (exists only when a tenant
+- ``number_formats`` - a per-tenant OVERRIDE row (exists only when a tenant
   customises prefix / format / reset for a doc type). Tenant-editable.
-- ``number_counters`` — the gapless running counter, ONE row per
+- ``number_counters`` - the gapless running counter, ONE row per
   (tenant, doc_type, period_key). The ``SELECT … FOR UPDATE`` counter row
   (AC-07-04): ``next_val`` is the NEXT number to hand out, incremented inside
   the CALLER's transaction (flush, not commit) so a caller rollback un-advances
-  it (no Postgres SEQUENCE — those skip on rollback = illegal gaps).
+  it (no Postgres SEQUENCE - those skip on rollback = illegal gaps).
 """
 import uuid
 

@@ -1,5 +1,5 @@
 /**
- * Cluster E (AC-06-64) scenario builder — operator-API setup so the FLOW under
+ * Cluster E (AC-06-64) scenario builder - operator-API setup so the FLOW under
  * test stays real clicks. Builds, against the live backend at :8002 as the demo
  * admin:
  *   - a published submission form (event) + its scoped status graph
@@ -25,7 +25,7 @@ const DB_URL =
 /**
  * E2E residue cleanup (the documented failure class). The persona-bound reviewer
  * pool draws EVERY Profile holding the reviewer/decider persona tenant-wide,
- * ordered by id and trimmed to required_review_count — so prior runs' reviewer
+ * ordered by id and trimmed to required_review_count - so prior runs' reviewer
  * profiles (lower ids) would be allocated instead of THIS run's. Soft-delete all
  * prior E2E reviewer/decider profiles (the resolver filters is_deleted=False) so
  * the pool contains only the run we are about to build. Historical FK refs (old
@@ -256,7 +256,7 @@ export async function buildStaffVariant(
   });
 
   // The author profile (scenario.author) holds the participant persona already,
-  // so it may submit to THIS config too — the spec submits via the portal API
+  // so it may submit to THIS config too - the spec submits via the portal API
   // (subject=profile) so allocation excludes the author and assigns the admin
   // user (the STAFF_ROLE reviewer). configId returned for that submit.
   void scenario;
@@ -357,7 +357,7 @@ export async function buildScenario(): Promise<ClusterEScenario> {
   // Author holds the participant persona (the can_submit role binds to it).
   await grantPersona(token, author.profileId, personaId('participant'));
 
-  // Review configuration — persona-bound roles + status map + open window.
+  // Review configuration - persona-bound roles + status map + open window.
   const now = Date.now();
   const config = await api(token, 'POST', '/reviews/configurations', {
     name: `E2E Event Reviews ${stamp}`,

@@ -2,9 +2,6 @@
  * In-memory mock for the workflow service (Phase A). Stateful across a session
  * so create/edit/publish/run feel real with no backend. Swapped out in Phase B.
  */
-import { toCsv } from '@/lib/csv';
-import { catalogEntry } from '@/lib/workflow-catalog';
-import { createBlankDefinition, newId, topoOrder } from '@/lib/workflow-doc';
 import type { ListQuery } from '@/types/resource';
 import type {
   Workflow,
@@ -15,8 +12,18 @@ import type {
   WorkflowRunListItem,
   WorkflowRunNode,
   WorkflowRunRequest,
+  WorkflowTestOptions,
   WorkflowVersionSummary,
 } from '@/types/workflows';
+import { toCsv } from '@/lib/csv';
+import { catalogEntry } from '@/lib/workflow-catalog';
+import {
+  createBlankDefinition,
+  newId,
+  topoOrder,
+  validAiOutputParams,
+  validateDefinition,
+} from '@/lib/workflow-doc';
 import type { WorkflowService } from './workflow-service';
 
 const LATENCY_MS = 220;
@@ -57,7 +64,14 @@ function welcomeDefinition(): WorkflowDefinition {
         position: { x: 40, y: 220 },
       },
     ],
-    edges: [{ id: 'e_seed1', source: 'trg_seed1', target: 'act_seed1', sourcePort: 'out' }],
+    edges: [
+      {
+        id: 'e_seed1',
+        source: 'trg_seed1',
+        target: 'act_seed1',
+        sourcePort: 'out',
+      },
+    ],
   };
 }
 
@@ -112,7 +126,7 @@ function seedWorkflows(): StoredWorkflow[] {
     {
       id: 'wf-draft',
       name: 'Reminder blast (draft)',
-      description: 'Work in progress — not published yet.',
+      description: 'Work in progress - not published yet.',
       isActive: false,
       isTrashed: false,
       draftDefinition: createBlankDefinition(),
@@ -131,7 +145,10 @@ interface StoredRun extends WorkflowRunDetail {
   workflowId: string;
 }
 
-function buildRunNodes(def: WorkflowDefinition, fail: boolean): WorkflowRunNode[] {
+function buildRunNodes(
+  def: WorkflowDefinition,
+  fail: boolean,
+): WorkflowRunNode[] {
   const ordered = topoOrder(def);
   let failedYet = false;
   return ordered.map((node, i): WorkflowRunNode => {
@@ -164,21 +181,100 @@ function buildRunNodes(def: WorkflowDefinition, fail: boolean): WorkflowRunNode[
     }
     const output =
       node.kind === 'trigger'
-        ? { triggeredBy: 'manual', 'trigger.input.email': 'alex@example.com', 'trigger.input.name': 'Alex Tan' }
+        ? {
+            triggeredBy: 'manual',
+            'trigger.input.email': 'alex@example.com',
+            'trigger.input.name': 'Alex Tan',
+          }
         : entry?.type === 'email.send'
           ? { messageId: newId('eml'), status: 'queued' }
-          : {};
+          : node.type === 'ai_agent.run'
+            ? Object.fromEntries([
+                ...validAiOutputParams(node.config.outputParams).map(
+                  (param) => [
+                    param.key,
+                    param.type === 'number'
+                      ? 1
+                      : param.type === 'boolean'
+                        ? true
+                        : param.type === 'enum'
+                          ? (param.enumValues?.[0] ?? 'option')
+                          : 'mock output',
+                  ],
+                ),
+                ['stateRevision', 1],
+                [
+                  'stateChangedFields',
+                  validAiOutputParams(node.config.outputParams)
+                    .filter((param) => param.stateful)
+                    .map((param) => param.key),
+                ],
+                ['stateRejectedFields', []],
+                ['pendingField', null],
+              ])
+            : node.type === 'ai_agent.clear_state'
+              ? { cleared: true, previousRevision: 1 }
+              : node.type === 'redis.command'
+                ? redisOutput(node.config.operation)
+                : node.type === 'code.run'
+                  ? {
+                      ...Object.fromEntries(
+                        validAiOutputParams(node.config.outputs).map(
+                          (param) => [
+                            param.key,
+                            param.type === 'number'
+                              ? 1
+                              : param.type === 'boolean'
+                                ? true
+                                : 'mock output',
+                          ],
+                        ),
+                      ),
+                      durationMs: 2,
+                      stdout: '',
+                      stderr: '',
+                      terminationReason: 'completed',
+                    }
+                  : {};
+    const input =
+      node.kind === 'trigger'
+        ? null
+        : node.type === 'code.run'
+          ? {
+              inputs: node.config.inputs ?? [],
+              source: node.config.source ?? '',
+            }
+          : { to: 'alex@example.com' };
     return {
       nodeId: node.id,
       nodeType: node.type,
       status: 'success',
-      inputJson: node.kind === 'trigger' ? null : { to: 'alex@example.com' },
+      inputJson: input,
       outputJson: output,
       error: null,
       startedAt: isoMinsAgo(3),
       finishedAt: isoMinsAgo(3),
     };
   });
+}
+
+function redisOutput(operation: unknown): Record<string, unknown> {
+  switch (operation) {
+    case 'set':
+      return { stored: true, value: 'mock value' };
+    case 'delete':
+      return { deleted: true };
+    case 'increment':
+      return { value: 2 };
+    case 'list_push':
+      return { length: 1 };
+    case 'list_pop':
+      return { value: 'mock value' };
+    case 'list_length':
+      return { length: 1 };
+    default:
+      return { value: 'mock value' };
+  }
 }
 
 function seedRuns(): StoredRun[] {
@@ -197,10 +293,13 @@ function seedRuns(): StoredRun[] {
       finishedAt: isoMinsAgo(n * 30 + 5),
       durationMs: 1240 + n * 60,
       versionNumber: 1,
+      correlationKey: null,
       error: fail ? 'Node "Send email" failed.' : null,
       createdAt: isoMinsAgo(n * 30 + 5),
       definition: def,
-      triggerPayload: { input: { email: 'alex@example.com', name: 'Alex Tan' } },
+      triggerPayload: {
+        input: { email: 'alex@example.com', name: 'Alex Tan' },
+      },
       nodes,
     };
   };
@@ -220,6 +319,7 @@ function toRunSummary(run: StoredRun): WorkflowRunListItem {
     finishedAt: run.finishedAt,
     durationMs: run.durationMs,
     versionNumber: run.versionNumber,
+    correlationKey: run.correlationKey,
     error: run.error,
     createdAt: run.createdAt,
   };
@@ -238,7 +338,9 @@ function toRunDetail(run: StoredRun): WorkflowRunDetail {
 
 function toListItem(wf: StoredWorkflow): WorkflowListItem {
   const trigger = wf.draftDefinition.nodes.find((n) => n.kind === 'trigger');
-  const triggerLabel = trigger ? (catalogEntry(trigger.type)?.label ?? trigger.type) : '—';
+  const triggerLabel = trigger
+    ? (catalogEntry(trigger.type)?.label ?? trigger.type)
+    : '-';
   const lastRun = RUNS.filter((r) => r.workflowId === wf.id).sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt),
   )[0];
@@ -262,7 +364,9 @@ function toListItem(wf: StoredWorkflow): WorkflowListItem {
 function hasUnpublished(wf: StoredWorkflow): boolean {
   if (!wf.currentVersionId) return wf.draftDefinition.nodes.length > 0;
   const current = wf.versions.find((v) => v.id === wf.currentVersionId);
-  return JSON.stringify(current?.definition) !== JSON.stringify(wf.draftDefinition);
+  return (
+    JSON.stringify(current?.definition) !== JSON.stringify(wf.draftDefinition)
+  );
 }
 
 function versionSummary(v: StoredVersion): WorkflowVersionSummary {
@@ -272,6 +376,7 @@ function versionSummary(v: StoredVersion): WorkflowVersionSummary {
     publishedAt: v.publishedAt,
     publishedByName: v.publishedByName,
     notes: v.notes,
+    definition: v.definition,
   };
 }
 
@@ -288,13 +393,20 @@ function toWorkflow(wf: StoredWorkflow): Workflow {
   };
 }
 
-function applyQuery(items: WorkflowListItem[], query: ListQuery): WorkflowListItem[] {
+function applyQuery(
+  items: WorkflowListItem[],
+  query: ListQuery,
+): WorkflowListItem[] {
   // Active|Archived view (statusView: 'trashed' = archived).
-  let rows = items.filter((r) => (query.statusView === 'trashed' ? r.isTrashed : !r.isTrashed));
+  let rows = items.filter((r) =>
+    query.statusView === 'trashed' ? r.isTrashed : !r.isTrashed,
+  );
   if (query.search) {
     const q = query.search.toLowerCase();
     rows = rows.filter(
-      (r) => r.name.toLowerCase().includes(q) || r.description.toLowerCase().includes(q),
+      (r) =>
+        r.name.toLowerCase().includes(q) ||
+        r.description.toLowerCase().includes(q),
     );
   }
   if (query.sort) {
@@ -314,7 +426,11 @@ export const mockWorkflowService: WorkflowService = {
   list(query) {
     const all = applyQuery(WORKFLOWS.map(toListItem), query);
     const start = query.page * query.pageSize;
-    return delay({ data: all.slice(start, start + query.pageSize), total: all.length, page: query.page });
+    return delay({
+      data: all.slice(start, start + query.pageSize),
+      total: all.length,
+      page: query.page,
+    });
   },
 
   getAt(query, index) {
@@ -410,7 +526,12 @@ export const mockWorkflowService: WorkflowService = {
   publish(id) {
     const wf = WORKFLOWS.find((w) => w.id === id);
     if (!wf) return Promise.reject(new Error('Workflow not found.'));
-    const versionNumber = (wf.versions[wf.versions.length - 1]?.versionNumber ?? 0) + 1;
+    const issue = validateDefinition(wf.draftDefinition).find(
+      (candidate) => candidate.level === 'error',
+    );
+    if (issue) return Promise.reject(new Error(issue.message));
+    const versionNumber =
+      (wf.versions[wf.versions.length - 1]?.versionNumber ?? 0) + 1;
     const version: StoredVersion = {
       id: newId('ver'),
       versionNumber,
@@ -436,7 +557,7 @@ export const mockWorkflowService: WorkflowService = {
   run(id, request: WorkflowRunRequest) {
     const wf = WORKFLOWS.find((w) => w.id === id);
     if (!wf) return Promise.reject(new Error('Workflow not found.'));
-    // Manual run executes the current DRAFT — no publish required (D13).
+    // Manual run executes the current DRAFT - no publish required (D13).
     const version = wf.versions.find((v) => v.id === wf.currentVersionId);
     const definition = wf.draftDefinition;
     const now = new Date().toISOString();
@@ -452,6 +573,7 @@ export const mockWorkflowService: WorkflowService = {
       finishedAt: now,
       durationMs: 1180,
       versionNumber: version?.versionNumber ?? 0, // 0 = ran the draft
+      correlationKey: null,
       error: null,
       createdAt: now,
       definition,
@@ -462,14 +584,34 @@ export const mockWorkflowService: WorkflowService = {
     return delay(toRunSummary(run));
   },
 
+  getTestOptions(): Promise<WorkflowTestOptions> {
+    return delay({
+      omnichannelTestSources: [
+        {
+          channelId: 'chn-demo',
+          channelName: 'Demo sandbox',
+          contactId: 'cnt-001',
+          contactName: 'Alice',
+          contactPhone: '+6012',
+        },
+      ],
+    });
+  },
+
   listRuns(workflowId, query) {
-    let rows = RUNS.filter((r) => r.workflowId === workflowId).map(toRunSummary);
+    let rows = RUNS.filter((r) => r.workflowId === workflowId).map(
+      toRunSummary,
+    );
     if (query.segment && query.segment !== 'all') {
       rows = rows.filter((r) => r.status === query.segment);
     }
     rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const start = query.page * query.pageSize;
-    return delay({ data: rows.slice(start, start + query.pageSize), total: rows.length, page: query.page });
+    return delay({
+      data: rows.slice(start, start + query.pageSize),
+      total: rows.length,
+      page: query.page,
+    });
   },
 
   getRun(runId) {
@@ -483,14 +625,20 @@ export const mockWorkflowService: WorkflowService = {
       .map(versionSummary)
       .sort((a, b) => b.versionNumber - a.versionNumber);
     const start = query.page * query.pageSize;
-    return delay({ data: all.slice(start, start + query.pageSize), total: all.length, page: query.page });
+    return delay({
+      data: all.slice(start, start + query.pageSize),
+      total: all.length,
+      page: query.page,
+    });
   },
 
   cancelRun(runId) {
     const run = RUNS.find((r) => r.id === runId);
     if (!run) return Promise.reject(new Error('Run not found.'));
     if (run.status !== 'pending' && run.status !== 'running') {
-      return Promise.reject(new Error('Only pending or running runs can be cancelled.'));
+      return Promise.reject(
+        new Error('Only pending or running runs can be cancelled.'),
+      );
     }
     run.status = 'cancelled';
     return delay(toRunSummary(run));
@@ -509,12 +657,18 @@ export const mockWorkflowService: WorkflowService = {
     for (let i = 0; i <= targetIdx; i++) {
       const node = ordered[i];
       const cached = run.nodes.find((rn) => rn.nodeId === node.id);
-      const mustRun = node.id === request.targetNodeId || stale.has(node.id) || !cached?.outputJson;
+      const mustRun =
+        node.id === request.targetNodeId ||
+        stale.has(node.id) ||
+        !cached?.outputJson;
       if (!mustRun) continue;
       const entry = catalogEntry(node.type);
       const output =
         node.kind === 'trigger'
-          ? { triggeredBy: 'manual', ...(run.triggerPayload as Record<string, unknown>) }
+          ? {
+              triggeredBy: 'manual',
+              ...(run.triggerPayload as Record<string, unknown>),
+            }
           : entry?.type === 'email.send'
             ? { messageId: newId('eml'), status: 'queued' }
             : {};
@@ -553,7 +707,9 @@ export const mockWorkflowService: WorkflowService = {
   export(query, columns) {
     const rows = applyQuery(WORKFLOWS.map(toListItem), query);
     const body = rows.map((r) =>
-      columns.map((c) => String((r as unknown as Record<string, unknown>)[c] ?? '')),
+      columns.map((c) =>
+        String((r as unknown as Record<string, unknown>)[c] ?? ''),
+      ),
     );
     return delay(toCsv(columns, body));
   },

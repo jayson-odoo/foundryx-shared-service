@@ -23,7 +23,7 @@ export default function TenantsPage() {
           <ToolbarHeading>
             <ToolbarPageTitle />
             <ToolbarDescription>
-              Manage tenants on this deployment — provision, suspend and archive tenants.
+              Manage tenants on this deployment - provision, suspend and archive tenants.
             </ToolbarDescription>
           </ToolbarHeading>
         </Toolbar>

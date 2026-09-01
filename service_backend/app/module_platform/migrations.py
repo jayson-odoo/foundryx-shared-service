@@ -2,7 +2,7 @@
 
 Each module owns ``modules/<name>/alembic/`` (its own ``env.py`` + ``versions/``)
 and an isolated version table (``alembic_version_<name>`` in the module schema,
-declared in the manifest) — dodging the core cross-branch-pin gotcha. Per module:
+declared in the manifest) - dodging the core cross-branch-pin gotcha. Per module:
 
   version-row exists            → ``upgrade head``
   no row + module tables exist  → ``stamp head``  (legacy create_all, no DDL)
@@ -60,7 +60,7 @@ def run_module_migrations(engine: Engine, name: str) -> None:
         return
     alembic_dir = MODULES_DIR / manifest["_dir"] / "alembic"
     if not alembic_dir.is_dir():
-        return  # legacy module — create_all path
+        return  # legacy module - create_all path
 
     schema = manifest.get("schema")
     version_table = manifest.get("alembic_version_table") or f"alembic_version_{name}"
@@ -96,12 +96,12 @@ def run_module_migrations(engine: Engine, name: str) -> None:
     has_module_tables = bool(module_tables & existing)
 
     if has_version_table:
-        # Already under Alembic — apply any new revisions.
+        # Already under Alembic - apply any new revisions.
         command.upgrade(cfg, "head")
     elif has_module_tables:
-        # Legacy create_all schema — adopt Alembic with NO DDL.
+        # Legacy create_all schema - adopt Alembic with NO DDL.
         command.stamp(cfg, "head")
         logger.info("Module '%s' stamped to head (legacy tables adopted).", name)
     else:
-        # Fresh DB — build from migrations.
+        # Fresh DB - build from migrations.
         command.upgrade(cfg, "head")

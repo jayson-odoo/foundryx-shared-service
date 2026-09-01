@@ -13,7 +13,7 @@ import { IdeaCaptureDialog } from './idea-capture-dialog';
 import { promoteIdeasToBr } from './promote-to-br';
 
 /**
- * The Ideas repository grid — the SINGLE list/grid component used by BOTH the
+ * The Ideas repository grid - the SINGLE list/grid component used by BOTH the
  * operator page and the chrome-less host iframe (WS-C1 / AC-CAP-9/10). The
  * backend + URLs it talks to come from `useIdeationRuntime()` (operator default
  * or embed), so the component code is mode-agnostic: shared ResourceList with

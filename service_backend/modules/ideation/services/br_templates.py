@@ -1,12 +1,12 @@
 """Versioned BR artifact template (Bi-D1/Bi-D2, AC-BI-16).
 
 The BR template is a ``form_engine`` block document (``FormDocument``), stored as
-immutable versions with a movable ``active`` label — the exact ai_skills shape,
+immutable versions with a movable ``active`` label - the exact ai_skills shape,
 one layer up. A BR STAMPS ``(template_key, version)`` at create; validation and
 rendering resolve the STAMPED version's ``doc_json`` (never the current active
 one) so a template edit can never reshape an existing BR.
 
-S2 seeds ONLY the platform-tier (``tenant_id = NULL``) template — no tenant fork
+S2 seeds ONLY the platform-tier (``tenant_id = NULL``) template - no tenant fork
 logic yet (tenant customization is deferred). Reseed is insert-if-missing so an
 operator's edits survive a bootstrap.
 """
@@ -39,7 +39,7 @@ def br_target_schema() -> FormDocument:
     valid ``validate_form_doc`` document (AC-BI-16). Fields mirror the intake
     pattern (``_ideation_target_schema``). ``problem_statement`` /
     ``business_goal`` / ``success_metric`` are required (the spine of a BR);
-    ``stakeholders`` / ``scope`` / ``constraints`` are optional — a grill may
+    ``stakeholders`` / ``scope`` / ``constraints`` are optional - a grill may
     leave a field blank rather than invent it (partial emit is success, D13)."""
     return FormDocument.model_validate(
         {
@@ -110,7 +110,7 @@ def seed_br_template(db: Session) -> None:
     Insert-if-missing (an operator's edits survive a reseed): if the platform
     template already exists this is a no-op. The doc is validated with
     ``validate_form_doc`` before persisting (a broken seed doc would be a
-    programming error — fail loudly). Bi-D2: only the platform (NULL) tier."""
+    programming error - fail loudly). Bi-D2: only the platform (NULL) tier."""
     existing = (
         db.query(IdeationArtifactTemplate)
         .filter(
@@ -194,13 +194,13 @@ def active_version_number(
 def get_stamped_version(
     db: Session, template_key: str, template_version: int, tenant_id: Optional[str]
 ) -> Optional[IdeationArtifactTemplateVersion]:
-    """The IMMUTABLE version row a BR stamped — resolved by (key, version) within
+    """The IMMUTABLE version row a BR stamped - resolved by (key, version) within
     the tenant's resolved tier (falls back to the platform tier). Rendering +
     validation read THIS, never the current active version (AC-BI-16)."""
     template = resolve_active_template(db, tenant_id)
     if template is None or template.template_key != template_key:
         # Fall back to any template of that key visible to the tenant (own or
-        # platform tier) — the stamp is authoritative, not the active pointer.
+        # platform tier) - the stamp is authoritative, not the active pointer.
         template = (
             db.query(IdeationArtifactTemplate)
             .filter(

@@ -65,12 +65,12 @@ function VoteCell({ idea, onVote }: { idea: Idea; onVote: (idea: Idea, dir: 'up'
 }
 
 /**
- * Ideas list config (plan Phase A) on the shared ResourceList — SAME component
+ * Ideas list config (plan Phase A) on the shared ResourceList - SAME component
  * as the Users list. Row order IS priority (top = highest), reordered via the
  * left grip (config.rowReorder). Column sorting is disabled so the drag order
  * stays meaningful. Row-click opens the idea form; votes are a per-user toggle.
  *
- * Actions (row + form + bulk): Advance to next stage (status_engine transition —
+ * Actions (row + form + bulk): Advance to next stage (status_engine transition -
  * prototype uses IDEA_NEXT_STATUS), Archive/Restore (soft, via the Active |
  * Archived status view), and hard Delete. Bulk-select via the select column.
  */
@@ -97,12 +97,12 @@ export function useIdeasListConfig(
         id: 'promote-br',
         label: 'Promote to BR',
         icon: FileText,
-        // Gated by the BR write perm — the destination is a new draft BR.
+        // Gated by the BR write perm - the destination is a new draft BR.
         permission: 'ideation.business_requirements.manage',
         surfaces: { row: true, form: true, bulk: true },
         // Only non-archived ideas that all share ONE product (a BR links
         // same-product ideas, AC-BI-17). A mixed-product selection is disabled
-        // (foolproof-UI — never offer a move that will 422).
+        // (foolproof-UI - never offer a move that will 422).
         isVisible: (rows) => rows.length > 0 && rows.every((r) => r.status !== 'archived'),
         isDisabled: (rows) => new Set(rows.map((r) => r.productId)).size > 1,
         run: async (rows) => {

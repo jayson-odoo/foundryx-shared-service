@@ -39,7 +39,7 @@ class User(Base):
     password = Column(String, nullable=True)  # bcrypt hash; null until set-password
     name = Column(String, nullable=True)
     status = Column(String, default=UserStatus.INACTIVE.value, nullable=False)
-    # Avatar = storage KEY, never a URL (plan 06 D4 — presigned URLs expire).
+    # Avatar = storage KEY, never a URL (plan 06 D4 - presigned URLs expire).
     # The version cache-busts the public route; the old `avatar` URL column
     # is gone (it only ever held NULLs).
     avatar_key = Column(String, nullable=True)
@@ -60,12 +60,12 @@ class User(Base):
 
     # joined: the per-request tenant-lifecycle check + platform gating read the
     # tenant (and its status, itself lazy="joined") on every authenticated
-    # request — load them with the user row, never as a second query.
+    # request - load them with the user row, never as a second query.
     tenant = relationship("Tenant", lazy="joined")
 
     @property
     def avatar(self) -> "str | None":
-        """Wire-facing avatar URL — every serializer (login payload, /auth/me,
+        """Wire-facing avatar URL - every serializer (login payload, /auth/me,
         users list) reads `.avatar` unchanged. Pure string concat from id +
         version: the PUBLIC route resolves the key per request (CDN/presigned/
         local), so nothing expiring is ever persisted or serialized here."""

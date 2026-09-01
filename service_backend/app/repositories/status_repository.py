@@ -1,4 +1,4 @@
-"""Status repository (sprint-2/01) — pure SQLAlchemy, two-tier resolution.
+"""Status repository (sprint-2/01) - pure SQLAlchemy, two-tier resolution.
 
 Two-tier (D7): reads for an entity_type return the TENANT's rows when any
 exist for that entity_type, else the platform defaults (``tenant_id NULL``).
@@ -28,7 +28,7 @@ class StatusRepository:
         )
 
     def resolve_tier(self, entity_type: str, tenant_id: Optional[str]) -> Optional[str]:
-        """The owning tenant_id of the visible set — tenant fork or None (platform)."""
+        """The owning tenant_id of the visible set - tenant fork or None (platform)."""
         return tenant_id if self.tenant_has_fork(entity_type, tenant_id) else None
 
     def list_for_entity(
@@ -39,7 +39,7 @@ class StatusRepository:
         scope_id: Optional[str] = None,
     ) -> List[Status]:
         """``scope_id`` (sprint-3/01 D4): a scoped entity's rows live per
-        owning record. None filters IS NULL — unscoped reads never see
+        owning record. None filters IS NULL - unscoped reads never see
         scoped rows and vice versa."""
         tier = self.resolve_tier(entity_type, tenant_id)
         q = self.db.query(Status).filter(

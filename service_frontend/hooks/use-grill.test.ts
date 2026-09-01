@@ -123,7 +123,7 @@ describe('useGrill (AC-BI-22/29)', () => {
     });
   });
 
-  it('ACCUMULATES the captured summary + coverage across turns — never drops a field (AC-BI-29c)', async () => {
+  it('ACCUMULATES the captured summary + coverage across turns - never drops a field (AC-BI-29c)', async () => {
     const { result } = renderHook(() => useGrill('br-1'));
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
@@ -138,7 +138,7 @@ describe('useGrill (AC-BI-22/29)', () => {
       await result.current.sendTurn('exports slow');
     });
 
-    // Turn B: reports ONLY business_goal (omits problem_statement) — the earlier
+    // Turn B: reports ONLY business_goal (omits problem_statement) - the earlier
     // field must NOT vanish (the "2 of 6" → "1 of 6" bug).
     svc.turn.mockResolvedValueOnce({
       replyText: 'Great.',

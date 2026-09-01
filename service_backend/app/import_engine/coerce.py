@@ -1,4 +1,4 @@
-"""Per-type cell coercion (sprint-3/09 D6) — server-authoritative.
+"""Per-type cell coercion (sprint-3/09 D6) - server-authoritative.
 
 Each coercer returns ``(value, error)``: a parsed value or an error message with
 the expected format. Empty-after-trim = None (absent). Dates = strict ISO-8601
@@ -52,7 +52,7 @@ def coerce_decimal(value: Any, decimals: Optional[int]) -> Result:
     except (InvalidOperation, ValueError, TypeError):
         return None, "expected a number"
     if decimals is not None:
-        # Decimal-exponent check (never a .split('.') digit count — sci-notation
+        # Decimal-exponent check (never a .split('.') digit count - sci-notation
         # would slip past; house rule, plan sprint-3/01 review).
         exp = d.as_tuple().exponent
         places = -exp if isinstance(exp, int) and exp < 0 else 0

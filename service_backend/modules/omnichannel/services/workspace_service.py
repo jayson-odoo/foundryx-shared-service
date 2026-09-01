@@ -1,4 +1,4 @@
-"""Workspace business logic — tenant-scoped. Routers stay thin; this owns rules
+"""Workspace business logic - tenant-scoped. Routers stay thin; this owns rules
 (default-workspace protection, status resolution, membership)."""
 from typing import List, Optional, Tuple
 

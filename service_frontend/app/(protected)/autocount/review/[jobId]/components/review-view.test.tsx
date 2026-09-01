@@ -28,7 +28,7 @@ vi.mock('@/hooks/use-datetime', () => ({
     formatTime: () => '',
   }),
 }));
-// Layout chrome pulls in the settings/session providers — passthroughs keep the
+// Layout chrome pulls in the settings/session providers - passthroughs keep the
 // test focused on the approve gate.
 vi.mock('@/components/common/container', () => ({
   Container: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -107,7 +107,7 @@ describe('ReviewView preview gate (AC-14-20)', () => {
     expect(screen.getByTestId('approve-batch')).not.toBeDisabled();
   });
 
-  it('enables Approve after a not-previewable dry run (logging sink — nothing to overwrite)', () => {
+  it('enables Approve after a not-previewable dry run (logging sink - nothing to overwrite)', () => {
     reviewState.mockReturnValue(baseReview());
     previewState.mockReturnValue(
       basePreview({

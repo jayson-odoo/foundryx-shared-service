@@ -1,4 +1,4 @@
-# 04 — Omnichannel Foundation · Phase B (Backend Wiring) — Test Execution Report
+# 04 - Omnichannel Foundation · Phase B (Backend Wiring) - Test Execution Report
 
 **Sprint:** 1 · **Plan:** [04-omnichannel-foundation](04-omnichannel-foundation.md) · **Phase:** B (real backend; mock→real swap)
 **Stack:** Next :3001 (prod build) → FastAPI :8001 → Postgres (schema `app_omnichannel`).
@@ -15,18 +15,18 @@
 
 ## 2. Automated coverage
 
-### Backend (pytest) — 66 passed (8 new + 58 existing, 0 regressions)
+### Backend (pytest) - 66 passed (8 new + 58 existing, 0 regressions)
 | Spec | Cases | Result |
 |------|-------|--------|
 | `tests/test_omnichannel.py` | default workspace seeded; workspace create/update; member assign/list/remove; default-workspace trash-guard (400); onboarding provisions channel (dev mode); test-connection + disconnect→trashed→restore→delete lifecycle; channel update toggles status; **403 gating** for a user without `omnichannel.*` | ✅ 8/8 |
-| existing suite (`auth`, `users`, `roles`, `impersonation`) | adjusted two role tests that hardcoded the catalog count (now count-agnostic — Admin holds core+module) | ✅ 58/58 |
+| existing suite (`auth`, `users`, `roles`, `impersonation`) | adjusted two role tests that hardcoded the catalog count (now count-agnostic - Admin holds core+module) | ✅ 58/58 |
 
 Module tests run on SQLite via `schema_translate_map={app_omnichannel: None}`.
 
 ### Frontend
 tsc 0 errors · eslint clean. Vitest (Phase A specs) still green.
 
-### E2E (Playwright, real clicks vs **live backend**) — 5 passed
+### E2E (Playwright, real clicks vs **live backend**) - 5 passed
 | # | Scenario | Steps | Expected | Actual |
 |---|----------|-------|----------|--------|
 | 1 | Channels page loads | nav Omnichannel → Channels | subtitle + Connect button | Pass |

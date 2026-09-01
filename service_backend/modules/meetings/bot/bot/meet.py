@@ -153,6 +153,18 @@ class MeetSession:
             self.events.emit("consent_skipped", reason="chat_input_not_found")
         self._click_if_present(S.CHAT_CLOSE, 1500)
 
+    def enable_captions(self) -> None:
+        if self.page.locator(S.CAPTIONS_OFF).count():
+            self.events.emit("captions_on", already=True)
+            return
+        if self._click_if_present(S.CAPTIONS_ON, 5000):
+            self.events.emit("captions_on")
+        else:
+            self.events.emit("captions_unavailable")
+
+    def captions(self) -> list[dict] | None:
+        return self.page.evaluate(S.CAPTION_BLOCKS_JS)
+
     def dom_probe(self) -> dict:
         """Dump what the in-call DOM offers so selectors can be pinned from a real run (spike only)."""
         return self.page.evaluate(
@@ -167,6 +179,7 @@ class MeetSession:
                   name: e.getAttribute('data-self-name') || e.getAttribute('aria-label') || '',
                   cls: e.className.toString().slice(0, 120)})),
                 url: location.href,
+                captionRegion: (document.querySelector('[aria-live="polite"], [aria-live="assertive"]') || {}).innerText || null,
               };
             }"""
         )

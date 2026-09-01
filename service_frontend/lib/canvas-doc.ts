@@ -10,12 +10,12 @@ import type {
 import { newDocId } from '@/lib/template-doc';
 
 // ---------------------------------------------------------------------------
-// F2 slice 2 — fixed-canvas (badge/ticket/cert) doc helpers
+// F2 slice 2 - fixed-canvas (badge/ticket/cert) doc helpers
 // ---------------------------------------------------------------------------
 // Geometry is ALWAYS stored in mm (print-authoritative). `canvas.unit` is the
-// editor's display/input unit only — convert on the boundary, never in the doc.
+// editor's display/input unit only - convert on the boundary, never in the doc.
 
-/** Bundled font families (mirror of backend fonts.py FONT_NAMES) — the canvas
+/** Bundled font families (mirror of backend fonts.py FONT_NAMES) - the canvas
  * text font picker. Adding a family = bundle the TTF + register on BOTH sides. */
 export const CANVAS_FONTS = [
   'Inter',
@@ -118,7 +118,7 @@ export function roundForUnit(value: number, unit: CanvasUnit): number {
 
 /** Clamp an axis-aligned box to the canvas trim [0..width] × [0..height].
  * Size is capped to the canvas first, then position so the box stays inside.
- * (Rotation is ignored — the unrotated box is what's bounded.) */
+ * (Rotation is ignored - the unrotated box is what's bounded.) */
 export function clampBox(
   canvas: CanvasSize,
   x: number,
@@ -236,7 +236,7 @@ export function findElement(
 }
 
 // ---------------------------------------------------------------------------
-// Validation mirror (D18) — keep PARITY with backend validate_canvas_doc.
+// Validation mirror (D18) - keep PARITY with backend validate_canvas_doc.
 // ---------------------------------------------------------------------------
 
 export interface CanvasValidationContext {

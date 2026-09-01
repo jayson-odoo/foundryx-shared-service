@@ -1,5 +1,5 @@
 /**
- * Onboarding service — channel provisioning via Meta Embedded Signup.
+ * Onboarding service - channel provisioning via Meta Embedded Signup.
  *
  * The Embedded Signup popup (Meta JS SDK in Phase B, a simulated dialog in
  * Phase A) hands the client an `EmbeddedSignupResult` (auth code + WABA/phone

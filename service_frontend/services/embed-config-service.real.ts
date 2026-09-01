@@ -1,5 +1,5 @@
 /**
- * Real embed-access config service — talks to FastAPI via the shared api-client
+ * Real embed-access config service - talks to FastAPI via the shared api-client
  * (`/omnichannel/embed-config*`, gated `workspaces.manage`).
  */
 import { apiFetch } from '@/lib/api-client';

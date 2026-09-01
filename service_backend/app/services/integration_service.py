@@ -1,4 +1,4 @@
-"""Integration service (plan 09 §4, §6) — business rules over the connection
+"""Integration service (plan 09 §4, §6) - business rules over the connection
 registry: one-per-type (plan 06 D7), credential encryption (write-only),
 inline test with status upkeep, Resource-list reads (plan 06 D6).
 """
@@ -33,7 +33,7 @@ from app.secrets import decrypt_secret, encrypt_secret
 from app.services.filter_translator import translate_filter
 from app.workflow_engine.entity_events import emit_entity_event
 
-# Whitelisted filterable columns (never arbitrary attributes — the translator
+# Whitelisted filterable columns (never arbitrary attributes - the translator
 # contract). Wire names are camelCase like every Resource entity.
 _CONNECTION_FILTER_COLUMNS = {
     "name": Connection.name,
@@ -51,7 +51,7 @@ def _now() -> datetime:
 
 
 _STALE_CIPHERTEXT_MSG = (
-    "Stored credentials can no longer be decrypted (the encryption key changed — "
+    "Stored credentials can no longer be decrypted (the encryption key changed - "
     "e.g. FERNET_KEY was unset, so a restart rotated the ephemeral key). "
     "Re-enter the credentials and save to fix this connection."
 )
@@ -136,7 +136,7 @@ class IntegrationService:
     def _registered_providers() -> List[str]:
         """Provider keys the Integrations surface owns. Infrastructure rows in
         the same ``connections`` table under an unregistered provider (e.g. the
-        embed ``omnichannel_shared`` connection) are deliberately excluded — the
+        embed ``omnichannel_shared`` connection) are deliberately excluded - the
         integrations Disconnect action would otherwise destroy them and mint a
         new connection id, invalidating every consumer's embed iframe."""
         return [p.provider for p in all_providers()]
@@ -223,22 +223,29 @@ class IntegrationService:
         provider = get_provider(req.provider)
         if provider is None:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f'Unknown provider "{req.provider}".')
-        # ONE connection per TYPE per tenant (plan 06 D7) — resolution must
+        # ONE connection per TYPE per tenant (plan 06 D7) - resolution must
         # stay deterministic (which bucket does StorageService write to?).
         # Subsumes the old per-provider rule; multiple-per-provider = BL-043.
         # RELAXED for ``payment`` (AC-07-24): a tenant may hold several payment
         # connections (Stripe + Billplz) for per-project resolution; only a
         # SAME-PROVIDER duplicate is rejected (the (tenant, provider) unique).
-        # RELAXED for ``llm`` too (Bi-D21 / AC-BI-03b) — agents resolve by
+        # RELAXED for ``llm`` too (Bi-D21 / AC-BI-03b) - agents resolve by
         # connection_id, so Anthropic + OpenAI + Gemini coexist. The exempt set
         # is shared with the DB index so the 409 and the constraint agree.
-        if provider.type in EXEMPT_FROM_ONE_PER_TYPE:
+        # ``erp`` is exempt from the per-PROVIDER rule as well: the
+        # ``uq_connection_tenant_provider`` index (app/models/connection.py)
+        # carries ``type != 'erp'`` in its predicate because one AutoCount
+        # company = one ``autocount``/``sql_database`` connection (sprint-4/13
+        # D16/D17, plan 22). Mirror the index exactly - no 409 for erp.
+        if provider.type == "erp":
+            pass
+        elif provider.type in EXEMPT_FROM_ONE_PER_TYPE:
             dup = self.repo.get_by_provider(tenant_id, provider.provider)
             if dup is not None:
                 raise HTTPException(
                     status.HTTP_409_CONFLICT,
                     f'A {dup.provider} connection ("{dup.name}") already exists '
-                    "for this workspace — disconnect it first.",
+                    "for this workspace - disconnect it first.",
                 )
         else:
             existing = self.repo.get_by_type(tenant_id, provider.type)
@@ -246,7 +253,7 @@ class IntegrationService:
                 raise HTTPException(
                     status.HTTP_409_CONFLICT,
                     f'A {existing.type} connection ("{existing.name}") already exists '
-                    "for this workspace — disconnect it first.",
+                    "for this workspace - disconnect it first.",
                 )
         connection = Connection(
             tenant_id=tenant_id,
@@ -285,7 +292,7 @@ class IntegrationService:
             changes["name"] = {"from": connection.name, "to": req.name}
             connection.name = req.name
         if req.config is not None:
-            # MERGE, don't replace — config is a partial PATCH field (its
+            # MERGE, don't replace - config is a partial PATCH field (its
             # sibling `credentials` merges too); wholesale replace would let a
             # partial body silently wipe omitted keys.
             connection.config_json = {**(connection.config_json or {}), **req.config}
@@ -311,7 +318,7 @@ class IntegrationService:
         (sprint-4/12). New uploads land here; resolve-by-type serves it. The
         partial-unique index permits only one active row per (tenant, type), so
         deactivate every other storage row of this tenant FIRST, then activate
-        the target — one transaction. Blobs written under a now-retired
+        the target - one transaction. Blobs written under a now-retired
         connection keep resolving by key (resolve-by-id ignores is_active)."""
         connection = self._get_or_404(tenant_id, connection_id)
         if connection.type != "storage":
@@ -365,7 +372,7 @@ class IntegrationService:
             )
         credentials = _decrypt_or_none(connection.credentials_json)
         if credentials is None:
-            # Key rotation made the stored secret unreadable — surface a clean,
+            # Key rotation made the stored secret unreadable - surface a clean,
             # actionable failure instead of a 500.
             result = TestResult(ok=False, message=_STALE_CIPHERTEXT_MSG)
         else:
@@ -380,7 +387,7 @@ class IntegrationService:
     def _get_or_404(self, tenant_id: str, connection_id: str) -> Connection:
         connection = self.repo.get(connection_id, tenant_id)
         # Infrastructure rows under an unregistered provider (embed
-        # ``omnichannel_shared``) are not part of the Integrations surface — hide
+        # ``omnichannel_shared``) are not part of the Integrations surface - hide
         # them from detail/test/disconnect just as they're hidden from the list.
         if connection is None or get_provider(connection.provider) is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Connection not found.")

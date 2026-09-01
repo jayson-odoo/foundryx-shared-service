@@ -1,7 +1,7 @@
 """Legacy ``media_url`` → ``media_key`` backfill (sprint-4/10 Slice 3, AC-10-20).
 
 Conftest uses ``create_all`` (module Alembic is a Postgres-only no-op here), so
-the backfill FUNCTION is the tested unit — seed a ``media_url``-only row, run it,
+the backfill FUNCTION is the tested unit - seed a ``media_url``-only row, run it,
 assert the row is now key-based + the URL is cleared. Also covers idempotency
 and per-row failure-isolation (an unfetchable blob is skipped, not fatal).
 """
@@ -104,7 +104,7 @@ def test_backfill_skips_unfetchable_row_without_failing(session_factory, media_r
     db = session_factory()
     # Points at a missing local blob AND an unsupported scheme → un-fetchable.
     bad_id = _seed_message(db, media_url="ftp://nowhere/omnichannel/media/missing.png")
-    # A convertible row BEHIND the skipped one — must still be reached.
+    # A convertible row BEHIND the skipped one - must still be reached.
     rel = "b/good.png"
     (media_root / "b").mkdir(parents=True)
     (media_root / rel).write_bytes(b"OK")
@@ -130,7 +130,7 @@ def test_media_sample_key_registered_and_drift_clean():
         all_key_columns,
         registered_scalar_columns,
     )
-    from modules.omnichannel import models as _omni  # noqa: F401 — populate metadata
+    from modules.omnichannel import models as _omni  # noqa: F401 - populate metadata
     from modules.omnichannel.bootstrap import register_engine_entities
     from modules.omnichannel.db import OmniBase
 

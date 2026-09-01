@@ -1,9 +1,9 @@
 'use client';
 
-/** Settings tab (plan sprint-3/01 D10/D11/D18) — access, submission window,
+/** Settings tab (plan sprint-3/01 D10/D11/D18) - access, submission window,
  * caps, per-user limit, display mode, pinned answer columns. Per-user limit
  * is enforceable only with an authenticated identity, so it greys out for
- * public forms (anonymous respondents — foolproof-UI, D10); `portal` access
+ * public forms (anonymous respondents - foolproof-UI, D10); `portal` access
  * is reserved for Cluster D and not offered yet (D11). */
 import type { FieldPath, FieldPathValue, UseFormReturn } from 'react-hook-form';
 import { Input } from '@/components/ui/input';
@@ -86,7 +86,7 @@ export function FormSettingsTab({ form, editing, formRecord, doc }: FormSettings
             onChange={(e) => set('name', e.target.value)}
           />
         ) : (
-          <span className="text-sm font-medium">{values.name || '—'}</span>
+          <span className="text-sm font-medium">{values.name || '-'}</span>
         )}
       </Row>
 
@@ -98,7 +98,7 @@ export function FormSettingsTab({ form, editing, formRecord, doc }: FormSettings
             onChange={(e) => set('description', e.target.value)}
           />
         ) : (
-          <span className="text-sm text-muted-foreground">{values.description || '—'}</span>
+          <span className="text-sm text-muted-foreground">{values.description || '-'}</span>
         )}
       </Row>
 
@@ -108,8 +108,8 @@ export function FormSettingsTab({ form, editing, formRecord, doc }: FormSettings
             value={values.access}
             onChange={(v) => set('access', (v as 'internal' | 'public') || 'internal')}
             options={[
-              { value: 'internal', label: 'Internal — signed-in users' },
-              { value: 'public', label: 'Public — anyone with the link' },
+              { value: 'internal', label: 'Internal - signed-in users' },
+              { value: 'public', label: 'Public - anyone with the link' },
             ]}
             placeholder="Access"
           />
@@ -180,7 +180,7 @@ export function FormSettingsTab({ form, editing, formRecord, doc }: FormSettings
           />
         ) : (
           <span className="text-sm text-muted-foreground">
-            {values.access === 'public' ? '—' : values.submissionLimitPerUser || 'Unlimited'}
+            {values.access === 'public' ? '-' : values.submissionLimitPerUser || 'Unlimited'}
           </span>
         )}
       </Row>

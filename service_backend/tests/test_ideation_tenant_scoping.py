@@ -1,4 +1,4 @@
-"""Ideation FIX 1 — operator reads are tenant-scoped, and chat-captured (intake)
+"""Ideation FIX 1 - operator reads are tenant-scoped, and chat-captured (intake)
 ideas are visible to the *same-tenant* operator, never leaked to another tenant.
 
 Root cause this pins down: intake ``create_idea`` writes an Idea under the
@@ -8,7 +8,7 @@ given workspace, and every read (``list`` / ``board`` / ``get``) MUST be
 tenant-scoped so nothing leaks across tenants.
 
 Also covers the new optional ``product_id`` scope on ``list`` / ``board`` (the
-canonical ideation scope — an idea belongs to a product, which belongs to a
+canonical ideation scope - an idea belongs to a product, which belongs to a
 tenant); the product filter never widens visibility across tenants.
 """
 import pytest
@@ -119,7 +119,7 @@ _FULL_FIELDS = {
 
 
 def _capture_idea_via_intake(client, key, contact_id, product_id) -> str:
-    """Drive the deterministic intake to a *completed* (status=captured) Idea —
+    """Drive the deterministic intake to a *completed* (status=captured) Idea -
     exactly the chat-capture path the sorento brain calls. Returns the idea id."""
     # Turn 1: seed problem + all fields -> review (never auto-completes).
     r1 = client.post(

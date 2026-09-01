@@ -1,14 +1,14 @@
 'use client';
 
 /**
- * The AutoCount transform formula builder (AC-16-11..15) — a Qrvey-style dialog
+ * The AutoCount transform formula builder (AC-16-11..15) - a Qrvey-style dialog
  * over the SAFE mirrored engine (`lib/autocount-formula.ts`). It only EDITS an
  * expression string; evaluation/validation stay in the hand-written parser (no
  * eval anywhere). Two tabs:
- *   • Formula — a textarea with live parse validation, an insert-at-caret
+ *   • Formula - a textarea with live parse validation, an insert-at-caret
  *     function catalog grouped by data type + searchable, a per-function
  *     reference panel, and the structured date-format tool.
- *   • Testing — a mock value in → live output + a server parity check.
+ *   • Testing - a mock value in → live output + a server parity check.
  *
  * Read-only-until-Edit is enforced by the caller (the Build affordance only
  * renders under the mapping form's global Edit toggle); a formula that fails to
@@ -54,12 +54,12 @@ export interface AutocountFormulaBuilderProps {
   onApply: (formula: string) => void;
   /** Server-authoritative single-formula eval for the Testing tab's parity check. */
   onServerTest: (formula: string, value: unknown) => Promise<AutocountFormulaTestResult>;
-  /** The Sorento field this row feeds — shown as context in the header. */
+  /** The Sorento field this row feeds - shown as context in the header. */
   fieldLabel?: string;
   /** Open on the Date category (a Date-preset row). */
   initialCategory?: string;
   /** A concise caveat shown under the formats line (e.g. the Decimal precision
-   *  note) — a contextual statement, not procedural how-to copy. */
+   *  note) - a contextual statement, not procedural how-to copy. */
   note?: string;
 }
 
@@ -164,7 +164,7 @@ export function AutocountFormulaBuilder({
             </TabsList>
 
             <TabsContent value="formula" className="flex flex-col gap-3">
-              {/* Accepted-formats reference (AC-16-15) — a concise statement, not
+              {/* Accepted-formats reference (AC-16-15) - a concise statement, not
                   procedural how-to copy. */}
               <p className="text-xs text-muted-foreground">
                 Values arrive as text (e.g. <code>&quot;T&quot;</code>,{' '}
@@ -208,7 +208,7 @@ export function AutocountFormulaBuilder({
                     <Check className="size-3.5" /> Valid formula
                   </>
                 ) : (
-                  'Empty — this field falls back to its transform preset.'
+                  'Empty - this field falls back to its transform preset.'
                 )}
               </div>
 
@@ -243,7 +243,7 @@ export function AutocountFormulaBuilder({
               </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {/* Function catalog — grouped by type + searchable (AC-16-13). */}
+                {/* Function catalog - grouped by type + searchable (AC-16-13). */}
                 <div className="flex flex-col gap-2">
                   <div className="flex items-center gap-2">
                     <div className="w-28 shrink-0">

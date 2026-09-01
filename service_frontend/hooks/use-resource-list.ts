@@ -13,7 +13,7 @@ export interface UseResourceListOptions<T> {
 }
 
 export interface UseResourceListResult<T> {
-  /** The live query (search reflects the DEBOUNCED value) — used for export + record-nav ctx. */
+  /** The live query (search reflects the DEBOUNCED value) - used for export + record-nav ctx. */
   query: ListQuery;
   data: T[];
   total: number;

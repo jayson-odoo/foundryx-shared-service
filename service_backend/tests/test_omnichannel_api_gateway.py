@@ -333,11 +333,11 @@ def test_public_update_contact_priority(client, session_factory):
         headers=hdr,
     )
     assert r.status_code == 200
-    # DEFAULT echoes a ThreadItem — which, unlike the Rio shape, carries priority.
+    # DEFAULT echoes a ThreadItem - which, unlike the Rio shape, carries priority.
     body = r.json()
     assert body["name"] == "Kay" and body["priority"] == "HIGH"
 
-    # Rio echo: firstName reflects the write; priority rides the FoundryX
+    # Rio echo: firstName reflects the write; priority rides the Foundryx
     # extension fields (BL-SS-026) rather than being dropped.
     rio = client.get(
         f"/api/v1/omnichannel/contacts/{cid}?format=rio", headers=hdr
@@ -506,7 +506,7 @@ def test_key_cannot_reach_another_workspace(client, session_factory):
 
     key_a = _mint(client, ws_a).json()["fullKey"]
 
-    # A's key lists ONLY A's templates — never B's.
+    # A's key lists ONLY A's templates - never B's.
     r = client.get(
         "/api/v1/omnichannel/templates", headers={"Authorization": f"Bearer {key_a}"}
     )
@@ -515,7 +515,7 @@ def test_key_cannot_reach_another_workspace(client, session_factory):
     assert "ws2_secret_template" not in names
 
     # A contact created via A's key lands in workspace A, not B. (A text send to
-    # a brand-new number creates the contact, then hits the closed-window 409 —
+    # a brand-new number creates the contact, then hits the closed-window 409 -
     # the contact is already persisted in workspace A by then.)
     client.post(
         "/api/v1/omnichannel/messages",
@@ -548,7 +548,7 @@ def test_phone_number_in_use_guard(session_factory):
 
 def test_trashed_channel_does_not_block_reconnect(session_factory):
     """A disconnected (is_trashed) channel keeps its phone_number_id but must NOT
-    block reconnecting the same number — the guard is scoped to live rows, matching
+    block reconnecting the same number - the guard is scoped to live rows, matching
     the partial-unique index predicate."""
     from modules.omnichannel.models import Channel
     from modules.omnichannel.services.onboarding_service import OnboardingService
@@ -564,12 +564,12 @@ def test_trashed_channel_does_not_block_reconnect(session_factory):
             name="old",
             phone_number_id="pn-recon",
             is_active=False,
-            is_trashed=True,  # disconnected — keeps its phone_number_id
+            is_trashed=True,  # disconnected - keeps its phone_number_id
             status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "CHANNEL", "ACTIVE"),
         )
     )
     db.commit()
-    # Must NOT raise — only a trashed row holds the number.
+    # Must NOT raise - only a trashed row holds the number.
     OnboardingService(db)._assert_phone_available("pn-recon")
     db.close()
 
@@ -630,7 +630,7 @@ def test_public_media_signed_url_serves_without_auth(client, session_factory):
     assert url.startswith("http") and "exp=" in url and "sig=" in url
 
     rel = _relativize(url)
-    # No Authorization header — the signature IS the authorization.
+    # No Authorization header - the signature IS the authorization.
     got = client.get(rel)
     assert got.status_code == 200 and got.content == b"PNGDATA"
 
@@ -707,7 +707,7 @@ def test_public_templates_channel_and_filters(client, session_factory):
 # ── Contract-drift regressions (consumer integration guide §6/§6a/§9) ────────
 # A consumer built to the published guide found the gateway had dropped fields
 # it documents. These pin the restored ones so the shape can't silently regress
-# again: every message carries a `timestamp` (INBOUND included — inbound never
+# again: every message carries a `timestamp` (INBOUND included - inbound never
 # gets a delivery receipt, so `status[]` is empty and cannot carry the time),
 # a contact exposes `cswExpiresAt` (the whole free-form-vs-template decision),
 # structured payloads survive, and a media body is not duplicated into `text`.
@@ -733,7 +733,7 @@ def _insert_message(session_factory, contact_id, channel_id=None, **kw):
 
 
 def test_incoming_message_carries_a_timestamp(client, session_factory):
-    """An INBOUND message has no delivery receipt, so `status[]` is empty — the
+    """An INBOUND message has no delivery receipt, so `status[]` is empty - the
     top-level `timestamp` is the only time key and MUST be populated, else a
     consumer cannot order or render a received message at all."""
     hdr, cid = _seeded(client, session_factory, phone="+60555222111")
@@ -745,7 +745,7 @@ def test_incoming_message_carries_a_timestamp(client, session_factory):
 
     inbound = [m for m in items if m["traffic"] == "incoming"]
     assert inbound and all(m["status"] == [] for m in inbound), "inbound has no receipt"
-    # Pin the VALUE, not just truthiness — `int(now())` would satisfy a truthy
+    # Pin the VALUE, not just truthiness - `int(now())` would satisfy a truthy
     # check while carrying the read time instead of the message time.
     from modules.omnichannel.models import ConversationMessage
 
@@ -780,7 +780,7 @@ def test_contact_csw_expiry_null_when_never_messaged_in(client, session_factory)
 
 def test_structured_payload_survives_the_rio_shape(client, session_factory):
     """Interactive buttons / location coordinates cannot be flattened into
-    `text` — a consumer would silently lose the buttons with no error."""
+    `text` - a consumer would silently lose the buttons with no error."""
     hdr, cid = _seeded(client, session_factory, phone="+60555222444")
     buttons = {"kind": "buttons", "body": "Pick one", "buttons": [{"id": "a", "title": "Morning"}]}
     mid = _insert_message(
@@ -811,10 +811,10 @@ def test_text_caption_split_keys_off_message_type_not_media_presence(client, ses
     first attempt) broke two real shapes:
 
     * a TEMPLATE/INTERACTIVE row carrying a HEADER IMAGE stores `media_key`, so
-      `url` is set — but its body is body text, not a caption, and nulling
+      `url` is set - but its body is body text, not a caption, and nulling
       `text` renders a blank bubble on the consumer side;
     * an inbound media row whose blob failed to store (dev creds / Graph
-      hiccup — `_store_media` returns None by design) has NO `url`, but is
+      hiccup - `_store_media` returns None by design) has NO `url`, but is
       still media, so its body is still a caption.
     """
     hdr, cid = _seeded(client, session_factory, phone="+60555222777")
@@ -842,7 +842,7 @@ def test_text_caption_split_keys_off_message_type_not_media_presence(client, ses
 
 
 def test_plain_text_still_returns_text(client, session_factory):
-    """The other half of the split — the caption fix must not null TEXT bodies."""
+    """The other half of the split - the caption fix must not null TEXT bodies."""
     hdr, cid = _seeded(client, session_factory, phone="+60555222888")
     mid = _insert_message(session_factory, cid, body="just a plain message")
     msg = client.get(f"/api/v1/omnichannel/contacts/{cid}/messages/{mid}?format=rio", headers=hdr).json()["message"]
@@ -929,7 +929,7 @@ def test_webhook_url_validation_is_a_typed_422(client, session_factory):
 def test_key_cannot_touch_another_workspaces_webhook(client, session_factory):
     """`WebhookService._get` is tenant-scoped only, so a tenant with two
     workspaces could otherwise reach across with its own key. Must be the same
-    uniform 404 as a genuine miss — no enumeration."""
+    uniform 404 as a genuine miss - no enumeration."""
     from modules.omnichannel.models import Workspace
 
     hdr_a, _ = _seeded(client, session_factory, phone="+60555333333")
@@ -1013,7 +1013,7 @@ def test_after_paging_does_not_emit_a_backwards_cursor(client, session_factory):
 
 
 def test_rio_pagination_url_is_followable_verbatim(client, session_factory):
-    """§6b promises `format=rio` is carried in the cursor URL — following it
+    """§6b promises `format=rio` is carried in the cursor URL - following it
     must not silently hand back the guide shape."""
     hdr, cid = _seeded(client, session_factory, phone="+60555444333")
     base = _now()
@@ -1051,7 +1051,7 @@ def test_format_switch_is_enforced_on_every_read_route(client, session_factory):
 
 def test_delivery_refuses_a_target_that_resolves_internally(monkeypatch):
     """The SSRF guard that actually closes the pivot: registration validated the
-    URL, but DNS can be re-pointed afterwards — and the URL is now settable by
+    URL, but DNS can be re-pointed afterwards - and the URL is now settable by
     any API-key holder. Every attempt re-checks before the POST."""
     import modules.omnichannel.services.webhook_service as ws
 
@@ -1066,7 +1066,7 @@ def test_delivery_refuses_a_target_that_resolves_internally(monkeypatch):
 
 
 def test_webhook_endpoint_cap_per_channel(client, session_factory):
-    """Every inbound event fans out to ALL endpoints — unbounded registration is
+    """Every inbound event fans out to ALL endpoints - unbounded registration is
     worker amplification, and an outbound amplifier on a key-authed surface."""
     from modules.omnichannel.services.webhook_service import MAX_ENDPOINTS_PER_CHANNEL
 
@@ -1090,7 +1090,7 @@ def test_webhook_endpoint_cap_per_channel(client, session_factory):
 
 def test_assignee_from_another_tenant_is_never_resolved(client, session_factory):
     """Cross-tenant leak guard. `_user_names` resolves a STORED user id to a
-    name/EMAIL that is rendered to the caller — on the key-authed public
+    name/EMAIL that is rendered to the caller - on the key-authed public
     gateway. An id belonging to another tenant must resolve to nothing.
 
     `patch_thread` validates the assignee on write, but it is not the only

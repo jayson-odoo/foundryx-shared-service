@@ -23,7 +23,7 @@ import {
 import { MegaMenuSubDefault } from '@/app/components/partials/mega-menu/components';
 
 // MegaMenuSubDefault calls hooks (usePathname/useMenu) internally, so it MUST be
-// rendered as its own component/fiber — calling it positionally inside .map()
+// rendered as its own component/fiber - calling it positionally inside .map()
 // would run its hooks in MegaMenu's fiber a variable number of times (the count
 // shifts as filterMenu resolves), tripping Rules-of-Hooks and white-screening.
 function MegaMenuSection({ items }: { items: MenuItem[] }) {
@@ -43,7 +43,7 @@ export function MegaMenu() {
     item.termKey ? labelPlural(item.termKey) : item.title;
   const showPlatform =
     session?.user?.isPlatformTenant === true && can('tenants.read');
-  // Same visibility pass as the sidebar (BL-014) — gated entries must not
+  // Same visibility pass as the sidebar (BL-014) - gated entries must not
   // resurface through the header mega menu.
   const visibleMenu = useMemo(
     () =>
@@ -64,7 +64,7 @@ export function MegaMenu() {
     data-[state=open]:text-primary data-[state=open]:bg-transparent
   `;
 
-  // Render GENERICALLY from the (permission/module-filtered) menu — resolve
+  // Render GENERICALLY from the (permission/module-filtered) menu - resolve
   // sections by existence, never by fixed index. The EMS/portal sections this
   // header used to hardcode (Public Profiles, Network) were stripped in the
   // shared-service fork, so any fixed-index dereference would crash the page.
