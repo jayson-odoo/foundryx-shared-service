@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Admin date-simulation (sprint-4/03 Slice 6) — fast-forward / backtrack "now"
+ * Admin date-simulation (sprint-4/03 Slice 6) - fast-forward / backtrack "now"
  * to test time-based derived status without waiting. Preview = dry-run (nothing
  * persists); Apply commits the would-advance transitions. Gated statuses.manage.
  */
@@ -40,7 +40,7 @@ export function SimulateDateDialog({
   const [busy, setBusy] = useState(false);
 
   const label = (id: string | null) =>
-    (id ? statuses.find((s) => s.id === id)?.label : null) ?? '—';
+    (id ? statuses.find((s) => s.id === id)?.label : null) ?? '-';
 
   const run = async (apply: boolean) => {
     if (!asOf) return;
@@ -51,7 +51,7 @@ export function SimulateDateDialog({
       if (apply) {
         toast.success(
           res.data.length
-            ? `Applied — ${res.data.length} ${entityLabel.toLowerCase()} record(s) advanced.`
+            ? `Applied - ${res.data.length} ${entityLabel.toLowerCase()} record(s) advanced.`
             : 'Nothing to advance as of that date.',
         );
         onClose();
@@ -67,7 +67,7 @@ export function SimulateDateDialog({
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>Simulate date — {entityLabel}</DialogTitle>
+          <DialogTitle>Simulate date - {entityLabel}</DialogTitle>
         </DialogHeader>
         <DialogBody className="space-y-4">
           <div className="space-y-1.5">

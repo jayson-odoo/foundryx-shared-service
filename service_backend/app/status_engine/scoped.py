@@ -1,4 +1,4 @@
-"""Scoped status machines (sprint-3/01 D4) — one graph per owning record.
+"""Scoped status machines (sprint-3/01 D4) - one graph per owning record.
 
 For entities registered ``scoped`` (first adopter: ``form_submission``), the
 status set is NOT resolved two-tier: creating the owning record (a form)
@@ -6,7 +6,7 @@ status set is NOT resolved two-tier: creating the owning record (a form)
 from birth and directly editable. Deleting the owner deletes its graph.
 
 The seed stays minimal by design (plan D4): tenants add review states per
-scope themselves. Flag semantics, never labels — ``is_active`` on a scoped
+scope themselves. Flag semantics, never labels - ``is_active`` on a scoped
 status means *the respondent may still edit answers*.
 """
 import uuid
@@ -38,7 +38,7 @@ class ScopeSeedEdge:
     to_key: str
     label: str
     sort_order: int = 0
-    # Derived status (sprint-4/03) — a scoped graph can seed an auto-edge
+    # Derived status (sprint-4/03) - a scoped graph can seed an auto-edge
     # (e.g. participant Checked-in). Auto requires conditions; both ride along.
     trigger_mode: str = "manual"
     conditions: Optional[Dict] = None
@@ -52,7 +52,7 @@ def materialize_scope(
     statuses: List[ScopeSeedStatus],
     edges: List[ScopeSeedEdge],
 ) -> Dict[str, Status]:
-    """Create the seed graph for a new scope. Flushes, does NOT commit — the
+    """Create the seed graph for a new scope. Flushes, does NOT commit - the
     caller's unit of work (e.g. form creation) owns the transaction.
 
     Idempotent per scope: refuses to double-seed (caller bug surface)."""
@@ -74,7 +74,7 @@ def materialize_scope(
             id=str(uuid.uuid4()),
             entity_type=entity_type,
             key=seed.key,
-            category=seed.key.upper(),  # cosmetic mirror — never branched on
+            category=seed.key.upper(),  # cosmetic mirror - never branched on
             label=seed.label,
             color=seed.color,
             sort_order=seed.sort_order,
@@ -115,9 +115,9 @@ def copy_scope(
     """Materialize a new scope by COPYING another scope's graph (sprint-3/11 D4).
 
     EMS create-from-template: a Project's eligibility graph is a per-project
-    editable copy of the TEMPLATE's graph (Option A — not live-inherit). Copies
+    editable copy of the TEMPLATE's graph (Option A - not live-inherit). Copies
     statuses (new ids, preserving keys/labels/colors/flags/order) + the edges
-    between them. Flushes, no commit — rides the Project-creation txn. Refuses to
+    between them. Flushes, no commit - rides the Project-creation txn. Refuses to
     double-seed the target. Returns ``{old_status_id: new_status_id}``."""
     if scope_status_ids(db, entity_type, tenant_id, to_scope_id):
         raise ValueError(f"Scope '{to_scope_id}' already has '{entity_type}' statuses.")
@@ -180,7 +180,7 @@ def copy_scope(
                 label=edge.label,
                 sort_order=edge.sort_order,
                 # Carry conditions + trigger mode so a copied graph keeps its
-                # auto-edges (sprint-4/03 — the flag-copy-list lesson).
+                # auto-edges (sprint-4/03 - the flag-copy-list lesson).
                 conditions_json=edge.conditions_json,
                 trigger_mode=edge.trigger_mode,
             )
@@ -209,7 +209,7 @@ def delete_scope(
 ) -> Tuple[int, int]:
     """Drop a scope's whole graph (owner deleted). Flushes, no commit.
     Returns (statuses_deleted, edges_deleted). Caller deletes the records
-    first — block-delete-if-referenced does not apply to a dying scope."""
+    first - block-delete-if-referenced does not apply to a dying scope."""
     ids = scope_status_ids(db, entity_type, tenant_id, scope_id)
     if not ids:
         return (0, 0)
@@ -234,7 +234,7 @@ def get_scope_status(
     db: Session, entity_type: str, tenant_id: str, scope_id: str, status_id: str
 ) -> Optional[Status]:
     """Tenant- AND scope-scoped status resolution (polymorphic target_id
-    rule — never resolve a stored id unscoped)."""
+    rule - never resolve a stored id unscoped)."""
     return (
         db.query(Status)
         .filter(
@@ -250,7 +250,7 @@ def get_scope_status(
 def initial_scope_status(
     db: Session, entity_type: str, tenant_id: str, scope_id: str
 ) -> Optional[Status]:
-    """The scope's ``is_initial`` row — where new records start."""
+    """The scope's ``is_initial`` row - where new records start."""
     return (
         db.query(Status)
         .filter(

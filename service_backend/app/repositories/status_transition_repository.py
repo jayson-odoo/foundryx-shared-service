@@ -1,4 +1,4 @@
-"""Status-transition repository (sprint-2/01) — pure SQLAlchemy, two-tier.
+"""Status-transition repository (sprint-2/01) - pure SQLAlchemy, two-tier.
 
 Edges live in the same tier as their statuses: the tenant's fork when one
 exists for the entity_type, else the platform defaults (``tenant_id NULL``).
@@ -27,7 +27,7 @@ class StatusTransitionRepository:
         return q.order_by(StatusTransition.sort_order.asc(), StatusTransition.created_at.asc()).all()
 
     def list_for_statuses(self, status_ids: List[str], tier: Optional[str]) -> List[StatusTransition]:
-        """Edges whose SOURCE lives in the given status set — a scoped graph's
+        """Edges whose SOURCE lives in the given status set - a scoped graph's
         edge list (sprint-3/01 D4; edges carry no scope column, their
         endpoints do)."""
         if not status_ids:

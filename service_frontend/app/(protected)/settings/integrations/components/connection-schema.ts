@@ -12,7 +12,7 @@ export const connectionFormSchema = z.object({
   name: z.string().min(1, 'Name is required.'),
   /** Non-secret provider fields (config_json). */
   config: z.record(z.string()),
-  /** Secret provider fields — write-only; blank on edit = keep existing. */
+  /** Secret provider fields - write-only; blank on edit = keep existing. */
   credentials: z.record(z.string()),
 });
 
@@ -33,13 +33,33 @@ export function defaultsForProvider(provider: IntegrationProvider): ConnectionFo
   return { provider: provider.provider, name: provider.title, config, credentials };
 }
 
+/**
+ * Registry-driven dependent default (`ProviderField.defaultsFrom`, plan 22
+ * AC-22-04): the value a field should take after its driver select changed,
+ * or null when nothing should change - because the field has no dependency,
+ * the choice has no mapped default, or the operator typed a custom value
+ * (anything that is neither blank nor one of the stock defaults is theirs).
+ */
+export function dependentDefault(
+  f: ProviderField,
+  driverValue: string,
+  current: string,
+): string | null {
+  if (!f.defaultsFrom) return null;
+  const next = f.defaultsFrom.values[driverValue];
+  if (next === undefined || next === current) return null;
+  const stock = new Set(Object.values(f.defaultsFrom.values));
+  if (current.trim() !== '' && !stock.has(current)) return null;
+  return next;
+}
+
 /** Values prefilled from an existing connection (secrets stay blank = keep). */
 export function valuesForConnection(
   provider: IntegrationProvider,
   connection: { provider: string; name: string; config: Record<string, string> },
 ): ConnectionFormValues {
   const config: Record<string, string> = {};
-  // Secrets prefill as '' (NOT absent) — a registered-but-undefined value
+  // Secrets prefill as '' (NOT absent) - a registered-but-undefined value
   // fails z.record(z.string()) with a bare "Required", breaking the
   // blank-to-keep contract on edit.
   const credentials: Record<string, string> = {};
@@ -52,7 +72,7 @@ export function valuesForConnection(
 
 /**
  * Per-provider required validation (plan 06 D6): config required-fields must
- * be non-empty always; secret required-fields only when CREATING — on edit a
+ * be non-empty always; secret required-fields only when CREATING - on edit a
  * blank secret means "keep the stored one" (write-only contract).
  */
 export function requiredFieldErrors(
@@ -74,7 +94,7 @@ export function requiredFieldErrors(
   return errors;
 }
 
-/** The write payload — only NON-EMPTY secrets travel (blank = keep). */
+/** The write payload - only NON-EMPTY secrets travel (blank = keep). */
 export function toConnectionInput(values: ConnectionFormValues): {
   provider: string;
   name: string;

@@ -1,7 +1,7 @@
 /**
  * Core AI subsystem wire types (Phase B-i slice 1).
  *
- * Mirror of `app/schemas/ai.py`. Explicit interfaces throughout — no `any`.
+ * Mirror of `app/schemas/ai.py`. Explicit interfaces throughout - no `any`.
  */
 
 /** One skill in an agent's equipped set (AC-BI-06b). */
@@ -19,15 +19,15 @@ export interface AiAgent {
   connectionId: string | null;
   connectionName: string | null;
   provider: string | null;
-  /** A PINNED model id — a retired model fails loudly, never substitutes. */
+  /** A PINNED model id - a retired model fails loudly, never substitutes. */
   model: string;
   temperature: number;
-  /** The equipped skill SET (AC-BI-06b) — an agent equips many skills, like a
+  /** The equipped skill SET (AC-BI-06b) - an agent equips many skills, like a
    *  Claude agent's skill set. Which one runs a grill is slice 3's choice. */
   skills: EquippedSkill[];
   isEnabled: boolean;
   /**
-   * Missing-prerequisite warning (AC-BI-06) — the connection is gone, inactive
+   * Missing-prerequisite warning (AC-BI-06) - the connection is gone, inactive
    * or errored, or no model is pinned. Surfaced BEFORE anything runs.
    */
   warning: string | null;
@@ -46,14 +46,14 @@ export interface AiAgentInput {
   isEnabled?: boolean;
 }
 
-/** A versioned prompt artifact — browsable and selectable, never an anonymous
+/** A versioned prompt artifact - browsable and selectable, never an anonymous
  *  text blob on the agent row. */
 export interface AiSkill {
   id: string;
   key: string;
   name: string;
   description: string;
-  /** The ACTIVE version's body — what an agent actually runs. */
+  /** The ACTIVE version's body - what an agent actually runs. */
   body: string;
   activeVersionId: string | null;
   activeVersionNumber: number | null;
@@ -112,7 +112,7 @@ export interface AiConnectionOption {
   isPlatform: boolean;
 }
 
-/** AC-BI-11 — is any LLM connection configured at all? */
+/** AC-BI-11 - is any LLM connection configured at all? */
 export interface AiPrerequisite {
   hasConnection: boolean;
   connections: AiConnectionOption[];
@@ -132,7 +132,7 @@ export type AiTraceStatus = 'ok' | 'error';
 export interface AiSpan {
   id: string;
   parentId: string | null;
-  /** Sortable materialised path ("1", "2", "2.1") — the flat list's sort key
+  /** Sortable materialised path ("1", "2", "2.1") - the flat list's sort key
    *  today, the tree's tomorrow. */
   dottedOrder: string;
   spanKind: AiSpanKind;
@@ -168,7 +168,7 @@ export interface AiTrace {
   createdAt: string | null;
 }
 
-/** Trace + its ordered FLAT step list (Bi-D17 — no tree renderer in v1). */
+/** Trace + its ordered FLAT step list (Bi-D17 - no tree renderer in v1). */
 export interface AiTraceDetail extends AiTrace {
   spans: AiSpan[];
 }

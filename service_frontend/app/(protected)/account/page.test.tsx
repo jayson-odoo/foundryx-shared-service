@@ -5,7 +5,7 @@ import { SettingsProvider } from '@/providers/settings-provider';
 import { __resetAccountNameOverride } from './components/use-account-form';
 import Page from './page';
 
-/** Container/Toolbar read layout settings — provide the real provider. */
+/** Container/Toolbar read layout settings - provide the real provider. */
 function render(ui: React.ReactElement) {
   return rtlRender(<SettingsProvider>{ui}</SettingsProvider>);
 }
@@ -89,7 +89,7 @@ describe('My Account page', () => {
     cancel.mockReset().mockResolvedValue(undefined);
     sessionUpdate.mockReset().mockResolvedValue(null);
     updateProfile.mockReset().mockImplementation(async (input) => input);
-    // Full identity surface (plan 06 D8 generalized the drift check) —
+    // Full identity surface (plan 06 D8 generalized the drift check) -
     // must MATCH the mocked session or every render fires update().
     identity.mockReset().mockResolvedValue({
       email: 'demo@example.com',
@@ -103,7 +103,7 @@ describe('My Account page', () => {
 
   it('refreshes the session ONLY when the backend email diverged', async () => {
     // Matching identity → no update() (a bare update-on-mount loops the
-    // protected layout's loading state — review fix).
+    // protected layout's loading state - review fix).
     const { unmount } = render(<Page />);
     await screen.findAllByText('Demo User');
     await waitFor(() => expect(identity).toHaveBeenCalled());
@@ -131,7 +131,7 @@ describe('My Account page', () => {
     expect(screen.getByText('Admin')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^edit$/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /profile/i })).toBeInTheDocument();
-    // Security tab is gone — sign-in concerns live in the "…" menu.
+    // Security tab is gone - sign-in concerns live in the "…" menu.
     expect(screen.queryByRole('tab', { name: /security/i })).not.toBeInTheDocument();
   });
 
@@ -150,7 +150,7 @@ describe('My Account page', () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);
     // AFTER setup(): userEvent installs its own clipboard stub at setup time
-    // and would shadow this one. jsdom's property is getter-only — define.
+    // and would shadow this one. jsdom's property is getter-only - define.
     Object.defineProperty(navigator, 'clipboard', {
       value: { writeText },
       configurable: true,
@@ -249,7 +249,7 @@ describe('My Account page', () => {
     expect(await screen.findByText(/check your current inbox/i)).toBeInTheDocument();
     expect(request).toHaveBeenCalledWith('next@example.com', 'Demo1234!');
 
-    // Close the dialog — the page underneath now shows the pending banner.
+    // Close the dialog - the page underneath now shows the pending banner.
     await user.click(screen.getByRole('button', { name: /got it/i }));
     expect(
       await screen.findByText(
@@ -277,7 +277,7 @@ describe('My Account page', () => {
     await user.click(screen.getByRole('button', { name: /send approval link/i }));
 
     expect(await screen.findByText('Incorrect password.')).toBeInTheDocument();
-    // Still on the form — no "check your inbox" state, no banner.
+    // Still on the form - no "check your inbox" state, no banner.
     expect(screen.queryByText(/check your current inbox/i)).not.toBeInTheDocument();
   });
 

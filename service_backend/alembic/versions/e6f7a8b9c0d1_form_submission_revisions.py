@@ -73,7 +73,7 @@ def upgrade() -> None:
         ["is_current"],
     )
     # Exactly ONE current revision per group, enforced at the DB level (a
-    # concurrent double-revise can't create two live rows — the partial UNIQUE
+    # concurrent double-revise can't create two live rows - the partial UNIQUE
     # index rejects the second). Doubles as the fast "latest per group" lookup.
     op.create_index(
         "ix_form_submissions_group_current",

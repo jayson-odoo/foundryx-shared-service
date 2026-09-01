@@ -1,4 +1,4 @@
-"""Email outbox + dispatcher tests (plan 09 §5) — enqueue-on-send, dev-log
+"""Email outbox + dispatcher tests (plan 09 §5) - enqueue-on-send, dev-log
 fallback, dispatch success/retry/backoff, tenant→platform fallback, the
 per-connection rate limit and retention pruning."""
 from datetime import datetime, timedelta, timezone
@@ -58,7 +58,7 @@ def test_enqueue_without_connection_devlogs_and_marks_sent(db, capsys):
     email_service.send_invite(db, "new@acme.com", "http://x/set-password?token=t", DEFAULT_TENANT_ID)
     db.commit()
     row = db.query(EmailOutbox).one()
-    assert row.status == OUTBOX_SENT  # dev fallback — no mail infra needed
+    assert row.status == OUTBOX_SENT  # dev fallback - no mail infra needed
     assert row.template_key == "auth.invite"  # engine key (plan 07 D7)
     assert "set-password?token=t" in capsys.readouterr().out
 
@@ -219,7 +219,7 @@ def test_sending_rows_within_lease_are_not_reclaimed(db, monkeypatch):
 
 
 def test_error_connection_is_skipped_at_resolution(db):
-    """A known-bad (ERROR) tenant connection must not absorb sends — resolution
+    """A known-bad (ERROR) tenant connection must not absorb sends - resolution
     falls through to the platform default (or dev-log when none)."""
     bad = _connection(db, DEFAULT_TENANT_ID, host="smtp.broken.com")
     bad.status = "ERROR"

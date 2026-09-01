@@ -1,12 +1,12 @@
 """ai_messages.captured_summary_json (Phase B-i S3, grill captured summary)
 
 The grill turn's ONE structured call now also returns a running per-field
-captured summary (AC-BI-24c) — a {fieldKey: shortValue} map the Grill panel
+captured summary (AC-BI-24c) - a {fieldKey: shortValue} map the Grill panel
 renders. It is persisted on the assistant turn so the panel survives a reload /
-resumed session (durable draft, AC-BI-21). Additive, nullable JSON — no backfill
+resumed session (durable draft, AC-BI-21). Additive, nullable JSON - no backfill
 needed (an absent value is an empty summary until the next turn).
 
-Revision id length: 17 chars (<= 32 — a longer id passes create_all tests but
+Revision id length: 17 chars (<= 32 - a longer id passes create_all tests but
 breaks a real deploy against `alembic_version.version_num VARCHAR(32)`).
 
 Revision ID: ai_msg_summary_s3

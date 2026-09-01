@@ -1,9 +1,9 @@
-# Test Execution Report — Login Page (Frontend Phase, mock auth)
+# Test Execution Report - Login Page (Frontend Phase, mock auth)
 
 **Plan:** [01-login-page](./01-login-page.md) · **Branch:** `sprint-1/login-page`
 **Phase:** A (frontend-first, `NEXT_PUBLIC_AUTH_MODE` unset → mock auth service)
-**User Story:** As a FoundryX EMS user, I can sign in from a branded login page so I can reach my dashboard.
-**Suites:** Vitest (component/unit, 10) · Playwright (E2E real-click, 6) — **all green**.
+**User Story:** As a Foundryx EMS user, I can sign in from a branded login page so I can reach my dashboard.
+**Suites:** Vitest (component/unit, 10) · Playwright (E2E real-click, 6) - **all green**.
 
 > Backend not wired this phase. The happy-path redirect-to-dashboard is verified
 > at the unit level (router.push('/') asserted) and deferred for full E2E to the
@@ -54,6 +54,6 @@ npm run test:e2e  # playwright   → 6 passed
 
 ## Result
 
-**PASS** — frontend prototype meets acceptance for Phase A. Pending: backend wiring
+**PASS** - frontend prototype meets acceptance for Phase A. Pending: backend wiring
 (Phase B) re-runs E2E with `NEXT_PUBLIC_AUTH_MODE=real` against FastAPI, adds the
 full happy-path login E2E + pytest suite.

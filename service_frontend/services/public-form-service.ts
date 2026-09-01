@@ -1,6 +1,6 @@
 /**
  * Public (pre-auth) form service boundary (plan sprint-3/02, slice 2). The
- * anonymous fill page consumes this — NO NextAuth session, NO Bearer (uses
+ * anonymous fill page consumes this - NO NextAuth session, NO Bearer (uses
  * `publicFetch`). Tenant is derived from the subdomain frontend-side and carried
  * in the path (the branding public-route precedent); the form is addressed by
  * its per-tenant slug. Unknown tenant / non-public / unpublished form = a
@@ -15,7 +15,7 @@ import { realPublicFormService } from './public-form-service.real';
 
 export interface PublicSubmitPayload {
   answers: FormAnswers;
-  /** Bot-trap input value — must post back empty (D12). */
+  /** Bot-trap input value - must post back empty (D12). */
   honeypot: string;
 }
 

@@ -1,4 +1,4 @@
-"""AI repositories — pure SQLAlchemy, every query tenant-scoped.
+"""AI repositories - pure SQLAlchemy, every query tenant-scoped.
 
 Skills are TWO-TIER (the template-engine pattern): a platform-tier row carries
 `tenant_id IS NULL` and is visible to every tenant; a tenant's own row wins over
@@ -93,7 +93,7 @@ class AgentRepository:
         )
 
     def get_by_key(self, tenant_id: str, key: str) -> Optional[AiAgent]:
-        """Resolve a system-seeded agent by its STABLE key (AC-BI-20b) — survives
+        """Resolve a system-seeded agent by its STABLE key (AC-BI-20b) - survives
         a display-name rename, unlike ``get_by_name``."""
         return (
             self.db.query(AiAgent)
@@ -222,7 +222,7 @@ class SkillRepository:
 
 class ConversationRepository:
     """The grill transcript store (AC-BI-21). Pure SQLAlchemy, tenant-scoped,
-    FLUSH-ONLY — the grill engine owns the single commit that keeps a turn atomic
+    FLUSH-ONLY - the grill engine owns the single commit that keeps a turn atomic
     (user message + assistant message + trace land together; a provider error
     never leaves a half-written turn, AC-BI-23)."""
 
@@ -322,7 +322,7 @@ class ConversationRepository:
             content=content or "",
             covered_fields_json=list(covered_fields) if covered_fields is not None else None,
             captured_summary_json=dict(captured_summary) if captured_summary else None,
-            # Stamp wall-clock microsecond time — NOT ``func.now()`` (transaction
+            # Stamp wall-clock microsecond time - NOT ``func.now()`` (transaction
             # time in Postgres, identical for both turns of one grill turn, which
             # would make transcript order ambiguous). Successive appends get
             # distinct timestamps so ``ORDER BY created_at`` is insert order.
@@ -363,7 +363,7 @@ class TraceRepository:
             q = q.filter(filter_clause)
         total = q.count()
         column = _TRACE_SORT_COLUMNS.get(sort_by or "", AiTrace.created_at)
-        # Traces default newest-first — the useful order for debugging.
+        # Traces default newest-first - the useful order for debugging.
         q = q.order_by(column.asc() if sort_dir == "asc" else column.desc())
         q = q.order_by(AiTrace.id.asc())
         return q.offset(page * page_size).limit(page_size).all(), total

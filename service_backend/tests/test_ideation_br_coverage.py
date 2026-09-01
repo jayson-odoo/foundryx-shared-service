@@ -1,10 +1,10 @@
-"""Ideation — BR coverage hardening (added by TESTER QA of Phase B-i slice 2).
+"""Ideation - BR coverage hardening (added by TESTER QA of Phase B-i slice 2).
 
 These tests close gaps the primary ``test_ideation_br.py`` left open, keyed to
 AC-BI-15..19:
 
 - **AC-BI-16 (validate against STAMPED, not active):** editing a template to a v2
-  with a NEW required field must NOT retroactively invalidate a historical BR —
+  with a NEW required field must NOT retroactively invalidate a historical BR -
   the v1 BR still saves with its v1 answer set (no ``extra``).
 - **AC-BI-17 (cross-TENANT refusal):** a valid Idea row owned by ANOTHER tenant
   can never be linked (tenant-scoped resolve on read = the polymorphic-target
@@ -12,7 +12,7 @@ AC-BI-15..19:
 - **AC-BI-19 (read vs manage boundary):** a ``.read``-only user is refused 403 on
   every mutating route (status move, link).
 - **AC-BI-19 (promote-gate DEFERRAL, documented):** the ``.promote`` permission is
-  declared + granted but NOT yet enforced — a ``.manage`` user can currently fire
+  declared + granted but NOT yet enforced - a ``.manage`` user can currently fire
   the ``draft → ready`` promote edge through ``POST /status``. This test PINS the
   current S2 behaviour so the S4 promote-gate work is provably the thing that
   closes it. See the QA report for the honest assessment.
@@ -141,13 +141,13 @@ def _bump_template_to_v2(factory) -> None:
         db.close()
 
 
-# ── AC-BI-16 — UPDATE validates against the STAMPED version, not the active ────
+# ── AC-BI-16 - UPDATE validates against the STAMPED version, not the active ────
 
 
 def test_update_historical_br_validates_against_stamped_version(
     ideation_client, ideation_session_factory
 ):
-    """A v1 BR is still editable WITHOUT the field v2 later made required — the
+    """A v1 BR is still editable WITHOUT the field v2 later made required - the
     write path resolves the STAMPED (v1) doc, never the active (v2) one."""
     h = _auth(ideation_client)
     pid = _product(ideation_client, h)
@@ -159,7 +159,7 @@ def test_update_historical_br_validates_against_stamped_version(
 
     _bump_template_to_v2(ideation_session_factory)
 
-    # Edit the v1 BR with only v1 fields — must SUCCEED (v1 has no `extra`), even
+    # Edit the v1 BR with only v1 fields - must SUCCEED (v1 has no `extra`), even
     # though the ACTIVE template (v2) would require `extra`.
     res = ideation_client.patch(
         f"/ideation/business-requirements/{br_id}",
@@ -179,11 +179,11 @@ def test_update_historical_br_validates_against_stamped_version(
     assert "extra" not in body["answers"]
 
 
-# ── AC-BI-17 — cross-TENANT idea link refused ────────────────────────────────
+# ── AC-BI-17 - cross-TENANT idea link refused ────────────────────────────────
 
 
 def test_link_cross_tenant_idea_refused(ideation_client, ideation_session_factory):
-    """An Idea owned by another tenant — even with the SAME product id — is
+    """An Idea owned by another tenant - even with the SAME product id - is
     refused (tenant-scoped resolve on read; the polymorphic-target rule)."""
     h = _auth(ideation_client)
     pid = _product(ideation_client, h)
@@ -226,7 +226,7 @@ def test_link_cross_tenant_idea_refused(ideation_client, ideation_session_factor
     assert lineage == []
 
 
-# ── AC-BI-19 — read-only user refused on every mutating route ─────────────────
+# ── AC-BI-19 - read-only user refused on every mutating route ─────────────────
 
 
 def test_read_only_user_refused_on_status_and_link(
@@ -277,7 +277,7 @@ def test_read_only_user_refused_on_status_and_link(
     )
 
 
-# ── AC-BI-19 — promote gate ENFORCED (closed in S2) ──────────────────────────
+# ── AC-BI-19 - promote gate ENFORCED (closed in S2) ──────────────────────────
 
 
 def test_manage_without_promote_refused_on_promote_edge(
@@ -285,7 +285,7 @@ def test_manage_without_promote_refused_on_promote_edge(
 ):
     """AC-BI-19/34: firing the ``br-tr-promote`` (draft → ready) edge requires the
     SEPARATE ``.promote`` permission. A ``.manage``-without-``.promote`` actor is
-    refused 403 on that edge — but every OTHER BR edge stays gated by ``.manage``
+    refused 403 on that edge - but every OTHER BR edge stays gated by ``.manage``
     (draft → grilling succeeds for the same actor)."""
     h_admin = _auth(ideation_client)
     pid = _product(ideation_client, h_admin)

@@ -1,5 +1,5 @@
 /**
- * PHASE 1 MOCK — in-memory meetings opt-in / events / settings (S0 plan §4).
+ * PHASE 1 MOCK - in-memory meetings opt-in / events / settings (S0 plan §4).
  *
  * Retained for tunable frontend states and for tests; the shipped pages bind the
  * REAL service (`meetings-service.ts`). Delete once no longer referenced.
@@ -115,7 +115,7 @@ let settings: MeetingsSettings = {
   consentMessage: null,
 };
 
-/** Test seam — put the mock back to its shipped starting state. */
+/** Test seam - put the mock back to its shipped starting state. */
 export function resetMeetingsMock(): void {
   optIn = {
     enabled: false,

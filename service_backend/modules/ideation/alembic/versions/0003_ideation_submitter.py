@@ -1,4 +1,4 @@
-"""ideation — add ``ideas.submitter_name`` for operator-authored ideas.
+"""ideation - add ``ideas.submitter_name`` for operator-authored ideas.
 
 The in-app operator create/edit surface authors ideas with no contact copy
 (``submitter_contact_id`` stays NULL), so the submitter's display name is stored
@@ -6,7 +6,7 @@ directly in this nullable column. The read serializer prefers it when set, else
 derives the name from the linked contact.
 
 Postgres-only DDL; a no-op on the SQLite test engine (per-module Alembic runs
-only on Postgres — see ``app/module_platform/migrations.run_module_migrations``).
+only on Postgres - see ``app/module_platform/migrations.run_module_migrations``).
 
 Revision ID: 0003_ideation_submitter
 Revises: 0002_ideation_dedup_trgm
@@ -27,7 +27,7 @@ def upgrade() -> None:
     from modules.ideation.db import IDEATION_SCHEMA
 
     # Idempotent: the live app_ideation.ideas may predate module Alembic (built by
-    # create_all, stamped at baseline) and already carry this column — an ADD would
+    # create_all, stamped at baseline) and already carry this column - an ADD would
     # crash the upgrade chain. IF NOT EXISTS makes the stamp/upgrade paths converge
     # (matches 0004's guard).
     op.execute(

@@ -1,4 +1,4 @@
-"""Core StorageService (sprint-2/03 — lifted from modules/omnichannel;
+"""Core StorageService (sprint-2/03 - lifted from modules/omnichannel;
 connection-driven since plan sprint-2/06 D1).
 
 Media blobs behind one interface. Backend selection is DATA, not env: the
@@ -8,14 +8,14 @@ local adapter needs it).
 
 Keys carry their writing backend: a blob stored through a connection gets a
 ``conn:<connection_id>:<raw>`` key, so reads resolve through the connection
-that WROTE them — switching connections never breaks existing assets (they
+that WROTE them - switching connections never breaks existing assets (they
 stay resolvable while the old row exists; re-upload migration = BL-077).
 Legacy unprefixed keys (and dev writes) resolve via local disk, unchanged.
 
 Two usage styles:
-- ``put``  — omnichannel's original contract: store + return the PUBLIC URL
+- ``put``  - omnichannel's original contract: store + return the PUBLIC URL
   (local URLs ride the omnichannel media router; the module owns that mount).
-- ``save`` / ``resolve`` / ``delete`` — key-based storage for core features
+- ``save`` / ``resolve`` / ``delete`` - key-based storage for core features
   that serve assets through their own routes (e.g. ``/public/branding/...``):
   ``save`` returns an opaque storage key persisted in the DB; ``resolve``
   turns it back into a local path or a remote URL to stream/redirect.
@@ -40,7 +40,7 @@ class StorageService(Protocol):
         ...
 
     def put_raw(self, raw: str, content: bytes, mime_type: str) -> None:
-        """Write a blob at the EXACT ``raw`` key — NO uuid mint (plan sprint-4/10
+        """Write a blob at the EXACT ``raw`` key - NO uuid mint (plan sprint-4/10
         D2). ``save`` mints a fresh uuid, which is wrong for a path-preserving
         COPY (storage migration): a later ``fetch(raw)`` / ``resolve(raw)`` must
         return exactly these bytes at exactly this key."""
@@ -48,14 +48,14 @@ class StorageService(Protocol):
 
     def resolve(self, key: str) -> Tuple[str, str]:
         """Storage key → ('path', local file path), ('url', STABLE remote
-        URL — safe to cache immutably) or ('presigned', EXPIRING URL — never
+        URL - safe to cache immutably) or ('presigned', EXPIRING URL - never
         let clients cache it past the presign TTL)."""
         ...
 
     def fetch(self, key: str) -> Tuple[bytes, Optional[str]]:
         """Storage key → (raw bytes, stored content-type | None). Reads the
         blob straight from the backend so a serving route can stream it
-        SAME-ORIGIN — no redirect to a presigned remote URL (which a browser
+        SAME-ORIGIN - no redirect to a presigned remote URL (which a browser
         then CORS-blocks against the bucket). Raises FileNotFoundError when the
         blob is gone."""
         ...
@@ -74,7 +74,7 @@ def _safe(key_hint: str) -> str:
 
 
 class LocalDiskStorage:
-    """Dev adapter — writes under media_root."""
+    """Dev adapter - writes under media_root."""
 
     def __init__(self, root: Optional[str] = None):
         self.root = Path(root or settings.media_root)
@@ -96,7 +96,7 @@ class LocalDiskStorage:
         return self._write(key_hint, content, mime_type)
 
     def put_raw(self, raw: str, content: bytes, mime_type: str) -> None:
-        # Path-preserving write (no uuid mint) — sprint-4/10 D2.
+        # Path-preserving write (no uuid mint) - sprint-4/10 D2.
         path = self.root / raw
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
@@ -119,15 +119,15 @@ class LocalDiskStorage:
 
 class UnresolvableKey(Exception):
     """A ``conn:``-prefixed key whose connection is gone or belongs to another
-    tenant (defense-in-depth — the polymorphic target_id rule)."""
+    tenant (defense-in-depth - the polymorphic target_id rule)."""
 
 
 _KEY_PREFIX = "conn:"
 
-# Adapter cache — presign needs decrypted credentials per resolve. Keyed by
+# Adapter cache - presign needs decrypted credentials per resolve. Keyed by
 # connection id; the stored updated_at stamp busts the entry when the
 # connection is edited (REPLACING it, so the cache stays bounded by the
-# number of live connections — review finding: a (id, updated_at) composite
+# number of live connections - review finding: a (id, updated_at) composite
 # key accumulated a stale adapter per edit, forever).
 _adapters: Dict[str, Tuple[str, object]] = {}
 
@@ -158,8 +158,8 @@ class TenantStorage:
 
     Writes go to the resolved connection (tenant → platform; ERROR rows
     skipped) and return ``conn:``-prefixed keys; no connection = local disk
-    with raw keys. Reads route by the KEY's prefix — through the connection
-    that wrote the blob — never by whatever connection is current.
+    with raw keys. Reads route by the KEY's prefix - through the connection
+    that wrote the blob - never by whatever connection is current.
     """
 
     def __init__(self, db: Session, tenant_id: str):
@@ -221,14 +221,14 @@ class TenantStorage:
         try:
             _adapter_for(self._connection_for_key(connection_id)).delete(raw)
         except UnresolvableKey:
-            pass  # connection gone — nothing left to delete through
+            pass  # connection gone - nothing left to delete through
 
     def put(self, key_hint: str, content: bytes, mime_type: str) -> str:
-        """Omnichannel contract — public URL straight back (no key persisted,
+        """Omnichannel contract - public URL straight back (no key persisted,
         so no prefix involved).
 
         The returned URL gets PERSISTED by the caller, so it must be STABLE:
-        a connection without a CDN can only mint presigned URLs (1h TTL —
+        a connection without a CDN can only mint presigned URLs (1h TTL -
         historical media would 403 forever after, review finding), so those
         fall back to local disk. Key-based media resolution that lifts this
         limit = BL-078.
@@ -253,7 +253,7 @@ _storage: Optional[StorageService] = None
 
 
 def get_storage() -> StorageService:
-    """Legacy accessor — LOCAL disk only (unprefixed keys). Kept for call
+    """Legacy accessor - LOCAL disk only (unprefixed keys). Kept for call
     sites without a db/tenant context; new code uses `storage_for_tenant`."""
     global _storage
     if _storage is None:

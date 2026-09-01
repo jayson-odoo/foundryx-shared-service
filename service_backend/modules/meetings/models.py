@@ -1,8 +1,8 @@
-"""Meetings module models — all ten tables live in the ``app_meetings`` schema.
+"""Meetings module models - all ten tables live in the ``app_meetings`` schema.
 
 The full shape from the program spine (``PLAN-meetings-program.md`` §3) lands in
 ONE migration even though S0 only writes four of the tables (``user_opt_ins``,
-``calendar_events``, ``meetings``, ``meeting_participants``) — one migration, one
+``calendar_events``, ``meetings``, ``meeting_participants``) - one migration, one
 shape, no drip.
 
 Refs to core rows are PLAIN INDEXED COLUMNS (``tenant_id``, ``user_id``,
@@ -43,7 +43,7 @@ PLATFORM_ZOOM = "zoom"
 PLATFORM_TEAMS = "teams"
 PLATFORM_OTHER = "other"
 
-# Meeting lifecycle — a plain machine-driven enum column, NOT the status engine
+# Meeting lifecycle - a plain machine-driven enum column, NOT the status engine
 # (spine M19): no tenant ever edits these and no transition is a human action.
 STATUS_SCHEDULED = "scheduled"
 STATUS_JOINING = "joining"
@@ -66,7 +66,7 @@ def _uuid() -> str:
 class UserOptIn(MeetingsBase):
     """The master toggle, one row per tenant user (spine M6).
 
-    ``enabled`` is the user's own decision — off until they flip it, and nothing
+    ``enabled`` is the user's own decision - off until they flip it, and nothing
     of theirs is ever synced while it is off. ``sync_token`` is Google's
     incremental ``syncToken`` for THIS user's calendar; it is dropped whenever
     Google rejects it (HTTP 410) and the next run refetches the full window.
@@ -86,7 +86,7 @@ class UserOptIn(MeetingsBase):
 
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String, nullable=False, index=True)
-    # Core ``public.users.id`` — plain indexed column, no cross-schema FK.
+    # Core ``public.users.id`` - plain indexed column, no cross-schema FK.
     user_id = Column(String, nullable=False, index=True)
     enabled = Column(Boolean, nullable=False, default=False, server_default="0")
     calendar_email = Column(String, nullable=True)
@@ -103,7 +103,7 @@ class CalendarEvent(MeetingsBase):
     """One calendar event that carries a conference link, mirrored per calendar.
 
     Two invitees of the same tenant each get their OWN row for the same meeting
-    (their calendars are two sources) — the shared ``meetings`` row is what
+    (their calendars are two sources) - the shared ``meetings`` row is what
     dedupes them. ``opted_out`` is the per-event switch; a later sync refreshes
     the event's own fields but NEVER resets this flag.
     """
@@ -143,7 +143,7 @@ class CalendarEvent(MeetingsBase):
 
 
 class Meeting(MeetingsBase):
-    """One meeting per conference link + start (spine M8) — the dedupe row.
+    """One meeting per conference link + start (spine M8) - the dedupe row.
 
     ``dedupe_key`` is ``<conference_url>|<starts_at ISO in UTC>``; it is what
     stops two invitees producing two bots for one meeting. S0 only ever creates
@@ -172,7 +172,7 @@ class Meeting(MeetingsBase):
     starts_at = Column(UTCDateTime(), nullable=False)
     ends_at = Column(UTCDateTime(), nullable=True)
     status = Column(String, nullable=False, default=STATUS_SCHEDULED)
-    # Core ``public.files.id`` holding the recorded audio — plain column (S2).
+    # Core ``public.files.id`` holding the recorded audio - plain column (S2).
     recording_file_id = Column(String, nullable=True, index=True)
     language = Column(String, nullable=True)
     status_reason = Column(Text, nullable=True)
@@ -190,7 +190,7 @@ class MeetingParticipant(MeetingsBase):
 
     ``user_id`` is resolved by email against the tenant's users and stays NULL
     for an external attendee. ``is_opted_in`` is a SNAPSHOT of that user's master
-    toggle when the participant row was written — minutes visibility in S5 reads
+    toggle when the participant row was written - minutes visibility in S5 reads
     it rather than re-deriving history.
     """
 
@@ -236,7 +236,7 @@ class Transcript(MeetingsBase):
 
 
 class TranscriptSegment(MeetingsBase):
-    """One diarised utterance (S3). ``language`` is per segment — a meeting may
+    """One diarised utterance (S3). ``language`` is per segment - a meeting may
     switch language mid-sentence and the transcript stays verbatim (spine M14).
     The ``pg_trgm`` index on ``text`` is added by the migration (Postgres only).
     """
@@ -326,7 +326,7 @@ class Share(MeetingsBase):
     meeting_id = Column(
         String, ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    # Core ``public.users.id`` — recipient and sharer.
+    # Core ``public.users.id`` - recipient and sharer.
     user_id = Column(String, nullable=False, index=True)
     shared_by = Column(String, nullable=True)
 
@@ -347,7 +347,7 @@ class MeetingsTenantSettings(MeetingsBase):
     minutes_language = Column(String, nullable=False, default="en")
     # 0 = keep audio forever (spine M15).
     audio_retention_days = Column(Integer, nullable=False, default=90)
-    # Core ``public.connections.id`` of the tenant's chosen LLM — plain column.
+    # Core ``public.connections.id`` of the tenant's chosen LLM - plain column.
     llm_connection_id = Column(String, nullable=True)
     bot_display_name = Column(String, nullable=True)
     consent_message = Column(Text, nullable=True)

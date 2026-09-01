@@ -12,7 +12,7 @@ import { RequirePermission } from '@/components/common/require-permission';
 import { BrandingEditor } from '@/components/platform/branding';
 
 /**
- * Tenant branding hub (sprint-2/03) — logo / favicon / illustration uploads,
+ * Tenant branding hub (sprint-2/03) - logo / favicon / illustration uploads,
  * slogan, and the curated light+dark theme editor. Gated by branding.read;
  * edits additionally need branding.manage.
  */

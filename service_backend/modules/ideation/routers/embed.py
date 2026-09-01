@@ -1,18 +1,18 @@
 """Ideation iframe-embed SSO router (PLAN-ideation-embed-sso §8/§9, AC-E-5..9).
 
-PUBLIC (mounted with ``"public": true`` — no JWT/require_module gate; the
+PUBLIC (mounted with ``"public": true`` - no JWT/require_module gate; the
 assertion signature / embed token IS the credential).
 
 Endpoints:
-  ``POST /embed/session``   — the SSO exchange. Verifies a host-minted assertion
+  ``POST /embed/session``   - the SSO exchange. Verifies a host-minted assertion
                               against the connection's secret and mints a
                               short-lived embed token.
-  ``POST /embed/validate``  — verify an embed token → its tenant scope (the
+  ``POST /embed/validate``  - verify an embed token → its tenant scope (the
                               chrome-less FE page calls this to gate render).
-  ``GET  /embed/ideas``     — embed-token-authed, tenant-scoped ideas list.
-  ``GET  /embed/ideas/{id}``— embed-token-authed, tenant-scoped idea detail.
+  ``GET  /embed/ideas``     - embed-token-authed, tenant-scoped ideas list.
+  ``GET  /embed/ideas/{id}``- embed-token-authed, tenant-scoped idea detail.
 
-DISPATCH NOTE — ``POST /embed/session`` COLLIDES by path with the omnichannel
+DISPATCH NOTE - ``POST /embed/session`` COLLIDES by path with the omnichannel
 widget's own ``POST /embed/session`` (both modules mount at prefix ``/embed``;
 the module loader wires ideation BEFORE omnichannel alphabetically, so THIS route
 wins the match). To preserve omnichannel embed, this handler dispatches: a body
@@ -67,7 +67,7 @@ class EmbedValidateBody(BaseModel):
 
 
 class EmbedIdeaCreateIn(BaseModel):
-    """Embed-mode idea create — mirrors ``IdeaCreateIn`` MINUS ``productId`` (the
+    """Embed-mode idea create - mirrors ``IdeaCreateIn`` MINUS ``productId`` (the
     product is FORCED to the connection's ``principal.product_id`` server-side, so
     the iframe never chooses/leaks another product). All other fields match the
     operator create contract."""
@@ -136,7 +136,7 @@ def require_embed_principal(
     db: Session = Depends(get_db),
 ) -> EmbedTokenPrincipal:
     """Resolve the embed token from ``Authorization: Bearer <embed token>`` →
-    tenant scope. 401 on any failure — the boundary is the backend, never the
+    tenant scope. 401 on any failure - the boundary is the backend, never the
     iframe."""
     token: Optional[str] = None
     if authorization:
@@ -171,7 +171,7 @@ def _assert_in_scope(
     """Resolve an idea scoped to ``principal.tenant_id`` (404 if outside the
     tenant), then enforce the PRODUCT scope: when the connection is product-scoped
     (``principal.product_id`` set) an idea in the same tenant but a DIFFERENT
-    product is denied (404) — never mutated, never leaked (AC-CAP-11). When the
+    product is denied (404) - never mutated, never leaked (AC-CAP-11). When the
     connection is tenant-only (no product), tenant scope is the whole guard."""
     idea = IdeaReadService(db).get(principal.tenant_id, idea_id, voter_id=None)
     if principal.product_id and idea.productId != principal.product_id:
@@ -187,7 +187,7 @@ def embed_list_ideas(
     db: Session = Depends(get_db),
 ) -> List[IdeaOut]:
     """Product-scoped ideas list for the embed page (AC-CAP-11). Reuses
-    ``IdeaReadService`` — the tenant AND product come from the TOKEN, so a token
+    ``IdeaReadService`` - the tenant AND product come from the TOKEN, so a token
     for tenant A / product X can never read tenant B or another product
     (AC-E-8/12). ``product_id=None`` (unscoped connection) falls back to
     tenant-only (today's behaviour)."""
@@ -215,7 +215,7 @@ def embed_get_board(
     )
 
 
-# ── embed-authed write routes (full operator parity, G1/G2 — dedicated /embed/*
+# ── embed-authed write routes (full operator parity, G1/G2 - dedicated /embed/*
 #    routes, each asserting tenant+product scope; declared BEFORE /ideas/{id}
 #    so static paths win the match) ──────────────────────────────────────────
 
@@ -227,7 +227,7 @@ def embed_reorder_ideas(
     db: Session = Depends(get_db),
 ) -> List[IdeaOut]:
     """Set manual priority from the given id order. Every id must resolve inside
-    the connection's tenant+product — any id outside the scope is denied (404)
+    the connection's tenant+product - any id outside the scope is denied (404)
     and NOTHING is reordered (no cross-product mutation, AC-CAP-11)."""
     voter_id = _embed_voter_id(principal)
     for idea_id in body.orderedIds:
@@ -236,7 +236,7 @@ def embed_reorder_ideas(
         principal.tenant_id, body.orderedIds, voter_id=voter_id
     )
     # Only surface the connection's product in the response (the service returns
-    # every tenant idea by priority — filter so an unscoped column never leaks).
+    # every tenant idea by priority - filter so an unscoped column never leaks).
     if principal.product_id:
         return [o for o in ordered if o.productId == principal.product_id]
     return ordered
@@ -249,7 +249,7 @@ def embed_create_idea(
     db: Session = Depends(get_db),
 ) -> IdeaOut:
     """Create an idea from the iframe (full parity). The product is FORCED to the
-    connection's ``product_id`` — a create is rejected (403) when the connection
+    connection's ``product_id`` - a create is rejected (403) when the connection
     is not product-scoped (there is no product to attribute the idea to)."""
     if not principal.product_id:
         raise ApiError(
@@ -330,7 +330,7 @@ def embed_set_idea_status(
 ) -> IdeaOut:
     """Move the idea to a lifecycle status by key. Server-authoritative (illegal
     moves refused, 409). Scoped to tenant+product (404 otherwise). ``actor=None``
-    — there is no operator user in the iframe."""
+    - there is no operator user in the iframe."""
     _assert_in_scope(db, principal, idea_id)
     return IdeaActionService(db).set_status(
         principal.tenant_id,
@@ -348,7 +348,7 @@ def embed_delete_idea(
     db: Session = Depends(get_db),
 ) -> Response:
     """Hard-delete an idea from the iframe (full parity, G1). Scoped to
-    tenant+product — a delete targeting another product is denied (404) before
+    tenant+product - a delete targeting another product is denied (404) before
     any row is touched."""
     _assert_in_scope(db, principal, idea_id)
     IdeaActionService(db).delete(principal.tenant_id, idea_id)

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Plan sprint-3/01 Phase C — Form engine slice 1, full stack (real clicks).
+ * Plan sprint-3/01 Phase C - Form engine slice 1, full stack (real clicks).
  *
  * Journeys (plan §TDD E2E):
  *   ① build a multi-page form via click-to-add → conditional field → computed
@@ -39,21 +39,21 @@ async function login(page: Page) {
 }
 
 /** Click-to-add from the palette (search → entry; dnd-kit drags are covered
- * in Vitest — Playwright can't drive its pointer sensors). */
+ * in Vitest - Playwright can't drive its pointer sensors). */
 async function addField(page: Page, term: string, type: string) {
   await page.getByLabel('Search fields').fill(term);
   await page.getByTestId(`palette-${type}`).click();
   await page.getByLabel('Search fields').fill('');
 }
 
-/** The settings panel edits the SELECTED field — select by row, then write. */
+/** The settings panel edits the SELECTED field - select by row, then write. */
 async function lastFieldRow(page: Page) {
   return page.locator('[data-testid^="field-row-"]').last();
 }
 
 test.describe.configure({ mode: 'serial', timeout: 180_000 });
 
-test.describe('Form engine — live stack (plan sprint-3/01 Phase C)', () => {
+test.describe('Form engine - live stack (plan sprint-3/01 Phase C)', () => {
   test.beforeAll(async ({ request }) => {
     const platformLogin = await request.post(`${API}/auth/login`, {
       data: { email: 'platform@example.com', password: 'platform1234', tenantSlug: 'platform' },
@@ -81,7 +81,7 @@ test.describe('Form engine — live stack (plan sprint-3/01 Phase C)', () => {
     await page.getByRole('button', { name: 'New form' }).click();
     await expect(page.getByTestId('form-builder')).toBeVisible();
 
-    // Page 1 — a required text field.
+    // Page 1 - a required text field.
     await addField(page, 'text', 'text');
     await (await lastFieldRow(page)).click();
     await page.getByLabel('Field label').fill('Full name');
@@ -141,11 +141,11 @@ test.describe('Form engine — live stack (plan sprint-3/01 Phase C)', () => {
 
     await page.getByRole('tab', { name: 'Builder' }).click();
     await page.getByTestId('publish-form').click();
-    await expect(page.getByText(/Published — the form can now be filled/i)).toBeVisible();
+    await expect(page.getByText(/Published - the form can now be filled/i)).toBeVisible();
     await expect(page.getByText('Published · v1')).toBeVisible();
   });
 
-  test('② fill internally — conditions live, computed updates, validation blocks, submit', async ({
+  test('② fill internally - conditions live, computed updates, validation blocks, submit', async ({
     page,
   }) => {
     await login(page);
@@ -186,13 +186,13 @@ test.describe('Form engine — live stack (plan sprint-3/01 Phase C)', () => {
     await expect(page.getByText('Submitted').first()).toBeVisible();
   });
 
-  test('③ Flow tab — custom scoped statuses + graph-driven transition', async ({ page }) => {
+  test('③ Flow tab - custom scoped statuses + graph-driven transition', async ({ page }) => {
     await login(page);
 
     await page.goto(tenantUrl('/forms'));
     await page.getByText(FORM_NAME, { exact: true }).click();
 
-    // The form's OWN pipeline (scoped machine) — seeded Draft + Submitted.
+    // The form's OWN pipeline (scoped machine) - seeded Draft + Submitted.
     await page.getByRole('tab', { name: 'Flow' }).click();
     await expect(page.getByTestId('status-node-draft')).toBeVisible();
     await expect(page.getByTestId('status-node-submitted')).toBeVisible();
@@ -228,7 +228,7 @@ test.describe('Form engine — live stack (plan sprint-3/01 Phase C)', () => {
     await expect(page.getByText('Under Review').first()).toBeVisible();
   });
 
-  test('④ versions — republish creates v2; the old submission still renders v1', async ({
+  test('④ versions - republish creates v2; the old submission still renders v1', async ({
     page,
   }) => {
     await login(page);

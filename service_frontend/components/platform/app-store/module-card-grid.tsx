@@ -9,7 +9,7 @@ import type { UseAppStoreResult } from '@/hooks/use-app-store';
 import { ModuleCard } from './module-card';
 
 /**
- * The App Store card grid (plan 08 §8) — storefront page and console Modules
+ * The App Store card grid (plan 08 §8) - storefront page and console Modules
  * tab render this against the same `useAppStore()` result; only the hook's
  * `tenantId` and the `canAct` gate differ between the two surfaces.
  */

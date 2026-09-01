@@ -2,11 +2,11 @@
 
 Both register into the CORE provider registry (``app/integrations``), so they are
 configured through the same ``/settings/integrations`` Resource shell as SMTP and
-S3 — no bespoke connection UI, and secrets ride the existing Fernet path.
+S3 - no bespoke connection UI, and secrets ride the existing Fernet path.
 
 They are two SEPARATE connection types on purpose. ``uq_connection_tenant_type``
 allows one active connection per type, and a tenant needs BOTH of these at once
-— so a single shared type would make the second one unsavable, the trap the
+- so a single shared type would make the second one unsavable, the trap the
 ``payment``/``erp`` carve-outs exist for.
 """
 import json
@@ -131,7 +131,7 @@ class GoogleDwdProvider:
             )
         except CalendarSourceError as exc:
             return TestResult(ok=False, message=str(exc))
-        except Exception as exc:  # noqa: BLE001 — never a raw traceback
+        except Exception as exc:  # noqa: BLE001 - never a raw traceback
             return TestResult(ok=False, message=str(exc))
         if not emails:
             return TestResult(

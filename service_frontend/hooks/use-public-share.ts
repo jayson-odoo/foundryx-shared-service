@@ -4,11 +4,11 @@
  * Document-share access for the two share surfaces (plan sprint-3/05, Google
  * model):
  *
- *  - PUBLIC mode (`/public/documents/{token}`, anonymous) — resolves a
+ *  - PUBLIC mode (`/public/documents/{token}`, anonymous) - resolves a
  *    public-tier link. A workspace/restricted link returns `sign_in_required`;
  *    the page then routes a logged-in member to the in-app scoped view, or shows
  *    a sign-in CTA. Password gate + anonymous upload ride here.
- *  - AUTHED mode (`/documents/shared/{token}`, `preferAuthed`) — resolves the
+ *  - AUTHED mode (`/documents/shared/{token}`, `preferAuthed`) - resolves the
  *    link as the signed-in member via the authed by-token route (workspace /
  *    named-people). 403 = no access; serves + edits ride the authed endpoints.
  *

@@ -1,4 +1,4 @@
-"""Document management (the Drive) endpoints (plan sprint-3/04) — HTTP only
+"""Document management (the Drive) endpoints (plan sprint-3/04) - HTTP only
 (Router → Service → Repository). One ``router`` (``/documents``) covering Drive
 navigation, folder/file ops, multipart upload, the CSP-sandbox content serve
 route, trash, attachment types, settings and the async ZIP download jobs.
@@ -100,7 +100,7 @@ def _none_if_blank(value: Optional[str]) -> Optional[str]:
 
 
 def _content_disposition(dispo: str, filename: str) -> str:
-    """Safe Content-Disposition — the file name is tenant-controlled (rename only
+    """Safe Content-Disposition - the file name is tenant-controlled (rename only
     strips whitespace), so a quote/backslash/CRLF would inject the header. Emit a
     sanitized ASCII fallback + an RFC 5987 ``filename*`` for the real (UTF-8) name."""
     from urllib.parse import quote
@@ -120,13 +120,13 @@ def _serve_blob(
     disposition: str,
 ):
     """Serve a stored blob CSP-sandboxed + nosniff (a blob may be script-bearing
-    markup — sandbox keeps it inert). Presigned URLs expire → never
+    markup - sandbox keeps it inert). Presigned URLs expire → never
     immutable-cache. Shared by the Drive serve route + the public share route."""
     from app.services.storage import storage_for_tenant
 
     try:
         location, value = storage_for_tenant(db, tenant_id).resolve(storage_key)
-    except Exception:  # noqa: BLE001 — unresolvable key (connection gone)
+    except Exception:  # noqa: BLE001 - unresolvable key (connection gone)
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
     dispo = "attachment" if disposition == "attachment" else "inline"
     headers = {
@@ -367,7 +367,7 @@ def file_content(
     db: Session = Depends(get_db),
 ):
     """Serve a file's current version (D10/D11). Authed + tenant-scoped;
-    CSP-sandboxed + nosniff (a stored blob may be script-bearing markup —
+    CSP-sandboxed + nosniff (a stored blob may be script-bearing markup -
     sandbox keeps it inert). Presigned URLs expire → never immutable-cache."""
     from app.services.storage import storage_for_tenant
 
@@ -377,7 +377,7 @@ def file_content(
     storage_key, mime, filename = found
     try:
         location, value = storage_for_tenant(db, current_user.tenant_id).resolve(storage_key)
-    except Exception:  # noqa: BLE001 — unresolvable key (connection gone)
+    except Exception:  # noqa: BLE001 - unresolvable key (connection gone)
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
     dispo = "attachment" if disposition == "attachment" else "inline"
     headers = {
@@ -556,7 +556,7 @@ def delete_type(
 
 @router.get("/settings", response_model=DocumentSettingsOut)
 def get_settings(
-    # Readable by any Drive user — the usage bar + caps need it; only writing
+    # Readable by any Drive user - the usage bar + caps need it; only writing
     # the policy requires documents.configure (below).
     current_user: User = Depends(require_permission("documents.read")),
     db: Session = Depends(get_db),
@@ -691,7 +691,7 @@ def shared_with_me(
     db: Session = Depends(get_db),
 ):
     """Roots shared TO the signed-in member (the "Shared with me" drive). Any
-    authenticated tenant member — not gated on documents.read (a recipient may
+    authenticated tenant member - not gated on documents.read (a recipient may
     not have Drive access of their own)."""
     return ShareService(db).list_shared_with_me(current_user.tenant_id, current_user)
 
@@ -725,7 +725,7 @@ def resolve_share_authed(
     db: Session = Depends(get_db),
 ) -> PublicShareView:
     """Resolve an internal/user/public link as the authenticated caller (any
-    tenant member — not necessarily a Sharer). Wrong tenant / not-on-allow-list
+    tenant member - not necessarily a Sharer). Wrong tenant / not-on-allow-list
     = 403; unknown/disabled = 404."""
     try:
         return ShareService(db).resolve(
@@ -765,7 +765,7 @@ async def upload_share_file_authed(
     db: Session = Depends(get_db),
 ) -> Response:
     """An authorized editor uploads into a shared folder from the in-app scoped
-    view (attributed to THEM, no honeypot/throttle — they're authenticated)."""
+    view (attributed to THEM, no honeypot/throttle - they're authenticated)."""
     content = await file.read(READ_CAP_BYTES + 1)
     if len(content) > READ_CAP_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File is too large.")
@@ -783,7 +783,7 @@ async def upload_share_file_authed(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-# ---- file_links polymorphic seam (D8 — isolation-tested only) ----
+# ---- file_links polymorphic seam (D8 - isolation-tested only) ----
 
 
 @router.post("/file-links", response_model=FileLinkOut, status_code=status.HTTP_201_CREATED)
@@ -826,7 +826,7 @@ def delete_file_link(
 # ---- public (pre-auth) share surface (D9) ----
 #
 # The token is a globally-unique bearer capability that self-identifies the
-# tenant — no slug in path/subdomain. Unknown/disabled/over-ceiling = uniform
+# tenant - no slug in path/subdomain. Unknown/disabled/over-ceiling = uniform
 # 404 (no enumeration); expired = a friendly 200 closed state. Password gate +
 # anonymous upload ride the OWN `doc_share` throttle bucket.
 
@@ -918,8 +918,8 @@ async def public_share_upload(
         )
     throttle.record_doc_share(ip=ip)
 
-    # Honeypot — a non-empty value = a bot. Return 204, store NOTHING (never tip
-    # off the bot — D6). The field rides the multipart form.
+    # Honeypot - a non-empty value = a bot. Return 204, store NOTHING (never tip
+    # off the bot - D6). The field rides the multipart form.
     form = await request.form()
     honeypot = (form.get(SHARE_HONEYPOT_FIELD) or "")
     if isinstance(honeypot, str) and honeypot.strip():

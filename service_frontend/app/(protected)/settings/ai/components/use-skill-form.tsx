@@ -115,7 +115,7 @@ export function useSkillForm(
           description: values.description.trim(),
           body: values.body,
         });
-        // Editing a PROVIDED (platform-tier) skill forks a tenant copy — follow
+        // Editing a PROVIDED (platform-tier) skill forks a tenant copy - follow
         // the new id rather than leaving the form pointed at the shared row.
         if (updated.id !== skillId) {
           toast.success('Saved as your workspace copy.');
@@ -127,7 +127,7 @@ export function useSkillForm(
         setVersionsToken((t) => t + 1);
         toast.success(
           updated.activeVersionNumber
-            ? `Saved — now on v${updated.activeVersionNumber}.`
+            ? `Saved - now on v${updated.activeVersionNumber}.`
             : 'Skill saved.',
         );
       }
@@ -165,7 +165,7 @@ export function useSkillForm(
               {skill?.isPlatform && (
                 <Alert variant="secondary" className="mb-5">
                   <AlertTitle>
-                    A provided skill — editing it creates your own copy.
+                    A provided skill - editing it creates your own copy.
                   </AlertTitle>
                 </Alert>
               )}
@@ -205,7 +205,7 @@ export function useSkillForm(
                         )}
                       />
                     ) : (
-                      (skill?.name ?? '—')
+                      (skill?.name ?? '-')
                     )}
                   </FormRow>
 
@@ -224,7 +224,7 @@ export function useSkillForm(
                         )}
                       />
                     ) : (
-                      (skill?.description || '—')
+                      (skill?.description || '-')
                     )}
                   </FormRow>
 
@@ -244,7 +244,7 @@ export function useSkillForm(
                       />
                     ) : (
                       <pre className="whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground">
-                        {skill?.body || '—'}
+                        {skill?.body || '-'}
                       </pre>
                     )}
                   </FormRow>

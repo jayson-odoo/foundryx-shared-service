@@ -1,7 +1,7 @@
 # PLAN - Meetings (AI meeting assistant) program master
 
 **Status:** Planning (grilled + confirmed 2026-08-24; UAC-first, no code yet). Next: S1 spike.
-**Classification:** MODULE / Service on the FoundryX shared-service platform. Multi-tenant from day one.
+**Classification:** MODULE / Service on the Foundryx shared-service platform. Multi-tenant from day one.
 **Repos in scope:** `foundryx-shared-service` (primary), `sorento_crm` (iframe host + record linkage).
 **This file is the spine.** Per-slice PLAN + UAC files key back to the Cross-Repo Contracts section here. If a contract changes, change it here first, then the slice plans.
 
@@ -32,7 +32,7 @@ Google Calendar (domain-wide delegation)
 |---|----------|
 | M1 | Meetings is a **Service module on foundryx-shared-service**: `modules/meetings`, schema `app_meetings`, own alembic table. Sorento consumes via iframe + a thin link table; nothing mirrored. |
 | M2 | **Own bot**, not Recall.ai or similar. Google Meet first. Zoom / Teams later as guest-join browser adapters behind the same `JoinAdapter` interface; native SDKs only if guest join proves too flaky. |
-| M3 | **Multi-tenant from day one.** Pilot tenant = FoundryX internal; Sorento = tenant 2. |
+| M3 | **Multi-tenant from day one.** Pilot tenant = Foundryx internal; Sorento = tenant 2. |
 | M4 | **Calendar read = one Google service account, in either of two modes** (one adapter, one `impersonate` flag on the connection). **Shared calendar (default):** each user shares their calendar with the service account's own address at "See all event details"; the account reads `calendarId=<that address>` as itself. Needs NO Workspace admin, which is why it is the default - the pilot tenant has none. **Domain-wide delegation:** the Workspace admin grants it once and the account impersonates each user's `primary`. Per-user OAuth is a later adapter; Google only, Microsoft 365 later. |
 | M5 | **Bot identity = one Workspace account inside each tenant's domain** (`notetaker@<tenant-domain>`), created by the tenant admin, 2SV-exempt OU. Credentials stored encrypted in a tenant `Connection` of kind `meet_bot`; persistent Chromium profile volume per tenant. Auto-admitted to tenant-hosted meetings. |
 | M6 | **Opt-in model:** user flips a master toggle; after that every event with a conference link is joined unless the user opts that event out. Cutoff 2 min before start. |
@@ -47,7 +47,7 @@ Google Calendar (domain-wide delegation)
 | M15 | **Retention:** transcript + minutes kept; audio deleted after N days, per-tenant setting (default 90, 0 = keep). Bytes live in the tenant's own storage connection. |
 | M16 | **Notify on minutes ready:** in-app and email, to opted-in attendees. |
 | M17 | **Bot fleet = Celery worker on queue `bots`** (same Redis, same `app/jobs` framework) spawning one Docker container per meeting through the local Docker socket. Pilot: worker on the Mac Mini. Prod: separate Linux VM (4 vCPU / 8 GB, ~4 concurrent), never the app server. |
-| M18 | **Ops safety net:** a daily canary Meet in the FoundryX domain the bot must join and record non-silent audio; alert (email to platform owner + red banner on the tenant admin page) on canary fail or join-failure rate above 20 % in an hour. Meet DOM selectors live in one file. |
+| M18 | **Ops safety net:** a daily canary Meet in the Foundryx domain the bot must join and record non-silent audio; alert (email to platform owner + red banner on the tenant admin page) on canary fail or join-failure rate above 20 % in an hour. Meet DOM selectors live in one file. |
 | M19 | **Reuse core, not new tables:** recordings = core `files` / `file_versions`; bot / STT / minutes runs = core `background_jobs`; credentials and provider config = `connections`; emails = `notification_specs` -> `email_outbox`; sync + LLM call logs = `integration_activity`; search = `pg_trgm` on segments. Meeting status is a plain enum column (machine-driven), not the status engine. |
 | M20 | **Sorento side:** module key `meetings`, permissions `meetings.view` / `meetings.manage`, nav item, three iframes via embed-SSO on the module's own prefix `/meetings/embed/session`, `meeting_links` table, `POST /api/v1/external/meetings/ready` webhook, auto-link attendees by email + manual link. MCP tools (`list_meetings`, `get_meeting_minutes`) later. |
 | M21 | **Simplest thing that works** governs every slice (PRINCIPLES.md design mandate). Ten thin module tables, adapters only where a second implementation is already planned (calendar, join, STT, LLM). |
@@ -99,9 +99,9 @@ Same mechanism as `PLAN-ideation-embed-sso.md`, mounted on the module's own pref
 
 ### 5.3 Tenant onboarding (human steps, wizard-scripted in S7)
 
-1. Google Cloud: FoundryX service account + OAuth client ID exist once (platform-owned).
+1. Google Cloud: Foundryx service account + OAuth client ID exist once (platform-owned).
 2. **Shared-calendar mode (default, no Workspace admin needed):** each user opens Google Calendar settings, shares their calendar with the service account's address at "See all event details", and types that calendar's address into My meetings when it is not their login email. Only `calendar.readonly` is involved; nothing is granted domain-wide.
-   **Domain-wide delegation mode:** the tenant Workspace admin grants delegation to the FoundryX client ID with scopes `https://www.googleapis.com/auth/calendar.readonly` and `https://www.googleapis.com/auth/admin.directory.user.readonly` (the second is what the DWD Test button and the opt-in user lookup use; found in S0). Either mode: create `notetaker@<domain>` in a 2SV-exempt OU.
+   **Domain-wide delegation mode:** the tenant Workspace admin grants delegation to the Foundryx client ID with scopes `https://www.googleapis.com/auth/calendar.readonly` and `https://www.googleapis.com/auth/admin.directory.user.readonly` (the second is what the DWD Test button and the opt-in user lookup use; found in S0). Either mode: create `notetaker@<domain>` in a 2SV-exempt OU.
 3. Tenant admin in shared-service: connection of type `calendar` (provider `google_dwd`: access mode, service-account JSON, and the admin email only when impersonating), connection of type `meeting_bot` (notetaker email + password), storage connection (existing), optional `llm` connection. Two connection types because core allows one active connection per type per tenant (S0 decision).
 
 **Three facts from a live probe with a real service account (2026-08-25), which the two modes are built around:**
@@ -113,7 +113,7 @@ c. A Workspace that blocks external sharing cannot share its own users' calendar
 
 | # | Slice | Plan file | Gate | Est. |
 |---|---|---|---|---|
-| S1 | Bot spike: throwaway container joins a real Meet under a notetaker account, records audio, uploads, leaves on empty room | `PLAN-meetings-s1-bot-spike.md` | 5/5 joins on FoundryX Meets, audio audible, leaves within 60 s of last human leaving | 1 wk |
+| S1 | Bot spike: throwaway container joins a real Meet under a notetaker account, records audio, uploads, leaves on empty room | `PLAN-meetings-s1-bot-spike.md` | 5/5 joins on Foundryx Meets, audio audible, leaves within 60 s of last human leaving | 1 wk |
 | S0 | Module skeleton, DWD calendar sync, `calendar_events`, opt-in toggles, settings page | `PLAN-meetings-s0-calendar-optin.md` | new calendar event with a Meet link appears in the settings page within 60 s | 1 wk |
 | S2 | Orchestrator: `bots` queue, scheduling at T-2 min, container lifecycle, lobby timeout, dedupe, retries, `background_jobs` | `PLAN-meetings-s2-orchestrator.md` | two overlapping meetings both captured; not-admitted path surfaces to the user | 1 wk |
 | S3 | STT: WhisperX on Modal, diarization, language per segment, Deepgram fallback, `transcripts` | `PLAN-meetings-s3-stt.md` | 1 h audio -> transcript in under 5 min; mixed Malay / English / Chinese meeting transcribed | 1-2 wk |

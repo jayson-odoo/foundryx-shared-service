@@ -1,5 +1,5 @@
 /**
- * My meetings (S0) — AC-S0-6, AC-S0-7, AC-S0-8, AC-S0-9.
+ * My meetings (S0) - AC-S0-6, AC-S0-7, AC-S0-8, AC-S0-9.
  *
  * Drives the page through the SERVICE boundary (the service module is mocked,
  * never fetch), so what is asserted is exactly what the user sees: the master
@@ -126,7 +126,7 @@ describe('My meetings', () => {
     const toggle = await screen.findByRole('switch', { name: 'Record my meetings' });
     await waitFor(() => expect(toggle).not.toBeDisabled());
     expect(toggle).toHaveAttribute('data-state', 'unchecked');
-    // Nothing is synced while it is off, so there is no list at all — the only
+    // Nothing is synced while it is off, so there is no list at all - the only
     // thing on offer is the toggle itself.
     expect(screen.getByRole('button', { name: 'Record my meetings' })).toBeInTheDocument();
     expect(screen.queryByText('Weekly product sync')).not.toBeInTheDocument();

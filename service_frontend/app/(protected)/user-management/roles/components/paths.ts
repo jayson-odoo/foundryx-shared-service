@@ -1,4 +1,4 @@
-/** Route helpers for the Roles feature — single source of truth for its URLs. */
+/** Route helpers for the Roles feature - single source of truth for its URLs. */
 
 export const rolesListPath = '/user-management/roles';
 export const roleNewPath = `${rolesListPath}/new`;

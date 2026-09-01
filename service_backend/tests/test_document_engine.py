@@ -1,4 +1,4 @@
-"""Document engine tests (plan sprint-3/04 §Phase C) — service/router over the
+"""Document engine tests (plan sprint-3/04 §Phase C) - service/router over the
 httpx TestClient, mapped to the UAT acceptance criteria.
 
 Covers: navigation + breadcrumb (AC-NAV) · folder create/rename/move + cycle
@@ -201,7 +201,7 @@ def test_soft_delete_cascade_restore_purge(client):
 
 def test_quota_counts_trashed_blobs(client):
     # Code-review fix: trashed (not purged) files still occupy storage, so they
-    # must count toward the quota — else trash-then-upload bypasses it.
+    # must count toward the quota - else trash-then-upload bypasses it.
     h = _admin(client)
     client.put("/documents/settings", json={"storageQuotaMb": 2}, headers=h)
     blob = b"%PDF-" + b"0" * 1_400_000  # ~1.4 MB

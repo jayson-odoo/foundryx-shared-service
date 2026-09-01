@@ -10,7 +10,7 @@ import {
   __mockSimulateInbound,
 } from '@/services/conversation-service.mock';
 
-// The binding points at the REAL service since Phase B — pin the hooks to the
+// The binding points at the REAL service since Phase B - pin the hooks to the
 // mock here (deterministic, no backend/session in jsdom).
 vi.mock('@/services/conversation-service', async () => {
   const { mockConversationService } = await import('@/services/conversation-service.mock');

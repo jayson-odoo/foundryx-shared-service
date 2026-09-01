@@ -18,7 +18,7 @@ import { useUpcomingEventsListConfig } from './use-upcoming-events-list-config';
  * My meetings (S0 plan §4, AC-S0-6..9).
  *
  * One master toggle and, once it is on, the caller's upcoming events with a
- * capture switch per row. With the toggle off there is nothing to list — the
+ * capture switch per row. With the toggle off there is nothing to list - the
  * toggle itself is the next-step CTA (AC-S0-9), which is why the empty state
  * carries a control and no explanation.
  *

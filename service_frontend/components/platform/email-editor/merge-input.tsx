@@ -9,10 +9,10 @@ import type { TemplateContextFact } from '@/types/templates';
 import { MergeFieldBuilder } from './merge-field-builder';
 
 /**
- * Single-field merge-token input — text field + a `{ }` insert BUILDER (same
+ * Single-field merge-token input - text field + a `{ }` insert BUILDER (same
  * shell idiom as the form engine's FormulaBuilder). The field vocabulary lives
  * in a searchable builder dialog with a live preview, NOT a flat always-on chip
- * wall (which grew unbounded as a context's fact set grew — user feedback).
+ * wall (which grew unbounded as a context's fact set grew - user feedback).
  */
 
 export interface MergeInputProps {
@@ -83,7 +83,7 @@ export function MergeInput({
         onChange={onChange}
         fields={fields}
         multiline={multiline}
-        title={ariaLabel ? `Insert field — ${ariaLabel}` : 'Insert field'}
+        title={ariaLabel ? `Insert field - ${ariaLabel}` : 'Insert field'}
       />
     </div>
   );

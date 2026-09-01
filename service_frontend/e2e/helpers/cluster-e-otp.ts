@@ -1,5 +1,5 @@
 /**
- * Cluster E OTP "mailbox" — the portal login code is emailed; with no SMTP it
+ * Cluster E OTP "mailbox" - the portal login code is emailed; with no SMTP it
  * lands in the `email_outbox` table. We read the latest code for an address by
  * shelling out to psql (the dedicated :8002 DB). The send body is
  * "Your one-time sign-in code is: NNNNNN" (email_service.send_profile_otp).

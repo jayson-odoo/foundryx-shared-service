@@ -1,7 +1,7 @@
 /**
  * Tenant slug rules + resolution (plan 07 §4, §6).
  *
- * The slug is the tenant's URL identity (subdomain) — lowercase kebab, immutable
+ * The slug is the tenant's URL identity (subdomain) - lowercase kebab, immutable
  * after creation. `deriveTenantSlug` resolves the current tenant from the
  * hostname (subdomain-based resolution, D4); local dev falls back to
  * NEXT_PUBLIC_TENANT_SLUG, then "default".
@@ -25,7 +25,7 @@ export const RESERVED_TENANT_SLUGS: readonly string[] = [
   'billing',
 ];
 
-/** lowercase kebab, 3–63 chars, no leading/trailing/double hyphen. */
+/** lowercase kebab, 3-63 chars, no leading/trailing/double hyphen. */
 const SLUG_RE = /^[a-z0-9](?:-?[a-z0-9]){2,62}$/;
 
 export function isValidTenantSlug(slug: string): boolean {
@@ -41,7 +41,7 @@ const NON_TENANT_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0']);
 
 /**
  * Subdomains that are infra aliases, never tenant homes. This is the reserved
- * list MINUS `platform`/`default` — those are real (seeded) tenants and must
+ * list MINUS `platform`/`default` - those are real (seeded) tenants and must
  * resolve (the operator console lives at platform.<domain>).
  */
 const NON_TENANT_SUBDOMAINS = new Set(
@@ -51,7 +51,7 @@ const NON_TENANT_SUBDOMAINS = new Set(
 const FALLBACK_SLUG = process.env.NEXT_PUBLIC_TENANT_SLUG || 'default';
 
 /**
- * Build a tenant's URL from the host the operator is browsing on —
+ * Build a tenant's URL from the host the operator is browsing on -
  * swap the subdomain for the tenant slug, keep domain/port/protocol.
  * platform.localhost:3001 + acme → http://acme.localhost:3001;
  * platform.foundryxems.com + acme → https://acme.foundryxems.com.

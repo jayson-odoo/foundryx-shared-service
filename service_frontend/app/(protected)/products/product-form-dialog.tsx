@@ -34,8 +34,8 @@ function toMoney(raw: string): number | null {
 /**
  * Create/Edit a catalog product (CRUD-UX standard: modal by default). Basic
  * scalar fields map to the core `/products` contract. When `kind === 'software'`
- * a **Product domain base** field appears — the absolute origin used to mint
- * ideation idea links — wired to the ideation delivery config
+ * a **Product domain base** field appears - the absolute origin used to mint
+ * ideation idea links - wired to the ideation delivery config
  * (GET/PUT /ideation/products/{id}/delivery). It is saved AFTER the product on
  * create (needs the new id) and only when it changed on edit. Every section is
  * always rendered; the software section shows a helper note.
@@ -258,7 +258,7 @@ export function ProductFormDialog({
             <Switch id="prod-active" checked={isActive} onCheckedChange={setIsActive} />
           </div>
 
-          {/* Software-only delivery config — always rendered for software kind. */}
+          {/* Software-only delivery config - always rendered for software kind. */}
           {isSoftware && (
             <div className="space-y-1.5 rounded-md border border-dashed p-3">
               <Label htmlFor="prod-domain-base">Product domain base</Label>

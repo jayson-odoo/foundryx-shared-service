@@ -1,4 +1,4 @@
-/** EMS domain types (sprint-3/11, F4) — mirror of the module wire schemas. */
+/** EMS domain types (sprint-3/11, F4) - mirror of the module wire schemas. */
 
 export interface Profile {
   id: string;
@@ -39,7 +39,7 @@ export interface Project {
   brief: string | null;
   notes: string | null;
   domainName: string | null;
-  /** Calendar dates (date-only, "YYYY-MM-DD") — not instants. */
+  /** Calendar dates (date-only, "YYYY-MM-DD") - not instants. */
   startDate: string | null;
   endDate: string | null;
   eventValidityEnd: string | null;
@@ -55,7 +55,7 @@ export interface Project {
 export type CommercialMode = 'SELF_RUN' | 'AGENCY';
 export type FeeType = 'PERCENT' | 'FLAT' | 'PER_TICKET';
 
-/** PATCH body for the event Details edit — all-optional; immutable fields
+/** PATCH body for the event Details edit - all-optional; immutable fields
  * (template/type/client/status) are intentionally absent. */
 export interface ProjectUpdate {
   title?: string;
@@ -80,7 +80,7 @@ export interface Participant {
   statusId: string | null;
 }
 
-/** A ticket (Cluster D slice 3) — status-engine backed, signed QR. */
+/** A ticket (Cluster D slice 3) - status-engine backed, signed QR. */
 export interface Ticket {
   id: string;
   projectId: string;
@@ -111,7 +111,7 @@ export interface VoidRefundResult {
   seatReleased: boolean;
 }
 
-/** Cluster D slice 3 (sprint-4/05) — event-day check-in. */
+/** Cluster D slice 3 (sprint-4/05) - event-day check-in. */
 export interface Checkpoint {
   id: string;
   projectId: string;
@@ -147,7 +147,7 @@ export interface CheckpointLog {
   scannedAt: string;
 }
 
-/** Cluster B (sprint-3/12) — commercial CRM. */
+/** Cluster B (sprint-3/12) - commercial CRM. */
 export interface Client {
   id: string;
   name: string;

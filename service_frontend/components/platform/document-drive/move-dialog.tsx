@@ -16,15 +16,15 @@ import type { FolderRow } from '@/types/documents';
 
 export interface MoveDialogProps {
   open: boolean;
-  /** Folder ids being moved — excluded as destinations (no self-move). */
+  /** Folder ids being moved - excluded as destinations (no self-move). */
   movingFolderIds: string[];
-  /** Where the items currently live — disables "Move here" for a no-op. */
+  /** Where the items currently live - disables "Move here" for a no-op. */
   sourceFolderId: string | null;
   onMove: (targetFolderId: string | null) => Promise<void>;
   onClose: () => void;
 }
 
-/** Destination picker — descend the tree, then "Move here". */
+/** Destination picker - descend the tree, then "Move here". */
 export function MoveDialog({
   open,
   movingFolderIds,

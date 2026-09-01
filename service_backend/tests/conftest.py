@@ -29,16 +29,16 @@ from app.seed import (
 from app.security import hash_password
 
 # Tests run the omnichannel adapter in DEV mode (no live Meta Graph calls), even
-# when META_* is set in a local .env — blank the Meta config for the test process.
+# when META_* is set in a local .env - blank the Meta config for the test process.
 settings.meta_app_id = ""
 settings.meta_app_secret = ""
-# No dispatcher thread under tests — outbox tests drive dispatch_pending()
+# No dispatcher thread under tests - outbox tests drive dispatch_pending()
 # directly against the test session (the thread would hit the real DATABASE_URL).
 settings.email_dispatcher_enabled = False
 # Tests must not pick up a platform SMTP connection from the local .env.
 settings.platform_smtp_host = ""
 # Nor a real LLM key: with no platform LLM connection seeded, the deterministic
-# stub adapter answers (AC-BI-12) — the routine suite stays offline and free
+# stub adapter answers (AC-BI-12) - the routine suite stays offline and free
 # even on a machine whose .env carries a live provider key.
 settings.platform_llm_api_key = ""
 settings.grill_api_key = ""
@@ -70,7 +70,7 @@ def _register_storage_locations():
 def session_factory():
     # The omnichannel module uses the `app_omnichannel` schema. SQLite has no
     # native schemas, so ATTACH an in-memory database as `omni` and translate
-    # the module schema onto it — keeps module tables isolated from core (the
+    # the module schema onto it - keeps module tables isolated from core (the
     # module's `statuses` must not collide with the core `statuses`, plan 07).
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
@@ -82,16 +82,20 @@ def session_factory():
         poolclass=StaticPool,
     ).execution_options(
         # The module schema maps onto one attached in-memory db (distinct table
-        # names; no collisions) — module tables stay isolated from core's.
+        # names; no collisions) - module tables stay isolated from core's.
         # autocount (sprint-4/13) maps onto the same attached db: its tables are
         # ``ac_``-prefixed, so they cannot collide with omnichannel's.
-        # meetings (sprint-5 S0) gets its OWN attached db — every module on disk
+        # ideation (sprint-4/18) maps onto the same attached db too: its tables
+        # are distinct names, and without the mapping ``bootstrap_modules``'s
+        # ideation install raises "unknown database app_ideation" mid-suite.
+        # meetings (sprint-5 S0) gets its OWN attached db - every module on disk
         # is globally installed by ``bootstrap_modules`` below, so a module whose
         # schema maps nowhere would fail its create_all and land in
         # ERRORED_MODULES for the whole suite.
         schema_translate_map={
             OMNI_SCHEMA: "omni",
             AUTOCOUNT_SCHEMA: "omni",
+            "app_ideation": "omni",
             MEETINGS_SCHEMA: "meetings",
         }
     )
@@ -109,21 +113,21 @@ def session_factory():
 
     db = TestingSessionLocal()
     # Statuses + tenants (default + platform) + permission catalogs (core +
-    # platform) + the platform operator — same seed path bootstrap_db runs.
+    # platform) + the platform operator - same seed path bootstrap_db runs.
     seed_statuses(db)
     seed_tenant_transitions(db)
     seed_default_tenant(db)
     seed_platform_tenant(db)
     seed_permissions(db)
     seed_platform_admin(db)
-    # Template engine (plan 07): platform-tier system templates — the suite's
+    # Template engine (plan 07): platform-tier system templates - the suite's
     # email flows render through the engine like production.
     from app.template_engine.seed_templates import seed_platform_templates
 
     seed_platform_templates(db)
 
     # Default-tenant Admin role holding the core keys (module keys arrive via
-    # the App-Store install below — plan 08 §5 grant model).
+    # the App-Store install below - plan 08 §5 grant model).
     admin_role = Role(
         tenant_id=DEFAULT_TENANT_ID,
         name="Admin",
@@ -156,14 +160,14 @@ def session_factory():
     db.commit()
 
     # Module wiring, the real path (plan 08): catalog sync + global install,
-    # then INSTALL omnichannel for the default tenant via the store service —
+    # then INSTALL omnichannel for the default tenant via the store service -
     # seeds the default workspace and grants the module keys to the Admin role.
     from app.module_loader import bootstrap_modules
     from app.services.app_store_service import AppStoreService
 
     bootstrap_modules(engine=engine, db=db)
     AppStoreService(db).install(DEFAULT_TENANT_ID, "omnichannel")
-    # AutoCount ESB (sprint-4/13) — installed the same real store path, so its
+    # AutoCount ESB (sprint-4/13) - installed the same real store path, so its
     # permission keys land on the default tenant's Admin role like production.
     AppStoreService(db).install(DEFAULT_TENANT_ID, "autocount")
     db.close()
@@ -192,7 +196,7 @@ def ideation_session_factory():
         poolclass=StaticPool,
     ).execution_options(
         # Each module schema maps onto its own attached in-memory db (distinct
-        # table names; no collisions) — module tables stay isolated from core's.
+        # table names; no collisions) - module tables stay isolated from core's.
         # autocount (sprint-4/13, merged from main) maps onto the `omni` db like
         # the core session_factory does so bootstrap_modules can install it here.
         schema_translate_map={
@@ -283,7 +287,7 @@ def meetings_session_factory():
     Mirrors ``ideation_session_factory``: every module schema maps onto its own
     attached in-memory db, ``bootstrap_modules`` runs the real global install for
     all of them, and the App Store then installs ``meetings`` for the default
-    tenant — so a meetings test gets the same wiring production has (permission
+    tenant - so a meetings test gets the same wiring production has (permission
     grants included).
     """
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
@@ -297,7 +301,7 @@ def meetings_session_factory():
         poolclass=StaticPool,
     ).execution_options(
         # Every module on disk is globally installed by ``bootstrap_modules``
-        # below, so every module schema needs somewhere to live here — one whose
+        # below, so every module schema needs somewhere to live here - one whose
         # schema maps nowhere lands in ERRORED_MODULES and pollutes the run.
         schema_translate_map={
             OMNI_SCHEMA: "omni",

@@ -1,4 +1,4 @@
-"""View-preference repository — per-user, per-view column prefs (upsert)."""
+"""View-preference repository - per-user, per-view column prefs (upsert)."""
 from typing import Optional
 
 from sqlalchemy.orm import Session

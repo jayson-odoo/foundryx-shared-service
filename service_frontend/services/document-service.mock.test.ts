@@ -14,7 +14,7 @@ async function findFolderId(parentId: string | null, name: string): Promise<stri
   return f.id;
 }
 
-describe('document-service mock — Drive', () => {
+describe('document-service mock - Drive', () => {
   it('seeds a navigable root with folders and files', async () => {
     const root = await svc.listFolder(null);
     expect(root.folders.map((f) => f.name)).toContain('Quotations');
@@ -46,7 +46,7 @@ describe('document-service mock — Drive', () => {
   });
 });
 
-describe('document-service mock — uploads', () => {
+describe('document-service mock - uploads', () => {
   it('uploads a new file with one version + progress', async () => {
     const target = await findFolderId(null, 'Contracts');
     const progress: number[] = [];
@@ -97,7 +97,7 @@ describe('document-service mock — uploads', () => {
   });
 });
 
-describe('document-service mock — move / trash', () => {
+describe('document-service mock - move / trash', () => {
   it('refuses to move a folder into its own subtree (cycle guard)', async () => {
     const eventsId = await findFolderId(null, 'Events');
     const childId = await findFolderId(eventsId, '2026');

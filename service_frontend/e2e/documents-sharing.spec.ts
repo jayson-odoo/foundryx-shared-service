@@ -1,7 +1,7 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
 
 /**
- * Plan sprint-3/05 Phase C — Document sharing (Google-Drive model), full stack
+ * Plan sprint-3/05 Phase C - Document sharing (Google-Drive model), full stack
  * (real clicks). Mapped to `05-document-mgmt-sharing-uat.md`.
  *
  * Journeys:
@@ -23,7 +23,7 @@ const ADMIN_EMAIL = `admin-${STAMP}@example.com`;
 const ADMIN_PASSWORD = 'E2eStart1!';
 
 const ACCESS_LABEL = {
-  restricted: 'Restricted — only people added below',
+  restricted: 'Restricted - only people added below',
   workspace: 'Anyone in the workspace',
   public: 'Anyone with the link',
 } as const;
@@ -33,7 +33,7 @@ function tenantUrl(pathname: string): string {
 }
 
 async function login(page: Page) {
-  // Retry the whole flow — the dev server can serve the signin page before React
+  // Retry the whole flow - the dev server can serve the signin page before React
   // hydrates, so an early click native-submits the form (GET ?email=…) and never
   // authenticates. Reload + retry until we leave /signin.
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -49,7 +49,7 @@ async function login(page: Page) {
       await page.waitForURL((url) => !url.pathname.startsWith('/signin'), { timeout: 30_000 });
       return;
     } catch {
-      /* native-submit / cold compile — retry */
+      /* native-submit / cold compile - retry */
     }
   }
   throw new Error('login did not complete');
@@ -125,7 +125,7 @@ async function anonPage(browser: Browser, mobile = false): Promise<Page> {
 
 test.describe.configure({ mode: 'serial', timeout: 180_000 });
 
-test.describe('Document sharing — live stack (plan sprint-3/05 Phase C)', () => {
+test.describe('Document sharing - live stack (plan sprint-3/05 Phase C)', () => {
   test.beforeAll(async ({ request }) => {
     const platformLogin = await request.post(`${API}/auth/login`, {
       data: { email: 'platform@example.com', password: 'platform1234', tenantSlug: 'platform' },
@@ -156,7 +156,7 @@ test.describe('Document sharing — live stack (plan sprint-3/05 Phase C)', () =
     expect(put.ok()).toBeTruthy();
   });
 
-  test('① workspace link — logged-out signs in, member sees it under Shared with me', async ({ page, browser }) => {
+  test('① workspace link - logged-out signs in, member sees it under Shared with me', async ({ page, browser }) => {
     await login(page);
     await page.goto(tenantUrl('/documents'));
     await uploadFile(page, 'internal-doc.pdf', 'i');

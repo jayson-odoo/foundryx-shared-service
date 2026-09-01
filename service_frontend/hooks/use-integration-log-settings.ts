@@ -1,5 +1,5 @@
 /**
- * Developer-logs retention settings (sprint-4/12 Slice 3, AC-DLC-21/23) — the
+ * Developer-logs retention settings (sprint-4/12 Slice 3, AC-DLC-21/23) - the
  * `/developers/logs/settings` page talks to the service through this hook, never
  * a direct fetch (UI → hook → service).
  */

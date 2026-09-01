@@ -35,7 +35,7 @@ function idea(id: string, over: Partial<Idea> = {}): Idea {
 
 beforeEach(() => mockApiFetch.mockReset());
 
-// ── the embed service hits the /embed/* routes (AC-CAP-11 — writes) ───────────
+// ── the embed service hits the /embed/* routes (AC-CAP-11 - writes) ───────────
 describe('ideationEmbedService → /embed/* endpoints', () => {
   it('validate posts the token and lists ideas from /embed/ideas', async () => {
     mockApiFetch.mockResolvedValueOnce({

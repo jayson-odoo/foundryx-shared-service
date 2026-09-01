@@ -85,7 +85,7 @@ class SettingsOut(ApiModel):
 
 
 class SettingsIn(ApiModel):
-    """Every field optional — an omitted key keeps the stored value."""
+    """Every field optional - an omitted key keeps the stored value."""
 
     minutesLanguage: Optional[str] = Field(default=None, max_length=16)
     # 0 = keep recordings forever (spine M15).

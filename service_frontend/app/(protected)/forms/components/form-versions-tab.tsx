@@ -1,7 +1,7 @@
 'use client';
 
-/** Versions tab (plan sprint-3/01 D9) — paginated version history (own
- * endpoint; never embedded in the form GET — history grows unbounded). */
+/** Versions tab (plan sprint-3/01 D9) - paginated version history (own
+ * endpoint; never embedded in the form GET - history grows unbounded). */
 import { useCallback, useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';

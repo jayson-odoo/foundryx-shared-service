@@ -1,11 +1,11 @@
-"""AI services (Phase B-i slice 1) — business logic over the AI repositories.
+"""AI services (Phase B-i slice 1) - business logic over the AI repositories.
 
 Three services, one per surface:
-- `AgentService`   — the persona registry (+ the missing-prerequisite warning).
-- `SkillService`   — versioned prompt artifacts: an edit MINTS a new immutable
+- `AgentService`   - the persona registry (+ the missing-prerequisite warning).
+- `SkillService`   - versioned prompt artifacts: an edit MINTS a new immutable
                      version and moves the `active` label; rollback is a label
                      move. A version row is never mutated (AC-BI-07).
-- `TraceService`   — read-only observability + the flag toggle.
+- `TraceService`   - read-only observability + the flag toggle.
 
 Every query is tenant-scoped through the repositories; ids arriving from a
 client (connection, skill, version) are re-validated against the caller's tenant
@@ -141,7 +141,7 @@ class AgentService:
                 "That connection is not an AI provider.",
             )
 
-        from app.ai.stub import is_dev  # noqa: PLC0415 — avoids an import cycle
+        from app.ai.stub import is_dev  # noqa: PLC0415 - avoids an import cycle
         from app.secrets import decrypt_secret
         from cryptography.fernet import InvalidToken
 
@@ -328,7 +328,7 @@ class AgentService:
     def delete(self, tenant_id: str, agent_id: str) -> None:
         agent = self._get_or_404(tenant_id, agent_id)
         # System-seeded agents (e.g. the grill's "ideation-grill") are delete-
-        # locked — a consumer binds to them by key (mirrors AiSkill.is_system).
+        # locked - a consumer binds to them by key (mirrors AiSkill.is_system).
         # Name/model/skills stay editable (AC-BI-20b).
         if agent.is_system:
             raise HTTPException(
@@ -362,7 +362,7 @@ class AgentService:
         self, tenant_id: str, connection_id: Optional[str]
     ) -> Optional[str]:
         """Validate on WRITE that the connection belongs to this tenant (or the
-        platform fallback) and is an LLM connection — a cross-tenant id is
+        platform fallback) and is an LLM connection - a cross-tenant id is
         refused here, and `resolve_for_agent` re-scopes it at USE time."""
         if not connection_id:
             return None
@@ -376,7 +376,7 @@ class AgentService:
 
     def _validated_skills(self, tenant_id: str, skill_ids: Optional[List[str]]) -> List[AiSkill]:
         """Resolve the equipped set (AC-BI-06b), validating EACH id belongs to
-        this tenant's own tier OR the platform tier — a foreign-tenant skill id
+        this tenant's own tier OR the platform tier - a foreign-tenant skill id
         is refused (the polymorphic-target rule: validate on write). Duplicates
         collapse; order is preserved for a stable set."""
         if not skill_ids:
@@ -399,7 +399,7 @@ class AgentService:
     def _to_out_many(self, tenant_id: str, agents: List[AiAgent]) -> List[AgentOut]:
         """Batch-resolve connection display data (one query, never per-row) and
         derive the missing-prerequisite warning. The equipped skill set rides
-        the selectin-loaded `agent.skills` relationship — tenant-scoped by
+        the selectin-loaded `agent.skills` relationship - tenant-scoped by
         construction (the join is per-agent, the agent is tenant-scoped)."""
         if not agents:
             return []
@@ -410,7 +410,7 @@ class AgentService:
             owners = [tenant_id]
             if tenant_id != PLATFORM_TENANT_ID:
                 owners.append(PLATFORM_TENANT_ID)
-            # Tenant-scope even though the write path validated — a stored id is
+            # Tenant-scope even though the write path validated - a stored id is
             # never resolved unscoped (defense in depth).
             connections = {
                 c.id: c
@@ -446,10 +446,10 @@ class AgentService:
 
 def _agent_warning(agent: AiAgent, connection: Optional[Connection]) -> Optional[str]:
     """The missing-prerequisite warning (AC-BI-06). Surfaced on the list AND the
-    form so a broken agent is visible BEFORE someone runs it — never a silent
+    form so a broken agent is visible BEFORE someone runs it - never a silent
     runtime failure."""
     if connection is None:
-        return "No AI connection — pick one before this agent can run."
+        return "No AI connection - pick one before this agent can run."
     if not connection.is_active:
         return f'Its connection "{connection.name}" is inactive.'
     if connection.status == CONNECTION_STATUS_ERROR:
@@ -604,7 +604,7 @@ class SkillService:
             description=(req.description or "").strip(),
         )
         self.repo.add(skill)
-        # Every skill starts at v1 — an agent must never point at a bodyless skill.
+        # Every skill starts at v1 - an agent must never point at a bodyless skill.
         self._mint_version(skill, req.body or "", actor)
         self.db.commit()
         self.db.refresh(skill)
@@ -624,7 +624,7 @@ class SkillService:
             skill.description = req.description.strip()
         if req.body is not None:
             current = self._active_body(skill)
-            # Only a REAL change mints a version — otherwise saving the form
+            # Only a REAL change mints a version - otherwise saving the form
             # twice would inflate history with identical rows.
             if req.body != current:
                 self._mint_version(skill, req.body, actor)
@@ -656,7 +656,7 @@ class SkillService:
                 status.HTTP_409_CONFLICT, "System skills cannot be deleted."
             )
         # Count agents equipping this skill via the join (AC-BI-06b). The FK
-        # CASCADEs, so a delete would silently un-equip — warn first instead.
+        # CASCADEs, so a delete would silently un-equip - warn first instead.
         in_use = (
             self.db.query(ai_agent_skills)
             .filter(
@@ -668,7 +668,7 @@ class SkillService:
         if in_use:
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
-                f"{in_use} agent(s) still equip this skill — remove it from them first.",
+                f"{in_use} agent(s) still equip this skill - remove it from them first.",
             )
         self.repo.delete(skill)
         self.db.commit()
@@ -682,7 +682,7 @@ class SkillService:
 
     def _own_tier(self, tenant_id: str, skill: AiSkill, actor: User) -> AiSkill:
         """Editing a PLATFORM-tier skill FORKS a tenant copy (the template-engine
-        two-tier pattern) — a tenant's edit must never mutate the shared default.
+        two-tier pattern) - a tenant's edit must never mutate the shared default.
         The platform tenant itself edits the NULL-tier row in place, since it is
         the operator maintaining those defaults."""
         if skill.tenant_id is not None or tenant_id == PLATFORM_TENANT_ID:
@@ -752,7 +752,7 @@ class SkillService:
 
 
 class TraceService:
-    """Read-only observability (+ the flag toggle). Gated `ai_traces.read` —
+    """Read-only observability (+ the flag toggle). Gated `ai_traces.read` -
     separate from `ai_agents.manage` because a trace holds RAW prompts and
     completions: debugging access is not the same as re-keying providers
     (AC-BI-14)."""

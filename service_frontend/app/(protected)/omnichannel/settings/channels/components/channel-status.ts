@@ -1,7 +1,7 @@
 import type { StatusRegistry } from '@/components/platform/status-badge';
 import type { ChannelStatus, ChannelType } from '@/types/omnichannel';
 
-/** Uniform status pill mapping for channels (plan 04 — statuses table, CHANNEL scope). */
+/** Uniform status pill mapping for channels (plan 04 - statuses table, CHANNEL scope). */
 export const CHANNEL_STATUS_REGISTRY: StatusRegistry<ChannelStatus> = {
   ACTIVE: { label: 'Active', tone: 'success' },
   PENDING: { label: 'Pending', tone: 'warning' },

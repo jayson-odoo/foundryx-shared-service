@@ -1,13 +1,13 @@
 """Triggerable / actionable entity registry (plan sprint-2/09 D6).
 
-The v1 instrumented set — ``user``, ``role``, ``tenant``, ``connection``,
-``template``, ``workflow`` — each a rule-engine fact source (so IF conditions +
+The v1 instrumented set - ``user``, ``role``, ``tenant``, ``connection``,
+``template``, ``workflow`` - each a rule-engine fact source (so IF conditions +
 entity triggers can read ``record.*``) plus the metadata the engine needs to
 load a record (entity triggers / actions) and patch a whitelisted set of fields
 (``entity.update``). Domain entities (Lead/Project/Task…) light up by
 registering here as future sprints add their services' ``emit_entity_event``.
 
-Code-side registry like StatusEntity / FactSource — modules append at install.
+Code-side registry like StatusEntity / FactSource - modules append at install.
 Registering an entity ALSO registers its ``record:<type>`` fact source (unless
 one already exists, e.g. the richer ``record:tenant`` the rule engine owns).
 """
@@ -34,7 +34,7 @@ class WorkflowEntity:
     model: Any
     # Columns surfaced as ``record.*`` facts + entity-trigger record outputs.
     fact_attrs: Tuple[str, ...] = ()
-    # Whitelist the ``entity.update`` action may write — NEVER the full schema
+    # Whitelist the ``entity.update`` action may write - NEVER the full schema
     # (email has its own ceremony, credentials are secret, slugs immutable).
     writable: frozenset = field(default_factory=frozenset)
     tenant_scoped: bool = True
@@ -72,7 +72,7 @@ def list_workflow_entities() -> List[WorkflowEntity]:
 
 
 def load_record(db: Session, entity: WorkflowEntity, tenant_id: str, record_id: str) -> Any:
-    """Tenant-scoped record load (defense-in-depth — never resolve a stored id
+    """Tenant-scoped record load (defense-in-depth - never resolve a stored id
     unscoped; the polymorphic target_id rule)."""
     query = db.query(entity.model).filter(entity.model.id == record_id)
     if entity.tenant_scoped:
@@ -139,7 +139,7 @@ def _register_core() -> None:
             label="Connection",
             model=Connection,
             fact_attrs=("provider", "type", "status"),
-            writable=frozenset(),  # credentials/config are sensitive — no patch
+            writable=frozenset(),  # credentials/config are sensitive - no patch
         )
     )
     register_workflow_entity(
@@ -160,7 +160,7 @@ def _register_core() -> None:
             writable=frozenset({"name", "description"}),
         )
     )
-    # The Drive's File (plan sprint-3/04 D13) — workflows can react to
+    # The Drive's File (plan sprint-3/04 D13) - workflows can react to
     # upload/move/rename/delete via entity.created/updated/deleted. No
     # entity.update writes (rename/move have dedicated ops); facts only.
     register_workflow_entity(

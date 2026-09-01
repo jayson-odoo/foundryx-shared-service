@@ -24,7 +24,7 @@ const full: WaTemplateDoc = {
   ],
 };
 
-describe('toMetaComponents — parity golden (pins FE ⇄ BE transform, SEC-5)', () => {
+describe('toMetaComponents - parity golden (pins FE ⇄ BE transform, SEC-5)', () => {
   it('produces the exact Meta component array the backend emits', () => {
     // This golden is the verified backend `to_meta_components` output.
     expect(toMetaComponents(full)).toEqual([
@@ -130,6 +130,6 @@ describe('helpers', () => {
     expect(qualityLabel('GREEN')).toBe('High');
     expect(qualityLabel('YELLOW')).toBe('Medium');
     expect(qualityLabel('RED')).toBe('Low');
-    expect(qualityLabel(null)).toBe('—');
+    expect(qualityLabel(null)).toBe('-');
   });
 });

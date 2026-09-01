@@ -1,5 +1,5 @@
-# Multi-stage build for the FoundryX EMS Next.js 15 frontend (standalone output).
-# No Prisma (stripped from this app), no in-container nginx — host nginx fronts it.
+# Multi-stage build for the Foundryx EMS Next.js 15 frontend (standalone output).
+# No Prisma (stripped from this app), no in-container nginx - host nginx fronts it.
 FROM node:20-alpine AS builder
 
 WORKDIR /app

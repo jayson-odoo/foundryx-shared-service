@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Omnichannel Inbox (plan 05) E2E — real user clicks through the menu against
+ * Omnichannel Inbox (plan 05) E2E - real user clicks through the menu against
  * the LIVE backend (Phase B: real conversation API + WS). The dev seed
  * (`seed_demo_conversations`) provides deterministic threads cnt-001..cnt-005
  * on a sandbox channel whose dev credentials stub the Graph send.
@@ -27,7 +27,7 @@ async function openInbox(page: Page) {
   await page.waitForURL(/\/omnichannel\/inbox$/);
 }
 
-test.describe('Omnichannel — Inbox', () => {
+test.describe('Omnichannel - Inbox', () => {
   test.beforeEach(async ({ page }) => {
     await login(page);
     await openInbox(page);
@@ -49,7 +49,7 @@ test.describe('Omnichannel — Inbox', () => {
     await page.getByTestId('thread-row-cnt-001').click();
     await expect(page.getByTestId('message-input')).toBeEnabled();
 
-    const text = `Saturday is confirmed — see you! (${Date.now()})`;
+    const text = `Saturday is confirmed - see you! (${Date.now()})`;
     await page.getByTestId('message-input').fill(text);
     await page.getByTestId('message-send').click();
 
@@ -81,9 +81,9 @@ test.describe('Omnichannel — Inbox', () => {
   test('quick reply inserts into the composer', async ({ page }) => {
     await page.getByTestId('thread-row-cnt-001').click();
     await page.getByTestId('quick-replies').click();
-    await page.getByText('Our office hours are Mon–Fri 9am–6pm (MYT).').click();
+    await page.getByText('Our office hours are Mon-Fri 9am-6pm (MYT).').click();
     await expect(page.getByTestId('message-input')).toHaveValue(
-      'Our office hours are Mon–Fri 9am–6pm (MYT).',
+      'Our office hours are Mon-Fri 9am-6pm (MYT).',
     );
   });
 
@@ -91,7 +91,7 @@ test.describe('Omnichannel — Inbox', () => {
     await page.getByTestId('thread-row-cnt-001').click();
     await page.getByTestId('tab-activities').click();
 
-    // Notes bypass the CSW — input enabled even though it is note mode.
+    // Notes bypass the CSW - input enabled even though it is note mode.
     await page.getByTestId('note-input').fill('Customer prefers afternoon calls');
     await page.getByTestId('note-send').click();
 
@@ -104,12 +104,12 @@ test.describe('Omnichannel — Inbox', () => {
   });
 
   test('self-claims an unassigned thread from the Unassigned bucket', async ({ page }) => {
-    // Self-heal: a prior run may have claimed cnt-003 — unassign it first.
+    // Self-heal: a prior run may have claimed cnt-003 - unassign it first.
     await page.getByTestId('thread-row-cnt-003').click();
     await page.getByTestId('assign-trigger').click();
     await expect(page.getByTestId('assign-clear')).toBeVisible();
     await page.getByTestId('assign-clear').click();
-    // Let the menu's exit animation finish before re-opening — re-opening over
+    // Let the menu's exit animation finish before re-opening - re-opening over
     // a still-mounted exiting Radix portal detaches the new content mid-click.
     await expect(page.getByTestId('assign-clear')).not.toBeVisible();
     await expect(page.getByTestId('assign-trigger')).toContainText('Unassigned');
@@ -123,7 +123,7 @@ test.describe('Omnichannel — Inbox', () => {
     await page.getByTestId('assign-me').click();
     await expect(page.getByTestId('assign-trigger')).toContainText('Demo User');
 
-    // Claimed — it leaves the Unassigned bucket.
+    // Claimed - it leaves the Unassigned bucket.
     await expect(page.getByTestId('thread-row-cnt-003')).not.toBeVisible();
   });
 
@@ -132,7 +132,7 @@ test.describe('Omnichannel — Inbox', () => {
     // Wait for the drawer header to render before probing lifecycle buttons.
     await expect(page.getByTestId('assign-trigger')).toBeVisible();
 
-    // Self-heal: a prior run leaves cnt-001 snoozed/closed — reopen first.
+    // Self-heal: a prior run leaves cnt-001 snoozed/closed - reopen first.
     if (await page.getByTestId('thread-reopen').isVisible().catch(() => false)) {
       await page.getByTestId('thread-reopen').click();
       await expect(page.getByTestId('thread-snooze')).toBeVisible();
@@ -163,7 +163,7 @@ test.describe('Omnichannel — Inbox', () => {
   });
 
   test('day separator pills segment the thread by date', async ({ page }) => {
-    // cnt-002's history spans ~28h — at least two day groups.
+    // cnt-002's history spans ~28h - at least two day groups.
     await page.getByTestId('thread-row-cnt-002').click();
     const pills = page.getByTestId('day-pill');
     await expect(pills.first()).toBeVisible();
@@ -180,11 +180,11 @@ test.describe('Omnichannel — Inbox', () => {
 
     await expect(page.getByTestId('reply-strip')).toContainText('Can I change my booking to Saturday?');
 
-    await page.getByTestId('message-input').fill('Yes — moving it now.');
+    await page.getByTestId('message-input').fill('Yes - moving it now.');
     await page.getByTestId('message-send').click();
 
     const sent = page.getByTestId('bubble-agent').last();
-    await expect(sent).toContainText('Yes — moving it now.');
+    await expect(sent).toContainText('Yes - moving it now.');
     await expect(sent.getByTestId('quoted-block')).toContainText('Can I change my booking to Saturday?');
     // Strip cleared after the send.
     await expect(page.getByTestId('reply-strip')).not.toBeVisible();

@@ -1,9 +1,9 @@
 /**
- * Channel service — boundary the UI talks to. Phase A binds the MOCK; Phase B
+ * Channel service - boundary the UI talks to. Phase A binds the MOCK; Phase B
  * swaps `channelService` to the real api-client impl in ONE line (bottom).
  *
  * Note: channels are CREATED via the Embedded Signup onboarding flow (see
- * onboarding-service), not a create form — so there is no `create` here.
+ * onboarding-service), not a create form - so there is no `create` here.
  */
 import type {
   Channel,
@@ -31,7 +31,7 @@ export interface ChannelService {
   testConnection(id: string): Promise<TestConnectionResult>;
   /** Pull live WABA + phone identity from Meta into the local mirror (plan 06). */
   syncConfig(id: string): Promise<Channel>;
-  /** Read the mirrored WhatsApp Business Profile (no Meta call — instant). */
+  /** Read the mirrored WhatsApp Business Profile (no Meta call - instant). */
   getProfile(id: string): Promise<ChannelProfile>;
   /** Pull the latest profile from Meta into the local mirror. */
   syncProfile(id: string): Promise<ChannelProfile>;

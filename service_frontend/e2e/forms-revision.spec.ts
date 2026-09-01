@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Plan sprint-4/04 Phase C — Form submission revisions, full stack (real clicks).
+ * Plan sprint-4/04 Phase C - Form submission revisions, full stack (real clicks).
  *
  * Journey (plan §Slices 2 / AC-04-RV-25):
  *   ① A revisions-enabled published form + one submitted entry (API setup).
@@ -43,7 +43,7 @@ async function login(page: Page) {
 
 test.describe.configure({ mode: 'serial', timeout: 180_000 });
 
-test.describe('Form revisions — live stack (plan sprint-4/04)', () => {
+test.describe('Form revisions - live stack (plan sprint-4/04)', () => {
   test.beforeAll(async ({ request }) => {
     const plat = await request.post(`${API}/auth/login`, {
       data: { email: 'platform@example.com', password: 'platform1234', tenantSlug: 'platform' },
@@ -140,7 +140,7 @@ test.describe('Form revisions — live stack (plan sprint-4/04)', () => {
     await field.fill('Revised proposal v2');
     await page.getByRole('button', { name: /submit revision/i }).click();
 
-    // Redirected back to the detail — rev 2 is now Submitted with the edit.
+    // Redirected back to the detail - rev 2 is now Submitted with the edit.
     await page.waitForURL((url) => url.pathname.includes('/submissions/'));
     await expect(page.getByTestId('revision-badge')).toContainText(/Current · rev 2/);
     // The edited answer renders (the field cell, not the raw-JSON sidebar).

@@ -1,4 +1,4 @@
-"""Server-side password policy (plan 10 §3) — defense-in-depth; the frontend
+"""Server-side password policy (plan 10 §3) - defense-in-depth; the frontend
 mirrors these rules for inline UX. Length is capped at 72: bcrypt hashes only
 the first 72 bytes and raises on longer input (see app/security.py).
 """
@@ -16,7 +16,7 @@ _POLICY = [
 
 
 def validate_password_strength(value: str) -> str:
-    """Pydantic field-validator body — raises ValueError on policy violations."""
+    """Pydantic field-validator body - raises ValueError on policy violations."""
     missing = [label for pattern, label in _POLICY if not pattern.search(value)]
     if missing:
         raise ValueError(f"Password must contain at least {', '.join(missing)}.")

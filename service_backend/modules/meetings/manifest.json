@@ -1,7 +1,7 @@
 {
   "module_name": "meetings",
   "version": "0.1.0",
-  "author": "FoundryX",
+  "author": "Foundryx",
   "title": "Meetings",
   "description": "AI meeting assistant: reads each opted-in user's calendar, records the meetings they choose, and turns them into transcripts and minutes that live beside the tenant's operational data.",
   "icon": "video",

@@ -1,4 +1,4 @@
-"""Background-job Celery task (sprint-4/10) — decoupled; eager-inline in dev/test.
+"""Background-job Celery task (sprint-4/10) - decoupled; eager-inline in dev/test.
 
 Reuses the workflow engine's Celery app. The task opens a FRESH session (a
 worker process has its own pool); the service re-scopes inside the job's tenant.

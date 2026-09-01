@@ -1,4 +1,4 @@
-"""External-agent identity service — plan 11H Slice 1 (AC-11H-01/02/03).
+"""External-agent identity service - plan 11H Slice 1 (AC-11H-01/02/03).
 
 The federated identity for an embed agent. ``upsert`` provisions-or-loads by
 ``(connection_id, sub)`` (cross-consumer isolation: two consumers' "u-1" agents
@@ -27,7 +27,7 @@ class ExternalAgentService:
         avatar_url: Optional[str] = None,
     ) -> ExternalAgent:
         """Provision-or-load the agent keyed by ``(connection_id, sub)``. Updates
-        display fields on later calls. Caller owns the transaction boundary — this
+        display fields on later calls. Caller owns the transaction boundary - this
         commits so the row (and its id) are durable before a token is minted."""
         row = (
             self.db.query(ExternalAgent)
@@ -59,7 +59,7 @@ class ExternalAgentService:
         return row
 
     def get(self, agent_id: str, tenant_id: str) -> Optional[ExternalAgent]:
-        """Tenant-scoped load (defense-in-depth — never resolve a stored id
+        """Tenant-scoped load (defense-in-depth - never resolve a stored id
         unscoped, the polymorphic-target_id rule)."""
         return (
             self.db.query(ExternalAgent)
@@ -70,7 +70,7 @@ class ExternalAgentService:
     def get_for_connection(
         self, agent_id: str, connection_id: str, tenant_id: str
     ) -> Optional[ExternalAgent]:
-        """Load an agent that belongs to a SPECIFIC connection — used to validate
+        """Load an agent that belongs to a SPECIFIC connection - used to validate
         an embed assign target (a token can only assign to its consumer's agents)."""
         return (
             self.db.query(ExternalAgent)

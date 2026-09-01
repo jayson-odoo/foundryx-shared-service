@@ -1,8 +1,8 @@
-"""Calendar sync — AC-S0-7, AC-S0-8, AC-S0-10, AC-S0-11, AC-S0-12, AC-S0-13.
+"""Calendar sync - AC-S0-7, AC-S0-8, AC-S0-10, AC-S0-11, AC-S0-12, AC-S0-13.
 
 Every test drives the real sync service against a scripted ``CalendarSource``
 (``FakeCalendarSource``), so nothing here touches Google: what is pinned is the
-sync's own behaviour — incremental token use, the HTTP-410 fallback, link
+sync's own behaviour - incremental token use, the HTTP-410 fallback, link
 recognition per platform, the cancelled/link-removed cleanup, the one-meeting
 dedupe across two invitees, and tenant scoping.
 """

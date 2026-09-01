@@ -5,7 +5,7 @@ import { useSession } from 'next-auth/react';
 import { avatarService } from '@/services/avatar-service';
 
 export interface OwnAvatarApi {
-  /** Display URL — freshest known value (local result wins over the session). */
+  /** Display URL - freshest known value (local result wins over the session). */
   avatar: string | null;
   upload: (blob: Blob) => Promise<void>;
   remove: () => Promise<void>;
@@ -13,14 +13,14 @@ export interface OwnAvatarApi {
 
 // Survives component remounts: update() flips useSession to 'loading', the
 // protected layout swaps to its loader and the page REMOUNTS (plan 04 lesson)
-// — a useState-only override would die right after every upload.
+// - a useState-only override would die right after every upload.
 let ownAvatarOverride: string | null | undefined;
 
 /**
  * Self-service avatar (plan 06 D5, /account). After a change, NextAuth
  * `update()` re-pulls /auth/me into the session (header + everywhere reading
  * `session.user.avatar` follow). The local override bridges the gap until the
- * session catches up — and carries the whole display in Phase A, where the
+ * session catches up - and carries the whole display in Phase A, where the
  * mock backend isn't behind /auth/me.
  */
 export function useOwnAvatar(): OwnAvatarApi {
@@ -57,12 +57,12 @@ export interface UserAvatarApi {
 }
 
 /**
- * Admin path (user form, users.update) — returns the fresh URL so the caller
+ * Admin path (user form, users.update) - returns the fresh URL so the caller
  * can patch its local record state; no session involvement (it's someone
  * else's avatar).
  */
 export function useUserAvatar(userId: string): UserAvatarApi {
-  // Stable identity — callers hold this in useMemo deps (user form config).
+  // Stable identity - callers hold this in useMemo deps (user form config).
   return useMemo(
     () => ({
       upload: async (blob: Blob) => (await avatarService.upload(userId, blob)).avatar,

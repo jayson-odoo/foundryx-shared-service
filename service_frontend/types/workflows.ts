@@ -1,6 +1,6 @@
 /**
  * Workflow engine wire contracts (plan sprint-2/08). The block-document
- * analogue: `WorkflowDefinition` is the forever-contract graph — `schemaVersion`
+ * analogue: `WorkflowDefinition` is the forever-contract graph - `schemaVersion`
  * at root, `nodes[]` + `edges[]`, editor-agnostic. Mirrors the backend
  * `app/workflow_engine/schemas.py` (Phase B). All datetimes are Z-suffixed UTC
  * strings (ApiModel); render via `useDatetime`.
@@ -12,6 +12,13 @@ import type { TemplateDocument } from './templates';
 /** Node kinds. Slice 08 ships trigger + action; `if` lands in slice 09 (the
  * canvas/executor are built kind-extensible from the start). */
 export type WorkflowNodeKind = 'trigger' | 'action' | 'if';
+
+export type WorkflowExecutionMode = 'parallel' | 'serialized';
+
+export interface WorkflowExecution {
+  mode: WorkflowExecutionMode;
+  correlationKey: string;
+}
 
 /** A node's config is a free-form bag validated against its catalog entry's
  * field schema. Values are primitives, merge-templated strings, or the
@@ -26,6 +33,9 @@ export type WorkflowNodeConfig = Record<
   | string[]
   | WorkflowManualInput[]
   | WorkflowFieldAssignment[]
+  | WorkflowAiOutputParam[]
+  | WorkflowCodeInput[]
+  | WorkflowCodeOutputParam[]
   | RuleGroup
   // A copied template block document (email.send per-use design).
   | TemplateDocument
@@ -45,6 +55,30 @@ export interface WorkflowFieldAssignment {
   value: string;
 }
 
+/** One structured-output parameter the AI Agent action asks the model for
+ * (plan sprint-4/17) - becomes one JSON-Schema property server-side. */
+export interface WorkflowAiOutputParam {
+  key: string;
+  type: 'string' | 'number' | 'boolean' | 'enum';
+  enumValues?: string[];
+  description?: string;
+  required?: boolean;
+  stateful?: boolean;
+}
+
+export interface WorkflowCodeInput {
+  key: string;
+  value: string;
+}
+
+export interface WorkflowCodeOutputParam {
+  key: string;
+  type: 'string' | 'number' | 'boolean' | 'enum';
+  enumValues?: string[];
+  description?: string;
+  required?: boolean;
+}
+
 export interface WorkflowNode {
   id: string;
   kind: WorkflowNodeKind;
@@ -58,12 +92,14 @@ export interface WorkflowEdge {
   id: string;
   source: string;
   target: string;
-  /** Output port on the source node — `out` for linear, `true`/`false` for IF. */
+  /** Output port on the source node - `out` for linear, `true`/`false` for IF. */
   sourcePort?: string;
 }
 
 export interface WorkflowDefinition {
   schemaVersion: number;
+  /** Optional in v1 documents. Omitted means parallel execution. */
+  execution?: WorkflowExecution;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
 }
@@ -89,16 +125,24 @@ export interface NodeFieldDef {
     | 'field'
     | 'cron'
     | 'form'
-    | 'assignments';
+    | 'assignments'
+    | 'omnichannelChannel'
+    | 'aiAgent'
+    | 'outputSchema'
+    | 'clarificationOutput'
+    | 'agentNode'
+    | 'code'
+    | 'codeInputs'
+    | 'codeCapabilities';
   required?: boolean;
   placeholder?: string;
-  /** For `select` — static options (dynamic ones resolve in Phase B). */
+  /** For `select` - static options (dynamic ones resolve in Phase B). */
   options?: { value: string; label: string }[];
   /** Whether the dynamic-content picker attaches to this field. */
   mergeable?: boolean;
   /** Conditional: only shown/required when config[field] === value. */
   showWhen?: { field: string; value: string };
-  /** For `entity` — restrict the picker (e.g. only status-engine entities). */
+  /** For `entity` - restrict the picker (e.g. only status-engine entities). */
   entityFilter?: 'status';
   help?: string;
 }
@@ -120,6 +164,10 @@ export interface TriggerCatalogEntry {
   fields: NodeFieldDef[];
   /** Output schema seeded into the run context (drives the picker). */
   outputs: NodeOutputDef[];
+  /** Owning module - `'core'`/absent = always visible; else gated by the
+   * module being ACTIVE for the tenant (plan sprint-4/17, mirrors the backend
+   * `TriggerDef.module`). */
+  module?: string;
 }
 
 export interface ActionCatalogEntry {
@@ -135,9 +183,15 @@ export interface ActionCatalogEntry {
   requiresConnection?: 'email' | 'storage';
   /** Real side effects that warrant a confirm before a manual/test run (D13). */
   destructive?: boolean;
+  /** Dynamic side effects for actions whose operation determines the risk. */
+  destructiveWhen?: { field: string; values: string[] };
+  /** Optional capability required to add or edit this action. */
+  permission?: string;
+  /** Owning module - see `TriggerCatalogEntry.module`. */
+  module?: string;
 }
 
-/** The IF node (built-in, not a registered Trigger/Action — D8). Its config is
+/** The IF node (built-in, not a registered Trigger/Action - D8). Its config is
  * a rule-engine tree (`conditions`); the drawer renders a `<RuleBuilder>` over
  * the run-context facts and the canvas gives it true/false output ports. */
 export interface IfCatalogEntry {
@@ -151,9 +205,12 @@ export interface IfCatalogEntry {
   outputs: NodeOutputDef[];
 }
 
-export type NodeCatalogEntry = TriggerCatalogEntry | ActionCatalogEntry | IfCatalogEntry;
+export type NodeCatalogEntry =
+  | TriggerCatalogEntry
+  | ActionCatalogEntry
+  | IfCatalogEntry;
 
-// ---- workflow metadata (triggerable entities — D6) ----
+// ---- workflow metadata (triggerable entities - D6) ----
 
 /** One readable/patchable field on a triggerable entity (the rule-engine fact
  * shape, reused for the field picker + entity.update assignments). */
@@ -178,7 +235,7 @@ export interface WorkflowTriggerableEntity {
 }
 
 /** A published form selectable by the `form.submitted` trigger (slice 2). Its
- * `fields` are the published version's answer keys — they drive the dynamic
+ * `fields` are the published version's answer keys - they drive the dynamic
  * `trigger.answers.<key>` outputs in the dynamic-content picker. */
 export interface WorkflowFormOption {
   id: string;
@@ -186,7 +243,7 @@ export interface WorkflowFormOption {
   fields: { key: string; label: string }[];
 }
 
-/** Tenant-resolved metadata the editor needs to configure slice-09 nodes —
+/** Tenant-resolved metadata the editor needs to configure slice-09 nodes -
  * `GET /workflow-metadata` in Phase B (mock in Phase A). */
 export interface WorkflowMetadata {
   entities: WorkflowTriggerableEntity[];
@@ -195,6 +252,30 @@ export interface WorkflowMetadata {
   connections?: { email: boolean; storage: boolean };
   /** Published forms for the `form.submitted` trigger picker (slice 2). */
   forms?: WorkflowFormOption[];
+  /** Tenant's active omnichannel channels - backs the omnichannel trigger's
+   * channel picker (plan sprint-4/17). */
+  omnichannelChannels?: { id: string; name: string }[];
+  /** Tenant's enabled AI agents - backs the AI Agent action's agent picker
+   * (plan sprint-4/17). */
+  aiAgents?: { id: string; name: string; model: string }[];
+  /** Health of the external Code runner, when the capability is configured. */
+  codeRunnerAvailable?: boolean;
+  /** The runner's language policy summary, rendered in the Code drawer. */
+  codeCapabilities?: string[];
+}
+
+/** One backend-validated sandbox contact/channel pair for test-trigger runs. */
+export interface WorkflowOmnichannelTestSource {
+  channelId: string;
+  channelName: string;
+  contactId: string;
+  contactName: string;
+  contactPhone: string;
+}
+
+/** Permission-gated, workflow-specific options for a synthetic trigger run. */
+export interface WorkflowTestOptions {
+  omnichannelTestSources: WorkflowOmnichannelTestSource[];
 }
 
 // ---- entities ----
@@ -223,17 +304,19 @@ export interface WorkflowVersionSummary {
   publishedAt: string;
   publishedByName: string;
   notes: string | null;
+  /** Included by the Phase 1 mock for draft-vs-published Code health checks. */
+  definition?: WorkflowDefinition;
 }
 
 /** The detail entity. Superset of WorkflowListItem so the ONE action registry
- * (typed for the list item) is reusable on the form surface (shell variance —
+ * (typed for the list item) is reusable on the form surface (shell variance -
  * template-engine precedent). */
 export interface Workflow extends WorkflowListItem {
   /** Mutable working copy the editor reads/writes. */
   draftDefinition: WorkflowDefinition;
   /** Id of the published version that fires (null = never published). */
   currentVersionId: string | null;
-  /** ONLY the current version (full history is a separate paginated endpoint —
+  /** ONLY the current version (full history is a separate paginated endpoint -
    * the version list can grow unbounded, never embed it in the workflow GET). */
   currentVersion: WorkflowVersionSummary | null;
   createdByName: string;
@@ -248,8 +331,18 @@ export interface WorkflowInput {
 
 // ---- runs ----
 
-export type WorkflowRunStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled';
-export type WorkflowNodeRunStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped';
+export type WorkflowRunStatus =
+  | 'pending'
+  | 'running'
+  | 'success'
+  | 'failed'
+  | 'cancelled';
+export type WorkflowNodeRunStatus =
+  | 'pending'
+  | 'running'
+  | 'success'
+  | 'failed'
+  | 'skipped';
 export type WorkflowRunTrigger = 'manual' | 'schedule' | 'event';
 
 export interface WorkflowRunListItem {
@@ -262,6 +355,7 @@ export interface WorkflowRunListItem {
   finishedAt: string | null;
   durationMs: number | null;
   versionNumber: number;
+  correlationKey: string | null;
   error: string | null;
   createdAt: string;
 }
@@ -284,10 +378,21 @@ export interface WorkflowRunDetail extends WorkflowRunListItem {
   nodes: WorkflowRunNode[];
 }
 
-/** Manual-run request: values for the trigger's declared inputs. */
+/** Synthetic event data accepted by the omnichannel trigger test path. */
+export interface WorkflowOmnichannelTestTrigger {
+  type: 'omnichannel.message_received';
+  channelId: string;
+  contactId: string;
+  messageText: string;
+}
+
+export type WorkflowTestTrigger = WorkflowOmnichannelTestTrigger;
+
+/** Draft-run request: manual inputs and, for event triggers, typed test data. */
 export interface WorkflowRunRequest {
   inputs: Record<string, string | number | boolean>;
   isTest?: boolean;
+  testTrigger?: WorkflowTestTrigger;
 }
 
 /** Debug single-node (staleness-aware) execute request (D16). */

@@ -1,8 +1,8 @@
 /**
- * Safe transform-formula engine (slice 16) — client mirror of the authoritative
+ * Safe transform-formula engine (slice 16) - client mirror of the authoritative
  * backend `modules/autocount/formula.py`.
  *
- *   !!  NO eval / Function / new Function / template engine — a hand-written
+ *   !!  NO eval / Function / new Function / template engine - a hand-written
  *       tokenizer + recursive-descent parser + evaluator ONLY.  !!
  *
  * An operator authors a transform as an EXPRESSION over a single input `value`
@@ -27,7 +27,7 @@
  *
  * Fail closed: a parse fault (unknown name/function, bad arity, syntax) throws
  * `FormulaParseError` (the save gate); an evaluate fault (`number("abc")`,
- * div-by-zero, a type mismatch) throws `FormulaRuntimeError` — never a silent
+ * div-by-zero, a type mismatch) throws `FormulaRuntimeError` - never a silent
  * value.
  */
 
@@ -385,6 +385,19 @@ export const PRESETS: readonly PresetDef[] = [
     label: 'Date',
     formula: 'formatDate(parseDate(value, "yyyy/MM/dd HH:mm:ss"), "yyyy-MM-ddTHH:mm:ssZ")',
   },
+  // Plan 22 S5 (AC-22-24, Appendix A6 item 3) - a document header ref field
+  // (customer_ref/sales_agent_ref/supplier_ref) mints a MASTER's integration
+  // ref (`{database}:{code}`, or `agent:{CODE}` for sales_agent) from a raw
+  // master-code column. A NAMED server-side transform (`mapping.mint_master_ref`,
+  // reusing the SAME `flat_source_ref` scheme a master task mints its own
+  // identity with, so the two schemes can never drift) - not a formula, since
+  // the company-qualifying prefix is server context a formula has no business
+  // authoring by hand.
+  { key: 'ref_customer', label: 'Customer ref', formula: '' },
+  { key: 'ref_supplier', label: 'Supplier ref', formula: '' },
+  { key: 'ref_product', label: 'Product ref', formula: '' },
+  { key: 'ref_warehouse', label: 'Warehouse ref', formula: '' },
+  { key: 'ref_sales_agent', label: 'Sales agent ref', formula: '' },
   { key: 'custom', label: 'Custom', formula: '' },
 ];
 
@@ -399,6 +412,11 @@ export const TRANSFORM_PRESET: Record<string, string> = {
   date: 'date',
   datetime: 'date',
   slash_datetime: 'date',
+  ref_customer: 'ref_customer',
+  ref_supplier: 'ref_supplier',
+  ref_product: 'ref_product',
+  ref_warehouse: 'ref_warehouse',
+  ref_sales_agent: 'ref_sales_agent',
 };
 
 // ── parser ────────────────────────────────────────────────────────────────────
@@ -536,7 +554,7 @@ class Parser {
       this.advance();
       if (this.peek().kind !== '(') {
         throw new FormulaParseError(
-          `Unknown name '${name}' — expected the variable 'value', a literal, or a function call.`,
+          `Unknown name '${name}' - expected the variable 'value', a literal, or a function call.`,
         );
       }
       if (!(name in FUNCTION_BY_NAME)) {
@@ -582,7 +600,7 @@ function checkArity(name: string, count: number): void {
     let need: string;
     if (fn.maxArgs === null) need = `at least ${fn.minArgs}`;
     else if (fn.minArgs === fn.maxArgs) need = `exactly ${fn.minArgs}`;
-    else need = `${fn.minArgs}–${fn.maxArgs}`;
+    else need = `${fn.minArgs}-${fn.maxArgs}`;
     throw new FormulaParseError(`${name}() takes ${need} argument(s), got ${count}.`);
   }
 }
@@ -677,7 +695,7 @@ function toBool(v: FormulaValue): boolean {
 
 function roundTo(x: number, digits: number): number {
   if (!Number.isInteger(digits) || digits < 0 || digits > 12) {
-    throw new FormulaRuntimeError('round() digits must be a whole number 0–12.');
+    throw new FormulaRuntimeError('round() digits must be a whole number 0-12.');
   }
   const factor = 10 ** digits;
   const sign = x >= 0 ? 1 : -1;

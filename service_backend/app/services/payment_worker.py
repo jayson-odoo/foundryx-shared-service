@@ -1,4 +1,4 @@
-"""Payment webhook Celery worker (sprint-4/07 Cluster F slice 3) — CORE.
+"""Payment webhook Celery worker (sprint-4/07 Cluster F slice 3) - CORE.
 
 Mirrors the omnichannel pattern: the webhook route fast-ACKs + enqueues; this
 task owns verify → log → dispatch. Out-of-order events (``RetryableWebhook``)

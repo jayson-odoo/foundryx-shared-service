@@ -5,7 +5,7 @@ import { aiService } from '@/services/ai-service';
 import type { AiConnectionOption, AiSkillOption } from '@/types/ai';
 
 export interface UseAiPrerequisiteResult {
-  /** AC-BI-11 — false ⇒ show the "no AI connection configured" warning. */
+  /** AC-BI-11 - false ⇒ show the "no AI connection configured" warning. */
   hasConnection: boolean;
   connections: AiConnectionOption[];
   skills: AiSkillOption[];

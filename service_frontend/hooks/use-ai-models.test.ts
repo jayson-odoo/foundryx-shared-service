@@ -43,7 +43,7 @@ describe('useAiModels (AC-BI-05)', () => {
   });
 
   it('serves the curated static fallback when the live call failed', async () => {
-    // The backend already did the fallback and reported isLive:false — the form
+    // The backend already did the fallback and reported isLive:false - the form
     // must still render a usable picker.
     svc.listModels.mockResolvedValue(STATIC_FALLBACK);
     const { result } = renderHook(() => useAiModels('conn-1'));
@@ -53,7 +53,7 @@ describe('useAiModels (AC-BI-05)', () => {
     expect(result.current.message).toContain('rejected');
   });
 
-  it('never throws when the endpoint itself fails — the form stays usable', async () => {
+  it('never throws when the endpoint itself fails - the form stays usable', async () => {
     svc.listModels.mockRejectedValue(new Error('network down'));
     const { result } = renderHook(() => useAiModels('conn-1'));
     await waitFor(() => expect(result.current.isLoading).toBe(false));

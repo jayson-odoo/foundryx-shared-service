@@ -1,5 +1,5 @@
 /**
- * Mock public form service (plan sprint-3/02, Phase A) — drives the public fill
+ * Mock public form service (plan sprint-3/02, Phase A) - drives the public fill
  * page with no backend so every state is tunable. Slug conventions:
  *   `closed-*` → closed state, `full-*` → full state, `missing-*` → 404 (null),
  *   anything else → an open 2-field demo form.

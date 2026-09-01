@@ -4,12 +4,12 @@
  * THE single frontend source for which theme variables a tenant may override.
  * Mirrors the Layer-1 `--foundryx-*` primitives in `css/foundryx-tokens.css`; the
  * backend keeps the canonical copy (`app/branding/token_whitelist.py`, Phase B)
- * — keep both in sync when a primitive is added.
+ * - keep both in sync when a primitive is added.
  *
  * Deliberately EXCLUDED from the whitelist:
- *  - `-transparent` variants — derived (base color @ 0.2 alpha) so pickers stay
+ *  - `-transparent` variants - derived (base color @ 0.2 alpha) so pickers stay
  *    plain colors; see `deriveTransparent`.
- *  - `--foundryx-white` / `--foundryx-black` — true constants.
+ *  - `--foundryx-white` / `--foundryx-black` - true constants.
  */
 import type {
   BrandingTokens,
@@ -42,7 +42,7 @@ const def = (key: string, label: string, group: TokenGroup): TokenDef => ({
   group,
 });
 
-/** Ordered — drives picker rows, template key order and CSS emission order. */
+/** Ordered - drives picker rows, template key order and CSS emission order. */
 export const TOKEN_DEFS: TokenDef[] = [
   // Brand
   def('primary', 'Primary', 'brand'),
@@ -66,7 +66,7 @@ export const TOKEN_DEFS: TokenDef[] = [
   def('warning-active', 'Warning · active', 'status'),
   def('warning-accent', 'Warning · accent', 'status'),
   def('warning-soft', 'Warning · soft', 'status'),
-  // Greys (invert in dark — values flip per theme, names stay)
+  // Greys (invert in dark - values flip per theme, names stay)
   def('grey-50', 'Grey 50', 'grey'),
   def('grey-100', 'Grey 100', 'grey'),
   def('grey-200', 'Grey 200', 'grey'),
@@ -91,7 +91,7 @@ export const TOKEN_KEYS = new Set(TOKEN_DEFS.map((d) => d.key));
 /** Bases whose `-transparent` variant is derived from the picked color. */
 const TRANSPARENT_BASES = ['primary', 'success', 'danger', 'info', 'warning'];
 
-/** FoundryX defaults — MUST mirror `css/foundryx-tokens.css` Layer 1 exactly. */
+/** Foundryx defaults - MUST mirror `css/foundryx-tokens.css` Layer 1 exactly. */
 export const FOUNDRYX_DEFAULTS: BrandingTokens = {
   light: {
     primary: '#ff5a00',
@@ -185,7 +185,7 @@ export function normalizeHex(value: string): string {
   return v;
 }
 
-/** base color @ 0.2 alpha — the `-transparent` companion of a picked base. */
+/** base color @ 0.2 alpha - the `-transparent` companion of a picked base. */
 export function deriveTransparent(hex: string): string {
   const v = normalizeHex(hex);
   const r = parseInt(v.slice(1, 3), 16);
@@ -194,7 +194,7 @@ export function deriveTransparent(hex: string): string {
   return `rgba(${r}, ${g}, ${b}, 0.2)`;
 }
 
-/** Empty document — what a fresh tenant starts from. */
+/** Empty document - what a fresh tenant starts from. */
 export function emptyTokens(): BrandingTokens {
   return { light: {}, dark: {} };
 }
@@ -207,7 +207,7 @@ export function hasOverrides(tokens: BrandingTokens | null): boolean {
   );
 }
 
-/** Defaults + overrides merged — the full effective palette for one theme. */
+/** Defaults + overrides merged - the full effective palette for one theme. */
 export function effectiveTokens(
   tokens: BrandingTokens | null,
   theme: ThemeName,
@@ -237,7 +237,7 @@ export function overrideVars(
   return out;
 }
 
-/** `:root { … } .dark { … }` text — preview/debug mirror of the Phase B endpoint. */
+/** `:root { … } .dark { … }` text - preview/debug mirror of the Phase B endpoint. */
 export function tokensToCss(tokens: BrandingTokens | null): string {
   const block = (selector: string, theme: ThemeName): string => {
     const vars = overrideVars(tokens, theme);
@@ -250,7 +250,7 @@ export function tokensToCss(tokens: BrandingTokens | null): string {
 }
 
 /**
- * Downloadable template — EVERY whitelisted key prefilled with the tenant's
+ * Downloadable template - EVERY whitelisted key prefilled with the tenant's
  * current effective value, in whitelist order. Tenants edit values (not keys)
  * and upload the file back.
  */
@@ -271,9 +271,9 @@ export interface TokenValidation {
 
 /**
  * Validate an uploaded template / arbitrary JSON into a stored document.
- * Unknown keys and non-color values are reported (NOT silently dropped — the
+ * Unknown keys and non-color values are reported (NOT silently dropped - the
  * tenant must see exactly why an upload was rejected). Values equal to the
- * FoundryX default are normalized away so the stored doc stays a true diff.
+ * Foundryx default are normalized away so the stored doc stays a true diff.
  */
 export function validateTokens(input: unknown): TokenValidation {
   const errors: string[] = [];
@@ -289,7 +289,7 @@ export function validateTokens(input: unknown): TokenValidation {
   for (const k of Object.keys(doc)) {
     if (k !== 'light' && k !== 'dark')
       errors.push(
-        `Unknown top-level section "${k}" — only "light" and "dark" are allowed.`,
+        `Unknown top-level section "${k}" - only "light" and "dark" are allowed.`,
       );
   }
   const result = emptyTokens();
@@ -318,7 +318,7 @@ export function validateTokens(input: unknown): TokenValidation {
         continue;
       }
       const normalized = normalizeHex(value);
-      // Store only true diffs — a template uploaded unchanged = no overrides.
+      // Store only true diffs - a template uploaded unchanged = no overrides.
       if (normalized !== normalizeHex(FOUNDRYX_DEFAULTS[theme][key])) {
         result[theme][key] = normalized;
       }

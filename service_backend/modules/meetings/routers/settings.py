@@ -1,6 +1,6 @@
 """Tenant-settings routes (S0 plan §5).
 
-HTTP + Pydantic only, gated on ``meetings.settings.manage`` — a user who may
+HTTP + Pydantic only, gated on ``meetings.settings.manage`` - a user who may
 manage their own capture still has no business over the tenant's configuration.
 """
 from fastapi import APIRouter, Depends

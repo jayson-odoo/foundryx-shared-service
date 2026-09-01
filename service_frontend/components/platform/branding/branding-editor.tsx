@@ -21,7 +21,7 @@ export interface BrandingEditorProps {
 }
 
 /**
- * The branding editor (sprint-2/03) — shared verbatim between the tenant
+ * The branding editor (sprint-2/03) - shared verbatim between the tenant
  * settings page and the operator console's Branding tab. Asset uploads apply
  * immediately; slogan + theme tokens are a draft committed by Save.
  */
@@ -102,7 +102,7 @@ export function BrandingEditor({ tenantId, canManage }: BrandingEditorProps) {
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Assets — apply immediately (server validates again). */}
+      {/* Assets - apply immediately (server validates again). */}
       <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
         <AssetUploadCard
           kind="logo"
@@ -132,7 +132,7 @@ export function BrandingEditor({ tenantId, canManage }: BrandingEditorProps) {
         />
       </div>
 
-      {/* System name — part of the Save draft. Drives "Welcome to {name}". */}
+      {/* System name - part of the Save draft. Drives "Welcome to {name}". */}
       <Card>
         <CardHeader className="py-4">
           <CardTitle className="text-sm">System name</CardTitle>
@@ -154,7 +154,7 @@ export function BrandingEditor({ tenantId, canManage }: BrandingEditorProps) {
         </CardContent>
       </Card>
 
-      {/* Slogan — part of the Save draft. */}
+      {/* Slogan - part of the Save draft. */}
       <Card>
         <CardHeader className="py-4">
           <CardTitle className="text-sm">Slogan</CardTitle>
@@ -176,7 +176,7 @@ export function BrandingEditor({ tenantId, canManage }: BrandingEditorProps) {
         </CardContent>
       </Card>
 
-      {/* Social profiles + email footer (plan 07 D4) — part of the Save draft. */}
+      {/* Social profiles + email footer (plan 07 D4) - part of the Save draft. */}
       <SocialFooterCard
         socials={socials}
         footer={footer}

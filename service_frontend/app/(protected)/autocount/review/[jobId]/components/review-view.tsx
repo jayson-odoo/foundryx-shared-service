@@ -42,12 +42,12 @@ import { StagedRecordsList } from './staged-records-list';
 
 export interface ReviewViewProps {
   jobId: string;
-  /** Where Back returns to — the originating company, when we came from one. */
+  /** Where Back returns to - the originating company, when we came from one. */
   from?: string;
 }
 
 /**
- * Batch review (AC-13-12) — every staged record's before → after per CHANGED
+ * Batch review (AC-13-12) - every staged record's before → after per CHANGED
  * field. Approve pushes to the consumer; Discard closes the batch without
  * pushing. Both are offered only while the job sits in `needs_review`
  * (AC-13-11), and are disabled with a stated reason otherwise.
@@ -68,7 +68,7 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
   const preview = useAutocountPreview(jobId);
   const { formatDateTime } = useDatetime();
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  // Back returns to wherever the operator came from — the originating company
+  // Back returns to wherever the operator came from - the originating company
   // when a sync routed them here, otherwise the Review list (its real parent).
   const backHref = from || AC_REVIEW_PATH;
 

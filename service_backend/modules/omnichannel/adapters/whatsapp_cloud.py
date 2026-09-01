@@ -1,7 +1,7 @@
 """WhatsApp Cloud API adapter (Meta Graph API).
 
-FoundryX is the Tech Provider: Embedded Signup hands us an auth code which we
-exchange for a permanent system-user token against the ONE FoundryX Meta app.
+Foundryx is the Tech Provider: Embedded Signup hands us an auth code which we
+exchange for a permanent system-user token against the ONE Foundryx Meta app.
 
 Dev-safe: when ``META_APP_ID``/``META_APP_SECRET`` are unset (local, no Meta app
 yet) the adapter returns stub credentials so the flow runs end-to-end without a
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class GraphCall:
-    """Telemetry for ONE outbound Meta/Graph call — what the adapter reports to
+    """Telemetry for ONE outbound Meta/Graph call - what the adapter reports to
     an (optional) recorder so the Developers → Logs console gets an
     ``outbound_meta`` row (sprint-4/12 Slice 2, AC-DLC-14). The adapter stays
     free of any DB knowledge: it only describes the call; the recorder (owned by
@@ -62,7 +62,7 @@ def _meta_error_detail(resp: "httpx.Response") -> str:
     if not parts:
         msg = (err.get("message") or "").strip()
         parts.append(msg or f"Meta returned {resp.status_code}.")
-    return " — ".join(parts)
+    return " - ".join(parts)
 
 
 class WhatsAppCloudAdapter:
@@ -90,7 +90,7 @@ class WhatsAppCloudAdapter:
     ) -> Any:
         """Time + record ONE Graph call (AC-DLC-14). With no recorder this is a
         transparent pass-through (existing behaviour, tests unaffected). The
-        record is fully failure-isolated — a logging failure can NEVER break the
+        record is fully failure-isolated - a logging failure can NEVER break the
         send."""
         if self._recorder is None:
             return fn()
@@ -110,7 +110,7 @@ class WhatsAppCloudAdapter:
             error_code = "SendError"
             error_message = str(exc)
             raise
-        except Exception as exc:  # noqa: BLE001 — report + re-raise unchanged.
+        except Exception as exc:  # noqa: BLE001 - report + re-raise unchanged.
             status = "error"
             error_code = type(exc).__name__
             error_message = str(exc)
@@ -129,7 +129,7 @@ class WhatsAppCloudAdapter:
                         external_ref=external_ref,
                     )
                 )
-            except Exception:  # noqa: BLE001 — recording must never break the send.
+            except Exception:  # noqa: BLE001 - recording must never break the send.
                 logger.exception("outbound-meta activity record failed (%s)", operation)
 
     @property
@@ -141,12 +141,12 @@ class WhatsAppCloudAdapter:
 
     def exchange_code(self, code: str, redirect_uri: Optional[str] = None) -> Dict[str, Any]:
         if not self._configured:
-            # Dev fallback — no Meta app configured yet (see module docstring).
+            # Dev fallback - no Meta app configured yet (see module docstring).
             return {"access_token": f"dev-token-{code}", "dev": True}
         # Self-hosted redirect flow: the code is minted against a redirect_uri WE
         # own + registered (strict mode requires an EXACT match at exchange), so
         # we send that identical value. Omitting it works only for the (rare)
-        # config-code exemption — kept as the fallback when the client sends none.
+        # config-code exemption - kept as the fallback when the client sends none.
         params = {
             "client_id": settings.meta_app_id,
             "client_secret": settings.meta_app_secret,
@@ -180,7 +180,7 @@ class WhatsAppCloudAdapter:
 
     def resolve_onboarded_assets(self, credentials: Dict[str, Any]) -> Dict[str, Any]:
         """After the token exchange, discover WHICH WABA + phone number the token
-        grants access to — the self-hosted redirect flow has no postMessage
+        grants access to - the self-hosted redirect flow has no postMessage
         session info, so we read it back from the token itself:
 
           debug_token → granular_scopes[whatsapp_business_*].target_ids → WABA
@@ -469,7 +469,7 @@ class WhatsAppCloudAdapter:
 
     def _fetch_waba_details_impl(self, credentials: Dict[str, Any], waba_id: str) -> Dict[str, Any]:
         if not self._configured or credentials.get("dev") or not waba_id:
-            return {"name": "FoundryX Events (dev sandbox)"}
+            return {"name": "Foundryx Events (dev sandbox)"}
         client = self._http()
         try:
             resp = client.get(
@@ -495,7 +495,7 @@ class WhatsAppCloudAdapter:
         if not self._configured or credentials.get("dev") or not phone_number_id:
             return {
                 "about": "Premier event spaces & concierge in KL.",
-                "address": "Level 12, Menara FoundryX, Kuala Lumpur",
+                "address": "Level 12, Menara Foundryx, Kuala Lumpur",
                 "description": "We host weddings, conferences and galas.",
                 "email": "hello@foundryx.example",
                 "vertical": "EVENT_PLAN",
@@ -661,7 +661,7 @@ class WhatsAppCloudAdapter:
     ) -> str:
         """Meta resumable upload (`/{app_id}/uploads`) → a file handle for a
         template media-header example. Dev stub: fake handle (T10). Shared
-        helper — BL-108 profile-photo upload reuses it."""
+        helper - BL-108 profile-photo upload reuses it."""
         if not self._configured or credentials.get("dev") or not app_id:
             import uuid
 
@@ -723,7 +723,7 @@ class WhatsAppCloudAdapter:
         Message events: {kind:'message', external_message_id, from, profile_name,
         message_type, body, media_id, reply_to_external_id, timestamp}.
         Status events: {kind:'status', external_message_id, status, error_code,
-        error_message}. Unknown shapes yield no events (never raise — webhook
+        error_message}. Unknown shapes yield no events (never raise - webhook
         payloads are attacker-controllable).
         """
         events: list = []
@@ -799,7 +799,7 @@ class WhatsAppCloudAdapter:
                         media_mime = media.get("mime_type")
                         media_filename = media.get("filename")
                         # An inbound audio flagged voice==true is a voice note
-                        # (plan 12 AC-12-09) — store it as VOICE, not AUDIO.
+                        # (plan 12 AC-12-09) - store it as VOICE, not AUDIO.
                         if mtype == "audio" and bool(media.get("voice")):
                             voice = True
                             resolved_type = "VOICE"
@@ -838,7 +838,7 @@ class WhatsAppCloudAdapter:
                         # A quick-reply button tap on a template message.
                         body = (m.get("button") or {}).get("text")
                     else:
-                        # Unsupported inbound type (order/system/ephemeral/…) — kept
+                        # Unsupported inbound type (order/system/ephemeral/…) - kept
                         # as a placeholder, never silently dropped (plan 12 AC-12-17).
                         resolved_type = "UNSUPPORTED"
                     events.append(
@@ -874,7 +874,7 @@ class WhatsAppCloudAdapter:
 
     def test_connection(self, credentials: Dict[str, Any], phone_number_id: str) -> ConnectionStatus:
         if not self._configured or credentials.get("dev"):
-            return ConnectionStatus(ok=True, message="Connected (dev mode — no live Meta call).")
+            return ConnectionStatus(ok=True, message="Connected (dev mode - no live Meta call).")
         client = self._http()
         try:
             resp = client.get(
@@ -907,7 +907,7 @@ def get_adapter(
 ):
     """Resolve a channel adapter by type (WhatsApp only for MVP). An optional
     ``recorder`` (owned by the service layer) turns on outbound-Meta activity
-    logging — see ``build_meta_recorder`` (sprint-4/12 Slice 2)."""
+    logging - see ``build_meta_recorder`` (sprint-4/12 Slice 2)."""
     if channel_type == "WHATSAPP":
         return WhatsAppCloudAdapter(client=client, recorder=recorder)
     raise ValueError(f"Unsupported channel type: {channel_type}")

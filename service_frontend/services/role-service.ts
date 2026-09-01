@@ -1,5 +1,5 @@
 /**
- * Role service — the boundary the Roles list + detail form talk to (via hooks).
+ * Role service - the boundary the Roles list + detail form talk to (via hooks).
  * Phase A binds the mock; Phase B swaps `roleService` to the real api-client impl
  * in ONE line (bottom of file). The interface IS the backend contract (plan 03).
  */

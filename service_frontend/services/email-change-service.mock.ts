@@ -30,7 +30,7 @@ const INVALID_TOKEN_MESSAGE = 'This link is invalid or has expired.';
 const EMAIL_TAKEN_MESSAGE = 'This email address is no longer available.';
 const THROTTLED_MESSAGE = 'Too many attempts.';
 
-/** One outstanding request max (re-request replaces it — plan 04 data model). */
+/** One outstanding request max (re-request replaces it - plan 04 data model). */
 let pending: PendingEmailChange | null = null;
 
 export function __resetMockEmailChange(initial: PendingEmailChange | null = null) {
@@ -50,7 +50,7 @@ export const mockEmailChangeService: EmailChangeService = {
       throw new InvalidPasswordError(INVALID_PASSWORD_MESSAGE);
     }
     // Uniqueness is checked server-side with a uniform error (no cross-account
-    // enumeration) — the mock mirrors the happy path; Phase B owns the rest.
+    // enumeration) - the mock mirrors the happy path; Phase B owns the rest.
     pending = {
       newEmail: newEmail.toLowerCase(),
       status: 'PENDING_OLD',

@@ -1,4 +1,4 @@
-"""Canonical record base — provenance every canonical record carries.
+"""Canonical record base - provenance every canonical record carries.
 
 ``source_system`` + ``source_ref`` are specified by the consumer's own
 `SCM_Module_Build_Plan.md`; they are not an ESB invention. Together they are the
@@ -6,7 +6,7 @@ correlation handle for every downstream operation: dedupe, re-push, divergence
 detection and (slice 4+) write-back correlation.
 
 ``source_ref`` is the vendor's **``DocKey``**, never ``DocNo``. ``DocNo`` is
-MUTABLE (the vendor exposes ``NewDocNo``) — correlating on it would silently
+MUTABLE (the vendor exposes ``NewDocNo``) - correlating on it would silently
 fork a document into two the first time a customer renumbers one. ``DocNo`` is
 carried for DISPLAY only.
 """
@@ -29,7 +29,7 @@ class CanonicalRecord(ApiModel):
     """
 
     source_system: str = SOURCE_SYSTEM
-    # Vendor DocKey — stable across a DocNo change (see module docstring).
+    # Vendor DocKey - stable across a DocNo change (see module docstring).
     source_ref: str
     # The canonical entity key ("goods_received_note"), so a consumer can route
     # a heterogeneous batch without inspecting the payload shape.
@@ -51,7 +51,7 @@ class CanonicalRecord(ApiModel):
 
 class CanonicalLine(ApiModel):
     """Base for a nested document line. Lines are always NESTED under their
-    header (AC-13-06) — never fetched or stored as free-standing records."""
+    header (AC-13-06) - never fetched or stored as free-standing records."""
 
     # Vendor detail key. Casing differs PER ENTITY at the source (``DtlKey`` on
     # GRN, ``Dtlkey`` on DO); that difference is resolved by mapping rows, so by

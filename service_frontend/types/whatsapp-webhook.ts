@@ -2,7 +2,7 @@
  * Consumer-webhook types (omnichannel Slice 4).
  *
  * Mirrors the backend `app_omnichannel` consumer-webhook contract. A tenant
- * registers webhook endpoints PER CHANNEL; FoundryX POSTs signed events to those
+ * registers webhook endpoints PER CHANNEL; Foundryx POSTs signed events to those
  * URLs on inbound messages / delivery receipts / contact updates. The signing
  * secret is returned ONCE at create/rotate and never re-read. Kept
  * framework-agnostic so the service + UI share one source.
@@ -15,7 +15,7 @@ export type WebhookEventType =
   | 'contact.updated'
   | 'message.reaction';
 
-/** Endpoint lifecycle — AUTO_DISABLED = the delivery pipeline gave up after repeated failures. */
+/** Endpoint lifecycle - AUTO_DISABLED = the delivery pipeline gave up after repeated failures. */
 export type WebhookStatus = 'ACTIVE' | 'DISABLED' | 'AUTO_DISABLED';
 
 /** A registered consumer-webhook endpoint (never carries the signing secret). */
@@ -36,14 +36,14 @@ export interface WebhookEndpoint {
   updatedAt: string; // ISO
 }
 
-/** Create/edit payload — a subset of the endpoint's editable fields. */
+/** Create/edit payload - a subset of the endpoint's editable fields. */
 export interface WebhookEndpointInput {
   name: string;
   url: string;
   events: WebhookEventType[];
 }
 
-/** Patch payload — every field optional. */
+/** Patch payload - every field optional. */
 export interface WebhookEndpointPatch {
   name?: string;
   url?: string;
@@ -51,7 +51,7 @@ export interface WebhookEndpointPatch {
 }
 
 /**
- * Create result — carries the ONE-TIME signing secret alongside the stored
+ * Create result - carries the ONE-TIME signing secret alongside the stored
  * endpoint. `signingSecret` is never returned by any later read.
  */
 export interface WebhookCreateResult {
@@ -59,7 +59,7 @@ export interface WebhookCreateResult {
   signingSecret: string;
 }
 
-/** Rotate result — the fresh one-time signing secret. */
+/** Rotate result - the fresh one-time signing secret. */
 export interface WebhookSecretResult {
   signingSecret: string;
 }

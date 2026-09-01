@@ -22,7 +22,7 @@ import { useQuickRepliesListConfig } from './use-quick-replies-list-config';
 import { QuickReplyDialog } from './quick-reply-dialog';
 
 /**
- * Quick-replies settings (plan sprint-3/12) — canned responses the inbox
+ * Quick-replies settings (plan sprint-3/12) - canned responses the inbox
  * composer's ★ picker consumes, on the config-driven Resource shell. Gated by
  * `workspaces.manage`. Workspace resolution mirrors the inbox host: the default
  * workspace, overridable with `?workspaceId=` (same contract as the media page).

@@ -1,5 +1,5 @@
 /**
- * In-memory mock of the document service (Phase A — frontend-first, no backend).
+ * In-memory mock of the document service (Phase A - frontend-first, no backend).
  * Seeds a small tenant Drive so every state is exercisable: nested folders,
  * versioned files, an image + a PDF (inline preview), an attachment type, a
  * storage quota with live usage, a couple of download jobs.
@@ -41,7 +41,7 @@ const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
 const shares: ShareRow[] = [];
 
-// Stable-ish id generator (mock only — no Math.random reproducibility concern).
+// Stable-ish id generator (mock only - no Math.random reproducibility concern).
 let seq = 1000;
 const nid = (prefix: string) => `${prefix}_${(seq += 1)}`;
 
@@ -278,7 +278,7 @@ function toFileRow(f: FileRec): FileRow {
   };
 }
 
-/** All descendant folder ids of `id` (inclusive) — for cascade + cycle guard. */
+/** All descendant folder ids of `id` (inclusive) - for cascade + cycle guard. */
 function subtreeFolderIds(id: string): Set<string> {
   const out = new Set<string>([id]);
   let added = true;
@@ -435,7 +435,7 @@ export const mockDocumentService: DocumentService = {
   async upload(file: File, options: UploadOptions, onProgress?: UploadProgress) {
     const ext = extOf(file.name);
 
-    // 1. Sniff hard-floor — never overridable.
+    // 1. Sniff hard-floor - never overridable.
     if (BLOCKED_EXTS.has(ext)) {
       throw new UploadRejectedError(
         `${ext.toUpperCase()} files aren't allowed for security reasons.`,
@@ -705,7 +705,7 @@ export const mockDocumentService: DocumentService = {
     return delay(clone({ ...settings, usedBytes: usedBytes() }));
   },
 
-  // ── Sharing (slice-05, Google model) — in-memory stub for unit tests ──
+  // ── Sharing (slice-05, Google model) - in-memory stub for unit tests ──
   async getTargetShare(kind, id) {
     const found = shares.find(
       (s) => s.targetKind === kind && s.targetId === id && !s.isDisabled,

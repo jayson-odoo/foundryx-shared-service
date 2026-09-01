@@ -1,4 +1,4 @@
-"""Form engine wire schemas (plan sprint-3/01) — camelCase out (mirror of the
+"""Form engine wire schemas (plan sprint-3/01) - camelCase out (mirror of the
 frontend ``types/forms.ts``). Datetime-bearing models inherit ``ApiModel`` so
 every timestamp leaves the API as Z-suffixed UTC (BL-012). Requests use camel
 field names directly (the frontend sends those verbatim).
@@ -6,7 +6,7 @@ field names directly (the frontend sends those verbatim).
 The published-vs-draft split (D9): ``FormRowOut``/``FormDetailOut`` describe the
 DEFINITION; fill surfaces serve a slimmed ``FormFillViewOut`` (published version
 only, the draft for preview). Submissions ride the form's OWN scoped status
-machine (D4) — ``FormSubmissionGraphOut`` exposes that scope-filtered graph so
+machine (D4) - ``FormSubmissionGraphOut`` exposes that scope-filtered graph so
 the Submissions tab's transition buttons render without ``statuses.read`` (D15).
 """
 from datetime import datetime
@@ -81,7 +81,7 @@ class FormVersionListResponse(ApiModel):
 
 
 class FormVersionDefinitionOut(ApiModel):
-    """One version's immutable doc — submission re-render contract (D9)."""
+    """One version's immutable doc - submission re-render contract (D9)."""
 
     id: str
     version_number: int = Field(serialization_alias="versionNumber")
@@ -124,7 +124,7 @@ class FormSubmissionOut(ApiModel):
     submitted_at: Optional[datetime] = Field(serialization_alias="submittedAt")
     created_at: datetime = Field(serialization_alias="createdAt")
     updated_at: datetime = Field(serialization_alias="updatedAt")
-    # Per-record fireable edge ids (graph-driven buttons, D15) — may be omitted.
+    # Per-record fireable edge ids (graph-driven buttons, D15) - may be omitted.
     available_transition_ids: Optional[List[str]] = Field(
         default=None, serialization_alias="availableTransitionIds"
     )
@@ -158,7 +158,7 @@ class FormSubmissionGraphOut(ApiModel):
     transitions: List[FormSubmissionGraphEdgeOut]
 
 
-# ---- requests (camelCase field names — frontend sends these) ----
+# ---- requests (camelCase field names - frontend sends these) ----
 
 
 class FormCreateRequest(BaseModel):
@@ -168,7 +168,7 @@ class FormCreateRequest(BaseModel):
 
 
 class FormUpdateRequest(BaseModel):
-    """PATCH semantics — every field optional, only the provided ones apply.
+    """PATCH semantics - every field optional, only the provided ones apply.
     ``model_fields_set`` distinguishes "absent" from "explicitly null"."""
 
     name: Optional[str] = None

@@ -28,7 +28,7 @@ export function ModuleIcon({ module, className }: { module: StoreModule; classNa
 }
 
 /**
- * The card BODY for an App Store module — icon, title, version, description,
+ * The card BODY for an App Store module - icon, title, version, description,
  * dependency chips, errored/availability notes + the status badge. Action
  * controls live in the Resource shell's row "…" menu, not here.
  */
@@ -77,7 +77,7 @@ export function ModuleCardBody({ module }: { module: StoreModule }) {
       )}
       {!installed && !module.errored && module.availabilityOk === false && (
         <p className="text-xs text-amber-600 dark:text-amber-500">
-          Needs required modules installed first — installing will offer to add them.
+          Needs required modules installed first - installing will offer to add them.
         </p>
       )}
     </div>

@@ -1,13 +1,13 @@
-"""ideation dedup — pg_trgm extension + GIN trigram index (AC-A-30).
+"""ideation dedup - pg_trgm extension + GIN trigram index (AC-A-30).
 
 Provisions ``CREATE EXTENSION IF NOT EXISTS pg_trgm`` and a GIN trigram index
 (``gin_trgm_ops``) on the Idea dedup text (``lower(problem)``) so the deterministic
 ``create_idea`` dedup query (per ``(tenant, product)``) is index-accelerated. There
-is **no ``vector`` extension and no ``embedding`` column** (D20 — shared-service
+is **no ``vector`` extension and no ``embedding`` column** (D20 - shared-service
 runs no embedding model).
 
 Postgres-only; a graceful no-op on the SQLite test engine (per-module Alembic runs
-only on Postgres — see ``app/module_platform/migrations.run_module_migrations`` —
+only on Postgres - see ``app/module_platform/migrations.run_module_migrations`` -
 and the provisioning helper itself guards the dialect).
 
 Revision ID: 0002_ideation_dedup_trgm

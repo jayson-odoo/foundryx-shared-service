@@ -1,9 +1,9 @@
 /**
- * Silent embed-token re-mint handshake (WS-C3 / AC-CAP-12) — shared by the
+ * Silent embed-token re-mint handshake (WS-C3 / AC-CAP-12) - shared by the
  * api-client (data-call 401 retry) AND the session gate (route-mount validate).
  *
  * The embed token is short-lived (5 min) and arrives in the iframe URL fragment.
- * When it expires — on a data call OR when navigating to another embed route —
+ * When it expires - on a data call OR when navigating to another embed route -
  * the child asks the HOST (sorento) to re-run its `POST /embed/session` handshake
  * and post a fresh token back. The host validates the child origin before
  * replying; the request carries NO secret (the token flows parent→child).

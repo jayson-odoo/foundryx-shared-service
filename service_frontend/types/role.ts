@@ -6,12 +6,12 @@
  */
 import type { UserStatus } from './user';
 
-/** Row in the Roles list — identity + computed counts. */
+/** Row in the Roles list - identity + computed counts. */
 export interface RoleListItem {
   id: string;
   name: string;
   description: string | null;
-  /** Seeded/system role — cannot be deleted (name/desc/permissions still editable). */
+  /** Seeded/system role - cannot be deleted (name/desc/permissions still editable). */
   isSystem: boolean;
   /** Computed server-side (assigned users). */
   userCount: number;
@@ -20,12 +20,12 @@ export interface RoleListItem {
   createdAt: string; // ISO
 }
 
-/** Full role record for the detail form — adds the granted permission keys. */
+/** Full role record for the detail form - adds the granted permission keys. */
 export interface RoleDetail extends RoleListItem {
   permissionKeys: string[];
 }
 
-/** Create payload — role + its grants in one transaction (implied-read normalized server-side). */
+/** Create payload - role + its grants in one transaction (implied-read normalized server-side). */
 export interface CreateRoleInput {
   name: string;
   description?: string | null;
@@ -33,7 +33,7 @@ export interface CreateRoleInput {
   isSystem?: boolean;
 }
 
-/** Patch payload — `permissionKeys` (when present) replaces the whole grant set. */
+/** Patch payload - `permissionKeys` (when present) replaces the whole grant set. */
 export interface UpdateRoleInput {
   name?: string;
   description?: string | null;
@@ -48,10 +48,10 @@ export interface RoleUser {
   email: string;
   avatar: string | null;
   status: UserStatus;
-  assignedAt: string; // ISO — "Joined"/assigned-at
+  assignedAt: string; // ISO - "Joined"/assigned-at
 }
 
-/** A tenant user not yet holding the role — option in the "Assign user" picker. */
+/** A tenant user not yet holding the role - option in the "Assign user" picker. */
 export interface AssignableUser {
   id: string;
   name: string | null;

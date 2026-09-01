@@ -21,7 +21,7 @@ import { CURRENCY_OPTIONS } from '@/lib/money';
 
 const CURRENCIES = CURRENCY_OPTIONS;
 
-/** Tenant general settings (sprint-4/08) — default currency + price decimal
+/** Tenant general settings (sprint-4/08) - default currency + price decimal
  * places for the catalog and quotations. A product/quotation can override the
  * currency; this is the fallback. */
 function GeneralSettingsForm() {
@@ -92,7 +92,7 @@ function GeneralSettingsForm() {
             disabled={loading || !canManage}
             onChange={(e) => setDecimals(e.target.value)}
           />
-          <p className="text-xs text-muted-foreground">How many decimals to show on money amounts (0–6).</p>
+          <p className="text-xs text-muted-foreground">How many decimals to show on money amounts (0-6).</p>
         </div>
         {canManage && (
           <div>

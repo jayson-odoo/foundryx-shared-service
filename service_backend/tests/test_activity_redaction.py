@@ -1,7 +1,7 @@
 """Redaction matrix (sprint-4/12 Slice 3, AC-DLC-25).
 
-Proves every secret shape — API key, bearer token, ``embedSecret``, Meta access
-token — is masked across the FOUR sources' request/response summaries, while
+Proves every secret shape - API key, bearer token, ``embedSecret``, Meta access
+token - is masked across the FOUR sources' request/response summaries, while
 WhatsApp message CONTENT is preserved (it's needed to troubleshoot). The matrix
 drives real ``ActivityLogService.record`` writes (one per source) and asserts the
 STORED summary carries no plaintext secret.
@@ -22,7 +22,7 @@ API_KEY = "fxw_live_apikey_abcdef123456"
 BEARER = "Bearer fxw_live_bearer_zyxwvu987654"
 EMBED_SECRET = "embed-secret-supersecret-000111"
 META_TOKEN = "EAAG_meta_access_token_998877"
-MESSAGE = "Order #42 shipped — track at example.com"
+MESSAGE = "Order #42 shipped - track at example.com"
 
 
 def _summary() -> dict:
@@ -47,7 +47,7 @@ def _all_secrets_masked(stored: dict) -> None:
     assert "fxw_live_bearer" not in blob
     assert EMBED_SECRET not in blob
     assert META_TOKEN not in blob
-    # Message content survives — not a secret KEY.
+    # Message content survives - not a secret KEY.
     assert MESSAGE in blob
 
 

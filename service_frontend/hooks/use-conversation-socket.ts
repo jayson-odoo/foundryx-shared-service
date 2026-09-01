@@ -2,7 +2,7 @@
 
 /**
  * Realtime subscription for a workspace's conversation events (plan 05).
- * Phase A: mock timer emitter behind conversation-service; Phase B: WebSocket —
+ * Phase A: mock timer emitter behind conversation-service; Phase B: WebSocket -
  * the hook is the stable seam, only the service implementation changes.
  */
 import { useEffect, useRef } from 'react';

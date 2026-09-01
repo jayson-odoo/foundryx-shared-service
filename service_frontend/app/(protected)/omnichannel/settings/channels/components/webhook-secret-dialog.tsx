@@ -18,7 +18,7 @@ export interface WebhookSecretDialogProps {
 }
 
 /**
- * Rotate-result dialog — reveals the freshly-rotated signing secret ONCE.
+ * Rotate-result dialog - reveals the freshly-rotated signing secret ONCE.
  * Driven by a nullable `secret` (open ⇔ non-null); closing clears it upstream.
  */
 export function WebhookSecretDialog({ secret, onOpenChange }: WebhookSecretDialogProps) {

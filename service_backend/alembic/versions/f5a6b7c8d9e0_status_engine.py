@@ -35,11 +35,11 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column("is_default", sa.Boolean(), nullable=False, server_default=false))
         batch_op.add_column(sa.Column("position_x", sa.Float(), nullable=True))
         batch_op.add_column(sa.Column("position_y", sa.Float(), nullable=True))
-        # Legacy cosmetic mirror — no code branches on it anymore (D2).
+        # Legacy cosmetic mirror - no code branches on it anymore (D2).
         batch_op.alter_column("category", existing_type=sa.String(), nullable=True)
 
     # Backfill the seeded tenant lifecycle flags (sprint-2/01 §migration).
-    # Matched by (entity_type, key) — NOT by the seeded UUID constants — so a
+    # Matched by (entity_type, key) - NOT by the seeded UUID constants - so a
     # deployment whose rows were ever re-created with different ids still gets
     # the flags (a missed `blocks_access` would re-open suspended-tenant login).
     op.execute(

@@ -18,7 +18,7 @@ export interface UseMeetingsConnections {
 
 /**
  * The meetings module's own connections, read off the CORE connection registry
- * (S0 plan §2) — the module stores no connection of its own and the create/edit
+ * (S0 plan §2) - the module stores no connection of its own and the create/edit
  * form is the shared `/settings/integrations` one.
  */
 export function useMeetingsConnections(): UseMeetingsConnections {

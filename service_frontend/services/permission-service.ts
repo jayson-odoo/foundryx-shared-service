@@ -1,5 +1,5 @@
 /**
- * Permission catalog service — the boundary the role form talks to (via the
+ * Permission catalog service - the boundary the role form talks to (via the
  * form hook). Phase A binds the mock; Phase B swaps to the real api-client impl
  * in ONE line (bottom of file). The interface IS the backend contract.
  */

@@ -1,6 +1,6 @@
 """storage integrations (plan sprint-2/06)
 
-- connections: UNIQUE(tenant_id, type) — ONE connection per type per tenant
+- connections: UNIQUE(tenant_id, type) - ONE connection per type per tenant
   (D7); race/bypass-proof backstop for the service-level 409.
 - users: avatar URL column → avatar_key (storage key, D4) + avatar_version
   (?v= cache-bust). The old column only ever held NULLs (BL-007 was open),

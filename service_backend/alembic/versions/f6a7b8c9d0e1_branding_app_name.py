@@ -1,7 +1,7 @@
 """Tenant branding: app_name (brandable system name for "Welcome to {name}")
 
 White-label: the sign-in heading and tab title should use a tenant-chosen
-product/system name, never the FoundryX product name. NULL = fall back to the
+product/system name, never the Foundryx product name. NULL = fall back to the
 tenant name. Chains the document-sharing head.
 
 Revision ID: f6a7b8c9d0e1

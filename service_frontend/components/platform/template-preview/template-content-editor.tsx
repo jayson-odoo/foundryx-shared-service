@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * Per-use template content editor — a COPY of a template's block document that
- * the operator edits IN PLACE (wording only; structure is locked — rearranging
+ * Per-use template content editor - a COPY of a template's block document that
+ * the operator edits IN PLACE (wording only; structure is locked - rearranging
  * blocks belongs in the Templates engine). Reuses the full `EmailEditor` (brand
  * header/footer/blocks render exactly like the email) in `structureLocked`
  * mode, in a roomy dialog. Used by status notifications + workflow email
@@ -27,7 +27,7 @@ export interface TemplateContentEditorProps {
   onOpenChange: (open: boolean) => void;
   doc: TemplateDocument;
   subject: string;
-  /** Template context key — its facts back the merge chips + preview render. */
+  /** Template context key - its facts back the merge chips + preview render. */
   contextKey: string;
   onDocChange: (doc: TemplateDocument) => void;
   onSubjectChange: (subject: string) => void;
@@ -69,7 +69,7 @@ export function TemplateContentEditor({
             <Input
               value={subject}
               onChange={(e) => onSubjectChange(e.target.value)}
-              placeholder="Subject — e.g. {{recordLabel}} moved to {{toStatus}}"
+              placeholder="Subject - e.g. {{recordLabel}} moved to {{toStatus}}"
               disabled={disabled}
             />
           </div>

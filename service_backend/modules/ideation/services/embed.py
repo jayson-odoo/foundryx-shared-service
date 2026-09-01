@@ -1,4 +1,4 @@
-"""Ideation iframe-embed SSO — verify + mint (PLAN-ideation-embed-sso §8, AC-E-5..9).
+"""Ideation iframe-embed SSO - verify + mint (PLAN-ideation-embed-sso §8, AC-E-5..9).
 
 The shared-service side of the SSO handshake. The host (sorento) mints a
 short-lived **assertion** signed with the connection's shared signing secret and
@@ -8,14 +8,14 @@ service:
   1. resolves the ``EmbedConnection`` by the body ``connection_id`` (active only);
   2. verifies the assertion signature against the connection's DECRYPTED secret,
      plus ``aud="ideation-embed"`` + ``iss="sorento"`` + ``typ="assertion"`` +
-     expiry — a rotated secret invalidates every outstanding assertion (blast
+     expiry - a rotated secret invalidates every outstanding assertion (blast
      radius = one connection, AC-E-6);
   3. on success mints a short-lived **embed token** (``typ="embed"``, ≤ a few
      minutes, carrying the connection's ``tenant_id`` + optional ``idea_id``,
-     AC-E-7) signed with the shared-service app JWT secret — NOT the app session
+     AC-E-7) signed with the shared-service app JWT secret - NOT the app session
      token, NOT the shared signing secret.
 
-Fail closed on every check with a typed :class:`IdeationEmbedError` (401/403) —
+Fail closed on every check with a typed :class:`IdeationEmbedError` (401/403) -
 the router maps it to the uniform ``{"error":{code,message}}`` envelope. Secrets
 (the shared signing secret, the assertion, the minted token) are NEVER logged.
 
@@ -52,7 +52,7 @@ IAT_SKEW_SECONDS = 60
 
 
 class IdeationEmbedError(Exception):
-    """A typed verification failure — the router emits the uniform envelope."""
+    """A typed verification failure - the router emits the uniform envelope."""
 
     def __init__(self, status_code: int, code: str, message: str):
         super().__init__(message)
@@ -63,10 +63,10 @@ class IdeationEmbedError(Exception):
 
 @dataclass
 class EmbedTokenPrincipal:
-    """Resolved from a valid embed token — the tenant scope the data reads use.
+    """Resolved from a valid embed token - the tenant scope the data reads use.
 
     ``product_id`` (from the connection, WS-C) is the canonical embed scope: when
-    set, every embed read/write is additionally scoped to that one product — a
+    set, every embed read/write is additionally scoped to that one product - a
     write targeting an idea in the same tenant but a different product is denied
     (404). ``None`` = the connection is not product-scoped (tenant-only, today's
     behaviour)."""
@@ -151,7 +151,7 @@ def rotate_secret(
     db: Session, *, connection_id: str, tenant_id: str, signing_secret: str
 ) -> Optional[EmbedConnection]:
     """Replace the connection's signing secret (rotation, AC-E-6). The new secret
-    is Fernet-encrypted at rest; it is NEVER returned here — the caller (which
+    is Fernet-encrypted at rest; it is NEVER returned here - the caller (which
     supplied the plaintext) is the only side that reveals it. Rotating
     invalidates every outstanding assertion signed with the old secret. Returns
     ``None`` when the connection is not in the caller's tenant."""
@@ -211,7 +211,7 @@ def _decrypt_signing_secret(conn: EmbedConnection) -> str:
     try:
         creds = decrypt_secret(conn.signing_secret_ciphertext or "")
     except (InvalidToken, ValueError, TypeError):
-        # A secret we cannot decrypt is unusable — fail closed (never 500).
+        # A secret we cannot decrypt is unusable - fail closed (never 500).
         raise IdeationEmbedError(401, "invalid_assertion", "Assertion verification failed.")
     secret = (creds or {}).get("signingSecret")
     if not secret:
@@ -231,7 +231,7 @@ def verify_and_mint(
 ) -> Dict[str, Any]:
     """Verify the host assertion + mint an embed token. Returns
     ``{"token", "expires_at"}``. Raises :class:`IdeationEmbedError` on any failure
-    — never mints on a failed check (AC-E-6)."""
+    - never mints on a failed check (AC-E-6)."""
     assertion = (assertion or "").strip()
     if not connection_id:
         raise IdeationEmbedError(401, "invalid_connection", "Connection id missing.")
@@ -249,7 +249,7 @@ def verify_and_mint(
     if conn is None:
         raise IdeationEmbedError(401, "invalid_connection", "Unknown embed connection.")
 
-    # Header must declare the app algorithm (the only one we verify against) —
+    # Header must declare the app algorithm (the only one we verify against) -
     # blocks an alg-confusion downgrade.
     try:
         header = jwt.get_unverified_header(assertion)
@@ -287,7 +287,7 @@ def verify_and_mint(
         {
             # ``typ="embed"`` is the sole discriminator: ``_resolve_user`` refuses
             # it on every staff endpoint, and ``resolve_embed_token`` accepts only
-            # it — so it is single-purpose (AC-E-7). No ``aud`` claim: the app
+            # it - so it is single-purpose (AC-E-7). No ``aud`` claim: the app
             # ``decode_access_token`` verifies signature+exp only (matching the
             # omnichannel embed token), so an ``aud`` here would need every caller
             # to pass it back.

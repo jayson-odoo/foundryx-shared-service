@@ -1,4 +1,4 @@
-"""Email log endpoints (plan 07 D14) — gated emails.read / emails.manage."""
+"""Email log endpoints (plan 07 D14) - gated emails.read / emails.manage."""
 
 from typing import Optional
 

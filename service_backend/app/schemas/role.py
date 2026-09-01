@@ -1,4 +1,4 @@
-"""Role schemas — list/detail/write contracts + assigned-users (plan 03).
+"""Role schemas - list/detail/write contracts + assigned-users (plan 03).
 
 Exposes camelCase to the frontend; reads snake_case off ORM via validation_alias.
 """
@@ -13,7 +13,7 @@ from app.schemas.filters import FilterGroup
 
 
 class RoleOut(ApiModel):
-    """Lightweight role ref (id + name) — used by auth + the user role multi-select."""
+    """Lightweight role ref (id + name) - used by auth + the user role multi-select."""
 
     model_config = ConfigDict(from_attributes=True)
 

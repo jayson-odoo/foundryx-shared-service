@@ -1,4 +1,4 @@
-"""Flat run-context (plan sprint-2/08 D7) — ONE dict the whole run reads.
+"""Flat run-context (plan sprint-2/08 D7) - ONE dict the whole run reads.
 
 Keys are dotted strings (``trigger.input.email``, ``nodes.<id>.messageId``) so
 they merge-render through the template engine's ``render_tokens`` unchanged
@@ -36,7 +36,7 @@ def set_node_output(ctx: Dict[str, Any], node_id: str, output: Dict[str, Any]) -
 
 
 def render_field(value: Any, ctx: Dict[str, Any]) -> str:
-    """Merge-render a string config field against the flat context (no escape —
+    """Merge-render a string config field against the flat context (no escape -
     these are values like email addresses / subjects, not HTML)."""
     if not isinstance(value, str):
         return "" if value is None else str(value)

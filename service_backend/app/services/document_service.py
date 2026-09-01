@@ -1,4 +1,4 @@
-"""Drive business logic (plan sprint-3/04) — Router → THIS → Repository.
+"""Drive business logic (plan sprint-3/04) - Router → THIS → Repository.
 
 Owns the Drive lifecycle: folder/file CRUD, the upload pipeline (sniff hard
 floor → type/size policy → quota → name-collision → version append → storage),
@@ -289,7 +289,7 @@ class DocumentService:
                 file.is_deleted = False
                 file.deleted_at = None
                 file.deleted_by = None
-            # The TOP restored folder may now clash with a live sibling — D9
+            # The TOP restored folder may now clash with a live sibling - D9
             # requires a re-collision-check on un-delete (the restored top is
             # still flagged at name-compute time, so it excludes itself).
             top = self.repo.get_folder(tenant_id, fid)
@@ -300,7 +300,7 @@ class DocumentService:
         for fid in file_ids:
             file = self.repo.get_file(tenant_id, fid)
             if file:
-                # Re-collision-check against LIVE siblings BEFORE un-deleting —
+                # Re-collision-check against LIVE siblings BEFORE un-deleting -
                 # file_by_name excludes is_deleted rows, so the restored file
                 # (still flagged here) doesn't match itself.
                 file.name = self._unique_name(tenant_id, file.folder_id, file.name)
@@ -328,7 +328,7 @@ class DocumentService:
         for v in self.repo.all_versions_for_files(file_ids_all):
             try:
                 storage.delete(v.storage_key)
-            except Exception:  # noqa: BLE001 — a storage hiccup must not 500 a purge
+            except Exception:  # noqa: BLE001 - a storage hiccup must not 500 a purge
                 pass
             self.db.delete(v)
         for f in target_files:
@@ -382,12 +382,12 @@ class DocumentService:
         actor_id: Optional[str] = None,
     ) -> FileOut:
         """Upload pipeline. ``actor`` is the authenticated User, or None for an
-        anonymous public-edit write — in which case ``actor_id`` carries the
+        anonymous public-edit write - in which case ``actor_id`` carries the
         synthetic ``share:{token}`` id so the audit/file event is attributed to
         the share, never a User (D6). ``created_by``/``uploaded_by`` stay NULL
         for anonymous writes."""
         author_id = actor.id if actor else None
-        # 1. Sniff hard-floor — non-overridable.
+        # 1. Sniff hard-floor - non-overridable.
         sniffed = detect_document_mime(content)
         if sniffed is None:
             raise UploadRejected("This file type isn't allowed for security reasons.")
@@ -565,7 +565,7 @@ class DocumentService:
             job.zip_storage_key = key
             job.status = DOWNLOAD_READY
             job.ready_at = datetime.now(timezone.utc)
-        except Exception as exc:  # noqa: BLE001 — a failed build marks the job, never 500s
+        except Exception as exc:  # noqa: BLE001 - a failed build marks the job, never 500s
             job.status = DOWNLOAD_FAILED
             job.error = str(exc)[:500]
         self.db.commit()
@@ -591,7 +591,7 @@ class DocumentService:
     def job_zip(
         self, tenant_id: str, user_id: str, job_id: str
     ) -> Tuple[str, str]:
-        """(storage_key, filename) for a READY job — for the authed serve route."""
+        """(storage_key, filename) for a READY job - for the authed serve route."""
         job = self.repo.get_job(tenant_id, user_id, job_id)
         if job is None or job.zip_storage_key is None or job.status != DOWNLOAD_READY:
             raise JobNotReady()

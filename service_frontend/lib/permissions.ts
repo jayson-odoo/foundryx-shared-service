@@ -1,6 +1,6 @@
 /**
- * Pure RBAC key helpers (plan 03 §2.4). The implied-read rule — *any* granted
- * action on a resource implies `<resource>.read` — is enforced here so the UI
+ * Pure RBAC key helpers (plan 03 §2.4). The implied-read rule - *any* granted
+ * action on a resource implies `<resource>.read` - is enforced here so the UI
  * lock and the (eventual) server normalization share one definition. Framework-
  * agnostic + side-effect-free so it's trivially unit-testable.
  */

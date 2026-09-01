@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Plan sprint-3/02 Phase C — Form engine slice 2, full stack (real clicks).
+ * Plan sprint-3/02 Phase C - Form engine slice 2, full stack (real clicks).
  *
  * Journeys (plan §TDD E2E ⑤/⑥):
  *   ⑤ Open the form's PUBLIC link logged-out on the tenant subdomain → fill +
@@ -11,7 +11,7 @@ import { expect, test, type Page } from '@playwright/test';
  *     `trigger.answers.*` fires → a run appears in the workflow's Logs, and the
  *     confirmation mail (merged subject) lands in the Email log.
  *
- * Setup is operator/admin API (deterministic — the builder + workflow editor
+ * Setup is operator/admin API (deterministic - the builder + workflow editor
  * are real-click-covered by slice 1 / the workflow specs; dnd-kit drags aren't
  * Playwright-drivable). Dedicated tenant; names timestamped (methodology §7).
  * The fill runs in a logged-OUT context (the public surface needs no auth).
@@ -32,7 +32,7 @@ function tenantUrl(pathname: string): string {
 
 test.describe.configure({ mode: 'serial', timeout: 180_000 });
 
-test.describe('Form engine slice 2 — public surface + form.submitted (Phase C)', () => {
+test.describe('Form engine slice 2 - public surface + form.submitted (Phase C)', () => {
   test.beforeAll(async ({ request }) => {
     const plat = await request.post(`${API}/auth/login`, {
       data: { email: 'platform@example.com', password: 'platform1234', tenantSlug: 'platform' },
@@ -79,7 +79,7 @@ test.describe('Form engine slice 2 — public surface + form.submitted (Phase C)
     await request.post(`${API}/workflows/${workflowId}/active`, { headers: auth, data: { isActive: true } });
   });
 
-  // ⑤ — anonymous, logged OUT.
+  // ⑤ - anonymous, logged OUT.
   test.describe('anonymous public fill', () => {
     test.use({ storageState: { cookies: [], origins: [] } });
 
@@ -93,7 +93,7 @@ test.describe('Form engine slice 2 — public surface + form.submitted (Phase C)
     });
   });
 
-  // ⑥ — the trigger fired; verify the run in Logs + the merged mail in the Email log.
+  // ⑥ - the trigger fired; verify the run in Logs + the merged mail in the Email log.
   test('⑥ form.submitted workflow ran and the merged confirmation mail is enqueued', async ({ page, request }) => {
     await login(page);
 

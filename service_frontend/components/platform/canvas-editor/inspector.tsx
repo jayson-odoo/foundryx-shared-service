@@ -28,7 +28,7 @@ export interface CanvasInspectorProps {
   onRemove: () => void;
 }
 
-/** Geometry/property inspector (D15) — numeric inputs (mobile precision), z-order,
+/** Geometry/property inspector (D15) - numeric inputs (mobile precision), z-order,
  * type props, merge binding, RuleBuilder visibility. Geometry shown in the
  * display unit; stored as mm. */
 export function CanvasInspector({
@@ -281,12 +281,12 @@ export function CanvasInspector({
       {(element.type === 'brandHeader' || element.type === 'brandFooter') && (
         <p className="text-xs text-muted-foreground">
           {element.type === 'brandHeader'
-            ? 'Renders your workspace logo on the brand colour — follows a rebrand automatically.'
+            ? 'Renders your workspace logo on the brand colour - follows a rebrand automatically.'
             : 'Renders your workspace footer text + social links (set in Branding).'}
         </p>
       )}
 
-      {/* Visibility — remount per element so the builder loads its own tree. */}
+      {/* Visibility - remount per element so the builder loads its own tree. */}
       <div className="flex flex-col gap-1.5 border-t border-input pt-3">
         <span className="text-xs font-medium text-muted-foreground">Visibility (optional)</span>
         <RuleBuilder

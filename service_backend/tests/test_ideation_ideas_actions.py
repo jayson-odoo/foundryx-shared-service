@@ -1,17 +1,17 @@
-"""Ideation Slice 4 — vote / priority / status / delete action APIs.
+"""Ideation Slice 4 - vote / priority / status / delete action APIs.
 
 These are the write endpoints the FE prototype already calls (services/
 ideation-service.ts: vote / reorderPriority / setStatus / remove):
 
-- ``POST /ideation/ideas/{id}/vote {dir}`` — per-user toggle vote (one row per
+- ``POST /ideation/ideas/{id}/vote {dir}`` - per-user toggle vote (one row per
   voter; clicking the same dir cancels, the other dir switches), recomputing
   ``upvotes`` / ``downvotes`` / ``myVote`` (partial AC-A-21 upvote idempotency).
-- ``PUT  /ideation/ideas/reorder {orderedIds}`` — manual priority (index =
+- ``PUT  /ideation/ideas/reorder {orderedIds}`` - manual priority (index =
   priority, ascending = top).
-- ``POST /ideation/ideas/{id}/status {status}`` — server-authoritative status
+- ``POST /ideation/ideas/{id}/status {status}`` - server-authoritative status
   engine transition (illegal refused); archive = → ``archived``; restore =
   ``archived`` → ``captured``.
-- ``DELETE /ideation/ideas/{id}`` — hard delete.
+- ``DELETE /ideation/ideas/{id}`` - hard delete.
 
 Test-first (PRINCIPLES.md): written before the implementation exists.
 """
@@ -199,7 +199,7 @@ def test_vote_idempotent_one_row_per_user_two_voters(ideation_client):
     h2 = _auth(ideation_client, email="voter2@example.com", password="voter21234")
 
     ideation_client.post(f"/ideation/ideas/{idea_id}/vote", headers=h1, json={"dir": "up"})
-    # user1 votes up again via a fresh request — must NOT double-count (idempotent
+    # user1 votes up again via a fresh request - must NOT double-count (idempotent
     # toggle), so re-assert up by toggling twice back to up.
     ideation_client.post(f"/ideation/ideas/{idea_id}/vote", headers=h1, json={"dir": "up"})
     ideation_client.post(f"/ideation/ideas/{idea_id}/vote", headers=h1, json={"dir": "up"})
@@ -289,7 +289,7 @@ def test_status_advance_follows_lifecycle(ideation_client):
 
 
 def test_illegal_transition_refused(ideation_client):
-    """captured -> delivered has no edge — refused (not a 2xx)."""
+    """captured -> delivered has no edge - refused (not a 2xx)."""
     h = _auth(ideation_client)
     pid = _create_software_product(ideation_client, h)
     idea_id = _insert_idea(ideation_client._factory, pid, status_key="captured")

@@ -2,7 +2,7 @@
 
 The sink is the **ONLY** promotion path: on explicit confirm it transitions the
 draft Idea ``draft -> captured`` via the core status engine and mints the
-product-domain deep link. **Idempotent** — re-firing on an already-captured draft
+product-domain deep link. **Idempotent** - re-firing on an already-captured draft
 does not create a second Idea and does not double-advance the status; it just
 re-mints the (stable) link.
 """
@@ -61,7 +61,7 @@ def ideation_on_complete_sink(
     """Promote the draft to ``captured`` (once) and return the minted link.
 
     Idempotent: if the Idea is already at ``captured`` (or past it), skip the
-    transition — a re-confirm is a no-op that still returns the link."""
+    transition - a re-confirm is a no-op that still returns the link."""
     # Promote the captured answers to first-class columns on completion (idempotent).
     sync_idea_columns_from_captured(idea)
     captured_id = idea_status_id(db, "captured", tenant_id)

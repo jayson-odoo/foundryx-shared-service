@@ -1,8 +1,8 @@
-"""Business Requirement router (Phase B-i slice 2, AC-BI-15..19) — gated by
+"""Business Requirement router (Phase B-i slice 2, AC-BI-15..19) - gated by
 ``require_module("ideation")`` (injected by the loader) + the relevant
 ``ideation.business_requirements.*`` permission.
 
-HTTP-only (no DB/SQL here — the hard-fail rule): every read/write goes through
+HTTP-only (no DB/SQL here - the hard-fail rule): every read/write goes through
 ``BusinessRequirementService``. Reads/writes ride ``.read`` / ``.manage``; the
 lifecycle promote gate (S4) rides a SEPARATE ``.promote`` (AC-BI-19).
 """
@@ -80,7 +80,7 @@ def br_status_graph(
     db: Session = Depends(get_db),
 ):
     """The BR entity's status graph for the detail form's action registry
-    (AC-BI-34) — gated by ``ideation.business_requirements.read`` so promote/
+    (AC-BI-34) - gated by ``ideation.business_requirements.read`` so promote/
     lifecycle buttons never depend on the user also holding ``statuses.read``.
     Delegates to the core status-graph reader (the ``.promote`` boundary is the
     server-side gate on the ``br-tr-promote`` edge)."""
@@ -88,7 +88,7 @@ def br_status_graph(
 
     from ..services.statuses import BR_ENTITY
 
-    # Keyword args — get_status_graph has a ``scope_id`` param between
+    # Keyword args - get_status_graph has a ``scope_id`` param between
     # entity_type and current_user (scoped machines), so a positional call would
     # misplace current_user.
     return get_status_graph(
@@ -104,7 +104,7 @@ def get_business_requirement(
     ),
     db: Session = Depends(get_db),
 ) -> BusinessRequirementDetailOut:
-    """One BR by id — answers + the STAMPED template doc (for the renderer)."""
+    """One BR by id - answers + the STAMPED template doc (for the renderer)."""
     return BusinessRequirementService(db).get(current_user.tenant_id, br_id)
 
 

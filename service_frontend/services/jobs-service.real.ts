@@ -1,4 +1,4 @@
-/** Real jobs service — talks to FastAPI via the shared api-client (`GET /jobs`,
+/** Real jobs service - talks to FastAPI via the shared api-client (`GET /jobs`,
  * `GET /jobs/{id}`, `POST /jobs/{id}/{abort,retry,complete}`). */
 import { apiFetch } from '@/lib/api-client';
 import type { Job, JobListResult } from '@/types/jobs';

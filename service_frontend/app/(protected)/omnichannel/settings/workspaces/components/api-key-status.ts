@@ -2,7 +2,7 @@ import type { StatusRegistry } from '@/components/platform/status-badge';
 import type { ApiKeyStatus } from '@/types/api-keys';
 
 /**
- * API-key status pills — frontend-only registry (the key lifecycle is a plain
+ * API-key status pills - frontend-only registry (the key lifecycle is a plain
  * ACTIVE/REVOKED flag on the row, not the status engine). Active = live/green,
  * Revoked = muted.
  */

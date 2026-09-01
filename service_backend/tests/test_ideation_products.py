@@ -1,10 +1,10 @@
-"""Ideation Slice 2 — unified Product: software kind + delivery config + adapters.
+"""Ideation Slice 2 - unified Product: software kind + delivery config + adapters.
 
 Covers AC-A-05 (one Product entity; ideation registers the ``software`` kind, so
 the active kind set is good|service|software and ``/products/kinds`` returns it),
-AC-A-06 (software delivery config — validated absolute ``product_domain_base`` in
+AC-A-06 (software delivery config - validated absolute ``product_domain_base`` in
 the ideation extension table, set/get), AC-A-07 (polymorphic adapter-kind registry
-— ``embed_connection`` wired, github/agent_runner/deploy registered-but-dormant),
+- ``embed_connection`` wired, github/agent_runner/deploy registered-but-dormant),
 AC-A-08 (product CRUD reuses the CORE catalog API; delivery config is an ideation
 route gated by ``ideation.products.manage``).
 

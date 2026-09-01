@@ -37,15 +37,15 @@ export interface StagedListConfigOptions {
   /**
    * Which partition this list serves: `true` = records the operator must act on
    * (changed / failed); `false` = the collapsed no-change set. Fixed per list
-   * instance — the no-change collapse mounts a second list with `false`.
+   * instance - the no-change collapse mounts a second list with `false`.
    */
   changed: boolean;
-  /** Open a record's full diff (detail drawer) — the diff is not forced inline. */
+  /** Open a record's full diff (detail drawer) - the diff is not forced inline. */
   onOpenRecord: (record: AutocountStagedRecord) => void;
 }
 
 /**
- * The staged-record list on the Resource shell (AC-15-10) — server-paginated,
+ * The staged-record list on the Resource shell (AC-15-10) - server-paginated,
  * searchable (source ref / doc no / name) and status-filterable, replacing the
  * tall full-card-per-record stack. Each row is a scannable line; the full
  * before → after diff is reached by opening the row (`onOpenRecord`), never
@@ -86,7 +86,7 @@ export function useStagedListConfig({
         cell: ({ row }) => (
           <div className="flex min-w-0 flex-col gap-0.5">
             <ClampedText
-              text={recordName(row.original) || '—'}
+              text={recordName(row.original) || '-'}
               lines={1}
               className="text-sm text-foreground"
             />

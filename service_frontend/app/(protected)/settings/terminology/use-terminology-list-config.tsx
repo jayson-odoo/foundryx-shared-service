@@ -69,7 +69,7 @@ function sortItems(rows: TermCatalogItem[], sort: ListQuery['sort']): TermCatalo
 }
 
 /**
- * Terminology list config (sprint-3/08, F10) — the catalog on the FULL Resource
+ * Terminology list config (sprint-3/08, F10) - the catalog on the FULL Resource
  * shell: search, the filter builder, column visibility/reorder/resize (per-user
  * via `viewKey`), sortable columns, and CSV export. The catalog is small client
  * data, so the fetcher pulls it whole and applies search/filter/sort/paginate
@@ -131,7 +131,7 @@ export function useTerminologyListConfig(
               {row.original.group}
             </Badge>
           ) : (
-            <span className="text-muted-foreground">—</span>
+            <span className="text-muted-foreground">-</span>
           ),
         size: 140,
         enableSorting: true,
@@ -221,7 +221,7 @@ export function useTerminologyListConfig(
     return {
       viewKey: 'terminology',
       getRowId: (row) => row.key,
-      rowHref: () => pathname, // no detail page — edit is an inline action
+      rowHref: () => pathname, // no detail page - edit is an inline action
       fetcher,
       exporter,
       searchPlaceholder: 'Search terminology…',

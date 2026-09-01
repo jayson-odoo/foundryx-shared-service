@@ -23,14 +23,14 @@ export interface UseAutocountReviewResult {
   job: AutocountSyncJob | null;
   /** Records in the batch (all statuses). */
   total: number;
-  /** No-field-change records — collapsed in the staged list (AC-15-11). */
+  /** No-field-change records - collapsed in the staged list (AC-15-11). */
   noChangeCount: number;
   isLoading: boolean;
   notFound: boolean;
   isSubmitting: boolean;
   /** True only while the job sits in `needs_review` (AC-13-11). */
   canDecide: boolean;
-  /** Set when `canDecide` is false — shown on the disabled buttons. */
+  /** Set when `canDecide` is false - shown on the disabled buttons. */
   blockedReason: string | null;
   approve: () => Promise<void>;
   discard: () => Promise<void>;
@@ -42,7 +42,7 @@ export interface UseAutocountReviewResult {
  * batch; Discard closes it without pushing. Both are idempotent server-side, and
  * both are only offered while the job is awaiting approval.
  *
- * The staged RECORDS are NOT loaded here — they render through their own
+ * The staged RECORDS are NOT loaded here - they render through their own
  * server-paginated Resource list (AC-15-10); this hook fetches only the job +
  * the batch counts (one small page).
  */
@@ -96,7 +96,7 @@ export function useAutocountReview(jobId: string): UseAutocountReviewResult {
           toast.success('Batch approved.');
         } else {
           await autocountService.discard(jobId);
-          toast.success('Batch discarded — nothing was pushed.');
+          toast.success('Batch discarded - nothing was pushed.');
         }
         setReloadKey((k) => k + 1);
       } catch (error) {

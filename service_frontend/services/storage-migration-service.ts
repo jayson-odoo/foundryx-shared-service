@@ -1,11 +1,11 @@
 /**
- * Storage-migration service (sprint-4/10) — starts a migration onto a new
+ * Storage-migration service (sprint-4/10) - starts a migration onto a new
  * bucket B and probes a candidate bucket (the wizard's Test step). The
  * interface IS the backend contract (`POST /storage/migrations`,
  * `POST /storage/migrations/test`).
  *
  * `testBucket` reuses the SAME `run_probe` (head_bucket + round-trip) the
- * connect wizard's Test + the migration `start` run — non-destructive so Start
+ * connect wizard's Test + the migration `start` run - non-destructive so Start
  * can be gated on it (foolproof-UI). Frontend-first: iterate on `.mock`, the
  * shipped boundary below is `.real`.
  */

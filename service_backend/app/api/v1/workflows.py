@@ -1,4 +1,4 @@
-"""Workflow engine endpoints (plan sprint-2/08) — gated workflows.read /
+"""Workflow engine endpoints (plan sprint-2/08) - gated workflows.read /
 .manage / .run. Tenant-scoped: a tenant only ever sees/acts on its own
 workflows (scope = the authed user's tenant)."""
 from typing import List, Optional
@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_db, require_permission
+from app.dependencies import effective_permission_keys, get_db, require_permission
 from app.models.user import User
 from app.schemas.filters import FilterGroup
 from app.schemas.workflow import (
@@ -29,8 +29,15 @@ from app.schemas.workflow import (
     WorkflowVersionListResponse,
 )
 from app.services.filter_translator import FilterError
-from app.services.workflow_service import WorkflowError, WorkflowNotFound, WorkflowService
+from app.services.workflow_service import (
+    CodeRunnerRequired,
+    WorkflowError,
+    WorkflowNotFound,
+    WorkflowPermissionError,
+    WorkflowService,
+)
 from app.workflow_engine import WorkflowValidationError
+from app.workflow_engine.registry import TriggerTestDataError
 
 router = APIRouter()
 
@@ -115,7 +122,11 @@ def workflow_metadata(
     db: Session = Depends(get_db),
 ) -> dict:
     """Triggerable entities + statuses + record fields for the editor pickers."""
-    return WorkflowService(db).metadata(current_user.tenant_id)
+    can_read_ai_agents = "ai_agents.read" in effective_permission_keys(current_user)
+    return WorkflowService(db).metadata(
+        current_user.tenant_id,
+        include_ai_agents=can_read_ai_agents,
+    )
 
 
 @router.get("/settings", response_model=WorkflowSettingsOut)
@@ -123,7 +134,7 @@ def get_workflow_settings(
     current_user: User = Depends(require_permission("workflows.manage")),
     db: Session = Depends(get_db),
 ) -> WorkflowSettingsOut:
-    """Tenant workflow settings — run retention (plan 10)."""
+    """Tenant workflow settings - run retention (plan 10)."""
     days, is_default = WorkflowService(db).get_run_retention(current_user.tenant_id)
     return WorkflowSettingsOut(run_retention_days=days, is_default=is_default)
 
@@ -192,13 +203,17 @@ def create_workflow(
     db: Session = Depends(get_db),
 ) -> WorkflowDetailOut:
     service = WorkflowService(db)
-    wf = service.create(
-        current_user.tenant_id,
-        name=body.name,
-        description=body.description,
-        draft=body.draftDefinition,
-        actor_id=current_user.id,
-    )
+    try:
+        wf = service.create(
+            current_user.tenant_id,
+            name=body.name,
+            description=body.description,
+            draft=body.draftDefinition,
+            actor_id=current_user.id,
+            actor=current_user,
+        )
+    except WorkflowPermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     return service.to_detail(wf)
 
 
@@ -217,9 +232,12 @@ def update_workflow(
             name=body.name,
             description=body.description,
             draft=body.draftDefinition,
+            actor=current_user,
         )
     except WorkflowNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow not found.")
+    except WorkflowPermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     return service.to_detail(wf)
 
 
@@ -243,6 +261,10 @@ def _action(workflow_id: str, current_user: User, db: Session, fn) -> WorkflowDe
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow not found.")
     except WorkflowValidationError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "; ".join(exc.issues))
+    except WorkflowPermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
+    except CodeRunnerRequired as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
     except WorkflowError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return service.to_detail(wf)
@@ -260,7 +282,7 @@ def set_active(workflow_id: str, body: WorkflowActiveRequest, current_user: User
 
 @router.post("/{workflow_id}/publish", response_model=WorkflowDetailOut)
 def publish_workflow(workflow_id: str, current_user: User = Depends(require_permission("workflows.manage")), db: Session = Depends(get_db)) -> WorkflowDetailOut:
-    return _action(workflow_id, current_user, db, lambda s: s.publish(workflow_id, current_user.tenant_id, current_user.id))
+    return _action(workflow_id, current_user, db, lambda s: s.publish(workflow_id, current_user.tenant_id, current_user.id, actor=current_user))
 
 
 @router.post("/{workflow_id}/unpublish", response_model=WorkflowDetailOut)
@@ -288,14 +310,48 @@ def run_workflow(
     current_user: User = Depends(require_permission("workflows.run")),
     db: Session = Depends(get_db),
 ) -> WorkflowRunItemOut:
+    # Manual runs only need workflows.run. Test-trigger runs also expose
+    # conversation data, so enforce the read permission at this boundary even
+    # when the caller skips the dedicated test-options endpoint.
+    if (
+        body.testTrigger is not None
+        and "conversations.read" not in effective_permission_keys(current_user)
+    ):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Missing permission: conversations.read"
+        )
     service = WorkflowService(db)
     try:
         run = service.run(
-            workflow_id, current_user.tenant_id, inputs=body.inputs, is_test=body.isTest, actor=current_user
+            workflow_id,
+            current_user.tenant_id,
+            inputs=body.inputs,
+            is_test=body.isTest,
+            actor=current_user,
+            test_trigger=(body.testTrigger.model_dump() if body.testTrigger else None),
         )
     except WorkflowNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow not found.")
+    except TriggerTestDataError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+    except WorkflowPermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
+    except WorkflowError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return WorkflowRunItemOut.from_row(run, current_user.name or current_user.email)
+
+
+@router.get("/{workflow_id}/test-options")
+def workflow_test_options(
+    workflow_id: str,
+    current_user: User = Depends(require_permission("workflows.run")),
+    _conversation_reader: User = Depends(require_permission("conversations.read")),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        return WorkflowService(db).test_options(workflow_id, current_user.tenant_id)
+    except WorkflowNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow not found.")
 
 
 @router.get("/{workflow_id}/runs", response_model=WorkflowRunListResponse)
@@ -349,7 +405,10 @@ def debug_execute(
             target_node_id=body.targetNodeId,
             scratch=body.scratch,
             stale_node_ids=body.staleNodeIds,
+            actor=current_user,
         )
     except WorkflowNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow or run not found.")
+    except WorkflowPermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     return WorkflowDebugResultOut(nodes=nodes)

@@ -10,7 +10,7 @@ import {
   type EmailChangeRedeemKind,
 } from '@/hooks/use-email-change-redeem';
 
-/** Per-kind copy — approve = OLD-side link, verify = NEW-side link. */
+/** Per-kind copy - approve = OLD-side link, verify = NEW-side link. */
 const COPY: Record<
   EmailChangeRedeemKind,
   {
@@ -24,7 +24,7 @@ const COPY: Record<
   approve: {
     heading: 'Approve email change',
     description:
-      'Someone asked to change the email on your account. Approve only if this was you — if not, just close this page and the request will expire.',
+      'Someone asked to change the email on your account. Approve only if this was you - if not, just close this page and the request will expire.',
     action: 'Approve Change',
     successHeading: 'Change approved.',
     successBody:
@@ -33,7 +33,7 @@ const COPY: Record<
   verify: {
     heading: 'Confirm your new email',
     description:
-      'Confirm that this mailbox is yours — this is the step that switches your account to the new address.',
+      'Confirm that this mailbox is yours - this is the step that switches your account to the new address.',
     action: 'Confirm New Email',
     successHeading: 'Email updated.',
     successBody: 'From now on, sign in with your new email address.',
@@ -42,7 +42,7 @@ const COPY: Record<
 
 /**
  * Shared body of the public approve/verify email-change pages (plan
- * sprint-2/04). Redeems on an explicit click — never on mount — so
+ * sprint-2/04). Redeems on an explicit click - never on mount - so
  * mail-scanner prefetches can't burn the single-use token.
  */
 export function EmailChangeRedeem({ kind }: { kind: EmailChangeRedeemKind }) {

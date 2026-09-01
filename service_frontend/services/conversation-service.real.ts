@@ -1,8 +1,8 @@
 /**
- * Real conversation service (plan 05 Phase B) — api-client + WebSocket.
+ * Real conversation service (plan 05 Phase B) - api-client + WebSocket.
  *
  * REST goes through apiFetch (Bearer + tenant headers). subscribe() opens a
- * WS to the backend (`/omnichannel/ws?workspaceId=&token=` — browsers can't
+ * WS to the backend (`/omnichannel/ws?workspaceId=&token=` - browsers can't
  * set headers on WS, so the JWT rides a query param) and auto-reconnects
  * with a small backoff until unsubscribed.
  */
@@ -36,8 +36,8 @@ function wsUrl(path: string): string {
   return BASE_URL.replace(/^http/, 'ws') + path;
 }
 
-// Interim list cap — the backend defaults to 50; send the max until the inbox
-// grows real pagination / infinite-scroll (BL — thread-list pagination).
+// Interim list cap - the backend defaults to 50; send the max until the inbox
+// grows real pagination / infinite-scroll (BL - thread-list pagination).
 const THREAD_PAGE_SIZE = 200;
 
 function threadQueryString(query: ThreadListQuery): string {
@@ -103,7 +103,7 @@ export const realConversationService: ConversationService = {
   },
 
   async sendMedia(contactId, input: SendMediaInput) {
-    // Multipart — apiFetch skips the JSON content-type for a FormData body.
+    // Multipart - apiFetch skips the JSON content-type for a FormData body.
     const form = new FormData();
     form.append('kind', input.kind);
     form.append('file', input.file);
@@ -169,7 +169,7 @@ export const realConversationService: ConversationService = {
   },
 
   async assignToMe(contactId) {
-    // Embed runtime: the actor is the external agent — self-claim to its id
+    // Embed runtime: the actor is the external agent - self-claim to its id
     // (the backend embed principal attributes assignment to the external agent).
     const embed = embedAuthStore.getState();
     if (embed) return this.assign(contactId, embed.agentId);
@@ -205,7 +205,7 @@ export const realConversationService: ConversationService = {
     let socket: WebSocket | null = null;
     let stopped = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    // A 4403 can be transient — the JWT expired between getSession() and the
+    // A 4403 can be transient - the JWT expired between getSession() and the
     // handshake. getSession() refreshes the token, so retry a bounded few times
     // (slower cadence) rather than giving up forever on the first auth close.
     let authRetries = 0;
@@ -230,7 +230,7 @@ export const realConversationService: ConversationService = {
         try {
           handler(JSON.parse(e.data) as ConversationSocketEvent);
         } catch {
-          // Malformed frame — drop it; the DB remains the source of truth.
+          // Malformed frame - drop it; the DB remains the source of truth.
         }
       };
       socket.onclose = (e) => {

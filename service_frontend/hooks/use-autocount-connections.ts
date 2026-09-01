@@ -18,7 +18,7 @@ const PROVIDER_FILTER: FilterGroup = {
 };
 
 export interface UseAutocountConnectionsResult {
-  /** AutoCount connections not yet registered as a company — the ONLY valid picks. */
+  /** AutoCount connections not yet registered as a company - the ONLY valid picks. */
   options: SearchSelectOption[];
   isLoading: boolean;
   /**
@@ -33,7 +33,7 @@ export interface UseAutocountConnectionsResult {
  *
  * One connection maps to exactly one company (the vendor API resolves the
  * company from the AppId header), so a connection that already has a company is
- * excluded — offering it would guarantee a 409.
+ * excluded - offering it would guarantee a 409.
  */
 export function useAutocountConnections(): UseAutocountConnectionsResult {
   const [options, setOptions] = useState<SearchSelectOption[]>([]);

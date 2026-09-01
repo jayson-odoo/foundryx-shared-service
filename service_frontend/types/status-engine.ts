@@ -1,5 +1,5 @@
 /**
- * Status & state-machine engine types (sprint-2/01) — mirrors the backend
+ * Status & state-machine engine types (sprint-2/01) - mirrors the backend
  * camelCase wire contracts in app/schemas/status_engine.py.
  */
 import type { RuleGroup } from './rules';
@@ -16,7 +16,7 @@ export interface StatusEntity {
   transitionCount: number;
   /** True when the caller's tenant forked this entity's set. */
   customized: boolean;
-  /** True when the entity has time-based auto edges — gates "Simulate date". */
+  /** True when the entity has time-based auto edges - gates "Simulate date". */
   hasTimeAutoEdges: boolean;
 }
 
@@ -76,10 +76,10 @@ export interface TransitionNotification {
   templateSubject: string;
   templateBody: string;
   templateKey?: string | null;
-  /** Engine template (BL-081) — set = render through the template engine;
+  /** Engine template (BL-081) - set = render through the template engine;
    * inline subject/body stay as the fallback. */
   templateId?: string | null;
-  /** Per-use COPY of a template's block doc (edited inline) — set = render this
+  /** Per-use COPY of a template's block doc (edited inline) - set = render this
    * branded doc (subject = templateSubject). */
   doc?: TemplateDocument | null;
   recipients: NotificationRecipient[];
@@ -99,10 +99,10 @@ export interface StatusTransition {
   sortOrder: number;
   roles: TransitionRole[];
   notifications: TransitionNotification[];
-  /** Rule-engine condition tree (sprint-2/02 D1) — null = unconditional. */
+  /** Rule-engine condition tree (sprint-2/02 D1) - null = unconditional. */
   conditionsJson?: RuleGroup | null;
   /**
-   * Derived status (sprint-4/03) — 'manual' = a user fires it (action button);
+   * Derived status (sprint-4/03) - 'manual' = a user fires it (action button);
    * 'auto' = the engine fires it when conditionsJson becomes true. Auto edges
    * are never offered as actions and render distinctly on the canvas.
    */
@@ -113,7 +113,7 @@ export type TriggerMode = 'manual' | 'auto';
 
 export interface StatusGraph {
   entityType: string;
-  /** Which tier the caller sees — their fork or the platform defaults. */
+  /** Which tier the caller sees - their fork or the platform defaults. */
   source: 'tenant' | 'platform';
   statuses: StatusNodeData[];
   transitions: StatusTransition[];
@@ -121,7 +121,7 @@ export interface StatusGraph {
 
 export interface CreateStatusInput {
   entityType: string;
-  /** Scoped machines (sprint-3/01 D4) — the owning record (e.g. form id). */
+  /** Scoped machines (sprint-3/01 D4) - the owning record (e.g. form id). */
   scopeId?: string;
   label: string;
   color?: string;
@@ -141,7 +141,7 @@ export interface UpdateStatusInput {
 
 export interface CreateTransitionInput {
   entityType: string;
-  /** Scoped machines (sprint-3/01 D4) — both endpoints must share this scope. */
+  /** Scoped machines (sprint-3/01 D4) - both endpoints must share this scope. */
   scopeId?: string;
   fromStatusId: string;
   toStatusId: string;
@@ -150,7 +150,7 @@ export interface CreateTransitionInput {
   roleIds?: string[];
   notifications?: TransitionNotification[];
   conditionsJson?: RuleGroup | null;
-  /** Derived status (sprint-4/03) — 'auto' requires conditions + no roles. */
+  /** Derived status (sprint-4/03) - 'auto' requires conditions + no roles. */
   triggerMode?: TriggerMode;
 }
 
@@ -160,6 +160,6 @@ export interface UpdateTransitionInput {
   roleIds?: string[];
   notifications?: TransitionNotification[];
   conditionsJson?: RuleGroup | null;
-  /** Derived status (sprint-4/03) — absent = keep. */
+  /** Derived status (sprint-4/03) - absent = keep. */
   triggerMode?: TriggerMode;
 }

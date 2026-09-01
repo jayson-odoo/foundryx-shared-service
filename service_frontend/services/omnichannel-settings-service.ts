@@ -1,5 +1,5 @@
 /**
- * Omnichannel media-caps settings service — the boundary the UI talks to (plan
+ * Omnichannel media-caps settings service - the boundary the UI talks to (plan
  * 12 Slice 3, AC-12-23). Frontend-first bound the mock; Phase B swaps
  * `omnichannelSettingsService` to the real api-client impl in ONE line (bottom).
  * The interface IS the backend contract (`GET/PUT /omnichannel/settings`).

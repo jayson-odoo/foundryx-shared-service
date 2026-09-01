@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * Form-builder palette (plan sprint-3/01 D7) — collapsed-by-default category
+ * Form-builder palette (plan sprint-3/01 D7) - collapsed-by-default category
  * sections with counts + a search box (house node-palette pattern). Each entry
- * is BOTH click-to-add (appends to the selected/last section — the E2E path,
+ * is BOTH click-to-add (appends to the selected/last section - the E2E path,
  * dnd-kit drags aren't Playwright-drivable) AND dnd-kit draggable onto a
  * section/gap in the canvas. No instructional copy (foolproof-UI mandate).
  */

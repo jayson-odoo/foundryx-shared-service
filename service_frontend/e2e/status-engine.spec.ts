@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Status Engine E2E (sprint-2/01, reworked UI) — real user clicks against the
+ * Status Engine E2E (sprint-2/01, reworked UI) - real user clicks against the
  * LIVE stack. Requires backend up + bootstrapped (`python -m scripts.bootstrap_db`).
  *
  * Surface shape follows the Resource design language: Platform Engines ▸
@@ -29,7 +29,7 @@ async function loginOperator(page: Page) {
 }
 
 async function gotoStatusEngineList(page: Page) {
-  // "Platform Engines" is a grouping parent — the navigable entry is a child.
+  // "Platform Engines" is a grouping parent - the navigable entry is a child.
   const link = page.getByRole('link', { name: 'Status Engine', exact: true });
   if (!(await link.isVisible().catch(() => false))) {
     await page.getByText('Platform Engines', { exact: true }).click();
@@ -41,7 +41,7 @@ async function gotoStatusEngineList(page: Page) {
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept as the documented entity-open path for future specs
 async function openTenantEntity(page: Page) {
   await gotoStatusEngineList(page);
-  // Entity list rides the Resource shell — row click opens the detail form.
+  // Entity list rides the Resource shell - row click opens the detail form.
   await page.getByRole('row', { name: /Tenant/ }).getByText('Tenant', { exact: true }).click();
   await expect(page).toHaveURL(/\/platform\/status-engine\/tenant/);
   await expect(page.getByTestId('entity-flow')).toBeVisible();
@@ -76,7 +76,7 @@ test.describe('Status Engine (live stack)', () => {
     await expect(page.getByTestId('status-node-archived')).toBeVisible();
     // (The read-only instructional caption was removed by the foolproof-UI
     // no-inline-instructions sweep; read-only state shows as a disabled canvas.)
-    // Archived is restorable (sprint-2/02 revision) — outgoing handle present.
+    // Archived is restorable (sprint-2/02 revision) - outgoing handle present.
     await expect(
       page.getByTestId('status-node-archived').getByTestId('source-handle'),
     ).toHaveCount(1);
@@ -92,7 +92,7 @@ test.describe('Status Engine (live stack)', () => {
     await page.getByRole('button', { name: 'Create', exact: true }).click();
     const holdNode = page.getByTestId(`status-node-${holdKey}`);
     await expect(holdNode).toBeVisible();
-    // The drawer's closing overlay would swallow the canvas drag — wait it out.
+    // The drawer's closing overlay would swallow the canvas drag - wait it out.
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await page.waitForTimeout(400);
 
@@ -115,7 +115,7 @@ test.describe('Status Engine (live stack)', () => {
     await expect(page.getByText(new RegExp(`Active → ${holdLabel}`))).toBeVisible();
     await page.getByLabel(/Action label/).fill(edgeLabel);
     await page.getByRole('button', { name: /add notification/i }).click();
-    await page.getByPlaceholder(/Subject — e.g./).fill(`{{recordLabel}} held ${ts}`);
+    await page.getByPlaceholder(/Subject - e.g./).fill(`{{recordLabel}} held ${ts}`);
     await page.getByPlaceholder('Body…').fill('{{actorName}} performed {{transitionLabel}}.');
     await page.getByRole('button', { name: 'Create transition' }).click();
     await expect(page.getByText(edgeLabel, { exact: true })).toBeVisible();
@@ -129,7 +129,7 @@ test.describe('Status Engine (live stack)', () => {
 
     // Notification round-trip persisted.
     await expect(page.getByText(new RegExp(`Active → ${holdLabel}`))).toBeVisible();
-    await expect(page.getByPlaceholder(/Subject — e.g./)).toHaveValue(
+    await expect(page.getByPlaceholder(/Subject - e.g./)).toHaveValue(
       `{{recordLabel}} held ${ts}`,
     );
     await page.getByRole('button', { name: 'Save', exact: true }).last().click();
@@ -161,7 +161,7 @@ test.describe('Status Engine (live stack)', () => {
 
     await loginOperator(page);
 
-    // Provision a dedicated tenant (spec isolation — parallel-safe).
+    // Provision a dedicated tenant (spec isolation - parallel-safe).
     await page.getByText('Tenant Management', { exact: true }).click();
     await page.getByRole('link', { name: 'Tenants', exact: true }).click();
     await page.getByRole('button', { name: /add tenant/i }).click();
@@ -173,7 +173,7 @@ test.describe('Status Engine (live stack)', () => {
     await page.getByRole('button', { name: /^create$/i }).click();
     await expect(page).toHaveURL(/\/platform\/tenants\/(?!new)/);
 
-    // Suspend via the console — the backend routes this through the status
+    // Suspend via the console - the backend routes this through the status
     // machine (strict edge Active → Suspended). Scope to the sidebar (the
     // detail page breadcrumb carries a second "Tenants" link).
     await page
@@ -181,7 +181,7 @@ test.describe('Status Engine (live stack)', () => {
       .getByRole('link', { name: 'Tenants', exact: true })
       .click();
     await page.getByPlaceholder('Search tenants…').fill(slug);
-    await expect(page.getByText('FoundryX EMS')).toHaveCount(0);
+    await expect(page.getByText('Foundryx EMS')).toHaveCount(0);
     const row = page.getByRole('row', { name: new RegExp(name) });
     await expect(row).toBeVisible();
     await page.waitForTimeout(800);
@@ -191,7 +191,7 @@ test.describe('Status Engine (live stack)', () => {
     // The badge shows the ENGINE's editable label (server statusLabel).
     await expect(row.getByText('Suspended')).toBeVisible();
 
-    // Suspending twice is impossible — no Suspended → Suspended edge: the
+    // Suspending twice is impossible - no Suspended → Suspended edge: the
     // action list now offers Reactivate/Archive instead.
     await row.getByRole('button', { name: 'Actions' }).click();
     await expect(page.getByRole('menuitem', { name: 'Suspend' })).toHaveCount(0);
@@ -208,17 +208,17 @@ test.describe('Status Engine (live stack)', () => {
     await page.getByRole('link', { name: 'Statuses', exact: true }).click();
     await expect(page).toHaveURL(/\/settings\/statuses$/);
     // Tenant callers don't see the platform-owned tenant entity; no module
-    // has registered a tenant-owned entity yet — the Resource list is empty.
+    // has registered a tenant-owned entity yet - the Resource list is empty.
     await expect(page.getByText('No data available')).toBeVisible();
   });
 
   test('user without statuses.read gets the friendly NoPermission page', async ({ page }) => {
-    // demo@kt.com holds only the Member role — no statuses.* keys.
+    // demo@kt.com holds only the Member role - no statuses.* keys.
     await login(page, 'http://localhost:3001', 'demo@kt.com', 'demo1234');
     await page.waitForURL((url) => !url.pathname.startsWith('/signin'));
 
     // Since plan sprint-2/05 (BL-014) the menu entry itself is pruned for a
-    // session without statuses.read — a real user can't click their way in.
+    // session without statuses.read - a real user can't click their way in.
     await expect(
       page.getByRole('link', { name: 'Statuses', exact: true }),
     ).toBeHidden();

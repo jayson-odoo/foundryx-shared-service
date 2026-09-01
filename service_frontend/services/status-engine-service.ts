@@ -17,7 +17,7 @@ import { realStatusEngineService } from './status-engine-service.real';
 
 export interface StatusEngineService {
   entities(): Promise<StatusEntity[]>;
-  /** `scopeId` = scoped machines (sprint-3/01 D4) — one graph per owning record. */
+  /** `scopeId` = scoped machines (sprint-3/01 D4) - one graph per owning record. */
   graph(entityType: string, scopeId?: string): Promise<StatusGraph>;
   createStatus(input: CreateStatusInput): Promise<StatusNodeData>;
   updateStatus(id: string, input: UpdateStatusInput): Promise<StatusNodeData>;

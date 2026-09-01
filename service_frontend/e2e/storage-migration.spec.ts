@@ -2,21 +2,21 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
 
 /**
  * Storage provider migration + centralized Jobs (sprint-4/10, AC-10-18/19/21/22)
- * — E2E against the LIVE stack (Next :3001 → FastAPI :8001 → Postgres). Real
+ * - E2E against the LIVE stack (Next :3001 → FastAPI :8001 → Postgres). Real
  * user clicks only (no URL shortcuts).
  *
  * Spec-isolation (MANDATORY): a migration mutates shared storage state, so every
  * test provisions a DEDICATED, timestamped tenant via the operator API (setup
- * only — the flow under test stays real clicks). No fixed literal names.
+ * only - the flow under test stays real clicks). No fixed literal names.
  *
  * Offline-deterministic storage:
  *  - AC-10-18 (test-gated Start): the candidate bucket's Endpoint URL points at a
  *    CLOSED port (localhost:9), so the wizard's Test fails with an honest
- *    transport error and Start never enables — no cloud/creds needed.
+ *    transport error and Start never enables - no cloud/creds needed.
  *  - AC-10-21/22 (full green migration): a local **moto** S3 server (started by
  *    the tester harness at MOTO_ENDPOINT with buckets `mig-source`/`mig-target`)
  *    stands in for a real bucket, so a genuine A→B copy+cutover runs and assets
- *    resolve. If moto is not reachable the happy-path test SKIPS (documented) —
+ *    resolve. If moto is not reachable the happy-path test SKIPS (documented) -
  *    it is never a false PASS.
  */
 
@@ -75,7 +75,7 @@ async function openIntegrations(page: Page) {
 
 /**
  * Fill the S3 config into a connection form (the connect page OR the migration-
- * wizard dialog — same `fields()`-driven ConfigurationTab). `scope` bounds the
+ * wizard dialog - same `fields()`-driven ConfigurationTab). `scope` bounds the
  * inputs so the wizard dialog never collides with the connection detail form
  * underneath it; the provider option list is a portal, resolved on `page`.
  */
@@ -128,7 +128,7 @@ async function uploadAvatar(page: Page, name: string): Promise<string> {
   return src;
 }
 
-test.describe('Storage migration — wizard + Jobs + assets (live backend)', () => {
+test.describe('Storage migration - wizard + Jobs + assets (live backend)', () => {
   test('AC-10-18 · test-gated Start: a failing bucket test never enables Start', async ({
     page,
     request,
@@ -160,7 +160,7 @@ test.describe('Storage migration — wizard + Jobs + assets (live backend)', () 
     await expect(dialog.getByText('Confirm', { exact: true })).toBeVisible();
     await page.setViewportSize({ width: 1280, height: 900 });
 
-    // Step 1 — configure candidate bucket B pointed at a CLOSED port.
+    // Step 1 - configure candidate bucket B pointed at a CLOSED port.
     await fillS3Config(page, dialog, {
       name: `Target ${Date.now()}`,
       bucket: 'e2e-target',
@@ -168,7 +168,7 @@ test.describe('Storage migration — wizard + Jobs + assets (live backend)', () 
     });
     await dialog.getByRole('button', { name: 'Next' }).click();
 
-    // Step 2 — Test. Before it runs, Next is disabled; the probe fails with the
+    // Step 2 - Test. Before it runs, Next is disabled; the probe fails with the
     // honest transport error and Next STAYS disabled (foolproof-UI, AC-10-18).
     const next = dialog.getByRole('button', { name: 'Next' });
     await expect(next).toBeDisabled();
@@ -193,7 +193,7 @@ test.describe('Storage migration — wizard + Jobs + assets (live backend)', () 
     await page.keyboard.press('Escape');
 
     // Sidebar → /jobs history list on the Resource shell: Type column + status
-    // segments render (empty state is fine — this asserts the surface exists).
+    // segments render (empty state is fine - this asserts the surface exists).
     await page.locator('a[href="/jobs"]').first().click();
     await page.waitForURL(/\/jobs$/);
     await expect(page.getByRole('columnheader', { name: 'Type' })).toBeVisible();
@@ -220,14 +220,14 @@ test.describe('Storage migration — wizard + Jobs + assets (live backend)', () 
       .catch(() => false);
     test.skip(
       !motoUp,
-      `moto S3 not reachable at ${MOTO} — happy-path migration deferred (offline).`,
+      `moto S3 not reachable at ${MOTO} - happy-path migration deferred (offline).`,
     );
 
     const tenant = await provisionTenant(request, 'go');
     await loginTenantAdmin(page, tenant);
     await openIntegrations(page);
 
-    // Connect storage A (moto mig-source) — new uploads now land on A.
+    // Connect storage A (moto mig-source) - new uploads now land on A.
     await connectStorageA(page, {
       name: `Source ${Date.now()}`,
       bucket: SRC_BUCKET,
@@ -249,7 +249,7 @@ test.describe('Storage migration — wizard + Jobs + assets (live backend)', () 
     const dialog = page.getByRole('dialog');
     const targetName = `Target ${Date.now()}`;
 
-    // Step 1 — configure B (moto mig-target).
+    // Step 1 - configure B (moto mig-target).
     await fillS3Config(page, dialog, {
       name: targetName,
       bucket: DST_BUCKET,
@@ -257,12 +257,12 @@ test.describe('Storage migration — wizard + Jobs + assets (live backend)', () 
     });
     await dialog.getByRole('button', { name: 'Next' }).click();
 
-    // Step 2 — Test passes → Next enables.
+    // Step 2 - Test passes → Next enables.
     await dialog.getByRole('button', { name: 'Test bucket' }).click();
     await expect(dialog.getByText(/Bucket verified/i)).toBeVisible({ timeout: 15_000 });
     await dialog.getByRole('button', { name: 'Next' }).click();
 
-    // Step 3 — typed-confirm gates Start.
+    // Step 3 - typed-confirm gates Start.
     const start = dialog.getByRole('button', { name: 'Start migration' });
     await expect(start).toBeDisabled();
     await dialog.getByPlaceholder(targetName).fill(targetName);
@@ -280,7 +280,7 @@ test.describe('Storage migration — wizard + Jobs + assets (live backend)', () 
     await expect(page.getByText('Done', { exact: true }).first()).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText(/Failed assets/)).toHaveCount(0);
 
-    // AC-10-21: the PRE-EXISTING avatar still resolves (now from B) — zero 404.
+    // AC-10-21: the PRE-EXISTING avatar still resolves (now from B) - zero 404.
     await expect((await request.get(avatarSrc)).status()).toBe(200);
 
     // AC-10-22: a NEW upload made after the migration also resolves (lands on B).

@@ -7,16 +7,16 @@ import { expect, test, request as pwRequest, type APIRequestContext, type Page }
 import { SignJWT } from 'jose';
 
 /**
- * Developer Logs / Integration Activity console — Slice 1 E2E (sprint-4/12).
+ * Developer Logs / Integration Activity console - Slice 1 E2E (sprint-4/12).
  *
  * Real user clicks against the live stack (Next :3001 → FastAPI :8001 →
  * Postgres). The FLOW under test = a developer VIEWING the inbound-API activity
  * log and its redacted detail. Generating the row (mint a workspace API key +
- * make a real gateway call) is precondition setup via the operator/API — that
+ * make a real gateway call) is precondition setup via the operator/API - that
  * is not the flow being asserted, so API setup is acceptable.
  *
  * Covers AC-DLC-13 (real-click journey), AC-DLC-04 (redaction visible in the
- * detail — no plaintext key), AC-DLC-10/11 (Resource-shell list + read-only
+ * detail - no plaintext key), AC-DLC-10/11 (Resource-shell list + read-only
  * detail), AC-DLC-12 (responsive 375px + 1280px).
  */
 
@@ -104,7 +104,7 @@ test.describe('Developer Logs console (Slice 1)', () => {
     await logsLink.click();
     await expect(page).toHaveURL(/\/developers\/logs$/);
 
-    // AC-DLC-10: Resource-shell list — search narrows to our unique trace.
+    // AC-DLC-10: Resource-shell list - search narrows to our unique trace.
     await page.getByPlaceholder(/Search operation, trace/i).fill(seed.traceId);
     const row = page.getByRole('row').filter({ hasText: seed.operation });
     await expect(row.first()).toBeVisible({ timeout: 10_000 });
@@ -118,7 +118,7 @@ test.describe('Developer Logs console (Slice 1)', () => {
     // No Edit toggle on a historical log row.
     await expect(page.getByRole('button', { name: /^Edit$/ })).toHaveCount(0);
 
-    // AC-DLC-04: the Payloads tab shows the redacted request — masked
+    // AC-DLC-04: the Payloads tab shows the redacted request - masked
     // Authorization, and NO plaintext API key anywhere on the page.
     await page.getByRole('tab', { name: /Payloads/i }).click();
     await expect(page.getByText('"authorization": "***"')).toBeVisible();
@@ -157,7 +157,7 @@ test.describe('Developer Logs console (Slice 1)', () => {
 });
 
 /**
- * Slice 2 — correlated trace (AC-DLC-19). A consumer sends a WhatsApp message via
+ * Slice 2 - correlated trace (AC-DLC-19). A consumer sends a WhatsApp message via
  * the public gateway (through the dev channel `chn-demo`, which STUBS Meta so no
  * Graph traffic leaves the box). That single consumption yields TWO legs sharing
  * ONE trace: the `inbound_api` POST /messages row and the `outbound_meta`
@@ -317,7 +317,7 @@ test.describe('Developer Logs trace (Slice 2)', () => {
 
     // AC-DLC-18: the Trace tab renders the timeline with BOTH legs, each with a
     // source badge + latency + status. Inbound API (POST /messages) + Outbound
-    // (graph:send) — the end-to-end correlated picture for one consumption.
+    // (graph:send) - the end-to-end correlated picture for one consumption.
     await page.getByRole('tab', { name: /Trace/i }).click();
     const timeline = page.getByTestId('trace-timeline');
     await expect(timeline).toBeVisible();
@@ -371,14 +371,14 @@ test.describe('Developer Logs trace (Slice 2)', () => {
 });
 
 /**
- * Slice 3 — retention settings + embed logging (AC-DLC-23/24). Real user clicks
+ * Slice 3 - retention settings + embed logging (AC-DLC-23/24). Real user clicks
  * against the live stack. Two independent journeys:
  *
- *  ① AC-DLC-23 — a developer navigates Developers → Logs → Log settings, sets a
+ *  ① AC-DLC-23 - a developer navigates Developers → Logs → Log settings, sets a
  *     retention window, saves, and the value persists across a reload. On the
  *     `default` tenant (benign: no beat runs in the E2E stack, and the value is
  *     kept high enough to never prune a recently-seeded row). Verified 375+1280.
- *  ② AC-DLC-24 — an `embed_session` row with a TYPED error renders with the Embed
+ *  ② AC-DLC-24 - an `embed_session` row with a TYPED error renders with the Embed
  *     source badge + its visible error code, in the list AND the detail. To get a
  *     real failing exchange WITHOUT touching the default tenant's live embed-config
  *     connection (depended on by omnichannel-embed*.spec), a DEDICATED tenant is
@@ -439,7 +439,7 @@ test.describe('Developer Logs retention settings (Slice 3)', () => {
     await page.reload();
     await expect(page.getByLabel('Keep developer logs for (days)')).toHaveValue(String(value));
 
-    // Responsive — the form reflows with no horizontal scroll at both widths.
+    // Responsive - the form reflows with no horizontal scroll at both widths.
     for (const [w, h, tag] of [
       [1280, 800, 'desktop'],
       [375, 812, 'mobile'],
@@ -523,18 +523,18 @@ async function seedEmbedError(request: APIRequestContext): Promise<EmbedSeed> {
 }
 
 /**
- * Detail enhancements (sprint-4/12 follow-up) — three additions on the log detail:
- *  ① Body capture — the Payloads tab shows the REAL request body (message text
+ * Detail enhancements (sprint-4/12 follow-up) - three additions on the log detail:
+ *  ① Body capture - the Payloads tab shows the REAL request body (message text
  *     visible, Authorization masked) + the response body (no "No payload captured").
- *  ② Workspace name + clickable — Overview "Workspace" shows the resolved NAME
+ *  ② Workspace name + clickable - Overview "Workspace" shows the resolved NAME
  *     ("General"), clickable to the workspace page; the trace id switches tabs.
- *  ③ Record-nav — ‹ N / M › prev/next pager navigates between neighbouring rows.
+ *  ③ Record-nav - ‹ N / M › prev/next pager navigates between neighbouring rows.
  *
  * Reuses `seedTracedSend` (a JSON gateway POST /messages → an inbound_api row
  * with a JSON body + a resolvable workspace). Real clicks for the flow.
  */
 test.describe('Developer Logs detail enhancements', () => {
-  // Serial: the three journeys share ONE read-only seed and each logs in — running
+  // Serial: the three journeys share ONE read-only seed and each logs in - running
   // them in parallel pumps the shared 127.0.0.1 login throttle + races the list
   // search. Serial keeps them deterministic (file-level isolation is unaffected).
   test.describe.configure({ mode: 'serial' });
@@ -566,10 +566,10 @@ test.describe('Developer Logs detail enhancements', () => {
     await openInboundDetail(page);
     await page.getByRole('tab', { name: /Payloads/i }).click();
 
-    // Request body — the message text is visible, the Authorization header masked.
+    // Request body - the message text is visible, the Authorization header masked.
     await expect(page.getByText('DLC E2E traced send')).toBeVisible();
     await expect(page.getByText('"authorization": "***"')).toBeVisible();
-    // Response body captured — no longer "No payload captured" for the JSON send.
+    // Response body captured - no longer "No payload captured" for the JSON send.
     await expect(page.getByText('"status": "queued"')).toBeVisible();
     const body = (await page.textContent('body')) ?? '';
     expect(body).not.toContain('No payload captured');
@@ -597,7 +597,7 @@ test.describe('Developer Logs detail enhancements', () => {
   test('③ record-nav: ‹ N / M › moves to a neighbouring row (375 + 1280)', async ({ page }) => {
     await openInboundDetail(page);
     // The detail id is the stable identity (the pushed nav URL drops the ?ctx
-    // record-nav query — compare by id, not the full URL).
+    // record-nav query - compare by id, not the full URL).
     const idOf = (u: string) => new URL(u).pathname.split('/').pop();
     const firstId = idOf(page.url());
 
@@ -651,7 +651,7 @@ test.describe('Developer Logs embed error (Slice 3)', () => {
     await expect(page.getByText('Embed').first()).toBeVisible();
     await expect(page.getByText('origin_not_allowed').first()).toBeVisible();
 
-    // Open the read-only detail — the error code is surfaced (data-testid pin).
+    // Open the read-only detail - the error code is surfaced (data-testid pin).
     await row.first().click();
     await expect(page).toHaveURL(/\/developers\/logs\/[\w-]+(\?|$)/);
     await expect(page.getByTestId('log-error-code')).toHaveText('origin_not_allowed');

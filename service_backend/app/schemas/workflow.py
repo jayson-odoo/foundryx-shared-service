@@ -1,9 +1,9 @@
-"""Workflow engine wire schemas (plan sprint-2/08) — camelCase out (mirror of
+"""Workflow engine wire schemas (plan sprint-2/08) - camelCase out (mirror of
 frontend ``types/workflows.ts``). Requests use camel field names directly."""
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.workflow import Workflow, WorkflowRun, WorkflowRunNode, WorkflowVersion
 from app.schemas.base import ApiModel
@@ -40,7 +40,7 @@ class WorkflowVersionSummaryOut(ApiModel):
             id=v.id,
             version_number=v.version_number,
             published_at=v.published_at,
-            published_by_name=published_by_name or "—",
+            published_by_name=published_by_name or "-",
             notes=v.notes,
         )
 
@@ -89,6 +89,10 @@ class WorkflowRunItemOut(ApiModel):
     finished_at: Optional[datetime] = Field(serialization_alias="finishedAt")
     duration_ms: Optional[int] = Field(serialization_alias="durationMs")
     version_number: int = Field(serialization_alias="versionNumber")
+    correlation_key: Optional[str] = Field(
+        default=None,
+        serialization_alias="correlationKey",
+    )
     error: Optional[str] = None
     created_at: datetime = Field(serialization_alias="createdAt")
 
@@ -99,11 +103,12 @@ class WorkflowRunItemOut(ApiModel):
             status=r.status,
             triggered_by=r.triggered_by,
             is_test=r.is_test,
-            actor_name=actor_name or "—",
+            actor_name=actor_name or "-",
             started_at=r.started_at,
             finished_at=r.finished_at,
             duration_ms=_duration_ms(r.started_at, r.finished_at),
             version_number=r.version_number,
+            correlation_key=r.correlation_key,
             error=r.error,
             created_at=r.created_at,
         )
@@ -160,7 +165,7 @@ class WorkflowDebugResultOut(ApiModel):
     nodes: List[WorkflowRunNodeOut]
 
 
-# ---- requests (camelCase field names — frontend sends these) ----
+# ---- requests (camelCase field names - frontend sends these) ----
 
 
 class WorkflowCreateRequest(BaseModel):
@@ -179,9 +184,23 @@ class WorkflowActiveRequest(BaseModel):
     isActive: bool
 
 
+class WorkflowTestTriggerRequest(BaseModel):
+    """Module-owned test data envelope.
+
+    Core validates the discriminant and preserves the remaining camelCase
+    fields; the selected trigger's registered callback owns their strict
+    schema and tenant-scoped resolution.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str = Field(min_length=1, max_length=120)
+
+
 class WorkflowRunRequest(BaseModel):
     inputs: Dict[str, Any] = Field(default_factory=dict)
     isTest: bool = False
+    testTrigger: Optional[WorkflowTestTriggerRequest] = None
 
 
 class WorkflowDebugRequest(BaseModel):

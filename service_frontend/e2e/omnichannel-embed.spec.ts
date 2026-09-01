@@ -7,12 +7,12 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 import { SignJWT } from 'jose';
 
 /**
- * Omnichannel embed host (sprint-4/11) E2E — AC-11H-21 + AC-11H-12..17.
+ * Omnichannel embed host (sprint-4/11) E2E - AC-11H-21 + AC-11H-12..17.
  *
  * A test harness POSES AS THE CONSUMER PARENT: it serves a real parent page that
  * mounts the chromeless `/embed/omnichannel/*` iframe, runs the postMessage
  * handshake (responds to `ready` with a validly-signed `init { assertion }`
- * targeted to — and origin-validated against — the shared-service origin), and
+ * targeted to - and origin-validated against - the shared-service origin), and
  * drives the reused conversation UI with REAL CLICKS via `frameLocator`.
  *
  * Setup (operator-side, allowed): a python helper seeds an `omnichannel_shared`
@@ -113,7 +113,7 @@ function parentHtml(mode: 'thread' | 'inbox', assertion: string, connectionId: s
   window.__activity = [];
   window.__resize = [];
   window.addEventListener('message', function (e) {
-    // Origin-validate BOTH directions (contract §5) — never accept '*'.
+    // Origin-validate BOTH directions (contract §5) - never accept '*'.
     if (e.origin !== SHARED) return;
     if (!FRAME.contentWindow || e.source !== FRAME.contentWindow) return;
     var d = e.data;
@@ -156,7 +156,7 @@ test.beforeAll(() => {
 });
 
 test.describe('Omnichannel embed host', () => {
-  // AC-11H-21 + AC-11H-12/13/16 — the embedded thread round-trip.
+  // AC-11H-21 + AC-11H-12/13/16 - the embedded thread round-trip.
   test('embedded thread: renders, replies (attributed to the external agent)', async ({
     page,
     request,
@@ -212,7 +212,7 @@ test.describe('Omnichannel embed host', () => {
     expect(mine!.senderId ?? null).toBeNull();
   });
 
-  // AC-11H-21 (read_only refusal) + AC-11H-11 — backend is the boundary.
+  // AC-11H-21 (read_only refusal) + AC-11H-11 - backend is the boundary.
   test('read_only token: reply is refused server-side, surfaced in the widget', async ({ page }) => {
     const assertion = await mintAssertion({
       scope: `thread:${seed.contactId}`,
@@ -231,7 +231,7 @@ test.describe('Omnichannel embed host', () => {
     await expect(frame.getByTestId('send-error')).toBeVisible({ timeout: 15_000 });
   });
 
-  // AC-11H-21 (wrong-origin) — the widget refuses an init whose assertion does
+  // AC-11H-21 (wrong-origin) - the widget refuses an init whose assertion does
   // not name the parent origin (no session exchange, no paint).
   test('wrong-origin assertion is rejected by the widget (no session)', async ({ page }) => {
     const assertion = await mintAssertion({
@@ -248,7 +248,7 @@ test.describe('Omnichannel embed host', () => {
     await expect(frame.getByTestId('composer')).toHaveCount(0);
   });
 
-  // AC-11H-15 — frame-ancestors clickjacking guard (server-emitted CSP).
+  // AC-11H-15 - frame-ancestors clickjacking guard (server-emitted CSP).
   test('embed route emits frame-ancestors from the connection allowedOrigins', async ({
     request,
   }) => {
@@ -267,7 +267,7 @@ test.describe('Omnichannel embed host', () => {
     expect(none.headers()['content-security-policy'] ?? '').toContain("frame-ancestors 'none'");
   });
 
-  // AC-11H-17 — responsive at 375 AND 1280 (thread + inbox), no h-scroll.
+  // AC-11H-17 - responsive at 375 AND 1280 (thread + inbox), no h-scroll.
   for (const width of [375, 1280]) {
     test(`thread embed reflows at ${width}px (no horizontal scroll)`, async ({ page }) => {
       await page.setViewportSize({ width, height: 800 });
@@ -304,7 +304,7 @@ function apiBase(): string {
 }
 
 /** Exchange a freshly-minted assertion directly at /embed/session (with the
- * required Origin header) for a scoped access token — the backend-truth path. */
+ * required Origin header) for a scoped access token - the backend-truth path. */
 async function exchange(
   request: APIRequestContext,
   opts: { scope: string; caps: string[]; name?: string; sub?: string },

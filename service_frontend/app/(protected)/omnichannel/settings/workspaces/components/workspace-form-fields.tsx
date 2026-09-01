@@ -70,7 +70,7 @@ export function SettingsTab({ form, editing, creating, workspace }: WorkspaceTab
             />
           ) : (
             <div className="flex items-center gap-2">
-              <span>{workspace?.name ?? '—'}</span>
+              <span>{workspace?.name ?? '-'}</span>
               {workspace?.isDefault && (
                 <Badge variant="secondary" appearance="light" size="sm">
                   Default
@@ -113,7 +113,7 @@ export function SettingsTab({ form, editing, creating, workspace }: WorkspaceTab
         </FormRow>
 
         {!creating && (
-          <FormRow label="Created">{workspace ? formatDate(workspace.createdAt) : '—'}</FormRow>
+          <FormRow label="Created">{workspace ? formatDate(workspace.createdAt) : '-'}</FormRow>
         )}
       </CardContent>
     </Card>
@@ -185,7 +185,7 @@ export function ChannelsTab({ workspaceId, creating }: { workspaceId: string | n
                     {c.name}
                   </span>
                 </span>
-                <span className="text-sm text-muted-foreground">{c.displayPhoneNumber ?? '—'}</span>
+                <span className="text-sm text-muted-foreground">{c.displayPhoneNumber ?? '-'}</span>
                 <StatusBadge status={c.status} registry={CHANNEL_STATUS_REGISTRY} />
               </Link>
             ))}
@@ -233,7 +233,7 @@ export function MembersTab({ workspaceId, creating }: { workspaceId: string | nu
           <Info className="size-8 text-muted-foreground" />
           <p className="text-sm font-medium">Add members after creating the workspace</p>
           <p className="text-sm text-muted-foreground">
-            Save this workspace first — you can then add members from this tab.
+            Save this workspace first - you can then add members from this tab.
           </p>
         </CardContent>
       </Card>
@@ -322,7 +322,7 @@ export function MembersTab({ workspaceId, creating }: { workspaceId: string | nu
                   <Initials name={m.name} email={m.email} />
                   <div className="flex flex-col">
                     <span className="text-sm font-medium text-foreground leading-tight transition-colors group-hover:text-primary">
-                      {m.name ?? '—'}
+                      {m.name ?? '-'}
                     </span>
                     <span className="text-xs text-muted-foreground">{m.email}</span>
                   </div>

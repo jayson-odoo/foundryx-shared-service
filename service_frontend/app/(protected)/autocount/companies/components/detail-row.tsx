@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 
 /**
  * One label/value row in the company Overview. Shared so the read-only identity
- * fields and the (edit-toggled) push-target fields render on the SAME grid — the
+ * fields and the (edit-toggled) push-target fields render on the SAME grid - the
  * push target is part of the one Resource form, not a bespoke card (AC-15-21).
  */
 export function DetailRow({ label, children }: { label: string; children: ReactNode }) {

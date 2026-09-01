@@ -5,7 +5,7 @@ Security rationale
 Tenant-authored expressions run inside the platform on user-supplied field data.
 We must NEVER use Python ``eval``/``exec``/``ast.literal_eval`` on expression
 strings, and NEVER pass them through Jinja2 or any general-purpose template
-engine — any of these paths would open an SSTI → RCE vector.
+engine - any of these paths would open an SSTI → RCE vector.
 
 Instead, we ship our own minimal recursive-descent parser for a deliberately
 tiny grammar:  numbers, field references, the four arithmetic operators
@@ -15,7 +15,7 @@ parser rejects the expression with ``ComputedExpressionError`` at parse time
 produces wrong output at runtime.
 
 At *evaluate* time the evaluator is fail-closed: a missing field, a None value,
-a non-numeric value, or a division by zero all produce ``None`` — never an
+a non-numeric value, or a division by zero all produce ``None`` - never an
 exception and never a crash in the calling request.
 
 Grammar (EBNF)
@@ -29,8 +29,8 @@ Grammar (EBNF)
 
 Hard caps
 ---------
-- ``MAX_EXPR_LEN``  = 1000 characters — reject longer strings at parse entry.
-- ``MAX_TOKENS``    = 100  — reject after tokenisation (DoS guard).
+- ``MAX_EXPR_LEN``  = 1000 characters - reject longer strings at parse entry.
+- ``MAX_TOKENS``    = 100  - reject after tokenisation (DoS guard).
 """
 from __future__ import annotations
 
@@ -57,9 +57,9 @@ _TK_EOF = "EOF"
 _UNICODE_MUL = "×"
 _UNICODE_DIV = "÷"
 
-# Compiled tokeniser pattern — order matters (longer matches first). IDENT may
+# Compiled tokeniser pattern - order matters (longer matches first). IDENT may
 # carry ONE dotted segment (`repeater.subKey`) so an aggregate argument is a
-# single token (sprint-3/02 follow-up — repeater column aggregates).
+# single token (sprint-3/02 follow-up - repeater column aggregates).
 _TOKEN_RE = re.compile(
     r"(?P<NUMBER>[0-9]+(?:\.[0-9]+)?)"
     r"|(?P<IDENT>[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)"
@@ -105,7 +105,7 @@ class ParsedExpression:
         Frozen set of field keys referenced by the expression.  Used at form
         publish time to validate that all refs point at real numeric fields.
     _ast:
-        Internal AST node — an implementation detail; callers should use
+        Internal AST node - an implementation detail; callers should use
         :func:`evaluate` rather than inspecting this directly.
     """
 
@@ -164,7 +164,7 @@ def _tokenise(source: str) -> List[_Token]:
     """Return a flat token list (whitespace skipped). Raises
     ``ComputedExpressionError`` on any illegal character, including ``**``
     (exponentiation is not part of our grammar and must be rejected explicitly
-    to prevent confusion with repeated ``*`` multiply — a common typo that
+    to prevent confusion with repeated ``*`` multiply - a common typo that
     should error loudly, not silently mis-parse)."""
     tokens: List[_Token] = []
     prev_star = False  # track consecutive '*' for the ** rejection
@@ -254,7 +254,7 @@ class _Parser:
     def parse(self) -> _ASTNode:
         node = self._expr()
         if self._peek().kind != _TK_EOF:
-            # There are unconsumed tokens — syntax error (e.g. "2 3").
+            # There are unconsumed tokens - syntax error (e.g. "2 3").
             leftover = self._peek().value
             raise ComputedExpressionError(
                 f"Unexpected token {leftover!r}: expression has trailing content."
@@ -262,7 +262,7 @@ class _Parser:
         return node
 
     def _expr(self) -> _ASTNode:
-        """expr = term (('+' | '-') term)*  — left-associative."""
+        """expr = term (('+' | '-') term)*  - left-associative."""
         node = self._term()
         while self._peek().kind in (_TK_PLUS, _TK_MINUS):
             op = self._advance().value
@@ -271,7 +271,7 @@ class _Parser:
         return node
 
     def _term(self) -> _ASTNode:
-        """term = unary (('*' | '/') unary)*  — left-associative."""
+        """term = unary (('*' | '/') unary)*  - left-associative."""
         node = self._unary()
         while self._peek().kind in (_TK_STAR, _TK_SLASH):
             op = self._advance().value
@@ -352,7 +352,7 @@ def _collect_refs(node: _ASTNode) -> Tuple[FrozenSet[str], Tuple[AggregateRef, .
             _walk(n.right)
         elif isinstance(n, _UnaryMinus):
             _walk(n.operand)
-        # _Num — no refs
+        # _Num - no refs
 
     _walk(node)
     return frozenset(refs), tuple(aggs)
@@ -390,7 +390,7 @@ def parse_expression(expr: str) -> ParsedExpression:
 
 def _coerce(value: object) -> Optional[float]:
     """Try to coerce *value* to float.  Returns ``None`` on failure (including
-    ``bool`` — booleans are not numeric in this domain)."""
+    ``bool`` - booleans are not numeric in this domain)."""
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -507,7 +507,7 @@ def evaluate(
         return _eval_node(parsed._ast, values)  # type: ignore[attr-defined]
     except ComputedExpressionError:
         return None  # a raw-str with a syntax error → None (fail closed)
-    except Exception:  # noqa: BLE001 — belt-and-suspenders, never raise
+    except Exception:  # noqa: BLE001 - belt-and-suspenders, never raise
         return None
 
 
@@ -516,7 +516,7 @@ def evaluate(
 
 def field_refs(expr: str) -> FrozenSet[str]:
     """Return the SCALAR field keys referenced in *expr* (not aggregate-over-
-    repeater refs — those are :func:`aggregate_refs`).
+    repeater refs - those are :func:`aggregate_refs`).
 
     Raises ``ComputedExpressionError`` on syntax errors (same as
     :func:`parse_expression`).  Useful for quick validation at save time.

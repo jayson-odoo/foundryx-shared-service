@@ -5,10 +5,10 @@ import type { NextRequest } from 'next/server';
  * frame-ancestors clickjacking guard for the chromeless omnichannel embed
  * routes (sprint-4/11 AC-11H-15). The consumer mounts the iframe with the
  * NON-secret connection id as `?c=<connectionId>` (the assertion itself is
- * NEVER in the URL — it arrives via the postMessage handshake). We resolve that
+ * NEVER in the URL - it arrives via the postMessage handshake). We resolve that
  * connection's `allowedOrigins` from the backend and emit
  * `Content-Security-Policy: frame-ancestors <origins>`. Unknown / absent
- * connection → `frame-ancestors 'none'` (fail closed — nothing may frame it).
+ * connection → `frame-ancestors 'none'` (fail closed - nothing may frame it).
  */
 const BACKEND =
   process.env.BACKEND_API_URL ??

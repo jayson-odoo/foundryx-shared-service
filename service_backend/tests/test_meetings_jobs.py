@@ -1,4 +1,4 @@
-"""Calendar-sync background job + beat fan-out — AC-S0-7 (the 60 s path), AC-S0-11.
+"""Calendar-sync background job + beat fan-out - AC-S0-7 (the 60 s path), AC-S0-11.
 
 The job rides the core ``background_jobs`` framework, so what is pinned here is
 the wiring: which tenants a tick picks up, what happens when a tenant has no
@@ -53,7 +53,7 @@ def _google_connection(session, tenant_id=DEFAULT_TENANT_ID):
 
 
 def test_the_handler_type_is_registered():
-    """AC-S0-11: an unregistered type makes ``JobService.create`` refuse — and
+    """AC-S0-11: an unregistered type makes ``JobService.create`` refuse - and
     would leave the beat tick silently creating nothing."""
     from app.jobs.registry import handler_for
     from modules.meetings.jobs import CALENDAR_SYNC

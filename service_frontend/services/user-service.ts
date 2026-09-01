@@ -1,5 +1,5 @@
 /**
- * User service — the boundary the UI talks to (via hooks). Phase A binds the
+ * User service - the boundary the UI talks to (via hooks). Phase A binds the
  * mock implementation; Phase B swaps `userService` to the real api-client impl
  * in ONE line (see bottom of this file). The interface IS the backend contract.
  */

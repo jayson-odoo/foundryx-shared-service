@@ -1,5 +1,5 @@
 /**
- * Integration service (plan 09; Resource-shell contract since plan 06 D6) —
+ * Integration service (plan 09; Resource-shell contract since plan 06 D6) -
  * the boundary the /settings/integrations surfaces talk to. Phase A binds the
  * MOCK; Phase B swaps `integrationService` to the real api-client impl in ONE
  * line (bottom).
@@ -7,7 +7,7 @@
  * The interface IS the backend contract: `/integrations/providers` +
  * `/integrations/connections[...]` (paginated list + `/at` + `/export`, like
  * every Resource entity), gated by `integrations.read/manage`. Credentials are
- * write-only — never echoed back by any call.
+ * write-only - never echoed back by any call.
  */
 import type {
   Connection,
@@ -32,15 +32,15 @@ export interface IntegrationService {
   ): Promise<{ connection: Connection | null; total: number }>;
   /** CSV export honoring the current query (GET …/export). */
   exportCsv(query: ListQuery, columns: string[], ids?: string[]): Promise<string>;
-  /** Create — status starts UNVERIFIED until a test passes. ONE active
-   *  connection per type per tenant (plan 06 D7) — a second storage
+  /** Create - status starts UNVERIFIED until a test passes. ONE active
+   *  connection per type per tenant (plan 06 D7) - a second storage
    *  connection 409s with "disconnect X first". */
   create(input: ConnectionInput): Promise<Connection>;
-  /** Update — omitted credential keys mean "keep existing secret". */
+  /** Update - omitted credential keys mean "keep existing secret". */
   update(id: string, input: Partial<ConnectionInput>): Promise<Connection>;
   /** Remove the connection (falls back to the platform default, plan 09 §5). */
   remove(id: string): Promise<void>;
-  /** Inline test — no `target` = the provider's standard check (SMTP:
+  /** Inline test - no `target` = the provider's standard check (SMTP:
    *  connect + authenticate; storage: HEAD bucket + probe round-trip, via the
    *  CDN URL when configured, plan 06 D3); with `target` = the provider's
    *  targeted test (SMTP: send a real email). Either way updates
@@ -51,5 +51,8 @@ export interface IntegrationService {
   activate(id: string): Promise<Connection>;
 }
 
-// Phase B swap done — mock retained in integration-service.mock.ts for tests.
+// Phase B swap done - mock retained in integration-service.mock.ts for tests.
+// The plan-22 `sql_database` provider now comes from the backend registry
+// (`modules/autocount/sql_provider.py`); the mock's descriptor is the parity
+// pin for its test only.
 export const integrationService: IntegrationService = realIntegrationService;

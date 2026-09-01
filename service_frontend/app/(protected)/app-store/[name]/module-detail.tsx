@@ -1,6 +1,6 @@
 'use client';
 
-/** App Store module detail/form view — read-only facts + the lifecycle actions
+/** App Store module detail/form view - read-only facts + the lifecycle actions
  * (install/deactivate/reactivate/update/uninstall) in the form "…" menu, same
  * registry as the list. Own-tenant only. */
 import { useCallback, useEffect, useMemo, useState } from 'react';

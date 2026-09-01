@@ -1,4 +1,4 @@
-"""The run executor (plan sprint-2/08 D1/D14/D16) — ONE topological walk.
+"""The run executor (plan sprint-2/08 D1/D14/D16) - ONE topological walk.
 
 ``run_workflow`` executes a persisted run's snapshot node-by-node, writing a
 ``WorkflowRunNode`` trace; a node failure halts the run (downstream skipped),
@@ -16,12 +16,14 @@ from app.models.workflow import (
     NODE_SKIPPED,
     NODE_SUCCESS,
     RUN_FAILED,
+    RUN_PENDING,
     RUN_RUNNING,
     RUN_SUCCESS,
+    Workflow,
     WorkflowRun,
     WorkflowRunNode,
 )
-from app.workflow_engine.context import build_initial_context, set_node_output
+from app.workflow_engine.context import build_initial_context, render_field, set_node_output
 from app.workflow_engine.registry import get_action
 from app.workflow_engine.schemas import (
     WorkflowNodeModel,
@@ -44,6 +46,8 @@ def _ctx_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         actor_id=actor.get("id", ""),
         inputs=payload.get("input") or {},
     )
+    workflow_test = payload.get("_workflowTest") or {}
+    ctx["_workflow.sandboxOnly"] = workflow_test.get("sandboxOnly") is True
     # Event-trigger context (slice 09): record fields, action, changes, statuses.
     for key, value in (payload.get("recordFacts") or {}).items():
         # `record.email` → `trigger.record.email` (the picker's namespace).
@@ -72,7 +76,63 @@ def _ctx_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         ctx["trigger.submissionId"] = payload["submissionId"]
     for key, value in (payload.get("answers") or {}).items():
         ctx[f"trigger.answers.{key}"] = value
+    # Omnichannel inbound-message context (sprint-4/17).
+    oc = payload.get("omnichannel")
+    if oc:
+        ctx["trigger.message.id"] = oc.get("messageId")
+        ctx["trigger.message.text"] = oc.get("messageText")
+        ctx["trigger.message.type"] = oc.get("messageType")
+        ctx["trigger.message.mediaUrl"] = oc.get("mediaUrl")
+        ctx["trigger.contact.id"] = oc.get("contactId")
+        ctx["trigger.contact.name"] = oc.get("contactName")
+        ctx["trigger.contact.phone"] = oc.get("contactPhone")
+        ctx["trigger.channel.id"] = oc.get("channelId")
+        ctx["trigger.channel.name"] = oc.get("channelName")
+        ctx["trigger.conversationId"] = oc.get("conversationId")
     return ctx
+
+
+def resolve_correlation_key(doc: Any, ctx: Dict[str, Any]) -> Optional[str]:
+    """Resolve the immutable definition's serialized key for this run.
+
+    S1 deliberately keeps this as a context seam; S2 can snapshot the result
+    on ``WorkflowRun`` when it adds keyed dispatch. Parallel definitions return
+    ``None`` and retain their existing behavior.
+    """
+    execution = getattr(doc, "execution", None)
+    if execution is None or execution.mode != "serialized":
+        return None
+    resolved = render_field(execution.correlationKey, ctx).strip()
+    if not resolved:
+        raise RuntimeError("Serialized execution requires a non-empty Correlation key.")
+    return resolved
+
+
+def _stateful_agent(node: WorkflowNodeModel) -> bool:
+    return node.type == "ai_agent.run" and any(
+        isinstance(row, dict) and row.get("stateful") is True
+        for row in (node.config.get("outputParams") or [])
+    )
+
+
+def _prepare_node_context(
+    ctx: Dict[str, Any],
+    run: WorkflowRun,
+    node: WorkflowNodeModel,
+    completed_stateful: set[str],
+    *,
+    force_agent_state_test: bool = False,
+) -> None:
+    ctx["_workflow.runId"] = run.id
+    ctx["_workflow.workflowId"] = run.workflow_id
+    ctx["_workflow.isTest"] = run.is_test is True
+    ctx["_workflow.nodeId"] = node.id
+    ctx["_workflow.reachableStatefulAgentIds"] = sorted(completed_stateful)
+    ctx["_workflow.agentStateNamespace"] = (
+        "test"
+        if force_agent_state_test or run.is_test is True or run.triggered_by == "manual"
+        else "prod"
+    )
 
 
 def _execute_node(
@@ -85,12 +145,32 @@ def _execute_node(
             "triggeredBy": ctx.get("trigger.triggeredBy", "manual"),
             **{k.split("trigger.input.")[1]: v for k, v in ctx.items() if k.startswith("trigger.input.")},
         }
+        # Event triggers expose the captured event in their trace, not only in
+        # the private flat executor context. This is identical for production
+        # and synthetic test events because both use the canonical envelope.
+        if "trigger.message.id" in ctx:
+            output["message"] = {
+                "id": ctx.get("trigger.message.id"),
+                "text": ctx.get("trigger.message.text"),
+                "type": ctx.get("trigger.message.type"),
+                "mediaUrl": ctx.get("trigger.message.mediaUrl"),
+            }
+            output["contact"] = {
+                "id": ctx.get("trigger.contact.id"),
+                "name": ctx.get("trigger.contact.name"),
+                "phone": ctx.get("trigger.contact.phone"),
+            }
+            output["channel"] = {
+                "id": ctx.get("trigger.channel.id"),
+                "name": ctx.get("trigger.channel.name"),
+            }
+            output["conversationId"] = ctx.get("trigger.conversationId")
         return output
     if node.kind == "if":
         from app.rule_engine.evaluator import evaluate
 
         # The condition tree's fact keys ARE the flat context's dotted keys
-        # (trigger.record.*, trigger.actor.*, nodes.<id>.*) — pass ctx straight.
+        # (trigger.record.*, trigger.actor.*, nodes.<id>.*) - pass ctx straight.
         passed = bool(evaluate(node.config.get("conditions"), ctx))
         output = {"passed": passed}
         set_node_output(ctx, node.id, output)
@@ -103,6 +183,39 @@ def _execute_node(
     return output
 
 
+def _node_input_json(node: WorkflowNodeModel, ctx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The node's stored trace input: its raw ``config`` PLUS a ``resolved``
+    map of every mergeable field rendered against the run context, so Logs can
+    show what was actually SENT (e.g. the message text), not just the template
+    (user request, plan sprint-4/19). Non-mergeable fields (ids, selects) are
+    never rendered - only substitution-only string fields are. Code nodes carry
+    their own ``runtime.input`` and declare no mergeable field, so this adds
+    nothing there."""
+    if node.kind == "trigger":
+        return None
+    base: Dict[str, Any] = {"config": node.config}
+    action = get_action(node.type)
+    if action is None:
+        return base
+    resolved: Dict[str, Any] = {}
+    config = node.config or {}
+    for fld in action.fields:
+        if not fld.mergeable:
+            continue
+        # Respect show_when: a hidden field is not part of this run's input.
+        if fld.show_when is not None and str(config.get(fld.show_when[0])) != str(fld.show_when[1]):
+            continue
+        raw = config.get(fld.key)
+        if isinstance(raw, str) and raw != "":
+            try:
+                resolved[fld.key] = render_field(raw, ctx)
+            except Exception:  # noqa: BLE001 - a TRACE render must never fail the node
+                continue
+    if resolved:
+        base["resolved"] = resolved
+    return base
+
+
 def run_workflow(db: Session, run_id: str) -> WorkflowRun:
     """Execute a persisted run end-to-end (the Celery task body, D1).
 
@@ -112,12 +225,42 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
     order-based). A node failure still halts the whole run (downstream skipped)."""
     from app.workflow_engine.entity_events import clear_run_origin, set_run_origin
 
-    run = db.query(WorkflowRun).filter(WorkflowRun.id == run_id).first()
+    run = (
+        db.query(WorkflowRun)
+        .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
+        .filter(
+            WorkflowRun.id == run_id,
+            WorkflowRun.tenant_id == Workflow.tenant_id,
+            WorkflowRun.status == RUN_PENDING,
+        )
+        # The claim is a status-guarded row lock: a duplicate wakeup finds no
+        # Pending row and returns. Overtake protection is NOT this lock - an
+        # action may commit mid-run and release it - it is the RUNNING row's
+        # heartbeat: the serialized drain refuses to advance past a fresh one
+        # (serialization._live_running_run_id) and the beat reaper fails a
+        # stale one.
+        .with_for_update()
+        .first()
+    )
     if run is None:
-        raise RuntimeError(f"Run {run_id} not found.")
+        existing = (
+            db.query(WorkflowRun)
+            .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
+            .filter(
+                WorkflowRun.id == run_id,
+                WorkflowRun.tenant_id == Workflow.tenant_id,
+            )
+            .first()
+        )
+        if existing is None:
+            raise RuntimeError(f"Run {run_id} not found.")
+        # Duplicate Celery delivery or wakeup. A terminal/running run is never
+        # executed again.
+        return existing
 
     run.status = RUN_RUNNING
     run.started_at = _now()
+    run.heartbeat_at = run.started_at
     db.flush()
 
     # Tag the session so action writes during this run carry the loop chain (D5).
@@ -125,6 +268,26 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
 
     doc = parse_definition(run.definition_snapshot_json)
     ctx = _ctx_from_payload(run.trigger_payload_json or {})
+    try:
+        correlation_key = run.correlation_key
+        if correlation_key is None:
+            # Compatibility for a legacy/manual row created before S2. All
+            # production creation paths snapshot before commit below.
+            correlation_key = resolve_correlation_key(doc, ctx)
+            if correlation_key is not None:
+                from app.workflow_engine.serialization import correlation_digest
+
+                run.correlation_key = correlation_key
+                run.correlation_key_digest = correlation_digest(correlation_key)
+    except RuntimeError as exc:
+        run.status = RUN_FAILED
+        run.error = str(exc)
+        run.finished_at = _now()
+        db.commit()
+        clear_run_origin(db)
+        return run
+    if correlation_key is not None:
+        ctx["_workflow.correlationKey"] = correlation_key
     ordered = topo_order(doc)
 
     out_edges: Dict[str, List] = {}
@@ -133,10 +296,17 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
 
     # The trigger (root) is always active; everything else must be reached.
     active = {n.id for n in ordered if n.kind == "trigger"}
+    # Structural set of stateful AI Agent node ids in the snapshot graph - the
+    # read-state node validates against this (order-independent, unlike the
+    # executed-this-pass reachableStatefulAgentIds the clear node uses).
+    stateful_agent_ids = sorted(n.id for n in doc.nodes if _stateful_agent(n))
+    ctx["_workflow.statefulAgentIds"] = stateful_agent_ids
 
     failed = False
+    completed_stateful: set[str] = set()
     try:
         for index, node in enumerate(ordered):
+            _prepare_node_context(ctx, run, node, completed_stateful)
             rn = WorkflowRunNode(
                 run_id=run.id, node_id=node.id, node_type=node.type, order_index=index
             )
@@ -146,7 +316,7 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
                 continue
             rn.started_at = _now()
             try:
-                rn.input_json = {"config": node.config} if node.kind != "trigger" else None
+                rn.input_json = _node_input_json(node, ctx)
                 output = _execute_node(db, run.tenant_id, node, ctx)
                 rn.output_json = output
                 rn.status = NODE_SUCCESS
@@ -159,9 +329,16 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
                 else:
                     for _port, target in out_edges.get(node.id, []):
                         active.add(target)
-            except Exception as exc:  # noqa: BLE001 — a node failure halts the run (D14)
+                if _stateful_agent(node):
+                    completed_stateful.add(node.id)
+            except Exception as exc:  # noqa: BLE001 - a node failure halts the run (D14)
                 rn.status = NODE_FAILED
                 rn.error = str(exc)
+                runtime = getattr(exc, "runtime", None)
+                if isinstance(runtime, dict):
+                    # Keep the bounded console/termination of a failed Code
+                    # node inspectable (AC-SAR-67) without marking it "produced".
+                    rn.input_json = {**(rn.input_json or {}), "runtime": runtime}
                 run.error = f"Node failed: {exc}"
                 failed = True
             rn.finished_at = _now()
@@ -186,14 +363,14 @@ def debug_execute(
 ) -> List[Dict[str, Any]]:
     """Staleness-aware partial re-run (D16, branch-aware since plan 10 D6).
 
-    Walks the snapshot like ``run_workflow`` — a node runs only if reached via a
+    Walks the snapshot like ``run_workflow`` - a node runs only if reached via a
     TAKEN edge (``active`` set; an IF activates only its true OR false branch).
     Within the taken path, a node re-executes when it is (a) directly stale (an
-    edited config — scratch edits are implicitly stale), (b) downstream of a node
-    that re-ran this pass (staleness PROPAGATES along taken edges — a fresh
+    edited config - scratch edits are implicitly stale), (b) downstream of a node
+    that re-ran this pass (staleness PROPAGATES along taken edges - a fresh
     upstream output invalidates every active descendant), (c) the target, or (d)
     never produced an output before. Otherwise its cached output is reused. Nodes
-    on the UNTAKEN branch (or unreached) are left untouched — their stale cache
+    on the UNTAKEN branch (or unreached) are left untouched - their stale cache
     never re-runs. Returns the touched nodes' results (ephemeral, not persisted).
     Real side effects fire (is_test); the caller commits."""
     doc = parse_definition(run.definition_snapshot_json)
@@ -203,11 +380,14 @@ def debug_execute(
     # Nodes that genuinely produced an output last run (skipped/failed = none).
     produced = {rn.node_id for rn in run.nodes if rn.output_json is not None}
     ctx = _ctx_from_payload(run.trigger_payload_json or {})
+    correlation_key = run.correlation_key or resolve_correlation_key(doc, ctx)
+    if correlation_key is not None:
+        ctx["_workflow.correlationKey"] = correlation_key
     ordered = topo_order(doc)
 
     # Apply scratch config edits to the working doc. The frontend sends the
     # CURRENT config of EVERY node as scratch, so a node is stale only when its
-    # scratch config actually DIFFERS from the snapshot — never blanket-stale
+    # scratch config actually DIFFERS from the snapshot - never blanket-stale
     # every node (that would defeat the cache and re-fire side effects for the
     # whole chain). A genuine edit makes the node stale; it then propagates
     # downstream via ``recomputed``.
@@ -225,18 +405,23 @@ def debug_execute(
         out_edges.setdefault(e.source, []).append((e.sourcePort or "out", e.target))
 
     active = {n.id for n in ordered if n.kind == "trigger"}
+    ctx["_workflow.statefulAgentIds"] = sorted(n.id for n in doc.nodes if _stateful_agent(n))
     taken_pred: Dict[str, List[str]] = {}  # node → predecessors reached via a taken edge
     recomputed: set = set()  # nodes whose output changed this pass
 
     touched: List[Dict[str, Any]] = []
+    completed_stateful: set[str] = set()
     for node in ordered:
+        _prepare_node_context(
+            ctx, run, node, completed_stateful, force_agent_state_test=True
+        )
         is_target = node.id == target_node_id
         reached = node.id in active
         if not reached and not is_target:
-            # Untaken branch / unreached and not the explicit target — leave it.
+            # Untaken branch / unreached and not the explicit target - leave it.
             continue
         upstream_dirty = any(p in recomputed for p in taken_pred.get(node.id, []))
-        # The explicit target ALWAYS runs (n8n "execute this node" — even when
+        # The explicit target ALWAYS runs (n8n "execute this node" - even when
         # it sits on the currently-untaken branch); otherwise re-run only on a
         # genuine stale/dirty/never-produced reason and reuse the cache.
         must_run = (
@@ -246,7 +431,25 @@ def debug_execute(
             or node.id not in produced
         )
         if must_run:
-            output = _execute_node(db, run.tenant_id, node, ctx)
+            try:
+                output = _execute_node(db, run.tenant_id, node, ctx)
+            except Exception as exc:  # noqa: BLE001 - mirror run_workflow: a node
+                # failure halts the pass here (D14), never a 500 (AC-ASR-11).
+                runtime = getattr(exc, "runtime", None)
+                input_json = _node_input_json(node, ctx)
+                if isinstance(runtime, dict):
+                    input_json = {**(input_json or {}), "runtime": runtime}
+                touched.append(
+                    {
+                        "nodeId": node.id,
+                        "nodeType": node.type,
+                        "status": NODE_FAILED,
+                        "inputJson": input_json,
+                        "outputJson": None,
+                        "error": str(exc),
+                    }
+                )
+                break
             cache[node.id] = output
             recomputed.add(node.id)
             touched.append(
@@ -254,19 +457,21 @@ def debug_execute(
                     "nodeId": node.id,
                     "nodeType": node.type,
                     "status": NODE_SUCCESS,
-                    "inputJson": {"config": node.config} if node.kind != "trigger" else None,
+                    "inputJson": _node_input_json(node, ctx),
                     "outputJson": output,
                     "error": None,
                 }
             )
         else:
-            # Reuse the cached output — re-hydrate the context from it.
+            # Reuse the cached output - re-hydrate the context from it.
             output = cache[node.id]
             set_node_output(ctx, node.id, output)
+        if reached and _stateful_agent(node):
+            completed_stateful.add(node.id)
         if is_target:
             break
         # Activate the taken downstream edges (branch-aware, like run_workflow).
-        # Only a node actually REACHED via a taken edge propagates activation —
+        # Only a node actually REACHED via a taken edge propagates activation -
         # a forced off-path target never fabricates a downstream walk.
         if reached:
             if node.kind == "if":

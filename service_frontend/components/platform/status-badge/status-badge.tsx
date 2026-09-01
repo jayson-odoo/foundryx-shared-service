@@ -12,7 +12,7 @@ export type StatusTone = 'success' | 'warning' | 'info' | 'destructive' | 'secon
 export interface StatusMeta {
   label: string;
   tone: StatusTone;
-  /** Exact dot color (engine-picked hex) — overrides the tone's dot color. */
+  /** Exact dot color (engine-picked hex) - overrides the tone's dot color. */
   hex?: string;
 }
 

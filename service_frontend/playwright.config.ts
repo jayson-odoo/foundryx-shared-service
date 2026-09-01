@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * E2E config — runs against the live stack (Next dev + FastAPI :8001).
+ * E2E config - runs against the live stack (Next dev + FastAPI :8001).
  * Backend must be up and seeded (`python -m scripts.init_db`).
  */
 export default defineConfig({

@@ -88,7 +88,7 @@ function I18nProvider({ children }: I18nProviderProps) {
 
   // STABLE tree: children always render under the SAME <I18nextProvider> ·
   // <RadixDirectionProvider> chain, so `isI18nInitialized` flipping only updates
-  // the `dir` prop — it does NOT add/remove a wrapper, which would unmount +
+  // the `dir` prop - it does NOT add/remove a wrapper, which would unmount +
   // REMOUNT the whole subtree (the omnichannel embed shell posted `ready` twice
   // and burned a single-use assertion because of exactly that remount). i18next
   // tolerates being rendered before init (keys fall back until ready).

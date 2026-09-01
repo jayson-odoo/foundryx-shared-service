@@ -20,8 +20,8 @@ export interface SkillVersionsTabProps {
 }
 
 /**
- * Immutable version history. Rollback is a LABEL MOVE — no content copy, no
- * delete — so the list never loses an entry when you roll back.
+ * Immutable version history. Rollback is a LABEL MOVE - no content copy, no
+ * delete - so the list never loses an entry when you roll back.
  */
 export function SkillVersionsTab({ skillId, reloadToken, onRolledBack }: SkillVersionsTabProps) {
   const [versions, setVersions] = useState<AiSkillVersion[]>([]);
@@ -56,7 +56,7 @@ export function SkillVersionsTab({ skillId, reloadToken, onRolledBack }: SkillVe
     setBusyId(versionId);
     try {
       await aiService.rollbackSkill(skillId, versionId);
-      toast.success('Rolled back — this version is now active.');
+      toast.success('Rolled back - this version is now active.');
       onRolledBack();
       load();
     } catch (e) {
@@ -95,7 +95,7 @@ export function SkillVersionsTab({ skillId, reloadToken, onRolledBack }: SkillVe
                   </Badge>
                 )}
                 <span className="text-xs text-muted-foreground">
-                  {version.createdAt ? formatDateTime(version.createdAt) : '—'}
+                  {version.createdAt ? formatDateTime(version.createdAt) : '-'}
                   {version.createdByName ? ` · ${version.createdByName}` : ''}
                 </span>
               </div>

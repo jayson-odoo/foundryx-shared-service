@@ -1,5 +1,5 @@
 /**
- * FormRenderer (plan sprint-3/01, D6/D7/D14/D18) — per-type render + inline
+ * FormRenderer (plan sprint-3/01, D6/D7/D14/D18) - per-type render + inline
  * validation messages, live conditional show/hide, live computed update, paged
  * Next-blocking, submit returning only visible answers, read-mode value
  * rendering, signature canvas mount + clear, and server-error page jump.
@@ -11,7 +11,7 @@ import { FormRenderer } from './form-renderer';
 import type { FormAnswers, FormDocument, FormField } from '@/types/forms';
 import { FORM_SCHEMA_VERSION } from '@/types/forms';
 
-// jsdom has no canvas — stub getContext so the SignaturePad mounts/clears.
+// jsdom has no canvas - stub getContext so the SignaturePad mounts/clears.
 beforeAll(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (HTMLCanvasElement.prototype as any).getContext = vi.fn(() => ({
@@ -147,7 +147,7 @@ describe('paged wizard', () => {
 
   it('advances once the page is valid', () => {
     render(<Harness definition={def} paged />);
-    // Required label includes the aria-hidden "*" marker — match by id.
+    // Required label includes the aria-hidden "*" marker - match by id.
     fireEvent.change(document.getElementById('ff-a')!, { target: { value: 'x' } });
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     expect(screen.getByLabelText('B')).toBeInTheDocument();
@@ -298,7 +298,7 @@ describe('flat mode (AC-BI-29c)', () => {
     expect(screen.queryByText('Business Requirement')).not.toBeInTheDocument();
     expect(screen.queryByText('Requirement')).not.toBeInTheDocument();
     expect(screen.queryByText('Fill this in')).not.toBeInTheDocument();
-    // The field label + value still render — only the structural chrome is gone.
+    // The field label + value still render - only the structural chrome is gone.
     expect(screen.getByText('Problem statement')).toBeInTheDocument();
     expect(screen.getByText('Exports break')).toBeInTheDocument();
   });

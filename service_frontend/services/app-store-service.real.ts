@@ -1,5 +1,5 @@
 /**
- * Real App Store service (Phase B) — talks to FastAPI via the shared
+ * Real App Store service (Phase B) - talks to FastAPI via the shared
  * api-client. Backend returns camelCase matching the app-store types, so no
  * field remapping. Bound in one line from app-store-service.ts when the
  * backend lands (plan 08 §7 endpoints).
@@ -13,7 +13,7 @@ export const realAppStoreService: AppStoreService = {
     return apiFetch<StoreModule[]>('/app-store/modules');
   },
   installed() {
-    // Menu gating only — perm-free /me/modules (NOT /app-store/installed, which
+    // Menu gating only - perm-free /me/modules (NOT /app-store/installed, which
     // needs app_store.read). Decouples seeing a module's sidebar item from
     // holding App Store read. Same shape; store/console use catalog() instead.
     return apiFetch<InstalledModule[]>('/me/modules');

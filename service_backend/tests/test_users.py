@@ -1,4 +1,4 @@
-"""User management endpoint tests — list/sort/search/filter/paginate + CRUD,
+"""User management endpoint tests - list/sort/search/filter/paginate + CRUD,
 trash/restore, invite + set-password, roles, preferences, export.
 """
 import json
@@ -156,7 +156,7 @@ def test_invited_status_not_overwritten_by_update(client):
     res = client.patch(
         f"/users/{created['id']}", headers=_auth(client), json={"status": "ACTIVE"}
     )
-    # INVITED is system-managed — a profile save must not flip it.
+    # INVITED is system-managed - a profile save must not flip it.
     assert res.json()["status"] == "INVITED"
 
 

@@ -36,7 +36,7 @@ describe('app-store mock service (lifecycle contract)', () => {
 
   it('deactivate keeps the row (data kept) and reactivate restores it', async () => {
     expect((await svc.act('omnichannel', 'deactivate')).status).toBe('INACTIVE');
-    // Still listed in installed() — INACTIVE, not gone.
+    // Still listed in installed() - INACTIVE, not gone.
     expect(await svc.installed()).toContainEqual({
       module: 'omnichannel',
       status: 'INACTIVE',

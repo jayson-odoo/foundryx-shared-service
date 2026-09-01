@@ -11,7 +11,7 @@ export interface RequirePermissionProps {
 
 /**
  * Route-level gate: renders the friendly NoPermission page when the user lacks
- * `permission`, otherwise the children. Backend still enforces — this just keeps
+ * `permission`, otherwise the children. Backend still enforces - this just keeps
  * the user out of a page that would 403 (plan 03 §3.4).
  */
 export function RequirePermission({ permission, children }: RequirePermissionProps) {

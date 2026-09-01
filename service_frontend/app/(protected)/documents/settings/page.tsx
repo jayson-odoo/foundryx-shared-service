@@ -21,9 +21,9 @@ import { documentService } from '@/services/document-service';
 import type { DocumentSettings, PublicSharingPolicy } from '@/types/documents';
 
 const SHARING_OPTIONS = [
-  { value: 'off', label: 'Off — no public links' },
-  { value: 'view', label: 'View only — public links can download' },
-  { value: 'edit', label: 'Edit — public links can also upload' },
+  { value: 'off', label: 'Off - no public links' },
+  { value: 'view', label: 'View only - public links can download' },
+  { value: 'edit', label: 'Edit - public links can also upload' },
 ];
 
 export default function DocumentSettingsPage() {

@@ -1,28 +1,28 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Sprint-3/03 (F2) slice 1 — document / PDF render, live stack.
+ * Sprint-3/03 (F2) slice 1 - document / PDF render, live stack.
  *
  * Preconditions (stack already up; this spec starts NOTHING):
- *   - backend :8001 on the f2-render branch, migrated + seeded — a platform-tier
+ *   - backend :8001 on the f2-render branch, migrated + seeded - a platform-tier
  *     DOCUMENT template named "Invoice" (key `document.invoice`, context
  *     `document.invoice_preview`) is present.
  *   - frontend prod build served on :3001 (same worktree).
  *
  * Demo login `demo@example.com` / `demo1234` on the bare host = the `default`
- * tenant. This spec only VIEWS the seeded Invoice — no provisioning / no shared
+ * tenant. This spec only VIEWS the seeded Invoice - no provisioning / no shared
  * state mutated, so it is parallel-safe.
  *
  * Journeys:
  *   1. Design → Preview → the in-app HTML sheet renders (the sandboxed iframe
  *      receives the compiled document HTML and shows real invoice content).
  *   2. Download PDF → a `.pdf` download starts.
- *   3. Responsive — the preview pane renders without horizontal overflow at
+ *   3. Responsive - the preview pane renders without horizontal overflow at
  *      375px AND 1280px (CLAUDE.md both-sizes mandate).
  *
  * NOTE: the preview iframe is rendered via `srcDoc` inside a `sandbox=""` frame
  * (our own renderer, not the browser PDF viewer; the same fully-sandboxed
- * pattern as the email preview pane) — so we assert on the populated `srcdoc`
+ * pattern as the email preview pane) - so we assert on the populated `srcdoc`
  * HTML sheet + its rendered content, not a `blob:` `src`.
  */
 
@@ -93,7 +93,7 @@ async function openPreview(page: Page) {
 
 test.describe.configure({ timeout: 120_000 });
 
-test.describe('F2 slice 1 — document / PDF render (live stack)', () => {
+test.describe('F2 slice 1 - document / PDF render (live stack)', () => {
   test('Design → Preview renders the in-app HTML sheet', async ({ page }) => {
     await login(page);
     await gotoTemplatesByClick(page);

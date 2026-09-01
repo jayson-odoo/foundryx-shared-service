@@ -1,4 +1,4 @@
-"""App Store tests (plan 08) — catalog, per-tenant lifecycle, require_module
+"""App Store tests (plan 08) - catalog, per-tenant lifecycle, require_module
 gating, Admin-grant model, per-tenant data wipe, operator endpoints."""
 from tests.conftest import (
     ACTIVE_EMAIL,
@@ -181,7 +181,7 @@ def test_uninstall_wipes_only_that_tenant(client, session_factory):
     )
     assert res.status_code == 200, res.text
 
-    # Default tenant: gone — catalog shows not-installed, routes 403, perms revoked.
+    # Default tenant: gone - catalog shows not-installed, routes 403, perms revoked.
     assert _module(client, dh)["status"] is None
     assert client.get("/omnichannel/workspaces", headers=dh).status_code == 403
     me = _login(client, ACTIVE_EMAIL, ACTIVE_PASSWORD).json()["user"]

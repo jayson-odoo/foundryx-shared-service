@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from ..models import OmnichannelSettings
 from .media_pipeline import ACCEPTED_MIMES, META_CEILINGS
 
-# Column suffix per media kind (image/video/audio/voice map — voice shares audio).
+# Column suffix per media kind (image/video/audio/voice map - voice shares audio).
 _COL_FOR_KIND = {
     "IMAGE": "image_max_bytes",
     "VIDEO": "video_max_bytes",

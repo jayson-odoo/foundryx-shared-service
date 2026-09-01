@@ -1,6 +1,6 @@
-"""Ideation — generic grill engine (Phase B-i slice 3, AC-BI-20..29 + 20b/24b).
+"""Ideation - generic grill engine (Phase B-i slice 3, AC-BI-20..29 + 20b/24b).
 
-Two layers, both OFFLINE via the deterministic stub (AC-BI-12) — zero key, zero
+Two layers, both OFFLINE via the deterministic stub (AC-BI-12) - zero key, zero
 network:
 
 - **Engine-level** (a synthetic ``GrillDefinition``): the turn's ONE structured
@@ -70,7 +70,7 @@ def _auth(client, email=ACTIVE_EMAIL, password=ACTIVE_PASSWORD) -> dict:
 
 def _make_llm_connection(db, *, tenant_id=DEFAULT_TENANT_ID):
     """A dev-cred LLM connection: readiness passes (a connection exists) and the
-    stub answers (AC-BI-12) — no key, no network."""
+    stub answers (AC-BI-12) - no key, no network."""
     conn = Connection(
         tenant_id=tenant_id,
         provider="gemini",
@@ -248,7 +248,7 @@ def test_generate_persists_answers_via_the_definition(engine_fixture):
 def test_generate_requests_a_required_extraction_schema(engine_fixture, monkeypatch):
     """AC-BI-24c (FIX 1): the EXTRACTION call marks EVERY target key required so a
     (thinking-off) shallow pass can't silently omit a synthesized field. Asserted
-    at the request level — the schema Generate builds carries required=[all keys]."""
+    at the request level - the schema Generate builds carries required=[all keys]."""
     import app.ai.grill as grill_mod
 
     captured: dict = {}
@@ -271,7 +271,7 @@ def test_generate_requests_a_required_extraction_schema(engine_fixture, monkeypa
 
 def test_generate_completeness_emits_all_fields(engine_fixture):
     """AC-BI-24c: when the model returns a value for every field (the completeness
-    directive's goal), ALL of them persist — none silently dropped."""
+    directive's goal), ALL of them persist - none silently dropped."""
     db, definition, sink = engine_fixture
     actor = _demo_user(db)
     with stub_fixtures(
@@ -305,7 +305,7 @@ def test_turn_returns_captured_summary_and_generate_signal(engine_fixture):
 
 def test_captured_summary_persists_and_state_returns_it(engine_fixture):
     """AC-BI-24c: the summary is persisted on the assistant turn and the state read
-    returns the LATEST turn's summary (durable draft — survives a reload)."""
+    returns the LATEST turn's summary (durable draft - survives a reload)."""
     db, definition, _ = engine_fixture
     actor = _demo_user(db)
     with stub_fixtures(
@@ -334,7 +334,7 @@ def test_captured_summary_persists_and_state_returns_it(engine_fixture):
 
 
 def test_captured_summary_and_coverage_accumulate_across_turns(engine_fixture):
-    """AC-BI-29c (BUG fix): successive turns ACCUMULATE — a field captured on an
+    """AC-BI-29c (BUG fix): successive turns ACCUMULATE - a field captured on an
     earlier turn is NEVER lost when a LATER turn reports a DIFFERENT field. Turn A
     grounds ``summary``; turn B reports only ``priority`` (omitting summary); the
     merged state carries BOTH (no "2 of 6" → "1 of 6" regression). The merge is
@@ -356,7 +356,7 @@ def test_captured_summary_and_coverage_accumulate_across_turns(engine_fixture):
     assert a.covered_fields == ["summary"]
     assert a.captured_summary == {"summary": "Speed up exports"}
 
-    # Turn B: reports ONLY priority — must NOT drop the earlier summary.
+    # Turn B: reports ONLY priority - must NOT drop the earlier summary.
     with stub_fixtures(
         StubResponse(
             structured={
@@ -372,7 +372,7 @@ def test_captured_summary_and_coverage_accumulate_across_turns(engine_fixture):
     assert set(b.covered_fields) == {"summary", "priority"}
     assert b.captured_summary == {"summary": "Speed up exports", "priority": "high"}
 
-    # A fresh state read (a page reload) is ALSO cumulative — not the last turn's.
+    # A fresh state read (a page reload) is ALSO cumulative - not the last turn's.
     state = GrillEngine(db).state(definition, DEFAULT_TENANT_ID, "br-acc")
     assert set(state.covered_fields) == {"summary", "priority"}
     assert state.captured_summary == {"summary": "Speed up exports", "priority": "high"}
@@ -380,7 +380,7 @@ def test_captured_summary_and_coverage_accumulate_across_turns(engine_fixture):
 
 def test_captured_summary_latest_value_wins_on_revision(engine_fixture):
     """AC-BI-29c: when a later turn REVISES a field the newest value wins (the
-    merge is not additive-only) — coverage stays monotonic."""
+    merge is not additive-only) - coverage stays monotonic."""
     db, definition, _ = engine_fixture
     actor = _demo_user(db)
     with stub_fixtures(
@@ -430,7 +430,7 @@ def test_turn_schema_carries_summary_and_signal(engine_fixture):
     )
     schema = _turn_schema(ctx)
     assert "capturedSummary" in schema["properties"]
-    # An enum-keyed ARRAY of {key,value} — NOT a nested object (which runs Gemini
+    # An enum-keyed ARRAY of {key,value} - NOT a nested object (which runs Gemini
     # away to MAX_TOKENS, the S3 runaway class; live-verified).
     summary = schema["properties"]["capturedSummary"]
     assert summary["type"] == "array"
@@ -446,7 +446,7 @@ def test_turn_schema_carries_summary_and_signal(engine_fixture):
 
 
 def test_partial_extraction_leaves_missing_required_blank_no_422(engine_fixture):
-    """A partial extraction (summary REQUIRED but omitted) is SUCCESS — the field
+    """A partial extraction (summary REQUIRED but omitted) is SUCCESS - the field
     is left blank, nothing 422s (AC-BI-26/24b)."""
     db, definition, sink = engine_fixture
     actor = _demo_user(db)
@@ -494,7 +494,7 @@ def test_validation_failure_twice_surfaces_field_errors(engine_fixture):
 
 
 def test_open_produces_assistant_message_on_empty_transcript(engine_fixture):
-    """AC-BI-29b: open() yields the FIRST assistant message with NO user message —
+    """AC-BI-29b: open() yields the FIRST assistant message with NO user message -
     the transcript starts with a single assistant greeting."""
     db, definition, _ = engine_fixture
     actor = _demo_user(db)
@@ -520,7 +520,7 @@ def test_open_produces_assistant_message_on_empty_transcript(engine_fixture):
         .order_by(AiMessage.created_at.asc())
         .all()
     )
-    # ONLY the assistant greeting — no synthetic user turn is persisted.
+    # ONLY the assistant greeting - no synthetic user turn is persisted.
     assert [m.role for m in msgs] == [ROLE_ASSISTANT]
     assert msgs[0].covered_fields_json == ["summary"]
 
@@ -535,7 +535,7 @@ def test_open_is_idempotent_no_second_llm_call(engine_fixture):
         StubResponse(structured={"replyText": "First question?", "coveredFields": []})
     ):
         first = GrillEngine(db).open(definition, DEFAULT_TENANT_ID, "br-idem", actor)
-    # No stub queued for the second call — if open() called the model it would
+    # No stub queued for the second call - if open() called the model it would
     # raise (empty queue); idempotency means it doesn't.
     second = GrillEngine(db).open(definition, DEFAULT_TENANT_ID, "br-idem", actor)
     assert second.reply_text == first.reply_text
@@ -561,7 +561,7 @@ def test_open_error_writes_error_trace(engine_fixture):
 
 def test_failed_completion_still_writes_an_error_trace(engine_fixture):
     """Decision 1 / AC-BI-24b: an LLMError commits the flushed trace inside the
-    except, then surfaces GrillError — the error trace MUST survive."""
+    except, then surfaces GrillError - the error trace MUST survive."""
     db, definition, _ = engine_fixture
     with stub_fixtures(StubResponse(error="provider exploded")):
         with pytest.raises(GrillError):
@@ -628,7 +628,7 @@ def test_grill_state_warns_when_no_connection(ideation_client):
 # The stub queue is thread-local; Starlette's TestClient runs the endpoint on a
 # DIFFERENT thread, so stub-scripted turns/extractions are driven against the
 # REAL registered ``idea_to_br`` definition on a same-thread factory session
-# (the route's HTTP wiring — readiness/scoping/perms — is covered above). This is
+# (the route's HTTP wiring - readiness/scoping/perms - is covered above). This is
 # the real ideation resolver + persist path, only the transport layer differs.
 
 
@@ -686,7 +686,7 @@ def test_turn_endpoint_persists_and_returns_coverage(ideation_client):
 
 
 def test_generate_persists_answers_and_br_stays_draft(ideation_client):
-    """Generate writes answers_json but NEVER promotes — the BR stays draft
+    """Generate writes answers_json but NEVER promotes - the BR stays draft
     (AC-BI-27). No non-human path reaches ready."""
     _seed_connection(ideation_client)
     h = _auth(ideation_client)
@@ -724,7 +724,7 @@ def test_generate_persists_answers_and_br_stays_draft(ideation_client):
 
 def test_generate_partial_extraction_persists_and_stays_draft(ideation_client):
     """A partial extraction (missing success_metric) persists the grounded fields,
-    leaves the rest blank, and succeeds — no 422 (AC-BI-26)."""
+    leaves the rest blank, and succeeds - no 422 (AC-BI-26)."""
     _seed_connection(ideation_client)
     h = _auth(ideation_client)
     pid = _product(ideation_client, h)
@@ -779,8 +779,8 @@ def test_turn_error_surfaces_502_and_writes_error_trace(ideation_client):
 
 
 def test_source_context_includes_all_idea_fields(ideation_client):
-    """AC-BI-32b: the grill's source artifacts are grounded in the FULL idea —
-    problem, proposed_solution, impact, department AND the raw captured text — not
+    """AC-BI-32b: the grill's source artifacts are grounded in the FULL idea -
+    problem, proposed_solution, impact, department AND the raw captured text - not
     just the problem headline."""
     from modules.ideation.services.grill import resolve_idea_to_br_context
 

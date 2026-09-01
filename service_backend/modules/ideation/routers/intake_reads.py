@@ -1,9 +1,9 @@
-"""Intake read router (public, workspace-key authed) — read-only lookups the
+"""Intake read router (public, workspace-key authed) - read-only lookups the
 integration/brain side needs to *configure* intake, kept separate from the intake
 write path (``routers/intake.py``) so the two evolve independently.
 
 **Public** because it is authenticated by a workspace/integration key, not a user
-session — the tenant is derived from the key via ``get_api_workspace`` (same
+session - the tenant is derived from the key via ``get_api_workspace`` (same
 mechanism as ``create-idea``). Read-only + simple.
 
 ``GET /ideation/intake/products`` lists the key's tenant's ELIGIBLE ideation
@@ -28,7 +28,7 @@ def list_intake_products(
     """List the tenant's eligible ideation products (``kind == 'software'``).
 
     Returns ``[{id, name, kind}]`` ordered by name. Tenant is derived from the
-    workspace key — never from the request — so a key can only ever see its own
+    workspace key - never from the request - so a key can only ever see its own
     tenant's catalog."""
     rows = (
         db.query(Product)

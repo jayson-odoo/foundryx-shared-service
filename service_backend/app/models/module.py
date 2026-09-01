@@ -1,11 +1,11 @@
-"""App Store models (plan 08) — global module catalog + per-tenant install state.
+"""App Store models (plan 08) - global module catalog + per-tenant install state.
 
 ``modules`` is the global catalog, synced from on-disk ``manifest.json`` files at
 bootstrap (same pattern as the permission CSV sync). ``tenant_modules`` is the
 per-tenant lifecycle row: INSTALL → ACTIVE; DEACTIVATE → INACTIVE (data kept);
 UNINSTALL → row deleted after the tenant's module data is wiped.
 
-Code is global — ``modules.version`` is what's deployed; ``installed_version``
+Code is global - ``modules.version`` is what's deployed; ``installed_version``
 is what the tenant's DATA is provisioned at and gates features (D3/D4: version
 gating, never per-tenant code).
 """
@@ -19,7 +19,7 @@ from app.models.utc_datetime import UTCDateTime
 
 from app.database import Base
 
-# Per-tenant install statuses — code branches only on these.
+# Per-tenant install statuses - code branches only on these.
 MODULE_STATUS_ACTIVE = "ACTIVE"
 MODULE_STATUS_INACTIVE = "INACTIVE"
 
@@ -37,9 +37,9 @@ class Module(Base):
     __tablename__ = "modules"
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    # manifest `module_name` — the API identity.
+    # manifest `module_name` - the API identity.
     name = Column(String, nullable=False, unique=True, index=True)
-    # Current CODE version (manifest) — global for every tenant.
+    # Current CODE version (manifest) - global for every tenant.
     version = Column(String, nullable=False)
     title = Column(String, nullable=False)
     description = Column(Text, nullable=False, default="")
@@ -64,7 +64,7 @@ class TenantModule(Base):
     tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
     module_id = Column(String, ForeignKey("modules.id"), nullable=False)
     status = Column(String, nullable=False, default=MODULE_STATUS_ACTIVE)
-    # What this tenant is provisioned at — gates features (D4).
+    # What this tenant is provisioned at - gates features (D4).
     installed_version = Column(String, nullable=False)
 
     installed_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)

@@ -9,8 +9,8 @@ PDF page (N sides → N pages).
 Revised away from a separate SVG emitter (D13): SVG ``<text>`` has no auto-wrap.
 HTML abs-pos gives native CSS text wrapping + the SAME bundled ``@font-face`` +
 the SAME ``url_fetcher`` + the SAME WeasyPrint backend as the flowing-doc surface
-— one render stack, not two. mm positioning is exact in WeasyPrint; output is
-vector-crisp. The client Konva editor NEVER renders the artifact — this server
+- one render stack, not two. mm positioning is exact in WeasyPrint; output is
+vector-crisp. The client Konva editor NEVER renders the artifact - this server
 HTML is authoritative (Konva = interactive editor only).
 
 QR codes are generated server-side (segno → inline SVG); data comes from a
@@ -63,13 +63,13 @@ def _css_color(value: Optional[str], fallback: str = "#000000") -> str:
 
 
 def _font_family(name: str) -> str:
-    """Only emit a KNOWN bundled family (else fall back) — the name lands in a
+    """Only emit a KNOWN bundled family (else fall back) - the name lands in a
     CSS `font-family` and must not be arbitrary tenant text."""
     return name if name in FONT_NAMES else "Inter"
 
 
 def _num(value: float) -> str:
-    """Format a number for CSS — drop a trailing ``.0`` (5.0 → ``5``)."""
+    """Format a number for CSS - drop a trailing ``.0`` (5.0 → ``5``)."""
     if value == int(value):
         return str(int(value))
     return f"{value:g}"
@@ -79,7 +79,7 @@ def _num(value: float) -> str:
 
 def _element_box_style(el) -> str:
     """Absolute mm box + rotation around the element's TOP-LEFT (matches Konva's
-    default node rotation pivot at x,y — keeps editor↔render parity)."""
+    default node rotation pivot at x,y - keeps editor↔render parity)."""
     base = (
         f"position:absolute;left:{_num(el.x)}mm;top:{_num(el.y)}mm;"
         f"width:{_num(el.w)}mm;height:{_num(el.h)}mm;"
@@ -216,7 +216,7 @@ def _element_html(el, brand: BrandValues, facts: Dict[str, str], mode: str) -> s
 def _side_dims(doc: CanvasDocumentModel) -> "tuple[float, float]":
     # width/height are the authoritative physical page dimensions (the editor
     # positions elements against them directly). `orientation` is metadata only
-    # — never swap here, or the render disagrees with where elements were placed
+    # - never swap here, or the render disagrees with where elements were placed
     # whenever the chosen orientation contradicts the authored aspect ratio.
     return doc.canvas.width, doc.canvas.height
 
@@ -235,7 +235,7 @@ def compile_canvas_html(
     canvas (no margin) so each side is exactly one trimmed page; bundled
     ``@font-face``. ``for_browser=True`` → an in-app preview: each side a centred
     white sheet (Google-Fonts link), stacked. Same compiler/merge/brand output
-    — never byte-golden the PDF; golden THIS HTML.
+    - never byte-golden the PDF; golden THIS HTML.
     """
     w, h = _side_dims(doc)
 

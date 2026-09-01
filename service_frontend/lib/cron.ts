@@ -1,18 +1,18 @@
 /**
- * Structured cron helpers (plan sprint-2/09 D9) — the schedule trigger's
+ * Structured cron helpers (plan sprint-2/09 D9) - the schedule trigger's
  * builder compiles a frequency + sub-fields to a standard 5-field cron string,
  * and parses one back for editing. A raw-cron escape hatch bypasses this; an
  * unrecognised string drops the builder into raw mode (see `parseCron`).
  *
  * Pure + framework-free so it is unit-tested directly. `croniter` (backend)
- * owns the actual next-run computation — this is display/compile only.
+ * owns the actual next-run computation - this is display/compile only.
  */
 
 export type CronFrequency = 'minute' | 'hour' | 'day' | 'week' | 'month';
 
 export interface CronState {
   frequency: CronFrequency;
-  /** minute freq — every N minutes (1 = every minute). */
+  /** minute freq - every N minutes (1 = every minute). */
   interval: number;
   /** minute-of-hour (hour/day/week/month freqs). */
   minute: number;
@@ -20,7 +20,7 @@ export interface CronState {
   hour: number;
   /** 0=Sun … 6=Sat (week freq). */
   dayOfWeek: number;
-  /** 1–31 (month freq). */
+  /** 1-31 (month freq). */
   dayOfMonth: number;
 }
 

@@ -15,7 +15,7 @@ class PreferenceService:
         self.repo = PreferenceRepository(db)
 
     def save_profile(self, user: User, prefs: ProfilePreferences) -> ProfilePreferences:
-        """User-level display preferences (plan sprint-2/05) — currently just
+        """User-level display preferences (plan sprint-2/05) - currently just
         the timezone; schema-validated upstream (IANA or null)."""
         user.timezone = prefs.timezone
         self.db.commit()

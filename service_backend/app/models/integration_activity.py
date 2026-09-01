@@ -1,17 +1,17 @@
-"""Integration activity log (sprint-4/12, Developer Logs console) — core
+"""Integration activity log (sprint-4/12, Developer Logs console) - core
 ``public`` table. ONE generic, source-tagged row per integration interaction so
 a future consumable service (storage, LLM) writes to the SAME console via the
-generic ``ActivityLogService`` seam — not an omnichannel-scoped table.
+generic ``ActivityLogService`` seam - not an omnichannel-scoped table.
 
 Slice 1 writes the ``inbound_api`` source (public gateway request logging);
 ``outbound_meta`` / ``embed_session`` land in later slices, and
 ``webhook_delivery`` is merged READ-ONLY from ``webhook_deliveries`` (its own
-source of truth) — the enum value exists so the console treats every leg
+source of truth) - the enum value exists so the console treats every leg
 uniformly.
 
 Every query is tenant-scoped. Datetimes are ``UTCDateTime`` (never plain
 ``DateTime``). JSON columns are ``JSON(none_as_null=True)`` (a cleared column is
-SQL NULL, not JSON ``'null'`` — house gotcha).
+SQL NULL, not JSON ``'null'`` - house gotcha).
 """
 import uuid
 
@@ -30,7 +30,7 @@ SOURCE_EMBED_SESSION = "embed_session"
 SOURCE_OUTBOUND_META = "outbound_meta"
 SOURCE_WEBHOOK_DELIVERY = "webhook_delivery"
 # Outbound calls the ``autocount`` module makes to a customer's on-prem
-# AutoCount instance (sprint-4/13). ``ACTIVITY_SOURCES`` is a CLOSED tuple —
+# AutoCount instance (sprint-4/13). ``ACTIVITY_SOURCES`` is a CLOSED tuple -
 # without this value the ESB's calls never render in the Developer Logs console.
 SOURCE_AUTOCOUNT = "autocount"
 # Calendar reads the ``meetings`` module makes against Google (sprint-5 S0).
@@ -47,7 +47,7 @@ ACTIVITY_SOURCES = (
     SOURCE_MEETINGS,
 )
 
-# Outcome — code branches on these; the console filters/segments by them.
+# Outcome - code branches on these; the console filters/segments by them.
 ACTIVITY_SUCCESS = "success"
 ACTIVITY_ERROR = "error"
 ACTIVITY_PENDING = "pending"
@@ -70,9 +70,9 @@ class IntegrationActivity(Base):
     )
 
     id = Column(String, primary_key=True, default=_uuid)
-    # Attribution — every query tenant-scoped. NOT NULL: a row we cannot
+    # Attribution - every query tenant-scoped. NOT NULL: a row we cannot
     # attribute to a tenant is never written (an unauthenticated 401 with no
-    # resolvable key is skipped, not stored — no console could ever show it).
+    # resolvable key is skipped, not stored - no console could ever show it).
     tenant_id = Column(String, nullable=False, index=True)
     # Correlation id minted at the inbound gateway; threaded to the outbound leg
     # (Slice 2). NULL for a standalone row.

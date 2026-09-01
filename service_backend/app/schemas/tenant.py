@@ -1,7 +1,7 @@
-"""Tenant admin schemas (plan 07 §9) — the Platform Console contracts.
+"""Tenant admin schemas (plan 07 §9) - the Platform Console contracts.
 
 Exposes camelCase to the frontend. ``status`` on the wire is the lifecycle
-CATEGORY (ACTIVE / SUSPENDED / ARCHIVED) — labels/colors stay a display concern.
+CATEGORY (ACTIVE / SUSPENDED / ARCHIVED) - labels/colors stay a display concern.
 """
 from datetime import datetime
 from typing import List, Optional
@@ -23,13 +23,13 @@ class TenantItem(ApiModel):
     name: str
     slug: str
     status: str
-    # Engine-driven display (sprint-2/01) — render these, not a hardcoded
+    # Engine-driven display (sprint-2/01) - render these, not a hardcoded
     # registry, so renamed/custom statuses show correctly. statusId lets the
     # console derive the row's available transitions from the edge graph.
     statusId: Optional[str] = None
     statusLabel: Optional[str] = None
     statusColor: Optional[str] = None
-    # Per-record fireable edges (sprint-2/02) — populated ONLY while a
+    # Per-record fireable edges (sprint-2/02) - populated ONLY while a
     # conditioned tenant edge exists (rule-engine D6: failing edges hidden).
     # None = no conditions anywhere; the client derives buttons from statusId.
     availableTransitionIds: Optional[List[str]] = None
@@ -67,9 +67,9 @@ class TenantProvisionRequest(ApiModel):
     notes: Optional[str] = Field(default=None, max_length=2000)
     adminName: str = Field(min_length=1, max_length=120)
     adminEmail: EmailStr
-    # Same server-side policy as signup/set-password (plan 10 review) — the
+    # Same server-side policy as signup/set-password (plan 10 review) - the
     # operator-set temp password is live immediately, no redeem step weakens it.
-    # Cap at 72 — bcrypt hashes only the first 72 bytes and raises on longer.
+    # Cap at 72 - bcrypt hashes only the first 72 bytes and raises on longer.
     adminPassword: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
 
     _password_policy = field_validator("adminPassword")(validate_password_strength)
@@ -86,7 +86,7 @@ class TenantUpdate(ApiModel):
 
 
 class TenantTransitionItem(ApiModel):
-    """An outgoing graph edge the actor may fire — label = button text."""
+    """An outgoing graph edge the actor may fire - label = button text."""
 
     id: str
     label: str
@@ -104,7 +104,7 @@ class TenantTransitionRequest(ApiModel):
 
 
 class TenantPurgeRequest(ApiModel):
-    """Typed confirmation (module-uninstall UX) — must equal the tenant slug."""
+    """Typed confirmation (module-uninstall UX) - must equal the tenant slug."""
 
     confirmSlug: str
 

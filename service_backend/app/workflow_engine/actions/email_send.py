@@ -1,4 +1,4 @@
-"""``email.send`` action (plan sprint-2/08) — render through the ONE render
+"""``email.send`` action (plan sprint-2/08) - render through the ONE render
 pipeline (template mode) OR a bare merge-rendered email (custom mode) + enqueue
 to the outbox. The workflow run boundary ends at ENQUEUE (D14): delivery/retry
 is the dispatcher's job, visible in the Email log."""
@@ -16,7 +16,7 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 
 class ActionError(Exception):
-    """A node failed — halts the run (D14)."""
+    """A node failed - halts the run (D14)."""
 
 
 def _facts(ctx: Dict[str, Any]) -> Dict[str, str]:
@@ -30,7 +30,7 @@ def email_send(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[st
     if not to_email:
         raise ActionError("Recipient (To) is empty after merging.")
 
-    # Per-use template copy (plan 10 follow-up) — render the edited block doc
+    # Per-use template copy (plan 10 follow-up) - render the edited block doc
     # branded, taking precedence over mode.
     doc = config.get("doc")
     if doc:
@@ -61,7 +61,7 @@ def email_send(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[st
     mode = config.get("mode") or "template"
 
     if mode == "custom":
-        # Bare email — merge subject + body directly (no Template row). Merged
+        # Bare email - merge subject + body directly (no Template row). Merged
         # values are HTML-escaped in the body; the authored body HTML is kept.
         facts = _facts(ctx)
         subject = render_tokens(str(config.get("subject") or ""), facts, mode="send", escape=False).strip()

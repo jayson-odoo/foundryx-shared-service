@@ -9,7 +9,7 @@ ordinary function means the LOGIC is testable directly (which is what actually
 catches a wrong default), leaving only the DDL wrapper to be verified by review
 plus a real ``alembic upgrade head`` against live Postgres.
 
-Adding a column with a ``server_default`` populates existing rows on the ADD —
+Adding a column with a ``server_default`` populates existing rows on the ADD -
 but the ADD only happens on a host where the column was missing. On a host where
 ``bootstrap_modules`` already ran ``install()``/``create_all`` FIRST, the column
 arrives from the model with no server default, and the migration must not assume
@@ -28,7 +28,7 @@ from .sources import INITIAL_LOAD_WINDOWED
 
 # Every entity config that predates this slice is a GRN one: a dict envelope with
 # a lookback-windowed first read. Those were the only semantics available, so
-# they are what those rows must end up with — stated as a backfill, not left to
+# they are what those rows must end up with - stated as a backfill, not left to
 # a column default that a create_all-first host would never apply.
 _ENTITY_CONFIG_DEFAULTS = (
     ("envelope", ENVELOPE_STATUS_DICT),
@@ -56,7 +56,7 @@ def backfill_sink_impl_defaults(
     predates the sink columns must end up on the ``'logging'`` no-op (its
     behaviour before the column existed), stated as a backfill rather than left
     to a column default a create_all-first host would never apply. Fills only
-    rows that lack a value and is safe to run repeatedly. Does **not** commit —
+    rows that lack a value and is safe to run repeatedly. Does **not** commit -
     the caller (Alembic's own connection, or ``update_tenant``) owns that.
     """
     prefix = f'"{schema}".' if schema else ""
@@ -78,7 +78,7 @@ def backfill_entity_config_defaults(
     Does **not** commit: on the Alembic path this runs on the migration's own
     connection and must let Alembic's transaction own the commit (a
     ``db.commit()`` on ``op.get_bind()`` mid-migration corrupts the
-    ``alembic_version`` stamp — learned on the storage-migration slice).
+    ``alembic_version`` stamp - learned on the storage-migration slice).
 
     ``schema=None`` for SQLite, which has no schemas.
     """
@@ -90,6 +90,46 @@ def backfill_entity_config_defaults(
             sa.text(
                 f"UPDATE {prefix}ac_entity_config SET {column} = :value "
                 f"WHERE {column} IS NULL OR {column} = ''"
+            ),
+            {"value": value},
+        )
+        touched += result.rowcount or 0
+    return touched
+
+
+# Plan 22 (direct-DB ETL): the NOT NULL columns added to EXISTING tables and
+# the value every pre-plan-22 row must end up with. Stated as a backfill, not
+# left to a server default a create_all-first host would never apply.
+_ETL_DEFAULTS = (
+    ("ac_entity_config", "etl_status", "draft"),
+    ("ac_staged_record", "op", "upsert"),
+    ("ac_sync_run", "mode", "manual"),
+    ("ac_sync_run", "rows_scanned", 0),
+    ("ac_sync_run", "deleted_count", 0),
+    # 0008 (plan 22 S2): hash-diff add/update counters on the run row.
+    ("ac_sync_run", "added_count", 0),
+    ("ac_sync_run", "updated_count", 0),
+)
+
+
+def backfill_etl_defaults(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA) -> int:
+    """Give every pre-plan-22 row its ETL defaults: a ``draft`` task status, an
+    ``upsert`` staged op, a ``manual`` run mode with zero cost counters.
+    Returns the number of rows touched.
+
+    Same two-order safety as the backfills above: fills only rows that lack a
+    value, safe to run repeatedly, does **not** commit (Alembic's connection or
+    ``update_tenant`` owns that).
+    """
+    prefix = f'"{schema}".' if schema else ""
+    touched = 0
+    for table, column, value in _ETL_DEFAULTS:
+        # ``table``/``column`` come from the fixed tuple above, never from input.
+        blank = f" OR {column} = ''" if isinstance(value, str) else ""
+        result = bind.execute(
+            sa.text(
+                f"UPDATE {prefix}{table} SET {column} = :value "
+                f"WHERE {column} IS NULL{blank}"
             ),
             {"value": value},
         )

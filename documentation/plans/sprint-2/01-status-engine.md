@@ -1,4 +1,4 @@
-# Sprint 2 · Plan 01 — Status & State-Machine Engine
+# Sprint 2 · Plan 01 - Status & State-Machine Engine
 
 **Branch:** `sprint-2/status-engine`
 **Closes/advances:** BL-027 (status engine). First of the four-engine foundation (BL-024 Template, BL-025 Workflow, BL-026 Rule are downstream).
@@ -8,9 +8,9 @@
 
 ## Context
 
-The repo already ships a thin core `statuses` table (plan 07) used only for tenant lifecycle, where **code branches on a fixed `category` enum** ("behavior binds to category, never label"). The product needs a real, tenant-configurable **state machine**: arbitrary statuses per entity, a branching transition graph, per-transition authorization, and notify-on-transition — reused across every domain table that has a status. This is the first of the four platform engines.
+The repo already ships a thin core `statuses` table (plan 07) used only for tenant lifecycle, where **code branches on a fixed `category` enum** ("behavior binds to category, never label"). The product needs a real, tenant-configurable **state machine**: arbitrary statuses per entity, a branching transition graph, per-transition authorization, and notify-on-transition - reused across every domain table that has a status. This is the first of the four platform engines.
 
-User intent (grilled to ground): maximum tenant flexibility (define any states), drag-reorder (no manual sort numbers), branching flows (one state → many, with loop-backs), per-transition role-gating, and **notification on transition handled by the engine itself** (no per-transition workflow authoring). UX is the top priority — a visual graph canvas, reusable later for the Workflow engine.
+User intent (grilled to ground): maximum tenant flexibility (define any states), drag-reorder (no manual sort numbers), branching flows (one state → many, with loop-backs), per-transition role-gating, and **notification on transition handled by the engine itself** (no per-transition workflow authoring). UX is the top priority - a visual graph canvas, reusable later for the Workflow engine.
 
 ### Locked design decisions (from grilling)
 
@@ -29,7 +29,7 @@ User intent (grilled to ground): maximum tenant flexibility (define any states),
 
 ## Data model (core `public`, Alembic migration)
 
-### `statuses` (extend existing — `app/models/status.py`)
+### `statuses` (extend existing - `app/models/status.py`)
 Add columns; keep `category` **nullable + cosmetic only** (no code branches on it anymore):
 - `is_initial` Bool, `is_terminal` Bool, `is_active` Bool (default true)
 - behavior flags: `blocks_access` Bool, `is_archived` Bool, `is_default` Bool
@@ -47,7 +47,7 @@ Add columns; keep `category` **nullable + cosmetic only** (no code branches on i
 ### `transition_roles` (new, M2M)
 - `transition_id` FK, `role_id` FK, `tenant_id`. Actor must hold ≥1 to fire.
 
-### `notification_specs` (new — generic, NOT transition-owned)
+### `notification_specs` (new - generic, NOT transition-owned)
 - `id`, `tenant_id`, `channel` enum (`EMAIL` | `IN_APP`), `template_subject`, `template_body` (inline merge fields), `template_key` (loose string, for future Template engine).
 
 ### `notification_spec_transitions` (link) + `notification_recipients` (new)
@@ -60,30 +60,30 @@ Add columns; keep `category` **nullable + cosmetic only** (no code branches on i
 
 ## Backend (`service_backend/`)
 
-- **Entity registry** — `app/status_engine/registry.py`: `STATUS_ENTITIES` list (`entity_type`, `label`, owning module, default-status seed, required-semantic hints). Core registers `tenant`. Module-extensible (modules append at install, mirroring permissions.csv pattern). Backs `GET /status-entities`.
-- **Models** — extend `app/models/status.py`; add `status_transition.py`, `notification_spec.py`, etc. to `app/models/`.
-- **Migration** — Alembic autogen revision (`alembic/versions/`), env already wired to `Base.metadata`. Backfill: seed platform-default statuses + tenant lifecycle flags (`active.is_initial=true`, `suspended.blocks_access=true`, `archived.is_terminal=true & is_archived=true`).
-- **Repositories** — `repositories/status_repository.py`, `status_transition_repository.py` (pure SQLAlchemy, tenant-scoped, two-tier resolution).
+- **Entity registry** - `app/status_engine/registry.py`: `STATUS_ENTITIES` list (`entity_type`, `label`, owning module, default-status seed, required-semantic hints). Core registers `tenant`. Module-extensible (modules append at install, mirroring permissions.csv pattern). Backs `GET /status-entities`.
+- **Models** - extend `app/models/status.py`; add `status_transition.py`, `notification_spec.py`, etc. to `app/models/`.
+- **Migration** - Alembic autogen revision (`alembic/versions/`), env already wired to `Base.metadata`. Backfill: seed platform-default statuses + tenant lifecycle flags (`active.is_initial=true`, `suspended.blocks_access=true`, `archived.is_terminal=true & is_archived=true`).
+- **Repositories** - `repositories/status_repository.py`, `status_transition_repository.py` (pure SQLAlchemy, tenant-scoped, two-tier resolution).
 - **Services**
-  - `services/status_service.py` — status/transition/notification CRUD, reorder, deactivate, migrate-records, two-tier fork-on-edit, validation (graph warnings; terminal-with-outgoing = block; block-delete-if-referenced).
-  - `services/status_machine.py` — **the shared executor**: `transition(entity_type, record, to_status_id, actor)` → resolve edge (strict) → check edge roles → write `status_id` → dispatch notifications → `emit("StatusTransitioned", payload)`.
-  - `services/notification_dispatch.py` — resolve recipients (incl. DYNAMIC) → render inline template → enqueue to plan-09 `email_outbox` (EMAIL only; IN_APP = no-op + log).
-- **Event seam** — `app/events.py`: minimal in-process emit/subscribe. `StatusTransitioned` emitted, no subscribers yet (Workflow engine plugs in later).
-- **Routers** — `api/v1/statuses.py`: status/transition/notification CRUD, `GET /status-entities`, `POST /statuses/reorder` (batch), `POST /statuses/{id}/migrate-records`. Thin per-entity transition endpoints delegate to `status_machine` (e.g. tenant transition in `api/v1/tenants.py`).
-- **Permissions** — add to `app/permissions/permissions.csv`: `statuses.read`, `statuses.manage`. Re-grant Admin at seed.
-- **Tenant lifecycle rewrite** — replace every `category`-based branch (login gating, suspend/archive checks) with flag reads (`status.blocks_access`, `status.is_archived`). Grep `TENANT_STATUS_SUSPENDED`/`ARCHIVED`/`category` in `app/services/`, `app/dependencies.py`, tenant service/repo.
+  - `services/status_service.py` - status/transition/notification CRUD, reorder, deactivate, migrate-records, two-tier fork-on-edit, validation (graph warnings; terminal-with-outgoing = block; block-delete-if-referenced).
+  - `services/status_machine.py` - **the shared executor**: `transition(entity_type, record, to_status_id, actor)` → resolve edge (strict) → check edge roles → write `status_id` → dispatch notifications → `emit("StatusTransitioned", payload)`.
+  - `services/notification_dispatch.py` - resolve recipients (incl. DYNAMIC) → render inline template → enqueue to plan-09 `email_outbox` (EMAIL only; IN_APP = no-op + log).
+- **Event seam** - `app/events.py`: minimal in-process emit/subscribe. `StatusTransitioned` emitted, no subscribers yet (Workflow engine plugs in later).
+- **Routers** - `api/v1/statuses.py`: status/transition/notification CRUD, `GET /status-entities`, `POST /statuses/reorder` (batch), `POST /statuses/{id}/migrate-records`. Thin per-entity transition endpoints delegate to `status_machine` (e.g. tenant transition in `api/v1/tenants.py`).
+- **Permissions** - add to `app/permissions/permissions.csv`: `statuses.read`, `statuses.manage`. Re-grant Admin at seed.
+- **Tenant lifecycle rewrite** - replace every `category`-based branch (login gating, suspend/archive checks) with flag reads (`status.blocks_access`, `status.is_archived`). Grep `TENANT_STATUS_SUSPENDED`/`ARCHIVED`/`category` in `app/services/`, `app/dependencies.py`, tenant service/repo.
 
 ## Frontend (`service_frontend/`)
 
 - **Dep:** `@xyflow/react` (v12, React 19-safe), `npm i --force`.
-- **Generic canvas** — `components/platform/flow-canvas/` (`<FlowCanvas>`): nodes, edges, drag-create edges, node/edge selection → drawer. Built generic so the Workflow engine reuses it.
-- **Status-engine pages** — `app/(protected)/platform/status-engine/`:
+- **Generic canvas** - `components/platform/flow-canvas/` (`<FlowCanvas>`): nodes, edges, drag-create edges, node/edge selection → drawer. Built generic so the Workflow engine reuses it.
+- **Status-engine pages** - `app/(protected)/platform/status-engine/`:
   - entity selector (from `GET /status-entities`) → loads that entity's graph.
   - canvas: node = status (drawer: label/color/flags), edge = transition (drawer: label, roles via `MultiSelect`, notification specs sub-form: channel, recipients, inline template).
   - companion **Resource list** (`useStatusesListConfig`) for tabular scan/export/display-reorder via existing `DataGridTableDndRows`.
-- **Services** — `services/status-engine-service.ts` (+ `.real.ts`) through `lib/api-client` (JWT + tenant + impersonation headers automatic).
-- **Status registry** — statuses now dynamic (from API), so `StatusBadge` consumes server-provided `{label,color}` instead of a hardcoded registry for engine-driven entities (keep static registries for not-yet-migrated entities).
-- **Menu** — two surfaces in `config/menu.config.tsx`: operator defaults under **Platform** (`platformOnly`), tenant under **Settings**. Gate with `statuses.read` / `statuses.manage` + `<RequirePermission>`.
+- **Services** - `services/status-engine-service.ts` (+ `.real.ts`) through `lib/api-client` (JWT + tenant + impersonation headers automatic).
+- **Status registry** - statuses now dynamic (from API), so `StatusBadge` consumes server-provided `{label,color}` instead of a hardcoded registry for engine-driven entities (keep static registries for not-yet-migrated entities).
+- **Menu** - two surfaces in `config/menu.config.tsx`: operator defaults under **Platform** (`platformOnly`), tenant under **Settings**. Gate with `statuses.read` / `statuses.manage` + `<RequirePermission>`.
 
 ---
 

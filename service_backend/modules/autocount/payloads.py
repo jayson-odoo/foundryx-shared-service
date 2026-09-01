@@ -2,7 +2,7 @@
 
 A single AutoCount read legitimately returns 161 documents, each with a nested
 line array. Storing that verbatim on every activity row would put megabytes per
-row into ``integration_activity`` — a table that already has a per-second volume
+row into ``integration_activity`` - a table that already has a per-second volume
 guard because it is written on hot paths.
 
 So payloads are BOUNDED. The rule that matters is the one AC-13-46 exists for:
@@ -10,12 +10,12 @@ So payloads are BOUNDED. The rule that matters is the one AC-13-46 exists for:
     !!  A TRUNCATED LOG MUST NEVER READ AS A COMPLETE ONE.  !!
 
 Silently dropping the tail of a ``ResultTable`` is the same class of failure as
-silently truncating a fetch — a diagnostician reads "3 documents came back",
+silently truncating a fetch - a diagnostician reads "3 documents came back",
 concludes the vendor sent 3, and chases the wrong bug. Every reduction here is
 therefore MARKED, in place:
 
 * a shortened list becomes ``{"__truncated__": true, "keptItems": n,
-  "totalItems": N, "items": [...]}`` — the shape CHANGES, so it cannot be
+  "totalItems": N, "items": [...]}`` - the shape CHANGES, so it cannot be
   mistaken for a complete array;
 * an over-long string keeps a visible ``…[truncated]`` suffix;
 * an over-large payload collapses to a marker carrying its original byte count
@@ -51,7 +51,7 @@ MAX_LIST_ITEMS = 5
 MAX_PAYLOAD_BYTES = 8_000
 # A .NET StackTraceString runs to thousands of characters on its own.
 MAX_STRING_CHARS = 1_000
-# Structural depth cap (mirrors ``mask_payload``'s) — a pathological payload
+# Structural depth cap (mirrors ``mask_payload``'s) - a pathological payload
 # must not recurse forever.
 _MAX_DEPTH = 12
 
@@ -117,7 +117,7 @@ def bound_payload(
     try:
         encoded = json.dumps(bounded, default=str)
     except (TypeError, ValueError):
-        # Unserialisable is a truncation too — say so rather than storing NULL
+        # Unserialisable is a truncation too - say so rather than storing NULL
         # and letting the row read as "no payload".
         return (
             {

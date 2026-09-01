@@ -18,7 +18,7 @@ export interface UseDatetimeReturn {
 }
 
 /**
- * Session-aware datetime formatters (plan sprint-2/05) — bind the user's
+ * Session-aware datetime formatters (plan sprint-2/05) - bind the user's
  * timezone preference (`session.user.timezone`, IANA; null = browser tz) onto
  * the shared `lib/datetime.ts` family. Every component rendering a backend
  * timestamp goes through this hook.

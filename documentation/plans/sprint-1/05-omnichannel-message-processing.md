@@ -1,4 +1,4 @@
-# Sprint 1 · Plan 05 — Omnichannel BSP: Message Processing (Inbound + Outbound + Inbox UI)
+# Sprint 1 · Plan 05 - Omnichannel BSP: Message Processing (Inbound + Outbound + Inbox UI)
 
 **Sprint:** 1
 **Branch:** `sprint-1/omnichannel-message-processing`
@@ -6,7 +6,7 @@
 **Depends on:** Plan 04 (module skeleton + full `app_omnichannel` schema + connected channel).
 **Module:** `omnichannel` (schema `app_omnichannel`).
 
-> **Plan 05 adds zero tables** — all schema landed in Plan 04. This plan adds **behavior + infra**: the zero-loss webhook pipeline, contact resolution, outbound sending, delivery receipts, the inbox UI, and the Redis/Celery/WebSocket infrastructure.
+> **Plan 05 adds zero tables** - all schema landed in Plan 04. This plan adds **behavior + infra**: the zero-loss webhook pipeline, contact resolution, outbound sending, delivery receipts, the inbox UI, and the Redis/Celery/WebSocket infrastructure.
 
 ---
 
@@ -29,11 +29,11 @@ Deliver:
 |---|----------|--------|
 | 8 | **Queue/worker** | Redis broker + **Celery** worker, autoretry with exponential backoff (5s / 30s / 2m / 10m per spec §3.3). |
 | 9 | **Realtime** | FastAPI **WebSocket** (browser ⇄ FastAPI, room per workspace/contact) + **Redis pub/sub** fan-out so the separate Celery process & multiple uvicorn workers all reach the right sockets. |
-| 10 | **Media** | `StorageService` interface — **S3-compatible** (S3/MinIO/R2) prod adapter + **local-disk** dev adapter. Worker downloads Meta media via Graph API → stores → `media_url`. (Closes BL-007's interface.) |
+| 10 | **Media** | `StorageService` interface - **S3-compatible** (S3/MinIO/R2) prod adapter + **local-disk** dev adapter. Worker downloads Meta media via Graph API → stores → `media_url`. (Closes BL-007's interface.) |
 | 11 | **Templates** | **Sync/mirror read-only** from Meta into `whatsapp_templates`; agent picks an approved template + fills variables. **Full template authoring/submission → backlog.** |
 | 12 | **Assignment** | **Manual** assign/reassign (`assigned_user_id`) + **Unassigned** queue + **self-claim** ("Assign to me"). No auto-routing (that's the deferred Rule engine, Plan 06). |
 | 13 | **Inbox extras** | All IN: internal notes (SYSTEM bubbles) + Activities/Messages tabs, quick replies, delivery-receipt ticks, Snooze/Close lifecycle. |
-| 14 | **CSW** | **Backend-enforced** — reject free-form send once `csw_expires_at` passed; permit approved template only. UI lock mirrors the rule. |
+| 14 | **CSW** | **Backend-enforced** - reject free-form send once `csw_expires_at` passed; permit approved template only. UI lock mirrors the rule. |
 | 15 | **Stitching** | Phone/email dedup is **within-workspace** (contacts are workspace-scoped). |
 | 17 | **Events** | **No event bus yet.** Future engines add emit-points when built (Plan 06 = paper contract). |
 
@@ -84,7 +84,7 @@ Deliver:
 
 ---
 
-## 6. Inbox UI (§5) — reusable drawer + thin host
+## 6. Inbox UI (§5) - reusable drawer + thin host
 
 Per component-library discipline, build the **`<ConversationDrawer>`** component first, then host it:
 - **`<ConversationDrawer>`** (the reusable piece, later docks into CRM forms): chat header (channel icon, contact name, assign/reassign dropdown, **Activities | Messages** tabs), thread window (CONTACT left / AGENT right / SYSTEM centered yellow internal-only notes), composer (rich text + paste-to-upload, **★ Quick Replies/templates** button, **CSW lock** banner + template picker when window closed).
@@ -110,14 +110,14 @@ Security invariant: outbound writes attributed to the **actor** (real agent), wo
 
 ---
 
-## 8. Build order — 3 phases
+## 8. Build order - 3 phases
 
-### Phase A — Frontend prototype (mock, no backend)
+### Phase A - Frontend prototype (mock, no backend)
 - Build `<ConversationDrawer>` + inbox host against a **mock conversation-service** (mock threads, messages, a mock WS emitter that fires `message.created`/`message.status` on a timer). Tune: empty inbox, loading, live-append, CSW-locked composer + template picker, internal-note bubbles, delivery ticks, snooze/close, assign/unassigned.
 - Vitest: bubble rendering by sender_type, CSW-lock logic, tick states, quick-reply insertion.
-- Playwright (mock): real-click — open thread, send (free-form), see CSW lock + pick template, add internal note, assign-to-me, snooze/close.
+- Playwright (mock): real-click - open thread, send (free-form), see CSW lock + pick template, add internal note, assign-to-me, snooze/close.
 
-### Phase B — Backend (wire real, TDD)
+### Phase B - Backend (wire real, TDD)
 - Stand up Redis + Celery worker + WS pub/sub + StorageService (§3).
 - Implement webhook receiver (fast ACK + signature), `process_inbound_webhook` task (parse/idempotency/resolve/media/persist/broadcast), outbound send + CSW enforcement, status-receipt handling, template sync, contact resolution repo logic (within-workspace stitch).
 - Extend `WhatsAppCloudAdapter`: `parse_inbound`, `send`, `fetch_media`.
@@ -125,7 +125,7 @@ Security invariant: outbound writes attributed to the **actor** (real agent), wo
 - Swap mock→real conversation-service + real WS client (one line at the service boundary).
 - Playwright re-run against live backend in Meta Dev Mode: send from real WhatsApp → message appears live; reply lands on the phone; receipts tick.
 
-### Phase C — Review + merge
+### Phase C - Review + merge
 - Code-review agent (core hard-fails + module governance: tables only in `app_omnichannel`, no core-table writes, cross-schema FK into core only; worker has no router/DB-in-router violations; WS auth + workspace scoping present).
 - Test Execution Report. Merge to `main`.
 
@@ -133,12 +133,12 @@ Security invariant: outbound writes attributed to the **actor** (real agent), wo
 
 ## 9. CLAUDE.md / docs updates required
 - Add **Redis + Celery + WebSocket** to backend commands/run instructions (start worker; `REDIS_URL`).
-- Document `StorageService` env (S3 vs local-disk) — note it also closes BL-007's interface.
+- Document `StorageService` env (S3 vs local-disk) - note it also closes BL-007's interface.
 - Note the realtime model (WS rooms + Redis pub/sub) and the zero-loss pipeline contract.
 
 ## 10. Backlog spawned (add to `backlog.md`)
-- **Full WhatsApp template management** — in-app authoring + submission to Meta + approval-status tracking (MVP is read-only sync).
-- **Auto-assignment / smart routing** — round-robin + content-based routing; belongs to the deferred Rule engine (Plan 06).
-- **Avatar/media upload polish** — closes BL-007 fully once StorageService is consumed UI-side.
-- **WS scale-out hardening** — presence, reconnect/backfill on socket drop, message backfill since last_seen.
-- **Additional message types** — INTERACTIVE (buttons/lists) compose UI; MVP renders inbound interactive, compose is later.
+- **Full WhatsApp template management** - in-app authoring + submission to Meta + approval-status tracking (MVP is read-only sync).
+- **Auto-assignment / smart routing** - round-robin + content-based routing; belongs to the deferred Rule engine (Plan 06).
+- **Avatar/media upload polish** - closes BL-007 fully once StorageService is consumed UI-side.
+- **WS scale-out hardening** - presence, reconnect/backfill on socket drop, message backfill since last_seen.
+- **Additional message types** - INTERACTIVE (buttons/lists) compose UI; MVP renders inbound interactive, compose is later.

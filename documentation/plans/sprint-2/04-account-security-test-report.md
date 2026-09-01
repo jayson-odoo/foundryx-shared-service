@@ -1,4 +1,4 @@
-# Test Execution Report — Sprint 2 · Plan 04 (Account Security: Change-Email + BL-005)
+# Test Execution Report - Sprint 2 · Plan 04 (Account Security: Change-Email + BL-005)
 
 **Branch:** `sprint-2/04-account-security` (rebased onto post-branding main) · **Date:** 2026-06-06 · **Stack:** live (FastAPI :8001 + Next prod build :3001, Postgres, maildir smtpd :1025)
 
@@ -10,7 +10,7 @@
 | Backend | full suite (`python -m pytest -q`) | 278/278 ✅ |
 | Frontend | Vitest (`npm test`) incl. account page (7), redeem pages (5), email-change mock contract (13), authorize() BL-005 (5) | 270/270 ✅ |
 | E2E | `e2e/account-security.spec.ts` | 3/3 ✅ |
-| E2E | full suite regression (after residue purge) | 67 passed, 1 pre-existing parallel flake (`roles-permissions` impersonation — passes alone) ✅ |
+| E2E | full suite regression (after residue purge) | 67 passed, 1 pre-existing parallel flake (`roles-permissions` impersonation - passes alone) ✅ |
 
 ## E2E scenarios (real clicks, per §6)
 
@@ -30,7 +30,7 @@
 - **Expected = Actual:** ✅.
 
 ## Remarks
-- **Mail-read race fixed in-spec:** the serial flow sends several mails to one address — `expectMailTo` takes a `containing` discriminator (masked target / full new email) so a stale message can't satisfy the wait. Spec timeout raised to 120s: the outbox dispatcher delivered up to ~35s after enqueue under a busy parallel suite (default 30s test timeout lost that race).
+- **Mail-read race fixed in-spec:** the serial flow sends several mails to one address - `expectMailTo` takes a `containing` discriminator (masked target / full new email) so a stale message can't satisfy the wait. Spec timeout raised to 120s: the outbox dispatcher delivered up to ~35s after enqueue under a busy parallel suite (default 30s test timeout lost that race).
 - **Header fix verified visually:** `/account` previously rendered the Metronic demo `<Breadcrumb />` slot (empty header); the mega menu now renders on every page.
-- **Pre-existing suite issues fixed en route:** `signin.spec.ts` asserted the fixed slogan, stale since branding (slogan is tenant-configurable; default tenant is branded with no slogan) — assertion moved to the panel logo. Omnichannel demo threads' CSW windows had expired by wall-clock (seed is idempotent-skip) — refreshed; auto-refresh tracked in BL-069.
-- **E2E residue purged twice** (34 then 14 `e2e-%` tenants) via `TenantService.purge` — each full-suite run regrows ~10 tenants and re-breaks `tenants.spec.ts` page-1 assertions; auto-purge tracked in BL-069.
+- **Pre-existing suite issues fixed en route:** `signin.spec.ts` asserted the fixed slogan, stale since branding (slogan is tenant-configurable; default tenant is branded with no slogan) - assertion moved to the panel logo. Omnichannel demo threads' CSW windows had expired by wall-clock (seed is idempotent-skip) - refreshed; auto-refresh tracked in BL-069.
+- **E2E residue purged twice** (34 then 14 `e2e-%` tenants) via `TenantService.purge` - each full-suite run regrows ~10 tenants and re-breaks `tenants.spec.ts` page-1 assertions; auto-purge tracked in BL-069.

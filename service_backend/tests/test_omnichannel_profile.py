@@ -3,7 +3,7 @@
 Covers sync-config (business + verified name from the dev stub), profile
 sync/mirror, save_profile validation matrix + changed-only write-through,
 tenant-scoping (404), and permission gates. Dev-stub mode throughout
-(no META_APP_ID) — the adapter returns canned data.
+(no META_APP_ID) - the adapter returns canned data.
 """
 from app.models import DEFAULT_TENANT_ID, User, UserStatus
 from app.security import hash_password
@@ -23,7 +23,7 @@ def _default_workspace_id(client, h) -> str:
     return next(w["id"] for w in data if w["isDefault"])
 
 
-def _onboard(client, h, workspace_id, name="FoundryX WA") -> dict:
+def _onboard(client, h, workspace_id, name="Foundryx WA") -> dict:
     return client.post(
         "/omnichannel/onboarding/oauth-callback",
         headers=h,
@@ -50,7 +50,7 @@ def test_sync_config_writes_business_and_verified_name(client):
     assert res.status_code == 200
     body = res.json()
     # Dev stub canned name from fetch_waba_details.
-    assert body["businessAccountName"] == "FoundryX Events (dev sandbox)"
+    assert body["businessAccountName"] == "Foundryx Events (dev sandbox)"
     assert body["lastVerifiedAt"] is not None
 
 
@@ -75,7 +75,7 @@ def test_sync_profile_mirrors_fields_and_stamps(client):
     assert body["vertical"] == "EVENT_PLAN"
     assert body["website1"] == "https://foundryx.example"
     assert body["profileSyncedAt"] is not None
-    # Persists — re-GET serves the mirror.
+    # Persists - re-GET serves the mirror.
     again = client.get(f"/omnichannel/channels/{cid}/profile", headers=h).json()
     assert again["about"] == "Premier event spaces & concierge in KL."
 
@@ -163,7 +163,7 @@ def test_save_profile_only_changed_fields_sent_to_meta(client, monkeypatch):
 
 
 def test_save_profile_clearing_a_field_propagates_to_meta(client, monkeypatch):
-    """A cleared field must be sent to Meta as "" (clear), not omitted — else the
+    """A cleared field must be sent to Meta as "" (clear), not omitted - else the
     local mirror nulls while Meta keeps the old value (SEC-5 divergence)."""
     from modules.omnichannel.services import channel_profile_service
 

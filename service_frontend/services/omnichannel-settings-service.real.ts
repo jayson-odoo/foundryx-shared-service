@@ -1,5 +1,5 @@
 /**
- * Real omnichannel media-caps settings service — talks to FastAPI via the shared
+ * Real omnichannel media-caps settings service - talks to FastAPI via the shared
  * api-client (`GET/PUT /omnichannel/settings?workspaceId=`, gated channels.manage).
  */
 import { apiFetch } from '@/lib/api-client';

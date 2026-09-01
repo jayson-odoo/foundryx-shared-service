@@ -2,7 +2,7 @@
 
 /** Public (anonymous) fill state (plan sprint-3/02). Loads the public view by
  * (tenant slug, form slug), holds answers + the honeypot value, submits through
- * the public service. No server-side drafts (D11) — multi-page state lives here
+ * the public service. No server-side drafts (D11) - multi-page state lives here
  * until the final submit. 422 → per-field errors; 429 → a throttle notice. */
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';

@@ -11,7 +11,7 @@ import { formPath } from './paths';
 
 const publishable = (f: FormRow) => f.currentVersionNumber == null || f.hasUnpublishedChanges;
 
-/** ONE action registry — row `…`, bulk dropdown and form `…` share it
+/** ONE action registry - row `…`, bulk dropdown and form `…` share it
  * (workflow-list parity, D18). Visibility branches on Active vs Archived. */
 export function useFormActions(): ResourceAction<FormRow>[] {
   const router = useRouter();
@@ -99,7 +99,7 @@ export function useFormActions(): ResourceAction<FormRow>[] {
         tone: 'destructive',
         surfaces: { row: true, bulk: true },
         permission: 'forms.manage',
-        // Hard delete only from the Archived view (two-step safety) — drops
+        // Hard delete only from the Archived view (two-step safety) - drops
         // versions, submissions AND the form's scoped status graph (D4).
         isVisible: (rows) => rows.length > 0 && rows.every((f) => f.isTrashed),
         confirm: {

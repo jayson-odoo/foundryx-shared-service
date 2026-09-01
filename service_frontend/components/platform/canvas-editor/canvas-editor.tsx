@@ -34,7 +34,7 @@ import type {
 import { CanvasPalette } from './palette';
 import { CanvasInspector } from './inspector';
 
-// Konva touches the DOM canvas — never SSR it.
+// Konva touches the DOM canvas - never SSR it.
 const CanvasStage = dynamic(() => import('./stage').then((m) => m.CanvasStage), {
   ssr: false,
   loading: () => (
@@ -114,7 +114,7 @@ export function CanvasEditor({
   const handleElementChange = useCallback(
     (patch: Partial<CanvasElement>) => {
       if (!selectedId || !selected) return;
-      // No element may exceed the canvas — clamp any geometry change.
+      // No element may exceed the canvas - clamp any geometry change.
       history.set(updateElement(doc, safeSide, selectedId, clampElementPatch(doc.canvas, selected, patch)));
     },
     [doc, safeSide, selectedId, selected, history],
@@ -154,7 +154,7 @@ export function CanvasEditor({
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       // Skip when focus is on ANY interactive control (SearchSelect triggers are
-      // buttons — a reflexive Backspace must not destroy an element mid-config).
+      // buttons - a reflexive Backspace must not destroy an element mid-config).
       if (target?.closest('input, textarea, [contenteditable="true"], [role="combobox"], button'))
         return;
       const meta = e.metaKey || e.ctrlKey;
@@ -357,7 +357,7 @@ function CanvasSettings({
             const orientation = v as 'portrait' | 'landscape';
             if (orientation === canvas.orientation) return;
             // Orientation flip swaps the physical page dimensions so width/height
-            // stay authoritative (the render never re-swaps — keeps editor↔PDF
+            // stay authoritative (the render never re-swaps - keeps editor↔PDF
             // parity). Element positions are intentionally left as-is.
             onChange({ orientation, width: canvas.height, height: canvas.width });
           }}

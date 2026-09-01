@@ -25,7 +25,7 @@ export interface UploadDialogProps {
 
 /**
  * Upload entry point (sprint-3/04b): pick an optional document type, then drop
- * files OR browse — instead of jumping straight to the OS picker (which gave no
+ * files OR browse - instead of jumping straight to the OS picker (which gave no
  * chance to set the type). Files enqueue to the global Uploads drawer with the
  * chosen type; progress is tracked there.
  */

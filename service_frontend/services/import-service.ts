@@ -1,5 +1,5 @@
 /**
- * Import service (sprint-3/09, F8) — the boundary the import wizard + drawer
+ * Import service (sprint-3/09, F8) - the boundary the import wizard + drawer
  * talk to (via hooks). The interface IS the backend contract (plan 09).
  */
 import type {

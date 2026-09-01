@@ -1,9 +1,9 @@
 /**
- * Pure helpers over the form block document (plan sprint-3/01 D6) — the
+ * Pure helpers over the form block document (plan sprint-3/01 D6) - the
  * editor-agnostic Page → Section → Field contract. All functions are
  * immutable so the builder's undo/redo keeps snapshot history (workflow-doc
  * precedent). `validateFormDoc` is the CLIENT mirror of the backend publish
- * gate (`validate_form_doc`) — keep PARITY, including empty-array = missing.
+ * gate (`validate_form_doc`) - keep PARITY, including empty-array = missing.
  */
 import { aggregateRefs, fieldRefs, parseExpression } from '@/lib/computed-expr';
 import { evaluateRules } from '@/lib/rule-eval';
@@ -21,7 +21,7 @@ import type {
 } from '@/types/forms';
 import { FORM_SCHEMA_VERSION } from '@/types/forms';
 
-/** Stable short id (forever-contract ids — workflow `newId` precedent). */
+/** Stable short id (forever-contract ids - workflow `newId` precedent). */
 export function newId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -261,7 +261,7 @@ function factType(field: FormField): RuleFact['type'] {
 }
 
 /**
- * The rule facts available to a field's / section's visibility conditions —
+ * The rule facts available to a field's / section's visibility conditions -
  * answer facts of fields EARLIER in document order (bans cycles AND forward
  * refs; the backend publish gate enforces the same).
  *
@@ -314,7 +314,7 @@ export function fieldVisible(
   return sectionVisible(section, facts) && evaluateRules(field.conditionsJson ?? null, facts);
 }
 
-// ---- publish gate (CLIENT mirror — backend `validate_form_doc` wins) ----
+// ---- publish gate (CLIENT mirror - backend `validate_form_doc` wins) ----
 
 function conditionFactKeys(tree: RuleGroup | null | undefined): string[] {
   if (!tree) return [];
@@ -510,7 +510,7 @@ export function validateFormDoc(doc: FormDocument): string[] {
             );
           }
           if (field.type === 'table' && field.table) {
-            // Table columns are aggregatable too — `sum(table.col)`.
+            // Table columns are aggregatable too - `sum(table.col)`.
             earlierRepeaters.set(
               field.key,
               new Map(field.table.columns.filter((c) => c.key).map((c) => [c.key, c.type])),

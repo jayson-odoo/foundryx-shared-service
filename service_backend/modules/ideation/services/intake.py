@@ -1,4 +1,4 @@
-"""``create_idea`` — the deterministic Conversational-Intake state machine (§5.1,
+"""``create_idea`` - the deterministic Conversational-Intake state machine (§5.1,
 AC-A-17..25). NO LLM (D20): merge structured ``fields``/``remove`` into the draft
 against the form_engine schema, run dedup on the problem text, recompute
 captured/missing via the ``completion_rule``, then pick the status and compose a
@@ -7,12 +7,12 @@ templated ``reply_text``.
 State machine (deterministic):
 - no ``draft_id`` -> create a draft Idea (status ``draft``); seed ``problem`` from
   ``message_text`` when ``fields`` did not carry it.
-- ``duplicate`` — a high text-similarity match (dedup seam; slice 6 wires pg_trgm).
-- ``collecting`` — ``missing != []``; reply echoes captured + lists missing.
-- ``review`` — ``missing == []`` AND ``confirm != true``; reply echoes the full
+- ``duplicate`` - a high text-similarity match (dedup seam; slice 6 wires pg_trgm).
+- ``collecting`` - ``missing != []``; reply echoes captured + lists missing.
+- ``review`` - ``missing == []`` AND ``confirm != true``; reply echoes the full
   summary + asks to confirm/revise; the draft STAYS ``draft`` (never auto-completes,
   AC-A-18b).
-- ``complete`` — ``missing == []`` AND ``confirm == true``; the ``on_complete_sink``
+- ``complete`` - ``missing == []`` AND ``confirm == true``; the ``on_complete_sink``
   moves ``draft -> captured`` (once, idempotent) and mints the link (AC-A-20).
 """
 from typing import Dict, List, Optional
@@ -36,7 +36,7 @@ from .statuses import IDEA_ENTITY, idea_status_id, initial_idea_status_id
 
 
 class IntakeService:
-    """The single home of intake logic (D7) — sorento/n8n never re-implement it."""
+    """The single home of intake logic (D7) - sorento/n8n never re-implement it."""
 
     def __init__(self, db: Session):
         self.db = db
@@ -60,11 +60,11 @@ class IntakeService:
         confirm: bool = False,
     ) -> dict:
         definition = get_intake_definition(IDEATION_INTAKE_KEY)
-        if definition is None:  # pragma: no cover — registered at boot
+        if definition is None:  # pragma: no cover - registered at boot
             raise ApiError(500, "intake_unavailable", "Intake definition not registered.")
 
         # is_new_idea restart (DC-10): the host opened a fresh draft (no draft_id)
-        # and named the abandoned one — reject it so it does not linger as a phantom.
+        # and named the abandoned one - reject it so it does not linger as a phantom.
         # Best-effort: an unknown / already-terminal draft is a no-op, never a 500.
         if discard_draft_id:
             self._discard_draft(tenant_id, discard_draft_id)
@@ -91,7 +91,7 @@ class IntakeService:
             raw_transcript=raw_transcript,
         )
 
-        # Persist media pointers idempotently on every turn (DC-9) — before the
+        # Persist media pointers idempotently on every turn (DC-9) - before the
         # draft-status branching so attachments land on collecting/review/complete
         # alike. Sorento has already durably stored + captioned them.
         self._persist_attachments(tenant_id, idea, attachments)
@@ -143,7 +143,7 @@ class IntakeService:
             }
 
         if not confirm:
-            # NEVER auto-completes — echo the full summary and ask to confirm/revise
+            # NEVER auto-completes - echo the full summary and ask to confirm/revise
             # (D-CONFIRM, AC-A-18b). The draft stays ``draft``.
             self.db.commit()
             return {
@@ -154,7 +154,7 @@ class IntakeService:
                 "reply_text": _reply_review(captured),
             }
 
-        # complete — explicit confirm: the sink is the ONLY promotion path.
+        # complete - explicit confirm: the sink is the ONLY promotion path.
         link = definition.on_complete_sink(self.db, idea, tenant_id)
         self.db.commit()
         return {
@@ -172,7 +172,7 @@ class IntakeService:
 
     def _discard_draft(self, tenant_id: str, discard_draft_id: str) -> None:
         """Reject an abandoned draft on an is_new_idea restart (DC-10). Best-effort:
-        an unknown, cross-tenant, or already-non-draft id is a silent no-op — the
+        an unknown, cross-tenant, or already-non-draft id is a silent no-op - the
         new idea proceeds regardless (never a 500 that breaks the turn)."""
         idea = (
             self.db.query(Idea)
@@ -182,14 +182,14 @@ class IntakeService:
         if idea is None or not self._is_draft(idea):
             return
         rejected_id = idea_status_id(self.db, "rejected", tenant_id)
-        if rejected_id is None:  # pragma: no cover — seeded at boot
+        if rejected_id is None:  # pragma: no cover - seeded at boot
             return
         try:
             status_machine.transition(
                 self.db, IDEA_ENTITY, idea, rejected_id,
                 tenant_id=tenant_id, commit=False,
             )
-        except Exception:  # noqa: BLE001 — a blocked edge must not fail the turn
+        except Exception:  # noqa: BLE001 - a blocked edge must not fail the turn
             return
 
     def _persist_attachments(
@@ -242,7 +242,7 @@ class IntakeService:
     ) -> None:
         """Add the duplicate submitter's upvote to the existing Idea (AC-A-21).
 
-        One vote row per ``(idea, voter)`` (UNIQUE) makes it idempotent — a repeat
+        One vote row per ``(idea, voter)`` (UNIQUE) makes it idempotent - a repeat
         duplicate from the same submitter does not double-count; distinct
         submitters each add a vote. Tallies are recomputed from ``idea_votes`` (the
         source of truth). No submitter id ⇒ nothing to attribute a vote to."""
@@ -277,7 +277,7 @@ class IntakeService:
         self, tenant_id: str, submitter_contact_id: Optional[str]
     ) -> Optional[str]:
         """Map the caller's submitter (a phone E.164 per §5.1/D21, or an existing
-        Contact id) to a shared-service Contact id — find-or-create by phone so a
+        Contact id) to a shared-service Contact id - find-or-create by phone so a
         real turn never FK-violates. Returns None when no submitter was supplied."""
         if not submitter_contact_id:
             return None
@@ -289,7 +289,7 @@ class IntakeService:
         )
         if existing is not None:
             return existing.id
-        # Otherwise treat it as a phone (E.164) — match our own copy, else create.
+        # Otherwise treat it as a phone (E.164) - match our own copy, else create.
         phone = submitter_contact_id.strip()
         by_phone = (
             self.db.query(Contact)
@@ -339,7 +339,7 @@ class IntakeService:
                 raise ApiError(404, "unknown_draft", "draft_id does not resolve to an open draft.")
             return idea
 
-        # Turn 1 — a brand-new draft Idea (AC-A-19). Seed ``problem`` from the raw
+        # Turn 1 - a brand-new draft Idea (AC-A-19). Seed ``problem`` from the raw
         # message so the draft is valid + dedup has text; ``fields`` still win.
         # ``raw_text`` prefers the cumulative transcript (WS-B) when the host sends
         # it, else the single message; ``problem`` always seeds from the message.
@@ -375,7 +375,7 @@ class IntakeService:
         captured_json: Dict[str, object] = dict(idea.captured_json or {})
         schema_keys = {f.key for f in definition.target_schema.input_fields() if f.key}
 
-        # raw_text = the CUMULATIVE transcript when the host sends it (WS-B — the
+        # raw_text = the CUMULATIVE transcript when the host sends it (WS-B - the
         # whole convo, not just the finalizing turn). Legacy fallback: when no
         # transcript is supplied, refresh with the latest message (old D9 behaviour).
         transcript = (raw_transcript or "").strip()
@@ -393,10 +393,10 @@ class IntakeService:
 
         idea.captured_json = captured_json
         # Keep the first-class segregated columns (problem / proposed_solution /
-        # impact / department) in sync with the captured answers — read surface +
+        # impact / department) in sync with the captured answers - read surface +
         # dedup rely on ``problem``, the operator UI on the rest.
         sync_idea_columns_from_captured(idea)
-        # Force SQLAlchemy to detect the JSON mutation (reassigned above — safe).
+        # Force SQLAlchemy to detect the JSON mutation (reassigned above - safe).
         self.db.flush()
 
     def _complete_output(self, definition, idea: Idea) -> dict:
@@ -445,4 +445,4 @@ def _reply_complete(link: Optional[str]) -> str:
 
 
 def _reply_duplicate() -> str:
-    return "This is similar to an existing idea — I've upvoted it for you."
+    return "This is similar to an existing idea - I've upvoted it for you."

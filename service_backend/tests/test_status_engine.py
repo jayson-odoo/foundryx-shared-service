@@ -28,7 +28,7 @@ from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD, PLATFORM_EMAIL, PLATFO
 
 
 class TicketRecord(Base):
-    """Test-only entity table — what a module's domain table looks like."""
+    """Test-only entity table - what a module's domain table looks like."""
 
     __tablename__ = "test_tickets"
 
@@ -41,7 +41,7 @@ class TicketRecord(Base):
 
 
 class TicketLineRecord(Base):
-    """Test-only CHILD table — exercises aggregate facts + DerivedTrigger
+    """Test-only CHILD table - exercises aggregate facts + DerivedTrigger
     (sprint-4/03 slice 2): a ticket's derived status reads SUM/COUNT of lines."""
 
     __tablename__ = "test_ticket_lines"
@@ -53,7 +53,7 @@ class TicketLineRecord(Base):
 
 
 class ScopedTicketRecord(Base):
-    """Test-only SCOPED entity — each scope_id owns its own status graph
+    """Test-only SCOPED entity - each scope_id owns its own status graph
     (sprint-4/03 slice 2, AC-03-17 derived re-eval on a scoped machine)."""
 
     __tablename__ = "test_scoped_tickets"
@@ -66,7 +66,7 @@ class ScopedTicketRecord(Base):
 
 
 class TimedTicketRecord(Base):
-    """Test-only entity with a date column — exercises the TIME-based sweep
+    """Test-only entity with a date column - exercises the TIME-based sweep
     (sprint-4/03 slice 3: Overdue when due_at < now)."""
 
     __tablename__ = "test_timed_tickets"
@@ -94,7 +94,7 @@ def _ticket_migrate(db, from_status_id, to_status_id, tenant_id):
     return count
 
 
-# NB: entity_type is "synthetic_ticket", NOT "ticket" — the EMS module
+# NB: entity_type is "synthetic_ticket", NOT "ticket" - the EMS module
 # (sprint-4/05 Cluster D slice 3) registers a REAL "ticket" status entity, and
 # the registry is keyed by entity_type (last register wins). Squatting "ticket"
 # here made the EMS bootstrap clobber this fixture mid-suite (the status-entity
@@ -110,7 +110,7 @@ register_status_entity(
 )
 
 
-# Rule fact source for the synthetic ticket — auto-edge conditions (derived
+# Rule fact source for the synthetic ticket - auto-edge conditions (derived
 # status, sprint-4/03) are authored over ``record:ticket`` facts. Identical to
 # test_rule_engine's registration (idempotent overwrite).
 from app.rule_engine.registry import FactDef, register_fact_source  # noqa: E402
@@ -122,7 +122,7 @@ register_fact_source(
 )
 
 
-# Time-based derived entity (sprint-4/03 slice 3) — Overdue when due_at < now.
+# Time-based derived entity (sprint-4/03 slice 3) - Overdue when due_at < now.
 def _timed_candidates(db):
     return db.query(TimedTicketRecord).all()
 
@@ -327,7 +327,7 @@ def test_strict_transition_rejected_without_edge(client, session_factory):
     db.add(ticket)
     db.commit()
 
-    # Approved is terminal and has no outgoing edge — no wall-cut (D4).
+    # Approved is terminal and has no outgoing edge - no wall-cut (D4).
     with pytest.raises(TransitionNotAllowed):
         status_machine.transition(db, "synthetic_ticket", ticket, rejected["id"], actor)
     db.close()
@@ -439,7 +439,7 @@ def test_block_delete_then_deactivate_and_migrate(client, session_factory):
     assert res.status_code == 409
     assert "2 record(s)" in res.json()["detail"]
 
-    # Deactivate instead — hidden from pickers, records keep it.
+    # Deactivate instead - hidden from pickers, records keep it.
     res = client.post(f"/statuses/{rejected['id']}/deactivate", headers=operator)
     assert res.status_code == 200 and res.json()["isActive"] is False
 
@@ -500,7 +500,7 @@ def test_reorder_is_batch_and_display_only(client):
 
 
 def test_custom_blocking_status_gates_login_by_flag(client):
-    """A NEW operator-defined status with blocks_access kills sign-in — proof
+    """A NEW operator-defined status with blocks_access kills sign-in - proof
     the lifecycle reads flags, not a category enum."""
     operator = _operator(client)
 
@@ -553,7 +553,7 @@ def test_custom_blocking_status_gates_login_by_flag(client):
 def test_generic_transition_keeps_legacy_permission_boundary(client, session_factory):
     """The generic /transition endpoint must not widen privileges
     (code-review fix): suspend-like moves need tenants.suspend, archive-like
-    moves need tenants.archive — tenants.update alone is NOT enough."""
+    moves need tenants.archive - tenants.update alone is NOT enough."""
     from app.models import PLATFORM_TENANT_ID, Permission
 
     operator = _operator(client)
@@ -611,7 +611,7 @@ def test_generic_transition_keeps_legacy_permission_boundary(client, session_fac
     assert "tenants.suspend" in res.json()["detail"]
 
     # The console graph endpoint needs only tenants.read (decoupled from
-    # statuses.read — the limited role holds no statuses.* keys).
+    # statuses.read - the limited role holds no statuses.* keys).
     res = client.get("/platform/tenants/status-graph", headers=limited_headers)
     assert res.status_code == 200
     assert {s["key"] for s in res.json()["statuses"]} >= {"active", "suspended", "archived"}
@@ -634,7 +634,7 @@ def test_generic_transition_keeps_legacy_permission_boundary(client, session_fac
 
 
 def test_archived_is_restorable(client, session_factory):
-    """Sprint-2/02 revision: archive is reversible — archived is NOT terminal
+    """Sprint-2/02 revision: archive is reversible - archived is NOT terminal
     and the seeded Restore edge moves a tenant back to active."""
     operator = _operator(client)
     graph = _graph(client, operator, "tenant")
@@ -747,7 +747,7 @@ def test_notification_recipients_resolve_and_enqueue_email(client, session_facto
 
 def test_recipient_targets_must_belong_to_author_tenant(client, session_factory):
     """Code-review fix: a spec may only reference the author tier's own users/
-    roles — a foreign tenant's role_id/user_id is rejected at save (422), or
+    roles - a foreign tenant's role_id/user_id is rejected at save (422), or
     cross-tenant email leaks at dispatch."""
     operator = _operator(client)
     _build_ticket_graph(client, operator)
@@ -823,7 +823,7 @@ def test_dispatch_never_resolves_cross_tenant_recipients(client, session_factory
     )
     assert res.status_code == 200, res.text
 
-    # The tenant edit forks the set — re-read for the TENANT tier's ids.
+    # The tenant edit forks the set - re-read for the TENANT tier's ids.
     graph = _graph(client, admin, "synthetic_ticket")
     by_label = {s["label"]: s for s in graph["statuses"]}
 
@@ -939,7 +939,7 @@ def _auto_edge(client, headers, from_id, to_id, label, value, sort_order=None):
 
 
 def test_trigger_mode_defaults_manual(client):
-    """AC-03-01 — a normal edge is 'manual'; the graph wire carries triggerMode."""
+    """AC-03-01 - a normal edge is 'manual'; the graph wire carries triggerMode."""
     operator = _operator(client)
     pending, approved, _rejected = _build_ticket_graph(client, operator)
     graph = _graph(client, operator, "synthetic_ticket")
@@ -947,7 +947,7 @@ def test_trigger_mode_defaults_manual(client):
 
 
 def test_auto_edge_requires_conditions(client):
-    """AC-03-02 — an auto edge with no conditions is rejected (would fire always)."""
+    """AC-03-02 - an auto edge with no conditions is rejected (would fire always)."""
     operator = _operator(client)
     pending, approved, _rejected = _build_ticket_graph(client, operator)
     res = _create_edge(
@@ -958,7 +958,7 @@ def test_auto_edge_requires_conditions(client):
 
 
 def test_auto_edge_forbids_roles(client, session_factory):
-    """AC-03-03 — an auto edge cannot be role-restricted (system-fired)."""
+    """AC-03-03 - an auto edge cannot be role-restricted (system-fired)."""
     operator = _operator(client)
     admin = _admin(client)
     # Fork to tenant tier (roles are tenant-scoped) and grab the Admin role.
@@ -988,7 +988,7 @@ def test_auto_edge_forbids_roles(client, session_factory):
 
 
 def test_update_to_auto_validates_resulting_state(client):
-    """AC-03-02/03 (update path) — flipping an edge to auto needs conditions."""
+    """AC-03-02/03 (update path) - flipping an edge to auto needs conditions."""
     operator = _operator(client)
     pending, approved, _rejected = _build_ticket_graph(client, operator)
     graph = _graph(client, operator, "synthetic_ticket")
@@ -1010,7 +1010,7 @@ def test_update_to_auto_validates_resulting_state(client):
 
 
 def test_auto_edges_excluded_from_user_surfaces(client, session_factory):
-    """AC-03-04 — auto edges never appear in available_transitions / fireable_edge_ids;
+    """AC-03-04 - auto edges never appear in available_transitions / fireable_edge_ids;
     manual edges from the same status still do."""
     operator = _operator(client)
     pending = _create_status(client, operator, "synthetic_ticket", "Pending", {"isInitial": True})
@@ -1037,7 +1037,7 @@ def test_auto_edges_excluded_from_user_surfaces(client, session_factory):
 
 
 def test_reevaluate_fires_first_passing_auto_edge(client, session_factory):
-    """AC-03-05/07 — reevaluate fires the first auto edge whose conditions pass;
+    """AC-03-05/07 - reevaluate fires the first auto edge whose conditions pass;
     none passing = no move."""
     operator = _operator(client)
     a = _create_status(client, operator, "synthetic_ticket", "A", {"isInitial": True})
@@ -1064,7 +1064,7 @@ def test_reevaluate_fires_first_passing_auto_edge(client, session_factory):
 
 
 def test_reevaluate_cascades_to_fixpoint(client, session_factory):
-    """AC-03-06 — a single reevaluate cascades A→B→C when both auto edges pass."""
+    """AC-03-06 - a single reevaluate cascades A→B→C when both auto edges pass."""
     operator = _operator(client)
     a = _create_status(client, operator, "synthetic_ticket", "Issued", {"isInitial": True})
     b = _create_status(client, operator, "synthetic_ticket", "Partial")
@@ -1083,7 +1083,7 @@ def test_reevaluate_cascades_to_fixpoint(client, session_factory):
 
 
 def test_reevaluate_first_wins_by_sort_order(client, session_factory):
-    """AC-03-07 — when two auto edges from a status both pass, the lower
+    """AC-03-07 - when two auto edges from a status both pass, the lower
     sort_order fires."""
     operator = _operator(client)
     a = _create_status(client, operator, "synthetic_ticket", "A", {"isInitial": True})
@@ -1103,7 +1103,7 @@ def test_reevaluate_first_wins_by_sort_order(client, session_factory):
 
 
 def test_reevaluate_terminates_on_cycle(client, session_factory):
-    """AC-03-06 — a cycle of passing auto edges terminates (no-revisit guard)."""
+    """AC-03-06 - a cycle of passing auto edges terminates (no-revisit guard)."""
     operator = _operator(client)
     a = _create_status(client, operator, "synthetic_ticket", "A", {"isInitial": True})
     b = _create_status(client, operator, "synthetic_ticket", "B")
@@ -1122,7 +1122,7 @@ def test_reevaluate_terminates_on_cycle(client, session_factory):
 
 
 def test_reevaluate_stable_state_not_pulled_back(client, session_factory):
-    """AC-03-09 — a status with no outgoing auto edge is never re-derived."""
+    """AC-03-09 - a status with no outgoing auto edge is never re-derived."""
     operator = _operator(client)
     a = _create_status(client, operator, "synthetic_ticket", "A", {"isInitial": True})
     b = _create_status(client, operator, "synthetic_ticket", "B")
@@ -1138,7 +1138,7 @@ def test_reevaluate_stable_state_not_pulled_back(client, session_factory):
 
 
 def test_manual_override_edge_to_derived_state_coexists(client, session_factory):
-    """AC-03-08 — a derived state may also have a role-free MANUAL edge; that
+    """AC-03-08 - a derived state may also have a role-free MANUAL edge; that
     manual edge IS offered while the auto one stays hidden."""
     operator = _operator(client)
     a = _create_status(client, operator, "synthetic_ticket", "A", {"isInitial": True})
@@ -1159,7 +1159,7 @@ def test_manual_override_edge_to_derived_state_coexists(client, session_factory)
 
 
 def test_fork_carries_trigger_mode(client, session_factory):
-    """AC-03-18 — forking the platform set to a tenant keeps an auto edge auto."""
+    """AC-03-18 - forking the platform set to a tenant keeps an auto edge auto."""
     operator = _operator(client)
     a = _create_status(client, operator, "synthetic_ticket", "A", {"isInitial": True})
     b = _create_status(client, operator, "synthetic_ticket", "B")
@@ -1180,7 +1180,7 @@ def test_fork_carries_trigger_mode(client, session_factory):
 
 @pytest.fixture(autouse=True)
 def _reset_derived_triggers():
-    """Derived triggers are module-global + dedup'd by (owner, trigger) — clear
+    """Derived triggers are module-global + dedup'd by (owner, trigger) - clear
     them around every test so each registers a fresh resolver in isolation. The
     subscriber (_on_event) stays registered but no-ops while _TRIGGERS is empty."""
     from app.status_engine import derived
@@ -1258,7 +1258,7 @@ def _emit_line(db, ticket, amount):
 
 
 def test_aggregate_fact_registered_and_authorable(client):
-    """AC-03-13 — aggregate facts surface in the rule-fact catalog and pass
+    """AC-03-13 - aggregate facts surface in the rule-fact catalog and pass
     save-time validation as an auto-edge condition."""
     _register_ticket_aggregates()
     operator = _operator(client)
@@ -1277,7 +1277,7 @@ def test_aggregate_fact_registered_and_authorable(client):
 
 
 def test_child_event_reevaluates_owner(client, session_factory):
-    """AC-03-11 — creating a child fires the owner's auto edge via the bus."""
+    """AC-03-11 - creating a child fires the owner's auto edge via the bus."""
     _register_ticket_aggregates()
     _wire_line_derivation()
     operator = _operator(client)
@@ -1304,7 +1304,7 @@ def test_child_event_reevaluates_owner(client, session_factory):
 
 
 def test_aggregate_facts_are_tenant_scoped(client, session_factory):
-    """AC-03-13 — an aggregate counts only the owner's own children."""
+    """AC-03-13 - an aggregate counts only the owner's own children."""
     _register_ticket_aggregates()
     operator = _operator(client)
     db = session_factory()
@@ -1327,7 +1327,7 @@ def test_aggregate_facts_are_tenant_scoped(client, session_factory):
 
 
 def test_self_trigger_reevaluates_on_update(client, session_factory):
-    """AC-03-12 — an owner's OWN update re-evaluates its auto edges."""
+    """AC-03-12 - an owner's OWN update re-evaluates its auto edges."""
     _register_ticket_aggregates()
     from app.status_engine.derived import (
         DerivedTrigger,
@@ -1379,7 +1379,7 @@ def test_self_trigger_reevaluates_on_update(client, session_factory):
 
 
 def test_generic_self_derivation_needs_no_explicit_trigger(client, session_factory):
-    """sprint-4/03 — an unscoped status entity that declares a ``model`` re-evaluates
+    """sprint-4/03 - an unscoped status entity that declares a ``model`` re-evaluates
     its OWN auto edges on its own update with NO registered DerivedTrigger
     (closes the foolproof gap: authoring an auto edge is enough to make it fire)."""
     from app.status_engine.derived import install_derived_status
@@ -1432,7 +1432,7 @@ def test_generic_self_derivation_needs_no_explicit_trigger(client, session_facto
 
 
 def test_relation_expands_to_count_and_column_facts():
-    """AC-03-28/29/30 — a relation generates count + (column×op) facts with
+    """AC-03-28/29/30 - a relation generates count + (column×op) facts with
     stable dotted keys, derived labels, and correct types."""
     import pytest
 
@@ -1479,7 +1479,7 @@ def test_relation_count_only_omits_columns():
 
 
 def test_relation_bad_op_and_missing_column_raise():
-    """AC-03-31 — an op outside {sum,avg,min,max} or an absent column is a loud
+    """AC-03-31 - an op outside {sum,avg,min,max} or an absent column is a loud
     ValueError at registration."""
     import pytest
 
@@ -1504,7 +1504,7 @@ def test_relation_bad_op_and_missing_column_raise():
 
 
 def test_relation_registration_wires_facts_and_trigger(client):
-    """AC-03-32/34 — registering an entity with a relation appends the generated
+    """AC-03-32/34 - registering an entity with a relation appends the generated
     facts to its rule source AND auto-registers the child→owner DerivedTrigger."""
     from app.rule_engine.aggregates import AggregatableRelation
     from app.rule_engine.registry import get_facts
@@ -1536,7 +1536,7 @@ def test_relation_registration_wires_facts_and_trigger(client):
 
 
 def test_broken_derivation_never_breaks_the_child_write(client, session_factory):
-    """AC-03-14 — a raising owner resolver is isolated: the child write stands,
+    """AC-03-14 - a raising owner resolver is isolated: the child write stands,
     nothing propagates."""
     _register_ticket_aggregates()
     from app.status_engine.derived import (
@@ -1577,7 +1577,7 @@ def test_broken_derivation_never_breaks_the_child_write(client, session_factory)
 
 
 def test_fail_closed_on_missing_aggregate_fact(client, session_factory):
-    """AC-03-15 — an auto edge whose condition can't resolve fires nothing."""
+    """AC-03-15 - an auto edge whose condition can't resolve fires nothing."""
     # Register record:ticket WITHOUT the aggregate the edge will reference, so
     # the fact resolves None → condition fails closed.
     register_fact_source(
@@ -1609,7 +1609,7 @@ def test_fail_closed_on_missing_aggregate_fact(client, session_factory):
 
 
 def test_derived_reeval_does_not_self_reenter(client, session_factory):
-    """AC-03-16 — a derived transition's own status_changed event is skipped by
+    """AC-03-16 - a derived transition's own status_changed event is skipped by
     the subscriber (no infinite re-entry); cascade still reaches the fixpoint."""
     _register_ticket_aggregates()
     _wire_line_derivation()
@@ -1640,7 +1640,7 @@ def test_derived_reeval_does_not_self_reenter(client, session_factory):
 
 
 def test_scoped_graph_derivation(client, session_factory):
-    """AC-03-17 — reevaluate resolves the correct SCOPED owner graph."""
+    """AC-03-17 - reevaluate resolves the correct SCOPED owner graph."""
     from app.status_engine.registry import StatusEntity, register_status_entity
     from app.status_engine.scoped import ScopeSeedEdge, ScopeSeedStatus, materialize_scope
 
@@ -1691,7 +1691,7 @@ def test_scoped_graph_derivation(client, session_factory):
 
 
 def test_time_based_sweep_advances_overdue(client, session_factory):
-    """AC-03-19 — the scheduler sweep advances a record whose time-conditioned
+    """AC-03-19 - the scheduler sweep advances a record whose time-conditioned
     auto edge now passes; a not-yet-due record stays put."""
     from app.workflow_engine.scheduler import reevaluate_time_based
 

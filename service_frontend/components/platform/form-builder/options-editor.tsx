@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Choice-options editor (plan sprint-3/01 D8) — value+label rows with
+ * Choice-options editor (plan sprint-3/01 D8) - value+label rows with
  * add/remove/reorder; value auto-derives from the label slug on add. Shared by
  * choice fields and repeater sub-fields. Pure presentation over `doc-ops`.
  */

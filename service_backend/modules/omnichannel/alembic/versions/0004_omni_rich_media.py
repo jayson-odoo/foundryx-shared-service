@@ -1,8 +1,8 @@
-"""omnichannel plan 12 Slice 1 — rich media columns + per-workspace settings.
+"""omnichannel plan 12 Slice 1 - rich media columns + per-workspace settings.
 
 Adds the rich-media columns to ``conversation_messages`` (``media_key``,
 ``media_mime``, ``media_filename``, ``media_size``, ``payload_json``) and the
-``omnichannel_settings`` table (per-workspace media caps). Idempotent guards —
+``omnichannel_settings`` table (per-workspace media caps). Idempotent guards -
 the module baseline runs ``create_all`` so a fresh deploy may already have these.
 Backfill-safe: existing rows keep their legacy ``media_url``; new media rides
 ``media_key``. Revision id ≤ 32 chars.

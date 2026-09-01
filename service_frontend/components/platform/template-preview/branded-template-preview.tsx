@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Branded email preview — renders a template through the SAME engine pipeline
+ * Branded email preview - renders a template through the SAME engine pipeline
  * used at send (brand header/footer/buttons + sample merge values), in a
  * sandboxed iframe. Used by the status-notification + workflow email pickers so
  * an operator can verify the real branded result of a linked template.

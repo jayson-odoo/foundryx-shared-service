@@ -55,13 +55,13 @@ function buildTenants(): TenantRecord[] {
 
   return [
     mk(0, {
-      name: 'FoundryX Platform',
+      name: 'Foundryx Platform',
       slug: 'platform',
       isPlatform: true,
       userCount: 3,
     }),
     mk(1, {
-      name: 'FoundryX EMS',
+      name: 'Foundryx EMS',
       slug: 'default',
       userCount: 12,
       contactName: 'Demo Admin',
@@ -129,7 +129,7 @@ function toListItem(t: TenantRecord): TenantListItem {
     customDomain: t.customDomain,
     userCount: t.userCount,
     createdAt: t.createdAt,
-    // Mirrors the real wire (sprint-2/02): null = no conditioned edges —
+    // Mirrors the real wire (sprint-2/02): null = no conditioned edges -
     // populate per row if the mock graph ever gains transitions.
     availableTransitionIds: null,
   };
@@ -210,7 +210,7 @@ function csvEscape(v: string): string {
 function assertSlugAvailable(slug: string): void {
   if (!isValidTenantSlug(slug)) {
     throw new Error(
-      'Slug must be lowercase letters/numbers with single hyphens (3–63 chars).',
+      'Slug must be lowercase letters/numbers with single hyphens (3-63 chars).',
     );
   }
   if (isReservedTenantSlug(slug))
@@ -309,12 +309,12 @@ export const mockTenantAdminService: TenantAdminService = {
   },
 
   async transition(id) {
-    // Mock has no edge graph — generic transitions are a no-op echo.
+    // Mock has no edge graph - generic transitions are a no-op echo.
     return delay(toDetail(findOrThrow(id)));
   },
 
   async statusGraph() {
-    // Mock has no engine — empty graph (lifecycle buttons simply absent).
+    // Mock has no engine - empty graph (lifecycle buttons simply absent).
     return delay({
       entityType: 'tenant',
       source: 'platform' as const,
@@ -346,7 +346,7 @@ export const mockTenantAdminService: TenantAdminService = {
   },
 };
 
-/** Test helper — reset the in-memory store between specs. */
+/** Test helper - reset the in-memory store between specs. */
 export function __resetMockTenants(): void {
   tenants = buildTenants();
 }

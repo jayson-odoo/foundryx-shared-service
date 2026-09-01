@@ -6,7 +6,7 @@ substitution-only prompt composition, trace/span write + payload caps, the
 retention sweep, stub determinism + fixture control, permission gating and
 tenant scoping.
 
-Everything here runs OFFLINE — the stub adapter answers, so the suite needs no
+Everything here runs OFFLINE - the stub adapter answers, so the suite needs no
 API key, costs nothing and never touches the network (AC-BI-12/13).
 """
 from datetime import datetime, timedelta, timezone
@@ -63,7 +63,7 @@ def _make_connection(db, *, tenant_id=DEFAULT_TENANT_ID, provider="gemini", dev=
         name=kwargs.pop("name", f"{provider} key"),
         config_json={},
         # `dev` credentials route to the stub adapter (the omnichannel `_is_dev`
-        # pattern) — no network, no key.
+        # pattern) - no network, no key.
         credentials_json=encrypt_secret({"apiKey": "x", "dev": True} if dev else {"apiKey": "x"}),
         **kwargs,
     )
@@ -96,7 +96,7 @@ def _demo_user(db):
 
 @pytest.mark.parametrize("provider_key", LLM_PROVIDERS)
 def test_llm_provider_registered_with_required_surface(provider_key):
-    """AC-BI-02 — all three registered as type='llm' with the full verb set."""
+    """AC-BI-02 - all three registered as type='llm' with the full verb set."""
     provider = get_provider(provider_key)
     assert provider is not None, f"{provider_key} not registered"
     assert provider.type == "llm"
@@ -106,7 +106,7 @@ def test_llm_provider_registered_with_required_surface(provider_key):
 
 @pytest.mark.parametrize("provider_key", LLM_PROVIDERS)
 def test_llm_provider_marks_api_key_secret(provider_key):
-    """AC-BI-03 — the key field is `secret`, so it routes to credentials_json
+    """AC-BI-03 - the key field is `secret`, so it routes to credentials_json
     (Fernet, write-only) and never into displayable config."""
     fields = get_provider(provider_key).fields()
     api_key_fields = [f for f in fields if f.get("secret")]
@@ -116,7 +116,7 @@ def test_llm_provider_marks_api_key_secret(provider_key):
 
 @pytest.mark.parametrize("provider_key", LLM_PROVIDERS)
 def test_llm_provider_has_static_model_fallback(provider_key):
-    """AC-BI-05 — a curated static list exists so the form renders when the live
+    """AC-BI-05 - a curated static list exists so the form renders when the live
     catalog call fails."""
     static = get_provider(provider_key).static_models
     assert static, f"{provider_key} has no static fallback models"
@@ -125,7 +125,7 @@ def test_llm_provider_has_static_model_fallback(provider_key):
 
 @pytest.mark.parametrize("provider_key", LLM_PROVIDERS)
 def test_llm_provider_test_reports_clean_error_without_key(provider_key):
-    """AC-BI-04 — a bad/absent key yields a clean message, never a traceback and
+    """AC-BI-04 - a bad/absent key yields a clean message, never a traceback and
     never the key echoed."""
     result = get_provider(provider_key).test({}, {})
     assert result.ok is False
@@ -134,7 +134,7 @@ def test_llm_provider_test_reports_clean_error_without_key(provider_key):
 
 
 def test_llm_result_enforces_text_xor_structured():
-    """AC-BI-01 — `text` and `structured` are mutually exclusive."""
+    """AC-BI-01 - `text` and `structured` are mutually exclusive."""
     assert LLMResult(text="hi").text == "hi"
     assert LLMResult(structured={"a": 1}).structured == {"a": 1}
     with pytest.raises(ValueError):
@@ -144,7 +144,7 @@ def test_llm_result_enforces_text_xor_structured():
 
 
 def test_gemini_schema_downconversion_strips_unsupported_keys():
-    """The adapter owns its own structured-output dialect — callers pass plain
+    """The adapter owns its own structured-output dialect - callers pass plain
     JSON Schema and never learn Gemini rejects `additionalProperties`."""
     from app.integrations.gemini_provider import to_gemini_schema
 
@@ -191,6 +191,35 @@ def test_gemini_disables_thinking_on_structured_calls(monkeypatch):
     )
     thinking = captured["body"]["generationConfig"].get("thinkingConfig")
     assert thinking == {"thinkingBudget": 0}
+
+
+def test_gemini_36_omits_unsupported_thinking_config(monkeypatch):
+    """Gemini 3.6 rejects ``thinkingConfig`` with INVALID_ARGUMENT."""
+    import app.integrations.gemini_provider as gp
+
+    captured = {}
+
+    def fake_http(method, url, *, headers=None, json_body=None, timeout=None):
+        captured["body"] = json_body
+        return {
+            "candidates": [
+                {"content": {"parts": [{"text": '{"intent": "status"}'}]}, "finishReason": "STOP"}
+            ],
+            "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 4},
+        }
+
+    monkeypatch.setattr(gp, "_http_json", fake_http)
+    result = gp.GeminiProvider().complete(
+        {},
+        {"apiKey": "x"},
+        model="gemini-3.6-flash",
+        system="s",
+        messages=[{"role": "user", "content": "hi"}],
+        output_schema={"type": "object", "properties": {"intent": {"type": "string"}}},
+    )
+
+    assert result.structured == {"intent": "status"}
+    assert "thinkingConfig" not in captured["body"]["generationConfig"]
 
 
 @pytest.mark.parametrize(
@@ -247,7 +276,7 @@ def test_truncated_structured_response_raises_clean_llmerror(
 
 
 def test_two_active_llm_connections_coexist(session_factory):
-    """AC-BI-03b — a tenant may hold several ACTIVE LLM connections, so
+    """AC-BI-03b - a tenant may hold several ACTIVE LLM connections, so
     different agents can use different providers."""
     db = session_factory()
     _make_connection(db, provider="anthropic", name="Claude")
@@ -262,7 +291,7 @@ def test_two_active_llm_connections_coexist(session_factory):
 
 
 def test_two_active_same_provider_llm_connections_rejected(client, session_factory):
-    """AC-BI-03b — `uq_connection_tenant_provider` still applies: no two ACTIVE
+    """AC-BI-03b - `uq_connection_tenant_provider` still applies: no two ACTIVE
     Anthropic rows."""
     headers = _login(client)
     body = {
@@ -300,7 +329,7 @@ def test_llm_connections_do_not_block_each_other_via_api(client):
 
 
 def test_storage_one_per_type_invariant_unchanged(client):
-    """AC-BI-03b — storage/email must KEEP one-active-per-type. The carve-out
+    """AC-BI-03b - storage/email must KEEP one-active-per-type. The carve-out
     is surgical; loosening storage would break deterministic resolution."""
     headers = _login(client)
     first = client.post(
@@ -350,7 +379,7 @@ def test_skill_edit_mints_new_version_and_moves_label(client):
     assert updated["body"] == "v2 body"
     assert updated["activeVersionId"] != v1_id
 
-    # The PRIOR version row is untouched — never mutated in place.
+    # The PRIOR version row is untouched - never mutated in place.
     versions = client.get(f"/ai/skills/{skill['id']}/versions", headers=headers).json()
     assert [v["version"] for v in versions] == [2, 1]
     v1 = next(v for v in versions if v["version"] == 1)
@@ -376,7 +405,7 @@ def test_skill_rollback_is_a_label_move_not_a_copy(client):
     assert body["activeVersionId"] == v1_id
     assert body["activeVersionNumber"] == 1
     assert body["body"] == "v1 body"
-    # No new version was created by the rollback — it is purely a label move.
+    # No new version was created by the rollback - it is purely a label move.
     assert body["versionCount"] == 2
 
 
@@ -425,7 +454,7 @@ def test_compose_substitutes_tokens():
 
 
 def test_compose_never_evaluates_eval_shaped_bodies():
-    """AC-BI-08 — the anti-SSTI house rule. Jinja/f-string/`${}` constructs are
+    """AC-BI-08 - the anti-SSTI house rule. Jinja/f-string/`${}` constructs are
     INERT TEXT; only `{{ token }}` substitution happens."""
     hostile = (
         "{% for x in ().__class__.__base__.__subclasses__() %}LOOP{% endfor %}\n"
@@ -438,7 +467,7 @@ def test_compose_never_evaluates_eval_shaped_bodies():
     # exactly once (a real Jinja render would repeat it per subclass).
     assert "49" not in out
     assert out.count("LOOP") == 1
-    # The eval-shaped constructs survive VERBATIM — proof they were never parsed
+    # The eval-shaped constructs survive VERBATIM - proof they were never parsed
     # as anything but literal text.
     assert "{% for x in ().__class__.__base__.__subclasses__() %}" in out
     assert "{% endfor %}" in out
@@ -455,7 +484,7 @@ def test_compose_missing_token_collapses_to_empty():
 
 
 def test_field_schema_marks_nothing_required():
-    """Bi-D13 — the TURN default marks nothing required: coverage is incremental
+    """Bi-D13 - the TURN default marks nothing required: coverage is incremental
     and an unreached field is simply absent."""
     schema = field_schema([{"key": "problem_statement", "label": "Problem"}])
     assert schema["type"] == "object"
@@ -464,9 +493,9 @@ def test_field_schema_marks_nothing_required():
 
 
 def test_field_schema_required_marks_every_key():
-    """AC-BI-24c — the EXTRACTION schema marks EVERY key required so the model
+    """AC-BI-24c - the EXTRACTION schema marks EVERY key required so the model
     returns a value for each field (including one synthesized across turns), never
-    silently omitting synthesized fields. Partial emit still holds — the paired
+    silently omitting synthesized fields. Partial emit still holds - the paired
     directive + enforce_required=False keep a genuinely-blank field blank."""
     fields = [
         {"key": "problem_statement", "label": "Problem"},
@@ -480,7 +509,7 @@ def test_field_schema_required_marks_every_key():
 
 
 def test_extraction_directive_demands_a_value_for_every_field():
-    """AC-BI-24c — the extraction directive tells the model to return a value for
+    """AC-BI-24c - the extraction directive tells the model to return a value for
     EVERY field and to SYNTHESIZE across turns, while still never inventing."""
     from app.ai.grill import GrillContext, _compose_extraction_system
 
@@ -524,7 +553,7 @@ def test_trace_and_spans_written_on_completion(session_factory):
     assert trace.provider == "stub"
     assert trace.agent_name == "Griller"
     assert trace.span_count == 1
-    # Trace usage is the roll-up of its spans — cost tracking reads the trace,
+    # Trace usage is the roll-up of its spans - cost tracking reads the trace,
     # so it must never drift from the spans.
     spans = db.query(AiSpan).filter(AiSpan.trace_id == trace.id).all()
     assert len(spans) == 1
@@ -535,7 +564,7 @@ def test_trace_and_spans_written_on_completion(session_factory):
 
 
 def test_failed_completion_still_writes_an_error_trace(session_factory):
-    """A failure must remain OBSERVABLE — that is what traces are for."""
+    """A failure must remain OBSERVABLE - that is what traces are for."""
     db = session_factory()
     conn = _make_connection(db)
     agent = _make_agent(db, conn)
@@ -556,7 +585,7 @@ def test_failed_completion_still_writes_an_error_trace(session_factory):
 
 
 def test_span_payload_is_capped_and_truncation_marked():
-    """AC-BI-10 — a long grill must not bloat Postgres, and a clipped payload
+    """AC-BI-10 - a long grill must not bloat Postgres, and a clipped payload
     must be distinguishable from a short one."""
     huge = "x" * (MAX_PAYLOAD_CHARS + 5_000)
     capped = cap_payload({"system": huge, "short": "ok"})
@@ -596,7 +625,7 @@ def test_long_completion_is_capped_when_traced(session_factory):
 
 
 def test_retention_sweep_prunes_ok_but_keeps_error_and_flagged(session_factory):
-    """AC-BI-10 — `ok` prunes on the short window; `error`/`flagged` keep the
+    """AC-BI-10 - `ok` prunes on the short window; `error`/`flagged` keep the
     longer one so a bad result stays diagnosable."""
     from app.config import settings
 
@@ -625,7 +654,7 @@ def test_retention_sweep_prunes_ok_but_keeps_error_and_flagged(session_factory):
         )
         return trace
 
-    # Capture ids BEFORE the prune — a deleted ORM instance can no longer be
+    # Capture ids BEFORE the prune - a deleted ORM instance can no longer be
     # attribute-accessed (ObjectDeletedError).
     fresh_ok_id = add(TRACE_STATUS_OK, now).id
     old_ok_id = add(TRACE_STATUS_OK, old).id
@@ -644,7 +673,7 @@ def test_retention_sweep_prunes_ok_but_keeps_error_and_flagged(session_factory):
     assert old_ok_id not in surviving
     assert ancient_error_id not in surviving
 
-    # Child spans cascade — no orphans left behind.
+    # Child spans cascade - no orphans left behind.
     orphans = (
         db.query(AiSpan).filter(AiSpan.trace_id.notin_(list(surviving))).count()
     )
@@ -653,7 +682,7 @@ def test_retention_sweep_prunes_ok_but_keeps_error_and_flagged(session_factory):
 
 
 def test_retention_sweep_is_wired_into_the_beat_task():
-    """AC-BI-10 — the sweep runs on the beat tick, in its OWN isolated
+    """AC-BI-10 - the sweep runs on the beat tick, in its OWN isolated
     try/except so a prune failure never breaks the beat."""
     import inspect
 
@@ -685,13 +714,13 @@ def test_resolution_falls_back_to_platform_connection(session_factory):
 
 
 def test_resolution_is_deterministic_across_several_llm_rows(session_factory):
-    """AC-BI-03b — with the carve-out a tenant can hold several rows, so the
+    """AC-BI-03b - with the carve-out a tenant can hold several rows, so the
     prerequisite probe must pick DETERMINISTICALLY.
 
     The ordering is (created_at, id): the id tiebreak is what makes the pick
     stable even when several rows share a timestamp, which is exactly what
     happens when they are seeded in one transaction. Asserting stability is the
-    real contract — asserting WHICH row would just re-encode the tiebreak.
+    real contract - asserting WHICH row would just re-encode the tiebreak.
     """
     db = session_factory()
     _make_connection(db, provider="anthropic", name="First")
@@ -708,8 +737,42 @@ def test_no_connection_anywhere_reports_missing_prerequisite(session_factory):
     db.close()
 
 
+def test_connectionless_agent_stubs_only_in_development(session_factory, monkeypatch):
+    """Review should-fix: the zero-config stub is a DEV convenience. In prod a
+    connection-less agent (with no LLM connection anywhere) must fail loudly,
+    never answer tenants with canned text."""
+    from app.ai.client import LLMError, resolve_for_agent
+    from app.config import settings
+
+    db = session_factory()
+    agent = _make_agent(db, None)  # no connection, and none exists on the tenant
+
+    monkeypatch.setattr(settings, "environment", "development")
+    assert resolve_for_agent(db, DEFAULT_TENANT_ID, agent).is_stub is True
+
+    for env in ("production", "staging"):
+        monkeypatch.setattr(settings, "environment", env)
+        with pytest.raises(LLMError, match="No AI connection is configured"):
+            resolve_for_agent(db, DEFAULT_TENANT_ID, agent)
+    db.close()
+
+
+def test_agent_with_dev_credentials_still_stubs_in_production(session_factory, monkeypatch):
+    """The `dev`-cred path is unchanged - a real connection carrying dev creds
+    routes to the stub in every environment (the omnichannel _is_dev shape)."""
+    from app.ai.client import resolve_for_agent
+    from app.config import settings
+
+    db = session_factory()
+    conn = _make_connection(db, dev=True)
+    agent = _make_agent(db, conn)
+    monkeypatch.setattr(settings, "environment", "production")
+    assert resolve_for_agent(db, DEFAULT_TENANT_ID, agent).is_stub is True
+    db.close()
+
+
 def test_prerequisite_endpoint_reports_absence(client):
-    """AC-BI-11 — the UI must be able to warn BEFORE anything runs."""
+    """AC-BI-11 - the UI must be able to warn BEFORE anything runs."""
     headers = _login(client)
     res = client.get("/ai/agents/prerequisite", headers=headers)
     assert res.status_code == 200
@@ -732,7 +795,7 @@ def test_prerequisite_endpoint_lists_llm_connections(client):
 
 
 def test_agent_holds_no_credential_of_its_own(session_factory):
-    """AC-BI-06 — credentials live ONLY on the connection."""
+    """AC-BI-06 - credentials live ONLY on the connection."""
     columns = {c.name for c in AiAgent.__table__.columns}
     assert not any(
         hint in name
@@ -811,7 +874,7 @@ def _create_skill(client, headers, key, name="Skill"):
 
 
 def test_agent_equips_zero_one_and_many_skills(client):
-    """AC-BI-06b — the equipped set is a many-many; 0, 1 and N all valid."""
+    """AC-BI-06b - the equipped set is a many-many; 0, 1 and N all valid."""
     headers = _login(client)
     s1 = _create_skill(client, headers, "s1", "First")
     s2 = _create_skill(client, headers, "s2", "Second")
@@ -876,7 +939,7 @@ def test_agent_equip_dedupes_repeated_skill_ids(client):
 
 
 def test_agent_equip_allows_platform_tier_skill(client, session_factory):
-    """AC-BI-06b — a platform-tier skill id is a valid equip target."""
+    """AC-BI-06b - a platform-tier skill id is a valid equip target."""
     db = session_factory()
     skill = AiSkill(tenant_id=None, key="platform-grill", name="Platform Grill")
     db.add(skill)
@@ -900,7 +963,7 @@ def test_agent_equip_allows_platform_tier_skill(client, session_factory):
 
 
 def test_agent_equip_refuses_foreign_tenant_skill(client, session_factory):
-    """AC-BI-06b — a skill id from ANOTHER tenant is refused (polymorphic-target
+    """AC-BI-06b - a skill id from ANOTHER tenant is refused (polymorphic-target
     rule: validate on write)."""
     from app.models.tenant import Tenant
 
@@ -926,7 +989,7 @@ def test_agent_equip_refuses_foreign_tenant_skill(client, session_factory):
 
 
 def test_agent_skill_set_is_tenant_scoped_on_read(client, session_factory):
-    """AC-BI-06b — the join is tenant-scoped: another tenant's agent+equip is
+    """AC-BI-06b - the join is tenant-scoped: another tenant's agent+equip is
     invisible, and its equipped skills never leak into our read."""
     db = session_factory()
     # A platform-tenant agent equipping a platform-tenant skill.
@@ -979,7 +1042,7 @@ def test_disabled_agent_refuses_to_run(session_factory):
 def test_models_endpoint_falls_back_to_static_list_on_provider_failure(
     client, session_factory
 ):
-    """AC-BI-05 — the form must STILL RENDER when the live call fails."""
+    """AC-BI-05 - the form must STILL RENDER when the live call fails."""
     headers = _login(client)
     conn = client.post(
         "/integrations/connections",
@@ -1022,7 +1085,7 @@ def test_stub_is_deterministic_for_identical_input(session_factory):
 
 
 def test_stub_fixture_can_declare_an_invalid_extraction(session_factory):
-    """AC-BI-12 — a spec can script an extraction MISSING a field, so slice 3's
+    """AC-BI-12 - a spec can script an extraction MISSING a field, so slice 3's
     retry/partial-emit paths become deterministically testable."""
     db = session_factory()
     conn = _make_connection(db)
@@ -1044,7 +1107,7 @@ def test_stub_fixture_can_declare_an_invalid_extraction(session_factory):
 
 
 def test_stub_queue_drains_then_falls_back(session_factory):
-    """A drained queue must not hang or raise — it returns the derived reply."""
+    """A drained queue must not hang or raise - it returns the derived reply."""
     db = session_factory()
     conn = _make_connection(db)
     agent = _make_agent(db, conn)
@@ -1080,7 +1143,7 @@ def test_stub_structured_call_returns_schema_shaped_object(session_factory):
 
 
 def test_stub_answers_when_no_connection_is_configured(session_factory):
-    """AC-BI-12 — zero API key, zero cost, zero network."""
+    """AC-BI-12 - zero API key, zero cost, zero network."""
     db = session_factory()
     agent = _make_agent(db, None)
     result, trace = AiClient(db).complete(
@@ -1098,7 +1161,7 @@ def test_stub_answers_when_no_connection_is_configured(session_factory):
 
 
 def test_ai_permissions_declared_in_core_csv():
-    """AC-BI-14 — agents+skills share `ai_agents.*`; traces are SEPARATE."""
+    """AC-BI-14 - agents+skills share `ai_agents.*`; traces are SEPARATE."""
     from pathlib import Path
 
     csv_text = Path("app/permissions/permissions.csv").read_text()
@@ -1113,7 +1176,7 @@ def test_ai_endpoints_reject_unauthenticated(client):
 
 
 def test_manage_required_to_write_agents(client, session_factory):
-    """The backend is the real boundary — read alone cannot write."""
+    """The backend is the real boundary - read alone cannot write."""
     db = session_factory()
     user = _demo_user(db)
     role = user.roles[0]
@@ -1130,7 +1193,7 @@ def test_manage_required_to_write_agents(client, session_factory):
 
 
 def test_trace_read_is_separable_from_agent_manage(client, session_factory):
-    """AC-BI-14 — the whole point of the split: trace access (raw prompts) can be
+    """AC-BI-14 - the whole point of the split: trace access (raw prompts) can be
     revoked WITHOUT losing the ability to configure agents."""
     db = session_factory()
     user = _demo_user(db)
@@ -1149,12 +1212,12 @@ def test_trace_read_is_separable_from_agent_manage(client, session_factory):
 
 
 def test_implied_read_normalization_for_ai_manage():
-    """AC-BI-14 — granting `ai_agents.manage` forces `ai_agents.read`
+    """AC-BI-14 - granting `ai_agents.manage` forces `ai_agents.read`
     server-side (the blanket implied-read rule applies to the new keys too)."""
     from app.services.role_service import apply_implied_read
 
     assert "ai_agents.read" in apply_implied_read(["ai_agents.manage"])
-    # `ai_traces.read` is already a read — it implies nothing further, and it is
+    # `ai_traces.read` is already a read - it implies nothing further, and it is
     # NOT implied by `ai_agents.manage` (the separation AC-BI-14 requires).
     assert "ai_traces.read" not in apply_implied_read(["ai_agents.manage"])
 
@@ -1163,7 +1226,7 @@ def test_implied_read_normalization_for_ai_manage():
 
 
 def test_agents_are_tenant_scoped(client, session_factory):
-    """Cross-tenant access is refused — the load-bearing isolation rule."""
+    """Cross-tenant access is refused - the load-bearing isolation rule."""
     db = session_factory()
     other_agent = AiAgent(tenant_id=PLATFORM_TENANT_ID, name="Platform agent")
     db.add(other_agent)
@@ -1196,7 +1259,7 @@ def test_agent_cannot_point_at_another_tenants_connection(client, session_factor
     from app.models.tenant import Tenant
 
     db = session_factory()
-    # A connection owned by a THIRD tenant — neither the caller nor the platform
+    # A connection owned by a THIRD tenant - neither the caller nor the platform
     # fallback, so it must be entirely invisible.
     default_tenant = db.query(Tenant).filter(Tenant.id == DEFAULT_TENANT_ID).first()
     other = Tenant(name="Other", slug="other-ai", status_id=default_tenant.status_id)
@@ -1221,7 +1284,7 @@ def test_skill_list_includes_platform_tier_rows(client, session_factory):
     db.flush()
     version = AiSkillVersion(skill_id=skill.id, tenant_id=None, version=1, body="shared")
     db.add(version)
-    # FLUSH before reading `version.id` — the uuid default is applied at INSERT,
+    # FLUSH before reading `version.id` - the uuid default is applied at INSERT,
     # not at construction, so an unflushed instance still has id=None.
     db.flush()
     skill.active_version_id = version.id
@@ -1284,7 +1347,7 @@ def test_platform_tier_skill_cannot_be_deleted_by_a_tenant(client, session_facto
 
 
 def test_llm_credentials_are_never_echoed(client):
-    """AC-BI-03 — the API key is never returned by any endpoint."""
+    """AC-BI-03 - the API key is never returned by any endpoint."""
     headers = _login(client)
     created = client.post(
         "/integrations/connections",
@@ -1304,7 +1367,7 @@ def test_llm_credentials_are_never_echoed(client):
 
 
 def test_blank_credential_on_update_keeps_the_stored_key(client, session_factory):
-    """AC-BI-03 — the documented blank-to-keep contract."""
+    """AC-BI-03 - the documented blank-to-keep contract."""
     from app.secrets import decrypt_secret
 
     headers = _login(client)
@@ -1331,7 +1394,7 @@ def test_blank_credential_on_update_keeps_the_stored_key(client, session_factory
 
 
 def test_config_patch_merges_rather_than_wipes(client, session_factory):
-    """AC-BI-03 — a partial config PATCH merges."""
+    """AC-BI-03 - a partial config PATCH merges."""
     headers = _login(client)
     created = client.post(
         "/integrations/connections",
@@ -1414,7 +1477,7 @@ def test_grill_api_key_alias_is_honoured(monkeypatch):
 
 
 def test_trace_detail_returns_ordered_flat_step_list(client, session_factory):
-    """AC-BI-09/Bi-D17 — a FLAT ordered list; no tree renderer in v1."""
+    """AC-BI-09/Bi-D17 - a FLAT ordered list; no tree renderer in v1."""
     db = session_factory()
     conn = _make_connection(db)
     agent = _make_agent(db, conn)

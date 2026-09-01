@@ -1,4 +1,4 @@
-"""``CalendarSource`` — the one adapter seam in S0 (spine §4).
+"""``CalendarSource`` - the one adapter seam in S0 (spine §4).
 
 Two more implementations are already planned (``google_oauth`` for tenants that
 refuse domain-wide delegation, ``m365_graph`` for Microsoft 365), which is the
@@ -6,7 +6,7 @@ only reason this is an interface rather than a direct call.
 
 The source's job is narrow: hand back the events of ONE user's calendar as
 ``RawEvent``s, plus the token that makes the next read incremental. It decides
-nothing about opt-ins, dedupe or persistence — that is the sync service.
+nothing about opt-ins, dedupe or persistence - that is the sync service.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from ..models import PLATFORM_MEET, PLATFORM_OTHER, PLATFORM_TEAMS, PLATFORM_ZOO
 class SyncTokenInvalid(Exception):
     """The stored ``syncToken`` was rejected (Google answers HTTP 410).
 
-    The caller drops the token and refetches the whole window — the one recovery
+    The caller drops the token and refetches the whole window - the one recovery
     Google documents for an expired token."""
 
 
@@ -33,7 +33,7 @@ class CalendarSourceError(Exception):
 
 @dataclass
 class RawEvent:
-    """One calendar event as the source saw it — provider-neutral.
+    """One calendar event as the source saw it - provider-neutral.
 
     ``cancelled`` is True for an event the calendar has since dropped; the sync
     service removes the mirrored row rather than guessing (AC-S0-10).

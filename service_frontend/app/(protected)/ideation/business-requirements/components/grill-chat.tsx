@@ -24,7 +24,7 @@ export interface GrillChatProps {
 }
 
 /**
- * The grill conversation surface (AC-BI-29 / AC-BI-29c) — a bounded fixed-height
+ * The grill conversation surface (AC-BI-29 / AC-BI-29c) - a bounded fixed-height
  * scroll-shell that fits ONE viewport: the captured-summary strip is pinned at
  * the top, the transcript scrolls internally, and the message input is pinned at
  * the bottom (no page scroll to reach it). Built from ui primitives (NOT the
@@ -34,8 +34,8 @@ export interface GrillChatProps {
  * transcript row is `minmax(0,1fr)` (so it bounds instead of ballooning to
  * content), the whole grid is height-bounded to the viewport, and NO `flex-1`
  * sits on an unbounded parent. Generation fires ONLY from the natural-language
- * signal (AC-BI-29c) — there is no explicit Generate button; the app acts on the
- * model's `generateSignal` (D22-A). Single column — stacks cleanly at 375px.
+ * signal (AC-BI-29c) - there is no explicit Generate button; the app acts on the
+ * model's `generateSignal` (D22-A). Single column - stacks cleanly at 375px.
  */
 export function GrillChat({
   messages,
@@ -81,7 +81,7 @@ export function GrillChat({
         'grid-rows-[auto_auto_minmax(0,1fr)_auto]',
       )}
     >
-      {/* Coverage indicator (AC-BI-22): N of M captured · missing … — pinned. */}
+      {/* Coverage indicator (AC-BI-22): N of M captured · missing … - pinned. */}
       <div className="flex flex-col gap-1 rounded-lg border bg-muted/30 px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between">
         <span className="font-medium">
           {captured} of {total} captured
@@ -97,7 +97,7 @@ export function GrillChat({
 
       {/* Running captured summary (AC-BI-24c): each target field + its current
           understood value. Capped so it never pushes the input off-screen on
-          mobile — it scrolls within its own bound (values only — no how-to copy). */}
+          mobile - it scrolls within its own bound (values only - no how-to copy). */}
       <dl className="grid max-h-[26vh] gap-x-4 gap-y-2 overflow-y-auto rounded-lg border px-3 py-2.5 text-sm sm:grid-cols-2">
         {fields.map((f) => {
           const value = capturedSummary[f.key]?.trim();
@@ -110,14 +110,14 @@ export function GrillChat({
                   value ? 'text-foreground' : 'text-muted-foreground/60',
                 )}
               >
-                {value || '—'}
+                {value || '-'}
               </dd>
             </div>
           );
         })}
       </dl>
 
-      {/* Transcript — the ONLY row that scrolls internally (bounded by 1fr). */}
+      {/* Transcript - the ONLY row that scrolls internally (bounded by 1fr). */}
       <ScrollArea ref={scrollRef} className="h-full min-h-0 rounded-lg border">
         <div className="flex flex-col gap-4 p-4">
           {messages.length === 0 && !sending ? (

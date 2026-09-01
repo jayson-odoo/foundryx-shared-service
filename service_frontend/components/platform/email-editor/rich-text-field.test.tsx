@@ -1,4 +1,4 @@
-/** RichTextField — WYSIWYG toolbar emits real tags (no typed-tag escaping). */
+/** RichTextField - WYSIWYG toolbar emits real tags (no typed-tag escaping). */
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { RichTextField } from './rich-text-field';

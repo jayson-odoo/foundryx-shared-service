@@ -1,8 +1,8 @@
-"""Anthropic (Claude) LLM provider — `type='llm'` (AC-BI-02).
+"""Anthropic (Claude) LLM provider - `type='llm'` (AC-BI-02).
 
 Structured output = **forced tool use**: the schema is handed over as a single
 tool's `input_schema` and `tool_choice` pins that tool, so the model must emit a
-conforming object. That is Anthropic's mechanism and it stops here — callers
+conforming object. That is Anthropic's mechanism and it stops here - callers
 only ever see `LLMResult.structured` (AC-BI-01).
 """
 from typing import Any, Dict, List, Optional
@@ -36,13 +36,13 @@ class AnthropicProvider(LLMProviderBase):
     provider = "anthropic"
     title = "Anthropic (Claude)"
     description = (
-        "Use Claude models for AI features — grilling, drafting and structured "
+        "Use Claude models for AI features - grilling, drafting and structured "
         "extraction. Bring your own API key from the Anthropic console."
     )
     icon = "sparkles"
 
     # Curated fallback so the model picker still renders if the live catalog
-    # call fails (AC-BI-05). Deliberately short — the live list is the truth.
+    # call fails (AC-BI-05). Deliberately short - the live list is the truth.
     static_models = [
         ModelOption(id="claude-sonnet-4-5", label="Claude Sonnet 4.5"),
         ModelOption(id="claude-opus-4-1", label="Claude Opus 4.1"),
@@ -89,7 +89,7 @@ class AnthropicProvider(LLMProviderBase):
         if system:
             body["system"] = system
         if output_schema is not None:
-            # Forced tool use — Anthropic's structured-output mechanism.
+            # Forced tool use - Anthropic's structured-output mechanism.
             body["tools"] = [
                 {
                     "name": _EMIT_TOOL,
@@ -114,12 +114,12 @@ class AnthropicProvider(LLMProviderBase):
 
         if output_schema is not None:
             # A truncated response ("max_tokens") means the tool_use input JSON
-            # was cut off — refuse cleanly rather than accept a partial object
+            # was cut off - refuse cleanly rather than accept a partial object
             # (defense: a runaway model must produce an LLMError, not bad data).
             if payload.get("stop_reason") == "max_tokens":
                 raise LLMError(
                     "The model's structured response was cut off at the token "
-                    "limit — try again."
+                    "limit - try again."
                 )
             for block in blocks:
                 if block.get("type") == "tool_use" and block.get("name") == _EMIT_TOOL:

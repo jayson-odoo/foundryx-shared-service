@@ -1,5 +1,5 @@
 /**
- * Document service — the boundary the Drive UI talks to (UI → hook → service →
+ * Document service - the boundary the Drive UI talks to (UI → hook → service →
  * api-client). Phase A points at the in-memory mock; Phase B swaps the export
  * to `realDocumentService` (one line). See sprint-3/04-document-mgmt-drive.md.
  */
@@ -43,7 +43,7 @@ export class UploadConflictError extends Error {
   }
 }
 
-/** Upload refused — the tenant storage quota would be exceeded (413, D12). */
+/** Upload refused - the tenant storage quota would be exceeded (413, D12). */
 export class StorageQuotaError extends Error {
   constructor(message = 'Storage quota exceeded.') {
     super(message);
@@ -51,7 +51,7 @@ export class StorageQuotaError extends Error {
   }
 }
 
-/** Upload refused — the file type/size failed the sniff floor or type policy. */
+/** Upload refused - the file type/size failed the sniff floor or type policy. */
 export class UploadRejectedError extends Error {
   constructor(message: string) {
     super(message);
@@ -59,7 +59,7 @@ export class UploadRejectedError extends Error {
   }
 }
 
-/** Progress callback for an in-flight upload (0–100). */
+/** Progress callback for an in-flight upload (0-100). */
 export type UploadProgress = (percent: number) => void;
 
 export interface DocumentService {
@@ -144,7 +144,7 @@ export interface DocumentService {
   exportShares(query: ListQuery, columns: string[], segment: 'active' | 'revoked'): Promise<string>;
 
   /**
-   * Resolve a share as the AUTHENTICATED caller (internal/user tiers — opened
+   * Resolve a share as the AUTHENTICATED caller (internal/user tiers - opened
    * by any tenant member). 404 → null; a 403 ApiError signals "wrong tenant /
    * not on the allow-list" (the public page renders a denied state).
    */

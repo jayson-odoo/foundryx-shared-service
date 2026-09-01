@@ -1,4 +1,4 @@
-"""Integration core tests (plan 09) — provider catalog, connection CRUD,
+"""Integration core tests (plan 09) - provider catalog, connection CRUD,
 write-only credentials (encryption at rest), inline test + status upkeep,
 tenant scoping."""
 from app.integrations import get_provider
@@ -91,7 +91,7 @@ def test_create_connection_encrypts_credentials_and_never_echoes(client, session
 
 def test_embed_connection_hidden_from_integrations(client):
     """The embed ``omnichannel_shared`` row lives in core ``connections`` but is
-    NOT part of the Integrations surface — it must never appear in the list
+    NOT part of the Integrations surface - it must never appear in the list
     (where Disconnect would destroy it + mint a new connection id, breaking every
     consumer's embed iframe) nor resolve on detail."""
     h = _demo_headers(client)
@@ -99,7 +99,7 @@ def test_embed_connection_hidden_from_integrations(client):
     assert client.post("/omnichannel/embed-config/enable", headers=h).status_code == 200
     embed_id = client.get("/omnichannel/embed-config", headers=h).json()["connectionId"]
     assert embed_id
-    # A normal SMTP connection for contrast — that one DOES show.
+    # A normal SMTP connection for contrast - that one DOES show.
     smtp = _create(client, h)
 
     ids = [c["id"] for c in client.get("/integrations/connections", headers=h).json()["data"]]
@@ -114,6 +114,51 @@ def test_duplicate_provider_conflicts(client):
     _create(client, h)
     res = client.post("/integrations/connections", json=SMTP_PAYLOAD, headers=h)
     assert res.status_code == 409
+
+
+SQL_DATABASE_PAYLOAD = {
+    "provider": "sql_database",
+    "name": "AED 2024",
+    "config": {
+        "dbType": "mssql",
+        "host": "db.acme.com",
+        "port": "1433",
+        "database": "AED_2024",
+        "username": "readonly_user",
+    },
+    "credentials": {"password": "s3cret"},
+}
+
+
+def test_erp_provider_allows_several_connections_per_tenant(client):
+    """``uq_connection_tenant_provider`` carves ``type='erp'`` out of the
+    one-per-provider rule (plan 22: one SQL connection per AutoCount company
+    database) - the service's 409 must mirror the index, not pre-empt it."""
+    h = _demo_headers(client)
+    first = _create(client, h, SQL_DATABASE_PAYLOAD)
+    second = _create(
+        client,
+        h,
+        {
+            **SQL_DATABASE_PAYLOAD,
+            "name": "AED 2025",
+            "config": {**SQL_DATABASE_PAYLOAD["config"], "database": "AED_2025"},
+        },
+    )
+    assert first["id"] != second["id"]
+    assert first["type"] == second["type"] == "erp"
+    ids = [c["id"] for c in client.get("/integrations/connections", headers=h).json()["data"]]
+    assert first["id"] in ids and second["id"] in ids
+    # Update never changes provider/type, and names are not unique - renaming
+    # the second onto the first's name is a plain 200.
+    res = client.patch(
+        f"/integrations/connections/{second['id']}", json={"name": "AED 2024"}, headers=h
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["name"] == "AED 2024"
+    # Non-erp providers keep the one-per-provider rule untouched.
+    _create(client, h)  # smtp
+    assert client.post("/integrations/connections", json=SMTP_PAYLOAD, headers=h).status_code == 409
 
 
 def test_unknown_provider_rejected(client):
@@ -151,7 +196,7 @@ def test_update_blank_credentials_keep_stored_secret(client, session_factory):
 
 def test_update_partial_config_merges_not_wipes(client, session_factory):
     """A partial config PATCH must merge with stored keys (sibling credentials
-    merge too) — never silently wipe omitted keys."""
+    merge too) - never silently wipe omitted keys."""
     h = _demo_headers(client)
     created = _create(client, h)
     res = client.patch(

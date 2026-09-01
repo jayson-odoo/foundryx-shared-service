@@ -10,15 +10,15 @@ export interface BrDetailsTabProps {
   doc: FormDocument;
   answers: FormAnswers;
   onAnswersChange: (answers: FormAnswers) => void;
-  /** Server 422 per-field map from a failed save / promote (AC-BI-34b) — merged
+  /** Server 422 per-field map from a failed save / promote (AC-BI-34b) - merged
    * into the renderer's inline field errors. */
   serverErrors?: FormFieldErrors;
 }
 
 /**
- * Details tab — renders ``answers`` through the form-engine renderer against the
+ * Details tab - renders ``answers`` through the form-engine renderer against the
  * BR's STAMPED template doc (AC-BI-16). Read mode when not editing; fill mode
- * (no submit button — the shell's global Save persists) when editing.
+ * (no submit button - the shell's global Save persists) when editing.
  *
  * Rendered FLAT (AC-BI-29c): the renderer's `flat` mode omits the template's
  * page/section titles ("Business Requirement" / "Requirement") so the fields

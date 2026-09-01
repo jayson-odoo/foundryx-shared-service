@@ -1,5 +1,5 @@
 /**
- * WhatsApp template domain types (plan 07) — mirror of the backend
+ * WhatsApp template domain types (plan 07) - mirror of the backend
  * `modules/omnichannel/template_schemas.py` + schemas. The friendly
  * `WaTemplateDoc` is what the builder edits; the canonical store is the Meta
  * component array. Transform lives in `lib/whatsapp-template.ts`.

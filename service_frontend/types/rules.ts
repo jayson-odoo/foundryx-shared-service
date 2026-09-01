@@ -1,7 +1,7 @@
 /**
- * Rule engine types (sprint-2/02) — mirrors the backend camelCase wire
+ * Rule engine types (sprint-2/02) - mirrors the backend camelCase wire
  * contracts (app/rule_engine/schemas.py once Phase B lands). The condition
- * tree is stored AS-IS in each consumer's own JSON column (D1 — rule =
+ * tree is stored AS-IS in each consumer's own JSON column (D1 - rule =
  * property, not entity); `status_transitions.conditions_json` is the first.
  */
 
@@ -38,9 +38,9 @@ export type RuleOperator =
   | 'not_contains';
 
 /**
- * Operators offered per fact type (plan D3 — nothing more, no regex).
+ * Operators offered per fact type (plan D3 - nothing more, no regex).
  * KEEP IN SYNC with the backend: OPERATORS_BY_TYPE (app/rule_engine/
- * schemas.py) and the prose phrases (app/rule_engine/prose.py) — every
+ * schemas.py) and the prose phrases (app/rule_engine/prose.py) - every
  * operator key must exist in all three tables.
  */
 export const RULE_OPERATORS: Record<
@@ -86,7 +86,7 @@ export const RULE_OPERATORS: Record<
 };
 
 /**
- * Scalar compare operators that may flip to cross-fact mode (D4 —
+ * Scalar compare operators that may flip to cross-fact mode (D4 -
  * `between`/`contains`/list ops stay literal-only).
  */
 export const CROSS_FACT_OPERATORS: ReadonlySet<RuleOperator> =
@@ -110,7 +110,7 @@ export interface RuleFactOption {
 }
 
 /**
- * One whitelisted fact from the registry (D7) — `key` is namespaced by
+ * One whitelisted fact from the registry (D7) - `key` is namespaced by
  * source (`actor.name`, `record.slug`); the builder groups by `sourceLabel`.
  */
 export interface RuleFact {
@@ -145,12 +145,12 @@ export interface RuleSiteRow {
   /** Registry key of the consuming site (e.g. `status_transition`). */
   site: string;
   siteLabel: string;
-  /** Where exactly — e.g. "Tenant · Active → Suspended". */
+  /** Where exactly - e.g. "Tenant · Active → Suspended". */
   context: string;
   /** Human prose rendering of the condition tree. */
   summary: string;
   /**
-   * Site-specific locator (entity type for status_transition) — the
+   * Site-specific locator (entity type for status_transition) - the
    * FRONTEND maps (site, target) to its deep-link route; the backend never
    * hardcodes frontend paths (code-review fix).
    */

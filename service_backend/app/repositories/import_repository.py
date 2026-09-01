@@ -1,4 +1,4 @@
-"""Import repository (sprint-3/09) — pure SQLAlchemy, tenant-scoped."""
+"""Import repository (sprint-3/09) - pure SQLAlchemy, tenant-scoped."""
 from typing import List, Optional
 
 from sqlalchemy.orm import Session
@@ -23,7 +23,7 @@ class ImportRepository:
         )
 
     def get_unscoped(self, job_id: str) -> Optional[ImportJob]:
-        """For the Celery task — the worker re-scopes inside the job's tenant."""
+        """For the Celery task - the worker re-scopes inside the job's tenant."""
         return self.db.query(ImportJob).filter(ImportJob.id == job_id).first()
 
     def list(

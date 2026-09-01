@@ -1,9 +1,9 @@
-"""Branding service (plan sprint-2/03) — business rules behind both route sets
+"""Branding service (plan sprint-2/03) - business rules behind both route sets
 (tenant /branding and operator /platform/tenants/{id}/branding).
 
 Token documents validate against the canonical whitelist (named 422 errors,
 default-equal values normalize away). Assets validate type + size + content
-sniff, store via the core StorageService, and bump ``version`` — public URLs
+sniff, store via the core StorageService, and bump ``version`` - public URLs
 carry ``?v=`` so long-cached assets/CSS never go stale.
 """
 import logging
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class BrandingError(Exception):
-    """422 — invalid tokens / asset. ``errors`` lists every named problem."""
+    """422 - invalid tokens / asset. ``errors`` lists every named problem."""
 
     def __init__(self, errors):
         self.errors = list(errors)
@@ -30,7 +30,7 @@ class BrandingError(Exception):
 
 
 class PlatformTenantBrandingRejected(Exception):
-    """409 — the platform console keeps stock branding (plan 03 D10)."""
+    """409 - the platform console keeps stock branding (plan 03 D10)."""
 
 
 class TenantNotFound(Exception):
@@ -40,7 +40,7 @@ class TenantNotFound(Exception):
 ASSET_KINDS = ("logo", "favicon", "illustration")
 
 # Client-side mirror lives in components/platform/branding/asset-upload-card.
-# Favicon accepts JPEG/WebP too — modern browsers render any image format as
+# Favicon accepts JPEG/WebP too - modern browsers render any image format as
 # a tab icon; the square-PNG/ICO advice stays a hint, not a gate.
 ASSET_RULES: Dict[str, Tuple[Tuple[str, ...], int]] = {
     "logo": (("image/png", "image/jpeg", "image/svg+xml", "image/webp"), 2 * 1024 * 1024),
@@ -54,7 +54,7 @@ ASSET_RULES: Dict[str, Tuple[Tuple[str, ...], int]] = {
     ),
 }
 
-# Content sniffing — shared gate since plan 06 (avatars need it too); see
+# Content sniffing - shared gate since plan 06 (avatars need it too); see
 # app/uploads.py for the rationale (declared type = client input, lies).
 from app.uploads import detect_mime as _detect_mime  # noqa: E402
 
@@ -71,7 +71,7 @@ class BrandingService:
         return self._to_response(row)
 
     def get_checked(self, tenant_id: str) -> dict:
-        """Operator read — 404 unknown tenant instead of silently-empty 200
+        """Operator read - 404 unknown tenant instead of silently-empty 200
         (review finding: reads and writes must share one existence contract).
         The platform tenant IS readable (the console shows its stock-branding
         notice); only writes reject it."""
@@ -88,7 +88,7 @@ class BrandingService:
 
     def public(self, slug: str) -> dict:
         """Branding for a host slug. Unknown slug OR unbranded tenant return
-        the SAME zeroed document — no tenant-enumeration signal (plan 03)."""
+        the SAME zeroed document - no tenant-enumeration signal (plan 03)."""
         row = self.repo.get_by_slug(slug)
         if row is None or not self._is_branded(row):
             return PUBLIC_DEFAULTS.copy()
@@ -110,7 +110,7 @@ class BrandingService:
         return tokens_to_css(row.tokens_json), row.version
 
     def resolve_asset(self, slug: str, kind: str) -> Optional[Tuple[str, str, str, str]]:
-        """(location, value, mime, disposition) for the public asset route —
+        """(location, value, mime, disposition) for the public asset route -
         the storage resolution lives HERE because the key's backend is the
         owning tenant's connection chain (plan 06 D1)."""
         if kind not in ASSET_KINDS:
@@ -131,7 +131,7 @@ class BrandingService:
 
     # ---- writes (routes resolve the tenant; platform tenant rejected) ----
 
-    # Whitelisted social/footer keys (plan 07 D4) — unknown keys 422 loudly.
+    # Whitelisted social/footer keys (plan 07 D4) - unknown keys 422 loudly.
     SOCIAL_KEYS = ("facebook", "instagram", "x", "linkedin", "youtube", "tiktok", "website")
     FOOTER_KEYS = ("companyName", "addressLine", "tagline")
 
@@ -183,15 +183,15 @@ class BrandingService:
         accept, max_bytes = ASSET_RULES[kind]
         if len(content) > max_bytes:
             raise BrandingError(
-                [f"File too large — max {max_bytes // 1024} KB for {kind}."]
+                [f"File too large - max {max_bytes // 1024} KB for {kind}."]
             )
-        # Trust the sniffed type, never the declared one — extensions lie
+        # Trust the sniffed type, never the declared one - extensions lie
         # (a JPEG renamed .png arrives declared image/png). Detected-and-allowed
         # is accepted with the corrected mime stored.
         detected = _detect_mime(content)
         if detected is None:
             raise BrandingError(
-                ["Unrecognized image format — use PNG, JPG, SVG, WebP or ICO."]
+                ["Unrecognized image format - use PNG, JPG, SVG, WebP or ICO."]
             )
         if detected not in accept:
             raise BrandingError(
@@ -209,7 +209,7 @@ class BrandingService:
         setattr(row, f"{kind}_mime", detected)
         row.version += 1
         self.db.commit()
-        self._delete_blob(tenant_id, old_key)  # after commit — never orphan the row
+        self._delete_blob(tenant_id, old_key)  # after commit - never orphan the row
         self.db.refresh(row)
         return self._to_response(row)
 
@@ -230,14 +230,14 @@ class BrandingService:
     # ---- internals ----
 
     def _delete_blob(self, tenant_id: str, key: Optional[str]) -> None:
-        """Best-effort cleanup AFTER a successful commit — a storage hiccup
+        """Best-effort cleanup AFTER a successful commit - a storage hiccup
         must not 500 a write that already succeeded (review finding). The
         orphaned blob is the lesser evil; log and move on."""
         if not key:
             return
         try:
             storage_for_tenant(self.db, tenant_id).delete(key)
-        except Exception:  # noqa: BLE001 — deliberate best-effort
+        except Exception:  # noqa: BLE001 - deliberate best-effort
             logger.warning("branding: failed to delete replaced blob %s", key)
 
     def _ensure_tenant(self, tenant_id: str) -> Tenant:

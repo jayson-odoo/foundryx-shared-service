@@ -2,7 +2,7 @@
 
 The block document is editor-agnostic and outlives any editor. A block (or a
 field on table/repeater/pageSetup) added on ONE side but not the other silently
-breaks round-tripping — this test fails loudly when the two drift. Lightweight
+breaks round-tripping - this test fails loudly when the two drift. Lightweight
 by design: it parses the TS source as text (no TS toolchain in the pytest env).
 """
 
@@ -21,7 +21,7 @@ _TS_PATH = (
     / "templates.ts"
 )
 # Parity needs the frontend mirror checked out next to the backend. In a
-# backend-only context (e.g. the CI Docker image) it's absent — skip at
+# backend-only context (e.g. the CI Docker image) it's absent - skip at
 # collection rather than erroring.
 if not _TS_PATH.exists():
     pytest.skip(
@@ -48,10 +48,10 @@ def _ts_discriminant_types() -> set[str]:
 
 def test_block_discriminants_match() -> None:
     # The TS file declares both block discriminants AND canvas-element ones
-    # (F2 slice 2) — compare against the UNION of the two python unions.
+    # (F2 slice 2) - compare against the UNION of the two python unions.
     py = _python_types(TemplateBlockModel) | _python_types(CanvasElementModel)
     ts = _ts_discriminant_types()
-    assert py == ts, f"discriminant drift — py-only={py - ts}, ts-only={ts - py}"
+    assert py == ts, f"discriminant drift - py-only={py - ts}, ts-only={ts - py}"
     # The F2 document blocks must be present on both sides.
     assert {"table", "repeater"} <= _python_types(TemplateBlockModel)
 

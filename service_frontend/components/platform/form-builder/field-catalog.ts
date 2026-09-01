@@ -1,5 +1,5 @@
 /**
- * Field-type catalog (plan sprint-3/01 D7) — the single source for the
+ * Field-type catalog (plan sprint-3/01 D7) - the single source for the
  * palette's category grouping, each type's lucide icon + label, and the
  * SearchSelect option lists the settings panel reuses. Mirrors the taxonomy
  * in `types/forms.ts` (parity with `lib/form-doc.ts FIELD_DEFAULT_LABELS`).
@@ -46,7 +46,7 @@ export interface PaletteCategory {
   types: FormFieldType[];
 }
 
-/** Icon per field type — used by the palette and the canvas type chip. */
+/** Icon per field type - used by the palette and the canvas type chip. */
 export const FIELD_ICONS: Record<FormFieldType, LucideIcon> = {
   text: TextIcon,
   textarea: AlignLeft,

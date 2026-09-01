@@ -1,4 +1,4 @@
-"""Form engine tables — forms / form_versions / form_submissions (plan sprint-3/01)
+"""Form engine tables - forms / form_versions / form_submissions (plan sprint-3/01)
 
 Revision ID: 4f5a6b7c8d9e
 Revises: 3e4f5a6b7c8d
@@ -8,7 +8,7 @@ Create Date: 2026-06-10
 from alembic import op
 import sqlalchemy as sa
 
-import app.models.utc_datetime  # noqa: F401 — UTCDateTime columns (workflow lesson)
+import app.models.utc_datetime  # noqa: F401 - UTCDateTime columns (workflow lesson)
 from app.models.utc_datetime import UTCDateTime
 
 revision = "4f5a6b7c8d9e"

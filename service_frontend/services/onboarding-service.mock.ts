@@ -15,13 +15,13 @@ import { delay } from './mock-query';
 export const MOCK_WABA_OPTIONS: MockWabaOption[] = [
   {
     wabaId: 'waba-901',
-    businessName: 'FoundryX Events Co.',
+    businessName: 'Foundryx Events Co.',
     phoneNumberId: 'pn-901',
     displayPhoneNumber: '+65 8900 1234',
   },
   {
     wabaId: 'waba-902',
-    businessName: 'FoundryX Concierge',
+    businessName: 'Foundryx Concierge',
     phoneNumberId: 'pn-902',
     displayPhoneNumber: '+60 12 345 6789',
   },

@@ -1,14 +1,14 @@
-"""Safe transform-formula engine (slice 16) — AutoCount source `value` → canonical.
+"""Safe transform-formula engine (slice 16) - AutoCount source `value` → canonical.
 
-    !!  NO eval / exec / Function / Jinja — a hand-written parser ONLY.  !!
+    !!  NO eval / exec / Function / Jinja - a hand-written parser ONLY.  !!
 
 An operator authors a transform as an EXPRESSION over a single input ``value``
-(the raw AutoCount source value — usually a string like ``"T"``, ``"30000.0"``,
+(the raw AutoCount source value - usually a string like ``"T"``, ``"30000.0"``,
 ``"2026/03/18 16:03:21"``). That expression runs in the sync path over customer
 data, so it MUST NOT be handed to any general evaluator: ``eval``/``exec``/
 ``ast.literal_eval``/Jinja would all open an SSTI→RCE hole. This is the same
 house line as ``app/form_engine/computed.py`` (arithmetic) and the template
-merge renderer — a deliberately tiny grammar with its own tokenizer +
+merge renderer - a deliberately tiny grammar with its own tokenizer +
 recursive-descent parser + evaluator, nothing else accepted.
 
 This module is the AUTHORITATIVE side of a client/server pair: its TypeScript
@@ -39,11 +39,11 @@ Fail-closed contract
   (mapped to a 422 that names the problem). A bad formula NEVER reaches a sync.
 * EVALUATE time (``evaluate_formula`` in the mapping path): a runtime fault
   (``number("abc")``, division by zero, a type mismatch) → ``FormulaRuntimeError``,
-  which the MappingEngine turns into a NAMED per-field error — never a silent
+  which the MappingEngine turns into a NAMED per-field error - never a silent
   null that would blank a Sorento field (AC-16-03).
 
 Dates use a FIXED, documented token vocabulary (``yyyy MM dd HH mm ss`` + ISO
-``yyyy-MM-ddTHH:mm:ssZ``) parsed/formatted by hand on BOTH sides — no
+``yyyy-MM-ddTHH:mm:ssZ``) parsed/formatted by hand on BOTH sides - no
 ``strptime`` on one side and a JS date library on the other. ``parseDate``
 extracts calendar COMPONENTS and ``formatDate`` re-emits them, with zero date
 arithmetic, so date parity is provable (AC-16-14).
@@ -66,12 +66,12 @@ MAX_DEPTH: int = _MAX_DEPTH  # reuse the ONE depth constant (rule_engine precede
 
 
 class FormulaError(ValueError):
-    """Base — a ``ValueError`` so callers may ``except (ValueError, FormulaError)``."""
+    """Base - a ``ValueError`` so callers may ``except (ValueError, FormulaError)``."""
 
 
 class FormulaParseError(FormulaError):
     """A save-time fault: syntax, unknown name/function, bad arity, over-length.
-    Mapped to a 422 that names the problem — a bad formula is un-saveable."""
+    Mapped to a 422 that names the problem - a bad formula is un-saveable."""
 
 
 class FormulaRuntimeError(FormulaError):
@@ -81,7 +81,7 @@ class FormulaRuntimeError(FormulaError):
 
 # ── the fixed date-token vocabulary (AC-16-14) ────────────────────────────────
 # Minimal v1: the known vendor format + ISO out. Every token is fixed-width, so
-# parse walks format + value in lockstep with no ambiguity. Expand on demand —
+# parse walks format + value in lockstep with no ambiguity. Expand on demand -
 # each added token is mirrored in the TS twin and parity-tested.
 DATE_TOKENS: Tuple[Dict[str, Any], ...] = (
     {"token": "yyyy", "width": 4, "field": "year", "description": "4-digit year"},
@@ -101,7 +101,7 @@ _DATE_TOKEN_FIELD: Dict[str, str] = {t["token"]: t["field"] for t in DATE_TOKENS
 ISO_OUTPUT_FORMAT = "yyyy-MM-ddTHH:mm:ssZ"
 
 # Documented input formats offered by the date-format tool. A free-form pattern
-# is NOT accepted — the tool picks from this list (foolproof + parity-safe).
+# is NOT accepted - the tool picks from this list (foolproof + parity-safe).
 DATE_INPUT_FORMATS: Tuple[str, ...] = (
     "yyyy/MM/dd HH:mm:ss",
     "yyyy/MM/dd",
@@ -124,7 +124,7 @@ class FormulaDate:
     """A parsed date as calendar COMPONENTS, treated as aware-UTC wall clock.
 
     Carrying components (not an epoch, not a ``datetime``) means ``formatDate``
-    is pure substitution with no calendar arithmetic — the property that makes
+    is pure substitution with no calendar arithmetic - the property that makes
     client/server date parity provable. The house datetime rule (aware-UTC) is
     honoured: the components are UTC and the ISO form carries a ``Z``.
     """
@@ -159,7 +159,7 @@ _TK_COMMA = ","
 _TK_EOF = "EOF"
 
 # Multi-char operators FIRST so ``==`` never tokenises as two ``=`` (and ``=``
-# alone is illegal — the grammar demands ``==``).
+# alone is illegal - the grammar demands ``==``).
 _OPERATORS: Tuple[str, ...] = ("==", "!=", "<=", ">=", "<", ">", "&", "+", "-", "*", "/")
 
 _KEYWORDS = {"value", "true", "false", "null", "and", "or", "not"}
@@ -211,7 +211,7 @@ def _tokenise(source: str) -> List[_Token]:
             tokens.append(_Token(_TK_OP, matched_op))
             i += len(matched_op)
             continue
-        if ch == "=":  # a lone '=' — guide the operator to '=='
+        if ch == "=":  # a lone '=' - guide the operator to '=='
             raise FormulaParseError("Use '==' for equality, not a single '='.")
         m = _NUMBER_RE.match(source, i)
         if m:
@@ -613,7 +613,7 @@ class _Parser:
             self._advance()
             if self._peek().kind != _TK_LPAREN:
                 raise FormulaParseError(
-                    f"Unknown name {name!r} — expected the variable 'value', a "
+                    f"Unknown name {name!r} - expected the variable 'value', a "
                     f"literal, or a function call."
                 )
             if name not in _FUNCTION_BY_NAME:
@@ -658,7 +658,7 @@ def _check_arity(name: str, count: int) -> None:
         elif fn.min_args == fn.max_args:
             need = f"exactly {fn.min_args}"
         else:
-            need = f"{fn.min_args}–{fn.max_args}"
+            need = f"{fn.min_args}-{fn.max_args}"
         raise FormulaParseError(
             f"{name}() takes {need} argument(s), got {count}."
         )
@@ -673,7 +673,7 @@ class ParsedFormula:
 def parse_formula(formula: str) -> ParsedFormula:
     """Parse + validate a formula. Raises ``FormulaParseError`` on any syntax
     error, unknown name/function, bad arity or over-length string. This is the
-    save-time gate (AC-16-03) — a formula that parses clean is storable."""
+    save-time gate (AC-16-03) - a formula that parses clean is storable."""
     if not isinstance(formula, str) or not formula.strip():
         raise FormulaParseError("The formula must not be empty.")
     if len(formula) > MAX_FORMULA_LEN:
@@ -773,7 +773,7 @@ def _to_bool(v: Value) -> bool:
 
 def _round(x: float, digits: float) -> float:
     if digits != int(digits) or digits < 0 or digits > 12:
-        raise FormulaRuntimeError("round() digits must be a whole number 0–12.")
+        raise FormulaRuntimeError("round() digits must be a whole number 0-12.")
     n = int(digits)
     factor = 10 ** n
     # Half away from zero, hand-rolled so Python's banker's rounding and JS's
@@ -784,7 +784,7 @@ def _round(x: float, digits: float) -> float:
     return sign * math.floor(abs(x) * factor + 0.5) / factor
 
 
-# ── date tools (hand-rolled, mirrored — AC-16-14) ─────────────────────────────
+# ── date tools (hand-rolled, mirrored - AC-16-14) ─────────────────────────────
 
 
 def _split_format(fmt: str) -> List[Tuple[str, Any]]:
@@ -1023,7 +1023,7 @@ def _eval(node: object, value: Value) -> Value:
 
 
 def _to_bool_strict(v: Value) -> bool:
-    """``not`` / ``and`` / ``or`` / ``if`` require a real boolean — a non-bool
+    """``not`` / ``and`` / ``or`` / ``if`` require a real boolean - a non-bool
     is a fail-closed error, never coerced (foolproof)."""
     if isinstance(v, bool):
         return v

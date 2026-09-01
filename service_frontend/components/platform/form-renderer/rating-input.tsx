@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Star rating input (plan sprint-3/01) — a 1..max clickable star row, keyboard
+ * Star rating input (plan sprint-3/01) - a 1..max clickable star row, keyboard
  * accessible (arrow keys move the value, the group is a radiogroup). The answer
  * is the integer count; 0 = unset.
  */

@@ -1,4 +1,4 @@
-"""Ideation Slice 7 — triage board API + drag authorization (AC-A-33, AC-A-37).
+"""Ideation Slice 7 - triage board API + drag authorization (AC-A-33, AC-A-37).
 
 The FE triage board (service_frontend/app/(protected)/ideation/board/page.tsx)
 renders ideas as cards in columns keyed by Idea status
@@ -7,14 +7,14 @@ column to transition status, and reorders within a column to set priority.
 
 This slice adds the server board read:
 
-- ``GET /ideation/ideas/board`` — ideas grouped by status column, columns in the
+- ``GET /ideation/ideas/board`` - ideas grouped by status column, columns in the
   lifecycle order, cards within a column ordered by priority; archived/terminal
   ideas are off the board. Gated by ``ideation.triage.manage`` (the Triager
-  surface — AC-A-33/AC-A-36).
+  surface - AC-A-33/AC-A-36).
 
 Drag = status transition and within-column reorder reuse the slice-4
 ``POST /ideation/ideas/{id}/status`` and ``PUT /ideation/ideas/reorder``
-endpoints (server-authoritative — illegal drags refused; both require
+endpoints (server-authoritative - illegal drags refused; both require
 ``ideation.triage.manage``). Server enforces the key regardless of the UI
 (AC-A-37).
 
@@ -30,7 +30,7 @@ from app.models import DEFAULT_TENANT_ID
 from app.security import hash_password
 from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD
 
-# Board columns (key, title) — must match the FE IDEA_BOARD_COLUMNS order.
+# Board columns (key, title) - must match the FE IDEA_BOARD_COLUMNS order.
 BOARD_COLUMNS = [
     ("captured", "New"),
     ("triaged", "Triaged"),
@@ -261,7 +261,7 @@ def test_legal_drag_transitions_status(ideation_client):
 
 
 def test_illegal_drag_refused(ideation_client):
-    """Dragging captured -> delivered has no edge — refused, state unchanged."""
+    """Dragging captured -> delivered has no edge - refused, state unchanged."""
     h = _auth(ideation_client)
     pid = _create_software_product(ideation_client, h)
     idea_id = _insert_idea(ideation_client._factory, pid, status_key="captured")

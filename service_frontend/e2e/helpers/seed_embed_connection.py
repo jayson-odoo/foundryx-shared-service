@@ -2,7 +2,7 @@
 
 Invoked by `e2e/omnichannel-embed.spec.ts` in `beforeAll` (via the backend
 .venv python). Idempotently ensures the dev demo inbox exists (threads
-cnt-001..005 on the dev-cred `chn-demo` channel — sends never hit Graph), then
+cnt-001..005 on the dev-cred `chn-demo` channel - sends never hit Graph), then
 creates/refreshes a single `omnichannel_shared` core connection for the `default`
 tenant carrying a KNOWN `embedSecret` (Fernet-encrypted) + `allowedOrigins`.
 

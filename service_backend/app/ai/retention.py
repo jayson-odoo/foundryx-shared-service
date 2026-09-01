@@ -1,8 +1,8 @@
-"""Trace retention sweep (AC-BI-10) — the `prune_runs` pattern.
+"""Trace retention sweep (AC-BI-10) - the `prune_runs` pattern.
 
 `ok` traces prune on a SHORT window (they are noise once the feature works);
 `error` and `flagged` traces keep a LONGER one (they are the reason traces exist
-— a bad BR must stay attributable to its prompt version long enough to diagnose).
+- a bad BR must stay attributable to its prompt version long enough to diagnose).
 
 Child `ai_spans` are deleted first via a subquery so the cascade is correct on
 Postgres AND on the SQLite test engine (whose FK pragma is off).

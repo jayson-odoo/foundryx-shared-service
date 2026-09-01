@@ -1,4 +1,4 @@
-"""Change-email ceremony (plan sprint-2/04) — dual confirmation.
+"""Change-email ceremony (plan sprint-2/04) - dual confirmation.
 
 Self-service: password re-entry → approve link to the OLD mailbox →
 verify link to the NEW mailbox → email flips only on the new-side verify.
@@ -182,7 +182,7 @@ def test_re_request_invalidates_prior_request(client, session_factory):
 
 def test_wrong_password_rejected_and_throttle_counted(client):
     token = _login(client)
-    # 400 (NOT 401 — the api-client treats 401-with-token as session death).
+    # 400 (NOT 401 - the api-client treats 401-with-token as session death).
     for _ in range(settings.throttle_email_max_fails):
         res = _request_change(client, token, password="not-the-password")
         assert res.status_code == 400
@@ -250,7 +250,7 @@ def test_expired_request_redeems_nothing(client, session_factory):
 
 def test_typoed_new_email_never_flips_anything(client, session_factory):
     """The whole point of dual confirmation: an undeliverable new address
-    leaves the account untouched — the verify link is simply never redeemed."""
+    leaves the account untouched - the verify link is simply never redeemed."""
     token = _login(client)
     _request_change(client, token, new_email="typo@nowhere-real.example.com")
     db = session_factory()
@@ -271,10 +271,10 @@ def test_typoed_new_email_never_flips_anything(client, session_factory):
 
 def test_uniqueness_race_409_at_verify(client, session_factory):
     """Request is accepted uniformly (no enumeration), but the FLIP re-checks
-    uniqueness transactionally — the race loses with a 409."""
+    uniqueness transactionally - the race loses with a 409."""
     token = _login(client)
     res = _request_change(client, token, new_email=INACTIVE_EMAIL)
-    assert res.status_code == 200  # uniform — never reveals the address is taken
+    assert res.status_code == 200  # uniform - never reveals the address is taken
 
     db = session_factory()
     try:
@@ -372,7 +372,7 @@ def test_admin_duplicate_email_409(client, session_factory):
 
 
 def test_verify_collision_with_trashed_user_is_409_not_500(client, session_factory):
-    """uq_users_tenant_email covers trashed rows — the uniqueness guard must
+    """uq_users_tenant_email covers trashed rows - the uniqueness guard must
     too, or the flip 500s where a clean 409 was intended (review fix)."""
     token = _login(client)
     db = session_factory()
@@ -402,7 +402,7 @@ def test_verify_collision_with_trashed_user_is_409_not_500(client, session_facto
 
 def test_change_email_success_does_not_clear_login_throttle(client):
     """A correct password on /me/change-email must NOT reset the LOGIN
-    lockout counter (review fix — session-holders can't wipe brute-force
+    lockout counter (review fix - session-holders can't wipe brute-force
     state)."""
     token = _login(client)
     # 4 login failures (one below the lock threshold of 5)…
@@ -425,7 +425,7 @@ def test_change_email_success_does_not_clear_login_throttle(client):
 
 
 def test_admin_change_clears_verified_badge(client, session_factory):
-    """The new mailbox never proved deliverability — email_verified_at must
+    """The new mailbox never proved deliverability - email_verified_at must
     not carry over from the previous address (review fix)."""
     token = _login(client)
     db = session_factory()
@@ -449,7 +449,7 @@ def test_admin_change_clears_verified_badge(client, session_factory):
 
 def test_service_email_change_fails_closed_without_actor(client, session_factory):
     """An internal caller that can't name the actor must not get the instant
-    path (review fix — an omitted Optional kwarg is not a bypass)."""
+    path (review fix - an omitted Optional kwarg is not a bypass)."""
     from app.services.user_service import SelfEmailChange, UserService
 
     db = session_factory()
@@ -462,7 +462,7 @@ def test_service_email_change_fails_closed_without_actor(client, session_factory
 
 
 def test_admin_patch_without_email_still_works(client, session_factory):
-    """Email stays optional — a plain profile save must not be affected."""
+    """Email stays optional - a plain profile save must not be affected."""
     token = _login(client)
     db = session_factory()
     try:

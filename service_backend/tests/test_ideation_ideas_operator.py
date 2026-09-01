@@ -1,14 +1,14 @@
-"""Ideation — operator-facing in-app Idea create + edit.
+"""Ideation - operator-facing in-app Idea create + edit.
 
 Distinct from the conversational WhatsApp intake (``POST /ideation/intake/
 create-idea``, which has the deterministic draft/collect/confirm gate). An
 operator typing an idea directly IS deliberate, so:
 
-- ``POST  /ideation/ideas``        — create straight into ``captured`` (rides the
+- ``POST  /ideation/ideas``        - create straight into ``captured`` (rides the
   status engine draft→captured), submitter = the logged-in operator
   (``submitter_name`` set from the user, ``submitter_contact_id`` NULL). Gated by
   ``ideation.ideas.submit``.
-- ``PATCH /ideation/ideas/{id}``   — edit ``productId`` / ``problem`` / ``rawText``
+- ``PATCH /ideation/ideas/{id}``   - edit ``productId`` / ``problem`` / ``rawText``
   (status moves stay on ``POST /{id}/status``). Gated by ``ideation.triage.manage``.
 
 Test-first (PRINCIPLES.md): written before the implementation exists.
@@ -251,7 +251,7 @@ def test_operator_create_permission_denied_403(ideation_client):
 
 def test_operator_created_idea_has_null_submitter_contact(ideation_client):
     """Operator-authored ideas carry NO submitter contact (the column is
-    nullable) — the display name comes from the operator, not a contact."""
+    nullable) - the display name comes from the operator, not a contact."""
     h = _auth(ideation_client)
     pid = _create_software_product(ideation_client, h)
     res = ideation_client.post(
@@ -299,7 +299,7 @@ def test_operator_edit_updates_fields(ideation_client):
     # Status is untouched by an edit.
     assert row["status"] == "captured"
 
-    # Persisted — a fresh GET reflects it.
+    # Persisted - a fresh GET reflects it.
     got = ideation_client.get(f"/ideation/ideas/{idea_id}", headers=h).json()
     assert got["problem"] == "after"
     assert got["productId"] == pid2

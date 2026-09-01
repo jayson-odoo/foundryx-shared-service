@@ -1,4 +1,4 @@
-"""Document-sharing business logic (plan sprint-3/05, Google-Drive model) —
+"""Document-sharing business logic (plan sprint-3/05, Google-Drive model) -
 Router → THIS → ShareRepository/DocumentRepository.
 
 A shared target has ONE stable ``file_shares`` row (token never changes). The
@@ -70,7 +70,7 @@ SHARE_HONEYPOT_FIELD = "company_website"
 
 
 class ShareNotFound(Exception):
-    """Uniform 404 — unknown / disabled token (no enumeration)."""
+    """Uniform 404 - unknown / disabled token (no enumeration)."""
 
 
 class ShareForbidden(Exception):
@@ -82,7 +82,7 @@ class ShareForbidden(Exception):
 
 
 class ShareInvalid(Exception):
-    """422 — malformed update (bad access level/capability, past expiry, foreign
+    """422 - malformed update (bad access level/capability, past expiry, foreign
     allow-list user, missing target)."""
 
     def __init__(self, message: str):
@@ -91,7 +91,7 @@ class ShareInvalid(Exception):
 
 
 class SharePasswordInvalid(Exception):
-    """Wrong password on unlock/serve/upload — the router pumps the throttle."""
+    """Wrong password on unlock/serve/upload - the router pumps the throttle."""
 
 
 class ShareCapExceeded(Exception):
@@ -214,7 +214,7 @@ class ShareService:
         self, tenant_id: str, actor: User, target_kind: str, target_id: str
     ) -> ShareOut:
         """Get-or-create the ONE stable share for a target (opening the dialog).
-        Created Restricted/View by default — like Google, the link exists
+        Created Restricted/View by default - like Google, the link exists
         immediately but only the owner (and named people) can use it."""
         if target_kind not in SHARE_TARGET_KINDS:
             raise ShareInvalid("Invalid share target.")
@@ -356,7 +356,7 @@ class ShareService:
         self.db.commit()
 
     def list_shared_with_me(self, tenant_id: str, user: User):
-        """Roots shared TO this user by OTHERS — the "Shared with me" drive.
+        """Roots shared TO this user by OTHERS - the "Shared with me" drive.
         Excludes the user's own shares (those live under their Drive) and any
         link they can't actually open."""
         from app.schemas.document import SharedWithMeItem

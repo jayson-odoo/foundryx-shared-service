@@ -1,5 +1,5 @@
 /**
- * SearchSelect — the system-wide searchable single-select (user mandate:
+ * SearchSelect - the system-wide searchable single-select (user mandate:
  * every data-driven dropdown is searchable like the user/role pickers).
  */
 import { fireEvent, render, screen } from '@testing-library/react';

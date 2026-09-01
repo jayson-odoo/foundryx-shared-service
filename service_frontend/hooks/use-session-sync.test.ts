@@ -69,7 +69,7 @@ describe('sessionDrifted', () => {
 });
 
 describe('useSessionSync', () => {
-  it('does NOT call update() when nothing drifted (loop regression — plan 04)', async () => {
+  it('does NOT call update() when nothing drifted (loop regression - plan 04)', async () => {
     svc.identity.mockResolvedValue({ ...BASE });
     renderHook(() => useSessionSync());
     await waitFor(() => expect(svc.identity).toHaveBeenCalledTimes(1));

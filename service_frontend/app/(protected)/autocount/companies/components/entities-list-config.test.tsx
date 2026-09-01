@@ -30,6 +30,7 @@ function entity(over: Partial<AutocountEntityConfig> = {}): AutocountEntityConfi
     watermarkAt: null,
     consecutiveFailures: 0,
     lastError: null,
+    etlStatus: 'draft',
     ...over,
   };
 }
@@ -38,6 +39,8 @@ const onSync = vi.fn();
 const onEditLookback = vi.fn();
 const onRefetch = vi.fn();
 const onConfigureMapping = vi.fn();
+const onConfigureTask = vi.fn();
+const onChangeSource = vi.fn();
 
 function config(entities: AutocountEntityConfig[], companyActive = true) {
   return renderHook(() =>
@@ -48,6 +51,8 @@ function config(entities: AutocountEntityConfig[], companyActive = true) {
       onEditLookback,
       onRefetch,
       onConfigureMapping,
+      onConfigureTask,
+      onChangeSource,
     }),
   ).result.current;
 }
@@ -57,6 +62,8 @@ beforeEach(() => {
   onEditLookback.mockReset();
   onRefetch.mockReset();
   onConfigureMapping.mockReset();
+  onConfigureTask.mockReset();
+  onChangeSource.mockReset();
 });
 
 describe('entities list config', () => {
@@ -76,6 +83,8 @@ describe('entities list config', () => {
     expect(ids).toContain('watermarkAt');
     expect(ids).toContain('initialLookbackDays');
     expect(ids).toContain('health');
+    // Plan 22 S2: where the entity reads from is visible on the row.
+    expect(ids).toContain('sourceImpl');
   });
 
   it('has no detail page, so a row click never dead-ends', () => {
@@ -133,7 +142,7 @@ describe('entities actions', () => {
 
   it('offers "Edit first-run window" ONLY before the first sync (no dead dialog)', () => {
     // AC-15-30: once a watermark exists, editing the window is a guaranteed
-    // no-op — the action must not be offered (it opened a disabled dialog).
+    // no-op - the action must not be offered (it opened a disabled dialog).
     const c = config([entity()]);
     const edit = c.actions.find((a) => a.id === 'edit-lookback')!;
     expect(edit.isVisible?.([entity({ watermarkAt: null })])).toBe(true);
@@ -144,7 +153,7 @@ describe('entities actions', () => {
     const c = config([entity({ watermarkAt: '2026-07-12T00:00:00Z' })]);
     const refetch = c.actions.find((a) => a.id === 'refetch-history')!;
     expect(refetch.permission).toBe('autocount.companies.manage');
-    // The mirror image of edit-lookback — visible only when the window is spent.
+    // The mirror image of edit-lookback - visible only when the window is spent.
     expect(refetch.isVisible?.([entity({ watermarkAt: '2026-07-12T00:00:00Z' })])).toBe(true);
     expect(refetch.isVisible?.([entity({ watermarkAt: null })])).toBe(false);
     // Explicit + confirmed, never a silent Days box.
@@ -165,10 +174,33 @@ describe('entities actions', () => {
   });
 });
 
+describe('entity source (plan 22 S2, AC-22-08)', () => {
+  it('offers "Configure database query" ONLY on a database-sourced entity', () => {
+    const c = config([entity()]);
+    const task = c.actions.find((a) => a.id === 'configure-task')!;
+    expect(task.permission).toBe('autocount.companies.manage');
+    expect(task.isVisible?.([entity({ sourceImpl: 'autocount_read' })])).toBe(false);
+    expect(task.isVisible?.([entity({ sourceImpl: 'sql_db' })])).toBe(true);
+    const row = entity({ sourceImpl: 'sql_db' });
+    task.run([row], { reload: vi.fn() });
+    expect(onConfigureTask).toHaveBeenCalledWith(row);
+  });
+
+  it('offers the guarded "Change source" on every row, gated on manage', () => {
+    const c = config([entity()]);
+    const change = c.actions.find((a) => a.id === 'change-source')!;
+    expect(change.permission).toBe('autocount.companies.manage');
+    expect(change.isVisible).toBeUndefined();
+    const row = entity();
+    change.run([row], { reload: vi.fn() });
+    expect(onChangeSource).toHaveBeenCalledWith(row);
+  });
+});
+
 describe('sync summary parsing (the zero-record case)', () => {
   it('reads a legitimate empty sync as a successful no-op', () => {
     // The reported symptom: a second Sync now appeared to do nothing. It was
-    // correct — the vendor had no changes — and the UI must say so.
+    // correct - the vendor had no changes - and the UI must say so.
     const summary = parseSyncSummary({
       entityType: 'goods_received_note',
       fetched: 0,
@@ -180,7 +212,7 @@ describe('sync summary parsing (the zero-record case)', () => {
     expect(summary).not.toBeNull();
     expect(summary!.fetched).toBe(0);
     expect(summary!.failed).toBe(0);
-    // Nothing to review — the operator must NOT be routed to a review surface.
+    // Nothing to review - the operator must NOT be routed to a review surface.
     expect(summary!.awaitingApproval).toBe(false);
   });
 

@@ -1,5 +1,5 @@
 /**
- * EmailEditor `surface='document'` (plan sprint-3/03 F2) — document palette
+ * EmailEditor `surface='document'` (plan sprint-3/03 F2) - document palette
  * (table/repeater), page-setup panel, table/repeater block editors, and the
  * on-demand embedded PDF preview.
  */
@@ -73,7 +73,7 @@ function renderDoc(opts?: {
 describe('EmailEditor document surface', () => {
   it('palette shows document blocks (table + repeater, no social links)', () => {
     renderDoc();
-    // Search the grouped palette — 'Table' expands the Data category.
+    // Search the grouped palette - 'Table' expands the Data category.
     const search = screen.getByPlaceholderText('Search blocks');
     fireEvent.change(search, { target: { value: 'Table' } });
     expect(screen.getByTestId('palette-table')).toBeInTheDocument();
@@ -141,7 +141,7 @@ describe('EmailEditor document surface', () => {
     fireEvent.click(screen.getByTestId(`canvas-block-${rep.id}`));
     expect(screen.getByTestId('repeater-editor')).toBeInTheDocument();
 
-    // Add a Text body block (scope to the dropdown option — "Text" also
+    // Add a Text body block (scope to the dropdown option - "Text" also
     // appears in the document palette).
     fireEvent.click(screen.getByLabelText('Add repeater block'));
     fireEvent.click(screen.getByRole('option', { name: 'Text' }));
@@ -182,7 +182,7 @@ describe('EmailEditor document surface', () => {
         expect.stringContaining('invoice preview'),
       ),
     );
-    // Tenant content is sandboxed (scripts never run) — parity with the email pane.
+    // Tenant content is sandboxed (scripts never run) - parity with the email pane.
     expect(screen.getByTestId('pdf-preview-frame')).toHaveAttribute('sandbox', '');
   });
 

@@ -1,5 +1,5 @@
 /**
- * MergeFieldEditor — click-to-insert variable chips + live preview
+ * MergeFieldEditor - click-to-insert variable chips + live preview
  * (sprint-2/01 review mandate: no hand-typed {{tokens}}).
  */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';

@@ -71,7 +71,7 @@ export function IdeaCaptureDialog({ products, onClose, onCreate }: IdeaCaptureDi
         <DialogHeader>
           <DialogTitle>Capture idea</DialogTitle>
           <DialogDescription>
-            The rawest capture — a structured Business Requirement comes later.
+            The rawest capture - a structured Business Requirement comes later.
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-4">
@@ -134,7 +134,7 @@ export function IdeaCaptureDialog({ products, onClose, onCreate }: IdeaCaptureDi
               id="idea-raw"
               value={rawText}
               rows={3}
-              placeholder="Verbatim context — paste the message, or add detail."
+              placeholder="Verbatim context - paste the message, or add detail."
               onChange={(e) => setRawText(e.target.value)}
             />
           </div>

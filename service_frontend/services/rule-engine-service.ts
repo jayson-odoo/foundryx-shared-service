@@ -9,11 +9,11 @@ import { realRuleEngineService } from './rule-engine-service.real';
 
 export interface RuleEngineService {
   /**
-   * Whitelisted facts for the given sources (`actor`, `record:<entity>`) —
+   * Whitelisted facts for the given sources (`actor`, `record:<entity>`) -
    * backend `GET /rule-facts?sources=` (authenticated-only, D13).
    */
   getFacts(sources: string[]): Promise<RuleFact[]>;
-  /** Rule-site observability rows — backend `GET /rules` (gated rules.read, D12). */
+  /** Rule-site observability rows - backend `GET /rules` (gated rules.read, D12). */
   listRules(query: ListQuery): Promise<ListResult<RuleSiteRow>>;
 }
 

@@ -1,4 +1,4 @@
-"""Review/Approval engine endpoints (plan sprint-4/06 Part 2) — HTTP only
+"""Review/Approval engine endpoints (plan sprint-4/06 Part 2) - HTTP only
 (Router → Service → Repository), no DB/raw SQL. Config admin in Part A; the
 reviewer/decider SURFACES are slice 2.
 
@@ -45,10 +45,10 @@ from typing import List
 router = APIRouter()
 
 
-# ── staff surfaces (AC-06-46/47/10) — user-kind actors only ───────────────────
+# ── staff surfaces (AC-06-46/47/10) - user-kind actors only ───────────────────
 # A staff user grades on the staff app; profile-kind assignments 404 here (the
 # surface filters by actor_kind='user'). Gated by core perms (reviews.grade /
-# reviews.decide) AND — inside the surface service — the per-config role
+# reviews.decide) AND - inside the surface service - the per-config role
 # capability via the assignment/decision actor match.
 
 
@@ -182,7 +182,7 @@ def create_configuration(
     return ReviewConfigOut(**service.config_to_dict(config))
 
 
-# Specific path BEFORE the /configurations/{config_id} param route — the admin
+# Specific path BEFORE the /configurations/{config_id} param route - the admin
 # pickers' only-valid-option universes (AC-06-55).
 @router.get("/configurations/form-meta", response_model=ReviewConfigMetaOut)
 def configuration_form_meta(
@@ -206,7 +206,7 @@ def configuration_submissions(
     current_user: User = Depends(require_permission("reviews.read")),
     db: Session = Depends(get_db),
 ) -> List[ReviewAdminSubmissionOut]:
-    """Admin Submissions overview (read-only staff god-view) — every submission
+    """Admin Submissions overview (read-only staff god-view) - every submission
     group for the config with its reviews/scores, live average + decision."""
     try:
         rows = ReviewSurfaceService(db).admin_submissions(

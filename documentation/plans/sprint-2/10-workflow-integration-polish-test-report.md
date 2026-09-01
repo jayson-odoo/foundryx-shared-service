@@ -1,4 +1,4 @@
-# Test Execution Report — Sprint 2 · Plan 10 (Workflow Engine integration & polish)
+# Test Execution Report - Sprint 2 · Plan 10 (Workflow Engine integration & polish)
 
 **Branch:** `sprint-2/10-workflow-integration-polish`
 **Stack:** frontend `:3001` + backend `:8001` (dev, Celery eager), one Postgres.
@@ -13,17 +13,17 @@ Typecheck (`tsc --noEmit`) clean; ESLint clean (1 pre-existing unrelated warning
 | Decision | What | Verification |
 |---|---|---|
 | D2 / BL-081 | Notification-spec template picker | Backend `test_context_filter_narrows_the_picker` (`?context=` filter + empty-context safety); frontend `status-engine.test.tsx` (drawer renders + validates); render-through-engine path already covered by plan-07 `test_template_engine.py` (notification template path). |
-| D3 / BL-064 | Undo/redo + previewable Tidy, both canvases | `use-history.test.ts` (4 cases — set/undo/redo, redo-clear, external-reset, reset); **E2E `workflow-polish.spec.ts`** (real-click round-trip below); status-canvas drawer/flags still green in `status-engine.test.tsx`. |
+| D3 / BL-064 | Undo/redo + previewable Tidy, both canvases | `use-history.test.ts` (4 cases - set/undo/redo, redo-clear, external-reset, reset); **E2E `workflow-polish.spec.ts`** (real-click round-trip below); status-canvas drawer/flags still green in `status-engine.test.tsx`. |
 | D4 | Run retention prune | `test_prune_runs_drops_old_runs_and_cascades_nodes` (age-based prune + child `workflow_run_nodes` cascade). |
 | D5 | Audit-log seam | `test_emit_seam_notifies_registered_subscriber` (subscriber receives the documented event shape after commit). |
 | D6 | Debug staleness through IF branches | `test_debug_staleness_propagates_through_taken_if_branch` (edit upstream → re-run upstream + active downstream; IF reused; untaken branch never touched; a stale id on the untaken branch ignored). |
 
 ---
 
-## E2E — User Story / Scenario (real clicks, live stack)
+## E2E - User Story / Scenario (real clicks, live stack)
 
-**User Story:** As a workflow author, I can experiment with my graph layout —
-auto-arrange (Tidy), move nodes, add/remove — and freely undo/redo, with Tidy
+**User Story:** As a workflow author, I can experiment with my graph layout -
+auto-arrange (Tidy), move nodes, add/remove - and freely undo/redo, with Tidy
 never silently destroying my work.
 
 | Field | Detail |
@@ -32,15 +32,15 @@ never silently destroying my work.
 | **Precondition** | Dedicated tenant `e2e-wf10-<stamp>` provisioned via operator API; admin logged in via real sign-in clicks. |
 | **Steps** | 1. New workflow → canvas visible; Undo disabled (empty timeline). 2. Add Manual trigger (palette search → click). 3. Add Send-email action → 2 nodes. 4. Drag-connect trigger→action → 1 edge; Undo now enabled. 5. Click **Tidy**. 6. Undo (Tidy). 7. Undo (connect), Undo (add-email). 8. Redo, Redo. |
 | **Expected** | After Tidy: still 2 nodes + 1 edge (non-destructive). After Undo×1: structure intact (layout only reverted). After Undo×2: edge gone. After Undo×3: 1 node. After Redo×2: 2 nodes + 1 edge restored. |
-| **Actual** | All assertions passed — node/edge counts tracked the history exactly; Tidy preserved structure and was itself undoable. |
+| **Actual** | All assertions passed - node/edge counts tracked the history exactly; Tidy preserved structure and was itself undoable. |
 | **Result** | ✅ PASS (`e2e/workflow-polish.spec.ts`, 6.5s, chromium). |
 | **Remarks** | Exercises the shared `useHistory` hook end-to-end. The status-engine canvas consumes the SAME hook (positions-as-draft + Save layout); its drawer + flag behavior stay green in vitest. |
 
-### Status-canvas BL-064 — live manual verification (clean rebuild)
+### Status-canvas BL-064 - live manual verification (clean rebuild)
 
 After the code-review fixes (dirty derived from a server baseline), the status
 canvas was verified manually against a freshly-rebuilt frontend (`rm -rf .next
-&& npm run build && npm start` — the served build had been stale, the documented
+&& npm run build && npm start` - the served build had been stale, the documented
 wrong-build gotcha). Operator → Status Engine ▸ Tenant ▸ Edit:
 
 | Step | Expected | Actual |
@@ -50,19 +50,19 @@ wrong-build gotcha). Operator → Status Engine ▸ Tenant ▸ Edit:
 | Click Undo | Layout reverts; **Save layout disabled** (dirty self-corrects to 0); Redo enabled | ✅ Save cleared + disabled, Redo enabled |
 
 Confirms the review fix: dirty is no longer monotonic (undo clears it), Tidy is a
-non-destructive preview. Save was intentionally NOT clicked — no shared-tenant
+non-destructive preview. Save was intentionally NOT clicked - no shared-tenant
 position was persisted.
 
 ---
 
 ## Journeys covered by integration/unit instead of full UI E2E (rationale)
 
-- **BL-081 — transition notification sent via a selected template (mailbox).**
+- **BL-081 - transition notification sent via a selected template (mailbox).**
   The picker UI is unit-tested and the render-through-engine + outbox path is
   backend-integration-tested. A full UI-fire-to-mailbox E2E would require editing
   the **shared platform-tenant** status graph (the only real status entity is
   operator-owned `tenant`), which mutates state every concurrent spec depends on
-  (isolation rule) — deliberately not automated here.
+  (isolation rule) - deliberately not automated here.
 - **Debug edit-upstream → execute-downstream across an IF branch.** The branch-
   aware active-set walk + staleness propagation is fully covered by
   `test_debug_staleness_propagates_through_taken_if_branch`; the debug-mode UI
@@ -73,12 +73,12 @@ position was persisted.
 
 ## Follow-up fixes (user feedback, verified live)
 
-- **BL-081 picker was empty** — no template existed for the `status.notification`
+- **BL-081 picker was empty** - no template existed for the `status.notification`
   context, so the picker stayed hidden. Seeded a platform-tier starter "Status
   change notification" template. Verified live: the TransitionDrawer notification
   now shows the "Email template" picker listing *Inline content* + *Status change
   notification*.
-- **BL-064 status-canvas Save/Cancel** — the layout draft now rides the
+- **BL-064 status-canvas Save/Cancel** - the layout draft now rides the
   ResourceForm's global Save/Cancel (like the workflow editor): Tidy/drag dirties
   the form; Cancel raises the "Discard changes?" dialog and reverts the
   arrangement; Save persists. The standalone "Save layout" button was removed.

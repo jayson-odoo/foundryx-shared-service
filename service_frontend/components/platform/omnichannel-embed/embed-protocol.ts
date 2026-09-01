@@ -1,7 +1,7 @@
 /**
- * Omnichannel embed — postMessage protocol v1 (cross-repo contract
+ * Omnichannel embed - postMessage protocol v1 (cross-repo contract
  * `11-omnichannel-embed-contract.md` §5) + the `/embed/session` wire types
- * (§3). Shared by the embed shell + its hook. NO `any` — every envelope,
+ * (§3). Shared by the embed shell + its hook. NO `any` - every envelope,
  * claim set and session field is explicitly typed.
  *
  * The widget (this repo, rendered in an iframe) and the parent (the consumer
@@ -23,7 +23,7 @@ export interface EmbedEnvelope<T> {
   payload: T;
 }
 
-/** `colorScheme` on init/theme — the light/dark toggle the parent controls. */
+/** `colorScheme` on init/theme - the light/dark toggle the parent controls. */
 export type EmbedColorScheme = 'light' | 'dark';
 
 /**
@@ -31,7 +31,7 @@ export type EmbedColorScheme = 'light' | 'dark';
  * aliases map to concrete CSS custom properties (see `THEME_VAR_MAP`); `vars`
  * is an escape hatch for raw `--foundryx-*` overrides applied verbatim, mirroring
  * the BrandingProvider idiom. Only known aliases / `--`-prefixed vars are
- * applied — an unknown key is ignored (foolproof: no runtime surprise).
+ * applied - an unknown key is ignored (foolproof: no runtime surprise).
  */
 export interface EmbedTheme {
   primary?: string;
@@ -62,14 +62,14 @@ export interface TokenPayload {
 
 /** Widget → parent payloads. */
 export interface ReadyPayload {
-  /** empty — the widget is mounted and requesting `init`. */
+  /** empty - the widget is mounted and requesting `init`. */
   [k: string]: never;
 }
 export interface ResizePayload {
   height: number;
 }
 export type ActivityKind = 'message_sent' | 'message_received' | 'assigned';
-/** Coarse "something happened" — NEVER message content (contract §5). */
+/** Coarse "something happened" - NEVER message content (contract §5). */
 export interface ActivityPayload {
   kind: ActivityKind;
   contactId: string | null;
@@ -77,7 +77,7 @@ export interface ActivityPayload {
 
 /**
  * The claims the widget decodes CLIENT-SIDE from the assertion JWT (base64url
- * payload — NO signature verification here; the shared service verifies). Used
+ * payload - NO signature verification here; the shared service verifies). Used
  * only to learn `allowedOrigins` so an inbound `init` origin can be validated.
  */
 export interface EmbedAssertionClaims {
@@ -132,7 +132,7 @@ export function themeToCssVars(theme: EmbedTheme | undefined): Record<string, st
   }
   if (theme.vars) {
     for (const [key, value] of Object.entries(theme.vars)) {
-      // Only accept genuine custom properties — never a bare identifier that
+      // Only accept genuine custom properties - never a bare identifier that
       // could collide with a real style declaration.
       if (key.startsWith('--') && typeof value === 'string') out[key] = value;
     }
@@ -149,7 +149,7 @@ function decodeBase64Url(segment: string): string {
 
 /**
  * Decode the assertion JWT's payload to read `allowedOrigins` (+ scope /
- * workspaceId). Returns null on any malformed input — the caller treats a null
+ * workspaceId). Returns null on any malformed input - the caller treats a null
  * as "cannot validate → reject". No signature check (server-side only).
  */
 export function decodeAssertionClaims(jwt: string): EmbedAssertionClaims | null {

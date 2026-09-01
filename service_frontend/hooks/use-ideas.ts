@@ -20,7 +20,7 @@ export interface UseIdeas {
 
 /**
  * Loads + mutates the idea repository (plan: Phase A). The idea list AND the
- * triage board read ideas ONLY through this hook — the UI never touches the
+ * triage board read ideas ONLY through this hook - the UI never touches the
  * service/api-client directly. Products load once alongside ideas (needed by the
  * capture modal's product picker).
  */

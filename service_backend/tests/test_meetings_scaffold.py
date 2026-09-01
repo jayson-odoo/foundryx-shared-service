@@ -1,4 +1,4 @@
-"""Meetings module scaffold — AC-S0-1, AC-S0-2, AC-S0-3.
+"""Meetings module scaffold - AC-S0-1, AC-S0-2, AC-S0-3.
 
 Manifest discovery, the ten-table shape, the permission catalog + the Admin
 grant that comes with a tenant install, the module gate, and the per-tenant
@@ -19,7 +19,7 @@ MEETINGS_PERMISSION_KEYS = {
     "meetings.settings.manage",
 }
 
-# The ten tables from the program spine §3 — all of them land in migration 0001.
+# The ten tables from the program spine §3 - all of them land in migration 0001.
 MEETINGS_TABLES = {
     "user_opt_ins",
     "calendar_events",
@@ -79,7 +79,7 @@ def test_manifest_discovered_and_fields():
 
 
 def test_module_loaded_without_error():
-    """A module that blows up at boot is skipped and behaves like inactive —
+    """A module that blows up at boot is skipped and behaves like inactive -
     which would make every other assertion here a false negative."""
     from app.module_loader import ERRORED_MODULES
 

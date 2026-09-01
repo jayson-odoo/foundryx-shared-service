@@ -1,10 +1,10 @@
-"""``EntitySource`` — the fetch seam (D6, plan §6), plus the AutoCount GRN
+"""``EntitySource`` - the fetch seam (D6, plan §6), plus the AutoCount GRN
 implementation.
 
 Pluggability sits on the axis of **uncertainty**: how data is fetched (two API
 generations coexist, and each customer runs their own wrapper version).
-Endpoint topology is NOT uncertain — it is a fixed uniform grammar
-(``POST /api/{Entity}/Get{Entity}``) — so there is no seam there.
+Endpoint topology is NOT uncertain - it is a fixed uniform grammar
+(``POST /api/{Entity}/Get{Entity}``) - so there is no seam there.
 
 Everything downstream of a source (mapping, staging, approval, push, retry,
 observability) is identical regardless of which implementation is selected.
@@ -35,13 +35,13 @@ logger = logging.getLogger("foundryx.autocount")
 #
 # A document stream (GRN) is naturally time-bounded, so reaching back N days is
 # the right first read. A MASTER LIST is a standing set whose purpose is to
-# mirror current state — applying document semantics to it produces a sync that
+# mirror current state - applying document semantics to it produces a sync that
 # reports success while importing ~1% of the data, which is the most dangerous
 # failure available because nothing looks wrong.
 #
 # Measured live 2026-07-21 against slice 1's 30-day default: Creditor 106 total →
 # **1** in window; Debtor 172 → **2**. A 365-day window still misses 4 and 15.
-# So no window is correct for masters — only an unbounded first pull.
+# So no window is correct for masters - only an unbounded first pull.
 #
 # ``initial_lookback_days`` therefore applies to ``windowed`` entities ONLY.
 INITIAL_LOAD_FULL = "full"
@@ -50,7 +50,7 @@ INITIAL_LOADS = (INITIAL_LOAD_FULL, INITIAL_LOAD_WINDOWED)
 
 
 class UnknownInitialLoad(Exception):
-    """A configured ``initial_load`` is not one we implement. LOUD — silently
+    """A configured ``initial_load`` is not one we implement. LOUD - silently
     defaulting to ``windowed`` would give a master entity a 30-day first read and
     report the resulting 1-of-106 import as a clean success."""
 
@@ -61,7 +61,7 @@ class TruncatedWindowError(AutoCountError):
 
     ``len == cap`` is the ONLY truncation signal the vendor gives us. The
     response's per-record ``"N of TOTAL"`` marker looks like a free total and is
-    not one — TOTAL is computed AFTER the cap is applied (verified live: an
+    not one - TOTAL is computed AFTER the cap is applied (verified live: an
     uncapped fetch reports ``"1 of 11"``, a ``RecordCount:5`` fetch reports
     ``"1 of 5"``). Trusting it would turn a truncated page into a "complete" one.
     """
@@ -79,12 +79,12 @@ class Watermark:
         first-run lookback.
 
         For a document stream a missing watermark must NEVER mean "fetch
-        everything" — an unbounded first fetch on a customer with years of
+        everything" - an unbounded first fetch on a customer with years of
         history is guaranteed to hit the record cap and fail.
 
         This stays the WINDOWED rule only. A ``full`` entity never calls it: the
         decision to send no lower bound belongs to the source, which knows the
-        entity's ``initial_load`` — a ``Watermark`` is a value object and has no
+        entity's ``initial_load`` - a ``Watermark`` is a value object and has no
         business holding policy (see ``AutoCountReadSource.window``).
         """
         if self.last_modified_at is not None:
@@ -96,7 +96,7 @@ class Watermark:
 class SourceRecord:
     """One raw vendor record + its parsed ``LastModified``.
 
-    The RAW payload travels with it all the way to storage (AC-13-07) —
+    The RAW payload travels with it all the way to storage (AC-13-07) -
     retained so a field discovered later can be mapped retroactively without
     re-fetching history.
     """
@@ -109,32 +109,68 @@ class SourceRecord:
 class FetchResult:
     records: List[SourceRecord] = field(default_factory=list)
     # Max LastModified observed. The caller advances the watermark to this ONLY
-    # once the whole batch has succeeded — never here.
+    # once the whole batch has succeeded - never here.
     max_last_modified: Optional[datetime] = None
     # ``None`` = no lower bound was sent: the unbounded initial master load.
     window_from: Optional[datetime] = None
     window_to: Optional[datetime] = None
     # What the vendor says is available, when it says so (AC-14-26). Reported
     # NEXT TO the fetched count so an operator can tell "nothing changed" from
-    # "the window excluded almost everything". Advisory ONLY — slice 1 verified
+    # "the window excluded almost everything". Advisory ONLY - slice 1 verified
     # this marker is computed AFTER the record cap is applied, so it is never
     # used to decide truncation.
     reported_total: Optional[int] = None
+    # ── cost + change-detection reporting (plan 22 §2.7, AC-22-17) ───────────
+    # Rows READ from the source. Distinct from ``len(records)`` in principle (a
+    # source may read more than it emits); ``None`` = "same as len(records)",
+    # which is what every API-path fetch means.
+    rows_scanned: Optional[int] = None
+    # How the fetched rows classify against the stored row hashes: a ref never
+    # seen before, or one whose COMPARED columns moved. The API path stores no
+    # hashes and reports zero - a run-history column, never a push decision.
+    added_count: int = 0
+    updated_count: int = 0
+    # Source-refs the reconcile diff found MISSING from a full extract that
+    # were previously known (plan 22 §2.5/S3, AC-22-16) - delete intents. Empty
+    # for every incremental fetch (a partial extract cannot prove absence) and
+    # for the API path (which stores no hashes at all).
+    delete_refs: List[str] = field(default_factory=list)
+    # Every source-ref SEEN in this extract (plan 22 S3 review BLOCKER 1). A
+    # delete intent must not outlive the evidence that produced it: when a ref
+    # already carrying a STAGED delete intent reappears here, the caller
+    # discards that stale intent BEFORE staging anything new. Empty for the
+    # API path (which stores no hashes and stages no delete intents at all).
+    current_refs: List[str] = field(default_factory=list)
+    # A source-owned resume point persisted to ``ac_watermark.cursor_json`` on a
+    # clean batch (the DB source's own mark, which need not be a datetime).
+    # ``None`` = leave the stored cursor untouched.
+    cursor: Optional[Dict[str, Any]] = None
 
 
 class EntitySource(Protocol):
-    """One entity, one company. Returns records changed since the watermark."""
+    """One entity, one company. Returns records changed since the watermark.
+
+    Two OPTIONAL duck-typed members (mirroring ``write_batch`` on sinks):
+
+    * ``drain_activity()`` - buffered observability records (the shape of
+      ``client.CallRecord``) consumed by ``record_client_calls``. A source
+      without it simply records nothing extra.
+    * ``close()`` - release the source's transport. The sync handler calls it
+      in its ``finally`` (it replaced the old ``client.close()``).
+    """
 
     entity_type: str
 
     def fetch_changes(self, since: Watermark) -> FetchResult: ...
+
+    def close(self) -> None: ...
 
 
 class AutoCountReadSource:
     """The vendor read implementation: ``POST /api/{Entity}/Get{Entity}`` with
     ``LastModifiedFrom``/``To`` (verified live to genuinely filter).
 
-    **Header and all lines arrive in ONE call** (AC-13-06) — the vendor nests
+    **Header and all lines arrive in ONE call** (AC-13-06) - the vendor nests
     the detail array in the header response, so there is no per-document
     fan-out anywhere. This is the property that makes the whole delta design
     viable at volume.
@@ -159,7 +195,7 @@ class AutoCountReadSource:
         self.vendor_entity = vendor_entity
         self.record_cap = record_cap
         self.lookback_days = lookback_days
-        # Per-entity from config (AC-14-03) — resolved HERE so a bad value fails
+        # Per-entity from config (AC-14-03) - resolved HERE so a bad value fails
         # at construction with a clear message, not mid-fetch.
         self.envelope = envelope_for(envelope)
         if initial_load not in INITIAL_LOADS:
@@ -191,7 +227,7 @@ class AutoCountReadSource:
         start, end = self.window(since)
         unbounded = start is None
 
-        # build_read_filter enforces the list-valued identifier keys — the exact
+        # build_read_filter enforces the list-valued identifier keys - the exact
         # mistake AutoCount does NOT report (it silently returns the whole
         # table). client.read then asserts the returned window (AC-13-04a).
         payload = build_read_filter(
@@ -207,7 +243,7 @@ class AutoCountReadSource:
         unwrapped = self.client.read(
             self.vendor_entity,
             payload,
-            # No lower bound means no window to assert — correct, not a gap:
+            # No lower bound means no window to assert - correct, not a gap:
             # AC-13-04a's defence exists to catch a filter the server IGNORED,
             # and here we deliberately sent none.
             window=None if unbounded else (start, end),
@@ -225,7 +261,7 @@ class AutoCountReadSource:
                 else f"window {start.isoformat()}..{end.isoformat()}"
             )
             logger.error(
-                "AutoCount %s fetch hit the record cap (%d) for %s — the page may "
+                "AutoCount %s fetch hit the record cap (%d) for %s - the page may "
                 "be truncated and window narrowing is not yet implemented; failing "
                 "rather than delivering partial data.",
                 self.vendor_entity,
@@ -263,11 +299,43 @@ class AutoCountReadSource:
             reported_total=unwrapped.reported_total,
         )
 
+    def drain_activity(self):
+        """The buffered HTTP legs (masked ``CallRecord``s) - the optional
+        observability seam ``record_client_calls`` consumes."""
+        return self.client.drain_calls()
+
+    def close(self) -> None:
+        self.client.close()
+
+
+# ── source context (plan 22 §2.1, AC-22-08) ──────────────────────────────────
+# The factory contract is ``factory(ctx, **cfg)``: each implementation builds
+# its OWN transport from the context (the HTTP client is no longer constructed
+# unconditionally in ``sync.py`` - a DB task must never sign in to the vendor
+# API it does not use).
+
+
+@dataclass
+class SourceContext:
+    """What every source implementation may need to build itself.
+
+    ``company_service`` is the handle for connection resolution (tenant- and
+    provider-scoped, the polymorphic-stored-id rule) and vendor-client
+    construction; ``entity_config`` carries the per-entity task config
+    (``source_config`` for the DB source).
+    """
+
+    db: Any
+    tenant_id: str
+    company: Any
+    entity_config: Any
+    company_service: Any
+
 
 # ── source registry (D6) ──────────────────────────────────────────────────────
 # ``ac_entity_config.source_impl`` selects the implementation PER ENTITY, PER
 # COMPANY. A second API generation, or a customer needing a bespoke fetch, adds
-# a factory here and a config value — no change to the pipeline.
+# a factory here and a config value - no change to the pipeline.
 
 SourceFactory = Callable[..., EntitySource]
 
@@ -275,7 +343,7 @@ _SOURCES: Dict[str, SourceFactory] = {}
 
 
 class UnknownSourceImpl(Exception):
-    """A configured ``source_impl`` has no registered factory. LOUD — a silent
+    """A configured ``source_impl`` has no registered factory. LOUD - a silent
     fallback to the default would sync a customer with the wrong strategy and
     look like it worked."""
 
@@ -294,7 +362,7 @@ def source_factory(name: str) -> SourceFactory:
 
 
 def _autocount_read_factory(
-    client: AutoCountClient,
+    ctx: SourceContext,
     *,
     entity_type: str,
     vendor_entity: str = VENDOR_ENTITY,
@@ -304,9 +372,12 @@ def _autocount_read_factory(
     initial_load: str = INITIAL_LOAD_WINDOWED,
     identifier_key: str = "DocNo",
     last_modified_path: str = "LastModified",
+    **_extra: Any,
 ) -> EntitySource:
+    # The HTTP client is built HERE, by the implementation that uses it -
+    # exactly the client ``sync.py`` used to build unconditionally (AC-22-08).
     return AutoCountReadSource(
-        client,
+        ctx.company_service.client_for(ctx.tenant_id, ctx.company),
         entity_type=entity_type,
         vendor_entity=vendor_entity,
         record_cap=record_cap,

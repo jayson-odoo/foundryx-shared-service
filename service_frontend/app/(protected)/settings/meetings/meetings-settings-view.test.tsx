@@ -1,8 +1,8 @@
 /**
- * Settings → Meetings (S0) — AC-S0-4, AC-S0-5, AC-S0-14 (structure half).
+ * Settings → Meetings (S0) - AC-S0-4, AC-S0-5, AC-S0-14 (structure half).
  *
  * The connection cards must offer exactly the two meetings kinds and route into
- * the SHARED integrations form with the provider preselected — the page never
+ * the SHARED integrations form with the provider preselected - the page never
  * re-implements a connection editor, so nothing here asserts field rendering.
  */
 import { render, screen, waitFor } from '@testing-library/react';

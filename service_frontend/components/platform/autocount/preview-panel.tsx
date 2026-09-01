@@ -105,10 +105,17 @@ function FailedCard({ prediction }: { prediction: AutocountPrediction }) {
 export interface PreviewPanelProps {
   preview: AutocountPreview | null;
   isLoading: boolean;
-  /** Set when the dry run itself failed — approval is blocked upstream. */
+  /** Set when the dry run itself failed - approval is blocked upstream. */
   error: string | null;
   /** Whether a preview has been requested yet. */
   hasRun: boolean;
+  /**
+   * `batch` (default) = the review-gate strip (Total/Created/Updated/Failed).
+   * `task` (plan 22 S2, AC-22-18) = the activation-gate strip of an initial
+   * load: Extracted / Would create / Would update / Would overwrite / Would
+   * fail - the same predictions, the overwrite count promoted into the strip.
+   */
+  variant?: 'batch' | 'task';
 }
 
 /**
@@ -117,10 +124,16 @@ export interface PreviewPanelProps {
  * prominently (blankings tinted destructive by `PredictionDiff`), and collapses
  * safe creates into a single count so overwrites are never buried under them.
  *
- * "Preview" is a prediction, not a delivery — approving is the separate act
+ * "Preview" is a prediction, not a delivery - approving is the separate act
  * (AC-14-41). Copy here is labels + one-line status only (foolproof-UI).
  */
-export function PreviewPanel({ preview, isLoading, error, hasRun }: PreviewPanelProps) {
+export function PreviewPanel({
+  preview,
+  isLoading,
+  error,
+  hasRun,
+  variant = 'batch',
+}: PreviewPanelProps) {
   if (isLoading) {
     return (
       <div
@@ -166,14 +179,34 @@ export function PreviewPanel({ preview, isLoading, error, hasRun }: PreviewPanel
   return (
     <div className="flex flex-col gap-4" data-testid="preview-panel">
       <div className="flex flex-wrap gap-2">
-        <SummaryStat label="Total" value={summary.total} />
-        <SummaryStat label="Created" value={summary.created} />
-        <SummaryStat label="Updated" value={summary.updated} />
-        <SummaryStat
-          label="Failed"
-          value={summary.failed}
-          tone={summary.failed > 0 ? 'destructive' : 'default'}
-        />
+        {variant === 'task' ? (
+          <>
+            <SummaryStat label="Extracted" value={summary.total} />
+            <SummaryStat label="Would create" value={summary.created} />
+            <SummaryStat label="Would update" value={summary.updated} />
+            <SummaryStat
+              label="Would overwrite"
+              value={overwrites.length}
+              tone={overwrites.length > 0 ? 'warning' : 'default'}
+            />
+            <SummaryStat
+              label="Would fail"
+              value={summary.failed}
+              tone={summary.failed > 0 ? 'destructive' : 'default'}
+            />
+          </>
+        ) : (
+          <>
+            <SummaryStat label="Total" value={summary.total} />
+            <SummaryStat label="Created" value={summary.created} />
+            <SummaryStat label="Updated" value={summary.updated} />
+            <SummaryStat
+              label="Failed"
+              value={summary.failed}
+              tone={summary.failed > 0 ? 'destructive' : 'default'}
+            />
+          </>
+        )}
         {summary.retryable > 0 && (
           <SummaryStat label="Retryable" value={summary.retryable} tone="warning" />
         )}

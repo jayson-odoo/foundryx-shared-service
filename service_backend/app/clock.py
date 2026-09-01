@@ -1,11 +1,11 @@
-"""Injectable clock (sprint-4/03 Slice 6) — the ONE source of "now" for
+"""Injectable clock (sprint-4/03 Slice 6) - the ONE source of "now" for
 time-dependent rule facts (the day-count facts ``record.<field>.daysSince`` /
-``.daysUntil``). Everything else keeps real ``datetime.now`` — stored timestamps
+``.daysUntil``). Everything else keeps real ``datetime.now`` - stored timestamps
 and transition times must never be skewed by a simulation.
 
 Default = real UTC. The admin date-simulation wraps a sweep in
 ``with clock_override(as_of): …`` so "now" moves for that call only (a
-contextvar, reset in ``finally``) — never a persisted/global clock.
+contextvar, reset in ``finally``) - never a persisted/global clock.
 """
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -17,13 +17,13 @@ _now_override: ContextVar[Optional[datetime]] = ContextVar("clock_now_override",
 
 
 def now() -> datetime:
-    """Aware-UTC current time — the simulated value inside ``clock_override``,
+    """Aware-UTC current time - the simulated value inside ``clock_override``,
     else the real wall clock."""
     return _now_override.get() or datetime.now(timezone.utc)
 
 
 def today() -> date:
-    """Current calendar date (honors the override) — for date-only comparisons."""
+    """Current calendar date (honors the override) - for date-only comparisons."""
     return now().date()
 
 

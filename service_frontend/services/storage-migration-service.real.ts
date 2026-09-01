@@ -1,4 +1,4 @@
-/** Real storage-migration service — FastAPI via the shared api-client. */
+/** Real storage-migration service - FastAPI via the shared api-client. */
 import { apiFetch } from '@/lib/api-client';
 import type {
   Job,

@@ -1,4 +1,4 @@
-"""Workspace repository — tenant-scoped queries + membership. Pure SQLAlchemy."""
+"""Workspace repository - tenant-scoped queries + membership. Pure SQLAlchemy."""
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 

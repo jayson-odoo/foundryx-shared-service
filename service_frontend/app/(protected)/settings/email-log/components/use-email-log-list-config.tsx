@@ -101,7 +101,7 @@ export function useEmailLogListConfig(): ResourceListConfig<EmailLogListItem> {
           header: ({ column }) => <DataGridColumnHeader title="Sent" column={column} />,
           cell: ({ row }) => (
             <span className="text-sm text-muted-foreground">
-              {row.original.sentAt ? formatDateTime(row.original.sentAt) : '—'}
+              {row.original.sentAt ? formatDateTime(row.original.sentAt) : '-'}
             </span>
           ),
           size: 160,

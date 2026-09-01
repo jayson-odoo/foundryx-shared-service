@@ -2,7 +2,7 @@
 
 One row per (scope, key): scope "email" tracks failed logins per account,
 scope "ip" tracks failures per client address. Postgres-backed by design (D5)
-— auth traffic is low-QPS and on-prem stays one-service; the Redis adapter is
+- auth traffic is low-QPS and on-prem stays one-service; the Redis adapter is
 BL-040. Stale rows are pruned by the email-dispatcher housekeeping pass.
 """
 import uuid
@@ -15,17 +15,17 @@ from app.database import Base
 
 THROTTLE_SCOPE_EMAIL = "email"
 THROTTLE_SCOPE_IP = "ip"
-# Public form submissions — own per-IP bucket so anonymous form spam never
+# Public form submissions - own per-IP bucket so anonymous form spam never
 # locks the login/forgot-password IP bucket and vice versa (plan sprint-3/02 D12).
 THROTTLE_SCOPE_FORM_PUBLIC = "form_public"
-# Public document-share access (unlock attempts + anonymous uploads) — own
+# Public document-share access (unlock attempts + anonymous uploads) - own
 # per-IP bucket, never shares login/form buckets (plan sprint-3/05 D6).
 THROTTLE_SCOPE_DOC_SHARE = "doc_share"
-# Profile Portal auth (EMS, sprint-4/06 slice 0a) — own per-IP bucket so portal
+# Profile Portal auth (EMS, sprint-4/06 slice 0a) - own per-IP bucket so portal
 # login/OTP/forgot/set-password spam never locks the staff login bucket and
 # vice versa (AC-06-16). Distinct from THROTTLE_SCOPE_IP.
 THROTTLE_SCOPE_PORTAL = "portal"
-# Omnichannel embed session exchange (plan sprint-4/11H, AC-11H-08) — own per-IP
+# Omnichannel embed session exchange (plan sprint-4/11H, AC-11H-08) - own per-IP
 # bucket so embed assertion-exchange spam never locks the staff login bucket and
 # vice versa. Window-throttle (no permanent lock).
 THROTTLE_SCOPE_EMBED = "embed_session"

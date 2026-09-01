@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Import engine E2E (plan sprint-3/09, F8 Phase C) — real user clicks against
+ * Import engine E2E (plan sprint-3/09, F8 Phase C) - real user clicks against
  * the LIVE stack (Next :3001 → FastAPI :8001 → Postgres).
  *
  * Dedicated provisioned tenant (mutates the Users list). Journey: Users →
@@ -27,7 +27,7 @@ async function login(page: Page) {
 
 test.describe.configure({ mode: 'serial', timeout: 180_000 });
 
-test.describe('Import engine — live stack (plan sprint-3/09 Phase C)', () => {
+test.describe('Import engine - live stack (plan sprint-3/09 Phase C)', () => {
   test.beforeAll(async ({ request }) => {
     const pl = await request.post(`${API}/auth/login`, {
       data: { email: 'platform@example.com', password: 'platform1234', tenantSlug: 'platform' },
@@ -63,11 +63,11 @@ test.describe('Import engine — live stack (plan sprint-3/09 Phase C)', () => {
     });
     await page.getByRole('button', { name: /upload & map/i }).click();
 
-    // Mapping page — auto-mapped; just validate.
+    // Mapping page - auto-mapped; just validate.
     await page.waitForURL(/\/imports\/.+\/mapping/);
     await page.getByRole('button', { name: /^validate$/i }).click();
 
-    // Results page — 1 valid, 1 invalid, the bad row shown.
+    // Results page - 1 valid, 1 invalid, the bad row shown.
     await page.waitForURL(/\/imports\/[^/]+$/);
     await expect(page.getByText('1 valid', { exact: true })).toBeVisible();
     await expect(page.getByText('1 invalid', { exact: true })).toBeVisible();

@@ -1,11 +1,11 @@
 """Block document → MJML → email-safe HTML (plan 07 D9).
 
-The compiler runs the FULL pipeline at render time, per send — no compiled
+The compiler runs the FULL pipeline at render time, per send - no compiled
 caches (per-recipient conditional pruning makes a single cached HTML wrong
 by construction, and brand values must live-follow a rebrand). MJML compiles
-via ``mrml`` (Rust port, no Node) — validated by the Phase-0 spike.
+via ``mrml`` (Rust port, no Node) - validated by the Phase-0 spike.
 
-Merge tokens are substituted AFTER compilation? No — values are substituted
+Merge tokens are substituted AFTER compilation? No - values are substituted
 into the MJML source per element with proper escaping (html.escape via
 merge.render_tokens), because hrefs need URL validation BEFORE they hit the
 attribute. mrml never sees un-merged ``{{`` braces in attributes it might
@@ -51,7 +51,7 @@ class BrandValues:
 
 
 # mj-social-element icon names (mrml ships the standard set; tiktok has no
-# stock icon — fall back to the generic 'web' glyph, href still correct).
+# stock icon - fall back to the generic 'web' glyph, href still correct).
 _SOCIAL_ICON = {
     "facebook": "facebook",
     "instagram": "instagram",
@@ -165,7 +165,7 @@ def _block_mjml(
         bg = (block.overrides.background_color if block.overrides else None) or brand.primary_color
         logo = (block.overrides.logo_src if block.overrides else None) or brand.logo_url
         if logo:
-            # width-capped — mj-image with only a height stretches the image
+            # width-capped - mj-image with only a height stretches the image
             # to the full column width (squashed wordmark, UX iteration).
             return (
                 f'<mj-image src="{_attr(logo)}" alt="{_attr(brand.tenant_name)}" width="160px" '

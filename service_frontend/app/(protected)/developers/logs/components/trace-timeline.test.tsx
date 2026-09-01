@@ -1,5 +1,5 @@
 /**
- * Trace timeline (sprint-4/12 Slice 2, AC-DLC-18) — renders the correlated legs
+ * Trace timeline (sprint-4/12 Slice 2, AC-DLC-18) - renders the correlated legs
  * of one consumption with source/status badges + latency, links each leg to its
  * detail, and highlights the currently-viewed leg.
  */

@@ -1,4 +1,4 @@
-"""Reference-guard registry (sprint-4/08 grill Q9b) — the INVERSE of soft-refs.
+"""Reference-guard registry (sprint-4/08 grill Q9b) - the INVERSE of soft-refs.
 
 Soft-refs let a module point AT core data; reference-guards let core ask "is
 this core row referenced by anybody?" WITHOUT core knowing which modules exist.
@@ -19,7 +19,7 @@ _GUARDS: dict[str, List[tuple[str, ReferenceChecker]]] = defaultdict(list)
 
 
 def register_reference_guard(entity_type: str, label: str, checker: ReferenceChecker) -> None:
-    """Idempotent per (entity_type, label) — re-registration at boot replaces."""
+    """Idempotent per (entity_type, label) - re-registration at boot replaces."""
     existing = _GUARDS[entity_type]
     for i, (lbl, _) in enumerate(existing):
         if lbl == label:

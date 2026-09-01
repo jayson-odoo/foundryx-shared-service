@@ -20,7 +20,7 @@ import {
 } from '../../components/autocount-meta';
 
 /**
- * The Review list on the Resource shell (AC-15-02) — one row per sync batch
+ * The Review list on the Resource shell (AC-15-02) - one row per sync batch
  * (job), newest first, backed by `GET /autocount/jobs`. Server-paginated and
  * segmented by review state (Needs review | Done | All); a row opens the
  * existing review surface (the form/detail view).
@@ -113,7 +113,7 @@ export function useAutocountJobsListConfig(): ResourceListConfig<AutocountSyncJo
           const when = row.original.updatedAt ?? row.original.createdAt;
           return (
             <span className="text-sm text-muted-foreground">
-              {when ? formatDateTime(when) : '—'}
+              {when ? formatDateTime(when) : '-'}
             </span>
           );
         },

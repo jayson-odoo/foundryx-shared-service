@@ -21,12 +21,12 @@ export const accountFormSchema = z.object({
 
 export type AccountFormValues = z.infer<typeof accountFormSchema>;
 
-// Survives the post-update() remount (same reason as the avatar override —
+// Survives the post-update() remount (same reason as the avatar override -
 // update() flips useSession to 'loading' and the page remounts, plan 04
 // lesson). Bridges Phase A, where the mock isn't behind /auth/me.
 let nameOverride: string | undefined;
 
-/** Test helper — module state would leak across specs otherwise. */
+/** Test helper - module state would leak across specs otherwise. */
 export function __resetAccountNameOverride(): void {
   nameOverride = undefined;
 }
@@ -41,7 +41,7 @@ export interface UseAccountFormResult {
 }
 
 /**
- * My Account on the Resource form shell (plan 06 — system principle: every
+ * My Account on the Resource form shell (plan 06 - system principle: every
  * form surface = ResourceForm with the global Edit toggle). Self-scope:
  * name is editable (PATCH /me/profile); email rides the plan-04 ceremony;
  * roles read-only.
@@ -63,7 +63,7 @@ export function useAccountForm(): UseAccountFormResult {
     defaultValues: { name: displayName ?? '' },
   });
 
-  // Session arrives async on hard loads — seed the form once it lands.
+  // Session arrives async on hard loads - seed the form once it lands.
   useEffect(() => {
     if (!form.formState.isDirty) form.reset({ name: nameOverride ?? user?.name ?? '' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -120,7 +120,7 @@ export function useAccountForm(): UseAccountFormResult {
           ),
         },
       ],
-      // Sign-in concerns live in the "…" menu (user feedback — the dedicated
+      // Sign-in concerns live in the "…" menu (user feedback - the dedicated
       // Security tab read as clutter for two buttons).
       actions: [
         {
@@ -140,7 +140,7 @@ export function useAccountForm(): UseAccountFormResult {
       ],
       actionRows: [{} as never],
       editable: true,
-      // Self-scope — perm-free like /auth/me; no editPermission gate.
+      // Self-scope - perm-free like /auth/me; no editPermission gate.
       initialEditing: false,
       isDirty: form.formState.isDirty,
       onSave,

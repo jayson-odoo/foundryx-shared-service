@@ -1,4 +1,4 @@
-"""Integration webhook/event log (sprint-4/07 Cluster F slice 3) — core
+"""Integration webhook/event log (sprint-4/07 Cluster F slice 3) - core
 ``public`` table. ONE row per inbound webhook delivery, the idempotency ledger
 AND the masked audit trail (AC-07-28/30).
 
@@ -15,19 +15,19 @@ from sqlalchemy.sql import func
 from app.database import Base
 from app.models.utc_datetime import UTCDateTime
 
-# Ingest outcomes — code branches on these.
+# Ingest outcomes - code branches on these.
 LOG_STATUS_RECEIVED = "RECEIVED"
 LOG_STATUS_PROCESSED = "PROCESSED"
 LOG_STATUS_REJECTED = "REJECTED"  # bad signature / stale / malformed
 LOG_STATUS_DUPLICATE = "DUPLICATE"  # idempotency collision (no-op)
-LOG_STATUS_RETRY = "RETRY"  # out-of-order — referenced record not yet present
+LOG_STATUS_RETRY = "RETRY"  # out-of-order - referenced record not yet present
 
 
 class IntegrationLog(Base):
     __tablename__ = "integration_logs"
     __table_args__ = (
         # Idempotency ledger (AC-07-30): a provider event lands at most once per
-        # tenant. ``external_event_id`` is NULLABLE — a rejected/unparseable
+        # tenant. ``external_event_id`` is NULLABLE - a rejected/unparseable
         # delivery may have none; the partial uniqueness only bites real events.
         UniqueConstraint(
             "tenant_id", "provider", "external_event_id",
@@ -46,7 +46,7 @@ class IntegrationLog(Base):
     external_event_id = Column(String, nullable=True)
     event_type = Column(String, nullable=True)  # charge.succeeded, paid, …
     status = Column(String, nullable=False, default=LOG_STATUS_RECEIVED)
-    # MASKED request + response (AC-07-28) — never raw secrets/PAN.
+    # MASKED request + response (AC-07-28) - never raw secrets/PAN.
     request_json = Column(JSON, nullable=True)
     response_json = Column(JSON, nullable=True)
     error = Column(Text, nullable=True)

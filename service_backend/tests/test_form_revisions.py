@@ -1,4 +1,4 @@
-"""Form submission revision tests (plan sprint-4/04 §Slices) — service/router/
+"""Form submission revision tests (plan sprint-4/04 §Slices) - service/router/
 scoped-status integration over the httpx TestClient.
 
 Covers: allow_revisions toggle persists · original identity (group_id == id,
@@ -187,7 +187,7 @@ def test_list_defaults_to_current_only(client):
     original = _submit(client, headers, form["id"], {"name": "Alice"})
     client.post(f"/submissions/{original['id']}/revise", headers=headers)
     rows = client.get(f"/forms/{form['id']}/submissions", headers=headers).json()
-    # One row per group — the current (draft) revision, not the frozen prior.
+    # One row per group - the current (draft) revision, not the frozen prior.
     assert rows["total"] == 1
     assert rows["data"][0]["isCurrent"] is True
     assert rows["data"][0]["revisionNumber"] == 2
@@ -224,7 +224,7 @@ def test_resubmit_revision_edits_and_fires_submit(client):
     )
     assert res.status_code == 200, res.text
     final = res.json()
-    assert final["id"] == draft["id"]  # same row — one row per revision
+    assert final["id"] == draft["id"]  # same row - one row per revision
     assert final["statusKey"] == "submitted"
     assert final["isCurrent"] is True
     assert final["revisionNumber"] == 2

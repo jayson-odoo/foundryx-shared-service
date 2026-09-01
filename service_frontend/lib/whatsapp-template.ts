@@ -1,5 +1,5 @@
 /**
- * WhatsApp template transform + validation (plan 07) — parity mirror of the
+ * WhatsApp template transform + validation (plan 07) - parity mirror of the
  * backend `template_schemas.py`. `toMetaComponents` / `fromMetaComponents` are
  * the single bidirectional transform; `validateDoc` mirrors the save/submit
  * 422 gate so the builder shows per-field errors before hitting the server.
@@ -181,9 +181,9 @@ export function validateDoc(
   } else if (!varsSequential(doc.body.text)) {
     e.body = 'Variables must be numbered sequentially: {{1}}, {{2}}, …';
   } else if (endsWithVar(doc.body.text)) {
-    e.body = 'Body can’t end with a variable — add text after the last {{n}} (Meta rule).';
+    e.body = 'Body can’t end with a variable - add text after the last {{n}} (Meta rule).';
   } else if (hasAdjacentVars(doc.body.text)) {
-    e.body = 'Two variables can’t be adjacent — put text between them (Meta rule).';
+    e.body = 'Two variables can’t be adjacent - put text between them (Meta rule).';
   } else {
     const nvars = distinctVarCount(doc.body.text);
     const provided = (doc.body.examples || []).filter((x) => (x || '').trim()).length;
@@ -228,6 +228,6 @@ export function qualityLabel(quality: string | null): string {
     case 'RED':
       return 'Low';
     default:
-      return '—';
+      return '-';
   }
 }

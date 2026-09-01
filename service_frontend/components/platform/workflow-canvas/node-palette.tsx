@@ -1,12 +1,12 @@
 'use client';
 
 /**
- * Left palette (plan sprint-2/08 D15, search + collapse in 09) — triggers /
+ * Left palette (plan sprint-2/08 D15, search + collapse in 09) - triggers /
  * logic / actions grouped into collapsible sections (collapsed by default so
  * the growing catalog stays compact) with a search box that filters across all
  * sections and auto-expands matches. Each item is a dnd-kit draggable AND a
- * click-to-add button — click is the E2E path (dnd-kit pointer sensors aren't
- * drivable by Playwright's dragTo — template-engine lesson); drag is the
+ * click-to-add button - click is the E2E path (dnd-kit pointer sensors aren't
+ * drivable by Playwright's dragTo - template-engine lesson); drag is the
  * nicety. A trigger is disabled once one exists (one trigger per workflow, D2).
  */
 import { useMemo, useState } from 'react';
@@ -15,8 +15,20 @@ import { ChevronDown, Search, Zap } from 'lucide-react';
 import { ACTION_CATALOG, IF_CATALOG, TRIGGER_CATALOG } from '@/lib/workflow-catalog';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
+import { ClampedText } from '@/components/platform/clamped-text';
+import { useInstalledModules } from '@/hooks/use-app-store';
 import type { NodeCatalogEntry } from '@/types/workflows';
 import { WORKFLOW_NODE_ICONS } from './workflow-icons';
+
+/** A `module`-tagged entry is visible only while that module is ACTIVE for the
+ * tenant (plan sprint-4/17) - `'core'`/absent is always visible. Mirrors the
+ * backend `app/module_platform/active.py` `is_visible` predicate. */
+function visibleEntries<T extends { module?: string }>(
+  entries: T[],
+  isActive: (name: string) => boolean,
+): T[] {
+  return entries.filter((e) => !e.module || e.module === 'core' || isActive(e.module));
+}
 
 const ICONS = WORKFLOW_NODE_ICONS;
 
@@ -53,9 +65,7 @@ function PaletteItem({ entry, disabled, onAdd }: PaletteItemProps) {
       </span>
       <span className="min-w-0">
         <span className="block text-xs font-medium text-foreground">{entry.label}</span>
-        <span className="block truncate text-[11px] leading-tight text-muted-foreground">
-          {entry.description}
-        </span>
+        <ClampedText text={entry.description} lines={2} className="text-[11px] leading-tight text-muted-foreground" />
       </span>
     </button>
   );
@@ -77,24 +87,27 @@ function matches(entry: NodeCatalogEntry, q: string): boolean {
 }
 
 export interface NodePaletteProps {
-  /** True when a trigger already exists — disables trigger items. */
+  /** True when a trigger already exists - disables trigger items. */
   hasTrigger: boolean;
   disabled: boolean;
   onAdd: (type: string) => void;
+  /** Permission snapshot supplied by the page. Defaults true for isolated UI use. */
+  canCode?: boolean;
 }
 
-export function NodePalette({ hasTrigger, disabled, onAdd }: NodePaletteProps) {
+export function NodePalette({ hasTrigger, disabled, onAdd, canCode = true }: NodePaletteProps) {
   const [query, setQuery] = useState('');
-  // Sections collapsed by default — the catalog is long; expand on click/search.
+  // Sections collapsed by default - the catalog is long; expand on click/search.
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const { isActive } = useInstalledModules();
 
   const sections: PaletteSection[] = useMemo(
     () => [
-      { title: 'Triggers', entries: TRIGGER_CATALOG, itemsDisabled: hasTrigger },
+      { title: 'Triggers', entries: visibleEntries(TRIGGER_CATALOG, isActive), itemsDisabled: hasTrigger },
       { title: 'Logic', entries: IF_CATALOG },
-      { title: 'Actions', entries: ACTION_CATALOG },
+      { title: 'Actions', entries: visibleEntries(ACTION_CATALOG, isActive) },
     ],
-    [hasTrigger],
+    [hasTrigger, isActive],
   );
 
   const q = query.trim().toLowerCase();
@@ -140,10 +153,14 @@ export function NodePalette({ hasTrigger, disabled, onAdd }: NodePaletteProps) {
             </button>
             {expanded &&
               entries.map((entry) => (
-                <PaletteItem
-                  key={entry.type}
-                  entry={entry}
-                  disabled={disabled || (section.itemsDisabled ?? false)}
+                  <PaletteItem
+                    key={entry.type}
+                    entry={entry}
+                    disabled={
+                      disabled ||
+                      (section.itemsDisabled ?? false) ||
+                      (entry.kind === 'action' && entry.permission === 'workflows.code' ? !canCode : false)
+                    }
                   onAdd={onAdd}
                 />
               ))}

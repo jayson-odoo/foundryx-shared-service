@@ -1,8 +1,8 @@
-"""Import service (sprint-3/09) — two-phase, server-authoritative pipeline.
+"""Import service (sprint-3/09) - two-phase, server-authoritative pipeline.
 
 Validate (dry-run, zero writes) → Commit (ALL-OR-NOTHING single transaction).
 Set-based throughout (one batched query per resolver / match-existence; bulk DML)
-— never per-row queries (D7). Owns: create_job (caps fail-fast + quarantine
+- never per-row queries (D7). Owns: create_job (caps fail-fast + quarantine
 store), validate, commit, template build, annotated-error build.
 """
 from __future__ import annotations
@@ -113,7 +113,7 @@ class ImportService:
             raise HTTPException(413, f"File exceeds the {max_mb} MB limit.")
         fmt = readers.sniff_format(content)
         if fmt is None:
-            raise HTTPException(422, "Unsupported file — upload xlsx, xls or csv.")
+            raise HTTPException(422, "Unsupported file - upload xlsx, xls or csv.")
 
         ctx = {k: v for k, v in (context or {}).items() if k in importer.context_keys}
         job = ImportJob(
@@ -159,7 +159,7 @@ class ImportService:
     def _merge_context(self, job: ImportJob, context: dict) -> None:
         """Merge whitelisted job-level context (e.g. Ticket mode) onto the job.
         Keys are constrained to the importer's ``context_keys`` (client can't
-        widen the scope) — mirrors create_job's filter."""
+        widen the scope) - mirrors create_job's filter."""
         importer = self._require_importer(job.entity_type)
         allowed = {k: v for k, v in (context or {}).items() if k in importer.context_keys}
         if allowed:
@@ -237,7 +237,7 @@ class ImportService:
         self, job: ImportJob, importer: ImporterDef
     ) -> Tuple[List[PreparedRow], List[dict], List[str]]:
         """Returns (valid prepared rows, errors[{row,column,message}], warnings).
-        Pure — zero writes. Used by BOTH validate and commit (re-validation)."""
+        Pure - zero writes. Used by BOTH validate and commit (re-validation)."""
         max_rows, _ = self.caps(job.tenant_id)
         content = self._read_content(job)
         fmt = readers.sniff_format(content) or readers.FMT_CSV
@@ -250,7 +250,7 @@ class ImportService:
         id_header = col_to_header.get("id")  # the match key (D5)
 
         # First pass: coerce + per-cell validate; collect resolver inputs. Each
-        # staged row carries its missing-required cols — enforced ONLY on create
+        # staged row carries its missing-required cols - enforced ONLY on create
         # rows in pass 2 (partial update for existing rows; required-create-only D5).
         staged: List[Tuple[int, dict, Optional[str], bool, list]] = []
         resolver_inputs: Dict[str, set] = {}
@@ -274,7 +274,7 @@ class ImportService:
                     errors.append({"row": rownum, "column": col.key, "message": err})
                     row_ok = False
                     continue
-                # required (if mapped-absent or empty) — deferred: only create rows
+                # required (if mapped-absent or empty) - deferred: only create rows
                 if col.required and (value is None or value == "") and not col.resolver:
                     missing_required.append(col.key)
                     continue
@@ -343,7 +343,7 @@ class ImportService:
             if ids:
                 existing_id_set = importer.existing_ids(self.db, job.tenant_id, ids)
 
-        # Batched table-uniqueness (D6) — a `unique` column value already present
+        # Batched table-uniqueness (D6) - a `unique` column value already present
         # in the table must fail at VALIDATE (Test), not blow up the commit on a
         # DB UNIQUE constraint. Case-insensitive (matches the lower() transform +
         # the tenant-scoped uniqueness intent). One query per unique column.
@@ -433,7 +433,7 @@ class ImportService:
 
             prepared.append(PreparedRow(rownum, data, raw_id, op))
 
-        # Aggregate/set-based validation (sprint-4/05) — runs over the VALID set
+        # Aggregate/set-based validation (sprint-4/05) - runs over the VALID set
         # only, zero writes, in both Test and commit. Rows it flags are demoted
         # out of `prepared` so the commit never acts on them (e.g. capacity).
         if importer.validate_prepared and prepared:
@@ -522,14 +522,14 @@ class ImportService:
         try:
             prepared, errors, _warnings = self._prepare(job, importer)
             if job.abort_on_invalid and errors:
-                raise RuntimeError(f"{len(errors)} invalid rows — commit aborted")
+                raise RuntimeError(f"{len(errors)} invalid rows - commit aborted")
 
             creates = [p for p in prepared if p.op == "create"]
             updates = [p for p in prepared if p.op == "update"]
             created_ids: List[str] = []
             updated_ids: List[str] = []
             # Capture before-images for update rows so we can emit a field-level
-            # `changes` diff (D13) — `entity.field_changed`/`updated` workflows
+            # `changes` diff (D13) - `entity.field_changed`/`updated` workflows
             # need it. Done BEFORE update_rows mutates.
             update_changes: Dict[str, Dict[str, dict]] = {}
             old_vals: Dict[str, dict] = {}
@@ -585,7 +585,7 @@ class ImportService:
 
             if job.trigger_automations:
                 self._emit_events(db, job, importer, created_ids, updated_ids, update_changes)
-        except Exception as exc:  # noqa: BLE001 — D7: roll back EVERYTHING
+        except Exception as exc:  # noqa: BLE001 - D7: roll back EVERYTHING
             db.rollback()
             job = repo.get_unscoped(job_id)
             if job:
@@ -637,7 +637,7 @@ class ImportService:
     def build_template(self, entity_type: str, columns: List[str], fmt: str) -> Tuple[bytes, str, str]:
         importer = self._require_importer(entity_type)
         chosen = [c for c in importer.columns if c.required or c.key in columns]
-        # id first if present (export↔import symmetry, D12) — but template for
+        # id first if present (export↔import symmetry, D12) - but template for
         # create doesn't need it; include only if explicitly chosen.
         headers = [c.label for c in chosen]
         if fmt == "csv":

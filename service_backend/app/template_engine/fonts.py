@@ -1,7 +1,7 @@
-"""Bundled font registry (plan sprint-3/03 — F2 font expansion).
+"""Bundled font registry (plan sprint-3/03 - F2 font expansion).
 
 A code-side registry of the fonts available to the render surfaces. All faces
-are bundled TTFs in ``app/assets/fonts`` (deterministic PDFs, offline — never a
+are bundled TTFs in ``app/assets/fonts`` (deterministic PDFs, offline - never a
 render-time network fetch). Adding a family = drop the TTF in + one row here.
 
 The WeasyPrint url_fetcher resolves ``FONT_BASE_URL/<file>`` to the local bytes;
@@ -25,7 +25,7 @@ class FontFamily:
     preview_weights: Tuple[int, ...] = (400, 700)
 
 
-# Curated set — sans / serif / display / mono. Inter + Poppins are the house
+# Curated set - sans / serif / display / mono. Inter + Poppins are the house
 # defaults (already bundled); the rest were added for the canvas surface.
 FONTS: List[FontFamily] = [
     FontFamily("Inter", (("100 900", "Inter.ttf"),), (400, 500, 600, 700)),
@@ -61,7 +61,7 @@ def font_face_css() -> str:
 
 
 def google_fonts_link() -> str:
-    """A Google-Fonts <link> covering every family — for the browser preview
+    """A Google-Fonts <link> covering every family - for the browser preview
     (the iframe can't reach the bundled TTFs)."""
     families = "&".join(
         "family=" + fam.name.replace(" ", "+") + ":wght@" + ";".join(str(w) for w in fam.preview_weights)

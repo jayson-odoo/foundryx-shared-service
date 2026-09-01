@@ -1,16 +1,16 @@
-"""Company service — registering an AutoCount company database and seeding its
+"""Company service - registering an AutoCount company database and seeding its
 per-entity config + mapping rows.
 
 **A company is DISCOVERED, never typed** (AC-13-01/D16). The operator supplies a
 connection; we sign in and read ``DatabaseName``/``CompanyName`` back. The
-vendor API has no company parameter at all — the server resolves it from the
-``AppId`` header — so asking an operator to name the company would be asking for
+vendor API has no company parameter at all - the server resolves it from the
+``AppId`` header - so asking an operator to name the company would be asking for
 a value that is silently overridden. Worse, it would let two connections claim
 the same company under different labels.
 
 Company identity is therefore ``database_name``, enforced UNIQUE per tenant by
 ``ac_company``. Core's ``uq_connection_tenant_provider`` was carved out for
-``erp`` precisely so this owns it — core keeps zero AutoCount knowledge.
+``erp`` precisely so this owns it - core keeps zero AutoCount knowledge.
 """
 from __future__ import annotations
 
@@ -35,6 +35,8 @@ from ..activity import (
 from ..client import AutoCountClient, AutoCountError
 from ..mapping import (
     DEFAULT_MAPPINGS,
+    FIELD_REF_TRANSFORMS,
+    REF_TRANSFORM_ENTITIES,
     SCOPE_HEADER,
     TRANSFORMS,
     MappingEngine,
@@ -57,13 +59,23 @@ from ..mapping_catalog import (
     sorento_field_for,
 )
 from ..models import (
+    ETL_STATUS_ACTIVE,
+    ETL_STATUS_DRAFT,
+    ETL_STATUS_PAUSED,
     SINK_IMPL_LOGGING,
     SINK_IMPL_SORENTO,
+    SOURCE_IMPL_AUTOCOUNT_READ,
+    SOURCE_IMPL_SQL_DB,
     SYNC_MODE_SCHEDULED_REVIEW,
     AcCompany,
     AcEntityConfig,
     AcFieldMapping,
 )
+
+# The two implementations behind the ``EntitySource`` seam an operator may pick
+# (AC-22-08). Anything else is a 422 - a silent fallback would sync a customer
+# with the wrong strategy and look like it worked.
+SOURCE_IMPLS = (SOURCE_IMPL_AUTOCOUNT_READ, SOURCE_IMPL_SQL_DB)
 from ..provider import PROVIDER_KEY, client_from_connection
 from ..repositories import (
     CompanyRepository,
@@ -86,12 +98,16 @@ logger = logging.getLogger("foundryx.autocount")
 # sync that silently does nothing. Probed live 2026-07-21: ``Stock``,
 # ``StockItem``, ``Item``, ``UOM``, ``StockGroup``, ``StockCategory``,
 # ``StockLocation`` and ``StockUOM`` all return HTTP 500 with an EMPTY
-# ``Message`` — distinct from the wrong-credential signature ("Stream was not
+# ``Message`` - distinct from the wrong-credential signature ("Stream was not
 # readable."), and consistent with the route being absent from this wrapper
 # build. They are therefore ABSENT here, not present-and-disabled.
 #
 # This is a STANDING guard, not a one-off: an entity is added only after its real
 # payload has been captured, never designed from inference.
+#
+# PARITY-PINNED with the frontend's own copy (S4 review S2):
+# `AC_API_CAPABLE_ENTITY_TYPES` in `autocount-meta.ts`, drift-checked by
+# `tests/test_autocount_entity_parity.py`.
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE  # noqa: E402
 from ..canonical.masters import ENTITY_CUSTOMER, ENTITY_SUPPLIER  # noqa: E402
 from ..envelopes import ENVELOPE_ROW_ARRAY, ENVELOPE_STATUS_DICT  # noqa: E402
@@ -143,7 +159,7 @@ ENTITY_DEFAULTS: Dict[str, EntityDefaults] = {
 
 
 class AutocountServiceError(Exception):
-    """Base — carries an operator-safe message (never a stack trace, never a
+    """Base - carries an operator-safe message (never a stack trace, never a
     credential)."""
 
     def __init__(self, message: str):
@@ -163,17 +179,41 @@ class CompanyAlreadyExists(AutocountServiceError):
     pass
 
 
+class SinkTargetValidationError(AutocountServiceError):
+    """A sink-target save rejected PER FIELD - the HTTP layer renders
+    ``422 {fieldErrors}`` (the same shape the task editor already consumes), so
+    the missing Sorento company code lands on its own input rather than as a
+    banner the operator has to map back to a field themselves."""
+
+    def __init__(self, field_errors: Dict[str, str]):
+        super().__init__(
+            "The push target could not be saved. Fix the highlighted fields."
+        )
+        self.field_errors = field_errors
+
+
 class EntityConfigNotFound(AutocountServiceError):
     pass
 
 
 # The first sync of a brand-new company reaches back exactly this far
 # (``AcEntityConfig.initial_lookback_days``, default 30). Anything older is
-# INVISIBLE until the supervised full initial load lands (D20, slice 3) — which
+# INVISIBLE until the supervised full initial load lands (D20, slice 3) - which
 # is precisely why the value has to be shown to an operator and be adjustable,
 # rather than sitting silently in a column nobody can see.
 MIN_LOOKBACK_DAYS = 1
 MAX_LOOKBACK_DAYS = 3650
+
+# Canonical fields ``replace_mapping`` preserves even though they are NOT in
+# the entity's accepted (deliverable-to-Sorento) set (plan 22 S4 review S4).
+# Grepped from ``mapping.py``'s ``DEFAULT_MAPPINGS``: every master's ONLY
+# non-deliverable row is the watermark ``last_modified`` (``_MASTER_COMMON``);
+# GRN carries three more (``last_modified_user_id``/``created_at_source``/
+# ``created_user_id``, ``DEFAULT_GRN_MAPPING``) but GRN's accepted set is
+# EMPTY (it has no Sorento ingest path yet) - ``replace_mapping`` skips the
+# sweep entirely for an entity with no accepted fields at all, so those never
+# need listing here (see the guard at the call site).
+PRESERVED_CANONICAL_FIELDS = frozenset({"last_modified"})
 
 
 @dataclass
@@ -204,6 +244,11 @@ class EntityState:
     watermark_at: Optional[datetime] = None
     consecutive_failures: int = 0
     last_error: Optional[str] = None
+    # The DB-task lifecycle (plan 22 §2.4, ``draft|active|paused``) - surfaced
+    # on the entities LIST (not just the task editor) so the Review & Activate
+    # tab can warn a `product` task's activation of a missing category/UOM
+    # dependency without a second fetch (AC-22-23, FE-only prerequisite chip).
+    etl_status: str = ETL_STATUS_DRAFT
 
 
 @dataclass(frozen=True)
@@ -212,7 +257,7 @@ class MappingWriteRow:
 
     ``sorento_field`` is the Sorento-facing target the operator picked; the
     service maps it back to the stored ``canonical_field`` (they are equal for
-    master sink fields). Only these three are operator-authored — ``scope`` and
+    master sink fields). Only these three are operator-authored - ``scope`` and
     the required/enabled flags are derived server-side so the editor cannot
     invent them.
     """
@@ -229,7 +274,7 @@ class MappingWriteRow:
 class MappingRowView:
     """One projected mapping row (AC-15-40). ``sorento_field`` is ``None`` when
     the stored ``canonical_field`` is not delivered to Sorento (identity /
-    watermark provenance like ``last_modified``, or an ``extras`` key) — shown as
+    watermark provenance like ``last_modified``, or an ``extras`` key) - shown as
     non-delivered rather than hidden.
 
     Flat + snake_cased so ``MappingRowOut.model_validate`` maps it straight
@@ -285,7 +330,7 @@ class CompanyService:
         return self.configs.list_for_company(tenant_id, company_id)
 
     def entity_states(self, tenant_id: str, company_id: str) -> List[EntityState]:
-        """Configured entities joined with their watermarks — TWO queries total,
+        """Configured entities joined with their watermarks - TWO queries total,
         never one per entity (the catalogue is heading for nine-plus rows).
 
         A missing watermark row is normal: it means this entity has never been
@@ -315,6 +360,7 @@ class CompanyService:
                     watermark_at=mark.last_modified_at if mark else None,
                     consecutive_failures=(mark.consecutive_failures or 0) if mark else 0,
                     last_error=mark.last_error if mark else None,
+                    etl_status=config.etl_status or ETL_STATUS_DRAFT,
                 )
             )
         return states
@@ -328,15 +374,26 @@ class CompanyService:
         entity_type: str,
         *,
         initial_lookback_days: Optional[int] = None,
+        source_impl: Optional[str] = None,
     ) -> EntityState:
         """Adjust one entity's sync configuration.
 
-        Only ``initial_lookback_days`` is writable today, and only because the
-        default of 30 days silently hides a customer's whole back-catalogue on a
-        newly connected company. Changing it does NOT re-fetch anything: it only
-        governs the window used when no watermark exists yet, which is why the
-        surface must say so rather than implying a backfill. The supervised full
-        initial load is D20 / slice 3.
+        ``initial_lookback_days`` is writable because the default of 30 days
+        silently hides a customer's whole back-catalogue on a newly connected
+        company. Changing it does NOT re-fetch anything: it only governs the
+        window used when no watermark exists yet, which is why the surface must
+        say so rather than implying a backfill. The supervised full initial load
+        is D20 / slice 3.
+
+        ``source_impl`` (plan 22, AC-22-08) switches the entity between the
+        vendor API path and the direct-DB task. Two rules make the switch safe:
+
+        * the task's ``source_config`` is KEPT either way - switching back to
+          the API path must never discard a query somebody built;
+        * switching an ACTIVE task to the API path PAUSES it. An active task
+          means "scheduled runs push without approval", and the sweep dispatches
+          on ``etl_status``; leaving it active under a source that no longer
+          runs it would be a task that looks live and does nothing.
         """
         self.get(tenant_id, company_id)  # tenant-scope guard before any write
         config = self.configs.get(tenant_id, company_id, entity_type)
@@ -344,6 +401,35 @@ class CompanyService:
             raise EntityConfigNotFound(
                 f"'{entity_type}' is not configured for sync on this company."
             )
+        if source_impl is not None:
+            if source_impl not in SOURCE_IMPLS:
+                raise AutocountServiceError(
+                    f"Unknown source '{source_impl}'. Choose "
+                    f"{' or '.join(SOURCE_IMPLS)}."
+                )
+            #     !!  NEVER OFFER "AutoCount API" FOR AN ENTITY WITH NO PROBED
+            #         VENDOR PAYLOAD.  !!
+            # (Plan 22 S4.) ``SEEDED_ENTITIES`` is exactly the entity catalogue
+            # this build has a confirmed, observed vendor route for (see its own
+            # docstring above); the S4 masters fan-out entities (product,
+            # warehouse, product_category, unit_of_measure, sales_agent) are
+            # DB-source only. Switching one to ``autocount_read`` would build the
+            # vendor HTTP client with the WRONG vendor entity name (``sync.py``'s
+            # ``VENDOR_ENTITIES`` has no entry either) - a guaranteed-to-fail
+            # sync the backend must refuse, not just the frontend hide.
+            if source_impl == SOURCE_IMPL_AUTOCOUNT_READ and entity_type not in SEEDED_ENTITIES:
+                raise AutocountServiceError(
+                    f"This build has no working AutoCount API route for "
+                    f"'{entity_type}' - it can only be synced from a database task."
+                )
+            if (
+                source_impl == SOURCE_IMPL_AUTOCOUNT_READ
+                and config.etl_status == ETL_STATUS_ACTIVE
+            ):
+                config.etl_status = ETL_STATUS_PAUSED
+                config.next_incremental_at = None
+                config.next_reconcile_at = None
+            config.source_impl = source_impl
         if initial_lookback_days is not None:
             if not (MIN_LOOKBACK_DAYS <= initial_lookback_days <= MAX_LOOKBACK_DAYS):
                 raise AutocountServiceError(
@@ -364,7 +450,7 @@ class CompanyService:
 
         This is the explicit, deliberate act behind the "Re-fetch history" action
         (AC-15-30): once an entity has synced, its first-run window is spent and
-        the lookback box is inert — the ONLY way to widen history again is to drop
+        the lookback box is inert - the ONLY way to widen history again is to drop
         the watermark. Distinct from ``update_entity_config`` precisely so a
         window edit never silently re-fetches and a re-fetch is never mistaken for
         a config tweak.
@@ -377,7 +463,7 @@ class CompanyService:
             )
         mark = self.watermarks.get(tenant_id, company_id, entity_type)
         if mark is not None:
-            # Clear the delta position and the failure bookkeeping — the next run
+            # Clear the delta position and the failure bookkeeping - the next run
             # starts clean. cursor_json (a mid-window resume point) goes too.
             mark.last_modified_at = None
             mark.last_success_at = None
@@ -400,7 +486,7 @@ class CompanyService:
     # ── connection resolution ────────────────────────────────────────────────
 
     def _connection(self, tenant_id: str, connection_id: str) -> Connection:
-        """Tenant-scoped connection lookup. NEVER a bare ``get(id)`` — a stored
+        """Tenant-scoped connection lookup. NEVER a bare ``get(id)`` - a stored
         id resolved unscoped is the polymorphic-target_id leak class. The query
         itself lives in the repository layer (Router → Service → Repository)."""
         conn = self.connections.get_for_provider(
@@ -413,7 +499,7 @@ class CompanyService:
     def _consumer_connection(self, tenant_id: str, connection_id: str) -> Connection:
         """Tenant- AND provider-scoped lookup of the outbound Sorento connection.
 
-        Mirrors ``_connection`` exactly (never a bare ``get(id)`` — a stored
+        Mirrors ``_connection`` exactly (never a bare ``get(id)`` - a stored
         connection id resolved unscoped is the polymorphic-target_id leak class),
         but pins ``provider='sorento'`` so a company can never be pointed at
         another provider's connection by id."""
@@ -433,21 +519,21 @@ class CompanyService:
         NOT a mock). ``'sorento'`` resolves the company's ``consumer`` connection,
         decrypts its ``apiKey`` (a wrong/rotated ``FERNET_KEY`` yields a CLEAN
         rejection via ``credentials``, never a 500) and builds a per-entity
-        ``SorentoSink``. An unknown ``sink_impl`` is a LOUD error — a silent
+        ``SorentoSink``. An unknown ``sink_impl`` is a LOUD error - a silent
         fallback to the logging sink would stop delivering to a real consumer
         without anyone noticing.
         """
         impl = company.sink_impl or SINK_IMPL_LOGGING
         if impl == SINK_IMPL_LOGGING:
             # Via the registry (not ``LoggingSink()`` directly) so the sink is
-            # swappable the same way the Sorento sink is chosen — one seam.
+            # swappable the same way the Sorento sink is chosen - one seam.
             return sink_for(SINK_IMPL_LOGGING)
         if impl == SINK_IMPL_SORENTO:
             if not sorento_supports_entity(entity_type):
                 # Sorento ingests masters only; a document entity (GRN, PO, …)
                 # has no ingest endpoint yet. Route it to the logging sink so it
                 # stages + logs cleanly instead of raising on a missing ingest
-                # path — deliverability, an expected not-yet-built state, not a
+                # path - deliverability, an expected not-yet-built state, not a
                 # misconfiguration. (The unknown-impl case below stays LOUD.)
                 return sink_for(SINK_IMPL_LOGGING)
             if not company.sink_connection_id:
@@ -460,6 +546,13 @@ class CompanyService:
                 conn.config_json or {},
                 self.credentials(conn),  # clean InvalidToken reject, never 500
                 entity_type=entity_type,
+                # The per-COMPANY anchor (plan 22 Appendix A6), read off the
+                # company and never off the connection: one Sorento connection
+                # legitimately serves several AutoCount companies, so anchoring
+                # on the connection would cross-post their masters into one
+                # Sorento company. A blank one is passed through so SORENTO
+                # answers the authoritative COMPANY_ANCHOR_REQUIRED.
+                company_code=company.sorento_company_code,
             )
         raise UnknownSinkImpl(
             f"Company '{company.database_name}' is configured with an unknown "
@@ -473,29 +566,50 @@ class CompanyService:
         *,
         sink_impl: str,
         sink_connection_id: Optional[str] = None,
+        sorento_company_code: Optional[str] = None,
     ) -> AcCompany:
-        """Point a company at a push target (plan 14 hop 2 — the operator wiring).
+        """Point a company at a push target (plan 14 hop 2 - the operator wiring).
 
         Validates the impl against the known set and, for ``'sorento'``, that the
         connection exists and is genuinely a Sorento ``consumer`` connection for
         THIS tenant (tenant- and provider-scoped, never a bare id). Switching to
         ``'logging'`` clears any stale connection id so a later switch back can't
         resurrect a wrong target.
+
+        ``sorento_company_code`` (plan 22 Appendix A6) is REQUIRED with the
+        Sorento sink and is a per-field 422 when blank: without it every single
+        call answers ``COMPANY_ANCHOR_REQUIRED``, so accepting the save would
+        store a configuration that is guaranteed to fail (the foolproof-UI line
+        - never let the UI be configured into a certain runtime error).
         """
         company = self.get(tenant_id, company_id)  # tenant-scope guard
         if sink_impl == SINK_IMPL_LOGGING:
             company.sink_impl = SINK_IMPL_LOGGING
             company.sink_connection_id = None
+            # Cleared with the target: a code left behind would silently anchor
+            # a later switch back to Sorento at a company nobody re-chose.
+            company.sorento_company_code = None
         elif sink_impl == SINK_IMPL_SORENTO:
+            code = (sorento_company_code or "").strip()
             if not sink_connection_id:
                 raise AutocountServiceError(
                     "Choose a Sorento connection to push to."
                 )
+            if not code:
+                raise SinkTargetValidationError(
+                    {
+                        "sorentoCompanyCode": (
+                            "Enter the Sorento company code this company "
+                            "delivers into."
+                        )
+                    }
+                )
             # Proves the connection exists AND is a Sorento consumer for this
-            # tenant — 404 otherwise, never a silently-stored dangling id.
+            # tenant - 404 otherwise, never a silently-stored dangling id.
             self._consumer_connection(tenant_id, sink_connection_id)
             company.sink_impl = SINK_IMPL_SORENTO
             company.sink_connection_id = sink_connection_id
+            company.sorento_company_code = code
         else:
             raise AutocountServiceError(
                 f"Unknown push target '{sink_impl}'. Choose 'logging' or 'sorento'."
@@ -504,9 +618,52 @@ class CompanyService:
         self.db.refresh(company)
         return company
 
+    def update_database_name(
+        self, tenant_id: str, company_id: str, database_name: str
+    ) -> AcCompany:
+        """Rename the source database a company reads from - locked once the
+        company has minted state under its CURRENT name (plan 22 S4 review
+        B1.d).
+
+        Company identity IS ``database_name`` (module docstring) and every
+        master's ``source_ref`` is qualified with it (AC-14-10). A company
+        already carrying reconcile state (an ``ac_row_hash`` row) or a
+        delivered record (a ``PUSHED`` staged row) has real refs living under
+        that qualifier; renaming out from under them mints a DIFFERENT ref
+        namespace on the very next run - the sink sees brand-new refs (a
+        duplicate "created" wave) and reconcile, finding the OLD refs
+        vanished, stages them as deletes. That is exactly the live-verify
+        incident this guard closes - a fresh company (no state yet) stays
+        freely editable, e.g. to fix a typo before the first sync ever runs.
+        """
+        company = self.get(tenant_id, company_id)  # tenant-scope guard
+        new_name = (database_name or "").strip()
+        if not new_name:
+            raise AutocountServiceError("Enter a database name.")
+        if new_name == company.database_name:
+            return company
+        if self.companies.has_ref_namespace_state(tenant_id, company_id):
+            raise AutocountServiceError(
+                f"'{company.database_name}' cannot be renamed - it already has "
+                "synced state under this name. Every ref this company has "
+                f"staged or pushed is qualified '{company.database_name}:<key>'; "
+                "renaming would mint a different namespace on the next run, "
+                "causing duplicate creates and reconcile deletes downstream. "
+                "Connect a fresh company instead."
+            )
+        if self.companies.get_by_database_name(tenant_id, new_name) is not None:
+            raise AutocountServiceError(
+                f"Company '{new_name}' is already connected. Each AutoCount "
+                "company can only be registered once per tenant."
+            )
+        company.database_name = new_name
+        self.db.commit()
+        self.db.refresh(company)
+        return company
+
     def credentials(self, connection: Connection) -> Dict[str, Any]:
         """Decrypt a connection's credentials. A wrong/rotated ``FERNET_KEY``
-        yields a CLEAN rejection, never a 500 — and the message never echoes any
+        yields a CLEAN rejection, never a 500 - and the message never echoes any
         ciphertext."""
         if not connection.credentials_json:
             return {}
@@ -540,7 +697,7 @@ class CompanyService:
 
         The sign-in is not ceremony: it is the only way to learn which company
         an ``AppId`` selects. Registering without it would let an operator
-        create two rows for one company, each with its own watermark — which
+        create two rows for one company, each with its own watermark - which
         would double-deliver every document.
         """
         conn = self._connection(tenant_id, connection_id)
@@ -555,13 +712,13 @@ class CompanyService:
         client = client_from_connection(
             conn.config_json or {}, self.credentials(conn), transport=transport
         )
-        # ONE trace for the discovery interaction — the HTTP leg and the
+        # ONE trace for the discovery interaction - the HTTP leg and the
         # domain-level outcome below share it.
         trace_id = f"acdiscover-{uuid.uuid4()}"
         try:
             session = client.login()
         except AutoCountError as exc:
-            # The real (masked) request/response of the failed login — the leg
+            # The real (masked) request/response of the failed login - the leg
             # that previously logged nothing but a message.
             record_client_calls(
                 self.db,
@@ -648,7 +805,7 @@ class CompanyService:
                         entity_type=entity_type,
                         # Every entity starts gated: a human sees the first
                         # batches before anything reaches a consumer (plan §9).
-                        # Masters especially — they OVERWRITE live data.
+                        # Masters especially - they OVERWRITE live data.
                         sync_mode=SYNC_MODE_SCHEDULED_REVIEW,
                         source_impl="autocount_read",
                         envelope=defaults.envelope,
@@ -683,7 +840,7 @@ class CompanyService:
     def mapping_rows(
         self, tenant_id: str, company_id: str, entity_type: str
     ) -> List[MappingRow]:
-        """DB rows → engine rows. The DB is the source of truth (D5) — there is
+        """DB rows → engine rows. The DB is the source of truth (D5) - there is
         deliberately NO fallback to ``DEFAULT_MAPPINGS`` here: a company whose
         rows were all deleted must map nothing and say so, not quietly resume
         the built-in behaviour an operator thought they had removed."""
@@ -704,7 +861,7 @@ class CompanyService:
 
     def _require_entity(self, tenant_id: str, company_id: str, entity_type: str):
         """Tenant-scope the company, then confirm the entity is one this company
-        is configured for — a 404 otherwise, never a mapping surface for an
+        is configured for - a 404 otherwise, never a mapping surface for an
         entity that does not exist here."""
         self.get(tenant_id, company_id)  # tenant-scope guard (CompanyNotFound)
         config = self.configs.get(tenant_id, company_id, entity_type)
@@ -753,22 +910,31 @@ class CompanyService:
         """Replace the DELIVERABLE mapping rows for one (company, entity) in ONE
         transaction (AC-15-41).
 
-        Foolproof guard (AC-15-42/43 + AC-16-03), enforced server-side — never
+        Foolproof guard (AC-15-42/43 + AC-16-03), enforced server-side - never
         advisory:
           * every ``sorento_field`` must be in the accepted set (else 422 naming
-            the field) — a target Sorento would reject (``extra="forbid"``) can
+            the field) - a target Sorento would reject (``extra="forbid"``) can
             never be stored;
           * each accepted field maps once (no duplicate target);
           * ``source_path`` is non-blank; ``transform`` is a known transform;
-          * a row's ``formula``, if present, PARSES — an unknown name/function or
+          * a row's ``formula``, if present, PARSES - an unknown name/function or
             bad arity is a 422 naming the problem, so a broken formula can never
             reach a sync (AC-16-03).
 
-        Only rows whose canonical field is in the accepted set are replaced —
+        Only rows whose canonical field is in the accepted set are replaced -
         provenance/watermark rows (``last_modified``) are PRESERVED, so a re-map
         can never silently break delta sync. This persists to ``ac_field_mapping``
         and is seed-if-absent-safe: ``seed_company_defaults`` only seeds when the
         entity has ZERO rows, so a later ``update_tenant`` never reverts it.
+
+        A STALE row - one whose ``canonical_field`` is neither an accepted
+        target nor a preserved provenance field (``PRESERVED_CANONICAL_FIELDS``)
+        - is swept here too (S4 review S4): a catalogue that changed shape
+        since the row was written otherwise leaves it behind forever, invisible
+        to the mapping editor (it only shows/writes accepted targets). Skipped
+        entirely for an entity with an EMPTY accepted set (GRN, no Sorento
+        ingest path yet) - sweeping there with nothing accepted would wipe its
+        whole default mapping instead of pruning stale rows.
         """
         self._require_entity(tenant_id, company_id, entity_type)
 
@@ -797,6 +963,24 @@ class CompanyService:
                     f"The Sorento field '{target}' is mapped more than once."
                 )
             seen.add(target)
+            #     !!  A ``ref_*`` TRANSFORM AND ITS FIELD ARE A PAIR.  !!
+            # (S5 review BLOCKER 2 - both directions, foolproof server-side.)
+            # (a) a ref transform smuggled onto a field it does not mint a
+            #     reference for; (b) a ``*_ref`` field saved WITHOUT its ref
+            #     transform - a plain/string transform would send the bare
+            #     AutoCount code, which Sorento cannot resolve as a reference,
+            #     and the row retries forever with no error naming why.
+            if row.transform in REF_TRANSFORM_ENTITIES and FIELD_REF_TRANSFORMS.get(target) != row.transform:
+                raise AutocountServiceError(
+                    f"'{row.transform}' cannot be used for '{target}' - it mints a "
+                    f"reference for a different field."
+                )
+            if target in FIELD_REF_TRANSFORMS and row.transform != FIELD_REF_TRANSFORMS[target]:
+                raise AutocountServiceError(
+                    f"'{target}' must be mapped with the '{FIELD_REF_TRANSFORMS[target]}' "
+                    f"transform - a plain value would send the raw AutoCount code, which "
+                    f"Sorento cannot resolve as a reference."
+                )
             formula = (row.formula or "").strip() or None
             if formula is not None:
                 try:
@@ -809,8 +993,35 @@ class CompanyService:
                 MappingWriteRow(source_path, row.transform, target, formula=formula)
             )
 
+        #     !!  A REQUIRED FIELD LEFT UNMAPPED SLIPS THROUGH ACTIVATION.  !!
+        # (S5 review SHOULD-FIX 4a.) ``activate_task`` gates only on a
+        # successful preview, not on whether every required Sorento field
+        # HAS a row - a missing ``status`` on a document (or a missing
+        # ``code``/``name``/``is_active`` on a master) previously sailed
+        # straight through to an active task. Applies to every ``sql_db``
+        # entity, not just documents. Checked ONLY when the operator has
+        # actually STARTED mapping (a non-empty save) - an intentional wipe
+        # to zero rows is a separate, already-legitimate action (GRN's empty
+        # accepted set relies on exactly this: `replace_mapping(..., [])`
+        # must stay a no-op sweep, never a spurious 422) and must not be
+        # blocked here.
+        if rows:
+            missing_required = sorted(required - {row.sorento_field for row in clean})
+            if missing_required:
+                raise AutocountServiceError(
+                    f"The required Sorento field '{missing_required[0]}' is not mapped."
+                )
+
         # Replace only the deliverable rows; provenance rows survive.
         self.mappings.delete_by_canonical(tenant_id, company_id, entity_type, accepted)
+        if accepted:
+            # S4 review S4: prune any row that is neither about to be
+            # recreated (accepted) nor an explicit provenance keeper - a
+            # stale leftover from a catalogue that has since changed shape.
+            self.mappings.delete_unknown(
+                tenant_id, company_id, entity_type,
+                accepted | PRESERVED_CANONICAL_FIELDS,
+            )
         for order, row in enumerate(clean):
             self.mappings.add(
                 AcFieldMapping(
@@ -849,7 +1060,7 @@ class CompanyService:
         formula: str,
         value: Any,
     ) -> Dict[str, Any]:
-        """Server-authoritative single-formula eval (AC-16-21) — the parity check
+        """Server-authoritative single-formula eval (AC-16-21) - the parity check
         behind the builder's live client preview. Writes nothing.
 
         A parse or runtime fault is returned as ``{ok: False, error}`` (named),
@@ -933,6 +1144,20 @@ class CompanyService:
                     f"The Sorento field '{target}' is mapped more than once."
                 )
             seen.add(target)
+            # Same ref-transform pairing as ``replace_mapping`` (S5 review
+            # BLOCKER 2) - a simulate must not preview a mapping the save
+            # gate would reject.
+            if row.transform in REF_TRANSFORM_ENTITIES and FIELD_REF_TRANSFORMS.get(target) != row.transform:
+                raise AutocountServiceError(
+                    f"'{row.transform}' cannot be used for '{target}' - it mints a "
+                    f"reference for a different field."
+                )
+            if target in FIELD_REF_TRANSFORMS and row.transform != FIELD_REF_TRANSFORMS[target]:
+                raise AutocountServiceError(
+                    f"'{target}' must be mapped with the '{FIELD_REF_TRANSFORMS[target]}' "
+                    f"transform - a plain value would send the raw AutoCount code, which "
+                    f"Sorento cannot resolve as a reference."
+                )
             formula = (row.formula or "").strip() or None
             if formula is not None:
                 try:

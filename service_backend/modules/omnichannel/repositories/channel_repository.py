@@ -1,4 +1,4 @@
-"""Channel repository — tenant-scoped channel queries. Pure SQLAlchemy."""
+"""Channel repository - tenant-scoped channel queries. Pure SQLAlchemy."""
 from typing import List, Optional, Tuple
 
 from sqlalchemy import or_
@@ -47,6 +47,32 @@ class ChannelRepository:
             .filter(Channel.tenant_id == tenant_id, Channel.is_trashed.is_(trashed))
             .order_by(Channel.created_at.desc(), Channel.id.asc())
             .all()
+        )
+
+    def active_scoped(self, tenant_id: str) -> List[Channel]:
+        """Live channel candidates. Credential suitability stays in service
+        logic because repositories never decrypt secrets."""
+        return (
+            self.db.query(Channel)
+            .filter(
+                Channel.tenant_id == tenant_id,
+                Channel.is_active.is_(True),
+                Channel.is_trashed.is_(False),
+            )
+            .order_by(Channel.name.asc(), Channel.id.asc())
+            .all()
+        )
+
+    def get_active_by_id(self, channel_id: str, tenant_id: str) -> Optional[Channel]:
+        return (
+            self.db.query(Channel)
+            .filter(
+                Channel.id == channel_id,
+                Channel.tenant_id == tenant_id,
+                Channel.is_active.is_(True),
+                Channel.is_trashed.is_(False),
+            )
+            .first()
         )
 
     def list_by_workspace(self, workspace_id: str, tenant_id: str) -> List[Channel]:

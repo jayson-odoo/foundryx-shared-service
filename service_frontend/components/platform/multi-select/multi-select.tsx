@@ -61,7 +61,7 @@ export function MultiSelect({
 
   return (
     // modal: inside a Sheet/Dialog the scroll lock otherwise swallows wheel
-    // events — the option list wouldn't scroll (sprint-2/02 iteration).
+    // events - the option list wouldn't scroll (sprint-2/02 iteration).
     <Popover open={open} onOpenChange={setOpen} modal>
       <PopoverTrigger asChild>
         <Button

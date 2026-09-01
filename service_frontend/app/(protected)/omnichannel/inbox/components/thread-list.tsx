@@ -2,7 +2,7 @@
 
 /**
  * Inbox left panel (plan 05 §6): assignee buckets (All | Mine | Unassigned),
- * status/priority filters, search, and the thread rows — live-sorted by
+ * status/priority filters, search, and the thread rows - live-sorted by
  * recency via useConversations.
  */
 import { Search } from 'lucide-react';

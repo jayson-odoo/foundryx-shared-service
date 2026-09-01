@@ -1,4 +1,4 @@
-"""Document management (the Drive) wire schemas (plan sprint-3/04) — camelCase
+"""Document management (the Drive) wire schemas (plan sprint-3/04) - camelCase
 out (mirror of the frontend ``types/documents.ts``). Datetime-bearing models
 inherit ``ApiModel`` so every timestamp leaves the API Z-suffixed UTC (BL-012).
 Request models declare camelCase field names directly (the frontend sends those
@@ -185,7 +185,7 @@ class ShareOut(ApiModel):
     target_kind: str = Field(serialization_alias="targetKind")
     target_id: str = Field(serialization_alias="targetId")
     target_name: Optional[str] = Field(default=None, serialization_alias="targetName")
-    # restricted | workspace | public — the tier beyond the named people list.
+    # restricted | workspace | public - the tier beyond the named people list.
     general_access: str = Field(serialization_alias="generalAccess")
     # Role for the general-access tier.
     capability: str

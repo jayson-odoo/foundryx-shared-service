@@ -71,7 +71,7 @@ describe('Reset-password (request) page', () => {
     await user.click(screen.getByRole('button', { name: /send reset link/i }));
 
     expect(await screen.findByText(RESET_MESSAGE)).toBeInTheDocument();
-    // The form is gone — no retry surface that could leak existence.
+    // The form is gone - no retry surface that could leak existence.
     expect(screen.queryByPlaceholderText(/your email/i)).not.toBeInTheDocument();
     expect(requestReset).toHaveBeenCalledWith('demo@example.com');
   });
@@ -89,7 +89,7 @@ describe('Reset-password (request) page', () => {
     await user.click(screen.getByRole('button', { name: /send reset link/i }));
 
     expect(
-      await screen.findByText(/too many attempts — please try again in ~15 minutes/i),
+      await screen.findByText(/too many attempts - please try again in ~15 minutes/i),
     ).toBeInTheDocument();
     // Form stays so the user can retry after the window.
     expect(screen.getByPlaceholderText(/your email/i)).toBeInTheDocument();

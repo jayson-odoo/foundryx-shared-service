@@ -1,11 +1,11 @@
-"""SorentoSink — hop 2's real consumer (AC-14-15..18, 14-20/21, 14-24).
+"""SorentoSink - hop 2's real consumer (AC-14-15..18, 14-20/21, 14-24).
 
 These pin the CONTRACT the live push already proved end-to-end, so a refactor
 cannot silently break what the vendor round-trip verified: the projection to
 Sorento's field set, X-API-Key auth, per-record outcome semantics, 429 honour,
 and the dry-run shape.
 
-The HTTP boundary is faked with ``httpx.MockTransport`` — the sink builds its own
+The HTTP boundary is faked with ``httpx.MockTransport`` - the sink builds its own
 ``httpx.Client`` per call, and the transport is injected, so no socket opens.
 """
 from __future__ import annotations
@@ -71,7 +71,7 @@ def _ok_records(request: httpx.Request, outcome: str = "created") -> httpx.Respo
 
 def test_only_sink_fields_cross_the_wire():
     """Provenance and local-only fields (source_system, entity_type, extras,
-    last_modified) must never reach Sorento — its models forbid extras, so an
+    last_modified) must never reach Sorento - its models forbid extras, so an
     unknown key is a per-record rejection."""
     rec = _Recorder(_ok_records)
     sink = SorentoSink(base_url="http://x", api_key="sk_test",
@@ -154,9 +154,43 @@ def test_failed_record_is_not_delivered_and_names_the_error():
     assert "Field required" in result.message
 
 
+def test_an_unrecognised_outcome_word_reads_retryable_never_failed():
+    """S2 review SHOULD-FIX 9: a NOVEL/blank outcome word (Sorento adds a
+    value we don't know about yet, or omits the field) must read the SAME
+    safe way as no verdict at all - quarantine (permanent) is reserved for
+    the EXPLICIT ``"failed"`` word (D13). Reading an unknown word as failed
+    would permanently quarantine a record over a future Sorento vocabulary
+    change we haven't even shipped support for."""
+    def responder(request):
+        ref = json.loads(request.content)["records"][0]["source_ref"]
+        return httpx.Response(200, json={
+            "summary": {"total": 1, "created": 0, "updated": 0, "failed": 0, "retryable": 0},
+            "records": [{"source_ref": ref, "outcome": "processing", "entity_id": None}]})
+    rec = _Recorder(responder)
+    sink = SorentoSink(base_url="http://x", api_key="k",
+                       entity_type="supplier", transport=rec.transport())
+    [result] = sink.write_batch([_supplier()], request_id="t")
+    assert result.delivered is False
+    assert result.ok is False
+    assert result.outcome == "retryable"
+
+
+def test_a_blank_outcome_word_reads_retryable_never_failed():
+    def responder(request):
+        ref = json.loads(request.content)["records"][0]["source_ref"]
+        return httpx.Response(200, json={
+            "summary": {"total": 1, "created": 0, "updated": 0, "failed": 0, "retryable": 0},
+            "records": [{"source_ref": ref, "outcome": "", "entity_id": None}]})
+    rec = _Recorder(responder)
+    sink = SorentoSink(base_url="http://x", api_key="k",
+                       entity_type="supplier", transport=rec.transport())
+    [result] = sink.write_batch([_supplier()], request_id="t")
+    assert result.outcome == "retryable"
+
+
 def test_retryable_is_a_loud_failure_not_a_silent_requeue():
     """AC-14-24: retryable cannot occur for masters. If Sorento ever reports it,
-    it is a defect signal, surfaced as a non-delivered failure — never quietly
+    it is a defect signal, surfaced as a non-delivered failure - never quietly
     accepted."""
     def responder(request):
         ref = json.loads(request.content)["records"][0]["source_ref"]
@@ -172,7 +206,7 @@ def test_retryable_is_a_loud_failure_not_a_silent_requeue():
 
 
 def test_a_missing_verdict_is_never_treated_as_success():
-    """Sorento omitted this record from its response — an anomaly, not a pass."""
+    """Sorento omitted this record from its response - an anomaly, not a pass."""
     responder = lambda r: httpx.Response(200, json={"summary": {}, "records": []})
     rec = _Recorder(responder)
     sink = SorentoSink(base_url="http://x", api_key="k",

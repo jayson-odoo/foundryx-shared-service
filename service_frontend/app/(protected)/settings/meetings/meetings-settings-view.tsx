@@ -33,7 +33,7 @@ const MINUTES_LANGUAGES = [
   { value: 'vi', label: 'Vietnamese' },
 ];
 
-// Explicit choices only — "Keep" is an option, never a magic number to type.
+// Explicit choices only - "Keep" is an option, never a magic number to type.
 const RETENTION_OPTIONS = [
   { value: '30', label: '30 days' },
   { value: '60', label: '60 days' },

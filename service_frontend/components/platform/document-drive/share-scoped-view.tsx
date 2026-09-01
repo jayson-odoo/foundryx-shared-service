@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Two-pane scoped share layout (plan sprint-3/05 follow-up) — the SAME look as
+ * Two-pane scoped share layout (plan sprint-3/05 follow-up) - the SAME look as
  * the All-documents Drive (left context rail + bordered right grid), reused by
  * both the in-app scoped view and the anonymous public page so a share opens
  * consistently with the rest of the product. The right pane is the shared
@@ -40,7 +40,7 @@ export function ShareScopedView({
         </div>
       </aside>
 
-      {/* Right pane — the shared mini-Drive */}
+      {/* Right pane - the shared mini-Drive */}
       <div className="min-h-[24rem] min-w-0 flex-1 rounded-lg border bg-background p-3">
         <ShareBrowser share={share} />
       </div>

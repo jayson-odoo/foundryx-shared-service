@@ -1,14 +1,14 @@
 'use client';
 
 /**
- * RuleBuilder (sprint-2/02) — the reusable condition-tree builder over the
- * whitelisted fact registry. Sibling of resource-list/filter-builder (D9 —
+ * RuleBuilder (sprint-2/02) - the reusable condition-tree builder over the
+ * whitelisted fact registry. Sibling of resource-list/filter-builder (D9 -
  * same draft-tree interaction, its own types): facts grouped by source,
  * operators per fact type (D3), literal⇄fact cross-compare on scalar ops
  * (D4), AND/OR groups nesting to depth 5, stale-fact chips (D11).
  *
  * Mount-initialized: `value` seeds the draft; remount (key) to load another
- * tree. Emits the serialized RuleGroup on every edit — null when empty
+ * tree. Emits the serialized RuleGroup on every edit - null when empty
  * (= unconditional).
  */
 import { useMemo, useRef, useState, type ReactNode } from 'react';
@@ -79,7 +79,7 @@ function FreeFormMulti({
 }
 
 /** Icon-button wrapper with an explanatory hover tooltip (icons alone are
- * not self-explanatory — user feedback, sprint-2/02 iteration). */
+ * not self-explanatory - user feedback, sprint-2/02 iteration). */
 function IconHint({ hint, children }: { hint: string; children: ReactNode }) {
   return (
     <Tooltip>
@@ -106,7 +106,7 @@ interface DraftGroup {
 }
 type DraftRule = DraftCondition | DraftGroup;
 
-/** Which value widget an operator needs — value resets when the shape changes. */
+/** Which value widget an operator needs - value resets when the shape changes. */
 type ValueShape = 'none' | 'single' | 'pair' | 'multi';
 
 function shapeFor(operator: RuleOperator): ValueShape {
@@ -162,7 +162,7 @@ export interface RuleBuilderProps {
   facts: RuleFact[];
   /** Initial tree (null = unconditional). Remount to load a different one. */
   value: RuleGroup | null;
-  /** Fires on every edit with the serialized tree — null when empty. */
+  /** Fires on every edit with the serialized tree - null when empty. */
   onChange: (group: RuleGroup | null) => void;
   disabled?: boolean;
 }
@@ -192,7 +192,7 @@ export function RuleBuilder({
       : { key: nextKey(), kind: 'group', combinator: 'and', rules: [] },
   );
 
-  // Derived lookups memoized — rebuilt only when the registry changes, not
+  // Derived lookups memoized - rebuilt only when the registry changes, not
   // on every keystroke (code-review cleanup).
   const factByKey = useMemo(
     () => new Map(facts.map((f) => [f.key, f])),
@@ -234,7 +234,7 @@ export function RuleBuilder({
         <div className="flex items-start gap-2 rounded-md border border-[var(--color-warning-soft,var(--color-yellow-200))] bg-[var(--color-warning-soft,var(--color-yellow-50))] p-2.5 text-xs text-[var(--color-warning-accent,var(--color-yellow-700))]">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
           <span>
-            Some conditions reference fields that no longer exist — fix or
+            Some conditions reference fields that no longer exist - fix or
             remove them before saving.
           </span>
         </div>
@@ -264,7 +264,7 @@ interface GroupEditorProps {
   nextKey: () => string;
   disabled: boolean;
   onChange: (group: DraftGroup) => void;
-  /** Removes THIS group from its parent — absent on the root. */
+  /** Removes THIS group from its parent - absent on the root. */
   onRemove?: () => void;
 }
 
@@ -321,7 +321,7 @@ function GroupEditor({
 
       {group.rules.length === 0 && depth === 0 && (
         <p className="text-xs text-muted-foreground">
-          No conditions — always allowed{disabled ? '.' : ' (add one below).'}
+          No conditions - always allowed{disabled ? '.' : ' (add one below).'}
         </p>
       )}
 
@@ -633,7 +633,7 @@ function ConditionValue({
         </div>
       );
     }
-    // Free-form multi (string in/not_in without options) — comma-separated.
+    // Free-form multi (string in/not_in without options) - comma-separated.
     return (
       <FreeFormMulti
         selected={selected}
