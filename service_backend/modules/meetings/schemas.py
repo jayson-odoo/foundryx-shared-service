@@ -111,3 +111,22 @@ class BotRunOut(ApiModel):
 
 class BotRunListResponse(ApiModel):
     data: List[BotRunOut]
+
+
+class TranscriptSegmentOut(ApiModel):
+    """One aligned segment (S3 plan §3.4, AC-S3-8)."""
+
+    speaker: Optional[str] = None
+    startMs: int
+    endMs: Optional[int] = None
+    text: str
+
+
+class TranscriptOut(ApiModel):
+    """``GET /meetings/{id}/transcript`` - the evidence surface until S5."""
+
+    sttProvider: str
+    model: Optional[str] = None
+    # The meeting's detected language (R3) - one value, not per segment.
+    language: Optional[str] = None
+    segments: List[TranscriptSegmentOut] = Field(default_factory=list)

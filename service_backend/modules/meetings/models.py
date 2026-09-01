@@ -50,6 +50,9 @@ STATUS_JOINING = "joining"
 STATUS_IN_LOBBY = "in_lobby"
 STATUS_RECORDING = "recording"
 STATUS_PROCESSING = "processing"
+# S3: STT ran and a transcript exists. Minutes are S4's - `ready` stays
+# reserved for a meeting that has them (R2/R7/R8, no stub job fakes it).
+STATUS_TRANSCRIBED = "transcribed"
 STATUS_READY = "ready"
 STATUS_FAILED = "failed"
 STATUS_NOT_ADMITTED = "not_admitted"
@@ -75,8 +78,10 @@ class UserOptIn(MeetingsBase):
     email: a Workspace that blocks external sharing cannot share its own users'
     calendars with our service account, so the calendar a user can actually share
     is often a personal address. NULL means "my login email", which is what every
-    domain-wide-delegation tenant uses. Participant-to-user matching still goes by
-    the LOGIN email - this column changes the source, never the identity.
+    domain-wide-delegation tenant uses. Participant-to-user matching goes by the
+    LOGIN email OR this address (2026-09-01 fix) - a shared calendar's own
+    attendee list carries whichever address it uses, which for the default
+    shared-calendar mode is this column, not the login.
     """
 
     __tablename__ = "user_opt_ins"
@@ -174,6 +179,10 @@ class Meeting(MeetingsBase):
     status = Column(String, nullable=False, default=STATUS_SCHEDULED)
     # Core ``public.files.id`` holding the recorded audio - plain column (S2).
     recording_file_id = Column(String, nullable=True, index=True)
+    # The meeting's spoken language, as Whisper detects it (S3, R3) - ONE value
+    # per meeting; a mixed-language meeting still gets one detected language
+    # here even though its segments' text stays in whichever language was
+    # actually spoken.
     language = Column(String, nullable=True)
     status_reason = Column(Text, nullable=True)
     screenshot_key = Column(Text, nullable=True)
@@ -236,9 +245,13 @@ class Transcript(MeetingsBase):
 
 
 class TranscriptSegment(MeetingsBase):
-    """One diarised utterance (S3). ``language`` is per segment - a meeting may
-    switch language mid-sentence and the transcript stays verbatim (spine M14).
-    The ``pg_trgm`` index on ``text`` is added by the migration (Postgres only).
+    """One aligned Whisper segment (S3). ``language`` stays NULL (R3, grilled
+    2026-09-01): the provider reports language ONCE per file - see
+    ``Meeting.language`` - and this column would otherwise hold a guessed
+    per-segment value nothing ever wrote correctly. The column is kept
+    (schema was fixed in rev 0001) so a future per-segment detector has
+    somewhere to land without a migration. ``ix_meetings_segments_text_trgm``
+    (Postgres-only, ``pg_trgm``) is created by rev 0001.
     """
 
     __tablename__ = "transcript_segments"

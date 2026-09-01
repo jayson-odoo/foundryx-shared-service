@@ -30,6 +30,7 @@ from ..models import (
     MeetingParticipant,
     UserOptIn,
 )
+from .optin import enabled_calendar_email_index
 
 logger = logging.getLogger("foundryx.meetings")
 
@@ -86,28 +87,38 @@ def wants_capture(db: Session, meeting: Meeting) -> bool:
     (read LIVE, so switching it off before the meeting really stops the bot -
     the participant row's ``is_opted_in`` is only a snapshot for later minutes
     visibility) and that person's own opt-out on their mirrored calendar row.
+
+    A participant resolves to an enabled opt-in through its own (sync-time)
+    ``user_id``, or - a row written before that match existed, or a shared
+    calendar whose attendee address is not the login email - through its
+    email matching an enabled opt-in's ``calendar_email``. Matching here too
+    (not just at sync time) means a legacy NULL-``user_id`` row still
+    dispatches once its owner opts in.
     """
     participants = (
         db.query(MeetingParticipant)
-        .filter(
-            MeetingParticipant.meeting_id == meeting.id,
-            MeetingParticipant.user_id.isnot(None),
-        )
+        .filter(MeetingParticipant.meeting_id == meeting.id)
         .all()
     )
     if not participants:
         return False
 
-    user_ids = [p.user_id for p in participants]
-    enabled = {
-        row.user_id
-        for row in db.query(UserOptIn)
-        .filter(
-            UserOptIn.tenant_id == meeting.tenant_id,
-            UserOptIn.user_id.in_(user_ids),
-            UserOptIn.enabled.is_(True),
-        )
+    opt_ins = (
+        db.query(UserOptIn)
+        .filter(UserOptIn.tenant_id == meeting.tenant_id, UserOptIn.enabled.is_(True))
         .all()
+    )
+    if not opt_ins:
+        return False
+
+    enabled_user_ids = {row.user_id for row in opt_ins}
+    calendar_email_to_user_id = enabled_calendar_email_index(opt_ins)
+
+    enabled = {
+        user_id
+        for p in participants
+        if (user_id := p.user_id or calendar_email_to_user_id.get((p.email or "").lower()))
+        and user_id in enabled_user_ids
     }
     if not enabled:
         return False

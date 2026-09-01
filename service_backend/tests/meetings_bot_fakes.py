@@ -11,14 +11,29 @@ from typing import Dict, List, Optional
 
 
 class FakeContainer:
-    """Replays a scripted stdout, then exits with a scripted code."""
+    """Replays a scripted stdout, then exits with a scripted code.
 
-    def __init__(self, lines: List[str], exit_code: int = 0, name: str = "bot"):
+    ``status`` mirrors the real SDK's ``Container.status`` (``running``,
+    ``exited``, ...) - what ``_container_for`` reads to decide re-attach vs.
+    remove-and-restart for a container found under the fixed per-meeting name.
+    """
+
+    def __init__(
+        self,
+        lines: List[str],
+        exit_code: int = 0,
+        name: str = "bot",
+        status: str = "running",
+        remove_error: Optional[Exception] = None,
+    ):
         self._lines = lines
         self._exit_code = exit_code
         self.name = name
+        self.status = status
+        self._remove_error = remove_error
         self.stopped_with: Optional[int] = None
         self.waited = False
+        self.removed_with_force: Optional[bool] = None
 
     def logs(self, stream: bool = False, follow: bool = False):
         for line in self._lines:
@@ -30,6 +45,11 @@ class FakeContainer:
 
     def stop(self, timeout: int = 10) -> None:
         self.stopped_with = timeout
+
+    def remove(self, force: bool = False) -> None:
+        if self._remove_error is not None:
+            raise self._remove_error
+        self.removed_with_force = force
 
 
 class NotFound(Exception):
@@ -44,12 +64,22 @@ class FakeContainers:
         # Containers that ALREADY exist under a given name - the redelivered-task
         # case, where a container from the first delivery is still recording.
         self.existing: Dict[str, FakeContainer] = {}
+        # ``docker.containers.list(filters={"volume": ...})`` results, keyed by
+        # volume name - what a sibling meeting's LIVE container on the same
+        # (per-tenant) profile volume looks like to the caller.
+        self.by_volume: Dict[str, List[object]] = {}
+        self.list_calls: List[Optional[dict]] = []
 
     def get(self, name: str):
         try:
             return self.existing[name]
         except KeyError:
             raise NotFound(name) from None
+
+    def list(self, filters: Optional[dict] = None):
+        self.list_calls.append(filters)
+        volume = (filters or {}).get("volume")
+        return list(self.by_volume.get(volume, []))
 
     def run(self, **kwargs):
         self.runs.append(kwargs)

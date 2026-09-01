@@ -18,8 +18,9 @@ from modules.meetings.models import (
     STATUS_JOINING,
     STATUS_NOT_ADMITTED,
     STATUS_PROCESSING,
-    STATUS_READY,
     STATUS_RECORDING,
+    STATUS_SKIPPED,
+    STATUS_TRANSCRIBED,
     Meeting,
     MeetingParticipant,
 )
@@ -76,7 +77,12 @@ def db(meetings_session_factory):
 
 @pytest.fixture(autouse=True)
 def local_storage(monkeypatch):
-    """Every recording lands in an in-memory store, never a bucket or a disk."""
+    """Every recording lands in an in-memory store, never a bucket or a disk.
+
+    A finished call enqueues ``meetings.transcribe`` (S3) synchronously
+    (eager jobs in tests), which re-downloads the SAME recording through its
+    own ``storage_for_tenant`` import - so the fake has to cover that module
+    too, not just where the recording was written."""
     from app.services import storage as storage_module
 
     recorder = RecordingStorage()
@@ -88,7 +94,25 @@ def local_storage(monkeypatch):
     monkeypatch.setattr(
         recordings_module, "storage_for_tenant", lambda db, tenant_id: recorder
     )
+    from modules.meetings import jobs as jobs_module
+
+    monkeypatch.setattr(jobs_module, "storage_for_tenant", lambda db, tenant_id: recorder)
     return recorder
+
+
+@pytest.fixture(autouse=True)
+def stt_provider_stub(monkeypatch):
+    """None of THIS suite is about transcription content - a trivial provider
+    lets the S3 job that S2's bot_run always enqueues finish cleanly, same as
+    it always has, without every S2 test needing its own STT setup."""
+    from modules.meetings import jobs as jobs_module
+    from modules.meetings.stt import SttResult
+
+    class _TrivialProvider:
+        def transcribe(self, audio_path):
+            return SttResult(language=None, segments=[])
+
+    monkeypatch.setattr(jobs_module, "get_provider", lambda: _TrivialProvider())
 
 
 def _demo_user(session):
@@ -343,8 +367,9 @@ def test_a_finished_call_registers_one_recording_and_queues_transcription(db, mo
         artifacts=artifacts,
     )
 
-    # S2 hands off to the S3 stub, which marks it ready so the UI path is real.
-    assert meeting.status == STATUS_READY
+    # S2 hands off to S3 (transcribe), which reaches `transcribed` (R2/R7/R8) -
+    # `ready` stays reserved for minutes (S4).
+    assert meeting.status == STATUS_TRANSCRIBED
     assert meeting.duration_s == 1800
     assert meeting.recording_file_id is not None
 
@@ -379,7 +404,7 @@ def test_every_normal_exit_word_counts_as_a_finished_call(db, monkeypatch):
             lines=bot_stdout(reason=reason),
             artifacts=FakeArtifacts({"audio_0000.ogg": OGG}),
         )
-        assert meeting.status == STATUS_READY, reason
+        assert meeting.status == STATUS_TRANSCRIBED, reason
         db.query(Meeting).filter(Meeting.id == meeting.id).delete()
         db.commit()
 
@@ -397,7 +422,9 @@ def test_a_call_that_recorded_nothing_still_finishes_without_a_file(db, monkeypa
     )
 
     assert meeting.recording_file_id is None
-    assert meeting.status == STATUS_READY
+    # bot_run still enqueues transcribe (unconditionally); with nothing to
+    # transcribe, S3 skips cleanly and leaves the status bot_run itself set.
+    assert meeting.status == STATUS_PROCESSING
 
 
 # ── AC-S2-7: not admitted ────────────────────────────────────────────────────
@@ -440,6 +467,41 @@ def test_a_lobby_timeout_is_not_admitted_too(db, monkeypatch):
 
     assert meeting.status == STATUS_NOT_ADMITTED
     assert meeting.status_reason == "not_admitted"
+
+
+# ── S2 live-run fix: a late host must not be recorded as an empty room ───────
+
+
+def test_a_no_show_is_skipped_with_no_recording_and_never_transcribed(db, monkeypatch):
+    """Live evidence: the bot joined alone, its old empty-room grace fired at
+    +2min - exactly when the late host arrived - and it registered ~123s of
+    silent audio that hallucinated a transcript. The container now leaves
+    `no_show` only after BOT_NO_SHOW_TIMEOUT_S with zero humans EVER seen;
+    the orchestrator must not register that audio or enqueue transcription
+    for it - silence only produces a hallucinated transcript."""
+    from app.models.document import File
+
+    meeting = _prepare(db)
+    artifacts = FakeArtifacts({"audio_0000.ogg": OGG, "events.jsonl": b"{}"})
+    job, _docker, _container = _run(
+        db,
+        monkeypatch,
+        meeting,
+        lines=[
+            event_line("joined", lobby=False),
+            event_line("recording_started", ts=1_000.0),
+            event_line("participants", humans=0, tiles=[]),
+            event_line("finished", reason="no_show", segments=1),
+            "no_show",
+        ],
+        artifacts=artifacts,
+    )
+
+    assert meeting.status == STATUS_SKIPPED
+    assert meeting.status_reason == "no_show"
+    assert meeting.recording_file_id is None
+    assert db.query(File).count() == 0
+    assert job.status == "done"
 
 
 # ── AC-S2-8: a crash ─────────────────────────────────────────────────────────
@@ -688,7 +750,7 @@ def test_a_redelivered_task_reattaches_to_the_container_already_running(db, monk
     # It attached to the running container and never tried to start a second.
     assert docker.containers.runs == []
     assert existing.waited is True
-    assert meeting.status == STATUS_READY
+    assert meeting.status == STATUS_TRANSCRIBED
 
 
 def test_a_first_delivery_still_starts_a_container(db, monkeypatch):
@@ -704,7 +766,206 @@ def test_a_first_delivery_still_starts_a_container(db, monkeypatch):
         artifacts=FakeArtifacts({"audio_0000.ogg": OGG}),
     )
 
-    assert meeting.status == STATUS_READY
+    assert meeting.status == STATUS_TRANSCRIBED
+
+
+def test_a_running_container_is_reattached_never_removed(db, monkeypatch):
+    """The re-attach path exists to survive a worker restart mid-meeting - a
+    RUNNING container must never be torn down."""
+    from modules.meetings.services import bot_runner
+
+    meeting = _prepare(db)
+    existing = FakeContainer(bot_stdout(reason="room_empty"), exit_code=0, status="running")
+    docker = FakeDocker(FakeContainer([]))
+    docker.existing[f"meetings-bot-{meeting.id}"] = existing
+    monkeypatch.setattr(bot_runner, "docker_client", lambda: docker)
+    real_build = bot_runner.build_spec
+    artifacts = FakeArtifacts({"audio_0000.ogg": OGG})
+    monkeypatch.setattr(
+        bot_runner, "build_spec", lambda db_, m: (real_build(db_, m)[0], artifacts)
+    )
+
+    job = _job(db, meeting)
+    bot_runner.run_bot(db, job)
+    db.refresh(meeting)
+
+    assert existing.removed_with_force is None
+    assert docker.containers.runs == []
+    assert meeting.status == STATUS_TRANSCRIBED
+
+
+def test_a_created_but_not_yet_started_container_is_reattached_not_removed(db, monkeypatch):
+    """Between ``create()`` and ``start()`` a container is briefly `created`,
+    not `running` - a redelivered task landing in that gap must not treat it
+    as a corpse (S6: only `exited`/`dead` are removed) and tear it down out
+    from under the real start."""
+    from modules.meetings.services import bot_runner
+
+    meeting = _prepare(db)
+    existing = FakeContainer(bot_stdout(reason="room_empty"), exit_code=0, status="created")
+    docker = FakeDocker(FakeContainer([]))
+    docker.existing[f"meetings-bot-{meeting.id}"] = existing
+    monkeypatch.setattr(bot_runner, "docker_client", lambda: docker)
+    real_build = bot_runner.build_spec
+    artifacts = FakeArtifacts({"audio_0000.ogg": OGG})
+    monkeypatch.setattr(
+        bot_runner, "build_spec", lambda db_, m: (real_build(db_, m)[0], artifacts)
+    )
+
+    job = _job(db, meeting)
+    bot_runner.run_bot(db, job)
+    db.refresh(meeting)
+
+    assert existing.removed_with_force is None
+    assert docker.containers.runs == []
+    assert meeting.status == STATUS_TRANSCRIBED
+
+
+# ── S2 live-run fix: an exited corpse is removed, not re-adopted ─────────────
+
+
+def test_an_exited_container_is_removed_and_a_fresh_one_starts(db, monkeypatch):
+    """A failed run leaves its exited container behind (``auto_remove=False``,
+    wanted for logs). Re-attaching to it here would mark the meeting failed
+    again in ~0.1s, and the fixed container name then blocks every retry with
+    a name conflict forever. The dead container must be removed so a fresh one
+    can be started in the SAME run."""
+    from modules.meetings.services import bot_runner
+
+    meeting = _prepare(db)
+    dead = FakeContainer([], exit_code=1, status="exited")
+    fresh = FakeContainer(bot_stdout(reason="room_empty"), exit_code=0)
+    docker = FakeDocker(fresh)
+    docker.existing[f"meetings-bot-{meeting.id}"] = dead
+    monkeypatch.setattr(bot_runner, "docker_client", lambda: docker)
+    real_build = bot_runner.build_spec
+    artifacts = FakeArtifacts({"audio_0000.ogg": OGG})
+    monkeypatch.setattr(
+        bot_runner, "build_spec", lambda db_, m: (real_build(db_, m)[0], artifacts)
+    )
+
+    job = _job(db, meeting)
+    bot_runner.run_bot(db, job)
+    db.refresh(meeting)
+    db.refresh(job)
+
+    assert dead.removed_with_force is True
+    # One helper run for the stale profile lock, one for the fresh bot.
+    assert len(docker.containers.runs) == 2
+    assert meeting.status == STATUS_TRANSCRIBED
+    assert job.status == "done"
+
+
+def test_a_container_removal_failure_fails_the_run_not_a_silent_skip(db, monkeypatch):
+    """A dead container that cannot even be removed must not be quietly
+    ignored - the meeting fails with the docker error, and nothing is
+    started."""
+    from modules.meetings.services import bot_runner
+
+    meeting = _prepare(db)
+    dead = FakeContainer(
+        [], exit_code=1, status="exited", remove_error=RuntimeError("container is locked")
+    )
+    docker = FakeDocker(FakeContainer([]))
+    docker.existing[f"meetings-bot-{meeting.id}"] = dead
+    monkeypatch.setattr(bot_runner, "docker_client", lambda: docker)
+
+    job = _job(db, meeting)
+    bot_runner.run_bot(db, job)
+
+    db.refresh(meeting)
+    db.refresh(job)
+    assert meeting.status == STATUS_FAILED
+    assert "container is locked" in (meeting.status_reason or "")
+    assert "could not be removed" in (meeting.status_reason or "")
+    assert docker.containers.runs == []
+    assert job.status == "failed"
+
+
+# ── S2 live-run fix: a stale Chromium profile lock is cleared before a start ─
+
+
+def test_a_stale_profile_lock_is_cleared_before_the_container_starts(db, monkeypatch):
+    """The S1 spike's run.sh always did ``rm -f $PROFILE/Singleton*`` before a
+    join; the orchestrator never did. Left behind by an interactive re-login
+    on the same profile volume, those files make the next bot's Chromium exit
+    immediately ("profile appears to be in use by another Chromium process ...
+    on another computer")."""
+    from modules.meetings.services import bot_runner
+
+    meeting = _prepare(db)
+    job, docker, container = _run(
+        db,
+        monkeypatch,
+        meeting,
+        lines=bot_stdout(reason="room_empty"),
+        artifacts=FakeArtifacts({"audio_0000.ogg": OGG}),
+    )
+
+    assert len(docker.containers.runs) == 2
+    cleanup_kwargs, run_kwargs = docker.containers.runs
+    assert cleanup_kwargs["entrypoint"] == [
+        "sh",
+        "-c",
+        "rm -f /profile/Singleton* 2>/dev/null || true",
+    ]
+    assert cleanup_kwargs["remove"] is True
+    profile_volume = f"meetings-profile-{DEFAULT_TENANT_ID}"
+    # Targets exactly the tenant's profile volume - nothing else in it.
+    assert cleanup_kwargs["volumes"] == {profile_volume: {"bind": "/profile", "mode": "rw"}}
+    assert run_kwargs["volumes"][profile_volume] == {"bind": "/profile", "mode": "rw"}
+
+
+def test_a_profile_lock_cleanup_failure_fails_the_run_not_a_silent_skip(db, monkeypatch):
+    from modules.meetings.services import bot_runner
+
+    meeting = _prepare(db)
+    docker = FakeDocker(FakeContainer([]), run_error=RuntimeError("permission denied"))
+    monkeypatch.setattr(bot_runner, "docker_client", lambda: docker)
+
+    job = _job(db, meeting)
+    bot_runner.run_bot(db, job)
+
+    db.refresh(meeting)
+    db.refresh(job)
+    assert meeting.status == STATUS_FAILED
+    assert "permission denied" in (meeting.status_reason or "")
+    assert "profile lock" in (meeting.status_reason or "")
+    assert job.status == "failed"
+
+
+def test_a_live_sibling_on_the_tenant_profile_volume_skips_the_lock_cleanup(db, monkeypatch):
+    """B1: the profile volume is per TENANT, not per meeting - a `-c 2` worker
+    can have two overlapping meetings on the same tenant sharing ONE volume.
+    Clearing Singleton* here while a SIBLING meeting's Chromium is still using
+    it would let two Chromiums share one profile mid-call and corrupt the
+    signed-in notetaker session - the tenant's credential. Skip the cleanup
+    and let Chromium's own lock stand (the OLD failure mode, and the safe
+    one) instead of failing or corrupting the session."""
+    from modules.meetings.services import bot_runner
+
+    meeting = _prepare(db)
+    fresh = FakeContainer(bot_stdout(reason="room_empty"), exit_code=0)
+    docker = FakeDocker(fresh)
+    volume = f"meetings-profile-{DEFAULT_TENANT_ID}"
+    docker.containers.by_volume[volume] = [FakeContainer([], name="meetings-bot-sibling")]
+    monkeypatch.setattr(bot_runner, "docker_client", lambda: docker)
+    real_build = bot_runner.build_spec
+    artifacts = FakeArtifacts({"audio_0000.ogg": OGG})
+    monkeypatch.setattr(
+        bot_runner, "build_spec", lambda db_, m: (real_build(db_, m)[0], artifacts)
+    )
+
+    job = _job(db, meeting)
+    bot_runner.run_bot(db, job)
+    db.refresh(meeting)
+
+    # No cleanup helper ran (its call always carries `entrypoint`) - only the
+    # ONE real bot container.
+    assert len(docker.containers.runs) == 1
+    assert "entrypoint" not in docker.containers.runs[0]
+    assert volume in {c["volume"] for c in docker.containers.list_calls if c}
+    assert meeting.status == STATUS_TRANSCRIBED
 
 
 # ── review round: SIGTERM must actually terminate the process ────────────────

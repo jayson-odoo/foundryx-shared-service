@@ -16,6 +16,7 @@ export type MeetingStatus =
   | 'in_lobby'
   | 'recording'
   | 'processing'
+  | 'transcribed'
   | 'ready'
   | 'failed'
   | 'not_admitted'
