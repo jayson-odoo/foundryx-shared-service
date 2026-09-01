@@ -1,4 +1,4 @@
-"""Derived / computed status (sprint-4/03) — status_transitions.trigger_mode.
+"""Derived / computed status (sprint-4/03) - status_transitions.trigger_mode.
 
 An 'auto' edge is fired by the engine when its conditions_json becomes true
 (reevaluate), never by a user. Default 'manual' keeps every existing edge a

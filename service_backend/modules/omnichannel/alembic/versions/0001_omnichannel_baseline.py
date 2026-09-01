@@ -1,4 +1,4 @@
-"""omnichannel baseline (sprint-3/10 D3) — adopt per-module Alembic.
+"""omnichannel baseline (sprint-3/10 D3) - adopt per-module Alembic.
 
 Captures the current ``app_omnichannel`` schema as rev 1. Existing DBs (tables
 already built by the legacy ``create_all``) are STAMPED to this rev (no DDL);

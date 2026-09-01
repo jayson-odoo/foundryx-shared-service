@@ -18,9 +18,9 @@ export interface IdeaBrsTabProps {
 }
 
 /**
- * Business Requirements tab (AC-BI-29c) — the BRs this idea feeds, on the shared
+ * Business Requirements tab (AC-BI-29c) - the BRs this idea feeds, on the shared
  * ResourceList (NOT a hand-rolled list, matching the BR ↔ Ideas reverse). Each
- * row navigates to the BR detail. Read-only lineage — link/unlink lives on the
+ * row navigates to the BR detail. Read-only lineage - link/unlink lives on the
  * BR's own Ideas tab.
  */
 export function IdeaBrsTab({ ideaId }: IdeaBrsTabProps) {
@@ -91,7 +91,7 @@ export function IdeaBrsTab({ ideaId }: IdeaBrsTabProps) {
       exporter,
       searchPlaceholder: 'Search requirements…',
       searchHints: ['Title', 'Product'],
-      // Lineage list — no Active/Trashed segmentation (there is no trashed view).
+      // Lineage list - no Active/Trashed segmentation (there is no trashed view).
       enableStatusViews: false,
       columns,
       filterFields: [],

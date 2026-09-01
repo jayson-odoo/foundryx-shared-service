@@ -20,7 +20,7 @@ MEDIA_HEADER_FORMATS = ["IMAGE", "VIDEO", "DOCUMENT"]
 BUTTON_TYPES = ["QUICK_REPLY", "URL", "PHONE_NUMBER", "COPY_CODE"]
 # Meta status set the local row can hold (T1).
 TEMPLATE_STATUSES = ["LOCAL_DRAFT", "PENDING", "APPROVED", "REJECTED", "PAUSED", "DISABLED"]
-# Common Meta language codes (not exhaustive — Meta validates the full set).
+# Common Meta language codes (not exhaustive - Meta validates the full set).
 TEMPLATE_LANGUAGES = [
     "en", "en_US", "en_GB", "es", "es_ES", "es_MX", "pt_BR", "pt_PT", "fr", "de",
     "it", "nl", "id", "ms", "zh_CN", "zh_HK", "zh_TW", "ja", "ko", "th", "vi",
@@ -76,7 +76,7 @@ def distinct_var_count(text: str) -> int:
 
 
 def vars_sequential(text: str) -> bool:
-    """True when the {{n}} placeholders are exactly {{1}}..{{N}} with no gaps —
+    """True when the {{n}} placeholders are exactly {{1}}..{{N}} with no gaps -
     Meta requires sequential numbering, and our example arrays are positional."""
     nums = {int(m) for m in _VAR_RE.findall(text or "")}
     return not nums or nums == set(range(1, len(nums) + 1))
@@ -99,7 +99,7 @@ def to_meta_components(doc: WaTemplateDoc) -> List[Dict[str, Any]]:
     if doc.header:
         if doc.header.format == "TEXT":
             comp: Dict[str, Any] = {"type": "HEADER", "format": "TEXT", "text": doc.header.text or ""}
-            # Only emit a header example when the text actually has a variable —
+            # Only emit a header example when the text actually has a variable -
             # a stale example on a var-less header is a Meta format rejection.
             if doc.header.example and distinct_var_count(doc.header.text or "") >= 1:
                 comp["example"] = {"header_text": [doc.header.example]}
@@ -229,9 +229,9 @@ def validate_doc(doc: WaTemplateDoc, *, existing_names: Optional[set] = None) ->
     if not vars_sequential(doc.body.text):
         raise _err("body", "Variables must be numbered sequentially: {{1}}, {{2}}, …")
     if ends_with_var(doc.body.text):
-        raise _err("body", "Body can’t end with a variable — add text after the last {{n}} (Meta rule).")
+        raise _err("body", "Body can’t end with a variable - add text after the last {{n}} (Meta rule).")
     if has_adjacent_vars(doc.body.text):
-        raise _err("body", "Two variables can’t be adjacent — put text between them (Meta rule).")
+        raise _err("body", "Two variables can’t be adjacent - put text between them (Meta rule).")
     nvars = distinct_var_count(doc.body.text)
     provided = [e for e in (doc.body.examples or []) if (e or "").strip()]
     if len(provided) != nvars:

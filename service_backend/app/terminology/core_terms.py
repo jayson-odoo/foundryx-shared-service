@@ -1,7 +1,7 @@
 """Core relabelable entities (sprint-3/08 seed).
 
 The existing core entities a tenant may reasonably rename, so the mechanism is
-demoable day one. Deliberately EXCLUDES ``user``/``permission``/``tenant`` —
+demoable day one. Deliberately EXCLUDES ``user``/``permission``/``tenant`` -
 relabeling those confuses RBAC/admin. EMS adds ``project``/``profile``/… at
 the ``ems`` module's install (plan 11).
 """

@@ -1,8 +1,8 @@
-# UAC — Ideation Phase C (Deliver)
+# UAC - Ideation Phase C (Deliver)
 
-**Keys back to:** `PLAN-ideation-to-delivery-program.md` (program spine) — §2 (D2, D11–D15, D17,
-D20), §3 (AgentRunner, FunctionalRequirement), §5.4 (Mac Mini bridge — canonical, carries BOTH
-grill and build). **If a contract here disagrees with §5.4, §5.4 wins and this file is wrong — fix
+**Keys back to:** `PLAN-ideation-to-delivery-program.md` (program spine) - §2 (D2, D11-D15, D17,
+D20), §3 (AgentRunner, FunctionalRequirement), §5.4 (Mac Mini bridge - canonical, carries BOTH
+grill and build). **If a contract here disagrees with §5.4, §5.4 wins and this file is wrong - fix
 it there first.**
 
 **Scope of Phase C:** the `AgentRunner` integration + **Mac Mini bridge** in **shared-service**, the
@@ -11,11 +11,11 @@ preview**, the **clarification bridge**, and the two build-time human gates (1.5
 2 PR-eyeball). Depends on Phase A (Product, Idea, contacts, embed host) and Phase B (BR, FR,
 templates, grilling, Gate 1 = FR approved).
 
-**Bridge is foundational infra shared with Phase B (D20, §5.4).** shared-service has no brain — so
+**Bridge is foundational infra shared with Phase B (D20, §5.4).** shared-service has no brain - so
 grilling a BR→FR is ALSO a job dispatched to Claude Code on the Mac Mini, not just building an
 FR→PR. The same bridge (registration + outbound poll + events + continuation-resume) carries both
-`kind: grill` and `kind: build` jobs. The registration/poll/events/resume substrate (§A–C, F below)
-therefore must be **built once, early** — before Phase B's grill can work — even though it is
+`kind: grill` and `kind: build` jobs. The registration/poll/events/resume substrate (§A-C, F below)
+therefore must be **built once, early** - before Phase B's grill can work - even though it is
 authored in this Phase-C file. Grill-job handling ACs (§K) are stated here alongside build so the
 one bridge is specified in one place.
 
@@ -31,7 +31,7 @@ keys PASS/FAIL/DEFERRED back to these ids.
 ## A. AgentRunner registration + API key (§3, §5.4 "Registration")
 
 ### AC-C-01 [BE] Register an AgentRunner
-- **Given** a Maintainer on the FoundryX-internal tenant,
+- **Given** a Maintainer on the Foundryx-internal tenant,
 - **When** they create an `AgentRunner` with `name`, `served_product_ids[]`, and `concurrency_cap`
   (default `2`),
 - **Then** a row persists with `status="offline"`, `last_seen=null`, and an `api_key_hash` is set;
@@ -65,7 +65,7 @@ keys PASS/FAIL/DEFERRED back to these ids.
 
 ---
 
-## B. Outbound poll — `GET /agent-runner/jobs` (§5.4 "Outbound poll", "Job payload")
+## B. Outbound poll - `GET /agent-runner/jobs` (§5.4 "Outbound poll", "Job payload")
 
 ### AC-C-06 [BE] Poll returns only queued jobs for served products
 - **Given** queued jobs of **both kinds** (`grill` and `build`, §5.4) across several products,
@@ -79,7 +79,7 @@ keys PASS/FAIL/DEFERRED back to these ids.
 - **When** it is returned by the poll,
 - **Then** the payload is exactly
   `{ kind: "build", fr_id, product_id, repo, branch_base, fr_snapshot (UAC+plan+reuse), phase_cursor }`
-  — byte-consistent with §5.4. `fr_snapshot` embeds the FR's acceptance criteria (UAC), technical
+  - byte-consistent with §5.4. `fr_snapshot` embeds the FR's acceptance criteria (UAC), technical
   approach, and `reuse_analysis`; `phase_cursor` tells the daemon where to resume
   (`prototype`/`tdd`/`review`).
 
@@ -94,7 +94,7 @@ keys PASS/FAIL/DEFERRED back to these ids.
 - **When** it polls or heartbeats,
 - **Then** the runner `status` becomes `online` and `last_seen` is stamped; after a configured
   silence window with no poll/heartbeat, `status` reverts to `offline` (Mac Mini offline = builds
-  queue, acceptable — program §6).
+  queue, acceptable - program §6).
 
 ### AC-C-10 [BE][T] Job lease is idempotent / at-least-once safe (grill + build)
 - **Given** a job of **either kind** (`grill` or `build`) handed to a runner,
@@ -105,7 +105,7 @@ keys PASS/FAIL/DEFERRED back to these ids.
 
 ---
 
-## C. Callbacks — `POST /agent-runner/events` (§5.4 "Callbacks")
+## C. Callbacks - `POST /agent-runner/events` (§5.4 "Callbacks")
 
 ### AC-C-11 [BE][T] Build callback envelope + kinds are exact
 - **Given** an authenticated runner on a **build** job,
@@ -131,7 +131,7 @@ keys PASS/FAIL/DEFERRED back to these ids.
 ### AC-C-14 [BE][T] Callback idempotency (grill + build)
 - **Given** the daemon retries a callback (network flap) on **either** a grill or a build job,
 - **When** the same `{job_id, event_id}` arrives twice,
-- **Then** the target machine advances **once** — the FR machine for build events, the grill/FR-draft
+- **Then** the target machine advances **once** - the FR machine for build events, the grill/FR-draft
   thread for grill events; duplicate callbacks are absorbed, not double-applied.
 
 ---
@@ -145,7 +145,7 @@ keys PASS/FAIL/DEFERRED back to these ids.
   **FR thread in shared-service** (the ONLY human surface), and the job lease is released so the
   runner's concurrency slot frees up.
 
-### AC-C-16 [FE] Human answers in the embedded FR thread — device-free
+### AC-C-16 [FE] Human answers in the embedded FR thread - device-free
 - **Given** a Maintainer viewing the FR (via the sorento iframe embed, seamless SSO),
 - **When** they read the agent's question and reply in the thread,
 - **Then** no GitHub, terminal, or Mac Mini access is required; the answer is captured against the FR.
@@ -154,15 +154,15 @@ keys PASS/FAIL/DEFERRED back to these ids.
 - **Given** an FR in `awaiting-clarification` with a human answer,
 - **When** the answer is submitted,
 - **Then** shared-service **re-enqueues a continuation job** carrying the answer + the resume
-  `phase_cursor`; the daemon picks it up on its **next poll** and resumes the same worktree — nothing
+  `phase_cursor`; the daemon picks it up on its **next poll** and resumes the same worktree - nothing
   is pushed to the Mac Mini (D15, §5.4). The **same next-poll continuation mechanism** carries a
-  human grill turn back to the daemon (§K, AC-C-40) — continuation-resume is not build-only.
+  human grill turn back to the daemon (§K, AC-C-40) - continuation-resume is not build-only.
 
 ### AC-C-18 [BE] GitHub stays machine-only during clarification
 - **Given** a clarification round,
 - **When** the human answers in shared-service,
 - **Then** no human ever posts on GitHub; GitHub carries only machine artifacts (issue, PR,
-  milestone) — the FR thread is authoritative for the Q&A (D15).
+  milestone) - the FR thread is authoritative for the Q&A (D15).
 
 ---
 
@@ -205,12 +205,12 @@ keys PASS/FAIL/DEFERRED back to these ids.
 - **Then** `preview_url` is a Cloudflare-Tunnel URL to that live Mac Mini session (not a shared-
   service-hosted build), and the FR enters `prototype-review`.
 
-### AC-C-24 [FE] Gate 1.5 — prototype-eyeball
+### AC-C-24 [FE] Gate 1.5 - prototype-eyeball
 - **Given** an FR in `prototype-review` with a `preview_url`,
 - **When** the Maintainer opens it from the FR detail (embedded UI),
 - **Then** they can click through the live prototype; an **explicit approve** advances to
   `developing` (Phase-2 TDD backend) and an **explicit reject/bounce** returns the FR to grilling
-  with notes — never auto-advanced (D5 "never auto-promote", D12).
+  with notes - never auto-advanced (D5 "never auto-promote", D12).
 
 ### AC-C-25 [BE] Preview URL lifecycle
 - **Given** a prototype approved or the session ended,
@@ -222,19 +222,19 @@ keys PASS/FAIL/DEFERRED back to these ids.
 
 ## G. Gate 2 (PR-eyeball) → merge → deploy (D12)
 
-### AC-C-26 [FE] Gate 2 — PR-eyeball
+### AC-C-26 [FE] Gate 2 - PR-eyeball
 - **Given** an FR in `pr-review` with a `pr_ref`,
 - **When** the Maintainer reviews (link out to the PR is machine-plumbing; the **decision** is taken
   in shared-service),
 - **Then** an explicit approve triggers merge; an explicit request-changes bounces the FR back to
   `developing` with notes carried into a continuation job. The two build gates (1.5, 2) are both
-  human-explicit (D12: exactly three gates — FR-approved, prototype-eyeball, PR-eyeball).
+  human-explicit (D12: exactly three gates - FR-approved, prototype-eyeball, PR-eyeball).
 
 ### AC-C-27 [E2E] Delivered end-to-end trace
 - **Given** a merged + deployed FR,
 - **When** the pipeline completes,
 - **Then** the FR is `done` and the originating Idea is traceable through BR→FR→issue→PR→commit→
-  deploy (Vision §1) — one idea, one shipped slice, fully linked.
+  deploy (Vision §1) - one idea, one shipped slice, fully linked.
 
 ---
 
@@ -245,7 +245,7 @@ keys PASS/FAIL/DEFERRED back to these ids.
   technical dupes (program §6 "Outline staleness"),
 - **When** the daemon builds, it runs a **code-level reuse check** against the target repo before
   writing new code,
-- **Then** a real duplication/overlap finding is produced (not a doc lookup) — this is the second
+- **Then** a real duplication/overlap finding is produced (not a doc lookup) - this is the second
   tier that Phase-B doc reuse cannot catch.
 
 ### AC-C-29 [BE] Reuse finding bounces back to the FR (D11)
@@ -253,18 +253,18 @@ keys PASS/FAIL/DEFERRED back to these ids.
 - **When** the finding is reported,
 - **Then** it surfaces as a `clarification_request`/bounce into the FR thread (device-free), the FR
   moves to `bounced`/`awaiting-clarification`, and no PR is opened until a human resolves reuse-vs-
-  build — a wasted duplicate build is prevented.
+  build - a wasted duplicate build is prevented.
 
 ---
 
-## I. Mac Mini daemon behaviour (separate deployable — asserted via bridge + daemon-side [T])
+## I. Mac Mini daemon behaviour (separate deployable - asserted via bridge + daemon-side [T])
 
 ### AC-C-30 [T] Poll loop drives headless Claude Code (Agent SDK) for both job kinds
 - **Given** the daemon configured with `{shared_service_url, api_key}` only,
 - **When** it receives a job,
 - **Then** it dispatches on `kind`: a `build` job launches the three-phase build worker (§I), a
   `grill` job launches a **headless Claude Code (Agent SDK)** grill session (reads code + Outline,
-  streams Q/A, emits the FR — §K); the daemon holds **no** shared-service secrets beyond the API key
+  streams Q/A, emits the FR - §K); the daemon holds **no** shared-service secrets beyond the API key
   (D13).
 
 ### AC-C-31 [T] One git worktree per FR, resumable
@@ -276,9 +276,9 @@ keys PASS/FAIL/DEFERRED back to these ids.
 ### AC-C-32 [T] Three-phase build inside the daemon
 - **Given** a fresh FR job,
 - **When** the daemon runs it,
-- **Then** it executes the mandated three phases in order — **Phase 1 FE prototype** (→
+- **Then** it executes the mandated three phases in order - **Phase 1 FE prototype** (→
   `prototype_ready`, Gate 1.5) → **Phase 2 TDD backend + tests** (red→green→refactor) → **Phase 3
-  code review** → open PR (`pr_opened`, Gate 2) — matching the program's methodology; skipping a
+  code review** → open PR (`pr_opened`, Gate 2) - matching the program's methodology; skipping a
   phase is a violation the daemon surfaces as `error`.
 
 ### AC-C-33 [T] Git/deploy creds are LOCAL-ONLY
@@ -314,7 +314,7 @@ keys PASS/FAIL/DEFERRED back to these ids.
 - **Given** an FR that has run through delivery,
 - **When** a Maintainer opens it in the embedded UI,
 - **Then** the milestone ladder, current status, progress, preview/PR links, and the clarification
-  Q&A thread are all visible in one device-free surface (D15, D17) — no need to leave shared-service.
+  Q&A thread are all visible in one device-free surface (D15, D17) - no need to leave shared-service.
 
 ---
 
@@ -322,7 +322,7 @@ keys PASS/FAIL/DEFERRED back to these ids.
 
 > The bridge carries `kind: grill` as well as `kind: build`. shared-service has no brain (D20), so
 > grilling a BR→FR is a job dispatched to Claude Code on the Mac Mini and relayed back. These ACs
-> reuse the same registration/poll/events/lease/continuation substrate (§A–C) — only the payload,
+> reuse the same registration/poll/events/lease/continuation substrate (§A-C) - only the payload,
 > event set, and terminal artifact differ. This substrate is **foundational for Phase B** and must
 > be built before the grill can work.
 
@@ -330,7 +330,7 @@ keys PASS/FAIL/DEFERRED back to these ids.
 - **Given** a BR (or set of BRs) entering `grilling` (Phase B) and a runner serving that product,
 - **When** the grill job is returned by `GET /agent-runner/jobs`,
 - **Then** the payload is exactly
-  `{ kind: "grill", br_ids[], fr_draft_id?, chat_turn, product_id, repo }` — byte-consistent with
+  `{ kind: "grill", br_ids[], fr_draft_id?, chat_turn, product_id, repo }` - byte-consistent with
   §5.4. `fr_draft_id` is absent on the first turn and present on continuation; `chat_turn` carries
   the human's latest grill message; `repo` lets Claude Code read code alongside Outline for one-pass
   reuse-analysis (D11).
@@ -339,7 +339,7 @@ keys PASS/FAIL/DEFERRED back to these ids.
 - **Given** a runner on a grill job,
 - **When** it posts `POST /agent-runner/events`,
 - **Then** the grill event set is honoured:
-  `kind ∈ {grill_progress, grill_question, clarification_request, fr_emitted, error}` —
+  `kind ∈ {grill_progress, grill_question, clarification_request, fr_emitted, error}` -
   `grill_question` carries the agent's next question (appended to the shared-service grill chat),
   `fr_emitted` carries the structured FR (acceptance_criteria G/W/T, technical_approach,
   reuse_analysis, slice_scope, grill_notes) which shared-service persists as an FR **draft** (never
@@ -350,7 +350,7 @@ keys PASS/FAIL/DEFERRED back to these ids.
   shared-service grill chat,
 - **When** the human sends their next turn,
 - **Then** shared-service **re-enqueues a continuation grill job** carrying `fr_draft_id` + the new
-  `chat_turn`; the daemon picks it up on its **next poll** and resumes the same grill session —
+  `chat_turn`; the daemon picks it up on its **next poll** and resumes the same grill session -
   nothing is pushed to the Mac Mini (D13, D15, §5.4). Continuation-resume works identically for
   grill and build.
 

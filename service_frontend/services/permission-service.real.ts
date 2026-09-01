@@ -1,5 +1,5 @@
 /**
- * Real permission service (Phase B) — `GET /permissions` returns the synced
+ * Real permission service (Phase B) - `GET /permissions` returns the synced
  * catalog grouped by resource. Bound in one line from permission-service.ts when
  * the backend lands.
  */

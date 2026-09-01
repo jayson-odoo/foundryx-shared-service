@@ -1,4 +1,4 @@
-"""Omnichannel module models — all live in the ``app_omnichannel`` schema.
+"""Omnichannel module models - all live in the ``app_omnichannel`` schema.
 
 Every tenant-scoped table carries ``tenant_id`` (FK core ``tenants``) and, where
 workspace-scoped, ``workspace_id``. Datetimes are tz-aware UTC (CLAUDE.md rule).
@@ -107,7 +107,7 @@ class Channel(OmniBase):
     credentials_json = Column(Text, nullable=True)  # Fernet-encrypted
     waba_id = Column(String, nullable=True)
     # Service-wide unique among live channels via a PARTIAL unique index (migration
-    # 0002, WHERE phone_number_id IS NOT NULL AND is_trashed=false) — inbound
+    # 0002, WHERE phone_number_id IS NOT NULL AND is_trashed=false) - inbound
     # routing keys off it (O(1)). index=True mirrors that for the create_all path.
     phone_number_id = Column(String, nullable=True, index=True)
     display_phone_number = Column(String, nullable=True)
@@ -150,9 +150,9 @@ class Contact(OmniBase):
     avatar_url = Column(String, nullable=True)
     custom_fields_json = Column(JSON, nullable=True)
     assigned_user_id = Column(String,nullable=True)
-    # Federated (embed) assignee — set instead of ``assigned_user_id`` when the
+    # Federated (embed) assignee - set instead of ``assigned_user_id`` when the
     # thread is assigned by an external agent (plan 11H Slice 1). Plain indexed
-    # str, no FK (mirrors ``assigned_user_id`` — external_agent lives in this
+    # str, no FK (mirrors ``assigned_user_id`` - external_agent lives in this
     # schema but the no-FK convention keeps the assignee columns symmetric).
     assigned_external_agent_id = Column(String, nullable=True, index=True)
     status_id = Column(String, ForeignKey("statuses.id"), nullable=True)
@@ -160,7 +160,7 @@ class Contact(OmniBase):
     csw_expires_at = Column(UTCDateTime(), nullable=True)
     last_incoming_message_at = Column(UTCDateTime(), nullable=True)
     last_message_at = Column(UTCDateTime(), nullable=True)
-    # When an agent last opened the thread — unreadCount = inbound newer than
+    # When an agent last opened the thread - unreadCount = inbound newer than
     # this (plan 05; added Phase B, idempotent ALTER in bootstrap.install).
     agent_last_read_at = Column(UTCDateTime(), nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
@@ -195,14 +195,14 @@ class ConversationMessage(OmniBase):
     channel_id = Column(String, ForeignKey("channels.id"), nullable=True, index=True)
     sender_type = Column(String, nullable=False)  # AGENT | CONTACT | SYSTEM
     sender_id = Column(String, nullable=True)
-    # Federated (embed) sender — set instead of ``sender_id`` when the message is
+    # Federated (embed) sender - set instead of ``sender_id`` when the message is
     # sent by an external agent (plan 11H Slice 1). The conversation mapper
     # resolves display name/avatar from whichever column is set.
     sender_external_agent_id = Column(String, nullable=True, index=True)
     message_type = Column(String, nullable=False, default="TEXT")
     body = Column(Text, nullable=True)
     # LEGACY (plan 04/05): full public URL of an inbound media blob. Deprecated by
-    # plan 12 — new media rides ``media_key`` (served via the blob endpoint). Kept
+    # plan 12 - new media rides ``media_key`` (served via the blob endpoint). Kept
     # so pre-plan-12 rows stay valid; the wire ``mediaUrl`` prefers ``media_key``.
     media_url = Column(String, nullable=True)
     # ── Rich media (plan 12 §Locked D3): storage KEY (never a presigned URL) +
@@ -212,7 +212,7 @@ class ConversationMessage(OmniBase):
     media_filename = Column(String, nullable=True)
     media_size = Column(Integer, nullable=True)
     # Structured payload for non-text types (interactive/location/contacts/
-    # reaction definitions — slices 2/3). JSON(none_as_null) per the house rule.
+    # reaction definitions - slices 2/3). JSON(none_as_null) per the house rule.
     payload_json = Column(JSON(none_as_null=True), nullable=True)
     external_message_id = Column(String, nullable=True, index=True)
     delivery_status = Column(String, nullable=True)  # QUEUED | SENT | DELIVERED | READ | FAILED
@@ -224,7 +224,7 @@ class ConversationMessage(OmniBase):
     @property
     def media_url_wire(self) -> Optional[str]:
         """The URL the frontend renders (plan 12 D3/D8). A stored ``media_key``
-        resolves to the authed blob-fetch endpoint (relative path — the agent's
+        resolves to the authed blob-fetch endpoint (relative path - the agent's
         browser fetches it with the Bearer via ``apiFetchBlob``); otherwise fall
         back to the legacy stored ``media_url``. No presigned URL is ever
         persisted (it would expire)."""
@@ -238,12 +238,12 @@ class ConversationMessage(OmniBase):
 
 
 class MessageReaction(OmniBase):
-    """A reaction (emoji) on a message — plan 12 Slice 3 (AC-12-19).
+    """A reaction (emoji) on a message - plan 12 Slice 3 (AC-12-19).
 
     Never a message row: reactions upsert here keyed to the target message +
     the reactor, so re-reacting replaces and an empty emoji deletes. ``reactor``
-    is the stable id of who reacted — the contact's wa id/phone for CONTACT,
-    the user id for AGENT — so ``UNIQUE(target_message_id, reactor)`` holds one
+    is the stable id of who reacted - the contact's wa id/phone for CONTACT,
+    the user id for AGENT - so ``UNIQUE(target_message_id, reactor)`` holds one
     reaction per party per message.
     """
 
@@ -292,7 +292,7 @@ class WhatsappTemplate(OmniBase):
 class WorkspaceApiKey(OmniBase):
     """Public-gateway API key, issued per workspace (plan sprint-1/01 Slice 3).
 
-    The plaintext key (``fxw_live_…``) is shown ONCE at mint and never stored —
+    The plaintext key (``fxw_live_…``) is shown ONCE at mint and never stored -
     only its SHA-256 ``key_hash`` (for constant-time verification) and an 8-char
     ``key_prefix`` (indexed O(1) lookup). A key resolves to (tenant, workspace,
     service=omnichannel); multiple active keys per workspace support rotation.
@@ -317,7 +317,7 @@ class WebhookEndpoint(OmniBase):
 
     Scope = per CHANNEL (one WhatsApp number). A channel can have many endpoints
     (fan-out to N consumer systems). ``secret`` is a Fernet-encrypted signing
-    secret (reversible — we HMAC-sign every delivery with it AND reveal it to the
+    secret (reversible - we HMAC-sign every delivery with it AND reveal it to the
     consumer on create/rotate). ``events`` selects which event types forward.
     Auto-disable: after ``consecutive_failures`` exhausted deliveries reach the
     threshold the status flips to AUTO_DISABLED until re-enabled.
@@ -396,7 +396,7 @@ class OmnichannelSettings(OmniBase):
     ``workspace_id`` NULL = the tenant-wide default (resolved when a workspace has
     no row of its own). Per-type max-size overrides are clamped to Meta's hard
     ceilings at enforcement; NULL = use the Meta ceiling. Accepted mimes are fixed
-    (Meta's set) and never tenant-configurable — the sniff-gate is the security
+    (Meta's set) and never tenant-configurable - the sniff-gate is the security
     boundary, not this table.
     """
 
@@ -421,14 +421,14 @@ class OmnichannelSettings(OmniBase):
 
 
 class ExternalAgent(OmniBase):
-    """Federated (embed) agent identity — plan 11H Slice 1 (AC-11H-01/02/03).
+    """Federated (embed) agent identity - plan 11H Slice 1 (AC-11H-01/02/03).
 
     A consumer (EMS) embeds the conversation UI as a chromeless iframe; its
     agents have NO shared-service login. On ``/embed/session`` we provision-or-load
-    an external agent keyed by ``(connection_id, sub)`` — the connection is the
+    an external agent keyed by ``(connection_id, sub)`` - the connection is the
     consumer link, ``sub`` the consumer's agent id. ``(connection_id, sub)`` keeps
     two consumers whose agents share a ``sub`` value ("u-1") strictly distinct
-    (cross-consumer isolation). No password, no login — provisioned on first use,
+    (cross-consumer isolation). No password, no login - provisioned on first use,
     name/email/avatar refreshed on later assertions.
     """
 
@@ -436,7 +436,7 @@ class ExternalAgent(OmniBase):
 
     id = Column(String, primary_key=True, default=_uuid)
     # Derivable from the connection, but stored so display-name/avatar resolution
-    # stays tenant-scoped (the polymorphic-target_id rule — never resolve a stored
+    # stays tenant-scoped (the polymorphic-target_id rule - never resolve a stored
     # id unscoped).
     tenant_id = Column(String, nullable=False, index=True)
     connection_id = Column(String, nullable=False, index=True)
@@ -455,7 +455,7 @@ class ExternalAgent(OmniBase):
 
 
 class EmbedJti(OmniBase):
-    """Single-use ledger for embed assertion ``jti`` values — plan 11H Slice 2
+    """Single-use ledger for embed assertion ``jti`` values - plan 11H Slice 2
     (AC-11H-05). An assertion may be exchanged at ``/embed/session`` exactly once;
     a replay (same ``jti``) is rejected ``401 replayed``. Rows are retained ≥ the
     assertion TTL (``expires_at`` = the assertion ``exp``) and pruned

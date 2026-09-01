@@ -1,4 +1,4 @@
-"""Branding repository (plan sprint-2/03) — pure SQLAlchemy."""
+"""Branding repository (plan sprint-2/03) - pure SQLAlchemy."""
 from typing import Optional
 
 from sqlalchemy.orm import Session

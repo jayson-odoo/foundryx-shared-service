@@ -12,7 +12,7 @@ import type { User } from '@/types/user';
 import { userFormHref } from './paths';
 
 /**
- * The User action registry — one set surfaced in the row "…" menu, the bulk
+ * The User action registry - one set surfaced in the row "…" menu, the bulk
  * toolbar, and the form "…" menu (plan 02 §3c). Closes over router + service so
  * each action is self-contained.
  */

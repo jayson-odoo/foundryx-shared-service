@@ -1,4 +1,4 @@
-"""Plan 12 Slice 1 — rich message types (media core).
+"""Plan 12 Slice 1 - rich message types (media core).
 
 Covers: model columns + mediaUrl property (AC-12-01), upload-by-id + async send
 (AC-12-02/03), voice transcode (AC-12-04), blob-fetch media endpoint dual-auth
@@ -769,7 +769,7 @@ def test_run_send_permanent_meta_rejection_fails(session_factory, monkeypatch):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Slice 2 — Interactive + structured types (AC-12-13..18)
+# Slice 2 - Interactive + structured types (AC-12-13..18)
 # ══════════════════════════════════════════════════════════════════════════════
 def _inbound_msg(pnid, message: dict, wa_from="60123456700"):
     return {
@@ -830,7 +830,7 @@ def test_send_interactive_too_many_buttons_422(client, session_factory):
 
 def test_interactive_media_header_closed_window_no_orphan_blob(session_factory, monkeypatch):
     """A media-header interactive on a CLOSED 24h window must reject BEFORE storing
-    the header blob — else the blob is orphaned (never sent) (reviewer #2)."""
+    the header blob - else the blob is orphaned (never sent) (reviewer #2)."""
     import app.services.storage as storage_mod
     from modules.omnichannel.services.message_service import MessageService, SendRejected
 
@@ -1306,7 +1306,7 @@ def test_agent_react_endpoint_and_wire(client, session_factory):
 
 
 def test_agent_react_single_business_identity(session_factory):
-    """Two DIFFERENT agents reacting on the same message keep ONE row — Meta
+    """Two DIFFERENT agents reacting on the same message keep ONE row - Meta
     stores one reaction per direction, so agent B overwrites agent A (reviewer)."""
     from modules.omnichannel.services.message_service import MessageService
 
@@ -1389,7 +1389,7 @@ def _seed_second_workspace(session_factory):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# AC-12-22 — template media/button headers at send
+# AC-12-22 - template media/button headers at send
 # ══════════════════════════════════════════════════════════════════════════════
 def _seed_template(session_factory, channel_id, components, name="tpl_rich", status="APPROVED"):
     from modules.omnichannel.models import WhatsappTemplate

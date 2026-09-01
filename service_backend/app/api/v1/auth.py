@@ -35,10 +35,10 @@ from app.services.user_service import InvalidToken, UserService
 
 router = APIRouter()
 
-# Single message for both unknown-email and wrong-password — no user enumeration.
+# Single message for both unknown-email and wrong-password - no user enumeration.
 _INVALID_CREDENTIALS = "Invalid email or password."
 
-# Uniform forgot-password reply — identical whether or not the account exists.
+# Uniform forgot-password reply - identical whether or not the account exists.
 _FORGOT_PASSWORD_MESSAGE = (
     "If an account exists for this email, a reset link has been sent."
 )
@@ -46,7 +46,7 @@ _FORGOT_PASSWORD_MESSAGE = (
 
 def enforce_throttle(throttle: ThrottleService, ip: str, email: str | None = None) -> None:
     """429 + Retry-After when over the limit. Runs BEFORE any credential work
-    (plan 10 §5) — cheap rejection under attack. The 429 is deliberately
+    (plan 10 §5) - cheap rejection under attack. The 429 is deliberately
     distinct from the uniform 401: locking is observable anyway."""
     try:
         throttle.enforce(ip=ip, email=email)
@@ -113,7 +113,7 @@ def forgot_password(
     payload: ForgotPasswordRequest, request: Request, db: Session = Depends(get_db)
 ) -> dict:
     """Public + enumeration-safe (plan 10 D1): ALWAYS the same 200, whether or
-    not the account exists. Every request counts toward the IP throttle — the
+    not the account exists. Every request counts toward the IP throttle - the
     endpoint sends mail, so unthrottled it is a mail-bombing vector."""
     throttle = ThrottleService(db)
     ip = client_ip(request)
@@ -126,7 +126,7 @@ def forgot_password(
 
 @router.post("/signup", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> UserOut:
-    # Parked until real tenant provisioning (plan 10 D3, BL-032) — a
+    # Parked until real tenant provisioning (plan 10 D3, BL-032) - a
     # kill-switch, not a deletion. 404 = the surface doesn't exist publicly.
     if not settings.signup_enabled:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
@@ -171,7 +171,7 @@ def approve_email_change(
 def verify_email_change(
     payload: EmailChangeTokenRequest, request: Request, db: Session = Depends(get_db)
 ) -> dict:
-    """Public: redeem the NEW-side verify token — THE step that flips the
+    """Public: redeem the NEW-side verify token - THE step that flips the
     account email (uniqueness re-checked transactionally; 409 on the race)."""
     throttle = ThrottleService(db)
     ip = client_ip(request)

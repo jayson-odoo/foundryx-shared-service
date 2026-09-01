@@ -1,4 +1,4 @@
-"""Platform-tier system templates (plan 07 D7) — the engine's day-one content.
+"""Platform-tier system templates (plan 07 D7) - the engine's day-one content.
 
 Block-doc ports of the legacy Jinja2 transactional mails. Seeded
 insert-if-missing by KEY: re-seeding never clobbers operator edits to the
@@ -31,7 +31,7 @@ def _cid() -> str:
 
 
 def _doc(heading: str, body_html: str, button_label: str | None, button_href: str | None) -> Dict:
-    """Brand header + content + brand footer — mirrors the editor's blank doc."""
+    """Brand header + content + brand footer - mirrors the editor's blank doc."""
     body_blocks: List[Dict] = [
         {"id": _bid(), "type": "heading", "text": heading, "level": 2, "align": "left"},
         {"id": _bid(), "type": "text", "html": body_html, "align": "left"},
@@ -118,7 +118,7 @@ SYSTEM_TEMPLATES: List[Dict] = [
     },
     {
         "key": "account.email_change_approve",
-        "name": "Email change — approve (old mailbox)",
+        "name": "Email change - approve (old mailbox)",
         "context": "account.email_change_approve",
         "subject": "Approve your email change request",
         "doc": _doc(
@@ -132,7 +132,7 @@ SYSTEM_TEMPLATES: List[Dict] = [
     },
     {
         "key": "account.email_change_verify",
-        "name": "Email change — verify (new mailbox)",
+        "name": "Email change - verify (new mailbox)",
         "context": "account.email_change_verify",
         "subject": "Verify your new email address",
         "doc": _doc(
@@ -144,7 +144,7 @@ SYSTEM_TEMPLATES: List[Dict] = [
     },
     {
         "key": "account.email_change_notice",
-        "name": "Email change — notice",
+        "name": "Email change - notice",
         "context": "account.email_change_notice",
         "subject": "Your sign-in email was changed",
         "doc": _doc(
@@ -158,7 +158,7 @@ SYSTEM_TEMPLATES: List[Dict] = [
     },
     {
         # Starter template for the status-engine transition-notification picker
-        # (BL-081) — gives the picker day-one content; operators clone/edit it.
+        # (BL-081) - gives the picker day-one content; operators clone/edit it.
         "key": "status.transition_notification",
         "name": "Status change notification",
         "context": "status.notification",
@@ -175,7 +175,7 @@ SYSTEM_TEMPLATES: List[Dict] = [
 
 
 def _invoice_doc() -> Dict:
-    """Starter document-surface (PDF) invoice — header + company/bill-to +
+    """Starter document-surface (PDF) invoice - header + company/bill-to +
     line-item table bound to ``lineItems`` + totals footer (plan sprint-3/03
     D9). Exercises the table/footer expansion ahead of the real Cluster-F
     invoice entity; ``document.invoice_preview`` context supplies the facts."""
@@ -295,7 +295,7 @@ def _eid() -> str:
 
 
 def _badge_doc() -> Dict:
-    """Starter fixed-canvas badge (plan sprint-3/03 D17) — 86×54mm landscape:
+    """Starter fixed-canvas badge (plan sprint-3/03 D17) - 86×54mm landscape:
     name + role + a QR bound to {{ticketCode}}. Exercises the canvas surface
     ahead of the real Cluster-H attendee entity; ``badge.preview`` supplies the
     facts. Geometry in mm (print-authoritative)."""
@@ -348,7 +348,7 @@ BADGE_TEMPLATES: List[Dict] = [
 
 
 def _repair_duplicate_ids(db: Session) -> None:
-    """One-time fixup: early seeds reused 'col_1' across sections — duplicate
+    """One-time fixup: early seeds reused 'col_1' across sections - duplicate
     ids break the editor's drop zones (dnd-kit keeps one droppable per id).
     Reassign unique ids wherever a doc repeats section/column/block ids."""
     import copy

@@ -63,6 +63,7 @@ emails,Email Log,manage,Manage email log,Can retry failed and cancel pending ema
 workflows,Workflows,read,View workflows,Can view workflows and their run logs
 workflows,Workflows,manage,Manage workflows,Can create / edit / publish / activate / delete workflows
 workflows,Workflows,run,Run workflows,Can manually run and test workflows
+workflows,Workflows,code,Author code,Can add and edit / publish / run workflow Code nodes (sandboxed Python)
 forms,Forms,read,View forms,Can view forms and their definitions
 forms,Forms,manage,Manage forms,Can create / edit / publish / archive / delete forms
 submissions,Form Submissions,read,View submissions,Can view a form's submissions and answers

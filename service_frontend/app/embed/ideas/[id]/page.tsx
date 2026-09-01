@@ -6,7 +6,7 @@ import { EmbedIdeationShell } from '../embed-app';
 
 /**
  * Chrome-less embed idea detail (WS-C / AC-CAP-9). Reached by clicking a row in
- * the embed grid — navigation stays inside the iframe and carries the fragment
+ * the embed grid - navigation stays inside the iframe and carries the fragment
  * token, so no second session is minted. Renders the SAME {@link IdeaFormView}
  * the operator detail page uses (one component, two modes); writes go through the
  * embed service (`/embed/*`), scoped to the connection's tenant + product.

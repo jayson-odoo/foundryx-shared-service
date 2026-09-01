@@ -2,7 +2,7 @@
 
 /**
  * Read-only "mini Drive" for a share (plan sprint-3/05). The SAME component
- * serves the anonymous public page AND the in-app scoped view — same look as the
+ * serves the anonymous public page AND the in-app scoped view - same look as the
  * internal Documents Drive (card/list toggle, folder navigation, click-to-preview
  * for images/PDF, download), but limited to the shared subtree and nothing else.
  * An `edit` folder share also gets an Upload affordance. Driven by the
@@ -271,7 +271,7 @@ function PreviewModal({
         <div className="flex max-h-[78vh] items-center justify-center overflow-auto bg-muted/30 p-3">
           {preview.previewKind === 'none' ? (
             <p className="py-16 text-center text-sm text-muted-foreground">
-              No preview — download to open this file.
+              No preview - download to open this file.
             </p>
           ) : !url ? (
             <div className="flex items-center justify-center py-20 text-muted-foreground">
@@ -283,7 +283,7 @@ function PreviewModal({
           ) : (
             // The blob is fetched from our own authed/sandboxed serve route; the
             // browser PDF viewer needs scripts so a restrictive `sandbox` would
-            // render it blank — the bytes are already trusted at this point.
+            // render it blank - the bytes are already trusted at this point.
             <iframe title={preview.name} src={url} className="h-[74vh] w-full border-0" />
           )}
         </div>

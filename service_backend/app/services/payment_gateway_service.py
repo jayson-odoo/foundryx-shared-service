@@ -1,4 +1,4 @@
-"""Payment-gateway webhook ingest (sprint-4/07 Cluster F slice 3) — CORE.
+"""Payment-gateway webhook ingest (sprint-4/07 Cluster F slice 3) - CORE.
 
 Plumbing only (plan §1): resolve the tenant from ``connection_id``, verify +
 parse the webhook via the provider adapter, write the MASKED idempotency log,
@@ -48,11 +48,11 @@ class PaymentGatewayService:
         self, provider_key: str, connection_id: str, body: bytes, headers: Dict[str, str]
     ) -> Dict[str, str]:
         """Verify + log + dispatch one inbound webhook. Returns a small status
-        dict. Tenant is resolved from the connection (AC-07-28) — NEVER from the
+        dict. Tenant is resolved from the connection (AC-07-28) - NEVER from the
         body."""
         # Resolve the connection → tenant (unscoped lookup, then the tenant is
         # taken FROM the row; the webhook is unauthenticated so there is no JWT
-        # tenant — this row IS the trust anchor, AC-07-28/49).
+        # tenant - this row IS the trust anchor, AC-07-28/49).
         conn = self.conn_repo.get_by_id(connection_id)
         if conn is None or conn.provider != provider_key:
             # No tenant to scope a log to → reject without persisting (can't
@@ -71,7 +71,7 @@ class PaymentGatewayService:
         config = conn.config_json or {}
         try:
             credentials = decrypt_secret(conn.credentials_json) if conn.credentials_json else {}
-        except Exception:  # noqa: BLE001 — InvalidToken etc.
+        except Exception:  # noqa: BLE001 - InvalidToken etc.
             self._log(tenant_id, conn.id, provider_key, None, None, LOG_STATUS_REJECTED,
                       body, error="credentials undecryptable")
             self.db.commit()
@@ -96,7 +96,7 @@ class PaymentGatewayService:
         if event.event_id:
             existing = self.log_repo.get_by_event(tenant_id, provider_key, event.event_id)
             if existing is not None:
-                logger.info("duplicate webhook %s/%s — no-op", provider_key, event.event_id)
+                logger.info("duplicate webhook %s/%s - no-op", provider_key, event.event_id)
                 return {"status": "duplicate"}
 
         log = self._log(
@@ -106,9 +106,9 @@ class PaymentGatewayService:
         try:
             self.db.commit()  # claim the idempotency slot before doing work
         except IntegrityError:
-            # Concurrent duplicate delivery raced us to the unique slot — no-op.
+            # Concurrent duplicate delivery raced us to the unique slot - no-op.
             self.db.rollback()
-            logger.info("race duplicate webhook %s/%s — no-op", provider_key, event.event_id)
+            logger.info("race duplicate webhook %s/%s - no-op", provider_key, event.event_id)
             return {"status": "duplicate"}
 
         # ── dispatch the business reaction (finance, via capability) ──
@@ -132,7 +132,7 @@ class PaymentGatewayService:
         self, tenant_id: str, provider_key: str, event: WebhookEvent
     ) -> Optional[Dict]:
         """Hand the normalised event to finance's reaction capability. Finance is
-        a module — call via the capability seam, never import it here. Returns
+        a module - call via the capability seam, never import it here. Returns
         the finance result dict (or None when finance is not installed)."""
         from app.module_platform import resolve_capability
 
@@ -159,7 +159,7 @@ class PaymentGatewayService:
         try:
             parsed = json.loads(body or b"{}")
         except ValueError:
-            # form-encoded (Billplz) or non-JSON — store the raw text masked.
+            # form-encoded (Billplz) or non-JSON - store the raw text masked.
             import urllib.parse
 
             parsed = {k: v[0] if v else "" for k, v in urllib.parse.parse_qs(body.decode(errors="replace")).items()}

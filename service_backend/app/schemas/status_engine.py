@@ -1,4 +1,4 @@
-"""Status-engine schemas (sprint-2/01) — camelCase wire contracts.
+"""Status-engine schemas (sprint-2/01) - camelCase wire contracts.
 
 The graph read returns the resolved tier (``source``: tenant fork vs platform
 defaults) so the UI can surface "customized" vs "inherited".
@@ -20,7 +20,7 @@ class StatusEntityItem(BaseModel):
     transitionCount: int = 0
     # True when the caller's tenant forked this entity's set.
     customized: bool = False
-    # True when the entity has time-based auto edges (sprint-4/03 Slice 6) —
+    # True when the entity has time-based auto edges (sprint-4/03 Slice 6) -
     # gates the "Simulate date" admin tool in the UI.
     hasTimeAutoEdges: bool = False
 
@@ -76,10 +76,10 @@ class NotificationItem(BaseModel):
     templateSubject: str = Field(min_length=1, max_length=300)
     templateBody: str = Field(min_length=1, max_length=10_000)
     templateKey: Optional[str] = None
-    # Engine template reference (plan 07 D10) — set = render through the
+    # Engine template reference (plan 07 D10) - set = render through the
     # template engine; inline subject/body stay as the fallback.
     templateId: Optional[str] = None
-    # Per-use COPY of a template's block document (plan 10 follow-up) — set =
+    # Per-use COPY of a template's block document (plan 10 follow-up) - set =
     # render this branded doc (subject = templateSubject), edited inline.
     doc: Optional[Dict[str, Any]] = None
     recipients: List[RecipientItem] = Field(min_length=1)
@@ -99,22 +99,22 @@ class TransitionItem(BaseModel):
     sortOrder: int
     roles: List[TransitionRoleItem] = []
     notifications: List[NotificationItem] = []
-    # Rule-engine condition tree (sprint-2/02) — None = unconditional.
+    # Rule-engine condition tree (sprint-2/02) - None = unconditional.
     conditionsJson: Optional[Dict[str, Any]] = None
-    # Derived status (sprint-4/03) — 'manual' (user fires) | 'auto' (engine fires).
+    # Derived status (sprint-4/03) - 'manual' (user fires) | 'auto' (engine fires).
     triggerMode: Literal["manual", "auto"] = "manual"
 
 
 class StatusGraphResponse(BaseModel):
     entityType: str
-    # Which tier the caller sees — their fork or the platform defaults (D7).
+    # Which tier the caller sees - their fork or the platform defaults (D7).
     source: Literal["tenant", "platform"]
     statuses: List[StatusItem]
     transitions: List[TransitionItem]
 
 
 class StatusFlags(BaseModel):
-    """Trait flags (D2) — omitted = unchanged (update) / False (create)."""
+    """Trait flags (D2) - omitted = unchanged (update) / False (create)."""
 
     isInitial: Optional[bool] = None
     isTerminal: Optional[bool] = None
@@ -140,7 +140,7 @@ class StatusFlags(BaseModel):
 
 class StatusCreateRequest(BaseModel):
     entityType: str
-    # Scoped machines (sprint-3/01 D4) — the owning record (e.g. form id).
+    # Scoped machines (sprint-3/01 D4) - the owning record (e.g. form id).
     scopeId: Optional[str] = None
     label: str = Field(min_length=1, max_length=80)
     color: str = Field(default="gray", max_length=40)
@@ -174,7 +174,7 @@ class MigrateRecordsResponse(BaseModel):
 
 class TransitionCreateRequest(BaseModel):
     entityType: str
-    # Scoped machines (sprint-3/01 D4) — both endpoints must share this scope.
+    # Scoped machines (sprint-3/01 D4) - both endpoints must share this scope.
     scopeId: Optional[str] = None
     fromStatusId: str
     toStatusId: str
@@ -183,7 +183,7 @@ class TransitionCreateRequest(BaseModel):
     roleIds: List[str] = []
     notifications: List[NotificationItem] = []
     conditionsJson: Optional[Dict[str, Any]] = None
-    # Derived status (sprint-4/03) — 'auto' requires conditions + no roles (422).
+    # Derived status (sprint-4/03) - 'auto' requires conditions + no roles (422).
     triggerMode: Literal["manual", "auto"] = "manual"
 
 
@@ -194,5 +194,5 @@ class TransitionUpdateRequest(BaseModel):
     notifications: Optional[List[NotificationItem]] = None
     # PATCH semantics via model_fields_set: absent = keep, null = clear.
     conditionsJson: Optional[Dict[str, Any]] = None
-    # Derived status (sprint-4/03) — absent = keep (PATCH semantics).
+    # Derived status (sprint-4/03) - absent = keep (PATCH semantics).
     triggerMode: Optional[Literal["manual", "auto"]] = None

@@ -28,7 +28,7 @@ const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 export interface BrIdeasTabProps {
   brId: string;
-  /** The BR's product — a BR only links same-product ideas (AC-BI-17). */
+  /** The BR's product - a BR only links same-product ideas (AC-BI-17). */
   productId: string;
   reloadToken: number;
   /** Bumped after a link/unlink so the grill re-seeds from fresh source ideas
@@ -36,7 +36,7 @@ export interface BrIdeasTabProps {
   onChanged: () => void;
 }
 
-/** Ideas tab — the linked ideas feeding this BR (lineage, AC-BI-35) on the shared
+/** Ideas tab - the linked ideas feeding this BR (lineage, AC-BI-35) on the shared
  * ResourceList (NOT a hand-rolled list, AC-BI-29c). Each row navigates to the
  * idea detail. Link (the "Link ideas from this product" picker) + unlink (a row/
  * bulk action) are preserved and gated by `.manage`; linking an idea mid-session
@@ -155,7 +155,7 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
       exporter,
       searchPlaceholder: 'Search linked ideas…',
       searchHints: ['Idea', 'Submitter'],
-      // Lineage list — no Active/Trashed segmentation (there is no trashed view).
+      // Lineage list - no Active/Trashed segmentation (there is no trashed view).
       enableStatusViews: false,
       columns,
       filterFields: [],

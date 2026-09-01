@@ -9,7 +9,7 @@ import { TimezoneCard } from './components/timezone-card';
 import { useAccountForm } from './components/use-account-form';
 
 /**
- * My Account (plan sprint-2/04; Resource form shell since plan 06) — minimal
+ * My Account (plan sprint-2/04; Resource form shell since plan 06) - minimal
  * self-service surface on the system design language: global Edit toggle
  * (name), avatar slot, Profile + Security tabs (change-email ceremony,
  * password reset). Perm-free like /auth/me (self-scope only); future home
@@ -17,7 +17,7 @@ import { useAccountForm } from './components/use-account-form';
  */
 export default function AccountPage() {
   // Catch a backend identity flip this session couldn't see (plan 04 email
-  // ceremony; generalized in plan 06 D8) — conditional update() via /auth/me
+  // ceremony; generalized in plan 06 D8) - conditional update() via /auth/me
   // probe. The protected layout probes per hard load; this re-probes on
   // every nav to /account.
   useSessionSync();
@@ -31,7 +31,7 @@ export default function AccountPage() {
         <ResourceForm config={config} />
       </Form>
 
-      {/* Display preferences — timezone picker (plan sprint-2/05). */}
+      {/* Display preferences - timezone picker (plan sprint-2/05). */}
       <TimezoneCard />
 
       <ChangeEmailDialog

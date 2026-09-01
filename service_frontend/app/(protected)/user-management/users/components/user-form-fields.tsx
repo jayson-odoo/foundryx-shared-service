@@ -32,7 +32,7 @@ export interface ProfileTabProps {
   editing: boolean;
   /** True on the create page (email editable; no record meta yet). */
   creating: boolean;
-  /** Editing one's own record — email locked (the /account ceremony owns it). */
+  /** Editing one's own record - email locked (the /account ceremony owns it). */
   isSelf?: boolean;
   user: User | null;
   roles: Role[];
@@ -63,7 +63,7 @@ export function ProfileTab({ form, editing, creating, isSelf, user, roles }: Pro
               )}
             />
           ) : (
-            (user?.name ?? '—')
+            (user?.name ?? '-')
           )}
         </FormRow>
 
@@ -79,7 +79,7 @@ export function ProfileTab({ form, editing, creating, isSelf, user, roles }: Pro
                   </FormControl>
                   {!creating && (
                     <p className="text-xs text-muted-foreground">
-                      Applies immediately — both the old and new address are notified.
+                      Applies immediately - both the old and new address are notified.
                     </p>
                   )}
                   <FormMessage />

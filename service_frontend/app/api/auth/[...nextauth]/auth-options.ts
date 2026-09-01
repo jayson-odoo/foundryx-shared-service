@@ -8,9 +8,9 @@ import { deriveTenantSlug } from '@/lib/tenant';
 const API_URL = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
 
 // BL-005 (plan sprint-2/04): infra failures must read differently from bad
-// credentials — a backend outage is not "Invalid email or password."
+// credentials - a backend outage is not "Invalid email or password."
 const SERVICE_UNAVAILABLE_MESSAGE =
-  'Service temporarily unavailable — please try again.';
+  'Service temporarily unavailable - please try again.';
 
 const authOptions: NextAuthOptions = {
   providers: [
@@ -45,13 +45,13 @@ const authOptions: NextAuthOptions = {
               email: credentials.email,
               password: credentials.password,
               tenantSlug,
-              // NextAuth serializes credentials to strings — coerce back. The
+              // NextAuth serializes credentials to strings - coerce back. The
               // backend JWT exp is the real session boundary (plan 10 D4).
               rememberMe: credentials.rememberMe === 'true',
             }),
           });
         } catch {
-          // Backend unreachable (down, DNS, refused) — BL-005: this is an
+          // Backend unreachable (down, DNS, refused) - BL-005: this is an
           // infra failure, NOT a credentials failure.
           throw new Error(
             JSON.stringify({ code: 503, message: SERVICE_UNAVAILABLE_MESSAGE }),
@@ -75,7 +75,7 @@ const authOptions: NextAuthOptions = {
             const data = await res.json();
             message = data.detail ?? data.message ?? message;
           } catch {
-            // backend returned non-JSON (proxy HTML) — keep the generic message
+            // backend returned non-JSON (proxy HTML) - keep the generic message
           }
           throw new Error(JSON.stringify({ code: res.status, message }));
         }
@@ -103,7 +103,7 @@ const authOptions: NextAuthOptions = {
   session: {
     strategy: 'jwt',
     // Long enough for "remember me" (30d). The backend JWT carries the real
-    // short/long expiry (24h vs 30d, plan 10 D4) — an expired backend token
+    // short/long expiry (24h vs 30d, plan 10 D4) - an expired backend token
     // 401s and the api-client treats that as session end either way.
     maxAge: 30 * 24 * 60 * 60,
   },
@@ -145,21 +145,21 @@ const authOptions: NextAuthOptions = {
               ? u.permissions
               : token.permissions;
             token.status = u.status ?? token.status;
-            // Identity fields too — the change-email ceremony (plan 04)
+            // Identity fields too - the change-email ceremony (plan 04)
             // flips the backend email; update() is how a live session
             // catches up without a re-login.
             token.email = u.email ?? token.email;
             token.name = u.name ?? token.name;
-            // `??` would keep a stale avatar forever — null is a meaningful
+            // `??` would keep a stale avatar forever - null is a meaningful
             // value here ("avatar removed", plan 06 D5), only undefined
             // (field absent) falls back.
             token.avatar = u.avatar === undefined ? token.avatar : u.avatar;
-            // Timezone preference (plan sprint-2/05) — null is meaningful
+            // Timezone preference (plan sprint-2/05) - null is meaningful
             // (= browser tz), so assign verbatim, no ?? fallback.
             token.timezone = u.timezone ?? null;
           }
         } catch {
-          // Network blip — keep the existing claims; next update retries.
+          // Network blip - keep the existing claims; next update retries.
         }
       }
       return token;

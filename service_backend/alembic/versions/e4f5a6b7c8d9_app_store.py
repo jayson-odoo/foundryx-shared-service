@@ -2,11 +2,11 @@
 
 - `modules`: synced from on-disk manifest.json at bootstrap (delist, not delete)
 - `tenant_modules`: INSTALL→ACTIVE / DEACTIVATE→INACTIVE / UNINSTALL→row gone;
-  `installed_version` gates features (D4 — version gating, not code pinning)
+  `installed_version` gates features (D4 - version gating, not code pinning)
 
 The transitional backfill (existing tenants with pre-App-Store omnichannel
 data → ACTIVE rows) is data-driven and runs in `bootstrap_modules()`, not here
-— a core migration must not read module-schema tables.
+- a core migration must not read module-schema tables.
 
 Revision ID: e4f5a6b7c8d9
 Revises: d3e4f5a6b7c8

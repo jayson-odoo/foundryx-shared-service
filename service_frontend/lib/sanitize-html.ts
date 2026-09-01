@@ -3,12 +3,12 @@
  *
  * The canvas Text block renders stored block HTML via dangerouslySetInnerHTML
  * in the app origin. The content is already nh3-sanitized server-side and the
- * only authoring path is the execCommand-limited RichTextField — but a doc
+ * only authoring path is the execCommand-limited RichTextField - but a doc
  * loaded from any other source must never execute script in-origin. This
  * strips script/style/iframe/object elements, on* event attributes, and
  * javascript:/data: URLs from href/src before injection.
  *
- * Not a substitute for the server sanitizer (nh3) — that stays the gate for
+ * Not a substitute for the server sanitizer (nh3) - that stays the gate for
  * what gets PERSISTED and sent; this is the render-time net.
  */
 const URL_ATTRS = ['href', 'src', 'xlink:href'];

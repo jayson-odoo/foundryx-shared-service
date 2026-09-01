@@ -16,7 +16,7 @@ export interface UseEmailChangeRedeemResult {
   isProcessing: boolean;
   isSuccess: boolean;
   error: string | null;
-  /** True when the failure was a bad/expired token — show the dead-link state. */
+  /** True when the failure was a bad/expired token - show the dead-link state. */
   isTokenError: boolean;
 }
 
@@ -24,7 +24,7 @@ export interface UseEmailChangeRedeemResult {
  * Drives the public approve/verify token-redeem pages (plan sprint-2/04).
  * `approve` = OLD-side link (moves the request to PENDING_NEW and mails the
  * new address); `verify` = NEW-side link (flips the email). Redeem fires on an
- * explicit button click — single-use tokens must survive mail-scanner
+ * explicit button click - single-use tokens must survive mail-scanner
  * prefetches, so the page never redeems on mount.
  */
 export function useEmailChangeRedeem(

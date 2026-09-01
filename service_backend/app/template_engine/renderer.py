@@ -1,9 +1,9 @@
-"""render_email — ONE renderer for every product mail (plan 07 D9/D10).
+"""render_email - ONE renderer for every product mail (plan 07 D9/D10).
 
 Full pipeline per send: resolve brand values for the RECIPIENT's tenant →
 prune blocks whose visibility conditions fail for THIS recipient (rule
 engine, fail closed) → compile MJML via mrml → merge-substitute facts →
-{subject, html, text}. The preview endpoint runs this same function — the
+{subject, html, text}. The preview endpoint runs this same function - the
 preview IS the production renderer, no drift.
 
 This is the contract the Workflow engine's SendEmail action consumes next.
@@ -42,9 +42,9 @@ class RenderedEmail:
 
 
 def brand_values_for_tenant(db: Session, tenant_id) -> BrandValues:
-    """Tenant brand snapshot — resolved at RENDER time (D4 live-follow)."""
+    """Tenant brand snapshot - resolved at RENDER time (D4 live-follow)."""
     if tenant_id is None:
-        # Platform scope (operator maintaining defaults) — stock values.
+        # Platform scope (operator maintaining defaults) - stock values.
         return BrandValues()
     tenant = db.get(Tenant, tenant_id)
     row: Optional[TenantBranding] = (
@@ -131,7 +131,7 @@ def render_email(
         doc = _prune(doc, rule_facts)
 
     # Expand table/repeater blocks into concrete structure BEFORE compile
-    # (shared with the PDF seam — invoice line-item tables work in email too).
+    # (shared with the PDF seam - invoice line-item tables work in email too).
     # No-op for docs without iterators (every legacy template unchanged).
     doc, facts = expand_iterators(doc, facts, mode=mode)
 
@@ -157,7 +157,7 @@ def render_email_doc(
     rule_objects: Optional[Dict[str, Any]] = None,
     mode: str = "send",
 ) -> RenderedEmail:
-    """Render a PER-USE block document (a copy of a template, edited inline) —
+    """Render a PER-USE block document (a copy of a template, edited inline) -
     same pipeline as ``render_email`` but over a raw doc + subject rather than a
     persisted ``Template`` row. Used by notification specs / workflow email
     actions that store their own edited copy of a template."""
@@ -198,7 +198,7 @@ def make_url_fetcher(db: Session, tenant_id):
             path = _FONTS_DIR / name
             if path.is_file():
                 return {"string": path.read_bytes(), "mime_type": _font_mime(name)}
-            # Missing bundled font — fall through to WeasyPrint's font fallback.
+            # Missing bundled font - fall through to WeasyPrint's font fallback.
             raise FileNotFoundError(name)
 
         resolved = _resolve_internal_asset(db, tenant_id, url)
@@ -220,14 +220,14 @@ def make_url_fetcher(db: Session, tenant_id):
 def _is_blocked_fetch_url(url: str) -> bool:
     """True ⇒ refuse to fetch (SSRF protection). ``data:`` is inline (allowed);
     only ``http(s)`` external hosts are fetched, and only if they resolve to a
-    public address. (DNS-rebinding TOCTOU is a known residual — acceptable for
+    public address. (DNS-rebinding TOCTOU is a known residual - acceptable for
     a low-frequency render path; revisit if it becomes a vector.)"""
     try:
         parsed = urlparse(url)
     except ValueError:
         return True
     if parsed.scheme == "data":
-        return False  # inline base64 — no network fetch
+        return False  # inline base64 - no network fetch
     if parsed.scheme not in ("http", "https"):
         return True  # file:, ftp:, etc.
     host = parsed.hostname
@@ -256,7 +256,7 @@ def _is_blocked_fetch_url(url: str) -> bool:
 
 def _resolve_internal_asset(db: Session, tenant_id, url: str):
     """Resolve a branding/storage URL to (bytes, mime) IN-PROCESS, or None to
-    let WeasyPrint fetch it normally. Never raises — a missing asset just
+    let WeasyPrint fetch it normally. Never raises - a missing asset just
     falls through to the default fetcher (best-effort, like the email logo)."""
     from app.services.storage import storage_for_tenant
 
@@ -300,7 +300,7 @@ def _resolve_branding_asset(db: Session, storage, path_part: str):
 
         data = _Path(value).read_bytes()
         return data, mime or "application/octet-stream"
-    # Remote (url/presigned) — let WeasyPrint fetch it (already a real URL).
+    # Remote (url/presigned) - let WeasyPrint fetch it (already a real URL).
     return None
 
 
@@ -344,7 +344,7 @@ def render_document(
 
     Pipeline mirrors ``render_email``: brand-resolve → prune-by-conditions →
     expand-iterators → compile_pdf (HTML+CSS) → WeasyPrint write_pdf. The
-    download/output path. WeasyPrint is CPU-bound + sync — the router offloads
+    download/output path. WeasyPrint is CPU-bound + sync - the router offloads
     this to a threadpool.
     """
     from weasyprint import HTML
@@ -371,7 +371,7 @@ def render_document_html(
     mode: str = "send",
 ) -> str:
     """Render the block doc to an in-app PREVIEW HTML sheet (no WeasyPrint, no
-    browser PDF-viewer chrome). Same compiler/merge/brand as the PDF — the
+    browser PDF-viewer chrome). Same compiler/merge/brand as the PDF - the
     editor shows this; Download produces the WeasyPrint PDF."""
     from app.template_engine.compiler_pdf import compile_pdf_html
 
@@ -439,7 +439,7 @@ def render_canvas(
 
     Each side → one page sized to the canvas (no margin). Same WeasyPrint
     backend + bundled fonts + url_fetcher as the flowing-doc surface. CPU-bound
-    + sync — the router offloads to a threadpool; batch wraps this N times (D16).
+    + sync - the router offloads to a threadpool; batch wraps this N times (D16).
     """
     from weasyprint import HTML
 
@@ -463,7 +463,7 @@ def render_canvas_html(
     rule_objects: Optional[Dict[str, Any]] = None,
     mode: str = "send",
 ) -> str:
-    """In-app PREVIEW HTML (stacked centred sheets, no WeasyPrint) — same
+    """In-app PREVIEW HTML (stacked centred sheets, no WeasyPrint) - same
     compiler/merge/brand as the canvas PDF."""
     from app.template_engine.compiler_canvas import compile_canvas_html
 
@@ -484,7 +484,7 @@ def render_canvas_batch(
     times and concatenates the side-HTML so WeasyPrint paginates once. The real
     trigger ("print all badges for Event X" → attendee query) lands with Cluster
     H; exercised here with synthetic sample-fact dicts. Celery-queued for large
-    N — the unit is the seam, zero rework.
+    N - the unit is the seam, zero rework.
     """
     from weasyprint import HTML
 
@@ -496,7 +496,7 @@ def render_canvas_batch(
     for facts, rule_objects in zip(facts_list, rule_objects_list):
         doc, f, brand = _prepare_canvas(db, template, tenant_id, dict(facts), rule_objects, "send")
         full = compile_canvas_html(doc, brand, f, mode="send")
-        # Pull the <head>…</head> once (identical per artifact — same template);
+        # Pull the <head>…</head> once (identical per artifact - same template);
         # concatenate every artifact's <body> sides so all paginate as one PDF.
         head, _, rest = full.partition("</head>")
         if not css_head:

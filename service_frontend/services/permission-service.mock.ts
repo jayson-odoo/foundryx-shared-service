@@ -1,7 +1,7 @@
 /**
  * Mock permission catalog (Phase A). Mirrors what the backend `GET /permissions`
  * will return once per-module CSVs are synced into the `permissions` table. Note
- * the dynamic/custom actions — `orders.approve`, `reports.export` — proving the
+ * the dynamic/custom actions - `orders.approve`, `reports.export` - proving the
  * catalog isn't locked to CRUD (plan 03 §2.1).
  */
 import type { PermissionCatalog } from '@/types/permission';
@@ -52,7 +52,7 @@ export const MOCK_CATALOG: PermissionCatalog = [
   },
 ];
 
-/** Every key in the catalog — used to seed the Admin role with full access. */
+/** Every key in the catalog - used to seed the Admin role with full access. */
 export const ALL_PERMISSION_KEYS: string[] = MOCK_CATALOG.flatMap((r) => r.actions.map((a) => a.key));
 
 export const mockPermissionService: PermissionService = {

@@ -1,6 +1,6 @@
 """AI permissions + grant sweep for existing tenants (Phase B-i S1, AC-BI-14)
 
-A new core permission does NOT reach already-provisioned tenants' Admin roles —
+A new core permission does NOT reach already-provisioned tenants' Admin roles -
 the grant is computed at provision/seed time. Without this sweep the AI surfaces
 would silently 403 (or simply not render) for every tenant created before this
 slice. That is Definition-of-Done #4, and it is the single most repeated gap in
@@ -9,10 +9,10 @@ this codebase's history.
 Grants `ai_agents.read` / `ai_agents.manage` / `ai_traces.read`. Note the
 deliberate SEPARATION of `ai_traces.read` (AC-BI-14): traces hold raw prompts and
 completions, so trace access can be granted without granting the ability to
-re-key providers or rewrite prompts — and vice versa. Both land on Admin here;
+re-key providers or rewrite prompts - and vice versa. Both land on Admin here;
 the split matters for every narrower role an operator builds.
 
-LLM *connections* need NO new permission — they ride the existing
+LLM *connections* need NO new permission - they ride the existing
 `integrations.read` / `integrations.manage`.
 
 Idempotent and order-independent: `PermissionRepository.sync` upserts the
@@ -94,7 +94,7 @@ def upgrade() -> None:
 
         # Grant to every non-platform tenant's Admin role that lacks it.
         # `tenant_id` on the association is derived from the OWNING ROLE
-        # (BL-015) — never a static default.
+        # (BL-015) - never a static default.
         bind.execute(
             sa.text(
                 "INSERT INTO role_permissions (role_id, permission_id, tenant_id) "

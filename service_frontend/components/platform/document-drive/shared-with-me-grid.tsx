@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * The "Shared with me" drive (plan sprint-3/05 follow-up) — roots others shared
+ * The "Shared with me" drive (plan sprint-3/05 follow-up) - roots others shared
  * TO the current user, shown in the SAME right-pane look as the main Drive grid.
  * Opening any root navigates to its scoped view (`/documents/shared/{token}`),
  * which limits the user to exactly that file/folder subtree.

@@ -1,20 +1,20 @@
-"""Ideation Slice 5 — ``create_idea`` intake engine + IntakeDefinition + confirm gate.
+"""Ideation Slice 5 - ``create_idea`` intake engine + IntakeDefinition + confirm gate.
 
 Covers the §5.1 CANONICAL contract and AC-A-13..20, AC-A-18b/c, AC-A-22, AC-A-25,
 AC-A-45:
 
-- AC-A-13/14/15/16 — the IntakeDefinition registry (key="ideation"), its
+- AC-A-13/14/15/16 - the IntakeDefinition registry (key="ideation"), its
   form_engine ``target_schema`` (valid ``validate_form_doc``), the
   ``completion_rule`` (captured/missing), and the idempotent ``on_complete_sink``.
-- AC-A-17/18 — endpoint input + output contract byte-for-byte per §5.1.
-- AC-A-18b — one-shot-complete still returns ``review`` (never auto-completes).
-- AC-A-18c — revision loop merges then re-reviews across >=3 turns; a removed
+- AC-A-17/18 - endpoint input + output contract byte-for-byte per §5.1.
+- AC-A-18b - one-shot-complete still returns ``review`` (never auto-completes).
+- AC-A-18c - revision loop merges then re-reviews across >=3 turns; a removed
   required field drops back to ``collecting``; identical re-send is idempotent.
-- AC-A-19 — a draft Idea (status ``draft``) is created on turn 1.
-- AC-A-20 — ``confirm=true`` -> ``complete`` + product-domain link; the draft moves
+- AC-A-19 - a draft Idea (status ``draft``) is created on turn 1.
+- AC-A-20 - ``confirm=true`` -> ``complete`` + product-domain link; the draft moves
   ``draft -> captured``; ``confirm`` on an already-captured idea is a no-op.
-- AC-A-22 — idempotency on ``draft_id`` (never duplicates / regresses).
-- AC-A-25 — public ``POST /ideation/intake/create-idea``, workspace-key auth,
+- AC-A-22 - idempotency on ``draft_id`` (never duplicates / regresses).
+- AC-A-25 - public ``POST /ideation/intake/create-idea``, workspace-key auth,
   uniform ``{error:{code,message}}`` envelope.
 
 Test-first (PRINCIPLES.md): written before the implementation exists.
@@ -85,7 +85,7 @@ def _default_workspace_id(db) -> str:
 
 
 def _mint_key(factory) -> str:
-    """A workspace API key (``fxw_live_…``) — the intake endpoint's server-to-server
+    """A workspace API key (``fxw_live_…``) - the intake endpoint's server-to-server
     auth (reuses the omnichannel workspace-key mechanism until the respond.io
     binding lands)."""
     from modules.omnichannel.services.api_key_service import ApiKeyService
@@ -186,7 +186,7 @@ def _idea_count(factory) -> int:
         db.close()
 
 
-# ── AC-A-13/14/15/16 — IntakeDefinition registry ──────────────────────────────
+# ── AC-A-13/14/15/16 - IntakeDefinition registry ──────────────────────────────
 
 
 def test_intake_definition_registered_and_valid(ideation_client):
@@ -207,7 +207,7 @@ def test_intake_definition_registered_and_valid(ideation_client):
 
 
 def test_completion_rule_computes_captured_missing():
-    """AC-A-15 — captured = answered keys->values; missing = required unanswered."""
+    """AC-A-15 - captured = answered keys->values; missing = required unanswered."""
     from modules.ideation.services.intake_definitions import get_intake_definition
 
     definition = get_intake_definition("ideation")
@@ -229,11 +229,11 @@ def test_completion_rule_computes_captured_missing():
     assert missing2 == []
 
 
-# ── AC-A-17/18 — endpoint input / output contract ─────────────────────────────
+# ── AC-A-17/18 - endpoint input / output contract ─────────────────────────────
 
 
 def test_input_output_shape(setup):
-    """AC-A-17/18 — accepts the §5.1 input; returns exactly
+    """AC-A-17/18 - accepts the §5.1 input; returns exactly
     {draft_id,status,captured,missing,reply_text} on a collecting turn."""
     s = setup
     res = _create_idea(s["client"], s["key"], s["contact_id"], s["product_id"])
@@ -248,7 +248,7 @@ def test_input_output_shape(setup):
 
 
 def test_draft_created_on_turn_1(setup):
-    """AC-A-19 — turn 1 (no draft_id) creates a draft Idea (status ``draft``)."""
+    """AC-A-19 - turn 1 (no draft_id) creates a draft Idea (status ``draft``)."""
     s = setup
     res = _create_idea(s["client"], s["key"], s["contact_id"], s["product_id"])
     assert res.status_code == 200, res.text
@@ -257,11 +257,11 @@ def test_draft_created_on_turn_1(setup):
     assert _idea_count(s["factory"]) == 1
 
 
-# ── AC-A-18b — confirmation gate: review before capture ────────────────────────
+# ── AC-A-18b - confirmation gate: review before capture ────────────────────────
 
 
 def test_one_shot_complete_returns_review(setup):
-    """AC-A-18b — a first turn that is fully complete still returns ``review``
+    """AC-A-18b - a first turn that is fully complete still returns ``review``
     (never auto-completes); the draft stays ``draft``."""
     s = setup
     res = _create_idea(
@@ -276,7 +276,7 @@ def test_one_shot_complete_returns_review(setup):
 
 
 def test_collecting_to_review_after_missing_filled(setup):
-    """AC-A-18 — collecting on a partial turn, review once ``missing == []``."""
+    """AC-A-18 - collecting on a partial turn, review once ``missing == []``."""
     s = setup
     r1 = _create_idea(s["client"], s["key"], s["contact_id"], s["product_id"])
     assert r1.json()["status"] == "collecting"
@@ -296,11 +296,11 @@ def test_collecting_to_review_after_missing_filled(setup):
     assert body["missing"] == []
 
 
-# ── AC-A-18c — revision loop (>=3 turns) ──────────────────────────────────────
+# ── AC-A-18c - revision loop (>=3 turns) ──────────────────────────────────────
 
 
 def test_revision_loop_over_three_turns(setup):
-    """AC-A-18c — a review draft re-merges fields/remove and re-reviews; removing a
+    """AC-A-18c - a review draft re-merges fields/remove and re-reviews; removing a
     required field drops to collecting; identical re-send is idempotent; >=3 turns."""
     s = setup
     # Turn 1 -> review (one-shot complete)
@@ -310,7 +310,7 @@ def test_revision_loop_over_three_turns(setup):
     draft_id = r1.json()["draft_id"]
     assert r1.json()["status"] == "review"
 
-    # Turn 2 — change a field, still review, captured reflects the change.
+    # Turn 2 - change a field, still review, captured reflects the change.
     r2 = _create_idea(
         s["client"],
         s["key"],
@@ -322,7 +322,7 @@ def test_revision_loop_over_three_turns(setup):
     assert r2.json()["status"] == "review"
     assert r2.json()["captured"]["impact"] == "Saves an hour a day"
 
-    # Turn 3 — remove a required field -> back to collecting.
+    # Turn 3 - remove a required field -> back to collecting.
     r3 = _create_idea(
         s["client"],
         s["key"],
@@ -334,7 +334,7 @@ def test_revision_loop_over_three_turns(setup):
     assert r3.json()["status"] == "collecting"
     assert "department" in r3.json()["missing"]
 
-    # Turn 4 — re-add it -> review again.
+    # Turn 4 - re-add it -> review again.
     r4 = _create_idea(
         s["client"],
         s["key"],
@@ -345,7 +345,7 @@ def test_revision_loop_over_three_turns(setup):
     )
     assert r4.json()["status"] == "review"
 
-    # Turn 5 — identical re-send is idempotent (still review, same captured).
+    # Turn 5 - identical re-send is idempotent (still review, same captured).
     r5 = _create_idea(
         s["client"],
         s["key"],
@@ -359,11 +359,11 @@ def test_revision_loop_over_three_turns(setup):
     assert _idea_count(s["factory"]) == 1
 
 
-# ── AC-A-20 — completion on explicit confirm ──────────────────────────────────
+# ── AC-A-20 - completion on explicit confirm ──────────────────────────────────
 
 
 def test_confirm_completes_with_link(setup):
-    """AC-A-20 — confirm=true -> complete; draft moves to captured; link is the
+    """AC-A-20 - confirm=true -> complete; draft moves to captured; link is the
     product-domain deep link."""
     s = setup
     r1 = _create_idea(
@@ -399,7 +399,7 @@ def test_confirm_completes_with_link(setup):
 
 
 def test_confirm_on_captured_is_idempotent(setup):
-    """AC-A-16/20 — re-confirming a captured draft is a no-op returning complete +
+    """AC-A-16/20 - re-confirming a captured draft is a no-op returning complete +
     the same link; no second Idea, no double-advance."""
     s = setup
     r1 = _create_idea(
@@ -422,11 +422,11 @@ def test_confirm_on_captured_is_idempotent(setup):
     assert _idea_status_key(s["factory"], draft_id) == "captured"
 
 
-# ── AC-A-22 / AC-A-23 — idempotency + interrupt/resume ────────────────────────
+# ── AC-A-22 / AC-A-23 - idempotency + interrupt/resume ────────────────────────
 
 
 def test_idempotency_on_draft_id(setup):
-    """AC-A-22 — repeated identical calls with the same draft_id never duplicate
+    """AC-A-22 - repeated identical calls with the same draft_id never duplicate
     the draft nor regress captured fields."""
     s = setup
     r1 = _create_idea(
@@ -446,7 +446,7 @@ def test_idempotency_on_draft_id(setup):
 
 
 def test_interrupt_resume_keeps_captured(setup):
-    """AC-A-23 — an interleaved (non-ideate) turn does not corrupt the draft;
+    """AC-A-23 - an interleaved (non-ideate) turn does not corrupt the draft;
     resuming by draft_id keeps prior captured fields intact."""
     s = setup
     r1 = _create_idea(
@@ -455,7 +455,7 @@ def test_interrupt_resume_keeps_captured(setup):
     )
     draft_id = r1.json()["draft_id"]
 
-    # (interrupt happens sorento-side — no create_idea call) then resume:
+    # (interrupt happens sorento-side - no create_idea call) then resume:
     r2 = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"],
         draft_id=draft_id, fields={"department": "The CS team"},
@@ -470,7 +470,7 @@ def test_interrupt_resume_keeps_captured(setup):
 
 
 def test_unknown_product_rejected(setup):
-    """AC-A-17 — a product_id that does not resolve for the workspace is rejected
+    """AC-A-17 - a product_id that does not resolve for the workspace is rejected
     with the uniform envelope (binding spoof-refusal deferred to respond.io slice)."""
     s = setup
     res = _create_idea(
@@ -480,11 +480,11 @@ def test_unknown_product_rejected(setup):
     assert set(res.json()["error"].keys()) >= {"code", "message"}
 
 
-# ── AC-A-25 — transport / auth + envelope ─────────────────────────────────────
+# ── AC-A-25 - transport / auth + envelope ─────────────────────────────────────
 
 
 def test_auth_required(setup):
-    """AC-A-25 — a missing/invalid workspace key is refused with the uniform
+    """AC-A-25 - a missing/invalid workspace key is refused with the uniform
     ``{error:{code,message}}`` envelope."""
     s = setup
     # No auth header at all.
@@ -508,7 +508,7 @@ def test_auth_required(setup):
 
 
 def test_reply_text_deterministic(setup):
-    """AC-A-18 — reply_text is a deterministic template: collecting echoes captured
+    """AC-A-18 - reply_text is a deterministic template: collecting echoes captured
     + lists missing; review echoes the full summary + confirm ask; complete carries
     the link."""
     s = setup
@@ -536,7 +536,7 @@ def test_reply_text_deterministic(setup):
     assert f"https://fe-sorento.foundryx.my/ideas/{draft_id}" in r3.json()["reply_text"]
 
 
-# ── WS-A / AC-CAP-1..3 — submitter_name stored verbatim ───────────────────────
+# ── WS-A / AC-CAP-1..3 - submitter_name stored verbatim ───────────────────────
 
 
 def _idea_field(factory, idea_id, attr):
@@ -570,12 +570,12 @@ def test_submitter_name_stored_on_idea(setup):
     assert _idea_field(s["factory"], draft_id, "submitter_name") == "Aisha Rahman"
 
 
-# ── WS-B / AC-CAP-5..7 — raw_transcript becomes the Idea's raw_text ───────────
+# ── WS-B / AC-CAP-5..7 - raw_transcript becomes the Idea's raw_text ───────────
 
 
 def test_raw_transcript_stored_as_raw_text(setup):
     """When the host sends the cumulative transcript it becomes raw_text (the whole
-    convo), refreshed each turn — NOT just the last message."""
+    convo), refreshed each turn - NOT just the last message."""
     s = setup
     r1 = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"],
@@ -585,7 +585,7 @@ def test_raw_transcript_stored_as_raw_text(setup):
     draft_id = r1.json()["draft_id"]
     assert _idea_field(s["factory"], draft_id, "raw_text") == "I want AI to update contractors"
 
-    # Turn 2 — transcript grows; raw_text reflects the WHOLE convo, not "okay i confirm".
+    # Turn 2 - transcript grows; raw_text reflects the WHOLE convo, not "okay i confirm".
     _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"],
         draft_id=draft_id,
@@ -688,7 +688,7 @@ def test_attachments_idempotent_on_source_msg_id(setup):
 
 def test_attachments_caption_can_update_on_reprocess(setup):
     """Idempotent upsert refreshes mutable metadata (caption/url) for the same
-    source_msg_id — a re-run with a better vision caption updates in place."""
+    source_msg_id - a re-run with a better vision caption updates in place."""
     s = setup
     r1 = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"], attachments=[_ATT]
@@ -724,7 +724,7 @@ def test_discard_draft_id_rejects_old_draft(setup):
 
 
 def test_discard_unknown_draft_is_noop(setup):
-    """A discard_draft_id that doesn't resolve must not 500 — just proceed."""
+    """A discard_draft_id that doesn't resolve must not 500 - just proceed."""
     s = setup
     res = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"],

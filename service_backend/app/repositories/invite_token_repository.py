@@ -50,7 +50,7 @@ class InviteTokenRepository:
         self.db.commit()
 
     def invalidate_for_user(self, user_id: str, tenant_id: str) -> int:
-        """Kill a user's outstanding (unused) tokens — a new reset supersedes
+        """Kill a user's outstanding (unused) tokens - a new reset supersedes
         every prior link (plan 10 §3)."""
         now = datetime.now(timezone.utc)
         updated = (

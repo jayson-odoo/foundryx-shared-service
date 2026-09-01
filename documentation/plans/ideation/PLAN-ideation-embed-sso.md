@@ -1,10 +1,10 @@
-# PLAN — Ideation Embed SSO (iframe, DB-configurable)
+# PLAN - Ideation Embed SSO (iframe, DB-configurable)
 
 **Status:** plan, pre-build. Fulfils `ideation-embed-sso-acceptance-criteria.md`.
 **Classification:** MODULE extension (ideation) on both sides; config on core `RespondWorkspace`
 (sorento) + a new embed-connection table (shared-service, `app_ideation` schema).
 **Cross-repo:** sorento_crm (host + config) + foundryx-shared-service (SSO verify + iframe page).
-**Owner note:** build in a FRESH focused session — this design is the handoff. Follow
+**Owner note:** build in a FRESH focused session - this design is the handoff. Follow
 grill→UAC→(this plan)→three-phase. UAC ids AC-E-1…14.
 
 ## Why / current state
@@ -29,7 +29,7 @@ sorento user opens /ideas/{id}
  → shared-service /embed/ideas page: validate token → render chrome-less board/detail for that tenant
 ```
 
-## Phase 1 — FE prototype (both sides, mocks)
+## Phase 1 - FE prototype (both sides, mocks)
 - Sorento: the Ideas detail already renders `IdeationEmbed`; add the config fields to the admin modal
   as disabled mocks first; stub `create_embed_session` to return a fake `{iframe_url, token}` and
   point the iframe at a static shared-service `/embed/ideas` placeholder page to nail sizing/chrome.
@@ -37,7 +37,7 @@ sorento user opens /ideas/{id}
   component with mock data + a token-gate placeholder.
 - Verify layout/states (loading, expired-token, not-configured) via Playwright MCP. No backend wiring.
 
-## Phase 2 — Backend wiring, test-first
+## Phase 2 - Backend wiring, test-first
 
 ### Sorento (config → DB, AC-E-1..4)
 1. **Migration** (chain onto current head): add to `respond_workspaces`
@@ -46,7 +46,7 @@ sorento user opens /ideas/{id}
 2. **Model/schema/service** (`app/models/respond_workspace.py`, `app/schemas/respond_workspace.py`,
    `app/services/respond_workspace_service.py`): add the fields; encrypt the secret on write
    (`encrypt_secret`), mask on read (`_mask_optional_key`), add `decrypt_ideation_embed_secret(row)`
-   — copy the `decrypt_ideation_api_key` pattern exactly.
+   - copy the `decrypt_ideation_api_key` pattern exactly.
 3. **`ideation_embed_service.py`**: add `_resolve_embed_config(db)` reading the default
    `RespondWorkspace` (base_url, fe_base_url, connection_id, decrypted secret), `.env` per-field
    fallback (like `_resolve_ideation_config` in `ideation_turn_service.py`). `create_embed_session`
@@ -61,14 +61,14 @@ sorento user opens /ideas/{id}
    secret; secret never returned plaintext. (vitest): admin fields render + mask.
 
 ### Shared-service (SSO + iframe, AC-E-5..9)
-7. **Embed-connection registry** — new table `app_ideation.embed_connections`
+7. **Embed-connection registry** - new table `app_ideation.embed_connections`
    `{id/connection_id, tenant_id, signing_secret_ciphertext, allowed_origins[], product_id?, is_active}`.
    Seed via module install + admin CRUD (App Store / a small admin page). Secret encrypted.
 8. **`POST /embed/session`**: look up connection by `connection_id`; verify the assertion
    (signature against the connection secret, `aud="ideation-embed"`, `exp`, `iss="sorento"`); on
    success mint a short-lived embed token (`typ=embed`, `tenant_id` from the connection, `exp` ≤ few
    min); 401/403 on any verification failure (AC-E-6/7). Never log secrets.
-9. **`GET /embed/ideas` + `/embed/ideas/{id}` FE page** — a chrome-less route (no shell/nav) that
+9. **`GET /embed/ideas` + `/embed/ideas/{id}` FE page** - a chrome-less route (no shell/nav) that
    reads the token from the URL fragment, validates it (calls a `/embed/validate` or verifies
    locally), resolves tenant, and renders the existing Ideas board/detail components scoped to that
    tenant. Invalid/expired → "session expired, refresh" (AC-E-8/9). Serve at the FE root so
@@ -83,12 +83,12 @@ sorento user opens /ideas/{id}
     sorento login → Ideas → Detail → shared-service board renders in-iframe, correct tenant, no
     second login; click-through inside the iframe.
 
-## Phase 3 — Review + gated deploy
+## Phase 3 - Review + gated deploy
 - `/code-review` per repo. Deploy shared-service first (SSO + page), then sorento (config + wiring),
   per the blue/green flow already used. Then set the config from the FE admin (connection on
   shared-service with matching secret + connection_id; the 3 fields on the sorento workspace).
 
-## Config values to set post-deploy (from the FE, per Req 1 — no .env)
+## Config values to set post-deploy (from the FE, per Req 1 - no .env)
 - Shared-service admin: create an embed connection → note `connection_id` + `signing_secret`,
   allowed origin = `https://fe-sorento.foundryx.my`.
 - Sorento Respond Workspaces (default): `ideation_shared_service_url = https://chat.foundryx.my/be`
@@ -96,10 +96,10 @@ sorento user opens /ideas/{id}
   `ideation_embed_connection_id` + `ideation_embed_signing_secret` = the connection's values.
 
 ## Risks / notes
-- **URL split is the #1 gotcha** — one host serves FE at root + backend under `/be` (Caddy). Keep
+- **URL split is the #1 gotcha** - one host serves FE at root + backend under `/be` (Caddy). Keep
   backend-base and fe-base as separate config values (AC-E-3); don't collapse them.
 - Token in fragment (not query) + sandboxed iframe + allow-listed origin (AC-E-10/12).
-- `module tables via create_all` on shared-service — new `embed_connections` needs the migration to
+- `module tables via create_all` on shared-service - new `embed_connections` needs the migration to
   actually run OR a manual `CREATE TABLE`/seed (see the deploy lesson: stamp-path can skip module
   migrations; verify on prod, like pg_trgm + idea statuses this session).
 - Additive + dormant-safe (AC-E-13): nothing else changes until configured.

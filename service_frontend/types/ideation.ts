@@ -1,8 +1,8 @@
 /**
- * Ideation module types (plan: documentation/plans/ideation/, Phase A — Capture).
+ * Ideation module types (plan: documentation/plans/ideation/, Phase A - Capture).
  * The Idea is the rawest capture in the pipeline (Idea → BR → FR → delivery).
  * Kept thin per the plan; BR/FR land in Phase B. These shapes ARE the FE side
- * of the backend contract (§5 of the program master) — Phase-1 uses the mock
+ * of the backend contract (§5 of the program master) - Phase-1 uses the mock
  * service; Phase-2 binds the real api-client impl.
  */
 
@@ -50,7 +50,7 @@ export const IDEA_NEXT_STATUS: Partial<Record<IdeaStatus, IdeaStatus>> = {
 /** How the idea entered the repository (the "channel"). */
 export type IdeaSource = 'whatsapp' | 'voice' | 'manual';
 
-/** An attachment on an idea — voice note, image, video, or generic file. */
+/** An attachment on an idea - voice note, image, video, or generic file. */
 export type IdeaAttachmentKind = 'audio' | 'image' | 'video' | 'file';
 
 export interface IdeaAttachment {
@@ -61,29 +61,29 @@ export interface IdeaAttachment {
   /** Preview/download URL (mock: a placeholder or data URI in Phase 1). */
   url: string;
   sizeBytes?: number;
-  /** Seconds — audio/video only. */
+  /** Seconds - audio/video only. */
   durationSec?: number;
 }
 
 export interface Idea {
   id: string;
   productId: string;
-  /** Denormalized for display — the FE never renders the UUID (cursor rule). */
+  /** Denormalized for display - the FE never renders the UUID (cursor rule). */
   productName: string;
   status: IdeaStatus;
   /** One-line problem/observation (the headline on cards). */
   problem: string;
-  /** Proposed solution — a segregated intake field (nullable until captured). */
+  /** Proposed solution - a segregated intake field (nullable until captured). */
   proposedSolution?: string | null;
-  /** Impact of solving it — a segregated intake field (nullable until captured). */
+  /** Impact of solving it - a segregated intake field (nullable until captured). */
   impact?: string | null;
-  /** Owning department — a segregated intake field (nullable until captured). */
+  /** Owning department - a segregated intake field (nullable until captured). */
   department?: string | null;
   /** The rawest input as captured (verbatim WhatsApp/voice text or typed). */
   rawText: string;
   /** The channel the idea arrived on. */
   source: IdeaSource;
-  /** Submitter display name (resolved from the synced contact — never a UUID). */
+  /** Submitter display name (resolved from the synced contact - never a UUID). */
   submitterName: string;
   upvotes: number;
   downvotes: number;
@@ -95,7 +95,7 @@ export interface Idea {
   createdAt: string; // ISO
 }
 
-/** One suggested idea cluster (AC-BI-30/31). A cluster is ALWAYS a suggestion —
+/** One suggested idea cluster (AC-BI-30/31). A cluster is ALWAYS a suggestion -
  * fully editable before promotion; nothing auto-promotes. */
 export interface IdeaCluster {
   label: string;

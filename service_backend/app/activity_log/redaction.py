@@ -1,6 +1,6 @@
 """Secret redaction for the integration-activity log (sprint-4/12, AC-DLC-04/25).
 
-A stored request/response summary must NEVER carry a plaintext credential — API
+A stored request/response summary must NEVER carry a plaintext credential - API
 keys, bearer tokens, ``embedSecret``, Meta access tokens, passwords, assertions
 are masked. WhatsApp message *content* is NOT a secret key → preserved (it's
 needed to troubleshoot). Recursive over dicts/lists, size-capped so a
@@ -14,7 +14,7 @@ MASK = "***"
 # Case-insensitive KEY patterns whose value is a secret regardless of content.
 # ``api[_-]?key`` matches apiKey / api_key / api-key; ``embedsecret`` covers the
 # iframe embed secret. ``token``/``secret``/``password``/``assertion`` are broad
-# by design. NOTE: only the KEY is matched — a value like a WhatsApp message
+# by design. NOTE: only the KEY is matched - a value like a WhatsApp message
 # body is never masked by key name.
 _SECRET_KEY_RE = re.compile(
     r"authorization|api[_-]?key|token|secret|password|assertion|embedsecret",

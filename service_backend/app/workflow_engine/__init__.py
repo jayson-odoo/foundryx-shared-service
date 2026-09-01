@@ -1,4 +1,4 @@
-"""Workflow engine (plan sprint-2/08) — the last core platform engine.
+"""Workflow engine (plan sprint-2/08) - the last core platform engine.
 
 PLATFORM CORE, never an App Store module: lives in core ``public`` tables, perms
 in the core CSV, present for every tenant. Modules EXTEND it by registering
@@ -9,6 +9,7 @@ from app.workflow_engine.registry import (
     NodeField,
     NodeOutput,
     TriggerDef,
+    TriggerTestDataError,
     get_action,
     get_trigger,
     list_actions,
@@ -33,6 +34,7 @@ from app.workflow_engine.entity_events import emit_entity_event  # noqa: E402
 __all__ = [
     "ActionDef",
     "TriggerDef",
+    "TriggerTestDataError",
     "NodeField",
     "NodeOutput",
     "get_action",

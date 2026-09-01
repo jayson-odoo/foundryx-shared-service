@@ -2,28 +2,43 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { FileText, History, ScrollText, Workflow as WorkflowIcon } from 'lucide-react';
+import {
+  FileText,
+  History,
+  ScrollText,
+  Workflow as WorkflowIcon,
+} from 'lucide-react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { toast } from 'sonner';
-import type { ResourceFormConfig } from '@/components/platform/resource-form';
-import type { TemplateOption, WorkflowDebugBundle } from '@/components/platform/workflow-canvas';
-import { WorkflowRuns } from '@/components/platform/workflow-runs';
-import { createBlankDefinition, topoOrder } from '@/lib/workflow-doc';
-import { workflowService } from '@/services/workflow-service';
-import { workflowMetadataService } from '@/services/workflow-metadata-service';
 import type {
   Workflow,
   WorkflowDefinition,
   WorkflowManualInput,
   WorkflowMetadata,
+  WorkflowOmnichannelTestSource,
   WorkflowRunNode,
+  WorkflowRunRequest,
 } from '@/types/workflows';
+import {
+  createBlankDefinition,
+  topoOrder,
+  validateDefinition,
+} from '@/lib/workflow-doc';
+import { workflowPublishIssue } from '@/lib/workflow-validation';
+import { workflowMetadataService } from '@/services/workflow-metadata-service';
+import { workflowService } from '@/services/workflow-service';
+import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type {
+  TemplateOption,
+  WorkflowDebugBundle,
+} from '@/components/platform/workflow-canvas';
+import { WorkflowRuns } from '@/components/platform/workflow-runs';
+import { workflowFormHref, workflowPath, WORKFLOWS_PATH } from './paths';
 import { RunDialog } from './run-dialog';
+import { useWorkflowActions } from './use-workflow-actions';
 import { WorkflowEditorTab } from './workflow-editor-tab';
 import { WorkflowSettingsFields } from './workflow-settings-fields';
 import { WorkflowVersionsTab } from './workflow-versions-tab';
-import { WORKFLOWS_PATH, workflowFormHref, workflowPath } from './paths';
-import { useWorkflowActions } from './use-workflow-actions';
 
 export interface WorkflowFormValues {
   name: string;
@@ -46,7 +61,7 @@ function blankWorkflow(): Workflow {
     isActive: false,
     isTrashed: false,
     triggerType: '',
-    triggerLabel: '—',
+    triggerLabel: '-',
     currentVersionNumber: null,
     hasUnpublishedChanges: false,
     lastRunAt: null,
@@ -63,7 +78,7 @@ function blankWorkflow(): Workflow {
 /**
  * Stale start-nodes + every descendant reachable along the TAKEN path the run
  * took (D6). At an IF node we follow only the branch the cached run executed
- * (`outputJson.passed`), mirroring the backend's branch-aware re-run — so an
+ * (`outputJson.passed`), mirroring the backend's branch-aware re-run - so an
  * edit never marks the untaken branch stale.
  */
 function takenDescendants(
@@ -109,17 +124,26 @@ export function useWorkflowForm(
   initialEditing: boolean,
   canManage: boolean,
   debugRunId?: string,
+  canCode = true,
 ): UseWorkflowFormResult {
   const router = useRouter();
   const actions = useWorkflowActions();
   const isNew = workflowId === undefined;
 
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
-  const [doc, setDoc] = useState<WorkflowDefinition>(() => createBlankDefinition());
+  const [doc, setDoc] = useState<WorkflowDefinition>(() =>
+    createBlankDefinition(),
+  );
   const docRef = useRef(doc);
+  const runPreparationRef = useRef(false);
   const [docDirty, setDocDirty] = useState(false);
   const [templateOptions, setTemplateOptions] = useState<TemplateOption[]>([]);
   const [metadata, setMetadata] = useState<WorkflowMetadata>({ entities: [] });
+  const [testSources, setTestSources] = useState<
+    WorkflowOmnichannelTestSource[]
+  >([]);
+  const [testOptionsLoading, setTestOptionsLoading] = useState(false);
+  const [testOptionsError, setTestOptionsError] = useState(false);
   const [isLoading, setIsLoading] = useState(!isNew);
   const [notFound, setNotFound] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -127,15 +151,26 @@ export function useWorkflowForm(
   const [runsReloadToken, setRunsReloadToken] = useState(0);
 
   // ---- debug session (Logs → Debug in editor) ----
-  const [debugCache, setDebugCache] = useState<Record<string, WorkflowRunNode> | null>(null);
+  const [debugCache, setDebugCache] = useState<Record<
+    string,
+    WorkflowRunNode
+  > | null>(null);
   const [debugStale, setDebugStale] = useState<Set<string>>(new Set());
   const [debugBusy, setDebugBusy] = useState(false);
 
-  const form = useForm<WorkflowFormValues>({ defaultValues: { name: '', description: '' } });
+  const form = useForm<WorkflowFormValues>({
+    defaultValues: { name: '', description: '' },
+  });
 
   useEffect(() => {
-    workflowService.listTemplateOptions().then(setTemplateOptions).catch(() => undefined);
-    workflowMetadataService.getMetadata().then(setMetadata).catch(() => undefined);
+    workflowService
+      .listTemplateOptions()
+      .then(setTemplateOptions)
+      .catch(() => undefined);
+    workflowMetadataService
+      .getMetadata()
+      .then(setMetadata)
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -153,7 +188,7 @@ export function useWorkflowForm(
       setWorkflow(loaded);
       form.reset({ name: loaded.name, description: loaded.description });
 
-      // Always edit the live DRAFT — debug never replaces it (n8n behavior).
+      // Always edit the live DRAFT - debug never replaces it (n8n behavior).
       docRef.current = loaded.draftDefinition;
       setDoc(loaded.draftDefinition);
 
@@ -163,7 +198,9 @@ export function useWorkflowForm(
         const run = await workflowService.getRun(debugRunId);
         if (cancelled) return;
         if (run) {
-          setDebugCache(Object.fromEntries(run.nodes.map((n) => [n.nodeId, n])));
+          setDebugCache(
+            Object.fromEntries(run.nodes.map((n) => [n.nodeId, n])),
+          );
           setDebugStale(new Set());
         } else {
           toast.error('That run no longer exists.');
@@ -182,13 +219,15 @@ export function useWorkflowForm(
   const handleDocChange = useCallback(
     (next: WorkflowDefinition) => {
       // While debugging, an edit marks that node stale AND propagates staleness
-      // to its taken-branch descendants (D6 — a fresh upstream output
+      // to its taken-branch descendants (D6 - a fresh upstream output
       // invalidates everything downstream of it on the path the run took).
       if (debugCache) {
         const prev = docRef.current;
         const prevById = new Map(prev.nodes.map((n) => [n.id, n]));
         const changed = next.nodes.filter(
-          (n) => JSON.stringify(prevById.get(n.id)?.config) !== JSON.stringify(n.config),
+          (n) =>
+            JSON.stringify(prevById.get(n.id)?.config) !==
+            JSON.stringify(n.config),
         );
         if (changed.length) {
           const restale = takenDescendants(
@@ -196,7 +235,9 @@ export function useWorkflowForm(
             next,
             debugCache,
           );
-          setDebugStale((s) => new Set([...Array.from(s), ...Array.from(restale)]));
+          setDebugStale(
+            (s) => new Set([...Array.from(s), ...Array.from(restale)]),
+          );
         }
       }
       docRef.current = next;
@@ -226,6 +267,13 @@ export function useWorkflowForm(
       toast.error('Name is required.');
       return false;
     }
+    const definitionIssue = validateDefinition(docRef.current, metadata).find(
+      (issue) => issue.level === 'error',
+    );
+    if (definitionIssue) {
+      toast.error(definitionIssue.message);
+      return false;
+    }
     const input = {
       name: values.name.trim(),
       description: values.description.trim(),
@@ -242,13 +290,14 @@ export function useWorkflowForm(
         form.reset({ name: updated.name, description: updated.description });
         toast.success('Workflow saved.');
       }
-      setDocDirty(false);
+      // Do not clear a newer edit made while the save was in flight.
+      if (docRef.current === input.draftDefinition) setDocDirty(false);
       return true;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Save failed.');
       return false;
     }
-  }, [form, isNew, router, workflowId]);
+  }, [form, isNew, metadata, router, workflowId]);
 
   const onCancel = useCallback(() => {
     if (isNew) {
@@ -265,6 +314,22 @@ export function useWorkflowForm(
 
   const onPublish = useCallback(async () => {
     if (!workflowId) return;
+    const definitionIssue = validateDefinition(docRef.current, metadata).find(
+      (issue) => issue.level === 'error',
+    );
+    if (definitionIssue) {
+      toast.error(definitionIssue.message);
+      return;
+    }
+    const publishIssue = workflowPublishIssue(
+      { ...(workflow ?? blankWorkflow()), draftDefinition: docRef.current },
+      metadata,
+      canCode,
+    );
+    if (publishIssue) {
+      toast.error(publishIssue);
+      return;
+    }
     setBusy(true);
     try {
       if (docDirty) {
@@ -273,13 +338,13 @@ export function useWorkflowForm(
       }
       await workflowService.publish(workflowId);
       await refresh(workflowId);
-      toast.success('Published — the trigger can now fire this workflow.');
+      toast.success('Published - the trigger can now fire this workflow.');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Publish failed.');
     } finally {
       setBusy(false);
     }
-  }, [workflowId, docDirty, onSave, refresh]);
+  }, [canCode, workflowId, docDirty, metadata, onSave, refresh, workflow]);
 
   const onUnpublish = useCallback(async () => {
     if (!workflowId) return;
@@ -287,7 +352,7 @@ export function useWorkflowForm(
     try {
       await workflowService.unpublish(workflowId);
       await refresh(workflowId);
-      toast.success('Unpublished — the trigger will no longer fire it.');
+      toast.success('Unpublished - the trigger will no longer fire it.');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Unpublish failed.');
     } finally {
@@ -312,49 +377,152 @@ export function useWorkflowForm(
     [workflowId, refresh],
   );
 
+  const trigger = useMemo(
+    () => doc.nodes.find((node) => node.kind === 'trigger'),
+    [doc],
+  );
+
   const triggerInputs = useMemo<WorkflowManualInput[]>(() => {
-    const trigger = doc.nodes.find((n) => n.kind === 'trigger');
     const inputs = trigger?.config.inputs;
     return Array.isArray(inputs) ? (inputs as WorkflowManualInput[]) : [];
-  }, [doc]);
+  }, [trigger]);
+
+  const runSideEffects = useMemo(
+    () => ({
+      callsAi: doc.nodes.some((node) => node.type === 'ai_agent.run'),
+      sendsMessage: doc.nodes.some(
+        (node) => node.type === 'omnichannel.send_message',
+      ),
+      mutatesRedis: doc.nodes.some((node) => {
+        if (node.type !== 'redis.command') return false;
+        const operation = node.config.operation;
+        return (
+          typeof operation === 'string' &&
+          ['set', 'delete', 'increment', 'list_push', 'list_pop'].includes(
+            operation,
+          )
+        );
+      }),
+      runsCode: doc.nodes.some((node) => node.type === 'code.run'),
+    }),
+    [doc],
+  );
 
   const doRun = useCallback(
-    async (inputs: Record<string, string | number | boolean>) => {
+    async (request: WorkflowRunRequest) => {
       if (!workflowId) {
         toast.error('Save the workflow before running it.');
         return;
       }
+      if (
+        !canCode &&
+        docRef.current.nodes.some((node) => node.type === 'code.run')
+      ) {
+        toast.error(
+          'You need the workflows.code permission to run Code nodes.',
+        );
+        return;
+      }
       setBusy(true);
       try {
-        if (docDirty) await onSave(); // run the latest draft
-        await workflowService.run(workflowId, { inputs });
+        if (docDirty) {
+          const saved = await onSave(); // run the latest draft
+          if (!saved) return;
+        }
+        await workflowService.run(workflowId, request);
         setRunsReloadToken((t) => t + 1);
         setRunDialogOpen(false);
-        toast.success('Run started — open the Logs tab to follow it.');
+        toast.success('Run started - open the Logs tab to follow it.');
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Run failed.');
       } finally {
         setBusy(false);
       }
     },
-    [workflowId, docDirty, onSave],
+    [canCode, workflowId, docDirty, onSave],
   );
 
-  const onRun = useCallback(() => {
-    if (triggerInputs.length > 0) setRunDialogOpen(true);
-    else void doRun({});
-  }, [triggerInputs, doRun]);
+  const loadTestOptions = useCallback(async () => {
+    if (!workflowId) return;
+    setTestSources([]);
+    setTestOptionsLoading(true);
+    setTestOptionsError(false);
+    try {
+      const options = await workflowService.getTestOptions(workflowId);
+      setTestSources(options.omnichannelTestSources);
+    } catch {
+      setTestOptionsError(true);
+    } finally {
+      setTestOptionsLoading(false);
+    }
+  }, [workflowId]);
+
+  const onRun = useCallback(async () => {
+    if (trigger?.type !== 'omnichannel.message_received') {
+      if (
+        triggerInputs.length > 0 ||
+        runSideEffects.mutatesRedis ||
+        runSideEffects.runsCode
+      ) {
+        setRunDialogOpen(true);
+      } else {
+        void doRun({ inputs: {} });
+      }
+      return;
+    }
+
+    if (runPreparationRef.current) return;
+    runPreparationRef.current = true;
+    setBusy(true);
+    try {
+      if (!workflowId) {
+        await doRun({ inputs: {} });
+        return;
+      }
+      const intendedDraft = docRef.current;
+      if (docDirty) {
+        const saved = await onSave();
+        if (!saved || docRef.current !== intendedDraft) return;
+      }
+      await loadTestOptions();
+      if (docRef.current !== intendedDraft) return;
+      setRunDialogOpen(true);
+    } finally {
+      setBusy(false);
+      runPreparationRef.current = false;
+    }
+  }, [
+    trigger,
+    triggerInputs,
+    workflowId,
+    docDirty,
+    doRun,
+    loadTestOptions,
+    onSave,
+    runSideEffects,
+  ]);
 
   // ---- debug execution (staleness-aware, D16) ----
   const runDebug = useCallback(
     async (targetNodeId: string, staleIds: string[]) => {
       if (!workflowId || !debugRunId) return;
+      if (
+        !canCode &&
+        docRef.current.nodes.some((node) => node.type === 'code.run')
+      ) {
+        toast.error(
+          'You need the workflows.code permission to run Code nodes.',
+        );
+        return;
+      }
       setDebugBusy(true);
       try {
         const result = await workflowService.debugExecute(workflowId, {
           runId: debugRunId,
           targetNodeId,
-          scratch: Object.fromEntries(docRef.current.nodes.map((n) => [n.id, n.config])),
+          scratch: Object.fromEntries(
+            docRef.current.nodes.map((n) => [n.id, n.config]),
+          ),
           staleNodeIds: staleIds,
         });
         setDebugCache((cache) => {
@@ -373,13 +541,17 @@ export function useWorkflowForm(
         setDebugBusy(false);
       }
     },
-    [workflowId, debugRunId],
+    [canCode, workflowId, debugRunId],
   );
 
   const onExecuteAll = useCallback(() => {
     const ordered = topoOrder(docRef.current);
     const last = ordered[ordered.length - 1];
-    if (last) void runDebug(last.id, docRef.current.nodes.map((n) => n.id));
+    if (last)
+      void runDebug(
+        last.id,
+        docRef.current.nodes.map((n) => n.id),
+      );
   }, [runDebug]);
 
   const exitDebug = useCallback(() => {
@@ -388,7 +560,8 @@ export function useWorkflowForm(
 
   const debugInEditor = useCallback(
     (runId: string) => {
-      if (workflowId) router.push(`${workflowPath(workflowId)}?edit=1&debug=${runId}`);
+      if (workflowId)
+        router.push(`${workflowPath(workflowId)}?edit=1&debug=${runId}`);
     },
     [router, workflowId],
   );
@@ -403,7 +576,8 @@ export function useWorkflowForm(
     return {
       data,
       busy: debugBusy,
-      onExecuteNode: (nodeId: string) => void runDebug(nodeId, Array.from(debugStale)),
+      onExecuteNode: (nodeId: string) =>
+        void runDebug(nodeId, Array.from(debugStale)),
     };
   }, [debugCache, debugStale, debugBusy, runDebug]);
 
@@ -433,6 +607,7 @@ export function useWorkflowForm(
                 canManage={canManage && !isNew}
                 templateOptions={templateOptions}
                 metadata={metadata}
+                canCode={canCode}
                 busy={busy}
                 onPublish={onPublish}
                 onUnpublish={onUnpublish}
@@ -444,7 +619,12 @@ export function useWorkflowForm(
               <RunDialog
                 open={runDialogOpen}
                 onOpenChange={setRunDialogOpen}
-                inputs={triggerInputs}
+                trigger={trigger}
+                testSources={testSources}
+                testOptionsLoading={testOptionsLoading}
+                testOptionsError={testOptionsError}
+                sideEffects={runSideEffects}
+                codeRunnerAvailable={metadata.codeRunnerAvailable}
                 busy={busy}
                 onRun={doRun}
               />
@@ -480,6 +660,9 @@ export function useWorkflowForm(
               canManage={canManage}
               busy={busy}
               onSetActive={onSetActive}
+              definition={doc}
+              onDefinitionChange={handleDocChange}
+              metadata={metadata}
             />
           ),
         },
@@ -518,13 +701,15 @@ export function useWorkflowForm(
                 recordId: r.workflow?.id ?? null,
                 total: r.total,
               })),
-            buildHref: (recordId, ctx, index) => workflowFormHref(recordId, { ctx, index }),
+            buildHref: (recordId, ctx, index) =>
+              workflowFormHref(recordId, { ctx, index }),
           },
     };
   }, [
     actions,
     busy,
     canManage,
+    canCode,
     debugBundle,
     debugInEditor,
     doc,
@@ -546,8 +731,12 @@ export function useWorkflowForm(
     refresh,
     runDialogOpen,
     runsReloadToken,
+    runSideEffects,
     templateOptions,
-    triggerInputs,
+    testOptionsError,
+    testOptionsLoading,
+    testSources,
+    trigger,
     workflow,
     workflowId,
   ]);

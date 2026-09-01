@@ -3,7 +3,7 @@ import { expect, request as pwRequest, test, type Page } from '@playwright/test'
 const API = process.env.NEXT_PUBLIC_BACKEND_API_URL ?? 'http://localhost:8003';
 
 /**
- * EMS Cluster B (sprint-3/12, slice 1 CRM) E2E — real user clicks against the
+ * EMS Cluster B (sprint-3/12, slice 1 CRM) E2E - real user clicks against the
  * live worktree stack (Next :3003 → FastAPI :8003 → Postgres), default tenant.
  *
  * Journey: Clients → create "Acme" → Leads → create a lead inline-quick-creating
@@ -25,7 +25,7 @@ async function login(page: Page) {
 
 test.describe.configure({ mode: 'serial' });
 
-test.describe('EMS Cluster B — CRM (slice 1)', () => {
+test.describe('EMS Cluster B - CRM (slice 1)', () => {
   test('create client → lead with quick-create client → convert to event', async ({ page }) => {
     await login(page);
 
@@ -75,7 +75,7 @@ test.describe('EMS Cluster B — CRM (slice 1)', () => {
     await expect(page.getByText(LEAD, { exact: false }).first()).toBeVisible();
   });
 
-  test('mobile viewport — clients + leads lists render without horizontal overflow', async ({ page }) => {
+  test('mobile viewport - clients + leads lists render without horizontal overflow', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 800 });
     await login(page);
     for (const path of ['/ems/clients', '/ems/leads']) {
@@ -93,7 +93,7 @@ const CAT_ROOT = `Tickets ${STAMP}`;
 const CAT_CHILD = `Conference ${STAMP}`;
 const PRODUCT = `VIP Pass ${STAMP}`;
 
-test.describe('EMS Cluster B — catalog (slice 2)', () => {
+test.describe('EMS Cluster B - catalog (slice 2)', () => {
   test('category tree (root + sub) → create a product in it → toggle active', async ({ page }) => {
     await login(page);
 
@@ -134,7 +134,7 @@ test.describe('EMS Cluster B — catalog (slice 2)', () => {
     await expect(page.getByRole('row').filter({ hasText: PRODUCT }).getByText('Inactive')).toBeVisible();
   });
 
-  test('mobile viewport — products + categories render without horizontal overflow', async ({ page }) => {
+  test('mobile viewport - products + categories render without horizontal overflow', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 800 });
     await login(page);
     for (const path of ['/ems/products', '/ems/categories']) {
@@ -153,7 +153,7 @@ const Q_CLIENT = `QuoteClient ${QSTAMP}`;
 const Q_LEAD = `QuoteLead ${QSTAMP}`;
 const Q_PRODUCT = `QuoteProduct ${QSTAMP}`;
 
-test.describe('EMS Cluster B — quotations (slice 3)', () => {
+test.describe('EMS Cluster B - quotations (slice 3)', () => {
   // Preconditions (client + lead + product) seeded via API; the quotation flow
   // itself is exercised through real clicks.
   test.beforeAll(async () => {
@@ -205,7 +205,7 @@ test.describe('EMS Cluster B — quotations (slice 3)', () => {
     }
   });
 
-  test('mobile viewport — quotations list renders without horizontal overflow', async ({ page }) => {
+  test('mobile viewport - quotations list renders without horizontal overflow', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 800 });
     await login(page);
     await page.goto('/ems/quotations');

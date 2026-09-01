@@ -1,4 +1,4 @@
-"""Conversation (inbox) endpoint tests — plan 05 Phase B-2.
+"""Conversation (inbox) endpoint tests - plan 05 Phase B-2.
 
 Threads list + filters (assignee/status/priority/search), thread get,
 messages (+read marker), PATCH field-level gating (assign vs reply),
@@ -262,7 +262,7 @@ def test_conversations_permission_gating(client, session_factory):
     )
 
 
-# ── Outbound send (plan 05 §5 — Phase B-3) ──────────────────────────────────
+# ── Outbound send (plan 05 §5 - Phase B-3) ──────────────────────────────────
 def _seed_template(session_factory, channel_id=None, status="APPROVED"):
     from modules.omnichannel.models import Channel, WhatsappTemplate
 
@@ -396,7 +396,7 @@ def test_internal_note_endpoint(client, session_factory):
     h = _auth(client)
 
     res = client.post(
-        f"/omnichannel/contacts/{cid}/notes", headers=h, json={"body": "VIP — escalate"}
+        f"/omnichannel/contacts/{cid}/notes", headers=h, json={"body": "VIP - escalate"}
     )
     assert res.status_code == 201
     assert res.json()["senderType"] == "SYSTEM"

@@ -1,8 +1,8 @@
 /**
  * Generic in-memory query engine for MOCK services (Phase A only).
  *
- * It applies the same semantics the real backend will — recursive AND/OR
- * filtering, general search, sort, pagination — over an in-memory array, so the
+ * It applies the same semantics the real backend will - recursive AND/OR
+ * filtering, general search, sort, pagination - over an in-memory array, so the
  * frontend prototype behaves exactly like the server-side list. In Phase B the
  * real service replaces the mock and this file is no longer used at runtime.
  */

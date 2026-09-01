@@ -1,4 +1,4 @@
-"""WebSocket realtime tests — plan 05 Phase B-5.
+"""WebSocket realtime tests - plan 05 Phase B-5.
 
 Auth-on-connect (bad token / missing perm → 4403 close), and the pub/sub
 relay: a realtime.publish on the workspace room reaches a connected socket.

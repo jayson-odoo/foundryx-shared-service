@@ -17,7 +17,7 @@ import { SearchSelect } from '@/components/platform/search-select';
 import type { NumberCatalogItem, NumberReset } from '@/types/numbering';
 import { NUMBER_RESET_OPTIONS } from '@/types/numbering';
 
-/** Live token substitution for the dialog preview — mirrors the backend tokens. */
+/** Live token substitution for the dialog preview - mirrors the backend tokens. */
 function previewNumber(prefix: string, pattern: string, seq: number): string {
   const now = new Date();
   const yyyy = String(now.getFullYear());
@@ -31,9 +31,9 @@ function previewNumber(prefix: string, pattern: string, seq: number): string {
 }
 
 /**
- * Inline numbering edit dialog (sprint-4/07, Cluster F — AC-07-07). Edits
+ * Inline numbering edit dialog (sprint-4/07, Cluster F - AC-07-07). Edits
  * prefix + format + reset + next-val; saving changes the next generated number.
- * Format must contain a running-number token ({NNNN}) — the boundary validates
+ * Format must contain a running-number token ({NNNN}) - the boundary validates
  * too; here Save is blocked so the user can't submit an always-colliding format.
  */
 export function NumberEditDialog({
@@ -83,7 +83,7 @@ export function NumberEditDialog({
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Numbering — {item.label}</DialogTitle>
+          <DialogTitle>Numbering - {item.label}</DialogTitle>
           <DialogDescription>
             Default: {item.defaultPrefix}
             {item.defaultFormat}

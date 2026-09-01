@@ -1,5 +1,5 @@
 /**
- * Mock template service — two-tier semantics (D6/D7) the Phase-B backend
+ * Mock template service - two-tier semantics (D6/D7) the Phase-B backend
  * must mirror: fork-on-edit, required-fact save gate, system delete-block,
  * reset-to-default.
  */
@@ -40,7 +40,7 @@ describe('mock template service (two-tier contract)', () => {
       doc: tpl.doc,
     });
     expect(updated.tier).toBe('customized');
-    expect(updated.isSystem).toBe(true); // still a system KEY — only forked
+    expect(updated.isSystem).toBe(true); // still a system KEY - only forked
   });
 
   it('save rejects when a required fact is missing (D7 safety rail)', async () => {

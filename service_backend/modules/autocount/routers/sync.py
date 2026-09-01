@@ -1,6 +1,6 @@
-"""Sync routes — trigger, review, approve, discard. HTTP + Pydantic only.
+"""Sync routes - trigger, review, approve, discard. HTTP + Pydantic only.
 
-"Sync now" is MANUAL this slice (no scheduling, no beat entry) — see
+"Sync now" is MANUAL this slice (no scheduling, no beat entry) - see
 ``services/sync_service.py`` for why.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -42,7 +42,7 @@ def _raise(exc: AutocountServiceError) -> None:
     if isinstance(exc, NotAwaitingApproval):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message)
     if isinstance(exc, (PushFailed, PreviewFailed)):
-        # An UPSTREAM fault, not bad client input — 422 would tell the operator
+        # An UPSTREAM fault, not bad client input - 422 would tell the operator
         # they sent something wrong when in fact the consumer broke. A push is
         # back in review and re-approvable; a preview failure just means the
         # gate cannot offer approval yet. Both say so in the message.
@@ -117,7 +117,7 @@ def list_jobs(
     page: int = Query(0, ge=0),
     page_size: int = Query(25, ge=1, le=200),
 ) -> SyncJobListResponse:
-    """The Review list — sync batches for the caller's tenant, newest first
+    """The Review list - sync batches for the caller's tenant, newest first
     (AC-15-02). Server-paginated + status/entity/label filtered; NEVER an
     unbounded fetch."""
     try:
@@ -148,7 +148,7 @@ def list_staged(
     page_size: int = Query(25, ge=1, le=200),
 ) -> StagedListResponse:
     """Staged records + their per-record diffs (AC-13-12, AC-15-10/11). Nothing
-    here has been pushed — this is the review surface. Server-paginated with an
+    here has been pushed - this is the review surface. Server-paginated with an
     optional ``changed``-only filter; the response carries the batch total + the
     no-change count so the FE collapses no-op re-fetches without fetching them."""
     try:
@@ -178,7 +178,7 @@ def preview(
     db: Session = Depends(get_db),
 ) -> PreviewResponse:
     """Dry-run the staged batch against the consumer and return its prediction
-    (AC-14-20/21). Writes NOTHING — the prediction is Sorento's own rolled-back
+    (AC-14-20/21). Writes NOTHING - the prediction is Sorento's own rolled-back
     resolution, never a local reconstruction. Gated by the run permission
     because it is the step immediately before approval."""
     try:
@@ -214,7 +214,7 @@ def discard(
     actor_user_id: str = Depends(get_actor_user_id),
 ) -> ApprovalResponse:
     """Close the job without pushing. Staged rows are marked discarded, never
-    deleted — the raw payloads stay for audit (AC-13-07)."""
+    deleted - the raw payloads stay for audit (AC-13-07)."""
     try:
         result = SyncService(db).discard(
             current_user.tenant_id, job_id, actor_user_id=actor_user_id

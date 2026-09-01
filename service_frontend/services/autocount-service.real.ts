@@ -1,5 +1,5 @@
 /**
- * Real AutoCount service — talks to FastAPI via the shared api-client. Router
+ * Real AutoCount service - talks to FastAPI via the shared api-client. Router
  * prefixes come from the module manifest: companies at `/autocount/companies`,
  * sync at `/autocount`.
  */
@@ -10,6 +10,10 @@ import type {
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
   AutocountEntityConfig,
+  AutocountEtlPreviewResult,
+  AutocountEtlRunStart,
+  AutocountEtlTask,
+  AutocountEtlTaskUpdate,
   AutocountFormulaTestResult,
   AutocountJobListQuery,
   AutocountMappingUpdate,
@@ -17,6 +21,9 @@ import type {
   AutocountMappingWriteRow,
   AutocountPreviewResult,
   AutocountSimulateResult,
+  AutocountSqlConnection,
+  AutocountSqlPreview,
+  AutocountSqlSchema,
   AutocountStagedList,
   AutocountSyncJob,
   AutocountSyncJobBatch,
@@ -29,7 +36,7 @@ import type { AutocountListQuery, AutocountService } from './autocount-service';
 function pageParams(query: AutocountListQuery = {}): URLSearchParams {
   const p = new URLSearchParams();
   p.set('page', String(query.page ?? 0));
-  // The backend caps page_size at 200 — asking for more is a 422, not a bigger
+  // The backend caps page_size at 200 - asking for more is a 422, not a bigger
   // page, so never send an uncapped "give me everything" size.
   p.set('page_size', String(Math.min(query.pageSize ?? 25, 200)));
   return p;
@@ -133,6 +140,7 @@ export const realAutocountService: AutocountService = {
         body: JSON.stringify({
           sinkImpl: input.sinkImpl,
           sinkConnectionId: input.sinkConnectionId ?? null,
+          sorentoCompanyCode: input.sorentoCompanyCode?.trim() || null,
         }),
       },
     );
@@ -172,7 +180,90 @@ export const realAutocountService: AutocountService = {
       { method: 'POST', body: JSON.stringify(body) },
     );
   },
+
+  // ── direct-DB ETL (plan 22 S1) - endpoints per the contract documented on
+  // `AutocountService`.
+
+  listSqlConnections() {
+    return apiFetch<AutocountSqlConnection[]>('/autocount/sql/connections');
+  },
+
+  getSqlSchema(connectionId, opts) {
+    const suffix = opts?.refresh ? '?refresh=true' : '';
+    return apiFetch<AutocountSqlSchema>(
+      `/autocount/sql/connections/${encodeURIComponent(connectionId)}/schema${suffix}`,
+    );
+  },
+
+  previewSqlQuery(connectionId, query, opts) {
+    return apiFetch<AutocountSqlPreview>('/autocount/sql/preview', {
+      method: 'POST',
+      body: JSON.stringify({
+        connectionId,
+        query,
+        bindDocKey: opts?.bindDocKey ?? false,
+        docKey: opts?.docKey ?? null,
+      }),
+    });
+  },
+
+  getEtlTask(companyId, entityType) {
+    return apiFetch<AutocountEtlTask>(
+      `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/etl-task`,
+    );
+  },
+
+  updateEtlTask(companyId, entityType, input: AutocountEtlTaskUpdate) {
+    return apiFetch<AutocountEtlTask>(
+      `${etlTaskPath(companyId, entityType)}`,
+      { method: 'PUT', body: JSON.stringify({ sourceConfig: input.sourceConfig }) },
+    );
+  },
+
+  // ── direct-DB ETL (plan 22 S2) - endpoints per the contract documented on
+  // `AutocountService`.
+
+  previewEtlTask(companyId, entityType) {
+    return apiFetch<AutocountEtlPreviewResult>(`${etlTaskPath(companyId, entityType)}/preview`, {
+      method: 'POST',
+    });
+  },
+
+  activateEtlTask(companyId, entityType) {
+    return apiFetch<AutocountEtlTask>(`${etlTaskPath(companyId, entityType)}/activate`, {
+      method: 'POST',
+    });
+  },
+
+  pauseEtlTask(companyId, entityType) {
+    return apiFetch<AutocountEtlTask>(`${etlTaskPath(companyId, entityType)}/pause`, {
+      method: 'POST',
+    });
+  },
+
+  resumeEtlTask(companyId, entityType) {
+    return apiFetch<AutocountEtlTask>(`${etlTaskPath(companyId, entityType)}/resume`, {
+      method: 'POST',
+    });
+  },
+
+  runEtlTaskNow(companyId, entityType) {
+    return apiFetch<AutocountEtlRunStart>(`${etlTaskPath(companyId, entityType)}/run`, {
+      method: 'POST',
+    });
+  },
+
+  listEtlRuns(companyId, entityType, query = {}) {
+    return apiFetch<ListResult<AutocountSyncRun>>(
+      `${etlTaskPath(companyId, entityType)}/runs?${pageParams(query).toString()}`,
+    );
+  },
 };
+
+/** The per-(company, entity) task resource root. */
+function etlTaskPath(companyId: string, entityType: string): string {
+  return `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/etl-task`;
+}
 
 /** The wire shape of one mapping row on write (a blank formula → null). */
 function writeRow(row: AutocountMappingWriteRow) {

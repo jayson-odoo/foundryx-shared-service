@@ -1,4 +1,4 @@
-"""Module platform v2 (sprint-3/10, F9) — inter-module deps + capability
+"""Module platform v2 (sprint-3/10, F9) - inter-module deps + capability
 registry + soft references + the one ``active_modules`` filter.
 
 Extends the App Store (sprint-1/08) from isolated leaf modules to a real
@@ -9,7 +9,7 @@ active-gated), cross-module data refs without FKs (soft refs through a provider
 point so a tenant only sees the modules active for it.
 
 Hard governance line preserved: a module NEVER FKs across schemas into another
-module's tables and NEVER imports another module's Python internals — coupling
+module's tables and NEVER imports another module's Python internals - coupling
 goes through the capability registry (this package).
 """
 from app.module_platform.active import active_modules, is_visible

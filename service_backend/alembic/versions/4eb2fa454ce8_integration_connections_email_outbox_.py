@@ -66,7 +66,7 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f('ix_connections_provider'), ['provider'], unique=False)
         batch_op.create_index(batch_op.f('ix_connections_tenant_id'), ['tenant_id'], unique=False)
 
-    # (autogen also proposed touching `modules` name index/constraint — pre-
+    # (autogen also proposed touching `modules` name index/constraint - pre-
     # existing drift unrelated to this plan; deliberately not included here.)
     # ### end Alembic commands ###
 

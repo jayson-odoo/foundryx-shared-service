@@ -9,6 +9,12 @@ export interface FormTab {
   icon?: LucideIcon;
   /** Render tab content; `editing` flips fields read ↔ editable (global edit). */
   render: (ctx: { editing: boolean }) => ReactNode;
+  /**
+   * Shown but not selectable - a tab whose surface is not yet available on
+   * this record (e.g. a task's Schedule before its query exists). Keeps the
+   * full structure visible without offering a dead-end (foolproof-UI).
+   */
+  disabled?: boolean;
 }
 
 export interface BreadcrumbStep {
@@ -30,7 +36,7 @@ export interface ResourceFormConfig<T> {
   backLabel?: string;
   title: string;
   /** Sub-identifier under the title. Accepts a node so it can carry a link
-   * (e.g. a clickable trace id) — a bare string is still valid (string ⊂ node). */
+   * (e.g. a clickable trace id) - a bare string is still valid (string ⊂ node). */
   subtitle?: ReactNode;
   /** Identity avatar node (e.g. initials). */
   avatar?: ReactNode;
@@ -44,7 +50,7 @@ export interface ResourceFormConfig<T> {
   /**
    * Refresh the loaded record after a mutating form-surface action (e.g. a
    * Test that flips status). Without it, `runtime.reload` is a no-op on the
-   * form (plan 06 — the connection Health card went stale otherwise).
+   * form (plan 06 - the connection Health card went stale otherwise).
    */
   onReload?: () => void;
 
@@ -54,7 +60,7 @@ export interface ResourceFormConfig<T> {
   editPermission?: string;
   /** Start in edit mode (create page, or ?edit=1). */
   initialEditing?: boolean;
-  /** RHF dirty flag — gates the unsaved-changes guard. */
+  /** RHF dirty flag - gates the unsaved-changes guard. */
   isDirty: boolean;
   /** Commit edits. Return false to stay in edit mode (validation failed). */
   onSave: () => Promise<boolean> | boolean;
@@ -64,15 +70,15 @@ export interface ResourceFormConfig<T> {
   recordNav?: RecordNavConfig;
 
   /**
-   * Embedded (form-in-form) mode — when true the form renders WITHOUT the
+   * Embedded (form-in-form) mode - when true the form renders WITHOUT the
    * breadcrumb and uses `onBack` + `inlineNav` instead of URL navigation, so it
    * can live inside a parent form's tab (MasterDetail). Same chrome otherwise
    * (title, icon tabs, record-nav, FormRow fields).
    */
   embedded?: boolean;
-  /** Back button as an in-place action (vs the URL Link) — used when embedded. */
+  /** Back button as an in-place action (vs the URL Link) - used when embedded. */
   onBack?: () => void;
-  /** In-memory record-nav (vs the URL RecordNav) — used when embedded. */
+  /** In-memory record-nav (vs the URL RecordNav) - used when embedded. */
   inlineNav?: {
     index: number;
     total: number;

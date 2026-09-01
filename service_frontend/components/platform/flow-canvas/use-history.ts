@@ -1,14 +1,14 @@
 'use client';
 
 /**
- * Generic snapshot undo/redo for a controlled value (BL-064 — the shared
+ * Generic snapshot undo/redo for a controlled value (BL-064 - the shared
  * position/layout history both FlowCanvas consumers use: the workflow canvas
  * over its whole draft doc, the status canvas over its positions map).
  *
  * The value is owned by the parent (controlled). `set` records the prior value
  * on the undo stack and forwards the new one through `onChange`. A value change
  * that DIDN'T come through `set` (a fresh load, a Cancel/discard) is detected
- * via the `lastEmitted` ref and resets both stacks — the timeline belongs to
+ * via the `lastEmitted` ref and resets both stacks - the timeline belongs to
  * the current editing session, not to externally-swapped state.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';

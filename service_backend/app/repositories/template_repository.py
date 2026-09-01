@@ -1,4 +1,4 @@
-"""Template repository — pure SQLAlchemy over the two-tier templates table."""
+"""Template repository - pure SQLAlchemy over the two-tier templates table."""
 
 from typing import List, Optional, Tuple
 
@@ -18,7 +18,7 @@ class TemplateRepository:
         """Tenant rows ∪ platform rows whose key the tenant has NOT forked.
 
         ``tenant_id is None`` = the PLATFORM TENANT's scope (D13): it sees and
-        edits the NULL-tier rows themselves — maintaining the defaults every
+        edits the NULL-tier rows themselves - maintaining the defaults every
         unforked tenant renders.
         """
         if tenant_id is None:

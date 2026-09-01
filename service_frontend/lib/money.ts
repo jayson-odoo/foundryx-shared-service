@@ -1,4 +1,4 @@
-/** Money formatting (sprint-4/08). ONE formatter — uses Intl.NumberFormat for the
+/** Money formatting (sprint-4/08). ONE formatter - uses Intl.NumberFormat for the
  * correct symbol + grouping + per-currency decimal places. Effective currency =
  * the value's own currency ?? the tenant default. Never render a bare price. */
 
@@ -14,7 +14,7 @@ export function formatMoney(
   currency?: string | null,
   decimals?: number | null,
 ): string {
-  if (amount === null || amount === undefined) return '—';
+  if (amount === null || amount === undefined) return '-';
   const cur = (currency || 'USD').toUpperCase();
   const opts: Intl.NumberFormatOptions = { style: 'currency', currency: cur };
   if (decimals !== null && decimals !== undefined) {

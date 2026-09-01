@@ -53,7 +53,7 @@ export function SettingsTab({ form, editing, role, creating }: SettingsTabProps)
               )}
             />
           ) : (
-            (role?.name ?? '—')
+            (role?.name ?? '-')
           )}
         </FormRow>
 
@@ -77,7 +77,7 @@ export function SettingsTab({ form, editing, role, creating }: SettingsTabProps)
             />
           ) : (
             <span className={role?.description ? '' : 'text-muted-foreground'}>
-              {role?.description || '—'}
+              {role?.description || '-'}
             </span>
           )}
         </FormRow>
@@ -93,7 +93,7 @@ export function SettingsTab({ form, editing, role, creating }: SettingsTabProps)
                   <span className="text-sm text-muted-foreground">
                     {field.value
                       ? 'Protected from deletion. Turn off to allow this role to be deleted.'
-                      : 'Not protected — this role can be deleted.'}
+                      : 'Not protected - this role can be deleted.'}
                   </span>
                 </div>
               )}
@@ -262,7 +262,7 @@ export function AssignedUsersTab({ roleId, creating }: AssignedUsersTabProps) {
           <Info className="size-8 text-muted-foreground" />
           <p className="text-sm font-medium">Assign users after creating the role</p>
           <p className="text-sm text-muted-foreground">
-            Save this role first — you can then assign users to it from this tab.
+            Save this role first - you can then assign users to it from this tab.
           </p>
         </CardContent>
       </Card>
@@ -351,7 +351,7 @@ export function AssignedUsersTab({ roleId, creating }: AssignedUsersTabProps) {
                   <Initials name={u.name} email={u.email} />
                   <div className="flex flex-col">
                     <span className="text-sm font-medium text-foreground leading-tight transition-colors group-hover:text-primary">
-                      {u.name ?? '—'}
+                      {u.name ?? '-'}
                     </span>
                     <span className="text-xs text-muted-foreground">{u.email}</span>
                   </div>

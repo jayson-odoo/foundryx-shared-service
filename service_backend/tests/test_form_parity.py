@@ -3,7 +3,7 @@
 The block document is a forever-contract mirrored in ``types/forms.ts``;
 ``validate_form_doc``/``validate_submission`` branch on the taxonomy sets.
 Any drift (a type added on one side only) silently breaks the publish gate
-or the renderer — this test pins the two copies together (branding-tokens
+or the renderer - this test pins the two copies together (branding-tokens
 precedent, ``test_frontend_defaults_parity``).
 """
 import re

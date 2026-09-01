@@ -1,4 +1,4 @@
-"""Document sharing tests (plan sprint-3/05 §Phase C, Google-Drive model) —
+"""Document sharing tests (plan sprint-3/05 §Phase C, Google-Drive model) -
 mapped to the UAT acceptance criteria.
 
 A target has ONE stable share (token never changes); the owner edits
@@ -145,11 +145,11 @@ def test_flip_access_keeps_same_link(client):
     share = _share(client, h, "file", f["id"], generalAccess="public", capability="view")
     token = share["token"]
     assert client.get(f"/public/documents/{token}").json()["state"] == "open"
-    # Flip to restricted — SAME token, now anonymous = sign-in-required.
+    # Flip to restricted - SAME token, now anonymous = sign-in-required.
     flipped = _update(client, h, share["id"], generalAccess="restricted").json()
     assert flipped["token"] == token
     assert client.get(f"/public/documents/{token}").json()["state"] == "sign_in_required"
-    # Flip back to public — same token resolves open again.
+    # Flip back to public - same token resolves open again.
     _update(client, h, share["id"], generalAccess="public", capability="view")
     assert client.get(f"/public/documents/{token}").json()["state"] == "open"
 
@@ -221,7 +221,7 @@ def test_revoke_then_reensure_reenables_same_token(client):
     assert client.get(f"/public/documents/{token}").json()["state"] == "open"
     assert client.post("/documents/shares/revoke", json={"ids": [share["id"]]}, headers=h).status_code == 204
     assert client.get(f"/public/documents/{token}").status_code == 404
-    # Re-opening the dialog (ensure) re-enables the SAME link (Google) — its
+    # Re-opening the dialog (ensure) re-enables the SAME link (Google) - its
     # prior general_access (public) is preserved, so it resolves open again.
     again = _ensure(client, h, "file", f["id"])
     assert again["token"] == token

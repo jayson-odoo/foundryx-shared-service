@@ -1,12 +1,12 @@
-"""Capability registry (sprint-3/10 D5) — the sanctioned cross-module call seam.
+"""Capability registry (sprint-3/10 D5) - the sanctioned cross-module call seam.
 
 A provider module BOOT-registers ``CapabilityDef{key, version, provider_module,
 handler}`` (e.g. omnichannel ``messaging.send@1``). A consumer resolves at
 runtime via ``resolve_capability(db, tenant_id, key, version)`` → the handler
 IFF the provider module is ACTIVE for that tenant AND the major version matches,
-else ``None`` (the self-disable signal — NEVER raises for "absent"). The handler
+else ``None`` (the self-disable signal - NEVER raises for "absent"). The handler
 ``(db, tenant_id, payload) -> result`` tenant-scopes INTERNALLY (isolation is
-never relaxed — the critical house invariant).
+never relaxed - the critical house invariant).
 
 Versioning = integer major, exact-major match (breaking = new major; a provider
 may keep old majors registered). Unique ``(key, version)`` → one provider; a
@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 
 class DuplicateCapability(Exception):
-    """Two providers registered the same (key, version) at boot — fatal."""
+    """Two providers registered the same (key, version) at boot - fatal."""
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,7 @@ def register_capability(cap: CapabilityDef) -> None:
 
 
 def reset_capabilities() -> None:
-    """Test hook — clear the registry between boot simulations."""
+    """Test hook - clear the registry between boot simulations."""
     _CAPS.clear()
 
 
@@ -55,7 +55,7 @@ def resolve_capability(
     db: Session, tenant_id: str, key: str, version: int
 ) -> Optional[Callable]:
     """Return the handler iff the provider module is ACTIVE for this tenant and
-    the major version matches exactly; else ``None`` (self-disable signal —
+    the major version matches exactly; else ``None`` (self-disable signal -
     never raises for absence). Works cross-process (web + Celery both boot the
     registry; resolution takes a live ``db``)."""
     cap = _CAPS.get((key, version))

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Trace timeline (sprint-4/12 Slice 2, AC-DLC-18) — the ordered legs of one
+ * Trace timeline (sprint-4/12 Slice 2, AC-DLC-18) - the ordered legs of one
  * consumption (inbound API → outbound Meta → webhook delivery), each with its
  * source badge, status, latency + time. Clicking a leg opens that leg's detail;
  * the currently-viewed leg is highlighted. Reuses the shell primitives

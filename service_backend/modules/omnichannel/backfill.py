@@ -9,12 +9,12 @@ this deployment's ``/omnichannel/media/`` route, else an HTTP GET) →
 ``storage_for_tenant(...).save(...)`` → set ``media_key``, clear ``media_url``.
 
 **Idempotent** (only rows with ``media_url`` set + ``media_key`` NULL are
-touched — a re-run is a no-op) · **batched/capped** · **failure-isolated per
+touched - a re-run is a no-op) · **batched/capped** · **failure-isolated per
 row** (a row whose blob can't be fetched is logged + skipped, never fails the
 whole backfill, and stays convertible on a later run).
 
 Exposed as a plain callable so both the per-module Alembic data migration AND
-the tests can invoke it directly (conftest uses ``create_all`` — module Alembic
+the tests can invoke it directly (conftest uses ``create_all`` - module Alembic
 is a Postgres-only no-op there, so the function is the tested unit).
 """
 from __future__ import annotations
@@ -64,8 +64,8 @@ def _fetch_bytes(media_url: str) -> tuple[bytes, Optional[str]]:
     if parsed.scheme not in ("http", "https"):
         raise ValueError(f"unsupported media_url scheme: {media_url!r}")
 
-    req = urllib.request.Request(media_url, headers={"User-Agent": "FoundryX-Backfill/1.0"})
-    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310 — trusted own URLs
+    req = urllib.request.Request(media_url, headers={"User-Agent": "Foundryx-Backfill/1.0"})
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310 - trusted own URLs
         content = resp.read(_MAX_BYTES + 1)
         if len(content) > _MAX_BYTES:
             raise ValueError("media exceeds the backfill size cap")
@@ -75,7 +75,7 @@ def _fetch_bytes(media_url: str) -> tuple[bytes, Optional[str]]:
 
 def _key_hint(media_url: str) -> str:
     name = os.path.basename(urlparse(media_url).path) or "media"
-    # Strip the uuid suffix/extension noise — save() re-mints its own uuid.
+    # Strip the uuid suffix/extension noise - save() re-mints its own uuid.
     return unquote(name).rsplit(".", 1)[0][:64] or "media"
 
 
@@ -90,7 +90,7 @@ def backfill_media_urls(
     from .models import ConversationMessage
 
     result = BackfillResult()
-    # Ids of rows we couldn't fetch — excluded so they don't clog the ordered
+    # Ids of rows we couldn't fetch - excluded so they don't clog the ordered
     # window and starve convertible rows behind them (progress is guaranteed).
     skipped_ids: list[str] = []
     while True:
@@ -128,7 +128,7 @@ def backfill_media_urls(
                 row.media_mime = row.media_mime or mime
                 row.media_url = None
                 result.converted += 1
-            except Exception as exc:  # noqa: BLE001 — per-row isolation
+            except Exception as exc:  # noqa: BLE001 - per-row isolation
                 logger.warning(
                     "media_url backfill skipped message %s: %s", row.id, exc
                 )

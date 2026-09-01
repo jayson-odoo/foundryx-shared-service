@@ -1,4 +1,4 @@
-"""Numbering service (sprint-4/07, Cluster F) — gapless, concurrency-safe
+"""Numbering service (sprint-4/07, Cluster F) - gapless, concurrency-safe
 document numbering. Service-Repository, tenant-scoped.
 
 ``next_number(db, tenant_id, doc_type, at_date)`` is the engine entry point
@@ -9,7 +9,7 @@ caller rollback un-advances the counter = no gap; a Postgres SEQUENCE would
 skip on rollback = illegal gap).
 
 The number is assigned at a STATE-CHANGE seam by the CALLER (e.g. a Draft → Issued
-transition), not at create — the engine just hands out the next gapless string.
+transition), not at create - the engine just hands out the next gapless string.
 """
 import re
 from datetime import date, datetime, timezone
@@ -55,7 +55,7 @@ def period_key_for(reset_period: str, at_date: date) -> str:
 def format_number(
     pattern: str, prefix: str, seq: int, at_date: date
 ) -> str:
-    """Substitute the format tokens (AC-07-05). Pure — unit-tested directly.
+    """Substitute the format tokens (AC-07-05). Pure - unit-tested directly.
 
     ``{prefix}`` → the prefix; date tokens → ``at_date``; ``{NNNN}`` → ``seq``
     zero-padded to the N count; literals pass through untouched.
@@ -67,7 +67,7 @@ def format_number(
             return prefix
         if tok in _DATE_TOKENS:
             return at_date.strftime(_DATE_TOKENS[tok])
-        # running counter — pad width = number of N's
+        # running counter - pad width = number of N's
         return str(seq).zfill(len(tok))
 
     return _TOKEN_RE.sub(_sub, pattern)
@@ -80,7 +80,7 @@ class NumberingService:
 
     # ── effective format resolution (override ⊕ registry default) ──────────
     def _effective(self, tenant_id: str, doc_type: str):
-        """Return (prefix, format_pattern, reset_period) — the tenant override
+        """Return (prefix, format_pattern, reset_period) - the tenant override
         row else the registered default."""
         seq = self._require_registered(doc_type)
         ov = self.repo.get_format(tenant_id, doc_type)
@@ -104,7 +104,7 @@ class NumberingService:
         self, tenant_id: str, doc_type: str, at_date: Optional[date] = None
     ) -> str:
         """Hand out the next gapless number for ``doc_type``. Increments the
-        counter inside the CALLER's transaction (flush, NOT commit) — the caller
+        counter inside the CALLER's transaction (flush, NOT commit) - the caller
         commits/rolls back; a rollback leaves the counter UN-advanced (no gap)."""
         if at_date is None:
             at_date = datetime.now(timezone.utc).date()
@@ -113,7 +113,7 @@ class NumberingService:
 
         # Race-safe lock-or-create: FOR UPDATE locks nothing when the row is
         # absent, so two concurrent first-of-period callers must not both create
-        # (DEFECT-1) — the repo INSERTs in a SAVEPOINT and re-fetches under lock
+        # (DEFECT-1) - the repo INSERTs in a SAVEPOINT and re-fetches under lock
         # on the unique-violation.
         counter = self.repo.get_or_create_counter_for_update(
             tenant_id, doc_type, pkey, start=1
@@ -122,7 +122,7 @@ class NumberingService:
         seq = counter.next_val
         number = format_number(pattern, prefix, seq, at_date)
         counter.next_val = seq + 1
-        self.db.flush()  # NOT commit — caller owns the transaction (AC-07-04)
+        self.db.flush()  # NOT commit - caller owns the transaction (AC-07-04)
         return number
 
     # ── settings surface (AC-07-07) ────────────────────────────────────────

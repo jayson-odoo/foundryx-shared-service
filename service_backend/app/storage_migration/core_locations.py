@@ -1,6 +1,6 @@
 """Core StorageKeyLocation registrations (sprint-4/10 D9).
 
-Every core ``conn:<id>:`` storage-key location — scalar ``*_key`` columns +
+Every core ``conn:<id>:`` storage-key location - scalar ``*_key`` columns +
 JSON-embedded keys (form answers, template block-docs, workflow definitions).
 Modules register their own at install (omnichannel ``conversation_messages.
 media_key`` in its boot hook). Guarded by ``lazy_once`` (the house one-shot
@@ -49,7 +49,7 @@ def _register_core_locations() -> None:
         StorageKeyLoc(model=Template, json_column="doc_json", tenant_column="tenant_id"),
         StorageKeyLoc(model=NotificationSpec, json_column="doc_json", tenant_column="tenant_id"),
         # Workflow email.send config.doc lives inside the definition graphs
-        # (mutable draft + immutable version snapshots) — both carry image-block
+        # (mutable draft + immutable version snapshots) - both carry image-block
         # storageKeys, covered by the generic recursive rewriter.
         StorageKeyLoc(model=Workflow, json_column="draft_definition_json", tenant_column="tenant_id"),
         StorageKeyLoc(model=WorkflowVersion, json_column="definition_json", tenant_column="tenant_id"),
@@ -73,7 +73,7 @@ def register_module_declared_locations(manifest: dict) -> int:
         {"model": "Foo", "jsonColumn": "doc_json", "tenantColumn": "tenant_id"}
 
     A module that declares locations is thereby PROTECTED by the completeness
-    gate below — a migration refuses to cut over if these did not register.
+    gate below - a migration refuses to cut over if these did not register.
     """
     import importlib
 
@@ -96,37 +96,37 @@ def register_module_declared_locations(manifest: dict) -> int:
 
 
 def ensure_all_storage_locations() -> list:
-    """Register EVERY storage-key location — core + all on-disk modules' — into
+    """Register EVERY storage-key location - core + all on-disk modules' - into
     ``_LOCATIONS``. Idempotent. Returns a list of ``(module, error)`` for any
-    module whose registration RAISED (surfaced into the job log — never silent).
+    module whose registration RAISED (surfaced into the job log - never silent).
 
     **Why this exists (the worker no-op bug, sprint-4/12).** Location
     registration was originally a side effect of FastAPI app boot only
     (``ensure_core_locations`` in ``main.py`` lifespan + each module's
     ``register_engine_entities`` via ``load_modules``). A ``storage_migration``
-    job runs in the **Celery worker**, which boots neither — so ``_LOCATIONS``
+    job runs in the **Celery worker**, which boots neither - so ``_LOCATIONS``
     was empty and the migration copied/rewrote NOTHING.
 
     **Why it's now declarative (sprint-4/12 round 3).** The earlier fix called
     each module's ``register_engine_entities`` via ``module_hooks``, but
-    ``module_hooks`` SWALLOWS ``ModuleNotFoundError`` — so when importing the
+    ``module_hooks`` SWALLOWS ``ModuleNotFoundError`` - so when importing the
     module's heavy ``bootstrap`` chain failed in the worker process, it returned
     ``None`` and the module's locations were silently skipped (the prod
     "Registered 13 not 15" bug: omnichannel media never enumerated, then A was
     retired and the media stranded). We now:
 
     1. Register from the module's **manifest declaration**, importing only its
-       ``models`` package — no capabilities, no bootstrap side effects.
+       ``models`` package - no capabilities, no bootstrap side effects.
     2. NEVER swallow an import error: a raise is recorded as a ``(module, err)``
        failure with its type + message, logged with a traceback.
 
     The real safety, though, is the **completeness gate** (``missing_declared_
     location_modules``): the migration HOLDS instead of cutting over whenever a
-    declaring module's locations are not all registered — so an undercount can
+    declaring module's locations are not all registered - so an undercount can
     never silently strand + retire.
     """
     ensure_core_locations()
-    # Deferred import — avoids a module_loader ↔ storage_migration import cycle.
+    # Deferred import - avoids a module_loader ↔ storage_migration import cycle.
     from app.module_loader import discover_manifests
 
     failures: list = []
@@ -134,7 +134,7 @@ def ensure_all_storage_locations() -> list:
         name = manifest["module_name"]
         try:
             register_module_declared_locations(manifest)
-        except Exception as exc:  # noqa: BLE001 — a broken module must not abort a migration
+        except Exception as exc:  # noqa: BLE001 - a broken module must not abort a migration
             logger.exception(
                 "module '%s' storage-location registration failed during migration", name
             )
@@ -144,12 +144,12 @@ def ensure_all_storage_locations() -> list:
 
 def missing_declared_location_modules() -> list:
     """Modules that DECLARE storage locations in their manifest but have fewer
-    registered than declared — the completeness gate. A migration must HOLD (not
+    registered than declared - the completeness gate. A migration must HOLD (not
     cut over) while this is non-empty: an undercount means some of that module's
     blobs would be missed, then stranded when the source connection is retired.
 
     Counts by the ``module`` tag on registered locations (no model import needed
-    — so it still catches the case where the models import itself failed).
+    - so it still catches the case where the models import itself failed).
     """
     from app.module_loader import discover_manifests
     from app.storage_migration.registry import list_locations

@@ -1,4 +1,4 @@
-# Sprint 4 · Plan 05 — Cluster D (slice 1) Test Execution Report
+# Sprint 4 · Plan 05 - Cluster D (slice 1) Test Execution Report
 
 **Scope:** Venue master + Offerings + capacity minting + read-only public registration portal (slice 1). Cart / seat-map / checkout = slice 2.
 **Stack:** Next :3001 → FastAPI :8001 → native Postgres, default tenant.
@@ -44,7 +44,7 @@
 
 ## Notes / deferred to slice 2
 - Seat occupancy is all-`free` until tickets exist (tickets = slice 2/3); the seat-allocation map's sold/held demo data was mock-only.
-- Public portal is read-only — cart, live seat-map (WS), checkout, per-IP throttle + honeypot all land in slice 2.
+- Public portal is read-only - cart, live seat-map (WS), checkout, per-IP throttle + honeypot all land in slice 2.
 - Bulk-import ticket modes (R3-5), nomination/QR, derived participant Checked-in (R3-2) = slices 2/3.
 
 ## Fixed alongside

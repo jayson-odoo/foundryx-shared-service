@@ -128,7 +128,7 @@ def test_empty_tree_is_unconditional():
 
 
 def test_missing_or_null_fact_fails_closed_even_negative_ops():
-    # D5: missing/null fact ⇒ condition False — including neq/not_in/not_contains.
+    # D5: missing/null fact ⇒ condition False - including neq/not_in/not_contains.
     facts = {"a.known": None}
     for c in (
         cond("a.ghost", "eq", "x"),
@@ -174,7 +174,7 @@ def test_cross_fact_compare():
 
 
 def test_decimal_facts_compare():
-    """sprint-4/07 Cluster F — Decimal money facts (Numeric(14,4)) compare
+    """sprint-4/07 Cluster F - Decimal money facts (Numeric(14,4)) compare
     correctly (the evaluator coerces Decimal → float). Finance's derived
     Partially Paid / Paid edges depend on this."""
     from decimal import Decimal
@@ -205,7 +205,7 @@ def test_failed_conditions_lists_failures():
 
 def test_failed_conditions_skips_satisfied_or_branches():
     """Code-review fix: a failing leaf inside an OR group whose sibling
-    passed did NOT block the tree — it must not appear in the 409 detail."""
+    passed did NOT block the tree - it must not appear in the 409 detail."""
     facts = {"a.x": 1, "a.y": 2, "a.z": 3}
     tree = group(
         "and",
@@ -443,7 +443,7 @@ def test_create_edge_with_conditions(client):
         client, admin, "synthetic_ticket", approved["id"], rejected["id"], "Reopen",
         conditionsJson=group("and", cond("actor.email", "contains", "@example.com")),
     )
-    # Approved is terminal in the helper graph — recreate on a non-terminal edge.
+    # Approved is terminal in the helper graph - recreate on a non-terminal edge.
     assert res.status_code in (201, 422)
 
 
@@ -482,7 +482,7 @@ def test_tenant_rows_carry_fireable_edges_when_conditioned(client):
     ]
     assert any(a in ids for a in archive_ids)  # unconditional edges remain
 
-    # Cleanup: clear the condition (shared platform graph) — clearing must
+    # Cleanup: clear the condition (shared platform graph) - clearing must
     # store SQL NULL, not JSON null (none_as_null regression): the field
     # drops back to null AND no "Always allowed" ghost lingers on /rules.
     res = client.patch(
@@ -545,7 +545,7 @@ def test_rules_list_aggregates_conditioned_edges(client):
     row = next(r for r in rows if "Approve" in r["context"] or "Pending" in r["context"])
     assert row["site"] == "status_transition"
     assert "Name" in row["summary"] and "VIP" in row["summary"]
-    # Wire carries DATA (the entity type) — frontend maps site+target to its
+    # Wire carries DATA (the entity type) - frontend maps site+target to its
     # own route; backend never hardcodes frontend paths (code-review fix).
     assert row["target"] == "synthetic_ticket"
 

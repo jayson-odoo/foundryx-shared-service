@@ -1,4 +1,4 @@
-"""Scoped status machines — sprint-3/01 Phase 0 spike (a) + D4 contract.
+"""Scoped status machines - sprint-3/01 Phase 0 spike (a) + D4 contract.
 
 A synthetic scoped ``review_item`` entity (scope = its ``board_id``, the way
 ``form_submission`` scopes on ``form_id``) exercises: materialize-on-create ·
@@ -29,7 +29,7 @@ from tests.conftest import ACTIVE_EMAIL
 
 
 class ReviewItemRecord(Base):
-    """Test-only scoped entity — what form_submission looks like to the engine."""
+    """Test-only scoped entity - what form_submission looks like to the engine."""
 
     __tablename__ = "test_review_items"
 
@@ -149,7 +149,7 @@ def test_two_scopes_reuse_keys(db):
     a = _seed_scope(db, "board-1")
     b = _seed_scope(db, "board-2")
     db.commit()
-    # Same keys, distinct rows per scope — unique constraint includes scope_id.
+    # Same keys, distinct rows per scope - unique constraint includes scope_id.
     assert a["draft"].id != b["draft"].id
     assert len(scope_status_ids(db, "review_item", DEFAULT_TENANT_ID, "board-1")) == 2
     assert len(scope_status_ids(db, "review_item", DEFAULT_TENANT_ID, "board-2")) == 2
@@ -183,7 +183,7 @@ def test_cross_scope_transition_refused(db):
     item = _make_item(db, "board-1", a["draft"].id)
     db.commit()
     actor = _demo_user(db)
-    # Target from ANOTHER board's graph — the scope guard must refuse before
+    # Target from ANOTHER board's graph - the scope guard must refuse before
     # any edge lookup ambiguity.
     with pytest.raises(TransitionNotAllowed) as exc:
         status_machine.transition(db, "review_item", item, b["submitted"].id, actor)

@@ -91,7 +91,7 @@ export default function ProductsPage() {
           <ToolbarHeading>
             <ToolbarPageTitle />
             <ToolbarDescription>
-              The core product catalog — goods, services, and software.
+              The core product catalog - goods, services, and software.
             </ToolbarDescription>
           </ToolbarHeading>
         </Toolbar>

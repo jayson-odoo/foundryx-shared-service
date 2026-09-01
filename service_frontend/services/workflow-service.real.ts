@@ -1,6 +1,3 @@
-import { apiFetch } from '@/lib/api-client';
-import { toCsv } from '@/lib/csv';
-import type { WorkflowSettings } from './workflow-service';
 import type { ListQuery, ListResult } from '@/types/resource';
 import type {
   Workflow,
@@ -11,9 +8,12 @@ import type {
   WorkflowRunDetail,
   WorkflowRunListItem,
   WorkflowRunRequest,
+  WorkflowTestOptions,
   WorkflowVersionSummary,
 } from '@/types/workflows';
-import type { WorkflowService } from './workflow-service';
+import { apiFetch } from '@/lib/api-client';
+import { toCsv } from '@/lib/csv';
+import type { WorkflowService, WorkflowSettings } from './workflow-service';
 
 function listParams(query: ListQuery): URLSearchParams {
   const p = new URLSearchParams();
@@ -31,7 +31,9 @@ function listParams(query: ListQuery): URLSearchParams {
 
 export const realWorkflowService: WorkflowService = {
   list(query) {
-    return apiFetch<ListResult<WorkflowListItem>>(`/workflows?${listParams(query).toString()}`);
+    return apiFetch<ListResult<WorkflowListItem>>(
+      `/workflows?${listParams(query).toString()}`,
+    );
   },
 
   getAt(query, index) {
@@ -49,11 +51,17 @@ export const realWorkflowService: WorkflowService = {
   },
 
   create(input: WorkflowInput) {
-    return apiFetch<Workflow>('/workflows', { method: 'POST', body: JSON.stringify(input) });
+    return apiFetch<Workflow>('/workflows', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
   },
 
   update(id, input: WorkflowInput) {
-    return apiFetch<Workflow>(`/workflows/${id}`, { method: 'PATCH', body: JSON.stringify(input) });
+    return apiFetch<Workflow>(`/workflows/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    });
   },
 
   remove(id) {
@@ -94,6 +102,10 @@ export const realWorkflowService: WorkflowService = {
     });
   },
 
+  getTestOptions(id) {
+    return apiFetch<WorkflowTestOptions>(`/workflows/${id}/test-options`);
+  },
+
   listRuns(workflowId, query) {
     const p = new URLSearchParams();
     p.set('page', String(query.page));
@@ -105,11 +117,15 @@ export const realWorkflowService: WorkflowService = {
   },
 
   getRun(runId) {
-    return apiFetch<WorkflowRunDetail>(`/workflows/runs/${runId}`).catch(() => null);
+    return apiFetch<WorkflowRunDetail>(`/workflows/runs/${runId}`).catch(
+      () => null,
+    );
   },
 
   cancelRun(runId) {
-    return apiFetch<WorkflowRunListItem>(`/workflows/runs/${runId}/cancel`, { method: 'POST' });
+    return apiFetch<WorkflowRunListItem>(`/workflows/runs/${runId}/cancel`, {
+      method: 'POST',
+    });
   },
 
   listVersions(workflowId, query) {
@@ -129,7 +145,9 @@ export const realWorkflowService: WorkflowService = {
   },
 
   listTemplateOptions() {
-    return apiFetch<{ value: string; label: string }[]>('/workflows/template-options');
+    return apiFetch<{ value: string; label: string }[]>(
+      '/workflows/template-options',
+    );
   },
 
   getSettings() {
@@ -144,12 +162,14 @@ export const realWorkflowService: WorkflowService = {
   },
 
   async export(query, columns) {
-    // No bulk export endpoint — render CSV from a large page client-side.
+    // No bulk export endpoint - render CSV from a large page client-side.
     const result = await apiFetch<ListResult<WorkflowListItem>>(
       `/workflows?${listParams({ ...query, page: 0, pageSize: 1000 }).toString()}`,
     );
     const body = result.data.map((r) =>
-      columns.map((c) => String((r as unknown as Record<string, unknown>)[c] ?? '')),
+      columns.map((c) =>
+        String((r as unknown as Record<string, unknown>)[c] ?? ''),
+      ),
     );
     return toCsv(columns, body);
   },

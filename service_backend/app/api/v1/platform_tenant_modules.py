@@ -1,4 +1,4 @@
-"""Operator App Store routes (plan 08 §7) — manage ANY tenant's modules from the
+"""Operator App Store routes (plan 08 §7) - manage ANY tenant's modules from the
 Platform Console (support path). Same AppStoreService as the tenant-side
 routes (error mapping shared via ``app_store.run_store_action``); gated by
 ``tenants.manage_modules`` (platform key + platform-tenant membership via

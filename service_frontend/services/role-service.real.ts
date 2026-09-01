@@ -1,5 +1,5 @@
 /**
- * Real role service (Phase B) — talks to FastAPI via the shared api-client.
+ * Real role service (Phase B) - talks to FastAPI via the shared api-client.
  * Backend returns camelCase matching the role types, so no field remapping.
  * Bound in one line from role-service.ts when the backend lands.
  */

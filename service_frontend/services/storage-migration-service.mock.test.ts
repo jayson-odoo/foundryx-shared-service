@@ -48,7 +48,7 @@ describe('mockStorageMigrationService (PHASE 1 MOCK)', () => {
   });
 });
 
-describe('mockJobsService (PHASE 1 MOCK) — auto-advancing progress', () => {
+describe('mockJobsService (PHASE 1 MOCK) - auto-advancing progress', () => {
   it('a running job advances toward done across polls', async () => {
     seedMockJobs([runningJob()]);
     let job = await mockJobsService.getJob('job-x');

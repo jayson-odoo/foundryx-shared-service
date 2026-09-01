@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Transition (edge) drawer (sprint-2/01) — label (the action button text),
+ * Transition (edge) drawer (sprint-2/01) - label (the action button text),
  * fire-authorization roles (D5, MultiSelect) and the notify-on-transition
  * sub-form (D6: channel, recipients USER/ROLE/DYNAMIC, inline merge-field
  * template). Saving syncs the whole edge in one PATCH.
@@ -42,7 +42,7 @@ const DYNAMIC_OPTIONS: { value: DynamicRecipientKey; label: string }[] = [
   { value: 'RECORD_OWNER', label: 'Record owner' },
 ];
 
-/** Variables a notification template can use — chips insert them at the caret. */
+/** Variables a notification template can use - chips insert them at the caret. */
 const MERGE_FIELDS: MergeField[] = [
   { key: 'recordLabel', label: 'Record name' },
   { key: 'fromStatus', label: 'From status' },
@@ -60,7 +60,7 @@ export interface PendingEdge {
 export interface TransitionDrawerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Existing edge to edit — or null with `pending` set for create-by-drag. */
+  /** Existing edge to edit - or null with `pending` set for create-by-drag. */
   transition: StatusTransition | null;
   pending: PendingEdge | null;
   statuses: StatusNodeData[];
@@ -96,7 +96,7 @@ export interface TransitionDrawerProps {
   onDelete: (id: string) => Promise<boolean>;
 }
 
-/** Picker sentinel — "no linked template, write a custom inline email". */
+/** Picker sentinel - "no linked template, write a custom inline email". */
 const CUSTOM_EMAIL = '';
 
 function emptyNotification(): TransitionNotification {
@@ -131,7 +131,7 @@ export function TransitionDrawer({
   const [notifications, setNotifications] = useState<TransitionNotification[]>([]);
   const [conditions, setConditions] = useState<RuleGroup | null>(null);
   const [triggerMode, setTriggerMode] = useState<TriggerMode>('manual');
-  // RuleBuilder is mount-initialized — bump to remount it with a fresh tree.
+  // RuleBuilder is mount-initialized - bump to remount it with a fresh tree.
   const [builderEpoch, setBuilderEpoch] = useState(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -182,7 +182,7 @@ export function TransitionDrawer({
   const validate = (): string | null => {
     if (!label.trim()) return 'Label is required.';
     // Auto edges are system-fired: they MUST carry conditions (an unconditioned
-    // auto edge would fire always) — mirrors the backend 422 (sprint-4/03 G6).
+    // auto edge would fire always) - mirrors the backend 422 (sprint-4/03 G6).
     if (isAuto && !hasConditions)
       return 'An automatic transition needs at least one condition.';
     for (const notification of notifications) {
@@ -206,7 +206,7 @@ export function TransitionDrawer({
     }
     setError(null);
     setSaving(true);
-    // Auto edges carry no roles (system-fired) — send an empty set regardless.
+    // Auto edges carry no roles (system-fired) - send an empty set regardless.
     const effectiveRoles = isAuto ? [] : roleIds;
     const ok = transition
       ? await onUpdate(transition.id, label, effectiveRoles, notifications, conditions, triggerMode)
@@ -222,10 +222,10 @@ export function TransitionDrawer({
       <SheetContent className="flex flex-col sm:max-w-lg">
         <SheetHeader>
           <SheetTitle>
-            Transition — {fromLabel} → {toLabel}
+            Transition - {fromLabel} → {toLabel}
           </SheetTitle>
         </SheetHeader>
-        {/* Scrollable body + pinned footer — template editors grow tall. */}
+        {/* Scrollable body + pinned footer - template editors grow tall. */}
         <SheetBody className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto">
           <div className="flex flex-col gap-2">
             <Label htmlFor="transition-label">
@@ -235,13 +235,13 @@ export function TransitionDrawer({
               id="transition-label"
               value={label}
               onChange={(e) => setLabel(e.target.value)}
-              placeholder='Button text — e.g. "Approve"'
+              placeholder='Button text - e.g. "Approve"'
               disabled={!canManage}
             />
             {error && <p className="text-xs text-destructive">{error}</p>}
           </div>
 
-          {/* Trigger mode (sprint-4/03) — a manual action button vs an
+          {/* Trigger mode (sprint-4/03) - a manual action button vs an
               engine-fired derivation when its conditions become true. */}
           <div className="flex flex-col gap-2">
             <Label>Trigger</Label>
@@ -257,7 +257,7 @@ export function TransitionDrawer({
             />
           </div>
 
-          {/* Roles gate WHO fires a manual edge — meaningless for an auto edge. */}
+          {/* Roles gate WHO fires a manual edge - meaningless for an auto edge. */}
           {!isAuto && (
             <div className="flex flex-col gap-2">
               <Label>Who can perform it</Label>
@@ -276,7 +276,7 @@ export function TransitionDrawer({
             </div>
           )}
 
-          {/* Rule-engine edge conditions (sprint-2/02) — evaluated at fire AND
+          {/* Rule-engine edge conditions (sprint-2/02) - evaluated at fire AND
               when listing available transitions; failing edges are hidden. For
               auto edges they ARE the derivation rule (required). */}
           <div className="flex flex-col gap-2">
@@ -313,7 +313,7 @@ export function TransitionDrawer({
           </div>
           {notifications.length === 0 && (
             <p className="text-xs text-muted-foreground">
-              No notifications — add one to email people when this transition fires.
+              No notifications - add one to email people when this transition fires.
             </p>
           )}
           {notifications.map((notification, index) => (
@@ -365,7 +365,7 @@ export function TransitionDrawer({
                             patchNotification(index, { templateId: null, doc: null });
                             return;
                           }
-                          // Copy the template's block doc for per-use editing —
+                          // Copy the template's block doc for per-use editing -
                           // branded, but the wording is editable here.
                           void onLoadTemplate?.(value).then((loaded) =>
                             patchNotification(index, {
@@ -390,7 +390,7 @@ export function TransitionDrawer({
                   {notification.doc ? (
                     <div className="flex flex-col gap-2 rounded-md border border-dashed border-input bg-muted/30 p-3">
                       <p className="text-xs text-muted-foreground">
-                        Branded email — edit the wording, or change layout in Templates.
+                        Branded email - edit the wording, or change layout in Templates.
                       </p>
                       <Button
                         type="button"
@@ -419,7 +419,7 @@ export function TransitionDrawer({
                         actorName: session?.user?.name ?? 'You',
                         entityLabel: entityLabel ?? '',
                       }}
-                      subjectPlaceholder="Subject — e.g. {{recordLabel}} moved to {{toStatus}}"
+                      subjectPlaceholder="Subject - e.g. {{recordLabel}} moved to {{toStatus}}"
                       bodyPlaceholder="Body…"
                       dialogTitle="Notification email"
                       disabled={!canManage}

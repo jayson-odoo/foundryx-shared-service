@@ -1,4 +1,4 @@
-"""Omnichannel API schemas — camelCase out to the frontend (mirrors
+"""Omnichannel API schemas - camelCase out to the frontend (mirrors
 service_frontend/types/omnichannel.ts). Status flags are resolved to string
 keys by the services before constructing these models.
 """
@@ -90,7 +90,7 @@ class ChannelItem(ApiModel):
 
 
 class ChannelProfileOut(ApiModel):
-    """WhatsApp Business Profile mirror (plan 06). Rendered from the local DB —
+    """WhatsApp Business Profile mirror (plan 06). Rendered from the local DB -
     no Meta call on read."""
 
     about: Optional[str] = None
@@ -105,7 +105,7 @@ class ChannelProfileOut(ApiModel):
 
 
 class ChannelProfileUpdate(ApiModel):
-    """Editable + write-through profile fields. All optional — only changed
+    """Editable + write-through profile fields. All optional - only changed
     fields are POSTed to Meta. ``websites`` capped at 2 (website1/website2)."""
 
     about: Optional[str] = None
@@ -152,17 +152,17 @@ class OnboardingCallbackRequest(ApiModel):
     businessName: Optional[str] = None
     # The redirect_uri the OAuth dialog was minted against. Under Meta "strict
     # mode" the code is redirect_uri-bound; the token exchange MUST send the
-    # identical value. None for the simulated popup (dev) — exchange stays
+    # identical value. None for the simulated popup (dev) - exchange stays
     # redirect-less.
     redirectUri: Optional[str] = None
 
 
 class ManualConnectRequest(ApiModel):
-    """Manual channel connect — paste a permanent System User token + phone IDs.
+    """Manual channel connect - paste a permanent System User token + phone IDs.
 
     Escape hatch for testing a number before Business Verification (the Embedded
     Signup popup is gated until verified). Provide phoneNumberId directly (easiest
-    — it's on the WhatsApp API Setup page), or wabaId + phoneNumber to resolve it.
+    - it's on the WhatsApp API Setup page), or wabaId + phoneNumber to resolve it.
     """
 
     workspaceId: str
@@ -203,7 +203,7 @@ class MessageItem(ApiModel):
     senderId: Optional[str] = None
     senderName: Optional[str] = None
     # Set when the sender is a federated (embed) external agent, else None
-    # (plan 11H Slice 1) — the bubble renders the agent's avatar either way.
+    # (plan 11H Slice 1) - the bubble renders the agent's avatar either way.
     senderExternalAgentId: Optional[str] = None
     senderAvatarUrl: Optional[str] = None
     messageType: str
@@ -214,9 +214,9 @@ class MessageItem(ApiModel):
     mediaSize: Optional[int] = None
     voice: bool = False
     # Structured payload for interactive/interactive-reply/location/contacts
-    # (plan 12 Slice 2) — the friendly definition the bubble renders.
+    # (plan 12 Slice 2) - the friendly definition the bubble renders.
     payload: Optional[dict] = None
-    # Emoji reaction chips (plan 12 Slice 3) — [{emoji, reactorType, reactor}].
+    # Emoji reaction chips (plan 12 Slice 3) - [{emoji, reactorType, reactor}].
     reactions: List[dict] = []
     externalMessageId: Optional[str] = None
     deliveryStatus: Optional[str] = None  # QUEUED | SENT | DELIVERED | READ | FAILED
@@ -227,7 +227,7 @@ class MessageItem(ApiModel):
 
 
 class ThreadItem(ApiModel):
-    id: str  # contact id — the contact IS the thread
+    id: str  # contact id - the contact IS the thread
     tenantId: str
     workspaceId: str
     name: str
@@ -235,7 +235,7 @@ class ThreadItem(ApiModel):
     avatarUrl: Optional[str] = None
     assignedUserId: Optional[str] = None
     assignedUserName: Optional[str] = None
-    # Federated (embed) assignee — set instead of assignedUserId when an external
+    # Federated (embed) assignee - set instead of assignedUserId when an external
     # agent owns the thread (plan 11H Slice 1). The list resolves the display
     # name/avatar from whichever assignee column is set.
     assignedExternalAgentId: Optional[str] = None
@@ -297,7 +297,7 @@ class TemplateItem(ApiModel):
     category: Optional[str] = None
     bodyText: str
     variableCount: int  # BODY {{n}} count (back-compat)
-    # Rich-header/button metadata (plan 12 Slice 3) — drives the send dialog's
+    # Rich-header/button metadata (plan 12 Slice 3) - drives the send dialog's
     # inputs so it asks for ONLY what a given template needs.
     headerFormat: Optional[str] = None  # None | TEXT | IMAGE | VIDEO | DOCUMENT
     headerVariableCount: int = 0  # TEXT-header {{n}} count
@@ -314,7 +314,7 @@ class QuickReplyItem(ApiModel):
 
 class QuickReplyCreate(ApiModel):
     """Create a canned response. ``body`` required (non-blank); ``shortcut``
-    optional (a leading ``/`` is fine — the composer matches ``/xyz``)."""
+    optional (a leading ``/`` is fine - the composer matches ``/xyz``)."""
 
     shortcut: Optional[str] = None
     body: str
@@ -362,7 +362,7 @@ class QuickReplyUpdate(ApiModel):
         return v
 
 
-# ── Omnichannel media settings (plan 12 — per-workspace caps) ────────────────
+# ── Omnichannel media settings (plan 12 - per-workspace caps) ────────────────
 class MediaCapItem(ApiModel):
     maxBytes: int
     ceilingBytes: int
@@ -430,7 +430,7 @@ class PublicMediaBody(ApiModel):
 
 
 class PublicReactionBody(ApiModel):
-    messageId: str  # OUR durable message id (never a raw wamid — AC-12-21)
+    messageId: str  # OUR durable message id (never a raw wamid - AC-12-21)
     emoji: str = ""  # empty removes
 
 
@@ -442,11 +442,11 @@ class PublicSendRequest(ApiModel):
     text: Optional[PublicTextBody] = None
     template: Optional[PublicTemplateBody] = None
     media: Optional[PublicMediaBody] = None
-    # Structured types (plan 12 Slice 2) — friendly definitions (see structured.py).
+    # Structured types (plan 12 Slice 2) - friendly definitions (see structured.py).
     interactive: Optional[dict] = None
     location: Optional[dict] = None
     contacts: Optional[List[dict]] = None
-    # Reaction (plan 12 Slice 3) — targets OUR durable id.
+    # Reaction (plan 12 Slice 3) - targets OUR durable id.
     reaction: Optional[PublicReactionBody] = None
 
 
@@ -470,7 +470,7 @@ class PublicTemplateListResponse(ApiModel):
 
 
 class PublicMessageListResponse(ApiModel):
-    """A contact's message history for the consumer API — full-fidelity
+    """A contact's message history for the consumer API - full-fidelity
     ``MessageItem`` (every message type). ``nextBefore`` = pass back as
     ``before`` to page further into history (null when the page is the oldest)."""
     contactId: str
@@ -502,11 +502,11 @@ class PublicCommentRequest(ApiModel):
 
 # ── respond.io-parity response shapes (public gateway) ───────────────────────
 # These deliberately do NOT inherit ApiModel: they mirror respond.io's documented
-# JSON exactly — snake_case where respond.io uses it (``custom_fields``,
+# JSON exactly - snake_case where respond.io uses it (``custom_fields``,
 # ``created_at``), epoch-second integer timestamps, and a ``{items, pagination}``
 # envelope with cursor URLs. Field NAMES/TYPES are the external contract.
-# NB: respond.io ids are int64; ours are UUID strings — ``id``/``messageId`` are
-# strings here (a documented, unavoidable deviation — we can't fabricate ints).
+# NB: respond.io ids are int64; ours are UUID strings - ``id``/``messageId`` are
+# strings here (a documented, unavoidable deviation - we can't fabricate ints).
 class RioCursorPagination(BaseModel):
     next: Optional[str] = None       # URL for the next page (older history), or null
     previous: Optional[str] = None   # URL for the previous page (newer), or null
@@ -540,7 +540,7 @@ class RioContactItem(BaseModel):
     lifecycle: Optional[str] = None
     created_at: Optional[int] = None  # epoch seconds
     isBlocked: bool = False
-    # ── FoundryX extensions (no respond.io equivalent) ──────────────────────
+    # ── Foundryx extensions (no respond.io equivalent) ──────────────────────
     # Kept so this shape is LOSSLESS vs the internal ThreadItem: a consumer has
     # no other read source for them, and an inbox list needs unreadCount +
     # lastMessagePreview. ISO-8601 Z (house convention) rather than the epoch
@@ -571,7 +571,7 @@ class RioMessageStatus(BaseModel):
     # moment the receipt landed. Don't compute send→delivered latency from it.
     timestamp: Optional[int] = None
     message: Optional[str] = None     # failure reason, when failed
-    # Meta's numeric error code (e.g. "131047" re-engagement required) — stable
+    # Meta's numeric error code (e.g. "131047" re-engagement required) - stable
     # and branchable, unlike `message`, which is free text and localised.
     code: Optional[str] = None
 
@@ -585,7 +585,7 @@ class RioMessageSender(BaseModel):
 class RioMessagePayload(BaseModel):
     type: str                         # text | image | video | audio | voice | document | ...
     # `text` carries the body of a TEXT-family message; a media message puts its
-    # caption in `caption` and leaves `text` null (respond.io's split — do NOT
+    # caption in `caption` and leaves `text` null (respond.io's split - do NOT
     # populate both, it reads as a duplicated body).
     text: Optional[str] = None
     url: Optional[str] = None         # signed, clickable media URL
@@ -593,7 +593,7 @@ class RioMessagePayload(BaseModel):
     filename: Optional[str] = None
     mimeType: Optional[str] = None
     size: Optional[int] = None        # media bytes, when known
-    # Structured definition for interactive / location / contacts / template —
+    # Structured definition for interactive / location / contacts / template -
     # the buttons, coordinates, cards or template binding that cannot survive
     # flattening into `text`. Same object the internal API exposes.
     payload: Optional[dict] = None
@@ -621,7 +621,7 @@ class RioMessageItem(BaseModel):
     contactId: str
     channelId: Optional[str] = None
     traffic: str                      # incoming | outgoing
-    # Epoch seconds the message was created — populated for INCOMING as well as
+    # Epoch seconds the message was created - populated for INCOMING as well as
     # outgoing. `status[].timestamp` only exists once a delivery receipt lands
     # (never for inbound), so this is the only orderable key on a merged history.
     timestamp: Optional[int] = None
@@ -728,7 +728,7 @@ class TemplateDetail(TemplateManageItem):
     components: List[dict]
 
 
-# ── Embed access config (plan 11H — tenant-level embed connection admin) ──────
+# ── Embed access config (plan 11H - tenant-level embed connection admin) ──────
 class EmbedWorkspaceOption(ApiModel):
     """A (id, name) workspace pick for the iframe-snippet workspace selector."""
 
@@ -737,7 +737,7 @@ class EmbedWorkspaceOption(ApiModel):
 
 
 class EmbedConfigResponse(ApiModel):
-    """The tenant's embed-access state. The ``embedSecret`` is NEVER included —
+    """The tenant's embed-access state. The ``embedSecret`` is NEVER included -
     ``hasSecret`` only reports whether one is set (write-only, echoed once at
     rotate)."""
 
@@ -750,7 +750,7 @@ class EmbedConfigResponse(ApiModel):
 
 
 class EmbedRotateSecretResponse(ApiModel):
-    """The freshly-minted secret — returned EXACTLY ONCE (write-only after)."""
+    """The freshly-minted secret - returned EXACTLY ONCE (write-only after)."""
 
     embedSecret: str
 

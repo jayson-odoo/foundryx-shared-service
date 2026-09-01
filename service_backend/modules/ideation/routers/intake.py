@@ -1,12 +1,12 @@
-"""Intake router (public, workspace-key authed) — the single home of intake logic
+"""Intake router (public, workspace-key authed) - the single home of intake logic
 (D7): ``POST /ideation/intake/create-idea`` (§5.1, AC-A-17..25).
 
 **Public** because it is authenticated by a workspace/integration key, not a user
-session — there is no authenticated user to resolve a tenant from (AC-A-45); the
+session - there is no authenticated user to resolve a tenant from (AC-A-45); the
 tenant is derived from the key via ``get_api_workspace`` (reuses the omnichannel
-workspace-key mechanism until the respond.io binding lands — AC-A-27). Errors use
+workspace-key mechanism until the respond.io binding lands - AC-A-27). Errors use
 the uniform ``{error:{code,message}}`` envelope (``ApiError``). Called
-server-to-server by the sorento brain per turn — NOT an MCP tool (§8-R3)."""
+server-to-server by the sorento brain per turn - NOT an MCP tool (§8-R3)."""
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 

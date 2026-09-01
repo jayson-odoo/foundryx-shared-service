@@ -9,14 +9,14 @@ import {
 } from '@/app/(protected)/ideation/ideas/components/paths';
 
 /**
- * Ideation runtime — the "one component, two modes" seam (WS-C1 / AC-CAP-9/10).
+ * Ideation runtime - the "one component, two modes" seam (WS-C1 / AC-CAP-9/10).
  *
  * The operator Ideas list / triage board / detail form are a SINGLE component
  * set. Which backend + which URLs they talk to is injected here, so the SAME
  * components render on the operator pages (app JWT, `/ideation/*` routes,
  * operator URLs) AND chrome-less inside the host iframe (embed token, `/embed/*`
  * routes, embed URLs). No provider = the operator default (so the operator pages
- * are unchanged by construction — AC-CAP-14).
+ * are unchanged by construction - AC-CAP-14).
  */
 export interface IdeaPaths {
   /** The list URL (embed mode carries the `#token=…` fragment). */
@@ -57,7 +57,7 @@ export function IdeationRuntimeProvider({
   );
 }
 
-/** The active ideation runtime — operator default outside any provider. */
+/** The active ideation runtime - operator default outside any provider. */
 export function useIdeationRuntime(): IdeationRuntime {
   return useContext(IdeationRuntimeContext) ?? OPERATOR_RUNTIME;
 }

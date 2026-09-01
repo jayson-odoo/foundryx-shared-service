@@ -59,7 +59,7 @@ def test_prune_deletes_only_past_window_rows(session_factory):
 def test_prune_respects_per_tenant_override(session_factory):
     db = session_factory()
     default = settings.integration_activity_retention_days  # 30
-    # OTHER_TENANT keeps only 7 days — a 10-day-old row is pruned for it but a
+    # OTHER_TENANT keeps only 7 days - a 10-day-old row is pruned for it but a
     # 10-day-old row for the default tenant (30d default) survives.
     db.add(IntegrationLogSettings(tenant_id=OTHER_TENANT, retention_days=7))
     db.commit()

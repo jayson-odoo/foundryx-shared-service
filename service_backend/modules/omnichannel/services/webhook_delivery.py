@@ -7,7 +7,7 @@ and queuing the HTTP POST. ``dispatch`` runs one attempt with an HMAC signature;
 on failure it backs off, and after N dead-letters the endpoint auto-disables.
 
 Delivery NEVER runs synchronously inside inbound processing and is fully failure-
-isolated — a broken/slow consumer can't 500 or block a WhatsApp message landing
+isolated - a broken/slow consumer can't 500 or block a WhatsApp message landing
 in the inbox.
 """
 import hashlib
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 _BACKOFF = [60, 300, 1500, 3600, 21600]
 MAX_ATTEMPTS = len(_BACKOFF) + 1  # 6 total attempts before dead-letter
 DELIVERY_TIMEOUT = 10.0
-# Reject a timestamp older than this on the consumer side (advisory — documented).
+# Reject a timestamp older than this on the consumer side (advisory - documented).
 SIGNATURE_TOLERANCE_SECONDS = 300
 
 
@@ -59,7 +59,7 @@ def build_envelope(
 
 
 def sign_body(secret: str, timestamp: str, body: bytes) -> str:
-    """`sha256=` HMAC over ``{timestamp}.{rawbody}`` — timestamp-bound so a
+    """`sha256=` HMAC over ``{timestamp}.{rawbody}`` - timestamp-bound so a
     captured body can't be replayed against a different time."""
     mac = hmac.new(
         secret.encode("utf-8"),
@@ -113,7 +113,7 @@ def enqueue_event(
             db.flush()
             delivery_ids.append(row.id)
         db.commit()
-    except Exception:  # noqa: BLE001 — forwarding must never break inbound
+    except Exception:  # noqa: BLE001 - forwarding must never break inbound
         logger.exception("webhook enqueue failed for channel %s (%s)", channel.id, event_type)
         db.rollback()
         return 0
@@ -152,14 +152,14 @@ def dispatch(db: Session, delivery_id: str) -> str:
     timestamp = str(int(datetime.now(timezone.utc).timestamp()))
     try:
         secret = decrypt_secret(endpoint.secret_encrypted)
-    except Exception:  # noqa: BLE001 — undecryptable secret: dead-letter cleanly
+    except Exception:  # noqa: BLE001 - undecryptable secret: dead-letter cleanly
         delivery.status = "FAILED"
         delivery.error = "Signing secret could not be decrypted."
         db.commit()
         return "dead"
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "FoundryX-Webhooks/1.0",
+        "User-Agent": "Foundryx-Webhooks/1.0",
         "X-Fx-Event-Id": delivery.event_id,
         "X-Fx-Event-Type": delivery.event_type,
         "X-Fx-Timestamp": timestamp,
@@ -186,7 +186,7 @@ def dispatch(db: Session, delivery_id: str) -> str:
         if not ok:
             error = f"Consumer returned {resp.status_code}."
     except WebhookError as exc:
-        # Blocked target — a real failure, but never a network call.
+        # Blocked target - a real failure, but never a network call.
         error = f"Delivery refused: {exc}"
     except httpx.HTTPError as exc:
         error = f"Delivery failed: {exc}"
@@ -200,7 +200,7 @@ def dispatch(db: Session, delivery_id: str) -> str:
     # Denormalize this attempt into the Developers → Logs console as a
     # ``webhook_delivery`` row (sprint-4/12 Slice 2, AC-DLC-16). ``webhook_deliveries``
     # stays the operational source of truth (retry queue); this is the observability
-    # copy, attached to the originating trace by wamid — written via the CORE seam so
+    # copy, attached to the originating trace by wamid - written via the CORE seam so
     # the console needs NO cross-schema read. Best-effort, own isolated session.
     _record_webhook_activity(db, delivery, ok=ok, status_code=status_code, error=error)
 
@@ -243,7 +243,7 @@ def _record_webhook_activity(
     """Write ONE ``webhook_delivery`` activity row for this attempt, attached to
     the originating trace by the message's wamid when resolvable. Fully failure-
     isolated: runs on a FRESH session (never touches the delivery transaction)
-    and swallows every error — a logging failure can NEVER break delivery."""
+    and swallows every error - a logging failure can NEVER break delivery."""
     try:
         from app.activity_log.service import ActivityLogService
         from app.models.integration_activity import SOURCE_WEBHOOK_DELIVERY
@@ -275,7 +275,7 @@ def _record_webhook_activity(
             )
         finally:
             fresh.close()
-    except Exception:  # noqa: BLE001 — logging must never break delivery.
+    except Exception:  # noqa: BLE001 - logging must never break delivery.
         logger.exception("webhook activity record failed for delivery %s", delivery.id)
 
 

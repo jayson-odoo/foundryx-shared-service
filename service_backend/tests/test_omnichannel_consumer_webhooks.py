@@ -237,7 +237,7 @@ def _reaction_payload(*, target_wamid, emoji, from_="60123456789", wamid="wamid.
 
 def test_reaction_forwards_to_consumer(client, session_factory, _capture_post):
     """A contact reaction fans out on the consumer webhook (AC-12-20) with the
-    documented data shape — targeting OUR durable id, never a raw wamid."""
+    documented data shape - targeting OUR durable id, never a raw wamid."""
     from tests.test_omnichannel_conversations import _seed_thread
 
     _seed_thread(
@@ -273,7 +273,7 @@ def test_unsubscribed_event_not_forwarded(client, session_factory, _capture_post
 
     _seed_thread(session_factory, messages=[{}])
     channel_id = _channel_id(session_factory)
-    # Endpoint only wants status — an inbound message must NOT enqueue.
+    # Endpoint only wants status - an inbound message must NOT enqueue.
     _create_endpoint(session_factory, channel_id, ["message.status"])
     _process(session_factory, channel_id, _wa_payload(wamid="wamid.skip-1"))
 

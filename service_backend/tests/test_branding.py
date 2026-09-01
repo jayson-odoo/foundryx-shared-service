@@ -1,4 +1,4 @@
-"""Tenant branding tests (plan sprint-2/03 §TDD — backend).
+"""Tenant branding tests (plan sprint-2/03 §TDD - backend).
 
 Token whitelist validation (422 with named errors) · default-equal values
 normalize away · version bump per mutation · template prefilled with effective
@@ -19,7 +19,7 @@ from tests.conftest import (
     PLATFORM_PASSWORD,
 )
 
-# 1×1 transparent PNG (real magic bytes — content sniffing must pass).
+# 1×1 transparent PNG (real magic bytes - content sniffing must pass).
 PNG_BYTES = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
     "0000000d49444154789c6260000000060001a2c1a1bd0000000049454e44ae426082"
@@ -168,7 +168,7 @@ def test_upload_logo_and_serve_publicly(client):
     assert body["logoUrl"] and "/public/branding/default/asset/logo" in body["logoUrl"]
     assert body["version"] == 1
 
-    # Public asset endpoint streams it with the right content type — no auth.
+    # Public asset endpoint streams it with the right content type - no auth.
     asset = client.get("/public/branding/default/asset/logo")
     assert asset.status_code == 200
     assert asset.headers["content-type"].startswith("image/png")
@@ -189,7 +189,7 @@ def test_upload_rejects_oversize(client):
 
 
 def test_upload_rejects_unrecognized_content(client):
-    # Not any known image format — rejected regardless of declared type.
+    # Not any known image format - rejected regardless of declared type.
     res = _upload(client, _demo_headers(client), "logo",
                   content=b"\x00\x01\x02garbage", filename="fake.png", mime="image/png")
     assert res.status_code == 422
@@ -197,7 +197,7 @@ def test_upload_rejects_unrecognized_content(client):
 
 
 def test_upload_trusts_sniffed_type_over_declared(client):
-    # A JPEG renamed .png declares image/png — the DETECTED type wins: JPEG is
+    # A JPEG renamed .png declares image/png - the DETECTED type wins: JPEG is
     # allowed for favicons, so this is accepted and stored as image/jpeg.
     jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"\x00" * 32
     res = _upload(client, _demo_headers(client), "favicon",
@@ -236,7 +236,7 @@ def test_unknown_asset_kind_404(client):
 
 
 def test_public_branding_unknown_slug_uniform_defaults(client):
-    # Unknown slug AND unbranded tenant look identical — no enumeration signal.
+    # Unknown slug AND unbranded tenant look identical - no enumeration signal.
     unknown = client.get("/public/branding/no-such-tenant").json()
     unbranded = client.get("/public/branding/default").json()
     assert unknown == unbranded
@@ -254,7 +254,7 @@ def test_public_branding_branded_tenant(client):
     res = client.get("/public/branding/default")
     body = res.json()
     assert body["isBranded"] is True
-    assert body["tenantName"] == "FoundryX EMS"  # the seeded default tenant's name
+    assert body["tenantName"] == "Foundryx EMS"  # the seeded default tenant's name
     assert body["slogan"] == "Go live."
     assert body["tokens"]["light"]["primary"] == "#0050ff"
 
@@ -276,7 +276,7 @@ def test_theme_css_renders_overrides_only(client):
     # Derived transparent companion rides along (0.2 alpha).
     assert "--foundryx-primary-transparent: rgba(0, 80, 255, 0.2);" in css
     assert "--foundryx-danger: #ff2200;" in css
-    # Non-overridden vars are NOT emitted — defaults come from foundryx-tokens.css.
+    # Non-overridden vars are NOT emitted - defaults come from foundryx-tokens.css.
     assert "--foundryx-success" not in css
 
 
@@ -356,7 +356,7 @@ def test_operator_edits_tenant_branding(client):
 
 def test_platform_tenant_branding_rejected(client):
     operator = _platform_headers(client)
-    # The console IS the product — the platform tenant keeps stock branding.
+    # The console IS the product - the platform tenant keeps stock branding.
     tenants = client.get("/platform/tenants?pageSize=100", headers=operator).json()["data"]
     platform = next(t for t in tenants if t["isPlatform"])
     res = client.put(
@@ -410,9 +410,9 @@ def test_operator_read_platform_tenant_allowed(client):
 
 
 def test_frontend_defaults_parity():
-    """The frontend mirrors the canonical whitelist + FoundryX defaults
+    """The frontend mirrors the canonical whitelist + Foundryx defaults
     (lib/branding-tokens.ts). validate_tokens normalizes default-equal values
-    away, so ANY drift silently drops tenant overrides — this test pins the
+    away, so ANY drift silently drops tenant overrides - this test pins the
     two copies together (review finding)."""
     import re
     from pathlib import Path

@@ -1,6 +1,6 @@
-# FoundryX Shared Service Platform — Deployment (CI/CD, blue/green)
+# Foundryx Shared Service Platform - Deployment (CI/CD, blue/green)
 
-> Shared-service fork (see `PRINCIPLES.md` → "What this is"). Forked from FoundryX EMS; the EMS domain is stripped, each module is a **Service** (first = `omnichannel`). Image/service/host names below may still read "foundryx" — they are the deployment identifiers carried over from the fork; rename per environment as the platform is renamed.
+> Shared-service fork (see `PRINCIPLES.md` → "What this is"). Forked from Foundryx EMS; the EMS domain is stripped, each module is a **Service** (first = `omnichannel`). Image/service/host names below may still read "foundryx" - they are the deployment identifiers carried over from the fork; rename per environment as the platform is renamed.
 
 
 Every push to `main` triggers `.github/workflows/deploy.yml`: validate → build &
@@ -22,7 +22,7 @@ https://icp-demo.foundryx.my/be/*    -> Caddy handle_path strips /be -> backend
 (`/auth/login`, `/public/avatars/…`). The backend's own absolute URLs stay correct
 because `PUBLIC_BASE_URL` carries the `/be` prefix. Bonus: API calls are
 same-origin → no CORS preflight. (Backend root routes like `/forms`/`/templates`
-would collide with frontend pages on a shared root — the prefix is what avoids it.)
+would collide with frontend pages on a shared root - the prefix is what avoids it.)
 
 This platform **shares the host with the dreamz EMS stack** (the fork origin),
 so every identifier is namespaced away from it: containers `foundryx_ss_*`,
@@ -35,8 +35,20 @@ loopback port range below (dreamz owns 8000/8010/3001/3011).
 |---|---|---|---|
 | backend (API) | `:8200` | `:8210` | gunicorn/UvicornWorker, `/health` |
 | frontend (Next standalone) | `:3200` | `:3210` | `node server.js` |
-| db / redis / pgbackups | — | — | infra, not blue/green; db host port `5433` |
-| worker_workflow / worker_omni / beat | — | — | Celery; recreated in place each deploy |
+| db / redis / pgbackups | - | - | infra, not blue/green; db host port `5433` |
+| worker_workflow / worker_omni / beat | - | - | Celery; recreated in place each deploy |
+| code_runner | - | - | sandboxed workflow Code action; own stdlib-only image, internal-only network, recreated each deploy |
+
+**Code runner** (`service_backend/code_runner/`, image tag `code-runner-<tag>`): the
+ONLY process that executes builder-authored Python (workflow `code.run`). It is
+a separate image with no application code, no pip packages and no secrets;
+compose runs it read-only, non-root, `cap_drop: ALL`, memory/pids-capped, on
+the `internal: true` network `foundryx_ss_runner` (no egress). The API colors
+and `worker_workflow` join that network to reach it; the runner reaches
+nothing. Auth = `CODE_RUNNER_TOKEN` (GitHub Secret, rendered into `.env` for
+both the backend env and the runner). Backend `CODE_RUNNER_URL` defaults to
+`http://code_runner:8011`. If the runner is down, Code nodes fail cleanly and
+publishing a Code-bearing workflow is blocked until `/health` returns.
 
 Two Celery apps share the backend image: `app.workflow_engine.worker` (tasks +
 **beat** schedule) and `modules.omnichannel.worker` (inbound WhatsApp). Exactly
@@ -48,7 +60,7 @@ one `beat` runs. DB migrations + seed run **only** on the API container start
 `docker-compose.yml` carries **no secrets** (all `${VAR}`), so CI commits + syncs
 it to the server. The `.env` (secrets) is **rendered on the server by CI** from
 GitHub Secrets/Variables on every deploy. To change any config: edit the Secret/
-Variable in GitHub and re-run the workflow — never SSH in to hand-edit `.env`.
+Variable in GitHub and re-run the workflow - never SSH in to hand-edit `.env`.
 (`.env.example` documents the keys; the live `.env` is generated, written `0600`.)
 
 ## One-time server setup
@@ -56,10 +68,10 @@ Variable in GitHub and re-run the workflow — never SSH in to hand-edit `.env`.
 1. Install Docker + compose plugin. Create the deploy dir (matches `DEPLOY_PATH`
    secret), e.g. `/opt/foundryx-ems`. CI delivers compose + `.env` + the deploy
    script on first push.
-2. DNS: already done — you reuse the existing `icp-demo.foundryx.my` record. No
+2. DNS: already done - you reuse the existing `icp-demo.foundryx.my` record. No
    new subdomain needed. Caddy issues TLS for it automatically.
 3. Caddy: the deploy script **owns** a site fragment (`CADDY_SITE_FILE`, default
-   `/etc/caddy/foundryx.caddy`) — it rewrites the single site block to the active
+   `/etc/caddy/foundryx.caddy`) - it rewrites the single site block to the active
    color's ports each swap and runs `caddy reload`. Your main Caddyfile
    (`CADDY_CONFIG`, default `/etc/caddy/Caddyfile`) must import it:
    ```caddyfile
@@ -87,7 +99,7 @@ Variable in GitHub and re-run the workflow — never SSH in to hand-edit `.env`.
 
 Settings → Secrets and variables → Actions.
 
-**Secrets** (sensitive — masked in logs, used to render the server `.env`):
+**Secrets** (sensitive - masked in logs, used to render the server `.env`):
 - Pipeline: `DOCKER_USERNAME`, `DOCKER_PASSWORD`, `SSH_HOST`, `SSH_USER`,
   `SSH_PRIVATE_KEY`, `DEPLOY_PATH` (e.g. `/opt/foundryx-ems`).
 - App: `POSTGRES_PASSWORD`, `JWT_SECRET`, `FERNET_KEY`, `OMNICHANNEL_FERNET_KEY`,
@@ -108,7 +120,7 @@ baked into the frontend image; the script also writes it as `PUBLIC_BASE_URL`),
 `PLATFORM_SMTP_HOST`/`_PORT`/`_SECURITY`/`_FROM_EMAIL`/`_FROM_NAME`.
 
 > Keys left unset render as empty in `.env` (fine for the optional Meta/SMTP
-> blocks — empty = dev-safe/console-log). The required ones (`${VAR:?...}` in
+> blocks - empty = dev-safe/console-log). The required ones (`${VAR:?...}` in
 > compose) will abort the deploy if blank, so set those before the first push.
 
 ## Rollback
@@ -118,7 +130,7 @@ or on the server set `IMAGE_TAG=<old-sha> ./scripts/blue_green_deploy.sh`.
 
 ## Notes / gotchas
 
-- `NEXT_PUBLIC_*` are compile-time — changing the public API origin requires a
+- `NEXT_PUBLIC_*` are compile-time - changing the public API origin requires a
   **rebuild**, not just an env change.
 - A failed migration exits the new API container → healthcheck never passes →
   the script aborts and the **old color keeps serving**. Set `SKIP_MIGRATIONS=1`

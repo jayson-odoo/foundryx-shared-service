@@ -25,11 +25,11 @@ import { tenantFormHref } from './paths';
 /**
  * The Tenant action registry (plan 07 §9, reworked sprint-2/01 / BL-059).
  * Lifecycle actions are GRAPH-DRIVEN: each outgoing edge of the tenant
- * status machine becomes a button — its label is the edge's action label
+ * status machine becomes a button - its label is the edge's action label
  * (rename "Suspend" in the Status Engine and the console button follows).
  * Firing posts the explicit transition; the backend enforces the strict
  * graph + edge roles. The platform tenant is excluded from all lifecycle
- * actions; archive keeps data (soft) — hard purge is BL-035.
+ * actions; archive keeps data (soft) - hard purge is BL-035.
  */
 
 function edgeIcon(target: StatusNodeData | undefined) {
@@ -41,10 +41,10 @@ function edgeIcon(target: StatusNodeData | undefined) {
 function edgeDescription(target: StatusNodeData | undefined): string {
   if (!target) return 'Moves the tenant along the status flow.';
   if (target.isArchived)
-    return `Moves the tenant to "${target.label}" — sign-in is blocked and it leaves the default list. Data stays intact (no hard delete).`;
+    return `Moves the tenant to "${target.label}" - sign-in is blocked and it leaves the default list. Data stays intact (no hard delete).`;
   if (target.blocksAccess)
-    return `Moves the tenant to "${target.label}" — its users are blocked from signing in (active sessions end on their next request). Data stays intact.`;
-  return `Moves the tenant to "${target.label}" — sign-in is allowed again.`;
+    return `Moves the tenant to "${target.label}" - its users are blocked from signing in (active sessions end on their next request). Data stays intact.`;
+  return `Moves the tenant to "${target.label}" - sign-in is allowed again.`;
 }
 
 export function useTenantActions(): ResourceAction<TenantListItem>[] {
@@ -53,7 +53,7 @@ export function useTenantActions(): ResourceAction<TenantListItem>[] {
 
   // The tenant entity's edge graph drives the lifecycle buttons. Fetched via
   // the console's own endpoint (tenants.read) so operators never need
-  // statuses.read for lifecycle actions (code-review fix). Fail quiet —
+  // statuses.read for lifecycle actions (code-review fix). Fail quiet -
   // Edit/Open remain; lifecycle buttons just don't render.
   useEffect(() => {
     let cancelled = false;
@@ -74,7 +74,7 @@ export function useTenantActions(): ResourceAction<TenantListItem>[] {
 
     // Actions group by LABEL, not edge (sprint-2/02 review feedback): the
     // same semantic action ("Archive") often exists from several statuses
-    // via DIFFERENT edges — a mixed Active+Suspended selection still bulk-
+    // via DIFFERENT edges - a mixed Active+Suspended selection still bulk-
     // archives, each row firing ITS own edge.
     const edgesByLabel = new Map<string, StatusTransition[]>();
     for (const edge of transitions) {
@@ -83,7 +83,7 @@ export function useTenantActions(): ResourceAction<TenantListItem>[] {
       else edgesByLabel.set(edge.label, [edge]);
     }
 
-    // The edge THIS row would fire for the action — D4 (must leave the row's
+    // The edge THIS row would fire for the action - D4 (must leave the row's
     // current status) + rule-engine D6 (server-computed fireable ids while
     // conditions exist; record-specific, not derivable from the shared graph).
     const edgeForRow = (edges: StatusTransition[], t: TenantListItem) =>
@@ -143,10 +143,10 @@ export function useTenantActions(): ResourceAction<TenantListItem>[] {
       };
     };
 
-    // Hard delete (BL-035) — ARCHIVED rows only, irreversible, typed confirm
+    // Hard delete (BL-035) - ARCHIVED rows only, irreversible, typed confirm
     // (module-uninstall UX): single row types the slug, bulk types DELETE.
     // Archived = the ENGINE FLAG on the row's status (code-review fix: the
-    // legacy category string diverges for custom archived-flagged statuses —
+    // legacy category string diverges for custom archived-flagged statuses -
     // a 'Dormant' tenant sits in the Archived view but isn't 'ARCHIVED').
     const rowIsArchived = (t: TenantListItem) =>
       t.statusId
@@ -164,7 +164,7 @@ export function useTenantActions(): ResourceAction<TenantListItem>[] {
       confirm: {
         title: 'Delete permanently?',
         description:
-          'This erases the tenant and ALL its data — users, roles, settings, module data. It cannot be undone (archive already blocks sign-in; delete only when the data is truly disposable).',
+          'This erases the tenant and ALL its data - users, roles, settings, module data. It cannot be undone (archive already blocks sign-in; delete only when the data is truly disposable).',
         confirmLabel: 'Delete forever',
         input: {
           expected: (rows) => (rows.length === 1 ? rows[0].slug : 'DELETE'),
@@ -212,7 +212,7 @@ export function useTenantActions(): ResourceAction<TenantListItem>[] {
         run: ([tenant]) => {
           if (!tenant) return;
           // Same domain, tenant's subdomain (plan 07 §6). Operator
-          // login-as-admin is BL-047 — this opens the tenant's sign-in.
+          // login-as-admin is BL-047 - this opens the tenant's sign-in.
           window.open(
             tenantUrl(tenant.slug, window.location),
             '_blank',

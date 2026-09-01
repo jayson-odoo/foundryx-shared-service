@@ -140,7 +140,7 @@ export function buildModuleActions(
 }
 
 /**
- * App Store on the Resource shell (closes the deferred migration) — card view
+ * App Store on the Resource shell (closes the deferred migration) - card view
  * by default with a list toggle, lifecycle actions in the row/bulk "…" menu.
  * Pass a `tenantId` to drive the operator console endpoints (acts on ANOTHER
  * tenant); omit it for the caller's own tenant storefront.

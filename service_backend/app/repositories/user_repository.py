@@ -1,4 +1,4 @@
-"""User repository — pure SQLAlchemy queries, all tenant-scoped.
+"""User repository - pure SQLAlchemy queries, all tenant-scoped.
 
 No business logic here; no HTTP concerns. Every lookup is bounded by `tenant_id`
 so one tenant can never read another's rows (multi-tenancy groundwork, BL-004).
@@ -61,7 +61,7 @@ class UserRepository:
         include_trashed: bool = False,
     ) -> bool:
         """`include_trashed=True` mirrors uq_users_tenant_email, which covers
-        trashed rows too — uniqueness guards must check the constraint's full
+        trashed rows too - uniqueness guards must check the constraint's full
         scope or the flush 500s where a clean 409 was intended."""
         if not include_trashed:
             return self.get_by_email(email, tenant_id) is not None

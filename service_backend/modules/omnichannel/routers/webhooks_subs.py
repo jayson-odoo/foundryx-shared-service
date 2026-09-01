@@ -28,7 +28,7 @@ router = APIRouter()
 
 
 def _to_item(row: WebhookEndpoint) -> WebhookEndpointItem:
-    """Shared mapper — defined in the service layer so the public gateway and
+    """Shared mapper - defined in the service layer so the public gateway and
     this operator router cannot drift (and don't import each other)."""
     from ..services.webhook_service import webhook_endpoint_item
 

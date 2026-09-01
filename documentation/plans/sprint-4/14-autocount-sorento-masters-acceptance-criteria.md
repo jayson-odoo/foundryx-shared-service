@@ -1,15 +1,15 @@
-# 14 — AutoCount → Sorento masters (hop 2, end-to-end) — User Acceptance Criteria
+# 14 - AutoCount → Sorento masters (hop 2, end-to-end) - User Acceptance Criteria
 
-> **Status:** DRAFT — contract for `documentation/plans/sprint-4/14-autocount-sorento-masters.md` (not yet written)
-> **Builds on:** `13-autocount-esb.md` (slice 1, MERGED — PR #4). Reuses its client, mapping engine,
+> **Status:** DRAFT - contract for `documentation/plans/sprint-4/14-autocount-sorento-masters.md` (not yet written)
+> **Builds on:** `13-autocount-esb.md` (slice 1, MERGED - PR #4). Reuses its client, mapping engine,
 > watermark, staging and approval machinery unchanged.
 > **Companion repo:** `/Users/tehjayson/Documents/foundryx/sorento_crm-autocount`, branch `feat/autocount-integration`
 > **Source of decisions:** grill session 2026-07-21 (9 decisions, §Decision Log below)
 
 ## Why this slice exists, and why it is not the slice the plan predicted
 
-Plan 13 sequenced masters as **slice 3**, on the reasoning that they are the highest-risk read —
-they overwrite live production data — and should land on machinery already proven by GRN and DO.
+Plan 13 sequenced masters as **slice 3**, on the reasoning that they are the highest-risk read -
+they overwrite live production data - and should land on machinery already proven by GRN and DO.
 
 That sequencing assumed the consumer could accept documents. It cannot. Sorento's `ENTITY_SPECS`
 (`app/services/master_ingest_service.py:233-247`) admits exactly six entities, all masters:
@@ -17,7 +17,7 @@ That sequencing assumed the consumer could accept documents. It cannot. Sorento'
 **There is no document ingest.** Slice 1's GRN pipeline therefore has nowhere to land, and BL-133
 (the no-op consumer sink) cannot be closed against documents at all.
 
-So masters move forward — not because the risk argument was wrong, but because the alternative is
+So masters move forward - not because the risk argument was wrong, but because the alternative is
 leaving hop 2 unproven against a stub indefinitely. The risk is mitigated differently instead: by
 AC-14-20's supervised reconciliation, which did not exist when the original sequencing was chosen.
 
@@ -27,21 +27,21 @@ AC-14-20's supervised reconciliation, which did not exist when the original sequ
 Manual sync only. Supervised first load. Two cross-repo fixes in Sorento.
 
 **Out:** The other four Sorento entities (`products`, `product_categories`, `units_of_measure`,
-`warehouses`) — no AutoCount source exists on this wrapper build; see AC-14-01. Scheduling. Per-field
+`warehouses`) - no AutoCount source exists on this wrapper build; see AC-14-01. Scheduling. Per-field
 ownership. Any write back to AutoCount. Payment terms (AC-14-12).
 
 ## Definitions
 
-- **Adoption** — Sorento claiming a pre-existing unclaimed local row by business-code match on first
+- **Adoption** - Sorento claiming a pre-existing unclaimed local row by business-code match on first
   push, and thereafter treating it as ours. Reports `updated`, not `created`.
-- **Dry run** — a full ingest resolution that reports the outcome each record *would* receive, then
+- **Dry run** - a full ingest resolution that reports the outcome each record *would* receive, then
   rolls back without writing.
-- **Company-qualified ref** — `"{DatabaseName}:{AutoKey}"`, the `source_ref` sent to Sorento.
-- **Envelope** — the outer JSON shape a vendor endpoint returns. AutoCount uses two (AC-14-03).
+- **Company-qualified ref** - `"{DatabaseName}:{AutoKey}"`, the `source_ref` sent to Sorento.
+- **Envelope** - the outer JSON shape a vendor endpoint returns. AutoCount uses two (AC-14-03).
 
 ---
 
-## Group A — Source: AutoCount masters
+## Group A - Source: AutoCount masters
 
 ### AC-14-01 `[BE]` Only entities with a confirmed source are offered
 **Given** the AutoCount entity catalogue
@@ -50,11 +50,11 @@ ownership. Any write back to AutoCount. Payment terms (AC-14-12).
 **And** entities with no working vendor route are **absent from the picker, not shown-and-disabled**
 **And** no canonical shape exists in code for an entity whose vendor payload has never been observed.
 > Probed live 2026-07-21: `Stock`, `StockItem`, `Item`, `UOM`, `StockGroup`, `StockCategory`,
-> `StockLocation`, `StockUOM` all return HTTP 500 with an **empty** `Message` — distinct from the
+> `StockLocation`, `StockUOM` all return HTTP 500 with an **empty** `Message` - distinct from the
 > wrong-credential signature (`"Stream was not readable."`), and consistent with the route being
 > absent from this wrapper build. Foolproof-UI: offer only what will work.
 > **This AC is a standing guard, not a one-off.** If a production wrapper exposes stock, the entity
-> is added only after its real payload is captured — never designed from inference. (See the slice-1
+> is added only after its real payload is captured - never designed from inference. (See the slice-1
 > retro: a whole canonical shape was once derived by guesswork against a spec that was readable all along.)
 
 ### AC-14-02 `[BE]` Creditor and Debtor read from the live instance
@@ -79,7 +79,7 @@ ownership. Any write back to AutoCount. Payment terms (AC-14-12).
 **Then** the vendor genuinely filters
 **And** a window in the future returns zero rows.
 > Verified live: 2026 window → 11 Creditor / 69 Debtor; 2099 window → 0 / 0. Contrast AC-13-04a,
-> where a **malformed** filter is silently ignored and returns everything — so a zero-row result
+> where a **malformed** filter is silently ignored and returns everything - so a zero-row result
 > proves filtering, but a full-set result does not disprove it.
 
 ### AC-14-05 `[BE]` Vendor scalars coerce at the mapping boundary
@@ -88,12 +88,12 @@ ownership. Any write back to AutoCount. Payment terms (AC-14-12).
 **When** a record is mapped
 **Then** `"T"`/`"F"` become real booleans
 **And** the timestamp is parsed and stored as aware UTC per house datetime rules
-**And** an unrecognised value fails **that record only**, with the field named — never a silent default.
+**And** an unrecognised value fails **that record only**, with the field named - never a silent default.
 > A silent `False` from an unparsed active-flag would deactivate a live supplier in Sorento.
 
 ---
 
-## Group B — Identity
+## Group B - Identity
 
 ### AC-14-10 `[BE]` `source_ref` is company-qualified
 **Given** AutoCount's `AutoKey` is a per-company primary key, so `AutoKey=1` exists in every company
@@ -114,7 +114,7 @@ ownership. Any write back to AutoCount. Payment terms (AC-14-12).
 
 ---
 
-## Group C — Sink: Sorento ingest
+## Group C - Sink: Sorento ingest
 
 ### AC-14-12 `[BE]` Payment terms are never sent
 **Given** AutoCount supplies `DisplayTerm` as a code (`"C.O.D."`), not a number of days
@@ -122,7 +122,7 @@ ownership. Any write back to AutoCount. Payment terms (AC-14-12).
 **Then** neither `payment_terms_code` nor `payment_terms_days` appears in the payload
 **And** no code→days mapping is invented anywhere in this slice.
 > `payment_terms_code` is an **unconditional** `MissingReference` in Sorento
-> (`master_ingest_service.py:165-171`) — it performs no lookup. Any value makes the record
+> (`master_ingest_service.py:165-171`) - it performs no lookup. Any value makes the record
 > permanently `retryable` until Sorento's Phase D. Sending it would build an undrainable queue.
 
 ### AC-14-13 `[BE]` Only fields Sorento actually persists are claimed as synced
@@ -148,7 +148,7 @@ never reported to the operator as synced.
 **When** the ESB pushes
 **Then** it sends `X-API-Key`, never `Authorization: Bearer`
 **And** the key is the one minted for the `foundryx-esb` integration
-**And** the legacy `EXTERNAL_API_KEY` is **never** used — its hash is seeded onto the *n8n*
+**And** the legacy `EXTERNAL_API_KEY` is **never** used - its hash is seeded onto the *n8n*
 integration, so presenting it would authenticate us as n8n and misattribute every write
 (`integration_seed.py:54`)
 **And** the key is stored Fernet-encrypted in its own outbound connection, distinct from the `erp`
@@ -158,7 +158,7 @@ connection pointing at AutoCount.
 **Given** Sorento returns HTTP 200 even when every record failed
 **When** a push completes
 **Then** each record's `created`/`updated`/`failed`/`retryable` outcome is recorded individually
-**And** `retryable` is treated as **nothing was written** — no row, no reference
+**And** `retryable` is treated as **nothing was written** - no row, no reference
 **And** a batch reporting failures is never summarised to the operator as a success.
 
 ### AC-14-17 `[BE]` 429 is honoured
@@ -166,7 +166,7 @@ connection pointing at AutoCount.
 **When** the ESB receives 429
 **Then** it waits at least `Retry-After` seconds before retrying
 **And** it does not infer remaining quota from headers (none are sent).
-> Note Sorento's limiter **fails open** when Redis is absent — a clean local run proves nothing
+> Note Sorento's limiter **fails open** when Redis is absent - a clean local run proves nothing
 > about throttling behaviour in production.
 
 ### AC-14-18 `[T]` A re-push is idempotent
@@ -179,7 +179,7 @@ call after a timeout re-runs the whole batch).
 
 ---
 
-## Group D — The overwrite gate
+## Group D - The overwrite gate
 
 ### AC-14-20 `[BE][FE]` First load is a supervised reconciliation
 **Given** the Sorento target holds **real hand-entered masters**
@@ -187,11 +187,11 @@ call after a timeout re-runs the whole batch).
 **When** the first sync runs
 **Then** it executes as a **dry run** and writes nothing
 **And** the operator sees per record the outcome it would receive
-**And** for every record whose values would **change** — whether newly **adopted** or already
-linked and re-synced — the field-level before/after is shown
+**And** for every record whose values would **change** - whether newly **adopted** or already
+linked and re-synced - the field-level before/after is shown
 **And** nothing is written until the operator explicitly approves.
 > Broadened from "adopted only" during build. An already-linked record overwrites live values just
-> as destructively as an adoption, and it is the **commoner** case — restricting the diff to
+> as destructively as an adoption, and it is the **commoner** case - restricting the diff to
 > adoptions would show an operator nothing at all on a routine sync, which is when they are most
 > likely to approve without looking.
 > This is the AC that makes ERP-as-source-of-truth safe against a populated target. Without it the
@@ -204,8 +204,8 @@ linked and re-synced — the field-level before/after is shown
 **And** the ESB does **not** re-implement adoption matching locally.
 > Two copies of one rule will drift, and the copy that is wrong is the one holding the safety gate.
 > Sorento's read API cannot be used for this: `current_state` resolves only via
-> `refs.resolve(source_ref)` (`master_read_service.py:96-99`), so an unclaimed hand-entered row —
-> exactly the at-risk case — reports `not_found`. A dry run built on it would report "new" for
+> `refs.resolve(source_ref)` (`master_read_service.py:96-99`), so an unclaimed hand-entered row -
+> exactly the at-risk case - reports `not_found`. A dry run built on it would report "new" for
 > records about to be overwritten.
 
 ### AC-14-22 `[FE]` Adoption is visible, never silent
@@ -237,12 +237,12 @@ linked and re-synced — the field-level before/after is shown
 **And** `initial_lookback_days` does **not** apply to masters
 **And** only *subsequent* syncs use the watermark for delta.
 > Measured live 2026-07-21 against slice 1's 30-day default: Creditor 106 total → **1** in window;
-> Debtor 172 → **2**. A 365-day window still misses 4 and 15. So no window is correct — only an
+> Debtor 172 → **2**. A 365-day window still misses 4 and 15. So no window is correct - only an
 > unbounded first pull mirrors the set.
 > This is a **category error inherited from slice 1**, worth stating plainly so it is not repeated:
 > a document stream (GRN) is naturally time-bounded and a lookback is right for it; a master list is
 > a standing set whose purpose is to mirror current state. Applying document semantics to masters
-> produces a sync that reports success while importing ~1% of the data — the most dangerous
+> produces a sync that reports success while importing ~1% of the data - the most dangerous
 > possible failure, because nothing looks wrong.
 
 ### AC-14-26 `[FE]` A partial or empty master sync is never reported as a clean success
@@ -255,7 +255,7 @@ linked and re-synced — the field-level before/after is shown
 
 ---
 
-## Group E — Cross-repo fixes in Sorento
+## Group E - Cross-repo fixes in Sorento
 
 ### AC-14-30 `[BE]` Ingest guard-rail errors return their intended status
 **Given** `AppException.__init__` is `(status_code, message, detail, code)`
@@ -280,16 +280,16 @@ linked and re-synced — the field-level before/after is shown
 **Then** every record is resolved exactly as a real ingest would, including adoption matching
 **And** the response reports the outcome each record would receive
 **And** for adoptions it reports the field-level diff against the existing row
-**And** **nothing is committed** — verified by asserting row counts and reference counts are
+**And** **nothing is committed** - verified by asserting row counts and reference counts are
 unchanged afterwards
 **And** the flag defaults to false, so existing callers are unaffected.
 
 ---
 
-## Group F — End-to-end
+## Group F - End-to-end
 
 ### AC-14-40 `[E2E]` Real AutoCount to real Sorento, locally
-**Given** FoundryX on :8001 and Sorento on :8000, both live
+**Given** Foundryx on :8001 and Sorento on :8000, both live
 **And** a minted `foundryx-esb` API key
 **When** an operator clicks Sync now, reviews the dry run, and approves
 **Then** real Creditor rows from the live AutoCount demo appear as Sorento suppliers
@@ -310,15 +310,15 @@ unchanged afterwards
 | # | Item | Owner | Why blocking |
 |---|------|-------|--------------|
 | 1 | Mint the `foundryx-esb` API key in Sorento | needs an admin JWT | Nothing is seeded (`integration_seed.py:173-174`); plaintext is shown **once**. Ingest is unreachable without it. |
-| 2 | Sorento running locally on :8000 with migrations `296`–`301` | — | `297` seeds the integration, principal and role. |
-| 3 | Confirm whether a production AutoCount wrapper exposes stock/item/UOM | — | Not blocking this slice, but decides whether products are a later slice or never. |
+| 2 | Sorento running locally on :8000 with migrations `296`-`301` | - | `297` seeds the integration, principal and role. |
+| 3 | Confirm whether a production AutoCount wrapper exposes stock/item/UOM | - | Not blocking this slice, but decides whether products are a later slice or never. |
 
 ## Decision Log (grill, 2026-07-21)
 
 | # | Decision | Rationale |
 |---|----------|-----------|
 | G1 | Scope = suppliers + customers only | The only two Sorento entities with a confirmed AutoCount source. |
-| G2 | `source_ref` = `{DatabaseName}:{AutoKey}` | Immutable; survives AccNo renumber; collision-free across companies. Guid unusable — Creditor has none. |
+| G2 | `source_ref` = `{DatabaseName}:{AutoKey}` | Immutable; survives AccNo renumber; collision-free across companies. Guid unusable - Creditor has none. |
 | G3 | Send no payment-terms field | `payment_terms_code` is an unconditional permanent-`retryable`; days cannot be derived from `"C.O.D."`. |
 | G4 | Supervised reconciliation on first load | Target holds real hand-entered data; adoption is silent by default. |
 | G5 | AutoCount owns both entities; overwrite | ERP as system of record. Per-field ownership deferred. |
@@ -332,5 +332,5 @@ unchanged afterwards
 | # | Item | Needed by |
 |---|------|-----------|
 | 1 | Does a production AutoCount wrapper expose stock/item/UOM routes? | Deciding whether products are ever in scope |
-| 2 | Sorento has no `country` source for customers, and Creditor has no phone field | Accepted gaps — confirm no one expects them |
+| 2 | Sorento has no `country` source for customers, and Creditor has no phone field | Accepted gaps - confirm no one expects them |
 | 3 | Sorento's supplier address columns exist but are unwritten | Their fix, not ours; AC-14-13 stops us mis-reporting meanwhile |

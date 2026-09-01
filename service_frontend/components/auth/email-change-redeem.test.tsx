@@ -53,7 +53,7 @@ describe('Email-change redeem pages', () => {
     expect(
       screen.getByRole('heading', { name: /approve email change/i }),
     ).toBeInTheDocument();
-    // Never on mount — single-use tokens must survive mail-scanner prefetches.
+    // Never on mount - single-use tokens must survive mail-scanner prefetches.
     expect(approve).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: /approve change/i }));
@@ -110,7 +110,7 @@ describe('Email-change redeem pages', () => {
     expect(
       await screen.findByText('This email address is no longer available.'),
     ).toBeInTheDocument();
-    // Not a dead link — the button stays for a retry after a fresh request.
+    // Not a dead link - the button stays for a retry after a fresh request.
     expect(
       screen.getByRole('button', { name: /confirm new email/i }),
     ).toBeInTheDocument();

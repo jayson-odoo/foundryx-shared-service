@@ -1,6 +1,6 @@
 'use client';
 
-/** Submissions tab (plan sprint-3/01 D18) — embedded Resource list scoped to
+/** Submissions tab (plan sprint-3/01 D18) - embedded Resource list scoped to
  * THIS form: respondent (or "Anonymous"), live status segments from the
  * form's scoped graph, submitted-at, author-pinned answer columns, CSV
  * export (answers flattened; repeater = JSON cell v1), graph-driven row
@@ -174,7 +174,7 @@ export function FormSubmissionsTab({ form }: FormSubmissionsTabProps) {
         header: ({ column }) => <DataGridColumnHeader title="Submitted" column={column} />,
         cell: ({ row }) => (
           <span className="text-sm text-muted-foreground">
-            {row.original.submittedAt ? formatDateTime(row.original.submittedAt) : '—'}
+            {row.original.submittedAt ? formatDateTime(row.original.submittedAt) : '-'}
           </span>
         ),
         size: 160,

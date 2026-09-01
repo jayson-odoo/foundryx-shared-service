@@ -37,13 +37,13 @@ export function useImpersonation() {
     }
   }, []);
 
-  /** Reconcile the persisted store with the backend's actual active session —
+  /** Reconcile the persisted store with the backend's actual active session -
    * clears a stale one (logout-without-exit) or adopts one started elsewhere. */
   const hydrate = useCallback(async (): Promise<void> => {
     try {
       impersonationStore.setSession(await impersonationService.current());
     } catch {
-      // Unauthenticated / network blip — leave the store as-is.
+      // Unauthenticated / network blip - leave the store as-is.
     }
   }, []);
 

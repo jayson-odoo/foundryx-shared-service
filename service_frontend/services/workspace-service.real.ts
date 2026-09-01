@@ -1,5 +1,5 @@
 /**
- * Real workspace service — talks to FastAPI via the shared api-client. Wired in
+ * Real workspace service - talks to FastAPI via the shared api-client. Wired in
  * Phase B (the mock is bound until then). Endpoints follow plan 04 §6.
  */
 import { apiFetch, apiFetchText } from '@/lib/api-client';

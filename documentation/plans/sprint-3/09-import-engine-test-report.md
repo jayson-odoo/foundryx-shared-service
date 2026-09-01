@@ -1,4 +1,4 @@
-# Sprint 3 · Plan 09 — Import Engine · Test Execution Report
+# Sprint 3 · Plan 09 - Import Engine · Test Execution Report
 
 **Branch:** `sprint-3/09-import-engine` · **Date:** 2026-06-16
 **Stack:** Next 15 :3001 → FastAPI :8001 → native Postgres
@@ -19,7 +19,7 @@ Validates `09-import-engine-acceptance-criteria.md` (AC-09-01 … AC-09-28).
 
 ---
 
-## Backend — `tests/test_import_engine.py` (20)
+## Backend - `tests/test_import_engine.py` (20)
 
 | Test | AC |
 |------|----|
@@ -44,12 +44,12 @@ Validates `09-import-engine-acceptance-criteria.md` (AC-09-01 … AC-09-28).
 | `test_commit_is_set_based_not_per_row` | AC-09-10 (≤3 INSERTs for 40 rows) |
 | `test_tenant_isolation` | AC-09-24 |
 
-## Frontend — `services/import-service.test.ts` (5)
+## Frontend - `services/import-service.test.ts` (5)
 
 create() multipart FormData · downloadTemplate() query+blob · setMapping() PUT body ·
 list() pagination/filter encoding · commit() POST. (AC-09-26 service contract.)
 
-## E2E — `e2e/import-engine.spec.ts` (1)
+## E2E - `e2e/import-engine.spec.ts` (1)
 
 Dedicated provisioned tenant. Real clicks: Users → **Import** → upload a CSV with a
 good row + a bad-email row → **Upload & map** (auto-mapped) → **Validate** → results
@@ -69,4 +69,4 @@ created" → the user appears in `/users`. (AC-09-01/06/07/08/16/17/19/27.)
 
 ## Verdict
 All plan-09 acceptance criteria (AC-09-01 … AC-09-28) **MET**. Quality gate green.
-Follow-ups unchanged (inline cell-edit, full undo, AV scan, export-path sanitize — all backlog).
+Follow-ups unchanged (inline cell-edit, full undo, AV scan, export-path sanitize - all backlog).

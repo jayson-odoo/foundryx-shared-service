@@ -1,10 +1,10 @@
-# Embedded Signup — Go-Live Runbook (Route A: FoundryX = Meta Tech Provider)
+# Embedded Signup - Go-Live Runbook (Route A: Foundryx = Meta Tech Provider)
 
 The code path is built (frontend SDK + backend exchange). It runs in **simulated**
 mode until the Meta app env vars are set, then flips to the **real** Meta Embedded
-Signup popup automatically — no code change.
+Signup popup automatically - no code change.
 
-## 1. One-time Meta setup (you/CEO — outside code)
+## 1. One-time Meta setup (you/CEO - outside code)
 1. **Create a Meta app** at developers.facebook.com (Business type). Can be under the CEO's Meta account.
 2. Add products: **WhatsApp** and **Facebook Login for Business**.
 3. Under WhatsApp → ensure the CEO's number's **WABA** is in a **Business Manager** you control.
@@ -39,5 +39,5 @@ Restart backend; rebuild + restart frontend (`npm run build && npm start`). The 
 
 ## 4. Gotchas
 - The number must be a **Cloud API** number on a WABA your Business controls; an already-in-use personal/another-platform number may need migration in Meta first.
-- Dev Mode restricts Embedded Signup to users with an **App Role** — add the tester.
+- Dev Mode restricts Embedded Signup to users with an **App Role** - add the tester.
 - Sending/receiving actual messages (beyond connect + test) is **Plan 05**.

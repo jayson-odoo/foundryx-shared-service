@@ -1,4 +1,4 @@
-"""Terminology service (sprint-3/08) — resolve-merged / catalog / set / reset.
+"""Terminology service (sprint-3/08) - resolve-merged / catalog / set / reset.
 
 Resolution (D6): code defaults overlaid with the tenant's override rows. The
 merged map is the client-cache source; the catalog drives the settings page.

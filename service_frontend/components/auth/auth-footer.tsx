@@ -18,7 +18,7 @@ const DEFAULT_LINKS: AuthFooterLink[] = [
 ];
 
 /**
- * Auth footer — secondary navigation shown on auth pages.
+ * Auth footer - secondary navigation shown on auth pages.
  * Links are stubbed (`href="#"`) until the corresponding pages ship (see BL-003).
  */
 export function AuthFooter({ links = DEFAULT_LINKS, className }: AuthFooterProps) {

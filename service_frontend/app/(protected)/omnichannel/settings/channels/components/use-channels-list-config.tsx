@@ -45,7 +45,7 @@ const FILTER_FIELDS: FilterFieldDef[] = [
 ];
 
 export interface UseChannelsListConfigOptions {
-  /** Triggered by the list's "Connect channel" button — opens the wizard. */
+  /** Triggered by the list's "Connect channel" button - opens the wizard. */
   onConnect: () => void;
 }
 
@@ -106,7 +106,7 @@ export function useChannelsListConfig({
         header: ({ column }) => <DataGridColumnHeader title="Phone Number" column={column} />,
         cell: ({ row }) => (
           <span className="text-sm text-muted-foreground">
-            {row.original.displayPhoneNumber ?? '—'}
+            {row.original.displayPhoneNumber ?? '-'}
           </span>
         ),
         size: 180,

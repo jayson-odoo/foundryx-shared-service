@@ -1,5 +1,5 @@
 /**
- * EmailEditor (plan sprint-2/07 D2/D12) — hand-rolled block editor over the
+ * EmailEditor (plan sprint-2/07 D2/D12) - hand-rolled block editor over the
  * forever-contract JSON schema. Canvas select → settings panel, RuleBuilder
  * visibility (D8), preview widths, Edit-toggle gating.
  */
@@ -146,7 +146,7 @@ describe('EmailEditor', () => {
     const onChange = vi.fn();
     renderEditor({ doc, onChange });
     fireEvent.click(screen.getByTestId('add-section-1'));
-    // Controlled component: the parent owns the doc — assert the emitted value.
+    // Controlled component: the parent owns the doc - assert the emitted value.
     const next: TemplateDocument = onChange.mock.calls.at(-1)![0];
     expect(next.sections).toHaveLength(doc.sections.length + 1);
     expect(next.sections[1].id).not.toBe(doc.sections[1].id);
@@ -162,7 +162,7 @@ describe('EmailEditor', () => {
   it('undo/redo buttons revert and reapply doc mutations', () => {
     const { doc: initial, headingId } = docWithBlocks();
     const docs: TemplateDocument[] = [];
-    // Stateful wrapper — the editor is controlled, history needs live props.
+    // Stateful wrapper - the editor is controlled, history needs live props.
     function Harness() {
       const [doc, setDoc] = useState(initial);
       return (
@@ -204,7 +204,7 @@ describe('EmailEditor', () => {
   it('blocks are drop targets themselves (insert-after)', () => {
     const { doc, headingId } = docWithBlocks();
     renderEditor({ doc });
-    // The droppable registered for a block carries index+1 semantics — assert
+    // The droppable registered for a block carries index+1 semantics - assert
     // the block node exists and is wired (presence of handle = draggable too).
     const block = screen.getByTestId(`canvas-block-${headingId}`);
     expect(block).toBeInTheDocument();

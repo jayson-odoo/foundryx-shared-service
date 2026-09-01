@@ -1,5 +1,5 @@
 /**
- * Numbering service (sprint-4/07, Cluster F) — the boundary the numbering
+ * Numbering service (sprint-4/07, Cluster F) - the boundary the numbering
  * settings surface talks to (via the page/dialog). The interface IS the backend
  * contract. The real api-client impl is wired below (backend exists this slice).
  */

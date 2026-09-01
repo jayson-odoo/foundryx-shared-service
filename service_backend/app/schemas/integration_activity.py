@@ -1,4 +1,4 @@
-"""Integration-activity wire schemas (sprint-4/12) — camelCase, Z-datetimes.
+"""Integration-activity wire schemas (sprint-4/12) - camelCase, Z-datetimes.
 
 The list item is the console-row projection; the detail adds the redacted
 request/response summaries. Both inherit ``ApiModel`` (the datetime→Z net).
@@ -47,8 +47,8 @@ class IntegrationActivityListResponse(ApiModel):
 
 
 class IntegrationActivityTraceResponse(ApiModel):
-    """The ordered legs (oldest→newest) of ONE consumption — inbound API →
-    outbound Meta → webhook delivery — for the trace timeline (AC-DLC-17/18)."""
+    """The ordered legs (oldest→newest) of ONE consumption - inbound API →
+    outbound Meta → webhook delivery - for the trace timeline (AC-DLC-17/18)."""
 
     traceId: str
     legs: List[IntegrationActivityItem]

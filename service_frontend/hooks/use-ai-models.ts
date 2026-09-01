@@ -8,7 +8,7 @@ export interface UseAiModelsResult {
   models: AiModelOption[];
   isLoading: boolean;
   /** False when the live catalog call failed and the curated static list is
-   *  being shown instead — the picker still works either way (AC-BI-05). */
+   *  being shown instead - the picker still works either way (AC-BI-05). */
   isLive: boolean;
   message: string | null;
 }
@@ -45,7 +45,7 @@ export function useAiModels(connectionId: string | null | undefined): UseAiModel
       })
       .catch(() => {
         // The endpoint itself failed (not just the provider). Keep the form
-        // usable rather than blanking it — the pinned model is still valid.
+        // usable rather than blanking it - the pinned model is still valid.
         if (cancelled) return;
         setModels([]);
         setIsLive(false);

@@ -2,7 +2,7 @@
 
 Registers into the CORE provider registry (``app/integrations``) as an ``erp``
 connection, so AutoCount is configured through the same `/settings/integrations`
-Resource shell as SMTP/S3 — no bespoke connection UI.
+Resource shell as SMTP/S3 - no bespoke connection UI.
 
 Two shapes deviate from the other providers, both forced by the vendor API:
 
@@ -10,13 +10,13 @@ Two shapes deviate from the other providers, both forced by the vendor API:
   with an ``AppId`` header and ``{UserID, Password}``. The Postman collection's
   two-step ``Auth/Login`` → ``Server/Login`` flow does not exist.
 * **No company field.** The server resolves the company from the ``AppId``
-  header and returns ``DatabaseName``/``CompanyName`` on login — so the company
+  header and returns ``DatabaseName``/``CompanyName`` on login - so the company
   is DISCOVERED and stored read-only, never entered by the operator (D16,
   foolproof-UI: never ask for something we can determine, and never let an
   operator type a value that will be silently overridden).
 
 ``test()`` names the failing STEP (AC-13-04). "Connection failed" catch-alls are
-banned — the operator has to know whether to fix the URL, the AppId, or the
+banned - the operator has to know whether to fix the URL, the AppId, or the
 credentials.
 """
 from typing import Any, Dict, List, Optional
@@ -45,7 +45,7 @@ def client_from_connection(
     """Build a client from a connection's stored config + DECRYPTED credentials.
 
     Callers pass credentials already decrypted via ``app/secrets.py``
-    (``decrypt_secret``, with ``InvalidToken`` caught as a clean reject) — this
+    (``decrypt_secret``, with ``InvalidToken`` caught as a clean reject) - this
     module never handles ciphertext or a module-local Fernet key.
     """
     return AutoCountClient(
@@ -69,7 +69,7 @@ class AutoCountProvider:
     )
     icon = "refresh-cw"
     test_label = "Test connection"
-    # Connection check only — there is no meaningful targeted test for a read
+    # Connection check only - there is no meaningful targeted test for a read
     # integration (and a write probe against a customer's live ledger is not
     # something a Test button may ever do).
     test_target = None
@@ -78,7 +78,7 @@ class AutoCountProvider:
         """Config schema driving the integrations form.
 
         Deliberately FOUR fields. No AppSecret (does not exist) and no company
-        picker (discovered from the login response) — offering either would be
+        picker (discovered from the login response) - offering either would be
         asking the operator for something we cannot use.
         """
         return [
@@ -121,7 +121,7 @@ class AutoCountProvider:
         """Verify the connection by signing in ONCE, and report which step failed.
 
         Success echoes the DISCOVERED company so the operator can confirm the
-        AppId selected the company they intended — the AppId is opaque, so this
+        AppId selected the company they intended - the AppId is opaque, so this
         readback is the only way to catch "right credentials, wrong company".
         """
         base_url = str(config.get("baseUrl", "")).strip()
@@ -137,7 +137,7 @@ class AutoCountProvider:
         try:
             session = client.login()
         except AutoCountTransportError as exc:
-            # Unreachable / timeout — distinct from an auth rejection.
+            # Unreachable / timeout - distinct from an auth rejection.
             return TestResult(ok=False, message=exc.message)
         except AutoCountAuthError as exc:
             return TestResult(
@@ -148,7 +148,7 @@ class AutoCountProvider:
                 ),
             )
         except AutoCountRelayError as exc:
-            # A bad AppId surfaces here — the relay faults rather than replying
+            # A bad AppId surfaces here - the relay faults rather than replying
             # cleanly. The AppId is the actionable thing, so name it. The raw
             # .NET stack trace stays in exc.detail (log only), never shown.
             return TestResult(
@@ -160,7 +160,7 @@ class AutoCountProvider:
             )
         except AutoCountAppError as exc:
             return TestResult(ok=False, message=exc.message)
-        except AutoCountError as exc:  # defensive — never leak a raw traceback
+        except AutoCountError as exc:  # defensive - never leak a raw traceback
             return TestResult(ok=False, message=exc.message)
         finally:
             client.close()

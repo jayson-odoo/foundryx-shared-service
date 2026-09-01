@@ -1,4 +1,4 @@
-"""core — payment-gateway webhook log + relax connection one-per-type for payment.
+"""core - payment-gateway webhook log + relax connection one-per-type for payment.
 
 sprint-4/07 Cluster F slice 3 (AC-07-24/28/30):
 - ``integration_logs`` table (idempotency ledger + masked webhook audit trail,
@@ -7,7 +7,7 @@ sprint-4/07 Cluster F slice 3 (AC-07-24/28/30):
   EXCLUDES ``type='payment'`` (a tenant may hold Stripe + Billplz; same-provider
   duplicates stay blocked by the existing (tenant, provider) unique).
 
-Revision ID: d6e7f8a9b0c1  (≤ 32 chars — alembic_version is VARCHAR(32))
+Revision ID: d6e7f8a9b0c1  (≤ 32 chars - alembic_version is VARCHAR(32))
 Revises: c4d5e6f7a8b9
 Create Date: 2026-06-23
 """

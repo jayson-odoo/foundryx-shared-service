@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Generic grouped / collapsible / searchable palette — the house node-palette
+ * Generic grouped / collapsible / searchable palette - the house node-palette
  * pattern (form-builder D7), shared across the form, email, and canvas editors.
  * Collapsed-by-default category sections with counts + a search box that
  * auto-expands matching categories. The CALLER renders each item (draggable
@@ -19,7 +19,7 @@ export interface PaletteCategory<T extends string> {
 
 export interface CollapsiblePaletteProps<T extends string> {
   categories: PaletteCategory<T>[];
-  /** Display label for a type — used for search matching. */
+  /** Display label for a type - used for search matching. */
   labelFor: (type: T) => string;
   /** Render one palette entry (the caller owns drag/click behaviour). */
   renderItem: (type: T) => ReactNode;

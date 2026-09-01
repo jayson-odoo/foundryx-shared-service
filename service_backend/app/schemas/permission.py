@@ -1,4 +1,4 @@
-"""Permission catalog schemas — the grouped shape the role Permissions tab reads."""
+"""Permission catalog schemas - the grouped shape the role Permissions tab reads."""
 from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field

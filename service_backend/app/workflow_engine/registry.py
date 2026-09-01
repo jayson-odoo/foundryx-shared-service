@@ -1,7 +1,7 @@
-"""Node-type registry (plan sprint-2/08 D8) — code-side, like the permissions
+"""Node-type registry (plan sprint-2/08 D8) - code-side, like the permissions
 CSV / StatusEntity / FactSource registries. Each trigger and action declares its
-config schema (drawer), output schema (dynamic-content picker) and — for actions
-— an executor + connection requirement. Slice 08 registers ``manual`` +
+config schema (drawer), output schema (dynamic-content picker) and - for actions
+- an executor + connection requirement. Slice 08 registers ``manual`` +
 ``email.send``; modules append at install (slice 09 fans out core triggers/actions).
 """
 from dataclasses import dataclass, field
@@ -25,7 +25,7 @@ class NodeField:
     options: Optional[List[Dict[str, str]]] = None
     # Conditional field: only shown/required when config[field] == value.
     show_when: Optional[Tuple[str, str]] = None
-    # For `entity` — restrict the picker (e.g. only status-engine entities).
+    # For `entity` - restrict the picker (e.g. only status-engine entities).
     entity_filter: Optional[str] = None
 
 
@@ -33,6 +33,19 @@ class NodeField:
 class NodeOutput:
     key: str
     label: str
+
+
+# Module callbacks keep trigger-specific test discovery/validation out of core.
+TriggerTestMetadataProvider = Callable[
+    [Session, str, Dict[str, Any]], Dict[str, Any]
+]
+TriggerTestPayloadBuilder = Callable[
+    [Session, str, Dict[str, Any], Dict[str, Any]], Dict[str, Any]
+]
+
+
+class TriggerTestDataError(Exception):
+    """A test-trigger selection failed structural or tenant validation."""
 
 
 @dataclass(frozen=True)
@@ -45,6 +58,8 @@ class TriggerDef:
     fields: List[NodeField] = field(default_factory=list)
     outputs: List[NodeOutput] = field(default_factory=list)
     module: str = "core"
+    test_metadata_provider: Optional[TriggerTestMetadataProvider] = None
+    test_payload_builder: Optional[TriggerTestPayloadBuilder] = None
 
 
 # An action executor: (db, tenant_id, config, ctx) -> output dict. ``ctx`` is the
@@ -217,7 +232,7 @@ def _register_core() -> None:
             outputs=[NodeOutput("trigger.firedAt", "Fired at")],
         )
     )
-    # slice sprint-3/02 — a form submission starts a workflow. The form is picked
+    # slice sprint-3/02 - a form submission starts a workflow. The form is picked
     # via a searchable `form` field; `trigger.answers.<key>` outputs are dynamic
     # per selected form (the frontend resolves them from /workflows/metadata).
     register_trigger(
@@ -354,6 +369,155 @@ def _register_core() -> None:
     from app.review_engine.actions import register_review_actions
 
     register_review_actions()
+
+    # ---- AI Agent action (sprint-4/17) ----
+    from app.workflow_engine.actions.ai_agent_actions import ai_agent_run
+    from app.workflow_engine.actions.agent_state_actions import clear_agent_state, read_agent_state
+
+    register_action(
+        ActionDef(
+            key="ai_agent.run",
+            label="AI Agent",
+            description="Send content to an AI agent and capture structured output.",
+            icon="Sparkles",
+            category="Actions",
+            executor=ai_agent_run,
+            fields=[
+                NodeField(key="agentId", label="Agent", type="aiAgent", required=True),
+                NodeField(
+                    key="instructions",
+                    label="Instructions",
+                    type="textarea",
+                    mergeable=True,
+                    required=True,
+                ),
+                NodeField(
+                    key="inputText",
+                    label="Message",
+                    type="textarea",
+                    mergeable=True,
+                    required=True,
+                ),
+                NodeField(
+                    key="outputParams",
+                    label="Output parameters",
+                    type="outputSchema",
+                    required=True,
+                ),
+                NodeField(
+                    key="clarificationOutputKey",
+                    label="Clarification output",
+                    type="clarificationOutput",
+                ),
+            ],
+            # Dynamic - the frontend lists config.outputParams as nodes.<id>.<key>
+            # (mirrors how entity/form triggers already inject dynamic outputs).
+            outputs=[],
+        )
+    )
+    register_action(
+        ActionDef(
+            key="ai_agent.clear_state",
+            label="Clear Agent State",
+            description="Clear retained values from an earlier AI Agent.",
+            icon="Eraser",
+            category="Actions",
+            executor=clear_agent_state,
+            fields=[NodeField(key="agentNodeId", label="Agent", type="agentNode", required=True)],
+            outputs=[
+                NodeOutput("cleared", "Cleared"),
+                NodeOutput("previousRevision", "Previous revision"),
+            ],
+        )
+    )
+    register_action(
+        ActionDef(
+            key="ai_agent.read_state",
+            label="Read Agent State",
+            description="Read the current saved values from an earlier AI Agent.",
+            icon="BookOpen",
+            category="Actions",
+            executor=read_agent_state,
+            fields=[NodeField(key="agentNodeId", label="Agent", type="agentNode", required=True)],
+            # Per-agent stateful fields are dynamic - the frontend resolves
+            # config.agentNodeId to the referenced node's stateful output
+            # params (mirrors ai_agent.run's dynamic outputs).
+            outputs=[
+                NodeOutput("stateRevision", "State revision"),
+                NodeOutput("pendingField", "Pending field"),
+                NodeOutput("exists", "State exists"),
+            ],
+        )
+    )
+
+    # ---- Generic Redis data action (sprint-4/19 S3) ----
+    from app.workflow_engine.actions.redis_actions import redis_command
+
+    _list_end_options = [{"value": "left", "label": "Left"}, {"value": "right", "label": "Right"}]
+    register_action(
+        ActionDef(
+            key="redis.command",
+            label="Redis",
+            description="Read or mutate a value in the workflow data store.",
+            icon="Database",
+            category="Actions",
+            executor=redis_command,
+            fields=[
+                NodeField(
+                    key="operation",
+                    label="Operation",
+                    type="select",
+                    required=True,
+                    options=[
+                        {"value": "get", "label": "Get"},
+                        {"value": "set", "label": "Set"},
+                        {"value": "delete", "label": "Delete"},
+                        {"value": "increment", "label": "Increment"},
+                        {"value": "list_push", "label": "List Push"},
+                        {"value": "list_pop", "label": "List Pop"},
+                        {"value": "list_length", "label": "List Length"},
+                    ],
+                ),
+                NodeField(key="key", label="Key", type="text", required=True, mergeable=True),
+                # A field may be listed once per operation that shows it - the
+                # publish gate skips entries whose show_when does not match.
+                NodeField(key="value", label="Value", type="text", required=True, mergeable=True, show_when=("operation", "set")),
+                NodeField(key="value", label="Value", type="text", required=True, mergeable=True, show_when=("operation", "list_push")),
+                NodeField(key="amount", label="Amount", type="text", required=True, mergeable=True, show_when=("operation", "increment")),
+                NodeField(key="end", label="List end", type="select", options=_list_end_options, show_when=("operation", "list_push")),
+                NodeField(key="end", label="List end", type="select", options=_list_end_options, show_when=("operation", "list_pop")),
+                NodeField(key="ttlSeconds", label="TTL seconds", type="text", mergeable=True, show_when=("operation", "set")),
+            ],
+            outputs=[
+                NodeOutput("value", "Value"),
+                NodeOutput("stored", "Stored"),
+                NodeOutput("deleted", "Deleted"),
+                NodeOutput("length", "Length"),
+            ],
+        )
+    )
+
+    # ---- Sandboxed Code action (sprint-4/19 S4) ----
+    from app.workflow_engine.actions.code_actions import code_run
+
+    register_action(
+        ActionDef(
+            key="code.run",
+            label="Code",
+            description="Transform mapped values with restricted Python.",
+            icon="Code2",
+            category="Actions",
+            executor=code_run,
+            fields=[
+                NodeField(key="language", label="Language", type="select", required=True, options=[{"value": "python", "label": "Python"}]),
+                NodeField(key="source", label="Python", type="code", required=True),
+                NodeField(key="inputs", label="Input mappings", type="codeInputs"),
+                NodeField(key="outputs", label="Output parameters", type="outputSchema", required=True),
+            ],
+            # Dynamic - the frontend lists config.outputs as nodes.<id>.<key>.
+            outputs=[],
+        )
+    )
 
 
 _ensure_core = lazy_once(_register_core)

@@ -23,13 +23,13 @@ export type EditorSelection =
 export interface CanvasProps {
   doc: TemplateDocument;
   editing: boolean;
-  /** Editor surface — drives nothing visual here, carried for parity. */
+  /** Editor surface - drives nothing visual here, carried for parity. */
   surface?: EditorSurface;
   /** Lock add/reorder/delete of sections+blocks (content-only edit). */
   structureLocked?: boolean;
   selection: EditorSelection;
   brand: BrandRenderValues;
-  /** List facts (document surface) — sample rows for table/repeater previews. */
+  /** List facts (document surface) - sample rows for table/repeater previews. */
   listFacts?: TemplateListFact[];
   onSelect: (selection: EditorSelection) => void;
   onInlineChange: (blockId: string, patch: Partial<TemplateBlock>) => void;
@@ -39,9 +39,9 @@ export interface CanvasProps {
 }
 
 /**
- * Droppable insertion gap — drop target before block `index` in a column.
+ * Droppable insertion gap - drop target before block `index` in a column.
  * Invisible 8px strip at rest; while a drag is active it expands into a
- * visible dashed slot (2px targets were impossible to hit — UX iteration).
+ * visible dashed slot (2px targets were impossible to hit - UX iteration).
  */
 function DropGap({
   sectionId,
@@ -60,7 +60,7 @@ function DropGap({
   grow?: boolean;
 }) {
   // Id includes the SECTION: imported/legacy docs may reuse column ids
-  // across sections (the seeded system templates did) — duplicate droppable
+  // across sections (the seeded system templates did) - duplicate droppable
   // ids make dnd-kit silently drop all but one zone (the "can't drop here"
   // bug).
   const { isOver, setNodeRef } = useDroppable({
@@ -133,8 +133,8 @@ function CanvasBlock({
     data: { source: 'canvas', blockId: block.id, sectionId, columnId },
     disabled: !canStructure,
   });
-  // The block itself is a drop target — dropping ON a block inserts AFTER it
-  // (hunting for the thin gap between blocks was unusable — UX iteration).
+  // The block itself is a drop target - dropping ON a block inserts AFTER it
+  // (hunting for the thin gap between blocks was unusable - UX iteration).
   const drop = useDroppable({
     id: `after-${block.id}`,
     data: { target: 'gap', sectionId, columnId, index: index + 1 },
@@ -148,7 +148,7 @@ function CanvasBlock({
         drop.setNodeRef(node);
       }}
       data-testid={`canvas-block-${block.id}`}
-      // Selection = FLUSH square outline (no offset/rounding) — offset
+      // Selection = FLUSH square outline (no offset/rounding) - offset
       // dashed boxes collided with neighbouring blocks; a rounded ring read
       // as an input field (two UX iterations). Never part of the email.
       className={`group/block relative transition-[outline] ${isDragging ? 'opacity-40' : ''} ${
@@ -170,7 +170,7 @@ function CanvasBlock({
       )}
       {canStructure && (
         /* Drag handle in the LEFT GUTTER. The wrapper anchors FLUSH to the
-           block edge (end-full) and the padding bridges the visual gap —
+           block edge (end-full) and the padding bridges the visual gap -
            the pointer never crosses a dead zone, so :hover survives the
            travel (third round of the disappearing-controls bug). */
         <div
@@ -230,7 +230,7 @@ function CanvasColumn({
   const gapDisabled = !editing || structureLocked;
 
   if (empty) {
-    // The whole empty column is ONE big drop zone — a 2px gap above a
+    // The whole empty column is ONE big drop zone - a 2px gap above a
     // non-droppable placeholder was unhittable.
     return (
       <div className="min-w-0" style={{ width: `${widthPct}%` }}>
@@ -343,7 +343,7 @@ export function Canvas({
               {canStructure && (
                 /* Toolbar in the RIGHT GUTTER. Wrapper anchors FLUSH to the
                    section edge (start-full) with padding bridging the gap so
-                   :hover survives the pointer travel — an offset gutter left
+                   :hover survives the pointer travel - an offset gutter left
                    a dead zone that hid the buttons mid-travel. */
                 <div
                   className={`absolute start-full top-1 z-20 ps-1.5 ${

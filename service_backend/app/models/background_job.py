@@ -43,7 +43,7 @@ JOB_STATUSES = (
     JOB_ABORTED,
 )
 # Terminal statuses (retention pruning targets these; running/pending never
-# pruned). ``needs_review`` is NOT terminal — it awaits an explicit decision.
+# pruned). ``needs_review`` is NOT terminal - it awaits an explicit decision.
 JOB_TERMINAL_STATUSES = (JOB_DONE, JOB_FAILED, JOB_ABORTED)
 
 
@@ -61,7 +61,7 @@ class BackgroundJob(Base):
     cursor_json = Column(_JSON, nullable=True)  # resume point
     # Human-readable milestone log for troubleshooting (sprint-4/12): a list of
     # ``{ts, level, message}`` appended via ``JobService.log`` and surfaced on the
-    # job-detail page. Milestones only (never per-item) — cheap + reads well.
+    # job-detail page. Milestones only (never per-item) - cheap + reads well.
     logs_json = Column(_JSON, nullable=True)
 
     progress_total = Column(Integer, nullable=False, default=0)

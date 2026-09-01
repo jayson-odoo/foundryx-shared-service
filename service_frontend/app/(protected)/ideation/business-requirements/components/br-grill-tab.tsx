@@ -17,7 +17,7 @@ export interface BrGrillTabProps {
 }
 
 /**
- * Grill tab (AC-BI-29) — the AI grill inside the BR ResourceForm, inheriting the
+ * Grill tab (AC-BI-29) - the AI grill inside the BR ResourceForm, inheriting the
  * shell's breadcrumb / record-nav / permissions. Shows the prerequisite warning
  * when no AI connection is configured (AC-BI-11); otherwise the conversation.
  */

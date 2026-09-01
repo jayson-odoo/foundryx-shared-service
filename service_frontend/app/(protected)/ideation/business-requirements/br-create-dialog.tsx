@@ -27,7 +27,7 @@ export interface BrCreateDialogProps {
 }
 
 /**
- * Create a draft Business Requirement. Product + title only — the requirement
+ * Create a draft Business Requirement. Product + title only - the requirement
  * fields are filled on the detail's Details tab (or by the grill in S3), so a
  * draft anchor exists from turn zero (Bi-D15). Foolproof: product is required.
  */

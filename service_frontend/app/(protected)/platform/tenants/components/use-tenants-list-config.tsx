@@ -118,11 +118,11 @@ export function useTenantsListConfig(): ResourceListConfig<TenantListItem> {
         cell: ({ row }) =>
           row.original.contactEmail ? (
             <div className="flex flex-col leading-tight">
-              <span className="text-sm text-foreground">{row.original.contactName ?? '—'}</span>
+              <span className="text-sm text-foreground">{row.original.contactName ?? '-'}</span>
               <span className="text-xs text-muted-foreground">{row.original.contactEmail}</span>
             </div>
           ) : (
-            <span className="text-sm text-muted-foreground">—</span>
+            <span className="text-sm text-muted-foreground">-</span>
           ),
         size: 220,
         enableSorting: true,
@@ -198,7 +198,7 @@ export function useTenantsListConfig(): ResourceListConfig<TenantListItem> {
       searchHints: ['Name', 'Slug', 'Contact', 'Custom domain'],
       defaultSort: { id: 'created', desc: true },
       // Reuses the Users-list segmented control: 'trashed' = soft-archived
-      // tenants (plan 07 §4 — archived hidden from the default view).
+      // tenants (plan 07 §4 - archived hidden from the default view).
       statusViewLabels: { active: 'Active', trashed: 'Archived' },
       exportFilename: 'tenants',
       createLabel: 'Add tenant',

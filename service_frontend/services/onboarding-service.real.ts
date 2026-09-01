@@ -1,5 +1,5 @@
 /**
- * Real onboarding service — POSTs the Embedded Signup result to FastAPI, which
+ * Real onboarding service - POSTs the Embedded Signup result to FastAPI, which
  * exchanges the code for a permanent token and provisions the channel. Wired in
  * Phase B (plan 04 §5.2 → `POST /omnichannel/onboarding/oauth-callback`).
  */

@@ -15,7 +15,7 @@ import type { ImportJob } from '@/types/import';
 
 const IN_FLIGHT = new Set(['pending', 'validating', 'importing']);
 
-/** Global right-side drawer for import jobs (sprint-3/09 D9) — sibling of the
+/** Global right-side drawer for import jobs (sprint-3/09 D9) - sibling of the
  * Uploads/Downloads drawers, triggered from the header. Click a job → its page. */
 export function ImportsDrawer() {
   const { jobs, drawerOpen, setDrawerOpen } = useImportActivity();

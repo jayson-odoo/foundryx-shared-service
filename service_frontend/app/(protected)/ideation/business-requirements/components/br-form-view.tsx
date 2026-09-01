@@ -11,7 +11,7 @@ import { BR_PATH } from './paths';
 export interface BrFormViewProps {
   brId: string;
   initialEditing: boolean;
-  /** Deep-link a starting tab (e.g. `grill` — Promote-to-BR lands here). */
+  /** Deep-link a starting tab (e.g. `grill` - Promote-to-BR lands here). */
   initialTab?: string;
 }
 

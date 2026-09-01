@@ -1,5 +1,5 @@
 /**
- * Timezone preference card (plan sprint-2/05 Phase A) — picker renders the
+ * Timezone preference card (plan sprint-2/05 Phase A) - picker renders the
  * browser-default fallback, saving goes through the service boundary, and the
  * picked zone sticks.
  */
@@ -32,7 +32,7 @@ describe('TimezoneCard', () => {
 
   it('defaults to the browser timezone option', () => {
     render(<TimezoneCard />);
-    expect(screen.getByText(/Browser default —/)).toBeInTheDocument();
+    expect(screen.getByText(/Browser default -/)).toBeInTheDocument();
   });
 
   it('saves a picked zone through the service and refreshes the session', async () => {
@@ -66,7 +66,7 @@ describe('TimezoneCard', () => {
       screen.getByPlaceholderText('Search timezones…'),
       'Browser default',
     );
-    await user.click(await screen.findByText(/Browser default —/));
+    await user.click(await screen.findByText(/Browser default -/));
     await waitFor(() => expect(saveTimezone).toHaveBeenCalledWith(null));
   });
 });

@@ -1,4 +1,4 @@
-"""Tenant-side App Store routes (plan 08 §7) — act on the CALLER's tenant only,
+"""Tenant-side App Store routes (plan 08 §7) - act on the CALLER's tenant only,
 gated by the ``app_store.*`` core permissions. Thin: delegate to AppStoreService.
 """
 from typing import List
@@ -26,7 +26,7 @@ router = APIRouter()
 
 
 def store_error_http(exc: AppStoreError) -> HTTPException:
-    """Map AppStoreService errors to HTTP — shared with the operator routes
+    """Map AppStoreService errors to HTTP - shared with the operator routes
     (platform_tenant_modules) so both entry points fail identically."""
     if isinstance(exc, ModuleNotFound):
         return HTTPException(status.HTTP_404_NOT_FOUND, exc.message)

@@ -1,4 +1,4 @@
-"""Integration connections (plan 09 §3) — the core registry every external
+"""Integration connections (plan 09 §3) - the core registry every external
 service integration plugs into.
 
 One row per (tenant, provider). The PLATFORM tenant's row is the deployment
@@ -25,16 +25,16 @@ from app.models.utc_datetime import UTCDateTime
 from app.database import Base
 
 # Connection types exempt from the ONE-active-per-type rule: ``payment``
-# (sprint-4/07 AC-07-24 — Stripe + Billplz resolve per-project), ``erp``
-# (sprint-4/13 AC-13-02 — AutoCount is one-connection-per-company, several
-# active erp rows per tenant), and ``llm`` (Phase B-i Bi-D21 / AC-BI-03b —
+# (sprint-4/07 AC-07-24 - Stripe + Billplz resolve per-project), ``erp``
+# (sprint-4/13 AC-13-02 - AutoCount is one-connection-per-company, several
+# active erp rows per tenant), and ``llm`` (Phase B-i Bi-D21 / AC-BI-03b -
 # agents resolve by connection_id, so several providers coexist). Everything
-# else — notably ``storage`` and ``email``, whose resolution MUST stay
-# deterministic — is still one active row per tenant.
+# else - notably ``storage`` and ``email``, whose resolution MUST stay
+# deterministic - is still one active row per tenant.
 # Keep this list and the migration's index predicate in step.
 EXEMPT_FROM_ONE_PER_TYPE = ("payment", "erp", "llm")
 
-# Connection health — code branches only on these.
+# Connection health - code branches only on these.
 CONNECTION_STATUS_ACTIVE = "ACTIVE"
 CONNECTION_STATUS_UNVERIFIED = "UNVERIFIED"
 CONNECTION_STATUS_ERROR = "ERROR"
@@ -46,18 +46,18 @@ class Connection(Base):
         # ONE ACTIVE connection per (tenant, provider). RELAXED to a partial
         # unique index on ``is_active`` (sprint-4/10 D10): a SAME-PROVIDER bucket
         # migration (s3→s3) needs the retired A (is_active=false) and its active
-        # successor B to coexist — a plain unique on (tenant, provider) would
+        # successor B to coexist - a plain unique on (tenant, provider) would
         # block creating B. Two ACTIVE same-provider connections stay blocked
         # (the payment invariant: two active Stripe rows forbidden; Stripe +
-        # Billplz still fine — different providers).
+        # Billplz still fine - different providers).
         # RELAXED for ``type='erp'`` (sprint-4/13 D16/D17, AC-13-02): the TYPE
         # carve-out below is NOT sufficient on its own. Every AutoCount company
         # is ``provider='autocount'``, so a tenant's second company is the SAME
         # provider a second time and this index would reject it. The payment
         # carve-out never hit this because Stripe + Billplz are DIFFERENT
         # providers. Real company-identity uniqueness is enforced by the module
-        # on ``ac_company (tenant_id, database_name)`` — ``DatabaseName`` is the
-        # true company identity, discovered from the login response — so core
+        # on ``ac_company (tenant_id, database_name)`` - ``DatabaseName`` is the
+        # true company identity, discovered from the login response - so core
         # keeps zero knowledge of AutoCount. Non-erp providers are unaffected.
         Index(
             "uq_connection_tenant_provider",
@@ -67,7 +67,7 @@ class Connection(Base):
             postgresql_where=and_(Column("type") != "erp", Column("is_active")),
             sqlite_where=and_(Column("type") != "erp", Column("is_active")),
         ),
-        # ONE connection per TYPE per tenant (plan 06 D7) — StorageService /
+        # ONE connection per TYPE per tenant (plan 06 D7) - StorageService /
         # EmailService resolution must be deterministic. RELAXED for
         # ``type='payment'`` (sprint-4/07 Cluster F AC-07-24): a tenant may hold
         # MULTIPLE payment connections (Stripe + Billplz), so checkout can resolve
@@ -79,11 +79,11 @@ class Connection(Base):
         # write-target; ``resolve_for_type`` filters on ``is_active`` to pick it.
         # RELAXED for ``type='erp'`` (sprint-4/13 D16/D17, AC-13-02): AutoCount
         # is multi-company and the vendor API resolves the company server-side
-        # from the ``AppId`` header — so ONE CONNECTION PER COMPANY is the model,
+        # from the ``AppId`` header - so ONE CONNECTION PER COMPANY is the model,
         # and a tenant legitimately holds several active ``erp`` rows.
         # RELAXED for ``type='llm'`` (Phase B-i, Bi-D21 / AC-BI-03b): a tenant
         # may hold SEVERAL active LLM connections (Anthropic + Gemini + OpenAI)
-        # so different agents can use different providers — a cheap model for
+        # so different agents can use different providers - a cheap model for
         # clustering, a strong one for grilling. An agent therefore resolves by
         # its own ``connection_id``, never by type; type-resolution survives
         # only as the "is any LLM configured?" prerequisite probe (AC-BI-11).
@@ -108,12 +108,12 @@ class Connection(Base):
     )
     # Provider identity, e.g. "smtp" (registry key, app/integrations).
     provider = Column(String, nullable=False, index=True)
-    # Category: email | storage | llm | erp — grouping, not behavior.
+    # Category: email | storage | llm | erp - grouping, not behavior.
     type = Column(String, nullable=False)
     name = Column(String, nullable=False)
-    # Non-secret config (host, port, from_email, …) — displayable/queryable.
+    # Non-secret config (host, port, from_email, …) - displayable/queryable.
     config_json = Column(JSON, nullable=False, default=dict)
-    # Fernet-encrypted secrets dict — write-only over the API.
+    # Fernet-encrypted secrets dict - write-only over the API.
     credentials_json = Column(Text, nullable=False, default="")
     status = Column(String, nullable=False, default=CONNECTION_STATUS_UNVERIFIED)
     # Write-target flag (sprint-4/10 D10). Only an ``is_active`` connection is
@@ -122,7 +122,7 @@ class Connection(Base):
     is_active = Column(Boolean, nullable=False, default=True, server_default="1")
     last_tested_at = Column(UTCDateTime(), nullable=True)
     last_error = Column(Text, nullable=True)
-    # Outbox dispatcher throttle (plan 09 §5 — low-spec SMTP guard).
+    # Outbox dispatcher throttle (plan 09 §5 - low-spec SMTP guard).
     rate_limit_per_minute = Column(Integer, nullable=False, default=30)
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)

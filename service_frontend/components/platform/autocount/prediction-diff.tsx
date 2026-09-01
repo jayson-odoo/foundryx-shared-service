@@ -7,24 +7,24 @@ import { humanizeFieldKey } from '@/lib/autocount-diff';
 import { isBlanking, type AutocountPreviewFieldDiff } from '@/types/autocount';
 import { DiffValue } from './record-diff';
 
-/** Shared grid — mirrors `RecordDiff` so a dry-run diff reads the same way. */
+/** Shared grid - mirrors `RecordDiff` so a dry-run diff reads the same way. */
 const ROW_GRID =
   'grid grid-cols-1 gap-x-3 gap-y-1 md:grid-cols-[minmax(140px,220px)_1fr_auto_1fr] md:items-start';
 
 export interface PredictionDiffProps {
-  /** `column → {current, incoming}` — Sorento's own dry-run resolution. */
+  /** `column → {current, incoming}` - Sorento's own dry-run resolution. */
   diff: Record<string, AutocountPreviewFieldDiff>;
   className?: string;
 }
 
 /**
  * A prediction's field-level current → incoming (AC-14-20/22). A BLANKING
- * (a live value replaced by nothing) is the destructive case — its row is
+ * (a live value replaced by nothing) is the destructive case - its row is
  * tinted with the destructive token and tagged, legible from styling alone
  * (foolproof-UI: no explanatory paragraph). Theme-aware light and dark.
  *
  * Stacks on mobile (label / current / incoming each on their own line), lays
- * out in columns from `md` up — no horizontal page scroll at 375px.
+ * out in columns from `md` up - no horizontal page scroll at 375px.
  */
 export function PredictionDiff({ diff, className }: PredictionDiffProps) {
   const fields = Object.keys(diff).sort((a, b) => a.localeCompare(b));

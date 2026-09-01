@@ -39,7 +39,7 @@ Clicking this deep-links the crew member directly to the participant's invoice p
 
 ## 2. Hardware Integration (Silent Printer Connectivity)
 
-Web browsers (Chrome/Safari) physically prevent websites from printing silently—they always force a "Print Dialog" popup, which slows down event registration. To achieve silent, universal printing compatible with ANY printer brand (Zebra, Brother, standard Laser), we use a **Local Print Spooler**.
+Web browsers (Chrome/Safari) physically prevent websites from printing silently-they always force a "Print Dialog" popup, which slows down event registration. To achieve silent, universal printing compatible with ANY printer brand (Zebra, Brother, standard Laser), we use a **Local Print Spooler**.
 
 ### 2.1 The Architecture (QZ Tray or Custom Daemon)
 1. The registration laptop runs a lightweight background daemon (like QZ Tray or a custom Node.js script) that listens on `http://localhost:8080`. This daemon has raw access to the OS drivers.

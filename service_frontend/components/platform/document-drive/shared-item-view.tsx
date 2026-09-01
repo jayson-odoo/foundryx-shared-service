@@ -2,7 +2,7 @@
 
 /**
  * One opened "Shared with me" item, browsed IN PLACE inside the Drive page
- * (plan sprint-3/05 follow-up — replaces the standalone scoped page). Resolves
+ * (plan sprint-3/05 follow-up - replaces the standalone scoped page). Resolves
  * the share by token as the signed-in member and renders the shared mini-Drive
  * (preview/download for a file, navigation for a folder) in the Drive's right
  * pane.

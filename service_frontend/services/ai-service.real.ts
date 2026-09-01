@@ -156,7 +156,7 @@ export const realAiService: AiService = {
   },
 
   async exportTraces(query, columns) {
-    // No bulk export endpoint — render CSV from a large page client-side
+    // No bulk export endpoint - render CSV from a large page client-side
     // (the workflow-service precedent). 200 is the endpoint's page_size cap;
     // asking for more 422s.
     const result = await apiFetch<ListResult<AiTrace>>(

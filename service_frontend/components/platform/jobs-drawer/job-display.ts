@@ -1,7 +1,7 @@
 /** Shared display helpers for background jobs (generic, type-aware). */
 import type { JobStatus, JobType } from '@/types/jobs';
 
-/** Human label for a job type (extensible — falls back to a humanized key). */
+/** Human label for a job type (extensible - falls back to a humanized key). */
 export function jobTypeLabel(type: JobType): string {
   const known: Record<string, string> = {
     storage_migration: 'Storage migration',
@@ -37,7 +37,7 @@ export const JOB_STATUS_LABEL: Record<JobStatus, string> = {
   aborted: 'Aborted',
 };
 
-/** Percent complete (0–100) for a job's progress bar. */
+/** Percent complete (0-100) for a job's progress bar. */
 export function jobProgressPct(progressDone: number, progressTotal: number): number {
   if (progressTotal <= 0) return 0;
   return Math.min(100, Math.round((progressDone / progressTotal) * 100));

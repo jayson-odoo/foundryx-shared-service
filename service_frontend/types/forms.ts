@@ -1,6 +1,6 @@
 /**
  * Form engine wire contracts (plan sprint-3/01). `FormDocument` is the
- * forever-contract block document — `schemaVersion` at root, Page → Section →
+ * forever-contract block document - `schemaVersion` at root, Page → Section →
  * Field (D6), editor-agnostic, NEVER stored compiled. Mirrors the backend
  * `app/form_engine/schemas.py` (Phase B; parity-pinned like branding tokens).
  * All datetimes are Z-suffixed UTC strings (ApiModel); render via
@@ -11,7 +11,7 @@ import type { RuleGroup } from './rules';
 
 export const FORM_SCHEMA_VERSION = 1;
 
-// ---- field taxonomy (D7 — full v1, `payment` deferred BL-086) ----
+// ---- field taxonomy (D7 - full v1, `payment` deferred BL-086) ----
 
 /** Answer-bearing field types. */
 export type FormInputFieldType =
@@ -37,12 +37,12 @@ export type FormInputFieldType =
   | 'table'
   | 'computed';
 
-/** Display-only field types — render, collect nothing. */
+/** Display-only field types - render, collect nothing. */
 export type FormDisplayFieldType = 'heading' | 'paragraph' | 'divider';
 
 export type FormFieldType = FormInputFieldType | FormDisplayFieldType;
 
-/** Sub-field types a repeater row may carry (no composites/uploads/display —
+/** Sub-field types a repeater row may carry (no composites/uploads/display -
  * conditions on sub-fields = BL-089). */
 export type FormSubFieldType =
   | 'text'
@@ -57,7 +57,7 @@ export type FormSubFieldType =
   | 'date'
   | 'rating';
 
-// ---- choice options (D8 — static-only v1, `entity` slots in via BL-087) ----
+// ---- choice options (D8 - static-only v1, `entity` slots in via BL-087) ----
 
 export interface FormChoiceItem {
   value: string;
@@ -80,7 +80,7 @@ export interface FormTextValidation {
   maxLength?: number;
   /** Anchored ECMAScript-compatible regex source (no flags). */
   pattern?: string;
-  /** Shown when `pattern` rejects — required alongside it. */
+  /** Shown when `pattern` rejects - required alongside it. */
   patternMessage?: string;
 }
 
@@ -91,7 +91,7 @@ export interface FormNumberValidation {
   /** Display + input precision (decimal places). Drives formatting + a
    * max-decimal-places validation (decimal mode only). */
   decimals?: number;
-  /** Whole numbers only (age, qty) — rejects any fraction. Default = decimal. */
+  /** Whole numbers only (age, qty) - rejects any fraction. Default = decimal. */
   integer?: boolean;
 }
 
@@ -106,23 +106,23 @@ export interface FormFileValidation {
 
 // ---- the document tree (D6) ----
 
-/** One leaf of the form. `key` is the STABLE answer key — relabel never
+/** One leaf of the form. `key` is the STABLE answer key - relabel never
  * breaks refs (workflow-node-id precedent); unique across the doc. Display
  * fields carry no `key`/`required`. Type-specific config rides the optional
- * bags — the publish gate (`validate_form_doc`) enforces which bag belongs
+ * bags - the publish gate (`validate_form_doc`) enforces which bag belongs
  * to which type. */
 export interface FormField {
   id: string;
   type: FormFieldType;
-  /** Answer key — required for input types, absent for display types. */
+  /** Answer key - required for input types, absent for display types. */
   key?: string;
   /** Field label; for `heading` the heading text, for `paragraph` the body. */
   label: string;
   required?: boolean;
   placeholder?: string;
   helpText?: string;
-  /** Rule-engine visibility — facts namespace `answers.<fieldKey>`, EARLIER
-   * fields only (document order — publish-gate enforced, D14). */
+  /** Rule-engine visibility - facts namespace `answers.<fieldKey>`, EARLIER
+   * fields only (document order - publish-gate enforced, D14). */
   conditionsJson?: RuleGroup | null;
 
   // -- type-specific bags (exactly one applies, per type) --
@@ -131,7 +131,7 @@ export interface FormField {
   /** `select`/`multiselect`/`radio`/`checkboxes`. */
   options?: FormChoiceOptions;
   file?: FormFileValidation;
-  /** `rating`: 1–N scale. */
+  /** `rating`: 1-N scale. */
   rating?: { max: number };
   /** `heading`: visual level. */
   heading?: { level: 1 | 2 | 3 };
@@ -142,9 +142,9 @@ export interface FormField {
     maxRows?: number;
   };
   /** `computed`: arithmetic-only expression over sibling field keys
-   * (`qty * unitPrice`) — own parser, never eval (anti-SSTI). */
+   * (`qty * unitPrice`) - own parser, never eval (anti-SSTI). */
   computed?: { expression: string };
-  /** `table`: tabular line items (PO/SO/invoice) — authored columns, per-row
+  /** `table`: tabular line items (PO/SO/invoice) - authored columns, per-row
    * computed columns, column totals, optional row numbers. */
   table?: FormTableConfig;
 }
@@ -179,7 +179,7 @@ export interface FormTableConfig {
   maxRows?: number;
 }
 
-/** A repeater row's sub-field — restricted type set, no conditions (BL-089). */
+/** A repeater row's sub-field - restricted type set, no conditions (BL-089). */
 /** Column-summary technique for a Table column total footer (sprint-3/02).
  * `count` works on any column; the rest need a numeric column. */
 export type FormSummarize = 'sum' | 'avg' | 'count' | 'min' | 'max';
@@ -207,7 +207,7 @@ export interface FormSection {
   fields: FormField[];
 }
 
-/** Wizard step — per-page client validation before advancing. */
+/** Wizard step - per-page client validation before advancing. */
 export interface FormPage {
   id: string;
   title?: string;
@@ -232,7 +232,7 @@ export interface FormAddressAnswer {
   country?: string;
 }
 
-/** One uploaded file as stored — quarantined storage key, display name. */
+/** One uploaded file as stored - quarantined storage key, display name. */
 export interface FormFileAnswer {
   key: string;
   name: string;
@@ -331,7 +331,7 @@ export interface FormSubmissionRow {
   availableTransitionIds?: string[] | null;
 }
 
-/** Read-model for fill surfaces — the PUBLISHED version only (D9). */
+/** Read-model for fill surfaces - the PUBLISHED version only (D9). */
 export interface FormFillView {
   formId: string;
   versionId: string;
@@ -345,7 +345,7 @@ export interface FormFillView {
 
 /** The serving state of a public form (slice 2, D10/D11). `open` carries the
  * definition to fill; `closed`/`full` render a friendly message with no schema.
- * An unknown/non-public/unpublished form is a uniform 404 (no enumeration) —
+ * An unknown/non-public/unpublished form is a uniform 404 (no enumeration) -
  * never surfaced as a state here. */
 export type PublicFormState = 'open' | 'closed' | 'full';
 

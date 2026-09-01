@@ -1,4 +1,4 @@
-"""Background-job wire schemas (sprint-4/10) — camelCase, Z-suffixed datetimes.
+"""Background-job wire schemas (sprint-4/10) - camelCase, Z-suffixed datetimes.
 
 ``JobOut`` surfaces the generic ``background_jobs`` row for the Jobs drawer /
 list; the storage-migration start takes the new-bucket connection config.
@@ -45,7 +45,7 @@ class StorageMigrationStartRequest(BaseModel):
 
 class StorageMigrationTestRequest(BaseModel):
     """Non-destructive pre-create probe of a candidate new bucket (wizard Test
-    step). No ``name`` — nothing is persisted."""
+    step). No ``name`` - nothing is persisted."""
 
     provider: str
     config: Dict[str, str]

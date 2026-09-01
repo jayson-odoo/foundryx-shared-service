@@ -46,7 +46,7 @@ const STEP_LABELS: Record<MigrationStep, string> = {
  * new bucket B (reusing the connect wizard's `fields()`-driven form) → a live,
  * non-destructive Test (Start stays gated until it passes) → a typed-confirm on
  * the bucket name before the destructive Start. Responsive: single-column,
- * scrollable body — usable at 375px and 1280px.
+ * scrollable body - usable at 375px and 1280px.
  */
 export function StorageMigrationWizard({ open, onClose, onStarted }: StorageMigrationWizardProps) {
   const m = useStorageMigration(open);
@@ -56,7 +56,7 @@ export function StorageMigrationWizard({ open, onClose, onStarted }: StorageMigr
 
   const goNext = async () => {
     if (m.step === 'configure') {
-      // Full per-provider validation before advancing to Test — surfaces field
+      // Full per-provider validation before advancing to Test - surfaces field
       // errors on the visible config step.
       if (!(await m.validateConfigure())) return;
       m.next();
@@ -74,7 +74,7 @@ export function StorageMigrationWizard({ open, onClose, onStarted }: StorageMigr
     try {
       const job = await m.start();
       if (job) {
-        toast.success('Storage migration started — track it in the Jobs drawer.');
+        toast.success('Storage migration started - track it in the Jobs drawer.');
         onStarted(job);
         onClose();
       }
@@ -93,7 +93,7 @@ export function StorageMigrationWizard({ open, onClose, onStarted }: StorageMigr
           </DialogDescription>
         </DialogHeader>
 
-        {/* Step indicator — wraps on narrow (375px) screens. */}
+        {/* Step indicator - wraps on narrow (375px) screens. */}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b px-5 py-3">
           {STEP_ORDER.map((s, i) => (
             <div key={s} className="flex items-center gap-2">
@@ -193,7 +193,7 @@ export function StorageMigrationWizard({ open, onClose, onStarted }: StorageMigr
                 </div>
                 <div className="flex items-center justify-between gap-3 py-1">
                   <span className="text-muted-foreground">Provider</span>
-                  <span className="font-medium">{m.provider?.title ?? '—'}</span>
+                  <span className="font-medium">{m.provider?.title ?? '-'}</span>
                 </div>
                 <p className="mt-2 text-muted-foreground">
                   Every existing asset is copied to the new bucket, then references

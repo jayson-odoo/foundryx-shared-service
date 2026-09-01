@@ -17,7 +17,7 @@ const PROVIDER_FILTER: FilterGroup = {
 };
 
 export interface UseAutocountConsumerConnectionsResult {
-  /** Sorento consumer connections — the valid `sinkConnectionId` picks. */
+  /** Sorento consumer connections - the valid `sinkConnectionId` picks. */
   options: SearchSelectOption[];
   isLoading: boolean;
   /**
@@ -29,7 +29,7 @@ export interface UseAutocountConsumerConnectionsResult {
 
 /**
  * The push-target picker's options (plan 14 hop 2). A company delivering to
- * Sorento needs a `consumer`/`sorento` connection to name — offering `sorento`
+ * Sorento needs a `consumer`/`sorento` connection to name - offering `sorento`
  * with none configured would guarantee a validation failure, so the picker
  * states the prerequisite instead.
  */

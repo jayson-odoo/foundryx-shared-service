@@ -5,7 +5,7 @@ columns + BL-015 association tenant_id backfill.
 - tenants: is_active -> status_id (FK statuses), + is_platform / contacts /
   custom_domain / notes (platform tenant itself is seeded by seed.py)
 - backfill user_roles.tenant_id / role_permissions.tenant_id from the owning
-  role (they were written via a static default — wrong for tenant #2, BL-015)
+  role (they were written via a static default - wrong for tenant #2, BL-015)
 
 Revision ID: d3e4f5a6b7c8
 Revises: c2d3e4f5a6b7
@@ -18,7 +18,7 @@ down_revision = "c2d3e4f5a6b7"
 branch_labels = None
 depends_on = None
 
-# Stable system-row ids — keep in sync with app/models/status.py.
+# Stable system-row ids - keep in sync with app/models/status.py.
 _ACTIVE_ID = "20000000-0000-0000-0000-000000000001"
 _SUSPENDED_ID = "20000000-0000-0000-0000-000000000002"
 _ARCHIVED_ID = "20000000-0000-0000-0000-000000000003"
@@ -105,7 +105,7 @@ def upgrade() -> None:
         batch.drop_column("is_active")
 
     # 3. BL-015: association tenant_id follows the owning role (was the static
-    # default — wrong the moment a 2nd tenant exists).
+    # default - wrong the moment a 2nd tenant exists).
     op.execute(
         "UPDATE user_roles SET tenant_id = "
         "(SELECT tenant_id FROM roles WHERE roles.id = user_roles.role_id)"

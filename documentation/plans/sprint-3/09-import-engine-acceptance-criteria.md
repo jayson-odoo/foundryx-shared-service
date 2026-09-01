@@ -1,4 +1,4 @@
-# Sprint 3 · Plan 09 — Import Engine · User Acceptance Criteria
+# Sprint 3 · Plan 09 - Import Engine · User Acceptance Criteria
 
 **Plan:** `09-import-engine.md` · **Foundation:** F8 (the 6th core engine)
 **Gate role:** MERGE green after 08, before 10. Consumed by F4 participant bulk-reg (plan 11).
@@ -8,7 +8,7 @@ A criterion is MET only when its named test is green (and UI verified at 375/128
 
 ---
 
-## 1. Functional SaaS — the import flow works end-to-end 🟢
+## 1. Functional SaaS - the import flow works end-to-end 🟢
 
 - **AC-09-01 (demo/D4) Full wizard round-trips.**
   *Given* `/users` with the importer, *when* the user runs Import → download template → fill →
@@ -28,7 +28,7 @@ A criterion is MET only when its named test is green (and UI verified at 375/128
 
 - **AC-09-04 (D4) Header detection is positional.**
   *Given* a file with leading empty rows, *when* parsed, *then* the first row with content =
-  headers, data follows — no bold/color/`*` sniffing.
+  headers, data follows - no bold/color/`*` sniffing.
 
 - **AC-09-05 (D5) Three explicit modes, `id`-only matching.**
   *Given* a chosen mode, *then*: Create-only rejects a present `id` (row error); Update-only
@@ -55,13 +55,13 @@ A criterion is MET only when its named test is green (and UI verified at 375/128
 
 - **AC-09-09 (D7) Commit is all-or-nothing.**
   *Given* a validated set, *when* Commit runs and a re-validation/integrity error occurs, *then*
-  the entire transaction rolls back (nothing imported), job = `failed`, clean retry — no partial
+  the entire transaction rolls back (nothing imported), job = `failed`, clean retry - no partial
   landing, no per-row savepoint skipping during commit.
 
-- **AC-09-10 (D7) Set-based queries / bulk DML — no per-row explosion.**
+- **AC-09-10 (D7) Set-based queries / bulk DML - no per-row explosion.**
   *Given* an import, *when* validated/committed, *then* resolvers run one batched `IN (…)` query
   each, match-existence is one query, DML is bulk (`bulk_insert_mappings` / `ON CONFLICT DO UPDATE`)
-  — a test asserts the query count does not scale per row.
+  - a test asserts the query count does not scale per row.
 
 - **AC-09-11 (D7) Double-commit guard.**
   *Given* a job already claimed, *when* Commit fires twice, *then* the atomic status claim
@@ -149,4 +149,4 @@ A criterion is MET only when its named test is green (and UI verified at 375/128
 ## Definition of Done (plan 09)
 All AC-09-* MET · suites green · E2E report filed · reviewer approved · merged to `main`.
 **Continuity gate:** plan 11's participant bulk-reg depends on D17 (context) + D18 (find-or-create)
-— AC-09-23 must be green before EMS slice 3 is built. Start plan 10 only after 09 is merged.
+- AC-09-23 must be green before EMS slice 3 is built. Start plan 10 only after 09 is merged.

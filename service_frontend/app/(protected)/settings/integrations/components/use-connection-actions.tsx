@@ -12,7 +12,7 @@ import type { Connection } from '@/types/integration';
 import { connectionFormHref, integrationsListPath } from './paths';
 
 /**
- * The Connection action registry — surfaced in the row "…" menu, the bulk
+ * The Connection action registry - surfaced in the row "…" menu, the bulk
  * toolbar, and the form "…" menu (plan 02 §3c). The wizard's ceremony lives
  * on as Test here + the UNVERIFIED badge (plan 06 D6).
  */
@@ -80,7 +80,7 @@ export function useConnectionActions(): ResourceAction<Connection>[] {
         icon: HardDriveDownload,
         permission: 'integrations.migrate_storage',
         surfaces: { row: true, form: true },
-        // Only for a storage connection — the migration drains this tenant's
+        // Only for a storage connection - the migration drains this tenant's
         // active storage bucket onto a new one (backend resolves the source).
         isVisible: (rows) => rows.length === 1 && rows[0].type === 'storage',
         run: () => openMigration(),
@@ -107,7 +107,7 @@ export function useConnectionActions(): ResourceAction<Connection>[] {
               ? `${rows[0].name} disconnected.`
               : `${rows.length} connections disconnected.`,
           );
-          // From the form surface the record is gone — return to the list.
+          // From the form surface the record is gone - return to the list.
           if (pathname !== integrationsListPath) router.push(integrationsListPath);
           else rt.reload();
         },

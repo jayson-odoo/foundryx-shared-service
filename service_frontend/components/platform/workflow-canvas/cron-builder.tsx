@@ -1,13 +1,13 @@
 'use client';
 
 /**
- * Structured cron builder (plan sprint-2/09 D9) — frequency + sub-fields
+ * Structured cron builder (plan sprint-2/09 D9) - frequency + sub-fields
  * compile to a standard 5-field cron string (lib/cron.ts), with an IANA
  * timezone. No raw-cron input on purpose: a mistyped expression is a silent
  * footgun, so the schedule is only ever expressible through the builder. The
  * schedule trigger stores `cron` (string) + `timezone` (IANA, '' = tenant tz).
  *
- * Mount-initialized from the incoming cron — bump the parent `key` (node id) to
+ * Mount-initialized from the incoming cron - bump the parent `key` (node id) to
  * reload it for a different node.
  */
 import { useEffect, useMemo, useState } from 'react';
@@ -45,7 +45,7 @@ export function CronBuilder({ cron, timezone, disabled = false, onChange }: Cron
   const [state, setState] = useState<CronState>(() => parseCron(cron) ?? DEFAULT_CRON_STATE);
 
   // Reconcile when the cron prop changes externally (undo/redo, Cancel/discard)
-  // without a remount — otherwise the sub-field inputs show a stale schedule and
+  // without a remount - otherwise the sub-field inputs show a stale schedule and
   // the next edit recompiles the stale state, clobbering the change.
   useEffect(() => {
     const parsed = parseCron(cron);
@@ -157,7 +157,7 @@ export function CronBuilder({ cron, timezone, disabled = false, onChange }: Cron
       />
 
       <p className="text-xs text-muted-foreground" data-testid="cron-summary">
-        {describeCron(cron || '')} · <code className="text-[11px]">{cron || '—'}</code>
+        {describeCron(cron || '')} · <code className="text-[11px]">{cron || '-'}</code>
       </p>
     </div>
   );

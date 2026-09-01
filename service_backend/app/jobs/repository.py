@@ -1,4 +1,4 @@
-"""Background-job repository (sprint-4/10) — pure SQLAlchemy, tenant-scoped."""
+"""Background-job repository (sprint-4/10) - pure SQLAlchemy, tenant-scoped."""
 from datetime import datetime, timezone
 from typing import Iterable, List, Optional, Tuple
 
@@ -28,7 +28,7 @@ class BackgroundJobRepository:
         )
 
     def get_unscoped(self, job_id: str) -> Optional[BackgroundJob]:
-        """For the worker — it re-scopes inside the job's tenant."""
+        """For the worker - it re-scopes inside the job's tenant."""
         return self.db.query(BackgroundJob).filter(BackgroundJob.id == job_id).first()
 
     def list(
@@ -88,14 +88,14 @@ class BackgroundJobRepository:
         return updated == 1
 
     def release(self, job_id: str, *, from_status: str, to_status: str) -> bool:
-        """The inverse of ``claim`` — hand a claimed job BACK to a non-terminal
+        """The inverse of ``claim`` - hand a claimed job BACK to a non-terminal
         status when the claimed work did not complete.
 
         Without this a crash between a successful ``claim`` and the terminal
         ``finish`` strands the job in ``running`` forever: not terminal so the
         pruner never touches it, and not in ``from_status`` so ``claim`` can
         never succeed again. Guarded on ``from_status`` for the same reason
-        ``claim`` is — never clobber a status someone else has since set.
+        ``claim`` is - never clobber a status someone else has since set.
         """
         updated = (
             self.db.query(BackgroundJob)

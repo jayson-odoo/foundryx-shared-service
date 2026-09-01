@@ -1,6 +1,6 @@
 You're invited
 
-An account has been created for you on FoundryX EMS. Set your password to get started:
+An account has been created for you on Foundryx EMS. Set your password to get started:
 
 {{ link }}
 

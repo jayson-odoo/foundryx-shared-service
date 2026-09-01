@@ -1,5 +1,5 @@
 /**
- * Template block-document operations (plan sprint-2/07 D3) — the editor's
+ * Template block-document operations (plan sprint-2/07 D3) - the editor's
  * only mutation surface. Pure, immutable, schema-versioned.
  */
 import { describe, expect, it } from 'vitest';
@@ -66,7 +66,7 @@ describe('template-doc', () => {
     doc = insertBlock(doc, section.id, colId, b);
     doc = insertBlock(doc, section.id, colId, c);
 
-    // Move a (index 0) after c (target index 3) — lands at the end.
+    // Move a (index 0) after c (target index 3) - lands at the end.
     doc = moveBlock(doc, a.id, { sectionId: section.id, columnId: colId, index: 3 });
     const ids = doc.sections[1].columns[0].blocks.map((blk) => blk.id);
     expect(ids).toEqual([b.id, c.id, a.id]);
@@ -268,7 +268,7 @@ describe('validateDocument (F2 D10 mirror)', () => {
       if (b.type === 'repeater') {
         b.source = 'lineItems';
         const t = createBlock('text');
-        if (t.type === 'text') t.html = '{{row.description}} — {{companyName}}';
+        if (t.type === 'text') t.html = '{{row.description}} - {{companyName}}';
         b.body = [t as never];
       }
     }, 'repeater');

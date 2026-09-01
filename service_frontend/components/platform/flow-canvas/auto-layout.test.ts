@@ -1,5 +1,5 @@
 /**
- * "Tidy" auto-layout (sprint-2/01) — layered LR layout: upstream states left
+ * "Tidy" auto-layout (sprint-2/01) - layered LR layout: upstream states left
  * of downstream ones, every node gets a finite position, no two nodes overlap.
  */
 import { describe, expect, it } from 'vitest';

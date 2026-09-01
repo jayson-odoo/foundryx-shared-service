@@ -1,5 +1,5 @@
 /**
- * Mock email-log service — D14 semantics the Phase-B backend must mirror:
+ * Mock email-log service - D14 semantics the Phase-B backend must mirror:
  * segment filtering, retry only FAILED|CANCELLED (attempts preserved),
  * cancel only PENDING (atomic guard), cancelled rows retryable.
  */

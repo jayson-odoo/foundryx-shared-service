@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * WABA Configuration + Profile (plan 06 Slice A) E2E — LIVE backend, dev-stub
+ * WABA Configuration + Profile (plan 06 Slice A) E2E - LIVE backend, dev-stub
  * mode. Targets the seeded "Demo WhatsApp (sandbox)" channel (dev credentials →
  * the adapter returns canned data, never a real Graph call). Real user clicks.
  */
@@ -46,7 +46,7 @@ test.describe('WABA Configuration + Profile', () => {
 
     // BR-3: Sync pulls the (dev-stub) business account name.
     await page.getByRole('button', { name: /^sync$/i }).click();
-    await expect(page.getByText('FoundryX Events (dev sandbox)')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText('Foundryx Events (dev sandbox)')).toBeVisible({ timeout: 15_000 });
   });
 
   test('Sync Profile pulls the mirror from Meta (BR-5)', async ({ page }) => {
@@ -62,7 +62,7 @@ test.describe('WABA Configuration + Profile', () => {
     await openDemoChannel(page);
     await page.getByRole('tab', { name: /profile/i }).click();
 
-    // Engage Edit (read-only until Edit — GP-1).
+    // Engage Edit (read-only until Edit - GP-1).
     await page.getByRole('button', { name: /^edit$/i }).click();
 
     const about = page.getByPlaceholder('A short tagline');
@@ -93,7 +93,7 @@ test.describe('WABA Configuration + Profile', () => {
     await expect(page.getByText(/valid email/i)).toBeVisible({ timeout: 10_000 });
   });
 
-  test('responsive at 375px — tabs and profile usable, no overflow', async ({ page }) => {
+  test('responsive at 375px - tabs and profile usable, no overflow', async ({ page }) => {
     await openDemoChannel(page);
     await page.setViewportSize({ width: 375, height: 800 });
     await expect(page.getByRole('tab', { name: /configuration/i })).toBeVisible();

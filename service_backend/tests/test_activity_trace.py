@@ -36,7 +36,7 @@ def _memory_idempotency():
 
 @pytest.fixture(autouse=True)
 def _reset_trace():
-    """Each test starts + ends with the trace contextvar at its default (None) —
+    """Each test starts + ends with the trace contextvar at its default (None) -
     ``run_send(trace_id=...)`` sets it without a reset, so isolate the leak."""
     from app.activity_log.context import trace_id_var
 
@@ -115,7 +115,7 @@ def test_worker_boundary_threads_trace_to_outbound(client, session_factory):
     contextvar (it defaults to None), so ``run_send`` must re-seed it from the
     passed ``trace_id`` for the outbound Meta row to land on the inbound trace.
     Simulated by calling ``run_send(trace_id=...)`` with NO contextvar set (as the
-    enqueue→worker path does), which is what prod does — eager dev never crosses
+    enqueue→worker path does), which is what prod does - eager dev never crosses
     processes."""
     from modules.omnichannel.models import Channel, ConversationMessage
     from modules.omnichannel.services.send_runner import run_send
@@ -142,7 +142,7 @@ def test_worker_boundary_threads_trace_to_outbound(client, session_factory):
     msg_id = row.id
     db.close()
 
-    # The worker's contextvar is at its default — the trace arrives ONLY via kwarg.
+    # The worker's contextvar is at its default - the trace arrives ONLY via kwarg.
     assert trace_id_var.get() is None
     db = session_factory()
     run_send(db, msg_id, trace_id="trace-worker")

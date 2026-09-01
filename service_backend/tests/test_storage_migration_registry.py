@@ -1,4 +1,4 @@
-"""StorageKeyLocation registry + put_raw + drift test (sprint-4/10 Slice 1) —
+"""StorageKeyLocation registry + put_raw + drift test (sprint-4/10 Slice 1) -
 AC-10-04..07.
 
 Covers: put_raw path preservation on both adapters, scalar enumerate + value-
@@ -75,7 +75,7 @@ def test_s3_put_raw_uses_exact_key():
         def __init__(self):
             self.objects = {}
 
-        def put_object(self, Bucket, Key, Body, ContentType):  # noqa: N803 — boto3 sig
+        def put_object(self, Bucket, Key, Body, ContentType):  # noqa: N803 - boto3 sig
             self.objects[Key] = (Body, ContentType)
 
         def get_object(self, Bucket, Key):  # noqa: N803
@@ -222,19 +222,19 @@ def test_json_rewrite_value_checked_and_only_keys(db, isolated_locations):
     assert keys == ["conn:B:one", "conn:A:two", "conn:B:already"]
 
 
-# ── AC-10-07: drift test — every *_key column is registered ────────────────────
+# ── AC-10-07: drift test - every *_key column is registered ────────────────────
 
 
 def test_no_unregistered_storage_key_columns(db):
     """Hard CI gate: a *_key storage column without a StorageKeyLocation fails."""
     from app.database import Base
     from app.storage_migration.core_locations import ensure_core_locations
-    from modules.omnichannel import models as omni_models  # noqa: F401 — populate metadata
+    from modules.omnichannel import models as omni_models  # noqa: F401 - populate metadata
     from modules.omnichannel.bootstrap import register_engine_entities
     from modules.omnichannel.db import OmniBase
 
     ensure_core_locations()
-    register_engine_entities()  # idempotent — registers conversation_messages.media_key
+    register_engine_entities()  # idempotent - registers conversation_messages.media_key
 
     found = all_key_columns([Base.metadata, OmniBase.metadata])
     registered = registered_scalar_columns()

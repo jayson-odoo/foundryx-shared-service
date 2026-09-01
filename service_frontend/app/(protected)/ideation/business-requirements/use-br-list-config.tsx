@@ -28,7 +28,7 @@ export interface BrListHandlers {
 
 /**
  * Business Requirements list config on the shared ResourceList (SAME component as
- * Users / Ideas — never a hand-rolled table). Client-side fetcher over the loaded
+ * Users / Ideas - never a hand-rolled table). Client-side fetcher over the loaded
  * BRs; row-click opens the detail form. Active | Archived status views; the only
  * bulk/row action in S2 is Delete (lifecycle status moves live on the detail).
  */

@@ -40,7 +40,7 @@ _ORIGIN = "workflow_origin"
 # fresh post-commit session, with the full event dict (see ``emit_entity_event``
 # for the stable shape: entity_type, action, tenant_id, record_id, actor,
 # changes={field:{from,to}}, record_facts, extra, source). Each subscriber runs
-# in its OWN commit, isolated — a failing/slow subscriber never breaks workflow
+# in its OWN commit, isolated - a failing/slow subscriber never breaks workflow
 # dispatch or the triggering request. The audit log re-instruments nothing: it
 # registers here at startup. This plan finalizes the seam; the log is its own
 # future plan (retention / PII-redaction / tenant-scoped Resource UI).
@@ -59,19 +59,19 @@ def unregister_event_subscriber(fn: Callable[[Session, Dict[str, Any]], None]) -
 
 
 def _notify_subscribers(session: Session, ev: Dict[str, Any]) -> None:
-    """Fan an event out to registered subscribers — each in its own commit so
+    """Fan an event out to registered subscribers - each in its own commit so
     one subscriber's failure is isolated from the next and from workflow dispatch."""
     for sub in _subscribers:
         try:
             sub(session, ev)
             session.commit()
-        except Exception:  # noqa: BLE001 — a subscriber never breaks the seam
+        except Exception:  # noqa: BLE001 - a subscriber never breaks the seam
             logger.exception("event subscriber failed: %s", ev.get("entity_type"))
             session.rollback()
 
 
 def _json_safe(value: Any) -> Any:
-    """Coerce fact/change values to JSON-storable forms — the run payload is a
+    """Coerce fact/change values to JSON-storable forms - the run payload is a
     JSON column, and record facts carry real datetimes/Decimals/enums."""
     if isinstance(value, (datetime, date)):
         return value.isoformat()
@@ -96,10 +96,10 @@ def clear_run_origin(db: Session) -> None:
     db.info.pop(_ORIGIN, None)
 
 
-# Derived status (sprint-4/03 G7) — re-eval transitions tag their emitted events
+# Derived status (sprint-4/03 G7) - re-eval transitions tag their emitted events
 # with this origin so the derived subscriber skips its OWN writes (loop-safe).
 # It carries no run_id, so workflow dispatch sees an empty origin chain and a
-# derived status change STILL triggers workflows (intended — a derived "Paid"
+# derived status change STILL triggers workflows (intended - a derived "Paid"
 # can start a post-payment workflow).
 DERIVED_ORIGIN = {"kind": "derived"}
 
@@ -108,7 +108,7 @@ def set_origin(
     db: Session, origin: Optional[Dict[str, Any]]
 ) -> Optional[Dict[str, Any]]:
     """Set (or clear, with None) the session's event origin. Returns the
-    previous value so a caller can restore it — nested-origin safe."""
+    previous value so a caller can restore it - nested-origin safe."""
     prev = db.info.get(_ORIGIN)
     if origin is None:
         db.info.pop(_ORIGIN, None)
@@ -175,14 +175,14 @@ def _dispatch(events: List[Dict[str, Any]], bind) -> None:
                 children = disp.info.pop(_BUFFER, [])
                 disp.commit()
                 pending.extend(children)
-            except Exception:  # noqa: BLE001 — a bad event never breaks the request
+            except Exception:  # noqa: BLE001 - a bad event never breaks the request
                 logger.exception("workflow event dispatch failed: %s", ev.get("entity_type"))
                 disp.rollback()
                 disp.info.pop(_BUFFER, None)
-            # Audit-log seam (D5) — independent of workflow matching above.
+            # Audit-log seam (D5) - independent of workflow matching above.
             _notify_subscribers(disp, ev)
             # A subscriber may emit its own events (derived-status re-eval fires
-            # status_changed transitions, sprint-4/03) — cascade them through the
+            # status_changed transitions, sprint-4/03) - cascade them through the
             # SAME loop so they reach workflow matching too. Empty unless a
             # subscriber emitted, so a no-op for plain audit subscribers.
             pending.extend(disp.info.pop(_BUFFER, []))
@@ -200,27 +200,28 @@ def notify_entity_event(
     actor: Optional[Any] = None,
     actor_id: Optional[str] = None,
     changes: Optional[Dict[str, Dict[str, Any]]] = None,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """emit + drain — for services whose repository commits internally (call
+    """emit + drain - for services whose repository commits internally (call
     AFTER the successful write)."""
     emit_entity_event(
         db, entity_type, action, record,
-        tenant_id=tenant_id, actor=actor, actor_id=actor_id, changes=changes,
+        tenant_id=tenant_id, actor=actor, actor_id=actor_id, changes=changes, extra=extra,
     )
     dispatch_pending(db)
 
 
 def dispatch_pending(db: Session) -> None:
     """Drain this session's buffer NOW (services whose repo commits internally
-    emit AFTER a successful write, then call this — the data is committed, never
-    rolled back, D3). Swallows everything — workflow dispatch is fire-and-forget
+    emit AFTER a successful write, then call this - the data is committed, never
+    rolled back, D3). Swallows everything - workflow dispatch is fire-and-forget
     relative to the triggering request."""
     events = db.info.pop(_BUFFER, None)
     if not events:
         return
     try:
         _dispatch(events, db.get_bind())
-    except Exception:  # noqa: BLE001 — never propagate to the caller's request
+    except Exception:  # noqa: BLE001 - never propagate to the caller's request
         logger.exception("workflow dispatch failed")
 
 
@@ -231,12 +232,12 @@ def _drain(committed: Session) -> None:
     if not events:
         return
     if committed.info.get(_DRAINING):
-        # A nested commit inside an active drain — leave events for the owning loop.
+        # A nested commit inside an active drain - leave events for the owning loop.
         committed.info.setdefault(_BUFFER, []).extend(events)
         return
     try:
         _dispatch(events, committed.get_bind())
-    except Exception:  # noqa: BLE001 — a broken workflow never breaks the emitter
+    except Exception:  # noqa: BLE001 - a broken workflow never breaks the emitter
         logger.exception("workflow drain failed")
 
 
@@ -258,6 +259,11 @@ def _trigger_types_for(action: str) -> List[str]:
         # trigger_entity_type is the constant "form_submission"; per-form
         # selectivity is refined by formId below.
         return ["form.submitted"]
+    if action == "received":
+        # Omnichannel inbound message (plan sprint-4/17, module omnichannel).
+        # The denormalized trigger_entity_type is the constant
+        # "omnichannel_message"; per-channel selectivity is refined below.
+        return ["omnichannel.message_received"]
     return []
 
 
@@ -284,7 +290,7 @@ def _passes_refine(config: Dict[str, Any], ev: Dict[str, Any], trigger_type: str
     if trigger_type == "entity.field_changed":
         wanted = config.get("field")
         # The picker stores a camelCase field key; the emitted change-diff keys
-        # are snake_case model attrs — compare in the canonical space.
+        # are snake_case model attrs - compare in the canonical space.
         return bool(wanted) and attr_for(str(wanted)) in (ev.get("changes") or {})
     if trigger_type == "entity.status_changed":
         extra = ev.get("extra") or {}
@@ -295,6 +301,10 @@ def _passes_refine(config: Dict[str, Any], ev: Dict[str, Any], trigger_type: str
         # Per-form selectivity: the picked formId must match the submitted form.
         wanted = config.get("formId")
         return bool(wanted) and wanted == (ev.get("extra") or {}).get("formId")
+    if trigger_type == "omnichannel.message_received":
+        # Per-channel selectivity: unset config = fires for any channel.
+        wanted = config.get("channelId")
+        return not wanted or wanted == (ev.get("extra") or {}).get("channelId")
     return True
 
 
@@ -340,24 +350,19 @@ def _match_and_enqueue(session: Session, ev: Dict[str, Any]) -> None:
         if not _passes_refine(config, ev, wf.trigger_type):
             continue
         if wf.id in chain:
-            continue  # own write / cycle — never re-trigger a workflow in the chain
+            continue  # own write / cycle - never re-trigger a workflow in the chain
         if new_depth > MAX_RUN_DEPTH:
             logger.warning("loop guard tripped: workflow %s at depth %s", wf.id, new_depth)
             continue
         _create_run(session, wf, ev, depth=new_depth)
 
 
-def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: int) -> None:
-    from app.config import settings
-    from app.models.workflow import WorkflowVersion
+def build_event_trigger_payload(ev: Dict[str, Any]) -> Dict[str, Any]:
+    """Canonical event envelope consumed by the executor.
 
-    version = (
-        session.query(WorkflowVersion)
-        .filter(WorkflowVersion.id == wf.current_version_id)
-        .first()
-    )
-    if version is None:
-        return
+    Production dispatch and module-owned synthetic test builders share this
+    function so their ``trigger.*`` context cannot drift.
+    """
     actor = ev.get("actor") or {}
     extra = ev.get("extra") or {}
     payload = {
@@ -377,6 +382,32 @@ def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: in
         payload["formId"] = extra.get("formId")
         payload["submissionId"] = extra.get("submissionId")
         payload["answers"] = extra.get("answers") or {}
+    if ev["action"] == "received":
+        # Omnichannel inbound message (sprint-4/17) - the executor flattens
+        # this into trigger.message.*/trigger.contact.*/trigger.channel.*.
+        payload["omnichannel"] = extra
+    return payload
+
+
+def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: int) -> None:
+    from app.config import settings
+    from app.models.workflow import WorkflowVersion
+
+    version = (
+        session.query(WorkflowVersion)
+        .filter(WorkflowVersion.id == wf.current_version_id)
+        .first()
+    )
+    if version is None:
+        return
+    from app.workflow_engine.schemas import has_code_nodes
+
+    if has_code_nodes(version.definition_json) and not version.code_authorized_by:
+        # Automated triggers may execute a Code-bearing version ONLY when a
+        # permitted actor stamped it at publish (AC-SAR-68). Fail closed.
+        logger.warning("workflow %s: Code-bearing version lacks authorization; skipped", wf.id)
+        return
+    payload = build_event_trigger_payload(ev)
     source = ev.get("source") or {}
     run = WorkflowRun(
         tenant_id=wf.tenant_id,
@@ -389,21 +420,20 @@ def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: in
         trigger_payload_json=payload,
         triggered_by_run_id=source.get("run_id"),
         depth=depth,
-        actor_id=actor.get("id"),
+        actor_id=(ev.get("actor") or {}).get("id"),
     )
+    from app.workflow_engine.serialization import (
+        assign_run_correlation,
+        dispatch_persisted_run,
+    )
+
+    assign_run_correlation(run)
     session.add(run)
     session.flush()
-    run_id = run.id
 
-    if settings.celery_task_always_eager:
-        from app.workflow_engine.executor import run_workflow
-
-        run_workflow(session, run_id)
-    else:
+    if not settings.celery_task_always_eager:
         session.commit()
-        from app.workflow_engine.worker import run_workflow_task
-
-        run_workflow_task.delay(run_id)
+    dispatch_persisted_run(session, run)
 
 
 # Register once on the Session class (all sessions share the hook).

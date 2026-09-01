@@ -4,10 +4,10 @@ Owns the rules: two-tier fork-on-edit (D7), strict graph validation (D4/D8),
 system-row locks, reorder, deactivate + migrate-records, transition role +
 notification-spec management. Routers translate outcomes to HTTP; the
 repositories do the SQL; the EXECUTION of transitions lives in
-``status_machine`` — this service only configures the machine.
+``status_machine`` - this service only configures the machine.
 
 Tier rules: a platform-tenant caller edits the platform defaults
-(``tenant_id NULL``); a tenant caller edits their own fork — created on first
+(``tenant_id NULL``); a tenant caller edits their own fork - created on first
 write by copying the platform set for that entity (statuses + transitions) and
 remapping the tenant's existing records onto the forked rows. Platform-owned
 entities (e.g. ``tenant``) reject tenant callers outright.
@@ -89,7 +89,7 @@ class StatusValidationError(StatusEngineError):
 
 
 class StatusReferenced(StatusEngineError):
-    """Hard delete blocked — records still hold this status (D8)."""
+    """Hard delete blocked - records still hold this status (D8)."""
 
     def __init__(self, count: int):
         super().__init__(f"{count} record(s) still use this status.")
@@ -105,7 +105,7 @@ class StatusService:
     # ---- entity + tier resolution ----
 
     def list_entities(self, user: User) -> List[StatusEntity]:
-        """Registry entries visible to the caller — tenant callers don't see
+        """Registry entries visible to the caller - tenant callers don't see
         platform-owned entities (they can't configure or read them usefully).
         SCOPED entities (sprint-3/01 D4) never list here: their graphs live
         on the owning record's own surface (a form's Flow tab), and the
@@ -144,7 +144,7 @@ class StatusService:
         return self.statuses.resolve_tier(entity.entity_type, user.tenant_id)
 
     def _write_scope(self, entity: StatusEntity, user: User) -> Optional[str]:
-        """The tier a write lands in — forks the platform set first when a
+        """The tier a write lands in - forks the platform set first when a
         tenant touches an entity it hasn't forked yet (D7)."""
         if self._is_platform_caller(user):
             return None
@@ -162,7 +162,7 @@ class StatusService:
         self, entity: StatusEntity, user: User, scope_id: Optional[str]
     ) -> Tuple[Optional[str], Optional[str]]:
         """(tier, scope_id) a write lands in. Scoped entities are tenant-owned
-        from birth — no fork, the caller's tenant IS the tier, and the scope
+        from birth - no fork, the caller's tenant IS the tier, and the scope
         owner must exist in that tenant (polymorphic guard class). Unscoped
         entities keep the legacy two-tier path."""
         if entity.scoped:
@@ -180,7 +180,7 @@ class StatusService:
     def _row_write_context(
         self, row: Status, entity: StatusEntity, user: User
     ) -> Tuple[Optional[str], Optional[str]]:
-        """Write context derived from an EXISTING row (update/delete paths) —
+        """Write context derived from an EXISTING row (update/delete paths) -
         a scoped row must belong to the caller's tenant + carry its scope."""
         if entity.scoped:
             if row.tenant_id != user.tenant_id or row.scope_id is None:
@@ -224,7 +224,7 @@ class StatusService:
             id_map[source.id] = clone.id
         self.db.flush()
 
-        # Copy the edge graph (roles/notification specs start empty — platform
+        # Copy the edge graph (roles/notification specs start empty - platform
         # defaults carry none today; revisit if platform-seeded specs arrive).
         edge_map: Dict[str, str] = {}
         for edge in (
@@ -243,16 +243,16 @@ class StatusService:
                 to_status_id=id_map[edge.to_status_id],
                 label=edge.label,
                 sort_order=edge.sort_order,
-                # Conditions copy verbatim — fact keys are tier-independent.
+                # Conditions copy verbatim - fact keys are tier-independent.
                 conditions_json=edge.conditions_json,
-                # Derived status (sprint-4/03) — an auto-edge stays auto in the fork.
+                # Derived status (sprint-4/03) - an auto-edge stays auto in the fork.
                 trigger_mode=edge.trigger_mode,
             )
             self.db.add(clone)
             edge_map[edge.id] = clone.id
         self.db.flush()
 
-        # The tenant's existing records point at platform rows — remap.
+        # The tenant's existing records point at platform rows - remap.
         for old_id, new_id in id_map.items():
             entity.migrate_records(self.db, old_id, new_id, tenant_id)
         self._fork_id_map = id_map
@@ -275,7 +275,7 @@ class StatusService:
         entity = self._entity(entity_type)
         if entity.scoped:
             # Scoped machines (sprint-3/01 D4): ONE owning record's graph,
-            # tenant-owned from birth — no tier resolution.
+            # tenant-owned from birth - no tier resolution.
             if not scope_id:
                 raise StatusValidationError(
                     f"{entity.scope_label or 'Scope'} is required for this entity."
@@ -357,7 +357,7 @@ class StatusService:
         status = Status(
             entity_type=entity_type,
             key=key,
-            category=key.upper(),  # cosmetic mirror — never branched on
+            category=key.upper(),  # cosmetic mirror - never branched on
             label=label.strip(),
             color=color,
             sort_order=(max((s.sort_order for s in siblings), default=0) + 1),
@@ -388,11 +388,11 @@ class StatusService:
         if flags.get("is_terminal") and not creating:
             if self.transitions.outgoing(status.id, scope):
                 raise StatusValidationError(
-                    "A terminal status cannot have outgoing transitions — remove them first."
+                    "A terminal status cannot have outgoing transitions - remove them first."
                 )
         for flag, value in flags.items():
             setattr(status, flag, bool(value))
-        # Single default per entity set (per SCOPE for scoped machines) —
+        # Single default per entity set (per SCOPE for scoped machines) -
         # converge silently.
         if flags.get("is_default"):
             (
@@ -525,14 +525,14 @@ class StatusService:
             raise TransitionNotFound("Transition not found.")
         entity = self._entity(edge.entity_type)
         if entity.scoped:
-            # Scoped edges are tenant-owned; endpoints carry the scope —
+            # Scoped edges are tenant-owned; endpoints carry the scope -
             # the tenant check below suffices (edges never bridge scopes).
             if edge.tenant_id != user.tenant_id:
                 raise TransitionNotFound("Transition not found.")
             return edge, entity, user.tenant_id
         scope = self._write_scope(entity, user)
         if edge.tenant_id != scope:
-            # The write may have just forked — the client sent a platform-tier
+            # The write may have just forked - the client sent a platform-tier
             # edge id; follow it to its forked counterpart.
             edge_map = getattr(self, "_fork_edge_map", None)
             if edge_map and edge.id in edge_map:
@@ -572,7 +572,7 @@ class StatusService:
         scope, scope_id = self._scope_for_write(entity, user, scope_id)
         self._validate_conditions(conditions, entity_type)
         self._validate_trigger_mode(trigger_mode, conditions, role_ids or [])
-        # Both endpoints must live in the SAME scope (D4 — an edge can never
+        # Both endpoints must live in the SAME scope (D4 - an edge can never
         # bridge two forms' graphs).
         source = self._get_status_in_scope(from_status_id, entity, scope, scope_id=scope_id)
         target = self._get_status_in_scope(to_status_id, entity, scope, scope_id=scope_id)
@@ -580,7 +580,7 @@ class StatusService:
             raise StatusValidationError("A status cannot transition to itself.")
         if source.is_terminal:
             raise StatusValidationError(
-                f'"{source.label}" is terminal — it cannot have outgoing transitions.'
+                f'"{source.label}" is terminal - it cannot have outgoing transitions.'
             )
         if self.transitions.find_edge(source.id, target.id, scope) is not None:
             raise StatusValidationError("This transition already exists.")
@@ -638,7 +638,7 @@ class StatusService:
             edge.conditions_json = conditions
         if trigger_mode is not None:
             edge.trigger_mode = trigger_mode
-        # Validate the RESULTING auto-edge invariants over the merged state —
+        # Validate the RESULTING auto-edge invariants over the merged state -
         # an auto edge needs conditions and no roles whether they were just set
         # or already on the row (sprint-4/03 G6).
         self._validate_trigger_mode(
@@ -652,7 +652,7 @@ class StatusService:
     def _validate_conditions(
         self, conditions: Optional[Dict[str, Any]], entity_type: str
     ) -> None:
-        """Save-time rule validation (sprint-2/02 D11) — 422 with specifics."""
+        """Save-time rule validation (sprint-2/02 D11) - 422 with specifics."""
         if conditions is None:
             return
         problems = validate_tree(conditions, ["actor", f"record:{entity_type}"])
@@ -666,7 +666,7 @@ class StatusService:
         role_ids: List[str],
     ) -> None:
         """Auto-edge invariants (sprint-4/03 G6): an AUTO edge is system-fired
-        when its conditions become true — so it MUST carry conditions (an
+        when its conditions become true - so it MUST carry conditions (an
         unconditioned auto-edge would fire always) and MUST NOT carry roles
         (no human fires it). 422 on violation."""
         if trigger_mode not in ("manual", "auto"):
@@ -751,7 +751,7 @@ class StatusService:
                 doc_json=item.get("doc"),
             )
             # Recipient targets may only reference the AUTHOR tier's own
-            # users/roles (platform-tier authors = the platform tenant) — a
+            # users/roles (platform-tier authors = the platform tenant) - a
             # foreign tenant's id here would leak email cross-tenant.
             author_tenant = scope or PLATFORM_TENANT_ID
             for r in item.get("recipients", []):

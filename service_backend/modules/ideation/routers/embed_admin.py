@@ -1,20 +1,20 @@
 """Embed-connection admin router (PLAN-ideation-embed-sso §7, AC-E-5/12).
 
-Gated (NOT public): every endpoint requires ``ideation.triage.manage`` (reused —
+Gated (NOT public): every endpoint requires ``ideation.triage.manage`` (reused -
 no new permission / grant sweep) AND the ideation module active for the caller's
 tenant (injected by the module loader). Registers the host applications allowed
 to embed THIS tenant's Ideas workspace.
 
-The ``signing_secret`` is WRITE-ONLY — it is accepted on create/rotate but NEVER
+The ``signing_secret`` is WRITE-ONLY - it is accepted on create/rotate but NEVER
 returned (list/create/rotate responses omit it, only reporting ``has_secret``).
 The admin (which supplies the plaintext) is the only side that reveals it, once,
-client-side — so the same value can be pasted into the host's (sorento's) embed
+client-side - so the same value can be pasted into the host's (sorento's) embed
 config. Both sides must hold the same ``connection_id`` + ``signing_secret``.
 
 Beyond list + create (idempotent upsert), the router supports the lifecycle the
 admin UI drives without ever re-supplying the secret: PATCH (enable/disable,
 re-scope, edit the origin allow-list), rotate (new secret only), and hard delete.
-All endpoints are tenant-scoped — a connection in another tenant is a 404.
+All endpoints are tenant-scoped - a connection in another tenant is a 404.
 """
 from typing import List, Optional
 
@@ -147,7 +147,7 @@ def rotate_embed_connection_secret(
     db: Session = Depends(get_db),
 ) -> EmbedConnectionOut:
     """Rotate the signing secret (new secret Fernet-encrypted at rest, never
-    returned — the admin reveals its own copy once). Invalidates every assertion
+    returned - the admin reveals its own copy once). Invalidates every assertion
     signed with the old secret. 404 when not in the caller's tenant."""
     row = rotate_secret(
         db,

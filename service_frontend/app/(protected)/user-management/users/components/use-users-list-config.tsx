@@ -101,7 +101,7 @@ export function useUsersListConfig(): ResourceListConfig<User> {
               <UserAvatar user={user} size="sm" />
               <div className="flex flex-col">
                 <span className="font-medium text-foreground leading-tight">
-                  {user.name ?? '—'}
+                  {user.name ?? '-'}
                 </span>
                 <span className="text-xs text-muted-foreground">{user.email}</span>
               </div>
@@ -189,7 +189,7 @@ export function useUsersListConfig(): ResourceListConfig<User> {
       exporter: (q, cols, ids) => userService.exportCsv(q, cols, ids),
       filterFields,
       exportColumns: [
-        // ID first — the import match key (export → edit → re-import to update).
+        // ID first - the import match key (export → edit → re-import to update).
         { id: 'id', label: 'ID' },
         { id: 'user', label: 'Name' },
         { id: 'email', label: 'Email' },
@@ -207,7 +207,7 @@ export function useUsersListConfig(): ResourceListConfig<User> {
       createLabel: 'Add user',
       createPermission: 'users.create',
       onCreate: () => router.push(userNewPath),
-      // Opt-in bulk import (plan sprint-3/09) — the first engine consumer.
+      // Opt-in bulk import (plan sprint-3/09) - the first engine consumer.
       importer: { entityType: 'user', writePermission: 'users.create' },
     };
   }, [actions, router, filterFields, formatDate, formatDateTime]);

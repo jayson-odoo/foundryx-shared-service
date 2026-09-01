@@ -1,10 +1,10 @@
 'use client';
 
 /**
- * Embed inbox view — the full chromeless workspace inbox (scope `inbox`).
+ * Embed inbox view - the full chromeless workspace inbox (scope `inbox`).
  * Reuses the exact ThreadList + ConversationDrawer composition of the protected
  * inbox page; the workspace comes from the embed session (no workspaceService
- * call — a thread-scoped-agent's token might not list workspaces).
+ * call - a thread-scoped-agent's token might not list workspaces).
  *
  * Responsive (AC-11H-17): side-by-side at ≥lg; a master/detail single pane on
  * mobile (selecting a thread swaps the list for the drawer + a back control),

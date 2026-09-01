@@ -1,17 +1,17 @@
-"""Response envelopes — the per-entity unwrap strategy (AC-14-03, D1).
+"""Response envelopes - the per-entity unwrap strategy (AC-14-03, D1).
 
 AutoCount returns **two different outer shapes**, and neither is derivable from
 the other:
 
-* **GRN** (``status_dict``) — a dict with a TOP-LEVEL ``Status`` and the rows
+* **GRN** (``status_dict``) - a dict with a TOP-LEVEL ``Status`` and the rows
   under ``ResultTable``.
-* **Masters** (``row_array``) — a **BARE ARRAY**. Each element is one record
+* **Masters** (``row_array``) - a **BARE ARRAY**. Each element is one record
   carrying its OWN ``Status``/``Message``/``RecordCount``, with the real DB row
   nested under ``Data[0]``.
 
 Passing a master response through the GRN unwrap raises on every single row (it
 requires a top-level ``Status`` that does not exist), so the strategy is selected
-**per entity from config** — ``ac_entity_config.envelope`` — never branched
+**per entity from config** - ``ac_entity_config.envelope`` - never branched
 inside ``read()``. Adding a third envelope is a new class plus a registry entry:
 ``read()``'s signature and its callers do not change.
 
@@ -20,15 +20,15 @@ inside ``read()``. Adding a third envelope is a new class plus a registry entry:
 ``verdict()`` is the SINGLE decision about whether a response succeeded, and it
 is consumed by both places that need that answer:
 
-  * ``AutoCountClient._unwrap`` — decides whether the call RAISES.
-  * ``AutoCountClient._record_call`` — decides how the call is BADGED in the
+  * ``AutoCountClient._unwrap`` - decides whether the call RAISES.
+  * ``AutoCountClient._record_call`` - decides how the call is BADGED in the
     activity log.
 
 Those were two separate rules once. They disagreed on one reachable input (a
-``200`` body with no ``Status`` key — AutoCount's own error envelope, which
+``200`` body with no ``Status`` key - AutoCount's own error envelope, which
 carries only ``Message``): the call raised, and the activity log badged the leg
 GREEN. So the run failed, the operator opened the exact leg the failure pointed
-at, and saw no problem — the log at its least trustworthy precisely when it was
+at, and saw no problem - the log at its least trustworthy precisely when it was
 being relied on. Fixed in ``6d3e21c`` by making one mirror the other; kept fixed
 here by structure rather than by comment, because there is now only one rule to
 mirror.
@@ -46,7 +46,7 @@ from typing import Any, Dict, List, Optional, Tuple
 ENVELOPE_STATUS_DICT = "status_dict"
 ENVELOPE_ROW_ARRAY = "row_array"
 # Login is its own shape (a bare array of session dicts) and therefore its own
-# envelope. Not stored in config — ``login()`` is not an entity read.
+# envelope. Not stored in config - ``login()`` is not an entity read.
 ENVELOPE_LOGIN = "login"
 
 ENVELOPES = (ENVELOPE_STATUS_DICT, ENVELOPE_ROW_ARRAY)
@@ -57,7 +57,7 @@ _SUCCESS = "success"
 #
 #     !!  THIS IS NOT A TRUSTWORTHY TOTAL.  !!
 # Verified live in slice 1: the total is computed AFTER the ``RecordCount`` cap
-# is applied — an uncapped fetch reports ``"1 of 11"`` and a ``RecordCount:5``
+# is applied - an uncapped fetch reports ``"1 of 11"`` and a ``RecordCount:5``
 # fetch reports ``"1 of 5"``. So it is surfaced to an operator as "what the
 # vendor says is available" (AC-14-26) and is NEVER used to decide truncation;
 # that decision stays ``len(records) == cap``.
@@ -65,7 +65,7 @@ _N_OF_M = re.compile(r"^\s*\d+\s+of\s+(?P<total>\d+)\s*$", re.IGNORECASE)
 
 
 class UnknownEnvelope(Exception):
-    """A configured envelope has no registered strategy. LOUD — silently falling
+    """A configured envelope has no registered strategy. LOUD - silently falling
     back to the default would read a master response through the GRN unwrap and
     fail every row with a misleading error."""
 
@@ -92,7 +92,7 @@ class Unwrapped:
 def _reported_total(value: Any) -> Optional[int]:
     """Read the vendor's availability marker, in either shape it appears in.
 
-    Returns None rather than guessing — an absent marker must read as "the
+    Returns None rather than guessing - an absent marker must read as "the
     vendor did not say", never as zero.
     """
     if isinstance(value, bool) or value is None:
@@ -126,7 +126,7 @@ class ResponseEnvelope:
 class StatusDictEnvelope(ResponseEnvelope):
     """GRN and every slice-1 read: ``{"Status": "Success", "ResultTable": [...]}``.
 
-    Success is ``Status == "Success"`` — NOT the HTTP code (business failures
+    Success is ``Status == "Success"`` - NOT the HTTP code (business failures
     come back ``HTTP 200``) and NOT the presence of ``ResultTable`` (present but
     EMPTY on failure, so testing for it reads a failure as a successful empty
     fetch).
@@ -137,7 +137,7 @@ class StatusDictEnvelope(ResponseEnvelope):
     def verdict(self, body: Any) -> Verdict:
         if not isinstance(body, dict):
             return Verdict(False, "AutoCount returned an unexpected response shape.")
-        # ``or ""`` collapses an ABSENT key to "", which is not "success" — so an
+        # ``or ""`` collapses an ABSENT key to "", which is not "success" - so an
         # error envelope carrying only ``Message`` is a failure here. That
         # absent-key case is the one the two old rules disagreed on.
         declared = str(body.get("Status") or "")
@@ -160,29 +160,29 @@ class RowArrayEnvelope(ResponseEnvelope):
 
     Each element carries its own ``Status``/``Message``/``RecordCount`` beside
     flat fields, with the real DB row nested under ``Data[0]``. The whole element
-    is the record — mapping rows address both levels explicitly
+    is the record - mapping rows address both levels explicitly
     (``EmailAddress`` vs ``Data.0.AutoKey``).
 
     A row that DECLARES a failure fails the WHOLE call, carrying that row's
     ``Message``. Accepting the good rows and dropping the bad ones would advance
-    a watermark over records the vendor told us it could not give us — the
+    a watermark over records the vendor told us it could not give us - the
     silent-partial-sync failure AC-14-26 exists to prevent.
 
         !!  EMPTY ``Status`` IS SUCCESS ON THIS ROUTE. DO NOT "FIX" IT.  !!
 
     Masters do NOT use GRN's ``Status: "Success"`` convention. Verified live
     2026-07-21 against the demo instance: **all 106 Creditor rows and all 172
-    Debtor rows return ``Status: ''`` with ``Message: ''``** — the empty string
+    Debtor rows return ``Status: ''`` with ``Message: ''``** - the empty string
     is what a healthy master row looks like. Only the GRN *dict* envelope
     declares ``"Success"``.
 
     So this must NOT mirror ``StatusDictEnvelope``'s ``!= "success" → fail``
     rule. Doing so rejects every valid row while the unit tests (which mock the
-    payload) stay green — the whole master pipeline reads as broken against the
+    payload) stay green - the whole master pipeline reads as broken against the
     real vendor. That is precisely the bug the first live smoke of this slice
     caught, after 205 mocked tests passed.
 
-    The rule is therefore: a row fails only when it AFFIRMATIVELY says so — a
+    The rule is therefore: a row fails only when it AFFIRMATIVELY says so - a
     non-empty ``Status`` that is not a success token. Silence means fine.
     """
 
@@ -219,12 +219,12 @@ class RowArrayEnvelope(ResponseEnvelope):
 
 
 class LoginEnvelope(ResponseEnvelope):
-    """``POST /api/Server/Login`` — a BARE ARRAY whose ``[0]`` is the session.
+    """``POST /api/Server/Login`` - a BARE ARRAY whose ``[0]`` is the session.
 
     It has an envelope of its own so the activity log badges a login leg by the
     login rule. Under the GRN rule a SUCCESSFUL login (an array, no ``Status``)
     would badge red; under no rule at all, a FAILED login (a dict carrying only
-    ``Message``) badged green. ``login()`` still does its own JWT extraction —
+    ``Message``) badged green. ``login()`` still does its own JWT extraction -
     this governs the log verdict only.
     """
 

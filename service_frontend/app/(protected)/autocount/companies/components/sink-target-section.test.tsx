@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AutocountCompany } from '@/types/autocount';
 
@@ -19,6 +19,7 @@ function company(over: Partial<AutocountCompany> = {}): AutocountCompany {
     isActive: true,
     sinkImpl: 'sorento',
     sinkConnectionId: 'conn-9',
+    sorentoCompanyCode: 'SRT',
     createdAt: null,
     ...over,
   };
@@ -32,7 +33,7 @@ beforeEach(() => {
   });
 });
 
-describe('push target — read vs edit (AC-15-20/21)', () => {
+describe('push target - read vs edit (AC-15-20/21)', () => {
   it('read mode shows plain label/value, no dropdowns and no Save', () => {
     render(
       <SinkTargetSection
@@ -42,6 +43,8 @@ describe('push target — read vs edit (AC-15-20/21)', () => {
         connectionId="conn-9"
         onSinkChange={vi.fn()}
         onConnectionChange={vi.fn()}
+        companyCode="SRT"
+        onCompanyCodeChange={vi.fn()}
       />,
     );
     expect(screen.getByText('Sorento')).toBeInTheDocument();
@@ -60,6 +63,8 @@ describe('push target — read vs edit (AC-15-20/21)', () => {
         connectionId="conn-9"
         onSinkChange={vi.fn()}
         onConnectionChange={vi.fn()}
+        companyCode="SRT"
+        onCompanyCodeChange={vi.fn()}
       />,
     );
     // Two SearchSelects (delivery + connection) in edit mode.
@@ -75,6 +80,8 @@ describe('push target — read vs edit (AC-15-20/21)', () => {
         connectionId={null}
         onSinkChange={vi.fn()}
         onConnectionChange={vi.fn()}
+        companyCode="SRT"
+        onCompanyCodeChange={vi.fn()}
       />,
     );
     expect(screen.getByTestId('sink-connection-warning')).toBeInTheDocument();
@@ -94,6 +101,8 @@ describe('push target — read vs edit (AC-15-20/21)', () => {
         connectionId={null}
         onSinkChange={vi.fn()}
         onConnectionChange={vi.fn()}
+        companyCode="SRT"
+        onCompanyCodeChange={vi.fn()}
       />,
     );
     expect(screen.getByTestId('sink-connection-warning')).toHaveTextContent(
@@ -110,9 +119,80 @@ describe('push target — read vs edit (AC-15-20/21)', () => {
         connectionId={null}
         onSinkChange={vi.fn()}
         onConnectionChange={vi.fn()}
+        companyCode="SRT"
+        onCompanyCodeChange={vi.fn()}
       />,
     );
     expect(screen.getByText('No delivery (logging only)')).toBeInTheDocument();
     expect(screen.queryByText('Sorento connection')).not.toBeInTheDocument();
+  });
+});
+
+describe('Sorento company code (plan 22 S2, Appendix A6)', () => {
+  it('read mode shows the persisted code', () => {
+    render(
+      <SinkTargetSection
+        company={company()}
+        editing={false}
+        sinkImpl="sorento"
+        connectionId="conn-9"
+        onSinkChange={vi.fn()}
+        onConnectionChange={vi.fn()}
+        companyCode="SRT"
+        onCompanyCodeChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('sink-company-code-value')).toHaveTextContent('SRT');
+  });
+
+  it('read mode flags a legacy sorento company with no code (the Activate prerequisite)', () => {
+    render(
+      <SinkTargetSection
+        company={company({ sorentoCompanyCode: null })}
+        editing={false}
+        sinkImpl="sorento"
+        connectionId="conn-9"
+        onSinkChange={vi.fn()}
+        onConnectionChange={vi.fn()}
+        companyCode=""
+        onCompanyCodeChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('sink-company-code-missing')).toHaveTextContent('Not set');
+  });
+
+  it('edit mode warns while the code is blank and forwards typing', () => {
+    const onCompanyCodeChange = vi.fn();
+    render(
+      <SinkTargetSection
+        company={company({ sorentoCompanyCode: null })}
+        editing
+        sinkImpl="sorento"
+        connectionId="conn-9"
+        onSinkChange={vi.fn()}
+        onConnectionChange={vi.fn()}
+        companyCode="  "
+        onCompanyCodeChange={onCompanyCodeChange}
+      />,
+    );
+    expect(screen.getByTestId('sink-company-code-warning')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('sink-company-code'), { target: { value: 'SRT' } });
+    expect(onCompanyCodeChange).toHaveBeenCalledWith('SRT');
+  });
+
+  it('hides the code row for a logging company', () => {
+    render(
+      <SinkTargetSection
+        company={company({ sinkImpl: 'logging', sinkConnectionId: null, sorentoCompanyCode: null })}
+        editing
+        sinkImpl="logging"
+        connectionId={null}
+        onSinkChange={vi.fn()}
+        onConnectionChange={vi.fn()}
+        companyCode=""
+        onCompanyCodeChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('Sorento company code')).not.toBeInTheDocument();
   });
 });

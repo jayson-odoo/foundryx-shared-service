@@ -23,7 +23,7 @@ export default function EmailLogPage() {
             <ToolbarHeading>
               <ToolbarPageTitle />
               <ToolbarDescription>
-                Every email this workspace queued — delivery status, retries and content.
+                Every email this workspace queued - delivery status, retries and content.
               </ToolbarDescription>
             </ToolbarHeading>
           </Toolbar>

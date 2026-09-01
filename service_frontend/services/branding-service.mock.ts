@@ -18,7 +18,7 @@ import { hasOverrides, validateTokens } from '@/lib/branding-tokens';
 import type { BrandingService } from './branding-service';
 import { delay } from './mock-query';
 
-/** Mirrors tenant-admin-service.mock ids — the console tab passes tenant IDs. */
+/** Mirrors tenant-admin-service.mock ids - the console tab passes tenant IDs. */
 const SLUG_BY_TENANT_ID: Record<string, string> = {
   'tnt-001': 'platform',
   'tnt-002': 'default',
@@ -170,7 +170,7 @@ export const mockBrandingService: BrandingService = {
 
   update(input: UpdateBrandingInput, tenantId) {
     const record = recordFor(resolveSlug(tenantId));
-    // Same gate the backend applies — reject anything off-whitelist loudly.
+    // Same gate the backend applies - reject anything off-whitelist loudly.
     let tokens: BrandingTokens | null = null;
     if (input.tokens) {
       const validated = validateTokens(input.tokens);
@@ -182,7 +182,7 @@ export const mockBrandingService: BrandingService = {
     record.slogan = input.slogan?.trim() ? input.slogan.trim() : null;
     record.appName = input.appName?.trim() ? input.appName.trim() : null;
     record.tokens = tokens;
-    // Social & footer (plan 07 D4) — undefined = caller didn't touch them.
+    // Social & footer (plan 07 D4) - undefined = caller didn't touch them.
     if (input.socials !== undefined) record.socials = input.socials;
     if (input.footer !== undefined) record.footer = input.footer;
     record.version += 1;
@@ -196,7 +196,7 @@ export const mockBrandingService: BrandingService = {
     }
     if (file.size > rules.maxBytes) {
       throw new Error(
-        `File too large — max ${Math.round(rules.maxBytes / 1024)} KB for ${kind}.`,
+        `File too large - max ${Math.round(rules.maxBytes / 1024)} KB for ${kind}.`,
       );
     }
     const record = recordFor(resolveSlug(tenantId));
@@ -220,7 +220,7 @@ export const mockBrandingService: BrandingService = {
   publicBranding(slug) {
     const record = records.get(slug);
     if (!record || !isBranded(record)) {
-      // Unknown slug OR unbranded tenant — uniform FoundryX defaults (plan 03:
+      // Unknown slug OR unbranded tenant - uniform Foundryx defaults (plan 03:
       // never 404, no tenant enumeration).
       return delay<PublicBranding>(
         {

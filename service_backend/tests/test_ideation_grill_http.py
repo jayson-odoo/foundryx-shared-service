@@ -1,22 +1,22 @@
-"""Grill — FULL HTTP-path coverage (QA addition, Phase B-i slice 3).
+"""Grill - FULL HTTP-path coverage (QA addition, Phase B-i slice 3).
 
 The routine grill suite (``test_ideation_grill.py``) drives stub-scripted
 turn/generate/error paths against the SERVICE on a same-thread factory session,
 because the stub's fixture queue is thread-local and Starlette's ``TestClient``
 runs the endpoint on a DIFFERENT thread. That leaves the REAL request lifecycle
-— routing → ``require_permission`` → the service → ``get_db`` teardown — untested
+- routing → ``require_permission`` → the service → ``get_db`` teardown - untested
 for the scripted paths.
 
 These tests close that gap by monkeypatching the PROCESS-GLOBAL ``stub_provider``
 singleton (shared across threads, unlike the thread-local queue), so the full
 HTTP stack runs end to end while the "model" output stays deterministic:
 
-- **AC-BI-24b / decision 1** — a failed completion leaves an ``error`` trace even
+- **AC-BI-24b / decision 1** - a failed completion leaves an ``error`` trace even
   after ``get_db`` would roll the request back (the engine commits inside the
   ``except``). Only a real request exercises that teardown; the service-level test
   never does.
-- **AC-BI-23** — a turn is synchronous: it creates NO ``background_jobs`` row.
-- **AC-BI-26 / AC-BI-27** — a partial extraction persists the grounded fields
+- **AC-BI-23** - a turn is synchronous: it creates NO ``background_jobs`` row.
+- **AC-BI-26 / AC-BI-27** - a partial extraction persists the grounded fields
   through the real ``/generate`` endpoint and the BR stays ``draft``.
 """
 import pytest
@@ -102,7 +102,7 @@ def _patch_complete(monkeypatch, fn):
 def test_http_turn_provider_error_writes_error_trace_and_502(ideation_client, monkeypatch):
     """A provider failure through the REAL request: the endpoint returns 502 and
     the committed ``error`` trace survives ``get_db``'s exception-teardown rollback
-    (decision 1 / AC-BI-24b). This is the path the service-level test can't reach —
+    (decision 1 / AC-BI-24b). This is the path the service-level test can't reach -
     it uses a direct session with no ``get_db`` teardown."""
     _seed_connection(ideation_client)
     h = _auth(ideation_client)
@@ -156,11 +156,11 @@ def test_http_turn_error_writes_no_transcript(ideation_client, monkeypatch):
     assert state["messages"] == [], "no half-written turn after a provider failure"
 
 
-# ── AC-BI-23: a turn is synchronous — no background_jobs row ───────────────────
+# ── AC-BI-23: a turn is synchronous - no background_jobs row ───────────────────
 
 
 def test_http_turn_is_synchronous_no_background_job(ideation_client, monkeypatch):
-    """A grill turn is request/response, never a batch job — it must not create a
+    """A grill turn is request/response, never a batch job - it must not create a
     ``background_jobs`` row (AC-BI-23)."""
     _seed_connection(ideation_client)
     h = _auth(ideation_client)
@@ -201,13 +201,13 @@ def test_http_turn_is_synchronous_no_background_job(ideation_client, monkeypatch
     assert after == before, "a synchronous turn must not enqueue a background job"
 
 
-# ── AC-BI-26 / AC-BI-27: full-stack generate — partial persists, stays draft ──
+# ── AC-BI-26 / AC-BI-27: full-stack generate - partial persists, stays draft ──
 
 
 def test_http_generate_partial_persists_and_br_stays_draft(ideation_client, monkeypatch):
     """The REAL ``/generate`` endpoint: a partial extraction (``success_metric``
     ungrounded) persists the grounded fields, leaves the rest blank (never
-    invented, AC-BI-26), succeeds (no 422), and the BR stays ``draft`` — no
+    invented, AC-BI-26), succeeds (no 422), and the BR stays ``draft`` - no
     non-human path promotes it (AC-BI-27)."""
     _seed_connection(ideation_client)
     h = _auth(ideation_client)
@@ -247,7 +247,7 @@ def test_http_generate_partial_persists_and_br_stays_draft(ideation_client, monk
 
 def test_http_generate_warns_when_no_connection(ideation_client):
     """With no LLM connection anywhere, ``/generate`` is unavailable (409 with the
-    prerequisite warning) — never a silent runtime failure (AC-BI-11)."""
+    prerequisite warning) - never a silent runtime failure (AC-BI-11)."""
     h = _auth(ideation_client)
     pid = _product(ideation_client, h)
     br_id = _draft_br(ideation_client, h, pid)

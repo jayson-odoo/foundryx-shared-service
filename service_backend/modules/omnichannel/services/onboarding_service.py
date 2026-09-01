@@ -1,6 +1,6 @@
-"""Embedded Signup onboarding — exchange the auth code, provision the channel.
+"""Embedded Signup onboarding - exchange the auth code, provision the channel.
 
-FoundryX = Tech Provider: the frontend's Meta popup returns an auth code + WABA/
+Foundryx = Tech Provider: the frontend's Meta popup returns an auth code + WABA/
 phone ids; this service exchanges the code for a permanent token (via the channel
 adapter), encrypts it, creates the channel, and subscribes the webhook
 (best-effort). Plan 04 §5.2.
@@ -65,7 +65,7 @@ class OnboardingService:
 
     def _persist_channel(self, channel: Channel) -> None:
         """Commit a new channel; the partial-unique phone index is the race-proof
-        backstop behind ``_assert_phone_available`` — translate its violation to a
+        backstop behind ``_assert_phone_available`` - translate its violation to a
         clean 409 instead of a 500."""
         self.db.add(channel)
         try:
@@ -89,7 +89,7 @@ class OnboardingService:
         credentials = adapter.exchange_code(payload.code, payload.redirectUri)
 
         # The self-hosted redirect flow sends no waba/phone ids (no postMessage
-        # session info) — discover them from the exchanged token. The simulated
+        # session info) - discover them from the exchanged token. The simulated
         # popup (dev) supplies both, so we only resolve what's missing.
         waba_id = payload.wabaId or None
         phone_number_id = payload.phoneNumberId or None
@@ -137,7 +137,7 @@ class OnboardingService:
             callback_url = f"/omnichannel/webhooks/{channel.id}"
             try:
                 adapter.subscribe_webhook(credentials, waba_id, callback_url)
-            except Exception:  # noqa: BLE001 — subscription failure shouldn't block onboarding
+            except Exception:  # noqa: BLE001 - subscription failure shouldn't block onboarding
                 pass
 
         return ChannelService(self.db)._items([channel], tenant_id)[0]
@@ -192,14 +192,14 @@ class OnboardingService:
         )
         self._persist_channel(channel)
 
-        # Best-effort WABA webhook subscription (same as the ES path) — without
+        # Best-effort WABA webhook subscription (same as the ES path) - without
         # it Meta never delivers inbound messages for this number.
         if payload.wabaId:
             try:
                 adapter.subscribe_webhook(
                     credentials, payload.wabaId, f"/omnichannel/webhooks/{channel.id}"
                 )
-            except Exception:  # noqa: BLE001 — subscription failure shouldn't block onboarding
+            except Exception:  # noqa: BLE001 - subscription failure shouldn't block onboarding
                 pass
 
         return ChannelService(self.db)._items([channel], tenant_id)[0]

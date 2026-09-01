@@ -1,4 +1,4 @@
-"""Channel routes — thin; gated by omnichannel `channels.*` permissions.
+"""Channel routes - thin; gated by omnichannel `channels.*` permissions.
 Channels are CREATED via onboarding (Embedded Signup), not here."""
 import csv
 import io

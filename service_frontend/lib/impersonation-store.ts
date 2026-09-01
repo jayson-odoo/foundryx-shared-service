@@ -20,7 +20,7 @@ export interface ImpersonationSession {
   sessionId: string;
   startedAt: string;
   targetUser: ImpersonationTargetUser;
-  /** The target's effective permission keys — what the UI gates by while active. */
+  /** The target's effective permission keys - what the UI gates by while active. */
   permissions: string[];
 }
 

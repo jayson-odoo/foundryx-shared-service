@@ -72,7 +72,7 @@ class UserCreate(ApiModel):
 class UserUpdate(ApiModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=120)
     # Admin instant path (plan sprint-2/04): applies immediately + notifies
-    # both addresses. Self-edit is rejected (409) — own email goes through the
+    # both addresses. Self-edit is rejected (409) - own email goes through the
     # dual-confirmation ceremony (/me/change-email), no self-bypass.
     email: Optional[EmailStr] = None
     roleIds: Optional[List[str]] = None
@@ -85,7 +85,7 @@ class IdsRequest(ApiModel):
 
 class SetPasswordRequest(ApiModel):
     token: str
-    # Full server-side policy (plan 10 §3) — mirrors the frontend password
+    # Full server-side policy (plan 10 §3) - mirrors the frontend password
     # schema; 72-byte cap protects bcrypt (see app/security.py).
     password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
 

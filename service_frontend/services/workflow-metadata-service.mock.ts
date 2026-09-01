@@ -1,10 +1,11 @@
 /**
- * Mock workflow-metadata service (Phase A) — the v1 instrumented triggerable
+ * Mock workflow-metadata service (Phase A) - the v1 instrumented triggerable
  * entity set (plan sprint-2/09 D6: user, role, tenant, connection, template,
  * workflow). Each entity = a rule-engine fact source; status-engine adopters
  * (tenant) carry their statuses. Phase B swaps the binding to `GET
  * /workflow-metadata` in workflow-metadata-service.ts.
  */
+import { CODE_CAPABILITIES_FALLBACK } from '@/components/platform/workflow-canvas/code-editor';
 import type { WorkflowMetadata, WorkflowTriggerableEntity } from '@/types/workflows';
 import { delay } from './mock-query';
 
@@ -114,7 +115,15 @@ const FORMS = [
 export const mockWorkflowMetadataService = {
   getMetadata(): Promise<WorkflowMetadata> {
     return delay(
-      { entities: ENTITIES, connections: { email: true, storage: false }, forms: FORMS },
+      {
+        entities: ENTITIES,
+        connections: { email: true, storage: false },
+        forms: FORMS,
+        codeRunnerAvailable: true,
+        codeCapabilities: CODE_CAPABILITIES_FALLBACK,
+        omnichannelChannels: [{ id: 'chn-demo', name: 'Demo channel' }],
+        aiAgents: [{ id: 'agent-demo', name: 'Demo classifier', model: 'stub' }],
+      },
       120,
     );
   },

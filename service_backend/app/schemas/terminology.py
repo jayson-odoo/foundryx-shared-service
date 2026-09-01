@@ -15,7 +15,7 @@ class TermLabels(ApiModel):
 
 
 class TermSetRequest(ApiModel):
-    """Both forms required + non-blank (D3 — no auto-pluralize)."""
+    """Both forms required + non-blank (D3 - no auto-pluralize)."""
 
     singular: str = Field(min_length=1, max_length=MAX_LABEL_LEN)
     plural: str = Field(min_length=1, max_length=MAX_LABEL_LEN)

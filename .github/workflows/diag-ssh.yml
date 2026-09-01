@@ -2,7 +2,7 @@ name: Diagnose SSH reachability
 
 # One-shot root-cause probe: does a GitHub runner reach the deploy host on 2002?
 # Compares the LITERAL known IP vs the SSH_HOST secret's target, and prints the
-# runner's egress IP — WITHOUT ever echoing the secret value.
+# runner's egress IP - WITHOUT ever echoing the secret value.
 on:
   workflow_dispatch:
 
@@ -19,7 +19,7 @@ jobs:
           echo "SSH_PORT (var)  : $P"
 
           probe() {
-            # $1=host $2=port $3=label — 5s connect timeout, OPEN/BLOCKED only
+            # $1=host $2=port $3=label - 5s connect timeout, OPEN/BLOCKED only
             if timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; then
               echo "$3 = OPEN"
             else
@@ -32,6 +32,6 @@ jobs:
           # The actual secret target the deploy uses (value never printed)
           probe "$H" "$P" "SSH_HOST-secret:SSH_PORT"
 
-          # Sanity: a definitely-open public host — proves the runner's egress
+          # Sanity: a definitely-open public host - proves the runner's egress
           # isn't globally broken.
           probe github.com 443 "github.com:443 (control)"

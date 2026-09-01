@@ -1,5 +1,5 @@
 /**
- * Mock integration-log service (sprint-4/12) — the contract the Phase-B backend
+ * Mock integration-log service (sprint-4/12) - the contract the Phase-B backend
  * mirrors: paginated list, search over operation/trace/external-ref, redacted
  * payloads, single-row detail, CSV export.
  */

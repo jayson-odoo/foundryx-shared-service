@@ -1,9 +1,9 @@
 /**
- * Public (pre-auth) document-share service (plan sprint-3/05, D9). NO auth —
+ * Public (pre-auth) document-share service (plan sprint-3/05, D9). NO auth -
  * the token is the bearer capability. Resolve returns the state envelope
  * (uniform 404 → null); unlock + upload ride the backend's own `doc_share`
  * throttle. File bytes are fetched as blobs (so a password header can ride the
- * request — an `<img src>` can't carry it) and served object-URLs.
+ * request - an `<img src>` can't carry it) and served object-URLs.
  */
 import { ApiError, publicFetch } from '@/lib/api-client';
 import type { PublicShareView } from '@/types/documents';

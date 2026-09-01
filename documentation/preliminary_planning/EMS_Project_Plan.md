@@ -67,7 +67,7 @@
   - **1.2.4 Template Engine:**
     - *Architecture:* Multi-format rendering pipeline (HTML for emails/web, PDF/Image for badges and tickets) using Handlebars or Mustache syntax.
     - *Components:*
-      - `Templates Table`: Stores everything—template structure, style, and inject variables—in a single row per template.
+      - `Templates Table`: Stores everything-template structure, style, and inject variables-in a single row per template.
       - `Variable Injector`: Populates placeholders like `{{user.name}}`, `{{qr_code_url}}`, or `{{invoice.amount}}` based on the triggered context.
       - `Template Nesting`: Supports including partials (e.g., rendering an `{{> event_header}}` inside a ticket template).
 
@@ -184,8 +184,8 @@
 ## 2. User Stories
 
 ### Core & CRM
-- **US-01:** As a FoundryX admin, I want to create a new Event/Project from a template so I can quickly set up checklists and tasks.
-- **US-02:** As a FoundryX admin, I want to use a web content builder to drag-and-drop elements and publish a registration website to a subdomain.
+- **US-01:** As a Foundryx admin, I want to create a new Event/Project from a template so I can quickly set up checklists and tasks.
+- **US-02:** As a Foundryx admin, I want to use a web content builder to drag-and-drop elements and publish a registration website to a subdomain.
 - **US-03:** As an admin, I want to check domain availability via a DNS checker within the system.
 - **US-04:** As an admin, I want to generate a quotation and share it with the customer to finalize the event requirements.
 - **US-21:** As an admin operator, I want an App Store interface to install, upgrade, activate, or deactivate modular features (like the CMS or Finance modules) dynamically.

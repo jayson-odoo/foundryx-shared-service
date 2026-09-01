@@ -37,7 +37,7 @@ describe('authorize() error classes (BL-005)', () => {
     const err = await authorize(credentials, req).catch((e) => e);
     expect(thrownPayload(err)).toEqual({
       code: 503,
-      message: 'Service temporarily unavailable — please try again.',
+      message: 'Service temporarily unavailable - please try again.',
     });
   });
 
@@ -48,7 +48,7 @@ describe('authorize() error classes (BL-005)', () => {
     const err = await authorize(credentials, req).catch((e) => e);
     expect(thrownPayload(err)).toEqual({
       code: 500,
-      message: 'Service temporarily unavailable — please try again.',
+      message: 'Service temporarily unavailable - please try again.',
     });
   });
 
@@ -139,7 +139,7 @@ describe('jwt callback update trigger (plan 04 session refresh)', () => {
         accessToken: 'jwt-abc',
       },
       trigger: 'update',
-      // The callback only reads token/trigger — the rest of the NextAuth
+      // The callback only reads token/trigger - the rest of the NextAuth
       // params object is irrelevant here.
     } as Parameters<typeof jwt>[0]);
     expect(token.email).toBe('fresh@example.com');

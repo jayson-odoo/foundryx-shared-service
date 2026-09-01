@@ -42,7 +42,7 @@ describe('autocount service (real boundary)', () => {
     expect(apiFetch.mock.calls[0][0]).toContain('page_size=200');
   });
 
-  it('creates a company from a connection ONLY — never a typed company name', async () => {
+  it('creates a company from a connection ONLY - never a typed company name', async () => {
     apiFetch.mockResolvedValue({ id: 'c1' });
     await realAutocountService.createCompany({ connectionId: 'conn-1', name: 'Main' });
     const [path, init] = apiFetch.mock.calls[0];
@@ -143,6 +143,7 @@ describe('autocount service (real boundary)', () => {
     expect(JSON.parse(init.body as string)).toEqual({
       sinkImpl: 'sorento',
       sinkConnectionId: 'conn-9',
+      sorentoCompanyCode: null,
     });
   });
 
@@ -152,6 +153,7 @@ describe('autocount service (real boundary)', () => {
     expect(JSON.parse(apiFetch.mock.calls[0][1].body as string)).toEqual({
       sinkImpl: 'logging',
       sinkConnectionId: null,
+      sorentoCompanyCode: null,
     });
   });
 
@@ -257,5 +259,54 @@ describe('autocount mock service (frontend-first scaffolding)', () => {
     const res = await mockAutocountService.refetchHistory('c1', 'goods_received_note');
     expect(res.watermarkAt).toBeNull();
     expect(res.entityType).toBe('goods_received_note');
+  });
+});
+
+describe('direct-DB ETL lifecycle (plan 22 S2 contract)', () => {
+  const root = '/autocount/companies/c1/entities/sales_order/etl-task';
+
+  it('sends the Sorento company code with the sink target (trimmed, null when blank)', async () => {
+    await realAutocountService.updateSinkTarget('c1', {
+      sinkImpl: 'sorento',
+      sinkConnectionId: 'conn-9',
+      sorentoCompanyCode: ' SRT ',
+    });
+    expect(JSON.parse(apiFetch.mock.calls[0][1].body)).toEqual({
+      sinkImpl: 'sorento',
+      sinkConnectionId: 'conn-9',
+      sorentoCompanyCode: 'SRT',
+    });
+    apiFetch.mockClear();
+    await realAutocountService.updateSinkTarget('c1', { sinkImpl: 'logging' });
+    expect(JSON.parse(apiFetch.mock.calls[0][1].body).sorentoCompanyCode).toBeNull();
+  });
+
+  it('PATCHes sourceImpl through the entity-config route', async () => {
+    await realAutocountService.updateEntityConfig('c1', 'customer', { sourceImpl: 'sql_db' });
+    expect(apiFetch).toHaveBeenCalledWith('/autocount/companies/c1/entities/customer', {
+      method: 'PATCH',
+      body: JSON.stringify({ sourceImpl: 'sql_db' }),
+    });
+  });
+
+  it('POSTs preview / activate / pause / resume / run under the task resource', async () => {
+    await realAutocountService.previewEtlTask('c1', 'sales_order');
+    await realAutocountService.activateEtlTask('c1', 'sales_order');
+    await realAutocountService.pauseEtlTask('c1', 'sales_order');
+    await realAutocountService.resumeEtlTask('c1', 'sales_order');
+    await realAutocountService.runEtlTaskNow('c1', 'sales_order');
+    expect(apiFetch.mock.calls.map((c) => c[0])).toEqual([
+      `${root}/preview`,
+      `${root}/activate`,
+      `${root}/pause`,
+      `${root}/resume`,
+      `${root}/run`,
+    ]);
+    for (const call of apiFetch.mock.calls) expect(call[1]).toEqual({ method: 'POST' });
+  });
+
+  it('lists the task run history page-based with the capped page size', async () => {
+    await realAutocountService.listEtlRuns('c1', 'sales_order', { page: 1, pageSize: 500 });
+    expect(apiFetch.mock.calls[0][0]).toBe(`${root}/runs?page=1&page_size=200`);
   });
 });

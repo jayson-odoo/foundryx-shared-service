@@ -1,5 +1,5 @@
 /**
- * In-memory mock embed-connection service — retained for tests + frontend-first
+ * In-memory mock embed-connection service - retained for tests + frontend-first
  * iteration. Mirrors the real service's contract (never returns the plaintext
  * secret; only reports `hasSecret`). Not bound by the barrel; import directly.
  */

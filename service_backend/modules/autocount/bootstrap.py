@@ -1,18 +1,19 @@
-"""AutoCount bootstrap — the App-Store module contract (plan 08 §4, AC-13-45).
+"""AutoCount bootstrap - the App-Store module contract (plan 08 §4, AC-13-45).
 
 ``install`` is GLOBAL and idempotent (schema + tables + permission-catalog sync);
 the per-tenant hooks (``install_tenant`` / ``update_tenant`` / ``uninstall_tenant``)
 are driven by AppStoreService when a tenant installs/updates/uninstalls.
-Permission GRANTS are the store's concern — it grants the module keys to the
+Permission GRANTS are the store's concern - it grants the module keys to the
 tenant's Admin role at install, which is why a brand-new module needs no grant
 sweep for existing tenants (nobody has it installed yet).
 
 Stage 1 scaffold: schema + (currently empty) tables + permission CSV + the
 integration provider. Companies, watermarks, entity config, staging and the sync
-job handler are filled in by later slices — the hooks are wired now so the
+job handler are filled in by later slices - the hooks are wired now so the
 module contract is complete from day one.
 """
 from pathlib import Path
+from typing import Any, Dict
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -21,11 +22,41 @@ from sqlalchemy.orm import Session
 from app.repositories.permission_repository import PermissionRepository
 from app.services.permission_service import load_csv
 
-from . import models  # noqa: F401 — register module tables on AutocountBase.metadata
+from . import models  # noqa: F401 - register module tables on AutocountBase.metadata
 from .db import AUTOCOUNT_SCHEMA, AutocountBase
 
 MODULE_NAME = "autocount"
 MODULE_CSV = Path(__file__).resolve().parent / "permissions" / "permissions.csv"
+
+
+def _evict_deleted_connection(session: Session, ev: Dict[str, Any]) -> None:
+    """CRUD event-bus subscriber (S6 merge-gate review SHOULD-FIX 4).
+
+    ``sql_source.runtime.SqlSourceRuntime.evict`` existed with no production
+    caller: deleting a ``sql_database`` connection left its cached engine (up
+    to 5 live pooled sessions to the CUSTOMER's own database) and its
+    ``SCHEMA_CACHE`` entry alive until the process restarted. There is no
+    core connection-deleted hook to import into (core must never import a
+    module) - but the core CRUD event bus already emits ``connection``/
+    ``deleted`` on every delete (``IntegrationService.delete``), so this
+    registers as an ordinary subscriber (``register_event_subscriber``,
+    plan sprint-2/10 D5 - the audit-log seam, generic to any consumer) at
+    boot instead of a bespoke hook. Runs for EVERY connection delete, any
+    provider - harmless no-op when the id was never a SQL-source engine
+    (nothing cached for it).
+    """
+    if ev.get("entity_type") != "connection" or ev.get("action") != "deleted":
+        return
+    connection_id = ev.get("record_id")
+    if not connection_id:
+        return
+    from .sql_source.introspect import SCHEMA_CACHE
+    from .sql_source.runtime import RUNTIME
+
+    RUNTIME.evict(connection_id)
+    tenant_id = ev.get("tenant_id")
+    if tenant_id:
+        SCHEMA_CACHE.invalidate(f"{tenant_id}:{connection_id}")
 
 
 def register_capabilities() -> None:
@@ -41,7 +72,7 @@ def register_capabilities() -> None:
 def register_engine_entities() -> None:
     """Boot-time registration into shared CORE registries (plan 11 D9).
 
-    Idempotent — ``register_module_boot`` calls this on every boot/bootstrap, and
+    Idempotent - ``register_module_boot`` calls this on every boot/bootstrap, and
     the provider registry is a keyed dict (re-registering replaces in place).
 
     Registers:
@@ -52,7 +83,7 @@ def register_engine_entities() -> None:
 
     The job handler must be registered in EVERY process that touches a sync job:
     the API process creates jobs (``JobService.create`` validates the type is
-    registered) and — under eager dev/test — runs them inline. The Celery worker
+    registered) and - under eager dev/test - runs them inline. The Celery worker
     boots no FastAPI lifespan, so it gets the handler from an explicit import in
     ``app/workflow_engine/worker.py`` instead. Missing EITHER path leaves jobs
     Pending forever with no error.
@@ -61,9 +92,11 @@ def register_engine_entities() -> None:
     describe in later slices.
     """
     from app.integrations import register_provider
+    from app.workflow_engine.entity_events import register_event_subscriber
 
     from .provider import AutoCountProvider
     from .sorento_provider import SorentoProvider
+    from .sql_provider import SqlDatabaseProvider
     from .sync import register_autocount_sync_handler
 
     register_provider(AutoCountProvider())
@@ -71,7 +104,14 @@ def register_engine_entities() -> None:
     # provider so the Sorento connection is configured from the same
     # `/settings/integrations` surface (AC-14-15).
     register_provider(SorentoProvider())
+    # The direct-DB read-only source (plan 22, AC-22-01) - a second ``erp``
+    # provider, configured from the same surface.
+    register_provider(SqlDatabaseProvider())
     register_autocount_sync_handler()
+    # S6 review SHOULD-FIX 4 - drop the cached engine + schema cache the
+    # instant a ``sql_database`` connection is deleted (see the subscriber's
+    # own docstring). Idempotent (the bus dedupes by function identity).
+    register_event_subscriber(_evict_deleted_connection)
 
 
 def create_schema_and_tables(engine: Engine) -> None:
@@ -98,7 +138,7 @@ def install_tenant(db: Session, tenant_id: str) -> None:
     Still nothing to seed: a tenant's AutoCount footprint begins when an
     operator registers a COMPANY, and a company cannot exist before its
     connection does. Per-company entity configs + mapping rows are seeded by
-    ``CompanyService.seed_company_defaults`` at that moment — seeding them here
+    ``CompanyService.seed_company_defaults`` at that moment - seeding them here
     would mean guessing a company that has not been discovered yet."""
     return None
 
@@ -111,7 +151,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
 
     1. **Entity configs + mapping rows for the two master entities on every
        company that ALREADY EXISTS.** ``seed_company_defaults`` runs once, when a
-       company is registered — a company registered under 0.1.0 was seeded with
+       company is registered - a company registered under 0.1.0 was seeded with
        GRN only, so without this pass the operator sees no Supplier/Customer
        entity at all and the feature is silently invisible to exactly the tenants
        who already use the module. Re-running the seed is safe: every branch in
@@ -120,7 +160,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
 
     2. **Envelope / initial-load values on pre-existing ``ac_entity_config``
        rows.** Module Alembic fills these, but a host built with ``init_db``
-       (``create_all`` + seed) never runs module Alembic — and ``create_all``
+       (``create_all`` + seed) never runs module Alembic - and ``create_all``
        cannot ALTER an existing table, so those rows can sit empty against
        columns the code assumes are populated. Cheap, idempotent, and the
        difference between a working sync and an ``UnknownEnvelope`` at fetch
@@ -128,6 +168,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     """
     from .backfill import (
         backfill_entity_config_defaults,
+        backfill_etl_defaults,
         backfill_sink_impl_defaults,
         default_schema,
     )
@@ -140,6 +181,9 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # ``'logging'`` no-op (its pre-hop-2 behaviour), not sit NULL against a
     # NOT NULL column on a create_all-first host.
     backfill_sink_impl_defaults(db, schema=schema)
+    # 0.3.0 → plan 22: every pre-existing task/staged/run row gets its ETL
+    # defaults (draft / upsert / manual) on a create_all-first host too.
+    backfill_etl_defaults(db, schema=schema)
 
     service = CompanyService(db)
     page = 0
@@ -158,9 +202,9 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
 def uninstall_tenant(db: Session, tenant_id: str) -> None:
     """Wipe THIS tenant's rows from every module table (plan 08 §5).
 
-    The module schema and other tenants' rows are untouched — uninstall is
+    The module schema and other tenants' rows are untouched - uninstall is
     per-tenant, never global. Reverse dependency order avoids FK violations.
-    (No module tables in the scaffold slice — a safe no-op that automatically
+    (No module tables in the scaffold slice - a safe no-op that automatically
     covers every table added later.)"""
     for table in reversed(AutocountBase.metadata.sorted_tables):
         if "tenant_id" in table.c:
@@ -170,5 +214,5 @@ def uninstall_tenant(db: Session, tenant_id: str) -> None:
 
 def tenant_has_data(db: Session, tenant_id: str) -> bool:
     """Backfill detection (loader) for pre-App-Store installs. AutoCount is a
-    net-new module — no legacy data ever existed — so no tenant backfills."""
+    net-new module - no legacy data ever existed - so no tenant backfills."""
     return False

@@ -39,7 +39,7 @@ const SEGMENTS = [
 ];
 
 /**
- * `/jobs` list config (sprint-4/10 AC-10-19) — the generic background-jobs
+ * `/jobs` list config (sprint-4/10 AC-10-19) - the generic background-jobs
  * history on the Resource shell. Type + Status + progress columns; N-way status
  * segments. The backend list is page-based only, so search/sort/filter are not
  * wired server-side (the fetcher passes page/pageSize + the segment's status).
@@ -83,7 +83,7 @@ export function useJobsListConfig(): ResourceListConfig<Job> {
         cell: ({ row }) => {
           const j = row.original;
           if (j.progressTotal <= 0) {
-            return <span className="text-muted-foreground text-sm">—</span>;
+            return <span className="text-muted-foreground text-sm">-</span>;
           }
           return (
             <div className="flex min-w-32 flex-col gap-1">

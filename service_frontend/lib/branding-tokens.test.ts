@@ -1,5 +1,5 @@
 /**
- * Branding token helpers (sprint-2/03 §TDD — frontend):
+ * Branding token helpers (sprint-2/03 §TDD - frontend):
  * whitelist validation · default-equal values normalize away · transparent
  * derivation · CSS/var emission · template roundtrip.
  */

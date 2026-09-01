@@ -1,5 +1,5 @@
 /**
- * Centralized background-jobs types (sprint-4/10) — the generic `background_jobs`
+ * Centralized background-jobs types (sprint-4/10) - the generic `background_jobs`
  * contract the Jobs drawer + `/jobs` list/detail speak. Storage migration is the
  * first `type`; the shapes stay type-agnostic so future job types ride them.
  *
@@ -15,7 +15,7 @@ export type JobStatus =
   | 'failed'
   | 'aborted';
 
-/** Known job types (extensible — the drawer/list render any `type` string). */
+/** Known job types (extensible - the drawer/list render any `type` string). */
 export type JobType = 'storage_migration' | string;
 
 /** One failed key in a storage-migration `result` (per-blob copy failure). */
@@ -58,7 +58,7 @@ export interface Job {
   finishedAt: string | null;
 }
 
-/** `GET /jobs` response — camelCase, matches backend `JobListResponse`. */
+/** `GET /jobs` response - camelCase, matches backend `JobListResponse`. */
 export interface JobListResult {
   items: Job[];
   total: number;

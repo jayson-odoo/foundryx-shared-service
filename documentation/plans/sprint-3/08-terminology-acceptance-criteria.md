@@ -1,4 +1,4 @@
-# Sprint 3 · Plan 08 — Terminology · User Acceptance Criteria
+# Sprint 3 · Plan 08 - Terminology · User Acceptance Criteria
 
 **Plan:** `08-terminology.md` · **Foundation:** F10 (first of F10→F8→F9→F4)
 **Gate role:** must MERGE green before plan 09 starts (continuous 08→11 objective).
@@ -10,7 +10,7 @@ is green AND verified at both 375px and 1280px where it renders UI.
 
 ---
 
-## 1. Functional SaaS — the feature works end-to-end 🟢
+## 1. Functional SaaS - the feature works end-to-end 🟢
 
 - **AC-08-01 (D6/D7) Rename is instant, no reload, no re-login.**
   *Given* an Admin on `/settings/terminology`, *when* they rename "Form" → "Survey"/"Surveys"
@@ -23,7 +23,7 @@ is green AND verified at both 375px and 1280px where it renders UI.
 
 - **AC-08-03 (D2/D3) Override requires both singular AND plural, non-blank.**
   *Given* the edit dialog, *when* singular or plural is blank, *then* Save is blocked
-  client-side and `PUT` returns 422 server-side (both forms stored explicitly — no auto-plural).
+  client-side and `PUT` returns 422 server-side (both forms stored explicitly - no auto-plural).
 
 - **AC-08-04 (D6) `GET /terminology` returns the merged map.**
   *Given* a tenant with one override, *when* the client fetches `/terminology`, *then* the
@@ -42,7 +42,7 @@ is green AND verified at both 375px and 1280px where it renders UI.
 
 - **AC-08-07 (D4/D5) Strict tenant isolation.**
   *Given* tenant A renames "Form"→"Survey", *when* tenant B (other browser) loads any surface,
-  *then* tenant B sees the unchanged default — A's override is invisible to B.
+  *then* tenant B sees the unchanged default - A's override is invisible to B.
 
 - **AC-08-08 (D6) Delivery is one cached config endpoint, NOT the JWT.**
   *Given* a rename, *then* no token is reissued and no field is added to the JWT (a rename must
@@ -62,14 +62,14 @@ is green AND verified at both 375px and 1280px where it renders UI.
 
 - **AC-08-11 (D9) Settings page is self-evident, no instructional copy.**
   *Given* `/settings/terminology`, *then* it lists every `TermDef` (Entity · Group/module ·
-  Default · Current label · Edit/Reset) on the Resource shell with loading/empty/error states —
+  Default · Current label · Edit/Reset) on the Resource shell with loading/empty/error states -
   controls speak for themselves (foolproof-UI mandate; no how-to text).
 
 - **AC-08-12 The current vs default label is always visible** so the operator sees exactly what
   the rename changes before/after Save.
 
 - **AC-08-13 (house mandate) Responsive.** The settings table reflows / horizontally scrolls
-  cleanly at 375px and 1280px — no clipped controls, no horizontal page scroll.
+  cleanly at 375px and 1280px - no clipped controls, no horizontal page scroll.
 
 ## 4. Validated quality ✅
 
@@ -94,5 +94,5 @@ is green AND verified at both 375px and 1280px where it renders UI.
 
 ## Definition of Done (plan 08)
 All AC-08-* MET · suites green · E2E report filed · reviewer approved · merged to `main`.
-**Continuity gate:** plan 09's history-list title resolves through this terminology layer — do
+**Continuity gate:** plan 09's history-list title resolves through this terminology layer - do
 not start 09 until AC-08-09 (module-extensible registry) and AC-08-16 (E2E) are green.

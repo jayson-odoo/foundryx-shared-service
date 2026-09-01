@@ -1,4 +1,4 @@
-/** Route helpers for the Users feature — single source of truth for its URLs. */
+/** Route helpers for the Users feature - single source of truth for its URLs. */
 
 export const usersListPath = '/user-management/users';
 export const userNewPath = `${usersListPath}/new`;

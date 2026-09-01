@@ -41,7 +41,7 @@ beforeEach(() => {
   startMigration.mockResolvedValue({ id: 'job-1', status: 'pending' });
 });
 
-describe('useStorageMigration — test-gated Start (AC-10-18)', () => {
+describe('useStorageMigration - test-gated Start (AC-10-18)', () => {
   it('lists STORAGE providers only', async () => {
     const { result } = renderHook(() => useStorageMigration(true));
     await waitFor(() => expect(result.current.providers.length).toBe(1));

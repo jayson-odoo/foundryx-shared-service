@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Generic node-graph canvas (sprint-2/01 D10) — a thin, reusable wrapper over
+ * Generic node-graph canvas (sprint-2/01 D10) - a thin, reusable wrapper over
  * @xyflow/react. Built engine-agnostic on purpose: the Status engine renders
  * statuses/transitions through it today, the Workflow engine (BL-025) reuses
  * it for workflow nodes later. No status-specific logic in here.
@@ -38,7 +38,7 @@ export interface FlowCanvasProps {
   /** Drag-create an edge between two nodes (omit = connecting disabled). */
   onConnect?: (connection: Connection) => void;
   onNodeClick?: (nodeId: string) => void;
-  /** Right-click a node — gives the cursor position for a context menu. */
+  /** Right-click a node - gives the cursor position for a context menu. */
   onNodeContextMenu?: (nodeId: string, x: number, y: number) => void;
   onEdgeClick?: (edgeId: string) => void;
   onNodeDragStop?: (nodeId: string, x: number, y: number) => void;

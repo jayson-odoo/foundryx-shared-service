@@ -1,9 +1,9 @@
 {
   "module_name": "autocount",
-  "version": "0.3.0",
-  "author": "FoundryX",
+  "version": "0.4.0",
+  "author": "Foundryx",
   "title": "AutoCount ESB",
-  "description": "Sync masters and documents between customer-hosted AutoCount installations and FoundryX consumer products. One whitelisted egress IP, an anti-corruption layer over the vendor API, and per-company credentials, watermarks and field mappings.",
+  "description": "Sync masters and documents between customer-hosted AutoCount installations and Foundryx consumer products. One whitelisted egress IP, an anti-corruption layer over the vendor API, and per-company credentials, watermarks and field mappings.",
   "icon": "refresh-cw",
   "required_core_version": ">=1.0.0",
   "schema": "app_autocount",
@@ -15,6 +15,10 @@
     {
       "name": "companies",
       "prefix": "/autocount/companies"
+    },
+    {
+      "name": "sql",
+      "prefix": "/autocount/sql"
     },
     {
       "name": "sync",

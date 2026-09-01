@@ -305,7 +305,7 @@ def test_embed_vote_happy(scoped):
 
 
 def test_embed_votes_are_per_sorento_user(scoped):
-    """Votes are per HOST (sorento) user, taken from the assertion ``sub`` — NOT one
+    """Votes are per HOST (sorento) user, taken from the assertion ``sub`` - NOT one
     shared vote per connection. One user upvotes, a DIFFERENT user downvotes the
     same idea → 1 up + 1 down (distinct entries)."""
     client = scoped["client"]
@@ -403,7 +403,7 @@ def test_embed_reorder_happy(scoped):
 
 
 def test_embed_reorder_cross_product_denied(scoped):
-    """Any id outside the tenant+product scope denies the whole reorder (404) —
+    """Any id outside the tenant+product scope denies the whole reorder (404) -
     no cross-product priority mutation."""
     res = scoped["client"].put(
         "/embed/ideas/reorder",

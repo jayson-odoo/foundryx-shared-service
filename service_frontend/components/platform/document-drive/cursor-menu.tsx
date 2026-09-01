@@ -22,7 +22,7 @@ export interface CursorMenuState {
 
 /**
  * Cursor-anchored context menu (sprint-3/04b). Radix's ContextMenu doesn't open
- * reliably on a dnd-kit draggable (the pointer sensors swallow the event — same
+ * reliably on a dnd-kit draggable (the pointer sensors swallow the event - same
  * reason the workflow/status canvases use a custom menu). This one opens from an
  * explicit onContextMenu handler, clamps into the viewport, and closes on
  * click-away / Escape / scroll.

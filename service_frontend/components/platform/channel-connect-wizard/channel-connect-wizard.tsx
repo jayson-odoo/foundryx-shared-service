@@ -74,7 +74,7 @@ export function ChannelConnectWizard({
   const configured = isEmbeddedSignupConfigured();
   const manualValid = manual.accessToken.trim().length > 0 && manual.phoneNumberId.trim().length > 0;
 
-  // "Connect with Facebook" — real SDK when configured, else the simulated popup.
+  // "Connect with Facebook" - real SDK when configured, else the simulated popup.
   const handleConnect = async () => {
     if (!configured) {
       start();
@@ -129,7 +129,7 @@ export function ChannelConnectWizard({
     onConnected?.(c);
   };
 
-  // Simulated popup (dev / no Meta app) — selecting, or exchanging after a pick.
+  // Simulated popup (dev / no Meta app) - selecting, or exchanging after a pick.
   if (open && !configured && (state === 'selecting' || state === 'exchanging')) {
     return (
       <MockEmbeddedSignupDialog
@@ -151,7 +151,7 @@ export function ChannelConnectWizard({
               <DialogDescription>
                 {configured
                   ? 'Your WhatsApp number is ready to use.'
-                  : 'Simulated channel — not linked to a real WhatsApp number.'}
+                  : 'Simulated channel - not linked to a real WhatsApp number.'}
               </DialogDescription>
             </DialogHeader>
             <DialogBody className="flex flex-col items-center gap-3 py-4 text-center">
@@ -201,7 +201,7 @@ export function ChannelConnectWizard({
             </DialogBody>
           </>
         ) : manualMode ? (
-          // Manual connect — paste a System User token + phone number id.
+          // Manual connect - paste a System User token + phone number id.
           <>
             <DialogHeader>
               <DialogTitle>Set up manually</DialogTitle>
@@ -269,7 +269,7 @@ export function ChannelConnectWizard({
               <DialogTitle>Connect a WhatsApp channel</DialogTitle>
               <DialogDescription>
                 Connect your Meta-approved WhatsApp Business number through Facebook. No
-                technical setup — pick your number in the popup.
+                technical setup - pick your number in the popup.
               </DialogDescription>
             </DialogHeader>
             <DialogBody className="flex flex-col gap-4">
@@ -294,7 +294,7 @@ export function ChannelConnectWizard({
                 <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
                   <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600" />
                   <span>
-                    WhatsApp app not configured — this creates a{' '}
+                    WhatsApp app not configured - this creates a{' '}
                     <strong>simulated sandbox channel</strong>, not a real connection. Set the
                     Meta app credentials to enable real Embedded Signup.
                   </span>

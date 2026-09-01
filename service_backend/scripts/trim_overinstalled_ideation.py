@@ -4,7 +4,7 @@ Context: ideation was force-installed (dependency check bypassed) for all ~25
 tenants during local integration testing. Ideation ``requires:["omnichannel"]``
 and omnichannel is only installed for the demo tenant, so the correct keep-set
 is exactly the tenant(s) that have omnichannel. The 24 extra tenants have ZERO
-ideas (verified 2026-07-19) — trimming their ``tenant_modules`` rows orphans
+ideas (verified 2026-07-19) - trimming their ``tenant_modules`` rows orphans
 nothing and is reversible from the snapshot this script writes.
 
 Run (dry-run by default, prints what it would do):
@@ -72,7 +72,7 @@ def main() -> int:
         print("  -", v["tenant_id"])
 
     if not args.apply:
-        print("\nDRY RUN — re-run with --apply to delete.")
+        print("\nDRY RUN - re-run with --apply to delete.")
         return 0
 
     stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")  # noqa: DTZ005 (local one-off)

@@ -15,7 +15,7 @@ export interface CopyFieldProps {
 }
 
 /**
- * A read-only value with a Copy button — the reusable "copy this token/snippet"
+ * A read-only value with a Copy button - the reusable "copy this token/snippet"
  * primitive for the embed screen (connection id, secret, iframe snippet).
  */
 export function CopyField({ value, ariaLabel, multiline, secret }: CopyFieldProps) {

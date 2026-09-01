@@ -1,4 +1,4 @@
-"""Derived / computed status — dependency wiring (sprint-4/03 G2/G4/G7).
+"""Derived / computed status - dependency wiring (sprint-4/03 G2/G4/G7).
 
 A ``DerivedTrigger`` maps a domain event (a CHILD changing, e.g. a payment, or
 the owner ITSELF on created/updated/status_changed) to the owner records whose
@@ -7,7 +7,7 @@ committed domain event to the matching triggers and calls
 ``status_machine.reevaluate`` on each owner.
 
 Run safety (G7): the subscriber rides the after-commit drain's isolated commit
-(``_notify_subscribers``) — a broken/slow derivation is fully isolated and can
+(``_notify_subscribers``) - a broken/slow derivation is fully isolated and can
 NEVER 500 the triggering write. Loop-safe: ``reevaluate`` tags the events its
 own transitions emit with the DERIVED origin, which this subscriber skips, so an
 auto transition can't infinitely re-enter. Fail-closed: a raising owner resolver
@@ -15,9 +15,9 @@ or reevaluate is logged + skipped, never a wrong-direction move.
 
 SELF derivation is GENERIC (sprint-4/03): any unscoped, tenant-owned status
 entity that declares a ``model`` re-evaluates its OWN auto edges on its own
-created/updated/status_changed — authoring an auto edge in the UI is enough to
+created/updated/status_changed - authoring an auto edge in the UI is enough to
 make it fire, no per-module wiring. CROSS-entity derivations (a CHILD changing
-re-derives an OWNER — Cluster D participant Checked-in, Cluster F invoice
+re-derives an OWNER - Cluster D participant Checked-in, Cluster F invoice
 Paid/Overdue) still register an explicit ``DerivedTrigger`` + aggregate facts +
 seed system auto-edges in their plans.
 """
@@ -31,7 +31,7 @@ logger = logging.getLogger("foundryx.status.derived")
 
 # Events that can change a derived owner's facts. (deleted included so a removed
 # child re-derives the owner, e.g. a refunded ticket dropping participant
-# eligibility — the owner is resolved from the event payload, not the dead row.)
+# eligibility - the owner is resolved from the event payload, not the dead row.)
 _REEVAL_ACTIONS = {"created", "updated", "status_changed", "deleted"}
 
 
@@ -54,7 +54,7 @@ _TRIGGERS: List[DerivedTrigger] = []
 
 
 def register_derived_trigger(trigger: DerivedTrigger) -> None:
-    """Idempotent — mirrors ``register_status_entity`` (modules re-register on
+    """Idempotent - mirrors ``register_status_entity`` (modules re-register on
     every bootstrap). Dedup by (owner_entity, trigger_entity)."""
     for existing in _TRIGGERS:
         if (
@@ -70,10 +70,10 @@ def list_derived_triggers() -> List[DerivedTrigger]:
 
 
 def _on_event(session: Session, ev: Dict[str, Any]) -> None:
-    """Bus subscriber — re-evaluate the owners affected by ``ev``."""
+    """Bus subscriber - re-evaluate the owners affected by ``ev``."""
     source = ev.get("source")
     if source and source.get("kind") == "derived":
-        return  # our OWN re-eval write — never re-enter (G7 loop guard)
+        return  # our OWN re-eval write - never re-enter (G7 loop guard)
     if ev.get("action") not in _REEVAL_ACTIONS:
         return
     entity_type = ev.get("entity_type")
@@ -87,7 +87,7 @@ def _on_event(session: Session, ev: Dict[str, Any]) -> None:
     seen: set = set()
 
     # Generic SELF re-evaluation (sprint-4/03): an unscoped, tenant-owned status
-    # entity re-evaluates its OWN auto edges when its own record changes — no
+    # entity re-evaluates its OWN auto edges when its own record changes - no
     # per-module DerivedTrigger needed. Authoring an auto edge in the UI is enough
     # to make it fire (closes the foolproof-UI gap). Cross-entity (child -> owner)
     # derivations still register an explicit DerivedTrigger below.
@@ -101,14 +101,14 @@ def _on_event(session: Session, ev: Dict[str, Any]) -> None:
         record_id = ev.get("record_id")
         try:
             record = self_entity.load_record(session, tenant_id, record_id)
-        except Exception:  # noqa: BLE001 — fail-closed, never break the seam
+        except Exception:  # noqa: BLE001 - fail-closed, never break the seam
             logger.exception("derived self load failed (%s %s)", entity_type, record_id)
             record = None
         if record is not None:
             seen.add((entity_type, record_id))
             try:
                 reevaluate(session, entity_type, record, tenant_id=tenant_id)
-            except Exception:  # noqa: BLE001 — never break the seam
+            except Exception:  # noqa: BLE001 - never break the seam
                 logger.exception(
                     "derived self reevaluate failed (%s %s)", entity_type, record_id
                 )
@@ -118,7 +118,7 @@ def _on_event(session: Session, ev: Dict[str, Any]) -> None:
             continue
         try:
             owners = trig.resolve_owners(session, tenant_id, ev) or []
-        except Exception:  # noqa: BLE001 — fail-closed, never break the seam
+        except Exception:  # noqa: BLE001 - fail-closed, never break the seam
             logger.exception(
                 "derived owner resolution failed (%s -> %s)",
                 entity_type,
@@ -132,14 +132,14 @@ def _on_event(session: Session, ev: Dict[str, Any]) -> None:
             seen.add(key)
             try:
                 reevaluate(session, trig.owner_entity, owner, tenant_id=tenant_id)
-            except Exception:  # noqa: BLE001 — one bad owner never stops siblings
+            except Exception:  # noqa: BLE001 - one bad owner never stops siblings
                 logger.exception(
                     "derived reevaluate failed (%s %s)", trig.owner_entity, key[1]
                 )
 
 
 def install_derived_status() -> None:
-    """Register the derived-status subscriber on the event bus. Idempotent —
+    """Register the derived-status subscriber on the event bus. Idempotent -
     safe to call from app lifespan and any bootstrap path."""
     from app.workflow_engine.entity_events import register_event_subscriber
 

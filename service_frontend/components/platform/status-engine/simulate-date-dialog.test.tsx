@@ -1,5 +1,5 @@
 /**
- * SimulateDateDialog (sprint-4/03 Slice 6) — Preview dry-runs the sweep as-of a
+ * SimulateDateDialog (sprint-4/03 Slice 6) - Preview dry-runs the sweep as-of a
  * date and lists the would-advance rows; Apply commits. Service is mocked.
  */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';

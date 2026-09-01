@@ -1,8 +1,8 @@
-"""Omnichannel embed host tests — plan 11H (AC-11H-01..11, 18).
+"""Omnichannel embed host tests - plan 11H (AC-11H-01..11, 18).
 
 Covers /embed/session verify matrix (bad sig / expired / future-iat / wrong-aud /
 replay / origin / workspace / rotation), external-agent upsert + cross-consumer
-isolation, federated attribution, and access-token scope + caps enforcement —
+isolation, federated attribution, and access-token scope + caps enforcement -
 proving a widget-bypassing direct API call still 403s.
 """
 import time
@@ -145,7 +145,7 @@ def _assertion(
 
 def _exchange(client, assertion, *, origin=ORIGIN):
     # The widget sends the VALIDATED PARENT origin in the request BODY (contract
-    # §3/§5) — NOT the browser Origin header (that is the widget's own
+    # §3/§5) - NOT the browser Origin header (that is the widget's own
     # shared-service origin). `origin=None` omits it → origin_not_allowed.
     body = {"assertion": assertion}
     if origin is not None:
@@ -331,7 +331,7 @@ def test_external_agent_upsert_and_refresh(client, session_factory):
 
 def test_cross_consumer_identity_isolation(session_factory):
     """Two consumers whose agents share sub='u-1' stay strictly distinct via the
-    (connection_id, sub) key — Consumer A's agent can never be Consumer B's.
+    (connection_id, sub) key - Consumer A's agent can never be Consumer B's.
     (One shared-service tenant holds one omnichannel_shared connection, so the
     two consumers are distinct connections; asserted at the identity layer.)"""
     from modules.omnichannel.models import ExternalAgent
@@ -516,7 +516,7 @@ def test_embed_assign_to_external_agent(client, session_factory):
 
 
 def test_embed_assign_foreign_agent_rejected(client, session_factory):
-    """A token can only assign to ITS consumer's agents (connection-scoped) — a
+    """A token can only assign to ITS consumer's agents (connection-scoped) - a
     foreign external agent (another connection) is refused (422)."""
     from modules.omnichannel.services.external_agent_service import ExternalAgentService
 
@@ -596,7 +596,7 @@ def _other_workspace_with_channel(session_factory):
 # ── Finding 1: aux catalog reads reachable by the embed principal ────────────
 def test_embed_reads_own_workspace_catalogs(client, session_factory):
     """The reused ConversationDrawer fetches templates / quick-replies / members
-    while rendering — an embed token reads its OWN workspace's catalogs (200)."""
+    while rendering - an embed token reads its OWN workspace's catalogs (200)."""
     cid = _make_connection(session_factory)
     wid = _workspace_id(session_factory)
     _seed_contact(session_factory, workspace_id=wid)  # ensures a channel in wid
@@ -618,7 +618,7 @@ def test_embed_reads_own_workspace_catalogs(client, session_factory):
 
 def test_thread_scoped_token_reads_workspace_catalogs(client, session_factory):
     """A thread:<contactId> token may still read its workspace's catalogs (it
-    needs templates to send / members to see assignees) — scope confines it to
+    needs templates to send / members to see assignees) - scope confines it to
     its OWN workspace, not to zero catalog access."""
     cid = _make_connection(session_factory)
     wid = _workspace_id(session_factory)
@@ -632,7 +632,7 @@ def test_thread_scoped_token_reads_workspace_catalogs(client, session_factory):
 
 def test_embed_reads_other_workspace_refused(client, session_factory):
     """A token for workspace A is refused workspace B's quick-replies / members
-    AND another workspace's channel templates (403) — backend is the boundary."""
+    AND another workspace's channel templates (403) - backend is the boundary."""
     cid = _make_connection(session_factory)
     wid = _workspace_id(session_factory)
     other_wid, other_channel = _other_workspace_with_channel(session_factory)
@@ -736,7 +736,7 @@ def test_ws_rejects_embed_token_for_wrong_workspace(client, session_factory):
 
 def test_ws_thread_scope_filters_other_contacts(client, session_factory):
     """AC-11H-10 over WS: a thread:<contactId> token receives ONLY its contact's
-    frames — the whole-workspace fan-out is filtered server-side, never left to
+    frames - the whole-workspace fan-out is filtered server-side, never left to
     the widget. A frame for another contact is dropped."""
     import json
 
@@ -761,11 +761,11 @@ def test_ws_thread_scope_filters_other_contacts(client, session_factory):
         with client.websocket_connect(
             f"/omnichannel/ws?workspaceId={wid}&token={token}"
         ) as sock:
-            # Frame for another contact — must be dropped by the server.
+            # Frame for another contact - must be dropped by the server.
             realtime.publish(
                 wid, {"type": "message.status", "messageId": "m-other", "contactId": "c-other"}
             )
-            # Frame for the scoped contact — must arrive.
+            # Frame for the scoped contact - must arrive.
             realtime.publish(
                 wid, {"type": "message.status", "messageId": "m-mine", "contactId": "c-scoped"}
             )

@@ -1,11 +1,11 @@
-"""Ideation Slice 3 — Idea entity + status engine + list/detail read.
+"""Ideation Slice 3 - Idea entity + status engine + list/detail read.
 
 Covers AC-A-09 (Idea entity fields in ``app_ideation.ideas``; no embedding
-column), AC-A-10 (Idea rides the core status engine as a tenant-owned entity —
+column), AC-A-10 (Idea rides the core status engine as a tenant-owned entity -
 lifecycle draft→captured→…→closed +duplicate/+rejected, initial draft,
 transitions via ``status_machine``; legal transition succeeds, illegal refused)
 and AC-A-12 (``GET /ideation/ideas`` list + ``GET /ideation/ideas/{id}`` detail,
-matching the FE Idea shape — every section present, submitter human-readable).
+matching the FE Idea shape - every section present, submitter human-readable).
 
 Test-first (PRINCIPLES.md): written before the implementation exists.
 """
@@ -107,7 +107,7 @@ def _insert_idea(
     from modules.ideation.services.statuses import idea_status_id
 
     # Distinct, strictly-increasing timestamps so "newest first" is deterministic
-    # (SQLite CURRENT_TIMESTAMP only has 1s resolution — rapid inserts would tie).
+    # (SQLite CURRENT_TIMESTAMP only has 1s resolution - rapid inserts would tie).
     if created_at is None:
         _IDEA_SEQ[0] += 1
         created_at = datetime.now(timezone.utc) + timedelta(seconds=_IDEA_SEQ[0])

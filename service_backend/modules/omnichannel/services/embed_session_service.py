@@ -1,4 +1,4 @@
-"""Embed session exchange — plan 11H Slice 2 (AC-11H-04..08) + §2/§3 of the
+"""Embed session exchange - plan 11H Slice 2 (AC-11H-04..08) + §2/§3 of the
 cross-repo contract.
 
 ``POST /embed/session { assertion }`` verifies a consumer-minted HS256 assertion
@@ -8,7 +8,7 @@ membership, provisions/loads the external agent, and mints a ~15-min access
 token embedding ``workspaceId/scope/caps/external_agent_id/connection_id`` with
 ``typ="embed"``. No cookie.
 
-Fail closed on any check — the typed error codes are the contract's:
+Fail closed on any check - the typed error codes are the contract's:
 ``invalid_assertion`` / ``replayed`` / ``expired`` / ``origin_not_allowed`` /
 ``workspace_not_found``.
 """
@@ -41,7 +41,7 @@ VALID_CAPS = {"reply", "assign", "close", "note", "send_template", "read_only"}
 
 
 class EmbedError(Exception):
-    """A typed verification failure — the router emits the uniform envelope."""
+    """A typed verification failure - the router emits the uniform envelope."""
 
     def __init__(self, status_code: int, code: str, message: str):
         super().__init__(message)
@@ -141,7 +141,7 @@ class EmbedSessionService:
         )
         if conn is None:
             raise EmbedError(401, "invalid_assertion", "Unknown assertion issuer.")
-        # Tenant is now attributable — every subsequent failure lands on the
+        # Tenant is now attributable - every subsequent failure lands on the
         # connection's tenant console (AC-DLC-20).
         ctx["tenant_id"] = conn.tenant_id
 
@@ -161,7 +161,7 @@ class EmbedSessionService:
         except (JWTClaimsError, JWTError):
             raise EmbedError(401, "invalid_assertion", "Assertion verification failed.")
 
-        # 4) iat skew — reject a token minted "in the future" (jose validates exp
+        # 4) iat skew - reject a token minted "in the future" (jose validates exp
         #    but not a future iat).
         iat = claims.get("iat")
         if isinstance(iat, (int, float)) and iat > int(_now().timestamp()) + IAT_SKEW_SECONDS:
@@ -171,7 +171,7 @@ class EmbedSessionService:
         if not jti:
             raise EmbedError(401, "invalid_assertion", "Assertion id (jti) missing.")
 
-        # 5) Parent-origin allow-list — validate the VALIDATED PARENT origin the
+        # 5) Parent-origin allow-list - validate the VALIDATED PARENT origin the
         #    widget captured from the accepted `init` (§5), NOT the widget's own
         #    request Origin header. The widget's fetch carries the shared-service
         #    origin as its browser Origin, never the parent's, so checking that
@@ -179,7 +179,7 @@ class EmbedSessionService:
         #    (and would force the operator to whitelist the shared-service origin).
         #    A widget COULD spoof parentOrigin, but a party without the connection's
         #    embedSecret can't mint a valid assertion (step 3), and the browser-
-        #    enforced `frame-ancestors` CSP is the real clickjacking control — this
+        #    enforced `frame-ancestors` CSP is the real clickjacking control - this
         #    check keeps allowedOrigins purely parent origins, consistent with the
         #    assertion's own `allowedOrigins` claim + frame-ancestors.
         allowed_origins = self._allowed_origins(conn)
@@ -203,7 +203,7 @@ class EmbedSessionService:
         if workspace is None:
             raise EmbedError(404, "workspace_not_found", "Workspace not found.")
 
-        # 7) Single-use jti (AC-11H-05) — retained ≥ the assertion TTL. Prune
+        # 7) Single-use jti (AC-11H-05) - retained ≥ the assertion TTL. Prune
         #    expired rows opportunistically. A duplicate → replayed.
         self._consume_jti(jti, claims.get("exp"))
 
@@ -301,6 +301,6 @@ class EmbedSessionService:
         try:
             self.db.commit()
         except IntegrityError:
-            # Concurrent replay race — the other request won the insert.
+            # Concurrent replay race - the other request won the insert.
             self.db.rollback()
             raise EmbedError(401, "replayed", "This assertion has already been used.")

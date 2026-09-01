@@ -1,4 +1,4 @@
-"""Core catalog models (sprint-4/08) — ``public`` schema, horizontal.
+"""Core catalog models (sprint-4/08) - ``public`` schema, horizontal.
 
 Moved out of ``modules/ems`` (wrong boundary): products + categories are
 consumed by CRM quotations, EMS ticketing, and future commerce, so they are
@@ -23,7 +23,7 @@ def _uuid() -> str:
 
 
 class ProductCategory(Base):
-    """Self-referencing taxonomy tree — classification/reporting only. Code never
+    """Self-referencing taxonomy tree - classification/reporting only. Code never
     branches on category; behavior (if any) comes from product ``kind``."""
 
     __tablename__ = "product_categories"

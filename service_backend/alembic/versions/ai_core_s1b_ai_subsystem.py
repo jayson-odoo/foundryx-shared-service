@@ -4,15 +4,15 @@ Creates `ai_agents`, `ai_skills`, `ai_skill_versions`, `ai_conversations`,
 `ai_messages`, `ai_traces`, `ai_spans` (plan §5).
 
 `ai_conversations` / `ai_messages` land HERE even though slice 3 is what fills
-them — so the grill engine adds no core migration later.
+them - so the grill engine adds no core migration later.
 
 It also RECREATES `uq_connection_tenant_type` with `llm` added to the exempt set
 (AC-BI-03b / Bi-D21): a tenant may hold several ACTIVE LLM connections, so an
 agent can pick a cheap model for clustering and a strong one for grilling.
-`uq_connection_tenant_provider` is untouched — two ACTIVE Anthropic rows stay
-forbidden — and storage/email keep their one-active-per-type invariant.
+`uq_connection_tenant_provider` is untouched - two ACTIVE Anthropic rows stay
+forbidden - and storage/email keep their one-active-per-type invariant.
 
-Revision id length: 11 chars (≤ 32 — a longer id silently breaks a real deploy
+Revision id length: 11 chars (≤ 32 - a longer id silently breaks a real deploy
 against `alembic_version.version_num VARCHAR(32)` while passing create_all tests).
 
 Revision ID: ai_core_s1b
@@ -24,7 +24,7 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-import app.models.utc_datetime  # noqa: F401 — UTCDateTime columns below
+import app.models.utc_datetime  # noqa: F401 - UTCDateTime columns below
 
 revision: str = "ai_core_s1b"
 down_revision: Union[str, Sequence[str], None] = "dlc_s412b_log_settings"
@@ -52,7 +52,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_ai_skills_tenant_id", "ai_skills", ["tenant_id"])
     op.create_index("ix_ai_skills_active_version_id", "ai_skills", ["active_version_id"])
-    # PARTIAL uniques per tier (the BL-065 lesson — a plain unique over a
+    # PARTIAL uniques per tier (the BL-065 lesson - a plain unique over a
     # nullable column doesn't constrain the platform tier).
     op.create_index(
         "uq_ai_skills_tenant_key",

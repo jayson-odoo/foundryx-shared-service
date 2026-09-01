@@ -72,7 +72,7 @@ describe('RecordDiff (AC-13-12)', () => {
       <RecordDiff diff={{ lines: { from: [], to: [{ itemCode: 'A1', qty: 2 }] } }} />,
     );
     const pres = container.querySelectorAll('pre');
-    // Only the "after" side is structured — an empty "before" collection reads
+    // Only the "after" side is structured - an empty "before" collection reads
     // as nothing rather than a bare `[]` block.
     expect(pres).toHaveLength(1);
     expect(pres[0].className).toContain('overflow-auto');
@@ -82,7 +82,7 @@ describe('RecordDiff (AC-13-12)', () => {
   it('shows an em dash where a side is genuinely empty', () => {
     render(<RecordDiff diff={{ description: { from: null, to: 'Urgent' } }} />);
     const row = screen.getByTestId('diff-row-description');
-    expect(row).toHaveTextContent('—');
+    expect(row).toHaveTextContent('-');
     expect(row).toHaveTextContent('Urgent');
   });
 });

@@ -1,4 +1,4 @@
-"""Generic Review/Approval engine business logic (plan sprint-4/06 Part 2) —
+"""Generic Review/Approval engine business logic (plan sprint-4/06 Part 2) -
 Router → THIS → ReviewRepository. CORE; never imports the EMS module.
 
 Owns:
@@ -8,13 +8,13 @@ Owns:
 - Author-actor capture/resolution (AC-06-41/42): a submission's author as an
   identity-agnostic ``(actor_kind, actor_id)`` ref, resolved tenant-scoped.
 - Actor-source resolution (AC-06-30): RULE / EXPLICIT (in-engine) +
-  PERSONA / STAFF_ROLE (via the injectable resolver hook — keeps core EMS-free).
+  PERSONA / STAFF_ROLE (via the injectable resolver hook - keeps core EMS-free).
 - can_submit gate (AC-06-31).
 - Decision write + first-wins (AC-06-34).
 - Live average computed on read (AC-06-35).
 
 The workflow ActionDefs (review.allocate / review.escalate) + the seeded default
-workflow + firing the decision's status transition are PART B — this slice builds
+workflow + firing the decision's status transition are PART B - this slice builds
 the pure selection + the first-wins decision write + the live average that those
 actions and the surfaces consume.
 """
@@ -96,7 +96,7 @@ class ReviewConfigService:
 
     def _published_doc(self, tenant_id: str, form_id: str) -> Optional[FormDocument]:
         """The form's CURRENT published version document, tenant-scoped via the
-        join to forms — never resolve a version id unscoped. None when the form
+        join to forms - never resolve a version id unscoped. None when the form
         is unknown to the tenant or has never been published."""
         form = self._form(tenant_id, form_id)
         if form is None or not form.current_version_id:
@@ -114,7 +114,7 @@ class ReviewConfigService:
             return None
         try:
             return FormDocument.model_validate(version.definition_json)
-        except Exception:  # noqa: BLE001 — a corrupt stored doc = no usable fields
+        except Exception:  # noqa: BLE001 - a corrupt stored doc = no usable fields
             return None
 
     def _numeric_field_keys(self, doc: FormDocument) -> set:
@@ -125,18 +125,18 @@ class ReviewConfigService:
         }
 
     def _answer_field_keys(self, tenant_id: str, form_id: str) -> set:
-        """Answer keys of the SUBMISSION form's published version — the universe a
+        """Answer keys of the SUBMISSION form's published version - the universe a
         RULE role's conditions may reference (facts = ``answers.<key>``)."""
         doc = self._published_doc(tenant_id, form_id)
         if doc is None:
             return set()
         return {f.key for f in doc.input_fields() if f.key}
 
-    # ---- editor metadata (the admin pickers — AC-06-55) ----
+    # ---- editor metadata (the admin pickers - AC-06-55) ----
 
     # Form field type → rule-engine fact type, for the RULE-role condition
     # builder (facts = ``answers.<key>``). Unmapped types are omitted (the
-    # builder only offers facts it can compare — foolproof-UI).
+    # builder only offers facts it can compare - foolproof-UI).
     _FACT_TYPE_BY_FIELD: Dict[str, str] = {
         "text": "string",
         "textarea": "string",
@@ -164,15 +164,15 @@ class ReviewConfigService:
     ) -> Dict[str, Any]:
         """Picker universes for the Review-process admin (AC-06-55):
 
-        - ``submission_statuses`` — the submission form's SCOPED status graph
+        - ``submission_statuses`` - the submission form's SCOPED status graph
           (the only valid targets for the 4 status-mapping selects).
-        - ``numeric_fields`` — numeric fields of the review form's PUBLISHED
+        - ``numeric_fields`` - numeric fields of the review form's PUBLISHED
           version (the only valid ``score_field_key`` options).
-        - ``submission_facts`` — answer facts of the submission form's published
+        - ``submission_facts`` - answer facts of the submission form's published
           version (the RULE-role condition builder universe).
 
         Each id is validated tenant-scoped; an unknown/unpublished form simply
-        yields an empty list (never a 404 — the form select itself is the guard).
+        yields an empty list (never a 404 - the form select itself is the guard).
         """
         statuses: List[Dict[str, Any]] = []
         submission_facts: List[Dict[str, Any]] = []
@@ -337,7 +337,7 @@ class ReviewConfigService:
         review_start_status_id`` on the ``form_submission`` entity, with one
         ``review.allocate`` node bound to this config. Needs a
         ``review_start_status_id`` to wire the trigger; without one (config drafted
-        before the rubric/flow is final) we skip — re-run on the first update that
+        before the rubric/flow is final) we skip - re-run on the first update that
         sets it. Idempotent via a sentinel description tag.
 
         Built through ``WorkflowService.create`` + ``publish`` so publish
@@ -400,17 +400,17 @@ class ReviewConfigService:
             wf_service = WorkflowService(self.db)
             wf = wf_service.create(
                 tenant_id,
-                name=f"Allocate reviewers — {config.name}",
+                name=f"Allocate reviewers - {config.name}",
                 description=tag,
                 draft=draft,
                 actor_id="",
             )
             wf_service.publish(wf.id, tenant_id, actor_id="")
             # Workflows are created inactive (is_active default False) and only
-            # fire when active — activate the seeded allocate workflow so the
+            # fire when active - activate the seeded allocate workflow so the
             # Submitted transition triggers it (AC-06-04/32).
             wf_service.set_active(wf.id, tenant_id, True)
-        except Exception:  # noqa: BLE001 — never block config create on the workflow
+        except Exception:  # noqa: BLE001 - never block config create on the workflow
             self.db.rollback()
 
     def update_config(
@@ -452,7 +452,7 @@ class ReviewConfigService:
         self.db.commit()
         self.db.refresh(config)
         # A config that just gained its review_start_status_id now scaffolds the
-        # allocate workflow (idempotent — no-op when already created, AC-06-32).
+        # allocate workflow (idempotent - no-op when already created, AC-06-32).
         self._ensure_allocate_workflow(tenant_id, config)
         return config
 
@@ -467,7 +467,7 @@ class ReviewConfigService:
     def _guard_score_field(self, tenant_id: str, review_form_id: str, score_field_key: Optional[str]) -> None:
         """422 unless ``score_field_key`` is a numeric field in the review form's
         PUBLISHED version. A None/blank key is allowed (a config can be drafted
-        before the rubric is final — allocation/average just have nothing to
+        before the rubric is final - allocation/average just have nothing to
         average until it is set)."""
         if not score_field_key:
             return
@@ -535,7 +535,7 @@ class ReviewConfigService:
         )
         self.repo.add_role(role)
 
-        # Named candidates (EXPLICIT / RULE) — each candidate's kind MUST match
+        # Named candidates (EXPLICIT / RULE) - each candidate's kind MUST match
         # the role's uniform identity kind (AC-06-29/30).
         if source in (SOURCE_EXPLICIT, SOURCE_RULE):
             for i, a in enumerate(spec.get("actors") or []):
@@ -558,14 +558,14 @@ class ReviewConfigService:
                         sort_order=int(a.get("sort_order") or i),
                     )
                 )
-                # AC-06-22 — an EXPLICIT profile actor BOUND to a review role
+                # AC-06-22 - an EXPLICIT profile actor BOUND to a review role
                 # auto-acquires the surface(s) matching the role's capabilities so
                 # it can see its work in the portal immediately on config save.
                 # This is the load-bearing path for can_decide / can_submit actors:
                 # deciders/submitters have NO assignment row (allocate only creates
                 # reviewer assignments), so without this they'd never get the
                 # surface key. Reviewers are covered here too (idempotent; allocate
-                # also grants them). EXPLICIT only — RULE candidates are conditional
+                # also grants them). EXPLICIT only - RULE candidates are conditional
                 # and only gain visibility when actually allocated; user-kind actors
                 # use the staff surface (core perms), never persona-granted.
                 if source == SOURCE_EXPLICIT and actor_kind == "profile":
@@ -603,9 +603,9 @@ class ReviewConfigService:
         self, tenant_id: str, form_id: str, conditions: Dict[str, Any]
     ) -> List[str]:
         """RULE-role conditions reference ``answers.<key>`` facts of the SUBMISSION
-        form — these are DYNAMIC per-document, not a registered FactSource, so we
+        form - these are DYNAMIC per-document, not a registered FactSource, so we
         do NOT call ``rule_engine.schemas.validate_tree`` (it operates over the
-        code-side fact registry). Instead — mirroring ``validate_form_doc`` — we
+        code-side fact registry). Instead - mirroring ``validate_form_doc`` - we
         check structure (it's a group) and that every referenced fact is an
         ``answers.<key>`` of a real published-version field. Runtime stays
         fail-closed for stale trees."""
@@ -679,14 +679,14 @@ class ReviewConfigService:
                 [(a.actor_kind, a.actor_id) for a in self.repo.list_actors(tenant_id, role.id)]
             )
 
-        # PERSONA / STAFF_ROLE — pool from the injectable resolver (fail-closed [] when none).
+        # PERSONA / STAFF_ROLE - pool from the injectable resolver (fail-closed [] when none).
         return _exclude_author(resolve_actor_pool(self.db, tenant_id, role, submission))
 
     def _submission_answer_facts(
         self, submission: FormSubmission, conditions: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """Flatten the submission's answers into ``answers.<key>`` facts for the
-        rule evaluator — only the keys the tree actually reads (perf, mirrors the
+        rule evaluator - only the keys the tree actually reads (perf, mirrors the
         form-engine ``resolve_facts`` only_keys pattern)."""
         answers = submission.answers_json or {}
         needed = collect_fact_keys(conditions)
@@ -713,7 +713,7 @@ class ReviewConfigService:
                     for a in self.repo.list_actors(tenant_id, role.id)
                 ):
                     return True
-            else:  # PERSONA / STAFF_ROLE — submission=None (membership-only check)
+            else:  # PERSONA / STAFF_ROLE - submission=None (membership-only check)
                 pool = resolve_actor_pool(self.db, tenant_id, role, None)
                 if (actor_kind, actor_id) in pool:
                     return True
@@ -723,7 +723,7 @@ class ReviewConfigService:
         self, tenant_id: str, config: ReviewConfiguration, actor_kind: str, actor_id: str
     ) -> bool:
         """True iff the actor holds a ``can_decide`` role for the config (AC-06-34
-        — any can_decide actor may decide, first-wins). Same resolution as
+        - any can_decide actor may decide, first-wins). Same resolution as
         ``may_submit`` over the can_decide capability."""
         for role in self.repo.list_roles(tenant_id, config.id):
             if not role.can_decide or role.actor_identity_kind != actor_kind:
@@ -734,7 +734,7 @@ class ReviewConfigService:
                     for a in self.repo.list_actors(tenant_id, role.id)
                 ):
                     return True
-            else:  # PERSONA / STAFF_ROLE — membership-only check
+            else:  # PERSONA / STAFF_ROLE - membership-only check
                 pool = resolve_actor_pool(self.db, tenant_id, role, None)
                 if (actor_kind, actor_id) in pool:
                     return True
@@ -743,7 +743,7 @@ class ReviewConfigService:
     def configs_for_decider(
         self, tenant_id: str, actor_kind: str, actor_id: str
     ) -> List[ReviewConfiguration]:
-        """Every config for which the actor holds a ``can_decide`` role — backs
+        """Every config for which the actor holds a ``can_decide`` role - backs
         the Decisions surface (AC-06-45/07)."""
         return [
             c
@@ -765,10 +765,10 @@ class ReviewConfigService:
         feedback: Optional[str] = None,
     ) -> ReviewDecision:
         """Write the terminal decision IFF none exists yet for (config, group,
-        revision) — single decider, first-wins. A concurrent second attempt
+        revision) - single decider, first-wins. A concurrent second attempt
         raises ReviewDecisionConflict (→ 409), NOT a double write (the DB UNIQUE
         is the backstop). Firing the status transition is the CALLER's job
-        (Part B / slice 2) — this returns the written decision."""
+        (Part B / slice 2) - this returns the written decision."""
         if decision not in DECISIONS:
             raise ReviewValidationError(f"Unknown decision '{decision}'.")
         # Fast-path check (clean 409 without an IntegrityError when uncontended).
@@ -788,7 +788,7 @@ class ReviewConfigService:
             self.repo.add_decision(row)
             self.db.commit()
         except IntegrityError:
-            # A concurrent decider won the race (the UNIQUE fired) — no-op.
+            # A concurrent decider won the race (the UNIQUE fired) - no-op.
             self.db.rollback()
             raise ReviewDecisionConflict()
         self.db.refresh(row)
@@ -799,7 +799,7 @@ class ReviewConfigService:
     def _current_submission(
         self, tenant_id: str, group_id: str
     ) -> Optional[FormSubmission]:
-        """The ``is_current`` row of the submission group, tenant-scoped — the
+        """The ``is_current`` row of the submission group, tenant-scoped - the
         live submission the decision transitions (plan-04 stable identity)."""
         return (
             self.db.query(FormSubmission)
@@ -832,7 +832,7 @@ class ReviewConfigService:
         feedback: Optional[str] = None,
         actor: Optional[Any] = None,
     ) -> ReviewDecision:
-        """Write the first-wins decision (``decide``) AND — only if it wrote —
+        """Write the first-wins decision (``decide``) AND - only if it wrote -
         fire the mapped status transition on the group's CURRENT submission
         (ACCEPTED→accepted, REJECTED→rejected, REVISIONS→revisions). A second
         concurrent decide raises ReviewDecisionConflict (→ 409, no double
@@ -851,7 +851,7 @@ class ReviewConfigService:
         ``decide`` commits the decision; the transition then commits its own unit
         (record + outbox atomically). NOTE the rare post-commit race: if the edge
         is torn down between pre-validation and fire, the transition raise is
-        caught + re-raised as ``ReviewTransitionUnavailable`` — at that point the
+        caught + re-raised as ``ReviewTransitionUnavailable`` - at that point the
         decision row has already committed (the unavoidable race edge). The
         pre-validation is the primary guard so the misconfig path never writes."""
         from app.models.form import FORM_SUBMISSION_ENTITY
@@ -864,7 +864,7 @@ class ReviewConfigService:
 
         # First-wins takes precedence over transition pre-validation: if a
         # decision already exists for (config, group, revision) this is a 409,
-        # NOT a 422 — and the submission may already sit at a terminal status
+        # NOT a 422 - and the submission may already sit at a terminal status
         # from the winning decision (which would otherwise fail pre-validation).
         if self.repo.get_decision(tenant_id, config.id, group_id, revision) is not None:
             raise ReviewDecisionConflict()
@@ -880,7 +880,7 @@ class ReviewConfigService:
         # Pre-validate the transition BEFORE writing the decision (no orphan on
         # a misconfigured status mapping). The move is possible only when an edge
         # from the current status to the target is fireable for this actor (role
-        # + rule-engine conditions checked) — exactly what the executor will fire.
+        # + rule-engine conditions checked) - exactly what the executor will fire.
         if move_required:
             fireable = status_machine.available_transitions(
                 self.db,
@@ -891,7 +891,7 @@ class ReviewConfigService:
             )
             if not any(e.to_status_id == target for e in fireable):
                 raise ReviewTransitionUnavailable(
-                    "Can't move the submission to the decision's mapped status — "
+                    "Can't move the submission to the decision's mapped status - "
                     "no transition is configured from its current status. Check "
                     "the review process's status mapping."
                 )
@@ -928,7 +928,7 @@ class ReviewConfigService:
         self, tenant_id: str, config: ReviewConfiguration, group_id: str, revision: int
     ) -> Optional[float]:
         """Average of ``score_field_key`` over COMPLETED assignments' review
-        submissions — computed on READ (no stored column). Each review reads its
+        submissions - computed on READ (no stored column). Each review reads its
         OWN pinned-version answer. Partial allowed; None when no completed review
         carries a numeric score. Review submissions are resolved TENANT-SCOPED
         (the polymorphic-target_id rule)."""

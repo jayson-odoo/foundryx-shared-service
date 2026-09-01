@@ -13,7 +13,7 @@ import { ResourceList } from '@/components/platform/resource-list';
 import { useModuleListConfig } from '@/components/platform/app-store';
 
 /**
- * Tenant App Store (plan 08 §8; migrated onto the Resource shell, sprint-3) —
+ * Tenant App Store (plan 08 §8; migrated onto the Resource shell, sprint-3) -
  * card view by default with a list toggle; install / deactivate / reactivate /
  * update / uninstall via the row + bulk "…" menu, gated by `app_store.*`.
  */

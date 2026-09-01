@@ -2,11 +2,11 @@
 
 /**
  * Resolve an omnichannel workspace id → its human-readable name (sprint-4/12
- * enhancement — the Developer Logs detail shows the workspace NAME, not a raw
+ * enhancement - the Developer Logs detail shows the workspace NAME, not a raw
  * uuid).
  *
  * Layering note: the Developer Logs console is CORE, workspaces are a MODULE
- * concern — so the name is resolved on the FRONTEND via the existing
+ * concern - so the name is resolved on the FRONTEND via the existing
  * `workspaceService` (`GET /omnichannel/workspaces/{id}`) rather than making the
  * core read service import a module table. UI → hook → service.
  *

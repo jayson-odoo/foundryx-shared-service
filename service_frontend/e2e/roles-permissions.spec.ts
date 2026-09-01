@@ -1,10 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Roles & Permissions + Impersonation E2E — real user clicks against the live
+ * Roles & Permissions + Impersonation E2E - real user clicks against the live
  * stack (Next :3001 → FastAPI :8001 → Postgres). Navigates by clicking the UI;
  * never URL-jumps into protected pages (per governance). Requires the backend up
- * + seeded (`python -m scripts.bootstrap_db`) — demo@example.com is Admin (all
+ * + seeded (`python -m scripts.bootstrap_db`) - demo@example.com is Admin (all
  * permissions); KT Demo (demo@kt.com) is a Member with no permissions.
  */
 

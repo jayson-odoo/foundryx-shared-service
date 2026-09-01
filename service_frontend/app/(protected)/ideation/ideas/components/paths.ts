@@ -1,4 +1,4 @@
-/** Route helpers for the Ideas feature — single source of truth for its URLs. */
+/** Route helpers for the Ideas feature - single source of truth for its URLs. */
 
 export const ideasListPath = '/ideation/ideas';
 export const ideaNewPath = `${ideasListPath}/new`;

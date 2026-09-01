@@ -1,5 +1,5 @@
 /**
- * Terminology service (sprint-3/08, F10) — the boundary the terminology
+ * Terminology service (sprint-3/08, F10) - the boundary the terminology
  * surfaces talk to (via the hook). Phase A binds the mock; Phase B swaps to the
  * real api-client impl in ONE line (bottom). The interface IS the backend
  * contract (plan 08).
@@ -8,7 +8,7 @@ import type { TermCatalogItem, TermLabels, TerminologyMap } from '@/types/termin
 import { realTerminologyService } from './terminology-service.real';
 
 export interface TerminologyService {
-  /** Merged map (defaults ⊕ tenant overrides) — the client-cache source. */
+  /** Merged map (defaults ⊕ tenant overrides) - the client-cache source. */
   getTerminology(): Promise<TerminologyMap>;
   /** All registered TermDefs + current overrides (drives the settings page). */
   getCatalog(): Promise<TermCatalogItem[]>;

@@ -1,4 +1,4 @@
-"""Import Celery tasks (sprint-3/09 D7) — decoupled; eager-inline in dev/test.
+"""Import Celery tasks (sprint-3/09 D7) - decoupled; eager-inline in dev/test.
 
 Reuses the workflow engine's Celery app. Each task opens a FRESH session (a
 worker process has its own pool); the service re-scopes inside the job's tenant.

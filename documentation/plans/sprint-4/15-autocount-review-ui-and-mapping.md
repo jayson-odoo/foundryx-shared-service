@@ -1,4 +1,4 @@
-# 15 — AutoCount review UI + field-mapping editor
+# 15 - AutoCount review UI + field-mapping editor
 
 > **Contract:** `15-autocount-review-ui-and-mapping-acceptance-criteria.md` (governs).
 > **Builds on:** slice 14. Branch continues on `sprint-4/14-autocount-sorento-masters` (same feature;
@@ -16,11 +16,11 @@ read-only-until-Edit mandate, plus one new editor.
 - **`GET /autocount/jobs`** (`autocount.sync.read`): tenant-scoped, paginated (`page`/`page_size`
   like `/companies/{id}/runs`), `status` filter (`needs_review|done|all`), optional `entityType`.
   Returns company, entity, status, counts, timestamps. Backs the Review list (AC-15-02). Reads
-  `background_jobs` where `type='autocount_sync'` — no new table.
+  `background_jobs` where `type='autocount_sync'` - no new table.
 - **Staged pagination**: `GET /autocount/jobs/{id}/staged` gains `page`/`page_size` + a
   `changed`-only filter option; response carries `total` + the no-change count so the FE can render
   the collapsed summary without fetching them all (AC-15-10/11). The service already computes the
-  per-record diff — surface `hasChanges` per row.
+  per-record diff - surface `hasChanges` per row.
 - **Mapping read/write** (`autocount.companies.manage`):
   - `GET /autocount/companies/{id}/entities/{entityType}/mapping` → current `ac_field_mapping` rows
     projected as `{sourcePath, transform, sorentoField}` (canonical name mapped to its Sorento label
@@ -29,12 +29,12 @@ read-only-until-Edit mandate, plus one new editor.
     required-ness).
   - `PUT .../mapping` → replace the entity's mapping rows transactionally. **Guard**: every
     `sorentoField` must be in the accepted set (else 422, AC-15-42); `sourcePath` shape-validated
-    (AC-15-43). Writing is an operator edit — the existing seed-if-absent contract already protects
+    (AC-15-43). Writing is an operator edit - the existing seed-if-absent contract already protects
     it from `update_tenant` (AC-15-41).
   - Catalog sources: `sorentoFields` from `CanonicalSupplier/Customer.SINK_FIELDS` + a
     required-fields marker (`code`,`name`); `acFields` from the entity's observed vendor payload keys
     (a declared list per entity in `mapping.py`, extended from the default mapping's source paths).
-- Naming: reuse `autocount.sync.read` / `autocount.companies.manage` — **no new permission**, so no
+- Naming: reuse `autocount.sync.read` / `autocount.companies.manage` - **no new permission**, so no
   grant sweep.
 
 ## 3. Frontend
@@ -46,7 +46,7 @@ read-only-until-Edit mandate, plus one new editor.
   `GET /autocount/jobs`: columns company/entity/status/records/when, status **segments** (Needs
   review | Done | All), search, server pagination. `rowHref` → the existing
   `/autocount/review/[jobId]` detail (which becomes the "form" view). Clone the Users list shape.
-- The existing `[jobId]` review page is the detail/form — unchanged except it now has a real list
+- The existing `[jobId]` review page is the detail/form - unchanged except it now has a real list
   parent (breadcrumb + back to the list).
 
 ### B. Staged list on the Resource shell (AC-15-10/11)
@@ -86,7 +86,7 @@ read-only-until-Edit mandate, plus one new editor.
 1. Backend endpoints (jobs list, staged pagination + `hasChanges`, mapping GET/PUT + catalogs) + tests.
 2. FE conformance fixes C, D (small, high-value, unblock the read-only-until-Edit complaint) + B.
 3. FE Review menu+list+form (A).
-4. FE mapping editor (E) — the feature.
+4. FE mapping editor (E) - the feature.
 5. Live-verify all at 375 + 1280 against the running stack (the mandate that caught slice-14's gaps),
    E2E spec, test report.
 
@@ -95,7 +95,7 @@ read-only-until-Edit mandate, plus one new editor.
 The recurring-gap gate applies. Specifically for this pass:
 - Every new list is the **Resource shell**, never hand-rolled (the exact complaint here).
 - Every editable surface is **read-only until Edit** (the push-target complaint).
-- No **dead controls** (the first-run-window complaint) — a control that cannot act is not shown.
+- No **dead controls** (the first-run-window complaint) - a control that cannot act is not shown.
 - Foolproof mapping: only valid Sorento targets offered; unmapped-required flagged before it becomes
   a failed sync (the null-record failure live-verify caught in slice 14).
 - Verified end-to-end with real data at both viewports on a freshly rebuilt frontend.

@@ -1,4 +1,4 @@
-"""Email template rendering (plan 09 D9) — Jinja2, FoundryX-branded base layout
+"""Email template rendering (plan 09 D9) - Jinja2, Foundryx-branded base layout
 + per-key children with plain-text siblings. User-editable templates /
 per-tenant branding = BL-038 (ties BL-024 template engine).
 """
@@ -15,10 +15,10 @@ _env = Environment(
 )
 
 SUBJECTS: Dict[str, str] = {
-    "invite": "You're invited to FoundryX EMS",
-    "password_reset": "Reset your FoundryX EMS password",
-    "verification": "Verify your email for FoundryX EMS",
-    "test": "FoundryX EMS — SMTP test email",
+    "invite": "You're invited to Foundryx EMS",
+    "password_reset": "Reset your Foundryx EMS password",
+    "verification": "Verify your email for Foundryx EMS",
+    "test": "Foundryx EMS - SMTP test email",
     # Change-email ceremony (plan sprint-2/04).
     "email_change_approve": "Approve the email change on your account",
     "email_change_verify": "Confirm your new email address",

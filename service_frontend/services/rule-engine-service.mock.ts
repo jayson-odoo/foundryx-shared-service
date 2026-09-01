@@ -1,6 +1,6 @@
 /**
  * Mock rule-engine service (Phase A). Mirrors what the backend will return:
- * `GET /rule-facts?sources=` from the whitelist fact registry (D7/D8 — thin
+ * `GET /rule-facts?sources=` from the whitelist fact registry (D7/D8 - thin
  * v1 set: `actor` + `record:tenant`) and `GET /rules` from the rule-site
  * registry (D12). Phase B swaps the binding in rule-engine-service.ts.
  */

@@ -1,5 +1,5 @@
 /**
- * View-preferences service — per-user column prefs (order/width/visibility) by
+ * View-preferences service - per-user column prefs (order/width/visibility) by
  * view_key, persisted to the backend `user_view_preferences` table via
  * GET/PATCH /me/preferences/{view_key}. Failures degrade silently (prefs are
  * non-critical UX).
@@ -27,7 +27,7 @@ export const preferencesService: PreferencesService = {
         body: JSON.stringify(prefs),
       });
     } catch {
-      // non-fatal — prefs are best-effort
+      // non-fatal - prefs are best-effort
     }
   },
 };

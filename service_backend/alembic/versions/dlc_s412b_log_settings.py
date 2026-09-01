@@ -1,6 +1,6 @@
 """integration_log_settings table (per-tenant developer-logs retention).
 
-sprint-4/12 Slice 3 (AC-DLC-21) — one row per tenant, ``retention_days`` NULL =
+sprint-4/12 Slice 3 (AC-DLC-21) - one row per tenant, ``retention_days`` NULL =
 use the global default (``settings.integration_activity_retention_days``).
 Mirrors ``workflow_settings``. No new permission (``integration_logs.manage`` was
 added + swept to existing tenants' Admin in the Slice-1 migration).

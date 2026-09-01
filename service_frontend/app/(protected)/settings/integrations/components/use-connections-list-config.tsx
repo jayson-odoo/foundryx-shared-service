@@ -53,7 +53,7 @@ const STATIC_FILTER_FIELDS: FilterFieldDef[] = [
 ];
 
 export function useConnectionsListConfig(): ResourceListConfig<Connection> {
-  // Session-tz formatters (plan sprint-2/05) — never the tz-blind lib/format.
+  // Session-tz formatters (plan sprint-2/05) - never the tz-blind lib/format.
   const { formatDate, formatDateTime } = useDatetime();
   const router = useRouter();
   const actions = useConnectionActions();
@@ -185,7 +185,7 @@ export function useConnectionsListConfig(): ResourceListConfig<Connection> {
               className="text-sm text-destructive"
             />
           ) : (
-            <span className="text-sm text-muted-foreground">—</span>
+            <span className="text-sm text-muted-foreground">-</span>
           ),
         size: 240,
         enableSorting: false,
@@ -253,7 +253,7 @@ export function useConnectionsListConfig(): ResourceListConfig<Connection> {
       searchPlaceholder: 'Search integrations…',
       searchHints: ['Name', 'Provider', 'Last error'],
       defaultSort: { id: 'created', desc: true },
-      // Connections have no soft-trash — disconnect is final (plan 09).
+      // Connections have no soft-trash - disconnect is final (plan 09).
       enableStatusViews: false,
       exportFilename: 'integrations',
       createLabel: 'Connect integration',

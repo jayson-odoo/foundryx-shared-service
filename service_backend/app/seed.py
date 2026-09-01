@@ -2,7 +2,7 @@
 catalog + roles + demo users.
 
 Shared by scripts/bootstrap_db.py (canonical) and scripts/init_db.py. Safe to
-run repeatedly — every step checks for existing rows first. The permission
+run repeatedly - every step checks for existing rows first. The permission
 catalog is synced from the core + platform CSVs (core = "module zero",
 plan 03 §4; platform = operator keys, plan 07 §5).
 
@@ -39,7 +39,7 @@ from app.repositories.permission_repository import PermissionRepository
 from app.security import hash_password
 from app.services.permission_service import PLATFORM_MODULE, PermissionService
 
-# (name, description) — all seeded roles are system (protected from deletion).
+# (name, description) - all seeded roles are system (protected from deletion).
 SEED_ROLES: List[Tuple[str, str]] = [
     ("Admin", "Full system access with all permissions"),
     ("Event Manager", "Plan and run events end to end"),
@@ -50,7 +50,7 @@ SEED_ROLES: List[Tuple[str, str]] = [
     ("Viewer", "Read-only access to dashboards and reports"),
 ]
 
-# (email, password, name, [role names]) — all ACTIVE under the default tenant.
+# (email, password, name, [role names]) - all ACTIVE under the default tenant.
 SEED_USERS = [
     ("demo@example.com", "demo1234", "Demo User", ["Admin"]),
     ("demo@kt.com", "demo1234", "KT Demo", ["Member"]),
@@ -67,7 +67,7 @@ PLATFORM_ADMIN_ROLE = "Platform Admin"
 
 
 def seed_statuses(db: Session) -> None:
-    """Tenant lifecycle system rows — platform defaults (tenant NULL).
+    """Tenant lifecycle system rows - platform defaults (tenant NULL).
 
     Behavior = trait flags (sprint-2/01 D2); ``category`` stays populated as
     the cosmetic uppercase-key mirror the wire/filters still display. Flags
@@ -91,17 +91,17 @@ def seed_statuses(db: Session) -> None:
                 tenant_id=None,
             )
             db.add(row)
-        # Trait flags are the machine semantics — always converge them.
+        # Trait flags are the machine semantics - always converge them.
         for flag, value in flags.items():
             setattr(row, flag, value)
     db.flush()
 
 
 def seed_tenant_transitions(db: Session) -> None:
-    """Default tenant lifecycle edge graph (sprint-2/01) — platform-owned.
+    """Default tenant lifecycle edge graph (sprint-2/01) - platform-owned.
 
     active→suspended (Suspend), suspended→active (Reactivate),
-    active/suspended→archived (Archive), archived→active (Restore —
+    active/suspended→archived (Archive), archived→active (Restore -
     sprint-2/02 revision; hard purge stays BL-035, not a transition).
     """
     existing = {
@@ -175,7 +175,7 @@ def tenant_admin_grant(db: Session, tenant_id: str):
 def seed_tenant_roles(db: Session, tenant_id: str) -> Dict[str, Role]:
     """Seed the standard system roles for ONE tenant (idempotent).
 
-    Reused by provisioning (plan 07 §7) — a new tenant gets the same role set
+    Reused by provisioning (plan 07 §7) - a new tenant gets the same role set
     the default tenant does, with Admin granted core + installed-module keys
     (a fresh tenant has no modules installed → core only, plan 08 §5).
     """
@@ -215,8 +215,8 @@ def sweep_tenant_admin_grants(db: Session) -> None:
 
     ``seed_roles`` only re-grants DEFAULT, so a new core permission (e.g.
     ``numbering.read/manage``) never reaches the Admin role of tenants
-    provisioned BEFORE the slice that added it. This idempotent sweep — run on
-    every bootstrap/init, AFTER the permission catalog is synced — closes that
+    provisioned BEFORE the slice that added it. This idempotent sweep - run on
+    every bootstrap/init, AFTER the permission catalog is synced - closes that
     gap. Platform tenant excluded (its Platform Admin holds the full catalog via
     ``seed_platform_admin``)."""
     tenants = db.query(Tenant).filter(Tenant.is_platform.is_(False)).all()
@@ -243,7 +243,7 @@ def seed_platform_admin(db: Session) -> None:
         role = Role(
             tenant_id=PLATFORM_TENANT_ID,
             name=PLATFORM_ADMIN_ROLE,
-            description="Operate the platform — tenants, app store, support",
+            description="Operate the platform - tenants, app store, support",
             is_system=True,
         )
         db.add(role)
@@ -305,10 +305,10 @@ def seed_platform_smtp_connection(db: Session) -> None:
         return
     if not settings.fernet_key:
         # Seeding encrypts with THIS process's ephemeral key; uvicorn is a
-        # DIFFERENT process with a different ephemeral key — the dispatcher
+        # DIFFERENT process with a different ephemeral key - the dispatcher
         # could never decrypt the password. Refuse loudly instead.
         print(
-            "WARNING: PLATFORM_SMTP_HOST is set but FERNET_KEY is not — "
+            "WARNING: PLATFORM_SMTP_HOST is set but FERNET_KEY is not - "
             "skipping the platform SMTP seed (the encrypted password would be "
             "unreadable by the API process). Set a stable FERNET_KEY and re-run."
         )
@@ -355,7 +355,7 @@ def seed_platform_storage_connection(db: Session) -> None:
         return
     if provider not in ("s3", "r2"):
         print(
-            f"WARNING: PLATFORM_STORAGE_PROVIDER={provider!r} is not one of s3|r2 — "
+            f"WARNING: PLATFORM_STORAGE_PROVIDER={provider!r} is not one of s3|r2 - "
             "skipping the platform storage seed."
         )
         return
@@ -363,7 +363,7 @@ def seed_platform_storage_connection(db: Session) -> None:
         # Same rule as the SMTP seed: an ephemeral key here is unreadable by
         # the API process. Refuse loudly instead.
         print(
-            "WARNING: PLATFORM_STORAGE_PROVIDER is set but FERNET_KEY is not — "
+            "WARNING: PLATFORM_STORAGE_PROVIDER is set but FERNET_KEY is not - "
             "skipping the platform storage seed (the encrypted credentials "
             "would be unreadable by the API process). Set a stable FERNET_KEY "
             "and re-run."
@@ -411,7 +411,7 @@ def seed_platform_llm_connection(db: Session) -> None:
     the deterministic stub adapter answers (AC-BI-12), so dev stays zero-config.
 
     Idempotent: matched on (platform tenant, provider), credentials refreshed
-    from env each bootstrap. This is a bootstrap convenience only — at run time
+    from env each bootstrap. This is a bootstrap convenience only - at run time
     credentials always come from `connections.credentials_json`.
     """
     from app.config import settings
@@ -428,7 +428,7 @@ def seed_platform_llm_connection(db: Session) -> None:
     if provider is None or getattr(provider, "type", "") != "llm":
         print(
             f"WARNING: PLATFORM_LLM_PROVIDER={provider_key!r} is not a registered "
-            "LLM provider (anthropic|openai|gemini) — skipping the platform LLM seed."
+            "LLM provider (anthropic|openai|gemini) - skipping the platform LLM seed."
         )
         return
     if not settings.fernet_key:
@@ -436,7 +436,7 @@ def seed_platform_llm_connection(db: Session) -> None:
         # process's ephemeral key, which the API process could never decrypt.
         # Refuse loudly rather than write an unreadable secret.
         print(
-            "WARNING: PLATFORM_LLM_API_KEY is set but FERNET_KEY is not — "
+            "WARNING: PLATFORM_LLM_API_KEY is set but FERNET_KEY is not - "
             "skipping the platform LLM seed (the encrypted key would be "
             "unreadable by the API process). Set a stable FERNET_KEY and re-run."
         )
@@ -459,7 +459,7 @@ def seed_platform_llm_connection(db: Session) -> None:
             status=CONNECTION_STATUS_UNVERIFIED,
         )
         db.add(row)
-    # `defaultModel` is config, not a credential — it seeds the agent form's
+    # `defaultModel` is config, not a credential - it seeds the agent form's
     # model picker; the pinned model still lives on each agent row.
     row.config_json = {"defaultModel": (settings.platform_llm_model or "").strip()}
     row.credentials_json = encrypt_secret({"apiKey": api_key})

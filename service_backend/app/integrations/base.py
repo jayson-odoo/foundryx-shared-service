@@ -2,8 +2,8 @@
 
 A provider declares its identity, a config schema (drives the frontend wizard)
 and the runtime operations: `test` (no target = connection check; with target =
-the provider's targeted test, e.g. send a real email) and — for email-type
-providers — `send` (used by the outbox dispatcher).
+the provider's targeted test, e.g. send a real email) and - for email-type
+providers - `send` (used by the outbox dispatcher).
 """
 from dataclasses import dataclass
 from decimal import Decimal
@@ -30,13 +30,13 @@ class CheckoutResult:
 class WebhookEvent:
     """A verified, parsed inbound webhook (AC-07-29..32/36). The gateway adapter
     is the ONLY place ``amount``/``fee`` cross the integer-cents ↔ Decimal
-    boundary — these are already exact ``Decimal`` (major units)."""
+    boundary - these are already exact ``Decimal`` (major units)."""
 
     event_id: str  # provider event id (idempotency key)
     event_type: str  # normalised: payment.succeeded | payment.failed | refund | dispute
     external_payment_id: Optional[str]  # gateway charge/bill id
     external_ref: Optional[str]  # OUR payment row id (passed at checkout)
-    amount: Optional["Decimal"] = None  # noqa: F821 (Decimal — imported lazily)
+    amount: Optional["Decimal"] = None  # noqa: F821 (Decimal - imported lazily)
     gateway_fee: Optional["Decimal"] = None  # noqa: F821
     raw: Optional[Dict[str, Any]] = None
 
@@ -84,7 +84,7 @@ class ModelOption:
 class LLMResult:
     """One completion (AC-BI-01).
 
-    ``text`` XOR ``structured`` — a call made WITHOUT an ``output_schema``
+    ``text`` XOR ``structured`` - a call made WITHOUT an ``output_schema``
     returns prose in ``text``; a call made WITH one returns the parsed object in
     ``structured`` (and leaves ``text`` None). ``usage`` is NORMALIZED across
     vendors (``tokens_in``/``tokens_out``) so cost tracking never branches on
@@ -106,7 +106,7 @@ class LLMResult:
 
 class LLMError(Exception):
     """An LLM provider call failed (bad key, retired model, transport, unparsable
-    structured output). Callers map this to a clean message — never a raw vendor
+    structured output). Callers map this to a clean message - never a raw vendor
     traceback and never the API key (AC-BI-04)."""
 
 
@@ -119,7 +119,7 @@ class PaymentProvider(IntegrationProvider, Protocol):
     """An ``IntegrationProvider`` of ``type == 'payment'`` (Stripe, Billplz).
 
     The adapter owns the integer-cents ↔ Decimal conversion at its boundary
-    (AC-07-51) — every amount that crosses into the rest of the system is an
+    (AC-07-51) - every amount that crosses into the rest of the system is an
     exact ``Decimal`` in major units.
     """
 
@@ -136,7 +136,7 @@ class PaymentProvider(IntegrationProvider, Protocol):
         cancel_url: str,
     ) -> CheckoutResult:
         """Open a hosted-checkout session; return the buyer redirect + the
-        gateway's payment id. ``external_ref`` is OUR Pending payment row id —
+        gateway's payment id. ``external_ref`` is OUR Pending payment row id -
         the gateway echoes it back on the webhook so we can reconcile."""
         ...
 
@@ -172,7 +172,7 @@ class LLMProvider(IntegrationProvider, Protocol):
 
     The adapter owns EVERY provider-specific detail of structured output
     (Anthropic tool-use · OpenAI ``json_schema`` response format · Gemini
-    ``responseSchema``) — no caller ever branches on provider (AC-BI-01).
+    ``responseSchema``) - no caller ever branches on provider (AC-BI-01).
     """
 
     def complete(
@@ -189,14 +189,14 @@ class LLMProvider(IntegrationProvider, Protocol):
         """One completion. ``messages`` = ``[{"role": "user"|"assistant",
         "content": str}, …]``. With ``output_schema`` (a JSON Schema object) the
         adapter forces the vendor's structured-output mode and returns the parsed
-        object in ``LLMResult.structured``. Raises ``LLMError`` on any failure —
+        object in ``LLMResult.structured``. Raises ``LLMError`` on any failure -
         including a model id the provider has retired, which must fail LOUDLY
         rather than silently substituting another model (AC-BI-05)."""
         ...
 
     def models(self, config: Dict[str, Any], credentials: Dict[str, Any]) -> List[ModelOption]:
         """The provider's live chat-capable model list, newest first. Raises
-        ``LLMError`` when the catalog can't be fetched — the caller falls back to
+        ``LLMError`` when the catalog can't be fetched - the caller falls back to
         the curated static list so the picker still renders (AC-BI-05)."""
         ...
 

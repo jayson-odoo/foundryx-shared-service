@@ -1,4 +1,4 @@
-"""Workflow business logic (plan sprint-2/08) — Router → THIS → Repository.
+"""Workflow business logic (plan sprint-2/08) - Router → THIS → Repository.
 
 Owns: CRUD, publish/unpublish (snapshot → version → current + denormalized
 trigger), active + archive/restore lifecycle, manual run (snapshot draft +
@@ -35,6 +35,7 @@ from app.services.filter_translator import translate_filter
 from app.workflow_engine import (
     get_trigger,
     parse_definition,
+    TriggerTestDataError,
     validate_definition,
 )
 from app.workflow_engine.entity_events import emit_entity_event
@@ -51,7 +52,7 @@ def _now() -> datetime:
 
 
 def _form_answer_fields(definition: Dict[str, Any]) -> List[Dict[str, str]]:
-    """Flatten a form definition to its answer fields ({key,label}) — input/
+    """Flatten a form definition to its answer fields ({key,label}) - input/
     choice/composite fields that carry a stable answer ``key`` (display blocks
     like heading/divider have none). Backs the form.submitted dynamic outputs."""
     fields: List[Dict[str, str]] = []
@@ -68,6 +69,14 @@ class WorkflowError(Exception):
     pass
 
 
+class WorkflowPermissionError(WorkflowError):
+    """The caller lacks a permission the definition requires (403)."""
+
+
+class CodeRunnerRequired(WorkflowError):
+    """Publishing a Code-bearing graph needs a healthy external runner (422)."""
+
+
 class WorkflowNotFound(WorkflowError):
     pass
 
@@ -77,7 +86,7 @@ class WorkflowService:
         self.db = db
         self.repo = WorkflowRepository(db)
 
-    # ---- tenant settings (plan 10 — run retention) ----
+    # ---- tenant settings (plan 10 - run retention) ----
     def get_run_retention(self, tenant_id: str) -> Tuple[int, bool]:
         """Effective run-retention days for the tenant + whether it's the global
         default (no per-tenant override)."""
@@ -111,7 +120,7 @@ class WorkflowService:
         doc = parse_definition(definition)
         trigger = next((n for n in doc.nodes if n.kind == "trigger"), None)
         if trigger is None:
-            return "", "—"
+            return "", "-"
         defn = get_trigger(trigger.type)
         return trigger.type, (defn.label if defn else trigger.type)
 
@@ -203,14 +212,28 @@ class WorkflowService:
             draft_definition=wf.draft_definition_json,
             current_version_id=wf.current_version_id,
             current_version=current_summary,
-            created_by_name=self._user_name(wf.created_by) or "—",
+            created_by_name=self._user_name(wf.created_by) or "-",
             created_at=wf.created_at,
         )
 
     # ---- writes ----
 
-    def create(self, tenant_id: str, *, name: str, description: str, draft: Dict[str, Any], actor_id: str) -> Workflow:
+    @staticmethod
+    def assert_code_permitted(actor: Optional[User], doc: Any) -> None:
+        """``workflows.code`` gates adding/editing/publishing/running a graph
+        that carries a Code node (AC-SAR-68). ``actor=None`` = system path."""
+        from app.workflow_engine.schemas import has_code_nodes
+
+        if actor is None or not has_code_nodes(doc):
+            return
+        from app.dependencies import effective_permission_keys
+
+        if "workflows.code" not in effective_permission_keys(actor):
+            raise WorkflowPermissionError("Missing permission: workflows.code")
+
+    def create(self, tenant_id: str, *, name: str, description: str, draft: Dict[str, Any], actor_id: str, actor: Optional[User] = None) -> Workflow:
         parse_definition(draft)  # shape gate (422 on malformed)
+        self.assert_code_permitted(actor, draft)
         wf = Workflow(
             tenant_id=tenant_id,
             name=name.strip(),
@@ -225,9 +248,10 @@ class WorkflowService:
         self.db.refresh(wf)
         return wf
 
-    def update(self, workflow_id: str, tenant_id: str, *, name: str, description: str, draft: Dict[str, Any]) -> Workflow:
+    def update(self, workflow_id: str, tenant_id: str, *, name: str, description: str, draft: Dict[str, Any], actor: Optional[User] = None) -> Workflow:
         wf = self.get(workflow_id, tenant_id)
         parse_definition(draft)
+        self.assert_code_permitted(actor, draft)
         changes: Dict[str, Any] = {}
         if wf.name != name.strip():
             changes["name"] = {"from": wf.name, "to": name.strip()}
@@ -283,14 +307,26 @@ class WorkflowService:
         self.db.refresh(wf)
         return wf
 
-    def publish(self, workflow_id: str, tenant_id: str, actor_id: str) -> Workflow:
+    def publish(self, workflow_id: str, tenant_id: str, actor_id: str, actor: Optional[User] = None) -> Workflow:
         wf = self.get(workflow_id, tenant_id)
         doc = validate_definition(wf.draft_definition_json)  # raises on issues (422)
+        from app.workflow_engine.schemas import has_code_nodes
+
+        code_bearing = has_code_nodes(doc)
+        code_authorized_by = None
+        if code_bearing:
+            self.assert_code_permitted(actor, doc)
+            from app.workflow_engine.code_runner import code_runner_available
+
+            if not code_runner_available():
+                raise CodeRunnerRequired("The Code runner is unavailable - publishing a Code node is blocked.")
+            code_authorized_by = actor.id if actor is not None else actor_id
         version = WorkflowVersion(
             workflow_id=wf.id,
             version_number=self.repo.next_version_number(wf.id),
             definition_json=json.loads(json.dumps(wf.draft_definition_json)),
             published_by=actor_id,
+            code_authorized_by=code_authorized_by,
         )
         self.repo.add_version(version)
         wf.current_version_id = version.id
@@ -304,6 +340,10 @@ class WorkflowService:
         # dispatch (sprint-3/02). The formId itself stays in the version config.
         if trigger and trigger.type == "form.submitted":
             wf.trigger_entity_type = "form_submission"
+        # Omnichannel inbound message (sprint-4/17) - same denormalization
+        # shape as form.submitted (per-channel selectivity stays in config).
+        if trigger and trigger.type == "omnichannel.message_received":
+            wf.trigger_entity_type = "omnichannel_message"
         # Scheduled trigger: arm the next fire (cron interpreted in its tz → UTC).
         wf.next_run_at = None
         if trigger and trigger.type == "schedule.cron":
@@ -329,44 +369,79 @@ class WorkflowService:
 
     # ---- runs ----
 
-    def run(self, workflow_id: str, tenant_id: str, *, inputs: Dict[str, Any], is_test: bool, actor: User) -> WorkflowRun:
-        """Manual run — executes the DRAFT (no publish required, D13)."""
+    def run(
+        self,
+        workflow_id: str,
+        tenant_id: str,
+        *,
+        inputs: Dict[str, Any],
+        is_test: bool,
+        actor: User,
+        test_trigger: Optional[Dict[str, Any]] = None,
+    ) -> WorkflowRun:
+        """Execute the draft manually or with registered synthetic trigger data."""
         wf = self.get(workflow_id, tenant_id)
-        current = self.repo.get_version(wf.current_version_id) if wf.current_version_id else None
-        payload = {
-            "triggeredBy": TRIGGER_MANUAL,
-            "input": inputs or {},
-            "actor": {"id": actor.id, "name": actor.name or actor.email, "email": actor.email},
-        }
+        self.assert_code_permitted(actor, wf.draft_definition_json)
+        version_id = wf.current_version_id
+        current = self.repo.get_version(version_id) if version_id else None
+        version_number = current.version_number if current else 0
+        triggered_by = TRIGGER_MANUAL
+        effective_is_test = is_test
+
+        if test_trigger is not None:
+            if not is_test:
+                raise TriggerTestDataError("Test-trigger data requires test mode.")
+            doc = parse_definition(wf.draft_definition_json)
+            trigger = next((node for node in doc.nodes if node.kind == "trigger"), None)
+            requested_type = str(test_trigger.get("type") or "")
+            if trigger is None or requested_type != trigger.type:
+                raise TriggerTestDataError("Test-trigger type does not match the draft.")
+            trigger_def = get_trigger(trigger.type)
+            if trigger_def is None or trigger_def.test_payload_builder is None:
+                raise TriggerTestDataError("This trigger does not support test data.")
+            payload = trigger_def.test_payload_builder(
+                self.db, tenant_id, trigger.config, test_trigger
+            )
+            # Test-trigger runs always execute and identify the draft, regardless
+            # of the workflow's current published version.
+            version_id = None
+            version_number = 0
+            triggered_by = str(payload.get("triggeredBy") or "event")
+            effective_is_test = True
+        else:
+            payload = {
+                "triggeredBy": TRIGGER_MANUAL,
+                "input": inputs or {},
+                "actor": {"id": actor.id, "name": actor.name or actor.email, "email": actor.email},
+            }
         run = WorkflowRun(
             tenant_id=tenant_id,
             workflow_id=wf.id,
-            version_id=wf.current_version_id,
-            version_number=current.version_number if current else 0,
+            version_id=version_id,
+            version_number=version_number,
             status=RUN_PENDING,
-            triggered_by=TRIGGER_MANUAL,
-            is_test=is_test,
+            triggered_by=triggered_by,
+            is_test=effective_is_test,
             definition_snapshot_json=json.loads(json.dumps(wf.draft_definition_json)),
             trigger_payload_json=payload,
             actor_id=actor.id,
         )
+        from app.workflow_engine.serialization import assign_run_correlation
+
+        try:
+            assign_run_correlation(run)
+        except RuntimeError as exc:
+            # A serialized manual run may not have the trigger data needed to
+            # resolve its key. Surface that as a workflow-level conflict before
+            # persisting a run, rather than returning an opaque 500.
+            raise WorkflowError(str(exc)) from exc
         self.repo.add_run(run)
         self.db.commit()
         run_id = run.id
 
-        from app.config import settings
+        from app.workflow_engine.serialization import dispatch_persisted_run
 
-        if settings.celery_task_always_eager:
-            # Dev/E2E + tests: execute inline on THIS session (a worker process
-            # would open a different DB session and not see an in-test run).
-            from app.workflow_engine.executor import run_workflow
-
-            run_workflow(self.db, run_id)
-        else:
-            # Prod: hand off to a worker (its own session, separate process).
-            from app.workflow_engine.worker import run_workflow_task
-
-            run_workflow_task.delay(run_id)
+        dispatch_persisted_run(self.db, run)
 
         self.db.expire_all()
         return self.repo.get_run(run_id, tenant_id)
@@ -413,12 +488,18 @@ class WorkflowService:
 
     def debug_execute(
         self, workflow_id: str, tenant_id: str, *, run_id: str, target_node_id: str,
-        scratch: Dict[str, Dict[str, Any]], stale_node_ids: List[str]
+        scratch: Dict[str, Dict[str, Any]], stale_node_ids: List[str],
+        actor: Optional[User] = None,
     ) -> List[WorkflowRunNodeOut]:
         self.get(workflow_id, tenant_id)
         run = self.repo.get_run(run_id, tenant_id)
         if run is None or run.workflow_id != workflow_id:
             raise WorkflowNotFound()
+        # Debug re-executes the snapshot with scratch config (incl. edited Code
+        # source) - the same ``workflows.code`` gate as a manual run (AC-SAR-68).
+        # Scratch can only override config on existing nodes, never add a node
+        # or change its type, so gating on the snapshot covers scratch too.
+        self.assert_code_permitted(actor, run.definition_snapshot_json)
         touched = _debug_execute(
             self.db, run, target_node_id=target_node_id, scratch=scratch, stale_node_ids=stale_node_ids
         )
@@ -437,9 +518,13 @@ class WorkflowService:
             for t in touched
         ]
 
-    def metadata(self, tenant_id: str) -> Dict[str, Any]:
-        """Triggerable entities + resolved statuses + record fields — the editor's
-        entity/status/field pickers (swaps the frontend mock, slice 09)."""
+    def metadata(self, tenant_id: str, *, include_ai_agents: bool = False) -> Dict[str, Any]:
+        """Triggerable entities + resolved statuses + record fields - the editor's
+        entity/status/field pickers (swaps the frontend mock, slice 09).
+
+        AI-agent options are included only when the caller holds the dedicated
+        ``ai_agents.read`` permission. The workflow metadata endpoint itself
+        remains available to every ``workflows.read`` caller."""
         from app.models.status import Status
         from app.rule_engine.registry import _camel, get_facts
         from app.workflow_engine.entities import list_workflow_entities
@@ -452,7 +537,7 @@ class WorkflowService:
                 for _, _, fact in facts
             ]
             # entity.update may only write the whitelist (camelCase to match the
-            # field keys above — see entity_actions guard).
+            # field keys above - see entity_actions guard).
             writable_fields = sorted(_camel(attr) for attr in e.writable)
             statuses: List[Dict[str, str]] = []
             if e.has_status:
@@ -480,7 +565,7 @@ class WorkflowService:
             })
 
         # Whether a usable connection exists for each connection-requiring action
-        # (tenant → platform fallback) — drives the editor's "no connection" warning.
+        # (tenant → platform fallback) - drives the editor's "no connection" warning.
         from app.repositories.connection_repository import ConnectionRepository
 
         conn_repo = ConnectionRepository(self.db)
@@ -488,14 +573,72 @@ class WorkflowService:
             "email": conn_repo.resolve_for_type(tenant_id, "email") is not None,
             "storage": conn_repo.resolve_for_type(tenant_id, "storage") is not None,
         }
-        return {
+        from app.workflow_engine.code_runner import code_runner_available
+        from code_runner.policy import CAPABILITIES as CODE_CAPABILITIES
+
+        metadata = {
             "entities": entities,
             "connections": connections,
             "forms": self._form_options(tenant_id),
+            "omnichannelChannels": self._omnichannel_channel_options(tenant_id),
+            "codeRunnerAvailable": code_runner_available(),
+            "codeCapabilities": list(CODE_CAPABILITIES),
         }
+        if include_ai_agents:
+            metadata["aiAgents"] = self._ai_agent_options(tenant_id)
+        return metadata
+
+    def test_options(self, workflow_id: str, tenant_id: str) -> Dict[str, Any]:
+        """Return tenant-safe options for the trigger in this workflow's draft.
+
+        Trigger-specific discovery stays behind the registry callback so core
+        never imports a Service module. The router separately gates access to
+        the workflow run capability and the trigger data's domain permission.
+        """
+        workflow = self.get(workflow_id, tenant_id)
+        document = parse_definition(workflow.draft_definition_json)
+        trigger = next((node for node in document.nodes if node.kind == "trigger"), None)
+        if trigger is None:
+            return {}
+        trigger_def = get_trigger(trigger.type)
+        if trigger_def is None or trigger_def.test_metadata_provider is None:
+            return {}
+        return trigger_def.test_metadata_provider(self.db, tenant_id, trigger.config)
+
+    def _omnichannel_channel_options(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Backs the omnichannel trigger's channel picker (sprint-4/17). A
+        guarded import - core stays functional if the module isn't present in
+        a given build (manifest-driven module set)."""
+        try:
+            from modules.omnichannel.models import Channel
+        except ImportError:
+            return []
+        rows = (
+            self.db.query(Channel.id, Channel.name)
+            .filter(
+                Channel.tenant_id == tenant_id,
+                Channel.is_trashed.is_(False),
+                Channel.is_active.is_(True),
+            )
+            .order_by(Channel.name)
+            .all()
+        )
+        return [{"id": r.id, "name": r.name} for r in rows]
+
+    def _ai_agent_options(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Backs the AI Agent node's agent picker (sprint-4/17)."""
+        from app.models.ai import AiAgent
+
+        rows = (
+            self.db.query(AiAgent.id, AiAgent.name, AiAgent.model)
+            .filter(AiAgent.tenant_id == tenant_id, AiAgent.is_enabled.is_(True))
+            .order_by(AiAgent.name)
+            .all()
+        )
+        return [{"id": r.id, "name": r.name, "model": r.model} for r in rows]
 
     def _form_options(self, tenant_id: str) -> List[Dict[str, Any]]:
-        """Published forms + their published-version answer keys — backs the
+        """Published forms + their published-version answer keys - backs the
         `form.submitted` trigger picker + its dynamic `trigger.answers.<key>`
         outputs (sprint-3/02)."""
         from app.models.form import FORM_PUBLISHED, Form
@@ -530,7 +673,7 @@ class WorkflowService:
         from app.models.template import TEMPLATE_TYPE_EMAIL, Template
         from app.repositories.template_repository import TemplateRepository
 
-        # Only EMAIL templates can back an email.send action — document/badge
+        # Only EMAIL templates can back an email.send action - document/badge
         # (canvas) templates render to PDF, not mail (F2 slice 2).
         rows, _ = TemplateRepository(self.db).paginate(
             tenant_id, page=0, page_size=100,

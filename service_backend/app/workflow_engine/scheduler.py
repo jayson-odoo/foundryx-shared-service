@@ -1,4 +1,4 @@
-"""Schedule trigger drain (plan sprint-2/09 D9) — a single minute-tick.
+"""Schedule trigger drain (plan sprint-2/09 D9) - a single minute-tick.
 
 ``compute_next_run_at`` turns a 5-field cron + IANA timezone into the next UTC
 fire time (stored on ``workflows.next_run_at``). ``run_due_workflows`` is the
@@ -29,7 +29,7 @@ def _zone(tzname: str):
         return timezone.utc
     try:
         return ZoneInfo(tzname)
-    except Exception:  # noqa: BLE001 — bad tz falls back to UTC, never explodes
+    except Exception:  # noqa: BLE001 - bad tz falls back to UTC, never explodes
         return timezone.utc
 
 
@@ -58,8 +58,6 @@ def _published_trigger_config(db: Session, wf: Workflow) -> Dict[str, Any]:
 def run_due_workflows(db: Session, *, now: Optional[datetime] = None) -> int:
     """Fire every scheduled workflow whose ``next_run_at`` has passed. Returns
     the number of runs enqueued."""
-    from app.config import settings
-
     now = now or datetime.now(timezone.utc)
     due = (
         db.query(Workflow)
@@ -81,7 +79,7 @@ def run_due_workflows(db: Session, *, now: Optional[datetime] = None) -> int:
             continue
         next_at = compute_next_run_at(cron_expr, str(config.get("timezone") or ""), after=now)
         # Claim: advance next_run_at guarded on the still-due value (idempotent
-        # under two concurrent beats — only the winner's UPDATE hits a row).
+        # under two concurrent beats - only the winner's UPDATE hits a row).
         claimed = (
             db.query(Workflow)
             .filter(Workflow.id == wf.id, Workflow.next_run_at <= now)
@@ -90,25 +88,27 @@ def run_due_workflows(db: Session, *, now: Optional[datetime] = None) -> int:
         if not claimed:
             continue
         version = db.query(WorkflowVersion).filter(WorkflowVersion.id == wf.current_version_id).first()
+        if version is None:
+            continue
+        from app.workflow_engine.schemas import has_code_nodes
+
+        if has_code_nodes(version.definition_json) and not version.code_authorized_by:
+            # Same fail-closed rule as the event path (AC-SAR-68).
+            db.commit()
+            continue
         run = _make_run(wf, version, now)
         db.add(run)
         db.flush()
-        run_id = run.id
         db.commit()
         fired += 1
-        if settings.celery_task_always_eager:
-            from app.workflow_engine.executor import run_workflow
+        from app.workflow_engine.serialization import dispatch_persisted_run
 
-            run_workflow(db, run_id)
-        else:
-            from app.workflow_engine.worker import run_workflow_task
-
-            run_workflow_task.delay(run_id)
+        dispatch_persisted_run(db, run)
     return fired
 
 
 def prune_runs(db: Session, *, now: Optional[datetime] = None) -> int:
-    """Housekeeping (plan sprint-2/10 D4) — delete workflow runs older than the
+    """Housekeeping (plan sprint-2/10 D4) - delete workflow runs older than the
     retention window, PER TENANT (plan 10 follow-up): each tenant's retention is
     its ``WorkflowSettings.run_retention_days`` override, else the global default
     (``settings.workflow_run_retention_days``). Child ``workflow_run_nodes`` go
@@ -146,7 +146,7 @@ def prune_runs(db: Session, *, now: Optional[datetime] = None) -> int:
 
 
 def reevaluate_time_based(db: Session) -> int:
-    """Derived status time sweep (sprint-4/03 G4) — re-evaluate records whose
+    """Derived status time sweep (sprint-4/03 G4) - re-evaluate records whose
     TIME-conditioned auto edges (e.g. invoice Overdue when due_date < now) the
     event bus can't catch, since no write fires when the clock merely advances.
 
@@ -164,7 +164,7 @@ def reevaluate_time_based(db: Session) -> int:
             continue
         try:
             candidates = entity.time_candidates(db) or []
-        except Exception:  # noqa: BLE001 — a bad candidate query never kills the tick
+        except Exception:  # noqa: BLE001 - a bad candidate query never kills the tick
             logger.exception("time-based candidate query failed: %s", entity.entity_type)
             db.rollback()
             continue
@@ -179,7 +179,7 @@ def reevaluate_time_based(db: Session) -> int:
                 db.commit()
                 if hops:
                     advanced += 1
-            except Exception:  # noqa: BLE001 — isolate one record's failure
+            except Exception:  # noqa: BLE001 - isolate one record's failure
                 logger.exception(
                     "time-based reevaluate failed: %s %s",
                     entity.entity_type,
@@ -190,13 +190,13 @@ def reevaluate_time_based(db: Session) -> int:
 
 
 def simulate_entity_sweep(db, entity_type, tenant_id, as_of, apply=False):
-    """Admin date-simulation (sprint-4/03 Slice 6) — run ONE entity's time sweep
+    """Admin date-simulation (sprint-4/03 Slice 6) - run ONE entity's time sweep
     AS-OF ``as_of`` (the injectable clock), tenant-scoped, returning the records
     that would advance: ``[{id,label,fromId,toId}]``.
 
     ``apply=False`` (default) = DRY-RUN: a single ``rollback`` at the end discards
     everything (the after_rollback listener clears the buffered events too), so
-    nothing persists and no events/notifications fire — a side-effect-free preview.
+    nothing persists and no events/notifications fire - a side-effect-free preview.
     ``apply=True`` = a single ``commit`` (transitions persist, events drain). A
     record whose ``reevaluate`` raises is logged + skipped (the others still
     preview); ``reevaluate`` validates before mutating, so a skip leaves no
@@ -225,7 +225,7 @@ def simulate_entity_sweep(db, entity_type, tenant_id, as_of, apply=False):
             before = getattr(record, attr)
             try:
                 reevaluate(db, entity_type, record, tenant_id=tenant_id)
-            except Exception:  # noqa: BLE001 — isolate one record; preview the rest
+            except Exception:  # noqa: BLE001 - isolate one record; preview the rest
                 logger.exception(
                     "simulate reevaluate failed: %s %s", entity_type,
                     getattr(record, "id", None),
@@ -249,8 +249,9 @@ def simulate_entity_sweep(db, entity_type, tenant_id, as_of, apply=False):
 
 def _make_run(wf: Workflow, version: WorkflowVersion, now: datetime):
     from app.models.workflow import WorkflowRun
+    from app.workflow_engine.serialization import assign_run_correlation
 
-    return WorkflowRun(
+    run = WorkflowRun(
         tenant_id=wf.tenant_id,
         workflow_id=wf.id,
         version_id=wf.current_version_id,
@@ -261,3 +262,5 @@ def _make_run(wf: Workflow, version: WorkflowVersion, now: datetime):
         trigger_payload_json={"triggeredBy": TRIGGER_SCHEDULE, "firedAt": now.isoformat()},
         depth=0,
     )
+    assign_run_correlation(run)
+    return run

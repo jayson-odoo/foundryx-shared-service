@@ -104,7 +104,7 @@ export const realTemplateEngineService: TemplateEngineService = {
   previewDocumentPdf(input: DocumentPreviewInput): Promise<Blob> {
     // ONE endpoint (backend `POST /templates/preview`): `format:'pdf'` in the
     // BODY selects the WeasyPrint emit step; `download` is a query flag for the
-    // attachment flavor. The draft doc renders inline — `id` isn't needed for
+    // attachment flavor. The draft doc renders inline - `id` isn't needed for
     // the call (kept in the interface for the caller's convenience/logging).
     const params = new URLSearchParams();
     if (input.download) params.set('download', 'true');
@@ -122,7 +122,7 @@ export const realTemplateEngineService: TemplateEngineService = {
 
   previewDocumentHtml(input: DocumentPreviewInput): Promise<string> {
     // Same endpoint; `format:'docHtml'` returns the in-app preview HTML sheet
-    // (text/html) instead of WeasyPrint bytes — no browser PDF-viewer chrome.
+    // (text/html) instead of WeasyPrint bytes - no browser PDF-viewer chrome.
     return apiFetchText('/templates/preview', {
       method: 'POST',
       body: JSON.stringify({

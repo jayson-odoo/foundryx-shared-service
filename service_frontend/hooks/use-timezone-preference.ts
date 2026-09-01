@@ -18,7 +18,7 @@ export interface UseTimezonePreferenceReturn {
 /**
  * Timezone preference state for My Account (plan sprint-2/05). Reads the
  * session value, saves through the service boundary, then refreshes the
- * session (jwt `update` branch re-pulls /auth/me — Phase B) with a local
+ * session (jwt `update` branch re-pulls /auth/me - Phase B) with a local
  * optimistic value so the picker reflects the save immediately.
  */
 export function useTimezonePreference(): UseTimezonePreferenceReturn {
@@ -38,14 +38,14 @@ export function useTimezonePreference(): UseTimezonePreferenceReturn {
       await profilePreferencesService.saveTimezone(next);
       setOverride(next);
     } catch {
-      setError('Could not save your timezone — please try again.');
+      setError('Could not save your timezone - please try again.');
       setIsSaving(false);
       return false;
     }
     try {
       // Pull the fresh value into the session so useDatetime everywhere
       // re-renders timestamps in the new tz. A hiccup here is NOT a save
-      // failure — the preference persisted; the session catches up on the
+      // failure - the preference persisted; the session catches up on the
       // next refresh (review fix: don't report success as an error).
       await update();
     } catch {

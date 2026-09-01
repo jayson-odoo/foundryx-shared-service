@@ -51,7 +51,7 @@ describe('inline edit stability', () => {
     const box = screen.getByTestId(`block-heading-${headingId}`);
     expect(box.textContent).toBe('Hello there');
 
-    // Click into the canvas box, then blur without typing — text must survive.
+    // Click into the canvas box, then blur without typing - text must survive.
     fireEvent.focus(box);
     fireEvent.click(box);
     fireEvent.blur(box);

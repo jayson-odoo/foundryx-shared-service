@@ -17,7 +17,7 @@ import { useTerminologyListConfig } from './use-terminology-list-config';
 import { TermEditDialog } from './term-edit-dialog';
 
 /**
- * Terminology settings (plan sprint-3/08, F10) — rename what entities are called
+ * Terminology settings (plan sprint-3/08, F10) - rename what entities are called
  * for this tenant, on the full config-driven Resource shell (search · filter ·
  * column visibility/reorder/resize · sort · export). Read for all authenticated
  * users; edit gated terminology.manage. Edit is an inline dialog (no detail page).

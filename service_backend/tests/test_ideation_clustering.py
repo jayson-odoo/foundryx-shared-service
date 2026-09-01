@@ -1,10 +1,10 @@
-"""Ideation — idea clustering (Phase B-i slice 4, AC-BI-30/31, Bi-D14).
+"""Ideation - idea clustering (Phase B-i slice 4, AC-BI-30/31, Bi-D14).
 
 Two layers:
 
 - **Service-level** (a same-thread factory session): the trigram all-pairs
   retrieval + LLM grouping via the scripted stub (AC-BI-30), and the
-  degrade-to-ungrouped path when the model call fails (AC-BI-30 — clustering
+  degrade-to-ungrouped path when the model call fails (AC-BI-30 - clustering
   degrades, never blocks the board). Same-thread so the stub's thread-local
   fixture queue is visible.
 - **Route-level** (``ideation_client``): the endpoint + its
@@ -98,7 +98,7 @@ def test_all_pairs_trigram_candidates_degrade_ungrouped(
 ):
     """AC-BI-30: the trigram all-pairs step groups near-duplicate ideas; with no
     usable model output (offline stub, no scripted clusters) it DEGRADES to the
-    ungrouped connected components — the unrelated idea is excluded."""
+    ungrouped connected components - the unrelated idea is excluded."""
     h = _auth(ideation_client)
     pid = _product(ideation_client, h)
     id1 = _idea(ideation_client, h, pid, _SLOW_1)
@@ -154,7 +154,7 @@ def test_llm_grouping_via_scripted_stub(ideation_client, ideation_session_factor
 def test_degrade_on_llm_error_returns_ungrouped(
     ideation_client, ideation_session_factory
 ):
-    """AC-BI-30: a model failure NEVER blocks the board — the trigram candidates
+    """AC-BI-30: a model failure NEVER blocks the board - the trigram candidates
     are still returned ungrouped, and an ``error`` trace is persisted."""
     from app.models.ai import TRACE_STATUS_ERROR, AiTrace
 
@@ -193,7 +193,7 @@ def test_degrade_on_non_llm_error_never_500s(
 ):
     """AC-BI-30 robustness: a grouping failure NOT wrapped as LLMError (a
     transport/JSON error the adapter missed) still DEGRADES to ungrouped
-    components — it must NEVER propagate and 500 the board."""
+    components - it must NEVER propagate and 500 the board."""
     import modules.ideation.services.clustering as clustering_mod
 
     h = _auth(ideation_client)
@@ -240,12 +240,12 @@ def test_no_candidates_returns_empty(ideation_client, ideation_session_factory):
 def test_clusters_endpoint_requires_clusters_manage(
     ideation_client, ideation_session_factory
 ):
-    """The endpoint is gated ``ideation.clusters.manage`` — a user without it is
+    """The endpoint is gated ``ideation.clusters.manage`` - a user without it is
     refused 403; the seeded Admin holds it."""
     from app.models import Role, User, UserStatus
     from app.models.permission import Permission
 
-    # Admin (holds clusters.manage) — 200.
+    # Admin (holds clusters.manage) - 200.
     h = _auth(ideation_client)
     pid = _product(ideation_client, h)
     res = ideation_client.get(
@@ -254,7 +254,7 @@ def test_clusters_endpoint_requires_clusters_manage(
     assert res.status_code == 200, res.text
     assert "clusters" in res.json()
 
-    # A user with only ideas.view — 403.
+    # A user with only ideas.view - 403.
     db = ideation_session_factory()
     try:
         perms = (

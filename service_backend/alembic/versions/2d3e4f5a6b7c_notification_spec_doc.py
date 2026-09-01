@@ -1,4 +1,4 @@
-"""notification_specs.doc_json (per-use template copy) — plan sprint-2/10
+"""notification_specs.doc_json (per-use template copy) - plan sprint-2/10
 
 Revision ID: 2d3e4f5a6b7c
 Revises: 1c2d3e4f5a6b

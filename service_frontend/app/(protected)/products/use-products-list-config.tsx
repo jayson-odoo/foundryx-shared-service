@@ -22,7 +22,7 @@ const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 /** Money + currency, or an em dash when unpriced. */
 function formatPrice(row: Product): string {
-  if (row.defaultPrice == null) return '—';
+  if (row.defaultPrice == null) return '-';
   const amount = row.defaultPrice.toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
@@ -114,7 +114,7 @@ export function useProductsListConfig(handlers: {
         meta: { headerTitle: 'SKU' },
         header: ({ column }) => <DataGridColumnHeader title="SKU" column={column} />,
         cell: ({ row }) => (
-          <span className="text-sm text-muted-foreground">{row.original.sku || '—'}</span>
+          <span className="text-sm text-muted-foreground">{row.original.sku || '-'}</span>
         ),
         size: 160,
         enableSorting: true,
@@ -205,7 +205,7 @@ export function useProductsListConfig(handlers: {
       searchPlaceholder: 'Search products…',
       searchHints: ['Name', 'SKU'],
       defaultSort: { id: 'name', desc: false },
-      // Soft-delete has no restore route — hide the Active|Trashed toggle.
+      // Soft-delete has no restore route - hide the Active|Trashed toggle.
       enableStatusViews: false,
       exportFilename: 'products',
       createLabel: 'Add product',

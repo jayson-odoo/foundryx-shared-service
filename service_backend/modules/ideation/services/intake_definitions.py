@@ -1,11 +1,11 @@
-"""IntakeDefinition registry — the generic Conversational-Intake engine (D18,
+"""IntakeDefinition registry - the generic Conversational-Intake engine (D18,
 AC-A-13..16).
 
 An ``IntakeDefinition`` binds a stable ``key`` to a form_engine ``target_schema``
 (the captured/missing surface), a ``completion_rule`` (captured/missing over that
 schema), an ``on_complete_sink`` (the ONLY promotion path), and an ``agent_role``.
 **Ideation is exactly one definition** (``key="ideation"``); a future "form over
-WhatsApp" flow is a NEW registry entry — no new conversation code (D18).
+WhatsApp" flow is a NEW registry entry - no new conversation code (D18).
 
 Everything here is DETERMINISTIC (no LLM, D20): field-extraction already happened
 in sorento's brain and arrives as structured ``fields``; this module only merges
@@ -38,7 +38,7 @@ _REGISTRY: Dict[str, IntakeDefinition] = {}
 
 def register_intake_definition(definition: IntakeDefinition) -> None:
     """Register (idempotently) an intake definition by key. Re-registration with
-    the same key overwrites — boot hooks run more than once."""
+    the same key overwrites - boot hooks run more than once."""
     _REGISTRY[definition.key] = definition
 
 
@@ -50,7 +50,7 @@ def get_intake_definition(key: str) -> Optional[IntakeDefinition]:
 
 IDEATION_INTAKE_KEY = "ideation"
 
-# Human-readable labels for each captured field — used verbatim in the
+# Human-readable labels for each captured field - used verbatim in the
 # deterministic reply_text templates (no LLM). Kept in sync with the schema below.
 IDEATION_FIELD_LABELS: Dict[str, str] = {
     "problem": "Problem statement",
@@ -62,7 +62,7 @@ IDEATION_FIELD_LABELS: Dict[str, str] = {
 
 def _ideation_target_schema() -> FormDocument:
     """The Idea-capture form document (Page -> Section -> Field), a valid
-    ``validate_form_doc`` document (AC-A-14). All fields are required — they
+    ``validate_form_doc`` document (AC-A-14). All fields are required - they
     are the intake's captured/missing surface. NB: no ``module`` (business
     submitters don't know modules) and no ``who`` (the submitter identity already
     answers that); the required set is problem / proposed_solution / impact /

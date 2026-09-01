@@ -1,13 +1,13 @@
 'use client';
 
 /**
- * useGrill (Phase B-i slice 3, AC-BI-29) — the Grill tab's data hook. UI →
+ * useGrill (Phase B-i slice 3, AC-BI-29) - the Grill tab's data hook. UI →
  * THIS hook → grill-service → api-client (the enforced layering; a component
  * never calls the service directly).
  *
  * Owns: the transcript + coverage + readiness, the in-flight turn indicator, and
  * Generate (which returns the refreshed BR detail so the Details tab can refresh
- * via `onGenerated`). The human always ends the grill — Generate is always
+ * via `onGenerated`). The human always ends the grill - Generate is always
  * enabled (AC-BI-22).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -29,7 +29,7 @@ function mergeCovered(base: string[], incoming: string[]): string[] {
 }
 
 /** Merge captured-summary maps, latest non-blank value winning per field
- * (AC-BI-29c) — a field absent from `incoming` keeps its prior value. */
+ * (AC-BI-29c) - a field absent from `incoming` keeps its prior value. */
 function mergeSummary(
   base: Record<string, string>,
   incoming: Record<string, string>,
@@ -59,7 +59,7 @@ export interface UseGrillResult {
   fields: GrillField[];
   messages: GrillMessage[];
   coveredFields: string[];
-  /** The running per-field captured summary (AC-BI-24c) — values understood so
+  /** The running per-field captured summary (AC-BI-24c) - values understood so
    * far, keyed by field key; updates each turn. */
   capturedSummary: Record<string, string>;
   /** Fields with no coverage yet (for the "missing: …" indicator). */
@@ -115,7 +115,7 @@ export function useGrill(brId: string, options: UseGrillOptions = {}): UseGrillR
   // Auto-open on a fresh promoted BR (AC-BI-29b): fire the opening turn EXACTLY
   // ONCE once loaded + ready + the transcript is still empty. The guard tracks
   // the BR the open was fired for (not a boolean) so it survives a re-render /
-  // StrictMode double-invoke AND re-arms cleanly on record-nav to another BR — a
+  // StrictMode double-invoke AND re-arms cleanly on record-nav to another BR - a
   // double-fire would mean two opening messages + a wasted LLM call.
   const openedForRef = useRef<string | null>(null);
   useEffect(() => {
@@ -142,7 +142,7 @@ export function useGrill(brId: string, options: UseGrillOptions = {}): UseGrillR
 
   // `generatingRef` lets `sendTurn` skip an auto-fire while a Generate is already
   // in flight WITHOUT taking `generate` as a dependency (which would re-create
-  // `sendTurn` each render) — the prompt-to-generate path fires at most once.
+  // `sendTurn` each render) - the prompt-to-generate path fires at most once.
   const generatingRef = useRef(false);
 
   const generate = useCallback(async () => {
@@ -155,7 +155,7 @@ export function useGrill(brId: string, options: UseGrillOptions = {}): UseGrillR
       const result = await grillService.generate(brId);
       if (result.status === 'needs_review') {
         setFieldErrors(result.fieldErrors);
-        setError('The generated requirement needs review — some fields could not be filled.');
+        setError('The generated requirement needs review - some fields could not be filled.');
         return;
       }
       if (result.br) onGenerated?.(result.br);
@@ -198,14 +198,14 @@ export function useGrill(brId: string, options: UseGrillOptions = {}): UseGrillR
         setCapturedSummary((prev) => mergeSummary(prev, turn.capturedSummary ?? {}));
         signalled = turn.generateSignal === true;
       } catch (e) {
-        // Roll back the optimistic turn — keep the transcript consistent.
+        // Roll back the optimistic turn - keep the transcript consistent.
         setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
         setError(e instanceof Error ? e.message : 'The grill could not respond.');
       } finally {
         setSending(false);
       }
       // Prompt-to-generate (AC-BI-24c): the MODEL signalled finalize intent → the
-      // APP fires the existing Generate call (once per intent — a normal turn with
+      // APP fires the existing Generate call (once per intent - a normal turn with
       // generateSignal=false does nothing new; `generate` guards against overlap).
       if (signalled) void generate();
     },

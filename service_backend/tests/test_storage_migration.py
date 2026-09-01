@@ -1,4 +1,4 @@
-"""Storage migration engine (sprint-4/10 Slice 2) — AC-10-08..16.
+"""Storage migration engine (sprint-4/10 Slice 2) - AC-10-08..16.
 
 Offline-deterministic: raw storage adapters are FAKED via an in-memory dict
 (monkeypatching ``app.services.storage._adapter_for``), and the new-bucket TEST
@@ -198,7 +198,7 @@ def test_inactive_a_and_active_b_coexist_under_relaxed_index(db):
     a = _storage_conn(db, name="A")
     ConnectionRepository(db).mark_active(a.id, False)
     db.commit()
-    b = _storage_conn(db, name="B")  # active — would violate the OLD index
+    b = _storage_conn(db, name="B")  # active - would violate the OLD index
     assert b.is_active is True
     assert a.is_active is False
 
@@ -246,7 +246,7 @@ def test_start_refuses_when_new_bucket_test_fails(db, only_avatar_location, fake
 
 def test_ensure_all_storage_locations_registers_module_keys(db):
     """Regression (sprint-4/12): a ``storage_migration`` job runs in the Celery
-    worker, which never boots the FastAPI app — so module ``register_engine_
+    worker, which never boots the FastAPI app - so module ``register_engine_
     entities`` (and core ``ensure_core_locations``) never ran there, ``_LOCATIONS``
     was EMPTY, ``enumerate_keys`` found 0 keys, and the migration finished "done"
     having copied/rewritten NOTHING (omnichannel ``conversation_messages.media_
@@ -256,7 +256,7 @@ def test_ensure_all_storage_locations_registers_module_keys(db):
     from app.storage_migration.core_locations import ensure_all_storage_locations
     from app.storage_migration.registry import registered_scalar_columns
 
-    # Snapshot AFTER a full populate — ``ensure_core_locations`` is ``lazy_once``,
+    # Snapshot AFTER a full populate - ``ensure_core_locations`` is ``lazy_once``,
     # so restoring a pre-populate snapshot would permanently drop core locations.
     ensure_all_storage_locations()
     saved = dict(reg._LOCATIONS)
@@ -274,10 +274,10 @@ def test_ensure_all_storage_locations_registers_module_keys(db):
 
 def test_migration_handler_self_registers_when_registry_empty(db, fakes, stub_probe):
     """End-to-end: even with ``_LOCATIONS`` cleared (a fresh worker), running the
-    migration handler re-registers the module locations before enumerating — so
+    migration handler re-registers the module locations before enumerating - so
     the omnichannel media-key location is present, not silently skipped. With no
     keys seeded, the 0-keys guard HOLDS the job (needs_review) instead of a
-    silent auto-cutover — the visible-not-silent behaviour the prod bug lacked."""
+    silent auto-cutover - the visible-not-silent behaviour the prod bug lacked."""
     from app.storage_migration.core_locations import ensure_all_storage_locations
     from app.storage_migration.registry import registered_scalar_columns
 
@@ -302,7 +302,7 @@ def test_migration_handler_self_registers_when_registry_empty(db, fakes, stub_pr
 
 def test_zero_keys_holds_for_review_not_silent_done(db, only_avatar_location, fakes, stub_probe):
     """0-keys guard (sprint-4/12): a migration that enumerates nothing HOLDS at
-    needs_review — the operator Completes it if bucket A is genuinely empty,
+    needs_review - the operator Completes it if bucket A is genuinely empty,
     rather than a "done" that migrated nothing (the prod silent no-op)."""
     _storage_conn(db)  # A exists, but no avatar_key points at it → 0 keys
     job = _start(db)
@@ -316,7 +316,7 @@ def test_zero_keys_holds_for_review_not_silent_done(db, only_avatar_location, fa
 def test_missing_declared_location_modules_detects_undercount(db):
     """Completeness detector (sprint-4/12 round 3): a module that DECLARES
     storage locations in its manifest but has fewer registered than declared is
-    reported — the signal the migration uses to HOLD instead of stranding. Keyed
+    reported - the signal the migration uses to HOLD instead of stranding. Keyed
     by the ``module`` tag on registered locations, so it fires even when the
     module's models import failed entirely (nothing registered)."""
     from app.storage_migration.core_locations import (
@@ -341,7 +341,7 @@ def test_incomplete_registration_holds_without_cutover(db, fakes, stub_probe, mo
     """THE data-safety guard (sprint-4/12 round 3). When a declaring module's
     locations fail to register (the prod stale-worker bug: omnichannel's
     ``media_key`` silently absent → "Registered 13 not 15"), the migration must
-    HOLD at needs_review BEFORE cutover — never enumerate a subset, retire the
+    HOLD at needs_review BEFORE cutover - never enumerate a subset, retire the
     source, and strand the rest. Proven by a CORE key that stays on A."""
     from app.storage_migration import core_locations
 
@@ -354,7 +354,7 @@ def test_incomplete_registration_holds_without_cutover(db, fakes, stub_probe, mo
     _point_avatar(db, DEFAULT_TENANT_ID, [f"conn:{a.id}:raw1"])  # a core key on A
 
     # Simulate the stale worker: omnichannel's declared locations fail to register
-    # (its models import blows up in that process) — the handler's ensure_all
+    # (its models import blows up in that process) - the handler's ensure_all
     # records the failure and leaves omnichannel undercounted.
     real = core_locations.register_module_declared_locations
 
@@ -374,7 +374,7 @@ def test_incomplete_registration_holds_without_cutover(db, fakes, stub_probe, mo
     assert job.logs_json and any(
         "Incomplete storage-key registration" in e["message"] for e in job.logs_json
     )
-    # CRITICAL: the core avatar key was NOT rewritten — no cutover, nothing
+    # CRITICAL: the core avatar key was NOT rewritten - no cutover, nothing
     # stranded. A still owns it (A is retired but serves by key).
     db.expire_all()
     key = db.query(User.avatar_key).filter(User.avatar_key.isnot(None)).scalar()
@@ -409,7 +409,7 @@ def test_copy_idempotent_skips_blobs_present_in_b(db, only_avatar_location, fake
     a_fake.store["raw2"] = (b"two", "image/png")
     _point_avatar(db, DEFAULT_TENANT_ID, [f"conn:{a.id}:raw1", f"conn:{a.id}:raw2"])
 
-    # Pre-place raw1 in B (a prior run / resume): the copy loop must SKIP it —
+    # Pre-place raw1 in B (a prior run / resume): the copy loop must SKIP it -
     # never re-fetch from A. Build B + a running job manually to control state.
     b = _storage_conn(db, name="B", active=False)
     b_fake = fakes.setdefault(b.id, FakeAdapter())
@@ -427,7 +427,7 @@ def test_copy_idempotent_skips_blobs_present_in_b(db, only_avatar_location, fake
     run_storage_migration(db, job)
     db.refresh(job)
     assert job.status == JOB_DONE
-    assert "raw1" not in a_fake.fetched  # skipped — already in B
+    assert "raw1" not in a_fake.fetched  # skipped - already in B
     assert "raw2" in a_fake.fetched
 
 
@@ -442,9 +442,9 @@ def test_continue_on_bad_blob_holds_needs_review(db, only_avatar_location, fakes
     assert job.status == JOB_NEEDS_REVIEW
     assert job.result_json["failed"] == 1
     assert job.result_json["failures"][0]["key"] == f"conn:{a.id}:raw2"
-    assert job.finished_at is None  # non-terminal — assets keep serving
+    assert job.finished_at is None  # non-terminal - assets keep serving
 
-    # No cutover yet — BOTH rows still point at A.
+    # No cutover yet - BOTH rows still point at A.
     db.expire_all()
     vals = {u.avatar_key for u in db.query(User).filter(User.avatar_key.isnot(None)).all()}
     assert vals == {f"conn:{a.id}:raw1", f"conn:{a.id}:raw2"}
@@ -549,7 +549,7 @@ def test_abort_mid_run_prevents_cutover(db, only_avatar_location, fakes, stub_pr
     fakes.setdefault(b.id, FakeAdapter())
     ConnectionRepository(db).mark_active(a.id, False)
     ConnectionRepository(db).mark_active(b.id, True)
-    # Job already ABORTED (a concurrent abort committed it) — the handler's
+    # Job already ABORTED (a concurrent abort committed it) - the handler's
     # pre-cutover status re-read must bail.
     job = BackgroundJob(
         tenant_id=DEFAULT_TENANT_ID, type=STORAGE_MIGRATION, status=JOB_ABORTED,
@@ -614,7 +614,7 @@ def test_platform_migration_sweeps_other_tenants_keys(db, only_avatar_location, 
     a_fake = fakes.setdefault(a.id, FakeAdapter())
     a_fake.store["rawX"] = (b"x", "image/png")
 
-    # A SECOND tenant fell back to the platform bucket — its user row carries a
+    # A SECOND tenant fell back to the platform bucket - its user row carries a
     # conn:<platform A>: key. Enumeration is connection-scoped → sweeps it.
     status_id = db.query(Status.id).filter(Status.entity_type == "tenant").first()[0]
     other = Tenant(name="Other Co", slug="other-co-mig", status_id=status_id)
@@ -684,7 +684,7 @@ def test_start_endpoint_requires_permission(client, session_factory):
 
 
 def test_start_endpoint_allows_admin_perm(client):
-    # Demo Admin HOLDS the perm — the gate passes; with no storage connection
+    # Demo Admin HOLDS the perm - the gate passes; with no storage connection
     # the endpoint reaches the service and returns 400 (not 403).
     res = client.post("/auth/login", json={"email": "demo@example.com", "password": "demo1234"})
     headers = {"Authorization": f"Bearer {res.json()['access_token']}"}
