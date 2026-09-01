@@ -8,7 +8,7 @@ row is where the override lives: ``calendar_address_for`` is the one definition
 the sync and the connection test both read, so the two can never disagree about
 what the service account is supposed to be able to see.
 """
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -25,6 +25,22 @@ def calendar_address_for(opt_in: Any, user: Any) -> Optional[str]:
     if explicit:
         return explicit
     return (getattr(user, "email", None) or "").strip() or None
+
+
+def enabled_calendar_email_index(opt_ins: List[UserOptIn]) -> Dict[str, str]:
+    """``calendar_email`` (lowercased) -> ``user_id``, ENABLED opt-ins only.
+
+    The additional match participant resolution needs on top of login email: a
+    shared calendar's attendee list carries whatever address the calendar
+    itself uses, which is often not the user's login (shared-calendar mode).
+    Filtering on ``enabled`` here rather than only at the caller means a
+    caller that mixes enabled and disabled rows can never accidentally
+    resurrect a toggled-off user."""
+    return {
+        (row.calendar_email or "").strip().lower(): row.user_id
+        for row in opt_ins
+        if row.enabled and row.calendar_email
+    }
 
 
 def opted_in_calendars(db: Optional[Session], tenant_id: Optional[str]) -> List[str]:

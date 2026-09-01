@@ -44,7 +44,7 @@ from ..models import (
     MeetingParticipant,
     UserOptIn,
 )
-from .optin import calendar_address_for
+from .optin import calendar_address_for, enabled_calendar_email_index
 
 logger = logging.getLogger("foundryx.meetings")
 
@@ -135,6 +135,10 @@ def sync_tenant(
         (user.email or "").lower(): user.id
         for user in db.query(User).filter(User.tenant_id == tenant_id).all()
     }
+    # An ADDITIONAL match, on top of login email: a shared calendar's attendee
+    # list carries the address the calendar itself uses, which a Workspace
+    # that blocks external sharing makes different from the login email.
+    calendar_email_to_user_id = enabled_calendar_email_index(opt_ins)
     opted_in_user_ids = {o.user_id for o in opt_ins}
 
     for opt_in in opt_ins:
@@ -165,6 +169,7 @@ def sync_tenant(
                 result,
                 tenant_users_by_email,
                 opted_in_user_ids,
+                calendar_email_to_user_id,
             )
         if read.full_window:
             result.events_deleted += _prune_missing(
@@ -274,6 +279,7 @@ def _apply_event(
     result: SyncResult,
     tenant_users_by_email: Dict[str, str],
     opted_in_user_ids: set,
+    calendar_email_to_user_id: Dict[str, str],
 ) -> None:
     existing = (
         db.query(CalendarEvent)
@@ -323,7 +329,16 @@ def _apply_event(
     result.events_upserted += 1
 
     _ensure_meeting(
-        db, tenant_id, raw, platform, starts_at, ends_at, result, tenant_users_by_email, opted_in_user_ids
+        db,
+        tenant_id,
+        raw,
+        platform,
+        starts_at,
+        ends_at,
+        result,
+        tenant_users_by_email,
+        opted_in_user_ids,
+        calendar_email_to_user_id,
     )
 
 
@@ -337,6 +352,7 @@ def _ensure_meeting(
     result: SyncResult,
     tenant_users_by_email: Dict[str, str],
     opted_in_user_ids: set,
+    calendar_email_to_user_id: Dict[str, str],
 ) -> Meeting:
     """The shared row two invitees of one meeting both point at (AC-S0-12)."""
     key = dedupe_key(raw.conference_url, starts_at)
@@ -362,7 +378,13 @@ def _ensure_meeting(
     meeting.ends_at = ends_at or meeting.ends_at
 
     _ensure_participants(
-        db, tenant_id, meeting, raw, tenant_users_by_email, opted_in_user_ids
+        db,
+        tenant_id,
+        meeting,
+        raw,
+        tenant_users_by_email,
+        opted_in_user_ids,
+        calendar_email_to_user_id,
     )
     return meeting
 
@@ -374,6 +396,7 @@ def _ensure_participants(
     raw: RawEvent,
     tenant_users_by_email: Dict[str, str],
     opted_in_user_ids: set,
+    calendar_email_to_user_id: Dict[str, str],
 ) -> None:
     known = {
         p.email.lower(): p
@@ -387,8 +410,14 @@ def _ensure_participants(
         email = (entry.get("email") or "").strip()
         if not email:
             continue
-        user_id = tenant_users_by_email.get(email.lower())
-        row = known.get(email.lower())
+        lowered = email.lower()
+        # Login email first (what a directory-delegated tenant always uses),
+        # then the calendar address a shared-calendar user shares instead -
+        # the attendee list there rarely carries the login email at all.
+        user_id = tenant_users_by_email.get(lowered) or calendar_email_to_user_id.get(
+            lowered
+        )
+        row = known.get(lowered)
         if row is None:
             row = MeetingParticipant(
                 tenant_id=tenant_id, meeting_id=meeting.id, email=email

@@ -292,6 +292,96 @@ def test_one_invitee_opting_out_does_not_cancel_the_others_capture(db):
     assert len(_bot_jobs(db)) == 1
 
 
+# ── S2 live-run fix: eligibility matches by calendar_email too ───────────────
+
+
+def test_a_participant_matched_only_by_calendar_email_still_dispatches(db):
+    """The live failure: a legacy participant row (written before this fix, or
+    from a shared calendar whose attendee address is not the login email) has
+    `user_id` NULL. Eligibility must still find the enabled opt-in by matching
+    the participant's email against that opt-in's `calendar_email`."""
+    from modules.meetings.services.dispatch import dispatch_tenant
+
+    user = _demo_user(db)
+    opt_in(db, DEFAULT_TENANT_ID, user.id, calendar_email="personal.calendar@example.com")
+    meeting = _meeting(db)
+    db.add(
+        MeetingParticipant(
+            tenant_id=meeting.tenant_id,
+            meeting_id=meeting.id,
+            email="personal.calendar@example.com",
+            user_id=None,
+            is_opted_in=False,
+        )
+    )
+    db.commit()
+
+    dispatched = dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW)
+
+    assert dispatched == [meeting.id]
+    db.refresh(meeting)
+    assert meeting.status == STATUS_JOINING
+
+
+def test_calendar_email_eligibility_matching_is_case_insensitive(db):
+    from modules.meetings.services.dispatch import dispatch_tenant
+
+    user = _demo_user(db)
+    opt_in(db, DEFAULT_TENANT_ID, user.id, calendar_email="Personal.Calendar@Example.com")
+    meeting = _meeting(db)
+    db.add(
+        MeetingParticipant(
+            tenant_id=meeting.tenant_id,
+            meeting_id=meeting.id,
+            email="personal.calendar@EXAMPLE.com",
+            user_id=None,
+            is_opted_in=False,
+        )
+    )
+    db.commit()
+
+    assert dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW) == [meeting.id]
+
+
+def test_a_calendar_email_match_never_resurrects_a_disabled_opt_in(db):
+    from modules.meetings.services.dispatch import REASON_OPTED_OUT, dispatch_tenant
+
+    user = _demo_user(db)
+    opt_in(
+        db,
+        DEFAULT_TENANT_ID,
+        user.id,
+        calendar_email="personal.calendar@example.com",
+        enabled=False,
+    )
+    meeting = _meeting(db)
+    db.add(
+        MeetingParticipant(
+            tenant_id=meeting.tenant_id,
+            meeting_id=meeting.id,
+            email="personal.calendar@example.com",
+            user_id=None,
+            is_opted_in=False,
+        )
+    )
+    db.commit()
+
+    assert dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW) == []
+    db.refresh(meeting)
+    assert meeting.status == STATUS_SKIPPED
+    assert meeting.status_reason == REASON_OPTED_OUT
+
+
+def test_login_email_matching_still_dispatches_alongside_calendar_email(db):
+    """The additional calendar_email match must not replace the login-email
+    path a directory-delegated tenant relies on."""
+    from modules.meetings.services.dispatch import dispatch_tenant
+
+    meeting, _user = _ready_meeting(db)
+
+    assert dispatch_tenant(db, DEFAULT_TENANT_ID, now=NOW) == [meeting.id]
+
+
 # ── AC-S2-4: late and missed ─────────────────────────────────────────────────
 
 

@@ -374,6 +374,102 @@ def _now_ts() -> float:
     return datetime.now(timezone.utc).timestamp()
 
 
+# The Chromium profile lock files a crashed or interactively-signed-in run can
+# leave behind. Their presence is what makes Chromium refuse to start at all
+# ("profile appears to be in use by another Chromium process ... on another
+# computer") - the S1 spike's run.sh always cleared these before a join; the
+# orchestrator never did.
+_SINGLETON_CLEANUP_COMMAND = ["sh", "-c", "rm -f /profile/Singleton* 2>/dev/null || true"]
+
+
+def _profile_volumes(spec: ContainerSpec) -> Dict[str, Dict[str, str]]:
+    """Just the ``/profile`` mount out of a spec's volumes - the ONLY thing the
+    lock cleanup is allowed to touch."""
+    return {
+        name: mount for name, mount in spec.volumes.items() if mount.get("bind") == "/profile"
+    }
+
+
+def _volume_has_a_live_container(client, volume_name: str) -> bool:
+    """True if any RUNNING container currently mounts ``volume_name``.
+
+    ``containers.list`` defaults to running-only, which is exactly what
+    matters here: an EXITED sibling holds no lock. A list failure can't prove
+    the volume is free, so it is treated the same as "yes, live" - the
+    cleanup below only ever gets skipped, never wrongly run."""
+    try:
+        return bool(client.containers.list(filters={"volume": volume_name}))
+    except Exception:  # noqa: BLE001 - can't prove it's safe, so don't clear it
+        return True
+
+
+def _clear_stale_profile_lock(client, spec: ContainerSpec) -> None:
+    """Remove Chromium's Singleton* files from this container's profile volume
+    before a fresh start - UNLESS a sibling meeting is still live on it.
+
+    The volume is per TENANT, not per meeting: a `-c 2` worker can have two
+    overlapping meetings on the same tenant sharing ONE profile. Clearing the
+    lock while another meeting's Chromium is still using that volume would let
+    two Chromiums share one profile mid-call and corrupt the signed-in
+    notetaker session - the tenant's credential. Skipping leaves Chromium's
+    own lock check to do its (safe, pre-existing) job instead: refuse to
+    start rather than share.
+
+    Otherwise: a short-lived helper container mounting the SAME volume is the
+    only place that can reach the lock files before the real container's
+    Chromium does - ``auto_remove`` (Docker's ``remove=True``) means it leaves
+    nothing behind of its own. Tolerates the files not existing (the shell
+    command already does); a Docker-level failure (no image, no daemon) is
+    not tolerated - silently skipping it would just move today's bug to a
+    rarer trigger."""
+    profile_volumes = _profile_volumes(spec)
+    if not profile_volumes:
+        return
+    volume_name = next(iter(profile_volumes))
+    if _volume_has_a_live_container(client, volume_name):
+        logger.info(
+            "meetings bot skipping the profile lock cleanup for %s: a sibling "
+            "meeting is still live on volume %s",
+            spec.name,
+            volume_name,
+        )
+        return
+    helper_name = f"{spec.name}-lock-cleanup"
+    error: Optional[Exception] = None
+    try:
+        client.containers.run(
+            image=spec.image,
+            name=helper_name,
+            entrypoint=_SINGLETON_CLEANUP_COMMAND,
+            volumes=profile_volumes,
+            remove=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - surfaced below, not swallowed
+        error = exc
+    finally:
+        # `remove=True` already cleans up the happy path; this is only for a
+        # daemon hiccup mid-run that could leave the helper behind under its
+        # own (fixed, so still findable) name.
+        try:
+            client.containers.get(helper_name).remove(force=True)
+        except Exception:  # noqa: BLE001 - best-effort only, never the failure
+            pass
+    if error is not None:
+        raise RuntimeError(
+            f"the stale profile lock for {spec.name} could not be cleared: {error}"
+        ) from error
+
+
+# The only statuses that mean "this is a corpse, not a container the real
+# start would collide with" - Docker's SDK reports exactly these two for a
+# container that has finished and will never run again. Anything else -
+# `running`, `created`, `restarting`, `paused` - is a container BETWEEN
+# lifecycle steps (e.g. `create()` having run but not yet `start()`) and a
+# redelivered task must re-attach to it, not tear it down out from under the
+# real start.
+_CORPSE_STATUSES = {"exited", "dead"}
+
+
 def _container_for(spec: ContainerSpec):
     """This meeting's container, started or RE-ATTACHED. Returns
     ``(container, reattached)``.
@@ -383,12 +479,31 @@ def _container_for(spec: ContainerSpec):
     STILL RECORDING. Starting a second one is a name conflict, and treating that
     conflict as a failure stamped `failed` on a meeting that was going perfectly
     well - and abandoned its recording. Attaching to what is already there
-    resumes the tail and the wait instead."""
+    resumes the tail and the wait instead - unless it is a CORPSE
+    (``_CORPSE_STATUSES``): a previous run's exited container is left behind
+    for its logs (``auto_remove=False``), and re-attaching to IT would mark the
+    meeting failed again in under a second, forever, since the fixed name then
+    blocks every retry's fresh container with a conflict."""
     client = docker_client()
     try:
-        return client.containers.get(spec.name), True
+        existing = client.containers.get(spec.name)
     except Exception:  # noqa: BLE001 - "not found" is the normal first delivery
-        pass
+        existing = None
+
+    if existing is not None:
+        if getattr(existing, "status", "running") not in _CORPSE_STATUSES:
+            return existing, True
+        logger.info(
+            "meetings bot removing exited container %s before a fresh run", spec.name
+        )
+        try:
+            existing.remove(force=True)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the caller, not swallowed
+            raise RuntimeError(
+                f"the exited container {spec.name} could not be removed: {exc}"
+            ) from exc
+
+    _clear_stale_profile_lock(client, spec)
     return client.containers.run(**spec.as_kwargs()), False
 
 

@@ -10,8 +10,12 @@ everyone off, or never finished onboarding Google, costs nothing.
 """
 from __future__ import annotations
 
+import json
 import logging
-from typing import List, Optional
+import tempfile
+import time
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 from cryptography.fernet import InvalidToken
 from sqlalchemy.orm import Session
@@ -26,19 +30,24 @@ from app.models.background_job import (
     BackgroundJob,
 )
 from app.models.connection import CONNECTION_STATUS_ERROR, Connection
+from app.models.document import File, FileVersion
 from app.secrets import decrypt_secret
+from app.services.storage import storage_for_tenant
 
 from .calendar.base import CalendarSourceError
 from .models import UserOptIn
 from .providers import GOOGLE_DWD_PROVIDER, calendar_source_from_connection
 from .services.calendar_sync import record_sync_activity, sync_tenant
+from .stt import SttResult, SttSegment, get_provider
+from .stt.align import CaptionEvent, assign_speakers
 
 logger = logging.getLogger("foundryx.meetings")
 
 CALENDAR_SYNC = "meetings.calendar_sync"
-# The orchestrator's two types (S2). ``bot_run`` is the only job in the system
-# that runs on the ``bots`` queue; ``transcribe`` is S3's, and its S2 handler
-# does nothing but log and mark the meeting ready so the UI path can be seen.
+# The orchestrator's job types. ``bot_run`` is the only job in the system that
+# runs on the ``bots`` queue; ``transcribe`` (S3, ``run_transcribe`` below)
+# rides the same shared workflow queue - R1's flock, not a fourth worker, is
+# what keeps at most one transcription running at a time.
 BOT_RUN = "meetings.bot_run"
 TRANSCRIBE = "meetings.transcribe"
 MODULE_NAME = "meetings"
@@ -124,19 +133,160 @@ def active_tenants(db: Session) -> List[str]:
     )
 
 
-def run_transcribe(db: Session, job: BackgroundJob) -> None:
-    """Handler for ``meetings.transcribe`` - a STUB until S3.
+def _events_jsonl(raw: bytes) -> Tuple[Optional[float], List[CaptionEvent]]:
+    """``events.jsonl`` bytes -> (recording start epoch, caption events).
 
-    It exists now so the recording path has somewhere real to hand off to and
-    the UI reaches ``ready``; it produces no transcript. S3 replaces the body,
-    not the wiring."""
+    The recording start epoch is the ``ts`` of the bot's ``recording_started``
+    event (plan §2 - "the ts of the first recorder segment event"). A
+    malformed line is skipped, never a crash - the container's writer is
+    append-only text, not a validated contract."""
+    start_epoch: Optional[float] = None
+    captions: List[CaptionEvent] = []
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        kind = row.get("kind")
+        if kind == "recording_started" and start_epoch is None:
+            ts = row.get("ts")
+            if ts is not None:
+                start_epoch = float(ts)
+        elif kind == "caption":
+            ts = row.get("ts")
+            speaker = row.get("speaker")
+            if ts is not None and speaker:
+                captions.append(CaptionEvent(ts=float(ts), speaker=str(speaker)))
+    return start_epoch, captions
+
+
+def _download_recording(db: Session, meeting) -> bytes:
+    """The registered ``recording.ogg`` bytes, via the same core storage the
+    file was originally saved through (``recordings.py`` §S2) - never the
+    artifacts location, which S2 deletes the audio segments from once the
+    joined file is safely stored."""
+    if not meeting.recording_file_id:
+        raise RuntimeError("This meeting has no recording to transcribe.")
+    file = (
+        db.query(File)
+        .filter(File.tenant_id == meeting.tenant_id, File.id == meeting.recording_file_id)
+        .first()
+    )
+    if file is None or not file.current_version_id:
+        raise RuntimeError("The meeting's recording file could not be found.")
+    version = db.query(FileVersion).filter(FileVersion.id == file.current_version_id).first()
+    if version is None:
+        raise RuntimeError("The meeting's recording has no stored version.")
+    content, _mime = storage_for_tenant(db, meeting.tenant_id).fetch(version.storage_key)
+    return content
+
+
+def _read_captions(db, meeting) -> Tuple[Optional[float], List[CaptionEvent], bool]:
+    """(start_epoch, captions, captions_missing) for one meeting.
+
+    ``captions_missing`` is True whenever nothing usable came out of
+    ``events.jsonl`` - file absent, empty, no caption events, no
+    ``recording_started`` to anchor them to, OR the read itself failing (a
+    storage connection whose credentials no longer decrypt, an S3 list
+    error, ...). AC-S3-3: a host with captions disabled must still produce a
+    transcript, not fail the job - and the same is true of a caption READ
+    that blows up: by the time this runs the provider has already succeeded,
+    so a caption failure must never discard a transcription that is
+    otherwise done."""
+    from .services.bot_runner import build_output
+
+    try:
+        _, _, artifacts = build_output(db, meeting)
+        if "events.jsonl" not in artifacts.names():
+            return None, [], True
+        start_epoch, captions = _events_jsonl(artifacts.read("events.jsonl"))
+        if start_epoch is None or not captions:
+            return None, [], True
+        return start_epoch, captions, False
+    except Exception:  # noqa: BLE001 - see docstring: never fails the whole run
+        logger.warning(
+            "meetings caption read failed for %s; transcribing without them", meeting.id
+        )
+        return None, [], True
+
+
+def _valid_segment_pairs(
+    speakers: List[Optional[str]], segments: List[SttSegment]
+) -> Tuple[List[Tuple[Optional[str], SttSegment]], int]:
+    """Drop any segment a provider got wrong: AC-S3-1 (``start_ms < end_ms``,
+    non-empty text) must hold for ANY driver, not just ``mlx_runner`` - the
+    one this codebase ships, which already only ever emits well-formed
+    segments. Returns ``(valid pairs, how many were dropped)``."""
+    pairs: List[Tuple[Optional[str], SttSegment]] = []
+    dropped = 0
+    for speaker, segment in zip(speakers, segments):
+        if segment.start_ms >= segment.end_ms or not (segment.text or "").strip():
+            dropped += 1
+            continue
+        pairs.append((speaker, segment))
+    return pairs, dropped
+
+
+def _transcribe(
+    db: Session, meeting
+) -> Tuple[SttResult, List[Optional[str]], bool, int]:
+    """Everything that can fail: download, provider call, caption alignment.
+    Raises on any failure - the caller marks the job/meeting failed.
+
+    ``transcribe_ms`` is measured around the provider call only (plan 3.3 step
+    5's "timing") - the one step whose wall-clock actually varies run to run;
+    download and caption-alignment are comparatively fixed overhead."""
+    with tempfile.TemporaryDirectory() as tmp:
+        audio_path = Path(tmp) / "recording.ogg"
+        audio_path.write_bytes(_download_recording(db, meeting))
+        provider = get_provider()
+        started = time.monotonic()
+        result = provider.transcribe(audio_path)
+        transcribe_ms = int((time.monotonic() - started) * 1000)
+
+    start_epoch, captions, captions_missing = _read_captions(db, meeting)
+    speakers = assign_speakers(result.segments, captions, start_epoch or 0.0)
+    return result, speakers, captions_missing, transcribe_ms
+
+
+def run_transcribe(db: Session, job: BackgroundJob) -> None:
+    """Handler for ``meetings.transcribe`` (S3 plan §3.3).
+
+    Downloads the registered recording, runs the configured ``SttProvider``,
+    aligns segments to caption-derived speaker names, and replaces the
+    meeting's transcript (AC-S3-9: a re-run leaves exactly one). ANY failure
+    from here on - reading an existing recording (unbuilt provider, subprocess
+    crash/timeout, a corrupt/missing stored file) OR writing the new rows (a
+    concurrent retry's unique-violation on ``uq_meetings_transcript_meeting``,
+    say) - marks BOTH the job and the meeting failed (AC-S3-4); the job stays
+    re-runnable. A write failure left uncaught would strand the meeting in
+    whatever status it already had (``processing``) forever - nothing else
+    ever moves it on.
+
+    ``bot_run`` (S2, not this module's to change) enqueues ``transcribe``
+    unconditionally on every normal exit, including a call that recorded
+    NOTHING (an empty room). That is not a failure - there is simply nothing
+    to transcribe - so it is a clean skip, same as a meeting that vanished."""
+    from app.config import settings
     from app.jobs.service import JobService
     from app.models.background_job import JOB_DONE
 
-    from .models import STATUS_READY, Meeting
+    from .models import STATUS_FAILED, STATUS_TRANSCRIBED, Meeting, Transcript, TranscriptSegment
 
     service = JobService(db)
-    meeting_id = str((job.payload_json or {}).get("meeting_id") or "")
+    raw_meeting_id = (job.payload_json or {}).get("meeting_id")
+    if not raw_meeting_id:
+        # The enqueuer (``bot_runner._enqueue_transcribe``) always sends a
+        # real meeting_id - an absent one is a wiring bug, not a meeting that
+        # disappeared, and must not be indistinguishable from that normal case.
+        error = "meetings.transcribe job payload is missing meeting_id"
+        logger.error(error)
+        service.finish(job, status=JOB_FAILED, error=error)
+        return
+    meeting_id = str(raw_meeting_id)
     meeting = (
         db.query(Meeting)
         .filter(Meeting.tenant_id == job.tenant_id, Meeting.id == meeting_id)
@@ -145,10 +295,82 @@ def run_transcribe(db: Session, job: BackgroundJob) -> None:
     if meeting is None:
         service.finish(job, status=JOB_DONE, result={"skipped": "meeting is gone"})
         return
-    service.log(job, "transcription is not built yet (S3); marking the meeting ready")
-    meeting.status = STATUS_READY
-    db.commit()
-    service.finish(job, status=JOB_DONE, result={"stub": True})
+    if not meeting.recording_file_id:
+        service.finish(job, status=JOB_DONE, result={"skipped": "meeting has no recording"})
+        return
+
+    try:
+        result, speakers, captions_missing, transcribe_ms = _transcribe(db, meeting)
+        valid_pairs, dropped_segments = _valid_segment_pairs(speakers, result.segments)
+
+        # Replace-on-rerun (AC-S3-9): one transcript row per meeting, ever.
+        existing = db.query(Transcript).filter(Transcript.meeting_id == meeting.id).first()
+        if existing is not None:
+            db.delete(existing)
+            db.flush()
+
+        transcript = Transcript(
+            tenant_id=meeting.tenant_id,
+            meeting_id=meeting.id,
+            stt_provider=settings.meetings_stt_provider,
+            model=settings.meetings_stt_model,
+        )
+        db.add(transcript)
+        db.flush()
+        for speaker, segment in valid_pairs:
+            db.add(
+                TranscriptSegment(
+                    tenant_id=meeting.tenant_id,
+                    transcript_id=transcript.id,
+                    speaker=speaker,
+                    start_ms=segment.start_ms,
+                    end_ms=segment.end_ms,
+                    text=segment.text,
+                    language=None,  # R3: language lives once on the meeting, not per segment
+                )
+            )
+        meeting.language = result.language
+        meeting.status = STATUS_TRANSCRIBED
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 - every failure mode, read or write, lands here
+        db.rollback()
+        meeting = (
+            db.query(Meeting)
+            .filter(Meeting.tenant_id == job.tenant_id, Meeting.id == meeting_id)
+            .first()
+        )
+        error = str(exc)
+        logger.exception("meetings transcription failed for meeting %s", meeting_id)
+        if meeting is not None:
+            meeting.status = STATUS_FAILED
+            meeting.status_reason = error
+            db.commit()
+        service.finish(job, status=JOB_FAILED, error=error)
+        return
+
+    if captions_missing:
+        service.log(job, "captions were absent or unusable; every segment's speaker is NULL")
+    if dropped_segments:
+        service.log(
+            job,
+            f"dropped {dropped_segments} invalid segment(s) from the provider "
+            "(bad start/end or empty text)",
+        )
+    service.log(
+        job,
+        f"transcribed {len(valid_pairs)} segments via {settings.meetings_stt_provider}",
+    )
+    service.finish(
+        job,
+        status=JOB_DONE,
+        result={
+            "segments": len(valid_pairs),
+            "provider": settings.meetings_stt_provider,
+            "model": settings.meetings_stt_model,
+            "language": result.language,
+            "transcribeMs": transcribe_ms,
+        },
+    )
 
 
 def _run_bot(db: Session, job: BackgroundJob) -> None:

@@ -137,3 +137,9 @@ or on the server set `IMAGE_TAG=<old-sha> ./scripts/blue_green_deploy.sh`.
   in backend env for manual expand-contract rollouts.
 - The email-outbox dispatcher is a lifespan thread inside each gunicorn worker;
   it claims under a DB lease, so multiple workers are safe.
+- Meetings transcription (`meetings.transcribe`) runs on the existing workflow
+  worker, not a new process - but the default `meetings_stt_python` only
+  exists on the macOS pilot host (`scripts/setup_stt_venv.sh`'s mlx venv,
+  Metal-only). A compose/prod deploy needs its own STT strategy (a reachable
+  `meetings_stt_python`, or a non-`mlx_local` provider) before enabling
+  meetings for a tenant, or every transcribe job fails immediately.

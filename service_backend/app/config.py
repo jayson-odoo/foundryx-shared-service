@@ -250,6 +250,22 @@ class Settings(BaseSettings):
     # from modules/meetings/bot; a deploy pins a published tag here.
     meetings_bot_image: str = ""
 
+    # ── Meetings STT (sprint-5 S3) ───────────────────────────────────────────
+    # Platform setting, not per-tenant (R5) - one pilot host runs one model.
+    # "deepgram" is a recognised NAME with no driver until the first real mlx
+    # outage or the prod move names the trigger (M12) - get_provider() fails
+    # loudly rather than silently falling back to mlx_local.
+    meetings_stt_provider: str = "mlx_local"
+    # The dedicated STT venv's python (built by scripts/setup_stt_venv.sh) -
+    # NOT the backend's own venv; mlx-whisper needs its own deps on Metal.
+    meetings_stt_python: str = "~/foundryx-stt/venv/bin/python"
+    meetings_stt_model: str = "mlx-community/whisper-large-v3-turbo"
+    meetings_stt_timeout_s: int = 1800
+    # A fixed absolute path, not `tempfile.gettempdir()` - the flock (R1) that
+    # serializes transcription only works if every process opens the SAME
+    # file; TMPDIR differs per-user/per-shell and is not guaranteed stable.
+    meetings_stt_lock_path: str = "/tmp/foundryx-meetings-stt.lock"
+
     # ── Payment gateways (sprint-4/07 Cluster F slice 3) ───────────────────
     # Webhook anti-replay: reject events whose timestamp is older than this
     # tolerance window (seconds). Stripe's own SDK uses 300s; mirror it.

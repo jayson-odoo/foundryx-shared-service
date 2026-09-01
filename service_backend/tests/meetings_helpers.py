@@ -68,7 +68,14 @@ def make_admin_user(
     return user
 
 
-def opt_in(db: Session, tenant_id: str, user_id: str, *, enabled: bool = True):
+def opt_in(
+    db: Session,
+    tenant_id: str,
+    user_id: str,
+    *,
+    enabled: bool = True,
+    calendar_email: Optional[str] = None,
+):
     """Flip a user's master toggle directly (the sync's only precondition)."""
     from modules.meetings.models import UserOptIn
 
@@ -82,6 +89,8 @@ def opt_in(db: Session, tenant_id: str, user_id: str, *, enabled: bool = True):
         db.add(row)
     else:
         row.enabled = enabled
+    if calendar_email is not None:
+        row.calendar_email = calendar_email
     db.flush()
     return row
 

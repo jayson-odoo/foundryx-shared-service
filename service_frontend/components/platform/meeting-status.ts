@@ -15,6 +15,9 @@ export const MEETING_STATUS_REGISTRY: StatusRegistry<MeetingStatus> = {
   in_lobby: { label: 'In lobby', tone: 'info' },
   recording: { label: 'Recording', tone: 'primary' },
   processing: { label: 'Processing', tone: 'info' },
+  // S3: a transcript exists. Distinct from `ready`, which stays reserved for
+  // a meeting whose MINUTES exist (S4) - never faked by this status.
+  transcribed: { label: 'Transcript ready', tone: 'success' },
   ready: { label: 'Ready', tone: 'success' },
   not_admitted: { label: 'Not admitted', tone: 'warning' },
   failed: { label: 'Failed', tone: 'destructive' },

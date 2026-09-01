@@ -599,6 +599,121 @@ def test_two_invitees_produce_two_events_but_one_meeting(db):
     assert by_email["outsider@vendor.example"].is_opted_in is False
 
 
+# ── S2 live-run fix: shared-calendar participants match by calendar_email ────
+
+
+def test_a_shared_calendars_attendee_resolves_via_calendar_email(db):
+    """The live failure: a shared personal calendar's attendee list carries
+    ``calendar_email`` (WHICH calendar was read), not the user's login. That
+    address is now an ADDITIONAL match on top of login email, so the
+    participant still resolves to the opted-in user."""
+    from modules.meetings.models import MeetingParticipant
+
+    user = _demo_user(db)
+    opt_in(db, DEFAULT_TENANT_ID, user.id, calendar_email="personal.calendar@example.com")
+    db.commit()
+
+    source = FakeCalendarSource(
+        {
+            "personal.calendar@example.com": [
+                SyncPage(
+                    events=[
+                        raw_event(
+                            "g1",
+                            starts_at=utc(2026, 9, 1, 2),
+                            attendees=[
+                                {"email": "personal.calendar@example.com", "displayName": None},
+                                {"email": "teammate@example.com", "displayName": None},
+                            ],
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+    _sync(db, source)
+
+    row = (
+        db.query(MeetingParticipant)
+        .filter(MeetingParticipant.email == "personal.calendar@example.com")
+        .one()
+    )
+    assert row.user_id == user.id
+    assert row.is_opted_in is True
+
+
+def test_calendar_email_matching_at_sync_time_is_case_insensitive(db):
+    from modules.meetings.models import MeetingParticipant
+
+    user = _demo_user(db)
+    opt_in(db, DEFAULT_TENANT_ID, user.id, calendar_email="Personal.Calendar@Example.com")
+    db.commit()
+
+    source = FakeCalendarSource(
+        {
+            "Personal.Calendar@Example.com": [
+                SyncPage(
+                    events=[
+                        raw_event(
+                            "g1",
+                            starts_at=utc(2026, 9, 1, 2),
+                            attendees=[{"email": "personal.calendar@EXAMPLE.com", "displayName": None}],
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+    _sync(db, source)
+
+    row = (
+        db.query(MeetingParticipant)
+        .filter(MeetingParticipant.email == "personal.calendar@EXAMPLE.com")
+        .one()
+    )
+    assert row.user_id == user.id
+
+
+def test_a_disabled_opt_ins_calendar_email_is_never_used_for_matching(db):
+    """``calendar_email`` matching must not resurrect a toggled-off user - the
+    index is built from ENABLED opt-ins only."""
+    from modules.meetings.models import MeetingParticipant
+
+    user = _demo_user(db)
+    other = make_admin_user(db, DEFAULT_TENANT_ID, "other@example.com", name="Other")
+    opt_in(db, DEFAULT_TENANT_ID, user.id)
+    opt_in(db, DEFAULT_TENANT_ID, other.id, calendar_email="shared@gmail.com", enabled=False)
+    db.commit()
+
+    source = FakeCalendarSource(
+        {
+            user.email: [
+                SyncPage(
+                    events=[
+                        raw_event(
+                            "g1",
+                            starts_at=utc(2026, 9, 1, 2),
+                            attendees=[
+                                {"email": user.email, "displayName": None},
+                                {"email": "shared@gmail.com", "displayName": None},
+                            ],
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+    _sync(db, source)
+
+    row = (
+        db.query(MeetingParticipant)
+        .filter(MeetingParticipant.email == "shared@gmail.com")
+        .one()
+    )
+    assert row.user_id is None
+    assert row.is_opted_in is False
+
+
 def test_the_same_link_at_a_different_start_is_a_different_meeting(db):
     """A recurring standup on the same room link is one meeting PER occurrence."""
     from modules.meetings.models import Meeting

@@ -1,6 +1,6 @@
 # PLAN - Meetings S3: STT (transcript + speaker names)
 
-**Status:** Grilled + confirmed 2026-09-01 (R1-R8 below). Spine: `PLAN-meetings-program.md` M12 (amended 2026-08-25), M19.
+**Status:** In progress 2026-09-01 - coder pass done (pytest + vitest green); live mlx evidence run still pending (captain's step, see Deviations). Spine: `PLAN-meetings-program.md` M12 (amended 2026-08-25), M19.
 **Branch:** `sprint-5/meetings-s3-stt`. UAC: `meetings-s3-stt-acceptance-criteria.md`.
 
 ## 1. What S3 delivers
@@ -30,6 +30,34 @@ No UI beyond a minimal read endpoint + the new status badge (S5 owns the surface
 - **R5** Provider selection is a platform setting, not per-tenant (M21 trigger stands).
 - **R6** `scripts/setup_stt_venv.sh` creates/pins `~/foundryx-stt/venv` (mlx-whisper==0.4.3)
   idempotently - a reboot or new host rebuilds it deterministically.
+
+## S2 live-run fixes (2026-09-01)
+
+Three defects found in a live pilot run, fixed test-first on this branch (do-not-touch hold on
+`dispatch.py`/`bot_runner.py` lifted for exactly these changes; `bot/` untouched):
+
+- **Shared-calendar participants never matched their opted-in user.** Participant-to-user
+  matching only compared the login email; a shared personal calendar's attendee list carries
+  `calendar_email` instead, so every `meeting_participants.user_id` stayed NULL and eligibility
+  found nobody opted in (`opted_out` on every meeting). Fix: `calendar_email` is now an
+  ADDITIONAL match, case-insensitive, ENABLED opt-ins only - at sync-time row creation
+  (`calendar_sync._ensure_participants`) and again in eligibility (`dispatch.wants_capture`, so a
+  legacy NULL-`user_id` row also resolves once its owner's opt-in exists). Login-email matching
+  is unchanged. New shared helper `optin.enabled_calendar_email_index`.
+- **A stale Chromium `Singleton*` lock killed the join.** An interactive re-login on the same
+  tenant profile volume leaves `SingletonLock`/`-Cookie`/`-Socket` behind; the next bot's
+  Chromium then refuses to start ("profile appears to be in use ... on another computer"). Fix:
+  `bot_runner._container_for` now runs a short-lived helper container (`spec.image`, entrypoint
+  override, `remove=True`) that clears `/profile/Singleton*` on the SAME profile volume right
+  before every fresh container start (never before a re-attach, while Chromium may still be using
+  the volume). A cleanup failure fails the run with the docker error, not a silent skip.
+- **Re-attach adopted a dead container and re-failed forever.** A failed run leaves its exited
+  container behind (`auto_remove=False`, kept for logs); the next `bot_run` for that meeting
+  re-attached to it, saw it exited, and marked the meeting failed again in ~0.1s - the fixed
+  container name then blocked every retry's fresh container with a name conflict. Fix:
+  `_container_for` re-attaches only to a container whose `.status == "running"`; anything else
+  found under that name is removed (`force=True`) and a fresh container is started in the same
+  run. A removal failure fails the run with the docker error.
 
 ## 2. Inputs available at transcribe time (measured, not assumed)
 
@@ -136,3 +164,47 @@ app/config.py                           # MEETINGS_STT_* settings
 Minutes (S4 - it adds the minutes job + the `ready` hop), transcript UI (S5), Deepgram driver
 body, pyannote, live transcript, per-segment language values (R3), search endpoint (index
 ships, endpoint later).
+
+## 7. Deviations from this plan (coder pass, 2026-09-01)
+
+Flagged rather than applied silently, per the house rule:
+
+- **No migration `0004_transcript_trgm.py`.** Measured against the real schema before writing
+  it: `pg_trgm` + `ix_meetings_segments_text_trgm` were ALREADY created in migration `0001`
+  (S0's "whole shape in one migration" - see its lines creating the extension/index right after
+  `transcript_segments`). Adding a second `CREATE EXTENSION IF NOT EXISTS` / `CREATE INDEX IF NOT
+  EXISTS` would be a no-op DDL migration for no reason - "simplest thing that works" says don't
+  ship it.
+- **Transcript-level `language` rides `Meeting.language`, not a new `transcripts.language`
+  column.** The `Transcript` model (fixed in rev 0001) never had a `language` column - only
+  `TranscriptSegment.language` exists, and R3 says that one stays NULL. `PLAN-meetings-program.md`
+  §3's table already lists `language` as a `meetings` column (present since S0, unused until now)
+  - S3 is simply the first slice to WRITE it, from `SttResult.language`. Zero new DDL. The
+    `GET /transcript` response's `language` field reads `meeting.language`.
+  - `TranscriptSegment`'s docstring updated to explain why its `language` column stays unused
+    (R3) rather than leaving the stale S0 comment that said the opposite.
+- **`meetings.transcribe` treats "no recording" as a clean SKIP, not a failure.** `bot_run` (S2,
+  out of scope to change) enqueues `transcribe` unconditionally on every normal exit, including a
+  call that recorded nothing (empty room, `recording_file_id` stays NULL). Failing that loudly
+  would mark a meeting "failed" when nothing actually went wrong - there is simply nothing to
+  transcribe. Treated the same as the existing "meeting is gone" skip. Confirmed against the S2
+  test `test_a_call_that_recorded_nothing_still_finishes_without_a_file`, which already existed
+  for exactly this case.
+- **Reused `bot_runner.build_output`, not a "helper extracted from `recordings.py`."** Measured:
+  the artifacts-resolution logic (`storage_connection` + `S3Artifacts`/`LocalArtifacts` branch) is
+  in `services/bot_runner.py`, not `services/recordings.py` (which only has the `Artifacts`
+  protocol + the two concrete classes). `bot_runner.py` is on this slice's do-not-touch list (live
+  pilot code), so `jobs.py` imports `build_output` as-is rather than moving/duplicating it -
+  reuse, not a rebuild, just from where the code actually lives.
+- **Five pre-existing S2 tests in `test_meetings_bot_runner.py` updated, `bot_runner.py` itself
+  untouched.** R2/R7/R8 retire the S2 stub's "mark it `ready`" behavior; those five tests asserted
+  exactly that stub behavior (one even said so in a comment: "S2 hands off to the S3 stub, which
+  marks it ready"). Updated their assertions to the new terminal statuses (`transcribed` on a real
+  recording, `processing` - untouched - when nothing was recorded) and extended the file's
+  `local_storage` fixture to also cover `jobs.py`'s own `storage_for_tenant` import plus a trivial
+  always-succeeds `get_provider` stub, so the S3 job `bot_run` now synchronously triggers in tests
+  finishes cleanly without every S2 test needing its own STT setup.
+- **Live mlx evidence run (AC-S3-5/6/7, UAC "Evidence run") NOT done.** Explicitly the captain's
+  step per the brief - the STT venv (`scripts/setup_stt_venv.sh`) was written but not executed,
+  and no real mlx-whisper process ran. Every subprocess-touching test uses a fake `subprocess.run`
+  or a fake `SttProvider`.
