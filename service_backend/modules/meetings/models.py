@@ -293,7 +293,12 @@ class Minutes(MeetingsBase):
         String, ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True
     )
     version = Column(Integer, nullable=False, default=1)
-    # {"summary": …, "decisions": [...], "openQuestions": [...], "topics": [...]}
+    # The five M14 sections (S4 plan §3.1, AC-S4-2), snake_case keys exactly
+    # as the prompt asks the model for: {"summary": str, "decisions": [str],
+    # "action_items": [{"text", "owner_email", "due_on"}], "open_questions":
+    # [str], "topic_notes": [{"topic", "notes"}]}. `action_items` here is
+    # informational (the model's own words); the canonical, tickable rows
+    # are the `action_items` TABLE below, keyed by this row's id.
     sections_json = Column(_JSON, nullable=True)
     # Core ``public.users.id`` for a human edit, or the literal ``"llm"``.
     created_by = Column(String, nullable=False, default=MINUTES_AUTHOR_LLM)

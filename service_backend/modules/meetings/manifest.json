@@ -31,6 +31,10 @@
     {
       "name": "transcripts",
       "prefix": "/meetings"
+    },
+    {
+      "name": "minutes",
+      "prefix": "/meetings"
     }
   ],
   "permissions_csv": "permissions/permissions.csv"

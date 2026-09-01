@@ -50,6 +50,10 @@ CALENDAR_SYNC = "meetings.calendar_sync"
 # what keeps at most one transcription running at a time.
 BOT_RUN = "meetings.bot_run"
 TRANSCRIBE = "meetings.transcribe"
+# S4: minutes generation. Auto-enqueued by ``run_transcribe`` on success (R2)
+# and by the manual regenerate route - rides the same shared workflow queue
+# as ``TRANSCRIBE``.
+MINUTES = "meetings.minutes"
 MODULE_NAME = "meetings"
 
 # Non-terminal statuses = a pass is still in flight (mirrors the storage
@@ -434,6 +438,102 @@ def run_transcribe(db: Session, job: BackgroundJob) -> None:
             "transcribeMs": transcribe_ms,
         },
     )
+    # R2: the `ready` hop belongs to minutes, not here - transcribe only ever
+    # sets `transcribed` (above). Mirrors bot_runner._enqueue_transcribe:
+    # called AFTER finish() so an enqueue failure can never be confused with
+    # a transcription failure.
+    enqueue_minutes(db, meeting)
+
+
+def minutes_in_flight(db: Session, tenant_id: str, meeting_id: str) -> bool:
+    """True while a ``meetings.minutes`` job for THIS meeting is still
+    pending or running (AC-S4-13). ``active_of_type`` is tenant+type only
+    (like the storage-migration / connection-lock guards), so the meeting
+    itself is filtered here in Python."""
+    from app.jobs.repository import BackgroundJobRepository
+
+    jobs = BackgroundJobRepository(db).active_of_type(tenant_id, MINUTES, _ACTIVE_JOB_STATUSES)
+    return any((job.payload_json or {}).get("meeting_id") == meeting_id for job in jobs)
+
+
+def enqueue_minutes(db: Session, meeting, *, actor_user_id: Optional[str] = None) -> BackgroundJob:
+    """Create + enqueue one ``meetings.minutes`` job for a meeting. The ONE
+    place both the auto-chain (``run_transcribe`` above, no actor - system
+    triggered) and the manual regenerate route (``routers/minutes.py``, the
+    caller as actor) create this job."""
+    from app.jobs.service import JobService
+
+    return JobService(db).create_and_enqueue(
+        type=MINUTES,
+        tenant_id=meeting.tenant_id,
+        actor_user_id=actor_user_id,
+        payload={"meeting_id": meeting.id, "tenant_id": meeting.tenant_id},
+    )
+
+
+def run_minutes(db: Session, job: BackgroundJob) -> None:
+    """Handler for ``meetings.minutes`` (S4 plan §3.1). Thin: everything that
+    can fail lives in ``services/minutes.generate_minutes`` as a typed
+    ``MinutesError`` - this only unpacks the payload and shapes the job
+    result/failure."""
+    from app.jobs.service import JobService
+
+    from .models import ActionItem, Meeting
+    from .services.minutes import MinutesError, generate_minutes
+
+    service = JobService(db)
+    raw_meeting_id = (job.payload_json or {}).get("meeting_id")
+    if not raw_meeting_id:
+        error = "meetings.minutes job payload is missing meeting_id"
+        logger.error(error)
+        service.finish(job, status=JOB_FAILED, error=error)
+        return
+    meeting_id = str(raw_meeting_id)
+    meeting = (
+        db.query(Meeting)
+        .filter(Meeting.tenant_id == job.tenant_id, Meeting.id == meeting_id)
+        .first()
+    )
+    if meeting is None:
+        service.finish(job, status=JOB_DONE, result={"skipped": "meeting is gone"})
+        return
+
+    started = time.monotonic()
+    try:
+        minutes_row = generate_minutes(db, meeting)
+    except MinutesError as exc:
+        db.rollback()
+        error = str(exc)
+        logger.warning(
+            "meetings minutes generation failed for meeting %s: %s", meeting_id, error
+        )
+        service.finish(job, status=JOB_FAILED, error=error)
+        return
+    except Exception as exc:  # noqa: BLE001 - any other failure lands here too
+        db.rollback()
+        error = str(exc)
+        logger.exception("meetings minutes generation crashed for meeting %s", meeting_id)
+        service.finish(job, status=JOB_FAILED, error=error)
+        return
+    latency_ms = int((time.monotonic() - started) * 1000)
+
+    action_item_count = (
+        db.query(ActionItem).filter(ActionItem.minutes_id == minutes_row.id).count()
+    )
+    service.log(
+        job, f"minutes v{minutes_row.version} generated via {minutes_row.llm_provider}"
+    )
+    service.finish(
+        job,
+        status=JOB_DONE,
+        result={
+            "minutesVersion": minutes_row.version,
+            "actionItems": action_item_count,
+            "llmProvider": minutes_row.llm_provider,
+            "llmModel": minutes_row.llm_model,
+            "latencyMs": latency_ms,
+        },
+    )
 
 
 def _run_bot(db: Session, job: BackgroundJob) -> None:
@@ -515,6 +615,7 @@ def enqueue_due_calendar_syncs(db: Session) -> int:
 _HANDLER_DEF = JobHandlerDef(CALENDAR_SYNC, run_calendar_sync, "Meetings calendar sync")
 _BOT_RUN_DEF = JobHandlerDef(BOT_RUN, _run_bot, "Meetings bot run")
 _TRANSCRIBE_DEF = JobHandlerDef(TRANSCRIBE, run_transcribe, "Meetings transcription")
+_MINUTES_DEF = JobHandlerDef(MINUTES, run_minutes, "Meetings minutes generation")
 
 
 def register_calendar_sync_handler() -> None:
@@ -524,7 +625,7 @@ def register_calendar_sync_handler() -> None:
     A worker only sees handlers whose MODULE was imported, so
     ``app/workflow_engine/worker.py`` and ``modules/meetings/worker.py`` import
     this module explicitly. Omitting that import leaves the job Pending forever
-    with NO error.
+    with NO error. ``meetings.minutes`` (S4) rides this same rule - AC-S4-12.
 
     ``bot_run`` is registered in EVERY process, the API one included, because
     ``JobService.create`` refuses to persist a job whose type is unregistered -
@@ -532,6 +633,7 @@ def register_calendar_sync_handler() -> None:
     register_job_handler(_HANDLER_DEF)
     register_job_handler(_BOT_RUN_DEF)
     register_job_handler(_TRANSCRIBE_DEF)
+    register_job_handler(_MINUTES_DEF)
 
 
 register_calendar_sync_handler()

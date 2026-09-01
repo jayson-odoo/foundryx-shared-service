@@ -279,6 +279,17 @@ class Settings(BaseSettings):
     # file; TMPDIR differs per-user/per-shell and is not guaranteed stable.
     meetings_stt_lock_path: str = "/tmp/foundryx-meetings-stt.lock"
 
+    # ── Meetings LLM (sprint-5 S4) ────────────────────────────────────────
+    # Platform default (R1), mirroring meetings_stt_* above - env-only, not
+    # per-tenant. A tenant that sets `tenant_settings.llm_connection_id`
+    # overrides all three: provider + credentials come from that connection,
+    # model from its `config_json` if present else `meetings_llm_model`.
+    meetings_llm_provider: str = "gemini"
+    meetings_llm_model: str = "gemini-3.5-flash"
+    # Empty = unset. `resolve_llm()` then fails loudly (AC-S4-5) rather than
+    # calling a provider with no key.
+    meetings_llm_api_key: str = ""
+
     # ── Payment gateways (sprint-4/07 Cluster F slice 3) ───────────────────
     # Webhook anti-replay: reject events whose timestamp is older than this
     # tolerance window (seconds). Stripe's own SDK uses 300s; mirror it.

@@ -8,7 +8,7 @@ off it, so they carry no ``validation_alias``: the snake→camel mapping is one
 explicit line in the router, which is the only place that knows which of the
 row's columns the wire actually exposes.
 """
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional
 
 from pydantic import EmailStr, Field, field_validator
@@ -134,3 +134,69 @@ class TranscriptOut(ApiModel):
     # language (R3 amended 2026-09-01), ties broken by first occurrence.
     language: Optional[str] = None
     segments: List[TranscriptSegmentOut] = Field(default_factory=list)
+
+
+# ── minutes (S4 plan §3.2) ───────────────────────────────────────────────────
+
+
+class ActionItemOut(ApiModel):
+    id: str
+    text: str
+    ownerEmail: Optional[str] = None
+    dueOn: Optional[date] = None
+    doneAt: Optional[datetime] = None
+
+
+class ActionItemIn(ApiModel):
+    text: str
+    ownerEmail: Optional[str] = None
+    # ISO date string ("YYYY-MM-DD") or null. Parsed server-side; an
+    # unparseable value is stored as null rather than guessed.
+    dueOn: Optional[str] = None
+
+
+class TopicNoteOut(ApiModel):
+    topic: str
+    notes: str
+
+
+class TopicNoteIn(ApiModel):
+    topic: str
+    notes: str
+
+
+class MinutesVersionSummaryOut(ApiModel):
+    """One entry in a minutes document's version history."""
+
+    version: int
+    createdBy: str
+    createdAt: datetime
+
+
+class MinutesOut(ApiModel):
+    """``GET /meetings/{id}/minutes`` (+ ``/versions/{v}``) - the five M14
+    sections, the canonical ``action_items`` rows (never the section's own
+    copy - that one is the model's raw words), and the version list."""
+
+    version: int
+    createdBy: str
+    createdAt: datetime
+    promptVersion: Optional[str] = None
+    llmProvider: Optional[str] = None
+    llmModel: Optional[str] = None
+    summary: str
+    decisions: List[str] = Field(default_factory=list)
+    openQuestions: List[str] = Field(default_factory=list)
+    topicNotes: List[TopicNoteOut] = Field(default_factory=list)
+    actionItems: List[ActionItemOut] = Field(default_factory=list)
+    versions: List[MinutesVersionSummaryOut] = Field(default_factory=list)
+
+
+class MinutesSectionsIn(ApiModel):
+    """``PUT /meetings/{id}/minutes`` body - a human edit of every section."""
+
+    summary: str
+    decisions: List[str] = Field(default_factory=list)
+    actionItems: List[ActionItemIn] = Field(default_factory=list)
+    openQuestions: List[str] = Field(default_factory=list)
+    topicNotes: List[TopicNoteIn] = Field(default_factory=list)
