@@ -1,6 +1,6 @@
 # UAC - Meetings S3: STT
 
-Plan: `PLAN-meetings-s3-stt.md`. Spine gate: 1 h audio -> transcript in under 5 min; mixed-language
+Plan: `PLAN-meetings-s3-stt.md`. Spine gate: 1 h audio -> transcript in under 15 min (amended 2026-09-01, see AC-S3-6); mixed-language
 meeting transcribed.
 
 **AC-S3-1** - Given a meeting with a registered `recording.ogg` and an `events.jsonl` containing
@@ -26,12 +26,20 @@ the real mlx venv, then the wall time is under 60 s warm and the text quality is
 S1-report baseline (no trailing-silence hallucination).
 
 **AC-S3-6** - Given a ~1 h recording, when transcribed on the pilot host, then the transcript
-lands in under 5 minutes (spine gate; mlx-whisper measured 11x realtime).
+lands in under 15 minutes. AMENDED 2026-09-01 (captain's ruling, was "under 5 minutes"): the
+code-switch fix flipped the model to non-turbo large-v3, measured ~11 min per audio hour
+(5.5x realtime, live). Accepted because transcription is a background job, flock-serialized,
+nothing user-facing waits on it, and M12 already names GPU/Modal as the escalation when
+volume demands speed.
 
 **AC-S3-7** - Given a meeting whose speech mixes languages (the spine names Malay / English /
 Chinese), when transcribed, then each spoken passage appears in its own language in the segment
-TEXT (no wholesale translation into one language); `transcript_segments.language` is NULL (R3 -
-the provider reports one language per file, and we never store a guessed per-segment value).
+TEXT (no wholesale translation into one language); `transcript_segments.language` carries the
+REAL per-chunk detected language (from an `{en, ms, zh}` allowlist), and `meeting.language`
+(transcript-level) is the majority chunk language, ties broken by first occurrence. **2026-09-01:
+amended** - R3 originally said `transcript_segments.language` stays NULL because a single-pass
+provider only ever detects language once for the whole file; the chunked runner detects language
+PER CHUNK, so the value is now real measured data, not a guess, and is populated.
 
 **AC-S3-8** - Given a user with `meetings.view` in the meeting's tenant, when they GET
 `/meetings/{id}/transcript` once `transcribed`, then they receive provider, model, language and

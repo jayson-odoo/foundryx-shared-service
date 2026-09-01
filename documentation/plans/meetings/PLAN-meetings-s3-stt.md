@@ -1,6 +1,6 @@
 # PLAN - Meetings S3: STT (transcript + speaker names)
 
-**Status:** In progress 2026-09-01 - coder pass done (pytest + vitest green); live mlx evidence run still pending (captain's step, see Deviations). Spine: `PLAN-meetings-program.md` M12 (amended 2026-08-25), M19.
+**Status:** DONE 2026-09-01 - S3 merged (PR #37); code-switch fold-in (branch `sprint-5/meetings-s3-codeswitch`) built, live-verified (AC-S3-7 PASS, 72.7s for 396.7s audio) - see section 8 and the test report. Spine: `PLAN-meetings-program.md` M12 (amended 2026-08-25), M19.
 **Branch:** `sprint-5/meetings-s3-stt`. UAC: `meetings-s3-stt-acceptance-criteria.md`.
 
 ## 1. What S3 delivers
@@ -26,6 +26,16 @@ No UI beyond a minimal read endpoint + the new status badge (S5 owns the surface
   S4's to set - no stub job that fakes it. Spine data model + S2 FE badges updated in this PR.
 - **R3** `transcript_segments.language` stays NULL (Whisper turbo reports one language per file;
   never store a guessed per-segment value). Transcript-level `language` carries the detection.
+  **2026-09-01: AMENDED.** AC-S3-7 (mixed-language meetings) failed on the live evidence run - a
+  single `mlx_whisper.transcribe()` call over the whole file detects language ONCE from the first
+  ~30s and decodes the rest (Malay/Chinese passages in an otherwise-English meeting) as garbled
+  English. The runner is now chunked: ffmpeg-segments the audio, detects language PER CHUNK
+  constrained to an `{en, ms, zh}` allowlist, transcribes each chunk forcing its own detected
+  language, and tags every segment with that chunk's language. `transcript_segments.language` is
+  therefore now POPULATED with real per-chunk detected data, never a guess - the original
+  objection (a guessed value) no longer applies because the value is measured, not guessed.
+  `meeting.language` (the transcript-level field) is the majority chunk language, ties broken by
+  first occurrence.
 - **R4** Re-run = the existing core `/jobs/{id}/retry`; no bespoke retranscribe endpoint.
 - **R5** Provider selection is a platform setting, not per-tenant (M21 trigger stands).
 - **R6** `scripts/setup_stt_venv.sh` creates/pins `~/foundryx-stt/venv` (mlx-whisper==0.4.3)
@@ -95,7 +105,7 @@ class SttProvider(Protocol):
 **v1 driver `mlx_local`** (`stt/mlx_local.py`): subprocess exec of a small runner script through
 a dedicated python (`MEETINGS_STT_PYTHON`, default `~/foundryx-stt/venv/bin/python`; built by
 `scripts/setup_stt_venv.sh`, R6), serialized by a host flock (R1), model
-`MEETINGS_STT_MODEL` (default `mlx-community/whisper-large-v3-turbo`), with
+`MEETINGS_STT_MODEL` (default `mlx-community/whisper-large-v3-mlx` - flipped from the turbo variant 2026-09-01, see section 8), with
 `condition_on_previous_text=False` and a `no_speech_threshold` - both proven necessary on run-7
 audio (trailing-silence hallucination). Subprocess, not import: mlx runs on Metal in its own venv
 (py version + deps differ from the backend venv) and a crash must not take the worker down. JSON
@@ -220,7 +230,54 @@ Flagged rather than applied silently, per the house rule:
   `local_storage` fixture to also cover `jobs.py`'s own `storage_for_tenant` import plus a trivial
   always-succeeds `get_provider` stub, so the S3 job `bot_run` now synchronously triggers in tests
   finishes cleanly without every S2 test needing its own STT setup.
-- **Live mlx evidence run (AC-S3-5/6/7, UAC "Evidence run") NOT done.** Explicitly the captain's
-  step per the brief - the STT venv (`scripts/setup_stt_venv.sh`) was written but not executed,
-  and no real mlx-whisper process ran. Every subprocess-touching test uses a fake `subprocess.run`
-  or a fake `SttProvider`.
+- **Live mlx evidence run (AC-S3-5/6/7, UAC "Evidence run") was NOT done in the original coder
+  pass** - explicitly the captain's step per that brief, so every subprocess-touching test used a
+  fake `subprocess.run` or a fake `SttProvider`. **2026-09-01: done.** The captain ran the STT venv
+  for real against the ytp-scai-bob recording; see section 8 and `meetings-s3-stt-test-report.md`
+  for the numbers (AC-S3-7 now PASS).
+
+## 8. Code-switch fold-in (2026-09-01)
+
+AC-S3-7 (mixed-language meetings) failed on the live evidence run: single-pass `mlx_runner.py`
+locked onto English from the first ~30s and decoded the rest of the recording as garbled
+English regardless of the language actually spoken. The captain ran an offline eval and picked
+the chunked design below.
+
+- **`mlx_runner.py` rewritten as a chunked pipeline.** ffmpeg-segments the input into
+  `meetings_stt_chunk_s`-second (default 30) 16kHz mono wav chunks in a
+  `tempfile.TemporaryDirectory`; per chunk, in name order, measures its REAL duration with ffprobe
+  (offsets accumulate real durations, never `i * chunk_s * 1000` - the last chunk is shorter
+  than the nominal value, and nominal offsets produced overlapping timestamps in the eval), detects language constrained to the
+  `meetings_stt_languages` allowlist (default `"en,ms,zh"`), then transcribes the chunk forcing
+  that language. Segment end times are clamped to the chunk's own end and a segment starting
+  at/after the chunk's end is dropped (boundary artifact). Consecutive segments whose text is
+  identical after `.strip().casefold()` are collapsed into one - whisper's repetition-loop
+  failure mode ("I don't know" x5) otherwise survives per-chunk transcription too. The
+  transcript-level `language` is the majority chunk language, ties broken by first occurrence.
+  Invocation grew two optional positional args (`chunk_s`, `languages_csv`) with defaults, so a
+  manual two-arg invocation still works.
+- **Allowlist, not open-vocabulary detection.** The eval recording's quiet/silent chunks
+  top-1'd `es`/`pt` with no real signal behind them; constraining `decoding.detect_language`'s
+  output to `{en, ms, zh}` (the pilot's actual language set, via `meetings_stt_languages`) turns
+  that misdetection into a harmless `en` default instead of poisoning the transcript with a
+  wrong-language chunk.
+- **Model default flipped to non-turbo `mlx-community/whisper-large-v3-mlx`** (`meetings_stt_model`
+  - the setting's name is unchanged, only its default value). The turbo variant's language head is
+  weaker under the per-chunk detection call; the eval was run against the non-turbo model.
+  Pilot-scale wall clock is dominated by the encoder/decoder passes, not language detection, so
+  this is the accuracy tradeoff the eval measured (below).
+- **Offline eval measurement (396.7s recording, model already warm on Metal - not the live job):**
+  per-chunk top-3 detection scores on the real zh/ms passages came out `zh 0.565` / `ms 0.523`; the
+  quiet junk chunks scored `es 0.341` / `pt 0.841` before the allowlist coerced them to `en`. Total
+  wall clock: 54.5s for 396.7s of audio (about 8.2 minutes of processing per hour of recording).
+  Before this fix, the same recording decoded its Malay/Chinese passages as garbled English end to
+  end under the single-pass runner. This is a SEPARATE measurement from the live job's 72.7s below
+  (that one is a cold start through the real worker subprocess, including model load; this one
+  reused an already-loaded model in the eval process) - the two numbers are not a contradiction.
+- **R3 amended in place above** - `transcript_segments.language` is populated now that the value
+  is measured per chunk rather than guessed once for the whole file.
+- **One model copy, shared with `transcribe()`'s cache.** The detection handle is obtained via
+  `mlx_whisper.transcribe.ModelHolder.get_model(model, mx.float16)` - internal API, acceptable
+  because the STT venv pins mlx-whisper==0.4.3 (R6). A separate `load_models.load_model()` call
+  held a SECOND large-v3 copy at float32; on the 16 GB pilot host that swap-thrashed the live
+  job to transcribeMs 1503977 (25 min) where the shared-cache version takes 72.7s.

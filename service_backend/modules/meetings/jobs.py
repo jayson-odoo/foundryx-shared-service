@@ -386,7 +386,10 @@ def run_transcribe(db: Session, job: BackgroundJob) -> None:
                     start_ms=segment.start_ms,
                     end_ms=segment.end_ms,
                     text=segment.text,
-                    language=None,  # R3: language lives once on the meeting, not per segment
+                    # R3 AMENDED (S3 code-switch fix, 2026-09-01): the chunked
+                    # mlx_runner detects language PER CHUNK, so this is real
+                    # detected data from the provider, never a guess.
+                    language=segment.language,
                 )
             )
         meeting.language = result.language

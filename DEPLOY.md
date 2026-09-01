@@ -142,4 +142,7 @@ or on the server set `IMAGE_TAG=<old-sha> ./scripts/blue_green_deploy.sh`.
   exists on the macOS pilot host (`scripts/setup_stt_venv.sh`'s mlx venv,
   Metal-only). A compose/prod deploy needs its own STT strategy (a reachable
   `meetings_stt_python`, or a non-`mlx_local` provider) before enabling
-  meetings for a tenant, or every transcribe job fails immediately.
+  meetings for a tenant, or every transcribe job fails immediately. The
+  chunked runner (`mlx_runner.py`, S3 code-switch fix) also needs `ffmpeg`
+  AND `ffprobe` on the host's `PATH` - it segments the audio with the former
+  and measures each chunk's real duration with the latter.

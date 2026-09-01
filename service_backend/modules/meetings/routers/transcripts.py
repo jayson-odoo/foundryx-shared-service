@@ -40,6 +40,7 @@ def get_transcript(
                 startMs=seg.start_ms,
                 endMs=seg.end_ms,
                 text=seg.text,
+                language=seg.language,
             )
             for seg in segments
         ],

@@ -51,6 +51,59 @@ def test_a_successful_run_parses_the_json_contract(monkeypatch):
     ]
 
 
+def test_per_segment_language_passes_through(monkeypatch):
+    """S3 code-switch fix: the chunked runner tags each segment with the
+    detected language of the chunk it came from - a code-switched meeting
+    carries a real value per segment, not a file-wide guess."""
+    payload = {
+        "language": "zh",
+        "segments": [
+            {"start_ms": 0, "end_ms": 1200, "text": "hello there", "language": "en"},
+            {"start_ms": 1200, "end_ms": 2400, "text": "你好嗎", "language": "zh"},
+        ],
+    }
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: _FakeCompleted(stdout=json.dumps(payload))
+    )
+
+    result = mlx_local.MlxLocalProvider().transcribe(Path("/tmp/recording.ogg"))
+
+    assert [s.language for s in result.segments] == ["en", "zh"]
+
+
+def test_a_segment_missing_the_language_key_parses_with_language_none(monkeypatch):
+    """Tolerates an older runner payload that never sent per-segment
+    language."""
+    payload = {
+        "language": "en",
+        "segments": [{"start_ms": 0, "end_ms": 1200, "text": "hello there"}],
+    }
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: _FakeCompleted(stdout=json.dumps(payload))
+    )
+
+    result = mlx_local.MlxLocalProvider().transcribe(Path("/tmp/recording.ogg"))
+
+    assert result.segments[0].language is None
+
+
+def test_the_runner_argv_carries_chunk_s_and_languages(monkeypatch):
+    captured = {}
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompleted(stdout=json.dumps({"language": None, "segments": []}))
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    mlx_local.MlxLocalProvider().transcribe(Path("/tmp/recording.ogg"))
+
+    from app.config import settings
+
+    assert captured["cmd"][-2] == str(settings.meetings_stt_chunk_s)
+    assert captured["cmd"][-1] == settings.meetings_stt_languages
+
+
 def test_a_non_zero_exit_raises_with_the_stderr_tail(monkeypatch):
     monkeypatch.setattr(
         subprocess,

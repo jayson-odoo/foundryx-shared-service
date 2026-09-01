@@ -259,8 +259,21 @@ class Settings(BaseSettings):
     # The dedicated STT venv's python (built by scripts/setup_stt_venv.sh) -
     # NOT the backend's own venv; mlx-whisper needs its own deps on Metal.
     meetings_stt_python: str = "~/foundryx-stt/venv/bin/python"
-    meetings_stt_model: str = "mlx-community/whisper-large-v3-turbo"
-    meetings_stt_timeout_s: int = 1800
+    # Non-turbo (S3 code-switch fix, R3 amended, 2026-09-01): under the
+    # chunked per-chunk detection eval, the turbo model missed the Chinese
+    # chunk entirely (detected en) and produced worse code-switch output;
+    # the non-turbo model correctly detected zh 0.565 / ms 0.523 on the same
+    # chunks. Detection cadence (once vs per-chunk) is the RUNNER's property,
+    # not the model's - this setting is only about which model transcribes.
+    meetings_stt_model: str = "mlx-community/whisper-large-v3-mlx"
+    meetings_stt_timeout_s: int = 3600
+    # Chunk length (seconds) the runner segments audio into before detecting
+    # language PER CHUNK - what actually fixes code-switched meetings.
+    meetings_stt_chunk_s: int = 30
+    # Allowlist the per-chunk language detector is constrained to. A quiet or
+    # silent chunk misdetects as es/pt/etc without this; the pilot's meetings
+    # are only ever en/ms/zh.
+    meetings_stt_languages: str = "en,ms,zh"
     # A fixed absolute path, not `tempfile.gettempdir()` - the flock (R1) that
     # serializes transcription only works if every process opens the SAME
     # file; TMPDIR differs per-user/per-shell and is not guaranteed stable.
