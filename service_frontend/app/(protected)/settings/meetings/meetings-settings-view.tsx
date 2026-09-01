@@ -8,15 +8,20 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Badge } from '@/components/ui/badge';
 import { SearchSelect } from '@/components/platform/search-select';
+import { ClampedText } from '@/components/platform/clamped-text';
+import { ResourceList } from '@/components/platform/resource-list';
+import { StatusBadge } from '@/components/platform/status-badge';
+import { CONNECTION_STATUS_REGISTRY } from '../integrations/components/connection-status';
 import { useCan } from '@/hooks/use-can';
+import { useDatetime } from '@/hooks/use-datetime';
+import { useMeetingsBotRuns } from '@/hooks/use-meetings-bot-runs';
 import { useMeetingsSettings } from '@/hooks/use-meetings-settings';
 import {
   useMeetingsConnections,
   type MeetingsProviderKey,
 } from '@/hooks/use-meetings-connections';
-import type { ConnectionStatus } from '@/types/integration';
+import { useBotRunsListConfig } from './use-bot-runs-list-config';
 
 const MINUTES_LANGUAGES = [
   { value: 'en', label: 'English' },
@@ -43,17 +48,8 @@ const CONNECTION_CARDS: { provider: MeetingsProviderKey; title: string }[] = [
   { provider: 'meet_bot', title: 'Notetaker account' },
 ];
 
-const STATUS_TONE: Record<ConnectionStatus, 'success' | 'warning' | 'destructive'> = {
-  ACTIVE: 'success',
-  UNVERIFIED: 'warning',
-  ERROR: 'destructive',
-};
-
-const STATUS_LABEL: Record<ConnectionStatus, string> = {
-  ACTIVE: 'Connected',
-  UNVERIFIED: 'Not tested',
-  ERROR: 'Error',
-};
+// The one card that also carries a value the operator has to hand out.
+const SERVICE_ACCOUNT_CARD: MeetingsProviderKey = 'google_dwd';
 
 /**
  * Settings → Meetings (S0 plan §4, AC-S0-4/5/14).
@@ -68,6 +64,10 @@ export function MeetingsSettingsView() {
   const canManage = can('meetings.settings.manage');
   const { settings, loading, saving, save } = useMeetingsSettings();
   const { byProvider, loading: connectionsLoading } = useMeetingsConnections();
+  const serviceAccountEmail = settings?.calendarServiceAccountEmail ?? null;
+  const { runs, error: runsError } = useMeetingsBotRuns(7);
+  const { timeZone, formatDateTime } = useDatetime();
+  const botRunsConfig = useBotRunsListConfig(runs, { timeZone });
 
   const [minutesLanguage, setMinutesLanguage] = useState('en');
   const [audioRetentionDays, setAudioRetentionDays] = useState('90');
@@ -115,13 +115,27 @@ export function MeetingsSettingsView() {
                 <div className="flex flex-wrap items-center gap-3">
                   <span className="text-sm font-medium">{title}</span>
                   {connection && (
-                    <Badge
-                      variant={STATUS_TONE[connection.status]}
-                      appearance="light"
+                    <StatusBadge
+                      status={connection.status}
+                      registry={CONNECTION_STATUS_REGISTRY}
                       size="sm"
-                    >
-                      {STATUS_LABEL[connection.status]}
-                    </Badge>
+                    />
+                  )}
+                  {/* The address users share their calendar WITH. It comes off
+                      the stored key's client_email; the key itself never
+                      leaves the server. */}
+                  {provider === SERVICE_ACCOUNT_CARD && serviceAccountEmail && (
+                    <span className="max-w-[16rem] text-sm text-muted-foreground">
+                      <ClampedText text={serviceAccountEmail} lines={1} />
+                    </span>
+                  )}
+                  {/* When the notetaker last really signed in (AC-S2-12). Only
+                      a bot run can set it, so it is the truth about the
+                      account rather than a test button's opinion. */}
+                  {provider === 'meet_bot' && connection?.lastTestedAt && (
+                    <span className="text-sm text-muted-foreground">
+                      {formatDateTime(connection.lastTestedAt)}
+                    </span>
                   )}
                 </div>
                 <Button variant="outline" size="sm" disabled={connectionsLoading} asChild>
@@ -138,6 +152,21 @@ export function MeetingsSettingsView() {
               </div>
             );
           })}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardHeading>
+            <CardTitle>Bot runs</CardTitle>
+          </CardHeading>
+        </CardHeader>
+        <CardContent>
+          {runsError ? (
+            <p className="py-5 text-sm text-destructive">{runsError}</p>
+          ) : (
+            <ResourceList config={botRunsConfig} />
+          )}
         </CardContent>
       </Card>
 

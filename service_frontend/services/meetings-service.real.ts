@@ -6,8 +6,10 @@
  */
 import { apiFetch } from '@/lib/api-client';
 import type {
+  MeetingsBotRun,
   MeetingsEvent,
   MeetingsOptIn,
+  MeetingsOptInInput,
   MeetingsSettings,
   MeetingsSettingsInput,
 } from '@/types/meetings';
@@ -15,6 +17,10 @@ import type { MeetingsEventRange, MeetingsService } from './meetings-service';
 
 interface EventListResponse {
   data: MeetingsEvent[];
+}
+
+interface BotRunListResponse {
+  data: MeetingsBotRun[];
 }
 
 function eventsPath(range?: MeetingsEventRange): string {
@@ -29,10 +35,10 @@ export const realMeetingsService: MeetingsService = {
   getOptIn() {
     return apiFetch<MeetingsOptIn>('/meetings/optin');
   },
-  setOptIn(enabled: boolean) {
+  setOptIn(input: MeetingsOptInInput) {
     return apiFetch<MeetingsOptIn>('/meetings/optin', {
       method: 'PUT',
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify(input),
     });
   },
   async listEvents(range?: MeetingsEventRange) {
@@ -44,6 +50,12 @@ export const realMeetingsService: MeetingsService = {
       `/meetings/events/${encodeURIComponent(eventId)}/opt-out`,
       { method: 'PUT', body: JSON.stringify({ optedOut }) },
     );
+  },
+  async listBotRuns(days = 7) {
+    const res = await apiFetch<BotRunListResponse>(
+      `/meetings/bot-runs?days=${encodeURIComponent(String(days))}`,
+    );
+    return res.data;
   },
   getSettings() {
     return apiFetch<MeetingsSettings>('/meetings/settings');

@@ -7,8 +7,10 @@
  * line at the bottom of this file.
  */
 import type {
+  MeetingsBotRun,
   MeetingsEvent,
   MeetingsOptIn,
+  MeetingsOptInInput,
   MeetingsSettings,
   MeetingsSettingsInput,
 } from '@/types/meetings';
@@ -23,12 +25,14 @@ export interface MeetingsEventRange {
 export interface MeetingsService {
   /** The caller's own master toggle. */
   getOptIn(): Promise<MeetingsOptIn>;
-  /** Flip the caller's master toggle. */
-  setOptIn(enabled: boolean): Promise<MeetingsOptIn>;
+  /** Flip the caller's master toggle, and optionally point it at a calendar. */
+  setOptIn(input: MeetingsOptInInput): Promise<MeetingsOptIn>;
   /** The caller's upcoming events that carry a conference link. */
   listEvents(range?: MeetingsEventRange): Promise<MeetingsEvent[]>;
   /** Switch a single event out of (or back into) capture. */
   setEventOptOut(eventId: string, optedOut: boolean): Promise<MeetingsEvent>;
+  /** The tenant's bot runs over the last `days` days (default 7). */
+  listBotRuns(days?: number): Promise<MeetingsBotRun[]>;
   /** Tenant-wide module settings. */
   getSettings(): Promise<MeetingsSettings>;
   saveSettings(input: MeetingsSettingsInput): Promise<MeetingsSettings>;

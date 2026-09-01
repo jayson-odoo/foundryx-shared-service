@@ -13,14 +13,14 @@ from app.database import get_db
 from app.dependencies import require_permission
 from app.models.user import User
 
-from ..models import CalendarEvent
+from ..models import STATUS_SCHEDULED, CalendarEvent
 from ..schemas import EventListResponse, EventOptOutIn, EventOut
-from ..services.events import EventsService, attendees_of
+from ..services.events import EventsService, attendees_of, meeting_status_for
 
 router = APIRouter()
 
 
-def _out(row: CalendarEvent) -> EventOut:
+def _out(row: CalendarEvent, status: tuple = (STATUS_SCHEDULED, None)) -> EventOut:
     attendees = attendees_of(row)
     return EventOut(
         id=row.id,
@@ -33,6 +33,8 @@ def _out(row: CalendarEvent) -> EventOut:
         startsAt=row.starts_at,
         endsAt=row.ends_at,
         optedOut=row.opted_out,
+        meetingStatus=status[0],
+        statusReason=status[1],
     )
 
 
@@ -46,7 +48,12 @@ def list_events(
     rows = EventsService(db).list_for_user(
         current_user.tenant_id, current_user.id, start=start, end=end
     )
-    return EventListResponse(data=[_out(row) for row in rows])
+    # ONE query for every row's meeting: a status column must not cost the list
+    # a round trip per event.
+    statuses = meeting_status_for(db, current_user.tenant_id, rows)
+    return EventListResponse(
+        data=[_out(row, statuses.get(row.id, (STATUS_SCHEDULED, None))) for row in rows]
+    )
 
 
 @router.put("/{event_id}/opt-out", response_model=EventOut)
@@ -59,4 +66,5 @@ def set_event_opt_out(
     row = EventsService(db).set_opt_out(
         current_user.tenant_id, current_user.id, event_id, body.optedOut
     )
-    return _out(row)
+    statuses = meeting_status_for(db, current_user.tenant_id, [row])
+    return _out(row, statuses.get(row.id, (STATUS_SCHEDULED, None)))

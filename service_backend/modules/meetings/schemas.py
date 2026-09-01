@@ -11,18 +11,36 @@ row's columns the wire actually exposes.
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import Field
+from pydantic import EmailStr, Field, field_validator
 
 from app.schemas.base import ApiModel
 
 
 class OptInIn(ApiModel):
     enabled: bool
+    # Omitted = keep the stored address; sent as null/blank = back to my login
+    # email. Told apart by ``model_fields_set``, never by the value being None.
+    calendarEmail: Optional[EmailStr] = None
+
+    @field_validator("calendarEmail", mode="before")
+    @classmethod
+    def _blank_means_my_login_email(cls, value):
+        """A cleared form field is "use my login email", not a bad address.
+
+        Runs BEFORE ``EmailStr``, which would otherwise 422 the empty string a
+        text input sends when someone deletes what they typed."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 class OptInOut(ApiModel):
     enabled: bool
     lastSyncedAt: Optional[datetime] = None
+    # The calendar this user's events are read from; null = their login email.
+    calendarEmail: Optional[str] = None
+    # The address to share a calendar with; null = no Google connection yet.
+    serviceAccountEmail: Optional[str] = None
 
 
 class AttendeeOut(ApiModel):
@@ -41,6 +59,10 @@ class EventOut(ApiModel):
     startsAt: datetime
     endsAt: Optional[datetime] = None
     optedOut: bool
+    # S2: where the SHARED meeting behind this event has got to, and why it is
+    # not on the happy path when it is not.
+    meetingStatus: str
+    statusReason: Optional[str] = None
 
 
 class EventListResponse(ApiModel):
@@ -52,6 +74,9 @@ class EventOptOutIn(ApiModel):
 
 
 class SettingsOut(ApiModel):
+    # Read-only: the connection's own service-account address, so the operator
+    # knows what to share calendars with. Never the key.
+    calendarServiceAccountEmail: Optional[str] = None
     minutesLanguage: str
     audioRetentionDays: int
     llmConnectionId: Optional[str] = None
@@ -68,3 +93,21 @@ class SettingsIn(ApiModel):
     llmConnectionId: Optional[str] = None
     botDisplayName: Optional[str] = Field(default=None, max_length=120)
     consentMessage: Optional[str] = Field(default=None, max_length=2000)
+
+
+class BotRunOut(ApiModel):
+    """One bot run for the tenant admin's ops list (AC-S2-12)."""
+
+    id: str
+    meetingId: str
+    meetingTitle: Optional[str] = None
+    startsAt: datetime
+    startedAt: Optional[datetime] = None
+    endedAt: Optional[datetime] = None
+    exitReason: Optional[str] = None
+    durationS: Optional[int] = None
+    meetingStatus: str
+
+
+class BotRunListResponse(ApiModel):
+    data: List[BotRunOut]

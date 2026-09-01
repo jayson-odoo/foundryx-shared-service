@@ -16,7 +16,13 @@ from typing import Any, Dict, List, Optional
 from app.integrations.base import TestResult
 
 from .calendar.base import CalendarSourceError
-from .calendar.google_dwd import GoogleDwdCalendarSource, list_directory_users
+from .calendar.google_dwd import (
+    GoogleDwdCalendarSource,
+    impersonation_enabled,
+    list_directory_users,
+    probe_calendar,
+    service_account_email,
+)
 
 GOOGLE_DWD_PROVIDER = "google_dwd"
 GOOGLE_DWD_TYPE = "calendar"
@@ -27,27 +33,53 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class GoogleDwdProvider:
-    """Google Calendar via domain-wide delegation (spine M4)."""
+    """Google Calendar, in either of the two access modes (spine M4).
+
+    ``impersonate`` off (the default) is SHARED-CALENDAR mode: the service
+    account reads calendars that users shared with its own address. On is
+    domain-wide delegation, which needs a Workspace admin to grant it.
+    """
 
     provider = GOOGLE_DWD_PROVIDER
     type = GOOGLE_DWD_TYPE
-    title = "Google Calendar (domain-wide delegation)"
+    title = "Google Calendar"
     description = (
-        "Read every user's calendar with one service account the Workspace admin "
-        "authorises once. No per-user sign-in."
+        "Read calendars with one service account: either shared with its address "
+        "by each user, or through domain-wide delegation."
     )
     icon = "calendar"
     test_label = "Test connection"
     # No targeted test: reading a calendar is the connection check.
     test_target = None
+    # Shared mode probes the opted-in users' OWN calendars, so this test needs
+    # the tenant's rows - core hands over ``db`` + ``tenant_id`` when a provider
+    # declares this (the only provider that does).
+    test_needs_context = True
 
     def fields(self) -> List[Dict[str, Any]]:
         return [
             {
+                # A select, not a checkbox: the shared connection form stores
+                # every non-secret field as a string, and two named modes read
+                # better on the page than a bare switch.
+                "key": "impersonate",
+                "label": "Access",
+                "type": "select",
+                "required": False,
+                "defaultValue": "off",
+                "options": [
+                    {"value": "off", "label": "Calendars shared with the service account"},
+                    {"value": "on", "label": "Domain-wide delegation"},
+                ],
+            },
+            {
                 "key": "impersonateEmail",
                 "label": "Admin email",
+                # Only domain-wide delegation impersonates anyone, so this is not
+                # required at the form level; ``test`` rejects a missing value in
+                # the mode that actually needs it.
                 "type": "text",
-                "required": True,
+                "required": False,
                 "placeholder": "admin@yourdomain.com",
             },
             {
@@ -65,24 +97,34 @@ class GoogleDwdProvider:
         config: Dict[str, Any],
         credentials: Dict[str, Any],
         target: Optional[str] = None,
+        *,
+        db: Any = None,
+        tenant_id: Optional[str] = None,
     ) -> TestResult:
-        """List the domain's first five users, or hand back Google's own error.
+        """Prove the mode this connection is actually in.
 
         A catch-all "connection failed" is banned here: the operator has to know
-        whether to fix the key, the impersonated admin, or the delegation grant
-        (AC-S0-4)."""
+        whether to fix the key, the impersonated admin, the delegation grant or a
+        calendar share (AC-S0-4)."""
         key = str(credentials.get("serviceAccountJson") or "")
-        admin = str(config.get("impersonateEmail") or "").strip()
         if not key:
             return TestResult(ok=False, message="Add the service-account key first.")
-        if not _EMAIL_RE.match(admin):
-            return TestResult(ok=False, message="Add the admin email to impersonate.")
         try:
             json.loads(key)
         except (TypeError, ValueError):
             return TestResult(
                 ok=False, message="The service-account key is not valid JSON."
             )
+        if impersonation_enabled(config):
+            return self._test_delegated(key, config)
+        return self._test_shared(key, db, tenant_id)
+
+    # ── domain-wide delegation ───────────────────────────────────────────────
+
+    def _test_delegated(self, key: str, config: Dict[str, Any]) -> TestResult:
+        admin = str(config.get("impersonateEmail") or "").strip()
+        if not _EMAIL_RE.match(admin):
+            return TestResult(ok=False, message="Add the admin email to impersonate.")
         try:
             emails = list_directory_users(
                 service_account_json=key, impersonate_email=admin, limit=5
@@ -97,6 +139,56 @@ class GoogleDwdProvider:
                 message="The domain returned no users for this admin.",
             )
         return TestResult(ok=True, message="Reading " + ", ".join(emails))
+
+    # ── shared calendars ─────────────────────────────────────────────────────
+
+    def _test_shared(self, key: str, db: Any, tenant_id: Optional[str]) -> TestResult:
+        """Read every opted-in user's calendar and report which ones answer.
+
+        NOT ``calendarList``: a calendar shared with a service account does not
+        appear in that account's list at all (verified against a real key - it
+        came back empty while ``events.list`` on the same address worked), so
+        listing would report "no calendars" for a correctly shared one."""
+        # Imported HERE, not at module scope: this adapter is loaded at boot to
+        # register the provider, and an adapter must not drag the domain service
+        # in with it.
+        from .services.optin import opted_in_calendars
+
+        address = service_account_email(key) or "the service account"
+        calendars = opted_in_calendars(db, tenant_id)
+        if not calendars:
+            return TestResult(
+                ok=False,
+                message=(
+                    f"Nobody has switched their meetings on yet. Share a calendar "
+                    f"with {address}, switch Record my meetings on, then test again."
+                ),
+            )
+        readable: List[str] = []
+        failures: List[str] = []
+        # EVERY calendar, not a slice: a capped probe would answer ok while the
+        # eleventh person's calendar had never been shared, and their meetings
+        # would silently never be captured.
+        for calendar_id in calendars:
+            try:
+                probe_calendar(service_account_json=key, calendar_id=calendar_id)
+            except CalendarSourceError as exc:
+                failures.append(f"{calendar_id}: {exc}")
+            except Exception as exc:  # noqa: BLE001 - never a raw traceback
+                failures.append(f"{calendar_id}: {exc}")
+            else:
+                readable.append(calendar_id)
+        if failures:
+            # PARTIAL success is still a failure: a calendar nobody shared means
+            # that user's meetings are silently never captured.
+            return TestResult(
+                ok=False,
+                message=(
+                    f"{address} cannot read " + "; ".join(failures)
+                    + (f". Reading {', '.join(readable)}." if readable else ".")
+                ),
+            )
+        return TestResult(ok=True, message="Reading " + ", ".join(readable))
 
 
 class MeetBotProvider:
@@ -138,14 +230,6 @@ class MeetBotProvider:
                 "required": True,
                 "secret": True,
             },
-            {
-                "key": "displayNameOverride",
-                "label": "Display name",
-                "type": "text",
-                "required": False,
-                "advanced": True,
-                "placeholder": "Notetaker",
-            },
         ]
 
 
@@ -159,4 +243,4 @@ def calendar_source_from_connection(
     key = str(credentials.get("serviceAccountJson") or "")
     if not key:
         raise CalendarSourceError("The Google Calendar connection has no key stored.")
-    return GoogleDwdCalendarSource(key)
+    return GoogleDwdCalendarSource(key, impersonate=impersonation_enabled(config))

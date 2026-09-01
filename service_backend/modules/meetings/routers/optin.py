@@ -12,12 +12,18 @@ from app.models.user import User
 
 from ..schemas import OptInIn, OptInOut
 from ..services.optin import OptInService
+from ..services.settings import calendar_service_account_email
 
 router = APIRouter()
 
 
-def _out(row) -> OptInOut:
-    return OptInOut(enabled=row.enabled, lastSyncedAt=row.last_synced_at)
+def _out(row, service_account_email=None) -> OptInOut:
+    return OptInOut(
+        enabled=row.enabled,
+        lastSyncedAt=row.last_synced_at,
+        calendarEmail=row.calendar_email,
+        serviceAccountEmail=service_account_email,
+    )
 
 
 @router.get("", response_model=OptInOut)
@@ -25,7 +31,10 @@ def get_opt_in(
     current_user: User = Depends(require_permission("meetings.view")),
     db: Session = Depends(get_db),
 ) -> OptInOut:
-    return _out(OptInService(db).get(current_user.tenant_id, current_user.id))
+    return _out(
+        OptInService(db).get(current_user.tenant_id, current_user.id),
+        calendar_service_account_email(db, current_user.tenant_id),
+    )
 
 
 @router.put("", response_model=OptInOut)
@@ -34,6 +43,16 @@ def set_opt_in(
     current_user: User = Depends(require_permission("meetings.view")),
     db: Session = Depends(get_db),
 ) -> OptInOut:
+    # The address is validated by the schema (``EmailStr``); the router's only
+    # job is telling "not sent" from "sent as null".
+    sent = body.model_dump(exclude_unset=True)
     return _out(
-        OptInService(db).set(current_user.tenant_id, current_user.id, body.enabled)
+        OptInService(db).set(
+            current_user.tenant_id,
+            current_user.id,
+            body.enabled,
+            calendar_email=body.calendarEmail,
+            set_calendar_email="calendarEmail" in sent,
+        ),
+        calendar_service_account_email(db, current_user.tenant_id),
     )

@@ -95,6 +95,10 @@ class FakeCalendarSource:
     ``SyncTokenInvalid`` (Google's HTTP 410), which is what the fallback path
     must recover from. ``calls`` records every read for assertions.
 
+    Google also drops ``nextSyncToken`` from any response carrying an
+    ``orderBy``, which is why the adapter never sends one - guarded where that
+    parameter is actually built, in ``test_meetings_shared_calendar.py``.
+
     **A tokenless read never yields a cancelled event.** ``events.list`` defaults
     to ``showDeleted=false``, so a full-window read simply OMITS an event the
     calendar has dropped; only an incremental (tokened) read reports it with

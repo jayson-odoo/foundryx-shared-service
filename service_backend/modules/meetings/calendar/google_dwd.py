@@ -1,9 +1,15 @@
-"""Google Calendar through domain-wide delegation - the only ``CalendarSource``
-in S0 (spine M4).
+"""Google Calendar through one service account - the only ``CalendarSource``.
 
-One platform-owned service account, granted domain-wide delegation by each
-tenant's Workspace admin, impersonates each user in turn. No per-user OAuth, no
-Google app verification, and no token to refresh in our database.
+TWO modes, one adapter, one flag (``impersonate`` on the connection config):
+
+* **Domain-wide delegation** (``impersonate`` on, spine M4). The Workspace admin
+  authorises the service account once; it then impersonates each user in turn and
+  reads their ``primary`` calendar. Needs Workspace admin access to set up.
+* **Shared calendar** (``impersonate`` off, the DEFAULT). The service account uses
+  its OWN credentials and reads ``calendarId=<the user's calendar address>``,
+  which works as soon as that user shares their calendar with the service-account
+  email at "See all event details". No Workspace admin, no delegation grant - the
+  mode a tenant whose admin will not grant DWD can actually use.
 
 The Google client is imported LAZILY, so this module imports cleanly (and the
 whole test suite runs) on a machine with no ``google-api-python-client``
@@ -25,19 +31,45 @@ from .base import (
 )
 
 # Read the user's calendar; that is the whole delegation the tenant grants for
-# the sync (spine §5.3 step 2).
+# the sync (spine §5.3 step 2), and also the only scope shared mode ever needs.
 CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
-# The connection TEST lists the domain's first users, which is the Directory
-# API, not Calendar - a tenant must grant this second scope for the Test button
-# to answer (AC-S0-4).
+# The connection TEST lists the domain's first users in DWD mode, which is the
+# Directory API, not Calendar - a tenant must grant this second scope for that
+# button to answer (AC-S0-4). Shared mode never touches it.
 DIRECTORY_SCOPES = ["https://www.googleapis.com/auth/admin.directory.user.readonly"]
 
 # What a Google client raises when a sync token has expired.
 _GONE = 410
 
 
-def _service_account_credentials(service_account_json: str, scopes: List[str], subject: str):
-    """Delegated credentials for ONE impersonated user. Lazy Google import."""
+def impersonation_enabled(config: Dict[str, Any]) -> bool:
+    """Is this connection in domain-wide-delegation mode?
+
+    The wire value is a STRING (the shared connection form stores every
+    non-secret field as one), so "off", "" and a missing key all mean shared
+    mode - the default, because it is the mode that needs no Workspace admin."""
+    raw = str((config or {}).get("impersonate") or "").strip().lower()
+    return raw in ("1", "on", "true", "yes")
+
+
+def service_account_email(service_account_json: str) -> Optional[str]:
+    """The ``client_email`` out of a stored key - the address a user has to
+    share their calendar WITH. Never the key itself, never the private key."""
+    try:
+        info = json.loads(service_account_json or "")
+    except (TypeError, ValueError):
+        return None
+    email = info.get("client_email") if isinstance(info, dict) else None
+    return str(email) if email else None
+
+
+def _service_account_credentials(
+    service_account_json: str, scopes: List[str], subject: Optional[str]
+):
+    """Service-account credentials, delegated to ``subject`` when one is given.
+
+    ``subject=None`` is shared mode: the service account acts as ITSELF, which is
+    what makes a calendar shared with it readable without any delegation."""
     try:
         from google.oauth2 import service_account  # type: ignore
     except ImportError as exc:  # pragma: no cover - dependency guard
@@ -51,7 +83,7 @@ def _service_account_credentials(service_account_json: str, scopes: List[str], s
         raise CalendarSourceError("The service-account key is not valid JSON.") from exc
     try:
         creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
-        return creds.with_subject(subject)
+        return creds.with_subject(subject) if subject else creds
     except Exception as exc:  # noqa: BLE001 - surfaced verbatim to the operator
         raise CalendarSourceError(str(exc)) from exc
 
@@ -80,7 +112,7 @@ def _status_of(exc: Exception) -> Optional[int]:
 def list_directory_users(
     *, service_account_json: str, impersonate_email: str, limit: int = 5
 ) -> List[str]:
-    """The domain's first ``limit`` user emails - what the Test button proves.
+    """The domain's first ``limit`` user emails - what the DWD Test proves.
 
     Raises ``CalendarSourceError`` carrying Google's own message, because
     "connection failed" tells the operator nothing about whether to fix the key,
@@ -104,6 +136,24 @@ def list_directory_users(
     return [u.get("primaryEmail", "") for u in (response.get("users") or [])][:limit]
 
 
+def probe_calendar(*, service_account_json: str, calendar_id: str) -> None:
+    """Can the service account, AS ITSELF, read ``calendar_id``? Raises with
+    Google's own message when it cannot.
+
+    A calendar shared with a service account does NOT show up in that account's
+    ``calendarList`` (verified against a real key: the list comes back empty),
+    so listing is worthless as a check - reading the calendar is the only proof
+    that the share was actually granted."""
+    creds = _service_account_credentials(service_account_json, CALENDAR_SCOPES, None)
+    try:
+        service = _build("calendar", "v3", creds)
+        service.events().list(calendarId=calendar_id, maxResults=1).execute()
+    except CalendarSourceError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - Google's message, verbatim
+        raise CalendarSourceError(_google_message(exc)) from exc
+
+
 def _google_message(exc: Exception) -> str:
     """Google's own wording, unwrapped from the client's error envelope."""
     content = getattr(exc, "content", None)
@@ -119,14 +169,21 @@ def _google_message(exc: Exception) -> str:
 
 
 class GoogleDwdCalendarSource:
-    """``CalendarSource`` over Google Calendar with domain-wide delegation."""
+    """``CalendarSource`` over Google Calendar, in either mode.
 
-    def __init__(self, service_account_json: str):
+    ``user_email`` is the CALENDAR ADDRESS to read (``user_opt_ins.calendar_email``
+    when the user set one, else their login email). In DWD mode it is also the
+    subject the service account impersonates.
+    """
+
+    def __init__(self, service_account_json: str, *, impersonate: bool = False):
         self._service_account_json = service_account_json
+        self._impersonate = impersonate
 
     def _service(self, user_email: str):
+        subject = user_email if self._impersonate else None
         creds = _service_account_credentials(
-            self._service_account_json, CALENDAR_SCOPES, user_email
+            self._service_account_json, CALENDAR_SCOPES, subject
         )
         return _build("calendar", "v3", creds)
 
@@ -140,18 +197,26 @@ class GoogleDwdCalendarSource:
     ) -> SyncPage:
         service = self._service(user_email)
         params: Dict[str, Any] = {
-            "calendarId": "primary",
+            # Impersonating the user, their own calendar IS "primary"; acting as
+            # ourselves we have to name the calendar that was shared with us.
+            "calendarId": "primary" if self._impersonate else user_email,
             "singleEvents": True,
             "maxResults": 250,
         }
         if sync_token:
             params["syncToken"] = sync_token
         else:
-            # Google rejects orderBy/timeMin alongside a syncToken, which is why
+            # Google rejects timeMin/timeMax alongside a syncToken, which is why
             # the window is only ever sent on a full read.
+            #
+            # ``orderBy`` is deliberately ABSENT. Google drops ``nextSyncToken``
+            # from any response that carries an orderBy (verified against a real
+            # calendar: the same request answers with a token without it and
+            # without one with it), so asking for sorted events costs us the
+            # token and every later read would be a full one. Nothing downstream
+            # cares about the order events arrive in.
             params["timeMin"] = _rfc3339(time_min)
             params["timeMax"] = _rfc3339(time_max)
-            params["orderBy"] = "startTime"
 
         events: List[RawEvent] = []
         next_sync_token: Optional[str] = None

@@ -23,6 +23,10 @@
     {
       "name": "settings",
       "prefix": "/meetings/settings"
+    },
+    {
+      "name": "bot_runs",
+      "prefix": "/meetings/bot-runs"
     }
   ],
   "permissions_csv": "permissions/permissions.csv"

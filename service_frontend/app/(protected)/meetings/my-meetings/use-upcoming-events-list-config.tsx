@@ -8,6 +8,8 @@ import { ClampedText } from '@/components/platform/clamped-text';
 import { OverflowPills } from '@/components/platform/overflow-pills';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
+import { StatusBadge } from '@/components/platform/status-badge';
+import { MEETING_STATUS_REGISTRY } from '@/components/platform/meeting-status';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
 import type { ListQuery, ListResult } from '@/types/resource';
 import type { MeetingAttendee, MeetingsEvent, MeetingPlatform } from '@/types/meetings';
@@ -33,6 +35,8 @@ function sortRows(rows: MeetingsEvent[], sort: ListQuery['sort']): MeetingsEvent
         return r.organiserEmail ?? '';
       case 'platform':
         return PLATFORM_LABELS[r.platform];
+      case 'status':
+        return MEETING_STATUS_REGISTRY[r.meetingStatus]?.label ?? r.meetingStatus;
       default:
         return r.startsAt;
     }
@@ -89,7 +93,7 @@ export function useUpcomingEventsListConfig(
             <ClampedText text={row.original.title ?? '-'} lines={2} />
           </span>
         ),
-        size: 175,
+        size: 150,
         enableSorting: true,
       },
       {
@@ -105,7 +109,7 @@ export function useUpcomingEventsListConfig(
             {whenRange(row.original)}
           </span>
         ),
-        size: 215,
+        size: 200,
         enableSorting: true,
       },
       {
@@ -116,7 +120,7 @@ export function useUpcomingEventsListConfig(
         cell: ({ row }) => (
           <ClampedText text={row.original.organiserEmail ?? '-'} lines={1} />
         ),
-        size: 165,
+        size: 150,
         enableSorting: true,
       },
       {
@@ -135,7 +139,7 @@ export function useUpcomingEventsListConfig(
             )}
           />
         ),
-        size: 145,
+        size: 118,
         enableSorting: true,
       },
       {
@@ -147,6 +151,43 @@ export function useUpcomingEventsListConfig(
           <Badge variant="outline" size="sm">
             {PLATFORM_LABELS[row.original.platform]}
           </Badge>
+        ),
+        size: 100,
+        enableSorting: true,
+      },
+      {
+        // Status + reason in ONE column: a reason only ever exists for a
+        // failed / not-admitted / skipped row, and giving it a column of its
+        // own would leave that column blank on almost every row while pushing
+        // the capture switch off the right edge at 1280px.
+        id: 'status',
+        accessorFn: (r) => MEETING_STATUS_REGISTRY[r.meetingStatus]?.label ?? r.meetingStatus,
+        meta: { headerTitle: 'Status' },
+        header: ({ column }) => <DataGridColumnHeader title="Status" column={column} />,
+        cell: ({ row }) => (
+          <div className="flex w-full min-w-0 flex-col items-start gap-1">
+            <StatusBadge
+              status={row.original.meetingStatus}
+              registry={MEETING_STATUS_REGISTRY}
+              size="sm"
+            />
+            {row.original.statusReason && (
+              <span className="w-full min-w-0 text-xs text-muted-foreground">
+                <ClampedText
+                  text={row.original.statusReason}
+                  lines={2}
+                  // The DataGrid's own `td` carries `truncate`, and its
+                  // `white-space: nowrap` cascades in and neuters line-clamp -
+                  // the reason rendered as ONE unwrapped line running off the
+                  // cell, with no tooltip because nothing measured as clamped.
+                  // `whitespace-normal` puts wrapping back; `break-all` is what
+                  // lets a reason like `error:TimeoutError:waiting...`, which
+                  // has no spaces, break at all.
+                  className="whitespace-normal break-all"
+                />
+              </span>
+            )}
+          </div>
         ),
         size: 130,
         enableSorting: true,
@@ -165,7 +206,7 @@ export function useUpcomingEventsListConfig(
             />
           </div>
         ),
-        size: 90,
+        size: 68,
         enableSorting: false,
         enableHiding: false,
         enableResizing: false,
@@ -192,7 +233,17 @@ export function useUpcomingEventsListConfig(
     const exporter = async (query: ListQuery): Promise<string> => {
       const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
       return toCsv(
-        ['Meeting', 'Starts', 'Ends', 'Organiser', 'Attendees', 'Platform', 'Capture'],
+        [
+          'Meeting',
+          'Starts',
+          'Ends',
+          'Organiser',
+          'Attendees',
+          'Platform',
+          'Status',
+          'Reason',
+          'Capture',
+        ],
         data.map((r) => [
           r.title ?? '',
           when(r.startsAt),
@@ -200,6 +251,8 @@ export function useUpcomingEventsListConfig(
           r.organiserEmail ?? '',
           r.attendeeCount,
           PLATFORM_LABELS[r.platform],
+          MEETING_STATUS_REGISTRY[r.meetingStatus]?.label ?? r.meetingStatus,
+          r.statusReason ?? '',
           r.optedOut ? 'No' : 'Yes',
         ]),
       );
@@ -238,11 +291,25 @@ export function useUpcomingEventsListConfig(
             </Badge>
           )}
         />
-        <div>
+        <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline" size="sm">
             {PLATFORM_LABELS[row.platform]}
           </Badge>
+          <StatusBadge
+            status={row.meetingStatus}
+            registry={MEETING_STATUS_REGISTRY}
+            size="sm"
+          />
         </div>
+        {row.statusReason && (
+          <div className="text-xs text-muted-foreground">
+            <ClampedText
+              text={row.statusReason}
+              lines={2}
+              className="whitespace-normal break-all"
+            />
+          </div>
+        )}
       </div>
     );
 
@@ -266,6 +333,7 @@ export function useUpcomingEventsListConfig(
         { id: 'organiser', label: 'Organiser' },
         { id: 'attendees', label: 'Attendees' },
         { id: 'platform', label: 'Platform' },
+        { id: 'status', label: 'Status' },
         { id: 'capture', label: 'Capture' },
       ],
       actions: [],

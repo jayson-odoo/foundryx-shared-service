@@ -375,6 +375,18 @@ class IntegrationService:
             # Key rotation made the stored secret unreadable - surface a clean,
             # actionable failure instead of a 500.
             result = TestResult(ok=False, message=_STALE_CIPHERTEXT_MSG)
+        elif getattr(provider, "test_needs_context", False):
+            # A provider whose test has to READ the tenant's own rows opts in
+            # with this attribute (meetings' shared-calendar mode probes each
+            # opted-in user's calendar). Handing the session over beats making
+            # the provider open one of its own, which no test could then steer.
+            result = provider.test(
+                connection.config_json or {},
+                credentials,
+                target,
+                db=self.db,
+                tenant_id=tenant_id,
+            )
         else:
             result = provider.test(connection.config_json or {}, credentials, target)
         checked_at = _now()

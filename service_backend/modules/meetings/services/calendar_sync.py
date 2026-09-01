@@ -44,6 +44,7 @@ from ..models import (
     MeetingParticipant,
     UserOptIn,
 )
+from .optin import calendar_address_for
 
 logger = logging.getLogger("foundryx.meetings")
 
@@ -138,15 +139,19 @@ def sync_tenant(
 
     for opt_in in opt_ins:
         user = users.get(opt_in.user_id)
-        if user is None or not user.email:
-            result.errors.append(f"No email for user {opt_in.user_id}")
+        # WHICH calendar, not which identity: a user whose Workspace blocks
+        # sharing points this at a personal address, and participant matching
+        # still runs off their login email.
+        address = calendar_address_for(opt_in, user)
+        if user is None or not address:
+            result.errors.append(f"No calendar address for user {opt_in.user_id}")
             continue
         try:
-            read = _read_calendar(source, user.email, opt_in, now)
+            read = _read_calendar(source, address, opt_in, now)
         except CalendarSourceError as exc:
             # One broken calendar must not cost the tenant its whole run.
-            logger.warning("meetings calendar read failed for %s: %s", user.email, exc)
-            result.errors.append(f"{user.email}: {exc}")
+            logger.warning("meetings calendar read failed for %s: %s", address, exc)
+            result.errors.append(f"{address}: {exc}")
             continue
 
         seen = set()

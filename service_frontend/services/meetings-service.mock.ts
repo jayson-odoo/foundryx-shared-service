@@ -5,8 +5,10 @@
  * REAL service (`meetings-service.ts`). Delete once no longer referenced.
  */
 import type {
+  MeetingsBotRun,
   MeetingsEvent,
   MeetingsOptIn,
+  MeetingsOptInInput,
   MeetingsSettings,
   MeetingsSettingsInput,
 } from '@/types/meetings';
@@ -32,6 +34,8 @@ const seedEvents = (): MeetingsEvent[] => [
     startsAt: hoursFromNow(3),
     endsAt: hoursFromNow(4),
     optedOut: false,
+    meetingStatus: 'scheduled',
+    statusReason: null,
   },
   {
     id: 'evt-2',
@@ -47,6 +51,8 @@ const seedEvents = (): MeetingsEvent[] => [
     startsAt: hoursFromNow(26),
     endsAt: hoursFromNow(27),
     optedOut: true,
+    meetingStatus: 'skipped',
+    statusReason: 'opted_out',
   },
   {
     id: 'evt-3',
@@ -59,12 +65,49 @@ const seedEvents = (): MeetingsEvent[] => [
     startsAt: hoursFromNow(72),
     endsAt: null,
     optedOut: false,
+    meetingStatus: 'not_admitted',
+    statusReason:
+      'denied: the host never let the notetaker in and the 3 minute lobby wait ran out',
   },
 ];
 
-let optIn: MeetingsOptIn = { enabled: false, lastSyncedAt: null };
+const seedBotRuns = (): MeetingsBotRun[] => [
+  {
+    id: 'job-1',
+    meetingId: 'mtg-1',
+    meetingTitle: 'Weekly product sync',
+    startsAt: hoursFromNow(-25),
+    startedAt: hoursFromNow(-25),
+    endedAt: hoursFromNow(-24),
+    exitReason: 'room_empty',
+    durationS: 3480,
+    meetingStatus: 'ready',
+  },
+  {
+    id: 'job-2',
+    meetingId: 'mtg-2',
+    meetingTitle: null,
+    startsAt: hoursFromNow(-49),
+    startedAt: hoursFromNow(-49),
+    endedAt: hoursFromNow(-48),
+    exitReason: 'denied',
+    durationS: null,
+    meetingStatus: 'not_admitted',
+  },
+];
+
+const SERVICE_ACCOUNT = 'notetaker@foundryx.iam.gserviceaccount.com';
+
+let optIn: MeetingsOptIn = {
+  enabled: false,
+  lastSyncedAt: null,
+  calendarEmail: null,
+  serviceAccountEmail: SERVICE_ACCOUNT,
+};
 let events: MeetingsEvent[] = seedEvents();
+let botRuns: MeetingsBotRun[] = seedBotRuns();
 let settings: MeetingsSettings = {
+  calendarServiceAccountEmail: SERVICE_ACCOUNT,
   minutesLanguage: 'en',
   audioRetentionDays: 90,
   llmConnectionId: null,
@@ -74,9 +117,16 @@ let settings: MeetingsSettings = {
 
 /** Test seam - put the mock back to its shipped starting state. */
 export function resetMeetingsMock(): void {
-  optIn = { enabled: false, lastSyncedAt: null };
+  optIn = {
+    enabled: false,
+    lastSyncedAt: null,
+    calendarEmail: null,
+    serviceAccountEmail: SERVICE_ACCOUNT,
+  };
   events = seedEvents();
+  botRuns = seedBotRuns();
   settings = {
+    calendarServiceAccountEmail: SERVICE_ACCOUNT,
     minutesLanguage: 'en',
     audioRetentionDays: 90,
     llmConnectionId: null,
@@ -89,12 +139,18 @@ export const mockMeetingsService: MeetingsService = {
   async getOptIn() {
     return { ...optIn };
   },
-  async setOptIn(enabled: boolean) {
+  async setOptIn(input: MeetingsOptInInput) {
     // A sync only ever runs for an opted-in user, so the timestamp appears
-    // with the first ON and is left alone afterwards.
+    // with the first ON and is left alone afterwards. An omitted calendar
+    // address keeps the stored one; sent as null clears it back to the login.
     optIn = {
-      enabled,
-      lastSyncedAt: enabled ? (optIn.lastSyncedAt ?? new Date().toISOString()) : optIn.lastSyncedAt,
+      ...optIn,
+      enabled: input.enabled,
+      lastSyncedAt: input.enabled
+        ? (optIn.lastSyncedAt ?? new Date().toISOString())
+        : optIn.lastSyncedAt,
+      calendarEmail:
+        'calendarEmail' in input ? (input.calendarEmail?.trim() || null) : optIn.calendarEmail,
     };
     return { ...optIn };
   },
@@ -112,6 +168,12 @@ export const mockMeetingsService: MeetingsService = {
     if (!row) throw new Error('Event not found.');
     row.optedOut = optedOut;
     return { ...row };
+  },
+  async listBotRuns(days = 7) {
+    const cutoff = Date.now() - days * 86_400_000;
+    return botRuns
+      .filter((r) => new Date(r.startsAt).getTime() >= cutoff)
+      .sort((a, b) => b.startsAt.localeCompare(a.startsAt));
   },
   async getSettings() {
     return { ...settings };

@@ -70,6 +70,13 @@ class UserOptIn(MeetingsBase):
     of theirs is ever synced while it is off. ``sync_token`` is Google's
     incremental ``syncToken`` for THIS user's calendar; it is dropped whenever
     Google rejects it (HTTP 410) and the next run refetches the full window.
+
+    ``calendar_email`` is WHICH calendar to read, and it is not always the login
+    email: a Workspace that blocks external sharing cannot share its own users'
+    calendars with our service account, so the calendar a user can actually share
+    is often a personal address. NULL means "my login email", which is what every
+    domain-wide-delegation tenant uses. Participant-to-user matching still goes by
+    the LOGIN email - this column changes the source, never the identity.
     """
 
     __tablename__ = "user_opt_ins"
@@ -82,6 +89,7 @@ class UserOptIn(MeetingsBase):
     # Core ``public.users.id`` - plain indexed column, no cross-schema FK.
     user_id = Column(String, nullable=False, index=True)
     enabled = Column(Boolean, nullable=False, default=False, server_default="0")
+    calendar_email = Column(String, nullable=True)
     sync_token = Column(Text, nullable=True)
     last_synced_at = Column(UTCDateTime(), nullable=True)
 
@@ -140,6 +148,13 @@ class Meeting(MeetingsBase):
     ``dedupe_key`` is ``<conference_url>|<starts_at ISO in UTC>``; it is what
     stops two invitees producing two bots for one meeting. S0 only ever creates
     it in ``scheduled``; S2 owns every other status.
+
+    ``status_reason`` explains any status that is not the happy path - why the
+    bot was not admitted, why the run failed, why the meeting was skipped. It
+    replaces S0's ``not_admitted_reason``, which could only ever have carried one
+    third of that (rev 0003); nothing had written it yet, so nothing was lost.
+    ``screenshot_key`` is the storage key of the bot's ``last.png``, the one
+    artefact that makes a failure diagnosable after the container is gone.
     """
 
     __tablename__ = "meetings"
@@ -160,7 +175,8 @@ class Meeting(MeetingsBase):
     # Core ``public.files.id`` holding the recorded audio - plain column (S2).
     recording_file_id = Column(String, nullable=True, index=True)
     language = Column(String, nullable=True)
-    not_admitted_reason = Column(Text, nullable=True)
+    status_reason = Column(Text, nullable=True)
+    screenshot_key = Column(Text, nullable=True)
     duration_s = Column(Integer, nullable=True)
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
