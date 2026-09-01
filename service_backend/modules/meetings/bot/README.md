@@ -32,6 +32,7 @@ by hand again, so it is a named volume per tenant, never a throwaway.
 | `BOT_LOBBY_TIMEOUT` | image | Seconds to wait in the lobby before giving up. Default 180. |
 | `BOT_EMPTY_ROOM_SECONDS` | image | Leave after this long with no humans. Default 60. |
 | `BOT_MIN_SECONDS` | image | Never call the room empty before this. Default 60. |
+| `BOT_NO_SHOW_TIMEOUT_S` | image | Before any human has ever been seen, leave (`no_show`) after this long from join instead of arming the empty-room leave. Default 600 (10 min) - covers a late host. |
 | `BOT_MAX_SECONDS` | image | Hard cap on one meeting. Default 4 h. |
 | `BOT_BROWSER_CHANNEL` | image | `chrome` on amd64; unset uses Playwright's Chromium (arm64). |
 
@@ -80,7 +81,8 @@ event. Exit code 0 with one of:
 
 | Reason | Meaning | S2 sets |
 |---|---|---|
-| `room_empty` | last human left | `processing` -> `ready` |
+| `room_empty` | last human left (only armed AFTER a human has been seen) | `processing` -> `ready` |
+| `no_show` | nobody was EVER seen; `BOT_NO_SHOW_TIMEOUT_S` expired from join | `skipped` (no recording registered, never transcribed) |
 | `removed` | the bot was removed from the call | `processing` -> `ready` |
 | `ended` | the host ended the meeting | `processing` -> `ready` |
 | `max_duration` | hit `BOT_MAX_SECONDS` | `processing` -> `ready` |

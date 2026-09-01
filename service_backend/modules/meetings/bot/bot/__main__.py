@@ -3,7 +3,7 @@
   python -m bot --meet-url https://meet.google.com/abc-defg-hij --display-name "Notetaker (for Jayson)" --out /out/run1
   python -m bot --login-only            # opens accounts.google.com on the Xvfb display + VNC on :5900
 
-Exit 0 with reason on stdout: joined | room_empty | removed | ended | max_duration | not_admitted | denied.
+Exit 0 with reason on stdout: joined | room_empty | no_show | removed | ended | max_duration | not_admitted | denied.
 Exit 1 with reason error:<what> and last screenshot uploaded (AC-S1-9).
 """
 from __future__ import annotations
@@ -54,6 +54,7 @@ def parse() -> argparse.Namespace:
     p.add_argument("--lobby-timeout", type=int, default=int(os.environ.get("BOT_LOBBY_TIMEOUT", "180")))
     p.add_argument("--empty-room-seconds", type=int, default=int(os.environ.get("BOT_EMPTY_ROOM_SECONDS", "60")))
     p.add_argument("--min-seconds", type=int, default=int(os.environ.get("BOT_MIN_SECONDS", "60")))
+    p.add_argument("--no-show-timeout", type=int, default=int(os.environ.get("BOT_NO_SHOW_TIMEOUT_S", "600")))
     p.add_argument("--max-seconds", type=int, default=int(os.environ.get("BOT_MAX_SECONDS", str(4 * 3600))))
     p.add_argument("--login-only", action="store_true")
     a = p.parse_args()
@@ -151,6 +152,7 @@ def run(a: argparse.Namespace) -> int:
 
             started = time.time()
             empty_since: float | None = None
+            ever_saw_human = False
             last_names: list[str] = []
             last_humans = -1
             while True:
@@ -167,6 +169,8 @@ def run(a: argparse.Namespace) -> int:
                 if p.names != last_names or p.humans != last_humans:
                     events.emit("participants", humans=p.humans, tiles=p.names)
                     last_names, last_humans = p.names, p.humans
+                if p.humans > 0:
+                    ever_saw_human = True
                 if p.speaking:
                     events.emit("active_speaker", names=p.speaking)
                 blocks = session.captions()
@@ -178,7 +182,16 @@ def run(a: argparse.Namespace) -> int:
                         events.emit("caption", speaker=b["speaker"], text=b["text"])
                         caption_done += 1
                     last_caption = (blocks[-1]["speaker"], blocks[-1]["text"])
-                if p.humans == 0 and time.time() - started > a.min_seconds:
+                if not ever_saw_human:
+                    # The empty-room leave must not arm before anyone has ever
+                    # shown up - a late host arriving right as it fires is
+                    # exactly the live bug this guards against. Wait out a
+                    # separate, longer bound instead (default 10 min).
+                    empty_since = None
+                    if time.time() - started >= a.no_show_timeout:
+                        reason = "no_show"
+                        break
+                elif p.humans == 0 and time.time() - started > a.min_seconds:
                     empty_since = empty_since or time.time()
                     if time.time() - empty_since >= a.empty_room_seconds:
                         reason = "room_empty"

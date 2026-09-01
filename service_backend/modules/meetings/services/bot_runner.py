@@ -39,6 +39,7 @@ from ..models import (
     STATUS_NOT_ADMITTED,
     STATUS_PROCESSING,
     STATUS_RECORDING,
+    STATUS_SKIPPED,
     Meeting,
 )
 from .recordings import (
@@ -59,6 +60,12 @@ DEFAULT_DISPLAY_NAME = "Notetaker"
 # The two exit words that mean the bot never got into the room (see
 # ``bot/__main__.py``). Every other zero exit is a finished call.
 NOT_ADMITTED_REASONS = ("not_admitted", "denied")
+
+# The bot joined and waited (recording the whole time) but no human EVER
+# showed up before its own bound (BOT_NO_SHOW_TIMEOUT_S) expired - a late
+# host, most often. That audio is pure silence: never worth registering or
+# transcribing (silence only produces a hallucinated transcript).
+NO_SHOW_REASON = "no_show"
 
 # A live event that moves the meeting on while the call is still running.
 LIVE_STATUS = {
@@ -564,6 +571,17 @@ def run_bot(db: Session, job: BackgroundJob) -> None:
     if reason in NOT_ADMITTED_REASONS:
         # No files, nothing to transcribe - the bot never got into the room.
         meeting.status = STATUS_NOT_ADMITTED
+        meeting.status_reason = reason
+        db.commit()
+        service.finish(job, status=JOB_DONE, result={"reason": reason})
+        _mark_bot_signed_in(db, meeting.tenant_id)
+        return
+    if reason == NO_SHOW_REASON:
+        # It DID get into the room (unlike NOT_ADMITTED_REASONS above) and
+        # recorded the whole wait, but nobody ever joined - that recording is
+        # silence, not a meeting. Skip it rather than register and transcribe
+        # audio that only hallucinates.
+        meeting.status = STATUS_SKIPPED
         meeting.status_reason = reason
         db.commit()
         service.finish(job, status=JOB_DONE, result={"reason": reason})

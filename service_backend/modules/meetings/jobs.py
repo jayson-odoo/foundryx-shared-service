@@ -163,6 +163,50 @@ def _events_jsonl(raw: bytes) -> Tuple[Optional[float], List[CaptionEvent]]:
     return start_epoch, captions
 
 
+def _ever_saw_a_human(raw: bytes) -> Optional[bool]:
+    """From ``events.jsonl``'s own ``participants`` events: True if any of
+    them ever reported a human in the room, False if there were participants
+    events and EVERY one said zero, None if there is no evidence either way.
+
+    ``None`` is never treated as "confirmed empty" - only a POSITIVE zero-
+    humans reading skips transcription (S2 live-run fix: a no_show meeting
+    whose recording is pure silence hallucinates a transcript, but a file
+    this can't read a verdict from is `_read_captions`'s problem to tolerate,
+    not this one's to punish)."""
+    seen_any = False
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("kind") != "participants":
+            continue
+        seen_any = True
+        if (row.get("humans") or 0) > 0:
+            return True
+    return False if seen_any else None
+
+
+def _recording_has_no_humans(db: Session, meeting) -> bool:
+    """True only on POSITIVE evidence (see ``_ever_saw_a_human``) that nobody
+    ever joined this meeting - defense in depth alongside the bot's own
+    `no_show` exit reason (``bot_runner.py``), for a recording that got
+    registered anyway (an older image, a race, a redelivered job before that
+    fix landed)."""
+    from .services.bot_runner import build_output
+
+    try:
+        _, _, artifacts = build_output(db, meeting)
+        if "events.jsonl" not in artifacts.names():
+            return False
+        return _ever_saw_a_human(artifacts.read("events.jsonl")) is False
+    except Exception:  # noqa: BLE001 - can't prove it, so don't skip on it
+        return False
+
+
 def _download_recording(db: Session, meeting) -> bytes:
     """The registered ``recording.ogg`` bytes, via the same core storage the
     file was originally saved through (``recordings.py`` §S2) - never the
@@ -274,7 +318,14 @@ def run_transcribe(db: Session, job: BackgroundJob) -> None:
     from app.jobs.service import JobService
     from app.models.background_job import JOB_DONE
 
-    from .models import STATUS_FAILED, STATUS_TRANSCRIBED, Meeting, Transcript, TranscriptSegment
+    from .models import (
+        STATUS_FAILED,
+        STATUS_SKIPPED,
+        STATUS_TRANSCRIBED,
+        Meeting,
+        Transcript,
+        TranscriptSegment,
+    )
 
     service = JobService(db)
     raw_meeting_id = (job.payload_json or {}).get("meeting_id")
@@ -297,6 +348,15 @@ def run_transcribe(db: Session, job: BackgroundJob) -> None:
         return
     if not meeting.recording_file_id:
         service.finish(job, status=JOB_DONE, result={"skipped": "meeting has no recording"})
+        return
+    if _recording_has_no_humans(db, meeting):
+        # S2 live-run fix, defense in depth: the bot's own `no_show` exit
+        # (bot_runner.py) already skips this normally - this catches a
+        # recording that got registered anyway. Silence only hallucinates.
+        meeting.status = STATUS_SKIPPED
+        meeting.status_reason = "no_show"
+        db.commit()
+        service.finish(job, status=JOB_DONE, result={"skipped": "no_show"})
         return
 
     try:

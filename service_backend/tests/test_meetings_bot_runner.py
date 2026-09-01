@@ -19,6 +19,7 @@ from modules.meetings.models import (
     STATUS_NOT_ADMITTED,
     STATUS_PROCESSING,
     STATUS_RECORDING,
+    STATUS_SKIPPED,
     STATUS_TRANSCRIBED,
     Meeting,
     MeetingParticipant,
@@ -466,6 +467,41 @@ def test_a_lobby_timeout_is_not_admitted_too(db, monkeypatch):
 
     assert meeting.status == STATUS_NOT_ADMITTED
     assert meeting.status_reason == "not_admitted"
+
+
+# ── S2 live-run fix: a late host must not be recorded as an empty room ───────
+
+
+def test_a_no_show_is_skipped_with_no_recording_and_never_transcribed(db, monkeypatch):
+    """Live evidence: the bot joined alone, its old empty-room grace fired at
+    +2min - exactly when the late host arrived - and it registered ~123s of
+    silent audio that hallucinated a transcript. The container now leaves
+    `no_show` only after BOT_NO_SHOW_TIMEOUT_S with zero humans EVER seen;
+    the orchestrator must not register that audio or enqueue transcription
+    for it - silence only produces a hallucinated transcript."""
+    from app.models.document import File
+
+    meeting = _prepare(db)
+    artifacts = FakeArtifacts({"audio_0000.ogg": OGG, "events.jsonl": b"{}"})
+    job, _docker, _container = _run(
+        db,
+        monkeypatch,
+        meeting,
+        lines=[
+            event_line("joined", lobby=False),
+            event_line("recording_started", ts=1_000.0),
+            event_line("participants", humans=0, tiles=[]),
+            event_line("finished", reason="no_show", segments=1),
+            "no_show",
+        ],
+        artifacts=artifacts,
+    )
+
+    assert meeting.status == STATUS_SKIPPED
+    assert meeting.status_reason == "no_show"
+    assert meeting.recording_file_id is None
+    assert db.query(File).count() == 0
+    assert job.status == "done"
 
 
 # ── AC-S2-8: a crash ─────────────────────────────────────────────────────────

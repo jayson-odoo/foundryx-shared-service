@@ -58,6 +58,16 @@ Three defects found in a live pilot run, fixed test-first on this branch (do-not
   `_container_for` re-attaches only to a container whose `.status == "running"`; anything else
   found under that name is removed (`force=True`) and a fresh container is started in the same
   run. A removal failure fails the run with the docker error.
+- **A late host got recorded as an empty room and hallucinated a transcript.** The bot joined
+  alone; its empty-room grace armed immediately, so it left `room_empty` at +2min - exactly when
+  the late host arrived - and ~123s of silent audio produced a hallucinated transcript ("Thank
+  you" at 30s boundaries). Fix (bot container, image rebuilt): the empty-room leave now arms only
+  AFTER a human has ever been seen; before that, a separate `BOT_NO_SHOW_TIMEOUT_S` bound (default
+  600s) from join governs, exiting `no_show` if it expires with zero humans ever seen. Orchestrator
+  (`bot_runner.py`): a `no_show` exit skips the meeting (`status_reason no_show`) with no recording
+  registered and no transcribe enqueued. `jobs.py` defense in depth: even a REGISTERED recording
+  whose `events.jsonl` `participants` events never saw a human skips transcription the same way,
+  never calling the provider on silence.
 
 ## 2. Inputs available at transcribe time (measured, not assumed)
 

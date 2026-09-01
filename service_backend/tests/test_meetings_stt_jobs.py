@@ -15,6 +15,7 @@ from modules.meetings.models import (
     STATUS_FAILED,
     STATUS_JOINING,
     STATUS_PROCESSING,
+    STATUS_SKIPPED,
     STATUS_TRANSCRIBED,
     Meeting,
     Transcript,
@@ -460,6 +461,63 @@ def test_a_meeting_id_that_no_longer_exists_is_a_clean_skip(db, storage, monkeyp
 
     assert finished.status == JOB_DONE
     assert finished.result_json == {"skipped": "meeting is gone"}
+
+
+def test_a_recording_with_zero_humans_ever_seen_skips_transcription(db, storage, monkeypatch):
+    """Fix 2 (review), defense in depth: a recording WAS registered (an older
+    bot image, a race, a redelivered job before this fix landed, ...) but
+    ``events.jsonl``'s own ``participants`` events show nobody ever joined -
+    silent audio only produces a hallucinated transcript ("Thank you" at 30s
+    boundaries, live evidence). Skip the same way a bot-level `no_show`
+    does, and never even call the provider."""
+    meeting = _meeting_with_recording(db, storage)
+    _patch_artifacts(
+        monkeypatch,
+        _events(
+            {"ts": 1000.0, "kind": "recording_started"},
+            {"ts": 1002.0, "kind": "participants", "humans": 0, "tiles": []},
+            {"ts": 1050.0, "kind": "participants", "humans": 0, "tiles": []},
+        ),
+    )
+    provider = _FakeProvider(result=_default_result())
+    _patch_provider(monkeypatch, provider)
+
+    from app.models.background_job import JOB_DONE
+
+    finished = _run(db, _job(db, meeting).id)
+
+    assert finished.status == JOB_DONE
+    assert finished.result_json == {"skipped": "no_show"}
+    assert provider.calls == []  # must never run the provider on silence
+    db.refresh(meeting)
+    assert meeting.status == STATUS_SKIPPED
+    assert meeting.status_reason == "no_show"
+    assert db.query(Transcript).filter(Transcript.meeting_id == meeting.id).count() == 0
+
+
+def test_a_run_with_a_human_present_transcribes_normally(db, storage, monkeypatch):
+    """The zero-humans robustness check must not false-positive on a normal
+    meeting that genuinely had someone in it."""
+    meeting = _meeting_with_recording(db, storage)
+    _patch_artifacts(
+        monkeypatch,
+        _events(
+            {"ts": 1000.0, "kind": "recording_started"},
+            {"ts": 1002.0, "kind": "participants", "humans": 1, "tiles": ["Alice"]},
+            {"ts": 1005.0, "kind": "caption", "speaker": "Alice", "text": "hi"},
+        ),
+    )
+    provider = _FakeProvider(result=_default_result())
+    _patch_provider(monkeypatch, provider)
+
+    from app.models.background_job import JOB_DONE
+
+    finished = _run(db, _job(db, meeting).id)
+
+    assert finished.status == JOB_DONE
+    assert provider.calls  # the provider DID run - a human was present
+    db.refresh(meeting)
+    assert meeting.status == STATUS_TRANSCRIBED
 
 
 def test_a_meeting_with_no_recording_is_skipped_not_failed(db, storage, monkeypatch):
