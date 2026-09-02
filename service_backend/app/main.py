@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import (
     ai,
+    ai_prompts,
     app_store,
     auth,
     avatars,
@@ -135,6 +136,9 @@ app.include_router(terminology.router, prefix="/terminology", tags=["terminology
 app.include_router(ai.agents_router, prefix="/ai/agents", tags=["ai"])
 app.include_router(ai.skills_router, prefix="/ai/skills", tags=["ai"])
 app.include_router(ai.traces_router, prefix="/ai/traces", tags=["ai"])
+# AI prompt registry (Meetings S4, R4/R5) - platform infra: immutable versions
+# + movable labels, editor gated `ai_prompts.manage` + platform tenant.
+app.include_router(ai_prompts.router, prefix="/ai-prompts", tags=["ai"])
 
 # Numbering engine (sprint-4/07, Cluster F) - read numbering.read, edit .manage.
 app.include_router(numbering.router, prefix="/numbering", tags=["numbering"])

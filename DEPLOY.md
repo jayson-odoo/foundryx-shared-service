@@ -146,3 +146,12 @@ or on the server set `IMAGE_TAG=<old-sha> ./scripts/blue_green_deploy.sh`.
   chunked runner (`mlx_runner.py`, S3 code-switch fix) also needs `ffmpeg`
   AND `ffprobe` on the host's `PATH` - it segments the audio with the former
   and measures each chunk's real duration with the latter.
+- Meetings minutes (`meetings.minutes`, S4) rides the SAME workflow worker,
+  registered by the same `modules/meetings/jobs.py` import - **the worker
+  needs a restart on any deploy that touches this job** (AC-S4-12), or every
+  `meetings.minutes` job (auto-enqueued after a successful transcribe, or a
+  manual regenerate) stays `Pending` forever with no error. It also needs an
+  LLM to call: either `meetings_llm_api_key` set (platform default, Gemini
+  by default - `meetings_llm_provider`/`meetings_llm_model` in `app/config.py`),
+  or every tenant using minutes picks its own connection via
+  `tenant_settings.llm_connection_id`.

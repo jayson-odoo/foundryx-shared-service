@@ -526,6 +526,51 @@ def test_a_run_with_a_human_present_transcribes_normally(db, storage, monkeypatc
     assert meeting.status == STATUS_TRANSCRIBED
 
 
+def test_a_successful_transcribe_enqueues_exactly_one_minutes_job(db, storage, monkeypatch):
+    """R2 / AC-S4-1: a successful transcribe auto-enqueues ``meetings.minutes``
+    - the ``ready`` hop belongs to that job, transcribe only ever reaches
+    ``transcribed`` itself."""
+    from app.models.background_job import JOB_DONE, BackgroundJob
+    from modules.meetings.jobs import MINUTES
+
+    meeting = _meeting_with_recording(db, storage)
+    _patch_artifacts(monkeypatch, {})
+    _patch_provider(monkeypatch, _FakeProvider(result=_default_result()))
+
+    finished = _run(db, _job(db, meeting).id)
+
+    assert finished.status == JOB_DONE
+    db.refresh(meeting)
+    assert meeting.status == STATUS_TRANSCRIBED
+
+    minutes_jobs = (
+        db.query(BackgroundJob)
+        .filter(BackgroundJob.type == MINUTES, BackgroundJob.tenant_id == meeting.tenant_id)
+        .all()
+    )
+    assert len(minutes_jobs) == 1
+    assert minutes_jobs[0].payload_json["meeting_id"] == meeting.id
+
+
+def test_a_failed_transcribe_does_not_enqueue_minutes(db, storage, monkeypatch):
+    from app.models.background_job import JOB_FAILED, BackgroundJob
+    from modules.meetings.jobs import MINUTES
+
+    meeting = _meeting_with_recording(db, storage)
+    _patch_artifacts(monkeypatch, {})
+    _patch_provider(monkeypatch, _FakeProvider(error=RuntimeError("mlx exited 1: OOM")))
+
+    finished = _run(db, _job(db, meeting).id)
+
+    assert finished.status == JOB_FAILED
+    minutes_jobs = (
+        db.query(BackgroundJob)
+        .filter(BackgroundJob.type == MINUTES, BackgroundJob.tenant_id == meeting.tenant_id)
+        .all()
+    )
+    assert minutes_jobs == []
+
+
 def test_a_meeting_with_no_recording_is_skipped_not_failed(db, storage, monkeypatch):
     """``bot_run`` (S2) enqueues ``transcribe`` unconditionally, including a
     call that recorded nothing (an empty room) - that is not a failure, there
