@@ -554,3 +554,64 @@ def test_a_meeting_with_no_recording_is_skipped_not_failed(db, storage, monkeypa
     db.refresh(meeting)
     assert meeting.status == STATUS_JOINING  # untouched
     assert db.query(Transcript).filter(Transcript.meeting_id == meeting.id).count() == 0
+
+
+# ── queue routing (sprint-5 prod-enablement, AC-STT-Q1) ──────────────────────
+# ``run_transcribe`` itself is exercised above; what changes here is WHERE the
+# job gets dispatched to, not what it does once it runs.
+
+
+def test_transcribe_is_registered_on_its_own_stt_queue():
+    """The registered handler declares ``stt``, never the default ``workflow``
+    queue the compose worker consumes."""
+    from app.jobs.registry import queue_for_type
+    from modules.meetings.jobs import TRANSCRIBE
+
+    assert queue_for_type(TRANSCRIBE) == "stt"
+
+
+def test_enqueue_routes_a_transcribe_job_onto_the_stt_queue(db, monkeypatch):
+    """Non-eager (prod-shaped) enqueue of a real ``meetings.transcribe`` job
+    publishes with Celery's ``queue=`` routing kwarg, never plain ``.delay`` -
+    the compose ``workflow`` worker never consumes ``stt``, so landing there
+    used to fail every transcribe job instantly instead of waiting for the
+    pilot host's dedicated worker."""
+    from app.config import settings
+    from app.jobs import worker as worker_module
+    from app.jobs.service import JobService
+    from modules.meetings.jobs import TRANSCRIBE
+
+    monkeypatch.setattr(settings, "celery_task_always_eager", False)
+    calls = []
+    monkeypatch.setattr(
+        worker_module.run_job_task,
+        "apply_async",
+        lambda args=None, queue=None, **kw: calls.append((args, queue)),
+    )
+    job = JobService(db).create(
+        type=TRANSCRIBE, tenant_id=DEFAULT_TENANT_ID, payload={"meeting_id": "m"}
+    )
+
+    JobService(db).enqueue(job.id)
+
+    assert calls == [([job.id], "stt")]
+
+
+def test_calendar_sync_still_rides_the_default_queue(db, monkeypatch):
+    """The OTHER meetings job type keeps using the worker's default queue via
+    plain ``.delay`` - only ``transcribe`` moved onto ``stt``."""
+    from app.config import settings
+    from app.jobs import worker as worker_module
+    from app.jobs.service import JobService
+    from modules.meetings.jobs import CALENDAR_SYNC
+
+    monkeypatch.setattr(settings, "celery_task_always_eager", False)
+    delayed = []
+    monkeypatch.setattr(
+        worker_module.run_job_task, "delay", lambda job_id: delayed.append(job_id)
+    )
+    job = JobService(db).create(type=CALENDAR_SYNC, tenant_id=DEFAULT_TENANT_ID)
+
+    JobService(db).enqueue(job.id)
+
+    assert delayed == [job.id]

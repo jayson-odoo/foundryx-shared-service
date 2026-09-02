@@ -1,12 +1,33 @@
 """Calendar-sync background job (S0 plan §3).
 
 Rides the EXISTING ``background_jobs`` table + ``register_job_handler`` (spine
-M19) - the module adds no queue, no scheduler and no runner of its own.
+M19) - the module adds no scheduler and no runner of its own for
+``calendar_sync``.
 
 The beat tick (``enqueue_due_calendar_syncs``) is deliberately narrow: it creates
 a job only for a tenant that has the module ACTIVE, an ACTIVE Google connection,
 at least one opted-in user, and no pass still in flight. A tenant that switched
 everyone off, or never finished onboarding Google, costs nothing.
+
+``transcribe`` (S3, ``run_transcribe`` below) DOES declare its own queue
+(sprint-5 prod-enablement): it still rides the shared ``workflow`` Celery app
+(``app/workflow_engine/worker.py``), but on the dedicated ``stt`` queue rather
+than that worker's default ``workflow`` queue. mlx STT is Metal-bound and only
+runs where the mlx venv exists - the pilot Mac Mini
+(``scripts/setup_stt_venv.sh``) - never on the Linux compose ``workflow``
+worker, which used to fail every transcribe job instantly. A dedicated worker
+on the pilot host attaches to prod Redis over an SSH tunnel and consumes ONLY
+that queue:
+
+    no_proxy='*' PGGSSENCMODE=disable OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES \\
+      celery -A app.workflow_engine.worker worker -Q stt -c 1 --loglevel info
+
+Concurrency 1: the mlx driver's own host-level ``flock`` (R1, ``mlx_local.py``)
+already serializes transcription to one at a time, so a second worker slot
+would only sit idle behind the same lock. The three macOS env vars are the same
+fork-safety prefix the ``bots`` worker needs (``modules/meetings/worker.py``'s
+docstring); the Linux compose workers need none of them. See ``DEPLOY.md`` for
+the tunnel shape and the ``bots`` worker's matching run command.
 """
 from __future__ import annotations
 
@@ -44,10 +65,10 @@ from .stt.align import CaptionEvent, assign_speakers
 logger = logging.getLogger("foundryx.meetings")
 
 CALENDAR_SYNC = "meetings.calendar_sync"
-# The orchestrator's job types. ``bot_run`` is the only job in the system that
-# runs on the ``bots`` queue; ``transcribe`` (S3, ``run_transcribe`` below)
-# rides the same shared workflow queue - R1's flock, not a fourth worker, is
-# what keeps at most one transcription running at a time.
+# The orchestrator's job types. ``bot_run`` runs on the ``bots`` queue;
+# ``transcribe`` runs on its own ``stt`` queue (sprint-5 prod-enablement -
+# see the module docstring above for why it can't share ``bot_run``'s worker
+# OR the app server's default ``workflow`` queue).
 BOT_RUN = "meetings.bot_run"
 TRANSCRIBE = "meetings.transcribe"
 MODULE_NAME = "meetings"
@@ -514,7 +535,10 @@ def enqueue_due_calendar_syncs(db: Session) -> int:
 # The SAME def object re-registers cleanly (the registry tolerates identity).
 _HANDLER_DEF = JobHandlerDef(CALENDAR_SYNC, run_calendar_sync, "Meetings calendar sync")
 _BOT_RUN_DEF = JobHandlerDef(BOT_RUN, _run_bot, "Meetings bot run")
-_TRANSCRIBE_DEF = JobHandlerDef(TRANSCRIBE, run_transcribe, "Meetings transcription")
+# queue="stt": Metal-bound mlx STT only runs on the pilot host's dedicated
+# worker (module docstring above) - it must never land on the compose
+# ``workflow`` worker, which has no mlx venv and would fail every job instantly.
+_TRANSCRIBE_DEF = JobHandlerDef(TRANSCRIBE, run_transcribe, "Meetings transcription", queue="stt")
 
 
 def register_calendar_sync_handler() -> None:
