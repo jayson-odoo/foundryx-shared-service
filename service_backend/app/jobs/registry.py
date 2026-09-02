@@ -6,7 +6,7 @@ Mirrors the engine registries (status entities / rule facts / importers): a
 for the same ``type`` is a loud error too (mirrors the capability registry).
 """
 from dataclasses import dataclass
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -20,11 +20,18 @@ JobHandler = Callable[[Session, BackgroundJob], None]
 
 @dataclass(frozen=True)
 class JobHandlerDef:
-    """One job ``type`` and the callable that executes it."""
+    """One job ``type`` and the callable that executes it.
+
+    ``queue`` is the Celery queue this type must be dispatched onto - None (the
+    default) rides the ``workflow`` worker's default queue like every other
+    job. A type declares one when its work cannot run on that shared worker
+    (sprint-5: ``meetings.transcribe`` needs the Metal-bound mlx STT venv that
+    only exists on the pilot host)."""
 
     type: str
     handler: JobHandler
     label: str
+    queue: Optional[str] = None
 
 
 _REGISTRY: Dict[str, JobHandlerDef] = {}
@@ -53,6 +60,17 @@ def handler_for(job_type: str) -> JobHandlerDef:
 
 def list_job_handlers() -> List[JobHandlerDef]:
     return list(_REGISTRY.values())
+
+
+def queue_for_type(job_type: str) -> Optional[str]:
+    """The Celery queue a registered ``type`` declares, or None when it has no
+    override (the default queue) - including for a ``type`` that is not
+    registered at all. ``JobService.enqueue`` only cares whether there is an
+    override to route onto, so this stays quiet rather than raising the way
+    ``handler_for`` does; the loud unknown-type check already happened at
+    ``create()`` time."""
+    handler_def = _REGISTRY.get(job_type)
+    return handler_def.queue if handler_def is not None else None
 
 
 def _reset_registry_for_tests() -> None:

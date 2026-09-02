@@ -98,6 +98,10 @@ services:
     image: redis:7-alpine
     container_name: foundryx_ss_redis
     command: redis-server --appendonly yes
+    # Loopback-only, for the SSH-tunneled pilot stt/bots workers (Mac Mini) -
+    # see DEPLOY.md; never expose publicly.
+    ports:
+      - "127.0.0.1:6379:6379"
     volumes:
       - foundryx_ss_redis:/data
     restart: unless-stopped

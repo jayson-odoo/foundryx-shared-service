@@ -137,12 +137,44 @@ or on the server set `IMAGE_TAG=<old-sha> ./scripts/blue_green_deploy.sh`.
   in backend env for manual expand-contract rollouts.
 - The email-outbox dispatcher is a lifespan thread inside each gunicorn worker;
   it claims under a DB lease, so multiple workers are safe.
-- Meetings transcription (`meetings.transcribe`) runs on the existing workflow
-  worker, not a new process - but the default `meetings_stt_python` only
-  exists on the macOS pilot host (`scripts/setup_stt_venv.sh`'s mlx venv,
-  Metal-only). A compose/prod deploy needs its own STT strategy (a reachable
-  `meetings_stt_python`, or a non-`mlx_local` provider) before enabling
-  meetings for a tenant, or every transcribe job fails immediately. The
-  chunked runner (`mlx_runner.py`, S3 code-switch fix) also needs `ffmpeg`
-  AND `ffprobe` on the host's `PATH` - it segments the audio with the former
-  and measures each chunk's real duration with the latter.
+- Meetings transcription (`meetings.transcribe`, sprint-5 prod-enablement) now
+  routes onto its own `stt` Celery queue, which NONE of the compose workers
+  consume (`worker_workflow` runs `-Q workflow` only). A transcribe job simply
+  WAITS in Redis - no more instant failures - until the pilot host's dedicated
+  `stt` worker attaches over the tunnel below and drains it. `meetings.calendar_
+  sync` and `meetings.bot_run` (the `bots` queue) are unaffected. The chunked
+  runner (`mlx_runner.py`, S3 code-switch fix) needs `ffmpeg` AND `ffprobe` on
+  the pilot host's `PATH` - it segments the audio with the former and measures
+  each chunk's real duration with the latter.
+
+## Meetings pilot host (Mac Mini)
+
+The meetings module's two Metal/Docker-bound workers - `stt` (mlx transcription)
+and `bots` (meeting recorder, needs a Docker socket) - never run in the Linux
+compose stack. They run on the pilot Mac Mini instead, attached to prod Redis
+and Postgres over an SSH tunnel:
+
+```
+ssh -L 6379:127.0.0.1:6379 -L 5433:127.0.0.1:5433 user@host -N
+```
+
+(`6379` = redis, loopback-published in `docker-compose.yml` for exactly this;
+`5433` = the `POSTGRES_PORT` mapping from "Topology" above - the Mini's stt
+worker still needs `DATABASE_URL` to write transcript rows.) With the tunnel up,
+point the Mini's `.env` at `REDIS_URL=redis://127.0.0.1:6379/0` and the tunneled
+Postgres port, then start each worker (both need the macOS fork-safety prefix -
+see `modules/meetings/worker.py`'s module docstring for why):
+
+```
+no_proxy='*' PGGSSENCMODE=disable OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES \
+  celery -A app.workflow_engine.worker worker -Q stt -c 1 --loglevel info
+
+no_proxy='*' PGGSSENCMODE=disable OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES \
+  celery -A modules.meetings.worker worker -Q bots -c 2 --loglevel info
+```
+
+Neither worker is part of `docker-compose.yml`'s managed set (the `stt` app
+reuses `app.workflow_engine.worker`, just on a queue that worker never
+declares in its own command; `worker_bots` stays commented out in compose for
+the same reason). Both are the operator's responsibility to keep running
+alongside the tunnel.
