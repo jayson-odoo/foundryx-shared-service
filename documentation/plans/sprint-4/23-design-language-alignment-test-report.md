@@ -410,3 +410,312 @@ Evidence: `fixround3-01-users-list-{1280-light,1280-dark,375-dark}.png`,
 
 **Verdict: T1 fix round 3 DONE.** 10/10 findings resolved and re-verified; one deliberate,
 reviewer-facing colour change flagged above (not silently absorbed); full gate green.
+
+---
+
+## T2 - Primitives
+
+**Branch:** `sprint-4/23-T2-primitives` (off `sprint-4/23-design-language-alignment`, at `53ee957`
+- T0+T1 merged).
+**Evidence:** `documentation/plans/sprint-4/23-evidence/T2/` (`README.md` run log + 20
+screenshots).
+**Environment:** backend `service_backend` (this worktree's venv) on :8001; frontend
+`rm -rf .next && npm run build` (green) served via `npx next start -p 3002` (this worktree, port
+ownership confirmed via `lsof` before every restart); `agent-browser` CLI only, real clicks,
+`demo@example.com`/`demo1234`.
+
+Tests were written first per primitive and watched fail for the right reasons (missing exports,
+un-migrated primitives, old defaults) before implementation, per the work order - see each AC's
+Steps for the exact file. Two AC-DLA-13/18 bugs (mobile page-scroll, mobile-pin specificity) were
+NOT caught by any unit test - jsdom has no real layout - and were found and fixed live during the
+375 evidence pass; both are now pinned by new inventory assertions.
+
+### AC-DLA-09 - primitive-classes exports + PRESSED_CLASS/COARSE_HIT_TARGET_CLASS `[FE][T]`
+
+**User story:** As a maintainer, I want the pressed feedback and touch-target rules defined once
+so every control answers the same way.
+**Scenario:** Given `components/ui/primitive-classes.ts`, when a primitive that must feel pressed
+or reach 44px imports it, then the class strings are wired exactly where AC-DLA-09 names.
+**Steps:** `npx vitest run components/ui/primitive-classes.test.ts`.
+**Expected:** exports present with the exact token/class content; Button lg/md/icon, checkbox,
+switch, radio, toggle, TabsTrigger, slider thumb, DropdownMenuItem, ContextMenuItem, MenubarItem,
+CommandItem carry `PRESSED_CLASS`; Button lg/md/icon + checkbox/switch/radio carry
+`COARSE_HIT_TARGET_CLASS`; `sm` buttons do not.
+**Actual:** PASS - 20/20 assertions green.
+**Remarks:** Ported verbatim from Sorento `origin/main` with the M1-01 `duration-fast`/
+`ease-standard` refinement (from `origin/integration/ui-motion-round2`) already baked into
+`PRESSED_CLASS`, per the AC's literal quoted class string - deliberately did NOT port the
+integration branch's separate `PRESSED_TRANSFORM_CLASS` (keyboard-item variant without a colour
+transition), since AC-DLA-09 explicitly lists `DropdownMenuItem`/`ContextMenuItem`/`MenubarItem`/
+`CommandItem` under plain `PRESSED_CLASS` with no mention of a transform-only variant - see "AC
+wording I flagged" at the end of this report.
+
+### AC-DLA-10 - Dialog/AlertDialog/Sheet modal + overlay + caps + close ring `[FE][T]`
+
+**Scenario:** Given any `Dialog`/`AlertDialog`/`Sheet` without an explicit `modal`, when it opens,
+then it is modal (focus trapped, Escape closes); overlay = the shared `OVERLAY_CLASS` scrim;
+`AlertDialog`/`Sheet` top-bottom content cap height and scroll; `SheetBody` scrolls independently;
+`DialogClose` no longer suppresses the focus-visible ring.
+**Steps:** `npx vitest run components/ui/modal-defaults.test.tsx`; browser: user-record Trash
+AlertDialog, mobile nav Sheet.
+**Expected:** 7/7 assertions; live Escape-closes and scrim-visible proof.
+**Actual:** PASS - 7/7. Live: `23-evidence/T2/05-user-record-trash-dialog-1280.png` (AlertDialog,
+scrim+blur, Escape confirmed to close it) and `19-mobile-nav-sheet-375.png` (Sheet, same scrim,
+Escape closes).
+**Remarks:** `AlertDialog` needed no `modal` default change - Radix's `AlertDialogProps` OMITS the
+`modal` prop entirely (`Omit<DialogProps, 'modal'>`), so it is unconditionally modal already; only
+`Dialog` and `Sheet` gained an explicit `modal = true` default (Radix's own default was already
+`true`, so this is a documentation/defensiveness change with zero behavioural delta for existing
+callers - confirmed no call site anywhere in the tree passes `modal={false}`). The plan's risk note
+about utility sheets (workflow canvas drawer, conversation drawer, jobs drawer) needing
+`overlay={false}`/`modal={false}` did not apply: none of those three surfaces in this codebase are
+actually built on the `Sheet`/`Dialog` primitives (the conversation drawer and workflow
+node-config panel are hand-rolled inline panels, not Radix dialogs) - grepped and confirmed, no
+code change needed there.
+
+### AC-DLA-11 - Badge shape/appearance/status dot `[FE][T]`
+
+**Scenario:** Given `Badge`, when rendered with `appearance="light"` (default) in dark mode, then
+the background and text resolve to DIFFERENT tokens (was: both read the same `-soft` var, so the
+pill rendered as a solid block with invisible text); given `shape="circle"`, then it stays a solid
+disc; given `appearance="ghost"`, then it does not exist anywhere.
+**Steps:** `npx vitest run components/ui/badge.test.tsx`; browser: Users list dark.
+**Expected:** `rounded-full` base, `md`=h-6/px-2.5, `sm`=h-5/px-2; every `light`/`outline` compound's
+`dark:bg`/`dark:text` reference different `--color-*` custom properties; zero `<Badge
+appearance="ghost">` remains; `status-badge.tsx` keeps the 6px dot.
+**Actual:** PASS - 7/7. Live: `01-users-list-1280.png` (light) vs `02-users-list-1280-dark.png`
+(dark) - the "Active" status pill and every role pill are legible in both themes now, where T1's
+own evidence (`23-evidence/T1/01-users-list-1280-dark.png`) documented the SAME surface with
+invisible text in dark.
+**Remarks:** Kept `lg` size (proven needed - `status-badge.tsx`'s `StatusBadgeProps.size` includes
+`'lg'`, and 6 dead Metronic demo card partials under `app/components/partials/cards/**` - zero
+real importers, confirmed by grep, slated for T7 deletion - pass it too, so removing it would have
+broken the type even though nothing renders them); dropped `xs` (zero call sites anywhere). Only
+ONE real `appearance="ghost"` site existed outside `account/**` demo routes -
+`app/(protected)/account/security/allowed-ip-addresses/components/ip-addresses.tsx` (itself part
+of the Metronic `account/security/*` demo subtree slated for T7 deletion, not the REAL
+`/account/security` feature) - migrated to `appearance="outline"`. Kept the existing
+`shape="circle"` auto-solid convenience (a caller that omits `appearance` on a count badge gets
+the solid fill it always had - `resource-list.tsx`'s selection-count pill and the omnichannel
+unread badge both rely on this without passing `appearance` explicitly; verified live no visual
+regression on either).
+
+### AC-DLA-12 - Tabs default `line` + scroll + mask + segmented-keeper inventory `[FE][T]`
+
+**Scenario:** Given `TabsList`, when no `variant` is passed, then it renders as an underline
+(`line`) that scrolls horizontally with a hidden scrollbar and a right-edge mask on overflow;
+given a genuine 2/3-option segmented switch built on `TabsList`, then it pins `variant="default"`
+explicitly and is the ONLY kind of site that does.
+**Steps:** `npx vitest run components/ui/tabs.inventory.test.ts`; browser: user record tabs,
+workflow editor tabs (1280 and 375).
+**Expected:** both cva blocks + the context default to `'line'`; base class carries
+`overflow-x-auto [scrollbar-width:none]` + the `data-fade` mask; exactly the recorded keeper set
+pins `variant="default"`, nowhere else does.
+**Actual:** PASS - 7/7. Live: `03-user-record-1280.png` (Profile/Security/Activity underlined),
+`08-workflow-editor-1280.png` + `18-workflow-editor-375.png` (Editor/Logs/Settings/Versions
+underlined, scrolling not wrapping at 375).
+**Remarks - AC/plan ruling on the "resource-list Active|Trashed, card/list toggle" keepers named
+in AC-DLA-12 and plan section 3.2:** grepped and confirmed `resource-list.tsx`'s Active|Trashed
+control and its card/list view toggle are BOTH built on `ToggleGroup`/`ToggleGroupItem`
+(`components/ui/toggle-group.tsx`), not `TabsList` - they were never affected by the `TabsList`
+default flip and have no `variant` prop to pin. This is a genuine mismatch between the AC/plan
+text (written assuming a different implementation) and this codebase's actual primitives - not a
+gap in this slice's work, since there is nothing on those two controls FOR a `TabsList`-scoped AC
+to change. The inventory instead greps the whole tree for real `<TabsList variant="default">`
+sites and finds exactly two genuine 2/3-option switches: `autocount-formula-builder.tsx`
+(Formula|Testing mode toggle) and `app/(protected)/omnichannel/inbox/components/thread-list.tsx`
+(All|Mine|Unassigned filter) - both pinned, both proven the ONLY sites via the inventory's
+tree-wide negative assertion. `conversation-drawer.tsx`'s Messages|Activities `TabsList` was
+judged a navigational content-tab strip (same category as `resource-form`'s record tabs), not a
+segmented switch, so it was left unpinned and now renders `line` like every other tab strip.
+
+### AC-DLA-13 - DataGrid defaults + scroller + pinned column + tabular-nums + no-ScrollArea `[FE][T]`
+
+**Scenario:** Given `DataGrid`, when no `tableLayout` override is passed, then `headerSticky`/
+`columnsResizable`/`columnsMovable` default true; given the grid's own content, when it exceeds
+the container, then ONLY the grid's own scroller scrolls (never the page) with a right-edge fade;
+given a phone viewport, then the first non-select column pins left; given the resize handle, then
+it captures the pointer; given any list, then zero wrap `DataGridTable*` in a `ScrollArea`.
+**Steps:** `npx vitest run components/ui/data-grid.inventory.test.ts`; browser: Users list at 1280
+and 375 (scrolled).
+**Expected:** 8/8 assertions (added 1 live-caught regression assertion beyond the original 7);
+live proof of a genuinely scrolling grid with a pinned first column and a page that does NOT
+scroll sideways.
+**Actual:** PASS after two live-caught fixes - 8/8. Live: `12-users-list-375.png`,
+`13-users-list-375-grid-scrolled.png` (User column pinned, Joined column scrolled into view,
+`document.documentElement.scrollWidth === window.innerWidth === 375` confirmed via `agent-browser
+eval` before AND after scrolling the grid to `scrollLeft: 400`).
+**Remarks - two real bugs found live, not by any test (jsdom has no real layout):**
+1. **The whole page scrolled sideways, not the grid.** `CardTable` (the grid's usual ancestor) is
+   `display: grid`; a grid item defaults to `min-width: auto` and refuses to shrink below its
+   content's intrinsic width. My new scroller wrapper (and the `DataGridTableDnd`/
+   `DataGridTableDndRows` variants' own pre-existing `<div className="relative">` wrapper, one
+   level further out) never actually clipped as a result. Fixed with `min-w-0` on all three
+   grid-item wrapper divs; pinned by a new inventory test.
+2. **The mobile pin computed `position: relative`, not `sticky`, even after fix 1.** A byte-level
+   diff of the compiled CSS found the row-select stripe's PRE-EXISTING compound selector
+   (`[&_>:first-child]:relative>:first-child`, applied whenever `enableRowSelection` is true -
+   every real list) outranks a plain `.max-sm\:sticky` class by CSS specificity (one class + one
+   pseudo-class beats one class) regardless of source order or the responsive media wrapper.
+   Fixed with Tailwind's `!` (important) suffix on every `MOBILE_PIN_CLASS` declaration. Also
+   found and removed a second, independent cause while investigating: `DataGridTableDnd`'s
+   dnd-kit `style` objects hardcoded `position: 'relative'` unconditionally on EVERY header and
+   body cell whenever `columnsMovable` is true (`resource-list.tsx`'s default, so every real
+   list) - an inline style always wins over ANY class including a responsive variant, defeating
+   the pin outright regardless of the `!important` fix. Removed as dead weight (the base
+   `relative` utility class the cell already carries provides the identical value).
+3. `columnResizeMode: 'onChange'` (named in the AC text as a "DataGrid default") is a
+   `useReactTable` construction option, not a `DataGridProps` field - `resource-list.tsx` (the
+   real caller) already set it explicitly before this slice; confirmed unchanged, no action
+   needed.
+4. The `min-width` sizing on the table itself uses a JS-computed `getTotalSize()` pixel value
+   (matching Sorento's LATER, bug-fixed implementation) rather than the plan text's literal
+   `min-w-max` - `min-w-max` is meaningless on a `table-layout: fixed` table (fixed layout ignores
+   content by design; Chrome resolves `max-content` to an "infinite" sentinel and scales every
+   column to fill it), which is exactly the failure mode Sorento's own comment on the file
+   documents. Implementation detail, not an AC wording change.
+5. `resource-list.tsx` was wrapping its `DataGridTableDnd`/`DataGridTableDndRows` render in a
+   Radix `<ScrollArea><ScrollBar orientation="horizontal"/></ScrollArea>` - exactly the anti-pattern
+   AC-DLA-13's own "zero list wraps DataGridTable in a ScrollArea" clause bans (`ScrollArea`'s
+   viewport is `display: table`, which shrink-fits and never reports an overflow, so the grid
+   could never actually scroll sideways there either). Removed; the grid's own scroller is now
+   the only scrollport. This is the one `components/platform/**` edit beyond the "pin only"
+   allowance in the brief, made because AC-DLA-13's own inventory clause can only pass with it
+   fixed, and it is inseparable from the primitive work (the primitive's new scroller and the
+   removed wrapper are the same bug from two ends).
+
+### AC-DLA-14 - `rowHref` link semantics + prefetch-once + active: + transition-opacity `[FE][T]`
+
+**Scenario:** Given `DataGrid` `rowHref`, when a row is clicked/Enter-Space'd/middle-clicked/
+hovered, then it behaves as a real link (push, new tab, prefetch-once); given a cell with its own
+control, then clicking it never navigates the row; given neither `rowHref` nor `onRowClick`, then
+no pointer cursor and no link role.
+**Steps:** `npx vitest run components/ui/data-grid-table.rowHref.test.tsx`.
+**Expected:** 7/7 assertions (role=link + tabIndex, click pushes, Enter/Space push, middle-click
+opens a new tab via `window.open` not `push`, hover prefetches exactly once, a nested control's
+click does not navigate, neither prop = no link role and no `cursor-pointer`).
+**Actual:** PASS - 7/7.
+**Remarks:** `role="link"` is what AC-DLA-14 explicitly asks for, quoted directly in this slice's
+brief - implemented as literally specified. Worth flagging: Sorento's OWN later revision
+(`origin/integration/ui-motion-round2`, `LinkableBodyRow`) deliberately REMOVED `role="link"` from
+this exact pattern, with a comment explaining an explicit ARIA role REPLACES the implicit `row`
+role, so a linkable `<tr>` stopped being a `row` to assistive tech and `getAllByRole('row')`
+broke in their own test suite. This repo's AC text was written without visibility into that later
+reversal. Implemented per the AC as written (contract wins); flagged under "AC wording I flagged"
+below rather than silently deviating. The capability is NOT yet wired into any real list
+(`resource-list.tsx` still passes `onRowClick`, unchanged) - that wiring is explicitly T4's job
+per the brief ("do NOT rewire row navigation to `rowHref`, that is T4").
+
+### AC-DLA-15 - `isPlaceholderData` dim + pagination gating `[FE][T]`
+
+**Scenario:** Given `DataGrid` `isPlaceholderData`, when true, then the body dims (`opacity-60`)
+and the pagination strip stays mounted and interactive; given `isLoading`, then skeleton rows
+render ONLY when there are zero rows to show.
+**Steps:** `npx vitest run components/ui/data-grid-placeholder.test.tsx`.
+**Expected:** 5/5 assertions (body dims + rows still render, no skeleton while
+`isPlaceholderData`, skeleton only on a genuine first load, empty state once settled with zero
+rows, pagination's own skeleton gate matches).
+**Actual:** PASS - 5/5.
+**Remarks:** `DataGridPagination`'s own skeleton gate changed from bare `isLoading` to
+`isLoading && !isPlaceholderData && recordCount === 0` - reads `isPlaceholderData` off the
+`DataGridProps` exposed via `useDataGrid()`'s `props` key (not a new context field). Not yet wired
+into `use-resource-list.ts`/`ResourceList` (T4's job, per plan section 3.4: "keep `rows` while
+`isLoading`... expose `isPlaceholderData`... `ResourceList` forwards it").
+
+### AC-DLA-16 - Tooltip bare Root + ONE provider 700/300 `[FE][T]`
+
+**Scenario:** Given `tooltip.tsx`, when `Tooltip` renders, then it is a bare Radix `Root` with no
+internal provider; given the app, then exactly one `TooltipProvider` (700ms delay, 300ms skip) is
+mounted, in `providers/tooltips-provider.tsx`; given tooltip content, then it animates opacity
+only, no `zoom-in-95`.
+**Steps:** `npx vitest run providers/tooltips-provider.test.tsx`; browser: My Account page info
+tooltip.
+**Expected:** 4/4 assertions; live 700ms-delay + opacity-only proof.
+**Actual:** PASS - 4/4. Live: `10-tooltip-700ms-1280.png` + the DOM-polling proof in the README
+(absent at ~300ms, present at ~900ms, class list has `duration-(--duration-fast) animate-in
+fade-in-0` and no zoom/slide keyframes).
+**Remarks:** Making `Tooltip` a bare Root (removing its previous auto-wrap) broke 2 EXISTING test
+files that rendered a `<Tooltip>`-using component with no provider in their own tree (`app/
+(protected)/account/page.test.tsx`, `components/platform/rule-builder/rule-builder.test.tsx`) -
+both fixed by wrapping their local `render()` helper in `TooltipsProvider`, a one-time cost since
+those are the only two component tests that render a live `<Tooltip>` without their own wrapper
+(full-suite grep + the green 182/182 file run confirms no others). `theme-provider.tsx` and
+`query-provider.tsx` both had a duplicated `'use client';'use client';` pragma at their top,
+fixed in passing while editing these files (zero behavioural change, harmless leftover from an
+earlier generation pass).
+
+### AC-DLA-17 - Toaster top-center + closeButton `[FE][T]`
+
+**Scenario:** Given `<Toaster>`, when mounted, then it renders `position="top-center"` and
+`closeButton`; given `query-provider.tsx`'s error toast, then it no longer passes a per-call
+`position`.
+**Steps:** `npx vitest run components/ui/sonner.test.tsx`; browser: DOM inspection of the mounted
+Toaster.
+**Expected:** 2/2 assertions; live `data-y-position="top" data-x-position="center"` proof.
+**Actual:** PASS - 2/2. Live: `11-toast-top-center-1280.png` + the `data-sonner-toaster`
+attribute dump in the README (present on the mount itself, independent of an active toast, which
+is the more reliable signal than timing a 4s-duration toast's screenshot).
+**Remarks:** Only ONE `<Toaster/>` mount exists in the whole tree (`app/layout.tsx`), confirmed by
+grep - no second Toaster to reconcile.
+
+### AC-DLA-18 - 375 sweep: Users, a record, Settings tabs, Services, a workflow `[FE][E2E]`
+
+**Scenario:** Given every primitive surface above, when viewed at 375, then no clipped control,
+tab strips scroll, the grid scrolls sideways inside itself with the first column pinned, the
+toolbar wraps.
+**Steps:** `agent-browser`, real clicks from `/` for the initial 1280 pass (sidebar + row clicks),
+direct URL revisit of the same nine already-click-reached routes for the 375 responsive re-check
+(see the README's navigation-method note) - both widths, both themes for Users.
+**Expected:** 20 screenshots, no clipped control, no console errors attributable to this slice's
+diff.
+**Actual:** PASS - 20/20 captured; zero new console errors (two PRE-EXISTING a11y warnings noted,
+matching T1's own already-logged findings, not new). Two real bugs were caught and fixed during
+this exact step (AC-DLA-13's remarks above) - which is the reason this AC exists as a live browser
+check and not only a unit test suite.
+**Remarks:** See `23-evidence/T2/README.md` for the full run log, including the two live-caught
+bugs' before/after evidence.
+
+### AC wording I flagged (not silently deviated from - implemented as written)
+
+1. **AC-DLA-09's `PRESSED_CLASS` on `ContextMenuItem`/`MenubarItem`/`CommandItem`** matches
+   Sorento `origin/main`'s `PRESSED_CLASS`, but Sorento's LATER revision
+   (`origin/integration/ui-motion-round2`) splits these three into a separate
+   `PRESSED_TRANSFORM_CLASS` (shrink only, no colour transition) specifically because animating
+   the highlight colour on a KEYBOARD-navigated selection (arrow keys moving the highlight) is
+   "motion on a keyboard-initiated action" - a hard-fail this very plan's own PRINCIPLES.md
+   addition (T8) will codify. `DropdownMenuItem` is exempt in Sorento's own reasoning (normally
+   pointer-driven, already carried `transition-colors` pre-M1). This repo's AC-DLA-09 text quotes
+   `PRESSED_CLASS` (not the split variant) for all four menu-item types, so it is implemented
+   exactly as written; flagging because a future motion-audit slice (T3's `/review-animations` or
+   T8's hard-fail sweep) may want to revisit these three specifically against the same rule this
+   plan is about to adopt for everything else.
+2. **AC-DLA-14's `role="link"` on the DataGrid row** - see AC-DLA-14's Remarks above (Sorento
+   reversed this exact choice after it broke `getAllByRole('row')` semantics). Implemented as
+   written since the UAC is the contract.
+3. **AC-DLA-12/plan 3.2's "resource-list Active|Trashed, card/list toggle" keepers** - see
+   AC-DLA-12's Remarks above; these two controls are `ToggleGroup`, not `TabsList`, so there is
+   nothing to pin on them. Not a gap, a mismatch between the AC/plan text and this codebase's
+   actual primitives.
+4. **AC-DLA-13's "min-w-max on the table"** - implemented as a JS-computed `getTotalSize()` pixel
+   value instead (matches Sorento's own later bug-fixed version, not the plan's literal wording);
+   see AC-DLA-13 Remarks point 4. Same observable outcome (a fade + real overflow), a strictly
+   more correct implementation for a `table-layout: fixed` table.
+
+### Definition of Done checklist (T2)
+
+1. Every AC-DLA-09..18 verified above (`[T]` tests + the `[E2E]` agent-browser run, including two
+   live-caught-and-fixed bugs). PASS.
+2. `npm run lint` (touched files, 0 errors), `npm test` (`npx vitest run`, 182 files / 1559 tests,
+   +67 new tests vs the pre-T2 baseline), `npm run build` all green.
+3. `rm -rf .next && npm run build` before the final live check; port ownership checked
+   (`lsof -p $(lsof -ti :3002) | grep cwd`) before every kill/restart across the whole slice,
+   including twice mid-slice after the live-caught fixes.
+4. No mock left behind (T2 has no service-trio slice - N/A). No backfill needed (primitives-only,
+   no new columns). No new permission (N/A). Verified from the user's perspective at 375 AND
+   1280, light AND dark (Users list), on the real prod build.
+5. Two genuine bugs found live (not by any test) are documented with full root-cause + fix +
+   re-verification, not silently absorbed; both are now pinned by inventory assertions so a
+   regression fails the suite, not just a future live-verify pass.
+
+**Verdict: T2 DONE.** 10/10 AC-DLA ids (09-18) PASS. Zero DEFERRED, zero FAIL. Four AC/plan wording
+notes flagged above for reviewer awareness, none blocking.
