@@ -111,3 +111,38 @@ in the dark-mode evidence and should not be mistaken for a T1 regression.
   here.
 - No dedicated in-app "design system" dark-mode toggle exists (used the Metronic user-menu
   switch, which flips the SAME `.dark` class); BL-SS-047 tracks adding one.
+
+## Fix round 1 (10 `/code-review` findings, all applied - see the test report's
+"T1 - Fix round 1" section for the full per-finding table)
+
+Additional screenshots, `fixround1-NN-*.png` in this directory:
+
+- `fixround1-01-banner-expanded-{1280,375}.png` / `fixround1-02-banner-collapsed-{1280,375}.png`
+  - a REAL impersonation session (Admin User impersonating KT Demo via the Users list row
+    action), banner expanded and collapsed, both widths - the page content is never covered
+    under the header in any of the 4 states (finding 1). The collapsed shot at 1280 also shows
+    the pill sitting ABOVE the header icons, proving `--z-banner` now outranks the header
+    (finding 2).
+- `fixround1-03-alert-warning-light-appearance-dark.png` - alert.tsx's actual
+  `appearance="light"` warning classes (icon-on-`-soft`) injected onto a live page in dark
+  mode; the triangle icon is clearly legible on the amber-tinted background (finding 3 - was
+  1.13:1/near-invisible with the old `-foreground`-on-`-soft` pairing).
+- `fixround1-04-badge-default-appearance-light.png` - badge.tsx's actual default
+  (non-"light") success/info/warning classes injected in light mode; all three read cleanly
+  (finding 3 - confirms the badge default pairing needed no code change, only the token fix).
+- `fixround1-05-megamenu-reduced-motion.png` - the header mega-menu opened with
+  `prefers-reduced-motion: reduce` forced on (`agent-browser set media light reduced-motion`,
+  confirmed via `matchMedia(...).matches === true` and
+  `getComputedStyle(html).getPropertyValue('--duration-fast') === '1ms'`) - opens instantly,
+  fully painted, no console errors (finding 4).
+- `fixround1-06-mobile-nav-sheet-reduced-motion.png` - the mobile nav drawer (currently a
+  `Sheet`, NOT yet the vaul drawer - `components/ui/drawer.tsx` has zero importers until T3
+  wires it in per plan D10/D13; `z-(--z-modal)` was still applied to `drawer.tsx` in this pass
+  so the file is ready when T3 mounts it) at 375, same reduced-motion state - opens cleanly, no
+  console errors.
+
+Injected-markup screenshots (`fixround1-03`/`fixround1-04`) render the component's OWN class
+strings copied verbatim from `alert.tsx`/`badge.tsx` onto a `document.body`-appended element via
+`agent-browser eval` - not a mockup - because no reachable page in this build currently renders
+a warning/success/info Alert or a default-appearance Badge without deeper, unrelated app setup
+(AutoCount company/entity data). The CSS is real; only the trigger path is synthetic.
