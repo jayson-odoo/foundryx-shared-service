@@ -150,8 +150,11 @@ describe('AC-DLA-13 DataGrid defaults + scroller + pinned column + tabular-nums'
     const declaration = src.match(/const MOBILE_PIN_CONTENT_CLASS_BODY =[\s\S]{0,120};/)?.[0] ?? '';
     expect(declaration).toContain('max-sm:overflow-hidden');
     expect(declaration).toContain('max-sm:truncate');
+    // `content` (T4, AC-DLA-29) - `children` wrapped in the primary cell's
+    // `<a href>` when the row is linkable, `children` unchanged otherwise -
+    // is what the mobile-pin wrapper carries now, not raw `children`.
     expect(src).toMatch(
-      /isMobilePinned \? <div className=\{MOBILE_PIN_CONTENT_CLASS_BODY\}>\{children\}<\/div> : children/,
+      /isMobilePinned \? <div className=\{MOBILE_PIN_CONTENT_CLASS_BODY\}>\{content\}<\/div> : content/,
     );
   });
 

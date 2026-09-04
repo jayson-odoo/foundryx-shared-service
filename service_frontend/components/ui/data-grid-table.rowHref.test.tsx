@@ -17,6 +17,7 @@ import { DataGridTable } from './data-grid-table';
 
 vi.mock('next/navigation', () => ({
   useRouter: vi.fn(() => ({ push: vi.fn(), prefetch: vi.fn() })),
+  useSearchParams: vi.fn(() => new URLSearchParams()),
 }));
 
 interface Row {
@@ -81,12 +82,24 @@ beforeEach(() => {
 });
 
 describe('AC-DLA-14 DataGrid rowHref link semantics', () => {
-  it('each linked row stays a table row (no role="link") but carries tabIndex=0', () => {
+  it('each linked row stays a table row (no role="link" ON THE ROW) but carries tabIndex=0', () => {
     render(<Harness rowHref={(row) => `/records/${row.id}`} />);
     const rowsEl = bodyRows();
     expect(rowsEl).toHaveLength(2);
-    expect(screen.queryAllByRole('link')).toHaveLength(0);
-    for (const row of rowsEl) expect(row).toHaveAttribute('tabindex', '0');
+    for (const row of rowsEl) {
+      expect(row).not.toHaveAttribute('role', 'link');
+      expect(row).toHaveAttribute('tabindex', '0');
+    }
+  });
+
+  it('AC-DLA-29: the primary cell renders a true <a href> (accessible link semantics)', () => {
+    render(<Harness rowHref={(row) => `/records/${row.id}`} />);
+    const links = screen.getAllByRole('link');
+    expect(links).toHaveLength(2);
+    expect(links[0]).toHaveAttribute('href', '/records/1');
+    expect(links[1]).toHaveAttribute('href', '/records/2');
+    // Not a Tab stop of its own - the row is the single Tab stop (AC-DLA-14).
+    for (const link of links) expect(link).toHaveAttribute('tabindex', '-1');
   });
 
   it('clicking a row pushes its href', () => {
