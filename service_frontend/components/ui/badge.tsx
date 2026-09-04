@@ -35,8 +35,12 @@ const badgeVariants = cva(
         destructive: 'bg-destructive text-destructive-foreground',
       },
       appearance: {
-        // The solid fill above (no compound override) - count badges
-        // (`shape="circle"`) default to it, see `Badge` below.
+        // The solid fill above (no compound override) - NOT the default
+        // (T2 fix round 2: the comment here previously claimed a circle
+        // badge (`shape="circle"`) defaults to it; it does not - the shared
+        // `defaultVariants.appearance` below is `light` for every shape, so
+        // a solid circle badge is caller-driven: pass `appearance="default"`
+        // explicitly, as the two real circle callers do).
         default: '',
         light: '',
         outline: '',

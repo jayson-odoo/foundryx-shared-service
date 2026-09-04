@@ -73,7 +73,7 @@ describe('AC-DLA-10 modal defaults + overlay + caps + close ring', () => {
     expect(document.querySelector('[data-slot="sheet-content"]')).toBeTruthy();
   });
 
-  it('Dialog/AlertDialog/Sheet overlays share the OVERLAY_CLASS scrim (bg-(--scrim) backdrop-blur-md)', async () => {
+  it('Dialog/AlertDialog/Sheet overlays share the OVERLAY_CLASS scrim (bg-(--scrim) backdrop-blur-sm)', async () => {
     const dialogSrc = await import('node:fs').then((fs) => fs.readFileSync(__dirname + '/dialog.tsx', 'utf8'));
     const alertSrc = await import('node:fs').then((fs) => fs.readFileSync(__dirname + '/alert-dialog.tsx', 'utf8'));
     const sheetSrc = await import('node:fs').then((fs) => fs.readFileSync(__dirname + '/sheet.tsx', 'utf8'));
