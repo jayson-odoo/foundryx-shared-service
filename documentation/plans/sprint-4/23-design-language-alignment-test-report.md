@@ -323,7 +323,11 @@ this is the fix, not a side effect) and `badge.tsx`'s solid compound (same).
 80/80 in `css/design-tokens.test.ts` alone - was 79/79 in fix round 2, net +1 after dropping
 2 `-corner` assertions and adding 3 new ones), `rm -rf .next && npm run build` (green), served
 on :3002; `service_backend/.venv/bin/python -m pytest service_backend/tests/test_branding.py -q`
-(28/28 green); full backend suite run for regression (tail below in the coder's final report).
+(28/28 green); full backend regression `service_backend/.venv/bin/python -m pytest -q` -
+**2702 passed, 1 skipped, 18 deselected, 0 failed** (1699s) - the semantic-hue default swap
+touches only `token_whitelist.py` + its own test file, and this confirms nothing else in the
+suite (branding, status/rule/template/workflow/form engines, omnichannel, AutoCount,
+ideation, ...) reads a hardcoded copy of the old hex.
 Evidence: `fixround3-01-users-list-{1280-light,1280-dark,375-dark}.png`,
 `fixround3-02-alert-warning-variants-{1280,375}-{light,dark}.png`.
 
