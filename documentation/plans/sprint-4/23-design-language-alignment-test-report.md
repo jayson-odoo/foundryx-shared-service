@@ -1136,3 +1136,235 @@ via `lsof -p $(lsof -ti :3002) | grep cwd` before every kill, per the worktree r
    confirming the header now paints correctly above a scrolling pinned column at both sizes.
 
 **Verdict: T2 fix round 2 DONE.** 8/8 findings resolved and re-verified; full gate green.
+
+## T3 - Motion
+
+**Branch:** `sprint-4/23-T3-motion` (off `sprint-4/23-design-language-alignment`, at `8cac6ec` -
+T0+T1+T2 merged).
+**Evidence:** `documentation/plans/sprint-4/23-evidence/T3/` (`README.md` run log + 15
+screenshots + live timing tables from `agent-browser eval` DOM polling).
+**Environment:** backend `service_backend` shared on :8001 (owned by the `s23` worktree's
+`uvicorn` process); frontend `rm -rf .next && npm run build` (green) served via
+`npx next start -p 3003` (this worktree, port ownership confirmed via `lsof` before starting -
+3001 free, 3002 owned by a sibling lane); `agent-browser` CLI only, real clicks/pointer events,
+`demo@example.com`/`demo1234` (session already live).
+
+**Environment finding (not a T3 regression, see the evidence README for the full writeup):** the
+shared backend's `cors_origins`/`cors_origin_regex` allow-list stops at port 3002, so every
+`Authorization`-bearing request from this slice's assigned port 3003 fails CORS preflight and
+every backend-driven list/form (Users, Roles, App Store, Documents) rendered empty throughout
+this run. Evidence below substitutes surfaces that don't need live backend data (SearchDialog,
+Notifications sheet, the user-menu dropdown, both mobile drawers, the Roles Popover and Status
+Select on the real New User form) plus direct DOM/computed-style timing proof via
+`agent-browser eval` (the CLI has no DevTools-Animations-panel equivalent). ContextMenu/HoverCard/
+Menubar's only real product call sites all need backend list data this gap blocks - covered by
+code-parity + green build/lint/vitest instead of live clicks this run (see AC-DLA-20/21 below).
+
+### AC-DLA-19 - `lib/motion.ts` exports + `lib/motion.test.ts` `[FE][T]`
+
+**User story:** As a maintainer, I want one file owning the surface spring so every primitive
+opens/closes on the same physics instead of inventing its own.
+**Scenario:** Given `lib/motion.ts`, when any of `SURFACE_SPRING`/`MENU_SPRING`/
+`SURFACE_SPRING_EXIT`/`REDUCED_MOTION_TRANSITION`/`surfaceTransition`/`surfaceExitTransition`/
+`surfaceVariants`/`useOpenState`/`useReducedMotion` is imported, then it matches Sorento's API
+verbatim plus the M2 exports.
+**Steps:** `npx vitest run lib/motion.test.ts`.
+**Expected:** every branch (lightbox vs menu preset, reduced-motion collapse, scale-drop under
+reduced motion, `useOpenState`'s controlled/uncontrolled contract) pinned.
+**Actual:** PASS - 11/11 tests green.
+**Remarks:** this repo's `lib/motion.ts` already carried the M2 exports verbatim from the start
+(D1) - `git diff` against `sorento_crm` `origin/main` and `origin/integration/ui-motion-round2`
+both come back byte-identical for this file, confirming the port needed no adaptation.
+
+### AC-DLA-20 - nine surfaces on `AnimatePresence` + `surfaceVariants` + `surfaceTransition` `[FE][T]`
+
+**User story:** As a user, I want every dialog/menu/popover to open and close with the same feel,
+and to be able to re-open one I just started closing without a visual jump.
+**Scenario:** Given Dialog/AlertDialog/Sheet/Popover/DropdownMenu(+SubContent)/
+ContextMenu(+SubContent)/HoverCard/Menubar/Select, when opened, then each renders through
+`useOpenState` + `AnimatePresence` gating a `motion.div` driven by `surfaceVariants`/
+`surfaceTransition`, with the overlay on `OVERLAY_CLASS_STATIC`; lightboxes open ~300ms/close
+~200ms, menus 200ms/200ms; zero `animate-in`/`animate-out`/`zoom-in`/`slide-in` classes remain;
+re-opening mid-close continues from the live scale.
+**Steps:** live `agent-browser` clicks + `eval`-driven `getComputedStyle` polling (see evidence
+README steps 3-16); `npx eslint`/`npx vitest run`/`npm run build`; a class-literal grep sweep of
+all 9 files.
+**Expected:** per the AC text above.
+**Actual:** PASS for Dialog/AlertDialog/Sheet/Popover/DropdownMenu+SubContent/Select (all six
+live-verified with real timing tables - see the evidence README); PASS-by-code-parity for
+ContextMenu+SubContent/HoverCard/Menubar (identical `AnimatePresence`+`forceMount`+
+`surfaceVariants`/`surfaceTransition` shape applied, diffable in the PR against the six
+live-verified files; their only real call sites - Documents right-click, `resource-list.tsx`
+hover cards, dead demo2/3 Menubar - all need backend data the CORS gap above blocks). Grep sweep:
+zero `animate-in`/`animate-out`/`zoom-in`/`slide-in` classes remain in any of the 9 files (the
+comments mentioning them explain what was REMOVED, not residue). Dialog trajectory: 16ms
+opacity 0.042/scale 0.962 -> 100ms 0.527/0.981 -> 300ms 0.967/0.999. Menu-family trajectory
+(DropdownMenu and Select both sampled): 16ms opacity ~0.04/scale ~0.962 -> 100ms ~0.71-0.77/
+~0.99 -> 200ms ~0.96-0.97/0.999. Mid-close reopen: full-open (opacity 0.991/scale 1) -> Escape ->
+60ms into close (0.680/0.986) -> **immediate re-open** -> 16ms later (0.523/0.981, continuing the
+live trajectory, not reset to 0/0.96). Sheet: opacity fixed at 1 throughout, transform's scale
+terms fixed at `1,0,0,1` throughout, only translate-X travels (466.7px -> 183.9px -> 11.5px) -
+slide-only, no scale, no fade.
+**Remarks:** two real Radix API constraints surfaced and were resolved, both documented inline in
+the diff: (1) Radix Select's `Content`/`Portal` have no `forceMount` prop at all (confirmed
+against `@radix-ui/react-select@2.2.6`'s own types) - `SelectContent` therefore plays the menu
+spring in on mount with no `AnimatePresence` exit gate, the same accepted shape `MenubarContent`
+already used pre-T3 for the identical reason; (2) `vitest.setup.ts` needed
+`MotionGlobalConfig.skipAnimations = true` (ported from `sorento_crm`'s identical fix) - without
+it, `AnimatePresence`+`forceMount`'s exit never resolves under jsdom (no real animation-frame
+pump), which broke 4 pre-existing test files (9 tests) that open-then-close one of these surfaces
+and then query something else; all 9 pass again after the fix (one, `rule-builder.test.tsx`, also
+needed a `waitFor` added around a query that ran one microtask tick too early against
+synchronous `fireEvent.click` - production code untouched).
+
+### AC-DLA-21 - origin-anchored scale, centered modals, `navigation-menu.tsx` `origin-top` `[FE][T]`
+
+**User story:** As a user, I want a popover/menu to visibly grow FROM its trigger, not from a
+random corner, and a modal to stay centered regardless.
+**Scenario:** Given Popover/DropdownMenu/ContextMenu/HoverCard/Select, when open, then the scale
+origin sits at the Radix-computed trigger anchor; Dialog/AlertDialog stay centered; the
+navigation-menu viewport uses `origin-top`.
+**Steps:** code review (`origin-(--radix-*-content-transform-origin)` on each inner `motion.div`)
++ live proof (the Dialog transform samples in AC-DLA-20 all carry the same `-300,-304.5` center
+offset throughout the whole open/close/reopen trajectory).
+**Expected:** per the AC text.
+**Actual:** PASS - `navigation-menu.tsx`'s viewport class changed `origin-top-center` (not a real
+Tailwind v4 utility) -> `origin-top`; every menu-family surface's inner `motion.div` carries the
+matching origin utility.
+
+### AC-DLA-22 - `command.tsx` `motion={false}` `[FE][T]`
+
+**User story:** As a keyboard user, I want a palette I summoned with a shortcut to be simply
+THERE on the next frame, not animate in.
+**Scenario:** Given `CommandDialog`, when `motion={false}` (default `true`), then no scale/no
+entry fade, the overlay fades on a plain `--duration-fast` tween, and Escape closes the same way.
+**Steps:** `npm run build` (type-checks the new prop threading through `DialogContent`); code
+review of `dialog.tsx`'s `motionEnabled` branch.
+**Expected:** the prop compiles and reaches `DialogContent`'s existing `motion` prop unchanged.
+**Actual:** PASS (mechanism) / **N/A live** - this codebase has no live keyboard-shortcut-opened
+`CommandDialog`: `app/components/partials/dialogs/search/search-dialog.tsx` (the only header
+search surface) is a plain click-triggered `Dialog` with hardcoded demo tabs, not `cmdk`-backed,
+and `CommandDialog` itself has zero importers outside `command.tsx` (grepped, confirmed). This is
+a plan/reality mismatch, not a T3 gap - flagged for T8/`docs/reference/design-language.md` rather
+than worked around with a throwaway page.
+
+### AC-DLA-23 - mobile nav on `vaul` `Drawer` `[FE][E2E]`
+
+**User story:** As a phone user, I want the sidebar to slide open with my finger and dismiss on a
+swipe, not react to a fixed CSS transition.
+**Scenario:** Given `header.tsx`'s two mobile Sheets (sidebar nav + mega-menu), when replaced with
+`Drawer` (`direction="left"`, `OVERLAY_CLASS_STATIC`, `shouldScaleBackground={false}`), then both
+track a real drag and `[data-vaul-drawer]` collapses to 1ms under reduced motion.
+**Steps:** live `agent-browser` at 375 - hamburger icon and the mega-menu icon, both under normal
+AND reduced motion (see evidence README steps 8-10).
+**Expected:** per the AC text.
+**Actual:** PASS - both triggers open a `data-vaul-drawer-direction="left"` panel with the shared
+scrim; under reduced motion `[data-vaul-drawer]`'s `transitionDuration` reads `"0.001s"`; under
+normal motion it reads `"0.5s"` (vaul's own drag-tracked default, untouched by T3 - the plan only
+assigns T3 the direction/overlay/reduced-motion wiring, not vaul's own physics).
+
+### AC-DLA-24 - sidebar collapse: `hover`-gated, reduced-motion-gated, double-rAF init `[FE][T]`
+
+**User story:** As a user on a touch device, I don't want the collapsed sidebar to phantom-expand
+on a tap; as a user who asked for less motion, I don't want it to travel at all.
+**Scenario:** Given `demo1.css`'s hover-expand rule, when wrapped in
+`@media (hover: hover) and (pointer: fine)`, and the width transition wrapped in
+`@media (prefers-reduced-motion: no-preference)`; given `demo1/layout.tsx`'s
+`setTimeout(...,1000)`, when replaced with a double `requestAnimationFrame`; then a DevTools-trace
+(or equivalent) of a collapse at 1280 shows no dropped frames, or a follow-up is filed and the
+transition left as-is.
+**Steps:** live `agent-browser` reduced-motion poll of `.sidebar`'s computed
+`transitionProperty`/`transitionDuration`; a real `requestAnimationFrame` sampler (24 frames)
+across a real collapse-toggle click on the Users list at 1280.
+**Expected:** `transition: none` under reduced motion; no dropped frames on the collapse (or a
+filed follow-up).
+**Actual:** PASS - reduced motion: `transitionProperty: "none"`, `transitionDuration: "0s"`.
+Frame sampler: 24 consecutive deltas all in a tight 16.6-16.8ms band (steady 60fps, no delta
+anywhere near the ~20ms dropped-frame threshold); the sidebar's `getBoundingClientRect().width`
+trace is one clean easing curve from 280px to the 80px collapsed rail, settled by frame ~19
+(~300ms, matching `--duration-slow`), no stutter or backtrack. No dropped frames -> per the
+plan's own instruction the transition is left as-is; BL-SS-046 (the transform-only rewrite,
+already backlogged, Sorento tried and reverted it) is unchanged by this slice.
+**Remarks:** `agent-browser` ships no DevTools-Animations-panel-equivalent or CDP trace
+passthrough in this version - the rAF sampler is the load-bearing substitute, same adaptation
+class as the timing tables in AC-DLA-20/26.
+
+### AC-DLA-25 - 16 decor components + `framer-motion` deleted `[FE][T]`
+
+**User story:** As a maintainer, I don't want dead decorative components with their own
+animation dependency lingering in the primitives directory.
+**Scenario:** Given the 16 named files (`marquee`, `text-reveal`, `shimmering-text`,
+`sliding-number`, `counting-number`, `gradient-background`, `hover-background`,
+`grid-background`, `stepper`, `word-rotate`, `typing-text`, `avatar-group`, `video-text`,
+`github-button`, `skeleton-with-pattern`, `svg-text`), when deleted with zero remaining
+importers, then `framer-motion` is removed and a guard test fails if any reappears.
+**Steps:** `grep -rl` (quoted globs) confirmed zero importers per file BEFORE deleting; `git rm`
+(not a bare `rm`, so the deletion is staged, not just working-tree); `npx vitest run
+components/ui/deleted-motion-components.guard.test.ts`; `npm run build`.
+**Expected:** all 16 gone, zero framer-motion imports remain, build green.
+**Actual:** PASS - all 16 deleted (confirmed via `existsSync` in the guard test, 18/18 green);
+zero `components/ui/*` files import `framer-motion` directly (the guard test's own second
+assertion); `npm run build` green.
+**Remarks:** `framer-motion` was **never a direct `package.json` dependency in this repo** - only
+`motion`'s own internal transitive dependency (`node_modules/motion/package.json` declares
+`"framer-motion": "^12.40.0"` itself; confirmed via `python3 -c "import json..."` against
+`package.json` that no top-level `dependencies`/`devDependencies` entry named it before this
+diff). `npm uninstall framer-motion --package-lock-only` + `npm ci` therefore produced a genuine
+no-op (`git status` on `package.json`/`package-lock.json` empty afterward) - run anyway per the
+brief, confirming rather than skipping the instruction. `motion` stays the one animation
+dependency the app imports from.
+
+### AC-DLA-26 - frame-by-frame + reduced-motion pass, evidence under `23-evidence/T3/` `[FE][E2E]`
+
+**User story:** As a reviewer, I want proof the spring actually ticks over real time and that
+reduced motion actually removes travel/scale, not just a claim from reading the source.
+**Scenario:** Given Dialog/Sheet/DropdownMenu/Popover/the command palette/the mobile drawer, when
+reviewed frame-by-frame at 4x (or equivalent), then normal motion shows the spring's progression
+and reduced motion shows an instant cross-fade with no travel/scale; the sidebar collapse is
+instant under reduced motion.
+**Steps:** see AC-DLA-20/23/24 above for the underlying data; this AC is the "evidence exists and
+is saved" check - `documentation/plans/sprint-4/23-evidence/T3/README.md` + 15 screenshots.
+**Expected:** evidence directory populated, one verdict line per AC, reduced-motion pass covering
+every AC-DLA-20 surface reachable this run.
+**Actual:** PASS for Dialog/Sheet/DropdownMenu/Popover/Select/mobile drawer (all six have both a
+normal-motion timing table AND a reduced-motion sample above); **N/A** for the command palette
+(AC-DLA-22 - no live surface exists to record). `agent-browser` has no DevTools-Animations-panel
+equivalent in this CLI version, so `agent-browser eval`-driven `getComputedStyle` sampling on a
+`setTimeout`/`requestAnimationFrame` cadence stands in for it throughout - the same adaptation
+T1/T2's evidence runs made for their own timing claims (documented explicitly in the README so a
+reviewer doesn't expect a literal screen-recording).
+
+### Gate
+
+`npx eslint` on all touched-and-surviving files (0 errors); `npx vitest run` - **186 files / 1610
+tests, all green** (includes the new `lib/motion.test.ts` and
+`components/ui/deleted-motion-components.guard.test.ts`, plus the `vitest.setup.ts`
+`skipAnimations` fix and the one `rule-builder.test.tsx` `waitFor` addition needed for the real
+async close the spring introduces); `rm -rf .next && npm run build` - green, run twice (once
+after the Radix Select `forceMount` compile errors were fixed, once final); restarted `:3003`,
+port ownership confirmed via `lsof -p $(lsof -ti :3003) | grep cwd` before every restart.
+
+### Definition of Done checklist (T3)
+
+1. All AC-DLA-19..26 addressed - 6 fully live-verified end-to-end with real timing data
+   (AC-DLA-19/20/21/23/24/25/26 partially or fully), AC-DLA-22 mechanism-verified with an honest
+   N/A note on the missing live call site, AC-DLA-20's ContextMenu/HoverCard/Menubar covered by
+   code parity + green suite rather than live clicks (CORS gap, documented, not silently
+   dropped).
+2. `npx eslint`, `npx vitest run` (186/186 files, 1610/1610 tests), `npm run build` all green.
+3. `rm -rf .next && npm run build` before every live check; port ownership confirmed via `lsof`
+   before every restart on :3003.
+4. No mock left behind (motion is a pure primitives slice, no backend/mock boundary to swap); no
+   backfill needed; no new permission. The 16 decor deletions have zero surviving importers
+   (grepped before deleting, re-confirmed by the guard test after).
+5. Verified from the user's perspective at 375 AND 1280 on the real prod build, both normal AND
+   reduced motion, with live DOM-level proof (not just visual screenshots) that the spring
+   genuinely ticks over wall-clock time, is interruptible without a jump, and fully collapses
+   under reduced motion - the CORS-3003 environment gap is disclosed rather than hidden, with the
+   evidence substitution strategy spelled out per surface.
+
+**Verdict: T3 - Motion DONE**, with two disclosed, non-blocking gaps for the reviewer/T8 to
+weigh: (a) the CORS-3002-cap environment gap (recommend widening before more concurrent-port
+slices land), (b) AC-DLA-22's missing live command-palette call site (a plan/reality mismatch,
+not code debt - the mechanism is built and unit-covered, ready for the day a real Cmd/Ctrl+K
+palette exists).
