@@ -13,6 +13,7 @@ from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
 from ..canonical.documents import is_document_entity
+from ..mapping import SCOPE_LINE
 from ..schemas import (
     CompanyCreate,
     CompanyDetailResponse,
@@ -308,6 +309,24 @@ def replace_entity_mapping(
     rows are preserved; the write is seed-if-absent-safe (``update_tenant`` never
     reverts an operator edit).
     """
+    #     !!  SECURITY RE-REVIEW SHOULD-FIX - `lineRows` IS THE ONLY SIGNAL
+    #         THAT DISTINGUISHES "UNTOUCHED" FROM "EXPLICITLY WIPED".  !!
+    # `is_document_entity(entity_type)` alone (the old S7 wiring) made EVERY
+    # header-only PUT on a document entity wipe its line rows, because an
+    # omitted line scope and an explicit empty submission both collapsed to
+    # the same "no line rows in this request" shape. `body.lineRows` being
+    # present (even `[]`) is the operator's Lines tab actually being part of
+    # THIS save; `None` means the request never touched line scope at all.
+    #
+    # Backward compat (one release, documented on `MappingUpdateRequest`): a
+    # caller still sending its line rows folded INSIDE `rows` (`scope:
+    # "line"` items, the pre-existing combined shape) is honoured exactly as
+    # before - those rows count as a submitted line scope too.
+    line_rows_in_body = [row for row in body.rows if row.scope == SCOPE_LINE]
+    combined_rows = list(body.rows) + list(body.lineRows or [])
+    line_rows_submitted = (
+        body.lineRows is not None or bool(line_rows_in_body)
+    ) and is_document_entity(entity_type)
     try:
         view = CompanyService(db).replace_mapping(
             current_user.tenant_id,
@@ -321,19 +340,9 @@ def replace_entity_mapping(
                     formula=row.formula,
                     scope=row.scope,
                 )
-                for row in body.rows
+                for row in combined_rows
             ],
-            #     !!  S7 (should-fix, review round) - THE MAPPING FORM IS ONE
-            #         COMBINED SAVE, NEVER A HEADER-ONLY PARTIAL.  !!
-            # The editor's single Save button always resubmits its WHOLE
-            # current draft (header rows AND line rows together) for a
-            # document entity - so an empty `body.rows` line-scope slice on
-            # a document entity genuinely means "the operator cleared every
-            # line row and saved", not "this request never touched line
-            # scope". Master/GRN entities have no line concept at all
-            # (`replace_mapping` gates line handling on `is_document_entity`
-            # regardless of this flag), so it is harmless there.
-            line_rows_submitted=is_document_entity(entity_type),
+            line_rows_submitted=line_rows_submitted,
         )
     except AutocountServiceError as exc:
         _raise(exc)

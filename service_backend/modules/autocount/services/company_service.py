@@ -1211,8 +1211,12 @@ class CompanyService:
         saved" (must wipe, symmetric with an empty HEADER submission, which
         already wipes unconditionally) versus "this save never touched line
         scope at all" (must leave existing line rows untouched). The router
-        sets the flag from whether the request actually carried the Lines-tab
-        payload, even when empty.
+        sets the flag from the wire's dedicated ``MappingUpdateRequest.
+        lineRows`` field being present (even ``[]``) - NOT from the entity
+        type alone (the security re-review catch: an entity-type-only signal
+        made every header-only PUT on a document entity wipe its lines,
+        because "no lineRows" and "lineRows: []" both read as `rows==[]`
+        without a dedicated field to tell them apart).
         """
         config = self._require_entity(tenant_id, company_id, entity_type)
 

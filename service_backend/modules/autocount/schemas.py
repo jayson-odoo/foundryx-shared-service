@@ -337,9 +337,30 @@ class MappingUpdateRow(ApiModel):
 
 
 class MappingUpdateRequest(ApiModel):
+    """``PUT .../mapping`` body.
+
+    ``lineRows`` is the WIRE SIGNAL a header-only save needs and could never
+    express before (security re-review should-fix, sprint-5/02 review round):
+    a document entity's line rows are a SEPARATE scope from ``rows`` (header)
+    now - ``None``/absent = line scope untouched this save, ``[]`` = the
+    operator explicitly cleared every line row (wipe), a non-empty list =
+    replace the line set with exactly what was submitted. Threading this
+    tri-state through required a dedicated field - ``rows`` alone can never
+    distinguish "no lineRows key at all" from "lineRows: []" once both arrive
+    as an empty slice.
+
+    Backward compat (one release): a caller that still sends its line rows
+    INSIDE ``rows`` (``scope: "line"`` items mixed in, the pre-existing
+    shape) is honoured exactly as before - those rows count as a submitted
+    line scope too, same as a non-empty ``lineRows``. The router folds both
+    sources together before handing them to ``CompanyService.replace_
+    mapping``.
+    """
+
     model_config = ConfigDict(populate_by_name=True)
 
     rows: List[MappingUpdateRow]
+    lineRows: Optional[List[MappingUpdateRow]] = None
 
 
 # ── formula catalog + simulators (plan 16 §3, AC-16-13/21/30) ─────────────────
