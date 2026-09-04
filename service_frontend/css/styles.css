@@ -16,6 +16,12 @@
   *:focus-visible {
     @apply outline-ring rounded-xs shadow-none outline-2 outline-offset-3 transition-none!;
   }
+
+  /* Inter is a variable font with an optical-size axis; letting the browser drive
+     it keeps small labels open and large titles tight without a second face. */
+  body {
+    font-optical-sizing: auto;
+  }
 }
 
 /* Metronic Components  */
@@ -32,3 +38,165 @@
 /** Dark/Light Theme Variant **/
 @custom-variant dark (&:is(.dark *));
 @custom-variant light (&:not(.dark *));
+
+/**
+ * Materials - a translucent surface tinted by what is behind it. Regular is the
+ * header, thick the sidebar; both collapse to a flat surface under the
+ * reduced-transparency and high-contrast preferences below. Tokens live in
+ * config.reui.css.
+ */
+@utility material-regular {
+  background-color: var(--material-regular);
+  -webkit-backdrop-filter: saturate(180%) blur(var(--material-blur));
+  backdrop-filter: saturate(180%) blur(var(--material-blur));
+}
+
+@utility material-thick {
+  background-color: var(--material-thick);
+  -webkit-backdrop-filter: saturate(180%) blur(var(--material-blur));
+  backdrop-filter: saturate(180%) blur(var(--material-blur));
+}
+
+/* The hairline that separates a material from the content scrolling under it. */
+@utility material-edge {
+  border-color: var(--material-edge);
+}
+
+/**
+ * Accessibility preferences.
+ *
+ * These three blocks are the whole story for motion, transparency and contrast, so
+ * a component never has to carry its own `motion-reduce:` variant for the cases
+ * below. They live last so they win on equal specificity.
+ */
+
+/* Reduced motion: an overlay still fades, it just stops travelling. Zeroing the
+   tw-animate translate/scale variables leaves the enter/exit keyframes in place and
+   turns them into a plain 150ms opacity change. Spinners keep spinning - they report
+   that work is happening, and a frozen one reads as a hung screen.
+
+   `dialog-content` and `sheet-content` are excluded: T3 migrates those two straight
+   onto a `motion.div` that `lib/motion.ts` animates via a JS spring - this rule's own
+   `transition-duration: 150ms` would otherwise land on that node and CSS-transition
+   its opacity out from under the spring (the spring commits `opacity: 1` in one frame
+   under `REDUCED_MOTION_TRANSITION`, and the browser would smear that jump over 150ms
+   instead). Popover and DropdownMenu don't need the exclusion: their animated child
+   carries no `-content` slot of its own. */
+@media (prefers-reduced-motion: reduce) {
+  [data-slot$='-content']:not([data-slot='dialog-content']):not([data-slot='sheet-content']),
+  [data-radix-popper-content-wrapper],
+  [data-radix-popper-content-wrapper] > * {
+    --tw-enter-translate-x: 0 !important;
+    --tw-enter-translate-y: 0 !important;
+    --tw-exit-translate-x: 0 !important;
+    --tw-exit-translate-y: 0 !important;
+    --tw-enter-scale: 1 !important;
+    --tw-exit-scale: 1 !important;
+    --tw-enter-rotate: 0 !important;
+    --tw-exit-rotate: 0 !important;
+    animation-duration: 150ms !important;
+    transition-duration: 150ms !important;
+  }
+
+  .animate-pulse,
+  .animate-bounce {
+    animation: none !important;
+  }
+
+  /* The demo1 shell's own CSS transitions (sidebar collapse width, header/wrapper
+     offsets) travel independently of the tw-animate variables above - stop them too. */
+  .demo1 .sidebar,
+  .demo1 .wrapper,
+  .demo1 .header {
+    transition: none !important;
+  }
+
+  /* vaul (the mobile nav drawer) and any element carrying an explicit `transition-[`
+     arbitrary property list drive their own duration outside the tw-animate vars -
+     collapse both to next-to-instant rather than travelling at full speed. */
+  [data-vaul-drawer] {
+    transition-duration: 1ms !important;
+  }
+
+  [class*='transition-['] {
+    transition-duration: 1ms !important;
+  }
+}
+
+/* Reduced transparency: no material, no scrim blur, and a heavier scrim so the
+   lightbox still separates from the page it covers. */
+@media (prefers-reduced-transparency: reduce) {
+  :root,
+  .dark {
+    --scrim: color-mix(in oklab, black 72%, transparent);
+    --material-regular: var(--background);
+    --material-thick: var(--background);
+  }
+
+  .material-regular,
+  .material-thick,
+  [data-slot='dialog-overlay'],
+  [data-slot='alert-dialog-overlay'],
+  [data-slot='sheet-overlay'],
+  [data-slot='drawer-overlay'],
+  [data-pinned] {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+
+  [data-slot='dialog-overlay'],
+  [data-slot='alert-dialog-overlay'],
+  [data-slot='sheet-overlay'],
+  [data-slot='drawer-overlay'] {
+    background-color: var(--scrim) !important;
+  }
+
+  /* A pinned grid column has rows sliding under it, so it has to be opaque - and
+     the header cell keeps reading as a header rather than as one more body row. */
+  td[data-pinned] {
+    background-color: var(--background) !important;
+  }
+
+  th[data-pinned] {
+    background-color: var(--muted) !important;
+  }
+}
+
+/* More contrast: the same flattening, plus firmer borders and secondary ink. */
+@media (prefers-contrast: more) {
+  :root {
+    --scrim: color-mix(in oklab, black 72%, transparent);
+    --border: var(--color-zinc-400);
+    --input: var(--color-zinc-400);
+    --muted-foreground: var(--color-zinc-700);
+    --material-regular: var(--background);
+    --material-thick: var(--background);
+    --material-edge: var(--color-zinc-400);
+  }
+
+  .dark {
+    --border: var(--color-zinc-500);
+    --input: var(--color-zinc-500);
+    --muted-foreground: var(--color-zinc-300);
+    --material-edge: var(--color-zinc-500);
+  }
+
+  .material-regular,
+  .material-thick,
+  [data-slot='dialog-overlay'],
+  [data-slot='alert-dialog-overlay'],
+  [data-slot='sheet-overlay'],
+  [data-slot='drawer-overlay'],
+  [data-pinned] {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+
+  td[data-pinned] {
+    background-color: var(--background) !important;
+  }
+
+  th[data-pinned] {
+    background-color: var(--muted) !important;
+  }
+}
