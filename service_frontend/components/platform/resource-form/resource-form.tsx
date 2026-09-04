@@ -1,13 +1,13 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, ChevronLeft, ChevronRight, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import { MENU_SIDEBAR } from '@/config/menu.config';
 import { buildListNav } from '@/lib/list-context';
-import { presentContinuous } from '@/lib/deferred-verb';
+import { deferredDoneMessage, presentContinuous } from '@/lib/deferred-verb';
 import { trackPendingEntities, untrackPendingEntities } from '@/lib/pending-entity-store';
 import { useCan } from '@/hooks/use-can';
 import { useDeferredAction } from '@/hooks/use-deferred-action';
@@ -152,7 +152,8 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
   // On commit the record is gone, so the page returns to the list (`ctx`/
   // `i`/`from` preserved via the SAME `backHref` the record's own Back link
   // already computes).
-  const deferredVerbRef = useRef('');
+  const deferredEntityTypeRef = useRef('');
+  const deferredLabelRef = useRef('');
   // The entity type any of this record's registered deferred actions target -
   // `watchFromMount`/`watch` below needs it to ask `current` about THIS
   // record without waiting for a local click (AC-DLA-46, second-tab parity).
@@ -165,23 +166,49 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
         : undefined,
     onCommitted: () => {
       if (recordId) untrackPendingEntities([recordId]);
-      toast.success('Done.');
+      toast.success(deferredDoneMessage(deferredLabelRef.current || 'Delete', deferredEntityTypeRef.current, 1));
       router.push(backHref ?? config.backHref);
+    },
+    onFailed: (error) => {
+      if (recordId) untrackPendingEntities([recordId]);
+      toast.error(error || 'The action failed.');
+    },
+    onCancelledElsewhere: () => {
+      if (recordId) untrackPendingEntities([recordId]);
+    },
+    onCancelFailed: (error) => {
+      toast.error(error || 'Could not cancel that action.');
     },
   });
 
   const deferredPending = deferred.state.status === 'pending' ? deferred.state : null;
   // A countdown picked up via `watch` (another tab / a re-mount) never ran
   // through `onDeferredStart` - derive its label from the matching action's
-  // OWN registered key instead of leaving the ref empty.
-  if (deferredPending && !deferredVerbRef.current) {
+  // OWN registered key. Fix round 1 item 11: this used to MUTATE a ref
+  // directly in the render body and read that same ref back for the JSX
+  // below (worked, but a ref write during render is a footgun the moment
+  // something reads it before the write - StrictMode double-invokes render
+  // for exactly this class of bug). `useMemo` derives it PURELY, fresh every
+  // render, so the label the countdown displays is never stale-by-one-frame.
+  const derivedDeferred = useMemo(() => {
+    if (!deferredPending) return null;
     const matched = config.actions.find((a) => a.deferred?.actionKey === deferredPending.actionKey);
-    if (matched) {
-      const matchedLabel =
-        typeof matched.label === 'function' ? matched.label(config.actionRows) : matched.label;
-      deferredVerbRef.current = presentContinuous(matchedLabel);
-    }
-  }
+    if (!matched) return null;
+    const label =
+      typeof matched.label === 'function' ? matched.label(config.actionRows) : matched.label;
+    return { label, entityType: matched.deferred?.entityType ?? '' };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- config.actions/actionRows are stable per render pass; re-run only when the pending action itself changes
+  }, [deferredPending?.actionKey]);
+
+  // `onCommitted` fires AFTER `deferredPending` has already gone back to
+  // null (the poll that discovers the commit settles straight to `done`),
+  // so it needs the LAST known label/entityType - cached here (a ref write
+  // in an effect, not render, is fine: nothing reads it during rendering).
+  useLayoutEffect(() => {
+    if (!derivedDeferred) return;
+    deferredLabelRef.current = derivedDeferred.label;
+    deferredEntityTypeRef.current = derivedDeferred.entityType;
+  }, [derivedDeferred]);
 
   const gear =
     !editing && !deferredPending && config.actions.some((a) => a.surfaces.form) ? (
@@ -195,14 +222,25 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
         surface="form"
         trigger="gear"
         onDeferredStart={(action, entityIds) => {
-          const actionLabel =
-            typeof action.label === 'function' ? action.label(config.actionRows) : action.label;
-          deferredVerbRef.current = presentContinuous(actionLabel);
+          // The label/entityType for THIS action reach the countdown via
+          // `derivedDeferred` above the moment `deferred.state` flips to
+          // `pending` (it re-derives from `config.actions` + the resulting
+          // `actionKey`) - no need to cache anything eagerly here.
+          const entityType = action.deferred!.entityType;
           trackPendingEntities(entityIds);
-          void deferred.start(
-            action.deferred!.actionKey,
-            entityIds.map((id) => ({ entityType: action.deferred!.entityType, entityId: id })),
-          );
+          // Fix round 1 item 5: mirror `action-menu.tsx`'s own try/catch - an
+          // unhandled park rejection here (a 409 "another action is already
+          // counting down") previously vanished silently, leaving the record
+          // dimmed with no countdown and no way to tell what happened.
+          deferred
+            .start(
+              action.deferred!.actionKey,
+              entityIds.map((id) => ({ entityType, entityId: id })),
+            )
+            .catch((error: unknown) => {
+              untrackPendingEntities(entityIds);
+              toast.error(error instanceof Error ? error.message : 'Could not start that action.');
+            });
         }}
       />
     ) : null;
@@ -211,10 +249,14 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
   // gear-less record card and tabs stay put; no dialog, no full-page swap.
   const primary = deferredPending ? (
     <DeferredCountdown
-      verb={deferredVerbRef.current || 'Working'}
+      verb={derivedDeferred ? presentContinuous(derivedDeferred.label) : 'Working'}
       commitAt={deferredPending.commitAt}
       windowSeconds={deferredPending.windowSeconds}
       onCancel={() => {
+        // Fix round 1 item 9: `deferred.cancel()` now leaves `pending`
+        // SYNCHRONOUSLY (before its own network round-trip) - this whole
+        // countdown unmounts on the SAME render, so there is no window
+        // where a stale/disabled Cancel could be double-pressed.
         void deferred.cancel();
         if (recordId) untrackPendingEntities([recordId]);
       }}

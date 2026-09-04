@@ -30,7 +30,13 @@ vi.mock('@/services/terminology-service', () => ({
 }));
 
 const toastSuccess = vi.fn();
-vi.mock('sonner', () => ({ toast: { success: (...a: unknown[]) => toastSuccess(...a) } }));
+const toastError = vi.fn();
+vi.mock('sonner', () => ({
+  toast: {
+    success: (...a: unknown[]) => toastSuccess(...a),
+    error: (...a: unknown[]) => toastError(...a),
+  },
+}));
 
 const park = vi.fn();
 const cancelPark = vi.fn();
@@ -145,15 +151,13 @@ describe('AC-DLA-44 ResourceForm deferred (grace-window) form-surface action', (
       lastOutcome: null,
     });
 
-    await act(async () => {
-      render(<ResourceForm config={baseConfig([trashAction])} />);
-      // Flush the watch-from-mount effect's async `current()` read.
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    render(<ResourceForm config={baseConfig([trashAction])} />);
 
     expect(current).toHaveBeenCalledWith('user', 'rec-1');
-    expect(screen.getByRole('timer')).toHaveTextContent('Trashing in');
+    // Flush the watch-from-mount effect's async `current()` read, THEN the
+    // label-derivation layout effect that reacts to the resulting pending
+    // state (fix round 1 item 11 - moved out of the render body).
+    await screen.findByText(/Trashing in/);
     expect(screen.queryByRole('button', { name: /^edit$/i })).not.toBeInTheDocument();
   });
 });
