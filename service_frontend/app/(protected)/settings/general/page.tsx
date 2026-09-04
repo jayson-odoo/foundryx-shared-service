@@ -104,7 +104,7 @@ function GeneralSettingsForm() {
         {canManage && (
           <div>
             <Button onClick={() => void save()} disabled={saving || loading}>
-              Save
+              Save settings
             </Button>
           </div>
         )}

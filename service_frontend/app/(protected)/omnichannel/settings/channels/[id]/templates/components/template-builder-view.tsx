@@ -203,7 +203,7 @@ export function TemplateBuilderView({ channelId, templateId }: TemplateBuilderVi
             {canSubmit && (
               <Button size="sm" onClick={onSubmit} disabled={saving || submitting}>
                 {submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-                Submit
+                Submit template
               </Button>
             )}
           </div>

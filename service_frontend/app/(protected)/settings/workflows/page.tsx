@@ -87,7 +87,7 @@ function WorkflowSettingsForm() {
         </div>
         <div>
           <Button onClick={() => void save()} disabled={saving || loading}>
-            Save
+            Save workflow settings
           </Button>
         </div>
       </CardContent>

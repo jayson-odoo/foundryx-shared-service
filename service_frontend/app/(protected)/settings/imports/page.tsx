@@ -105,7 +105,7 @@ function ImportSettingsForm() {
         </div>
         <div>
           <Button onClick={() => void save()} disabled={saving || loading}>
-            Save
+            Save import settings
           </Button>
         </div>
       </CardContent>

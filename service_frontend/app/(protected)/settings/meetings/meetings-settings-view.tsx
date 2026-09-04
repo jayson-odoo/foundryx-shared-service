@@ -225,7 +225,7 @@ export function MeetingsSettingsView() {
           {canManage && (
             <div>
               <Button disabled={saving || loading} onClick={() => void onSave()}>
-                Save
+                Save meeting settings
               </Button>
             </div>
           )}

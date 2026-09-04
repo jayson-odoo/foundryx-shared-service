@@ -77,7 +77,7 @@ function LogRetentionForm() {
             onClick={() => void onSave()}
             disabled={isSaving || isLoading}
           >
-            Save
+            Save log settings
           </Button>
         </div>
       </CardContent>
