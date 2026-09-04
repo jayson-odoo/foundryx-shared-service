@@ -61,17 +61,43 @@ class DocumentPreset:
 
 
 # ── Sales Order ───────────────────────────────────────────────────────────────
-
+#
+#     !!  TABLE NAMES + AutoKey JOINS MATCH THE SQL PACK (S2, review round).  !!
+# (`documentation/plans/sprint-4/22-autocount-db-etl-autocount-sql.md`.)
+# Real AutoCount tables are `SO`/`SODTL`/`PO`/`PODTL` - the earlier
+# `SO_Header`/`SO_Dtl`/`PO_Header`/`PO_Dtl` names (and a bare `DebtorAutoKey`/
+# `ItemAutoKey`/`LocationAutoKey` column, as if AutoCount stored a master's
+# key directly on the document) were placeholders that never matched a real
+# schema OR the live tasks built against the pack. `ref_customer`/
+# `ref_supplier`/`ref_product`/`ref_warehouse` mint `{database}:{AutoKey}` -
+# a wrong/missing AutoKey means the reference can never resolve against the
+# ALREADY-SYNCED master, so this is a functional-correctness fix, not a
+# cosmetic one. `RequestedDeliveryDate`/`ExpectedDate` are simplified to the
+# header's own UDF override column (never the pack's OUTER APPLY "first
+# line's delivery date" fallback) - line-derived aggregates belong to the
+# mapping engine's OWN `lines.*` facts (`DEFAULT_STATUS_FORMULA` already
+# reads `lines.count`/`lines.open_count` that way), not a second SQL-side
+# computation of the same shape.
 _SO_HEADER_QUERY = (
-    "SELECT DocKey, DocNo, DebtorAutoKey, SalesAgent, DocDate, "
-    "RequestedDeliveryDate, Note, Cancelled, DebtorCode, DebtorName, "
-    "LastModified FROM {database}.dbo.SO_Header"
+    "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, c.AutoKey AS DebtorAutoKey, "
+    "h.SalesAgent AS SalesAgent, h.DocDate AS DocDate, "
+    "h.UDF_DelDate AS RequestedDeliveryDate, h.Note AS Note, "
+    "h.Cancelled AS Cancelled, h.DebtorCode AS DebtorCode, "
+    "h.DebtorName AS DebtorName, h.LastModified AS LastModified "
+    "FROM {database}.dbo.SO AS h "
+    "LEFT JOIN {database}.dbo.Debtor AS c ON c.AccNo = h.DebtorCode"
 )
 _SO_LINE_QUERY = (
-    "SELECT DtlKey, ItemAutoKey, LocationAutoKey, Qty, TransferedQty, "
-    "UnitPrice, DiscountAmt, SubTotal, UOM, DeliveryDate, ItemCode, "
-    "Description, Location, Seq FROM {database}.dbo.SO_Dtl "
-    "WHERE DocKey = :doc_key"
+    "SELECT d.DtlKey AS DtlKey, i.AutoKey AS ItemAutoKey, "
+    "w.AutoKey AS LocationAutoKey, d.Qty AS Qty, "
+    "d.TransferedQty AS TransferedQty, d.UnitPrice AS UnitPrice, "
+    "d.DiscountAmt AS DiscountAmt, d.SubTotal AS SubTotal, d.UOM AS UOM, "
+    "d.DeliveryDate AS DeliveryDate, d.ItemCode AS ItemCode, "
+    "d.Description AS Description, d.Location AS Location, d.Seq AS Seq "
+    "FROM {database}.dbo.SODTL AS d "
+    "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode "
+    "LEFT JOIN {database}.dbo.Location AS w ON w.Location = d.Location "
+    "WHERE d.DocKey = :doc_key"
 )
 
 SO_PRESET = DocumentPreset(
@@ -114,17 +140,31 @@ SO_PRESET = DocumentPreset(
 
 
 # ── Purchase Order ────────────────────────────────────────────────────────────
-
+# Same S2 table-name/AutoKey-join fix as SO above. `PurchaseAgent` (not
+# `SalesAgent` - the earlier query's copy-paste from the SO header) is the
+# pack's real PO agent column. `UDF_Currency` is selected alongside
+# `CurrencyCode` for the S4 currency-fallback formula below.
 _PO_HEADER_QUERY = (
-    "SELECT DocKey, DocNo, CreditorAutoKey, SalesAgent, DocDate, "
-    "ExpectedDate, Note, Cancelled, CreditorCode, CreditorName, CurrencyCode, "
-    "LastModified FROM {database}.dbo.PO_Header"
+    "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, s.AutoKey AS CreditorAutoKey, "
+    "h.PurchaseAgent AS SalesAgent, h.DocDate AS DocDate, "
+    "h.UDF_DelDate AS ExpectedDate, h.Note AS Note, h.Cancelled AS Cancelled, "
+    "h.CreditorCode AS CreditorCode, h.CreditorName AS CreditorName, "
+    "h.CurrencyCode AS CurrencyCode, h.UDF_Currency AS UDF_Currency, "
+    "h.LastModified AS LastModified "
+    "FROM {database}.dbo.PO AS h "
+    "LEFT JOIN {database}.dbo.Creditor AS s ON s.AccNo = h.CreditorCode"
 )
 _PO_LINE_QUERY = (
-    "SELECT DtlKey, ItemAutoKey, LocationAutoKey, Qty, TransferedQty, "
-    "UnitPrice, DiscountAmt, SubTotal, UOM, ExpectedDate, ItemCode, "
-    "Description, Location, Seq FROM {database}.dbo.PO_Dtl "
-    "WHERE DocKey = :doc_key"
+    "SELECT d.DtlKey AS DtlKey, i.AutoKey AS ItemAutoKey, "
+    "w.AutoKey AS LocationAutoKey, d.Qty AS Qty, "
+    "d.TransferedQty AS TransferedQty, d.UnitPrice AS UnitPrice, "
+    "d.DiscountAmt AS DiscountAmt, d.SubTotal AS SubTotal, d.UOM AS UOM, "
+    "d.DeliveryDate AS ExpectedDate, d.ItemCode AS ItemCode, "
+    "d.Description AS Description, d.Location AS Location, d.Seq AS Seq "
+    "FROM {database}.dbo.PODTL AS d "
+    "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode "
+    "LEFT JOIN {database}.dbo.Location AS w ON w.Location = d.Location "
+    "WHERE d.DocKey = :doc_key"
 )
 
 # addendum §3/§9 - a PO task filters OUT the SPO-numbered documents its
