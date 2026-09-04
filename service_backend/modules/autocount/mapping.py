@@ -782,11 +782,16 @@ LINE_FIELD_REF_TRANSFORMS: Dict[str, str] = {
 }
 
 # The documented default `status` formula a document preset seeds (sprint-5/02,
-# AC-02-08) - defined ONCE here (mapping.py, not presets.py) so the ENGINE-
-# level tests (which build ``MappingRow`` by hand, never through a preset) and
-# the seeding code share the exact same string.
+# AC-02-08, amended by the review round - a header with ZERO lines yet (a
+# fresh SO/PO before its detail rows have synced) must read "open", not
+# "closed" - `lines.open_count == 0` alone cannot distinguish "no lines" from
+# "every line closed"). Defined ONCE here (mapping.py, not presets.py) so the
+# ENGINE-level tests (which build ``MappingRow`` by hand, never through a
+# preset) and the seeding code share the exact same string.
 DEFAULT_STATUS_FORMULA = (
-    'if(Cancelled == "T", "cancelled", if(lines.open_count == 0, "closed", "open"))'
+    'if(Cancelled == "T", "cancelled", '
+    'if(lines.count == 0, "open", '
+    'if(lines.open_count == 0, "closed", "open")))'
 )
 
 
