@@ -12,6 +12,7 @@ from app.database import get_db
 from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
+from ..canonical.documents import is_document_entity
 from ..schemas import (
     CompanyCreate,
     CompanyDetailResponse,
@@ -322,6 +323,17 @@ def replace_entity_mapping(
                 )
                 for row in body.rows
             ],
+            #     !!  S7 (should-fix, review round) - THE MAPPING FORM IS ONE
+            #         COMBINED SAVE, NEVER A HEADER-ONLY PARTIAL.  !!
+            # The editor's single Save button always resubmits its WHOLE
+            # current draft (header rows AND line rows together) for a
+            # document entity - so an empty `body.rows` line-scope slice on
+            # a document entity genuinely means "the operator cleared every
+            # line row and saved", not "this request never touched line
+            # scope". Master/GRN entities have no line concept at all
+            # (`replace_mapping` gates line handling on `is_document_entity`
+            # regardless of this flag), so it is harmless there.
+            line_rows_submitted=is_document_entity(entity_type),
         )
     except AutocountServiceError as exc:
         _raise(exc)

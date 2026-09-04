@@ -1189,6 +1189,7 @@ class CompanyService:
         company_id: str,
         entity_type: str,
         rows: List[MappingWriteRow],
+        line_rows_submitted: bool = False,
     ) -> MappingView:
         """Replace the DELIVERABLE mapping rows for one (company, entity) in ONE
         transaction (AC-15-41), HEADER and LINE scope both (sprint-5/02,
@@ -1202,12 +1203,16 @@ class CompanyService:
         even LOOK at a line row's target name.
 
         !!  A HEADER-ONLY SAVE MUST NEVER TOUCH LINE ROWS (AC-02-01).  !!
-        The line-scope block runs ONLY when the caller actually submitted at
-        least one ``scope='line'`` row this call. The real editor always
-        resubmits its WHOLE current line draft together (never a header-only
-        partial), so an empty submission unambiguously means "this save did
-        not touch line scope" - exactly like a fresh document task with no
-        line mapping configured yet.
+        The line-scope block runs when the caller submitted at least one
+        ``scope='line'`` row THIS call, OR ``line_rows_submitted=True`` (S7,
+        review round): an empty ``rows`` list and an omitted Lines tab both
+        arrive as ``line_rows == []`` and are otherwise indistinguishable, but
+        they mean opposite things - "the operator cleared every line row and
+        saved" (must wipe, symmetric with an empty HEADER submission, which
+        already wipes unconditionally) versus "this save never touched line
+        scope at all" (must leave existing line rows untouched). The router
+        sets the flag from whether the request actually carried the Lines-tab
+        payload, even when empty.
         """
         config = self._require_entity(tenant_id, company_id, entity_type)
 
@@ -1215,7 +1220,7 @@ class CompanyService:
         line_rows = [r for r in rows if getattr(r, "scope", SCOPE_HEADER) == SCOPE_LINE]
 
         self._replace_header_mapping(tenant_id, company_id, entity_type, header_rows, config)
-        if line_rows and is_document_entity(entity_type):
+        if (line_rows or line_rows_submitted) and is_document_entity(entity_type):
             self._replace_line_mapping(tenant_id, company_id, entity_type, line_rows, config)
 
         self.db.commit()
@@ -1396,10 +1401,23 @@ class CompanyService:
         """The LINE-scope guard chain (sprint-5/02, AC-02-02/03) - mirrors
         ``_replace_header_mapping`` against the LINE catalog
         (``mapping_catalog.SORENTO_LINE_FIELDS``/``LINE_FIELD_REF_TRANSFORMS``).
-        Only ever called with a NON-EMPTY ``rows`` (the caller's "did this
-        save touch line scope at all" gate) - so the required-fields check
-        below is unconditional, unlike the header's ``if rows:`` guard.
+
+        Called whenever the caller's ``replace_mapping`` decided the Lines
+        tab was touched THIS save (``line_rows`` non-empty OR
+        ``line_rows_submitted=True``, S7) - so ``rows`` CAN be empty here,
+        meaning "the operator cleared every line row and saved". That case
+        is a pure wipe: the required-fields check below only applies to a
+        genuine (non-empty) line mapping attempt, exactly like the header's
+        own ``if rows:`` guard - an intentional wipe to zero rows must never
+        420 on "status is required".
         """
+        if not rows:
+            self.mappings.delete_by_canonical(
+                tenant_id, company_id, entity_type,
+                line_accepted_field_names(entity_type), scope=SCOPE_LINE,
+            )
+            return
+
         accepted = line_accepted_field_names(entity_type)
         required = line_required_field_names(entity_type)
         line_columns = config.line_result_columns
