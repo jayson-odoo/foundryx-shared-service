@@ -60,6 +60,11 @@ export function useUserActions(): ResourceAction<User>[] {
         // Can't impersonate yourself or a non-active user (backend also guards).
         isVisible: (rows) => rows.length === 1 && rows[0].id !== selfId,
         isDisabled: (rows) => rows.some((r) => r.status !== 'ACTIVE'),
+        // DISCLOSED THIRD confirm carve-out (sprint-4/23, T5 report): D2's grace
+        // window is a delete/archive-style model - "start impersonating in 10s,
+        // Cancel to stop" has no sensible commit semantics (impersonation isn't
+        // a record mutation the server can undo/redo the way trash/archive can).
+        // Kept as a plain (non-typed) confirm rather than forced into `deferred`.
         confirm: {
           title: 'Impersonate this user?',
           description:
@@ -106,12 +111,9 @@ export function useUserActions(): ResourceAction<User>[] {
         permission: 'users.delete',
         surfaces: { row: true, bulk: true, form: true },
         isVisible: (rows) => rows.length > 0 && rows.every((r) => !r.isTrashed),
-        confirm: {
-          title: 'Move to trash?',
-          description:
-            'The selected user(s) will be moved to the trash. You can restore them later from the Trashed view.',
-          confirmLabel: 'Trash',
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm
+        // dialog; a bulk trash parks ONE row per user behind one countdown.
+        deferred: { actionKey: 'users.trash', entityType: 'user', window: 'destructive' },
         run: async (rows, rt) => {
           await userService.trash(ids(rows));
           toast.success(`Moved ${rows.length} user(s) to trash.`);
