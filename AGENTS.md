@@ -444,6 +444,14 @@ Skills auto-fire on description match - these rules disambiguate overlap and for
 - **IDLE for this stack (won't match, leave alone):** `better-auth-best-practices` (auth is FastAPI, not Better Auth), `vercel-react-native-skills` + `building-native-ui` (no mobile app). `supabase-postgres-best-practices` = generic Postgres advice, fine to consult; ignore its Supabase-specific bits (we run native Postgres, no Supabase).
 - **Starting a non-trivial feature/refactor:** run `/feature` (`.claude/skills/feature/SKILL.md`) - it drives the mandatory methodology order below and calls the user-level `mattpocock-skills` plugin (grill, tdd, prototype, code-review, domain-modeling, diagnosing-bugs, …) at each step, with two standing overrides where the plugin disagrees with this repo: UAC+plan files under `documentation/plans/sprint-<N>/` are the contract (issues, if used, are only the queue), and frontend-mock always precedes backend TDD. For a cross-model second opinion in the review step, use `.claude/skills/codex-review/SKILL.md`.
 
+### Subagent model routing (standing rule, mirrored from sorento_crm 2026-08-30; hardened 2026-09-04)
+
+The main session (Fable) plans and briefs; execution subagents run on **Sonnet** by default - `coder` and `tester` declare `model: sonnet` in `.claude/agents/`; `reviewer` and `planner` stay `model: opus` (the review is the quality gate before a merge). Built-in agent types (`Explore`, `Plan`, `general-purpose`) get an explicit `model: "sonnet"` per Agent call. A vague brief is the main session's defect, not a reason to upgrade the model.
+
+Escalate a SINGLE spawn to Opus (pass `model: "opus"` on the Agent call; never edit the agent files) only for: complex architecture / tangled refactors; hard debugging after a Sonnet pass failed; critical security review (auth, tenant isolation, external ingest); drift control (a Sonnet coder that rewrote the plan - rerun that slice on Opus). Name the reason in the brief.
+
+**Never spawn subagents on Fable.** That includes forked skills: the built-in `/code-review` skill runs as a fork (inherits the main session's context AND model) and fans out to 20+ same-model verifier agents - one run costs more Fable than a whole slice. Reviews go to the `reviewer` agent (Opus) with a compact brief: branch, diff range, plan + UAC paths, the hard-fail list. `/review-animations` runs as ONE `general-purpose` agent on Opus. `/codex-review` (OpenAI CLI) is the cross-model second opinion.
+
 ## Development methodology (mandatory order)
 
 This is a strict, governed process - follow it for every feature. Source: the user's `/init` directive + `documentation/development_process/`.

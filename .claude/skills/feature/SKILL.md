@@ -147,9 +147,11 @@ full:
 
 ### Step 8 - Review
 
-`code-review` (this session's built-in skill - the repo's own diff review) is
-the primary pass; `mattpocock-skills:code-review` (parallel Standards + Spec
-review) is a useful second lens for a large or ambiguous diff. Then
+The `reviewer` agent (Opus, `.claude/agents/reviewer.md`) is the primary pass:
+brief it with the branch, the diff range, the plan + UAC paths and the hard-fail
+list. NEVER the built-in `code-review` skill: it forks on the main session's model
+(Fable) and spawns 20+ Fable verifiers. `mattpocock-skills:code-review` is a
+second lens only if it is run as a Sonnet/Opus agent, not a fork. Then
 `/codex-review` (this repo's ported skill) for a cross-model second opinion on
 risky or large diffs. Apply findings via `simplify` or `--fix`.
 
@@ -183,7 +185,7 @@ active plan.
 | 5 Phase 1 FE mock | `agent-browser` CLI to verify | `coder` agent (worktree if concurrent) |
 | 6 Phase 2 TDD | `mattpocock-skills:tdd` (scoped to backend phase) | `coder` agent; tests may split to `tester` |
 | 6 hard bugs | `mattpocock-skills:diagnosing-bugs` | main session or `coder` agent |
-| 8 review | `code-review` (built-in), then `mattpocock-skills:code-review`, then `/codex-review` | `reviewer` agent + main session |
+| 8 review | `reviewer` agent on Opus (never the built-in `code-review` fork), then `/codex-review` | `reviewer` agent + main session |
 | periodic | `mattpocock-skills:codebase-design` | main session |
 | context capture | `mattpocock-skills:research` | main session or background agent |
 
