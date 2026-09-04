@@ -21,7 +21,7 @@ own bind is safe (nothing here needs the storage-migration lesson's
 separate-connection treatment - there is no batched multi-commit loop, one
 flush at the end, Alembic owns the single commit).
 
-Revision ID: 0011_autocount_doc_line_fix   (26 chars <= 32)
+Revision ID: 0011_autocount_doc_line_fix   (27 chars <= 32)
 Revises: 0010_autocount_doc_lines
 Create Date: 2026-09-05
 """
