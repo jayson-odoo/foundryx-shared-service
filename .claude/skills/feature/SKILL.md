@@ -103,7 +103,7 @@ expected API contract at the top of the service file (backend phase must match
 it exactly). Follow the Resource shell contract for any list/form
 (PRINCIPLES.md "Resource shell for every list/form").
 
-Verify in a real browser via Playwright MCP or the `webapp-testing` skill,
+Verify in a real browser via the `agent-browser` CLI (headless; never Playwright MCP or an ad-hoc Playwright script - user mandate),
 navigating by **sidebar/UI clicks** - never a deep URL, real users don't know
 URLs. Check console messages. Screenshot the golden path and edge cases at
 **375px AND 1280px** (responsive mandate). Close the browser session when done.
@@ -177,7 +177,7 @@ active plan.
 | 2 UAC + plan | manual - files are the contract | main session (plan mode) |
 | 2b design options | `mattpocock-skills:prototype` (throwaway) | main session |
 | 3 plan review | `lavish` then `mattpocock-skills:grilling` | main session (user in loop) |
-| 5 Phase 1 FE mock | `webapp-testing` / Playwright MCP to verify | `coder` agent (worktree if concurrent) |
+| 5 Phase 1 FE mock | `agent-browser` CLI to verify (headless) | `coder` agent (worktree if concurrent) |
 | 6 Phase 2 TDD | `mattpocock-skills:tdd` (scoped to backend phase) | `coder` agent; tests may split to `tester` |
 | 6 hard bugs | `mattpocock-skills:diagnosing-bugs` | main session or `coder` agent |
 | 8 review | `code-review` (built-in), then `mattpocock-skills:code-review`, then `/codex-review` | `reviewer` agent + main session |
