@@ -17,6 +17,8 @@ from pydantic import ConfigDict, Field, model_validator
 
 from app.schemas.base import ApiModel
 
+from .sql_source.source import MAX_DOCUMENT_LINES_PER_HEADER
+
 
 # ── companies ─────────────────────────────────────────────────────────────────
 
@@ -367,11 +369,20 @@ class SimulateRequest(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
     record: Dict[str, Any]
-    rows: Optional[List[MappingUpdateRow]] = None
+    # A sane defensive cap (review-round nit) - a mapping draft is operator-
+    # authored (a handful to a few dozen rows per entity in practice); this
+    # is not a real business constant, just a ceiling against a pathological
+    # payload reaching the simulator unbounded.
+    rows: Optional[List[MappingUpdateRow]] = Field(default=None, max_length=500)
     # sprint-5/02 (AC-02-22) - a document entity's fetched line records for
     # the picked header, so Simulate can preview the header AND its lines
-    # together (aggregates, status formula) without saving anything.
-    lines: Optional[List[Dict[str, Any]]] = None
+    # together (aggregates, status formula) without saving anything. Capped
+    # at the SAME ceiling the live SQL source enforces per header
+    # (``MAX_DOCUMENT_LINES_PER_HEADER``, review-round nit) - Simulate must
+    # never accept a payload the real pipeline would already have rejected.
+    lines: Optional[List[Dict[str, Any]]] = Field(
+        default=None, max_length=MAX_DOCUMENT_LINES_PER_HEADER
+    )
 
 
 class SimulateFieldResult(ApiModel):

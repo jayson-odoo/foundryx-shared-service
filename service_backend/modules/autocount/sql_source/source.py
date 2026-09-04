@@ -691,6 +691,18 @@ class SqlDbSource:
                     f"query and the connection, then re-run reconcile."
                 )
 
+        # Only ever finds anything on a FULL extract (review-round nit): on an
+        # incremental run `known` is `self._prior_hashes(raw_rows)` - built
+        # from the POST-FILTER `raw_rows` this method already returned above,
+        # so it can never contain a filtered-out ref to begin with. That is
+        # fine, not a gap: an incremental run's filtered-out header was never
+        # a "changed header" this pass (the watermark WHERE clause excluded
+        # it), so it cannot be carrying a stale hash from THIS run's extract
+        # either. The case this drop exists for - a filter newly added/
+        # tightened so a PREVIOUSLY-hashed header now falls outside it - only
+        # ever surfaces on a reconcile's full-population diff (F1 covers the
+        # sibling case: editing the filter itself re-baselines the whole
+        # entity's hashes at save time).
         stale_filtered_refs = [ref for ref in filtered_refs if ref in known]
         if self.persist_hashes and (hashes or stale_filtered_refs):
             if hashes:
