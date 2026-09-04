@@ -34,9 +34,21 @@ export function Demo1Layout({ children }: { children: ReactNode }) {
     bodyClass.add('sidebar-fixed');
     bodyClass.add('header-fixed');
 
-    const timer = setTimeout(() => {
-      bodyClass.add('layout-initialized');
-    }, 1000); // 1000 milliseconds
+    // AC-DLA-24: the class only needs to land AFTER the browser has painted
+    // the shell's initial (un-transitioned) layout at least once, so the
+    // very first paint never carries a `transition` that would animate FROM
+    // nothing. A 1000ms `setTimeout` guessed at that; a double
+    // `requestAnimationFrame` (first frame commits the initial paint,
+    // second frame runs after the browser has had a chance to render it)
+    // is the actual signal and lands within two frames instead of a full
+    // second.
+    let raf1 = 0;
+    let raf2 = 0;
+    raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        bodyClass.add('layout-initialized');
+      });
+    });
 
     // Remove the class when the component is unmounted
     return () => {
@@ -45,7 +57,8 @@ export function Demo1Layout({ children }: { children: ReactNode }) {
       bodyClass.remove('sidebar-collapse');
       bodyClass.remove('header-fixed');
       bodyClass.remove('layout-initialized');
-      clearTimeout(timer);
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
     };
   }, []); // Runs only once on mount
 
