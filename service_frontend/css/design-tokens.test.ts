@@ -406,8 +406,21 @@ describe('AC-DLA-05 accessibility preference blocks', () => {
     const reduced = reducedMotion();
     expect(reduced).toMatch(/\.demo1 \.sidebar,\s*\n?\s*\.demo1 \.wrapper,\s*\n?\s*\.demo1 \.header/);
     expect(reduced).toMatch(/\.demo1[\s\S]*\{\s*transition:\s*none\s*!important/);
-    expect(reduced).toMatch(/\[data-vaul-drawer\]\s*\{\s*transition-duration:\s*1ms\s*!important/);
+    // T3 fix round 1 finding 5 (BLOCKER 3): vaul opens/closes via a CSS
+    // ANIMATION, not a transition - both `[data-vaul-drawer]` AND
+    // `[data-vaul-overlay]` need `animation-duration` reset alongside
+    // `transition-duration`, or a reduced-motion reader still gets the full
+    // 500ms slide.
+    expect(reduced).toMatch(
+      /\[data-vaul-drawer\],\s*\n?\s*\[data-vaul-overlay\]\s*\{\s*transition-duration:\s*1ms\s*!important;\s*\n?\s*animation-duration:\s*1ms\s*!important/,
+    );
     expect(reduced).toMatch(/\[class\*='transition-\['\]\s*\{\s*transition-duration:\s*1ms\s*!important/);
+  });
+
+  it('pins the normal-motion vaul drawer/overlay animation to --duration-slow, outside the reduced-motion query', () => {
+    expect(stylesCss).toMatch(
+      /\[data-vaul-drawer\],\s*\n?\s*\[data-vaul-overlay\]\s*\{\s*animation-duration:\s*var\(--duration-slow\)\s*!important/,
+    );
   });
 
   // T1 fix round 1 finding 6: reduced-transparency and prefers-contrast: more used to

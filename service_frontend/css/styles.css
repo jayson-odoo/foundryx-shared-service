@@ -105,9 +105,15 @@
      and CSS-transition its opacity out from under the spring (the spring commits
      `opacity: 1` in one frame under `REDUCED_MOTION_TRANSITION`, and the browser
      would smear that jump over 150ms instead). Popover and DropdownMenu don't need
-     the exclusion: their animated child carries no `-content` slot of its own. */
+     the exclusion: their animated child carries no `-content` slot of its own.
+     `navigation-menu-viewport` is added explicitly (T3 fix round 1 finding 6): its
+     `data-slot` does not end in `-content` and it renders outside any
+     `[data-radix-popper-content-wrapper]` (NavigationMenu has no floating-ui
+     popper), so neither branch of this selector reached its zoom/fade without
+     being named directly. */
   @media (prefers-reduced-motion: reduce) {
     [data-slot$='-content']:not([data-slot='dialog-content']):not([data-slot='sheet-content']):not([data-vaul-drawer]),
+    [data-slot='navigation-menu-viewport'],
     [data-radix-popper-content-wrapper],
     [data-radix-popper-content-wrapper] > * {
       --tw-enter-translate-x: 0 !important;
@@ -139,14 +145,42 @@
     /* vaul (the mobile nav drawer) and any element carrying an explicit
        `transition-[` arbitrary property list drive their own duration outside the
        tw-animate vars - collapse both to next-to-instant rather than travelling at
-       full speed. */
-    [data-vaul-drawer] {
+       full speed. vaul's own `[data-vaul-drawer]`/`[data-vaul-overlay]` CSS
+       (injected by the library, not this stylesheet) opens/closes via an
+       `animation-name`/`animation-duration` pair - a plain `transition-duration`
+       reset (T3 fix round 1 BLOCKER 3) never reaches a CSS ANIMATION, so the
+       285px nav drawer still slid at full speed for a reduced-motion reader
+       until `animation-duration` is reset too. */
+    [data-vaul-drawer],
+    [data-vaul-overlay] {
       transition-duration: 1ms !important;
+      animation-duration: 1ms !important;
     }
 
     [class*='transition-['] {
       transition-duration: 1ms !important;
     }
+  }
+}
+
+/* vaul's own injected CSS defaults `[data-vaul-drawer]`/`[data-vaul-overlay]`
+   to a 500ms animation (AC-DLA-23) - slower than every other migrated surface
+   in this app. Pinned to this app's own `--duration-slow` (300ms) so the one
+   surface still on CSS keyframes (not the `lib/motion.ts` spring - vaul owns
+   its own drag-tracked animation) reads at the same pace as the rest. Sits
+   OUTSIDE the reduced-motion media query above, which already collapses both
+   properties to 1ms.
+
+   `!important`, same reasoning as the reduced-motion block's own comment
+   above: vaul injects its CSS as a plain, UNLAYERED `<style>` tag, and an
+   unlayered declaration always beats a layered one at equal specificity
+   REGARDLESS of source order - `@layer base`'s own `animation-duration`
+   would silently lose to vaul's without it. `!important` is what reverses
+   that ordering back in this stylesheet's favour. */
+@layer base {
+  [data-vaul-drawer],
+  [data-vaul-overlay] {
+    animation-duration: var(--duration-slow) !important;
   }
 }
 
