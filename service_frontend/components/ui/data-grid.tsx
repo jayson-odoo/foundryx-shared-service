@@ -47,6 +47,14 @@ export interface DataGridContextProps<TData extends object> {
   table: Table<TData>;
   recordCount: number;
   isLoading: boolean;
+  /**
+   * True while the CURRENT rows are stale but kept on screen rather than
+   * replaced by a skeleton (AC-DLA-15/32). Consumers use this to tell "an
+   * empty list" (recordCount 0, no placeholder) apart from "a refetch that
+   * happens to be in flight while the previous page's rows are showing" -
+   * the two must not be disabled the same way (AC-DLA-33).
+   */
+  isPlaceholderData: boolean;
 }
 
 export type DataGridRequestParams = {
@@ -142,6 +150,7 @@ function DataGridProvider<TData extends object>({
         table,
         recordCount: props.recordCount,
         isLoading: props.isLoading || false,
+        isPlaceholderData: props.isPlaceholderData || false,
       }}
     >
       {children}

@@ -831,12 +831,12 @@ function DataGridTableRowSelect<TData>({ row, size }: { row: Row<TData>; size?: 
 }
 
 function DataGridTableRowSelectAll({ size }: { size?: 'sm' | 'md' | 'lg' }) {
-  const { table, recordCount, isLoading } = useDataGrid();
+  const { table, recordCount, isPlaceholderData } = useDataGrid();
 
   return (
     <Checkbox
       checked={table.getIsAllPageRowsSelected() || (table.getIsSomePageRowsSelected() && 'indeterminate')}
-      disabled={isLoading || recordCount === 0}
+      disabled={recordCount === 0 && !isPlaceholderData}
       onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
       aria-label="Select all"
       size={size}
