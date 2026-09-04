@@ -23,10 +23,15 @@ export interface ActionMenuProps<T> {
   runtime: ResourceActionRuntime;
   surface: 'row' | 'form';
   /**
-   * Custom trigger; defaults to a "…" icon button. `trigger="gear"` renders
-   * the record-card gear icon (D5) instead - use one or the other, not both.
+   * `'dots'` (default, omit or pass explicitly) renders the "…" icon button;
+   * `'gear'` renders the record-card gear icon (D5) instead. Pass a custom
+   * `React.ReactElement` for anything else. Narrowed from a bare
+   * `React.ReactNode | 'gear'` (fix round 1, nit) - a literal `ReactNode`
+   * union with a string variant lets a plain text trigger silently collide
+   * with the 'gear' sentinel (e.g. a future `trigger="gear icon"` typo would
+   * have rendered as a raw text node, not thrown).
    */
-  trigger?: React.ReactNode | 'gear';
+  trigger?: 'gear' | 'dots' | React.ReactElement;
   align?: 'start' | 'end';
 }
 
@@ -92,17 +97,12 @@ export function ActionMenu<T>({
             >
               <Settings2 />
             </Button>
+          ) : trigger && trigger !== 'dots' ? (
+            trigger
           ) : (
-            (trigger ?? (
-              <Button
-                variant="ghost"
-                size="sm"
-                mode="icon"
-                aria-label="Actions"
-              >
-                <MoreHorizontal />
-              </Button>
-            ))
+            <Button variant="ghost" size="sm" mode="icon" aria-label="Actions">
+              <MoreHorizontal />
+            </Button>
           )}
         </DropdownMenuTrigger>
         <DropdownMenuContent align={align} className="w-48">
