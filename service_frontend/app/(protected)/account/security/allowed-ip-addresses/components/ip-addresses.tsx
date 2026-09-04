@@ -22,8 +22,8 @@ import {
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -393,7 +393,12 @@ const IPAddresses = () => {
                 pill, a visual regression on this file the ghost sweep must
                 not leave behind even though the whole account/security/**
                 subtree is dead demo code slated for deletion in T7. */}
-            <span className={cn('inline-block size-1.5 rounded-full bg-[currentColor] opacity-75', row.original.status)} />
+            <span
+              className={cn(
+                'inline-block size-1.5 rounded-full bg-[currentColor] opacity-75',
+                row.original.status,
+              )}
+            />
           </div>
         ),
         enableSorting: true,
