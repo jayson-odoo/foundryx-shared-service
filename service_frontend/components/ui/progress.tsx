@@ -209,7 +209,7 @@ function ProgressRadial({
           strokeWidth={strokeWidth}
           fill="none"
           strokeLinecap="round"
-          className={cn('text-primary transition-[stroke-dashoffset] ease-(--ease-standard) duration-(--duration-base)', indicatorClassName)}
+          className={cn('text-primary transition-[stroke,color] ease-(--ease-standard) duration-(--duration-base)', indicatorClassName)}
         />
       </svg>
       {(showLabel || children) && (
