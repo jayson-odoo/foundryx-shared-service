@@ -12,6 +12,16 @@ declare module '@tanstack/react-table' {
     cellClassName?: string;
     skeleton?: ReactNode;
     expandedContent?: (row: TData) => ReactNode;
+    /**
+     * A structural column that never carries record data - a drag handle, an
+     * icon-only affordance column, etc. Excluded from the mobile first-data-
+     * column pin (AC-DLA-13) the same way `reorderable: false` columns are;
+     * kept as its own flag because "not reorderable" and "not real data" are
+     * different reasons a column can be structural (a fixed but genuinely
+     * pinnable data column, e.g. an id column, sets `reorderable: false`
+     * without being a utility column).
+     */
+    utility?: boolean;
   }
 }
 
@@ -52,6 +62,20 @@ export interface DataGridProps<TData extends object> {
   recordCount: number;
   children?: ReactNode;
   onRowClick?: (row: TData) => void;
+  /**
+   * Each body row becomes a real link target to this href (AC-DLA-14): click,
+   * Enter/Space and middle-click all open it, hover prefetches it once. Stays
+   * undefined for lightbox-edited lists, which keep `onRowClick`. Neither prop
+   * set = no pointer cursor, no row-level interaction.
+   */
+  rowHref?: (row: TData) => string;
+  /**
+   * True while the CURRENT rows are stale (a new page/sort/filter/search is
+   * resolving) but kept on screen rather than replaced by a skeleton
+   * (AC-DLA-15). Dims the body; the pagination strip stays mounted and
+   * interactive throughout.
+   */
+  isPlaceholderData?: boolean;
   isLoading?: boolean;
   loadingMode?: 'skeleton' | 'spinner';
   loadingMessage?: ReactNode | string;
@@ -82,6 +106,14 @@ export interface DataGridProps<TData extends object> {
     bodyRow?: string;
     footer?: string;
     edgeCell?: string;
+    /**
+     * The ONE element that scrolls both axes (AC-DLA-13): bounded vertically
+     * by `max-h-(--grid-max-h)` so `headerSticky` has something to stick
+     * inside, and horizontally by `overflow-x-auto`. Override per list (a
+     * tall embedded grid inside a tab/dialog needs its own bound instead of
+     * the shell-relative default).
+     */
+    scroller?: string;
   };
 }
 
@@ -126,14 +158,17 @@ function DataGrid<TData extends object>({ children, table, ...props }: DataGridP
       rowBorder: true,
       rowRounded: false,
       stripped: false,
-      headerSticky: false,
+      // AC-DLA-13: sticky by default - the grid brings its own bounded
+      // scroller (DataGridTableBase), so a sticky header has something to
+      // stick against. Per-list overridable (`--grid-max-h` is the bound).
+      headerSticky: true,
       headerBackground: true,
       headerBorder: true,
       width: 'fixed',
       columnsVisibility: false,
-      columnsResizable: false,
+      columnsResizable: true,
       columnsPinnable: false,
-      columnsMovable: false,
+      columnsMovable: true,
       columnsDraggable: false,
       rowsDraggable: false,
     },
@@ -141,11 +176,17 @@ function DataGrid<TData extends object>({ children, table, ...props }: DataGridP
       base: '',
       header: '',
       headerRow: '',
-      headerSticky: 'sticky top-0 z-(--z-sticky-content) bg-background',
+      headerSticky: 'sticky top-0 z-(--z-sticky-header) bg-background',
       body: '',
       bodyRow: '',
       footer: '',
       edgeCell: '',
+      // Bounded on the SAME element that scrolls sideways (AC-DLA-13 fix
+      // round 1) - a separate horizontal-only scroller with an outer
+      // vertical bound never actually lets the sticky header stick, since
+      // `position: sticky`'s containing block is whichever ancestor
+      // actually scrolls.
+      scroller: 'max-h-(--grid-max-h) overflow-y-auto',
     },
   };
 

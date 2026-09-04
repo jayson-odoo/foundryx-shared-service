@@ -50,6 +50,12 @@
    * `--z-sidebar` on purpose: a fixed shell layer always has to win over a sticky
    * cell scrolling underneath it.
    *
+   * `--z-sticky-header` (T2 fix round 2) is the sticky `<thead>` AND the mobile-pinned
+   * HEADER cell inside it - one step above `--z-sticky-content` so a pinned body
+   * column slides UNDER the header when the grid scrolls (both classes shared the
+   * same step before this, so at <=640px the pinned column painted OVER the sticky
+   * header). Pinned BODY cells stay on `--z-sticky-content`.
+   *
    * `--z-banner` (the impersonation banner) sits ABOVE `--z-modal` on purpose (T1 fix
    * round 1 finding 2) - PAINT ORDER ONLY: the banner is never covered by an overlay's
    * scrim, so "Exit impersonation" stays visible even with a dialog/sheet open. It is
@@ -62,6 +68,7 @@
   --z-modal: 50;
   --z-banner: 60;
   --z-sticky-content: 5;
+  --z-sticky-header: 6;
 
   /** Motion. One curve, three steps; every components/ui transition uses them. */
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);

@@ -149,8 +149,12 @@ describe('AC-DLA-03 named z-scale', () => {
   // --z-sticky-content-corner was dropped (T1 fix round 3 finding 10) - it had no
   // consumer (no cell pinned on both axes exists yet); re-add it, registered here,
   // if one ever does.
+  // --z-sticky-header (T2 fix round 2) is the sticky <thead> + the mobile-pinned
+  // HEADER cell - one step above --z-sticky-content (pinned BODY cells) so a
+  // pinned column slides UNDER the header when the grid scrolls, not over it.
   const steps: Array<[string, number]> = [
     ['--z-sticky-content', 5],
+    ['--z-sticky-header', 6],
     ['--z-header', 10],
     ['--z-sidebar', 20],
     ['--z-modal', 50],
@@ -162,10 +166,11 @@ describe('AC-DLA-03 named z-scale', () => {
     expect(Number(cs.getPropertyValue(name).trim())).toBe(expected);
   });
 
-  it('orders the scale: sticky-content < header < sidebar < modal < banner', () => {
+  it('orders the scale: sticky-content < sticky-header < header < sidebar < modal < banner', () => {
     const cs = injectStylesheet();
     const n = (name: string) => Number(cs.getPropertyValue(name).trim());
-    expect(n('--z-sticky-content')).toBeLessThan(n('--z-header'));
+    expect(n('--z-sticky-content')).toBeLessThan(n('--z-sticky-header'));
+    expect(n('--z-sticky-header')).toBeLessThan(n('--z-header'));
     expect(n('--z-header')).toBeLessThan(n('--z-sidebar'));
     expect(n('--z-sidebar')).toBeLessThan(n('--z-modal'));
     expect(n('--z-modal')).toBeLessThan(n('--z-banner'));

@@ -3,10 +3,21 @@
  * fact registry. Sibling of filter-builder (D9): per-type operators,
  * cross-fact compare toggle, nested AND/OR groups, stale-fact chips.
  */
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render as rtlRender, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { RuleFact, RuleGroup } from '@/types/rules';
+import { TooltipsProvider } from '@/providers/tooltips-provider';
 import { RuleBuilder } from './rule-builder';
+
+/**
+ * `tooltip.tsx` is a bare Radix Root since AC-DLA-16 (the one app-wide
+ * provider lives in `TooltipsProvider`, mounted once in `app/layout.tsx`) -
+ * `RuleBuilder` renders tooltips on its stale-fact chips, so every render in
+ * this file needs one in its tree too.
+ */
+function render(ui: React.ReactElement) {
+  return rtlRender(<TooltipsProvider>{ui}</TooltipsProvider>);
+}
 
 const FACTS: RuleFact[] = [
   {

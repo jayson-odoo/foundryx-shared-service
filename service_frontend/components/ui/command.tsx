@@ -91,6 +91,9 @@ function CommandItem({ className, ...props }: React.ComponentProps<typeof Comman
     <CommandPrimitive.Item
       data-slot="command-item"
       className={cn(
+        // No press class (AC-DLA-09 fix round 1): keyboard-driven, 100+/day -
+        // arrow keys move `data-[selected=true]` between siblings and any
+        // pressed transition would read as motion on a keyboard action.
         'relative flex text-foreground cursor-default gap-2 select-none items-center rounded-sm px-2 py-1.5 text-sm outline-hidden data-[disabled=true]:pointer-events-none data-[selected=true]:bg-accent data-[disabled=true]:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0',
         className,
       )}
