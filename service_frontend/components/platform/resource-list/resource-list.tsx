@@ -343,6 +343,16 @@ export function ResourceList<T extends object>({
   // to. Indexing/encoding against the live query would silently mis-number
   // a row clicked during that window.
   const ctx = encodeListQuery(list.loadedQuery);
+  // A row's position on the CURRENT page, O(1) (fix round 1, nit) - was
+  // `list.data.indexOf(row)` on every call site (buildRowHref per row PER
+  // COLUMN before the DataGrid-side fix above, and again in openRow), an
+  // O(n) scan each time. Recomputed only when the page's rows actually
+  // change.
+  const rowIndexMap = useMemo(() => {
+    const map = new Map<T, number>();
+    list.data.forEach((row, i) => map.set(row, i));
+    return map;
+  }, [list.data]);
   // The row's href, carrying ctx + global index + from=<rowId> (AC-DLA-29/30):
   // `from` is what lets Back re-find and highlight this exact row later.
   // A config without a detail page returns '#'/'' - the DataGrid primitive's
@@ -362,13 +372,16 @@ export function ResourceList<T extends object>({
   // primitive renders a true `<a href>` in the primary cell and the row's
   // own click/keyboard handling delegates to it. `onRowSelect` (inline
   // master-detail) keeps the in-place open instead, so no `rowHref` at all.
+  // `DataGrid` now calls this at most once per row (data-grid-table.tsx fix
+  // round 1), so together with the O(1) index lookup this is once per row,
+  // not once per cell.
   const rowHrefFn = config.onRowSelect
     ? undefined
-    : (row: T) => buildRowHref(row, list.data.indexOf(row));
+    : (row: T) => buildRowHref(row, rowIndexMap.get(row) ?? 0);
   // Card view (and `onRowSelect`) still call this directly - it's the same
   // href/ctx contract, just pushed imperatively instead of via a real anchor.
   function openRow(row: T) {
-    const indexOnPage = list.data.indexOf(row);
+    const indexOnPage = rowIndexMap.get(row) ?? 0;
     if (config.onRowSelect) {
       config.onRowSelect(row, indexOnPage, list.data);
       return;

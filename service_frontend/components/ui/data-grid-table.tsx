@@ -309,11 +309,20 @@ function DataGridTableHeadRowCell<TData>({
   header,
   dndRef,
   dndStyle,
+  primaryColumnIndex,
 }: {
   children: ReactNode;
   header: Header<TData, unknown>;
   dndRef?: React.Ref<HTMLTableCellElement>;
   dndStyle?: CSSProperties;
+  /**
+   * The table's primary-column index, computed ONCE by `DataGridTable`
+   * (fix round 1) - column order/visibility is uniform across every header
+   * cell, so recomputing `firstDataColumnIndex` per cell was pure waste.
+   * Falls back to a local computation for any direct caller that doesn't
+   * pass it (none in this codebase; kept for API compatibility).
+   */
+  primaryColumnIndex?: number;
 }) {
   const { props } = useDataGrid();
 
@@ -324,8 +333,9 @@ function DataGridTableHeadRowCell<TData>({
   const headerCellSpacing = headerCellSpacingVariants({
     size: props.tableLayout?.dense ? 'dense' : 'default',
   });
-  const isMobilePinned =
-    !isPinned && column.getIndex() === firstDataColumnIndex(header.headerGroup.headers.map((h) => h.column));
+  const resolvedPrimaryIndex =
+    primaryColumnIndex ?? firstDataColumnIndex(header.headerGroup.headers.map((h) => h.column));
+  const isMobilePinned = !isPinned && column.getIndex() === resolvedPrimaryIndex;
 
   return (
     <th
@@ -547,14 +557,22 @@ function DataGridTableBodyRow<TData>({
   row,
   dndRef,
   dndStyle,
+  href: hrefProp,
 }: {
   children: ReactNode;
   row: Row<TData>;
   dndRef?: React.Ref<HTMLTableRowElement>;
   dndStyle?: CSSProperties;
+  /**
+   * This row's resolved href, computed ONCE by the caller (`DataGridTable`,
+   * fix round 1) so the SAME value reaches both this row and its cells
+   * instead of each recomputing `props.rowHref(row.original)` itself. Falls
+   * back to a local computation when omitted (API compatibility).
+   */
+  href?: string;
 }) {
   const { props, table } = useDataGrid();
-  const href = props.rowHref ? props.rowHref(row.original) : undefined;
+  const href = hrefProp ?? (props.rowHref ? props.rowHref(row.original) : undefined);
 
   if (hasRowHref(href)) {
     return (
@@ -712,11 +730,28 @@ function DataGridTableBodyRowCell<TData>({
   cell,
   dndRef,
   dndStyle,
+  primaryColumnIndex,
+  rowHref: rowHrefProp,
 }: {
   children: ReactNode;
   cell: Cell<TData, unknown>;
   dndRef?: React.Ref<HTMLTableCellElement>;
   dndStyle?: CSSProperties;
+  /**
+   * The table's primary-column index, computed ONCE by `DataGridTable` (fix
+   * round 1, nit) - it was being recomputed from `row.getVisibleCells()`
+   * TWICE per cell (once for the mobile-pin check, once for the primary-
+   * cell check) though it never varies across rows or cells. Falls back to
+   * a local per-cell computation when omitted (API compatibility).
+   */
+  primaryColumnIndex?: number;
+  /**
+   * This row's resolved href, computed ONCE by `DataGridTableBodyRow` (fix
+   * round 1) - was recomputed here via `props.rowHref(row.original)` on
+   * EVERY cell in the row (once per column) instead of once per row. Falls
+   * back to a local computation when omitted.
+   */
+  rowHref?: string;
 }) {
   const { props } = useDataGrid();
 
@@ -727,15 +762,14 @@ function DataGridTableBodyRowCell<TData>({
   const bodyCellSpacing = bodyCellSpacingVariants({
     size: props.tableLayout?.dense ? 'dense' : 'default',
   });
-  const isMobilePinned =
-    !isPinned &&
-    column.getIndex() === firstDataColumnIndex(row.getVisibleCells().map((c) => c.column));
+  const resolvedPrimaryIndex =
+    primaryColumnIndex ?? firstDataColumnIndex(row.getVisibleCells().map((c) => c.column));
+  const isMobilePinned = !isPinned && column.getIndex() === resolvedPrimaryIndex;
   // The primary cell concept is independent of desktop pin state (unlike the
   // mobile-pin visual above) - it is whichever leaf column is the first REAL
   // data column, pinned or not.
-  const isPrimaryCell =
-    column.getIndex() === firstDataColumnIndex(row.getVisibleCells().map((c) => c.column));
-  const rowHref = props.rowHref ? props.rowHref(row.original) : undefined;
+  const isPrimaryCell = column.getIndex() === resolvedPrimaryIndex;
+  const rowHref = rowHrefProp ?? (props.rowHref ? props.rowHref(row.original) : undefined);
   const content =
     isPrimaryCell && hasRowHref(rowHref) ? (
       <PrimaryCellLink href={rowHref}>{children}</PrimaryCellLink>
@@ -849,6 +883,11 @@ function DataGridTable<TData>() {
   const { table, isLoading, props } = useDataGrid();
   const pagination = table.getState().pagination;
   const showSkeleton = shouldShowSkeletonRows(props, isLoading, table);
+  // Computed ONCE for the whole table (fix round 1, nit): column order/
+  // visibility is uniform across every row and header cell, so this used to
+  // be needlessly recomputed per cell (twice, even, in the body) via each
+  // cell's own `row.getVisibleCells()`/`header.headerGroup.headers` walk.
+  const primaryColumnIndex = firstDataColumnIndex(table.getVisibleLeafColumns());
 
   return (
     <DataGridTableBase>
@@ -860,7 +899,7 @@ function DataGridTable<TData>() {
                 const { column } = header;
 
                 return (
-                  <DataGridTableHeadRowCell header={header} key={index}>
+                  <DataGridTableHeadRowCell header={header} key={index} primaryColumnIndex={primaryColumnIndex}>
                     {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
                     {props.tableLayout?.columnsResizable && column.getCanResize() && (
                       <DataGridTableHeadRowCellResize header={header} />
@@ -890,12 +929,22 @@ function DataGridTable<TData>() {
           ))
         ) : table.getRowModel().rows.length ? (
           table.getRowModel().rows.map((row: Row<TData>, index) => {
+            // Computed ONCE per row (fix round 1) - was recomputed by every
+            // cell in the row via its own `props.rowHref(row.original)` call
+            // (each of which, for a Resource list, re-ran an O(n) row-index
+            // lookup + rebuilt a URLSearchParams - see resource-list.tsx).
+            const rowHref = props.rowHref ? props.rowHref(row.original) : undefined;
             return (
               <Fragment key={row.id}>
-                <DataGridTableBodyRow row={row} key={index}>
+                <DataGridTableBodyRow row={row} key={index} href={rowHref}>
                   {row.getVisibleCells().map((cell: Cell<TData, unknown>, colIndex) => {
                     return (
-                      <DataGridTableBodyRowCell cell={cell} key={colIndex}>
+                      <DataGridTableBodyRowCell
+                        cell={cell}
+                        key={colIndex}
+                        primaryColumnIndex={primaryColumnIndex}
+                        rowHref={rowHref}
+                      >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </DataGridTableBodyRowCell>
                     );
