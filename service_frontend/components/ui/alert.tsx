@@ -161,12 +161,12 @@ const alertVariants = cva('flex items-stretch w-full gap-2 group-[.toaster]:w-(-
     {
       variant: 'mono',
       icon: 'warning',
-      className: '[&_[data-slot=alert-icon]]:text-[var(--color-warning-foreground,var(--color-yellow-600))]',
+      className: '[&_[data-slot=alert-icon]]:text-[var(--color-warning-accent,var(--color-yellow-600))]',
     },
     {
       variant: 'mono',
       icon: 'success',
-      className: '[&_[data-slot=alert-icon]]:text-[var(--color-success-foreground,var(--color-green-600))]',
+      className: '[&_[data-slot=alert-icon]]:text-[var(--color-success-accent,var(--color-green-600))]',
     },
     {
       variant: 'mono',
@@ -176,7 +176,7 @@ const alertVariants = cva('flex items-stretch w-full gap-2 group-[.toaster]:w-(-
     {
       variant: 'mono',
       icon: 'info',
-      className: '[&_[data-slot=alert-icon]]:text-[var(--color-info-foreground,var(--color-violet-600))]',
+      className: '[&_[data-slot=alert-icon]]:text-[var(--color-info-accent,var(--color-violet-600))]',
     },
   ],
   defaultVariants: {
