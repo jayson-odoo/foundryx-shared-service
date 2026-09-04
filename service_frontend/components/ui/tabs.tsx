@@ -206,7 +206,7 @@ function TabsList({
           aria-hidden="true"
           data-slot="tabs-fade"
           data-fade={isFading}
-          className="pointer-events-none absolute inset-y-0 end-0 w-6 bg-gradient-to-l from-background to-transparent opacity-0 transition-opacity duration-(--duration-fast) data-[fade=true]:opacity-100"
+          className="pointer-events-none absolute inset-y-0 end-0 w-6 bg-gradient-to-l from-background to-transparent opacity-0 transition-opacity duration-(--duration-fast) ease-(--ease-standard) data-[fade=true]:opacity-100"
         />
       </div>
     </TabsContext.Provider>

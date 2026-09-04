@@ -53,7 +53,7 @@ describe('AC-DLA-12 tabs default variant + segmented keepers', () => {
     const src = read('components/ui/tabs.tsx');
     expect(src).not.toContain('[mask-image:');
     expect(src).toMatch(/data-slot="tabs-fade"[\s\S]{0,120}data-fade=\{isFading\}/);
-    expect(src).toMatch(/opacity-0 transition-opacity duration-\(--duration-fast\) data-\[fade=true\]:opacity-100/);
+    expect(src).toMatch(/opacity-0 transition-opacity duration-\(--duration-fast\) ease-\(--ease-standard\) data-\[fade=true\]:opacity-100/);
   });
 
   it('TabsTrigger uses an inset, zero-offset focus ring (fix round 1: the scroller clips an outer ring)', () => {
