@@ -7,6 +7,7 @@ import { X } from 'lucide-react';
 import { Dialog as SheetPrimitive } from 'radix-ui';
 import { AnimatePresence, motion } from 'motion/react';
 import { OVERLAY_CLASS_STATIC } from '@/components/ui/primitive-classes';
+import { focusIsInsideFloating } from '@/components/common/floatingAncestry';
 import { surfaceExitTransition, surfaceTransition, useOpenState, useReducedMotion } from '@/lib/motion';
 
 // Mirrors the Root's open state so SheetContent can gate its own
@@ -124,6 +125,7 @@ function SheetContent({
   close = true,
   className,
   children,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & SheetContentProps) {
   const open = React.useContext(SheetOpenContext);
@@ -132,6 +134,46 @@ function SheetContent({
   const transition = surfaceTransition(prefersReducedMotion);
   const exitTransition = surfaceExitTransition(prefersReducedMotion);
   const variants = slideVariants(prefersReducedMotion, side ?? 'right', rtl);
+  // T3 fix round 1 finding 8 - the same guardOutsideInteraction/
+  // restoreFocusToOpener pair as dialog.tsx (see there for the full
+  // rationale); a Sheet is a lightbox surface too and hits the identical
+  // trailing-event-from-the-opening-surface + focus-lands-on-body problems.
+  const mountedAtRef = React.useRef<number>(0);
+  const openerRef = React.useRef<HTMLElement | null>(null);
+  const contentRefCallback = React.useCallback((node: HTMLDivElement | null) => {
+    if (node) {
+      mountedAtRef.current = performance.now();
+      const active = document.activeElement;
+      if (openerRef.current === null && active instanceof HTMLElement && active !== document.body && !node.contains(active)) {
+        openerRef.current = active;
+      }
+    } else {
+      mountedAtRef.current = 0;
+    }
+  }, []);
+
+  const restoreFocusToOpener = (event: Event) => {
+    const opener = openerRef.current;
+    openerRef.current = null;
+    onCloseAutoFocus?.(event);
+    if (event.defaultPrevented) return;
+    if (!opener || !opener.isConnected) return;
+    event.preventDefault();
+    opener.focus();
+  };
+  const guardOutsideInteraction = (event: Event) => {
+    const detail = (event as CustomEvent<{ originalEvent?: Event }>).detail;
+    const original = detail?.originalEvent;
+    const target = (original?.target ?? event.target) as Element | null;
+    if (focusIsInsideFloating(target)) {
+      event.preventDefault();
+      return;
+    }
+    if (mountedAtRef.current && performance.now() - mountedAtRef.current < 300) {
+      event.preventDefault();
+      return;
+    }
+  };
 
   return (
     <AnimatePresence>
@@ -148,7 +190,17 @@ function SheetContent({
               />
             </SheetPrimitive.Overlay>
           )}
-          <SheetPrimitive.Content asChild forceMount data-slot="sheet-content" {...props}>
+          <SheetPrimitive.Content
+            ref={contentRefCallback}
+            asChild
+            forceMount
+            data-slot="sheet-content"
+            onPointerDownOutside={guardOutsideInteraction}
+            onInteractOutside={guardOutsideInteraction}
+            onFocusOutside={guardOutsideInteraction}
+            onCloseAutoFocus={restoreFocusToOpener}
+            {...props}
+          >
             <motion.div
               className={cn(sheetVariants({ side }), className)}
               initial={variants.initial}
