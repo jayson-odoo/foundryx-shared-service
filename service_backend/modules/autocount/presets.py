@@ -190,7 +190,13 @@ PO_PRESET = DocumentPreset(
         PresetField("CreditorAutoKey", "supplier_ref", "ref_supplier"),
         PresetField("DocDate", "issue_date", "date"),
         PresetField("ExpectedDate", "expected_date", "date"),
-        PresetField("CurrencyCode", "currency", "string"),
+        # S4 (AC-02-16) - AutoCount's UDF currency override wins, falling
+        # back to the header's own CurrencyCode, falling back to the
+        # documented default currency.
+        PresetField(
+            "CurrencyCode", "currency", "string",
+            formula='coalesce(UDF_Currency, CurrencyCode, "CNY")',
+        ),
         PresetField("Note", "internal_note", "string"),
         PresetField("Cancelled", "status", "string", formula=DEFAULT_STATUS_FORMULA, required=True),
         PresetField("CreditorCode", "supplier_code", "string"),
@@ -239,7 +245,13 @@ SPO_PRESET = DocumentPreset(
         PresetField("CreditorAutoKey", "supplier_ref", "ref_supplier"),
         PresetField("DocDate", "issue_date", "date"),
         PresetField("ExpectedDate", "expected_date", "date"),
-        PresetField("CurrencyCode", "currency", "string"),
+        # S4 (AC-02-16) - AutoCount's UDF currency override wins, falling
+        # back to the header's own CurrencyCode, falling back to the
+        # documented default currency.
+        PresetField(
+            "CurrencyCode", "currency", "string",
+            formula='coalesce(UDF_Currency, CurrencyCode, "CNY")',
+        ),
         PresetField("Cancelled", "status", "string", formula=DEFAULT_STATUS_FORMULA, required=True),
         PresetField("CreditorCode", "supplier_code", "string"),
         PresetField("CreditorName", "supplier_name", "string"),
