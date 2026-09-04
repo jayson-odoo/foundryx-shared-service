@@ -35,13 +35,19 @@ export function ImpersonationBanner() {
     }
   }, [collapsed]);
 
-  // Push page content down so the fixed bar never covers the top toolbar.
+  // Set the offset the header/sidebar consume for their own `top` - they read
+  // `var(--impersonation-banner-height, 0px)` so the banner pushes the shell down
+  // instead of the two fixed layers (banner z-(--z-banner), header z-(--z-header))
+  // stacking on the same top:0 and the banner covering the header.
   useEffect(() => {
     if (typeof document === 'undefined') return;
     const apply = Boolean(session) && !collapsed;
-    document.body.style.paddingTop = apply ? `${BANNER_HEIGHT}px` : '';
+    document.documentElement.style.setProperty(
+      '--impersonation-banner-height',
+      apply ? `${BANNER_HEIGHT}px` : '0px',
+    );
     return () => {
-      document.body.style.paddingTop = '';
+      document.documentElement.style.removeProperty('--impersonation-banner-height');
     };
   }, [session, collapsed]);
 
@@ -61,7 +67,7 @@ export function ImpersonationBanner() {
         type="button"
         onClick={() => setCollapsed(false)}
         title="Show impersonation banner"
-        className="fixed end-3 top-2 z-60 flex items-center gap-1 rounded-full border border-amber-300 bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-900 shadow-sm hover:bg-amber-200"
+        className="fixed end-3 top-2 z-(--z-banner) flex items-center gap-1 rounded-full border border-amber-300 bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-900 shadow-sm hover:bg-amber-200"
       >
         <UserCog className="size-3.5" />
         Impersonating
@@ -73,7 +79,7 @@ export function ImpersonationBanner() {
   return (
     <div
       role="status"
-      className="fixed inset-x-0 top-0 z-60 border-b border-amber-300 bg-amber-100 px-4 py-2 text-amber-900 shadow-sm"
+      className="fixed inset-x-0 top-0 z-(--z-banner) border-b border-amber-300 bg-amber-100 px-4 py-2 text-amber-900 shadow-sm"
     >
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2 text-sm">
