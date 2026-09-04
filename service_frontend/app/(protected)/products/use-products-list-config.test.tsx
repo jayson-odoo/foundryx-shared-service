@@ -43,15 +43,20 @@ describe('useProductsListConfig', () => {
     );
   });
 
-  it('registers Edit + confirm-gated Delete actions', () => {
+  it('registers Edit + a deferred (grace-window) Delete action', () => {
     const { result } = renderHook(() => useProductsListConfig(handlers()));
     const del = result.current.actions.find((a) => a.id === 'delete');
     const edit = result.current.actions.find((a) => a.id === 'edit');
     expect(edit?.permission).toBe('products.update');
     expect(del?.tone).toBe('destructive');
     expect(del?.permission).toBe('products.delete');
-    expect(del?.confirm?.title).toBe('Confirm delete');
-    expect(del?.confirm?.description).toMatch(/cannot be undone/i);
+    // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm dialog.
+    expect(del?.confirm).toBeUndefined();
+    expect(del?.deferred).toEqual({
+      actionKey: 'products.delete',
+      entityType: 'product',
+      window: 'destructive',
+    });
   });
 
   it('Edit action calls the onEdit handler with the row', () => {

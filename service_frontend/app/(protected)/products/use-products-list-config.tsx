@@ -64,12 +64,8 @@ export function useProductsListConfig(handlers: {
         tone: 'destructive',
         permission: 'products.delete',
         surfaces: { row: true, form: true, bulk: true },
-        confirm: {
-          title: 'Confirm delete',
-          description:
-            'This removes the product from the catalog. This action cannot be undone.',
-          confirmLabel: 'Delete',
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm.
+        deferred: { actionKey: 'products.delete', entityType: 'product', window: 'destructive' },
         run: async (rows) => {
           for (const r of rows) await onDelete(r);
         },
