@@ -18,9 +18,7 @@ import {
 } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 import { toAbsoluteUrl } from '@/lib/helpers';
-import { cn } from '@/lib/utils';
 import { useIsMobile } from '@/hooks/use-mobile';
-import { useScrollPosition } from '@/hooks/use-scroll-position';
 import { Button } from '@/components/ui/button';
 import {
   Sheet,
@@ -44,9 +42,6 @@ export function Header() {
   const mobileMode = useIsMobile();
   const { data: session } = useSession();
 
-  const scrollPosition = useScrollPosition();
-  const headerSticky: boolean = scrollPosition > 0;
-
   // Close sheet when route changes
   useEffect(() => {
     setIsSidebarSheetOpen(false);
@@ -54,12 +49,7 @@ export function Header() {
   }, [pathname]);
 
   return (
-    <header
-      className={cn(
-        'header material-regular material-edge fixed top-[var(--impersonation-banner-height,0px)] z-(--z-header) start-0 flex items-stretch shrink-0 border-b border-transparent end-0 pe-[var(--removed-body-scroll-bar-size,0px)]',
-        headerSticky && 'border-b border-border',
-      )}
-    >
+    <header className="header material-regular material-edge fixed top-[var(--shell-top-offset,0px)] z-(--z-header) start-0 flex items-stretch shrink-0 border-b border-border end-0 pe-[var(--removed-body-scroll-bar-size,0px)]">
       {/* Fluid like the content pages - the Metronic default was fixed
           max-w-[1320px], which left the header floating centered on wide
           screens while every list page stretches full width (plan 06). */}

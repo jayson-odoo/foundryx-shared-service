@@ -1,8 +1,8 @@
 @layer components {
   /* Variables */
   .demo1 {
-    --sidebar-transition-duration: 0.3s;
-    --sidebar-transition-timing: ease;
+    --sidebar-transition-duration: var(--duration-slow);
+    --sidebar-transition-timing: var(--ease-standard);
     --sidebar-width: 280px;
     --sidebar-width-collapse: 80px;
     --sidebar-default-width: 280px;
@@ -25,8 +25,14 @@
     width: var(--sidebar-width);
   }
 
+  /* --shell-top-offset is the impersonation banner's REAL measured height (0 when
+     absent/collapsed - components/impersonation/impersonation-banner.tsx). The
+     header/sidebar read it alone for their own `top`; the wrapper (content) has to
+     clear BOTH the banner and the header stacked on top of it, so it adds
+     --header-height on top - T1 fix round 1 finding 1 (the wrapper staying at
+     --header-height alone left the page title hidden under the dropped header). */
   .demo1.header-fixed .wrapper {
-    padding-top: var(--header-height);
+    padding-top: calc(var(--header-height) + var(--shell-top-offset, 0px));
   }
 
   /* Desktop mode */
@@ -62,7 +68,7 @@
     }
 
     .demo1.sidebar-fixed.header-fixed .wrapper {
-      padding-top: var(--header-height);
+      padding-top: calc(var(--header-height) + var(--shell-top-offset, 0px));
     }
 
     .demo1.sidebar-collapse {
