@@ -4,6 +4,8 @@ No DB query and no raw SQL lives here (code-review hard-fail). Every handler
 takes the tenant from the authenticated user - NEVER from client input - and
 hands off to a service.
 """
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -31,6 +33,7 @@ from ..schemas import (
     FormulaTestResponse,
     MappingRowOut,
     MappingUpdateRequest,
+    MappingUpdateRow,
     MappingViewResponse,
     SimulateRequest,
     SimulateResponse,
@@ -323,26 +326,35 @@ def replace_entity_mapping(
     # "line"` items, the pre-existing combined shape) is honoured exactly as
     # before - those rows count as a submitted line scope too.
     line_rows_in_body = [row for row in body.rows if row.scope == SCOPE_LINE]
-    combined_rows = list(body.rows) + list(body.lineRows or [])
     line_rows_submitted = (
         body.lineRows is not None or bool(line_rows_in_body)
     ) and is_document_entity(entity_type)
+
+    def _to_write_row(row: MappingUpdateRow, *, force_scope: Optional[str] = None) -> MappingWriteRow:
+        return MappingWriteRow(
+            source_path=row.sourcePath,
+            transform=row.transform,
+            sorento_field=row.sorentoField,
+            formula=row.formula,
+            # A `lineRows` item is unambiguously LINE scope by ARRIVING in
+            # this array (nit, code-review round) - forcing it rather than
+            # trusting the item's own `scope` field is defense-in-depth,
+            # the same class of guard as the polymorphic-target_id rule: a
+            # payload's OWN self-description is never the sole authority
+            # for where it lands.
+            scope=force_scope or row.scope,
+            is_enabled=row.isEnabled,
+        )
+
+    combined_rows = [_to_write_row(row) for row in body.rows] + [
+        _to_write_row(row, force_scope=SCOPE_LINE) for row in (body.lineRows or [])
+    ]
     try:
         view = CompanyService(db).replace_mapping(
             current_user.tenant_id,
             company_id,
             entity_type,
-            [
-                MappingWriteRow(
-                    source_path=row.sourcePath,
-                    transform=row.transform,
-                    sorento_field=row.sorentoField,
-                    formula=row.formula,
-                    scope=row.scope,
-                    is_enabled=row.isEnabled,
-                )
-                for row in combined_rows
-            ],
+            combined_rows,
             line_rows_submitted=line_rows_submitted,
         )
     except AutocountServiceError as exc:
