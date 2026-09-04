@@ -90,6 +90,11 @@ regression.
    default, untouched by T3 - the
    plan only asks T3 to own direction/overlay/reduced-motion, not vaul's own physics).
    `08-mobile-sidebar-drawer-normal-375.png`.
+   **Fix round 1 note (finding 14):** `07-...-reduced-motion-375.png` and
+   `08-...-normal-375.png` are byte-identical checksums - both are SETTLED-STATE screenshots of a
+   fully-open drawer, which necessarily look the same regardless of how long the open took. The
+   actual motion proof is the `transitionDuration` values quoted above (`0.001s` vs `0.5s`), not
+   the images; labelled here so a reviewer doesn't read the identical files as a copy-paste error.
 10. Second mobile trigger (the mega-menu icon, right of the hamburger) -> also a vaul `Drawer`
     now, `direction="left"`, shows the mega-menu's own item list ("Home", "My Account", "User
     Management", "Developers") -> `09-mega-menu-mobile-drawer-375.png`. (One CLI quirk hit and
@@ -253,3 +258,107 @@ item, unchanged by this slice. `15-sidebar-collapsed-1280.png` is the settled co
   design-language.md` (T8) documents this AC.
 - `docs/reference/process-lessons.md` / CLAUDE.md CORS note - recommended, not made (out of this
   slice's file scope; flagged for the reviewer/T8 instead of edited unilaterally mid-slice).
+
+## T3 - Fix round 1 (2026-09-05)
+
+Same worktree/branch, this time served on port **3003 from THIS worktree directly**
+(`rm -rf .next && npm run build` then `npx next start -p 3003`, ownership confirmed via
+`lsof -p $(lsof -ti :3003) | grep cwd`). Same shared backend on :8001 - the CORS-3003 gap from
+the original run still applies (backend-driven lists render "No data available"); every check
+below targets surfaces that don't need live backend data, same as the original run.
+
+1. **BLOCKER 1 (finding 1) - search dialog position.** Header search icon -> `SearchDialog` at
+   1280: `getBoundingClientRect()` on `[data-slot="dialog-content"]` = `top:135, bottom:744` in a
+   900px-tall viewport - `135/900 = 15%` exactly, `bottom` well inside the viewport (fully
+   visible, not clipped). `fixround1-01-search-dialog-1280.png`. At 375: the header does not
+   render the search trigger at all under `mobileMode` (`{!mobileMode && <SearchDialog .../>}`,
+   `header.tsx` - pre-existing, not something this fix touches) - `fixround1-02-search-dialog-
+   375.png` shows the Dashboard with no search icon, confirming there is no mobile search
+   surface to clip in the first place.
+2. **BLOCKER 2 (finding 2) - collapsed-rail presentation.** `agent-browser`'s CDP session has no
+   way to flip `(pointer: coarse)`/`(hover: none)` short of full mobile-device emulation (checked:
+   none of the built-in `set device` presets - iPad Pro, Pixel 9 - toggle `pointer`/`hover` media
+   features at all in this CLI version, confirmed via `matchMedia` returning `fine`/`hover` on
+   every one of them). Verified instead by fetching the ACTUAL SERVED build CSS
+   (`curl .../_next/static/css/f48830121753e9a7.css`) and confirming byte-for-byte that
+   `.demo1.sidebar-collapse .sidebar:not(:hover) .default-logo` (and every other presentation
+   rule) sits OUTSIDE any `@media (hover:...)` block, while ONLY
+   `.demo1.sidebar-collapse .sidebar:hover{width:...}` is wrapped in
+   `@media (hover:hover) and (pointer:fine){...}` - this is a stronger proof than an emulated
+   screenshot for this specific bug class (it inspects the exact rule nesting a coarse pointer
+   would evaluate against, not a rendered approximation). Live regression check with the real
+   (fine) pointer: `localStorage.setItem('app_settings_layouts.demo1.sidebarCollapse','true')` +
+   reload -> `fixround1-03-sidebar-collapsed-presentation-1280.png` - 80px icon-only rail, small
+   logo, labels/badges hidden, exactly as the presentation rules specify.
+3. **Finding 5 (BLOCKER 3) - vaul animation-duration.** 375, `set media light reduced-motion`,
+   opened the sidebar drawer: `getComputedStyle([data-vaul-drawer])` = `transitionDuration:
+   "0.001s"`, **`animationDuration: "0.001s"`** (previously untouched by the reduced-motion
+   reset - this is the actual BLOCKER, since vaul opens via a CSS animation, not a transition).
+   Same for `[data-vaul-overlay]`. `fixround1-04-mobile-drawer-reduced-motion-375.png`. Normal
+   motion: `transitionDuration: "0.5s"` (vaul's own drag-release default, untouched), **`animation
+   Duration: "0.3s"`** (pinned to `--duration-slow`, was vaul's un-pinned `.5s` default before this
+   fix). `fixround1-05-mobile-drawer-normal-375.png`. **These two screenshots are byte-identical
+   (checksummed) to each other** - both are settled-state screenshots of a fully-open drawer,
+   which necessarily look the same regardless of how long the open took; the `animationDuration`
+   values above are the actual proof, not the images (T3 fix round 1 finding 14 - same call as
+   the original run's 07/08 pair).
+4. **Finding 10 - drawer width.** At 375: `[data-vaul-drawer].getBoundingClientRect().width` =
+   **275** (was `w-3/4` = 281.25px pre-fix at 375, an accidental near-match that hid the bug at
+   this one width). At **700px** width (`fixround1-06-mobile-drawer-width-700.png`): width is
+   still exactly **275** - pre-fix this would have been `w-3/4` = 525px, visibly wrong. Confirms
+   the direction-scoped width utilities no longer out-specify the consumer's `w-[275px]`.
+5. **Finding 11 - DrawerTitle.** `[data-slot="drawer-title"]` textContent = `"Navigation"` for the
+   hamburger drawer and `"Apps"` for the mega-menu drawer (both read via `eval` while each was
+   open) - confirms `header.tsx`'s explicit sr-only titles render (not just the primitive's
+   generic fallback, which only fires when a caller supplies none).
+6. **Finding 6 - NavigationMenu viewport symmetric fade.** 1280, real `mouse move` onto the "Apps"
+   top-nav trigger (Radix opens on hover, not click - `mouse move` + a settle wait, not `click`):
+   `[data-slot="navigation-menu-viewport"]` opens (`data-state="open"`), computed
+   `animationDuration: "0.2s"` (= `--duration-base`) with `animationTimingFunction:
+   "cubic-bezier(0.2, 0, 0, 1)"` (= `--ease-standard`) under normal motion -
+   `fixround1-07-navigation-menu-viewport-1280.png`. Under `set media light reduced-motion`,
+   re-opened: `animationDuration: "0.15s"` (the reduced-motion reset's 150ms, now reachable -
+   previously this slot was outside the reduced-motion selector's reach entirely and would have
+   kept its full un-reduced duration).
+7. **Finding 7 - Select/Menubar symmetric fade.** `/user-management/users/new`, opened the Status
+   `<Select>`: `[data-slot="select-content"]` `data-state="open"`, `transform: "none"` (no zoom -
+   confirmed no scale/zoom classes remain), `animationDuration: "0.15s"` (= `--duration-fast`).
+   `fixround1-08-select-status-fade-1280.png`. Menubar has no live product call site in this
+   codebase (same as the original run) - covered by code review + the green build/lint/vitest
+   gate below, not a live click.
+8. **Finding 14 - "close a dialog, click a button immediately."** Opened `SearchDialog`, dispatched
+   a real `Escape` keydown, then polled `getComputedStyle(document.body).pointerEvents` via
+   `requestAnimationFrame` every frame from the moment Escape fired: **cleared at ~326ms**
+   (Radix's `disableOutsidePointerEvents` lock lifts once `AnimatePresence` actually unmounts the
+   dialog, i.e. once the exit spring settles) - down from the pre-fix ~390-559ms window (D16
+   measurements). Then, as a practical proof rather than just a synthetic measurement: opened the
+   dialog again, closed it, and **immediately** (back-to-back `agent-browser mouse move/down/up`
+   CLI calls, no artificial sleep) clicked the "Filters" toolbar button underneath where the
+   scrim had been - its popover opened (`aria-expanded="true"`) on the very next real click,
+   confirming the click was NOT swallowed. `fixround1-09-close-dialog-click-immediately-1280.png`.
+   (One CLI quirk hit here, consistent with the original run's note: `agent-browser click @ref`
+   right after a DOM mutation intermittently missed - `mouse move` + `mouse down` + `mouse up` at
+   a freshly-measured coordinate was reliable.)
+
+### Console
+
+`agent-browser console` after the full fix-round-1 pass: only the same pre-existing a11y warnings
+the original run logged as out-of-scope (`Missing Description or aria-describedby` on
+`DialogContent`, from `notifications-sheet.tsx` - a file this slice never touches). Zero new
+errors.
+
+### Gate (this round)
+
+- `npx vitest run` - **191 files / 1631 tests, all green** (18 new: `lib/motion.test.ts` settle-time
+  + `useOpenState` renderHook additions, `command.test.tsx`, `dialog.test.tsx`,
+  `alert-dialog.test.tsx`, `sheet.test.tsx`, `drawer.test.tsx`, plus one pre-existing
+  `css/design-tokens.test.ts` case updated for the new `[data-vaul-overlay]` selector + a new
+  case pinning the normal-motion `--duration-slow` pin).
+- `npx eslint` on every touched file - 0 errors (3 pre-existing warnings elsewhere, untouched by
+  this round).
+- `rm -rf .next && npm run build` - green (one real compile error surfaced and fixed along the
+  way: Radix's `AlertDialogContentProps` deliberately omits `onPointerDownOutside`/
+  `onInteractOutside` from `DialogContentProps` - an AlertDialog is never dismissable by an
+  outside click by design, confirmed against `@radix-ui/react-alert-dialog`'s own `.d.mts`; the
+  guard's `onFocusOutside` + `onCloseAutoFocus` wiring stayed, the two unsupported props were
+  dropped from `alert-dialog.tsx`).

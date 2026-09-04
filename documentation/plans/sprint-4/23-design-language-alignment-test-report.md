@@ -1174,7 +1174,15 @@ reduced motion, `useOpenState`'s controlled/uncontrolled contract) pinned.
 **Actual:** PASS - 11/11 tests green.
 **Remarks:** this repo's `lib/motion.ts` already carried the M2 exports verbatim from the start
 (D1) - `git diff` against `sorento_crm` `origin/main` and `origin/integration/ui-motion-round2`
-both come back byte-identical for this file, confirming the port needed no adaptation.
+both came back CODE-identical for this file (same exports, same functions, same reduced-motion
+branching) at the time of this run - not byte-identical, since Sorento's own comments/wording
+differ in a few places even where the logic matches exactly. **Superseded by T3 - Fix round 1
+below**: the port's `visualDuration` LITERALS (`0.3`/`0.2`/`0.2`) were copied verbatim from
+Sorento, but `visualDuration` is not the animation's wall-clock length - measuring with the real
+`motion-dom` spring generator showed those settle at 559ms/390ms/390ms (~1.9x the intended
+300ms/200ms/200ms), so fix round 1 changes the constants to `0.15`/`0.1`/`0.1` (D16) and the file
+now deliberately DIVERGES from Sorento's literals (fed back upstream as BL-SS-049) while staying
+code-identical in shape.
 
 ### AC-DLA-20 - nine surfaces on `AnimatePresence` + `surfaceVariants` + `surfaceTransition` `[FE][T]`
 
@@ -1191,7 +1199,9 @@ README steps 3-16); `npx eslint`/`npx vitest run`/`npm run build`; a class-liter
 all 9 files.
 **Expected:** per the AC text above.
 **Actual:** PASS for Dialog/AlertDialog/Sheet/Popover/DropdownMenu+SubContent/Select (all six
-live-verified with real timing tables - see the evidence README); PASS-by-code-parity for
+live-verified with real timing tables - see the evidence README; **Select's own timing table
+below is superseded by T3 - Fix round 1**, which moves it off the spring onto a symmetric CSS
+fade - see that section); PASS-by-code-parity for
 ContextMenu+SubContent/HoverCard/Menubar (identical `AnimatePresence`+`forceMount`+
 `surfaceVariants`/`surfaceTransition` shape applied, diffable in the PR against the six
 live-verified files; their only real call sites - Documents right-click, `resource-list.tsx`
@@ -1207,9 +1217,12 @@ terms fixed at `1,0,0,1` throughout, only translate-X travels (466.7px -> 183.9p
 slide-only, no scale, no fade.
 **Remarks:** two real Radix API constraints surfaced and were resolved, both documented inline in
 the diff: (1) Radix Select's `Content`/`Portal` have no `forceMount` prop at all (confirmed
-against `@radix-ui/react-select@2.2.6`'s own types) - `SelectContent` therefore plays the menu
-spring in on mount with no `AnimatePresence` exit gate, the same accepted shape `MenubarContent`
-already used pre-T3 for the identical reason; (2) `vitest.setup.ts` needed
+against `@radix-ui/react-select@2.2.6`'s own types), and Menubar's top-level `Content` has the
+same gap - **superseded by T3 - Fix round 1 below**: both `SelectContent` and `MenubarContent`
+originally played the menu SPRING in on mount with no exit (a one-sided 390ms-in/instant-out
+asymmetry), which fix round 1 replaces with a SYMMETRIC CSS opacity fade on `--duration-fast`
+(no `forceMount`, no spring at all) so open and close read as the same intent even though close
+never gets to visibly finish before Radix unmounts it; (2) `vitest.setup.ts` needed
 `MotionGlobalConfig.skipAnimations = true` (ported from `sorento_crm`'s identical fix) - without
 it, `AnimatePresence`+`forceMount`'s exit never resolves under jsdom (no real animation-frame
 pump), which broke 4 pre-existing test files (9 tests) that open-then-close one of these surfaces
@@ -1246,7 +1259,14 @@ review of `dialog.tsx`'s `motionEnabled` branch.
 search surface) is a plain click-triggered `Dialog` with hardcoded demo tabs, not `cmdk`-backed,
 and `CommandDialog` itself has zero importers outside `command.tsx` (grepped, confirmed). This is
 a plan/reality mismatch, not a T3 gap - flagged for T8/`docs/reference/design-language.md` rather
-than worked around with a throwaway page.
+than worked around with a throwaway page. **Corrected in T3 - Fix round 1 below**: this row
+originally described `motion={false}` as an opt-OUT (default `true`) - the frequency table
+forbids animating a command palette outright, so a default of `true` satisfied the AC only on
+paper with zero call sites ever passing `false`. Fix round 1 flips the default to
+**`motion=false`** (opt IN to motion, never out); the verdict stays PASS (mechanism) / N/A (no
+live opener) - the default flip changes nothing observable without a live `CommandDialog`, it
+only changes what a FUTURE caller gets for free. This row remains a guard-only mechanism check
+(`command.test.tsx` pins the default via `data-motion="off"`), not a live click.
 
 ### AC-DLA-23 - mobile nav on `vaul` `Drawer` `[FE][E2E]`
 
@@ -1262,6 +1282,14 @@ AND reduced motion (see evidence README steps 8-10).
 scrim; under reduced motion `[data-vaul-drawer]`'s `transitionDuration` reads `"0.001s"`; under
 normal motion it reads `"0.5s"` (vaul's own drag-tracked default, untouched by T3 - the plan only
 assigns T3 the direction/overlay/reduced-motion wiring, not vaul's own physics).
+**Screenshot note (T3 fix round 1 finding 14):** `07-mobile-sidebar-drawer-reduced-motion-375.png`
+and `08-mobile-sidebar-drawer-normal-375.png` are BYTE-IDENTICAL (confirmed via checksum) - a
+static screenshot of a fully-open drawer necessarily looks the same regardless of how long it took
+to get there, so the two screenshots alone prove nothing about motion; the actual proof is the
+`transitionDuration` values quoted above (`"0.001s"` vs `"0.5s"`), sampled live via
+`agent-browser eval` against the real DOM. Both files are correctly labelled here as SETTLED-STATE
+screenshots (confirming the drawer opened and rendered correctly under each preference), not as
+frame-by-frame motion evidence - that evidence is the timing data, not the images.
 
 ### AC-DLA-24 - sidebar collapse: `hover`-gated, reduced-motion-gated, double-rAF init `[FE][T]`
 
@@ -1368,3 +1396,49 @@ weigh: (a) the CORS-3002-cap environment gap (recommend widening before more con
 slices land), (b) AC-DLA-22's missing live command-palette call site (a plan/reality mismatch,
 not code debt - the mechanism is built and unit-covered, ready for the day a real Cmd/Ctrl+K
 palette exists).
+
+## T3 - Fix round 1
+
+**Reviewer input:** `.claude/skills/codex-review` / `review-animations` full pass (12
+findings + 3 blockers) against `sprint-4/23-T3-motion` at `04f8646` (T3's original merge),
+measured with the real `motion-dom` spring generator. Full text at
+`/private/tmp/claude-501/.../scratchpad/t3-review-animations.md` (session-scoped scratchpad, not
+in the repo - findings reproduced below against the actual diff).
+**Branch/commit:** same `sprint-4/23-T3-motion`, fix-round-1 commits on top.
+**Evidence:** `documentation/plans/sprint-4/23-evidence/T3/README.md` "T3 - Fix round 1" section
+(9 new `fixround1-NN-*.png` screenshots + live DOM/CSS-source proof per finding).
+**Gate:** `npx eslint` (0 errors), `npx vitest run` (191 files / 1631 tests, all green),
+`rm -rf .next && npm run build` (green) - see the evidence README's own Gate subsection for the
+one real compile error surfaced and fixed (Radix's `AlertDialogContentProps` omitting
+`onPointerDownOutside`/`onInteractOutside`).
+
+| # | Finding | Outcome |
+|---|---|---|
+| 1 (BLOCKER) | Search dialog centering broke under `lg:top-[15%] lg:translate-y-0` once centering moved into the animated transform. | FIXED - `dialogContentVariants` gained a `position: 'center' \| 'top'` variant; `DialogContent` maps `position="top"` to `{x:'-50%', y:0}` (no vertical translate needed, `top-[15%]` handles it) vs `center`'s `{x:'-50%', y:'-50%'}`. `search-dialog.tsx` switched to `position="top"`. Live-verified fully visible at 1280 (`top:135/900 = 15%` exactly, `bottom` inside viewport) - `fixround1-01-search-dialog-1280.png`; confirmed absent (by pre-existing design, not a regression) at 375, where the header never renders the search trigger under `mobileMode` - `fixround1-02-search-dialog-375.png`. |
+| 2 (BLOCKER) | Collapsed-rail presentation rules (logo swap, label/badge hiding) had moved inside `@media (hover: hover) and (pointer: fine)` alongside the hover-expand rule, so a coarse-pointer device at >= lg with `sidebarCollapse=true` got the collapsed WIDTH with none of the collapsed PRESENTATION. | FIXED - `demo1.css`: only `.demo1.sidebar-collapse .sidebar:hover{width:...}` stays inside the hover-pointer gate; every presentation rule (`.default-logo`/`.small-logo`/`[data-slot=accordion-menu-*]`/`[data-slot=badge]`) moved back outside it, applying on any pointer whenever `.sidebar-collapse` is set. `agent-browser`'s CDP session cannot toggle `pointer`/`hover` media features (confirmed: none of its device presets do, `matchMedia` still reports `fine`/`hover` on all of them) - verified instead by fetching the actual SERVED build CSS and confirming the rule nesting byte-for-byte matches the fix; live regression check with a real (fine) pointer confirms the collapsed rail still renders correctly (`fixround1-03-sidebar-collapsed-presentation-1280.png`). |
+| 3 | `SURFACE_SPRING`/`MENU_SPRING`/`SURFACE_SPRING_EXIT` `visualDuration` literals (0.3/0.2/0.2, copied from Sorento) settle at 559ms/390ms/390ms - not the intended 300ms/200ms/200ms, since `visualDuration` is the perceived-response knob, not the wall-clock length. `REDUCED_MOTION_TRANSITION` at `duration: 0.01` was indistinguishable from a hard pop. | FIXED (D16) - `lib/motion.ts`: `SURFACE_SPRING visualDuration: 0.15` (measured settle 302ms), `MENU_SPRING`/`SURFACE_SPRING_EXIT: 0.1` (measured settle 210ms), `REDUCED_MOTION_TRANSITION: { duration: 0.15 }` (matches `--duration-fast`, keeps the fade). Comments rewritten to state what each settles to and why, and to flag the deliberate divergence from Sorento's literals (fed back as BL-SS-049). `lib/motion.test.ts` now imports `spring` from `motion-dom` directly and asserts real settle times (250-350ms lightbox, 180-240ms menu/exit) alongside the existing config-object assertions - this is what would have caught the original 559/390ms regression, since `vitest.setup.ts`'s `skipAnimations` flag means no rendered-component test ever exercises the generator. Added real `renderHook` tests for `useOpenState`: uncontrolled default + update, controlled prop wins with internal state untouched, `onOpenChange` fired in both modes; the `typeof === 'function'` placeholder is gone. 18/18 green. |
+| 4 | `CommandDialog` defaulted `motion={true}` - the frequency table's one absolute no-animate surface, opt-out instead of opt-in, with zero call sites ever passing `false`. | FIXED - default flipped to `motion={false}` (AC-DLA-22). New `command.test.tsx` (3 tests) pins the default via `DialogContent`'s `data-motion="off"` attribute, an explicit `motion` override, and an explicit `motion={false}` matching the default. |
+| 5 (BLOCKER) | `[data-vaul-drawer]`'s reduced-motion reset only touched `transition-duration` - vaul opens/closes via a CSS ANIMATION, so the 275px mobile drawer still slid at full 500ms speed for a reduced-motion reader. Normal-motion drawer had no house-token pin either (vaul's un-pinned 500ms default, vs every other migrated surface's ~200-300ms). | FIXED - `css/styles.css`: `[data-vaul-drawer], [data-vaul-overlay] { transition-duration: 1ms !important; animation-duration: 1ms !important; }` inside the reduced-motion block; a new unlayered-vs-layered `!important` block outside it pins normal-motion `animation-duration: var(--duration-slow) !important` (300ms) for both selectors (`!important` needed because vaul injects its own CSS unlayered, which otherwise always beats a layered non-important declaration). Live-verified at 375: reduced motion `animationDuration: "0.001s"` (was untouched before this fix), normal motion `animationDuration: "0.3s"` (was vaul's un-pinned `.5s`) - `fixround1-04/05-mobile-drawer-{reduced-motion,normal}-375.png` (byte-identical to each other by design - settled-state screenshots can't show a duration difference; the computed-style values are the proof, noted inline in both READMEs per finding 14). `css/design-tokens.test.ts` updated (one existing case, one new case) to pin both selectors and both properties. |
+| 6 | `navigation-menu.tsx`'s viewport stayed on 150ms plain-`ease` tw-animate keyframes, asymmetric `zoom-in-90`/`zoom-out-95`, and sat outside the reduced-motion selector's reach entirely (`data-slot` doesn't end in `-content`, not inside a popper wrapper). | FIXED, via the documented "at minimum" fallback, NOT the spring - investigated `forceMount` + `AnimatePresence` first (Radix's `Viewport` DOES support `forceMount`), but `NavigationMenuViewportImpl` computes its own `children` internally (`Array.from(viewportContentContext.items).map(...)`, one per active trigger) and unconditionally overwrites whatever `children`/`asChild` target this component passes - the inner-`motion.div` split every sibling surface uses has no single child to attach to here, confirmed by reading Radix's own source rather than guessing. Landed the documented fallback instead: symmetric `zoom-in-95`/`zoom-out-95` (was asymmetric 90/95) + `duration-(--duration-base) ease-(--ease-standard)` (tokenised, matches the menu family's ~200ms). `css/styles.css`'s reduced-motion selector gained `[data-slot='navigation-menu-viewport']` explicitly. Live-verified: normal motion `animationDuration: "0.2s"`, `animationTimingFunction: "cubic-bezier(0.2, 0, 0, 1)"` (`fixround1-07-navigation-menu-viewport-1280.png`); reduced motion `animationDuration: "0.15s"` (previously unreachable, now reset). |
+| 7 | `SelectContent`/`MenubarContent` (no `forceMount` in Radix) entered on the one-sided menu spring (390ms in) and vanished in one un-animated frame on close - the deliberate-slow-half was the wrong one for a form control opened tens of times a day. | FIXED - both dropped the spring entirely for a symmetric CSS opacity fade on `--duration-fast` (`data-[state=open]:animate-in data-[state=closed]:animate-out fade-in-0 fade-out-0 duration-(--duration-fast) ease-(--ease-standard)`, no zoom), matching the honest-simplification call in the review (`MenubarSubContent`, which DOES have `forceMount`, is unaffected and stays on the spring - it was never part of this finding). Live-verified: `[data-slot="select-content"]` `animationDuration: "0.15s"`, `transform: "none"` (confirmed no residual zoom) - `fixround1-08-select-status-fade-1280.png`. Menubar has no live product call site (same as the original run) - code review + green build/lint/vitest cover it. |
+| 8 | No `guardOutsideInteraction`/`restoreFocusToOpener` on any of Dialog/AlertDialog/Sheet - a plain-button-opened dialog (244 of 250 call sites in this repo) left focus on `<body>` after close, and a DropdownMenu/Popover/Select item that opened a dialog could have its trailing event misread as an outside click on the freshly-mounted dialog. | FIXED - ported `sorento_crm`'s `dialog.tsx` pair verbatim (mount-grace window, `focusIsInsideFloating` stacked-surface guard, `onCloseAutoFocus` restore-to-opener with a caller-`preventDefault` escape hatch) onto `dialog.tsx`, and applied the SAME pair to `alert-dialog.tsx`/`sheet.tsx` per this finding's explicit instruction (Sorento itself only ships it on `dialog.tsx` and left AlertDialog as its own follow-up - this repo ships both now). New `components/common/floatingAncestry.ts` (ported, with this repo's own `sheet-content`/`drawer-content` slots added to the selector). **Real Radix API constraint found while wiring AlertDialog**: `AlertDialogContentProps` deliberately `Omit`s `onPointerDownOutside`/`onInteractOutside` from `DialogContentProps` (confirmed against `@radix-ui/react-alert-dialog`'s own types) - an AlertDialog is never dismissable by an outside click at all, by design; only `onFocusOutside` + `onCloseAutoFocus` survive that Omit, so `alert-dialog.tsx`'s guard wiring is intentionally narrower than `dialog.tsx`/`sheet.tsx`'s. Unit-tested: `dialog.test.tsx` (4), `alert-dialog.test.tsx` (2), `sheet.test.tsx` (2) - all via `userEvent` (not bare `fireEvent`, which does not reproduce a real click's focus-follows-click behaviour in jsdom) - covering Escape-close, close-button-close, a caller's own `onCloseAutoFocus` taking over, and the opener-left-the-DOM edge case. |
+| 9 | `demo1/layout.tsx` set `layout-initialized` from the MOUNT effect's own double-`requestAnimationFrame`, independent of the `[settings]` effect that actually applies `sidebar-collapse` - `SettingsProvider` hydrates `sidebarCollapse` from localStorage in an effect of its OWN that can fire AFTER the mount effect's rAFs already scheduled, so a returning collapsed-sidebar user could get `layout-initialized` (enabling the width transition) BEFORE the hydrated class landed, then see the wrapper visibly collapse into place. | FIXED - `layout-initialized` is now scheduled from inside the `[settings]` effect itself, one `requestAnimationFrame` after `sidebar-collapse` is applied in that SAME effect run (not the mount effect, which now only owns `demo1`/`sidebar-fixed`/`header-fixed` mount/unmount). Live-verified: `localStorage.setItem('app_settings_layouts.demo1.sidebarCollapse','true')` + reload -> `document.body.className` carries BOTH `sidebar-collapse` AND `layout-initialized` together on the settled page (`fixround1-03-...png` is this same state) - the two classes never observably land out of order in this run. |
+| 10 | `drawer.tsx`'s `data-[vaul-drawer-direction=left]:w-3/4 sm:max-w-sm` (a data-ATTRIBUTE-scoped Tailwind utility, which compiles to a two-selector rule) out-specified `header.tsx`'s plain `w-[275px]` regardless of source order, so the nav drawer silently rendered at 75% of the viewport instead of 275px. | FIXED - dropped the width utilities from the left/right direction variants entirely (the sole consumer, `header.tsx`, already sets its own width via `className`); position/height/border stayed. Live-verified at 375 (`width: 275`, was previously masked by a near-coincidental match with `w-3/4` at that one width) AND at 700px (`width: 275`, was `525` = `w-3/4` pre-fix, unambiguously wrong) - `fixround1-06-mobile-drawer-width-700.png`. |
+| 11 | `header.tsx`'s two mobile drawers had no `DrawerTitle` at all (a11y gap); `DrawerContent` lacked the sr-only fallback `DialogContent` has. | FIXED - `drawer.tsx` gained a `hasDrawerTitleInChildren` check (same shape as `dialog.tsx`'s) with a generic sr-only "Panel" fallback; `header.tsx` renders explicit `<DrawerTitle className="sr-only">Navigation</DrawerTitle>` / `Apps` in each drawer's `DrawerHeader` (more descriptive than the generic fallback, which only fires when a caller supplies nothing). Live-verified: `[data-slot="drawer-title"]` reads `"Navigation"`/`"Apps"` respectively while each drawer is open. New `drawer.test.tsx` (2 tests) pins the fallback-vs-caller-supplied behaviour. |
+| 12 | `dialog.tsx`'s standalone `DialogOverlay` export used `OVERLAY_CLASS_STATIC` (no CSS fade) even though it's not spring-driven when used alone; `alert-dialog.tsx` had no standalone `AlertDialogOverlay` export at all (T3's spring migration deleted the pre-spring one that existed at `8cac6ec`, without replacing it). | FIXED - `DialogOverlay` switched to `OVERLAY_CLASS` (the CSS-fade variant). `AlertDialogOverlay` restored as a standalone export using `OVERLAY_CLASS` too, mirroring `DialogOverlay`. Both remain zero-importer today (confirmed by grep) - kept for API stability, per the finding's own instruction. |
+| 13 | `demo1.css` still transitions `width`/`padding-inline-start`/`inset-inline-start` (layout properties, normally an escalation trigger) with no comment explaining why that's accepted. | DOCUMENTED (not rewritten - the finding's own ruling: "leave them, trace showed zero dropped frames") - one-line-plus comment added above the width transition naming the exception and `BL-SS-046` explicitly, cross-referencing the original run's 24-frame `requestAnimationFrame` sampler (zero dropped frames, all deltas 16.6-16.8ms) that justified leaving it. |
+| 14 | Test report inaccuracies: `lib/motion.ts` called "byte-identical" to Sorento's (it's code-identical, and post-fix-round-1 deliberately diverges on the `visualDuration` literals); Select/Menubar rows described the one-sided spring that no longer exists; AC-DLA-22 described `motion={false}` as opt-out; the two byte-identical drawer screenshots (07/08) were unlabelled; no "close a dialog, click a button immediately" check existed anywhere in the suite or the evidence. | FIXED - AC-DLA-19/20/22 rows in the T3 body above amended with "Superseded by T3 - Fix round 1" pointers explaining exactly what changed and why (kept the original text as historical record rather than silently rewriting it, so a reader can see what was true AT THE TIME); AC-DLA-23/26 gained the byte-identical-screenshot disclosure; this row's own outcome cell doubles as the "close a dialog, click a button immediately" writeup: dispatched a real `Escape` keydown on an open `SearchDialog`, `requestAnimationFrame`-polled `getComputedStyle(document.body).pointerEvents` from that instant - **cleared at ~326ms** (down from the pre-fix 390-559ms window measured in D16), and a from-scratch back-to-back CDP `mouse move/down/up` click on the "Filters" toolbar button immediately after a second close landed successfully (`aria-expanded="true"` on the very next click) - `fixround1-09-close-dialog-click-immediately-1280.png`. |
+| 15 (gate) | Full gate + evidence for this round. | `npx eslint` clean (0 errors); `npx vitest run` 191 files / 1631 tests green; `rm -rf .next && npm run build` green (after fixing the one real Radix `AlertDialogContentProps` compile error, see above); restarted `:3003` from this worktree, ownership confirmed via `lsof -p $(lsof -ti :3003) \| grep cwd` before every check; 9 new `fixround1-NN-*.png` screenshots + the full write-up under `documentation/plans/sprint-4/23-evidence/T3/README.md`'s "T3 - Fix round 1" section; this section appended to the test report mapping all 15 items. No push, no merge, no branch switch. |
+
+**Files touched this round:** `lib/motion.ts`, `lib/motion.test.ts`, `components/ui/{dialog,alert-dialog,sheet,drawer,select,menubar,navigation-menu,command}.tsx`, new
+`components/ui/{dialog,alert-dialog,sheet,drawer,command}.test.tsx`, new
+`components/common/floatingAncestry.ts`, `css/{styles,demos/demo1,design-tokens.test}.ts`/`.css`,
+`app/components/layouts/demo1/layout.tsx`, `app/components/layouts/demo1/components/header.tsx`,
+`app/components/partials/dialogs/search/search-dialog.tsx`.
+
+**Verdict: T3 - Fix round 1 DONE.** All 3 blockers resolved and live-verified; all 11 non-blocker
+findings resolved (10 code + 1 documented-as-accepted per the finding's own ruling); the report
+accuracy issues (finding 14) corrected in place with pointers rather than silent rewrites. Same
+two disclosed non-blocking gaps as the original run carry forward unchanged: the CORS-3002-cap
+environment gap (still not this slice's file scope to fix) and AC-DLA-22's missing live
+command-palette call site (still a plan/reality mismatch, not code debt).
