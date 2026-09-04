@@ -49,11 +49,16 @@
    * (a frozen DataGrid column, a sticky table header) - they stay below `--z-header`
    * and `--z-sidebar` on purpose: a fixed shell layer always has to win over a sticky
    * cell scrolling underneath it. `-corner` is for a cell pinned on BOTH axes.
+   *
+   * `--z-banner` (the impersonation banner) sits ABOVE `--z-modal` on purpose (T1 fix
+   * round 1 finding 2): the operator must always be able to reach Exit impersonation,
+   * even with a dialog/sheet/drawer open over the page - the one control that ends a
+   * privileged session can never be the thing an overlay buries.
    */
   --z-header: 10;
   --z-sidebar: 20;
-  --z-banner: 30;
   --z-modal: 50;
+  --z-banner: 60;
   --z-sticky-content: 5;
   --z-sticky-content-corner: 6;
 
@@ -63,7 +68,8 @@
   --duration-base: 200ms;
   --duration-slow: 300ms;
 
-  /** Bounded DataGrid scroller height (toolbar + header + pager); per-list overridable. */
+  /** Bounded DataGrid scroller height (toolbar + header + pager); T2 wires the first
+      consumer (headerSticky's scroller). */
   --grid-max-h: calc(100dvh - 17rem);
 }
 
@@ -98,14 +104,22 @@
   --material-blur: 24px;
   --material-edge: color-mix(in oklab, var(--foreground) 12%, transparent);
   --scrim: color-mix(in oklab, black 62%, transparent);
+}
 
-  /* Redeclared for symmetry with :root (inheritance already carries these to any
-     .dark-classed descendant of <html> - the redeclaration is a belt-and-suspenders
-     assertion that dark mode never silently drifts onto a different curve/step). */
-  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
-  --duration-fast: 150ms;
-  --duration-base: 200ms;
-  --duration-slow: 300ms;
+/* prefers-reduced-motion collapses the motion tokens THEMSELVES to 1ms - every
+   PRESENT and FUTURE consumer that reads duration-(--duration-fast/base/slow)
+   (switch, accordion, progress, the sidebar width transition, ...) stops travelling
+   automatically, with no selector list to keep in sync as new components adopt the
+   tokens. css/styles.css's reduced-motion block (@layer base) covers what this can't
+   reach - Radix's animate-in/out keyframe utilities, which read --tw-enter-* vars,
+   not a duration token (T1 fix round 1 finding 4). */
+@media (prefers-reduced-motion: reduce) {
+  :root,
+  .dark {
+    --duration-fast: 1ms;
+    --duration-base: 1ms;
+    --duration-slow: 1ms;
+  }
 }
 
 /** Theme Setup **/
