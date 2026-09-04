@@ -9,61 +9,77 @@ import { useReducedMotion, type Transition } from 'motion/react';
  * `bounce: 0` - because none of these are driven by a flick or a drag;
  * overshoot only belongs on a momentum-carrying gesture.
  *
- * `visualDuration` is Apple's "response" half of the damping/response pair,
- * tuned to match `--duration-slow` (300ms, css/config.reui.css) so a JS
- * spring and this app's CSS transitions read at the same pace.
+ * `visualDuration` is Apple's "response" half of the damping/response pair -
+ * it is NOT the wall-clock length of the animation. A `bounce: 0` spring
+ * actually settles (motion-dom's generator reports `done`) at roughly 1.9x
+ * `visualDuration`: measured with `spring({ keyframes: [0,1], bounce: 0,
+ * visualDuration })` from `motion-dom`, 0.3 settles at 559ms and 0.2 at
+ * 390ms - both well past this app's own `--duration-slow` (300ms) and
+ * `--duration-base` (200ms) tokens they were meant to match (T3 fix round 1,
+ * D16). `0.15` is the value that actually lands a lightbox around 300ms
+ * (measured 302ms) the way the original comment intended.
  *
  * A spring re-targets from wherever the value currently sits, so re-opening a
  * surface mid-close continues from its live scale/opacity instead of jumping
  * back to 0 - that is what makes it "interruptible" (AC-DLA-20).
  *
- * Ported from `sorento_crm` `lib/motion.ts` verbatim (plan 23 section 3.3).
+ * Ported from `sorento_crm` `lib/motion.ts` (plan 23 section 3.3); the
+ * `visualDuration` values below diverge from Sorento's literal 0.3/0.2/0.2
+ * per D16 - fed back upstream as BL-SS-049.
  */
 export const SURFACE_SPRING: Transition = {
   type: 'spring',
   bounce: 0,
-  visualDuration: 0.3,
+  visualDuration: 0.15,
 };
 
 /**
  * The menu/popper family (Popover, DropdownMenu and the rest of the menu
  * primitives) opens on a shorter response than a lightbox: a menu is a
  * quick lookup next to the trigger, not a surface that takes over the
- * screen, so `visualDuration` matches `--duration-base` (200ms) instead of
- * `--duration-slow`.
+ * screen. `0.1` settles at 210ms (measured), matching the ~200ms a menu
+ * previously opened at (D16) - `0.2` would settle at 390ms, nearly double.
  */
 export const MENU_SPRING: Transition = {
   type: 'spring',
   bounce: 0,
-  visualDuration: 0.2,
+  visualDuration: 0.1,
 };
 
 /**
  * The exit half of a lightbox close. Every surface in this file opens on
- * its own response (0.3s for a lightbox, 0.2s for a menu) but closes on the
- * same 0.2s - a close only has to get out of the way, not announce itself,
- * so there is no reason to hold the lightbox's slower in-transition on the
- * way out.
+ * its own response (0.15s for a lightbox, 0.1s for a menu) but closes on the
+ * same 0.1s (settles ~210ms, D16) - a close only has to get out of the way,
+ * not announce itself, so there is no reason to hold the lightbox's slower
+ * in-transition on the way out. This is also the window Radix's modal
+ * `DialogContentModal` keeps `disableOutsidePointerEvents` (and therefore
+ * `document.body { pointer-events: none }`) active, so a short, ACCURATE
+ * exit duration is what keeps the UI from eating the next click.
  */
 export const SURFACE_SPRING_EXIT: Transition = {
   type: 'spring',
   bounce: 0,
-  visualDuration: 0.2,
+  visualDuration: 0.1,
 };
 
 /**
- * Under `prefers-reduced-motion: reduce` the spring collapses to a same-frame
- * opacity change - no scale, no travel, no overshoot.
+ * Under `prefers-reduced-motion: reduce` the spring collapses to a quick
+ * opacity-only fade - no scale, no travel, no overshoot. STANDARDS: reduced
+ * motion means fewer and GENTLER animations, not zero - `surfaceVariants`
+ * already drops the scale, so this only has to remove the spring's travel
+ * time, not the fade itself. `0.15` matches `--duration-fast`
+ * (css/config.reui.css); `0.01` (fix round 1) was indistinguishable from a
+ * hard pop, which is the jarring change reduced motion exists to prevent.
  */
 export const REDUCED_MOTION_TRANSITION: Transition = {
-  duration: 0.01,
+  duration: 0.15,
 };
 
 /**
  * The transition a surface should ENTER with, given the user's motion
  * preference and what kind of surface it is. `'lightbox'` (Dialog, Sheet,
- * AlertDialog) is the default; `'menu'` (Popover, DropdownMenu and the rest
- * of the menu family) is 0.2s.
+ * AlertDialog) is the default and settles ~300ms; `'menu'` (Popover,
+ * DropdownMenu and the rest of the menu family) settles ~210ms.
  */
 export function surfaceTransition(
   prefersReducedMotion: boolean | null,
@@ -74,7 +90,7 @@ export function surfaceTransition(
 }
 
 /**
- * The transition a surface should EXIT with - always the shorter 0.2s
+ * The transition a surface should EXIT with - always the shorter ~210ms
  * response regardless of what it entered on, so a lightbox opens slower
  * than it closes and a menu's open and close read the same.
  */
