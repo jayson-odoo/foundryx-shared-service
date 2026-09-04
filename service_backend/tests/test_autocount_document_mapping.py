@@ -2173,3 +2173,348 @@ def test_simulate_rejects_line_count_over_cap(client, session_factory):
         "a `lines` payload over MAX_DOCUMENT_LINES_PER_HEADER must 422 - got "
         f"{response.status_code}: {response.text}"
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Group H (continued) - code re-review blocker R1 + should-fix SF1.
+#
+# R1: migration 0011's backfill seeds every DOCUMENT_LINE_FIXED_FIELDS row
+# `is_enabled=True` regardless of the task's saved `line_result_columns` -
+# the S1 gate then rejects the WHOLE line draft the first time the operator
+# tries to save the Mapping tab at all (live task 48e2b593, "'discount' is
+# not among the line query's last preview columns"). Contract (mirrors
+# AC-02-16 for presets):
+#   (a) the backfill seeds a fixed field absent from `line_result_columns`
+#       as `is_enabled=False` (visible, greyed); present columns enabled;
+#       a NEVER-previewed task (`line_result_columns is None`) seeds
+#       everything enabled, as today.
+#   (b) the S1 line-source gate ignores DISABLED rows.
+#   (c) a migration-0012 repair flips existing ENABLED rows whose
+#       source_path is missing from the preview to disabled, idempotent,
+#       leaves un-previewed tasks alone.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_backfill_seeds_fixed_fields_disabled_when_absent_from_line_preview(session_factory):
+    """R1(a): a fixed field whose canonical name does NOT appear in the
+    task's saved `line_result_columns` must be seeded `is_enabled=False`
+    (visible, greyed) - not `True`, which is what lets a bogus fixed-field
+    row block the S1 gate on the operator's very first Mapping-tab save. A
+    fixed field that DOES match a real preview column stays enabled.
+    """
+    from modules.autocount.backfill import backfill_document_line_mapping_pickers
+
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_R1A", name="src")
+    company = _company(db, conn.id, database="AED_R1A", name="R1 Co A")
+    config = _document_config(
+        db, company, conn.id,
+        lineKeyColumn="DtlKey", lineProductColumn="ItemAutoKey", lineWarehouseColumn=None,
+    )
+    # A realistic lineQuery preview: it happens to return a column literally
+    # named "uom" (matches a fixed field's canonical name exactly) but NOT
+    # "discount" - the realistic case, since the fixed-field convention
+    # assumes `source_path == canonical_field`, and a real AutoCount column
+    # is almost never spelled that way (`DiscountAmt`, not `discount`).
+    config.line_result_columns = ["DtlKey", "ItemAutoKey", "uom"]
+    db.add(config)
+    db.commit()
+
+    backfill_document_line_mapping_pickers(db, DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER)
+    db.commit()
+
+    rows = db.query(AcFieldMapping).filter(
+        AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+        AcFieldMapping.company_id == company.id,
+        AcFieldMapping.entity_type == ENTITY_SALES_ORDER,
+        AcFieldMapping.scope == SCOPE_LINE,
+    ).all()
+    by_field = {r.canonical_field: r for r in rows}
+
+    assert by_field["uom"].is_enabled is True, (
+        "a fixed field present in line_result_columns must be seeded enabled"
+    )
+    assert by_field["discount"].is_enabled is False, (
+        "a fixed field ABSENT from line_result_columns must be seeded "
+        f"DISABLED - got is_enabled={by_field['discount'].is_enabled}"
+    )
+    db.close()
+
+
+def test_backfill_seeds_fixed_fields_enabled_when_never_previewed(session_factory):
+    """R1(a), companion: a task that has never previewed its line query
+    (`line_result_columns is None`) must seed every fixed field ENABLED, as
+    today - there is nothing to check the source_path against yet, so
+    staying permissive (the same "test first" convention as
+    `validate_source_config`'s filterFormula gate) is correct here."""
+    from modules.autocount.backfill import backfill_document_line_mapping_pickers
+
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_R1B", name="src")
+    company = _company(db, conn.id, database="AED_R1B", name="R1 Co B")
+    config = _document_config(
+        db, company, conn.id,
+        lineKeyColumn="DtlKey", lineProductColumn="ItemAutoKey", lineWarehouseColumn=None,
+    )
+    config.line_result_columns = None
+    db.add(config)
+    db.commit()
+
+    backfill_document_line_mapping_pickers(db, DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER)
+    db.commit()
+
+    rows = db.query(AcFieldMapping).filter(
+        AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+        AcFieldMapping.company_id == company.id,
+        AcFieldMapping.entity_type == ENTITY_SALES_ORDER,
+        AcFieldMapping.scope == SCOPE_LINE,
+    ).all()
+    assert rows, "expected line rows to be seeded"
+    assert all(r.is_enabled for r in rows), (
+        "a never-previewed task must seed every fixed field enabled - got "
+        f"{[(r.canonical_field, r.is_enabled) for r in rows]}"
+    )
+    db.close()
+
+
+def test_replace_line_mapping_skips_source_path_gate_for_disabled_rows(session_factory):
+    """R1(b): a DISABLED line row's `source_path` must NOT be checked
+    against `line_result_columns` - a backfill-seeded fixed field that does
+    not match a real column must be able to survive an ordinary save so the
+    operator can fix the OTHER rows first; an ENABLED row with the exact
+    same unknown source_path must still 422.
+
+    ASSUMPTION (not yet chosen by the coder): `MappingWriteRow` gains an
+    `is_enabled: bool = True` field (mirrors the read-side
+    `MappingRowView.is_enabled` already on the wire), threaded through to
+    the S1 gate in `_replace_line_mapping`. Today `MappingWriteRow` has no
+    such field at all, so this fails at construction with a clean
+    TypeError.
+    """
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_R1C", name="src")
+    company = _company(db, conn.id, database="AED_R1C", name="R1 Co C")
+    config = _document_config(db, company, conn.id, entity_type=ENTITY_SALES_ORDER)
+    config.line_result_columns = ["DtlKey", "ItemAutoKey", "Qty"]
+    db.add(config)
+    db.commit()
+
+    service = CompanyService(db)
+
+    # (b1) a DISABLED row with an unknown source_path must save fine.
+    service.replace_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER,
+        [
+            MappingWriteRow(source_path="DocNo", transform="string", sorento_field="so_number"),
+            MappingWriteRow(source_path="Cancelled", transform="string", sorento_field="status"),
+            MappingWriteRow(
+                source_path="DtlKey", transform="string", sorento_field="source_ref", scope="line",
+            ),
+            MappingWriteRow(
+                source_path="ItemAutoKey", transform="ref_product", sorento_field="product_ref",
+                scope="line",
+            ),
+            MappingWriteRow(
+                source_path="Qty", transform="decimal", sorento_field="qty_ordered", scope="line",
+            ),
+            MappingWriteRow(
+                source_path="discount", transform="decimal", sorento_field="discount",
+                scope="line", is_enabled=False,
+            ),
+        ],
+    )
+    row = db.query(AcFieldMapping).filter(
+        AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+        AcFieldMapping.company_id == company.id,
+        AcFieldMapping.entity_type == ENTITY_SALES_ORDER,
+        AcFieldMapping.scope == SCOPE_LINE,
+        AcFieldMapping.canonical_field == "discount",
+    ).one()
+    assert row.is_enabled is False
+    assert row.source_path == "discount"
+
+    # (b2) the SAME unknown source_path, but ENABLED, must still 422.
+    with pytest.raises(AutocountServiceError):
+        service.replace_mapping(
+            DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER,
+            [
+                MappingWriteRow(source_path="DocNo", transform="string", sorento_field="so_number"),
+                MappingWriteRow(source_path="Cancelled", transform="string", sorento_field="status"),
+                MappingWriteRow(
+                    source_path="DtlKey", transform="string", sorento_field="source_ref",
+                    scope="line",
+                ),
+                MappingWriteRow(
+                    source_path="ItemAutoKey", transform="ref_product",
+                    sorento_field="product_ref", scope="line",
+                ),
+                MappingWriteRow(
+                    source_path="Qty", transform="decimal", sorento_field="qty_ordered",
+                    scope="line",
+                ),
+                MappingWriteRow(
+                    source_path="discount", transform="decimal", sorento_field="discount",
+                    scope="line", is_enabled=True,
+                ),
+            ],
+        )
+    db.close()
+
+
+def test_disable_line_rows_missing_from_preview_repair(session_factory):
+    """R1(c): migration 0012's repair function flips existing ENABLED line
+    rows whose `source_path` is not in the task's `line_result_columns` to
+    `is_enabled=False` - idempotent, and leaves a never-previewed task
+    (`line_result_columns is None`) alone entirely.
+
+    ASSUMPTION (name given by the coordinator; not yet chosen by the coder
+    otherwise): `modules.autocount.backfill.
+    disable_line_rows_missing_from_preview(db, tenant_id, company_id,
+    entity_type) -> int`.
+    """
+    from modules.autocount.backfill import disable_line_rows_missing_from_preview
+
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_R1D", name="src")
+    company = _company(db, conn.id, database="AED_R1D", name="R1 Co D")
+    config = _document_config(db, company, conn.id, entity_type=ENTITY_SALES_ORDER)
+    config.line_result_columns = ["DtlKey", "ItemAutoKey", "Qty"]
+    db.add(config)
+    db.commit()
+
+    # Simulate the pre-repair state (R1's actual aftermath, e.g. live task
+    # 48e2b593): every fixed field seeded ENABLED regardless of whether its
+    # source_path matches the real preview.
+    _seed_line_row(db, company, ENTITY_SALES_ORDER, "DtlKey", "source_ref", "string", required=True)
+    _seed_line_row(
+        db, company, ENTITY_SALES_ORDER, "ItemAutoKey", "product_ref", "ref_product", required=True,
+    )
+    _seed_line_row(db, company, ENTITY_SALES_ORDER, "Qty", "qty_ordered", "decimal", required=True)
+    _seed_line_row(db, company, ENTITY_SALES_ORDER, "discount", "discount", "decimal")
+
+    touched = disable_line_rows_missing_from_preview(
+        db, DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER
+    )
+    db.commit()
+
+    rows = db.query(AcFieldMapping).filter(
+        AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+        AcFieldMapping.company_id == company.id,
+        AcFieldMapping.entity_type == ENTITY_SALES_ORDER,
+        AcFieldMapping.scope == SCOPE_LINE,
+    ).all()
+    by_field = {r.canonical_field: r for r in rows}
+    assert by_field["discount"].is_enabled is False, (
+        "a row whose source_path is missing from line_result_columns must "
+        f"be disabled by the repair - got is_enabled={by_field['discount'].is_enabled}"
+    )
+    for field in ("source_ref", "product_ref", "qty_ordered"):
+        assert by_field[field].is_enabled is True, (
+            f"'{field}' matches a real preview column and must stay enabled"
+        )
+    assert touched == 1, f"expected exactly 1 row disabled, got touched={touched}"
+
+    # Idempotent: a second call touches nothing more.
+    again = disable_line_rows_missing_from_preview(
+        db, DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER
+    )
+    assert again == 0
+
+    # A DIFFERENT, never-previewed task is left alone entirely, even with an
+    # obviously-unmatched row.
+    other_company = _company(db, conn.id, database="AED_R1D2", name="R1 Co D2")
+    _document_config(db, other_company, conn.id, entity_type=ENTITY_SALES_ORDER)
+    _seed_line_row(db, other_company, ENTITY_SALES_ORDER, "discount", "discount", "decimal")
+
+    untouched = disable_line_rows_missing_from_preview(
+        db, DEFAULT_TENANT_ID, other_company.id, ENTITY_SALES_ORDER
+    )
+    db.commit()
+    assert untouched == 0, "a never-previewed task must be left alone entirely"
+    row = db.query(AcFieldMapping).filter(
+        AcFieldMapping.company_id == other_company.id,
+        AcFieldMapping.canonical_field == "discount",
+    ).one()
+    assert row.is_enabled is True
+    db.close()
+
+
+def test_runtime_filter_formula_fault_fails_the_run(session_factory, monkeypatch):
+    """SF1: a `filterFormula` that parses cleanly at save time but FAULTS at
+    evaluate time (a genuine per-row runtime error, e.g. a value that does
+    not coerce the way the formula expects - never a parse problem) must
+    fail the WHOLE run with a NAMED error code, stage nothing, and leave
+    row hashes untouched (the same fail-safe contract as the delete guard
+    and document caps) - never silently fail OPEN and keep every header.
+
+    Monkeypatches `evaluate_row_filter` (as imported into
+    `sql_source.source`) to raise `FormulaRuntimeError` unconditionally -
+    the deterministic way to provoke "faults at eval" without hand-crafting
+    a formula/row-value combination that happens to blow up `formula.py`'s
+    internals. Exercises the real `run_autocount_sync` pipeline (via
+    `JobService.create_and_enqueue`, eager under tests) end to end, not
+    just `SqlDbSource.fetch_changes` in isolation.
+    """
+    from modules.autocount.formula import FormulaRuntimeError
+    from modules.autocount.models import AcSyncRun, RUN_FAILED
+    from modules.autocount.sync import AUTOCOUNT_SYNC
+    from app.jobs.service import JobService
+
+    header_rows = [
+        ("D001", "SO-001", "open", "F", "2026-08-01", "2026-08-01 09:00:00"),
+        ("D002", "SO-002", "open", "F", "2026-08-02", "2026-08-02 09:00:00"),
+    ]
+    lines = {
+        "D001": [("D001-1", "ITEM-A", "10", "0", 1)],
+        "D002": [("D002-1", "ITEM-B", "5", "0", 1)],
+    }
+    db = session_factory()
+    engine = _source_engine(header_rows, lines)
+    conn = _sql_connection(db, engine, database="AED_SF1", name="src")
+    company = _company(db, conn.id, database="AED_SF1", name="SF1 Co")
+    config = _document_config(
+        db, company, conn.id, entity_type=ENTITY_SALES_ORDER,
+        filterFormula='startswith(upper(trim(DocNo)), "SPO-")',
+    )
+
+    known = {"AED_SF1:D001": "h1", "AED_SF1:D002": "h2"}
+    RowHashRepository(db).upsert_many(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, known, seen_at=None
+    )
+    db.commit()
+
+    def _boom(formula, raw):
+        raise FormulaRuntimeError("cannot coerce this row's value")
+
+    monkeypatch.setattr("modules.autocount.sql_source.source.evaluate_row_filter", _boom)
+
+    job = JobService(db).create_and_enqueue(
+        type=AUTOCOUNT_SYNC, tenant_id=DEFAULT_TENANT_ID,
+        payload={"companyId": company.id, "entityType": ENTITY_SALES_ORDER, "mode": "manual"},
+    )
+
+    db.refresh(config)
+    assert config.last_run_error_code == "FILTER_FORMULA", (
+        "a runtime filter fault must be tagged FILTER_FORMULA - got "
+        f"{config.last_run_error_code!r} ({config.last_run_error!r})"
+    )
+
+    run = db.query(AcSyncRun).filter(AcSyncRun.job_id == job.id).one()
+    assert run.outcome == RUN_FAILED, f"the run must be FAILED - got {run.outcome!r}"
+
+    staged = db.query(AcStagedRecord).filter(
+        AcStagedRecord.tenant_id == DEFAULT_TENANT_ID,
+        AcStagedRecord.company_id == company.id,
+        AcStagedRecord.entity_type == ENTITY_SALES_ORDER,
+    ).count()
+    assert staged == 0, "a failed run must stage nothing"
+
+    remaining = RowHashRepository(db).all_hashes(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER
+    )
+    assert remaining == known, f"row hashes must be untouched by a failed run - got {remaining}"
+    db.close()
