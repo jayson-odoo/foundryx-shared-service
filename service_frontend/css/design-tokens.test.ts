@@ -141,13 +141,16 @@ describe('AC-DLA-02 material tokens', () => {
 });
 
 describe('AC-DLA-03 named z-scale', () => {
-  // --z-banner sits ABOVE --z-modal (fix round 1 finding 2): the operator must
-  // always be able to end an impersonation, including while a dialog/sheet/drawer is
-  // open over the page - the banner and its Exit control can never be buried under
-  // an overlay.
+  // --z-banner sits ABOVE --z-modal (fix round 1 finding 2) - PAINT ORDER ONLY: the
+  // banner is never covered by an overlay's scrim while a dialog/sheet/drawer is
+  // open over the page. This does NOT guarantee clickability - a Radix overlay's
+  // `pointer-events: none` on the body can still swallow a click on the banner even
+  // though it paints on top (tracked BL-SS-050, T1 fix round 3 finding 3).
+  // --z-sticky-content-corner was dropped (T1 fix round 3 finding 10) - it had no
+  // consumer (no cell pinned on both axes exists yet); re-add it, registered here,
+  // if one ever does.
   const steps: Array<[string, number]> = [
     ['--z-sticky-content', 5],
-    ['--z-sticky-content-corner', 6],
     ['--z-header', 10],
     ['--z-sidebar', 20],
     ['--z-modal', 50],
@@ -162,8 +165,7 @@ describe('AC-DLA-03 named z-scale', () => {
   it('orders the scale: sticky-content < header < sidebar < modal < banner', () => {
     const cs = injectStylesheet();
     const n = (name: string) => Number(cs.getPropertyValue(name).trim());
-    expect(n('--z-sticky-content')).toBeLessThan(n('--z-sticky-content-corner'));
-    expect(n('--z-sticky-content-corner')).toBeLessThan(n('--z-header'));
+    expect(n('--z-sticky-content')).toBeLessThan(n('--z-header'));
     expect(n('--z-header')).toBeLessThan(n('--z-sidebar'));
     expect(n('--z-sidebar')).toBeLessThan(n('--z-modal'));
     expect(n('--z-modal')).toBeLessThan(n('--z-banner'));
@@ -263,6 +265,52 @@ describe('AC-DLA-03 named z-scale', () => {
     // unrelated PR; a wide ceiling still catches an accidental mass-revert.
     expect(hits.length).toBeGreaterThan(0);
     expect(hits.length).toBeLessThan(120);
+  });
+
+  /**
+   * T1 fix round 3 finding 4: bare numeric `z-<N>` utilities are BANNED under
+   * `app/**` and `components/platform/**` outside an explicit allowlist - the
+   * broad "documents...as a baseline" ceiling test above stays the Sorento-parity
+   * check for the WHOLE tree (components/ui/** included, still just tolerated under
+   * a wide count); this stricter pass targets the two trees where a hand-rolled
+   * sticky/overlay surface tends to reach for `z-10` instead of the named scale
+   * (the bug three of these findings fixed). The Metronic `demo2`-`demo10` layouts
+   * are exempt (dead code, D8 - T7 deletes them wholesale), matching AC-DLA-06's own
+   * exemption. The allowlist starts as exactly the genuine baseline found by this
+   * sweep - every entry computes its stacking order from something the shell's named
+   * steps don't model (an avatar-group hover-to-front, a canvas drag handle's local
+   * z, a context-menu/inspector portal) - not a silent grandfather clause; a NEW
+   * hand-rolled z-index anywhere else in these two trees now fails the build.
+   */
+  const isExemptDemoLayoutForZ = (f: string) => /app\/components\/layouts\/demo(10|[2-9])\//.test(f);
+
+  const zNumericAllowlist = new Set([
+    // app/**
+    'app/components/partials/common/avatar-input.tsx',
+    'app/components/partials/common/avatar-group.tsx',
+    // components/platform/**
+    'components/platform/document-drive/cursor-menu.tsx',
+    'components/platform/overflow-pills/overflow-pills.tsx',
+    'components/platform/resource-list/resource-list.tsx',
+    'components/platform/email-editor/canvas.tsx',
+    'components/platform/email-editor/block-view.tsx',
+    'components/platform/workflow-canvas/workflow-canvas.tsx',
+    'components/platform/status-engine/status-table.tsx',
+    'components/platform/status-engine/entity-flow.tsx',
+  ]);
+
+  it('bans bare z-<N> under app/** and components/platform/** outside the recorded baseline allowlist', () => {
+    const offenders = walk(['app', 'components/platform'])
+      .filter((f) => /\.tsx?$/.test(f))
+      .filter((f) => !isExemptDemoLayoutForZ(rel(f)))
+      .filter((f) => !zNumericAllowlist.has(rel(f)))
+      .filter((f) => /\bz-\d+\b/.test(fs.readFileSync(f, 'utf8')))
+      .map(rel);
+    expect(offenders).toEqual([]);
+  });
+
+  it('records the app/**+components/platform/** z-<N> baseline as exactly 10 files (T1 fix round 3)', () => {
+    expect(zNumericAllowlist.size).toBe(10);
   });
 });
 
@@ -503,8 +551,13 @@ describe('AC-DLA-07 semantic ink contrast', () => {
   // semantic ink has to clear 4.5:1 both (a) as a fill's ink against its foreground
   // (asserted above) AND (b) used directly as text ON --background (a bare
   // `text-success` toast/body-copy use, not paired with any foreground at all). The
-  // raw brand hue fails (b) in light mode at 3.49:1 - --success/--info/--warning
-  // point at --foundryx-*-active (or -accent for warning) specifically to pass this.
+  // ORIGINAL raw brand hue failed (b) in light mode at 3.49:1 - rather than point
+  // --success/--info/--warning at a DIFFERENT primitive (-active/-accent, which
+  // would disconnect the tenant Branding controls from what the semantic var
+  // renders - T1 fix round 3), the --foundryx-success/-info/-warning primitives
+  // THEMSELVES are darkened in :root/light until the raw hue clears both (a) and
+  // (b) at once (see css/foundryx-tokens.css's Layer 1/2 comments for the hex +
+  // ratio history).
   it.each(semantic)('clears 4.5:1 as ink directly on --background (light, constraint b)', (name) => {
     const cs = injectStylesheet();
     const base = resolveVar(`--${name}`, cs);
@@ -543,7 +596,8 @@ describe('AC-DLA-07 semantic ink contrast', () => {
   // badge.tsx's DEFAULT (solid, non-"light") success/warning/info variant is
   // `bg-<hue>-accent text-<hue>-foreground` (components/ui/badge.tsx) - verify that
   // pairing directly rather than assuming it inherits constraint (a)'s pass (that one
-  // paired the foreground against --success itself, i.e. -active, not -accent).
+  // paired the foreground against --success itself, i.e. the base primitive, not
+  // -accent - a separate, darker step).
   it.each(alertHues)('badge.tsx default appearance (-foreground on -accent) clears 4.5:1 (light)', (name) => {
     const cs = injectStylesheet();
     const accent = resolveVar(`--${name}-accent`, cs);
@@ -558,12 +612,18 @@ describe('AC-DLA-07 semantic ink contrast', () => {
     expect(contrast(accent, fg)).toBeGreaterThanOrEqual(4.5);
   });
 
-  it('sends alert.tsx light-appearance icons to -accent, not -foreground (a fill-ink colour, not a tint-safe one)', () => {
+  it('sends alert.tsx light-appearance AND mono+icon compounds to -accent, not -foreground (a fill-ink colour, not a tint-safe one)', () => {
     const alertSrc = read('components/ui/alert.tsx');
     for (const name of alertHues) {
-      // The three appearance="light" compound variants (not the "mono" variant's
-      // icon-on-solid-fill compounds, which correctly keep -foreground).
-      expect(alertSrc).toContain(`[&_[data-slot=alert-icon]]:text-[var(--color-${name}-accent,`);
+      // The three appearance="light" compound variants, plus the "mono" variant's
+      // icon compounds (T1 fix round 3 finding 7 - these used -foreground before,
+      // which is the wrong role here: -foreground is fill ink for text ON a solid
+      // hue-coloured surface, not an accent tint for an icon sitting on an
+      // unrelated mono/neutral surface).
+      const accentVar = `var(--color-${name}-accent,`;
+      const occurrences = alertSrc.split(`[&_[data-slot=alert-icon]]:text-[${accentVar}`).length - 1;
+      expect(occurrences, `${name} icon should use -accent in both its light-appearance and mono compounds`).toBe(2);
+      expect(alertSrc).not.toContain(`[&_[data-slot=alert-icon]]:text-[var(--color-${name}-foreground,`);
     }
   });
 });
