@@ -127,10 +127,27 @@ export function useResourceList<T>({
 
   useEffect(() => {
     let active = true;
+    // Fix round 2: set inside `.then` when this fetch's page turns out to be
+    // past the last real page - a restored `ctx` naming a page that no
+    // longer exists once rows were deleted elsewhere, or a page whose only
+    // remaining row was just deleted. Guards `finally` so `isLoading` stays
+    // true straight through the hand-off to the corrected-page refetch
+    // (below) - the rows already on screen (from BEFORE this fetch cycle)
+    // keep showing, dimmed, instead of the grid ever committing this now-
+    // empty/wrong-page result and flashing (or sticking on) "No records".
+    let clamping = false;
     setIsLoading(true);
     fetcher(query)
       .then((result) => {
         if (!active) return;
+        if (query.page > 0 && query.pageSize > 0 && query.page * query.pageSize >= result.total) {
+          const clamped = Math.max(0, Math.ceil(result.total / query.pageSize) - 1);
+          if (clamped !== query.page) {
+            clamping = true;
+            setPage(clamped);
+            return;
+          }
+        }
         setData(result.data);
         setTotal(result.total);
         setError(null);
@@ -143,7 +160,7 @@ export function useResourceList<T>({
         if (active) setError(e instanceof Error ? e.message : 'Failed to load.');
       })
       .finally(() => {
-        if (active) setIsLoading(false);
+        if (active && !clamping) setIsLoading(false);
       });
     return () => {
       active = false;
