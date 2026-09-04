@@ -200,7 +200,7 @@ export function BrandingEditor({ tenantId, canManage }: BrandingEditorProps) {
       />
 
       {canManage && (
-        <div className="sticky bottom-4 z-10 flex items-center justify-end gap-2">
+        <div className="sticky bottom-4 z-(--z-sticky-content) flex items-center justify-end gap-2">
           {isDirty && (
             <>
               <Button

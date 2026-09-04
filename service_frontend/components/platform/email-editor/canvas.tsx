@@ -91,7 +91,7 @@ function DropGap({
     <div
       ref={setNodeRef}
       data-testid={`drop-gap-${columnId}-${index}`}
-      className={`rounded transition-all ${
+      className={`rounded transition-[height,margin,background-color,border-color,border-width] ${
         isOver
           ? 'my-1 h-9 border border-dashed border-primary bg-primary/10'
           : dragActive

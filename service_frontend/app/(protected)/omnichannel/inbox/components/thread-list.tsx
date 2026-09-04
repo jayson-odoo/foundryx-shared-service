@@ -163,7 +163,7 @@ export function ThreadList({
                       <span className={cn('truncate text-sm', t.unreadCount > 0 ? 'font-semibold' : 'font-medium')}>
                         {t.name}
                       </span>
-                      <span className="shrink-0 text-[11px] text-muted-foreground">
+                      <span className="shrink-0 text-2xs text-muted-foreground">
                         {relativeTime(t.lastMessageAt)}
                       </span>
                     </div>
@@ -178,7 +178,7 @@ export function ThreadList({
                     <div className="mt-1 flex items-center gap-1.5">
                       <StatusBadge status={t.status} registry={THREAD_STATUS_REGISTRY} size="sm" />
                       <StatusBadge status={t.priority} registry={THREAD_PRIORITY_REGISTRY} size="sm" />
-                      <span className="ms-auto truncate text-[11px] text-muted-foreground">
+                      <span className="ms-auto truncate text-2xs text-muted-foreground">
                         {t.assignedUserName ?? 'Unassigned'}
                       </span>
                     </div>

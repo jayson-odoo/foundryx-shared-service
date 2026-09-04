@@ -79,7 +79,7 @@ export function WorkflowFlowNode({ data, selected }: NodeProps & { data: Workflo
         </span>
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <span className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
               {isTrigger ? 'Trigger' : isIf ? 'Condition' : 'Action'}
             </span>
           </div>

@@ -24,7 +24,9 @@ import {
 } from './components';
 
 const stickySidebarClasses: Record<string, string> = {
-  'demo1-layout': 'top-[calc(var(--header-height)+1rem)]',
+  // Clears the header AND the impersonation banner's measured height, same formula
+  // as demo1.css's wrapper padding-top (T1 fix round 1 finding 1).
+  'demo1-layout': 'top-[calc(var(--header-height)+var(--shell-top-offset,0px)+1rem)]',
   'demo2-layout': 'top-[calc(var(--header-height)+1rem)]',
   'demo3-layout': 'top-[calc(var(--header-height)+var(--navbar-height)+1rem)]',
   'demo4-layout': 'top-[3rem]',
@@ -71,7 +73,7 @@ export function AccountSettingsSidebarContent() {
           <div
             className={cn(
               'w-[230px]',
-              sidebarSticky && `fixed z-10 start-auto ${stickyClass}`,
+              sidebarSticky && `fixed z-(--z-sticky-content) start-auto ${stickyClass}`,
             )}
           >
             <Scrollspy offset={100} targetRef={parentRef}>

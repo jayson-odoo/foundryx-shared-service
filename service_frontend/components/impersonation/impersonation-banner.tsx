@@ -1,13 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ChevronDown, ChevronUp, LogOut, UserCog } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useImpersonation } from '@/hooks/use-impersonation';
 
-const BANNER_HEIGHT = 40;
 const COLLAPSE_KEY = 'foundryx.impersonation.collapsed';
 
 /**
@@ -18,6 +17,7 @@ const COLLAPSE_KEY = 'foundryx.impersonation.collapsed';
 export function ImpersonationBanner() {
   const { session, stop, hydrate, pending } = useImpersonation();
   const router = useRouter();
+  const bannerRef = useRef<HTMLDivElement>(null);
 
   // Reconcile the persisted store with the backend on mount (clears a stale
   // session after a logout-without-exit; adopts one started elsewhere).
@@ -35,15 +35,43 @@ export function ImpersonationBanner() {
     }
   }, [collapsed]);
 
-  // Push page content down so the fixed bar never covers the top toolbar.
+  const expanded = Boolean(session) && !collapsed;
+
+  // Publishes the REAL rendered banner height (never a guessed constant - the copy
+  // wraps to two lines under ~640px, and a hardcoded height silently undercounts
+  // that) as --shell-top-offset. header.tsx/sidebar.tsx read it for their own `top`;
+  // demo1.css's wrapper padding-top and the settings-sidebar sticky nav read
+  // `calc(var(--header-height) + var(--shell-top-offset, 0px))` so the banner pushes
+  // the WHOLE shell down, not just the header - T1 fix round 1 finding 1 was the
+  // wrapper (and everything below the header) staying put while the header alone
+  // dropped, hiding the page title under it. The collapsed pill floats and never
+  // spans the top, so it publishes 0.
   useEffect(() => {
     if (typeof document === 'undefined') return;
-    const apply = Boolean(session) && !collapsed;
-    document.body.style.paddingTop = apply ? `${BANNER_HEIGHT}px` : '';
-    return () => {
-      document.body.style.paddingTop = '';
+    if (!expanded) {
+      document.documentElement.style.setProperty('--shell-top-offset', '0px');
+      return;
+    }
+    const el = bannerRef.current;
+    if (!el) return;
+    const publish = () => {
+      document.documentElement.style.setProperty('--shell-top-offset', `${el.offsetHeight}px`);
     };
-  }, [session, collapsed]);
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [expanded]);
+
+  // Clears the offset entirely on unmount (session ended, component torn down) so a
+  // stale value never survives past the banner that set it.
+  useEffect(() => {
+    return () => {
+      if (typeof document !== 'undefined') {
+        document.documentElement.style.removeProperty('--shell-top-offset');
+      }
+    };
+  }, []);
 
   if (!session) return null;
 
@@ -61,7 +89,7 @@ export function ImpersonationBanner() {
         type="button"
         onClick={() => setCollapsed(false)}
         title="Show impersonation banner"
-        className="fixed end-3 top-2 z-60 flex items-center gap-1 rounded-full border border-amber-300 bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-900 shadow-sm hover:bg-amber-200"
+        className="fixed end-3 top-2 z-(--z-banner) flex items-center gap-1 rounded-full border border-amber-300 bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-900 shadow-sm hover:bg-amber-200"
       >
         <UserCog className="size-3.5" />
         Impersonating
@@ -72,8 +100,9 @@ export function ImpersonationBanner() {
 
   return (
     <div
+      ref={bannerRef}
       role="status"
-      className="fixed inset-x-0 top-0 z-60 border-b border-amber-300 bg-amber-100 px-4 py-2 text-amber-900 shadow-sm"
+      className="fixed inset-x-0 top-0 z-(--z-banner) border-b border-amber-300 bg-amber-100 px-4 py-2 text-amber-900 shadow-sm"
     >
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2 text-sm">

@@ -322,7 +322,7 @@ export function CompanyDocuments({
                                       strokeWidth="2"
                                       strokeDasharray={`${2 * Math.PI * 14}`}
                                       strokeDashoffset={`${2 * Math.PI * 14 * (1 - fileItem.progress / 100)}`}
-                                      className="text-primary transition-all duration-300"
+                                      className="text-primary transition-[stroke-dashoffset] duration-(--duration-base)"
                                       strokeLinecap="round"
                                     />
                                   </svg>

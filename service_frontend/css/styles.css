@@ -16,6 +16,12 @@
   *:focus-visible {
     @apply outline-ring rounded-xs shadow-none outline-2 outline-offset-3 transition-none!;
   }
+
+  /* Inter is a variable font with an optical-size axis; letting the browser drive
+     it keeps small labels open and large titles tight without a second face. */
+  body {
+    font-optical-sizing: auto;
+  }
 }
 
 /* Metronic Components  */
@@ -32,3 +38,175 @@
 /** Dark/Light Theme Variant **/
 @custom-variant dark (&:is(.dark *));
 @custom-variant light (&:not(.dark *));
+
+/**
+ * Materials - a translucent surface tinted by what is behind it. Regular is the
+ * header, thick the sidebar; both collapse to a flat surface under the
+ * reduced-transparency and high-contrast preferences below. Tokens live in
+ * config.reui.css.
+ */
+@utility material-regular {
+  background-color: var(--material-regular);
+  -webkit-backdrop-filter: saturate(180%) blur(var(--material-blur));
+  backdrop-filter: saturate(180%) blur(var(--material-blur));
+}
+
+@utility material-thick {
+  background-color: var(--material-thick);
+  -webkit-backdrop-filter: saturate(180%) blur(var(--material-blur));
+  backdrop-filter: saturate(180%) blur(var(--material-blur));
+}
+
+/* The hairline that separates a material from the content scrolling under it. */
+@utility material-edge {
+  border-color: var(--material-edge);
+}
+
+/**
+ * Accessibility preferences.
+ *
+ * These three blocks are the whole story for motion, transparency and contrast, so
+ * a component never has to carry its own `motion-reduce:` variant for the cases
+ * below. They live last so they win on equal specificity.
+ *
+ * The reduced-motion block is TWO fixes, not one (T1 fix round 1 finding 4):
+ *
+ * 1. Token-layer collapse - `--duration-fast/base/slow` themselves drop to 1ms under
+ *    the media query, in `config.reui.css`'s `:root`/`.dark`. Every PRESENT and
+ *    FUTURE component that reads `duration-(--duration-fast)` (switch, accordion,
+ *    progress, the sidebar width transition, ...) collapses automatically - no
+ *    selector list to keep in sync as new components adopt the tokens.
+ * 2. The selector-based reset below (tw-animate `--tw-enter-*`/`--tw-exit-*` vars,
+ *    the demo1 shell transitions, vaul, any `transition-[` arbitrary-property list)
+ *    stays for the things the token collapse can't reach: Radix's OWN `animate-in`/
+ *    `animate-out` keyframe utilities read `--tw-enter-translate-x` etc, not a
+ *    duration token. Those utilities compile inside Tailwind's `utilities` LAYER;
+ *    CSS inverts layer precedence for `!important` declarations (an important in an
+ *    EARLIER-declared layer beats one in a later layer), and `utilities` is declared
+ *    AFTER `base` - so an unlayered `!important` rule here (the pre-fix state) LOST
+ *    to any `!`-suffixed Tailwind utility (e.g. `navigation-menu.tsx`'s
+ *    `slide-in-from-right-52!`). Layering this block in `@layer base` - not
+ *    dropping the two navigation-menu `!` utilities, which resolve a real
+ *    simultaneous-data-attribute conflict unrelated to motion - restores the win.
+ *
+ *    This reset's own `animation-duration`/`transition-duration: 150ms` (T1 fix
+ *    round 3 finding 5) is a DELIBERATE, separate constant from the token-layer
+ *    collapse's 1ms above - not an oversight to tighten. A dropdown/popover/overlay
+ *    entry still needs to FADE under reduced motion (only its slide/scale/rotate
+ *    TRAVEL is stripped, per WCAG's own guidance - an instant opacity snap reads as a
+ *    flicker, not a fade); the 1ms token collapse is for every OTHER duration-token
+ *    consumer (switch, accordion, progress, the sidebar width transition, ...),
+ *    which have no such fade requirement.
+ */
+@layer base {
+  /* `dialog-content` and `sheet-content` are excluded: T3 migrates those two
+     straight onto a `motion.div` that `lib/motion.ts` animates via a JS spring -
+     this rule's own `transition-duration: 150ms` would otherwise land on that node
+     and CSS-transition its opacity out from under the spring (the spring commits
+     `opacity: 1` in one frame under `REDUCED_MOTION_TRANSITION`, and the browser
+     would smear that jump over 150ms instead). Popover and DropdownMenu don't need
+     the exclusion: their animated child carries no `-content` slot of its own. */
+  @media (prefers-reduced-motion: reduce) {
+    [data-slot$='-content']:not([data-slot='dialog-content']):not([data-slot='sheet-content']):not([data-vaul-drawer]),
+    [data-radix-popper-content-wrapper],
+    [data-radix-popper-content-wrapper] > * {
+      --tw-enter-translate-x: 0 !important;
+      --tw-enter-translate-y: 0 !important;
+      --tw-exit-translate-x: 0 !important;
+      --tw-exit-translate-y: 0 !important;
+      --tw-enter-scale: 1 !important;
+      --tw-exit-scale: 1 !important;
+      --tw-enter-rotate: 0 !important;
+      --tw-exit-rotate: 0 !important;
+      animation-duration: 150ms !important;
+      transition-duration: 150ms !important;
+    }
+
+    .animate-pulse,
+    .animate-bounce {
+      animation: none !important;
+    }
+
+    /* The demo1 shell's own CSS transitions (sidebar collapse width, header/wrapper
+       offsets) travel independently of the tw-animate variables above - stop them
+       too. */
+    .demo1 .sidebar,
+    .demo1 .wrapper,
+    .demo1 .header {
+      transition: none !important;
+    }
+
+    /* vaul (the mobile nav drawer) and any element carrying an explicit
+       `transition-[` arbitrary property list drive their own duration outside the
+       tw-animate vars - collapse both to next-to-instant rather than travelling at
+       full speed. */
+    [data-vaul-drawer] {
+      transition-duration: 1ms !important;
+    }
+
+    [class*='transition-['] {
+      transition-duration: 1ms !important;
+    }
+  }
+}
+
+/* Reduced transparency AND more contrast flatten materials/scrim IDENTICALLY (T1 fix
+   round 1 finding 6 - the two blocks had drifted into two copies of the same rules,
+   and prefers-contrast: more was missing the scrim-on-overlay declaration reduced
+   transparency had). One merged block carries the shared flattening; a second,
+   contrast-only block carries just the border/input/muted-foreground/material-edge
+   deltas that reduced transparency does not touch. */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :root,
+  .dark {
+    --scrim: color-mix(in oklab, black 72%, transparent);
+    --material-regular: var(--background);
+    --material-thick: var(--background);
+  }
+
+  .material-regular,
+  .material-thick,
+  [data-slot='dialog-overlay'],
+  [data-slot='alert-dialog-overlay'],
+  [data-slot='sheet-overlay'],
+  [data-slot='drawer-overlay'],
+  [data-pinned] {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+
+  [data-slot='dialog-overlay'],
+  [data-slot='alert-dialog-overlay'],
+  [data-slot='sheet-overlay'],
+  [data-slot='drawer-overlay'] {
+    background-color: var(--scrim) !important;
+  }
+
+  /* A pinned grid column has rows sliding under it, so it has to be opaque - and
+     the header cell keeps reading as a header rather than as one more body row. */
+  td[data-pinned] {
+    background-color: var(--background) !important;
+  }
+
+  th[data-pinned] {
+    background-color: var(--muted) !important;
+  }
+}
+
+/* More contrast ONLY: firmer borders, secondary ink, and the material hairline - the
+   flattening above already applies (prefers-contrast: more is in the merged query). */
+@media (prefers-contrast: more) {
+  :root {
+    --border: var(--color-zinc-400);
+    --input: var(--color-zinc-400);
+    --muted-foreground: var(--color-zinc-700);
+    --material-edge: var(--color-zinc-400);
+  }
+
+  .dark {
+    --border: var(--color-zinc-500);
+    --input: var(--color-zinc-500);
+    --muted-foreground: var(--color-zinc-300);
+    --material-edge: var(--color-zinc-500);
+  }
+}

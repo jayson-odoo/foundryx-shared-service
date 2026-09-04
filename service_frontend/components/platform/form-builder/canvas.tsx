@@ -337,7 +337,7 @@ function PageCard({
             <GripVertical className="size-4" />
           </button>
         )}
-        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
+        <span className="rounded bg-muted px-1.5 py-0.5 text-2xs font-semibold uppercase text-muted-foreground">
           Page {index + 1}
         </span>
         {editing ? (

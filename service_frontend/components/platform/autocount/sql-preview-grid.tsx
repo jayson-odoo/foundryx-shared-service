@@ -63,7 +63,7 @@ export function SqlPreviewGrid({ state }: SqlPreviewGridProps) {
           column pickers below the fold (side panels never stretch the page). */}
       <div className="max-h-[26rem] overflow-auto rounded-lg border border-border">
         <table className="w-full min-w-max border-collapse text-xs">
-          <thead className="sticky top-0 z-10">
+          <thead className="sticky top-0 z-(--z-sticky-content)">
             <tr className="bg-muted">
               {columns.map((col) => (
                 <th
@@ -72,7 +72,7 @@ export function SqlPreviewGrid({ state }: SqlPreviewGridProps) {
                   scope="col"
                 >
                   <span className="block text-foreground">{col.name}</span>
-                  <span className="block font-mono text-[10px] font-normal text-muted-foreground">
+                  <span className="block font-mono text-2xs font-normal text-muted-foreground">
                     {col.type}
                   </span>
                 </th>

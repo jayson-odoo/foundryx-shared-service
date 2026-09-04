@@ -15,7 +15,7 @@ const stop = (e: React.MouseEvent) => e.stopPropagation();
 function Initials({ name, email }: { name: string | null; email: string }) {
   const initials = (name || email).trim().slice(0, 2).toUpperCase();
   return (
-    <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium text-muted-foreground">
+    <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-2xs font-medium text-muted-foreground">
       {initials}
     </span>
   );
