@@ -160,15 +160,11 @@ function Badge({
   ...props
 }: React.ComponentProps<'span'> & VariantProps<typeof badgeVariants> & { asChild?: boolean }) {
   const Comp = asChild ? SlotPrimitive.Slot : 'span';
-  // A count badge (`shape="circle"`) keeps the solid fill it always had - a
-  // caller that wants the tinted pill still can by passing `appearance`
-  // explicitly.
-  const effectiveAppearance = shape === 'circle' && appearance === undefined ? 'default' : appearance;
 
   return (
     <Comp
       data-slot="badge"
-      className={cn(badgeVariants({ variant, size, appearance: effectiveAppearance, shape, disabled }), className)}
+      className={cn(badgeVariants({ variant, size, appearance, shape, disabled }), className)}
       {...props}
     />
   );

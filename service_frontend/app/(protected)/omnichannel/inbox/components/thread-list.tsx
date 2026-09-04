@@ -172,7 +172,13 @@ export function ThreadList({
                     <div className="flex items-center justify-between gap-2">
                       <span className="truncate text-xs text-muted-foreground">{t.lastMessagePreview}</span>
                       {t.unreadCount > 0 && (
-                        <Badge variant="primary" size="sm" shape="circle" data-testid="unread-badge">
+                        <Badge
+                          variant="primary"
+                          size="sm"
+                          shape="circle"
+                          appearance="default"
+                          data-testid="unread-badge"
+                        >
                           {t.unreadCount}
                         </Badge>
                       )}
