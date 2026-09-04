@@ -794,6 +794,44 @@ DEFAULT_STATUS_FORMULA = (
     'if(lines.open_count == 0, "closed", "open")))'
 )
 
+# canonical line field -> (transform name, is required) per document entity
+# (review-round B1 - reintroduced). This is the FIXED set of line fields
+# every document header carries alongside its picker-derived ref rows
+# (source_ref/product_ref/warehouse_ref) - the shape the now-deleted
+# `document_line_rows` code-generated before line rows became operator-
+# editable persisted `AcFieldMapping` rows (sprint-5/02 AC-02-03). It is NOT
+# an engine input any more; it exists solely as the reference the migration
+# backfill (`backfill.backfill_document_line_mapping_pickers`) seeds against,
+# using the FIXED column-name convention the old code-gen path relied on
+# (`source_path == canonical_field` - the lineQuery must return a column
+# named exactly like the canonical field it feeds).
+_SO_LINE_FIXED_FIELDS: Tuple[Tuple[str, str, bool], ...] = (
+    ("qty_ordered", "decimal", True),
+    ("qty_delivered", "decimal", False),
+    ("unit_price", "decimal", False),
+    ("discount", "decimal", False),
+    ("line_total", "decimal", False),
+    ("uom", "string", False),
+    ("required_date", "date", False),
+)
+_PO_LINE_FIXED_FIELDS: Tuple[Tuple[str, str, bool], ...] = (
+    ("qty_ordered", "decimal", True),
+    ("qty_received", "decimal", False),
+    ("unit_cost", "decimal", False),
+    ("discount", "decimal", False),
+    ("line_total", "decimal", False),
+    ("uom", "string", False),
+    ("currency", "string", False),
+    ("expected_date", "date", False),
+)
+DOCUMENT_LINE_FIXED_FIELDS: Dict[str, Tuple[Tuple[str, str, bool], ...]] = {
+    ENTITY_SALES_ORDER: _SO_LINE_FIXED_FIELDS,
+    ENTITY_PURCHASE_ORDER: _PO_LINE_FIXED_FIELDS,
+    # SPO shares the PO shape end-to-end (presets.py reuses the PO header/
+    # line SQL verbatim) - same fixed-field set.
+    ENTITY_SHIPPING_ORDER: _PO_LINE_FIXED_FIELDS,
+}
+
 
 # ── entity profiles ───────────────────────────────────────────────────────────
 # What differs BETWEEN entities, in one place. Adding an entity is a profile plus

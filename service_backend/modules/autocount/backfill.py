@@ -25,7 +25,7 @@ import sqlalchemy as sa
 from .canonical.documents import is_document_entity
 from .db import AUTOCOUNT_SCHEMA
 from .envelopes import ENVELOPE_STATUS_DICT
-from .mapping import SCOPE_LINE
+from .mapping import DOCUMENT_LINE_FIXED_FIELDS, SCOPE_LINE
 from .models import AcEntityConfig, AcFieldMapping
 from .sources import INITIAL_LOAD_WINDOWED
 
@@ -158,10 +158,17 @@ def backfill_etl_defaults(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
 def backfill_document_line_mapping_pickers(
     db: Any, tenant_id: str, company_id: str, entity_type: str
 ) -> int:
-    """Idempotent per (tenant, company, entity): a second call is a no-op
-    (returns 0) once ANY line row exists for it - whether created by THIS
-    backfill or by an operator who has since mapped lines by hand. Returns
-    the number of line rows created (0-3)."""
+    """Idempotent per (tenant, company, entity), and REPAIR-capable (review
+    round B1): guard is PER CANONICAL FIELD, not "does any line row exist" -
+    a task left with only the picker-derived rows (source_ref/product_ref/
+    warehouse_ref, e.g. by an earlier run of this same backfill/migration
+    0010) is missing its FIXED line fields (`mapping.DOCUMENT_LINE_FIXED_
+    FIELDS` - qty_ordered, unit_price, … - the fields the now-deleted
+    `document_line_rows` code-generated), which the old "any row exists"
+    guard would have locked out of ever being repaired. Re-running this
+    function always tops a task up to the FULL expected line set and never
+    duplicates a field that is already there. Returns the number of line
+    rows created (0 when the full set already exists)."""
     if not is_document_entity(entity_type):
         return 0
     config = (
@@ -181,53 +188,42 @@ def backfill_document_line_mapping_pickers(
     line_product_column = str(source_config.get("lineProductColumn") or "").strip()
     line_warehouse_column = str(source_config.get("lineWarehouseColumn") or "").strip()
 
-    already_has_lines = (
-        db.query(AcFieldMapping)
-        .filter(
+    existing_fields = {
+        row.canonical_field
+        for row in db.query(AcFieldMapping.canonical_field).filter(
             AcFieldMapping.tenant_id == tenant_id,
             AcFieldMapping.company_id == company_id,
             AcFieldMapping.entity_type == entity_type,
             AcFieldMapping.scope == SCOPE_LINE,
         )
-        .count()
-        > 0
-    )
+    }
+    next_order = len(existing_fields)
     created = 0
-    if not already_has_lines:
-        order = 0
-        if line_key_column:
-            db.add(
-                AcFieldMapping(
-                    tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
-                    scope=SCOPE_LINE, source_path=line_key_column,
-                    canonical_field="source_ref", transform="string",
-                    is_required=True, is_enabled=True, sort_order=order,
-                )
+
+    def _add(source_path: str, canonical_field: str, transform: str, required: bool) -> None:
+        nonlocal created, next_order
+        if not source_path or canonical_field in existing_fields:
+            return
+        db.add(
+            AcFieldMapping(
+                tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
+                scope=SCOPE_LINE, source_path=source_path,
+                canonical_field=canonical_field, transform=transform,
+                is_required=required, is_enabled=True, sort_order=next_order,
             )
-            created += 1
-            order += 1
-        if line_product_column:
-            db.add(
-                AcFieldMapping(
-                    tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
-                    scope=SCOPE_LINE, source_path=line_product_column,
-                    canonical_field="product_ref", transform="ref_product",
-                    is_required=True, is_enabled=True, sort_order=order,
-                )
-            )
-            created += 1
-            order += 1
-        if line_warehouse_column:
-            db.add(
-                AcFieldMapping(
-                    tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
-                    scope=SCOPE_LINE, source_path=line_warehouse_column,
-                    canonical_field="warehouse_ref", transform="ref_warehouse",
-                    is_required=False, is_enabled=True, sort_order=order,
-                )
-            )
-            created += 1
-            order += 1
+        )
+        existing_fields.add(canonical_field)
+        created += 1
+        next_order += 1
+
+    _add(line_key_column, "source_ref", "string", True)
+    _add(line_product_column, "product_ref", "ref_product", True)
+    _add(line_warehouse_column, "warehouse_ref", "ref_warehouse", False)
+
+    # The FIXED fields (B1) - unconditional on the picker columns, keyed by
+    # the FIXED column-name convention (source_path == canonical_field).
+    for canonical_field, transform, required in DOCUMENT_LINE_FIXED_FIELDS.get(entity_type, ()):
+        _add(canonical_field, canonical_field, transform, required)
 
     # Strip the picker keys EVERY call (idempotent w.r.t. the config half
     # too, independent of whether rows were just created) - a JSON column
