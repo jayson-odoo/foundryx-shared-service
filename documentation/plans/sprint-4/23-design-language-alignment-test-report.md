@@ -2242,3 +2242,171 @@ worktree via `lsof -p <pid> | grep cwd` before kill).
 
 **Verdict: T4 fix round 2 DONE.** All 5 findings resolved and gate green: `npm test` 197/197 files,
 1657/1657 tests, exit 0; zero eslint warnings on every touched file.
+## T5 - Deferred actions (the grace-window engine)
+
+Branch `sprint-4/23-T5-deferred-actions` off `sprint-4/23-design-language-alignment` (integration
+at `9d73de4`). Own stack for this backend slice: Postgres db `foundryx_service_s23`, backend
+`:8003`, frontend prod build `:3002` - see `documentation/plans/sprint-4/23-evidence/T5/README.md`
+for the exact commands + evidence run log.
+
+### Backend engine (AC-DLA-37..41)
+
+New package `app/deferred_actions/` (`registry.py`, `service.py`, `handlers.py`), model
+`app/models/pending_action.py` (`PendingAction`, partial unique index
+`uq_pending_actions_one_per_record` on `(tenant_id, entity_type, entity_id) WHERE status =
+'pending'`), migration `65458ac6203e` (also adds `tenant_settings.deferred_destructive_seconds` /
+`deferred_reversible_seconds`, both nullable - NULL = defaults 10/5, no backfill needed for
+existing tenants). Router `app/api/v1/pending_actions.py` mounted at `/api/v1/pending-actions`
+(park/cancel/current), schemas `app/schemas/pending_action.py`. Beat task
+`pending_actions.commit_due` wired into `app/workflow_engine/worker.py`'s existing 60s
+`beat_schedule` (same host as the other sweeps). Settings surfaced through the existing
+`app/services/catalog_service.py TenantSettingsService` + `app/schemas/catalog.py` (no new
+router - `settings.read`/`settings.update` already gate `/settings/general`, no new permission).
+
+**16 deferred actions registered** (`app/deferred_actions/handlers.py`), covering the 10 the plan
+names explicitly plus 6 more found live-necessary (document-share revoke's typed confirm had to
+go somewhere; template reset, connection activate, and the tenant lifecycle's three well-known
+edges needed their own keys to leave `confirm:` behind honestly rather than silently):
+
+| Key | Entity type | Permission | Window | Calls |
+|---|---|---|---|---|
+| `users.trash` | user | `users.delete` | destructive | `UserService.trash` |
+| `roles.delete` | role | `roles.delete` | destructive | `RoleService.delete` |
+| `workflows.delete` | workflow | `workflows.manage` | destructive | `WorkflowService.remove` |
+| `forms.delete` | form | `forms.manage` | destructive | `FormService.delete` |
+| `templates.delete` | template | `templates.manage` | destructive | `TemplateService.delete` |
+| `templates.reset` | template | `templates.manage` | destructive | `TemplateService.reset` |
+| `connections.delete` | connection | `integrations.manage` | destructive | `IntegrationService.delete` |
+| `connections.activate` | connection | `integrations.manage` | reversible | `IntegrationService.set_active` |
+| `ai_agents.delete` | ai_agent | `ai_agents.manage` | destructive | `AgentService.delete` |
+| `ai_skills.delete` | ai_skill | `ai_agents.manage` | destructive | `SkillService.delete` |
+| `documents.trash` | document_file | `documents.manage` | destructive | `DocumentService.delete` (single file) |
+| `products.delete` | product | `products.delete` | destructive | `ProductService.delete` |
+| `document_shares.revoke` | document_share | `documents.share` | destructive | `ShareService.revoke` |
+| `tenants.archive` | tenant | `tenants.archive` | reversible | `TenantService.archive` (platform-only) |
+| `tenants.suspend` | tenant | `tenants.suspend` | reversible | `TenantService.suspend` (platform-only) |
+| `tenants.reactivate` | tenant | `tenants.suspend` | reversible | `TenantService.reactivate` (platform-only) |
+
+Note on naming: the plan's prose said `workflows.trash`/`forms.trash`/`tenants.archive` as
+shorthand for "the deferred action on that entity" - the actual site guarded by `confirm:` for
+workflows/forms is the ARCHIVED-view hard delete (`WorkflowService.remove`/`FormService.delete`),
+so the registered keys are `workflows.delete`/`forms.delete` to match what they actually do.
+
+**Tests** (`tests/test_deferred_actions.py`, 18 cases): registry duplicate/unknown-key loud
+errors, all 10 first-party keys registered, park 202 + idempotent re-park + 409 different-key +
+400 unknown-key + 403 missing-permission, cancel before/after (409 after, entity committed
+first), `current` lazy-commit (with and without a prior park), cross-tenant cancel 404, sweeper
+isolation (one handler failure never blocks or corrupts the rest of the sweep, failed row's
+entity untouched), window-seconds read from `tenant_settings`, impersonation actor recorded as
+the REAL admin (`get_actor_user_id`, not the impersonated target), `users.trash` end to end
+(row trashed after lazy-commit, restorable via `/users/restore`). Full backend suite: **2720
+passed, 1 skipped, 18 deselected** (Postgres, `foundryx_service_s23`) - zero regressions. Also
+fixed a pre-existing storage-key drift-test false-positive this slice's own migration tripped
+(`pending_actions.action_key` looks like a storage key to the `*_key` heuristic but is a
+registry key with no blob behind it - added to `app/storage_migration/registry.py`'s documented
+`_NON_STORAGE_KEY_COLUMNS` exclude-set with a reason, both drift tests green).
+
+**CORS fix** (T3 finding, folded into this slice per the brief): `app/config.py` `cors_origins`/
+`cors_origin_regex` widened from `300[0-2]` to `300[0-5]` so parallel worktree builds (each on
+their own frontend port talking to their own backend port) aren't silently CORS-blocked.
+
+### Frontend engine (AC-DLA-42..47)
+
+Service trio `services/pending-actions-service.{ts,mock,real}.ts` (mock swapped to `.real` -
+this is the shipped boundary, the mock exists only for `hooks/use-deferred-action.test.ts`'s
+deterministic fake-timer driving). `hooks/use-deferred-action.ts` (state machine `idle |
+pending{actionKey,commitAt,windowSeconds,count} | committing | done | failed`, `start`/`cancel`/
+`reset`, `dimEntityIds`, `watchFromMount`/`watch` for second-tab parity + a `focus` listener).
+`components/platform/resource-actions/deferred-action-button.tsx` (`DeferredCountdown` - `scaleX`
+fill armed ONCE via a double-rAF keyed off `commitAt`, 1000ms label tick, `motion-reduce:
+transition-none`, no Escape handler) + `deferred-toast.tsx` (sonner `toast.custom`, duration =
+window + 8s safety margin). `lib/pending-entity-store.ts` (module-level pub/sub the row/bulk
+surfaces publish into) + `data-grid-table.tsx`'s new `useRowPendingDim` (imperative `data-pending`
+DOM toggling, matching `useRestoreReturnedRow`'s existing pattern - the class carrying
+`data-[pending=true]:opacity-50` was ALREADY present from T4, left as a forward-reference).
+`ResourceAction.deferred?: {actionKey, entityType, window}` (added `entityType` beyond the
+AC-DLA-43 shape - disclosed below). `ActionMenu`/`BulkActions` run a deferred action through the
+hook + toast themselves (row/bulk surfaces, self-contained); `ResourceForm` lifts it via
+`onDeferredStart` so the countdown replaces the record card's PRIMARY area instead of a toast
+(AC-DLA-44) and now ALSO watches its own record from mount (second-tab parity fix, see below).
+Settings > General gained a "Deferred actions" card (`app/(protected)/settings/general/page.tsx`
+`DeferredActionsSettingsForm`) with the two 1-60 fields.
+
+**Disclosed deviations from the literal AC text** (all reasoned, none silent):
+- **AC-DLA-43's `deferred` shape omits `entityType`**; it was added (`{actionKey, entityType,
+  window}`) because the frontend must supply `entityType` in the park POST body, and co-locating
+  it on the action definition (where `actionKey` already lives) avoids threading a brand-new
+  required prop through every `ActionMenu`/`BulkActions`/`ResourceForm` call site across the
+  whole app for this one slice.
+- **AC-DLA-47's "the two allowed importers" grew a third, disclosed exception**: Users'
+  "Impersonate" keeps its plain (non-typed) confirm - D2's grace-window model ("commit after Ns
+  unless Cancelled") has no sensible meaning for starting an impersonation session (there is
+  nothing to "undo" server-side the way a delete/archive can be). `confirm-carve-outs.
+  inventory.test.ts` pins exactly these 3 files, no more.
+- **AC-DLA-43's "zero other `confirm:` remains"**: this T5 pass migrated the 12 files / 16
+  registered actions above. **17 files remain on `confirm:`** (AutoCount task/entity delete,
+  ideation BR/idea/embed-connection delete, jobs abort, six omnichannel deletes, document-types
+  delete, email-log purge) - each needs its own backend `DeferredActionDef` before it can move,
+  which is a full module-by-module pass beyond this slice's remaining budget. Tracked as
+  **BL-SS-051** with the exact file list; `confirm-carve-outs.inventory.test.ts`'s
+  `PENDING_MIGRATION` array pins the baseline so the count can only shrink, never silently grow.
+  A fourth disclosed carve-out (`use-tenant-actions.tsx`'s custom-status-edge fallback) is
+  BL-SS-052.
+
+**Live-caught bug + fix** (see the evidence README for the full narrative): `useDeferredAction`'s
+poll only checked the FIRST entity in a bulk park, so under eager dev (no beat process) a 3-row
+bulk delete committed only 1 of 3 rows - the other two stayed parked forever server-side. Fixed
+to poll every entity in the batch; regression-pinned
+(`hooks/use-deferred-action.test.ts`, "bulk commit polls EVERY entity, not just the first") and
+re-verified live.
+
+**Tests** (all new, all green): `hooks/use-deferred-action.test.ts` (9 - idle/pending/done state
+machine, cancel, bulk park + dim, second-tab watch-from-mount, the bulk-poll regression, reset),
+`components/platform/resource-actions/deferred-action-button.test.tsx` (7 - label text, bulk
+count+noun copy, 1000ms tick, the double-rAF ONE-time arm, reduced-motion live-fraction, Cancel
+enabled/disabled, Escape is a no-op), `deferred-toast.test.tsx` (3), `data-grid-table.pending-dim.
+test.tsx` (4 - AC-DLA-45 row/bulk dim via the store, opacity class present),
+`pending-actions-service.test.ts` (7 - real service hits the 3 routes exactly, mock idempotent/
+conflict/lazy-commit/cancel), `resource-form.deferred.test.tsx` (3 - AC-DLA-44 countdown replaces
+primary no dialog, Cancel restores, AC-DLA-46 second-tab pickup on mount with the right verb),
+`app/(protected)/settings/general/page.test.tsx` (3 - fields render pre-filled, out-of-range
+rejected client-side before saving, valid values reach the service),
+`confirm-carve-outs.inventory.test.ts` (4). One pre-existing test updated
+(`use-products-list-config.test.tsx` - Delete is now `deferred`, not `confirm`).
+
+### Gate
+
+`npx eslint` on every touched file: 0 errors. `npm test`: **213/213 files, 1757/1757 tests**
+(up from 213/1755 before this slice's 2 fixes added tests). `rm -rf .next && npm run build`:
+green (two real TypeScript failures caught and fixed mid-slice - `start()`'s empty-entities
+early-return needed to throw instead of returning `undefined` against its typed Promise, and two
+`for...of` spreads over a `Set`/`Map.entries()` needed `Array.from` per the house lint rule).
+`pytest -q` (Postgres, `foundryx_service_s23`): **2720 passed, 1 skipped, 18 deselected** (0
+failed - the 2 storage-key drift-test failures this migration introduced were fixed the same
+slice, see above).
+
+### Definition of Done checklist (T5)
+
+1. Every AC-DLA-37..47 verified live (`agent-browser`, real clicks, timestamped users, own
+   isolated stack) and/or by a new test - see the AC table in
+   `documentation/plans/sprint-4/23-evidence/T5/README.md`; one real bug (bulk-poll) caught DURING
+   live verification and regression-pinned, exactly the T4 precedent.
+2. `npx eslint` (0 errors), `npm test` (213/213, 1757/1757), `npm run build` all green. `pytest -q`
+   2720/2720 passed (Postgres).
+3. `rm -rf .next && npm run build` before every live-verify pass in this run (twice - once before
+   the initial evidence pass, once after the bulk-poll fix); port ownership confirmed via
+   `lsof -p <pid> | grep cwd` before every kill (two collisions with OTHER worktrees' processes on
+   :8002/:3002 were correctly left untouched, a different port used instead).
+4. **No mock left behind** - `pending-actions-service.ts` exports the `.real` impl; the `.mock`
+   is tagged and used only by Vitest. **No backfill needed** - `tenant_settings`'s two new columns
+   are nullable, NULL reads as the coded defaults (10/5), verified by
+   `test_default_settings_have_no_row_needed`. **No new permission** - every registered action
+   reuses its entity's existing permission (table above). Scope reduction on the confirm→deferred
+   migration is FLAGGED (BL-SS-051/052), not silently dropped.
+5. Verified from the user's perspective, real sidebar clicks, at 375 AND 1280, against the real
+   backend on a fresh prod build (`documentation/plans/sprint-4/23-evidence/T5/README.md`).
+
+**Verdict: T5 (Deferred actions) DONE**, with two disclosed, tracked scope reductions
+(BL-SS-051 - 17 `confirm:` sites still to migrate; BL-SS-052 - a fully general per-row-payload
+tenant-transition deferred action). All AC-DLA-37..47 pass either fully or via a disclosed,
+reasoned, tracked deviation - none silently skipped.
