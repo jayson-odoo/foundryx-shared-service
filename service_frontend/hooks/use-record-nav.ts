@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { ListQuery } from '@/types/resource';
 import { buildListNav, decodeListQuery, encodeListQuery } from '@/lib/list-context';
@@ -41,7 +41,12 @@ export function useRecordNav({ fetchAt, buildHref }: UseRecordNavOptions): UseRe
   const [isNavigating, setIsNavigating] = useState(false);
   const prefetchOnce = usePrefetchOnce();
 
-  const query = decodeListQuery(ctx);
+  // Memoized on `ctx` alone (fix round 2) - `decodeListQuery` returns a FRESH
+  // object every call, so a bare `decodeListQuery(ctx)` per render would
+  // never be a stable dep even with the same `ctx` string. Stabilizing it
+  // here is what lets the effect below list a genuinely complete deps array
+  // (no eslint-disable) without re-running on every unrelated render.
+  const query = useMemo(() => decodeListQuery(ctx), [ctx]);
 
   // Resolve total for the carried query, THEN prefetch the prev/next
   // neighbours' form routes (AC-DLA-31) - one more `fetchAt` each, the exact
@@ -51,12 +56,16 @@ export function useRecordNav({ fetchAt, buildHref }: UseRecordNavOptions): UseRe
   // fetching that neighbour with a naively unwrapped negative index (-1) hit
   // the endpoint's own validation and 422'd on every single-record-set-of-1
   // form open (caught live - the fetch was harmlessly `.catch()`-swallowed,
-  // but wasteful and noisy). Keyed on `[ctx, index]` (fix round 1 - was
-  // `[ctx]` only): `ctx` alone never changes as the user steps within the
+  // but wasteful and noisy). Keyed on `[query, index]` (fix round 1 keyed on
+  // `[ctx, index]`; `query` is now the memoized decode of `ctx`, so it's the
+  // same signal): `ctx` alone never changes as the user steps within the
   // same list, so the ORIGINAL bug re-prefetched once for the first record
   // and never again - `index` (the URL's own `i`, effectively "which record
   // is current") changes on every `goPrev`/`goNext` push, re-arming the
-  // prefetch for the NEW neighbours each step.
+  // prefetch for the NEW neighbours each step. `fetchAt`/`buildHref` (fix
+  // round 2) are now genuinely stable `useCallback`s at every call site (see
+  // use-user-form.tsx et al.), so listing them here is a complete deps array
+  // - no eslint-disable - without re-arming the prefetch on every render.
   useEffect(() => {
     if (!query) {
       setTotal(0);
@@ -89,7 +98,7 @@ export function useRecordNav({ fetchAt, buildHref }: UseRecordNavOptions): UseRe
     return () => {
       active = false;
     };
-  }, [ctx, index]);
+  }, [query, index, fetchAt, buildHref, prefetchOnce]);
 
   const go = useCallback(
     (nextIndex: number) => {

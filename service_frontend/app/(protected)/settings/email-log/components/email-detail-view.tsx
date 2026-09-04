@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Code2, Info, LoaderCircleIcon, Mail } from 'lucide-react';
 import { useForm } from 'react-hook-form';
@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Form } from '@/components/ui/form';
 import { Label } from '@/components/ui/label';
 import { ResourceForm, type ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ListQuery } from '@/types/resource';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { useDatetime } from '@/hooks/use-datetime';
 import { emailLogService } from '@/services/email-log-service';
@@ -89,6 +90,20 @@ export function EmailDetailView({ emailId }: { emailId: string }) {
     };
   }, [emailId, reloadKey]);
 
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
+  const fetchRecordAt = useCallback(
+    (query: ListQuery, index: number) =>
+      emailLogService.getAt(query, index).then((r) => ({
+        recordId: r.email?.id ?? null,
+        total: r.total,
+      })),
+    [],
+  );
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => emailLogDetailHref(recordId, { ctx, index }),
+    [],
+  );
+
   const config = useMemo<ResourceFormConfig<EmailLogDetail> | null>(() => {
     if (!email) return null;
     return {
@@ -158,16 +173,9 @@ export function EmailDetailView({ emailId }: { emailId: string }) {
       onSave: () => true,
       onCancel: () => setReloadKey((k) => k + 1),
       // House Form invariant: circular N / M prev-next record-nav (?ctx=&i=).
-      recordNav: {
-        fetchAt: (query, index) =>
-          emailLogService.getAt(query, index).then((r) => ({
-            recordId: r.email?.id ?? null,
-            total: r.total,
-          })),
-        buildHref: (recordId, ctx, index) => emailLogDetailHref(recordId, { ctx, index }),
-      },
+      recordNav: { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
-  }, [actions, email, formatDateTime]);
+  }, [actions, email, formatDateTime, fetchRecordAt, buildRecordHref]);
 
   if (isLoading) {
     return (

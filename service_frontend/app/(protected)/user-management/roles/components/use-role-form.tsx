@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { KeyRound, Settings as SettingsIcon, Users as UsersIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ListQuery } from '@/types/resource';
 import { roleService } from '@/services/role-service';
 import { permissionService } from '@/services/permission-service';
 import type { PermissionCatalog } from '@/types/permission';
@@ -79,6 +80,20 @@ export function useRoleForm(roleId: string | undefined, initialEditing: boolean)
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roleId, creating]);
+
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
+  const fetchRecordAt = useCallback(
+    (query: ListQuery, index: number) =>
+      roleService.getAt(query, index).then((r) => ({
+        recordId: r.role?.id ?? null,
+        total: r.total,
+      })),
+    [],
+  );
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => roleFormHref(recordId, { ctx, index }),
+    [],
+  );
 
   const config = useMemo<ResourceFormConfig<RoleListItem> | null>(() => {
     if (isLoading || notFound) return null;
@@ -161,16 +176,22 @@ export function useRoleForm(roleId: string | undefined, initialEditing: boolean)
       onCancel,
       recordNav: creating
         ? undefined
-        : {
-            fetchAt: (query, index) =>
-              roleService.getAt(query, index).then((r) => ({
-                recordId: r.role?.id ?? null,
-                total: r.total,
-              })),
-            buildHref: (recordId, ctx, index) => roleFormHref(recordId, { ctx, index }),
-          },
+        : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
-  }, [isLoading, notFound, creating, role, catalog, actions, form, initialEditing, roleId, router]);
+  }, [
+    isLoading,
+    notFound,
+    creating,
+    role,
+    catalog,
+    actions,
+    form,
+    initialEditing,
+    roleId,
+    router,
+    fetchRecordAt,
+    buildRecordHref,
+  ]);
 
   return { config, form, isLoading, notFound };
 }

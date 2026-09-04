@@ -28,6 +28,7 @@ import { workflowPublishIssue } from '@/lib/workflow-validation';
 import { workflowMetadataService } from '@/services/workflow-metadata-service';
 import { workflowService } from '@/services/workflow-service';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ListQuery } from '@/types/resource';
 import type {
   TemplateOption,
   WorkflowDebugBundle,
@@ -581,6 +582,20 @@ export function useWorkflowForm(
     };
   }, [debugCache, debugStale, debugBusy, runDebug]);
 
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
+  const fetchRecordAt = useCallback(
+    (query: ListQuery, index: number) =>
+      workflowService.getAt(query, index).then((r) => ({
+        recordId: r.workflow?.id ?? null,
+        total: r.total,
+      })),
+    [],
+  );
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => workflowFormHref(recordId, { ctx, index }),
+    [],
+  );
+
   const config = useMemo<ResourceFormConfig<Workflow> | null>(() => {
     if (!isNew && !workflow) return null;
     const editorWorkflow = workflow ?? blankWorkflow();
@@ -695,15 +710,7 @@ export function useWorkflowForm(
       onReload: workflowId ? () => void refresh(workflowId) : undefined,
       recordNav: isNew
         ? undefined
-        : {
-            fetchAt: (query, index) =>
-              workflowService.getAt(query, index).then((r) => ({
-                recordId: r.workflow?.id ?? null,
-                total: r.total,
-              })),
-            buildHref: (recordId, ctx, index) =>
-              workflowFormHref(recordId, { ctx, index }),
-          },
+        : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
     actions,
@@ -739,6 +746,8 @@ export function useWorkflowForm(
     trigger,
     workflow,
     workflowId,
+    fetchRecordAt,
+    buildRecordHref,
   ]);
 
   return { config, form, isLoading, notFound };
