@@ -30,12 +30,8 @@ export function useAgentActions(): ResourceAction<AiAgent>[] {
         tone: 'destructive',
         surfaces: { row: true, bulk: true, form: true },
         permission: 'ai_agents.manage',
-        confirm: {
-          title: 'Delete agent?',
-          description:
-            'Runs already recorded keep their trace history. This cannot be undone.',
-          confirmLabel: 'Delete',
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm.
+        deferred: { actionKey: 'ai_agents.delete', entityType: 'ai_agent', window: 'destructive' },
         run: async (rows, runtime) => {
           for (const agent of rows) await aiService.removeAgent(agent.id);
           toast.success(`Deleted ${rows.length} agent${rows.length === 1 ? '' : 's'}.`);
