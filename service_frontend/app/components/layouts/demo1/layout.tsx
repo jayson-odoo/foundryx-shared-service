@@ -19,6 +19,24 @@ export function Demo1Layout({ children }: { children: ReactNode }) {
     } else {
       bodyClass.remove('sidebar-collapse');
     }
+
+    // T3 fix round 1 finding 9: `layout-initialized` (the class that turns
+    // the sidebar width transition ON) is scheduled from THIS effect now,
+    // one frame after `sidebar-collapse` is applied right above - not from
+    // the mount effect below. `SettingsProvider` hydrates
+    // `sidebarCollapse` from localStorage in an effect of ITS OWN that
+    // fires AFTER this component's mount effect has already run (a second
+    // render, once localStorage is read) - so a returning collapsed-sidebar
+    // user previously got `layout-initialized` (enabling the transition)
+    // BEFORE the hydrated `sidebar-collapse` class ever landed, then
+    // watched the wrapper visibly slide into the collapsed width once it
+    // did. Tying the class to THIS effect means it always trails the
+    // specific settings-driven class change it exists to guard, on every
+    // settings update, not just the first one.
+    const raf = requestAnimationFrame(() => {
+      bodyClass.add('layout-initialized');
+    });
+    return () => cancelAnimationFrame(raf);
   }, [settings]); // Runs only on settings update
 
   useEffect(() => {
@@ -34,18 +52,15 @@ export function Demo1Layout({ children }: { children: ReactNode }) {
     bodyClass.add('sidebar-fixed');
     bodyClass.add('header-fixed');
 
-    const timer = setTimeout(() => {
-      bodyClass.add('layout-initialized');
-    }, 1000); // 1000 milliseconds
-
-    // Remove the class when the component is unmounted
+    // `layout-initialized` itself is scheduled from the `[settings]` effect
+    // above (T3 fix round 1 finding 9) - this effect only owns mount/unmount
+    // of the shell's structural classes now.
     return () => {
       bodyClass.remove('demo1');
       bodyClass.remove('sidebar-fixed');
       bodyClass.remove('sidebar-collapse');
       bodyClass.remove('header-fixed');
       bodyClass.remove('layout-initialized');
-      clearTimeout(timer);
     };
   }, []); // Runs only once on mount
 

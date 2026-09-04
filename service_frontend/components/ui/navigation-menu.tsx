@@ -85,12 +85,25 @@ function NavigationMenuViewport({
   className,
   ...props
 }: React.ComponentProps<typeof NavigationMenuPrimitive.Viewport>) {
+  // T3 fix round 1 finding 6 - NOT the shared spring: Radix's own
+  // `NavigationMenuViewportImpl` computes `children` itself internally
+  // (`Array.from(viewportContentContext.items).map(...)`, one per active
+  // trigger) and ALWAYS overwrites whatever `children` this component
+  // passes in - the `asChild` + inner-`motion.div` split every sibling
+  // menu surface uses (Popover/DropdownMenu/Select/...) needs a single
+  // child it fully controls, which Viewport never gives up. So this stays
+  // a symmetric, TOKENISED CSS fade instead (AC-DLA-20's documented
+  // "at minimum" fallback) rather than forcing the spring onto a primitive
+  // that does not support animating an inner node: `duration-(--duration-base)
+  // ease-(--ease-standard)` (matches the menu family's settle time, D16) and
+  // a SYMMETRIC `zoom-in-95`/`zoom-out-95` (was an asymmetric 90/95, plus a
+  // plain `ease` timing function with no duration token at all).
   return (
     <div className={cn('absolute top-full left-0 isolate z-50 flex justify-center')}>
       <NavigationMenuPrimitive.Viewport
         data-slot="navigation-menu-viewport"
         className={cn(
-          'shadow-md shadow-black/5 rounded-md border border-border bg-popover text-popover-foreground p-1.5 origin-top-center data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-90 relative mt-1.5 h-[var(--radix-navigation-menu-viewport-height)] w-full overflow-hidden md:w-[var(--radix-navigation-menu-viewport-width)]',
+          'shadow-md shadow-black/5 rounded-md border border-border bg-popover text-popover-foreground p-1.5 origin-top data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 duration-(--duration-base) ease-(--ease-standard) relative mt-1.5 h-[var(--radix-navigation-menu-viewport-height)] w-full overflow-hidden md:w-[var(--radix-navigation-menu-viewport-width)]',
           className,
         )}
         {...props}

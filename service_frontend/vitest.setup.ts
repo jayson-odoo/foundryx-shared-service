@@ -1,10 +1,27 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup } from '@testing-library/react';
+import { MotionGlobalConfig } from 'motion/react';
 import { afterEach, vi } from 'vitest';
 
 afterEach(() => {
   cleanup();
 });
+
+// T3 (AC-DLA-20): Dialog/AlertDialog/Sheet/Popover/DropdownMenu/ContextMenu/
+// HoverCard/Menubar/Select now open and close on a real JS spring
+// (`motion/react`'s `AnimatePresence` + `forceMount`) instead of the CSS
+// `animate-in`/`animate-out` classes they replaced. Unlike those classes,
+// a spring genuinely ticks over wall-clock time even in jsdom - without this,
+// every test that opens then closes one of those surfaces would leave the
+// closing content mounted (mid-exit) for the rest of the test, so a
+// synchronous `getByRole` query for whatever is BEHIND or AFTER it finds a
+// stale, still-`aria-expanded` element instead. `skipAnimations` makes
+// motion apply the final keyframe and report completion immediately instead
+// of animating, so a closed surface is actually gone from the DOM by the
+// time the next assertion runs. A test that cares about the spring itself
+// (`lib/motion.test.ts`) asserts the transition object it was handed rather
+// than an in-flight animated value, so this does not weaken that coverage.
+MotionGlobalConfig.skipAnimations = true;
 
 // jsdom polyfills for components that measure (OverflowPills) or use Radix
 // (pointer capture / scrollIntoView are not implemented in jsdom). Guarded

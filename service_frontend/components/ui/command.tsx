@@ -19,12 +19,24 @@ function Command({ className, ...props }: React.ComponentProps<typeof CommandPri
   );
 }
 
-type CommandDialogProps = DialogProps & { className?: string };
+type CommandDialogProps = DialogProps & {
+  className?: string;
+  /**
+   * A command palette is the one surface the frequency table forbids
+   * animating outright (AC-DLA-22, T3 fix round 1 finding 4/BLOCKER 2): it
+   * is keyboard-initiated and opened tens-to-hundreds of times a day, so
+   * motion is opt IN, never opt out - `motion={false}` is the default and a
+   * caller has to explicitly pass `motion` (e.g. a genuine click-triggered
+   * `CommandDialog`, which still wants the surface spring per the same
+   * gate) to get the spring back.
+   */
+  motion?: boolean;
+};
 
-const CommandDialog = ({ children, className, ...props }: CommandDialogProps) => {
+const CommandDialog = ({ children, className, motion = false, ...props }: CommandDialogProps) => {
   return (
     <Dialog {...props}>
-      <DialogContent className={cn('overflow-hidden p-0 shadow-lg', className)}>
+      <DialogContent motion={motion} className={cn('overflow-hidden p-0 shadow-lg', className)}>
         <DialogTitle className="hidden" />
         <Command className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-group]]:px-2 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5">
           {children}

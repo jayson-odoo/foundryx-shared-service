@@ -21,12 +21,13 @@ import { toAbsoluteUrl } from '@/lib/helpers';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import {
-  Sheet,
-  SheetBody,
-  SheetContent,
-  SheetHeader,
-  SheetTrigger,
-} from '@/components/ui/sheet';
+  Drawer,
+  DrawerBody,
+  DrawerContent,
+  DrawerHeader,
+  DrawerTitle,
+  DrawerTrigger,
+} from '@/components/ui/drawer';
 import { Container } from '@/components/common/container';
 import { ActivityTriggers } from '@/components/platform/document-drive';
 import { UserAvatar } from '@/components/platform/user-avatar';
@@ -68,11 +69,13 @@ export function Header() {
           </Link>
           <div className="flex items-center">
             {mobileMode && (
-              <Sheet
+              <Drawer
                 open={isSidebarSheetOpen}
                 onOpenChange={setIsSidebarSheetOpen}
+                direction="left"
+                shouldScaleBackground={false}
               >
-                <SheetTrigger asChild>
+                <DrawerTrigger asChild>
                   <Button
                     variant="ghost"
                     mode="icon"
@@ -80,40 +83,38 @@ export function Header() {
                   >
                     <Menu className="text-muted-foreground/70" />
                   </Button>
-                </SheetTrigger>
-                <SheetContent
-                  className="p-0 gap-0 w-[275px]"
-                  side="left"
-                  close={false}
-                >
-                  <SheetHeader className="p-0 space-y-0" />
-                  <SheetBody className="p-0 overflow-y-auto">
+                </DrawerTrigger>
+                <DrawerContent className="p-0 gap-0 w-[275px] max-w-[275px]">
+                  <DrawerHeader className="p-0 gap-0">
+                    <DrawerTitle className="sr-only">Navigation</DrawerTitle>
+                  </DrawerHeader>
+                  <DrawerBody className="p-0">
                     <SidebarMenu />
-                  </SheetBody>
-                </SheetContent>
-              </Sheet>
+                  </DrawerBody>
+                </DrawerContent>
+              </Drawer>
             )}
             {mobileMode && (
-              <Sheet
+              <Drawer
                 open={isMegaMenuSheetOpen}
                 onOpenChange={setIsMegaMenuSheetOpen}
+                direction="left"
+                shouldScaleBackground={false}
               >
-                <SheetTrigger asChild>
-                  <Button variant="ghost" mode="icon">
+                <DrawerTrigger asChild>
+                  <Button variant="ghost" mode="icon" aria-label="Open apps menu">
                     <SquareChevronRight className="text-muted-foreground/70" />
                   </Button>
-                </SheetTrigger>
-                <SheetContent
-                  className="p-0 gap-0 w-[275px]"
-                  side="left"
-                  close={false}
-                >
-                  <SheetHeader className="p-0 space-y-0" />
-                  <SheetBody className="p-0 overflow-y-auto">
+                </DrawerTrigger>
+                <DrawerContent className="p-0 gap-0 w-[275px] max-w-[275px]">
+                  <DrawerHeader className="p-0 gap-0">
+                    <DrawerTitle className="sr-only">Apps</DrawerTitle>
+                  </DrawerHeader>
+                  <DrawerBody className="p-0">
                     <MegaMenuMobile />
-                  </SheetBody>
-                </SheetContent>
-              </Sheet>
+                  </DrawerBody>
+                </DrawerContent>
+              </Drawer>
             )}
           </div>
         </div>
