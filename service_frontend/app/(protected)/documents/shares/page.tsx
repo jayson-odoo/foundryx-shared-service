@@ -47,17 +47,10 @@ export default function DocumentSharesPage() {
         tone: 'destructive',
         surfaces: { row: true, bulk: true },
         permission: 'documents.share',
-        confirm: {
-          title: 'Revoke link(s)?',
-          description:
-            'Revoked links stop working immediately. This keeps the audit trail.',
-          confirmLabel: 'Revoke',
-          // Bulk revoke = typed confirm (AC-OVERSIGHT-03 / AC-UX-03).
-          input: {
-            expected: (rows) => (rows.length > 1 ? 'REVOKE' : ''),
-            hint: (rows) => (rows.length > 1 ? 'Type REVOKE to confirm' : ''),
-          },
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2/D13) - no confirm
+        // dialog, a countdown with Cancel; a bulk revoke parks ONE row per
+        // link behind a single countdown naming the count.
+        deferred: { actionKey: 'document_shares.revoke', entityType: 'document_share', window: 'destructive' },
         run: async (rows, runtime) => {
           await documentService.revokeShares(rows.map((r) => r.id));
           runtime.reload();
