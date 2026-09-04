@@ -156,7 +156,11 @@ fallback fields and their lines include the line fallback fields; the preset map
 PurchaseAgent → agent_code`, line `ItemCode→product_code`, `Description→product_name`,
 `Location→warehouse_code`)
 **And** `[XR]` Sorento accepts them (addendum) - until then the sink OMITS them from the payload
-behind a per-sink capability flag (`sorento_contract_version`), so nothing 422s today.
+behind the consumer connection's `sorento_contract_version` (default 1, operator-flipped; the
+AUTHORITATIVE gate), so nothing 422s today
+**And** `GET /api/v1/external/contract` is advisory: a higher advertised version than the
+connection's setting yields `warnings.contract_version_mismatch` in the activation preview,
+never an automatic flip.
 
 ### AC-02-15 `[BE]` Never emit `partial` by default
 **Then** the default status formula never yields `partial`; `partial`/`fulfilled` remain valid

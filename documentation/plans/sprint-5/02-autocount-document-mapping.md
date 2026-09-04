@@ -71,9 +71,13 @@ orders, CNY default, back-create, post-write hooks) - that delta is the addendum
   `/ingest/{entity}/deletions`; Sorento serves it for `sales_orders`/`purchase_orders` today,
   `shipping_orders` is `[XR]` (a 404 `UNKNOWN_ENTITY` from `/deletions` maps to `retryable`,
   not `failed`).
-- Canonical documents gain the fallback fields; `SorentoSink` reads the contract version from
-  `GET /api/v1/external/contract` at construction (fallback: consumer connection config
-  `sorento_contract_version`, default `1`); `sink_payload(contract_version)` drops
+- Canonical documents gain the fallback fields; the AUTHORITATIVE contract version is the
+  consumer connection config `sorento_contract_version` (default `1`, operator-flipped).
+  `GET /api/v1/external/contract` is ADVISORY only: `SorentoSink` reads it at construction and the
+  activation preview reports `warnings.contract_version_mismatch` when Sorento advertises a higher
+  version than the connection is set to (Sorento's endpoint advertised `2` while their v2 slices
+  were still landing - flipping on the endpoint alone would have sent v2 fields to a half-built
+  consumer). `sink_payload(contract_version)` drops
   `[XR]` fields (`customer_code/name`, `supplier_code/name`, `agent_code`, line
   `product_code/name`, `warehouse_code`, `from_so_numbers`, `line_number`) below version `2`.
   `line_number` (AutoCount `Seq`) exists so Sorento can adopt an xlsx-era ref-less line by
