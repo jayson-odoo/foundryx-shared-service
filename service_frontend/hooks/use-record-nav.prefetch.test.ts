@@ -121,4 +121,34 @@ describe('AC-DLA-31 use-record-nav prefetch + from carry', () => {
     // Back click after stepping must still carry the ORIGINAL list query).
     expect(href).toContain('ctx=');
   });
+
+  it('re-prefetches the NEW neighbours after a step (fix round 1 - the effect was keyed on ctx only, so it fired once for the first record and never again)', async () => {
+    const params = { current: paramsFor(0) };
+    vi.mocked(useSearchParams).mockImplementation(
+      () => params.current as unknown as ReturnType<typeof useSearchParams>,
+    );
+    const fetchAt = vi.fn((_q: ListQuery, index: number) => {
+      const wrapped = ((index % 3) + 3) % 3;
+      return Promise.resolve({ recordId: `r${wrapped}`, total: 3 });
+    });
+    const buildHref = (recordId: string, ctx: string, index: number) => `/records/${recordId}?ctx=${ctx}&i=${index}`;
+
+    const { rerender } = renderHook(() => useRecordNav({ fetchAt, buildHref }));
+    // Mount at index 0: prefetches neighbours r2 (prev, wraps) and r1 (next).
+    await waitFor(() => expect(prefetch).toHaveBeenCalledTimes(2));
+    const firstRoundHrefs = prefetch.mock.calls.map((c) => c[0] as string);
+    expect(firstRoundHrefs.some((h) => h.includes('/records/r1'))).toBe(true);
+    expect(firstRoundHrefs.some((h) => h.includes('/records/r2'))).toBe(true);
+
+    // Simulate the URL after goNext pushed to index 1 - same ctx, new i.
+    params.current = paramsFor(1);
+    rerender();
+
+    // Re-armed: prefetches the index-1 neighbours (r0 prev, r2 next) too -
+    // NOT just the two calls from mount (the ORIGINAL bug: [ctx]-only deps
+    // never re-ran this effect once ctx stayed the same across steps).
+    await waitFor(() => expect(prefetch.mock.calls.length).toBeGreaterThan(2));
+    const allHrefs = prefetch.mock.calls.map((c) => c[0] as string);
+    expect(allHrefs.some((h) => h.includes('/records/r0') && h.includes('i=0'))).toBe(true);
+  });
 });

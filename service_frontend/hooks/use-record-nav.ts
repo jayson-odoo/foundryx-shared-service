@@ -51,8 +51,12 @@ export function useRecordNav({ fetchAt, buildHref }: UseRecordNavOptions): UseRe
   // fetching that neighbour with a naively unwrapped negative index (-1) hit
   // the endpoint's own validation and 422'd on every single-record-set-of-1
   // form open (caught live - the fetch was harmlessly `.catch()`-swallowed,
-  // but wasteful and noisy). Only fires once per `ctx` - a mid-set `i` change
-  // from stepping goes through `go()` below, which pushes a brand new URL.
+  // but wasteful and noisy). Keyed on `[ctx, index]` (fix round 1 - was
+  // `[ctx]` only): `ctx` alone never changes as the user steps within the
+  // same list, so the ORIGINAL bug re-prefetched once for the first record
+  // and never again - `index` (the URL's own `i`, effectively "which record
+  // is current") changes on every `goPrev`/`goNext` push, re-arming the
+  // prefetch for the NEW neighbours each step.
   useEffect(() => {
     if (!query) {
       setTotal(0);
@@ -85,8 +89,7 @@ export function useRecordNav({ fetchAt, buildHref }: UseRecordNavOptions): UseRe
     return () => {
       active = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ctx]);
+  }, [ctx, index]);
 
   const go = useCallback(
     (nextIndex: number) => {
