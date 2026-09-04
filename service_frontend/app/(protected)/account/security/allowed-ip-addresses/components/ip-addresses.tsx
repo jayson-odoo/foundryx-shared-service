@@ -386,7 +386,7 @@ const IPAddresses = () => {
         ),
         cell: ({ row }) => (
           <div className="text-center">
-            <Badge appearance="ghost">
+            <Badge appearance="outline">
               <BadgeDot className={row.original.status} />
             </Badge>
           </div>
