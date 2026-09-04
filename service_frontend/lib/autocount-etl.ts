@@ -187,6 +187,22 @@ export function anchorErrorTitle(code: string | null | undefined): string {
   return isAnchorErrorCode(code) ? ANCHOR_TITLES[code] : 'Task error';
 }
 
+/**
+ * Read a 422's `{fieldErrors: {field: message}}` detail into a flat map
+ * (empty when the detail carries none) - the per-field shape the task save
+ * (AC-22-11) and the company create (AC-01-14) both return.
+ */
+export function readFieldErrors(detail: unknown): Record<string, string> {
+  if (!detail || typeof detail !== 'object') return {};
+  const bag = (detail as { fieldErrors?: unknown }).fieldErrors;
+  if (!bag || typeof bag !== 'object') return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(bag as Record<string, unknown>)) {
+    if (typeof value === 'string') out[key] = value;
+  }
+  return out;
+}
+
 /** Read the structured `{code, message}` detail of a task-level 422; null otherwise. */
 export function readTaskError(detail: unknown): AutocountEtlTaskError | null {
   if (!detail || typeof detail !== 'object') return null;

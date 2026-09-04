@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import Link from 'next/link';
-import { Play, TriangleAlert } from 'lucide-react';
+import { Lock, Play, TriangleAlert } from 'lucide-react';
 import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -28,6 +28,17 @@ import type {
   AutocountSqlConnection,
 } from '@/types/autocount';
 
+/**
+ * The company connection a DB company's task is locked to (AC-01-19): shown
+ * as a read-only row where the API company has a picker, and pre-set on the
+ * config so the save never has to guess.
+ */
+export interface LockedConnection {
+  id: string;
+  /** `name · database` when the connection is loaded; the company database until then. */
+  label: string;
+}
+
 export interface QueryTabProps {
   editing: boolean;
   entityType: string;
@@ -35,6 +46,8 @@ export interface QueryTabProps {
   onChange: (patch: Partial<AutocountEtlSourceConfig>) => void;
   connections: AutocountSqlConnection[];
   connectionsLoading: boolean;
+  /** Set on a DB company - replaces the Connection picker with a read-only row. */
+  lockedConnection?: LockedConnection | null;
   schema: UseAutocountSqlSchemaResult;
   preview: UseSqlPreviewResult;
   /** Documents only (plan 22 S5) - a SEPARATE preview instance for the line
@@ -75,6 +88,7 @@ export function QueryTab({
   onChange,
   connections,
   connectionsLoading,
+  lockedConnection = null,
   schema,
   preview,
   linePreview,
@@ -82,6 +96,15 @@ export function QueryTab({
 }: QueryTabProps) {
   const isDocument = isDocumentEntity(entityType);
   const connection = connections.find((c) => c.id === config.connectionId) ?? null;
+
+  // A DB company's task reads ONLY from the company connection - pre-set it so
+  // a draft whose default differs (or a legacy row) saves against the right
+  // one without the operator having to notice (AC-01-19; the server enforces).
+  useEffect(() => {
+    if (lockedConnection && config.connectionId !== lockedConnection.id) {
+      onChange({ connectionId: lockedConnection.id });
+    }
+  }, [config.connectionId, lockedConnection, onChange]);
   const previewColumns = useMemo(
     () => (preview.state.status === 'success' ? preview.state.preview.columns.map((c) => c.name) : []),
     [preview.state],
@@ -178,7 +201,7 @@ export function QueryTab({
 
   return (
     <div className="flex flex-col gap-4">
-      {!connectionsLoading && connections.length === 0 && (
+      {!lockedConnection && !connectionsLoading && connections.length === 0 && (
         <Alert variant="warning" appearance="light" data-testid="no-sql-connection">
           <AlertIcon>
             <TriangleAlert />
@@ -211,14 +234,24 @@ export function QueryTab({
           <div className="flex flex-wrap items-end gap-3">
             <div className="flex min-w-0 flex-1 flex-col gap-1.5 sm:max-w-sm">
               <Label htmlFor="etl-connection">Connection</Label>
-              <SearchSelect
-                options={connectionOptions}
-                value={config.connectionId}
-                onChange={onConnectionChange}
-                placeholder={connectionsLoading ? 'Loading…' : 'Select a connection'}
-                disabled={!editing || connectionsLoading || connections.length === 0}
-                ariaLabel="Connection"
-              />
+              {lockedConnection ? (
+                <span
+                  className="flex min-h-8.5 items-center gap-1.5 text-sm text-foreground"
+                  data-testid="locked-connection"
+                >
+                  <Lock className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                  {lockedConnection.label}
+                </span>
+              ) : (
+                <SearchSelect
+                  options={connectionOptions}
+                  value={config.connectionId}
+                  onChange={onConnectionChange}
+                  placeholder={connectionsLoading ? 'Loading…' : 'Select a connection'}
+                  disabled={!editing || connectionsLoading || connections.length === 0}
+                  ariaLabel="Connection"
+                />
+              )}
             </div>
             <Button
               type="button"

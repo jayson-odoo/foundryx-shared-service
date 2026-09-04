@@ -34,6 +34,8 @@ function company(over: Partial<AutocountCompany> = {}): AutocountCompany {
     sinkConnectionId: 'conn-9',
     sorentoCompanyCode: 'SRT',
     createdAt: null,
+    sourceKind: 'api',
+    documentPrerequisites: [],
     ...over,
   };
 }

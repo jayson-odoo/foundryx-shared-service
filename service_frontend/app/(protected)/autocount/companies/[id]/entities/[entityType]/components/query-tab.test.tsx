@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { AutocountEtlSourceConfig, AutocountSqlConnection } from '@/types/autocount';
 import type { SqlPreviewState, UseAutocountSqlSchemaResult, UseSqlPreviewResult } from '@/hooks/use-autocount-etl';
-import { QueryTab } from './query-tab';
+import { QueryTab, type LockedConnection } from './query-tab';
 
 /**
  * Query tab - plan 22 S5 additions (AC-22-24): the line-query test leg +
@@ -67,6 +67,8 @@ function renderQueryTab(over: {
   preview?: UseSqlPreviewResult;
   linePreview?: UseSqlPreviewResult;
   onChange?: (patch: Partial<AutocountEtlSourceConfig>) => void;
+  connections?: AutocountSqlConnection[];
+  lockedConnection?: LockedConnection | null;
 } = {}) {
   const onChange = over.onChange ?? vi.fn();
   render(
@@ -75,8 +77,9 @@ function renderQueryTab(over: {
       entityType={over.entityType ?? 'sales_order'}
       config={over.cfg ?? config()}
       onChange={onChange}
-      connections={CONNECTIONS}
+      connections={over.connections ?? CONNECTIONS}
       connectionsLoading={false}
+      lockedConnection={over.lockedConnection ?? null}
       schema={EMPTY_SCHEMA}
       preview={over.preview ?? idlePreview()}
       linePreview={over.linePreview ?? idlePreview()}
@@ -166,5 +169,60 @@ describe('QueryTab - document line/ref columns (plan 22 S5, AC-22-24)', () => {
     fireEvent.click(screen.getByLabelText('Line key column'));
     fireEvent.click(screen.getByRole('option', { name: 'DtlKey' }));
     expect(onChange).toHaveBeenCalledWith({ lineKeyColumn: 'DtlKey' });
+  });
+});
+
+describe('QueryTab - DB company connection lock (plan sprint-5/01, AC-01-19)', () => {
+  const LOCKED: LockedConnection = { id: 'conn-sql-1', label: 'AutoCount DB · AED_2024' };
+
+  it('replaces the Connection picker with a read-only row on a DB company', () => {
+    renderQueryTab({ entityType: 'customer', cfg: config({ lineQuery: null }), lockedConnection: LOCKED });
+    expect(screen.getByTestId('locked-connection')).toHaveTextContent('AutoCount DB · AED_2024');
+    expect(screen.queryByRole('combobox', { name: 'Connection' })).not.toBeInTheDocument();
+  });
+
+  it('an API company keeps the searchable Connection picker', () => {
+    renderQueryTab({ entityType: 'customer', cfg: config({ lineQuery: null }) });
+    expect(screen.getByRole('combobox', { name: 'Connection' })).toBeInTheDocument();
+    expect(screen.queryByTestId('locked-connection')).not.toBeInTheDocument();
+  });
+
+  it('pre-sets config.connectionId to the locked connection when it differs', () => {
+    const onChange = vi.fn();
+    renderQueryTab({
+      entityType: 'customer',
+      cfg: config({ lineQuery: null, connectionId: 'conn-other' }),
+      lockedConnection: LOCKED,
+      onChange,
+    });
+    expect(onChange).toHaveBeenCalledWith({ connectionId: 'conn-sql-1' });
+  });
+
+  it('does not patch when the config already carries the locked connection', () => {
+    const onChange = vi.fn();
+    renderQueryTab({
+      entityType: 'customer',
+      cfg: config({ lineQuery: null, connectionId: 'conn-sql-1' }),
+      lockedConnection: LOCKED,
+      onChange,
+    });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('never shows the "No SQL database connection yet." warning on a DB company', () => {
+    // Even with an empty connection list (still loading elsewhere / not visible):
+    // the company connection IS the connection.
+    renderQueryTab({
+      entityType: 'customer',
+      cfg: config({ lineQuery: null }),
+      connections: [],
+      lockedConnection: LOCKED,
+    });
+    expect(screen.queryByTestId('no-sql-connection')).not.toBeInTheDocument();
+  });
+
+  it('an API company with no SQL connection still gets the warning (regression pin)', () => {
+    renderQueryTab({ entityType: 'customer', cfg: config({ lineQuery: null }), connections: [] });
+    expect(screen.getByTestId('no-sql-connection')).toBeInTheDocument();
   });
 });

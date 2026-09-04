@@ -164,7 +164,7 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
                 variant="primary"
                 size="sm"
                 onClick={handleSave}
-                disabled={saving}
+                disabled={saving || config.saveDisabled}
               >
                 {config.editable
                   ? 'Save'

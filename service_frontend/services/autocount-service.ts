@@ -56,8 +56,15 @@ export interface AutocountService {
   getCompany(id: string): Promise<AutocountCompanyDetail>;
   /**
    * Register a company by DISCOVERING it from its connection
-   * (`POST /autocount/companies`). The backend signs in and reads the company
-   * name back - there is deliberately no company field to supply.
+   * (`POST /autocount/companies`) - there is deliberately no company field to
+   * supply. The backend branches on the connection's PROVIDER (plan sprint-5/01,
+   * AC-01-01): an `autocount` connection signs in and reads the company name
+   * back; a `sql_database` connection derives the identity from its
+   * `config.database`, verified by a live probe. 409 names the company already
+   * holding the database/connection; 422 `{fieldErrors: {connectionId}}` is a
+   * probe mismatch / connect failure. Every `CompanyItem` carries the derived
+   * `sourceKind` + (detail only) `documentPrerequisites` - the full S2 contract
+   * is spelled out in `autocount-service.mock.ts` ("DB-only company fixtures").
    */
   createCompany(input: AutocountCompanyCreateInput): Promise<AutocountCompany>;
   /**

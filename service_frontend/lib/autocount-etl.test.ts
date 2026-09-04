@@ -166,6 +166,8 @@ function company(over: Partial<import('@/types/autocount').AutocountCompany> = {
     sinkConnectionId: 'conn-9',
     sorentoCompanyCode: 'SRT',
     createdAt: null,
+    sourceKind: 'api',
+    documentPrerequisites: [],
     ...over,
   };
 }

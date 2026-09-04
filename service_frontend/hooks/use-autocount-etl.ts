@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '@/lib/api-client';
-import { readTaskError } from '@/lib/autocount-etl';
+import { readFieldErrors, readTaskError } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type {
   AutocountEtlSourceConfig,
@@ -35,17 +35,6 @@ export interface UseAutocountEtlTaskResult {
   /** Adopt a task returned by a lifecycle call (activate/pause/resume/run/preview). */
   apply: (task: AutocountEtlTask) => void;
   reload: () => void;
-}
-
-function readFieldErrors(detail: unknown): Record<string, string> {
-  if (!detail || typeof detail !== 'object') return {};
-  const bag = (detail as { fieldErrors?: unknown }).fieldErrors;
-  if (!bag || typeof bag !== 'object') return {};
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(bag as Record<string, unknown>)) {
-    if (typeof value === 'string') out[key] = value;
-  }
-  return out;
 }
 
 export function useAutocountEtlTask(

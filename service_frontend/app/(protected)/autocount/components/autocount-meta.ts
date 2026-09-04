@@ -7,6 +7,7 @@ import type {
   AutocountRunMode,
   AutocountRunOutcome,
   AutocountSourceImpl,
+  AutocountSourceKind,
   AutocountStagedStatus,
 } from '@/types/autocount';
 
@@ -88,6 +89,47 @@ export const AC_NEW_MASTER_ENTITY_TYPES: string[] = [
   'sales_order',
   'purchase_order',
 ];
+
+// ── company source kind (plan sprint-5/01) ───────────────────────────────────
+
+/** The two ways a company can be connected - the Source toggle's ONLY options. */
+export const AC_SOURCE_KIND_OPTIONS: { value: AutocountSourceKind; label: string }[] = [
+  { value: 'api', label: 'AutoCount API' },
+  { value: 'db', label: 'SQL database' },
+];
+
+export function sourceKindLabel(kind: string): string {
+  return AC_SOURCE_KIND_OPTIONS.find((o) => o.value === kind)?.label ?? humanizeFieldKey(kind);
+}
+
+/**
+ * Every entity a DATABASE company can extract (AC-01-17) - the nine `sql_db`
+ * entities in dependency order: the two API-seeded masters (`customer`,
+ * `supplier`) are born on the DB source here exactly like the plan 22 S4
+ * fan-out (a DB company seeds nothing, AC-01-05), then categories/UOM before
+ * products, then documents. `goods_received_note` is deliberately ABSENT: it
+ * has no Sorento path and an API-only envelope, so offering it would be a
+ * guaranteed 422 (foolproof-UI: only valid options).
+ *
+ * PARITY-PINNED (S2): `tests/test_autocount_entity_parity.py` reads this
+ * literal and fails if it drifts from `ENTITY_PROFILES` minus GRN.
+ */
+export const AC_SQL_DB_ENTITY_TYPES: string[] = [
+  'customer',
+  'supplier',
+  'product_category',
+  'unit_of_measure',
+  'warehouse',
+  'product',
+  'sales_agent',
+  'sales_order',
+  'purchase_order',
+];
+
+/** The Add-entity picker's candidate list for a company of the given kind. */
+export function addableEntityTypes(kind: AutocountSourceKind): string[] {
+  return kind === 'db' ? AC_SQL_DB_ENTITY_TYPES : AC_NEW_MASTER_ENTITY_TYPES;
+}
 
 // ── transforms (mapping editor picker; mirrors backend mapping.py TRANSFORMS) ──
 

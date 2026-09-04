@@ -14,6 +14,10 @@
  *   - `*logging*` / `*nopreview*`  → not previewable (logging sink)
  *   - `*fail*`                     → the dry run failed (throws HTTP 502)
  *   - anything else                → a realistic previewable payload
+ *
+ * PHASE 1 MOCK (plan sprint-5/01 S1) - DB-only company onboarding is built
+ * against this mock FIRST; the S2 backend swaps it out. The contract it
+ * encodes lives in the "DB-only company fixtures" section below.
  */
 import { ApiError } from '@/lib/api-client';
 import { testFormula as evalFormula } from '@/lib/autocount-formula';
@@ -26,7 +30,9 @@ import {
 import type {
   AutocountApprovalResult,
   AutocountCompany,
+  AutocountCompanyCreateInput,
   AutocountCompanyDetail,
+  AutocountDocumentPrerequisite,
   AutocountEntityConfig,
   AutocountEntityConfigUpdate,
   AutocountEtlPreviewResult,
@@ -71,6 +77,8 @@ function mockCompany(overrides: Partial<AutocountCompany> = {}): AutocountCompan
     sinkConnectionId: null,
     sorentoCompanyCode: null,
     createdAt: '2026-07-01T00:00:00Z',
+    sourceKind: 'api',
+    documentPrerequisites: [],
     ...overrides,
   };
 }
@@ -214,9 +222,12 @@ function cloneJson<T>(value: T): T {
 }
 
 /**
- * Two connections: a healthy MSSQL source and a PostgreSQL one whose schema
- * fetch FAILS - so the editor's connection-error state is reachable by a real
- * click (switch the connection picker), no backend needed.
+ * The tenant's `sql_database` connections. A healthy MSSQL source (bound to
+ * the seeded DB company below), a second healthy one a DB company can be
+ * CREATED from, one whose database is already an API company's (the 409 path),
+ * and a PostgreSQL one whose every connect FAILS - so the editor's connection-
+ * error state AND the create form's 422 are reachable by a real click, no
+ * backend needed.
  */
 const SQL_CONNECTIONS: AutocountSqlConnection[] = [
   {
@@ -224,6 +235,18 @@ const SQL_CONNECTIONS: AutocountSqlConnection[] = [
     name: 'AutoCount SQL Server',
     dialect: 'mssql',
     database: 'AED_Sorento_2024',
+  },
+  {
+    id: 'conn-sql-2',
+    name: 'AutoCount SQL Server (branch)',
+    dialect: 'mssql',
+    database: 'AED_BRANCH',
+  },
+  {
+    id: 'conn-sql-vsoft',
+    name: 'AutoCount SQL Server (VSoft)',
+    dialect: 'mssql',
+    database: 'AED_VSOFT',
   },
   {
     id: 'conn-sql-down',
@@ -449,9 +472,12 @@ function runMockPreview(query: string): AutocountSqlPreview {
 }
 
 /** Draft defaults for a never-configured entity (documents get a from-date). */
-function defaultEtlConfig(entityType: string): AutocountEtlSourceConfig {
+function defaultEtlConfig(
+  entityType: string,
+  connectionId: string = SQL_CONNECTIONS[0].id,
+): AutocountEtlSourceConfig {
   return {
-    connectionId: SQL_CONNECTIONS[0].id,
+    connectionId,
     query: '',
     lineQuery: isDocumentEntity(entityType) ? '' : null,
     keyColumns: [],
@@ -472,16 +498,19 @@ function defaultEtlConfig(entityType: string): AutocountEtlSourceConfig {
 /** In-memory task store so draft saves round-trip within the session. */
 const etlTasks = new Map<string, AutocountEtlTask>();
 
-function etlTaskFor(companyId: string, entityType: string): AutocountEtlTask {
-  const key = `${companyId}:${entityType}`;
-  const existing = etlTasks.get(key);
-  if (existing) return existing;
-  const task: AutocountEtlTask = {
+/** A never-configured entity's DRAFT task. On a DB company the draft's
+ * connection is the company connection (the server fills it, AC-01-09). */
+function blankTask(companyId: string, entityType: string): AutocountEtlTask {
+  const company = mockCompanyState(companyId);
+  return {
     companyId,
     entityType,
     etlStatus: 'draft',
     activatedAt: null,
-    sourceConfig: defaultEtlConfig(entityType),
+    sourceConfig: defaultEtlConfig(
+      entityType,
+      company.sourceKind === 'db' ? company.connectionId : undefined,
+    ),
     resultColumns: [],
     lastPreviewAt: null,
     lastPreviewFailedCount: null,
@@ -491,6 +520,14 @@ function etlTaskFor(companyId: string, entityType: string): AutocountEtlTask {
     nextIncrementalAt: null,
     nextReconcileAt: null,
   };
+}
+
+function etlTaskFor(companyId: string, entityType: string): AutocountEtlTask {
+  if (companyId === DB_COMPANY_ID) ensureDbCompanySeed();
+  const key = `${companyId}:${entityType}`;
+  const existing = etlTasks.get(key);
+  if (existing) return existing;
+  const task = blankTask(companyId, entityType);
   etlTasks.set(key, task);
   return task;
 }
@@ -643,11 +680,18 @@ function noteTaskSaved(companyId: string, entityType: string, cfg: AutocountEtlS
 function mockCompanyState(id: string): AutocountCompany {
   const legacy = id.includes('legacy');
   const sink = mockSinks.get(id);
-  return mockCompany({
-    id,
-    sinkImpl: sink?.sinkImpl ?? (legacy ? 'sorento' : 'logging'),
-    sinkConnectionId: sink?.sinkConnectionId ?? (legacy ? 'conn-9' : null),
-  });
+  const created = createdCompanies.get(id);
+  let base: AutocountCompany;
+  if (id === DB_COMPANY_ID) base = mockDbCompany();
+  else if (created) base = { ...created };
+  else {
+    base = mockCompany({
+      id,
+      sinkImpl: legacy ? 'sorento' : 'logging',
+      sinkConnectionId: legacy ? 'conn-9' : null,
+    });
+  }
+  return sink ? { ...base, sinkImpl: sink.sinkImpl, sinkConnectionId: sink.sinkConnectionId } : base;
 }
 
 function applyCompanyOverlay(company: AutocountCompany): AutocountCompany {
@@ -900,6 +944,308 @@ function mockListEtlRuns(
   };
 }
 
+// ── DB-only company fixtures (plan sprint-5/01 S1 - PHASE 1 MOCK is the backend spec) ──
+//
+// BACKEND CONTRACT (S2 must match this EXACTLY - the hook + views are built on it):
+//
+//   POST /autocount/companies {connectionId, name?}   (gated autocount.companies.manage)
+//     connection provider `autocount`    → the existing API flow, unchanged (AC-01-01).
+//     connection provider `sql_database` → a DB company (AC-01-01..06): database_name =
+//       config.database (trimmed) verified by the dialect's live current-database probe;
+//       company_name best-effort from `dbo.Profile` (blank on any failure, never an
+//       error); NO ac_entity_config / ac_field_mapping seeds; activity `discover company`.
+//       409 when the connection is already bound OR the database already has a company
+//           of EITHER kind: "'<database>' is already connected as company '<label>'."
+//       422 {fieldErrors: {connectionId}} on a probe mismatch ("This login lands on
+//           '<probe>', but the connection names '<config>'.") or a connect/auth failure
+//           (the SANITIZED runtime message - never credentials, never a DSN).
+//     any other provider, or another tenant's connection → uniform 404
+//           "That connection was not found."
+//
+//   GET /autocount/companies · GET /autocount/companies/{id}     (AC-01-07, AC-01-11)
+//     CompanyItem += `sourceKind: 'api' | 'db'` - DERIVED from the connection's provider
+//       (the list resolves connections in ONE batched tenant-scoped query; a deleted
+//       connection reports 'api' and never 500s) and `documentPrerequisites:
+//       [{entityType, missing[], inactive[]}]` for each configured document entity
+//       (`sales_order` needs customer+product, `purchase_order` supplier+product;
+//       missing = no config row, inactive = row with etl_status != 'active' or disabled).
+//       The detail populates it; the LIST returns [].
+//
+//   PUT .../entities/{entityType}/etl-task · POST .../etl-task/preview on a DB company
+//     an OMITTED source_config.connectionId is FILLED with company.connection_id; a
+//       DIFFERENT one is 422 {fieldErrors: {connectionId: "A database company reads only
+//       from its own connection."}} (AC-01-09). API companies keep the free picker.
+//     the first save for `customer` / `supplier` births the row `sql_db` like the other
+//       seven (AC-01-10); `goods_received_note` is 422 "not available on a database
+//       company".
+//
+//   PATCH .../entities/{entityType} {sourceImpl: 'autocount_read'} and every vendor-client
+//     path on a DB company → 409/422 "This company is connected by database; the AutoCount
+//     API is not available." (AC-01-08) - never ConnectionNotFound, never a 500.
+//
+// Click-reachable states (no backend):
+//   conn-sql-1      bound to the seeded, in-use DB company `company-db` (excluded from the
+//                   create picker - offering it would guarantee the 409)
+//   conn-sql-2      unbound + healthy → Create succeeds → the new company's Overview
+//   conn-sql-vsoft  unbound, database AED_VSOFT = the API company's → 409 inline
+//   conn-sql-down   unbound + unreachable → 422 on connectionId inline
+//   company-db      Entities: customer + sales_order ACTIVE, product + purchase_order DRAFT,
+//                   no supplier → the prerequisite card shows one inactive-only line and
+//                   one missing+inactive line; a freshly created DB company has no entities
+//                   (AC-01-05) → no card, Add entity offers all nine.
+
+const DB_COMPANY_ID = 'company-db';
+const DB_COMPANY_CONNECTION = SQL_CONNECTIONS[0];
+
+/** The seeded DB company - in use for a while, so its Entities tab has state. */
+function mockDbCompany(): AutocountCompany {
+  return mockCompany({
+    id: DB_COMPANY_ID,
+    connectionId: DB_COMPANY_CONNECTION.id,
+    databaseName: DB_COMPANY_CONNECTION.database,
+    companyName: 'Sorento Trading Sdn Bhd',
+    name: 'Sorento Trading',
+    sourceKind: 'db',
+    createdAt: '2026-08-30T00:00:00Z',
+  });
+}
+
+/** DB companies registered this session (created from a `sql_database` connection). */
+const createdCompanies = new Map<string, AutocountCompany>();
+
+/** Best-effort `dbo.Profile` company names per connection (absent = unreadable → blank). */
+const PROFILE_NAMES: Record<string, string> = {
+  'conn-sql-2': 'Sorento Trading (Branch) Sdn Bhd',
+};
+
+/** Mirrors the backend's DOCUMENT_PREREQUISITES (plan §2.2). */
+const DOCUMENT_PREREQUISITES: Record<string, string[]> = {
+  sales_order: ['customer', 'product'],
+  purchase_order: ['supplier', 'product'],
+};
+
+/** Display order of a DB company's rows - the nine `sql_db` entities in dependency order. */
+const DB_ENTITY_ORDER = [
+  'customer',
+  'supplier',
+  'product_category',
+  'unit_of_measure',
+  'warehouse',
+  'product',
+  'sales_agent',
+  'sales_order',
+  'purchase_order',
+];
+
+/** The pure function the backend's `document_prerequisites(company)` must mirror. */
+export function computeDocumentPrerequisites(
+  entities: AutocountEntityConfig[],
+): AutocountDocumentPrerequisite[] {
+  const byType = new Map(entities.map((e) => [e.entityType, e]));
+  return entities
+    .filter((e) => e.entityType in DOCUMENT_PREREQUISITES)
+    .map((doc) => {
+      const masters = DOCUMENT_PREREQUISITES[doc.entityType];
+      return {
+        entityType: doc.entityType,
+        missing: masters.filter((m) => !byType.has(m)),
+        inactive: masters.filter((m) => {
+          const row = byType.get(m);
+          return row !== undefined && (row.etlStatus !== 'active' || !row.enabled);
+        }),
+      };
+    });
+}
+
+/** The in-use DB company's saved tasks: two active, two still draft. */
+const DB_SEED_TASKS: {
+  entityType: string;
+  status: EtlTaskOverlay['etlStatus'];
+  config: Partial<AutocountEtlSourceConfig>;
+}[] = [
+  {
+    entityType: 'customer',
+    status: 'active',
+    config: {
+      query: 'SELECT AccNo, CompanyName, Phone1, EmailAddress, IsActive, LastModified FROM dbo.Debtor',
+      keyColumns: ['AccNo'],
+      watermarkColumn: 'LastModified',
+    },
+  },
+  {
+    entityType: 'product',
+    status: 'draft',
+    config: {
+      query: 'SELECT ItemCode, Description, ItemGroup, BaseUOM, IsActive, LastModified FROM dbo.Stock',
+      keyColumns: ['ItemCode'],
+      watermarkColumn: 'LastModified',
+    },
+  },
+  {
+    entityType: 'sales_order',
+    status: 'active',
+    config: {
+      query: 'SELECT DocKey, DocNo, DebtorCode, Agent, DocDate, Cancelled, LastModified FROM dbo.SO',
+      lineQuery:
+        'SELECT DtlKey, DocKey, ItemCode, Qty, UnitPrice, Location FROM dbo.SODtl WHERE DocKey = :doc_key',
+      keyColumns: ['DocKey'],
+      watermarkColumn: 'LastModified',
+      fromDate: '2026-01-01',
+      docDateColumn: 'DocDate',
+      lineKeyColumn: 'DtlKey',
+      lineProductColumn: 'ItemCode',
+      lineWarehouseColumn: 'Location',
+    },
+  },
+  {
+    entityType: 'purchase_order',
+    status: 'draft',
+    config: {
+      query: 'SELECT DocKey, DocNo, CreditorCode, DocDate, Cancelled, LastModified FROM dbo.PO',
+      lineQuery: 'SELECT DtlKey, DocKey, ItemCode, Qty, UnitPrice FROM dbo.PODtl WHERE DocKey = :doc_key',
+      keyColumns: ['DocKey'],
+      watermarkColumn: 'LastModified',
+      fromDate: '2026-01-01',
+      docDateColumn: 'DocDate',
+      lineKeyColumn: 'DtlKey',
+      lineProductColumn: 'ItemCode',
+    },
+  },
+];
+
+let dbSeeded = false;
+
+/** Lazily materialize the seeded DB company's tasks (re-applied after a reset). */
+function ensureDbCompanySeed(): void {
+  if (dbSeeded) return;
+  dbSeeded = true;
+  for (const seed of DB_SEED_TASKS) {
+    const key = taskKey(DB_COMPANY_ID, seed.entityType);
+    if (!etlTasks.has(key)) {
+      etlTasks.set(key, {
+        ...blankTask(DB_COMPANY_ID, seed.entityType),
+        sourceConfig: {
+          ...defaultEtlConfig(seed.entityType, DB_COMPANY_CONNECTION.id),
+          ...seed.config,
+        },
+      });
+    }
+    const o = overlayFor(DB_COMPANY_ID, seed.entityType);
+    o.etlStatus = seed.status;
+    o.resultColumns = resultColumnsFor(etlTasks.get(key)!.sourceConfig);
+    if (seed.status === 'active') {
+      o.activatedAt = '2026-08-30T06:00:00Z';
+      o.lastPreviewAt = '2026-08-30T05:55:00Z';
+      o.lastPreviewFailedCount = 0;
+    }
+  }
+}
+
+/** The API company's seeded rows (`SEEDED_ENTITIES` - the plan-13 path, unchanged). */
+function apiSeedEntities(companyId: string): AutocountEntityConfig[] {
+  return [
+    {
+      id: `${companyId}-customer`,
+      entityType: 'customer',
+      syncMode: 'SCHEDULED_REVIEW',
+      sourceImpl: 'autocount_read',
+      recordCap: 200,
+      initialLookbackDays: 30,
+      enabled: true,
+      lastSuccessAt: null,
+      lastAttemptAt: null,
+      watermarkAt: null,
+      consecutiveFailures: 0,
+      lastError: null,
+      etlStatus: 'draft',
+    },
+  ];
+}
+
+/**
+ * Rows born on the DB source: a task exists AND has a SAVED query (opening the
+ * editor alone births nothing - `update_task` "a row that exists ONLY for the
+ * DB path is born on the DB source", plan 22 S4).
+ */
+function bornEntities(companyId: string): AutocountEntityConfig[] {
+  const rows: AutocountEntityConfig[] = [];
+  for (const [key, task] of Array.from(etlTasks.entries())) {
+    if (!key.startsWith(`${companyId}:`) || !task.sourceConfig.query.trim()) continue;
+    const o = overlayFor(companyId, task.entityType);
+    rows.push({
+      id: `${companyId}-${task.entityType}`,
+      entityType: task.entityType,
+      syncMode: 'AUTO',
+      sourceImpl: 'sql_db',
+      recordCap: 200,
+      initialLookbackDays: 30,
+      enabled: true,
+      lastSuccessAt: o.lastRunAt && !o.lastRunError ? o.lastRunAt : null,
+      lastAttemptAt: o.lastRunAt,
+      watermarkAt: null,
+      consecutiveFailures: o.lastRunError ? 1 : 0,
+      lastError: o.lastRunError,
+      etlStatus: o.etlStatus,
+    });
+  }
+  const order = (t: string) => {
+    const i = DB_ENTITY_ORDER.indexOf(t);
+    return i === -1 ? DB_ENTITY_ORDER.length : i;
+  };
+  return rows.sort((a, b) => order(a.entityType) - order(b.entityType));
+}
+
+/** A company's entity rows: API seeds (API company only, AC-01-05) + born DB rows. */
+function companyEntities(company: AutocountCompany): AutocountEntityConfig[] {
+  if (company.id === DB_COMPANY_ID) ensureDbCompanySeed();
+  const base = company.sourceKind === 'db' ? [] : apiSeedEntities(company.id);
+  const seen = new Set(base.map((e) => e.entityType));
+  return [...base, ...bornEntities(company.id).filter((e) => !seen.has(e.entityType))];
+}
+
+/** Every company the tenant holds: the API one, the seeded DB one, the session's creates. */
+function allCompanies(): AutocountCompany[] {
+  return [
+    mockCompanyState('company-1'),
+    mockCompanyState(DB_COMPANY_ID),
+    ...Array.from(createdCompanies.keys()).map(mockCompanyState),
+  ].map(applyCompanyOverlay);
+}
+
+/** The create dispatcher the backend's `CompanyService.create` must mirror. */
+async function mockCreateCompany(input: AutocountCompanyCreateInput): Promise<AutocountCompany> {
+  await pause(300);
+  const sql = SQL_CONNECTIONS.find((c) => c.id === input.connectionId);
+  // Not a `sql_database` connection → the API path (the plan-13 scaffolding).
+  if (!sql) return mockCompany();
+  const companies = allCompanies();
+  const bound = companies.find((c) => c.connectionId === sql.id);
+  if (bound) {
+    throw new ApiError(`'${sql.database}' is already connected as company '${bound.name}'.`, 409);
+  }
+  if (sql.id === 'conn-sql-down') {
+    // The probe could not even connect - the SANITIZED runtime message, on the field.
+    const message = 'Could not connect to the database: connection refused.';
+    throw new ApiError(message, 422, null, { fieldErrors: { connectionId: message } });
+  }
+  const holder = companies.find((c) => c.databaseName === sql.database);
+  if (holder) {
+    throw new ApiError(`'${sql.database}' is already connected as company '${holder.name}'.`, 409);
+  }
+  const companyName = PROFILE_NAMES[sql.id] ?? '';
+  const company = mockCompany({
+    id: `company-db-${createdCompanies.size + 1}`,
+    connectionId: sql.id,
+    databaseName: sql.database,
+    companyName,
+    name: input.name?.trim() || companyName || sql.database,
+    sourceKind: 'db',
+    createdAt: nowIso(),
+  });
+  createdCompanies.set(company.id, company);
+  return { ...company };
+}
+
 /** Test seam: forget every S2 session state (the Vitest suite isolates cases). */
 export function resetEtlMockState(): void {
   etlOverlays.clear();
@@ -909,40 +1255,29 @@ export function resetEtlMockState(): void {
   previewColumnsByQuery.clear();
   etlRuns.clear();
   etlTasks.clear();
+  createdCompanies.clear();
+  dbSeeded = false;
 }
 
 export const mockAutocountService: AutocountService = {
-  listCompanies(): Promise<ListResult<AutocountCompany>> {
-    return Promise.resolve({ data: [mockCompany()], total: 1, page: 0 });
+  listCompanies(query: AutocountListQuery = {}): Promise<ListResult<AutocountCompany>> {
+    const all = allCompanies();
+    return Promise.resolve({ data: all, total: all.length, page: query.page ?? 0 });
   },
 
   getCompany(id: string): Promise<AutocountCompanyDetail> {
+    const company = mockCompanyState(id);
+    const entities = companyEntities(company).map((e) => applyEntityOverlay(id, e));
     return Promise.resolve(
       applyDetailOverlay({
-        company: mockCompanyState(id),
-        entities: [
-          {
-            id: `${id}-customer`,
-            entityType: 'customer',
-            syncMode: 'SCHEDULED_REVIEW',
-            sourceImpl: 'autocount_read',
-            recordCap: 200,
-            initialLookbackDays: 30,
-            enabled: true,
-            lastSuccessAt: null,
-            lastAttemptAt: null,
-            watermarkAt: null,
-            consecutiveFailures: 0,
-            lastError: null,
-            etlStatus: 'draft',
-          },
-        ],
+        company: { ...company, documentPrerequisites: computeDocumentPrerequisites(entities) },
+        entities,
       }),
     );
   },
 
-  createCompany(): Promise<AutocountCompany> {
-    return Promise.resolve(mockCompany());
+  createCompany(input: AutocountCompanyCreateInput): Promise<AutocountCompany> {
+    return mockCreateCompany(input);
   },
 
   async updateEntityConfig(
@@ -1281,7 +1616,21 @@ export const mockAutocountService: AutocountService = {
   ): Promise<AutocountEtlTask> {
     await pause(250);
     const current = etlTaskFor(companyId, entityType);
-    const cfg = input.sourceConfig;
+    let cfg = input.sourceConfig;
+    // A DB company reads ONLY from its own connection (AC-01-09/10): an
+    // omitted connection is filled, a different one refused on the field; the
+    // API-only GRN envelope has no database path at all.
+    const company = mockCompanyState(companyId);
+    if (company.sourceKind === 'db') {
+      if (entityType === 'goods_received_note') {
+        throw new ApiError('Goods received notes are not available on a database company.', 422);
+      }
+      if (!cfg.connectionId) cfg = { ...cfg, connectionId: company.connectionId };
+      else if (cfg.connectionId !== company.connectionId) {
+        const message = 'A database company reads only from its own connection.';
+        throw new ApiError(message, 422, null, { fieldErrors: { connectionId: message } });
+      }
+    }
     // Mirrors the save-time guard (AC-22-11/S5): documents need a from-date,
     // a watermark column (line-change detection - AutoCount stamps a
     // header's LastModified on any line edit), a date-floor column and the

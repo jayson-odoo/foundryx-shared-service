@@ -38,3 +38,46 @@ describe('presetOptionsForField', () => {
     expect(AC_FIELD_REF_PRESET.warehouse_ref).toBeUndefined();
   });
 });
+
+// Plan sprint-5/01 (AC-01-16/17) - the DB company's entity catalogue + kind labels.
+import {
+  AC_NEW_MASTER_ENTITY_TYPES,
+  AC_SQL_DB_ENTITY_TYPES,
+  addableEntityTypes,
+  sourceKindLabel,
+} from './autocount-meta';
+
+describe('AC_SQL_DB_ENTITY_TYPES (AC-01-17)', () => {
+  it('is exactly the nine sql_db entities - customer + supplier included, GRN absent', () => {
+    expect(AC_SQL_DB_ENTITY_TYPES).toEqual([
+      'customer',
+      'supplier',
+      'product_category',
+      'unit_of_measure',
+      'warehouse',
+      'product',
+      'sales_agent',
+      'sales_order',
+      'purchase_order',
+    ]);
+    expect(AC_SQL_DB_ENTITY_TYPES).not.toContain('goods_received_note');
+  });
+
+  it('is a strict superset of the API company\'s seven (regression pin)', () => {
+    for (const t of AC_NEW_MASTER_ENTITY_TYPES) expect(AC_SQL_DB_ENTITY_TYPES).toContain(t);
+    expect(AC_NEW_MASTER_ENTITY_TYPES).toHaveLength(7);
+  });
+
+  it('addableEntityTypes picks the list by company kind', () => {
+    expect(addableEntityTypes('db')).toBe(AC_SQL_DB_ENTITY_TYPES);
+    expect(addableEntityTypes('api')).toBe(AC_NEW_MASTER_ENTITY_TYPES);
+  });
+});
+
+describe('sourceKindLabel (AC-01-16)', () => {
+  it('labels the two kinds and humanizes anything else', () => {
+    expect(sourceKindLabel('api')).toBe('AutoCount API');
+    expect(sourceKindLabel('db')).toBe('SQL database');
+    expect(sourceKindLabel('something_else')).toBe('Something else');
+  });
+});

@@ -21,6 +21,28 @@ export type AutocountSyncMode = 'AUTO' | 'SCHEDULED_REVIEW' | 'MANUAL';
 export type AutocountSourceImpl = 'autocount_read' | 'sql_db';
 
 /**
+ * How a company is connected (plan sprint-5/01, AC-01-07): DERIVED server-side
+ * from its ONE connection's provider - `autocount` → `'api'`, `sql_database` →
+ * `'db'`. Never stored, never client-supplied. A DB company has no vendor API:
+ * every entity reads through a `sql_db` task locked to the company connection.
+ */
+export type AutocountSourceKind = 'api' | 'db';
+
+/**
+ * One document entity's prerequisite-master status (AC-01-11). A sales order
+ * needs `customer` + `product`, a purchase order `supplier` + `product` - the
+ * refs Sorento cannot NULL. While any is missing/inactive the document's rows
+ * stay `retryable` (never lost), so the Entities tab warns instead of blocking.
+ */
+export interface AutocountDocumentPrerequisite {
+  entityType: string;
+  /** Prerequisite masters with no entity config row at all. */
+  missing: string[];
+  /** Masters configured but not active (`etl_status != 'active'` or disabled). */
+  inactive: string[];
+}
+
+/**
  * Per-entity sync configuration seeded when a company is registered, PLUS the
  * entity's live delta state.
  *
@@ -101,6 +123,13 @@ export interface AutocountCompany {
    */
   sorentoCompanyCode: string | null;
   createdAt: string | null; // ISO Z
+  /** Derived from the connection's provider (AC-01-07); a deleted connection reports `'api'`. */
+  sourceKind: AutocountSourceKind;
+  /**
+   * Prerequisite-master status per configured document entity (AC-01-11).
+   * Populated on `GET /autocount/companies/{id}`; the LIST returns `[]`.
+   */
+  documentPrerequisites: AutocountDocumentPrerequisite[];
 }
 
 /** `GET /autocount/companies/{id}` - the company plus its entity configs. */
@@ -124,7 +153,12 @@ export interface AutocountSinkTargetInput {
   sorentoCompanyCode?: string | null;
 }
 
-/** `POST /autocount/companies` - the operator supplies ONLY a connection. */
+/**
+ * `POST /autocount/companies` - the operator supplies ONLY a connection. The
+ * server branches on its provider (AC-01-01): an `autocount` connection signs
+ * in to discover the company; a `sql_database` connection derives the identity
+ * from `config.database` (verified by a live probe, AC-01-02).
+ */
 export interface AutocountCompanyCreateInput {
   connectionId: string;
   /** Optional label; blank falls back to the discovered company name. */

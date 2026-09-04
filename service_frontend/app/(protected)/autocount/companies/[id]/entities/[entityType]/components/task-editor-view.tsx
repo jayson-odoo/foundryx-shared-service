@@ -55,7 +55,7 @@ import { useAutocountRunsListConfig } from '../../../../components/use-runs-list
 import { MappingEditorBody } from '../mapping/components/mapping-editor-body';
 import { useMappingDraft } from '../mapping/components/use-mapping-draft';
 import { ActivateTab } from './activate-tab';
-import { QueryTab } from './query-tab';
+import { QueryTab, type LockedConnection } from './query-tab';
 import { ScheduleTab } from './schedule-tab';
 
 export interface TaskEditorViewProps {
@@ -99,6 +99,18 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     setConfig(baseline ? { ...baseline } : null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baselineKey]);
+
+  // A DB company's task is locked to the company connection (AC-01-19) - the
+  // Query tab shows it read-only (`name · database`) instead of the picker.
+  const company = detail?.company ?? null;
+  const lockedConnection = useMemo<LockedConnection | null>(() => {
+    if (!company || company.sourceKind !== 'db') return null;
+    const conn = sqlConnections.connections.find((c) => c.id === company.connectionId);
+    return {
+      id: company.connectionId,
+      label: conn ? `${conn.name} · ${conn.database}` : company.databaseName,
+    };
+  }, [company, sqlConnections.connections]);
 
   const schema = useAutocountSqlSchema(config?.connectionId ?? null);
   const preview = useSqlPreview();
@@ -281,6 +293,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 onChange={onChange}
                 connections={sqlConnections.connections}
                 connectionsLoading={sqlConnections.isLoading}
+                lockedConnection={lockedConnection}
                 schema={schema}
                 preview={preview}
                 linePreview={linePreview}
@@ -404,6 +417,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     initialTab,
     lifecycle,
     linePreview,
+    lockedConnection,
     mapping,
     onCancel,
     onChange,
