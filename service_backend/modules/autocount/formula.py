@@ -787,12 +787,27 @@ def validate_formula(formula: str, known_variables: AbstractSet[str] = frozenset
     parse_formula(formula, known_variables)
 
 
+_COMPARISON_OPS = frozenset({"==", "!=", "<", "<=", ">", ">="})
+
+
 def string_literals(parsed: ParsedFormula) -> List[str]:
-    """Every STRING literal reachable in ``parsed``'s AST, in encounter order
-    (sprint-5/02, AC-02-08) - the raw material for the status-vocabulary save
-    gate: a formula targeting ``status`` may only use the fixed five words as
-    string literals, checked without caring where in the expression they sit
-    (an ``if``/``coalesce`` branch, a comparison operand, ...)."""
+    """Every STRING literal reachable in ``parsed``'s AST that could actually
+    BECOME the formula's result, in encounter order (sprint-5/02, AC-02-08) -
+    the raw material for the status-vocabulary save gate: a formula targeting
+    ``status`` may only use the fixed five words as string literals.
+
+    Descends into ``if``/``coalesce`` branches and non-comparison ``_Binary``
+    nodes (string concatenation, arithmetic) - anywhere a literal could
+    surface as the eventual output. Does NOT descend into a COMPARISON
+    ``_Binary``'s operands (``==``/``!=``/``<``/``<=``/``>``/``>=``) - a
+    comparison always evaluates to a bool that only GATES a branch, so its
+    operands can never themselves be the formula's result. (Review-round F3
+    fix: the seeded ``DEFAULT_STATUS_FORMULA`` compares ``Cancelled == "T"``
+    - "T" is a raw AutoCount boolean flag being tested, never a candidate
+    status value, and the OLD "check literally everywhere" behavior flagged
+    it as an illegal status literal, rejecting the platform's own canonical
+    formula the instant anything routed it through this gate.)
+    """
     out: List[str] = []
 
     def walk(node: object) -> None:
@@ -802,6 +817,8 @@ def string_literals(parsed: ParsedFormula) -> List[str]:
         elif isinstance(node, _Unary):
             walk(node.operand)
         elif isinstance(node, _Binary):
+            if node.op in _COMPARISON_OPS:
+                return
             walk(node.left)
             walk(node.right)
         elif isinstance(node, _Call):

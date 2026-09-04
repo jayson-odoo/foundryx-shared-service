@@ -1541,13 +1541,15 @@ class CompanyService:
         the ONLY wiring this needs). ``None`` previews the header alone,
         exactly as before this parameter existed.
         """
-        self._require_entity(tenant_id, company_id, entity_type)
+        config = self._require_entity(tenant_id, company_id, entity_type)
         company = self.get(tenant_id, company_id)
 
         if draft_rows is None:
             rows = self.mapping_rows(tenant_id, company_id, entity_type)
         else:
-            rows = self._draft_engine_rows(tenant_id, company_id, entity_type, draft_rows)
+            rows = self._draft_engine_rows(
+                tenant_id, company_id, entity_type, draft_rows, config
+            )
 
         engine = MappingEngine(
             rows,
@@ -1570,6 +1572,7 @@ class CompanyService:
         company_id: str,
         entity_type: str,
         draft_rows: List[MappingWriteRow],
+        config: AcEntityConfig,
     ) -> List[MappingRow]:
         """Build in-memory engine rows from UNSAVED editor rows for a simulate.
 
@@ -1588,9 +1591,22 @@ class CompanyService:
         clicked Simulate with unsaved line edits - the S2 mapping-engine test
         suite never caught it because it only exercises this path with
         ``draft_rows=None``. Mirrors ``replace_mapping``'s header/line split.)
+
+        !!  KNOWN VARIABLES MIRROR THE SAVE GATE (F3/B2, review round).  !!
+        Formerly parsed with ``known_vars=None`` for BOTH scopes - unlike
+        ``replace_mapping``'s ``_replace_header_mapping``/
+        ``_replace_line_mapping``, which build ``known_vars`` from
+        ``config.result_columns`` (+ ``LINE_AGGREGATE_NAMES``) and
+        ``config.line_result_columns`` respectively - so a draft row carrying
+        the seeded ``DEFAULT_STATUS_FORMULA`` (``Cancelled``,
+        ``lines.open_count``) or any line-column formula 422'd "Unknown name"
+        at Simulate even though the IDENTICAL row saves cleanly via PUT
+        mapping. Simulate must accept exactly what the save gate accepts.
         """
         header_draft = [r for r in draft_rows if getattr(r, "scope", SCOPE_HEADER) != SCOPE_LINE]
         line_draft = [r for r in draft_rows if getattr(r, "scope", SCOPE_HEADER) == SCOPE_LINE]
+        header_known_vars = frozenset(config.result_columns or []) | LINE_AGGREGATE_NAMES
+        line_known_vars = frozenset(config.line_result_columns or [])
 
         engine_rows: List[MappingRow] = []
         engine_rows.extend(
@@ -1600,7 +1616,8 @@ class CompanyService:
                 accepted=accepted_field_names(entity_type),
                 required=required_field_names(entity_type),
                 ref_pairs=FIELD_REF_TRANSFORMS,
-                known_vars=None,
+                known_vars=header_known_vars,
+                check_status_vocabulary=True,
             )
         )
         engine_rows.extend(
@@ -1610,7 +1627,7 @@ class CompanyService:
                 accepted=line_accepted_field_names(entity_type),
                 required=line_required_field_names(entity_type),
                 ref_pairs=LINE_FIELD_REF_TRANSFORMS,
-                known_vars=None,
+                known_vars=line_known_vars,
             )
         )
 
@@ -1633,10 +1650,14 @@ class CompanyService:
         accepted: frozenset,
         required: frozenset,
         ref_pairs: Dict[str, str],
-        known_vars: Optional[frozenset],
+        known_vars: frozenset,
+        check_status_vocabulary: bool = False,
     ) -> List[MappingRow]:
         """One scope's slice of ``_draft_engine_rows`` - the guard chain
-        shared by header and line, parameterised by which catalog applies."""
+        shared by header and line, parameterised by which catalog applies.
+        ``check_status_vocabulary`` mirrors ``_replace_header_mapping``'s
+        status-literal guard (AC-02-08) - header only, a line row can never
+        target ``status``."""
         seen: set = set()
         engine_rows: List[MappingRow] = []
         for row in draft_rows:
@@ -1674,11 +1695,25 @@ class CompanyService:
             formula = (row.formula or "").strip() or None
             if formula is not None:
                 try:
-                    parse_formula(formula, known_vars) if known_vars is not None else parse_formula(formula)
+                    parsed = parse_formula(formula, known_vars)
                 except FormulaParseError as exc:
                     raise AutocountServiceError(
                         f"The formula for '{target}' is invalid: {exc}"
                     ) from exc
+                if check_status_vocabulary and target == "status":
+                    # Same fixed-vocabulary guard as `_replace_header_mapping`
+                    # (AC-02-08) - a simulate must reject the exact literals
+                    # the save gate would, never preview a formula that would
+                    # 422 the instant it was actually saved.
+                    bad = [
+                        lit for lit in string_literals(parsed)
+                        if lit not in DOCUMENT_STATUS_VALUES
+                    ]
+                    if bad:
+                        raise AutocountServiceError(
+                            f"'{bad[0]}' is not a recognised document status - use "
+                            f"one of {', '.join(DOCUMENT_STATUS_VALUES)}."
+                        )
             engine_rows.append(
                 MappingRow(
                     source_path=source_path,
