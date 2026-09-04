@@ -22,16 +22,18 @@ function Command({ className, ...props }: React.ComponentProps<typeof CommandPri
 type CommandDialogProps = DialogProps & {
   className?: string;
   /**
-   * A palette opened by a keyboard shortcut never animates (AC-DLA-22): pass
-   * `false` so it is there on the frame after the keydown and gone the
-   * frame Escape/a selection fires. Left `true` for a `CommandDialog`
-   * opened some other way (e.g. a click trigger, which still wants the
-   * surface spring per the frequency gate).
+   * A command palette is the one surface the frequency table forbids
+   * animating outright (AC-DLA-22, T3 fix round 1 finding 4/BLOCKER 2): it
+   * is keyboard-initiated and opened tens-to-hundreds of times a day, so
+   * motion is opt IN, never opt out - `motion={false}` is the default and a
+   * caller has to explicitly pass `motion` (e.g. a genuine click-triggered
+   * `CommandDialog`, which still wants the surface spring per the same
+   * gate) to get the spring back.
    */
   motion?: boolean;
 };
 
-const CommandDialog = ({ children, className, motion = true, ...props }: CommandDialogProps) => {
+const CommandDialog = ({ children, className, motion = false, ...props }: CommandDialogProps) => {
   return (
     <Dialog {...props}>
       <DialogContent motion={motion} className={cn('overflow-hidden p-0 shadow-lg', className)}>
