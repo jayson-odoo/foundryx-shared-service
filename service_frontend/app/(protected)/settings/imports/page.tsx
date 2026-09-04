@@ -2,19 +2,20 @@
 
 import { Fragment, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
-import { Container } from '@/components/common/container';
-import { RequirePermission } from '@/components/common/require-permission';
+import { importService } from '@/services/import-service';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardHeading, CardTitle } from '@/components/ui/card';
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardHeading,
+  CardTitle,
+} from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { importService } from '@/services/import-service';
+import { Container } from '@/components/common/container';
+import { RequirePermission } from '@/components/common/require-permission';
+import { PageHeader } from '@/components/platform/page-header';
 
 /**
  * Import engine tenant settings (plan sprint-3/09 D11) - per-tenant caps
@@ -97,7 +98,9 @@ function ImportSettingsForm() {
             onChange={(e) => setMaxFileMb(e.target.value)}
           />
           <p className="text-xs text-muted-foreground">
-            {isDefault ? 'Using the deployment defaults.' : 'Custom for this workspace.'}
+            {isDefault
+              ? 'Using the deployment defaults.'
+              : 'Custom for this workspace.'}
           </p>
         </div>
         <div>
@@ -114,16 +117,10 @@ export default function ImportSettingsPage() {
   return (
     <RequirePermission permission="imports.read_all">
       <Fragment>
-        <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle text="Import settings" />
-              <ToolbarDescription>
-                Caps applied to every bulk import in this workspace.
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
+        <PageHeader
+          title="Import settings"
+          description="Caps applied to every bulk import in this workspace."
+        />
         <Container width="fluid">
           <ImportSettingsForm />
         </Container>

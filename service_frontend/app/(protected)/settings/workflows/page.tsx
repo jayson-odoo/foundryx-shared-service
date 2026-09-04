@@ -2,19 +2,20 @@
 
 import { Fragment, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
-import { Container } from '@/components/common/container';
-import { RequirePermission } from '@/components/common/require-permission';
+import { workflowService } from '@/services/workflow-service';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardHeading, CardTitle } from '@/components/ui/card';
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardHeading,
+  CardTitle,
+} from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { workflowService } from '@/services/workflow-service';
+import { Container } from '@/components/common/container';
+import { RequirePermission } from '@/components/common/require-permission';
+import { PageHeader } from '@/components/platform/page-header';
 
 /**
  * Workflow engine tenant settings (plan sprint-2/10) - run retention. The
@@ -66,7 +67,9 @@ function WorkflowSettingsForm() {
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <div className="flex max-w-xs flex-col gap-1.5">
-          <Label htmlFor="run-retention-days">Keep run history for (days)</Label>
+          <Label htmlFor="run-retention-days">
+            Keep run history for (days)
+          </Label>
           <Input
             id="run-retention-days"
             type="number"
@@ -77,7 +80,9 @@ function WorkflowSettingsForm() {
             onChange={(e) => setDays(e.target.value)}
           />
           <p className="text-xs text-muted-foreground">
-            {isDefault ? 'Using the deployment default.' : 'Custom for this workspace.'}
+            {isDefault
+              ? 'Using the deployment default.'
+              : 'Custom for this workspace.'}
           </p>
         </div>
         <div>
@@ -94,16 +99,7 @@ export default function WorkflowSettingsPage() {
   return (
     <RequirePermission permission="workflows.manage">
       <Fragment>
-        <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>
-                Run retention and other workflow engine settings for this workspace.
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
+        <PageHeader description="Run retention and other workflow engine settings for this workspace." />
         <Container width="fluid">
           <WorkflowSettingsForm />
         </Container>
