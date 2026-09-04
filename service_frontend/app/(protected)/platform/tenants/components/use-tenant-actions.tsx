@@ -94,11 +94,28 @@ export function useTenantActions(): ResourceAction<TenantListItem>[] {
             t.availableTransitionIds.includes(e.id)),
       );
 
+    // The tenant-lifecycle status entity is PLATFORM-OWNED (a single global
+    // graph, no per-tenant fork) with system-locked keys (label/color are
+    // editable, `key` is not) - so the three seeded target keys below always
+    // resolve to the SAME status row regardless of a renamed label, and
+    // `TenantService.archive/suspend/reactivate` (edge-agnostic, key-keyed
+    // lookups) are safe deferred-action handlers for them (sprint-4/23, T5,
+    // D2). An OPERATOR-ADDED custom status sharing a label ("Dormant" also
+    // reading "Archive") but a DIFFERENT key falls through to `confirm:` -
+    // disclosed 4th carve-out (see the T5 report); a fully general fix needs
+    // a per-row-payload `tenants.transition` deferred action (backlog).
+    const DEFERRED_KEY_FOR_TARGET: Record<string, string> = {
+      archived: 'tenants.archive',
+      suspended: 'tenants.suspend',
+      active: 'tenants.reactivate',
+    };
+
     const transitionAction = (
       label: string,
       edges: StatusTransition[],
     ): ResourceAction<TenantListItem> => {
       const target = statusById.get(edges[0].toStatusId);
+      const deferredActionKey = target ? DEFERRED_KEY_FOR_TARGET[target.key] : undefined;
       return {
         id: `transition-${edges[0].id}`,
         label,
@@ -111,11 +128,15 @@ export function useTenantActions(): ResourceAction<TenantListItem>[] {
         isVisible: (rows) =>
           rows.length > 0 &&
           rows.every((t) => !t.isPlatform && Boolean(edgeForRow(edges, t))),
-        confirm: {
-          title: `${label} this tenant?`,
-          description: edgeDescription(target),
-          confirmLabel: `${label} tenant`,
-        },
+        ...(deferredActionKey
+          ? { deferred: { actionKey: deferredActionKey, entityType: 'tenant', window: 'reversible' as const } }
+          : {
+              confirm: {
+                title: `${label} this tenant?`,
+                description: edgeDescription(target),
+                confirmLabel: `${label} tenant`,
+              },
+            }),
         run: async (rows, rt) => {
           // Count what actually FIRED (code-review fix): a row whose edge
           // vanished between the visibility check and run (concurrent rule/
