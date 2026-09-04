@@ -970,7 +970,6 @@ class EtlService:
         ):
             seed_document_mapping(
                 self.db, tenant_id, company_id, entity_type,
-                company.database_name,
                 header_columns=columns,
                 line_columns=line_columns,
             )

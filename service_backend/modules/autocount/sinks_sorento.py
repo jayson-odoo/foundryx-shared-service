@@ -47,6 +47,7 @@ import httpx
 
 from .canonical.base import CanonicalRecord
 from .canonical.documents import (
+    CanonicalDocument,
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
     ENTITY_SHIPPING_ORDER,
@@ -297,13 +298,17 @@ class SorentoSink:
                     f"{type(record).__name__} has no sink_payload projection; "
                     "it cannot be delivered to Sorento safely."
                 )
-            try:
-                # Documents accept `contract_version` (AC-02-14); a master's
-                # `sink_payload()` takes no arguments at all - fall back to
-                # the bare call rather than forcing every canonical model to
-                # carry a parameter only documents use.
+            # Documents accept `contract_version` (AC-02-14); a master's
+            # `sink_payload()` takes no arguments at all - dispatch on the
+            # record's OWN TYPE (S6, code review) rather than a bare
+            # `except TypeError` around the documents call: a real bug
+            # inside a document's `sink_payload()` implementation also
+            # raises `TypeError` and would silently be swallowed into the
+            # WRONG fallback branch (a bare call a document's signature does
+            # not even accept), masking the actual error as a v1 downgrade.
+            if isinstance(record, CanonicalDocument):
                 out.append(payload(contract_version=self.contract_version))
-            except TypeError:
+            else:
                 out.append(payload())
         return out
 

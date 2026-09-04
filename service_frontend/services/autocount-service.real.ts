@@ -191,9 +191,10 @@ export const realAutocountService: AutocountService = {
   },
 
   listMappingPresets(companyId, entityType) {
-    // sprint-5/02 S3 - not yet served by the real backend (never reached
-    // while `withPhase1DocumentMappingMock` is bound; kept so the interface
-    // is satisfied and the swap-to-real needs no call-site change).
+    // sprint-5/02 S3 - the mapping editor's "Use preset" action, backed by
+    // GET /autocount/presets/{entityType}?companyId= (mounted bare via the
+    // `sync` router - see the backend endpoint's own docstring). Real since
+    // the S3 mock overlay (withPhase1DocumentMappingMock) was removed.
     return apiFetch<AutocountMappingPreset[]>(
       `/autocount/presets/${encodeURIComponent(entityType)}?companyId=${encodeURIComponent(companyId)}`,
     );

@@ -451,9 +451,9 @@ FUNCTION_CATALOG: Tuple[FunctionDef, ...] = (
     ),
     FunctionDef(
         "coalesce", "Logical", "coalesce(a, b, ...)",
-        (FunctionArg("...", "candidates, evaluated left to right"),),
+        (FunctionArg("...", "two or more candidates, evaluated left to right"),),
         "Returns the first argument that is not null.",
-        'coalesce(UDF_Currency, CurrencyCode, "CNY")', 1, None,
+        'coalesce(UDF_Currency, CurrencyCode, "CNY")', 2, None,
     ),
 )
 
@@ -673,6 +673,20 @@ class _Parser:
 
         if tok.kind == _TK_IDENT:
             name = tok.value
+            #     !!  RESERVED WORDS SHADOW A NAMED VARIABLE OF THE SAME
+            #         SPELLING (security review nit).  !!
+            # `value`/`true`/`false`/`null` are checked BEFORE the
+            # known-variables lookup below, on PURPOSE - `value` must always
+            # resolve to the single-value reference every non-named-variable
+            # formula caller relies on (a mapping row's own `source_path`
+            # formula, a filter's blank-value fallback, ...). The tradeoff: a
+            # document header whose OWN column happens to be named/fold-match
+            # `value` (or `true`/`false`/`null`) can never be referenced as a
+            # named variable in a formula - it always parses as the reserved
+            # word instead. Rare in practice (real AutoCount columns are
+            # never literally `Value`) and not worth a breaking grammar
+            # change; documented here so it is a known tradeoff, not a
+            # silent surprise.
             if name == "true":
                 self._advance()
                 return _Lit(True)

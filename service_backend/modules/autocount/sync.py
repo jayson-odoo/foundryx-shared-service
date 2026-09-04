@@ -544,11 +544,11 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         return
 
     # ── map + stage, ONE DOCUMENT AT A TIME ──────────────────────────────────
-    # A document's LINE rows are code-generated from its source_config (plan
-    # 22 S5's "FIXED column-name convention", ``mapping.document_line_rows``),
-    # never read from ``ac_field_mapping`` - ``mapping_rows`` stays HEADER-only.
-    # ``build_mapping_rows_for_run`` is the ONE gate for this (S5 review NIT -
-    # shared with ``etl_service.py``'s preview path so the two can never drift).
+    # A document's LINE rows are operator-persisted ``ac_field_mapping`` rows
+    # (scope='line', sprint-5/02) - ``mapping_rows`` already returns header AND
+    # line scope together. ``build_mapping_rows_for_run`` is the ONE gate for
+    # this (S5 review NIT - shared with ``etl_service.py``'s preview path so
+    # the two can never drift).
     mapping_rows = build_mapping_rows_for_run(
         entity_type,
         companies.mapping_rows(tenant_id, company_id, entity_type),

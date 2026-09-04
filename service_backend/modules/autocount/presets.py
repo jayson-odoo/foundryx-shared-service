@@ -264,7 +264,6 @@ def seed_document_mapping(
     tenant_id: str,
     company_id: str,
     entity_type: str,
-    database_name: str,
     *,
     header_columns: Optional[Dict[str, str]],
     line_columns: Optional[Dict[str, str]],
@@ -272,6 +271,11 @@ def seed_document_mapping(
     """Seed the entity's preset header+line mapping rows. Returns the count
     created (0 when no preset is registered for ``entity_type``, e.g. a
     non-document entity).
+
+    No ``database_name`` param (review nit - was accepted but unused): a
+    mapping ROW is source_path/canonical_field only, never a query string -
+    only ``list_mapping_presets`` (the "Use preset" read view) needs the
+    company's database name, to substitute it into the documented query text.
 
     The CALLER (``EtlService.update_task``) is responsible for only invoking
     this on a genuinely first save (the entity's mapping is empty) - this

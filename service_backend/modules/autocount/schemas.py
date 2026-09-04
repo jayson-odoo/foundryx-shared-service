@@ -11,7 +11,7 @@ Nothing here echoes a credential. A company's identity is the DISCOVERED
 never appear in any response (AC-13-42).
 """
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import ConfigDict, Field, model_validator
 
@@ -326,7 +326,12 @@ class MappingUpdateRow(ApiModel):
     formula: Optional[str] = None
     # sprint-5/02 (AC-02-01) - which scope this row targets. Defaulting to
     # ``header`` reproduces every pre-existing (master/GRN) save request.
-    scope: str = "header"
+    # A `Literal` (S8, review nit) - "header"/"line" are the only two scopes
+    # this engine has ever had (SCOPE_HEADER/SCOPE_LINE in mapping.py); a
+    # typo'd third value should 422 at the wire boundary, not silently
+    # coerce through `getattr(row, "scope", SCOPE_HEADER) != SCOPE_LINE`
+    # everywhere it is read.
+    scope: Literal["header", "line"] = "header"
 
 
 class MappingUpdateRequest(ApiModel):
