@@ -265,7 +265,7 @@ export function StatusDrawer({
               )}
             </div>
             <Button onClick={() => void save()} disabled={saving}>
-              {status ? 'Save' : 'Create'}
+              {status ? 'Save status' : 'Create status'}
             </Button>
           </div>
         )}

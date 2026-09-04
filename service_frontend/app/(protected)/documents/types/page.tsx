@@ -356,7 +356,7 @@ function TypeFormDialog({
             onClick={() => void save()}
             disabled={!name.trim() || busy || loading}
           >
-            {typeId ? 'Save' : 'Create'}
+            {typeId ? 'Save type' : 'Create type'}
           </Button>
         </DialogFooter>
       </DialogContent>
