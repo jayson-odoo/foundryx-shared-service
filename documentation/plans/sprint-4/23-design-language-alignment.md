@@ -8,7 +8,8 @@
 
 **Slug:** `design-language-alignment` | **Domain:** design-system (cross-cutting, every screen)
 **Status:** APPROVED - grill 4 Sep 2026 (8 decisions), lavish plan review 4 Sep 2026 (A1 delete
-demo pages, A2 no Playwright = D15). Nothing built yet.
+demo pages, A2 no Playwright = D15, widened at review close to a full purge = slice T0).
+T0 and T1 in progress (parallel worktrees `s23-t0`, `s23`; disjoint files).
 **Branch:** base `origin/main`; worktree `.claude/worktrees/s23`; integration branch
 `sprint-4/23-design-language-alignment`; one branch per slice `sprint-4/23-T<n>-<slug>`, PR
 each, `/code-review` between slices, one coder at a time.
@@ -61,6 +62,18 @@ has it, and the `ctx`/`i` server-driven record-nav this repo's Resource shell is
   `status-badge` registry; `useDebounce`; `--mono`/`--success`/`--info`/`--warning` tokens.
 
 ## 3. Standards (the design)
+
+### 3.0 Playwright retirement (T0)
+
+No Sorento file to read; this is a deletion. Remove `service_frontend/e2e/`, the three
+`playwright*.config.ts`, `playwright-report/`, `test-results/`, the `test:e2e` script, the
+`@playwright/test` dependency (`npm uninstall @playwright/test --package-lock-only`: the shared
+`node_modules` symlink must not be rewritten), the three `.gitignore` lines, and every live
+mention (docs, skills, agents, CI, code comments) outside `documentation/plans/**`. Replace each
+removed sentence with the agent-browser rule, never leave a hole. Add
+`service_frontend/no-playwright.guard.test.ts` (walks the repo from the frontend root's parent,
+skips `node_modules`, `.next`, `.git`, `documentation/plans`, `.claude/worktrees`; fails on any
+case-insensitive `playwright`). Evidence for `[E2E]` from T1 on = agent-browser runs only.
 
 Each subsection names the Sorento file to read first. Port the mechanism, adapt the names to
 this repo, keep this repo's layering (UI -> hook -> service trio -> `lib/api-client`).
@@ -290,7 +303,9 @@ integration branch `lib/toast.ts`, `lib/toast.inventory.test.ts`.
 
 - `eslint.config.mjs` rules as AC-DLA-63 (the `text-[Npx]` rule is Sorento's local AST rule,
   port it from `sorento: eslint.config.mjs`).
-- `docs/reference/design-language.md` = Sorento's `DESIGN-LANGUAGE.md` re-homed: this repo's
+- `docs/reference/design-language.md` (the `docs/reference/` tree exists only in the user's
+  uncommitted docs refactor on 4 Sep; T8 lands after it, or creates the folder) = Sorento's
+  `DESIGN-LANGUAGE.md` re-homed: this repo's
   file paths, this repo's roster (`ResourceList`, `ResourceForm`, `PageHeader`, `ActionMenu`
   gear, `DeferredActionButton`, `StatusBadge`, `SearchSelect`/`MultiSelect`, `ClampedText`,
   `OverflowPills`, `ListSearchInput`, `lib/toast`), decisions D1-D14, the frequency gate, the
@@ -307,6 +322,7 @@ integration branch `lib/toast.ts`, `lib/toast.inventory.test.ts`.
 
 | Slice | Branch | Contents | Phase 1 (mock) | Phase 2 (tests) |
 |---|---|---|---|---|
+| T0 | `sprint-4/23-T0-playwright-retirement` | 3.0 | n/a | guard test; lint + test + build green |
 | T1 | `sprint-4/23-T1-tokens` | 3.1 | n/a | `design-tokens.test.ts`; light + dark shots |
 | T2 | `sprint-4/23-T2-primitives` | 3.2 | n/a | vitest per primitive; 375 sweep of Users, Settings, Services, a workflow |
 | T3 | `sprint-4/23-T3-motion` | 3.3 | n/a | `motion.test.ts`, guard test; frame-by-frame + reduced-motion evidence; sidebar trace |
@@ -316,7 +332,7 @@ integration branch `lib/toast.ts`, `lib/toast.inventory.test.ts`.
 | T7 | `sprint-4/23-T7-sweep` | 3.7 | n/a | pressed/a11y/table/deleted inventories; full sidebar sweep evidence |
 | T8 | `sprint-4/23-T8-guardrails-docs` | 3.8 | n/a | lint green in CI; `/review-animations` Approve |
 
-Order T1 -> T2 -> T3 -> T4 -> T5 -> T6 -> T7 -> T8. T2 depends on T1 (tokens); T3 on T2
+Order T0 (parallel with T1, disjoint files) -> T1 -> T2 -> T3 -> T4 -> T5 -> T6 -> T7 -> T8. T2 depends on T1 (tokens); T3 on T2
 (`OVERLAY_CLASS_STATIC`, `primitive-classes`); T4 on T2 (`rowHref`, `isPlaceholderData`) and
 T3 (`AlertDialog` spring for the dirty guard); T5 on T4 (`RecordActions` seam) and T3
 (`AlertDialog` for the carve-outs); T6 on T2 (toast position) and T5 (`deferred-toast` lives

@@ -12,7 +12,7 @@ The slim, always-true rules. `CLAUDE.md` is the detailed per-engine reference; *
 3. **Frontend-first** - UI → hook → service → **mock**, tune all states, THEN swap the mock for the real `api-client` call (one-line at the service boundary).
 4. **Backend second** - Service-Repository.
 5. **TDD** both layers (Vitest/RTL front, pytest/httpx back), tests precede impl.
-6. **Playwright E2E** - REAL user clicks (never URL shortcuts), against mock then live; produce a Test Execution Report.
+6. **Browser verification** (Playwright is retired - user ruling 2026-09-04, plan 23 D15) - `[E2E]` = one recorded `agent-browser` CLI run per user flow, REAL clicks from the sidebar (never URL shortcuts), 375px AND 1280px, against mock then live; produce a Test Execution Report.
 7. **Code review approves before merge.**
 8. **Branch** `sprint-<N>/<feature>`; merge to `main` only after review.
 
