@@ -243,7 +243,14 @@ export function SidebarMenu() {
   };
 
   return (
-    <div className="kt-scrollable-y-hover flex grow shrink-0 py-5 px-5 lg:max-h-[calc(100vh-5.5rem)]">
+    // Bounded by the flex-1 min-h-0 wrapper in sidebar.tsx (itself inside the fixed
+    // sidebar box, whose own height already shrinks when the impersonation banner is
+    // expanded) via h-full/max-h-full - NOT a 100vh calc, which stayed a page-relative
+    // guess and never accounted for --shell-top-offset. At the old calc(100vh-5.5rem)
+    // with the banner expanded (B=45px), the box was short by B, so the last ~7px of
+    // the final nav item (after its own py-5) was unreachable at max scroll (T1 fix
+    // round 2).
+    <div className="kt-scrollable-y-hover flex grow shrink-0 py-5 px-5 lg:h-full lg:max-h-full">
       <AccordionMenu
         selectedValue={pathname}
         matchPath={matchPath}

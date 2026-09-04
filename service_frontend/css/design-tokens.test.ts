@@ -204,6 +204,25 @@ describe('AC-DLA-03 named z-scale', () => {
     expect(settingsSidebar).toContain('calc(var(--header-height)+var(--shell-top-offset,0px)+1rem)');
   });
 
+  /**
+   * T1 fix round 2: the sidebar box itself already shrinks with the banner
+   * (lg:top-(--shell-top-offset) lg:bottom-0), but the menu scroller kept a
+   * `100vh`-relative cap (`calc(100vh-5.5rem)`) instead of being bounded by the
+   * REMAINING height inside that box - with the banner expanded, the scroller's cap
+   * stayed a fixed viewport fraction while the box shrank underneath it, so the
+   * last ~7px of the final nav item sat past the sidebar's real bottom edge,
+   * unreachable at max scroll. The fix bounds the scroller with flex (h-full/
+   * max-h-full through a flex-1 min-h-0 ancestor), never a 100vh calc.
+   */
+  it('bounds the sidebar menu scroller by the remaining flex height, not a 100vh calc', () => {
+    const sidebarTsx = read('app/components/layouts/demo1/components/sidebar.tsx');
+    expect(sidebarTsx).toMatch(/overflow-hidden[^"'`]*\bflex-1\b[^"'`]*\bmin-h-0\b/);
+    const sidebarMenuTsx = read('app/components/layouts/demo1/components/sidebar-menu.tsx');
+    expect(sidebarMenuTsx).not.toMatch(/max-h-\[calc\(100vh/);
+    expect(sidebarMenuTsx).toMatch(/\blg:h-full\b/);
+    expect(sidebarMenuTsx).toMatch(/\blg:max-h-full\b/);
+  });
+
   it('leaves no ad-hoc z-[N] under app/** or components/**', () => {
     const offenders = walk(['app', 'components'])
       .filter((f) => /\.(tsx?|css)$/.test(f))
