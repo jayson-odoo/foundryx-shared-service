@@ -17,6 +17,12 @@ from sqlalchemy.orm import Session
 # `failed` with the exception text - never swallow an error silently.
 DeferredActionExecutor = Callable[[Session, str, str, dict, str], None]
 
+# exists(db, tenant_id, entity_id) -> bool - a tenant-scoped existence check
+# run at PARK time (missing target = 404, fix round 1 item 7) so parking an
+# action on a record that's already gone (or never existed) fails loudly
+# instead of silently sitting until commit.
+DeferredActionExistsCheck = Callable[[Session, str, str], bool]
+
 DeferredActionWindow = Literal["destructive", "reversible"]
 
 
@@ -36,6 +42,11 @@ class DeferredActionDef:
     window: DeferredActionWindow
     label: str
     execute: DeferredActionExecutor
+    #: Tenant-scoped existence check for the target record, run at park time
+    #: (fix round 1 item 7). Wired to the entity's own repository `get_by_id`
+    #: (or equivalent) - a missing target 404s the park instead of parking a
+    #: countdown for a record that isn't there.
+    exists: DeferredActionExistsCheck
     #: True for a platform-only action (e.g. tenant archive from the console) -
     #: `PendingActionService.park` additionally requires the actor's OWN
     #: tenant to be the platform tenant, mirroring `require_platform_permission`

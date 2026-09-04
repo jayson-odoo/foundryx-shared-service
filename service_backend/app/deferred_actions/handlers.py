@@ -12,18 +12,37 @@ site's OWN verb is used where it differs from the plan's shorthand (the
 Archived view, so the key is `workflows.delete`/`forms.delete`, not
 `.trash` - the plan's prose names were approximate; the registered set is the
 one this file actually implements).
+
+Fix round 1 (T5) items 6/7: every handler resolves its acting user via the
+entity's OWN tenant-scoped repository (never a bare `db.get(User, id)` -
+that's an unscoped lookup of a stored id, the polymorphic-target_id rule),
+and every `DeferredActionDef` carries an `exists` check so `park()` 404s a
+target that's already gone, plus the handlers whose underlying service call
+silently no-ops on a missing id (bulk-shaped `UPDATE ... WHERE id IN (...)`)
+assert the record was actually touched before reporting success.
 """
 from sqlalchemy.orm import Session
 
 from app.deferred_actions.registry import DeferredActionDef, register_deferred_action
-from app.models.user import User
+from app.repositories.user_repository import UserRepository
 
 
-def _load_actor(db: Session, actor_user_id: str) -> User:
-    """Look up the acting user by id for an existing service call that wants
-    a `User` (audit context only - the permission check already happened at
-    park time, this is not a re-authorization)."""
-    actor = db.get(User, actor_user_id) if actor_user_id else None
+class DeferredTargetGone(Exception):
+    """The record the handler was asked to act on no longer exists - the
+    underlying service call would otherwise silently no-op (fix round 1,
+    item 7). Raised so `commit_one` marks the row `failed`."""
+
+
+def _load_actor(db: Session, tenant_id: str, actor_user_id: str):
+    """Tenant-scoped resolution of the acting user (audit context only - the
+    permission check already happened at park time, this is not a
+    re-authorization). Never an unscoped `db.get(User, id)` - a stored id
+    must always be resolved tenant-scoped at use time."""
+    actor = (
+        UserRepository(db).get_by_id(actor_user_id, tenant_id, include_trashed=True)
+        if actor_user_id
+        else None
+    )
     if actor is None:
         raise ValueError("Deferred action actor not found.")
     return actor
@@ -32,7 +51,13 @@ def _load_actor(db: Session, actor_user_id: str) -> User:
 def _users_trash(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
     from app.services.user_service import UserService
 
+    if UserRepository(db).get_by_id(entity_id, tenant_id, include_trashed=True) is None:
+        raise DeferredTargetGone("User no longer exists.")
     UserService(db).trash([entity_id], tenant_id)
+
+
+def _users_trash_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    return UserRepository(db).get_by_id(entity_id, tenant_id, include_trashed=True) is not None
 
 
 def _roles_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
@@ -41,16 +66,34 @@ def _roles_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, ac
     RoleService(db).delete(entity_id, tenant_id)
 
 
+def _roles_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.repositories.role_repository import RoleRepository
+
+    return RoleRepository(db).get_by_id(entity_id, tenant_id) is not None
+
+
 def _workflows_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
     from app.services.workflow_service import WorkflowService
 
     WorkflowService(db).remove(entity_id, tenant_id)
 
 
+def _workflows_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.repositories.workflow_repository import WorkflowRepository
+
+    return WorkflowRepository(db).get(entity_id, tenant_id) is not None
+
+
 def _forms_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
     from app.services.form_service import FormService
 
     FormService(db).delete(tenant_id, entity_id)
+
+
+def _forms_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.repositories.form_repository import FormRepository
+
+    return FormRepository(db).get_by_id(tenant_id, entity_id) is not None
 
 
 def _templates_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
@@ -65,6 +108,12 @@ def _templates_reset(db: Session, tenant_id: str, entity_id: str, payload: dict,
     TemplateService(db).reset(entity_id, tenant_id)
 
 
+def _templates_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.repositories.template_repository import TemplateRepository
+
+    return TemplateRepository(db).get_visible(entity_id, tenant_id) is not None
+
+
 def _connections_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
     from app.services.integration_service import IntegrationService
 
@@ -77,10 +126,22 @@ def _connections_activate(db: Session, tenant_id: str, entity_id: str, payload: 
     IntegrationService(db).set_active(tenant_id, entity_id)
 
 
+def _connections_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.repositories.connection_repository import ConnectionRepository
+
+    return ConnectionRepository(db).get(entity_id, tenant_id) is not None
+
+
 def _ai_agents_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
     from app.services.ai_service import AgentService
 
     AgentService(db).delete(tenant_id, entity_id)
+
+
+def _ai_agents_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.repositories.ai_repository import AgentRepository
+
+    return AgentRepository(db).get(tenant_id, entity_id) is not None
 
 
 def _ai_skills_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
@@ -89,17 +150,42 @@ def _ai_skills_delete(db: Session, tenant_id: str, entity_id: str, payload: dict
     SkillService(db).delete(tenant_id, entity_id)
 
 
+def _ai_skills_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.repositories.ai_repository import SkillRepository
+
+    return SkillRepository(db).get(tenant_id, entity_id) is not None
+
+
 def _documents_trash(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
     from app.services.document_service import DocumentService
+    from app.repositories.document_repository import DocumentRepository
 
-    actor = _load_actor(db, actor_user_id)
+    actor = _load_actor(db, tenant_id, actor_user_id)
+    if DocumentRepository(db).get_file(tenant_id, entity_id) is None:
+        raise DeferredTargetGone("File no longer exists.")
     DocumentService(db).delete(tenant_id, [], [entity_id], actor)
+
+
+def _documents_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.repositories.document_repository import DocumentRepository
+
+    file = DocumentRepository(db).get_file(tenant_id, entity_id)
+    return file is not None and not file.is_deleted
 
 
 def _document_shares_revoke(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
     from app.services.share_service import ShareService
+    from app.repositories.share_repository import ShareRepository
 
+    if ShareRepository(db).get(tenant_id, entity_id) is None:
+        raise DeferredTargetGone("Share no longer exists.")
     ShareService(db).revoke(tenant_id, [entity_id])
+
+
+def _document_shares_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.repositories.share_repository import ShareRepository
+
+    return ShareRepository(db).get(tenant_id, entity_id) is not None
 
 
 def _products_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
@@ -108,27 +194,57 @@ def _products_delete(db: Session, tenant_id: str, entity_id: str, payload: dict,
     ProductService(db).delete(tenant_id, entity_id)
 
 
+def _products_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.models.catalog import Product
+
+    return (
+        db.query(Product.id)
+        .filter(Product.id == entity_id, Product.tenant_id == tenant_id)
+        .first()
+        is not None
+    )
+
+
 def _tenants_archive(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
     from app.services.tenant_service import TenantService
 
-    actor = db.get(User, actor_user_id) if actor_user_id else None
     # `entity_id` is the TARGET tenant being archived, not the actor's own
-    # tenant (a platform action) - `tenant_id` (park scope) is the actor's own.
+    # tenant (a platform action) - the actor is only resolved for audit;
+    # `TenantService`'s guard reads the target tenant itself.
+    actor = (
+        UserRepository(db).get_by_id(actor_user_id, tenant_id, include_trashed=True)
+        if actor_user_id
+        else None
+    )
     TenantService(db).archive(entity_id, actor)
 
 
 def _tenants_suspend(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
     from app.services.tenant_service import TenantService
 
-    actor = db.get(User, actor_user_id) if actor_user_id else None
+    actor = (
+        UserRepository(db).get_by_id(actor_user_id, tenant_id, include_trashed=True)
+        if actor_user_id
+        else None
+    )
     TenantService(db).suspend(entity_id, actor)
 
 
 def _tenants_reactivate(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
     from app.services.tenant_service import TenantService
 
-    actor = db.get(User, actor_user_id) if actor_user_id else None
+    actor = (
+        UserRepository(db).get_by_id(actor_user_id, tenant_id, include_trashed=True)
+        if actor_user_id
+        else None
+    )
     TenantService(db).reactivate(entity_id, actor)
+
+
+def _tenants_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.repositories.tenant_repository import TenantRepository
+
+    return TenantRepository(db).get_by_id(entity_id) is not None
 
 
 USERS_TRASH = DeferredActionDef(
@@ -138,6 +254,7 @@ USERS_TRASH = DeferredActionDef(
     window="destructive",
     label="Trash",
     execute=_users_trash,
+    exists=_users_trash_exists,
 )
 ROLES_DELETE = DeferredActionDef(
     key="roles.delete",
@@ -146,6 +263,7 @@ ROLES_DELETE = DeferredActionDef(
     window="destructive",
     label="Delete role",
     execute=_roles_delete,
+    exists=_roles_exists,
 )
 WORKFLOWS_DELETE = DeferredActionDef(
     key="workflows.delete",
@@ -154,6 +272,7 @@ WORKFLOWS_DELETE = DeferredActionDef(
     window="destructive",
     label="Delete permanently",
     execute=_workflows_delete,
+    exists=_workflows_exists,
 )
 FORMS_DELETE = DeferredActionDef(
     key="forms.delete",
@@ -162,6 +281,7 @@ FORMS_DELETE = DeferredActionDef(
     window="destructive",
     label="Delete permanently",
     execute=_forms_delete,
+    exists=_forms_exists,
 )
 TEMPLATES_DELETE = DeferredActionDef(
     key="templates.delete",
@@ -170,6 +290,7 @@ TEMPLATES_DELETE = DeferredActionDef(
     window="destructive",
     label="Delete",
     execute=_templates_delete,
+    exists=_templates_exists,
 )
 TEMPLATES_RESET = DeferredActionDef(
     key="templates.reset",
@@ -178,6 +299,7 @@ TEMPLATES_RESET = DeferredActionDef(
     window="destructive",
     label="Reset to default",
     execute=_templates_reset,
+    exists=_templates_exists,
 )
 CONNECTIONS_DELETE = DeferredActionDef(
     key="connections.delete",
@@ -186,6 +308,7 @@ CONNECTIONS_DELETE = DeferredActionDef(
     window="destructive",
     label="Disconnect",
     execute=_connections_delete,
+    exists=_connections_exists,
 )
 CONNECTIONS_ACTIVATE = DeferredActionDef(
     key="connections.activate",
@@ -194,6 +317,7 @@ CONNECTIONS_ACTIVATE = DeferredActionDef(
     window="reversible",  # switching the active bucket back is a click away
     label="Set as active",
     execute=_connections_activate,
+    exists=_connections_exists,
 )
 AI_AGENTS_DELETE = DeferredActionDef(
     key="ai_agents.delete",
@@ -202,6 +326,7 @@ AI_AGENTS_DELETE = DeferredActionDef(
     window="destructive",
     label="Delete",
     execute=_ai_agents_delete,
+    exists=_ai_agents_exists,
 )
 AI_SKILLS_DELETE = DeferredActionDef(
     key="ai_skills.delete",
@@ -210,6 +335,7 @@ AI_SKILLS_DELETE = DeferredActionDef(
     window="destructive",
     label="Delete",
     execute=_ai_skills_delete,
+    exists=_ai_skills_exists,
 )
 DOCUMENTS_TRASH = DeferredActionDef(
     key="documents.trash",
@@ -218,6 +344,7 @@ DOCUMENTS_TRASH = DeferredActionDef(
     window="destructive",
     label="Trash",
     execute=_documents_trash,
+    exists=_documents_exists,
 )
 PRODUCTS_DELETE = DeferredActionDef(
     key="products.delete",
@@ -226,6 +353,7 @@ PRODUCTS_DELETE = DeferredActionDef(
     window="destructive",
     label="Delete",
     execute=_products_delete,
+    exists=_products_exists,
 )
 DOCUMENT_SHARES_REVOKE = DeferredActionDef(
     key="document_shares.revoke",
@@ -234,6 +362,7 @@ DOCUMENT_SHARES_REVOKE = DeferredActionDef(
     window="destructive",
     label="Revoke",
     execute=_document_shares_revoke,
+    exists=_document_shares_exists,
 )
 TENANTS_ARCHIVE = DeferredActionDef(
     key="tenants.archive",
@@ -242,6 +371,7 @@ TENANTS_ARCHIVE = DeferredActionDef(
     window="reversible",  # archive is reversible via Restore (D2)
     label="Archive",
     execute=_tenants_archive,
+    exists=_tenants_exists,
     platform=True,
 )
 TENANTS_SUSPEND = DeferredActionDef(
@@ -251,6 +381,7 @@ TENANTS_SUSPEND = DeferredActionDef(
     window="reversible",
     label="Suspend",
     execute=_tenants_suspend,
+    exists=_tenants_exists,
     platform=True,
 )
 TENANTS_REACTIVATE = DeferredActionDef(
@@ -260,6 +391,7 @@ TENANTS_REACTIVATE = DeferredActionDef(
     window="reversible",
     label="Reactivate",
     execute=_tenants_reactivate,
+    exists=_tenants_exists,
     platform=True,
 )
 
