@@ -6,7 +6,8 @@ import { buttonVariants } from '@/components/ui/button';
 import { VariantProps } from 'class-variance-authority';
 import { AlertDialog as AlertDialogPrimitive } from 'radix-ui';
 import { AnimatePresence, motion } from 'motion/react';
-import { OVERLAY_CLASS_STATIC } from '@/components/ui/primitive-classes';
+import { OVERLAY_CLASS, OVERLAY_CLASS_STATIC } from '@/components/ui/primitive-classes';
+import { focusIsInsideFloating } from '@/components/common/floatingAncestry';
 import {
   surfaceExitTransition,
   surfaceTransition,
@@ -41,9 +42,22 @@ function AlertDialogPortal({ ...props }: React.ComponentProps<typeof AlertDialog
   return <AlertDialogPrimitive.Portal data-slot="alert-dialog-portal" {...props} />;
 }
 
+// T3 fix round 1 finding 12: T3's spring migration inlined the overlay's
+// `motion.div` straight into `AlertDialogContent` and dropped this
+// standalone export entirely (it existed pre-spring, mirroring
+// `DialogOverlay`). Restored the same way as `DialogOverlay`: `OVERLAY_CLASS`
+// (with its own CSS fade), since this export is NOT spring-driven when used
+// alone. Zero importers today - kept for API stability.
+function AlertDialogOverlay({ className, ...props }: React.ComponentProps<typeof AlertDialogPrimitive.Overlay>) {
+  return (
+    <AlertDialogPrimitive.Overlay data-slot="alert-dialog-overlay" className={cn(OVERLAY_CLASS, className)} {...props} />
+  );
+}
+
 function AlertDialogContent({
   className,
   children,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof AlertDialogPrimitive.Content>) {
   const open = React.useContext(AlertDialogOpenContext);
@@ -60,6 +74,53 @@ function AlertDialogContent({
   };
   const transition = surfaceTransition(prefersReducedMotion, 'lightbox');
   const exitTransition = surfaceExitTransition(prefersReducedMotion);
+  // T3 fix round 1 finding 8 - ported from `sorento_crm`/`dialog.tsx` (the
+  // AlertDialog equivalent Sorento left as a follow-up; this repo ships it
+  // now since the request calls for parity across Dialog/AlertDialog/Sheet).
+  // See dialog.tsx's identical block for the full rationale.
+  const mountedAtRef = React.useRef<number>(0);
+  const openerRef = React.useRef<HTMLElement | null>(null);
+  const contentRefCallback = React.useCallback((node: HTMLDivElement | null) => {
+    if (node) {
+      mountedAtRef.current = performance.now();
+      const active = document.activeElement;
+      if (openerRef.current === null && active instanceof HTMLElement && active !== document.body && !node.contains(active)) {
+        openerRef.current = active;
+      }
+    } else {
+      mountedAtRef.current = 0;
+    }
+  }, []);
+
+  const restoreFocusToOpener = (event: Event) => {
+    const opener = openerRef.current;
+    openerRef.current = null;
+    onCloseAutoFocus?.(event);
+    if (event.defaultPrevented) return;
+    if (!opener || !opener.isConnected) return;
+    event.preventDefault();
+    opener.focus();
+  };
+  // Radix's `AlertDialogContentProps` deliberately OMITS `onPointerDownOutside`/
+  // `onInteractOutside` from `DialogContentProps` (confirmed against
+  // `@radix-ui/react-alert-dialog`'s own types) - an AlertDialog is never
+  // dismissable by an outside click at all, by design (it demands an explicit
+  // choice). Only `onFocusOutside` survives that Omit, so this guard is wired
+  // to that alone below - still useful for the identical stacked-surface /
+  // trailing-event cases `dialog.tsx`'s guard documents.
+  const guardOutsideInteraction = (event: Event) => {
+    const detail = (event as CustomEvent<{ originalEvent?: Event }>).detail;
+    const original = detail?.originalEvent;
+    const target = (original?.target ?? event.target) as Element | null;
+    if (focusIsInsideFloating(target)) {
+      event.preventDefault();
+      return;
+    }
+    if (mountedAtRef.current && performance.now() - mountedAtRef.current < 300) {
+      event.preventDefault();
+      return;
+    }
+  };
 
   return (
     <AnimatePresence>
@@ -74,7 +135,15 @@ function AlertDialogContent({
               transition={transition}
             />
           </AlertDialogPrimitive.Overlay>
-          <AlertDialogPrimitive.Content asChild forceMount data-slot="alert-dialog-content" {...props}>
+          <AlertDialogPrimitive.Content
+            ref={contentRefCallback}
+            asChild
+            forceMount
+            data-slot="alert-dialog-content"
+            onFocusOutside={guardOutsideInteraction}
+            onCloseAutoFocus={restoreFocusToOpener}
+            {...props}
+          >
             <motion.div
               className={cn(
                 // `max-h` + `overflow-y-auto`: a long confirmation (a bulk
@@ -170,6 +239,7 @@ export {
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
+  AlertDialogOverlay,
   AlertDialogPortal,
   AlertDialogTitle,
   AlertDialogTrigger,
