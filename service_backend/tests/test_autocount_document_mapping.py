@@ -534,10 +534,14 @@ def test_push_carries_full_line_set(session_factory):
 
 
 def test_picker_migration_idempotent(session_factory):
-    """AC-02-05: the module migration's backfill function converts an
-    existing task's `lineKeyColumn`/`lineProductColumn`/`lineWarehouseColumn`
-    into three persisted line rows, once, idempotently, and strips the keys
-    from `source_config`; `validate_source_config` no longer requires them.
+    """AC-02-05 (amended - code-review B1): the module migration's backfill
+    function converts an existing task's `lineKeyColumn`/`lineProductColumn`/
+    `lineWarehouseColumn` into persisted line rows, once, idempotently, and
+    strips the keys from `source_config`; `validate_source_config` no longer
+    requires them. It ALSO seeds one row per the entity's
+    `DOCUMENT_LINE_FIXED_FIELDS` entry (source_path == canonical_field) - not
+    just the picker-derived rows - so a migrated task's fixed-field pushes
+    (e.g. `qty_ordered`) are never null.
 
     ASSUMED name: `modules.autocount.backfill.backfill_document_line_mapping_
     pickers(db, tenant_id, company_id, entity_type) -> int` (see module
@@ -553,11 +557,16 @@ def test_picker_migration_idempotent(session_factory):
     )
 
     from modules.autocount.backfill import backfill_document_line_mapping_pickers
+    from modules.autocount.mapping import DOCUMENT_LINE_FIXED_FIELDS
+
+    fixed_fields = DOCUMENT_LINE_FIXED_FIELDS[ENTITY_SALES_ORDER]
 
     created = backfill_document_line_mapping_pickers(
         db, DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER
     )
-    assert created == 2  # source_ref + product_ref (no warehouse column configured)
+    # source_ref + product_ref (no warehouse column configured) plus one row
+    # per fixed field.
+    assert created == 2 + len(fixed_fields)
 
     line_rows = db.query(AcFieldMapping).filter(
         AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
@@ -565,7 +574,10 @@ def test_picker_migration_idempotent(session_factory):
         AcFieldMapping.entity_type == ENTITY_SALES_ORDER,
         AcFieldMapping.scope == SCOPE_LINE,
     ).all()
-    assert {r.canonical_field for r in line_rows} == {"source_ref", "product_ref"}
+    expected_fields = {"source_ref", "product_ref"} | {
+        canonical for canonical, _transform, _required in fixed_fields
+    }
+    assert {r.canonical_field for r in line_rows} == expected_fields
 
     db.refresh(config)
     for key in ("lineKeyColumn", "lineProductColumn", "lineWarehouseColumn"):
@@ -642,7 +654,9 @@ def test_line_result_columns_persist_and_gate(session_factory):
 # ═══════════════════════════════════════════════════════════════════════════
 
 DEFAULT_STATUS_FORMULA = (
-    'if(Cancelled == "T", "cancelled", if(lines.open_count == 0, "closed", "open"))'
+    'if(Cancelled == "T", "cancelled", '
+    'if(lines.count == 0, "open", '
+    'if(lines.open_count == 0, "closed", "open")))'
 )
 
 
@@ -676,7 +690,7 @@ def test_line_aggregates_matrix(session_factory):
     """
     engine = _aggregate_engine()
     matrix = [
-        ("no lines", [], "closed"),
+        ("no lines", [], "open"),
         ("all open", [{"DtlKey": "L1", "ItemAutoKey": "P1", "Qty": "10", "TransferedQty": "0"}], "open"),
         ("all fulfilled", [{"DtlKey": "L1", "ItemAutoKey": "P1", "Qty": "10", "TransferedQty": "10"}], "closed"),
         (
