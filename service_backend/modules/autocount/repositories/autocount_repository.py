@@ -855,6 +855,28 @@ class RowHashRepository:
         self.db.flush()
         return deleted
 
+    def clear_all(self, tenant_id: str, company_id: str, entity_type: str) -> int:
+        """Wipe EVERY hash row for one (tenant, company, entity) - the
+        re-baseline primitive a population-narrowing task save needs (F1,
+        sprint-5/02 review round): a header that merely fell out of a new,
+        narrower scope must never be diffed against a stale hash population
+        and read as a genuine deletion. The caller re-populates from a clean
+        slate on the next fetch (`upsert_many`), so a real deletion is only
+        ever detected again once the new population has had a chance to see
+        every record it is actually configured to see. Does not commit; the
+        caller owns the transaction."""
+        deleted = (
+            self.db.query(AcRowHash)
+            .filter(
+                AcRowHash.tenant_id == tenant_id,
+                AcRowHash.company_id == company_id,
+                AcRowHash.entity_type == entity_type,
+            )
+            .delete(synchronize_session=False)
+        )
+        self.db.flush()
+        return deleted
+
 
 class SyncRunRepository:
     def __init__(self, db: Session):

@@ -60,6 +60,7 @@ from ..models import (
 from ..repositories import (
     ConnectionRepository,
     EntityConfigRepository,
+    RowHashRepository,
     SyncJobRepository,
     SyncRunRepository,
 )
@@ -269,6 +270,21 @@ def _clean_int(value: Any) -> Optional[int]:
     if isinstance(value, str) and value.strip().lstrip("-").isdigit():
         return int(value.strip())
     return None
+
+
+# A document task's row-hash population (`ac_row_hash`) is a diff baseline
+# for the *exact* set of headers `query`+`fromDate`+`filterFormula` can ever
+# return. Narrowing any of these (or `keyColumns`, which changes what a hash
+# row's own identity even means) makes a header that merely fell OUT of the
+# new, narrower scope look identical - to the next reconcile's `known -
+# current_refs` diff - to one AutoCount genuinely deleted (F1, sprint-5/02
+# review round). Schedule-only fields (interval/reconcile timing) never
+# change what the task's population IS, so they are deliberately excluded -
+# clearing hashes on every save would defeat the whole point of reconcile
+# (every save would re-add everything as a fresh "ADD", masking real edits).
+POPULATION_DEFINING_KEYS = frozenset(
+    {"fromDate", "query", "lineQuery", "keyColumns", "filterFormula"}
+)
 
 
 def validate_source_config(
@@ -850,6 +866,15 @@ class EtlService:
             raise EtlValidationError(errors)
 
         config = self.configs.get(tenant_id, company_id, entity_type)
+        # Captured BEFORE `config.source_config` is overwritten below - the F1
+        # re-baseline check needs the OLD population-defining values to
+        # compare against the new ones. `None` for a brand-new task (nothing
+        # to compare, no hashes could possibly exist yet either).
+        previous_source_config: Optional[Dict[str, Any]] = (
+            dict(config.source_config)
+            if config is not None and isinstance(config.source_config, dict)
+            else None
+        )
         if config is None:
             # A row that exists ONLY for the DB path is born on the DB source.
             # Existing rows (API-path entities) keep their source_impl - the
@@ -867,6 +892,22 @@ class EtlService:
                 )
             )
         config.source_config = clean
+        #     !!  A NARROWED POPULATION MUST RE-BASELINE, NEVER DELETE.  !!
+        # (F1, sprint-5/02 review round - BLOCKER.) A document task's
+        # `ac_row_hash` rows are a diff baseline for the set `query` +
+        # `fromDate` + `filterFormula` + `keyColumns` can return. Changing any
+        # of THOSE (never a schedule-only field) means every existing hash is
+        # a baseline for a population that no longer exists - clearing them
+        # here forces the next fetch to `upsert_many` a FRESH baseline (every
+        # in-scope header stages as an ADD, never a phantom DELETE for one
+        # that merely fell outside the new scope).
+        if is_document_entity(entity_type) and previous_source_config is not None:
+            narrowed = any(
+                previous_source_config.get(key) != clean.get(key)
+                for key in POPULATION_DEFINING_KEYS
+            )
+            if narrowed:
+                RowHashRepository(self.db).clear_all(tenant_id, company_id, entity_type)
         # The validation preview already proved what this query returns, so its
         # column names are stored (AC-22-09/11) - the Mapping tab's source
         # picker reads them instead of re-running the query per keystroke.
