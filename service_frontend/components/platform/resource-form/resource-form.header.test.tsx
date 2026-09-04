@@ -124,6 +124,29 @@ describe('AC-DLA-28 ResourceForm header restructure', () => {
     expect(cluster?.className).toContain('flex-wrap');
   });
 
+  it('a form-surface action run() receives rt.backHref carrying the SAME ctx/i/from as the Back link (AC-DLA-30 fix round 1, post-delete nav)', async () => {
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams({ ctx: 'CTX', i: '3' }) as unknown as ReturnType<typeof useSearchParams>,
+    );
+    const run = vi.fn();
+    const trashAction: ResourceAction<Rec> = {
+      id: 'trash',
+      label: 'Trash',
+      tone: 'destructive',
+      surfaces: { form: true },
+      run,
+    };
+    render(<ResourceForm config={baseConfig({ actions: [trashAction] })} />);
+    const gear = screen.getByRole('button', { name: 'Actions' });
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(gear);
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Trash' }));
+    expect(run).toHaveBeenCalled();
+    const rt = run.mock.calls[0][1] as { backHref?: string };
+    const backLinkHref = screen.getByRole('link', { name: /back/i }).getAttribute('href');
+    expect(rt.backHref).toBe(backLinkHref);
+  });
+
   it('embedded mode renders no PageHeader toolbar row, uses onBack in RecordActions instead', () => {
     const onBack = vi.fn();
     render(<ResourceForm config={baseConfig({ embedded: true, onBack })} />);

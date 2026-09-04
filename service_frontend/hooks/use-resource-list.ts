@@ -1,7 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import type { FilterGroup, ListQuery, ListResult, SortState, StatusView } from '@/types/resource';
+import { decodeListQuery } from '@/lib/list-context';
 import { useDebounce } from './use-debounce';
 
 export interface UseResourceListOptions<T> {
@@ -10,6 +12,19 @@ export interface UseResourceListOptions<T> {
   defaultSort?: SortState | null;
   /** Initial segment when the entity uses N-way segments (see ListQuery.segment). */
   defaultSegment?: string;
+  /**
+   * AC-DLA-30 fix round 1 (Back restores the row past page one): when true,
+   * the hook's initial page/pageSize/search/sort/filter/statusView/segment
+   * are read off the `ctx` query param (`decodeListQuery`) if present and
+   * decodable, falling back to the usual defaults otherwise. Read exactly
+   * ONCE, at mount (a `useState` lazy initializer) - a later `ctx` edit in
+   * the URL never re-seeds an already-mounted list. Callers embedding a
+   * `ResourceList` inside a RECORD's own tab must leave this off: that URL's
+   * `ctx` belongs to the outer record's pager (`use-record-nav.ts`), not to
+   * the tab's own list - `ResourceList` defaults it to `!hideHeader` for
+   * exactly this reason.
+   */
+  restoreFromCtx?: boolean;
 }
 
 export interface UseResourceListResult<T> {
@@ -64,14 +79,22 @@ export function useResourceList<T>({
   defaultPageSize = 25,
   defaultSort = null,
   defaultSegment,
+  restoreFromCtx = false,
 }: UseResourceListOptions<T>): UseResourceListResult<T> {
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSizeState] = useState(defaultPageSize);
-  const [search, setSearchState] = useState('');
-  const [sort, setSortState] = useState<SortState | null>(defaultSort);
-  const [filter, setFilterState] = useState<FilterGroup | null>(null);
-  const [statusView, setStatusViewState] = useState<StatusView>('active');
-  const [segment, setSegmentState] = useState<string | undefined>(defaultSegment);
+  const searchParams = useSearchParams();
+  // Lazy initializer runs exactly once, at mount - the whole point (a later
+  // `ctx` change from record-nav stepping must never re-seed this list).
+  const [restored] = useState<ListQuery | null>(() =>
+    restoreFromCtx ? decodeListQuery(searchParams.get('ctx')) : null,
+  );
+
+  const [page, setPage] = useState(restored?.page ?? 0);
+  const [pageSize, setPageSizeState] = useState(restored?.pageSize ?? defaultPageSize);
+  const [search, setSearchState] = useState(restored?.search ?? '');
+  const [sort, setSortState] = useState<SortState | null>(restored?.sort ?? defaultSort);
+  const [filter, setFilterState] = useState<FilterGroup | null>(restored?.filter ?? null);
+  const [statusView, setStatusViewState] = useState<StatusView>(restored?.statusView ?? 'active');
+  const [segment, setSegmentState] = useState<string | undefined>(restored?.segment ?? defaultSegment);
 
   const [data, setData] = useState<T[]>([]);
   const [total, setTotal] = useState(0);

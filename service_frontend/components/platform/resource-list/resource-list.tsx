@@ -122,6 +122,17 @@ export interface ResourceListProps<T extends object> {
    * page's one `PageHeader` (or, for a chrome-less embed, none at all).
    */
   hideHeader?: boolean;
+  /**
+   * AC-DLA-30 fix round 1: restore page/sort/filter/search from the URL's
+   * `ctx` on mount (Back lands with the list exactly as the user left it).
+   * Defaults to `!hideHeader` - a list that owns its own page IS the thing
+   * `ctx` was encoded for; a list embedded in a record's tab sits under that
+   * record's OWN `ctx` (its record-nav pager) and must never read it as its
+   * own query. The couple of pages that hide their header for purely
+   * cosmetic reasons (their own custom wrapper renders the real
+   * `PageHeader`) while still owning a real list route pass this explicitly.
+   */
+  restoreFromCtx?: boolean;
 }
 
 /**
@@ -133,6 +144,7 @@ export interface ResourceListProps<T extends object> {
 export function ResourceList<T extends object>({
   config,
   hideHeader,
+  restoreFromCtx,
 }: ResourceListProps<T>) {
   const router = useRouter();
   const { can } = useCan();
@@ -143,6 +155,7 @@ export function ResourceList<T extends object>({
     defaultSegment: config.segments
       ? (config.defaultSegment ?? config.segments[0]?.id)
       : undefined,
+    restoreFromCtx: restoreFromCtx ?? !hideHeader,
   });
   const prefs = useViewPreferences(config.viewKey);
 

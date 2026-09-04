@@ -31,6 +31,16 @@ export interface ResourceActionRuntime {
   ctx?: string;
   /** Global index of the row within the current query (row surface only). */
   index?: number;
+  /**
+   * The list href a FORM-surface action should navigate to after a delete/
+   * trash success (AC-DLA-30 fix round 1, "post-delete navigation") - the
+   * SAME href the record's own Back button computes: `config.backHref` with
+   * the record's current `ctx`/`i`/`from` reattached, so leaving via a
+   * delete restores the exact list state the user came from rather than a
+   * bare default path. Form surface only (row/bulk actions already have
+   * `ctx` and stay on the list).
+   */
+  backHref?: string;
   /** Refresh the list after a mutating action. */
   reload: () => void;
 }

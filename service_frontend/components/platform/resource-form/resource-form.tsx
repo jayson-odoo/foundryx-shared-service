@@ -144,7 +144,10 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
       <ActionMenu
         actions={config.actions}
         rows={config.actionRows}
-        runtime={{ reload: config.onReload ?? (() => {}) }}
+        runtime={{
+          reload: config.onReload ?? (() => {}),
+          backHref: backHref ?? undefined,
+        }}
         surface="form"
         trigger="gear"
       />
