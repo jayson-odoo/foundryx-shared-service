@@ -1966,3 +1966,210 @@ def test_replace_mapping_omitted_line_scope_leaves_lines_untouched(session_facto
         f"untouched - got {[r.canonical_field for r in remaining]}"
     )
     db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Group H (continued) - security re-review should-fix: the S7 wire signal.
+#
+# `test_replace_mapping_explicit_empty_line_list_wipes_lines` above drives
+# `CompanyService.replace_mapping` directly at the SERVICE layer
+# (`line_rows_submitted=True` passed by hand) - it never contradicts the wire
+# contract below (it is not a router/HTTP test at all), so it is UNCHANGED.
+#
+# Today `routers/companies.py`'s PUT handler sets
+# `line_rows_submitted=is_document_entity(entity_type)` UNCONDITIONALLY - so
+# a plain header-only PUT on any document entity wipes every line row over
+# HTTP, regardless of the operator's intent. Contract: `MappingUpdateRequest`
+# gains a nullable `lineRows` field - absent/null = line scope untouched,
+# `[]` = explicit wipe, `[...]` = replace.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_put_mapping_header_only_no_line_rows_key_leaves_lines_untouched(client, session_factory):
+    """(a) HTTP PUT with `rows` (header only) and NO `lineRows` key on a
+    document task that already has line rows must 200 AND leave those line
+    rows untouched.
+
+    Today's gap: the router passes `line_rows_submitted=is_document_entity
+    (entity_type)` - always True for a document entity, no matter what (or
+    whether) `lineRows` was sent - so this exact header-only request wipes
+    every line row.
+    """
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_WIRE_A", name="src")
+    company = _company(db, conn.id, database="AED_WIRE_A", name="Wire Co A")
+    _document_config(db, company, conn.id, entity_type=ENTITY_SALES_ORDER)
+    _seed_line_row(db, company, ENTITY_SALES_ORDER, "DtlKey", "source_ref", "string", required=True)
+    _seed_line_row(db, company, ENTITY_SALES_ORDER, "ItemAutoKey", "product_ref", "ref_product", required=True)
+    company_id = company.id
+    db.close()
+
+    headers = _auth(client)
+    response = client.put(
+        f"/autocount/companies/{company_id}/entities/{ENTITY_SALES_ORDER}/mapping",
+        headers=headers,
+        json={
+            "rows": [
+                {"sourcePath": "DocNo", "transform": "string", "sorentoField": "so_number"},
+                {"sourcePath": "Cancelled", "transform": "string", "sorentoField": "status"},
+            ],
+            # Deliberately NO "lineRows" key at all - "absent" per the
+            # contract, not an empty list.
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    db2 = session_factory()
+    remaining = db2.query(AcFieldMapping).filter(
+        AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+        AcFieldMapping.company_id == company_id,
+        AcFieldMapping.entity_type == ENTITY_SALES_ORDER,
+        AcFieldMapping.scope == SCOPE_LINE,
+    ).all()
+    assert {r.canonical_field for r in remaining} == {"source_ref", "product_ref"}, (
+        "a header-only PUT with no lineRows key must leave existing line "
+        f"rows untouched - got {[r.canonical_field for r in remaining]}"
+    )
+    db2.close()
+
+
+def test_put_mapping_explicit_empty_line_rows_wipes_lines(client, session_factory):
+    """(b) HTTP PUT with `lineRows: []` must wipe the entity's existing line
+    rows.
+
+    NOTE: this is a CONTROL, not a red assertion - today's `lineRows` field
+    does not exist on the wire at all (silently dropped by Pydantic's
+    default `extra="ignore"`), so the router's unconditional
+    `line_rows_submitted=is_document_entity(...)` ALSO wipes every line row
+    on this exact request, coincidentally matching the contract's expected
+    outcome for THIS ONE input. Kept as a companion so a future
+    implementation cannot regress the explicit-wipe case while fixing (a).
+    """
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_WIRE_B", name="src")
+    company = _company(db, conn.id, database="AED_WIRE_B", name="Wire Co B")
+    _document_config(db, company, conn.id, entity_type=ENTITY_SALES_ORDER)
+    _seed_line_row(db, company, ENTITY_SALES_ORDER, "DtlKey", "source_ref", "string", required=True)
+    _seed_line_row(db, company, ENTITY_SALES_ORDER, "ItemAutoKey", "product_ref", "ref_product", required=True)
+    company_id = company.id
+    db.close()
+
+    headers = _auth(client)
+    response = client.put(
+        f"/autocount/companies/{company_id}/entities/{ENTITY_SALES_ORDER}/mapping",
+        headers=headers,
+        json={
+            "rows": [
+                {"sourcePath": "DocNo", "transform": "string", "sorentoField": "so_number"},
+                {"sourcePath": "Cancelled", "transform": "string", "sorentoField": "status"},
+            ],
+            "lineRows": [],
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    db2 = session_factory()
+    remaining = db2.query(AcFieldMapping).filter(
+        AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+        AcFieldMapping.company_id == company_id,
+        AcFieldMapping.entity_type == ENTITY_SALES_ORDER,
+        AcFieldMapping.scope == SCOPE_LINE,
+    ).all()
+    assert remaining == [], (
+        f"lineRows: [] must wipe existing line rows - got "
+        f"{[r.canonical_field for r in remaining]}"
+    )
+    db2.close()
+
+
+def test_put_mapping_line_rows_replaces_line_set(client, session_factory):
+    """(c) HTTP PUT with `lineRows: [...]` must REPLACE the entity's line
+    rows with exactly the submitted set.
+
+    Today's gap: `lineRows` does not exist on the wire at all (silently
+    dropped) - this submission is never read, so the pre-existing line row
+    is wiped to NOTHING (the router's unconditional wipe) instead of being
+    replaced by the submitted 3-row set.
+    """
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_WIRE_C", name="src")
+    company = _company(db, conn.id, database="AED_WIRE_C", name="Wire Co C")
+    _document_config(db, company, conn.id, entity_type=ENTITY_SALES_ORDER)
+    _seed_line_row(db, company, ENTITY_SALES_ORDER, "OldDtlKey", "source_ref", "string", required=True)
+    company_id = company.id
+    db.close()
+
+    headers = _auth(client)
+    response = client.put(
+        f"/autocount/companies/{company_id}/entities/{ENTITY_SALES_ORDER}/mapping",
+        headers=headers,
+        json={
+            "rows": [
+                {"sourcePath": "DocNo", "transform": "string", "sorentoField": "so_number"},
+                {"sourcePath": "Cancelled", "transform": "string", "sorentoField": "status"},
+            ],
+            "lineRows": [
+                {"sourcePath": "DtlKey", "transform": "string", "sorentoField": "source_ref", "scope": "line"},
+                {
+                    "sourcePath": "ItemAutoKey", "transform": "ref_product",
+                    "sorentoField": "product_ref", "scope": "line",
+                },
+                {
+                    "sourcePath": "Qty", "transform": "decimal", "sorentoField": "qty_ordered",
+                    "scope": "line",
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    db2 = session_factory()
+    remaining = db2.query(AcFieldMapping).filter(
+        AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+        AcFieldMapping.company_id == company_id,
+        AcFieldMapping.entity_type == ENTITY_SALES_ORDER,
+        AcFieldMapping.scope == SCOPE_LINE,
+    ).all()
+    by_field = {r.canonical_field: r for r in remaining}
+    assert set(by_field) == {"source_ref", "product_ref", "qty_ordered"}, (
+        "lineRows: [...] must REPLACE the line set with exactly what was "
+        f"submitted - got {sorted(by_field)}"
+    )
+    assert by_field["source_ref"].source_path == "DtlKey", (
+        "the OLD line row (source_path OldDtlKey) must be gone, replaced by "
+        "the submitted set"
+    )
+    db2.close()
+
+
+def test_simulate_rejects_line_count_over_cap(client, session_factory):
+    """Tiny regression test: `SimulateRequest` must reject a `lines` payload
+    with more than `MAX_DOCUMENT_LINES_PER_HEADER` entries with a 422 -
+    Simulate must never accept a payload the real SQL source's own
+    per-header fan-out cap would already have rejected at run time."""
+    from modules.autocount.sql_source.source import MAX_DOCUMENT_LINES_PER_HEADER
+
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_CAP1", name="src")
+    company = _company(db, conn.id, database="AED_CAP1", name="Cap Co")
+    _document_config(db, company, conn.id, entity_type=ENTITY_SALES_ORDER)
+    company_id = company.id
+    db.close()
+
+    headers = _auth(client)
+    response = client.post(
+        f"/autocount/companies/{company_id}/entities/{ENTITY_SALES_ORDER}/mapping/simulate",
+        headers=headers,
+        json={
+            "record": {"DocKey": "D001"},
+            "lines": [{"DtlKey": f"L{i}"} for i in range(MAX_DOCUMENT_LINES_PER_HEADER + 1)],
+        },
+    )
+    assert response.status_code == 422, (
+        "a `lines` payload over MAX_DOCUMENT_LINES_PER_HEADER must 422 - got "
+        f"{response.status_code}: {response.text}"
+    )
