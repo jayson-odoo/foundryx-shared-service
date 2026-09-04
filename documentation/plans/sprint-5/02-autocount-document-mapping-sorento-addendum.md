@@ -187,3 +187,11 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   added to §1). Sorento D1-D10 as reported (ladder, customer code+name, SPO line-set, unclassified
   warning, SPO-under-PO failed, `partial`->`open`, hooks, contract endpoint, warnings vocabulary,
   `warehouse_unresolved`) accepted without change.
+- 2026-09-05 (Sorento S1 as built): a SENT-but-unresolved `customer_ref`/`supplier_ref`/
+  `sales_agent_ref` no longer makes the record retryable when a code/name rides alongside; the
+  ladder falls through to code -> name -> back-create and registers the new row under that ref.
+  Products stay retryable; warehouses land NULL + `warehouse_unresolved`. Cross-company conflicts
+  are filed under the field name (`errors.customer_ref`, `errors.supplier_ref`), not
+  `errors.source_ref`. Consequence for the ESB: masters-first sequencing is a hard prerequisite
+  only for products + warehouses; the `documentPrerequisites` card and the cutover playbook
+  (BL-SS-050) should say so, and the sink's error mapper must read the field-named keys.
