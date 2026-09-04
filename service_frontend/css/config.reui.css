@@ -45,22 +45,23 @@
    * Named z-scale. Every fixed layer of the shell names its step here instead of
    * inventing a `z-[N]`, so "what covers what" is answered in one place.
    *
-   * `--z-sticky-content` / `-corner` are for sticky/pinned cells INSIDE page content
-   * (a frozen DataGrid column, a sticky table header) - they stay below `--z-header`
-   * and `--z-sidebar` on purpose: a fixed shell layer always has to win over a sticky
-   * cell scrolling underneath it. `-corner` is for a cell pinned on BOTH axes.
+   * `--z-sticky-content` is for sticky/pinned cells INSIDE page content (a frozen
+   * DataGrid column, a sticky table header) - it stays below `--z-header` and
+   * `--z-sidebar` on purpose: a fixed shell layer always has to win over a sticky
+   * cell scrolling underneath it.
    *
    * `--z-banner` (the impersonation banner) sits ABOVE `--z-modal` on purpose (T1 fix
-   * round 1 finding 2): the operator must always be able to reach Exit impersonation,
-   * even with a dialog/sheet/drawer open over the page - the one control that ends a
-   * privileged session can never be the thing an overlay buries.
+   * round 1 finding 2) - PAINT ORDER ONLY: the banner is never covered by an overlay's
+   * scrim, so "Exit impersonation" stays visible even with a dialog/sheet open. It is
+   * NOT a claim of clickability - a Radix Dialog/Sheet/AlertDialog sets
+   * `pointer-events: none` on the body while open, which can still swallow a click on
+   * the banner even though it paints on top (tracked BL-SS-050).
    */
   --z-header: 10;
   --z-sidebar: 20;
   --z-modal: 50;
   --z-banner: 60;
   --z-sticky-content: 5;
-  --z-sticky-content-corner: 6;
 
   /** Motion. One curve, three steps; every components/ui transition uses them. */
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
@@ -68,8 +69,8 @@
   --duration-base: 200ms;
   --duration-slow: 300ms;
 
-  /** Bounded DataGrid scroller height (toolbar + header + pager); T2 wires the first
-      consumer (headerSticky's scroller). */
+  /** Bounded DataGrid scroller height (toolbar + header + pager). consumer = T2
+      DataGrid scroller. */
   --grid-max-h: calc(100dvh - 17rem);
 }
 
@@ -101,7 +102,8 @@
 
   --material-regular: color-mix(in oklab, var(--background) 76%, transparent);
   --material-thick: color-mix(in oklab, var(--background) 90%, transparent);
-  --material-blur: 24px;
+  /* --material-blur is not re-declared here - :root's 24px is identical and already
+     cascades (T1 fix round 3 finding 10). */
   --material-edge: color-mix(in oklab, var(--foreground) 12%, transparent);
   --scrim: color-mix(in oklab, black 62%, transparent);
 }
