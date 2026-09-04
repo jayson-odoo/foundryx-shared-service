@@ -147,27 +147,37 @@
   --destructive: var(--foundryx-danger);
   --destructive-foreground: var(--foundryx-white);
 
-  /* success/info/warning solid hues clear 4.5:1 against black ink but NOT against
-     white (AC-DLA-07, css/design-tokens.test.ts) - the foreground was white before
-     this pass. The base hue is identical light/dark (Tokens Studio export), so a
-     single --foundryx-black (a true constant, never overridden under .dark) foreground
-     stays correct in both themes rather than flipping via --foundryx-dark. */
-  --success: var(--foundryx-success);
-  --success-foreground: var(--foundryx-black);
+  /* success/info/warning (AC-DLA-07, css/design-tokens.test.ts): --success etc is the
+     INK role (solid-fill text, "text-success" body ink, an alert's light-appearance
+     icon) - it must clear 4.5:1 (a) against its own foreground AND (b) as ink directly
+     on --background. The RAW brand hue (--foundryx-success #1f9d54, unchanged - still
+     used for charts/dots via --foundryx-success and the badge/alert SOFT tint) fails
+     both in light mode (3.49:1 on white). Sorento's own fix is the same shape: darken
+     the light-mode ink, brighten the dark-mode ink, flip the foreground with it - so
+     --success/--info point at the existing --foundryx-*-active step (already darker in
+     :root, already brighter under .dark - no new hex, --active untouched) and
+     --success-foreground/etc flip white (light) -> black (dark) below. --warning-active
+     still fails vs white in light mode (3.13:1, too close to the source yellow) so
+     --warning uses --foundryx-warning-accent instead (5.41:1) - the one case Sorento
+     itself falls back past -active for. -soft is NOT touched; alert.tsx's light
+     appearance reads its icon off --success-accent directly (not -foreground) since
+     -foreground is white/black (fill ink), not a tint-safe hue. */
+  --success: var(--foundryx-success-active);
+  --success-foreground: var(--foundryx-white);
   --success-active: var(--foundryx-success-active);
   --success-accent: var(--foundryx-success-accent);
   --success-soft: var(--foundryx-success-soft);
   --success-transparent: var(--foundryx-success-transparent);
 
-  --info: var(--foundryx-info);
-  --info-foreground: var(--foundryx-black);
+  --info: var(--foundryx-info-active);
+  --info-foreground: var(--foundryx-white);
   --info-active: var(--foundryx-info-active);
   --info-accent: var(--foundryx-info-accent);
   --info-soft: var(--foundryx-info-soft);
   --info-transparent: var(--foundryx-info-transparent);
 
-  --warning: var(--foundryx-warning);
-  --warning-foreground: var(--foundryx-black);
+  --warning: var(--foundryx-warning-accent);
+  --warning-foreground: var(--foundryx-white);
   --warning-active: var(--foundryx-warning-active);
   --warning-accent: var(--foundryx-warning-accent);
   --warning-soft: var(--foundryx-warning-soft);
@@ -206,6 +216,14 @@
 
   --destructive: var(--foundryx-danger);
   --destructive-foreground: var(--foundryx-white);
+
+  /* --success/--info/--warning need no override here - they resolve to
+     --foundryx-*-active/-accent, which already carry their OWN .dark values above, so
+     the ink auto-brightens under .dark without a second declaration. Only the
+     foreground (a true white/black constant, not a flipping primitive) needs one. */
+  --success-foreground: var(--foundryx-black);
+  --info-foreground: var(--foundryx-black);
+  --warning-foreground: var(--foundryx-black);
 
   --border: var(--foundryx-grey-200);
   --input: var(--foundryx-grey-200);
