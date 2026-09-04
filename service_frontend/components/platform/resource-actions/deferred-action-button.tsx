@@ -14,8 +14,13 @@ export interface DeferredCountdownProps {
   count?: number;
   noun?: string;
   onCancel: () => void;
-  cancelling?: boolean;
   className?: string;
+  // No `cancelling` prop (fix round 1 item 9): `useDeferredAction.cancel()`
+  // now leaves `pending` SYNCHRONOUSLY on the caller's very next render, so
+  // this whole countdown unmounts on the SAME click - there is never a
+  // window where a stale/disabled Cancel button could be double-pressed
+  // while a round trip is in flight. A prop that disables a button which no
+  // longer exists by the time it would matter is dead weight, not a fix.
 }
 
 /** Treat a timezone-less ISO timestamp (shouldn't happen - the backend is
@@ -40,7 +45,6 @@ export function DeferredCountdown({
   count,
   noun,
   onCancel,
-  cancelling,
   className,
 }: DeferredCountdownProps) {
   const target = Date.parse(asUtc(commitAt));
@@ -68,10 +72,17 @@ export function DeferredCountdown({
   const [armed, setArmed] = useState<{ target: number; remainingMs: number } | null>(null);
   useEffect(() => {
     if (prefersReducedMotion) return;
-    const remainingMs = Math.max(0, target - Date.now());
     let second = 0;
+    // Fix round 1 item 10: measure `remainingMs` INSIDE the second frame,
+    // not from a timestamp captured before either frame runs. rAF is
+    // throttled in a hidden/backgrounded tab, so a fixed pre-frame
+    // measurement understates the elapsed time - the fill then arms a
+    // near-full-duration transition against an already-mostly-elapsed
+    // clock and visibly lags the server's real `commitAt`.
     const first = requestAnimationFrame(() => {
-      second = requestAnimationFrame(() => setArmed({ target, remainingMs }));
+      second = requestAnimationFrame(() =>
+        setArmed({ target, remainingMs: Math.max(0, target - Date.now()) }),
+      );
     });
     return () => {
       cancelAnimationFrame(first);
@@ -123,7 +134,7 @@ export function DeferredCountdown({
             if (Date.now() >= target) return;
             onCancel();
           }}
-          disabled={cancelling || lapsed}
+          disabled={lapsed}
         >
           Cancel
         </Button>
@@ -132,10 +143,18 @@ export function DeferredCountdown({
         <div
           data-testid="deferred-countdown-bar"
           className={cn(
-            'h-full origin-left rounded-full motion-reduce:transition-none',
+            'h-full origin-left rounded-full transition-[background-color] duration-(--duration-fast) ease-(--ease-standard) motion-reduce:transition-none',
             lapsed ? 'bg-muted-foreground/40' : 'bg-destructive',
           )}
-          style={lapsed ? { transform: 'scaleX(1)' } : fillStyle}
+          // Fix round 1 item 8: hold the drained bar at `scaleX(0)` at
+          // commit - snapping it back to `scaleX(1)` reads as the countdown
+          // resetting/glitching at the exact moment the destructive action
+          // fires, and a full bar visually says "100% complete" rather than
+          // "committing". The track's colour swap (destructive -> muted)
+          // animates instead, via the class transition above (no inline
+          // `transitionProperty` fights it once `fillStyle` is no longer in
+          // play at this branch).
+          style={lapsed ? { transform: 'scaleX(0)' } : fillStyle}
         />
       </div>
     </div>

@@ -169,4 +169,29 @@ describe('DeferredCountdown', () => {
     });
     expect(onCancel).not.toHaveBeenCalled();
   });
+
+  it('fix round 1 item 8: at lapse the fill holds scaleX(0), never snaps back to full', () => {
+    const { rerender } = render(
+      <DeferredCountdown
+        verb="Deleting"
+        commitAt={isoInMs(1_000)}
+        windowSeconds={1}
+        onCancel={vi.fn()}
+      />,
+    );
+    rerender(
+      <DeferredCountdown
+        verb="Deleting"
+        commitAt={new Date(Date.now() - 1000).toISOString()}
+        windowSeconds={1}
+        onCancel={vi.fn()}
+      />,
+    );
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    const bar = screen.getByTestId('deferred-countdown-bar');
+    expect(bar.style.transform).toBe('scaleX(0)');
+    expect(bar.className).toContain('transition-[background-color]');
+  });
 });
