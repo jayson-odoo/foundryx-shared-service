@@ -15,9 +15,25 @@ export interface UseResourceListOptions<T> {
 export interface UseResourceListResult<T> {
   /** The live query (search reflects the DEBOUNCED value) - used for export + record-nav ctx. */
   query: ListQuery;
+  /**
+   * The query that produced the CURRENT `data` (AC-DLA-15/32, T2 half).
+   * While a refetch is in flight `query` has already advanced (new page/
+   * sort/filter/search) but `data` still holds the PREVIOUS result - a
+   * caller computing a row's global index (or anything else keyed to "which
+   * page are these rows actually from") must read `loadedQuery`, not
+   * `query`, or it mis-indexes the still-showing stale rows against the
+   * new page number.
+   */
+  loadedQuery: ListQuery;
   data: T[];
   total: number;
   isLoading: boolean;
+  /**
+   * True while `isLoading` AND the previous page's rows are still on screen
+   * (AC-DLA-15) - `DataGrid` dims the body instead of showing a skeleton.
+   * False on a genuine first load (no rows to hold yet).
+   */
+  isPlaceholderData: boolean;
   error: string | null;
 
   page: number;
@@ -70,6 +86,12 @@ export function useResourceList<T>({
     [page, pageSize, debouncedSearch, sort, filter, statusView, segment],
   );
 
+  // The query that produced the rows CURRENTLY in `data` - starts equal to
+  // the first query, only ever reassigned once a fetch for a NEWER query
+  // resolves (see the effect below). Never read `query` for "which page are
+  // these rows from" while `isPlaceholderData` is true.
+  const [loadedQuery, setLoadedQuery] = useState<ListQuery>(query);
+
   // Reset to first page whenever the result set (not just the page) changes.
   const firstRender = useRef(true);
   useEffect(() => {
@@ -89,6 +111,10 @@ export function useResourceList<T>({
         setData(result.data);
         setTotal(result.total);
         setError(null);
+        // This query is now the one the rows on screen belong to - flips
+        // `isPlaceholderData` off for it and lets a caller trust `loadedQuery`
+        // for indexing again.
+        setLoadedQuery(query);
       })
       .catch((e: unknown) => {
         if (active) setError(e instanceof Error ? e.message : 'Failed to load.');
@@ -101,6 +127,8 @@ export function useResourceList<T>({
     };
   }, [fetcher, query, reloadKey]);
 
+  const isPlaceholderData = isLoading && data.length > 0;
+
   const setPageSize = useCallback((size: number) => setPageSizeState(size), []);
   const setSearch = useCallback((value: string) => setSearchState(value), []);
   const setSort = useCallback((value: SortState | null) => setSortState(value), []);
@@ -111,9 +139,11 @@ export function useResourceList<T>({
 
   return {
     query,
+    loadedQuery,
     data,
     total,
     isLoading,
+    isPlaceholderData,
     error,
     page,
     pageSize,

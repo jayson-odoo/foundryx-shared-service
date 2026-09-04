@@ -259,7 +259,13 @@ export function ResourceList<T extends object>({ config }: ResourceListProps<T>)
     [list.data, selectedIds, config],
   );
 
-  const ctx = encodeListQuery(list.query);
+  // `loadedQuery`, not the live `list.query`/`list.page` (AC-DLA-15/32 fix
+  // round 1): while a refetch is in flight the rows still on screen (and
+  // still clickable - AC-DLA-15 keeps the strip interactive) are from
+  // `loadedQuery`'s page, not whatever page the user has already advanced
+  // to. Indexing/encoding against the live query would silently mis-number
+  // a row clicked during that window.
+  const ctx = encodeListQuery(list.loadedQuery);
   function openRow(row: T) {
     const indexOnPage = list.data.indexOf(row);
     // Inline master-detail (form-in-form): open in place instead of navigating.
@@ -270,7 +276,7 @@ export function ResourceList<T extends object>({ config }: ResourceListProps<T>)
     const href = config.rowHref(row);
     // A config without a detail page returns '#'/'' → the row/card doesn't navigate.
     if (!href || href === '#') return;
-    const globalIndex = list.page * list.pageSize + indexOnPage;
+    const globalIndex = list.loadedQuery.page * list.loadedQuery.pageSize + indexOnPage;
     router.push(`${href}?ctx=${ctx}&i=${globalIndex}`);
   }
 
@@ -288,6 +294,7 @@ export function ResourceList<T extends object>({ config }: ResourceListProps<T>)
       table={table}
       recordCount={list.total}
       isLoading={list.isLoading}
+      isPlaceholderData={list.isPlaceholderData}
       onRowClick={openRow}
       tableLayout={{
         columnsResizable: true,
@@ -457,7 +464,7 @@ export function ResourceList<T extends object>({ config }: ResourceListProps<T>)
                         <Filter />
                         Filters
                         {filterCount > 0 && (
-                          <Badge variant="primary" size="sm" shape="circle">
+                          <Badge variant="primary" size="sm" shape="circle" appearance="default">
                             {filterCount}
                           </Badge>
                         )}
