@@ -415,7 +415,12 @@ export function ResourceList<T extends object>({
         isLoading={list.isLoading}
         isPlaceholderData={list.isPlaceholderData}
         rowHref={rowHrefFn}
-        onRowClick={openRow}
+        // Only inline master-detail (config.onRowSelect) uses onRowClick -
+        // every other list navigates through rowHref's real <a href> (AC-
+        // DLA-29). Passing it unconditionally made the DataGrid primitive
+        // treat an opt-out row (rowHref '#'/'') as clickable too (cursor-
+        // pointer with a dead click, since openRow no-ops on '#'/'').
+        onRowClick={config.onRowSelect ? openRow : undefined}
         tableLayout={{
           columnsResizable: true,
           columnsMovable: true,

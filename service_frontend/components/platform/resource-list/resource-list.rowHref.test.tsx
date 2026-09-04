@@ -99,6 +99,19 @@ describe('AC-DLA-29 ResourceList rowHref wiring', () => {
     expect(within(table).queryAllByRole('link')).toHaveLength(0);
   });
 
+  it('a rowHref of "#" opt-out row carries no cursor-pointer (no onRowClick fallback, fix round 1)', async () => {
+    render(<ResourceList config={baseConfig({ rowHref: () => '#' })} />);
+    const table = await screen.findByRole('table');
+    const bodyRows = await waitFor(() => {
+      const found = within(table).getAllByRole('row').slice(1); // drop the header row
+      expect(found.length).toBeGreaterThan(0);
+      return found;
+    });
+    for (const row of bodyRows) {
+      expect(row.className).not.toContain('cursor-pointer');
+    }
+  });
+
   it('onRowSelect (inline master-detail) skips rowHref entirely - no anchors rendered', async () => {
     const onRowSelect = vi.fn();
     render(<ResourceList config={baseConfig({ onRowSelect })} />);
