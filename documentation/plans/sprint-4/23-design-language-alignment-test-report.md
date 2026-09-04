@@ -193,3 +193,63 @@ fresh session drove the identical dropdown/menu flows without incident both befo
 
 **Verdict: T1 fix round 1 DONE.** 10/10 findings resolved and re-verified; full gate green;
 evidence refreshed. `css/design-tokens.test.ts`: 78 assertions, all green.
+
+---
+
+## T1 - Fix round 2
+
+One confirmed finding from a second `/code-review` pass over the fix-round-1 diff.
+
+**Finding:** with the impersonation banner expanded on `lg`, the sidebar box itself already
+shrinks with the banner (`sidebar.tsx:16` `lg:top-[var(--shell-top-offset,0px)] lg:bottom-0`,
+fix round 1's own change), but the menu scroller kept a `100vh`-relative cap
+(`sidebar-menu.tsx:246` `lg:max-h-[calc(100vh-5.5rem)]`) inside an `overflow-hidden` wrapper
+(`sidebar.tsx:23`) that had no `flex-1 min-h-0` - so with the banner's real measured height
+B=45px, the scroller's cap stayed a FIXED viewport fraction while the box underneath it
+shrank by B, and the last ~7px of the final nav item (after its own `py-5`) sat past the
+sidebar's real bottom edge, unreachable at max scroll.
+
+**Fix:** `sidebar.tsx`'s `overflow-hidden` wrapper gained `flex-1 min-h-0` (a flex child never
+shrinks below its content size without `min-h-0`, which is exactly why the wrapper had stayed
+content-sized before) plus `h-full` on the inner width-only div so the percentage height has
+a definite ancestor to resolve against; `sidebar-menu.tsx`'s scroller dropped the `100vh` calc
+entirely for `lg:h-full lg:max-h-full` (kept `lg:`-scoped, matching the original's scope - the
+same `SidebarMenu` component also renders unscoped inside the MOBILE nav `Sheet` via
+`header.tsx`, a completely different flex/scroll context that must not be touched). The
+scroller is now bounded purely by whatever height the flex ancestor chain actually gives it,
+whatever the banner does - no more viewport-relative guessing.
+
+**Test:** `css/design-tokens.test.ts` "bounds the sidebar menu scroller by the remaining flex
+height, not a 100vh calc" - asserts `sidebar.tsx` carries `flex-1`+`min-h-0` on the
+overflow-hidden wrapper, and `sidebar-menu.tsx` no longer matches `max-h-[calc(100vh` and
+instead carries `lg:h-full`/`lg:max-h-full`. 79/79 assertions green (was 78).
+
+**Browser verification:** `demo@example.com` (Admin, full ~19-item menu - the one role whose
+menu reliably overflows even before any banner) at 1280x700 (per the brief's "window at ~700px
+tall"). The impersonation feature's OWN permission rule blocked an Admin-impersonating-Admin
+session in this pass (`POST /impersonation/start` 400 - unrelated to this CSS fix, not
+investigated further here; a Member-role target's session started fine and its real banner
+measured exactly B=45px, confirming the round-1 `ResizeObserver` value independently) - rather
+than debug an unrelated permission rule, `--shell-top-offset` was set to that SAME real,
+just-measured 45px value directly on `document.documentElement` (`agent-browser eval`, the
+identical mechanism the banner's own `ResizeObserver` effect uses) while viewing the Admin
+account's own full menu, which is a faithful reproduction of "banner expanded" for this
+CSS-only fix (the fix has zero dependency on WHERE the offset value comes from). Confirmed via
+`agent-browser eval`: sidebar box `top: 45, bottom: 577` (== `window.innerHeight`, no overflow
+past the viewport), scroller `scrollHeight: 858` vs `clientHeight: 462` (genuinely overflows,
+`scrollTop` set to `scrollHeight` reached exactly `396 = 858-462`, i.e. true max scroll, not
+clamped short). Screenshot `fixround2-01-sidebar-bottom-banner.png`: "AutoCount" (the last menu
+item) fully visible with clean spacing below it, nothing clipped.
+
+**Recorded, not fixed (accepted per the coordinator):** the material header
+(`material-regular material-edge`, `header.tsx`) has no `@media print` fallback - a printed
+page would carry the translucent/blurred material styling as-is. This app has no print use
+case (no print stylesheet, no print button anywhere in the product), so this is accepted as
+out of scope rather than fixed.
+
+**Gate:** `npx eslint` (`sidebar.tsx`, `sidebar-menu.tsx`, `design-tokens.test.ts` - clean),
+`npx vitest run` (172 files / 1490 tests, +1 vs fix round 1), `rm -rf .next && npm run build`
+(green), served on :3002 (backend :8001 healthy throughout).
+
+**Verdict: T1 fix round 2 DONE.** 1/1 finding resolved and verified; print-fallback gap
+recorded as accepted, not fixed; full gate green.

@@ -146,3 +146,16 @@ strings copied verbatim from `alert.tsx`/`badge.tsx` onto a `document.body`-appe
 `agent-browser eval` - not a mockup - because no reachable page in this build currently renders
 a warning/success/info Alert or a default-appearance Badge without deeper, unrelated app setup
 (AutoCount company/entity data). The CSS is real; only the trigger path is synthetic.
+
+## Fix round 2 (1 `/code-review` finding - see the test report's "T1 - Fix round 2" section)
+
+- `fixround2-01-sidebar-bottom-banner.png` - Admin's full ~19-item sidebar menu at 1280x700
+  with `--shell-top-offset` set to 45px (the REAL height a genuine impersonation banner
+  measured moments earlier in this same run, via `ResizeObserver` - not a guess), scrolled to
+  its true max (`scrollTop === scrollHeight - clientHeight`, verified via `agent-browser eval`
+  before the shot). The last item, "AutoCount", is fully visible with clean spacing below it -
+  nothing clipped past the sidebar's real bottom edge.
+- A genuine Admin-impersonating-Admin session 400'd on `POST /impersonation/start` in this
+  pass (the impersonation feature's own permission rule, unrelated to this CSS fix - not
+  investigated further); a Member-role target's session started fine and independently
+  confirmed the real banner height is 45px, which is the exact value applied above.
