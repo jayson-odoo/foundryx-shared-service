@@ -2,13 +2,8 @@
 
 import { use, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, LoaderCircle } from 'lucide-react';
-import {
-  Toolbar,
-  ToolbarActions,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
+import { LoaderCircle } from 'lucide-react';
+import { PageHeader } from '@/components/platform/page-header';
 import { Container } from '@/components/common/container';
 import { Card, CardContent, CardHeader, CardHeading, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -104,15 +99,10 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
 
   return (
     <Container width="fluid">
-      <Toolbar>
-        <ToolbarHeading>
+      <PageHeader
+        title={jobTypeLabel(job.type)}
+        description={
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" asChild>
-              <Link href="/jobs">
-                <ArrowLeft className="size-4" />
-              </Link>
-            </Button>
-            <ToolbarPageTitle text={jobTypeLabel(job.type)} />
             <Badge variant={JOB_STATUS_TONE[job.status]} appearance="light">
               {JOB_STATUS_LABEL[job.status]}
             </Badge>
@@ -120,16 +110,16 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
               <LoaderCircle className="text-muted-foreground size-4 animate-spin" />
             )}
           </div>
-        </ToolbarHeading>
-        <ToolbarActions>
+        }
+        actions={
           <ActionMenu
             actions={actions}
             rows={[job]}
             runtime={{ reload: () => void refresh() }}
             surface="form"
           />
-        </ToolbarActions>
-      </Toolbar>
+        }
+      />
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <Card>
