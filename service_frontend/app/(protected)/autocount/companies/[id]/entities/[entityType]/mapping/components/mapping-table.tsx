@@ -6,7 +6,8 @@ import { Badge } from '@/components/ui/badge';
 import { SearchSelect } from '@/components/platform/search-select';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { humanizeFieldKey } from '@/lib/autocount-diff';
-import { statusFormulaSeed } from '@/lib/autocount-etl';
+import { pickerColumnOptions, statusFormulaSeed } from '@/lib/autocount-etl';
+import { cn } from '@/lib/utils';
 import type {
   AutocountMappingRow,
   AutocountSorentoField,
@@ -110,7 +111,16 @@ export function MappingTable({
   columnTypes = {},
 }: MappingTableProps) {
   const columnMode = sourceMode === 'column';
-  const sourceOptions = acFields.map((f) => ({ label: f, value: f }));
+  // A seeded row (sprint-5/02, AC-02-16/21) whose column vanished from the
+  // saved query still needs to show WHAT it currently is - fold any such
+  // stale value into the offered set (same pattern as the Query tab's
+  // key/watermark pickers) so the picker's trigger never blanks to the
+  // placeholder while a real value is stored.
+  const acFieldsSet = new Set(acFields);
+  const sourceOptions = pickerColumnOptions(
+    acFields,
+    rows.map((r) => r.sourcePath).filter(Boolean),
+  ).map((f) => ({ label: f, value: f }));
   const usedTargets = new Set(rows.map((r) => r.sorentoField).filter(Boolean));
   const allTargetsUsed = sorentoFields.every((f) => usedTargets.has(f.field));
 
@@ -163,32 +173,51 @@ export function MappingTable({
                   label: f.required ? `${sorentoFieldLabel(f.field)} *` : sorentoFieldLabel(f.field),
                   value: f.field,
                 }));
+              // A preset-seeded row (AC-02-16/21) whose source column is no
+              // longer part of the saved query - visible, greyed, with the
+              // SAME picker so the operator can fix it in place. A blank row
+              // (just added) is never flagged - only a REAL stale value is.
+              const disabled = columnMode && row.sourcePath !== '' && !acFieldsSet.has(row.sourcePath);
               return (
-                <tr key={index} className="border-b align-top">
+                <tr key={index} className={cn('border-b align-top', disabled && 'opacity-60')}>
                   <td className="px-2 py-2">
                     {editing ? (
-                      <SearchSelect
-                        options={sourceOptions}
-                        value={row.sourcePath}
-                        onChange={(value) =>
-                          onChangeRow(index, withStatusSeed(row, { sourcePath: value }))
-                        }
-                        placeholder={
-                          columnMode
-                            ? sourceOptions.length > 0
-                              ? 'Select a column'
-                              : 'No columns yet'
-                            : 'Select or type a path'
-                        }
-                        searchPlaceholder={
-                          columnMode ? 'Search columns' : 'Search or type a dotted path'
-                        }
-                        allowCustom={!columnMode}
-                        disabled={columnMode && sourceOptions.length === 0}
-                        ariaLabel={`${columnMode ? 'Source column' : 'AutoCount source'} for row ${index + 1}`}
-                      />
+                      <div className="flex flex-col gap-1">
+                        <SearchSelect
+                          options={sourceOptions}
+                          value={row.sourcePath}
+                          onChange={(value) =>
+                            onChangeRow(index, withStatusSeed(row, { sourcePath: value }))
+                          }
+                          placeholder={
+                            columnMode
+                              ? acFields.length > 0
+                                ? 'Select a column'
+                                : 'No columns yet'
+                              : 'Select or type a path'
+                          }
+                          searchPlaceholder={
+                            columnMode ? 'Search columns' : 'Search or type a dotted path'
+                          }
+                          allowCustom={!columnMode}
+                          disabled={columnMode && acFields.length === 0}
+                          ariaLabel={`${columnMode ? 'Source column' : 'AutoCount source'} for row ${index + 1}`}
+                        />
+                        {disabled && (
+                          <Badge variant="warning" appearance="light" size="sm" className="w-fit">
+                            Column not in query
+                          </Badge>
+                        )}
+                      </div>
                     ) : (
-                      <code className="text-xs">{row.sourcePath}</code>
+                      <div className="flex flex-col gap-1">
+                        <code className="text-xs">{row.sourcePath}</code>
+                        {disabled && (
+                          <Badge variant="warning" appearance="light" size="sm" className="w-fit">
+                            Column not in query
+                          </Badge>
+                        )}
+                      </div>
                     )}
                   </td>
                   <td className="px-2 py-2">

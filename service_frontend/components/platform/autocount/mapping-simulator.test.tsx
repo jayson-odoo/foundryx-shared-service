@@ -101,3 +101,80 @@ describe('MappingSimulator (AC-16-30/31)', () => {
     expect(onSimulate).not.toHaveBeenCalled();
   });
 });
+
+// sprint-5/02 (AC-02-22) - document mode: pick a real header, fetch its lines.
+describe('MappingSimulator - document mode (sprint-5/02, AC-02-22)', () => {
+  const HEADER_ROWS = [
+    { DocKey: '1', DocNo: 'SO-1001', Cancelled: 'F' },
+    { DocKey: '2', DocNo: 'SO-1002', Cancelled: 'T' },
+  ];
+
+  function documentResult(status: string): AutocountSimulateResult {
+    return {
+      ok: true,
+      sourceRef: 'SO-1001',
+      docNo: 'SO-1001',
+      record: { so_number: 'SO-1001', status },
+      headerFields: [],
+      lineFields: [[{ scope: 'line', sourcePath: 'Qty', canonicalField: 'qty_ordered', present: true, ok: true, value: 10, error: null }]],
+      status,
+      errors: [],
+    };
+  }
+
+  it('renders a header picker instead of the free-JSON textarea being editable', () => {
+    render(
+      <MappingSimulator
+        open
+        onOpenChange={vi.fn()}
+        rows={ROWS}
+        onSimulate={vi.fn()}
+        headerPreviewRows={HEADER_ROWS}
+        headerKeyColumns={['DocKey']}
+        onFetchLines={vi.fn().mockResolvedValue([])}
+      />,
+    );
+    expect(screen.getByRole('combobox', { name: 'Header row' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Mock AutoCount record')).toHaveAttribute('readonly');
+  });
+
+  it('picking a header fetches its lines and simulates header + lines together', async () => {
+    const onFetchLines = vi.fn().mockResolvedValue([{ DtlKey: 'L1', Qty: 10 }]);
+    const onSimulate = vi.fn().mockResolvedValue(documentResult('open'));
+    render(
+      <MappingSimulator
+        open
+        onOpenChange={vi.fn()}
+        rows={ROWS}
+        onSimulate={onSimulate}
+        headerPreviewRows={HEADER_ROWS}
+        headerKeyColumns={['DocNo']}
+        onFetchLines={onFetchLines}
+      />,
+    );
+    fireEvent.click(screen.getByRole('combobox', { name: 'Header row' }));
+    fireEvent.click(screen.getByRole('option', { name: 'SO-1001' }));
+    fireEvent.click(screen.getByRole('button', { name: /run simulation/i }));
+
+    await waitFor(() => expect(onSimulate).toHaveBeenCalled());
+    expect(onFetchLines).toHaveBeenCalledWith('SO-1001');
+    expect(onSimulate.mock.calls[0][0]).toEqual(HEADER_ROWS[0]);
+    expect(onSimulate.mock.calls[0][2]).toEqual([{ DtlKey: 'L1', Qty: 10 }]);
+    expect(await screen.findByTestId('simulate-status')).toHaveTextContent('open');
+  });
+
+  it('Run simulation is disabled until a header is picked', () => {
+    render(
+      <MappingSimulator
+        open
+        onOpenChange={vi.fn()}
+        rows={ROWS}
+        onSimulate={vi.fn()}
+        headerPreviewRows={HEADER_ROWS}
+        headerKeyColumns={['DocKey']}
+        onFetchLines={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /run simulation/i })).toBeDisabled();
+  });
+});

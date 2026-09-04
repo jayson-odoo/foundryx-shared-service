@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError } from '@/lib/api-client';
+import { isDocumentEntity } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type {
   AutocountFormulaTestResult,
+  AutocountMappingPreset,
   AutocountMappingView,
   AutocountMappingWriteRow,
   AutocountSimulateResult,
@@ -124,4 +126,48 @@ export function useAutocountMapping(
     simulate,
     reload,
   };
+}
+
+export interface UseAutocountMappingPresetsResult {
+  presets: AutocountMappingPreset[];
+  isLoading: boolean;
+}
+
+/**
+ * The AutoCount SQL-pack preset(s) for a document entity's Query tab "Use
+ * preset" picker (sprint-5/02, AC-02-16/17). A master/GRN entity never
+ * fetches - always `[]`, so the picker is simply absent (foolproof-UI).
+ */
+export function useAutocountMappingPresets(
+  companyId: string,
+  entityType: string,
+): UseAutocountMappingPresetsResult {
+  const [presets, setPresets] = useState<AutocountMappingPreset[]>([]);
+  const [isLoading, setIsLoading] = useState(isDocumentEntity(entityType));
+
+  useEffect(() => {
+    if (!isDocumentEntity(entityType)) {
+      setPresets([]);
+      setIsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setIsLoading(true);
+    autocountService
+      .listMappingPresets(companyId, entityType)
+      .then((list) => {
+        if (!cancelled) setPresets(list);
+      })
+      .catch(() => {
+        if (!cancelled) setPresets([]);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId, entityType]);
+
+  return { presets, isLoading };
 }

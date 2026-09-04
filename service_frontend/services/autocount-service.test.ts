@@ -169,8 +169,14 @@ describe('autocount service (real boundary)', () => {
     expect(path).toBe('/autocount/companies/c1/entities/supplier/mapping');
     expect(init.method).toBe('PUT');
     expect(JSON.parse(init.body as string).rows).toEqual([
-      { sourcePath: 'IsActive', transform: 't_f_bool', sorentoField: 'is_active', formula: 'if(value == "T", true, false)' },
-      { sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: null },
+      {
+        sourcePath: 'IsActive',
+        transform: 't_f_bool',
+        sorentoField: 'is_active',
+        formula: 'if(value == "T", true, false)',
+        scope: 'header',
+      },
+      { sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: null, scope: 'header' },
     ]);
   });
 
@@ -196,7 +202,9 @@ describe('autocount service (real boundary)', () => {
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({
       record: { AccNo: 'A1' },
-      rows: [{ sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: null }],
+      rows: [
+        { sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: null, scope: 'header' },
+      ],
     });
   });
 

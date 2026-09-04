@@ -12,14 +12,19 @@ import {
   type MappingEditableRow,
 } from './mapping-table';
 
-/** Deliverable rows (a mappable Sorento target) vs provenance rows (no target). */
-export function splitMappingRows(rows: AutocountMappingRow[]): {
+/** Deliverable rows (a mappable Sorento target) vs provenance rows (no target),
+ * for ONE scope (`'header'` or `'line'`, sprint-5/02, AC-02-01). */
+export function splitMappingRows(
+  rows: AutocountMappingRow[],
+  scope: string,
+): {
   deliverable: MappingEditableRow[];
   provenance: AutocountMappingRow[];
 } {
   const deliverable: MappingEditableRow[] = [];
   const provenance: AutocountMappingRow[] = [];
   for (const row of rows) {
+    if (row.scope !== scope) continue;
     if (row.sorentoField) {
       deliverable.push({
         sourcePath: row.sourcePath,
@@ -34,25 +39,42 @@ export function splitMappingRows(rows: AutocountMappingRow[]): {
   return { deliverable, provenance };
 }
 
-export interface UseMappingDraftResult {
+/** One scope's (header or line) working rows + the catalogs it offers. */
+export interface MappingDraftScope {
   rows: MappingEditableRow[];
-  provenance: AutocountMappingRow[];
   sorentoFields: AutocountSorentoField[];
   acFields: string[];
-  /** Working rows differ from the loaded view. */
-  dirty: boolean;
   /** Required Sorento fields no row maps (AC-15-44) - warned, never silent. */
   unmappedRequired: string[];
   onChangeRow: (index: number, patch: Partial<MappingEditableRow>) => void;
   onAddRow: () => void;
   onRemoveRow: (index: number) => void;
-  /** Which row's formula builder is open (null = closed). */
-  builderIndex: number | null;
-  setBuilderIndex: (index: number | null) => void;
+}
+
+/** Which row's formula builder is open - `null` when closed. */
+export interface MappingBuilderTarget {
+  scope: 'header' | 'line';
+  index: number;
+}
+
+export interface UseMappingDraftResult {
+  header: MappingDraftScope;
+  /**
+   * Document entities only (sprint-5/02, AC-02-01/18) - `null` for a
+   * master/GRN entity (the view's `lineSorentoFields` came back empty), so
+   * the Mapping tab renders a single section unchanged.
+   */
+  line: MappingDraftScope | null;
+  /** Non-deliverable provenance/identity rows (e.g. last_modified), header scope only. */
+  provenance: AutocountMappingRow[];
+  /** Working rows (either scope) differ from the loaded view. */
+  dirty: boolean;
+  builderTarget: MappingBuilderTarget | null;
+  setBuilderTarget: (target: MappingBuilderTarget | null) => void;
   onApplyFormula: (formula: string) => void;
   simulatorOpen: boolean;
   setSimulatorOpen: (open: boolean) => void;
-  /** The rows as the PUT sends them (trimmed source paths). */
+  /** The rows as the PUT sends them (trimmed source paths, scope-tagged). */
   writeRows: () => AutocountMappingWriteRow[];
   /** The foolproof pre-save check - the message to show, or null when sendable. */
   validate: () => string | null;
@@ -60,29 +82,35 @@ export interface UseMappingDraftResult {
   reset: () => void;
 }
 
-/**
- * The mapping editor's WORKING state (rows, dirty, add/remove/change, builder +
- * simulator toggles) - extracted from the standalone mapping page so the DB
- * task editor's Mapping tab (plan 22 S2, AC-22-09) runs the SAME editor under
- * its own form's Edit/Save, never a parallel one.
- */
-export function useMappingDraft(view: AutocountMappingView | null): UseMappingDraftResult {
+function useScope(
+  view: AutocountMappingView | null,
+  scope: 'header' | 'line',
+  sorentoFields: AutocountSorentoField[],
+  acFields: string[],
+): {
+  scope: MappingDraftScope;
+  provenance: AutocountMappingRow[];
+  dirty: boolean;
+  baseline: MappingEditableRow[];
+  setRows: (rows: MappingEditableRow[] | ((prev: MappingEditableRow[]) => MappingEditableRow[])) => void;
+  rows: MappingEditableRow[];
+} {
   const [rows, setRows] = useState<MappingEditableRow[]>([]);
-  const [builderIndex, setBuilderIndex] = useState<number | null>(null);
-  const [simulatorOpen, setSimulatorOpen] = useState(false);
 
-  // Seed the working rows from the loaded/saved view. Keyed on the deliverable
-  // signature so a background reload with identical rows never wipes an edit.
-  const baseline = useMemo(() => (view ? splitMappingRows(view.rows).deliverable : []), [view]);
+  const baseline = useMemo(
+    () => (view ? splitMappingRows(view.rows, scope).deliverable : []),
+    [view, scope],
+  );
   const baselineKey = useMemo(() => JSON.stringify(baseline), [baseline]);
   useEffect(() => {
     setRows(baseline);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baselineKey]);
 
-  const provenance = useMemo(() => (view ? splitMappingRows(view.rows).provenance : []), [view]);
-  const sorentoFields = useMemo(() => view?.sorentoFields ?? [], [view]);
-  const acFields = useMemo(() => view?.acFields ?? [], [view]);
+  const provenance = useMemo(
+    () => (view ? splitMappingRows(view.rows, scope).provenance : []),
+    [view, scope],
+  );
 
   const dirty = useMemo(() => JSON.stringify(rows) !== baselineKey, [rows, baselineKey]);
 
@@ -110,48 +138,85 @@ export function useMappingDraft(view: AutocountMappingView | null): UseMappingDr
     setRows((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
+  return {
+    scope: { rows, sorentoFields, acFields, unmappedRequired, onChangeRow, onAddRow, onRemoveRow },
+    provenance,
+    dirty,
+    baseline,
+    setRows,
+    rows,
+  };
+}
+
+/**
+ * The mapping editor's WORKING state - HEADER scope always, plus a LINE
+ * scope for document entities (sprint-5/02, AC-02-01/18/21) - extracted from
+ * the standalone mapping page so the DB task editor's Mapping tab (plan 22
+ * S2, AC-22-09) runs the SAME editor under its own form's Edit/Save, never a
+ * parallel one. `line` is `null` whenever the view carries no line targets
+ * (a master/GRN entity), so callers render a single section unchanged.
+ */
+export function useMappingDraft(view: AutocountMappingView | null): UseMappingDraftResult {
+  const headerSorentoFields = useMemo(() => view?.sorentoFields ?? [], [view]);
+  const headerAcFields = useMemo(() => view?.acFields ?? [], [view]);
+  const lineSorentoFields = useMemo(() => view?.lineSorentoFields ?? [], [view]);
+  const lineAcFields = useMemo(() => view?.lineAcFields ?? [], [view]);
+  const hasLineScope = lineSorentoFields.length > 0;
+
+  const header = useScope(view, 'header', headerSorentoFields, headerAcFields);
+  const lineScope = useScope(view, 'line', lineSorentoFields, lineAcFields);
+
+  const [builderTarget, setBuilderTarget] = useState<MappingBuilderTarget | null>(null);
+  const [simulatorOpen, setSimulatorOpen] = useState(false);
+
+  const dirty = header.dirty || (hasLineScope && lineScope.dirty);
+
   const onApplyFormula = useCallback(
     (formula: string) => {
-      if (builderIndex === null) return;
-      // Empty ⇒ the row falls back to its named transform (formula NULL).
-      onChangeRow(builderIndex, { formula: formula.trim() ? formula.trim() : null });
+      if (!builderTarget) return;
+      const next = formula.trim() ? formula.trim() : null;
+      const target = builderTarget.scope === 'header' ? header : lineScope;
+      target.scope.onChangeRow(builderTarget.index, { formula: next });
     },
-    [builderIndex, onChangeRow],
+    [builderTarget, header, lineScope],
   );
 
-  const writeRows = useCallback(
-    (): AutocountMappingWriteRow[] =>
+  const writeRows = useCallback((): AutocountMappingWriteRow[] => {
+    const toWrite = (rows: MappingEditableRow[], scope: 'header' | 'line'): AutocountMappingWriteRow[] =>
       rows.map((r) => ({
         sourcePath: r.sourcePath.trim(),
         transform: r.transform,
         formula: r.formula,
         sorentoField: r.sorentoField,
-      })),
-    [rows],
-  );
+        scope,
+      }));
+    return [
+      ...toWrite(header.rows, 'header'),
+      ...(hasLineScope ? toWrite(lineScope.rows, 'line') : []),
+    ];
+  }, [hasLineScope, header.rows, lineScope.rows]);
 
   const validate = useCallback((): string | null => {
     // Foolproof: every row needs a source + a target before it can be sent.
-    if (rows.some((r) => !r.sourcePath.trim() || !r.sorentoField)) {
+    const rowsToCheck = hasLineScope ? [...header.rows, ...lineScope.rows] : header.rows;
+    if (rowsToCheck.some((r) => !r.sourcePath.trim() || !r.sorentoField)) {
       return 'Every mapping row needs a source and a Sorento field.';
     }
     return null;
-  }, [rows]);
+  }, [hasLineScope, header.rows, lineScope.rows]);
 
-  const reset = useCallback(() => setRows(baseline), [baseline]);
+  const reset = useCallback(() => {
+    header.setRows(header.baseline);
+    lineScope.setRows(lineScope.baseline);
+  }, [header, lineScope]);
 
   return {
-    rows,
-    provenance,
-    sorentoFields,
-    acFields,
+    header: header.scope,
+    line: hasLineScope ? lineScope.scope : null,
+    provenance: header.provenance,
     dirty,
-    unmappedRequired,
-    onChangeRow,
-    onAddRow,
-    onRemoveRow,
-    builderIndex,
-    setBuilderIndex,
+    builderTarget,
+    setBuilderTarget,
     onApplyFormula,
     simulatorOpen,
     setSimulatorOpen,

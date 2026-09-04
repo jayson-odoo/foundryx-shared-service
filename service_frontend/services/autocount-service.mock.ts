@@ -22,6 +22,7 @@
 import { ApiError } from '@/lib/api-client';
 import { testFormula as evalFormula } from '@/lib/autocount-formula';
 import {
+  DEFAULT_STATUS_FORMULA,
   MIN_RECONCILE_HOURS,
   RECONCILE_TIME_RE,
   incrementalFloorMinutes,
@@ -43,6 +44,7 @@ import type {
   AutocountPreview,
   AutocountFormulaTestResult,
   AutocountJobListQuery,
+  AutocountMappingPreset,
   AutocountMappingUpdate,
   AutocountMappingView,
   AutocountMappingWriteRow,
@@ -485,9 +487,7 @@ function defaultEtlConfig(
     comparedColumns: [],
     fromDate: isDocumentEntity(entityType) ? '2026-08-30' : null,
     docDateColumn: null,
-    lineKeyColumn: null,
-    lineProductColumn: null,
-    lineWarehouseColumn: null,
+    filterFormula: null,
     incrementalMinutes: 5,
     reconcileMode: 'dailyAt',
     reconcileHours: null,
@@ -1092,9 +1092,6 @@ const DB_SEED_TASKS: {
       watermarkColumn: 'LastModified',
       fromDate: '2026-01-01',
       docDateColumn: 'DocDate',
-      lineKeyColumn: 'DtlKey',
-      lineProductColumn: 'ItemCode',
-      lineWarehouseColumn: 'Location',
     },
   },
   {
@@ -1107,8 +1104,6 @@ const DB_SEED_TASKS: {
       watermarkColumn: 'LastModified',
       fromDate: '2026-01-01',
       docDateColumn: 'DocDate',
-      lineKeyColumn: 'DtlKey',
-      lineProductColumn: 'ItemCode',
     },
   },
 ];
@@ -1464,13 +1459,16 @@ export const mockAutocountService: AutocountService = {
     entityType: string,
     input: AutocountMappingUpdate,
   ): Promise<AutocountMappingView> {
+    const view = mockMappingView(entityType);
+    const headerRows = input.rows.filter((r) => (r.scope ?? 'header') === 'header');
+    const lineRows = input.rows.filter((r) => r.scope === 'line');
+
     // A required Sorento target left unmapped is the real failure the editor
     // guards; a target outside the accepted set is a 422 server-side. The mock
     // rejects an unknown target so the surfaced-error path is testable.
-    const view = mockMappingView(entityType);
-    const accepted = new Set(view.sorentoFields.map((f) => f.field));
-    for (const row of input.rows) {
-      if (!accepted.has(row.sorentoField)) {
+    const acceptedHeader = new Set(view.sorentoFields.map((f) => f.field));
+    for (const row of headerRows) {
+      if (!acceptedHeader.has(row.sorentoField)) {
         return Promise.reject(
           new ApiError(
             `'${row.sorentoField}' is not a Sorento field accepted for ${entityType}.`,
@@ -1479,18 +1477,56 @@ export const mockAutocountService: AutocountService = {
         );
       }
     }
-    return Promise.resolve({
-      ...view,
-      rows: input.rows.map((row) => ({
+
+    // Line rows (sprint-5/02, AC-02-03): only accepted line targets, ref
+    // pairing locked, and source_ref/product_ref/qty_ordered required the
+    // moment any line row is saved.
+    if (lineRows.length > 0) {
+      const acceptedLine = new Set(view.lineSorentoFields.map((f) => f.field));
+      for (const row of lineRows) {
+        if (!acceptedLine.has(row.sorentoField)) {
+          return Promise.reject(
+            new ApiError(
+              `'${row.sorentoField}' is not a line field accepted for ${entityType}.`,
+              422,
+            ),
+          );
+        }
+        if (row.sorentoField === 'product_ref' && row.transform !== 'ref_product') {
+          return Promise.reject(new ApiError("'product_ref' must use the Product ref transform.", 422));
+        }
+        if (row.sorentoField === 'warehouse_ref' && row.transform !== 'ref_warehouse') {
+          return Promise.reject(new ApiError("'warehouse_ref' must use the Warehouse ref transform.", 422));
+        }
+      }
+      const mappedTargets = new Set(lineRows.map((r) => r.sorentoField));
+      for (const required of ['source_ref', 'product_ref', 'qty_ordered']) {
+        if (!mappedTargets.has(required)) {
+          return Promise.reject(
+            new ApiError(`Line mapping is missing the required field '${required}'.`, 422),
+          );
+        }
+      }
+    }
+
+    const toRows = (rows: AutocountMappingWriteRow[], scope: 'header' | 'line', fields: typeof view.sorentoFields) =>
+      rows.map((row) => ({
         sourcePath: row.sourcePath,
         transform: row.transform,
         formula: row.formula?.trim() ? row.formula.trim() : null,
         sorentoField: row.sorentoField,
         canonicalField: row.sorentoField,
-        scope: 'header',
-        isRequired: view.sorentoFields.find((f) => f.field === row.sorentoField)?.required ?? false,
+        scope,
+        isRequired: fields.find((f) => f.field === row.sorentoField)?.required ?? false,
         isEnabled: true,
-      })),
+      }));
+
+    return Promise.resolve({
+      ...view,
+      rows: [
+        ...toRows(headerRows, 'header', view.sorentoFields),
+        ...toRows(lineRows, 'line', view.lineSorentoFields),
+      ],
     });
   },
 
@@ -1509,38 +1545,94 @@ export const mockAutocountService: AutocountService = {
     entityType: string,
     record: Record<string, unknown>,
     rows?: AutocountMappingWriteRow[],
+    lines?: Array<Record<string, unknown>>,
   ): Promise<AutocountSimulateResult> {
     // A light stand-in for the real MappingEngine: evaluate each draft (or saved)
     // deliverable row's formula/passthrough over the flat mock record so the
     // record-in → record-out preview + per-field errors are tunable with no
     // backend. The real engine is authoritative; this only drives the UI states.
     const view = mockMappingView(entityType);
-    const source = rows
-      ? rows.map((r) => ({
-          sourcePath: r.sourcePath,
-          formula: r.formula ?? null,
-          canonicalField: r.sorentoField,
-        }))
-      : view.rows
-          .filter((r) => r.sorentoField)
-          .map((r) => ({
-            sourcePath: r.sourcePath,
-            formula: r.formula,
-            canonicalField: r.sorentoField as string,
-          }));
+    type RowSpec = { sourcePath: string; formula: string | null; canonicalField: string };
+    const toSpec = (r: {
+      sourcePath: string;
+      formula?: string | null;
+      sorentoField: string | null;
+    }): RowSpec => ({
+      sourcePath: r.sourcePath,
+      formula: r.formula ?? null,
+      canonicalField: r.sorentoField as string,
+    });
+    const headerSource: RowSpec[] = rows
+      ? rows.filter((r) => (r.scope ?? 'header') === 'header').map(toSpec)
+      : view.rows.filter((r) => r.scope === 'header' && r.sorentoField).map(toSpec);
+    const lineSource: RowSpec[] = rows
+      ? rows.filter((r) => r.scope === 'line').map(toSpec)
+      : view.rows.filter((r) => r.scope === 'line' && r.sorentoField).map(toSpec);
 
+    // Lines pass FIRST (AC-02-07) - both the mapped line canonical rows AND
+    // the per-field results, then the five aggregates they feed into the
+    // header pass.
+    const lineFields: AutocountSimulateFieldResult[][] = [];
+    const lineCanonical: Record<string, unknown>[] = [];
+    for (const lineRecord of lines ?? []) {
+      const fields: AutocountSimulateFieldResult[] = [];
+      const out: Record<string, unknown> = {};
+      for (const r of lineSource) {
+        const raw = lineRecord[r.sourcePath];
+        const present = raw !== undefined;
+        const formula = r.formula?.trim() ? r.formula.trim() : 'value';
+        const evaluated = present ? evalFormula(formula, raw) : { ok: true, output: null, error: null };
+        if (evaluated.ok && present) out[r.canonicalField] = evaluated.output;
+        fields.push({
+          scope: 'line',
+          sourcePath: r.sourcePath,
+          canonicalField: r.canonicalField,
+          present,
+          ok: evaluated.ok,
+          value: evaluated.output,
+          error: evaluated.error,
+        });
+      }
+      lineFields.push(fields);
+      lineCanonical.push(out);
+    }
+
+    const asNumber = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    const sum = (values: number[]): number => values.reduce((a, b) => a + b, 0);
+    const fulfilledField = fulfilledFieldFor(entityType);
+    const outstandingPerLine = lineCanonical.map((l) =>
+      Math.max(0, asNumber(l.qty_ordered) - asNumber(l[fulfilledField])),
+    );
+    const aggregateFacts: Record<string, unknown> = {
+      'lines.count': lineCanonical.length,
+      'lines.open_count': outstandingPerLine.filter((v) => v > 0).length,
+      'lines.ordered_sum': sum(lineCanonical.map((l) => asNumber(l.qty_ordered))),
+      'lines.fulfilled_sum': sum(lineCanonical.map((l) => asNumber(l[fulfilledField]))),
+      'lines.outstanding_sum': sum(outstandingPerLine),
+    };
+
+    // Header runs AFTER lines - every header row's formula can reference its
+    // own row value (`value`) AND any raw header column / `lines.*`
+    // aggregate BY NAME (sprint-5/02, AC-02-07/20).
+    const headerFacts: Record<string, unknown> = { ...record, ...aggregateFacts };
     const headerFields: AutocountSimulateFieldResult[] = [];
     const out: Record<string, unknown> = {};
     let ok = true;
-    for (const r of source) {
+    let status: string | null = null;
+    for (const r of headerSource) {
       const raw = record[r.sourcePath];
       const present = raw !== undefined;
       const formula = r.formula?.trim() ? r.formula.trim() : 'value';
       const evaluated = present
-        ? evalFormula(formula, raw)
+        ? evalFormula(formula, raw, headerFacts)
         : { ok: true, output: null, error: null };
       if (!evaluated.ok) ok = false;
-      if (evaluated.ok && present) out[r.canonicalField] = evaluated.output;
+      if (evaluated.ok && present) {
+        out[r.canonicalField] = evaluated.output;
+        if (r.canonicalField === 'status' && typeof evaluated.output === 'string') {
+          status = evaluated.output;
+        }
+      }
       headerFields.push({
         scope: 'header',
         sourcePath: r.sourcePath,
@@ -1551,6 +1643,9 @@ export const mockAutocountService: AutocountService = {
         error: evaluated.error,
       });
     }
+    if (lineSource.length > 0) {
+      out.lines = lineCanonical;
+    }
 
     return Promise.resolve({
       ok,
@@ -1558,11 +1653,17 @@ export const mockAutocountService: AutocountService = {
       docNo: (record.DocNo as string | undefined) ?? null,
       record: ok ? out : null,
       headerFields,
-      lineFields: [],
+      lineFields,
+      status,
       errors: ok
         ? []
         : headerFields.filter((f) => !f.ok).map((f) => ({ field: f.canonicalField, message: f.error })),
     });
+  },
+
+  listMappingPresets(companyId: string, entityType: string): Promise<AutocountMappingPreset[]> {
+    const company = mockCompanyState(companyId);
+    return Promise.resolve(mockMappingPresets(company.databaseName, entityType));
   },
 
   // ── direct-DB ETL (plan 22 S1) ─────────────────────────────────────────────
@@ -1631,10 +1732,11 @@ export const mockAutocountService: AutocountService = {
         throw new ApiError(message, 422, null, { fieldErrors: { connectionId: message } });
       }
     }
-    // Mirrors the save-time guard (AC-22-11/S5): documents need a from-date,
-    // a watermark column (line-change detection - AutoCount stamps a
-    // header's LastModified on any line edit), a date-floor column and the
-    // line key/product columns.
+    // Mirrors the save-time guard (AC-22-11/S5, line key/product columns
+    // moved OFF this guard and onto the mapping save path in sprint-5/02
+    // AC-02-03/05): documents need a from-date, a watermark column
+    // (line-change detection - AutoCount stamps a header's LastModified on
+    // any line edit), and a date-floor column.
     if (isDocumentEntity(entityType)) {
       const fieldErrors: Record<string, string> = {};
       if (!cfg.fromDate) fieldErrors.fromDate = 'From date is required for documents.';
@@ -1642,10 +1744,6 @@ export const mockAutocountService: AutocountService = {
         fieldErrors.watermarkColumn = 'A watermark column is required for documents.';
       }
       if (!cfg.docDateColumn) fieldErrors.docDateColumn = "Choose the document's date column.";
-      if (!cfg.lineKeyColumn) fieldErrors.lineKeyColumn = "Choose the line query's key column.";
-      if (!cfg.lineProductColumn) {
-        fieldErrors.lineProductColumn = "Choose the line query's product column.";
-      }
       if (Object.keys(fieldErrors).length > 0) {
         throw new ApiError('The task could not be saved. Fix the highlighted fields.', 422, null, {
           fieldErrors,
@@ -1706,7 +1804,7 @@ export const mockAutocountService: AutocountService = {
 };
 
 /** A realistic supplier/customer mapping view for the editor's tunable states. */
-function mockMappingView(entityType: string): AutocountMappingView {
+function masterMappingView(entityType: string): AutocountMappingView {
   return {
     entityType,
     rows: [
@@ -1780,5 +1878,242 @@ function mockMappingView(entityType: string): AutocountMappingView {
       'Data.0.AutoKey',
       'Data.0.LastModified',
     ],
+    lineSorentoFields: [],
+    lineAcFields: [],
+  };
+}
+
+// ── document mapping (sprint-5/02, S1 - AC-02-01/02/16/17) - PHASE 1 MOCK ────
+//
+// One canonical field spec drives BOTH the "current mapping" fixture
+// (`documentMappingView`) and the "Use preset" insert (`listMappingPresets`
+// via `documentPreset`) - a single source of truth so the two can never
+// silently drift, matching `MappingEngine.project_document`'s eventual (S2)
+// backend contract.
+
+interface DocFieldSpec {
+  sourcePath: string;
+  sorentoField: string;
+  transform: string;
+  formula?: string | null;
+  required?: boolean;
+}
+
+interface DocumentPresetSpec {
+  label: string;
+  headerQuery: string;
+  lineQuery: string;
+  keyColumns: string[];
+  watermarkColumn: string;
+  docDateColumn: string;
+  fromDate: string;
+  filterFormula: string | null;
+  header: DocFieldSpec[];
+  line: DocFieldSpec[];
+}
+
+const SO_PRESET: DocumentPresetSpec = {
+  label: 'AutoCount SO',
+  headerQuery:
+    'SELECT DocKey, DocNo, DebtorAutoKey, DebtorCode, DebtorName, SalesAgent, DocDate, ' +
+    'RequestedDeliveryDate, Note, Cancelled, LastModified FROM {database}.dbo.SO_Header',
+  lineQuery:
+    'SELECT DtlKey, ItemAutoKey, ItemCode, Description, LocationAutoKey, Location, Qty, ' +
+    'TransferedQty, UnitPrice, DiscountAmt, SubTotal, UOM, DeliveryDate, Seq ' +
+    'FROM {database}.dbo.SO_Dtl WHERE DocKey = :doc_key',
+  keyColumns: ['DocKey'],
+  watermarkColumn: 'LastModified',
+  docDateColumn: 'DocDate',
+  fromDate: '',
+  filterFormula: null,
+  header: [
+    { sourcePath: 'DocNo', sorentoField: 'so_number', transform: 'string', required: true },
+    { sourcePath: 'DebtorAutoKey', sorentoField: 'customer_ref', transform: 'ref_customer', required: true },
+    { sourcePath: 'SalesAgent', sorentoField: 'sales_agent_ref', transform: 'ref_sales_agent' },
+    { sourcePath: 'DocDate', sorentoField: 'doc_date', transform: 'date' },
+    { sourcePath: 'RequestedDeliveryDate', sorentoField: 'requested_delivery_date', transform: 'date' },
+    { sourcePath: 'Note', sorentoField: 'internal_note', transform: 'string' },
+    { sourcePath: 'Cancelled', sorentoField: 'status', transform: 'string', formula: DEFAULT_STATUS_FORMULA },
+    { sourcePath: 'DebtorCode', sorentoField: 'customer_code', transform: 'string' },
+    { sourcePath: 'DebtorName', sorentoField: 'customer_name', transform: 'string' },
+    { sourcePath: 'SalesAgent', sorentoField: 'agent_code', transform: 'string' },
+  ],
+  line: [
+    { sourcePath: 'DtlKey', sorentoField: 'source_ref', transform: 'string', required: true },
+    { sourcePath: 'ItemAutoKey', sorentoField: 'product_ref', transform: 'ref_product', required: true },
+    { sourcePath: 'LocationAutoKey', sorentoField: 'warehouse_ref', transform: 'ref_warehouse' },
+    { sourcePath: 'Qty', sorentoField: 'qty_ordered', transform: 'decimal', required: true },
+    { sourcePath: 'TransferedQty', sorentoField: 'qty_delivered', transform: 'decimal' },
+    { sourcePath: 'UnitPrice', sorentoField: 'unit_price', transform: 'decimal' },
+    { sourcePath: 'DiscountAmt', sorentoField: 'discount', transform: 'decimal' },
+    { sourcePath: 'SubTotal', sorentoField: 'line_total', transform: 'decimal' },
+    { sourcePath: 'UOM', sorentoField: 'uom', transform: 'string' },
+    { sourcePath: 'DeliveryDate', sorentoField: 'required_date', transform: 'date' },
+    { sourcePath: 'ItemCode', sorentoField: 'product_code', transform: 'string' },
+    { sourcePath: 'Description', sorentoField: 'product_name', transform: 'string' },
+    { sourcePath: 'Location', sorentoField: 'warehouse_code', transform: 'string' },
+    { sourcePath: 'Seq', sorentoField: 'line_number', transform: 'int' },
+  ],
+};
+
+/** PO/SPO share the supplier-side shape (unit_cost/qty_received/currency);
+ *  the family split is the filter formula + entity, not the field list. */
+function purchaseFamilyPreset(entityType: 'purchase_order' | 'shipping_order'): DocumentPresetSpec {
+  const isSpo = entityType === 'shipping_order';
+  return {
+    label: isSpo ? 'AutoCount SPO' : 'AutoCount PO',
+    headerQuery:
+      'SELECT DocKey, DocNo, CreditorAutoKey, CreditorCode, CreditorName, PurchaseAgent, DocDate, ' +
+      'ExpectedDate, UDF_Currency, CurrencyCode, Cancelled, LastModified FROM {database}.dbo.PO_Header',
+    lineQuery:
+      'SELECT DtlKey, ItemAutoKey, ItemCode, Description, LocationAutoKey, Location, Qty, ' +
+      'ReceivedQty, UnitPrice, UOM, ExpectedDate, FromSODocList, Seq ' +
+      'FROM {database}.dbo.PO_Dtl WHERE DocKey = :doc_key',
+    keyColumns: ['DocKey'],
+    watermarkColumn: 'LastModified',
+    docDateColumn: 'DocDate',
+    fromDate: '',
+    filterFormula: isSpo
+      ? 'startswith(upper(trim(DocNo)), "SPO-")'
+      : 'not(startswith(upper(trim(DocNo)), "SPO-"))',
+    header: [
+      {
+        sourcePath: 'DocNo',
+        sorentoField: isSpo ? 'spo_number' : 'po_number',
+        transform: 'string',
+        required: true,
+      },
+      { sourcePath: 'CreditorAutoKey', sorentoField: 'supplier_ref', transform: 'ref_supplier', required: true },
+      { sourcePath: 'DocDate', sorentoField: isSpo ? 'issue_date' : 'doc_date', transform: 'date' },
+      { sourcePath: 'ExpectedDate', sorentoField: 'expected_date', transform: 'date' },
+      {
+        sourcePath: 'UDF_Currency',
+        sorentoField: 'currency',
+        transform: 'string',
+        formula: 'coalesce(UDF_Currency, CurrencyCode, "CNY")',
+      },
+      { sourcePath: 'Cancelled', sorentoField: 'status', transform: 'string', formula: DEFAULT_STATUS_FORMULA },
+      { sourcePath: 'CreditorCode', sorentoField: 'supplier_code', transform: 'string' },
+      { sourcePath: 'CreditorName', sorentoField: 'supplier_name', transform: 'string' },
+      { sourcePath: 'PurchaseAgent', sorentoField: 'agent_code', transform: 'string' },
+    ],
+    line: [
+      { sourcePath: 'DtlKey', sorentoField: 'source_ref', transform: 'string', required: true },
+      { sourcePath: 'ItemAutoKey', sorentoField: 'product_ref', transform: 'ref_product', required: true },
+      { sourcePath: 'LocationAutoKey', sorentoField: 'warehouse_ref', transform: 'ref_warehouse' },
+      { sourcePath: 'Qty', sorentoField: 'qty_ordered', transform: 'decimal', required: true },
+      { sourcePath: 'ReceivedQty', sorentoField: 'qty_received', transform: 'decimal' },
+      { sourcePath: 'UnitPrice', sorentoField: 'unit_cost', transform: 'decimal' },
+      { sourcePath: 'UOM', sorentoField: 'uom', transform: 'string' },
+      { sourcePath: 'ExpectedDate', sorentoField: 'expected_date', transform: 'date' },
+      { sourcePath: 'ItemCode', sorentoField: 'product_code', transform: 'string' },
+      { sourcePath: 'Description', sorentoField: 'product_name', transform: 'string' },
+      { sourcePath: 'Location', sorentoField: 'warehouse_code', transform: 'string' },
+      { sourcePath: 'FromSODocList', sorentoField: 'from_so_numbers', transform: 'string' },
+      { sourcePath: 'Seq', sorentoField: 'line_number', transform: 'int' },
+    ],
+  };
+}
+
+const DOCUMENT_PRESETS: Record<string, DocumentPresetSpec> = {
+  sales_order: SO_PRESET,
+  purchase_order: purchaseFamilyPreset('purchase_order'),
+  shipping_order: purchaseFamilyPreset('shipping_order'),
+};
+
+/** The entity's fulfilled-quantity line field (AC-02-07) - `qty_delivered`
+ *  for a sales order, `qty_received` for a purchase/shipping order. */
+function fulfilledFieldFor(entityType: string): string {
+  return entityType === 'sales_order' ? 'qty_delivered' : 'qty_received';
+}
+
+/** A document's "current mapping" fixture - every preset field, already
+ *  mapped and enabled (a realistic ALREADY-CONFIGURED task). */
+function documentMappingView(entityType: string): AutocountMappingView {
+  const spec = DOCUMENT_PRESETS[entityType];
+  const toRows = (fields: DocFieldSpec[], scope: 'header' | 'line') =>
+    fields.map((f) => ({
+      sourcePath: f.sourcePath,
+      transform: f.transform,
+      formula: f.formula ?? null,
+      sorentoField: f.sorentoField,
+      canonicalField: f.sorentoField,
+      scope,
+      isRequired: Boolean(f.required),
+      isEnabled: true,
+    }));
+  return {
+    entityType,
+    rows: [...toRows(spec.header, 'header'), ...toRows(spec.line, 'line')],
+    sorentoFields: spec.header.map((f) => ({ field: f.sorentoField, required: Boolean(f.required) })),
+    acFields: spec.header.map((f) => f.sourcePath),
+    lineSorentoFields: spec.line.map((f) => ({ field: f.sorentoField, required: Boolean(f.required) })),
+    lineAcFields: spec.line.map((f) => f.sourcePath),
+  };
+}
+
+function mockMappingView(entityType: string): AutocountMappingView {
+  return isDocumentEntity(entityType) && DOCUMENT_PRESETS[entityType]
+    ? documentMappingView(entityType)
+    : masterMappingView(entityType);
+}
+
+/** `GET /autocount/presets/{entityType}` (S3 backend) - the mock returns the
+ *  ONE preset for this document entity, `{database}` already substituted. */
+function mockMappingPresets(databaseName: string, entityType: string): AutocountMappingPreset[] {
+  const spec = DOCUMENT_PRESETS[entityType];
+  if (!spec) return [];
+  return [
+    {
+      entityType,
+      label: spec.label,
+      headerQuery: spec.headerQuery.replace('{database}', databaseName),
+      lineQuery: spec.lineQuery.replace('{database}', databaseName),
+      keyColumns: spec.keyColumns,
+      watermarkColumn: spec.watermarkColumn,
+      docDateColumn: spec.docDateColumn,
+      fromDate: spec.fromDate || null,
+      filterFormula: spec.filterFormula,
+    },
+  ];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PHASE 1 MOCK (sprint-5/02, S1) - document field mapping. Every OTHER
+// AutoCount surface (companies, sync, staged review, ETL tasks, master/GRN
+// mapping) is served by the REAL backend end to end (plan sprint-4/22 +
+// sprint-5/01); this overlay swaps in the mock ONLY for the document-mapping
+// endpoints (`getMapping`/`updateMapping`/`simulateMapping`/
+// `listMappingPresets`) and ONLY when the entity is a document (sales_order/
+// purchase_order/shipping_order) - a master/GRN call passes straight through
+// to `real`, unchanged. `listMappingPresets` still asks the REAL backend for
+// the company's `databaseName` (a mock company would substitute the WRONG
+// database into the preset queries). Phase 2 (S2/S3 backend) swap = drop
+// this overlay and export `realAutocountService` bare, same pattern as the
+// plan-22 S2 `withPhase1EtlMock` this mirrors.
+// ═══════════════════════════════════════════════════════════════════════════
+export function withPhase1DocumentMappingMock(real: AutocountService): AutocountService {
+  return {
+    ...real,
+    getMapping(companyId, entityType) {
+      return isDocumentEntity(entityType)
+        ? mockAutocountService.getMapping(companyId, entityType)
+        : real.getMapping(companyId, entityType);
+    },
+    updateMapping(companyId, entityType, input) {
+      return isDocumentEntity(entityType)
+        ? mockAutocountService.updateMapping(companyId, entityType, input)
+        : real.updateMapping(companyId, entityType, input);
+    },
+    simulateMapping(companyId, entityType, record, rows, lines) {
+      return isDocumentEntity(entityType)
+        ? mockAutocountService.simulateMapping(companyId, entityType, record, rows, lines)
+        : real.simulateMapping(companyId, entityType, record, rows);
+    },
+    async listMappingPresets(companyId, entityType) {
+      if (!isDocumentEntity(entityType)) return [];
+      const detail = await real.getCompany(companyId);
+      return mockMappingPresets(detail.company.databaseName, entityType);
+    },
   };
 }

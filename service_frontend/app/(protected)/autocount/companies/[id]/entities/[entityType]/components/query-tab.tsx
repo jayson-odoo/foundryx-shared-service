@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Lock, Play, TriangleAlert } from 'lucide-react';
+import { Lock, Play, TriangleAlert, Wand2 } from 'lucide-react';
 import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -10,6 +10,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { MultiSelect } from '@/components/platform/multi-select';
 import { SearchSelect } from '@/components/platform/search-select';
+import { ClampedText } from '@/components/platform/clamped-text';
+import { AutocountFormulaBuilder } from '@/components/platform/autocount/formula-builder';
 import { SqlEditor } from '@/components/platform/autocount/sql-editor';
 import { SqlPreviewGrid } from '@/components/platform/autocount/sql-preview-grid';
 import { SqlSchemaTree } from '@/components/platform/autocount/sql-schema-tree';
@@ -25,6 +27,8 @@ import {
 } from '@/lib/autocount-etl';
 import type {
   AutocountEtlSourceConfig,
+  AutocountFormulaTestResult,
+  AutocountMappingPreset,
   AutocountSqlConnection,
 } from '@/types/autocount';
 
@@ -56,6 +60,17 @@ export interface QueryTabProps {
   linePreview: UseSqlPreviewResult;
   /** Per-field 422 errors from the last save (AC-22-11). */
   fieldErrors: Record<string, string>;
+  /**
+   * Document entities only (sprint-5/02, AC-02-16/17) - the AutoCount
+   * SQL-pack preset for THIS entity, already substituted for the company's
+   * database. Empty/undefined = "Use preset" is not offered (foolproof-UI -
+   * never show a picker with nothing that would work).
+   */
+  presets?: AutocountMappingPreset[];
+  onUsePreset?: (preset: AutocountMappingPreset) => void;
+  /** Server-authoritative single-formula eval, backing the Filter field's
+   * `AutocountFormulaBuilder` Testing tab (AC-02-11/20). */
+  onServerTest: (formula: string, value: unknown) => Promise<AutocountFormulaTestResult>;
 }
 
 const NO_WATERMARK = '';
@@ -94,21 +109,31 @@ export function QueryTab({
   preview,
   linePreview,
   fieldErrors,
+  presets = [],
+  onUsePreset,
+  onServerTest,
 }: QueryTabProps) {
   const isDocument = isDocumentEntity(entityType);
   const connection = connections.find((c) => c.id === config.connectionId) ?? null;
+  const [filterBuilderOpen, setFilterBuilderOpen] = useState(false);
 
   const previewColumns = useMemo(
     () => (preview.state.status === 'success' ? preview.state.preview.columns.map((c) => c.name) : []),
     [preview.state],
   );
-  const linePreviewColumns = useMemo(
-    () => (linePreview.state.status === 'success' ? linePreview.state.preview.columns.map((c) => c.name) : []),
-    [linePreview.state],
+  // The Filter builder's Variables panel (AC-02-11/20) - the header columns
+  // known so far, plus whatever the saved formula already references (a
+  // stale-but-visible variable, same discoverability as `pickerColumnOptions`).
+  const filterKnownColumns = useMemo(
+    () => pickerColumnOptions(previewColumns, config.keyColumns),
+    [config.keyColumns, previewColumns],
   );
-  const lineColumnOptions = useMemo(
-    () => linePreviewColumns.map((c) => ({ label: c, value: c })),
-    [linePreviewColumns],
+  const filterVariables = useMemo(
+    () =>
+      filterKnownColumns.length > 0
+        ? [{ label: 'Header columns', items: filterKnownColumns.map((c) => ({ label: c, token: c })) }]
+        : [],
+    [filterKnownColumns],
   );
   const docDateOptions = useMemo(
     () => previewColumns.map((c) => ({ label: c, value: c })),
@@ -141,7 +166,6 @@ export function QueryTab({
     [columnOptions, isDocument],
   );
   const pickersEnabled = editing && columnOptions.length > 0;
-  const linePickersEnabled = editing && lineColumnOptions.length > 0;
 
   const canTest = Boolean(config.connectionId) && config.query.trim().length > 0 &&
     preview.state.status !== 'loading';
@@ -246,6 +270,22 @@ export function QueryTab({
                 />
               )}
             </div>
+            {isDocument && presets.length > 0 && (
+              <div className="flex min-w-0 flex-col gap-1.5 sm:max-w-xs">
+                <Label htmlFor="etl-preset">Use preset</Label>
+                <SearchSelect
+                  options={presets.map((p) => ({ label: p.label, value: p.entityType }))}
+                  value=""
+                  onChange={(entityKey) => {
+                    const preset = presets.find((p) => p.entityType === entityKey);
+                    if (preset) onUsePreset?.(preset);
+                  }}
+                  placeholder="Choose a preset"
+                  disabled={!editing}
+                  ariaLabel="Use preset"
+                />
+              </div>
+            )}
             <Button
               type="button"
               variant="primary"
@@ -366,66 +406,56 @@ export function QueryTab({
                     <p className="text-xs text-destructive">{fieldErrors.docDateColumn}</p>
                   )}
                 </div>
-                <div className="flex min-w-0 flex-col gap-1.5">
-                  <Label>
-                    Line key column <span className="text-destructive">*</span>
-                  </Label>
-                  {editing ? (
-                    <SearchSelect
-                      options={lineColumnOptions}
-                      value={config.lineKeyColumn ?? ''}
-                      onChange={(v) => onChange({ lineKeyColumn: v || null })}
-                      placeholder={linePickersEnabled ? 'Pick a column' : 'Run Test line query first'}
-                      disabled={!linePickersEnabled}
-                      ariaLabel="Line key column"
+              </div>
+
+              {/* The family filter (AC-02-11/19/20) - authored ONLY through the
+                  formula builder, same dialog masters' Transform column uses
+                  (Q16); the field itself shows the formula read-only. */}
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <Label>Filter</Label>
+                <div className="flex items-center gap-2">
+                  {config.filterFormula ? (
+                    <ClampedText
+                      text={config.filterFormula}
+                      lines={2}
+                      className="flex-1 rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-xs"
                     />
                   ) : (
-                    <ColumnChips values={config.lineKeyColumn ? [config.lineKeyColumn] : []} empty="-" />
+                    <span className="flex-1 rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+                      Every header is staged (no filter).
+                    </span>
                   )}
-                  {fieldErrors.lineKeyColumn && (
-                    <p className="text-xs text-destructive">{fieldErrors.lineKeyColumn}</p>
-                  )}
-                </div>
-                <div className="flex min-w-0 flex-col gap-1.5">
-                  <Label>
-                    Line product column <span className="text-destructive">*</span>
-                  </Label>
-                  {editing ? (
-                    <SearchSelect
-                      options={lineColumnOptions}
-                      value={config.lineProductColumn ?? ''}
-                      onChange={(v) => onChange({ lineProductColumn: v || null })}
-                      placeholder={linePickersEnabled ? 'Pick a column' : 'Run Test line query first'}
-                      disabled={!linePickersEnabled}
-                      ariaLabel="Line product column"
-                    />
-                  ) : (
-                    <ColumnChips values={config.lineProductColumn ? [config.lineProductColumn] : []} empty="-" />
-                  )}
-                  {fieldErrors.lineProductColumn && (
-                    <p className="text-xs text-destructive">{fieldErrors.lineProductColumn}</p>
+                  {editing && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      mode="icon"
+                      onClick={() => setFilterBuilderOpen(true)}
+                      aria-label="Build the filter formula"
+                      title="Edit as a formula"
+                    >
+                      <Wand2 className="size-4" />
+                    </Button>
                   )}
                 </div>
-                <div className="flex min-w-0 flex-col gap-1.5">
-                  <Label>Line warehouse column</Label>
-                  {editing ? (
-                    <SearchSelect
-                      options={[{ label: 'None', value: '' }, ...lineColumnOptions]}
-                      value={config.lineWarehouseColumn ?? ''}
-                      onChange={(v) => onChange({ lineWarehouseColumn: v || null })}
-                      placeholder="None"
-                      disabled={!linePickersEnabled}
-                      ariaLabel="Line warehouse column"
-                    />
-                  ) : (
-                    <ColumnChips values={config.lineWarehouseColumn ? [config.lineWarehouseColumn] : []} empty="None" />
-                  )}
-                  {fieldErrors.lineWarehouseColumn && (
-                    <p className="text-xs text-destructive">{fieldErrors.lineWarehouseColumn}</p>
-                  )}
-                </div>
+                {fieldErrors.filterFormula && (
+                  <p className="text-xs text-destructive">{fieldErrors.filterFormula}</p>
+                )}
               </div>
             </div>
+          )}
+
+          {isDocument && (
+            <AutocountFormulaBuilder
+              open={filterBuilderOpen}
+              onOpenChange={setFilterBuilderOpen}
+              value={config.filterFormula ?? ''}
+              onApply={(formula) => onChange({ filterFormula: formula.trim() ? formula.trim() : null })}
+              onServerTest={onServerTest}
+              variables={filterVariables}
+              fieldLabel="Filter"
+            />
           )}
 
           <SqlPreviewGrid state={preview.state} />

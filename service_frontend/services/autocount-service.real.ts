@@ -16,6 +16,7 @@ import type {
   AutocountEtlTaskUpdate,
   AutocountFormulaTestResult,
   AutocountJobListQuery,
+  AutocountMappingPreset,
   AutocountMappingUpdate,
   AutocountMappingView,
   AutocountMappingWriteRow,
@@ -172,15 +173,29 @@ export const realAutocountService: AutocountService = {
     );
   },
 
-  simulateMapping(companyId, entityType, record, rows) {
-    const body: { record: Record<string, unknown>; rows?: ReturnType<typeof writeRow>[] } = {
-      record,
-    };
+  simulateMapping(companyId, entityType, record, rows, lines) {
+    const body: {
+      record: Record<string, unknown>;
+      rows?: ReturnType<typeof writeRow>[];
+      lines?: Array<Record<string, unknown>>;
+    } = { record };
     // Only send `rows` when previewing DRAFT edits; omit to simulate saved rows.
     if (rows) body.rows = rows.map(writeRow);
+    // Document entities only (sprint-5/02, AC-02-22) - the picked header's
+    // fetched line records.
+    if (lines) body.lines = lines;
     return apiFetch<AutocountSimulateResult>(
       `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/mapping/simulate`,
       { method: 'POST', body: JSON.stringify(body) },
+    );
+  },
+
+  listMappingPresets(companyId, entityType) {
+    // sprint-5/02 S3 - not yet served by the real backend (never reached
+    // while `withPhase1DocumentMappingMock` is bound; kept so the interface
+    // is satisfied and the swap-to-real needs no call-site change).
+    return apiFetch<AutocountMappingPreset[]>(
+      `/autocount/presets/${encodeURIComponent(entityType)}?companyId=${encodeURIComponent(companyId)}`,
     );
   },
 
@@ -276,5 +291,8 @@ function writeRow(row: AutocountMappingWriteRow) {
     transform: row.transform,
     sorentoField: row.sorentoField,
     formula: formula ? formula : null,
+    // Default 'header' server-side too (sprint-5/02, AC-02-01) - a
+    // master/GRN save never sends anything else.
+    scope: row.scope ?? 'header',
   };
 }
