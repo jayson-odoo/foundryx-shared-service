@@ -131,17 +131,23 @@ changed them after the upload. So, for a header adopted by `so_number`/`po_numbe
 whose lines carry no `source_ref`, please ADOPT before you delete:
 
 1. Match each incoming line to one remaining ref-less line by business key
-   `(product_id, warehouse_id-or-NULL, qty_ordered)`; if several remain, take the one whose
-   position equals `line_number` (else the first in stored order).
+   `(product_id, warehouse_id-or-NULL, outstanding)` where `outstanding = qty_ordered -
+   qty_delivered|qty_received` on BOTH sides (Sorento correction: the upload stored
+   `qty_ordered = Remaining Qty` on insert, so raw `qty_ordered` is not comparable; the ESB side
+   is `Qty - TransferedQty`); if several remain, take the one whose position equals
+   `line_number` (else the first in `(created_at, id)` order).
 2. Else match by `(product_id, warehouse_id-or-NULL)` when exactly one remains.
 3. Else match by `line_number` position among the remaining ref-less lines when the counts agree.
-4. A matched row keeps its id: stamp `source_ref` (DtlKey) on it, register it in
-   `integration_references`, then update its values (qty/price/dates) from the payload -
-   allocations, claims, GRN links stay attached.
+4. A matched row keeps its id: stamp `source_ref` (DtlKey) + `source_system='autocount'` on
+   the line COLUMN (lines are never registered in `integration_references` - A3 rule), then
+   update its values (qty/price/dates) from the payload - allocations, claims, GRN links stay
+   attached.
 5. Only the ref-less lines still unmatched after 1-3 are deleted (or cancelled in place when
    referenced) - the existing rule, now applied to the true remainder.
-6. Report per record: `lines_adopted`, `lines_created`, `lines_deleted`, `lines_cancelled` (the
-   dry run must show the same counts so the cutover playbook BL-SS-050 can be rehearsed).
+6. Report per record `lines: {adopted, created, updated, deleted, cancelled}` (dry run too) so
+   the cutover playbook BL-SS-050 can be rehearsed.
+`line_number` is position-only on the Sorento side (not persisted; `spo_line_number` stays
+Sorento's own sequence). Sorento: plan D11, UAC group V7, issue #668, slice S1b.
 
 The ESB sends `line_number` (AutoCount `Seq`) on every line at contract v2 and always sends
 `product_ref`/`warehouse_ref` (+ code fallbacks) so step 1 resolves the same masters the upload
