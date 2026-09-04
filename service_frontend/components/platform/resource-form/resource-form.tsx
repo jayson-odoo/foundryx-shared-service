@@ -188,6 +188,12 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
       {/* Toolbar row = PageHeader (D6): crumbs + title left, ONE Back right. */}
       {!config.embedded && (
         <PageHeader
+          // AC-DLA-30/D6 fix round 1: config.breadcrumb (the record-level
+          // trail, e.g. "Users > Jane Doe") names the record itself when a
+          // form supplies one - PageHeader's own menu-derived trail is only
+          // the fallback for the (currently unused) forms that leave it []
+          // (BreadcrumbStep and PageHeaderCrumb share the same shape).
+          crumbs={config.breadcrumb.length ? config.breadcrumb : undefined}
           actions={
             <Button variant="outline" size="sm" asChild>
               <Link href={backHref ?? config.backHref}>

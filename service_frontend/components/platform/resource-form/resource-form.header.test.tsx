@@ -109,6 +109,22 @@ describe('AC-DLA-28 ResourceForm header restructure', () => {
     expect(items[0].className).not.toContain('text-destructive');
   });
 
+  it('config.breadcrumb renders as the PageHeader crumb trail, naming the record (fix round 1)', () => {
+    render(
+      <ResourceForm
+        config={baseConfig({
+          breadcrumb: [{ label: 'Records', href: '/records' }, { label: 'Jane Doe' }],
+        })}
+      />,
+    );
+    const nav = screen.getByRole('navigation', { name: 'breadcrumb' });
+    expect(nav).toHaveTextContent('Dashboard');
+    expect(nav).toHaveTextContent('Records');
+    expect(nav).toHaveTextContent('Jane Doe');
+    // Jane Doe (the record) is the CURRENT page, not the sidebar-derived one.
+    expect(screen.getByText('Jane Doe').closest('[aria-current="page"]')).toBeTruthy();
+  });
+
   it('config.entityNoun overrides the sidebar-derived noun on the primary button (AC-DLA-35 fix round 1)', async () => {
     render(<ResourceForm config={baseConfig({ entityNoun: 'task' })} />);
     const { default: userEvent } = await import('@testing-library/user-event');
