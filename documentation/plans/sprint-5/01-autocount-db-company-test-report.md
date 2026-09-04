@@ -103,15 +103,15 @@ count(*) FROM tenants WHERE slug LIKE 'e2e-dbco-%'` = **0** after the run (no re
 | AC-01-12 | FE | PASS | `connect-company-view.test.tsx`: "offers AutoCount API \| SQL database and defaults to API when both have a connection", "defaults to SQL database when only it has an unbound connection", "the SQL picker lists the source's (already-filtered) connections only", "switching source clears the picked connection"; `use-autocount-connections.test.ts` default matrix; **live**: toggle click → `data-state="on"`, picker filtered to the SQL connection |
 | AC-01-13 | FE | PASS | `connect-company-view.test.tsx`: "SQL source with no connection at all: banner + link to Integrations", "SQL source with every connection bound: the all-bound banner", "the API source keeps today's two banners (regression pin)", "Create is disabled until a connection is picked"; **live**: Create disabled before the pick; all-bound banner + disabled picker/Create on the second attempt |
 | AC-01-14 | FE | PASS | `connect-company-view.test.tsx`: "renders a 422 on connectionId inline under the picker", "renders a 409 inline naming the existing company"; **live**: Create → `createCompany` → routed to the new company's Overview |
-| AC-01-15 | FE | PASS | **live E2E** `expectNoPageScroll` on the Connect-company form at 1280×900; 375px verified in the S1 browser pass (agent-browser) - the E2E's one mobile assertion is on the Entities tab per the S3 brief |
+| AC-01-15 | FE | PASS | **live E2E** `expectNoPageScroll` on the Connect-company form at **1280×900 AND 375×812** (`connect company @375`, review follow-up): after `setViewportSize(375, 812)` the Source toggle, the `SQL database connection` picker, the Label input and Create are all still visible, no horizontal page scroll; viewport restored to 1280 before Create |
 | AC-01-16 | FE | PASS | `company-detail-view.test.tsx`: "an API company's Integration row reads \"AutoCount API\" and still links the connection", "a DB company's Integration row reads \"SQL database\""; **live**: `company-source-kind` = "SQL database" + "Open connection" link |
 | AC-01-17 | FE | PASS | `add-entity-control.test.tsx`: "a DB company offers all nine sql_db entities incl. customer + supplier, never GRN", "an API company keeps today's seven - customer/supplier are API-seeded, never added", "a DB company's list drops the entities already configured"; `autocount-meta.test.ts` nine-entity pin; **live**: exactly 9 options, Customer/Supplier/Product present, GRN absent |
 | AC-01-18 | FE | PASS | `entities-list-config.test.tsx`: "never offers \"Edit first-run window\" nor \"Change source\" on a DB company", "keeps configure-task, sync-now, configure-mapping and refetch-history on a DB company", "an API company's rows are unchanged (regression pin)"; **live**: Customer row "…" has "Configure database query", no "Change source", no "Edit first-run window" |
-| AC-01-19 | FE | PASS | `query-tab.test.tsx`: "replaces the Connection picker with a read-only row on a DB company", "an API company keeps the searchable Connection picker", "pre-sets config.connectionId to the locked connection when it differs", "an API company with no SQL connection still gets the warning (regression pin)"; **live**: `locked-connection` row (`<name> · foundryx_service`), zero `Connection` comboboxes, zero `no-sql-connection` alerts, in edit AND read mode |
+| AC-01-19 | FE | PASS | `query-tab.test.tsx`: "replaces the Connection picker with a read-only row on a DB company", "an API company keeps the searchable Connection picker", "never patches connectionId on mount - the editor seeds it into the baseline (review fix)", "an API company with no SQL connection still gets the warning (regression pin)"; **`task-editor-view.locked-connection.test.tsx`** (review follow-up, real `ResourceForm` shell): "mounts clean: locked row shown, config.connectionId pre-set, no picker", "Edit -> Cancel on an untouched editor never asks \"Discard changes?\"", "control: a real edit then Cancel DOES ask \"Discard changes?\" (the guard is live)", "an API company keeps the null draft as-is (picker present, nothing seeded)" - the Edit -> Cancel case was confirmed to FAIL against the pre-fix code (git-stash mutation check); **live**: `locked-connection` row (`<name> · foundryx_service`), zero `Connection` comboboxes, zero `no-sql-connection` alerts, in edit AND read mode |
 | AC-01-20 | FE | PASS | `document-prerequisite-card.test.tsx` (3) + `company-detail-view.test.tsx`: "is absent when every prerequisite is active", "renders above the Entities list, one line per blocked document, with Add for the missing master", "also warns on an API company with a configured document entity"; **live**: absent case only (the E2E company configures no document entity) |
-| AC-01-21 | FE | PASS | **live E2E**: no horizontal overflow at 1280 on the Query tab and Entities tab, and at **375×812** on the Entities tab (Customer row still visible); Overview/Query tab at 375 verified in the S1 browser pass |
+| AC-01-21 | FE | PASS | **live E2E**: no horizontal overflow at 1280 on the Query tab and Entities tab, and at **375×812** on BOTH the task editor Query tab (`task editor / query tab @375`, review follow-up: locked row + preview badge still visible after Test query) and the Entities tab (`company / entities tab @375`, Customer row still visible); Overview at 375 verified in the S1 browser pass |
 | AC-01-22 | T | PASS | `tests/test_autocount_db_company.py` (29) + `tests/test_connection_index_drift.py` (1) + `tests/test_autocount_entity_parity.py` (2) = **33 passed**; full `tests/test_autocount*` (15 files) = **808 passed, 0 failed** (4m58s) |
-| AC-01-23 | T | PASS | `npx vitest run` = **175 files, 1481 tests, all passing** (36s) - the S1 files listed in the evidence above (`connect-company-view`, `company-detail-view`, `add-entity-control`, `document-prerequisite-card`, `entities-list-config`, `query-tab`, `use-autocount-connections`, `autocount-service.mock`, `autocount-meta`) all green |
+| AC-01-23 | T | PASS | `npx vitest run` = **176 files, 1484 tests, all passing** (43s, review follow-up run) - the S1 files listed in the evidence above (`connect-company-view`, `company-detail-view`, `add-entity-control`, `document-prerequisite-card`, `entities-list-config`, `query-tab`, `use-autocount-connections`, `autocount-service.mock`, `autocount-meta`) all green, plus the new `task-editor-view.locked-connection.test.tsx` (4) |
 | AC-01-24 | E2E | **PASS** | `e2e/autocount-db-company.spec.ts` - real clicks, dedicated timestamped tenant, live, 2 consecutive green runs (6.8s / 6.3s), tenant purged after each |
 
 **Totals: 24 PASS, 0 FAIL, 0 DEFERRED.**
@@ -121,8 +121,8 @@ count(*) FROM tenants WHERE slug LIKE 'e2e-dbco-%'` = **0** after the run (no re
 - Backend S2 files: `pytest -q tests/test_autocount_db_company.py tests/test_connection_index_drift.py
   tests/test_autocount_entity_parity.py` = **33 passed, 0 failed** (45s).
 - Backend `pytest -q tests/test_autocount*` = **808 passed, 0 failed** (4m58s).
-- Frontend `npx vitest run` = **175 files, 1481 tests, all passing** (36s).
-- New E2E spec: **1/1 passing**, 2 consecutive runs.
+- Frontend `npx vitest run` = **176 files, 1484 tests, all passing** (43s, after the review follow-up).
+- New E2E spec: **1/1 passing**, 2 consecutive runs (re-run 2 more times after the review follow-up, both green).
 
 ## Responsive verification (375px / 1280px)
 
@@ -130,9 +130,11 @@ count(*) FROM tenants WHERE slug LIKE 'e2e-dbco-%'` = **0** after the run (no re
 
 - **1280×900**: Connect-company form (after the pick), task editor Query tab (after Test query),
   company Entities tab - all passed.
-- **375×812**: company Entities tab after `setViewportSize` - passed, Customer row still visible.
-- Overview / task editor at 375 were verified in S1's agent-browser pass (S1 report); not
-  re-asserted here beyond the one mobile assertion the S3 brief asked for.
+- **375×812** (three surfaces, each via `setViewportSize` then restored to 1280 so the rest of
+  the journey is unaffected): the Connect-company form (toggle, picker, Label, Create visible -
+  AC-01-15), the task editor Query tab after Test query (locked row + preview badge visible -
+  AC-01-21), the company Entities tab (Customer row visible - AC-01-21). All passed.
+- Overview at 375 was verified in S1's agent-browser pass (S1 report).
 
 ## Regression check - pre-existing autocount E2E specs (same :3002/:8002 stack)
 
@@ -239,3 +241,41 @@ Already registered by the plan: **BL-SS-045** (AutoCount SQL presets in the task
 queries the live ORM model). New from this report, not yet backlogged: the task editor's Mapping
 tab stays on its pre-birth 404 state after the first query save births the row (plan 22 S4 gap,
 product code - see the regression section; one `mapping.reload()` after a successful save).
+
+## Review follow-up (2026-09-04, after the S3 code review)
+
+Two findings applied on this branch, small and surgical; no backend change.
+
+1. **SHOULD-FIX - a fresh DB-company task editor was dirty on mount.** `query-tab.tsx` patched
+   `config.connectionId` to the locked id in a `useEffect`, but the backend's default draft for a
+   never-configured entity carries `connectionId: null` (`etl_service.default_source_config`), so
+   `configDirty` was already true in read mode: Edit -> Cancel asked "Discard changes?" on an
+   untouched editor, Discard reset to the null baseline and the effect re-dirtied it (perpetual),
+   and `beforeunload` armed the moment Edit was clicked. **Fix (one place):** `task-editor-view.tsx`
+   now seeds the locked connection into the BASELINE (`connectionId: saved.connectionId ??
+   lockedConnection.id`) that feeds both the `setConfig` seed and `baselineKey`; the `useEffect` in
+   `query-tab.tsx` is deleted. **Tests:** new
+   `task-editor-view.locked-connection.test.tsx` (4 cases, renders the REAL `ResourceForm` shell so
+   the Edit/Cancel/dirty-guard path is production code; includes a control that a real edit DOES
+   raise the dialog, and an API-company case that nothing is seeded); the two effect-specific
+   `query-tab.test.tsx` cases were replaced by one pin that the tab never patches on mount. The
+   Edit -> Cancel case was verified to fail against the pre-fix code (git-stash mutation check)
+   and pass after.
+2. **DoD gate item 5 (375px) - E2E assertions widened.** `autocount-db-company.spec.ts` now
+   asserts no horizontal page scroll at 375×812 on the Connect-company form (AC-01-15) and on the
+   task editor Query tab (AC-01-21) in addition to the Entities tab, each followed by a restore to
+   1280×900. Real clicks only; no new `page.goto`.
+
+**Verification (isolated stack, headless only):** worktree backend `.venv/bin/uvicorn ... --port
+8002`; frontend `rm -rf .next && npm run build` with `NEXT_PUBLIC_BACKEND_API_URL=http://localhost:8002`
+baked in, then `next start -p 3002` (port ownership confirmed via `lsof`, cwd = this worktree; the
+main checkout's :3001/:8001 untouched). Same temporary, uncommitted rig as S3
+(`playwright.wt3002.tmp.config.ts` + a `sed 8001->8002` copy of `autocount-db-etl.spec.ts` under
+`e2e-wt3002-tmp/`), both deleted before commit.
+
+- `npx vitest run`: **176 files, 1484 tests, all passing**.
+- `npx eslint` on every changed file: clean; no em/en dashes.
+- `e2e/autocount-db-company.spec.ts`: **1/1 passing**, 2 consecutive runs (8.9s, 8.4s), tenant
+  purged after each.
+- `e2e/autocount-db-etl.spec.ts` (touches the same task editor): **2/2 passing** (AC-22-31 12.0s,
+  AC-22-32 4.1s).

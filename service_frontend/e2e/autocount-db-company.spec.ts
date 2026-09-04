@@ -20,8 +20,10 @@ import {
  * Entities -> Add entity (Customer offered, Goods received note not) ->
  * Customer -> Query tab (connection LOCKED, no picker) -> schema tree ->
  * `etl_demo_customers` -> Test query (rows render) -> key column -> Save (the
- * Customer row is born on the DB source) -> Entities (375px, no overflow) ->
- * Connect company again (every SQL connection already registered).
+ * Customer row is born on the DB source) -> Entities -> Connect company again
+ * (every SQL connection already registered). The Connect-company form, the
+ * Query tab and the Entities tab are each also asserted at 375x812 (no
+ * horizontal page scroll, controls still visible - AC-01-15 / AC-01-21).
  *
  * ── Why this Postgres is the "AutoCount" database ───────────────────────────
  * The `sql_database` connection points back at the Foundryx database itself
@@ -343,6 +345,21 @@ test('AC-01-24 DB company: connect from a SQL database -> add Customer -> locked
     await page.getByLabel('Label').fill(companyLabel);
     await expectNoPageScroll(page, 'connect company @1280');
 
+    // ── Responsive: the Connect-company form at 375px (AC-01-15) ──────────
+    // Toggle, picker, label and Create stack - no horizontal scroll, nothing
+    // clipped - then back to desktop so the rest of the journey is unaffected.
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.waitForTimeout(500);
+    await expectNoPageScroll(page, 'connect company @375');
+    await expect(sourceOption(page, 'SQL database')).toBeVisible();
+    await expect(
+      page.getByRole('combobox', { name: 'SQL database connection' }),
+    ).toBeVisible();
+    await expect(page.getByLabel('Label')).toBeVisible();
+    await expect(create).toBeVisible();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.waitForTimeout(300);
+
     await expect(create).toBeEnabled();
     await create.click();
     // The Resource shell may carry record-nav state on the URL - never anchor
@@ -422,6 +439,17 @@ test('AC-01-24 DB company: connect from a SQL database -> add Customer -> locked
       page.getByTestId('sql-preview-success').getByText('acc_no').first(),
     ).toBeVisible();
     await expectNoPageScroll(page, 'task editor / query tab @1280');
+
+    // ── Responsive: the task editor Query tab at 375px (AC-01-21) ──────────
+    // The schema tree stacks above the editor and the preview grid scrolls
+    // inside its own box; the locked row and the preview badge stay visible.
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.waitForTimeout(500);
+    await expectNoPageScroll(page, 'task editor / query tab @375');
+    await expect(locked).toBeVisible();
+    await expect(page.getByTestId('sql-preview-badge')).toBeVisible();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.waitForTimeout(300);
 
     // Save the query - the Customer row is born on the DB source with the
     // company connection filled server-side (AC-01-09/10 live).

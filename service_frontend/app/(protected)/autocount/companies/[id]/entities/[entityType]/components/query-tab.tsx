@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { Lock, Play, TriangleAlert } from 'lucide-react';
 import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
@@ -30,8 +30,9 @@ import type {
 
 /**
  * The company connection a DB company's task is locked to (AC-01-19): shown
- * as a read-only row where the API company has a picker, and pre-set on the
- * config so the save never has to guess.
+ * as a read-only row where the API company has a picker. The editor seeds it
+ * into the config BASELINE (never a post-mount patch, which would dirty an
+ * untouched editor), so the save never has to guess.
  */
 export interface LockedConnection {
   id: string;
@@ -97,14 +98,6 @@ export function QueryTab({
   const isDocument = isDocumentEntity(entityType);
   const connection = connections.find((c) => c.id === config.connectionId) ?? null;
 
-  // A DB company's task reads ONLY from the company connection - pre-set it so
-  // a draft whose default differs (or a legacy row) saves against the right
-  // one without the operator having to notice (AC-01-19; the server enforces).
-  useEffect(() => {
-    if (lockedConnection && config.connectionId !== lockedConnection.id) {
-      onChange({ connectionId: lockedConnection.id });
-    }
-  }, [config.connectionId, lockedConnection, onChange]);
   const previewColumns = useMemo(
     () => (preview.state.status === 'success' ? preview.state.preview.columns.map((c) => c.name) : []),
     [preview.state],

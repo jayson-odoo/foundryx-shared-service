@@ -187,22 +187,15 @@ describe('QueryTab - DB company connection lock (plan sprint-5/01, AC-01-19)', (
     expect(screen.queryByTestId('locked-connection')).not.toBeInTheDocument();
   });
 
-  it('pre-sets config.connectionId to the locked connection when it differs', () => {
+  it('never patches connectionId on mount - the editor seeds it into the baseline (review fix)', () => {
+    // A post-mount patch dirtied an untouched editor ("Discard changes?" on
+    // Edit -> Cancel); the seed now lives in `TaskEditorView`'s baseline
+    // (`task-editor-view.locked-connection.test.tsx`). Pin that the tab itself
+    // stays silent even when the config disagrees with the lock.
     const onChange = vi.fn();
     renderQueryTab({
       entityType: 'customer',
       cfg: config({ lineQuery: null, connectionId: 'conn-other' }),
-      lockedConnection: LOCKED,
-      onChange,
-    });
-    expect(onChange).toHaveBeenCalledWith({ connectionId: 'conn-sql-1' });
-  });
-
-  it('does not patch when the config already carries the locked connection', () => {
-    const onChange = vi.fn();
-    renderQueryTab({
-      entityType: 'customer',
-      cfg: config({ lineQuery: null, connectionId: 'conn-sql-1' }),
       lockedConnection: LOCKED,
       onChange,
     });

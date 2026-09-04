@@ -91,15 +91,6 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
 
   const [config, setConfig] = useState<AutocountEtlSourceConfig | null>(null);
 
-  // Seed the working config from the loaded/saved task. Keyed on the config
-  // signature so a background reload with identical values never wipes an edit.
-  const baseline = task?.sourceConfig ?? null;
-  const baselineKey = useMemo(() => JSON.stringify(baseline), [baseline]);
-  useEffect(() => {
-    setConfig(baseline ? { ...baseline } : null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baselineKey]);
-
   // A DB company's task is locked to the company connection (AC-01-19) - the
   // Query tab shows it read-only (`name · database`) instead of the picker.
   const company = detail?.company ?? null;
@@ -111,6 +102,25 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       label: conn ? `${conn.name} · ${conn.database}` : company.databaseName,
     };
   }, [company, sqlConnections.connections]);
+
+  // The saved config is the dirty BASELINE. A never-configured entity's draft
+  // carries `connectionId: null`, so on a DB company the locked connection is
+  // seeded here (not patched after mount): an untouched editor stays clean
+  // (no "Discard changes?" on Edit -> Cancel) and the first save carries the
+  // company connection without the operator having to notice.
+  const baseline = useMemo<AutocountEtlSourceConfig | null>(() => {
+    const saved = task?.sourceConfig ?? null;
+    if (!saved || !lockedConnection) return saved;
+    return { ...saved, connectionId: saved.connectionId ?? lockedConnection.id };
+  }, [lockedConnection, task?.sourceConfig]);
+
+  // Seed the working config from the baseline. Keyed on the config signature
+  // so a background reload with identical values never wipes an edit.
+  const baselineKey = useMemo(() => JSON.stringify(baseline), [baseline]);
+  useEffect(() => {
+    setConfig(baseline ? { ...baseline } : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baselineKey]);
 
   const schema = useAutocountSqlSchema(config?.connectionId ?? null);
   const preview = useSqlPreview();
