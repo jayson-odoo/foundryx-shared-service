@@ -66,7 +66,13 @@ export interface ResourceAction<T> {
   isVisible?: (rows: T[]) => boolean;
   /** Show but disable (e.g. "Send invitation" only for INVITED users). */
   isDisabled?: (rows: T[]) => boolean;
-  /** When set, a confirm dialog gates the action. */
+  /**
+   * When set, a confirm dialog gates the action - RESERVED for the two
+   * typed-confirmation carve-outs (module uninstall, tenant purge, D2/D13):
+   * every other destructive/reversible action uses `deferred` instead (the
+   * grace-window engine, sprint-4/23 T5). `confirm` and `deferred` are
+   * mutually exclusive.
+   */
   confirm?: {
     title: string;
     description?: string;
@@ -77,6 +83,23 @@ export interface ResourceAction<T> {
      * For irreversible actions (hard delete).
      */
     input?: { expected: (rows: T[]) => string; hint?: (rows: T[]) => string };
+  };
+  /**
+   * Deferred (grace-window) action (sprint-4/23 T5, D2/AC-DLA-43): no confirm
+   * dialog - the action parks on the server for `window`'s countdown (10s
+   * destructive / 5s reversible, tenant-configurable) and applies when it
+   * lapses. `actionKey` is the backend registry key (`<entity>.<verb>`,
+   * `app/deferred_actions/registry.py`). When set, `run` is NOT called by
+   * the shell - the shell drives `useDeferredAction` itself. `entityType`
+   * (the deferred-actions registry's entity type, e.g. `"user"`) is
+   * co-located here rather than threaded as a new prop through every
+   * ActionMenu/BulkActions/ResourceForm call site (AC-DLA-43's shape omits
+   * it - a deliberate, disclosed addition; see the T5 report).
+   */
+  deferred?: {
+    actionKey: string;
+    entityType: string;
+    window: 'destructive' | 'reversible';
   };
   run: (rows: T[], runtime: ResourceActionRuntime) => void | Promise<void>;
 }

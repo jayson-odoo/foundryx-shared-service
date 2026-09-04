@@ -2,10 +2,23 @@
 
 /**
  * ONE confirm dialog for the action registry (code-review consolidation -
- * was duplicated verbatim in action-menu and bulk-actions). Supports the
- * typed-confirmation contract (`confirm.input`): the confirm button stays
- * disabled until the user types `expected(rows)` exactly - irreversible
- * actions (hard delete) gate on it.
+ * was duplicated verbatim in action-menu and bulk-actions).
+ *
+ * **RESERVED for the two typed-confirmation carve-outs (sprint-4/23, T5,
+ * D2/D13/AC-DLA-43/47) - the ONLY allowed importers of `ResourceAction.confirm`
+ * are `components/platform/app-store/use-module-list-config.tsx` (module
+ * uninstall) and `app/(protected)/platform/tenants/components/
+ * use-tenant-actions.tsx` (tenant purge, irreversible hard delete).** Every
+ * other destructive/reversible action in the app uses `ResourceAction.deferred`
+ * instead (the grace-window engine, `hooks/use-deferred-action.ts`) - no
+ * confirm dialog, a countdown with Cancel in its place. `confirm-carve-outs.
+ * inventory.test.ts` pins this to exactly those two files, PLUS one disclosed
+ * third exception (Users' "Impersonate" - a session action with no sensible
+ * grace-window commit semantics; see the T5 report).
+ *
+ * Supports the typed-confirmation contract (`confirm.input`): the confirm
+ * button stays disabled until the user types `expected(rows)` exactly -
+ * renders on the lightbox spring via `AlertDialog` (T3).
  */
 import { useState } from 'react';
 import { cn } from '@/lib/utils';

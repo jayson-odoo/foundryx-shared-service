@@ -1,12 +1,16 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { usePathname, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, ChevronLeft, ChevronRight, Pencil } from 'lucide-react';
+import { toast } from 'sonner';
 import { MENU_SIDEBAR } from '@/config/menu.config';
 import { buildListNav } from '@/lib/list-context';
+import { presentContinuous } from '@/lib/deferred-verb';
+import { trackPendingEntities, untrackPendingEntities } from '@/lib/pending-entity-store';
 import { useCan } from '@/hooks/use-can';
+import { useDeferredAction } from '@/hooks/use-deferred-action';
 import { useMenu } from '@/hooks/use-menu';
 import { useTerminology } from '@/hooks/use-terminology';
 import {
@@ -23,6 +27,7 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { PageHeader } from '@/components/platform/page-header';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
+import { DeferredCountdown } from '@/components/platform/resource-actions/deferred-action-button';
 import { RecordNav } from './record-nav';
 import type { ResourceFormConfig } from './types';
 
@@ -63,6 +68,7 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
   const canEdit = !config.editPermission || can(config.editPermission);
   const pathname = usePathname() ?? '';
   const searchParams = useSearchParams();
+  const router = useRouter();
   const { getCurrentItem } = useMenu(pathname);
   const { label } = useTerminology();
 
@@ -140,8 +146,45 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
         from: recordId,
       });
 
+  // Deferred (grace-window) form-surface action (sprint-4/23 T5, AC-DLA-44):
+  // the gear's Delete/Archive/etc. no longer opens a confirm dialog - it
+  // parks on the server and the countdown REPLACES the primary area below.
+  // On commit the record is gone, so the page returns to the list (`ctx`/
+  // `i`/`from` preserved via the SAME `backHref` the record's own Back link
+  // already computes).
+  const deferredVerbRef = useRef('');
+  // The entity type any of this record's registered deferred actions target -
+  // `watchFromMount`/`watch` below needs it to ask `current` about THIS
+  // record without waiting for a local click (AC-DLA-46, second-tab parity).
+  const watchEntityType = config.actions.find((a) => a.deferred)?.deferred?.entityType;
+  const deferred = useDeferredAction({
+    watchFromMount: Boolean(!config.embedded && recordId && watchEntityType),
+    watch:
+      !config.embedded && recordId && watchEntityType
+        ? { entityType: watchEntityType, entityId: recordId }
+        : undefined,
+    onCommitted: () => {
+      if (recordId) untrackPendingEntities([recordId]);
+      toast.success('Done.');
+      router.push(backHref ?? config.backHref);
+    },
+  });
+
+  const deferredPending = deferred.state.status === 'pending' ? deferred.state : null;
+  // A countdown picked up via `watch` (another tab / a re-mount) never ran
+  // through `onDeferredStart` - derive its label from the matching action's
+  // OWN registered key instead of leaving the ref empty.
+  if (deferredPending && !deferredVerbRef.current) {
+    const matched = config.actions.find((a) => a.deferred?.actionKey === deferredPending.actionKey);
+    if (matched) {
+      const matchedLabel =
+        typeof matched.label === 'function' ? matched.label(config.actionRows) : matched.label;
+      deferredVerbRef.current = presentContinuous(matchedLabel);
+    }
+  }
+
   const gear =
-    !editing && config.actions.some((a) => a.surfaces.form) ? (
+    !editing && !deferredPending && config.actions.some((a) => a.surfaces.form) ? (
       <ActionMenu
         actions={config.actions}
         rows={config.actionRows}
@@ -151,10 +194,32 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
         }}
         surface="form"
         trigger="gear"
+        onDeferredStart={(action, entityIds) => {
+          const actionLabel =
+            typeof action.label === 'function' ? action.label(config.actionRows) : action.label;
+          deferredVerbRef.current = presentContinuous(actionLabel);
+          trackPendingEntities(entityIds);
+          void deferred.start(
+            action.deferred!.actionKey,
+            entityIds.map((id) => ({ entityType: action.deferred!.entityType, entityId: id })),
+          );
+        }}
       />
     ) : null;
 
-  const primary = editing ? (
+  // The countdown REPLACES the primary area only (AC-DLA-44) - identity,
+  // gear-less record card and tabs stay put; no dialog, no full-page swap.
+  const primary = deferredPending ? (
+    <DeferredCountdown
+      verb={deferredVerbRef.current || 'Working'}
+      commitAt={deferredPending.commitAt}
+      windowSeconds={deferredPending.windowSeconds}
+      onCancel={() => {
+        void deferred.cancel();
+        if (recordId) untrackPendingEntities([recordId]);
+      }}
+    />
+  ) : editing ? (
     <>
       <Button
         variant="outline"

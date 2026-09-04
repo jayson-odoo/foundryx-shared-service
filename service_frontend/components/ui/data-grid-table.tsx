@@ -11,6 +11,7 @@ import { cva } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 import { useHorizontalOverflow } from '@/hooks/use-horizontal-overflow';
 import { usePrefetchOnce } from '@/hooks/use-prefetch-once';
+import { pendingEntityIds, subscribePendingEntities } from '@/lib/pending-entity-store';
 
 const headerCellSpacingVariants = cva('', {
   variants: {
@@ -221,10 +222,36 @@ function useRestoreReturnedRow(scrollerRef: React.RefObject<HTMLDivElement | nul
   }, []);
 }
 
+/**
+ * Dims a row whenever its id enters `lib/pending-entity-store.ts` (AC-DLA-45)
+ * and un-dims it when the action settles (commit/cancel/fail) - imperative
+ * DOM attribute toggling, matching `useRestoreReturnedRow`'s pattern, so
+ * neither the store nor this hook forces a React re-render of the grid on
+ * every 1s countdown tick.
+ */
+function useRowPendingDim(scrollerRef: React.RefObject<HTMLDivElement | null>) {
+  useEffect(() => {
+    const apply = () => {
+      const root = scrollerRef.current;
+      if (!root) return;
+      const rows = root.querySelectorAll<HTMLElement>('[data-row-id]');
+      const ids = pendingEntityIds();
+      rows.forEach((el) => {
+        const id = el.getAttribute('data-row-id');
+        if (id && ids.has(id)) el.setAttribute('data-pending', 'true');
+        else el.removeAttribute('data-pending');
+      });
+    };
+    apply();
+    return subscribePendingEntities(apply);
+  }, [scrollerRef]);
+}
+
 function DataGridTableBase({ children }: { children: ReactNode }) {
   const { props, table } = useDataGrid();
   const { ref: scrollerRef, isFading } = useHorizontalOverflow<HTMLDivElement>();
   useRestoreReturnedRow(scrollerRef);
+  useRowPendingDim(scrollerRef);
 
   // `getTotalSize()` is the sum of the visible leaf columns' widths - a
   // DEFINITE length the browser can resolve, unlike `min-w-max` on a
@@ -541,7 +568,11 @@ function dataGridBodyRowClass<TData>(
     // background of its own.
     'group hover:bg-muted/40 data-[state=selected]:bg-muted/50',
     // AC-DLA-30: the row Back restored, until the next pointer event.
-    'transition-[background-color,opacity] duration-(--duration-fast) ease-(--ease-standard) data-[returned=true]:bg-primary/5',
+    // AC-DLA-45 (T5): a row with a deferred action parked on it dims via
+    // `data-pending`, on the SAME opacity transition this class already
+    // carries for that purpose (`useRowPendingDim` below sets the attribute
+    // imperatively, matching `useRestoreReturnedRow`'s pattern).
+    'transition-[background-color,opacity] duration-(--duration-fast) ease-(--ease-standard) data-[returned=true]:bg-primary/5 data-[pending=true]:opacity-50',
     (isLinkRow || Boolean(props.onRowClick) || (unknownHref && Boolean(props.rowHref))) && 'cursor-pointer',
     isLinkRow &&
       // AC-DLA-14 fix round 1: `background-color` (the active/hover states)
