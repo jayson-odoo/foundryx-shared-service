@@ -234,5 +234,5 @@ export function FormSubmissionsTab({ form }: FormSubmissionsTabProps) {
     };
   }, [form.id, form.slug, form.pinnedColumns, form.draftDefinition, graph, formatDateTime]);
 
-  return <ResourceList config={config} />;
+  return <ResourceList config={config} hideHeader />;
 }

@@ -137,7 +137,7 @@ export function MyMeetingsView() {
       )}
 
       {enabled ? (
-        <ResourceList config={config} />
+        <ResourceList config={config} hideHeader />
       ) : (
         <Card>
           <CardContent className="flex flex-col items-center gap-4 py-14">

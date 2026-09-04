@@ -127,7 +127,7 @@ export function IdeaBrsTab({ ideaId }: IdeaBrsTabProps) {
   return (
     <Card>
       <CardContent className="py-4">
-        <ResourceList config={config} />
+        <ResourceList config={config} hideHeader />
       </CardContent>
     </Card>
   );

@@ -374,7 +374,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 icon: History,
                 render: () => (
                   <div className="py-2">
-                    <ResourceList key={runsKey} config={runsConfig} />
+                    <ResourceList key={runsKey} config={runsConfig} hideHeader />
                   </div>
                 ),
               },

@@ -187,7 +187,7 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
           <p className="py-8 text-center text-sm text-muted-foreground">No linked ideas.</p>
         ) : (
           // Remount on reload so the freshly-fetched linked set drives the list.
-          <ResourceList key={reloadToken} config={config} />
+          <ResourceList key={reloadToken} config={config} hideHeader />
         )}
       </CardContent>
     </Card>
