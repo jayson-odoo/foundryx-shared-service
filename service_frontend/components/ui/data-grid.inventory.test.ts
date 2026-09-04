@@ -119,13 +119,16 @@ describe('AC-DLA-13 DataGrid defaults + scroller + pinned column + tabular-nums'
     expect(resourceListSrc).toMatch(/id:\s*'__drag'[\s\S]{0,400}meta:\s*\{\s*reorderable:\s*false\s*\}/);
   });
 
-  it('the pinned cell background matches its row state via group-* variants, not a flat colour (fix round 1)', () => {
+  it('the pinned cell background matches its row state via group-* variants, using OPAQUE pre-mixed tokens not the row\'s own translucent colour (fix round 1; opacity T2 fix round 3)', () => {
     const src = read('components/ui/data-grid-table.tsx');
-    expect(src).toContain('group-hover:max-sm:bg-muted/40');
-    expect(src).toContain('group-data-[state=selected]:max-sm:bg-muted/50');
-    expect(src).toContain('group-odd:max-sm:bg-muted/90');
+    expect(src).toContain('group-hover:max-sm:bg-(--pinned-cell-hover)');
+    expect(src).toContain('group-data-[state=selected]:max-sm:bg-(--pinned-cell-selected)');
+    expect(src).toContain('group-odd:max-sm:bg-(--pinned-cell-striped)');
     // The row itself carries `group` so the pinned cell has an ancestor to
     // key off - both the header row and the shared body-row class builder.
+    // The ROW stays translucent (blends into its ancestor surface) - only the
+    // PINNED CELL needs the opaque token, since it alone sits over unrelated
+    // scrolled-under content rather than a card/dialog backdrop.
     expect(src).toContain("'group bg-muted/40'");
     expect(src).toContain("'group hover:bg-muted/40 data-[state=selected]:bg-muted/50'");
   });
@@ -133,6 +136,30 @@ describe('AC-DLA-13 DataGrid defaults + scroller + pinned column + tabular-nums'
   it('the pinned cell striped legs are gated on tableLayout.stripped (T2 fix round 2 - a non-stripped list must not darken odd rows)', () => {
     const src = read('components/ui/data-grid-table.tsx');
     expect(src).toMatch(/isMobilePinned && props\.tableLayout\?\.stripped && MOBILE_PIN_CLASS_BODY_STRIPED/);
+  });
+
+  it('the mobile-pinned HEADER cell is fully opaque (T2 fix round 3 - a translucent bg-muted/40 let the scrolled-under header text of another column show through the sticky cell)', () => {
+    const src = read('components/ui/data-grid-table.tsx');
+    const declaration = src.match(/const MOBILE_PIN_CLASS_HEAD =[\s\S]{0,200};/)?.[0] ?? '';
+    expect(declaration).toContain('max-sm:bg-muted!');
+    expect(declaration).not.toContain('bg-muted/40');
+  });
+
+  it('the mobile-pinned BODY cell wraps its children in a non-sticky clipping wrapper (T2 fix round 3 - a sticky table cell does not reliably clip overflow, letting long content bleed into the next column)', () => {
+    const src = read('components/ui/data-grid-table.tsx');
+    const declaration = src.match(/const MOBILE_PIN_CONTENT_CLASS_BODY =[\s\S]{0,120};/)?.[0] ?? '';
+    expect(declaration).toContain('max-sm:overflow-hidden');
+    expect(declaration).toContain('max-sm:truncate');
+    expect(src).toMatch(
+      /isMobilePinned \? <div className=\{MOBILE_PIN_CONTENT_CLASS_BODY\}>\{children\}<\/div> : children/,
+    );
+  });
+
+  it('the pinned-cell hover/selected/striped tokens pre-mix their alpha against --background into a solid colour (T2 fix round 3)', () => {
+    const css = read('css/config.reui.css');
+    expect(css).toMatch(/--pinned-cell-hover:\s*color-mix\(in oklab, var\(--muted\) 40%, var\(--background\)\)/);
+    expect(css).toMatch(/--pinned-cell-selected:\s*color-mix\(in oklab, var\(--muted\) 50%, var\(--background\)\)/);
+    expect(css).toMatch(/--pinned-cell-striped:\s*color-mix\(in oklab, var\(--muted\) 90%, var\(--background\)\)/);
   });
 
   it('every grid-item wrapper around DataGridTableBase carries min-w-0 (else the PAGE scrolls sideways, not the grid)', () => {

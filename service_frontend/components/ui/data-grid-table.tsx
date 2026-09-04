@@ -91,8 +91,18 @@ function firstDataColumnIndex<TData>(leafColumns: Column<TData>[]): number {
 // HEADER cell must sit at the SAME step as the sticky `<thead>` it belongs
 // to, one above pinned BODY cells - else at <=640px the pinned body column
 // scrolls OVER the header instead of sliding under it.
+// `bg-muted` NOT `bg-muted/40` (T2 fix round 3): the header row paints its
+// OWN `bg-muted/40` tint underneath every `th` including this one, so a
+// translucent pin only ever composed with its own row's colour in isolated
+// testing - on a real horizontal scroll, the header text of every column
+// scrolling UNDER the sticky cell shows straight through the 40% alpha. The
+// pinned cell must be fully OPAQUE (solid `bg-muted`, matching the row's
+// tint family without the alpha) so nothing beneath can bleed into it. Same
+// simplification as the comment above - hardcodes the common case
+// (`headerBackground: true`, `stripped: false`), which is every list in the
+// app today.
 const MOBILE_PIN_CLASS_HEAD =
-  'max-sm:sticky! max-sm:start-0! max-sm:z-(--z-sticky-header)! max-sm:bg-muted/40! max-sm:data-pinned:static!';
+  'max-sm:sticky! max-sm:start-0! max-sm:z-(--z-sticky-header)! max-sm:bg-muted! max-sm:data-pinned:static!';
 // `group-hover:` here is already hover-capable-gated by Tailwind v4's OWN
 // default `hover` variant (compiles to `&:hover { @media (hover: hover) }`)
 // - no project override in `css/` and none needed, so no arbitrary
@@ -100,15 +110,39 @@ const MOBILE_PIN_CLASS_HEAD =
 // Eases with `transition-[background-color]` (T2 fix round 2) so the pinned
 // cell's background follows its row's hover/select/stripe change instead of
 // snapping.
+// `bg-(--pinned-cell-hover)` / `bg-(--pinned-cell-selected)` NOT `bg-muted/40`
+// / `bg-muted/50` (T2 fix round 3): the row itself is deliberately translucent
+// (blends into whatever ancestor surface it's on), but the pinned cell has no
+// ancestor at these screen pixels - the columns scrolling underneath are
+// unrelated data, not a backdrop - so a live scroll showed a selected/hovered
+// row's OWN date/status text bleeding straight through the pinned cell. The
+// two tokens (`css/config.reui.css`) pre-mix the same alpha against
+// `--background` into an opaque colour, keeping the relative visual weight
+// (selected reads a touch stronger than hover) with nothing left to bleed.
 const MOBILE_PIN_CLASS_BODY =
   'max-sm:sticky! max-sm:start-0! max-sm:z-(--z-sticky-content)! max-sm:bg-background! max-sm:data-pinned:static! ' +
   'transition-[background-color] duration-(--duration-fast) ease-(--ease-standard) ' +
-  'group-hover:max-sm:bg-muted/40! group-data-[state=selected]:max-sm:bg-muted/50!';
+  'group-hover:max-sm:bg-(--pinned-cell-hover)! group-data-[state=selected]:max-sm:bg-(--pinned-cell-selected)!';
 // Striped legs (T2 fix round 2 finding 3): only apply when the row itself
 // stripes (`tableLayout.stripped`) - unconditional before this, so a
 // non-stripped list's pinned cell darkened on odd rows for no reason.
+// `--pinned-cell-striped` (T2 fix round 3, same reasoning as above) replaces
+// `bg-muted/90` - 90% alpha reads as opaque in isolation but still lets a
+// sliver of scrolled-under content show at the cell's edges.
 const MOBILE_PIN_CLASS_BODY_STRIPED =
-  'group-odd:max-sm:bg-muted/90! group-hover:group-odd:max-sm:bg-muted!';
+  'group-odd:max-sm:bg-(--pinned-cell-striped)! group-hover:group-odd:max-sm:bg-muted!';
+// T2 fix round 3: a `position: sticky` table cell does not reliably clip its
+// own overflowing content via `overflow: hidden` (a real cross-browser
+// rendering gap on sticky cells inside a table) - a cell's content is
+// commonly a `flex flex-col` wrapper (title + subtitle) rather than a bare
+// text node, and the inherited `nowrap` from the cell's own `truncate` class
+// lets that flex box grow past the cell's box instead of wrapping, bleeding
+// into the next (unrelated, now-scrolled-under) column's text. A plain,
+// NON-sticky wrapper `div` around the cell's children establishes its own
+// ordinary block-level clip that is not subject to the sticky-cell bug -
+// applied ONLY on the mobile-pinned cell so every other cell's layout is
+// untouched.
+const MOBILE_PIN_CONTENT_CLASS_BODY = 'max-sm:overflow-hidden max-sm:truncate';
 
 /**
  * Skeleton rows render ONLY while there is nothing worth showing yet
@@ -620,7 +654,7 @@ function DataGridTableBodyRowCell<TData>({
           : '',
       )}
     >
-      {children}
+      {isMobilePinned ? <div className={MOBILE_PIN_CONTENT_CLASS_BODY}>{children}</div> : children}
     </td>
   );
 }

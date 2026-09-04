@@ -79,6 +79,23 @@
   /** Bounded DataGrid scroller height (toolbar + header + pager). consumer = T2
       DataGrid scroller. */
   --grid-max-h: calc(100dvh - 17rem);
+
+  /**
+   * Mobile-pinned DataGrid BODY cell tints, hover/selected/striped (T2 fix round 3).
+   * The row itself paints these states as translucent (`bg-muted/40` etc, so it
+   * blends into whatever ANCESTOR surface it sits on - a card, a dialog). A pinned
+   * cell has no such ancestor to blend with at these screen pixels - the columns
+   * scrolled underneath it are unrelated content, not a backdrop - so it must be
+   * OPAQUE. `color-mix` bakes the same alpha math down against `--background`
+   * (the pinned cell's own resting colour) into a solid result, preserving the
+   * intended visual WEIGHT (selected reads slightly stronger than hover) without
+   * leaving anything to bleed through. One declaration - `--muted`/`--background`
+   * already flip under `.dark`, so this recomputes correctly per theme with no
+   * separate `.dark` entry needed (same as `--material-blur` above).
+   */
+  --pinned-cell-hover: color-mix(in oklab, var(--muted) 40%, var(--background));
+  --pinned-cell-selected: color-mix(in oklab, var(--muted) 50%, var(--background));
+  --pinned-cell-striped: color-mix(in oklab, var(--muted) 90%, var(--background));
 }
 
 .dark {
