@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { pendingActionsService } from '@/services/pending-actions-service';
+import type { PendingActionCreateResult } from '@/types/pending-actions';
 
 /**
  * The grace window, from the caller's side (D2, AC-DLA-43).
@@ -47,6 +48,32 @@ export interface UseDeferredActionOptions {
   watch?: DeferredEntity;
   /** Called once the server has confirmed the action committed. */
   onCommitted?: () => void;
+  /**
+   * Called when the server reports the action FAILED (a handler error, or
+   * the target vanished before commit) - the caller shows an error toast.
+   * Fix round 1 item 2: distinct from `onCommitted` (success) and silent
+   * cancellation (below) - a failure must not be mistaken for a success.
+   */
+  onFailed?: (error: string) => void;
+  /**
+   * Called when `current` reports the action was CANCELLED - by this same
+   * tab's own `cancel()` (which already resolves synchronously and does not
+   * go through this callback) OR, the case this exists for, by ANOTHER tab/
+   * teammate holding the same permission (D2 - anyone with the permission
+   * may veto). The caller must reconcile its own toast/dim WITHOUT treating
+   * it as a success (fix round 1 item 2 - a cancelled outcome was previously
+   * reported as `done`, firing a success toast and navigating away).
+   */
+  onCancelledElsewhere?: () => void;
+  /**
+   * Called when THIS tab's own `cancel()` call itself failed - the window
+   * had already closed server-side (AC-DLA-40 - a cancel arriving at/after
+   * `commit_at` loses to the commit) or the request otherwise errored.
+   * `cancel()` already reconciled by re-reading `current` (restoring the
+   * countdown if it's somehow still pending, or settling done/failed) -
+   * this is purely for the caller's error toast.
+   */
+  onCancelFailed?: (error: string) => void;
 }
 
 export interface UseDeferredActionResult {
@@ -58,7 +85,15 @@ export interface UseDeferredActionResult {
     actionKey: string,
     entities: DeferredEntity | DeferredEntity[],
     payload?: Record<string, unknown>,
-  ) => Promise<{ commitAt: string; windowSeconds: number }>;
+  ) => Promise<{
+    commitAt: string;
+    windowSeconds: number;
+    failedCount: number;
+    /** The entity ids that actually parked (fix round 1 item 3) - returned
+     * directly rather than making the caller re-read `dimEntityIds` after
+     * the await, which would read a stale closure from before this render. */
+    parkedEntityIds: string[];
+  }>;
   cancel: () => Promise<void>;
   reset: () => void;
 }
@@ -68,7 +103,14 @@ const POLL_MS = 1000;
 export function useDeferredAction(
   options: UseDeferredActionOptions = {},
 ): UseDeferredActionResult {
-  const { watchFromMount = false, watch, onCommitted } = options;
+  const {
+    watchFromMount = false,
+    watch,
+    onCommitted,
+    onFailed,
+    onCancelledElsewhere,
+    onCancelFailed,
+  } = options;
   const [state, setState] = useState<DeferredActionState>({ status: 'idle' });
   // The parked action ids (one per entity, D13) + which entities they belong
   // to - kept in a ref so the poll loop always reads the live set without
@@ -77,6 +119,12 @@ export function useDeferredAction(
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const onCommittedRef = useRef(onCommitted);
   onCommittedRef.current = onCommitted;
+  const onFailedRef = useRef(onFailed);
+  onFailedRef.current = onFailed;
+  const onCancelledElsewhereRef = useRef(onCancelledElsewhere);
+  onCancelledElsewhereRef.current = onCancelledElsewhere;
+  const onCancelFailedRef = useRef(onCancelFailed);
+  onCancelFailedRef.current = onCancelFailed;
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current) {
@@ -103,6 +151,7 @@ export function useDeferredAction(
           : { status: 'failed', error: error ?? 'The action failed.' },
       );
       if (status === 'done') onCommittedRef.current?.();
+      else onFailedRef.current?.(error ?? 'The action failed.');
     },
     [stopPolling],
   );
@@ -122,6 +171,19 @@ export function useDeferredAction(
     if (results.some((r) => r === null)) return;
     const stillPending = results.some((r) => r!.pending);
     if (stillPending) return;
+    // Fix round 1 item 2: a CANCELLED outcome (this hook's own `cancel()`
+    // already short-circuits before ever polling again - this is a
+    // teammate cancelling from ANOTHER tab/session) must return to `idle`
+    // silently, never report `done` (which would fire a success toast and
+    // navigate away from a record that was NOT deleted).
+    const cancelledElsewhere = results.some((r) => r!.lastOutcome?.status === 'cancelled');
+    if (cancelledElsewhere) {
+      stopPolling();
+      parkedRef.current = null;
+      setState({ status: 'idle' });
+      onCancelledElsewhereRef.current?.();
+      return;
+    }
     setState({ status: 'committing', count: parked.entities.length });
     const failed = results.find((r) => r!.lastOutcome?.status === 'failed');
     if (failed) {
@@ -129,7 +191,7 @@ export function useDeferredAction(
     } else {
       settle('done', parked.entities.length);
     }
-  }, [checkCurrent, settle]);
+  }, [checkCurrent, settle, stopPolling]);
 
   const startPolling = useCallback(() => {
     stopPolling();
@@ -198,22 +260,52 @@ export function useDeferredAction(
       if (list.length === 0) {
         throw new Error('useDeferredAction.start() called with zero entities.');
       }
-      const results = await Promise.all(
+      // Fix round 1 item 3: `Promise.all` would orphan every row that DID
+      // park the instant ANY one park rejects (a 409 mid-batch) - the
+      // rejection unwinds the whole call and `parkedRef` is never set, so
+      // the rows that succeeded server-side count down with no Cancel and
+      // no visible countdown anywhere in the UI. `allSettled` keeps every
+      // successful park tracked; only the failures are reported.
+      const settled = await Promise.allSettled(
         list.map((e) =>
           pendingActionsService.park(actionKey, e.entityType, e.entityId, payload),
         ),
       );
-      parkedRef.current = { ids: results.map((r) => r.id), entities: list };
-      const first = results[0];
+      const succeeded: { entity: DeferredEntity; result: PendingActionCreateResult }[] = [];
+      let failedCount = 0;
+      let firstError: unknown;
+      settled.forEach((outcome, i) => {
+        if (outcome.status === 'fulfilled') {
+          succeeded.push({ entity: list[i], result: outcome.value });
+        } else {
+          failedCount += 1;
+          firstError = firstError ?? outcome.reason;
+        }
+      });
+      if (succeeded.length === 0) {
+        throw firstError instanceof Error
+          ? firstError
+          : new Error('Could not start that action.');
+      }
+      parkedRef.current = {
+        ids: succeeded.map((s) => s.result.id),
+        entities: succeeded.map((s) => s.entity),
+      };
+      const first = succeeded[0].result;
       setState({
         status: 'pending',
         actionKey,
         commitAt: first.commitAt,
         windowSeconds: first.windowSeconds,
-        count: list.length,
+        count: succeeded.length,
       });
       startPolling();
-      return { commitAt: first.commitAt, windowSeconds: first.windowSeconds };
+      return {
+        commitAt: first.commitAt,
+        windowSeconds: first.windowSeconds,
+        failedCount,
+        parkedEntityIds: succeeded.map((s) => s.entity.entityId),
+      };
     },
     [startPolling],
   );
@@ -221,11 +313,55 @@ export function useDeferredAction(
   const cancel = useCallback(async () => {
     const parked = parkedRef.current;
     if (!parked) return;
+    // Fix round 1 item 9: leave `pending` SYNCHRONOUSLY - the button/fill
+    // reverts on the SAME click, matching the toast surface's own
+    // `dismissDeferredToast` (called synchronously by its caller). Waiting
+    // for the round trip left the fill draining at full speed for the whole
+    // request, sometimes reaching zero and flipping to "Deleting…" AFTER
+    // the user had already cancelled.
     stopPolling();
-    await Promise.allSettled(parked.ids.map((id) => pendingActionsService.cancel(id)));
     parkedRef.current = null;
     setState({ status: 'idle' });
-  }, [stopPolling]);
+
+    const results = await Promise.allSettled(
+      parked.ids.map((id) => pendingActionsService.cancel(id)),
+    );
+    const anyFailed = results.some((r) => r.status === 'rejected');
+    if (!anyFailed) return;
+
+    // Reconcile: a cancel that arrives AT/AFTER the window closes loses to
+    // the commit (AC-DLA-40) - re-read `current` rather than trusting the
+    // optimistic "idle" we already rendered, so the UI never shows
+    // "cancelled" for a record that was actually deleted.
+    const first = parked.entities[0];
+    const outcome = first ? await checkCurrent(first) : null;
+    if (outcome?.pending) {
+      parkedRef.current = { ids: parked.ids, entities: parked.entities };
+      setState({
+        status: 'pending',
+        actionKey: outcome.pending.actionKey,
+        commitAt: outcome.pending.commitAt,
+        windowSeconds: outcome.pending.windowSeconds,
+        count: parked.entities.length,
+      });
+      startPolling();
+      onCancelFailedRef.current?.('Could not cancel - please try again.');
+      return;
+    }
+    if (outcome?.lastOutcome?.status === 'failed') {
+      onCancelFailedRef.current?.('Could not cancel - the action already ran.');
+      onFailedRef.current?.(outcome.lastOutcome.errorText ?? 'The action failed.');
+      return;
+    }
+    if (outcome?.lastOutcome?.status === 'cancelled') {
+      // Someone else's cancel won the race - the net effect (not pending,
+      // nothing applied) matches the optimistic "idle" already rendered, so
+      // there's nothing further to reconcile.
+      return;
+    }
+    onCancelFailedRef.current?.('Could not cancel - the action already ran.');
+    onCommittedRef.current?.();
+  }, [checkCurrent, startPolling, stopPolling]);
 
   const reset = useCallback(() => {
     stopPolling();

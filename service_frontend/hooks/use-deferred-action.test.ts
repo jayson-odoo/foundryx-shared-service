@@ -152,6 +152,108 @@ describe('useDeferredAction', () => {
     expect(b3.lastOutcome?.status).toBe('committed');
   });
 
+  // ── fix round 1, item 2: a cancel outcome must never be reported as done ──
+
+  it('a pending action cancelled from ANOTHER tab returns this hook to idle silently, not done', async () => {
+    const onCommitted = vi.fn();
+    const onCancelledElsewhere = vi.fn();
+    const { result } = renderHook(() =>
+      useDeferredAction({ onCommitted, onCancelledElsewhere }),
+    );
+    let parkId = '';
+    await act(async () => {
+      const parked = await result.current.start('users.trash', {
+        entityType: 'user',
+        entityId: 'ce1',
+      });
+      parkId = (await mockPendingActionsService.current('user', 'ce1')).pending!.id;
+      expect(parked.windowSeconds).toBe(10);
+    });
+
+    // Simulate a SECOND tab/teammate cancelling the SAME pending action
+    // directly against the server (bypassing this hook entirely).
+    await act(async () => {
+      await mockPendingActionsService.cancel(parkId);
+    });
+
+    // The next 1s poll tick discovers the cancellation.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500);
+    });
+
+    expect(result.current.state.status).toBe('idle');
+    expect(onCancelledElsewhere).toHaveBeenCalledTimes(1);
+    expect(onCommitted).not.toHaveBeenCalled();
+  });
+
+  // ── fix round 1, item 3: Promise.allSettled - one 409 never orphans the rest
+
+  it('bulk start() with one park rejecting keeps the rest tracked and reports the failure count', async () => {
+    // Pre-park a DIFFERENT action on c2 so its park() call rejects (409).
+    await mockPendingActionsService.park('roles.delete', 'user', 'c2');
+
+    const { result } = renderHook(() => useDeferredAction());
+    let outcome!: { commitAt: string; windowSeconds: number; failedCount: number };
+    await act(async () => {
+      outcome = await result.current.start('users.trash', [
+        { entityType: 'user', entityId: 'c1' },
+        { entityType: 'user', entityId: 'c2' },
+        { entityType: 'user', entityId: 'c3' },
+      ]);
+    });
+
+    expect(outcome.failedCount).toBe(1);
+    expect(result.current.state.status).toBe('pending');
+    if (result.current.state.status === 'pending') {
+      expect(result.current.state.count).toBe(2);
+    }
+    expect(result.current.dimEntityIds).toEqual(['c1', 'c3']);
+
+    // Cancel only touches the two rows that actually parked.
+    await act(async () => {
+      await result.current.cancel();
+    });
+    expect(result.current.state.status).toBe('idle');
+    const c1 = await mockPendingActionsService.current('user', 'c1');
+    const c3 = await mockPendingActionsService.current('user', 'c3');
+    expect(c1.lastOutcome?.status).toBe('cancelled');
+    expect(c3.lastOutcome?.status).toBe('cancelled');
+  });
+
+  // ── fix round 1, item 9: cancel() leaves pending synchronously and
+
+  it('cancel() reconciles instead of hiding it when the cancel itself arrives too late', async () => {
+    const onCommitted = vi.fn();
+    const onCancelFailed = vi.fn();
+    const { result } = renderHook(() => useDeferredAction({ onCommitted, onCancelFailed }));
+    await act(async () => {
+      await result.current.start('users.trash', { entityType: 'user', entityId: 'oc1' });
+    });
+
+    // Jump the clock past commitAt WITHOUT letting the 1s poll interval fire
+    // (a real `advanceTimersByTimeAsync` would tick it) - simulates the
+    // window closing between renders, before this tab's own poll notices.
+    vi.setSystemTime(new Date(Date.now() + 11_000));
+
+    let cancelPromise!: Promise<void>;
+    act(() => {
+      cancelPromise = result.current.cancel();
+    });
+    // Synchronous, optimistic exit - idle on the SAME tick, before the
+    // reconciliation round-trip below even starts.
+    expect(result.current.state.status).toBe('idle');
+
+    await act(async () => {
+      await cancelPromise;
+    });
+
+    // Reconciled: the action had already committed server-side, so the
+    // caller is told via `onCommitted` (not left showing a false "cancelled"
+    // for a record that's actually gone) plus an explicit cancel-failed toast.
+    expect(onCancelFailed).toHaveBeenCalledTimes(1);
+    expect(onCommitted).toHaveBeenCalledTimes(1);
+  });
+
   it('reset() clears back to idle without touching the server', async () => {
     const { result } = renderHook(() => useDeferredAction());
     await act(async () => {
