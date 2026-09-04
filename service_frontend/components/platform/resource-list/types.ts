@@ -80,6 +80,13 @@ export interface ExportColumn {
 export interface ResourceListConfig<T extends object> {
   /** Stable key for per-user column prefs (e.g. 'users.list'). */
   viewKey: string;
+  /**
+   * Overrides `PageHeader`'s auto-resolved (menu-derived) title. Omit for the
+   * common case - the sidebar entry's own label already reads right.
+   */
+  pageTitle?: string;
+  /** Optional meta line under the `PageHeader` breadcrumb trail. */
+  pageDescription?: import('react').ReactNode;
   columns: ColumnDef<T>[];
   /**
    * Optional card renderer. When set, the list offers a card/list view toggle
