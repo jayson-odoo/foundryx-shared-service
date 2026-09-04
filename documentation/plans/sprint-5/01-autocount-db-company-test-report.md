@@ -1,0 +1,212 @@
+# 01 - AutoCount DB-only company onboarding - Test Execution Report (slice S3)
+
+Keyed to `01-autocount-db-company-acceptance-criteria.md` (AC-01-01..24). Executed 2026-09-04 on
+branch `sprint-5/autocount-db-company`, worktree `.claude/worktrees/autocount-db-company`, against
+branch HEAD `6964b29` (S1 frontend `5876cc2`, S2 backend + mock→real swap `ed53174`, the
+`uq_connection_tenant_type` carve-out fix `322a02e`).
+
+## Environment
+
+- Backend: FastAPI on **:8002** from this worktree (`.venv/bin/uvicorn app.main:app --port 8002`,
+  no `--reload`), native Postgres `foundryx_service` (shared with the main checkout's `main`
+  servers on :3001/:8001, which were left untouched). Live `alembic_version` =
+  `conn_erp_llm_s501` (this branch's core migration is applied).
+- Frontend: **prod build on :3002** from this worktree (`rm -rf .next && npm run build` with
+  `NEXT_PUBLIC_BACKEND_API_URL=http://localhost:8002` baked in at build time - it is a
+  `NEXT_PUBLIC_` value, so setting it only at `next start` would still have pointed the browser at
+  :8001 - then `next start -p 3002`). Port ownership confirmed via `lsof` (cwd = this worktree).
+- Unit/integration: `.venv/bin/python -m pytest -q` (in-memory SQLite, `schema_translate_map`),
+  `npx vitest run` (jsdom).
+- E2E: **headless Chromium only**. A temporary, uncommitted `playwright.wt3002.tmp.config.ts`
+  (`baseURL http://localhost:3002`, no `webServer`, `workers: 1`) drove the new spec with
+  `E2E_API_URL=http://localhost:8002`; deleted before commit. `playwright.config.ts` is unchanged
+  and remains the deliverable.
+- Pre-existing spec regression check: the three `e2e/autocount*.spec.ts` files hardcode
+  `:8001`/`:3001`, so port-rewritten COPIES (`sed 8001→8002, 3001→3002`, nothing else) were run
+  from a temporary `e2e-wt3002-tmp/` dir against the same :3002/:8002 stack, then deleted. The
+  one failure (below) was cross-checked by running the ORIGINAL spec against the main checkout's
+  `main` stack on :3001/:8001 (standard config, `reuseExistingServer`), where it passes.
+
+## AC-01-24 - the new E2E spec
+
+`service_frontend/e2e/autocount-db-company.spec.ts` - one test, real clicks throughout after the
+single sign-in `goto`: sidebar AutoCount → Companies → **Connect company** → Source toggle
+**SQL database** (asserted `data-state="on"`; Create asserted disabled before a pick) → SQL
+database connection `SearchSelect` → Label → **Create** → Overview (h1 = label, `foundryx_service`
+discovered, Integration row **"SQL database"** + "Open connection") → **Entities** tab → **Add
+entity** picker (exactly 9 options; Customer, Supplier, Product present; Goods received note
+absent) → Customer → Configure → task editor → Edit → Query tab (**locked-connection row** with
+`name · database`, NO Connection combobox, NO "No SQL database connection yet." warning) → schema
+tree search `etl_demo_customers` → Insert SELECT * → **Test query** (preview badge + `<tbody>`
+rows > 0, `acc_no` column) → Key columns = `acc_no` → **Save** (read mode still locked) → sidebar
+Companies → company row → Entities (Customer row present; row "…" offers "Configure database
+query", NOT "Change source" / "Edit first-run window"; Add-entity now 8 options, Customer gone) →
+**375×812 viewport, no horizontal overflow on the Entities tab** → back to 1280 → Companies →
+Connect company → SQL database → banner "Every SQL database connection is already registered as a
+company." + picker and Create disabled.
+
+**Fixture/isolation.** The spec provisions its own timestamped tenant (`e2e-dbco-<stamp>`) via
+the operator API, installs `autocount`, creates the `sql_database` connection through
+`POST /integrations/connections` as that tenant's admin (setup only; the company flow is clicks),
+runs plan 22's `python -m scripts.seed_etl_demo_source` (no args - idempotent, creates only the
+`public.etl_demo_*` dev tables, nothing tenant-scoped) so the schema tree lists a real table, and
+in `finally` archives + purges the tenant through `GET .../transitions` → `POST .../transition` →
+`POST .../purge {confirmSlug}` (best effort, logged if it cannot). Both `PLAYWRIGHT` base URL and
+the API URL are parameterized (`baseURL` fixture + `E2E_API_URL`) so the spec runs unchanged on
+the standard :3001/:8001 stack.
+
+**Live result (2 consecutive clean runs, fresh tenant each):**
+
+```
+✓ AC-01-24 DB company: connect from a SQL database -> add Customer -> locked connection -> preview rows  (6.8s)
+1 passed (8.4s)
+✓ AC-01-24 DB company: connect from a SQL database -> add Customer -> locked connection -> preview rows  (6.3s)
+1 passed (6.7s)
+```
+
+Backend log for one run confirms the real path was exercised, not a stub: `POST
+/autocount/companies` → **201** (no vendor call; the identity probe ran against the real
+Postgres), `GET /autocount/sql/connections/{id}/schema` 200, `POST /autocount/sql/preview` 200,
+`PUT /autocount/companies/{id}/entities/customer/etl-task` **200**, then `POST
+/platform/tenants/{id}/transition` 200 + `POST /platform/tenants/{id}/purge` **204**. `SELECT
+count(*) FROM tenants WHERE slug LIKE 'e2e-dbco-%'` = **0** after the run (no residue).
+
+### Findings from building/running the spec
+
+1. **No product bug surfaced by the new journey.** Every step behaved per the UAC on the first
+   run; no selector workaround (`dispatchEvent`) was needed - Playwright's `click()` fired every
+   Next/Radix handler.
+2. **`GET .../entities/customer/mapping` → 404** appears in the backend log when the task editor
+   opens for a not-yet-born entity (the Mapping tab probes for rows that do not exist yet). The
+   editor handles it (no error surfaced, the save succeeded) and it predates this slice (plan 22
+   S4 "Add entity" behaviour) - noted, not a finding against this plan.
+3. **Pre-existing `autocount-db-etl.spec.ts` is broken BY this branch's semantics** - see the
+   regression section below. Not fixed here (test-owned files, but the brief scoped this slice to
+   the new spec + report; the fix is proposed there for the coder).
+
+## Results by AC id
+
+| AC | Tag | Result | Evidence |
+|----|-----|--------|----------|
+| AC-01-01 | BE | PASS | `tests/test_autocount_db_company.py`: `test_create_from_a_sql_connection_derives_identity_from_the_config_database`, `test_an_autocount_connection_still_runs_the_api_flow`, `test_another_provider_or_another_tenants_connection_is_a_uniform_404`, `test_create_requires_companies_manage`; **live**: `POST /autocount/companies` 201 from a `sql_database` connection with no vendor call (E2E step "Create") |
+| AC-01-02 | BE | PASS | `test_create_from_a_sql_connection_derives_identity_from_the_config_database`, `test_a_probe_mismatch_is_a_422_on_connectionId_and_creates_nothing`, `test_a_connect_failure_is_a_422_with_a_sanitized_message`, `test_a_failing_probe_statement_is_a_422_not_a_500`; **live**: the create-time `current_database()` probe ran against the real Postgres and matched `config.database` - Overview shows `foundryx_service` as the discovered database |
+| AC-01-03 | BE | PASS | `test_the_profile_company_name_is_read_when_available`, `test_an_absent_profile_table_leaves_company_name_blank_and_still_creates`; **live**: Postgres has no `dbo.Profile`, create still succeeded silently (Overview "Company name" = "-") |
+| AC-01-04 | BE | PASS | `test_the_same_database_held_by_an_api_company_is_a_409`, `test_a_sql_connection_already_bound_to_a_company_is_a_409`; **live**: the second Connect-company attempt shows the all-bound banner and withholds the bound connection (the UI never lets the 409 be reached without a second connection - foolproof-UI; the 409 itself is backend-pinned) |
+| AC-01-05 | BE | PASS | `test_a_db_company_seeds_no_entity_configs_or_mappings` (+ API regression pin inside `test_an_autocount_connection_still_runs_the_api_flow`); **live**: the fresh DB company's Entities list is empty and all 9 entities are addable |
+| AC-01-06 | BE | PASS | `test_create_records_a_discover_company_activity_row`, `test_a_probe_mismatch_records_an_error_activity_row` |
+| AC-01-07 | BE | PASS | `test_source_kind_is_derived_on_list_and_detail`, `test_the_list_resolves_connections_in_one_batched_query` (query-count assertion), `test_a_deleted_connection_reports_api_and_never_500s`; **live** on the shared dev DB: `GET /autocount/companies` → `V Soft Trading` = `api`, `ETL Demo Co` = `db` (see regression finding) |
+| AC-01-08 | BE | PASS | `test_client_for_refuses_a_db_company_with_a_named_error`, `test_switching_an_entity_to_autocount_read_on_a_db_company_is_a_409` |
+| AC-01-09 | BE | PASS | `test_an_omitted_task_connection_is_filled_and_the_row_is_born_sql_db`, `test_a_different_connection_on_a_db_company_is_a_422`, `test_an_api_company_keeps_the_free_picker`; **live**: `PUT .../etl-task` 200 against the locked company connection |
+| AC-01-10 | BE | PASS | `test_an_omitted_task_connection_is_filled_and_the_row_is_born_sql_db` (customer born `sql_db`), `test_goods_received_note_is_not_available_on_a_db_company`; **live**: after Save the Customer row lists on Entities and drops out of the Add-entity picker (8 left) |
+| AC-01-11 | BE | PASS | `test_document_prerequisites_are_empty_without_a_document_entity`, `test_document_prerequisites_report_missing_masters`, `test_document_prerequisites_report_inactive_masters`, `test_document_prerequisites_are_clear_when_all_masters_are_active`, `test_document_prerequisites_apply_to_an_api_company_too`; **live**: the DB company detail carries `documentPrerequisites: []` |
+| AC-01-12 | FE | PASS | `connect-company-view.test.tsx`: "offers AutoCount API \| SQL database and defaults to API when both have a connection", "defaults to SQL database when only it has an unbound connection", "the SQL picker lists the source's (already-filtered) connections only", "switching source clears the picked connection"; `use-autocount-connections.test.ts` default matrix; **live**: toggle click → `data-state="on"`, picker filtered to the SQL connection |
+| AC-01-13 | FE | PASS | `connect-company-view.test.tsx`: "SQL source with no connection at all: banner + link to Integrations", "SQL source with every connection bound: the all-bound banner", "the API source keeps today's two banners (regression pin)", "Create is disabled until a connection is picked"; **live**: Create disabled before the pick; all-bound banner + disabled picker/Create on the second attempt |
+| AC-01-14 | FE | PASS | `connect-company-view.test.tsx`: "renders a 422 on connectionId inline under the picker", "renders a 409 inline naming the existing company"; **live**: Create → `createCompany` → routed to the new company's Overview |
+| AC-01-15 | FE | PASS | **live E2E** `expectNoPageScroll` on the Connect-company form at 1280×900; 375px verified in the S1 browser pass (agent-browser) - the E2E's one mobile assertion is on the Entities tab per the S3 brief |
+| AC-01-16 | FE | PASS | `company-detail-view.test.tsx`: "an API company's Integration row reads \"AutoCount API\" and still links the connection", "a DB company's Integration row reads \"SQL database\""; **live**: `company-source-kind` = "SQL database" + "Open connection" link |
+| AC-01-17 | FE | PASS | `add-entity-control.test.tsx`: "a DB company offers all nine sql_db entities incl. customer + supplier, never GRN", "an API company keeps today's seven - customer/supplier are API-seeded, never added", "a DB company's list drops the entities already configured"; `autocount-meta.test.ts` nine-entity pin; **live**: exactly 9 options, Customer/Supplier/Product present, GRN absent |
+| AC-01-18 | FE | PASS | `entities-list-config.test.tsx`: "never offers \"Edit first-run window\" nor \"Change source\" on a DB company", "keeps configure-task, sync-now, configure-mapping and refetch-history on a DB company", "an API company's rows are unchanged (regression pin)"; **live**: Customer row "…" has "Configure database query", no "Change source", no "Edit first-run window" |
+| AC-01-19 | FE | PASS | `query-tab.test.tsx`: "replaces the Connection picker with a read-only row on a DB company", "an API company keeps the searchable Connection picker", "pre-sets config.connectionId to the locked connection when it differs", "an API company with no SQL connection still gets the warning (regression pin)"; **live**: `locked-connection` row (`<name> · foundryx_service`), zero `Connection` comboboxes, zero `no-sql-connection` alerts, in edit AND read mode |
+| AC-01-20 | FE | PASS | `document-prerequisite-card.test.tsx` (3) + `company-detail-view.test.tsx`: "is absent when every prerequisite is active", "renders above the Entities list, one line per blocked document, with Add for the missing master", "also warns on an API company with a configured document entity"; **live**: absent case only (the E2E company configures no document entity) |
+| AC-01-21 | FE | PASS | **live E2E**: no horizontal overflow at 1280 on the Query tab and Entities tab, and at **375×812** on the Entities tab (Customer row still visible); Overview/Query tab at 375 verified in the S1 browser pass |
+| AC-01-22 | T | PASS | `tests/test_autocount_db_company.py` (29) + `tests/test_connection_index_drift.py` (1) + `tests/test_autocount_entity_parity.py` (2) = **33 passed**; full `tests/test_autocount*` (15 files) = **808 passed, 0 failed** (4m58s) |
+| AC-01-23 | T | PASS | `npx vitest run` = **175 files, 1481 tests, all passing** (36s) - the S1 files listed in the evidence above (`connect-company-view`, `company-detail-view`, `add-entity-control`, `document-prerequisite-card`, `entities-list-config`, `query-tab`, `use-autocount-connections`, `autocount-service.mock`, `autocount-meta`) all green |
+| AC-01-24 | E2E | **PASS** | `e2e/autocount-db-company.spec.ts` - real clicks, dedicated timestamped tenant, live, 2 consecutive green runs (6.8s / 6.3s), tenant purged after each |
+
+**Totals: 24 PASS, 0 FAIL, 0 DEFERRED.**
+
+## Suite totals
+
+- Backend S2 files: `pytest -q tests/test_autocount_db_company.py tests/test_connection_index_drift.py
+  tests/test_autocount_entity_parity.py` = **33 passed, 0 failed** (45s).
+- Backend `pytest -q tests/test_autocount*` = **808 passed, 0 failed** (4m58s).
+- Frontend `npx vitest run` = **175 files, 1481 tests, all passing** (36s).
+- New E2E spec: **1/1 passing**, 2 consecutive runs.
+
+## Responsive verification (375px / 1280px)
+
+`expectNoPageScroll` (`documentElement.scrollWidth <= max(clientWidth, innerWidth) + 1`):
+
+- **1280×900**: Connect-company form (after the pick), task editor Query tab (after Test query),
+  company Entities tab - all passed.
+- **375×812**: company Entities tab after `setViewportSize` - passed, Customer row still visible.
+- Overview / task editor at 375 were verified in S1's agent-browser pass (S1 report); not
+  re-asserted here beyond the one mobile assertion the S3 brief asked for.
+
+## Regression check - pre-existing autocount E2E specs (same :3002/:8002 stack)
+
+| Spec | Result | Notes |
+|------|--------|-------|
+| `autocount.spec.ts` | **2/2 PASS** | Both GRN journeys (~10s each). Note: plan 22's report recorded this spec failing on the "Sync now" `.first()` selector; it passes on this stack. |
+| `autocount-mapping.spec.ts` | **2/2 PASS** | Both mapping/formula journeys. |
+| `autocount-db-etl.spec.ts` | **FAIL on this branch / PASS on `main`** | See below. |
+
+### Finding: `autocount-db-etl.spec.ts` AC-22-31 fails on this branch at "Change source"
+
+- **Repro**: `npx playwright test e2e/autocount-db-etl.spec.ts` against this branch's stack →
+  `locator.click: Timeout 3000ms exceeded. waiting for getByRole('menuitem', { name: /change
+  source/i })` inside `switchCustomerToDatabase` (spec line 375). The ORIGINAL spec against the
+  main checkout's `main` stack (:3001/:8001, same shared Postgres) passes **2/2 (33.9s / 10.4s)**
+  - so this is branch-induced, not environment.
+- **Root cause**: plan 22's dev rig (`scripts/seed_etl_demo_source.py --company`,
+  `ensure_demo_company`) builds the `ETL Demo Co` company DIRECTLY via the ORM with a
+  `sql_database` connection (`foundryx_service`) and then calls
+  `CompanyService.seed_company_defaults` to seed the API-shaped
+  `goods_received_note/supplier/customer` rows (`source_impl='autocount_read'`), because on
+  `main` a company could only be created from an `autocount` connection and the S2 live-verify
+  reached the DB path through "Change source". Under this plan `sourceKind` is DERIVED from the
+  connection's provider (AC-01-07), so that company now reports `sourceKind: 'db'` (confirmed:
+  `GET /autocount/companies` on :8002 → `ETL Demo Co | foundryx_service | db`), and AC-01-18
+  correctly hides `change-source` on a DB company. The demo company is a hybrid the product can no
+  longer create: a DB company that (contrary to AC-01-05) carries API-seeded rows, including a
+  GRN row that AC-01-10 says is not available on a DB company.
+- **Blast radius**: dev fixture only. No real company can be in this state - on `main` the create
+  path never accepted a `sql_database` connection, and this branch's DoD claim "existing API
+  companies all report `'api'`" holds for every company created through the product (`V Soft
+  Trading` = `api`). The only `db`-reporting row on the shared dev DB is this rig's.
+- **The row is still reachable through the product**: `configure-task` stays visible (AC-01-18),
+  and `EtlService.activate_task` flips `source_impl` to `sql_db` at activation ("Activation IS the
+  switch to the DB path"), so the spec's remaining journey (Configure database query → Query →
+  Mapping → Review & Activate) works without the Change-source dialog - after the `main` run the
+  demo company's Customer row indeed reads `customer sql_db active`.
+- **Proposed fix (test-owned files, for the coder; NOT applied here per the S3 brief)**:
+  (a) `e2e/autocount-db-etl.spec.ts` `switchCustomerToDatabase`: skip the "Change source" step
+  when the row menu does not offer it (a DB company never does now), or drop the step entirely
+  since activation performs the switch; (b) `scripts/seed_etl_demo_source.py`
+  `ensure_demo_company`: stop calling `seed_company_defaults` for a `sql_database`-connected
+  company (it violates AC-01-05/AC-01-10 and seeds a GRN row a DB company cannot use) - the
+  Customer row is then born `sql_db` on the first query save exactly like the E2E in this report;
+  (c) same file, first-create path prints `Created company '...'` which the spec's
+  `/Company '([^']+)'/` parse misses (case) - on a DB with no demo company yet the spec fails in
+  `beforeAll` before anything runs (hit here on the first attempt; the second attempt found the
+  row and got to the real failure). Pre-existing, not a plan-01 regression, worth fixing in the
+  same pass.
+- **Residue note**: running the rig created `ETL Demo Co` + a `sql_database` connection in the
+  `default` tenant and the `public.etl_demo_*` tables on the shared dev Postgres. That is the
+  rig's designed, documented state (plan 22), left in place.
+
+## DoD gate (PRINCIPLES.md)
+
+1. **Mock swapped to real.** `service_frontend/services/autocount-service.ts:349` -
+   `export const autocountService: AutocountService = realAutocountService;` - and the E2E above
+   ran the whole journey against the real backend with real Postgres rows in the preview.
+2. **Backfill.** No new columns on this plan (`sourceKind` is derived at read time). The one
+   migration on the branch (`conn_erp_llm_s501`, the `uq_connection_tenant_type` carve-out) is
+   applied on the live DB (`alembic_version` = `conn_erp_llm_s501`). Live derivation check:
+   product-created companies report `api`; the single `db` row is plan 22's ORM-built dev fixture
+   (finding above).
+3. **No new permission.** `git diff main -- service_backend/modules/autocount/permissions/permissions.csv
+   service_backend/app/permissions/permissions.csv` = empty; create rides
+   `autocount.companies.manage`, exercised live by the tenant admin.
+4. **375px + 1280px verified** - section above.
+5. **Fresh build, correct ports.** Prod build rebuilt from scratch for this run; :3002/:8002 owned
+   by this worktree (the brief's sanctioned deviation from :3001/:8001, which belong to the main
+   checkout's `main` servers and were not touched). Both stopped after the run.
+
+## Deferred / backlog
+
+Already registered by the plan: **BL-SS-045** (AutoCount SQL presets in the task editor),
+**BL-SS-046** (attach a second, API connection to a DB company), **BL-SS-047** (migration 0006
+queries the live ORM model). New from this report, not yet backlogged: the
+`autocount-db-etl.spec.ts` + `seed_etl_demo_source.py` reconciliation above (test-owned; three
+small edits).
