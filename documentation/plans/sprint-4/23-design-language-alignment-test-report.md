@@ -719,3 +719,265 @@ bugs' before/after evidence.
 
 **Verdict: T2 DONE.** 10/10 AC-DLA ids (09-18) PASS. Zero DEFERRED, zero FAIL. Four AC/plan wording
 notes flagged above for reviewer awareness, none blocking.
+
+---
+
+## T2 - Fix round 1
+
+Two reviews ran against the T2 DONE diff: `/code-review` (10 confirmed findings) and
+`/review-animations` (Block, 11 items). The UAC was amended on the integration branch
+(`b7f2eb7`) for AC-DLA-09/13/14/15/29/32 - re-read before starting; the amended text is quoted
+inline below where it governs. All 21 findings, grouped into 19 numbered rulings (some rulings
+close more than one finding - e.g. the `scale` transition bug was raised by both reviews
+independently against the same line).
+
+### A. Press mechanics
+
+**A1 - PRESSED_CLASS's active:scale-[0.97] never eased (`/review-animations` Block: motion snaps).**
+Tailwind 4 compiles `active:scale-[0.97]` to the standalone CSS `scale` property, not `transform`
+- `transition-[transform,color,...]` (no `scale`) never animated it, so every pressed control
+snapped instead of easing. `PRESSED_CLASS`'s transition list now includes `scale` alongside
+`transform`; a new `PRESSED_TRANSFORM_CLASS` (transform-only, `transition-transform` - which
+Tailwind 4 itself expands to cover `transform`/`translate`/`scale`/`rotate` as one named utility,
+unlike the arbitrary `transition-[...]` bracket syntax which takes exactly what is written)
+serves the roving-focus items in A2. Test: `components/ui/primitive-classes.test.ts` reads the
+`transition-[...]` bracket itself and asserts `scale` is one of its comma-separated properties
+(not a substring hit that could pass by accident).
+**Fixed:** `components/ui/primitive-classes.ts`.
+
+**A2 - press class assignment per control (`/code-review` + `/review-animations`: colour easing
+on a keyboard-navigated item is motion-on-keyboard-action, a hard-fail).** `DropdownMenuItem`,
+`ContextMenuItem`, `MenubarItem` (Radix roving focus moves `focus:bg-accent` on arrow keys) now
+carry `PRESSED_TRANSFORM_CLASS`, never `PRESSED_CLASS`. `CommandItem` (keyboard-driven, 100+/day)
+and `SliderThumb` (a drag is a hold, no discrete press moment) carry **no** press class at all.
+Everything else (Button lg/md/icon, checkbox, switch, radio, toggle, TabsTrigger) keeps
+`PRESSED_CLASS` unchanged.
+**Fixed:** `components/ui/{dropdown-menu,context-menu,menubar,command,slider}.tsx`.
+**Test:** `components/ui/primitive-classes.test.ts` rewritten - per-file `it.each` tables for
+`PRESSED_CLASS` carriers, `PRESSED_TRANSFORM_CLASS` carriers (and NOT `PRESSED_CLASS`), and the
+two no-press-class files (assert neither).
+**Live:** `fixround1-06-dropdown-item-pressed-1280.png` (Actions dropdown open on a user record)
++ a computed-className check confirming the rendered `DropdownMenuItem` carries
+`transition-transform` with zero `color`/`background-color`/`border-color`/`box-shadow` in its
+class list. Capturing the CSS `:active` pseudo-state itself mid-press in a screenshot is a known
+automation-timing limitation (the press-and-release round trip is faster than a screenshot
+command's own latency) - the computed-style proof is the reliable evidence here, same as T2's
+original tooltip-timing proof used DOM polling over a raced screenshot.
+
+### B. DataGrid
+
+**B3 - the hook half of AC-DLA-32 (amended AC-DLA-15).** `resource-list.tsx:290`'s skeleton gate
+moving to `rows.length === 0` meant every shell list lost its "something is happening" feedback
+during a refetch unless the placeholder-dim behaviour actually reached `ResourceList`. Per the
+amended UAC ("Because that gate removes the old loading feedback, the hook half of AC-DLA-32
+ships in T2"): `useResourceList` now exposes `isPlaceholderData` (`isLoading && data.length > 0`
+- `data` was ALREADY staying stale during a refetch, since `setData` only ever runs on a
+resolved fetch) and `loadedQuery` (the query the CURRENT rows actually came from, captured when
+a fetch resolves - NOT the live `query`, which has already advanced by the time a refetch is in
+flight). `ResourceList` forwards `isPlaceholderData` to `DataGrid`, and `openRow`'s
+`globalIndex`/`ctx` now read `loadedQuery` instead of the live `list.page`/`list.query` - a row
+clicked while stale rows are still showing (AC-DLA-15 keeps them clickable) would otherwise be
+indexed against a page it is not actually on. `onRowClick` wiring is untouched (T4 does
+`rowHref`).
+**Fixed:** `hooks/use-resource-list.ts`, `components/platform/resource-list/resource-list.tsx`.
+**Test:** `hooks/use-resource-list.placeholder.test.ts` - a fetcher that resolves on demand;
+asserts rows persist across a page change, `isPlaceholderData` flips true then false, and
+`loadedQuery.page` stays at the OLD page while stale rows are showing.
+**Live:** `fixround1-07-list-dimmed-rows-search-1280.png` - Roles list, search box shows a
+non-matching query ("zz") but the table still shows the full previous 7-role result set, visibly
+dimmed, pagination strip intact. Reproduced via a `window.fetch` interception delaying only the
+`/roles?...` response (the real local backend resolves in tens of milliseconds, too fast for a
+screenshot's own command latency to reliably land inside the window otherwise - the delay proves
+the SAME code path a slow network would exercise, not a different one).
+
+**B4 - `headerSticky` was a no-op (`/code-review`: dead default).** The AC-DLA-13 amendment
+spells this out: the scroller must be bounded (`max-h-(--grid-max-h)`, token already defined in
+`config.reui.css` since T1) on the SAME element that scrolls horizontally, or `position: sticky`
+has no bounded ancestor to stick inside and the header just scrolls away with everything else.
+Added `tableClassNames.scroller` (default `'max-h-(--grid-max-h) overflow-y-auto'`, overridable
+per list) and applied it to the one scroller div in `DataGridTableBase` alongside its existing
+`overflow-x-auto overscroll-x-contain`.
+**Fixed:** `components/ui/data-grid.tsx`, `components/ui/data-grid-table.tsx`.
+**Test:** `components/ui/data-grid.inventory.test.ts` new assertions for the scroller class,
+the `scroller?: string` prop type, and `--grid-max-h`'s existence in `config.reui.css`.
+**Live:** `fixround1-01-sticky-header-scrolled-1280.png` / `fixround1-02-...-375.png` - Workflows
+list narrowed to a 500px-tall viewport (its 8 rows don't overflow at a normal window height, so
+the window itself was narrowed per the ruling's own suggested fallback) genuinely overflows
+(`scrollHeight` 475 vs `clientHeight` 228), scrolled 200px, header still pinned at the top with a
+row visibly sliding underneath it.
+
+**B5 - mobile-pin selector generalisation (`/code-review`: hardcoded to `select`-only, breaks on
+a `rowReorder` list's drag column).** `firstDataColumnIndex` now `findIndex`s the first LEAF
+column whose id is not `select`/`__drag` AND whose `meta.reorderable !== false` AND
+`meta.utility !== true` (a new `ColumnMeta.utility` flag, declared for a future structural
+column that needs excluding without also lying about `reorderable`). `__drag` (resource-list.tsx's
+row-drag grip column) already sets `meta: { reorderable: false }`, so it is excluded by the SAME
+convention every fixed/action column in the app already uses - no new per-column wiring needed.
+**Fixed:** `components/ui/data-grid-table.tsx`, `components/ui/data-grid.tsx` (the `utility` meta
+field).
+**Test:** `components/ui/data-grid.inventory.test.ts` new assertions.
+**Live:** `fixround1-03-rowreorder-mobile-pin-375.png` - Ideation > Ideas (a real `rowReorder`
+list), scrolled sideways: the drag-grip and select columns have scrolled off-screen, "Idea" (the
+real first data column, index 2) is pinned left. A DOM check confirmed the exact header index
+list (`0,1` unpinned/structural, `2` pinned = "Idea").
+
+**B6 - pinned cell background did not match its row's hover/selected/striped state (`/code-review`:
+a flat `bg-background` reads as a visual bug once the row itself tints).** The `<tr>` (both the
+header row and the shared body-row class builder) now carries `group`; the pinned cell's
+background is a set of `group-*:max-sm:bg-*` variants mirroring the row's own
+`hover:`/`data-[state=selected]:`/`odd:` conditions, split into `MOBILE_PIN_CLASS_HEAD` (the
+header row's constant `bg-muted/40`) and `MOBILE_PIN_CLASS_BODY` (hover/selected/striped, each
+`!important` for the same specificity reason `position` needed it - the row-select stripe's
+compound selector otherwise outranks a plain class regardless of source order).
+**Fixed:** `components/ui/data-grid-table.tsx`.
+**Test:** `components/ui/data-grid.inventory.test.ts` new assertions (the `group` classes present,
+the `group-hover:`/`group-data-[state=selected]:`/`group-odd:` variants present).
+**Live:** `fixround1-04-selected-row-pinned-cell-375.png` - Ideas list, first row selected via its
+checkbox, scrolled sideways: a `getComputedStyle` check confirmed the pinned "Idea" cell's
+background is OPAQUE and matches the selected tint (`rgb(247, 246, 244)`), while a neighbouring
+non-pinned cell in the same row stays transparent (correctly letting the `<tr>`'s own background
+show through instead).
+**Known simplification (documented, not a silent gap):** the header pin's background covers only
+the common `bg-muted/40` case, not every `stripped`/`headerBackground: false` permutation - noted
+in a code comment; no current real list combines the mobile pin with those header variants.
+
+**B7 - `role="link"` on the DataGrid row + outer focus ring clipped by the scroller (amended
+AC-DLA-14 + `/code-review`).** The amended UAC states plainly: `role="link"` "would remove the row
+from the table structure for assistive tech" - dropped. `tabIndex={0}`, click, Enter/Space,
+middle-click and hover-prefetch are all unchanged; the real `<a href>` lands in T4. The scroller
+clips anything an outer ring/offset would draw past the row's own box, so the linked row now
+carries `focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring` instead.
+**Fixed:** `components/ui/data-grid-table.tsx`.
+**Test:** `components/ui/data-grid-table.rowHref.test.tsx` rewritten off `getAllByRole('link')`
+onto `getAllByRole('row')` (skipping the header row) + `tabindex` assertions; a new test asserts
+the inset-ring classes are present; the "neither prop set" test now also asserts no `tabindex`
+attribute at all (was previously proven only via the absent link role).
+
+**B8 - placeholder-dim transition was conditional, so the RESTORE snapped (amended AC-DLA-15:
+"the transition-opacity declaration is unconditional so the restore eases too, never snaps").**
+`transition-opacity duration-(--duration-fast) ease-(--ease-standard)` moved to always apply on
+`DataGridTableBody`'s `<tbody>`; only `opacity-60` itself stays conditional on
+`isPlaceholderData`.
+**Fixed:** `components/ui/data-grid-table.tsx`.
+**Test:** covered by the existing `data-grid-placeholder.test.tsx` suite (unchanged assertions,
+now reading the always-present transition class).
+
+**B9 - row transition property list + a redundant reduced-motion override (amended AC-DLA-14:
+"`transition-[background-color,opacity] duration-(--duration-fast) ease-(--ease-standard)`... no
+`motion-reduce:transition-none`, the tokens already collapse").** The linked-row transition now
+lists `background-color` (hover/active) AND `opacity` (T5's future pending-row dim) explicitly,
+replacing the earlier bare `transition-opacity`; the per-component `motion-reduce:transition-none`
+override was removed - T1's reduced-motion preference block already collapses every
+`duration-(--duration-*)` token to ~0, so the per-component copy was dead weight duplicating a
+global rule.
+**Fixed:** `components/ui/data-grid-table.tsx` (`dataGridBodyRowClass`).
+
+**B10 - the right-edge fade toggled by mount/unmount (grid) or `mask-image` (tabs) (`/review-animations`
+Block: abrupt property, no interruptible transition).** Amended AC-DLA-14: "always mounted... toggles
+`opacity` over `--duration-fast`, never mount/unmount or `mask-image`." Both surfaces now render an
+always-mounted `aria-hidden` overlay div (`opacity-0 data-[fade=true]:opacity-100
+transition-opacity duration-(--duration-fast)`); `tabs.tsx`'s `TabsList` gained a wrapping
+`<div className="relative">` to host its own copy (the CSS `mask-image` toggle it previously
+carried directly on the scrollable element is gone).
+**Fixed:** `components/ui/data-grid-table.tsx`, `components/ui/tabs.tsx`.
+**Test:** `components/ui/data-grid.inventory.test.ts` + `components/ui/tabs.inventory.test.ts` -
+both assert no conditional `{isFading && (` / no `[mask-image:` remains, and the always-mounted
+`data-fade={isFading}` + opacity-transition classes are present.
+
+**B11 - the overflow-measure scroll handler was unthrottled and only watched the scroller's own
+box, missing content-width changes (`/code-review` + `/review-animations`: excess re-renders +
+a resize/reorder that changes overflow state without the fade updating).** `useHorizontalOverflow`
+now rAF-guards its scroll/resize handlers (`requestAnimationFrame`-coalesced, at most one measure
+per frame) and additionally `ResizeObserver`s the scroller's FIRST CHILD (the table or the tab
+strip itself) alongside the scroller box - a column resize/hide/reorder or a late-added tab
+changes the child's content width while the scroller's own box stays the same size.
+**Fixed:** `hooks/use-horizontal-overflow.ts`.
+**Live:** implicitly exercised by every DataGrid/Tabs screenshot in this round and the original
+T2 run; no dedicated new screenshot (a perf/correctness fix with no distinct visual state).
+
+**B12 - the "no ScrollArea around DataGridTable" inventory only scanned `components/platform/**`
+(`/code-review`: the real offenders documented in AC-DLA-13 live under `app/**`, unscanned).**
+Widened the walk to `app/**` too, with an explicit 14-file allowlist (all `account/**` Metronic
+demo pages + the `demo1/light-sidebar` showcase team - dead code slated for wholesale deletion in
+T7, AC-DLA-57/60) - a new offender anywhere else in either tree now fails the build.
+**Fixed:** `components/ui/data-grid.inventory.test.ts` (test-only; no production code in the
+allowlisted files was touched, per the brief).
+
+### C. Other primitives
+
+**C13 - TabsTrigger's outer focus ring was clipped by the tab strip's own `overflow-x-auto`
+(`/code-review`).** `focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2` ->
+`focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0`
+on both the base class and the `button` variant compound (which duplicated - and without the fix
+would have RE-introduced - the outer ring for `variant="button"` tabs specifically, since a later
+compound-variant class wins a same-specificity tie).
+**Fixed:** `components/ui/tabs.tsx`.
+**Test:** `components/ui/tabs.inventory.test.ts` new assertion.
+**Live:** `fixround1-05-tabs-keyboard-focus-ring-1280.png` - Users record, Security tab focused
+via `agent-browser focus` (confirmed `:focus-visible` true via `matches(':focus-visible')`, not
+just a class-string check); the ring renders as a clean inset outline hugging the tab pill, no
+clipping. The conversation-drawer tabs use the identical shared `TabsTrigger` component, so this
+is the same code path; that specific surface was not independently re-verified live in this pass
+(the drawer did not open reliably during the attempt - unrelated interaction nuance, not
+re-investigated given the shared-component proof already covers the mechanism).
+
+**C14 - overlay blur was 12px (`backdrop-blur-md`), amended AC-DLA-09 specifies 8px
+(`backdrop-blur-sm`) (`/review-animations`: visual regression vs the design spec).**
+**Fixed:** `components/ui/primitive-classes.ts` (`OVERLAY_CLASS`, `OVERLAY_CLASS_STATIC`).
+**Test:** `components/ui/primitive-classes.test.ts` new assertion (`backdrop-blur-sm` present,
+`backdrop-blur-md` absent).
+
+**C15 - `badge.tsx`'s JS-level `shape="circle"` appearance override (`/code-review`: a
+component silently reinterpreting a caller's explicit prop is a footgun - the default should be
+data-driven by the CALLER, not inferred from `shape`).** Removed the `effectiveAppearance`
+special-case entirely; `resource-list.tsx`'s selection-count pill and the omnichannel unread
+badge (the two real callers that relied on it) now pass `appearance="default"` explicitly.
+**Fixed:** `components/ui/badge.tsx`, `components/platform/resource-list/resource-list.tsx`,
+`app/(protected)/omnichannel/inbox/components/thread-list.tsx`.
+**Verified no other real (non-demo) `<Badge shape="circle">` caller relies on the removed
+default** - grepped every `shape="circle"` site in the tree; the rest are either `<Button
+shape="circle">` (an unrelated prop on a different component), demo2/3/5/9 dead layouts, or
+`search-users.tsx`'s Badge, which already passes `appearance="light"` explicitly.
+
+**C16 - the AC-DLA-11 ghost->outline migration on `ip-addresses.tsx` turned a bare status dot
+into a visible pill (`/code-review`: a visual regression the badge sweep must not leave behind,
+even on a file slated for T7 deletion).** Replaced the `Badge`+`BadgeDot` wrapper with a bare
+`<span className="size-1.5 rounded-full bg-[currentColor] opacity-75">` (the same visual as
+`BadgeDot` itself, minus the pill container) - restores the original ghost look (no border, no
+background) without reintroducing the deleted `appearance="ghost"`.
+**Fixed:** `app/(protected)/account/security/allowed-ip-addresses/components/ip-addresses.tsx`.
+
+### D. Gate, evidence, docs
+
+**D17 - gate + evidence.** `npm run lint` (touched files, 0 errors), `npm test` (183 files / 1572
+tests, +11 vs the T2-DONE baseline), `rm -rf .next && npm run build` (green), restarted :3002
+(port ownership confirmed via `lsof` before kill). 7 new `fixround1-NN-*.png` screenshots (listed
+under each finding above) plus this section serve as the evidence + report; `23-evidence/T2/README.md`
+is left as the original T2 run log (the fix-round screenshots and their captions live in this
+report to avoid duplicating narrative in two places).
+
+**D18 - this section** maps all 21 findings (10 code-review + 11 animation) to what changed, with
+the `/review-animations` Block reasons named inline under each relevant item (A1, A2, B6, B10,
+B11, C14) and how each was cleared.
+
+**D19 - commits.** Small, one per ruling group (A, B-scroller, B-hook, B-pin/bg, B-inventory, C,
+docs), each trailer exactly `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
+
+### Definition of Done checklist (T2 fix round 1)
+
+1. All 19 rulings (21 findings) addressed, each with a code change, a test, or both; 6 have live
+   `agent-browser` evidence (the ones with a genuinely new visual/behavioural state); the rest
+   (B8, B9, B11, B12, D-items) are covered by existing or new unit/inventory tests plus the
+   unchanged full-suite live pass.
+2. `npm run lint`, `npm test` (183/183 files, 1572/1572 tests), `npm run build` all green.
+3. `rm -rf .next && npm run build` before the final live check; port ownership confirmed via
+   `lsof -p $(lsof -ti :3002) | grep cwd` before every kill/restart in this round.
+4. No mock left behind, no backfill needed, no new permission - primitives-only fix round.
+5. Verified from the user's perspective at 375 AND 1280 on the real prod build, including two
+   genuinely hard-to-reproduce states (a vertically overflowing sticky-header grid, and a
+   dimmed-rows-during-refetch frame) caught via legitimate reproduction techniques (a narrowed
+   viewport height; a `window.fetch` response-delay injected purely to widen an otherwise-too-fast
+   local-network timing window, not a different code path than a slow real network would exercise).
+
+**Verdict: T2 fix round 1 DONE.** 19/19 rulings (21/21 findings) resolved and re-verified; full
+gate green.

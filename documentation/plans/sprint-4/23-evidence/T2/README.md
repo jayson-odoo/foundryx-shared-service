@@ -1,5 +1,11 @@
 # T2 - Primitives - evidence run log
 
+**Fix round 1 (21 findings from `/code-review` + `/review-animations`):** 7 more screenshots,
+`fixround1-01` through `fixround1-07`, in this same directory. Their captions and the mapping
+from each screenshot back to its finding live in the "T2 - Fix round 1" section of
+`documentation/plans/sprint-4/23-design-language-alignment-test-report.md` rather than duplicated
+here, to keep one narrative per fix.
+
 Branch `sprint-4/23-T2-primitives` (off `sprint-4/23-design-language-alignment`, T0+T1 merged).
 Backend `service_backend` (this worktree's venv) on :8001; frontend `rm -rf .next && npm run build`
 (green) served via `npx next start -p 3002` (this worktree, port ownership confirmed via
