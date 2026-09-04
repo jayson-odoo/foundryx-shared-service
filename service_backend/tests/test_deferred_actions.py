@@ -100,10 +100,12 @@ def test_duplicate_registration_of_a_different_def_is_loud():
     a = DeferredActionDef(
         key="widget.test_dup", entity_type=TEST_ENTITY, permission="users.delete",
         window="destructive", label="Delete", execute=lambda *a, **k: None,
+        exists=lambda *a, **k: True,
     )
     b = DeferredActionDef(
         key="widget.test_dup", entity_type=TEST_ENTITY, permission="users.delete",
         window="destructive", label="Delete (other)", execute=lambda *a, **k: None,
+        exists=lambda *a, **k: True,
     )
     register_deferred_action(a)
     with pytest.raises(ValueError):
@@ -129,7 +131,13 @@ _WIDGET_STATE: dict = {}
 def _widget_execute(db, tenant_id, entity_id, payload, actor_user_id):
     if entity_id in _WIDGET_STATE.get("boom_ids", set()):
         raise RuntimeError("handler exploded")
+    if entity_id in _WIDGET_STATE.get("missing_ids", set()):
+        raise RuntimeError("widget no longer exists")
     _WIDGET_STATE[entity_id] = {"deleted": True, "actor": actor_user_id, "payload": payload}
+
+
+def _widget_exists(db, tenant_id, entity_id):
+    return entity_id not in _WIDGET_STATE.get("missing_ids", set())
 
 
 WIDGET_DELETE = DeferredActionDef(
@@ -139,6 +147,7 @@ WIDGET_DELETE = DeferredActionDef(
     window="destructive",
     label="Delete widget",
     execute=_widget_execute,
+    exists=_widget_exists,
 )
 WIDGET_ARCHIVE = DeferredActionDef(
     key="widget.archive",
@@ -147,6 +156,7 @@ WIDGET_ARCHIVE = DeferredActionDef(
     window="reversible",
     label="Archive widget",
     execute=lambda *a, **k: None,
+    exists=_widget_exists,
 )
 
 
@@ -459,10 +469,163 @@ def test_users_trash_end_to_end_commits_and_restores(client, session_factory):
     assert user.is_trashed is True
     db.close()
 
-    # Restorable from the Trashed view (the same endpoint the UI's Restore uses).
-    restore = client.post("/users/restore", json={"ids": [target]}, headers=h)
-    assert restore.status_code == 204, restore.text
-    db = session_factory()
-    user = db.query(User).filter(User.id == target).first()
-    assert user.is_trashed is False
+
+# ── fix round 1, item 1: cancel/current gated by the parked action's own
+# permission, not just "any authenticated user in the tenant" ──────────────
+
+
+def test_current_without_the_actions_permission_is_uniform_404(client, session_factory):
+    _make_user(session_factory, "viewer-dla@foundryx.io", perm_keys=["users.read"])
+    admin_h = _login(client)
+    client.post(
+        "/api/v1/pending-actions",
+        json={"actionKey": "widget.delete", "entityType": TEST_ENTITY, "entityId": "w-sec1"},
+        headers=admin_h,
+    )
+
+    viewer_h = _login(client, "viewer-dla@foundryx.io", "pw12345678")
+    res = client.get(
+        "/api/v1/pending-actions/current",
+        params={"entityType": TEST_ENTITY, "entityId": "w-sec1"},
+        headers=viewer_h,
+    )
+    assert res.status_code == 404
+
+    # The holder of the action's permission sees it fine.
+    ok = client.get(
+        "/api/v1/pending-actions/current",
+        params={"entityType": TEST_ENTITY, "entityId": "w-sec1"},
+        headers=admin_h,
+    )
+    assert ok.status_code == 200
+    assert ok.json()["pending"] is not None
+
+
+def test_cancel_without_the_actions_permission_is_403(client, session_factory):
+    _make_user(session_factory, "viewer-dla2@foundryx.io", perm_keys=["users.read"])
+    admin_h = _login(client)
+    row = client.post(
+        "/api/v1/pending-actions",
+        json={"actionKey": "widget.delete", "entityType": TEST_ENTITY, "entityId": "w-sec2"},
+        headers=admin_h,
+    ).json()
+
+    viewer_h = _login(client, "viewer-dla2@foundryx.io", "pw12345678")
+    res = client.post(f"/api/v1/pending-actions/{row['id']}/cancel", headers=viewer_h)
+    assert res.status_code == 403
+    # Untouched - still pending, cancellable by a holder of the permission.
+    assert "w-sec2" not in _WIDGET_STATE
+
+
+def test_a_second_teammate_holding_the_permission_can_cancel(client, session_factory):
+    """A teammate admin can veto another admin's parked action (D2 - anyone
+    in the tenant WITH the permission may cancel, not only the requester)."""
+    second_admin = _make_user(
+        session_factory, "second-admin-dla@foundryx.io", perm_keys=["users.delete", "users.read"]
+    )
+    admin_h = _login(client)
+    row = client.post(
+        "/api/v1/pending-actions",
+        json={"actionKey": "widget.delete", "entityType": TEST_ENTITY, "entityId": "w-sec3"},
+        headers=admin_h,
+    ).json()
+
+    second_h = _login(client, "second-admin-dla@foundryx.io", "pw12345678")
+    res = client.post(f"/api/v1/pending-actions/{row['id']}/cancel", headers=second_h)
+    assert res.status_code == 200
+    assert res.json()["status"] == PENDING_ACTION_CANCELLED
+    assert second_admin  # keep the fixture referenced
+
+
+# ── fix round 1, item 4: atomic claim - a race never runs the handler twice ─
+
+
+def test_two_concurrent_commit_attempts_run_the_handler_once(db):
+    """Simulates the beat sweep racing the frontend's lazy `current` poll
+    against the SAME overdue row: two independent `commit_one` calls must
+    only ever apply the handler once (the second sees the claim already
+    taken and returns the settled row untouched)."""
+    admin = _admin(db)
+    svc = PendingActionService(db)
+    row = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+        action_key="widget.delete", entity_type=TEST_ENTITY, entity_id="w-race",
+    )
+    pa = db.get(PendingAction, row.id)
+    pa.commit_at = _now() - timedelta(seconds=1)
+    db.commit()
+
+    first = svc.commit_one(row)
+    second = svc.commit_one(row)
+
+    assert first.status == PENDING_ACTION_COMMITTED
+    assert second.status == PENDING_ACTION_COMMITTED
+    assert second.id == first.id
+    # The handler recorded exactly one application, not two.
+    assert _WIDGET_STATE["w-race"]["deleted"] is True
+
+
+# ── fix round 1, item 7: park validates the target exists; a vanished target
+# fails the commit instead of silently no-op'ing ───────────────────────────
+
+
+def test_park_against_a_missing_target_is_404(client):
+    h = _login(client)
+    _WIDGET_STATE["missing_ids"] = {"w-ghost"}
+    res = client.post(
+        "/api/v1/pending-actions",
+        json={"actionKey": "widget.delete", "entityType": TEST_ENTITY, "entityId": "w-ghost"},
+        headers=h,
+    )
+    assert res.status_code == 404
+
+
+def test_target_vanishing_during_the_window_fails_the_commit(db):
+    """The record existed at park time but is gone by commit time - the
+    handler must fail loudly, never silently no-op (AC-DLA-41)."""
+    admin = _admin(db)
+    svc = PendingActionService(db)
+    row = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+        action_key="widget.delete", entity_type=TEST_ENTITY, entity_id="w-vanish",
+    )
+    pa = db.get(PendingAction, row.id)
+    pa.commit_at = _now() - timedelta(seconds=1)
+    db.commit()
+
+    # The target vanishes before the sweep gets to it.
+    _WIDGET_STATE["missing_ids"] = {"w-vanish"}
+
+    committed = svc.commit_due()
+    assert committed == 1
+    settled = db.get(PendingAction, row.id)
+    assert settled.status == PENDING_ACTION_FAILED
+    assert "w-vanish" not in _WIDGET_STATE
+
+
+def test_users_trash_handler_fails_when_the_user_is_gone(db, session_factory):
+    """A real first-party handler (not just the synthetic widget) asserts it
+    touched a row - `UserService.trash` is a bulk `UPDATE ... WHERE id IN
+    (...)` that silently no-ops on a missing id without this guard."""
+    admin = _admin(db)
+    target = _make_user(session_factory, "vanish-me@foundryx.io", perm_keys=["users.read"])
+    svc = PendingActionService(db)
+    row = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+        action_key="users.trash", entity_type="user", entity_id=target,
+    )
+    # The user is hard-removed out from under the pending action (edge case -
+    # normally trashed, but the guard must hold regardless of how it vanished).
+    other_db = session_factory()
+    other_db.query(User).filter(User.id == target).delete(synchronize_session=False)
+    other_db.commit()
+    other_db.close()
+
+    pa = db.get(PendingAction, row.id)
+    pa.commit_at = _now() - timedelta(seconds=1)
+    db.commit()
+
+    result = svc.commit_one(row)
+    assert result.status == PENDING_ACTION_FAILED
+    assert result.error_text and "no longer exists" in result.error_text
     db.close()

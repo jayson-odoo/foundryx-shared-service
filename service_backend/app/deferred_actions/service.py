@@ -23,6 +23,7 @@ from app.deferred_actions.registry import (
 from app.models.pending_action import (
     PENDING_ACTION_CANCELLED,
     PENDING_ACTION_COMMITTED,
+    PENDING_ACTION_COMMITTING,
     PENDING_ACTION_FAILED,
     PENDING_ACTION_PENDING,
     PendingAction,
@@ -59,6 +60,11 @@ class ActionNotFound(DeferredActionServiceError):
 
 class AlreadySettled(DeferredActionServiceError):
     """Cancel arrived at/after `commit_at` - the row already committed."""
+
+
+class TargetNotFound(DeferredActionServiceError):
+    """Park was asked to act on a record that doesn't exist (or isn't in
+    this tenant) - fix round 1 item 7. 404, never silently parked."""
 
 
 def _now() -> datetime:
@@ -118,12 +124,35 @@ class PendingActionService:
             return row
         return self.commit_one(row)
 
-    def current(self, tenant_id: str, entity_type: str, entity_id: str) -> dict:
+    def _may_act_on(self, actor: User, action_key: str) -> bool:
+        try:
+            action_def = deferred_action_for(action_key)
+        except UnknownDeferredAction:
+            return False
+        if action_def.permission not in effective_permission_keys(actor):
+            return False
+        if action_def.platform and not (actor.tenant and actor.tenant.is_platform):
+            return False
+        return True
+
+    def current(self, tenant_id: str, entity_type: str, entity_id: str, actor: User) -> dict:
         row = self._commit_if_due(self._pending_for(tenant_id, entity_type, entity_id))
         pending = row if (row is not None and row.status == PENDING_ACTION_PENDING) else None
+        last_outcome = self._last_outcome(tenant_id, entity_type, entity_id)
+
+        # Fix round 1 item 1: `current` is gated by the SAME permission the
+        # parked action itself requires (resolved fresh from the actor's
+        # roles, exactly like `park`) - a teammate who cannot fire the action
+        # cannot observe its countdown either. Uniform empty response (never
+        # a distinct error shape) so a caller lacking the permission cannot
+        # distinguish "nothing pending" from "pending, but not yours to see".
+        relevant_key = pending.action_key if pending else (last_outcome.action_key if last_outcome else None)
+        if relevant_key is not None and not self._may_act_on(actor, relevant_key):
+            raise ActionNotFound("Pending action not found.")
+
         return {
             "pending": pending,
-            "last_outcome": self._last_outcome(tenant_id, entity_type, entity_id),
+            "last_outcome": last_outcome,
         }
 
     # ---- park / cancel ---------------------------------------------------
@@ -157,6 +186,10 @@ class PendingActionService:
             # Same double lock as `require_platform_permission` - a plain
             # permission-key check alone isn't enough for a platform action.
             raise PermissionDenied(f"Missing permission: {action_def.permission}")
+        if not action_def.exists(self.db, tenant_id, entity_id):
+            # Fix round 1 item 7: never park a countdown against a record
+            # that's already gone (or never existed in this tenant).
+            raise TargetNotFound(f"{entity_type} {entity_id!r} not found.")
 
         existing = self._commit_if_due(self._pending_for(tenant_id, entity_type, entity_id))
         if existing is not None and existing.status == PENDING_ACTION_PENDING:
@@ -195,7 +228,7 @@ class PendingActionService:
         self.db.refresh(row)
         return row
 
-    def cancel(self, tenant_id: str, action_id: str) -> PendingAction:
+    def cancel(self, tenant_id: str, action_id: str, actor: User) -> PendingAction:
         row = (
             self.db.query(PendingAction)
             .filter(PendingAction.id == action_id, PendingAction.tenant_id == tenant_id)
@@ -203,6 +236,15 @@ class PendingActionService:
         )
         if row is None:
             raise ActionNotFound("Pending action not found.")
+        # Fix round 1 item 1: cancel is gated by the parked action's OWN
+        # permission (resolved fresh, same as `park`) - ANY teammate holding
+        # it may veto (a second admin can cancel a colleague's park); anyone
+        # without it is refused. The id itself is already tenant-scoped
+        # above, so this is a plain 403 (not a 404 - there's nothing to
+        # enumerate that a 404 would hide beyond what the 200-path already
+        # would have revealed by the row's existence).
+        if not self._may_act_on(actor, row.action_key):
+            raise PermissionDenied(f"Missing permission for {row.action_key!r}.")
         if row.status != PENDING_ACTION_PENDING:
             raise AlreadySettled("This action already settled.")
         if row.commit_at <= _now():
@@ -225,9 +267,26 @@ class PendingActionService:
         left dirty and the row is re-marked `failed` in a FRESH commit, so a
         bad handler never poisons the session for the next row in a sweep and
         the entity itself is left untouched.
+
+        Fix round 1 item 4: an atomic claim (`UPDATE ... WHERE id=:id AND
+        status='pending'`) precedes the handler call - the beat sweep and the
+        frontend's lazy `current` poll can both race to commit the same
+        overdue row, and without the claim both would run the handler. A
+        rowcount of 0 means another caller already claimed (or settled) it -
+        this call is a no-op and returns whatever the row now is.
         """
         db = self.db
         row_id = row.id
+        claim = (
+            db.query(PendingAction)
+            .filter(PendingAction.id == row_id, PendingAction.status == PENDING_ACTION_PENDING)
+            .update({PendingAction.status: PENDING_ACTION_COMMITTING}, synchronize_session=False)
+        )
+        db.commit()
+        if claim == 0:
+            fresh = db.get(PendingAction, row_id)
+            return fresh if fresh is not None else row
+        row = db.get(PendingAction, row_id)
         try:
             action_def = deferred_action_for(row.action_key)
         except UnknownDeferredAction as exc:
@@ -269,9 +328,31 @@ class PendingActionService:
         db.refresh(fresh)
         return fresh
 
+    # A `committing` row that crashed mid-execute (process killed between the
+    # claim and the terminal status write) never resolves itself - the next
+    # sweep marks it `failed` once it's sat well past its own window.
+    _STUCK_COMMITTING_GRACE = timedelta(seconds=60)
+
+    def _reap_stuck_committing(self) -> None:
+        stuck = (
+            self.db.query(PendingAction)
+            .filter(
+                PendingAction.status == PENDING_ACTION_COMMITTING,
+                PendingAction.commit_at <= _now() - self._STUCK_COMMITTING_GRACE,
+            )
+            .all()
+        )
+        for row in stuck:
+            row.status = PENDING_ACTION_FAILED
+            row.error_text = "Commit did not complete (worker crashed or was interrupted)."
+            row.ended_at = _now()
+        if stuck:
+            self.db.commit()
+
     def commit_due(self) -> int:
         """Beat sweep (`pending_actions.commit_due`) - every tenant's overdue
         pending rows, each in its own transaction (AC-DLA-41)."""
+        self._reap_stuck_committing()
         rows = (
             self.db.query(PendingAction)
             .filter(

@@ -19,6 +19,7 @@ from app.deferred_actions.service import (
     ConflictingPendingAction,
     PendingActionService,
     PermissionDenied,
+    TargetNotFound,
     UnknownActionKey,
 )
 from app.dependencies import get_actor_user_id, get_current_user
@@ -73,6 +74,8 @@ def create_pending_action(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
     except PermissionDenied as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
+    except TargetNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
     except ConflictingPendingAction as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return PendingActionCreateResponse(
@@ -88,9 +91,11 @@ def cancel_pending_action(
 ):
     service = PendingActionService(db)
     try:
-        row = service.cancel(current_user.tenant_id, action_id)
+        row = service.cancel(current_user.tenant_id, action_id, current_user)
     except ActionNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
+    except PermissionDenied as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     except AlreadySettled as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return PendingActionCancelResponse(id=row.id, status=row.status)
@@ -104,7 +109,10 @@ def get_current_pending_action(
     db: Session = Depends(get_db),
 ):
     service = PendingActionService(db)
-    result = service.current(current_user.tenant_id, entityType, entityId)
+    try:
+        result = service.current(current_user.tenant_id, entityType, entityId, current_user)
+    except ActionNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
     pending = result["pending"]
     last_outcome = result["last_outcome"]
     return PendingActionCurrentOut(
