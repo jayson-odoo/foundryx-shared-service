@@ -22,8 +22,11 @@ from typing import Any, Optional
 
 import sqlalchemy as sa
 
+from .canonical.documents import is_document_entity
 from .db import AUTOCOUNT_SCHEMA
 from .envelopes import ENVELOPE_STATUS_DICT
+from .mapping import SCOPE_LINE
+from .models import AcEntityConfig, AcFieldMapping
 from .sources import INITIAL_LOAD_WINDOWED
 
 # Every entity config that predates this slice is a GRN one: a dict envelope with
@@ -135,3 +138,107 @@ def backfill_etl_defaults(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
         )
         touched += result.rowcount or 0
     return touched
+
+
+# sprint-5/02 (AC-02-05): a document task's line fields used to be code-
+# generated from three `source_config` picker columns (`lineKeyColumn`/
+# `lineProductColumn`/`lineWarehouseColumn` - the now-deleted
+# `mapping.document_line_rows`). This backfill converts an EXISTING task's
+# pickers into three real, operator-editable `ac_field_mapping` rows and
+# strips the keys, so the task behaves identically after upgrade with zero
+# manual re-mapping.
+#
+#     !!  ORM-LEVEL, NOT RAW SQL (unlike the backfills above).  !!
+# Unlike its siblings this one BUILDS ROWS (`AcFieldMapping`), not a column
+# UPDATE - the natural unit is an ORM insert. A live-Postgres Alembic
+# migration wraps this the SAME two-connection way every other backfill in
+# this file does (a `Session(bind=op.get_bind())` reading/writing on a
+# connection Alembic's own transaction will commit) - the module docstring's
+# "test the FUNCTION directly" rule is why this is a plain function at all.
+def backfill_document_line_mapping_pickers(
+    db: Any, tenant_id: str, company_id: str, entity_type: str
+) -> int:
+    """Idempotent per (tenant, company, entity): a second call is a no-op
+    (returns 0) once ANY line row exists for it - whether created by THIS
+    backfill or by an operator who has since mapped lines by hand. Returns
+    the number of line rows created (0-3)."""
+    if not is_document_entity(entity_type):
+        return 0
+    config = (
+        db.query(AcEntityConfig)
+        .filter(
+            AcEntityConfig.tenant_id == tenant_id,
+            AcEntityConfig.company_id == company_id,
+            AcEntityConfig.entity_type == entity_type,
+        )
+        .one_or_none()
+    )
+    if config is None:
+        return 0
+
+    source_config = dict(config.source_config or {})
+    line_key_column = str(source_config.get("lineKeyColumn") or "").strip()
+    line_product_column = str(source_config.get("lineProductColumn") or "").strip()
+    line_warehouse_column = str(source_config.get("lineWarehouseColumn") or "").strip()
+
+    already_has_lines = (
+        db.query(AcFieldMapping)
+        .filter(
+            AcFieldMapping.tenant_id == tenant_id,
+            AcFieldMapping.company_id == company_id,
+            AcFieldMapping.entity_type == entity_type,
+            AcFieldMapping.scope == SCOPE_LINE,
+        )
+        .count()
+        > 0
+    )
+    created = 0
+    if not already_has_lines:
+        order = 0
+        if line_key_column:
+            db.add(
+                AcFieldMapping(
+                    tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
+                    scope=SCOPE_LINE, source_path=line_key_column,
+                    canonical_field="source_ref", transform="string",
+                    is_required=True, is_enabled=True, sort_order=order,
+                )
+            )
+            created += 1
+            order += 1
+        if line_product_column:
+            db.add(
+                AcFieldMapping(
+                    tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
+                    scope=SCOPE_LINE, source_path=line_product_column,
+                    canonical_field="product_ref", transform="ref_product",
+                    is_required=True, is_enabled=True, sort_order=order,
+                )
+            )
+            created += 1
+            order += 1
+        if line_warehouse_column:
+            db.add(
+                AcFieldMapping(
+                    tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
+                    scope=SCOPE_LINE, source_path=line_warehouse_column,
+                    canonical_field="warehouse_ref", transform="ref_warehouse",
+                    is_required=False, is_enabled=True, sort_order=order,
+                )
+            )
+            created += 1
+            order += 1
+
+    # Strip the picker keys EVERY call (idempotent w.r.t. the config half
+    # too, independent of whether rows were just created) - a JSON column
+    # needs a FRESH dict reassigned, never an in-place mutation of the
+    # existing one, or SQLAlchemy misses the change (the house gotcha).
+    stripped = {
+        k: v for k, v in source_config.items()
+        if k not in ("lineKeyColumn", "lineProductColumn", "lineWarehouseColumn")
+    }
+    if stripped != source_config:
+        config.source_config = stripped
+
+    db.flush()
+    return created

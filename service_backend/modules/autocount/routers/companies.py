@@ -258,6 +258,8 @@ def _mapping_response(view: MappingView) -> MappingViewResponse:
         rows=[MappingRowOut.model_validate(row) for row in view.rows],
         sorentoFields=[SorentoFieldOut.model_validate(f) for f in view.sorento_fields],
         acFields=list(view.ac_fields),
+        lineSorentoFields=[SorentoFieldOut.model_validate(f) for f in view.line_sorento_fields],
+        lineAcFields=list(view.line_ac_fields),
     )
 
 
@@ -316,6 +318,7 @@ def replace_entity_mapping(
                     transform=row.transform,
                     sorento_field=row.sorentoField,
                     formula=row.formula,
+                    scope=row.scope,
                 )
                 for row in body.rows
             ],
@@ -395,6 +398,7 @@ def simulate_mapping(
                     transform=row.transform,
                     sorento_field=row.sorentoField,
                     formula=row.formula,
+                    scope=row.scope,
                 )
                 for row in body.rows
             ]
@@ -420,6 +424,7 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
         activatedAt=view.activated_at,
         sourceConfig=view.source_config,
         resultColumns=view.result_columns,
+        lineResultColumns=view.line_result_columns,
         lastPreviewAt=view.last_preview_at,
         lastPreviewFailedCount=view.last_preview_failed_count,
         lastRunAt=view.last_run_at,

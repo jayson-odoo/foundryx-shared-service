@@ -467,12 +467,25 @@ class MappingRow:
     # authoritative and the named transform is ignored for value production.
     formula: Optional[str] = None
 
-    def coerce(self, value: Any, transforms: Optional[Dict[str, Callable[[Any], Any]]] = None) -> Any:
+    def coerce(
+        self,
+        value: Any,
+        transforms: Optional[Dict[str, Callable[[Any], Any]]] = None,
+        facts: Optional[Dict[str, Any]] = None,
+    ) -> Any:
         """``transforms`` overrides the module-level ``TRANSFORMS`` lookup -
         ``MappingEngine`` passes its own INSTANCE-bound table (plan 22 S5) so a
         ``ref_*`` transform can close over the engine's ``database_name``.
         ``None`` (every pre-S5 caller) falls back to the plain module table -
-        byte-identical to before."""
+        byte-identical to before.
+
+        ``facts`` (sprint-5/02, AC-02-07/09) - the NAMED-variable dict a
+        document header formula may reference (its own raw record + the
+        ``lines.*`` aggregates), passed straight through to
+        ``evaluate_formula``. ``None`` for every non-document/non-header row -
+        the formula then sees only the built-in ``value``, byte-identical to
+        before this slice.
+        """
         if self.formula:
             # A BLANK source value short-circuits to None WITHOUT evaluating -
             # exactly as every named transform treats blank (``_blank`` → None).
@@ -483,7 +496,7 @@ class MappingRow:
             if _blank(value):
                 return None
             try:
-                return evaluate_formula(self.formula, value)
+                return evaluate_formula(self.formula, value, facts)
             except FormulaError as exc:
                 # A runtime formula fault becomes a NAMED per-field error via the
                 # engine's existing ``except TransformError`` path (AC-16-03).
@@ -756,6 +769,23 @@ FIELD_REF_TRANSFORMS: Dict[str, str] = {
     "sales_agent_ref": "ref_sales_agent",
 }
 
+# The LINE-scope equivalent (sprint-5/02, AC-02-03) - now that a document's
+# line fields are operator-editable persisted rows (never code-generated),
+# ``product_ref``/``warehouse_ref`` need the SAME locked-pair guard header
+# ref fields already have.
+LINE_FIELD_REF_TRANSFORMS: Dict[str, str] = {
+    "product_ref": "ref_product",
+    "warehouse_ref": "ref_warehouse",
+}
+
+# The documented default `status` formula a document preset seeds (sprint-5/02,
+# AC-02-08) - defined ONCE here (mapping.py, not presets.py) so the ENGINE-
+# level tests (which build ``MappingRow`` by hand, never through a preset) and
+# the seeding code share the exact same string.
+DEFAULT_STATUS_FORMULA = (
+    'if(Cancelled == "T", "cancelled", if(lines.open_count == 0, "closed", "open"))'
+)
+
 
 # ── entity profiles ───────────────────────────────────────────────────────────
 # What differs BETWEEN entities, in one place. Adding an entity is a profile plus
@@ -787,6 +817,12 @@ class EntityProfile:
     # every non-document profile (a GRN line's ``source_ref`` stays the bare
     # DtlKey it always was - unchanged behaviour, S1 regression pin).
     line_ref_prefix: bool = False
+    # sprint-5/02 (AC-02-07) - which mapped LINE canonical field carries the
+    # "fulfilled" quantity for this document's aggregates (`qty_delivered`
+    # for a sales order, `qty_received` for a purchase/shipping order). None
+    # for every non-document profile - `MappingEngine` skips aggregate
+    # computation entirely rather than guess a field name.
+    line_fulfilled_field: Optional[str] = None
 
     def record_fields(self) -> set:
         return set(self.record_model.model_fields) - {"lines", "extras"}
@@ -888,6 +924,7 @@ SALES_ORDER_PROFILE = EntityProfile(
     detail_key=SQL_DOC_LINES_KEY,
     identity_path="DocKey",
     line_ref_prefix=True,
+    line_fulfilled_field="qty_delivered",
 )
 
 PURCHASE_ORDER_PROFILE = EntityProfile(
@@ -899,6 +936,7 @@ PURCHASE_ORDER_PROFILE = EntityProfile(
     detail_key=SQL_DOC_LINES_KEY,
     identity_path="DocKey",
     line_ref_prefix=True,
+    line_fulfilled_field="qty_received",
 )
 
 ENTITY_PROFILES: Dict[str, EntityProfile] = {
@@ -947,6 +985,7 @@ def flat_profile(entity_type: str, key_columns: Sequence[str]) -> EntityProfile:
         detail_key=base.detail_key,
         identity_path=", ".join(columns) or base.identity_path,
         line_ref_prefix=base.line_ref_prefix,
+        line_fulfilled_field=base.line_fulfilled_field,
     )
 
 
@@ -1019,6 +1058,47 @@ class MappingEngine:
 
         return transform
 
+    def _header_facts(self, raw: Dict[str, Any], lines: Sequence[Any]) -> Dict[str, Any]:
+        """The NAMED-variable fact dict a header formula may reference
+        (sprint-5/02, AC-02-07/09): the header's own raw record verbatim
+        (so ``Cancelled`` resolves straight off the source row) PLUS, for a
+        document entity whose profile names a ``line_fulfilled_field``, the
+        ``lines.*`` aggregates over the ALREADY-MAPPED line objects.
+
+        ``outstanding`` per line is ``max(0, ordered - fulfilled)`` - a line
+        somehow over-delivered/over-received never goes NEGATIVE and cancel
+        out another line's genuine shortfall in the sum.
+        """
+        facts: Dict[str, Any] = dict(raw)
+        if not (is_document_entity(self.entity_type) and self.profile.line_fulfilled_field):
+            return facts
+        ordered_field = "qty_ordered"
+        fulfilled_field = self.profile.line_fulfilled_field
+        zero = Decimal("0")
+        ordered_sum = zero
+        fulfilled_sum = zero
+        outstanding_sum = zero
+        open_count = 0
+        for line in lines:
+            ordered = getattr(line, ordered_field, None) or zero
+            fulfilled = getattr(line, fulfilled_field, None) or zero
+            outstanding = ordered - fulfilled
+            if outstanding < zero:
+                outstanding = zero
+            ordered_sum += ordered
+            fulfilled_sum += fulfilled
+            outstanding_sum += outstanding
+            if outstanding > zero:
+                open_count += 1
+        facts.update({
+            "lines.count": len(lines),
+            "lines.open_count": open_count,
+            "lines.ordered_sum": ordered_sum,
+            "lines.fulfilled_sum": fulfilled_sum,
+            "lines.outstanding_sum": outstanding_sum,
+        })
+        return facts
+
     # ── one document ──────────────────────────────────────────────────────
 
     def map_document(self, raw: Dict[str, Any]) -> MappedDocument:
@@ -1045,17 +1125,14 @@ class MappingEngine:
             )
         doc_key = source_ref
 
-        header, header_extras = self._apply(
-            self.header_rows,
-            raw,
-            fields=self._record_fields,
-            errors=errors,
-            doc_key=doc_key,
-            doc_no=doc_no,
-            line_no=None,
-            field_types=self._record_field_types,
-        )
-
+        #     !!  LINES MAP BEFORE THE HEADER (sprint-5/02, AC-02-07).  !!
+        # A document's `status` (and any other header formula) may reference
+        # the mapped LINES' own aggregate facts (`lines.open_count`, …) - so
+        # the line pass must complete FIRST and its aggregates be computed
+        # BEFORE the header row is evaluated. Reordered from the original
+        # header-then-lines pass (a pure internals change - the header ref
+        # composition below is unaffected, since `doc_key`/`source_ref`
+        # already resolved above from identity, never from header mapping).
         lines: List[CanonicalLine] = []
         details: List[Any] = []
         if self.detail_key is not None:
@@ -1131,6 +1208,18 @@ class MappingEngine:
                 )
                 continue
 
+        header, header_extras = self._apply(
+            self.header_rows,
+            raw,
+            fields=self._record_fields,
+            errors=errors,
+            doc_key=doc_key,
+            doc_no=doc_no,
+            line_no=None,
+            field_types=self._record_field_types,
+            facts=self._header_facts(raw, lines),
+        )
+
         if errors:
             # All-or-nothing per document (D13/AC-13-10): no partial record.
             return MappedDocument(record=None, errors=errors, raw=raw, doc_no=doc_no)
@@ -1184,10 +1273,6 @@ class MappingEngine:
         except IdentityError:
             source_ref = None
 
-        header_fields = self._project_rows(
-            self.header_rows, raw, self._record_fields, self._record_field_types,
-            SCOPE_HEADER,
-        )
         line_projections: List[List[Dict[str, Any]]] = []
         if self.detail_key is not None:
             details = raw.get(self.detail_key)
@@ -1202,8 +1287,23 @@ class MappingEngine:
                         )
 
         # The authoritative verdict (the exact record a real sync would push,
-        # or None + the per-field errors it would reject on).
+        # or None + the per-field errors it would reject on) - computed BEFORE
+        # the header projection (sprint-5/02) so a header formula referencing
+        # `lines.*` (AC-02-07) sees the SAME aggregate facts the real sync
+        # would compute. When the document as a whole fails (any line error),
+        # `mapped.record` is None and the header projection falls back to no
+        # facts - a broken record's preview degrading gracefully, never a 500.
         mapped = self.map_document(raw)
+        mapped_lines = (
+            mapped.record.lines
+            if mapped.record is not None and self.profile.line_model is not None
+            else []
+        )
+        header_facts = self._header_facts(raw, mapped_lines)
+        header_fields = self._project_rows(
+            self.header_rows, raw, self._record_fields, self._record_field_types,
+            SCOPE_HEADER, facts=header_facts,
+        )
         record_payload: Optional[Dict[str, Any]] = None
         if mapped.record is not None:
             sink_payload = getattr(mapped.record, "sink_payload", None)
@@ -1226,6 +1326,7 @@ class MappingEngine:
         fields: set,
         field_types: Dict[str, Optional[str]],
         scope: str,
+        facts: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         types = field_types or {}
@@ -1248,7 +1349,7 @@ class MappingEngine:
                 out.append(entry)
                 continue
             try:
-                coerced = row.coerce(raw_value, self._transforms)
+                coerced = row.coerce(raw_value, self._transforms, facts)
                 if row.formula and row.canonical_field in fields:
                     coerced = coerce_output(coerced, types.get(row.canonical_field))
             except TransformError as exc:
@@ -1278,6 +1379,7 @@ class MappingEngine:
         doc_no: Optional[str],
         line_no: Optional[int],
         field_types: Optional[Dict[str, Optional[str]]] = None,
+        facts: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         values: Dict[str, Any] = {}
         extras: Dict[str, Any] = {}
@@ -1302,7 +1404,7 @@ class MappingEngine:
                 continue
 
             try:
-                coerced = row.coerce(raw_value, self._transforms)
+                coerced = row.coerce(raw_value, self._transforms, facts)
                 # A FORMULA row's output is coerced/validated to the target
                 # field's declared type (AC-16-04). Named-transform rows already
                 # return the right type, so they skip this. Extras (undeclared
@@ -1454,120 +1556,37 @@ DEFAULT_MAPPINGS: Dict[str, Tuple[MappingRow, ...]] = {
 }
 
 
-# ── document LINE mapping - a FIXED column-name convention, not data (plan 22
-# S5, Appendix A6 item 3) ──────────────────────────────────────────────────
+# ── document LINE mapping is now FIRST-CLASS, operator-editable, PERSISTED
+# data (sprint-5/02, AC-02-01..05) ───────────────────────────────────────────
 #
-# Everything above this point (`DEFAULT_MAPPINGS`, the mapping editor,
-# `ac_field_mapping`) is HEADER-scope only for a document - matching how the
-# rest of the DB-task editor already works (the mapping editor writes
-# `scope=SCOPE_HEADER` unconditionally; see `company_service.replace_mapping`).
-# A document's LINES are deliberately NOT operator-mapped: the lineQuery's
-# result columns are read by a FIXED convention instead - most canonical line
-# fields must be named EXACTLY like the column the lineQuery returns them
-# under (`qty_ordered`, `unit_price`, …), and the two fields that need MINTING
-# (the line key, the master refs) are picked via three `source_config` columns
-# (`lineKeyColumn`/`lineProductColumn`/`lineWarehouseColumn`) instead of a
-# mapping row. This still runs through the ordinary `MappingEngine` (decimal/
-# date coercion, per-field named errors) - only the ROWS are generated here
-# instead of read from `ac_field_mapping`.
-#
-# so_number/customer_ref/sales_agent_ref/doc_date/requested_delivery_date/
-# status/internal_note (SO) and po_number/supplier_ref/issue_date/
-# expected_date/currency/status/internal_note (PO) stay ordinary HEADER
-# mapping rows, saved through the SAME mapping editor masters already use -
-# `mapping_catalog.SORENTO_FIELDS` gained entries for both entities so the
-# editor's Sorento-field picker offers them (`customer_ref`/`sales_agent_ref`/
-# `supplier_ref` pick the `ref_customer`/`ref_sales_agent`/`ref_supplier`
-# transform above).
-
-# canonical line field -> (transform name, is required per Sorento's own
-# `_CanonicalLine.qty_ordered` - Appendix A6 §3). Per entity, since SO and PO
-# line fields only partly overlap.
-_SO_LINE_FIXED_FIELDS: Tuple[Tuple[str, str, bool], ...] = (
-    ("qty_ordered", "decimal", True),
-    ("qty_delivered", "decimal", False),
-    ("unit_price", "decimal", False),
-    ("discount", "decimal", False),
-    ("line_total", "decimal", False),
-    ("uom", "string", False),
-    ("required_date", "date", False),
-)
-_PO_LINE_FIXED_FIELDS: Tuple[Tuple[str, str, bool], ...] = (
-    ("qty_ordered", "decimal", True),
-    ("qty_received", "decimal", False),
-    ("unit_cost", "decimal", False),
-    ("discount", "decimal", False),
-    ("line_total", "decimal", False),
-    ("uom", "string", False),
-    ("currency", "string", False),
-    ("expected_date", "date", False),
-)
-DOCUMENT_LINE_FIXED_FIELDS: Dict[str, Tuple[Tuple[str, str, bool], ...]] = {
-    ENTITY_SALES_ORDER: _SO_LINE_FIXED_FIELDS,
-    ENTITY_PURCHASE_ORDER: _PO_LINE_FIXED_FIELDS,
-}
-
-# canonical line ref field -> (source_config key naming the lineQuery column,
-# the ref transform that mints it, whether Sorento requires it - Appendix A6:
-# `product_ref` is required on every line, `warehouse_ref` is optional).
-DOCUMENT_LINE_REF_COLUMNS: Tuple[Tuple[str, str, str, bool], ...] = (
-    ("product_ref", "lineProductColumn", "ref_product", True),
-    ("warehouse_ref", "lineWarehouseColumn", "ref_warehouse", False),
-)
-
-
-def document_line_rows(
-    entity_type: str, source_config: Optional[Dict[str, Any]]
-) -> List[MappingRow]:
-    """The FIXED, code-generated line rows for a document ``sql_db`` task
-    (plan 22 S5) - never persisted to ``ac_field_mapping``, never operator-
-    edited. Built fresh from the task's ``source_config`` on every extract/
-    preview/push so a picker change takes effect immediately.
-
-    Empty (not an error) when the task has no ``lineKeyColumn`` configured yet
-    - a document task mid-setup simply maps no lines, exactly like an empty
-    ``ac_field_mapping`` for a header.
-    """
-    cfg = source_config or {}
-    rows: List[MappingRow] = []
-    key_column = str(cfg.get("lineKeyColumn") or "").strip()
-    if not key_column:
-        return rows
-    # The line's bare key (DtlKey) - `MappingEngine` composes the FULL
-    # `{header_ref}:{DtlKey}` ref post-mapping via `EntityProfile.line_ref_prefix`.
-    rows.append(MappingRow(key_column, "source_ref", "string", SCOPE_LINE, is_required=True))
-    for canonical_field, config_key, transform, required in DOCUMENT_LINE_REF_COLUMNS:
-        column = str(cfg.get(config_key) or "").strip()
-        if column:
-            rows.append(MappingRow(column, canonical_field, transform, SCOPE_LINE, is_required=required))
-    for canonical_field, transform, required in DOCUMENT_LINE_FIXED_FIELDS.get(entity_type, ()):
-        # FIXED column-name convention: the lineQuery must return a column
-        # named EXACTLY like the canonical field it feeds.
-        rows.append(
-            MappingRow(canonical_field, canonical_field, transform, SCOPE_LINE, is_required=required)
-        )
-    return rows
+# The FIXED column-name convention this section used to hold
+# (`document_line_rows`, `DOCUMENT_LINE_FIXED_FIELDS`, `DOCUMENT_LINE_REF_
+# COLUMNS`) is GONE: a document's line fields are `ac_field_mapping` rows
+# exactly like its header fields, `scope='line'` (`mapping_catalog.
+# SORENTO_LINE_FIELDS` is the accepted-target catalog; `LINE_FIELD_REF_
+# TRANSFORMS` above is the ref-pairing guard). The migration that converts a
+# pre-existing task's `lineKeyColumn`/`lineProductColumn`/`lineWarehouseColumn`
+# pickers into three persisted rows lives in `backfill.py`
+# (`backfill_document_line_mapping_pickers`, AC-02-05).
 
 
 def build_mapping_rows_for_run(
     entity_type: str,
-    header_rows: Sequence[MappingRow],
+    rows: Sequence[MappingRow],
     *,
     is_sql_db_source: bool,
     source_config: Optional[Dict[str, Any]],
 ) -> List[MappingRow]:
-    """The FULL engine row set for one extract/preview/push: the operator's
-    saved HEADER mapping as given, plus - for a document entity running on
-    the ``sql_db`` source ONLY - the FIXED, code-generated LINE rows
-    (``document_line_rows``, plan 22 S5 NIT).
+    """The FULL engine row set for one extract/preview/push.
 
-    ONE function so ``sync.py`` (the real run) and ``etl_service.py``'s
-    ``_extract_and_map`` (the activation-gate preview) gate the line rows
-    IDENTICALLY - two separately-maintained copies of this "if document AND
-    sql_db" condition is exactly how they would quietly drift (one gating on
-    ``source_impl``, the other forgetting to).
+    Pre-sprint-5/02 this ALSO code-generated a document's line rows from three
+    `source_config` picker columns (`document_line_rows`) - line rows are now
+    operator-persisted data, already included in ``rows`` (whatever
+    ``CompanyService.mapping_rows`` returns, header AND line scope alike), so
+    this is now a thin pass-through. Kept as ONE function (not inlined at each
+    call site) so ``sync.py``'s real run and ``etl_service.py``'s activation-
+    gate preview stay wired through the SAME seam - the anti-drift reason this
+    function existed in the first place, and the reason a future addition
+    (e.g. a filter-formula gate) belongs here too, once needed.
     """
-    rows = list(header_rows)
-    if is_sql_db_source and is_document_entity(entity_type):
-        rows.extend(document_line_rows(entity_type, source_config))
-    return rows
+    return list(rows)

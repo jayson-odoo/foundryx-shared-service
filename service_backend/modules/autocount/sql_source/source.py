@@ -336,9 +336,6 @@ class SqlDbSource:
         self.line_query: Optional[str] = None
         self.doc_date_column: Optional[str] = None
         self.from_date: Optional[date] = None
-        self.line_key_column: Optional[str] = None
-        self.line_product_column: Optional[str] = None
-        self.line_warehouse_column: Optional[str] = None
         if self.is_document:
             #     !!  A DOCUMENT TASK REQUIRES A HEADER WATERMARK COLUMN.  !!
             # Save-time validation already refuses to persist a document task
@@ -412,13 +409,11 @@ class SqlDbSource:
                 raise SqlTaskNotConfigured(
                     "This document task's from-date is not a valid date."
                 ) from exc
-            self.line_key_column = str(config.get("lineKeyColumn") or "").strip() or None
-            self.line_product_column = str(config.get("lineProductColumn") or "").strip() or None
-            self.line_warehouse_column = str(config.get("lineWarehouseColumn") or "").strip() or None
-            if not self.line_key_column:
-                raise SqlTaskNotConfigured(
-                    "This document task has no line key column chosen."
-                )
+            # sprint-5/02 (AC-02-05): the `lineKeyColumn`/`lineProductColumn`/
+            # `lineWarehouseColumn` pickers are gone - a document's line
+            # fields are persisted, operator-editable `ac_field_mapping` rows
+            # now (`CompanyService.replace_mapping`), never source_config
+            # picks. Nothing to validate or store here any more.
 
         # A STORED connection id, re-resolved tenant- AND provider-scoped on
         # every run (AC-22-29) - never a bare get-by-id.

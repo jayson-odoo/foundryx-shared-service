@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -36,25 +36,33 @@ from ..client import AutoCountClient, AutoCountError
 from ..mapping import (
     DEFAULT_MAPPINGS,
     FIELD_REF_TRANSFORMS,
+    LINE_FIELD_REF_TRANSFORMS,
     REF_TRANSFORM_ENTITIES,
     SCOPE_HEADER,
+    SCOPE_LINE,
     TRANSFORMS,
     MappingEngine,
     MappingRow,
 )
 from ..formula import (
+    LINE_AGGREGATE_NAMES,
     FormulaError,
     FormulaParseError,
     catalog_payload,
     evaluate_formula,
     parse_formula,
     result_to_json,
+    string_literals,
 )
+from ..canonical.documents import DOCUMENT_STATUS_VALUES, is_document_entity
 from ..mapping_catalog import (
     SorentoFieldDef,
     accepted_fields,
     accepted_field_names,
     ac_source_fields,
+    line_accepted_field_names,
+    line_accepted_fields,
+    line_required_field_names,
     required_field_names,
     sorento_field_for,
 )
@@ -359,6 +367,10 @@ class MappingWriteRow:
     # Optional safe transform formula (slice 16). NULL/blank ⇒ the named
     # ``transform`` runs unchanged. Set ⇒ the formula is authoritative.
     formula: Optional[str] = None
+    # sprint-5/02 (AC-02-01) - which scope this row targets. Defaulting to
+    # ``header`` reproduces every pre-existing call site byte-for-byte (they
+    # never touch a document's line catalog at all).
+    scope: str = SCOPE_HEADER
 
 
 @dataclass
@@ -392,6 +404,11 @@ class MappingView:
     rows: List[MappingRowView]
     sorento_fields: List[SorentoFieldDef]
     ac_fields: List[str]
+    # sprint-5/02 (AC-02-02) - a document entity's LINE catalog: the accepted
+    # Sorento line targets + the task's persisted ``line_result_columns``.
+    # Empty for a non-document entity (master/GRN have no line scope).
+    line_sorento_fields: List[SorentoFieldDef] = field(default_factory=list)
+    line_ac_fields: List[str] = field(default_factory=list)
 
 
 class CompanyService:
@@ -1142,11 +1159,20 @@ class CompanyService:
             )
             for row in self.mappings.list(tenant_id, company_id, entity_type)
         ]
+        line_sorento_fields: List[SorentoFieldDef] = []
+        line_ac_fields: List[str] = []
+        if is_document_entity(entity_type):
+            line_sorento_fields = list(line_accepted_fields(entity_type))
+            config = self.configs.get(tenant_id, company_id, entity_type)
+            if config is not None:
+                line_ac_fields = [str(c) for c in (config.line_result_columns or [])]
         return MappingView(
             entity_type=entity_type,
             rows=rows,
             sorento_fields=list(accepted_fields(entity_type)),
             ac_fields=list(ac_source_fields(entity_type)),
+            line_sorento_fields=line_sorento_fields,
+            line_ac_fields=line_ac_fields,
         )
 
     def mapping_view(
@@ -1165,10 +1191,53 @@ class CompanyService:
         rows: List[MappingWriteRow],
     ) -> MappingView:
         """Replace the DELIVERABLE mapping rows for one (company, entity) in ONE
-        transaction (AC-15-41).
+        transaction (AC-15-41), HEADER and LINE scope both (sprint-5/02,
+        AC-02-01).
 
-        Foolproof guard (AC-15-42/43 + AC-16-03), enforced server-side - never
-        advisory:
+        Split by ``row.scope`` and validated/persisted independently against
+        each scope's OWN catalog (``mapping_catalog.SORENTO_FIELDS`` /
+        ``SORENTO_LINE_FIELDS``) - the two guard sets share the same shape
+        (accepted target / no duplicate / known transform / ref-pairing /
+        formula parses) but are never mixed, so a header re-map can never
+        even LOOK at a line row's target name.
+
+        !!  A HEADER-ONLY SAVE MUST NEVER TOUCH LINE ROWS (AC-02-01).  !!
+        The line-scope block runs ONLY when the caller actually submitted at
+        least one ``scope='line'`` row this call. The real editor always
+        resubmits its WHOLE current line draft together (never a header-only
+        partial), so an empty submission unambiguously means "this save did
+        not touch line scope" - exactly like a fresh document task with no
+        line mapping configured yet.
+        """
+        config = self._require_entity(tenant_id, company_id, entity_type)
+
+        header_rows = [r for r in rows if getattr(r, "scope", SCOPE_HEADER) != SCOPE_LINE]
+        line_rows = [r for r in rows if getattr(r, "scope", SCOPE_HEADER) == SCOPE_LINE]
+
+        self._replace_header_mapping(tenant_id, company_id, entity_type, header_rows, config)
+        if line_rows and is_document_entity(entity_type):
+            self._replace_line_mapping(tenant_id, company_id, entity_type, line_rows, config)
+
+        self.db.commit()
+        return self._mapping_view(tenant_id, company_id, entity_type)
+
+    def _replace_header_mapping(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        rows: List[MappingWriteRow],
+        config: AcEntityConfig,
+    ) -> None:
+        """The pre-sprint-5/02 header guard chain (AC-15-42/43 + AC-16-03),
+        unchanged, PLUS two sprint-5/02 additions: named-variable formulas
+        (AC-02-07/09 - a document header may reference its own raw AC columns
+        and the ``lines.*`` aggregates by name) and the ``status`` vocabulary
+        literal guard (AC-02-08 - a string literal outside the fixed five
+        words is rejected at save time, never a value Sorento would reject
+        later as ``errors.status``).
+
+        Foolproof guard, enforced server-side - never advisory:
           * every ``sorento_field`` must be in the accepted set (else 422 naming
             the field) - a target Sorento would reject (``extra="forbid"``) can
             never be stored;
@@ -1193,10 +1262,12 @@ class CompanyService:
         ingest path yet) - sweeping there with nothing accepted would wipe its
         whole default mapping instead of pruning stale rows.
         """
-        self._require_entity(tenant_id, company_id, entity_type)
-
         accepted = accepted_field_names(entity_type)
         required = required_field_names(entity_type)
+        # The header's own AC source columns + the line aggregates - a
+        # header formula may name either (AC-02-07/09). `result_columns` is
+        # NULL until the header query has previewed clean at least once.
+        known_vars = frozenset(config.result_columns or []) | LINE_AGGREGATE_NAMES
         seen: set = set()
         clean: List[MappingWriteRow] = []
         for row in rows:
@@ -1241,11 +1312,25 @@ class CompanyService:
             formula = (row.formula or "").strip() or None
             if formula is not None:
                 try:
-                    parse_formula(formula)  # save-gate: unknown fn/name → 422
+                    parsed = parse_formula(formula, known_vars)  # save-gate: unknown fn/name → 422
                 except FormulaParseError as exc:
                     raise AutocountServiceError(
                         f"The formula for '{target}' is invalid: {exc}"
                     ) from exc
+                if target == "status":
+                    #     !!  A STATUS FORMULA'S LITERALS ARE THE FIXED VOCABULARY.  !!
+                    # (AC-02-08.) Checked on every string literal reachable in
+                    # the expression (an `if`/`coalesce` branch, a comparison
+                    # operand, ...) - never just the top-level shape.
+                    bad = [
+                        lit for lit in string_literals(parsed)
+                        if lit not in DOCUMENT_STATUS_VALUES
+                    ]
+                    if bad:
+                        raise AutocountServiceError(
+                            f"'{bad[0]}' is not a recognised document status - use "
+                            f"one of {', '.join(DOCUMENT_STATUS_VALUES)}."
+                        )
             clean.append(
                 MappingWriteRow(source_path, row.transform, target, formula=formula)
             )
@@ -1269,8 +1354,11 @@ class CompanyService:
                     f"The required Sorento field '{missing_required[0]}' is not mapped."
                 )
 
-        # Replace only the deliverable rows; provenance rows survive.
-        self.mappings.delete_by_canonical(tenant_id, company_id, entity_type, accepted)
+        # Replace only the deliverable HEADER rows; line rows (a different
+        # scope entirely) and provenance rows survive (AC-02-01).
+        self.mappings.delete_by_canonical(
+            tenant_id, company_id, entity_type, accepted, scope=SCOPE_HEADER
+        )
         if accepted:
             # S4 review S4: prune any row that is neither about to be
             # recreated (accepted) nor an explicit provenance keeper - a
@@ -1278,6 +1366,7 @@ class CompanyService:
             self.mappings.delete_unknown(
                 tenant_id, company_id, entity_type,
                 accepted | PRESERVED_CANONICAL_FIELDS,
+                scope=SCOPE_HEADER,
             )
         for order, row in enumerate(clean):
             self.mappings.add(
@@ -1285,7 +1374,7 @@ class CompanyService:
                     tenant_id=tenant_id,
                     company_id=company_id,
                     entity_type=entity_type,
-                    scope=SCOPE_HEADER,  # masters are header-only (plan 15 §2)
+                    scope=SCOPE_HEADER,
                     source_path=row.source_path,
                     canonical_field=row.sorento_field,
                     transform=row.transform,
@@ -1295,8 +1384,102 @@ class CompanyService:
                     sort_order=order,
                 )
             )
-        self.db.commit()
-        return self._mapping_view(tenant_id, company_id, entity_type)
+
+    def _replace_line_mapping(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        rows: List[MappingWriteRow],
+        config: AcEntityConfig,
+    ) -> None:
+        """The LINE-scope guard chain (sprint-5/02, AC-02-02/03) - mirrors
+        ``_replace_header_mapping`` against the LINE catalog
+        (``mapping_catalog.SORENTO_LINE_FIELDS``/``LINE_FIELD_REF_TRANSFORMS``).
+        Only ever called with a NON-EMPTY ``rows`` (the caller's "did this
+        save touch line scope at all" gate) - so the required-fields check
+        below is unconditional, unlike the header's ``if rows:`` guard.
+        """
+        accepted = line_accepted_field_names(entity_type)
+        required = line_required_field_names(entity_type)
+        known_vars = frozenset(config.line_result_columns or [])
+        seen: set = set()
+        clean: List[MappingWriteRow] = []
+        for row in rows:
+            source_path = (row.source_path or "").strip()
+            if not source_path:
+                raise AutocountServiceError(
+                    "A mapping row is missing its AutoCount source field."
+                )
+            if row.transform not in TRANSFORMS:
+                raise AutocountServiceError(
+                    f"'{row.transform}' is not a known transform."
+                )
+            target = row.sorento_field
+            if target not in accepted:
+                raise AutocountServiceError(
+                    f"'{target}' is not a Sorento line field accepted for "
+                    f"{entity_type}. Choose one of: {', '.join(sorted(accepted))}."
+                )
+            if target in seen:
+                raise AutocountServiceError(
+                    f"The Sorento line field '{target}' is mapped more than once."
+                )
+            seen.add(target)
+            if row.transform in REF_TRANSFORM_ENTITIES and LINE_FIELD_REF_TRANSFORMS.get(target) != row.transform:
+                raise AutocountServiceError(
+                    f"'{row.transform}' cannot be used for '{target}' - it mints a "
+                    f"reference for a different field."
+                )
+            if target in LINE_FIELD_REF_TRANSFORMS and row.transform != LINE_FIELD_REF_TRANSFORMS[target]:
+                raise AutocountServiceError(
+                    f"'{target}' must be mapped with the '{LINE_FIELD_REF_TRANSFORMS[target]}' "
+                    f"transform - a plain value would send the raw AutoCount code, which "
+                    f"Sorento cannot resolve as a reference."
+                )
+            formula = (row.formula or "").strip() or None
+            if formula is not None:
+                try:
+                    parse_formula(formula, known_vars)
+                except FormulaParseError as exc:
+                    raise AutocountServiceError(
+                        f"The formula for '{target}' is invalid: {exc}"
+                    ) from exc
+            clean.append(
+                MappingWriteRow(source_path, row.transform, target, formula=formula)
+            )
+
+        #     !!  source_ref/product_ref/qty_ordered ARE REQUIRED THE MOMENT
+        #         ANY LINE ROW IS SAVED.  !!  (AC-02-03.)
+        missing_required = sorted(required - {row.sorento_field for row in clean})
+        if missing_required:
+            raise AutocountServiceError(
+                f"The required line field '{missing_required[0]}' is not mapped."
+            )
+
+        self.mappings.delete_by_canonical(
+            tenant_id, company_id, entity_type, accepted, scope=SCOPE_LINE
+        )
+        if accepted:
+            self.mappings.delete_unknown(
+                tenant_id, company_id, entity_type, accepted, scope=SCOPE_LINE
+            )
+        for order, row in enumerate(clean):
+            self.mappings.add(
+                AcFieldMapping(
+                    tenant_id=tenant_id,
+                    company_id=company_id,
+                    entity_type=entity_type,
+                    scope=SCOPE_LINE,
+                    source_path=row.source_path,
+                    canonical_field=row.sorento_field,
+                    transform=row.transform,
+                    formula=row.formula,
+                    is_required=row.sorento_field in required,
+                    is_enabled=True,
+                    sort_order=order,
+                )
+            )
 
     # ── formula catalog + simulators (slice 16, AC-16-13/21/30) ───────────────
 

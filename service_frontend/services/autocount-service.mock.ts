@@ -2079,34 +2079,36 @@ function mockMappingPresets(databaseName: string, entityType: string): Autocount
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PHASE 1 MOCK (sprint-5/02, S1) - document field mapping. Every OTHER
-// AutoCount surface (companies, sync, staged review, ETL tasks, master/GRN
-// mapping) is served by the REAL backend end to end (plan sprint-4/22 +
-// sprint-5/01); this overlay swaps in the mock ONLY for the document-mapping
-// endpoints (`getMapping`/`updateMapping`/`simulateMapping`/
-// `listMappingPresets`) and ONLY when the entity is a document (sales_order/
-// purchase_order/shipping_order) - a master/GRN call passes straight through
-// to `real`, unchanged. `listMappingPresets` still asks the REAL backend for
-// the company's `databaseName` (a mock company would substitute the WRONG
-// database into the preset queries). Phase 2 (S2/S3 backend) swap = drop
-// this overlay and export `realAutocountService` bare, same pattern as the
-// plan-22 S2 `withPhase1EtlMock` this mirrors.
+// PHASE 1 MOCK, NARROWED AT sprint-5/02 S2 - document field mapping.
+//
+// S2 (backend, this slice) wired the REAL `getMapping`/`updateMapping` for
+// document entities too: scope-on-write, the line catalog
+// (`lineSorentoFields`/`lineAcFields`), line-aggregate facts, the default
+// status formula + vocabulary guard, and preset-seed-on-first-save all now
+// live server-side (`modules/autocount/services/company_service.py`,
+// `presets.py`). So `getMapping`/`updateMapping` pass straight through to
+// `real` for EVERY entity now, document or not - there is no more
+// document-specific mock branch for them.
+//
+// Still mocked (S3 backend scope, not yet built): `simulateMapping`'s
+// `lines=` overload (`CompanyService.simulate_mapping` has no `lines` param
+// yet - a document Simulate-with-lines preview stays client-only) and
+// `listMappingPresets` (no `GET /autocount/presets/{entityType}` route yet -
+// the picker's "Use preset" action stays mocked). Both apply ONLY to
+// document entities; a master/GRN call already passed straight through to
+// `real` and still does. `listMappingPresets` still asks the REAL backend
+// for the company's `databaseName` (a mock company would substitute the
+// WRONG database into the preset queries).
+//
+// Phase 3 (S3 backend) swap = drop this overlay entirely and export
+// `realAutocountService` bare, same pattern as the plan-22 S2/S3 mocks
+// before it.
 // ═══════════════════════════════════════════════════════════════════════════
 export function withPhase1DocumentMappingMock(real: AutocountService): AutocountService {
   return {
     ...real,
-    getMapping(companyId, entityType) {
-      return isDocumentEntity(entityType)
-        ? mockAutocountService.getMapping(companyId, entityType)
-        : real.getMapping(companyId, entityType);
-    },
-    updateMapping(companyId, entityType, input) {
-      return isDocumentEntity(entityType)
-        ? mockAutocountService.updateMapping(companyId, entityType, input)
-        : real.updateMapping(companyId, entityType, input);
-    },
     simulateMapping(companyId, entityType, record, rows, lines) {
-      return isDocumentEntity(entityType)
+      return isDocumentEntity(entityType) && lines
         ? mockAutocountService.simulateMapping(companyId, entityType, record, rows, lines)
         : real.simulateMapping(companyId, entityType, record, rows);
     },

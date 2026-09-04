@@ -89,6 +89,7 @@ from .company_service import (
     ConnectionNotFound,
     EntityConfigNotFound,
 )
+from ..presets import seed_document_mapping
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -198,6 +199,10 @@ class EtlTaskView:
     # The SAVED query's result column names, from the validation preview every
     # PUT runs - so the Mapping tab offers them without re-running the query.
     result_columns: List[str] = field(default_factory=list)
+    # The SAVED lineQuery's result columns (sprint-5/02, AC-02-06) - the
+    # Mapping tab's Line-fields source picker + save-time gate. Empty until
+    # the line query has previewed clean at least once.
+    line_result_columns: List[str] = field(default_factory=list)
     # The activate-once gate (AC-22-18). CLEARED by every config save: a
     # preview of a superseded query must never unlock Activate.
     last_preview_at: Optional[datetime] = None
@@ -227,9 +232,13 @@ def default_source_config(entity_type: str, *, today: Optional[date] = None) -> 
         "comparedColumns": [],
         "fromDate": (today or date.today()).isoformat() if document else None,
         "docDateColumn": None,
-        "lineKeyColumn": None,
-        "lineProductColumn": None,
-        "lineWarehouseColumn": None,
+        # sprint-5/02 (AC-02-11) - a document task's optional header filter,
+        # authored ONLY via the AutocountFormulaBuilder (never a free-text
+        # field). The three line/ref column pickers this slot used to sit
+        # beside (`lineKeyColumn`/`lineProductColumn`/`lineWarehouseColumn`)
+        # are GONE - a document's line fields are persisted `ac_field_mapping`
+        # rows now (AC-02-01), not source_config picks.
+        "filterFormula": None,
         "incrementalMinutes": DEFAULT_INCREMENTAL_MINUTES,
         "reconcileMode": RECONCILE_MODE_DAILY_AT,
         "reconcileHours": None,
@@ -274,11 +283,13 @@ def validate_source_config(
     against it; a pick with no preview to check against is an error on the
     query, not a silent accept.
 
-    ``line_columns`` (plan 22 S5, documents only) = the SAME shape from a
-    FRESH preview of ``lineQuery`` (a sample ``:doc_key`` bound) - the line-
-    column pickers (``lineKeyColumn``/``lineProductColumn``/
-    ``lineWarehouseColumn``) are checked against it exactly like the header
-    pickers are checked against ``columns``.
+    ``line_columns`` (plan 22 S5, documents only) - the SAME shape from a
+    FRESH preview of ``lineQuery`` (a sample ``:doc_key`` bound). Accepted for
+    call-site compatibility with ``EtlService.update_task`` (which still
+    stores it on the task as ``line_result_columns``, AC-02-06); no longer
+    used to validate the removed line/ref column pickers (sprint-5/02,
+    AC-02-05 - a document's line fields are persisted ``ac_field_mapping``
+    rows now, validated by ``CompanyService.replace_mapping``, not here).
 
     Returns ``(clean, field_errors)``. Pure - no DB, no source. The caller
     (``EtlService.update_task``) resolves the connection, runs both previews
@@ -317,12 +328,14 @@ def validate_source_config(
     # Compared columns never include a key (a key change is a new record).
     compared = [c for c in compared if c not in key_columns]
 
-    # ── documents: line query + from-date + line/ref columns (S5) ────────────
+    # ── documents: line query + from-date + filter formula (S5, sprint-5/02) ─
     from_date: Optional[str] = None
     doc_date_column: Optional[str] = None
-    line_key_column: Optional[str] = None
-    line_product_column: Optional[str] = None
-    line_warehouse_column: Optional[str] = None
+    # sprint-5/02 (AC-02-11) - stored as-is; the AutocountFormulaBuilder
+    # already validates it client-side, and the server-side parse/evaluate
+    # gate at fetch time is slice S3. Never blank-required (a document with
+    # no filter simply stages every header, today's behaviour).
+    filter_formula = str(raw.get("filterFormula") or "").strip() or None
     if document:
         raw_from = str(raw.get("fromDate") or "").strip()
         if not raw_from:
@@ -384,27 +397,6 @@ def validate_source_config(
                 "docDateColumn", f"'{doc_date_column}' is not in the query result."
             )
 
-        line_key_column = str(raw.get("lineKeyColumn") or "").strip() or None
-        line_product_column = str(raw.get("lineProductColumn") or "").strip() or None
-        line_warehouse_column = str(raw.get("lineWarehouseColumn") or "").strip() or None
-        if line_key_column is None:
-            errors.setdefault("lineKeyColumn", "Choose the line query's key column.")
-        if line_product_column is None:
-            errors.setdefault("lineProductColumn", "Choose the line query's product column.")
-        picked_line = bool(line_key_column or line_product_column or line_warehouse_column)
-        if picked_line and line_query and "lineQuery" not in errors and line_columns is None:
-            errors.setdefault(
-                "lineQuery", "Test the line query first - the picked columns are checked against its result."
-            )
-        elif line_columns is not None:
-            for field, value in (
-                ("lineKeyColumn", line_key_column),
-                ("lineProductColumn", line_product_column),
-                ("lineWarehouseColumn", line_warehouse_column),
-            ):
-                if value is not None and value not in line_columns:
-                    errors.setdefault(field, f"'{value}' is not in the line query result.")
-
     # ── schedule floors (AC-22-12) ───────────────────────────────────────────
     minutes = _clean_int(raw.get("incrementalMinutes"))
     floor = MIN_INCREMENTAL_MINUTES if watermark else MIN_INCREMENTAL_MINUTES_NO_WATERMARK
@@ -443,9 +435,7 @@ def validate_source_config(
         "comparedColumns": compared,
         "fromDate": from_date if document else None,
         "docDateColumn": doc_date_column if document else None,
-        "lineKeyColumn": line_key_column if document else None,
-        "lineProductColumn": line_product_column if document else None,
-        "lineWarehouseColumn": line_warehouse_column if document else None,
+        "filterFormula": filter_formula if document else None,
         "incrementalMinutes": minutes,
         "reconcileMode": mode,
         "reconcileHours": hours,
@@ -638,6 +628,10 @@ class EtlService:
             source_config=merged,
             result_columns=[
                 str(c) for c in ((config.result_columns if config is not None else None) or [])
+            ],
+            line_result_columns=[
+                str(c)
+                for c in ((config.line_result_columns if config is not None else None) or [])
             ],
             last_preview_at=config.last_preview_at if config is not None else None,
             last_preview_failed_count=(
@@ -877,6 +871,10 @@ class EtlService:
         # ``None`` (no query / no connection) clears them rather than leaving a
         # stale list pointing at a query that no longer exists.
         config.result_columns = list(columns) if columns is not None else None
+        # The SAME "test then pick" discipline as `result_columns`, for the
+        # LINE query (sprint-5/02, AC-02-06) - the Mapping tab's Line-fields
+        # source picker + save-time gate read this.
+        config.line_result_columns = list(line_columns) if line_columns is not None else None
         #     !!  EVERY SAVE INVALIDATES THE ACTIVATION GATE (AC-22-18).  !!
         # A dry run proves what a SPECIFIC query would deliver. Editing the
         # query, the keys or the compared columns and keeping the old stamp
@@ -891,6 +889,26 @@ class EtlService:
         if config.etl_status == ETL_STATUS_ACTIVE:
             config.next_incremental_at, config.next_reconcile_at = self.next_run_times(
                 clean, now=datetime.now(timezone.utc)
+            )
+        #     !!  A DOCUMENT'S FIRST CLEAN SAVE SEEDS ITS PRESET MAPPING.  !!
+        # (sprint-5/02, AC-02-16.) Only when the header query previewed
+        # successfully (`columns is not None` - never seed rows referencing a
+        # query that has not even proven it runs) AND the entity's mapping is
+        # still completely empty (an operator who already started mapping,
+        # or a second save, is never re-seeded - the DB stays the one source
+        # of truth, same rule `seed_company_defaults` already follows for
+        # masters). A row whose source column the query does not (yet) return
+        # is seeded `is_enabled=False` rather than omitted.
+        if (
+            is_document_entity(entity_type)
+            and columns is not None
+            and self.companies.mappings.count(tenant_id, company_id, entity_type) == 0
+        ):
+            seed_document_mapping(
+                self.db, tenant_id, company_id, entity_type,
+                company.database_name,
+                header_columns=columns,
+                line_columns=line_columns,
             )
         self.db.commit()
         self.db.refresh(config)

@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import AbstractSet, Any, Callable, Dict, FrozenSet, List, Optional, Tuple, Union
 
 from app.services.filter_translator import MAX_GROUP_DEPTH as _MAX_DEPTH
 
@@ -164,8 +164,12 @@ _OPERATORS: Tuple[str, ...] = ("==", "!=", "<=", ">=", "<", ">", "&", "+", "-", 
 
 _KEYWORDS = {"value", "true", "false", "null", "and", "or", "not"}
 
+# sprint-5/02 (AC-02-07/09): widened to admit DOTTED names (`lines.open_count`)
+# so a document's line aggregates can be referenced as ONE identifier token -
+# the evaluator never walks nested attributes, it just looks the whole dotted
+# string up in the facts dict verbatim.
 _NUMBER_RE = re.compile(r"[0-9]+(?:\.[0-9]+)?")
-_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
 # String escapes shared verbatim with the TS twin (keep both tables identical).
 _STRING_ESCAPES = {"\\": "\\", '"': '"', "'": "'", "n": "\n", "t": "\t"}
 
@@ -268,6 +272,18 @@ class _ValueRef:
 
 
 @dataclass(frozen=True)
+class _VarRef:
+    """A NAMED variable reference (sprint-5/02, AC-02-07/09) - resolved against
+    the ``facts`` dict at evaluate time, never against ``value``. Only names in
+    the parser's ``known_variables`` set can ever become one (see ``_primary``)
+    - an unknown bare identifier still fails to parse exactly as before, which
+    is what makes this backward compatible with every 2-arg ``evaluate_formula``
+    call site that passes no facts at all."""
+
+    name: str
+
+
+@dataclass(frozen=True)
 class _Unary:
     op: str  # "-" | "not"
     operand: object
@@ -359,6 +375,12 @@ FUNCTION_CATALOG: Tuple[FunctionDef, ...] = (
         "Joins its arguments into one string.",
         'concat("AC-", value) → "AC-300"', 1, None,
     ),
+    FunctionDef(
+        "startswith", "String", "startswith(text, prefix)",
+        (FunctionArg("text", "the text to check"),
+         FunctionArg("prefix", "the prefix to look for")),
+        "True when text starts with prefix.", 'startswith(value, "SPO-") → true', 2, 2,
+    ),
     # ── Number ──
     FunctionDef(
         "number", "Number", "number(x)",
@@ -416,9 +438,27 @@ FUNCTION_CATALOG: Tuple[FunctionDef, ...] = (
         "Returns x, or fallback when x is null.",
         'default(value, "N/A")', 2, 2,
     ),
+    FunctionDef(
+        "coalesce", "Logical", "coalesce(a, b, ...)",
+        (FunctionArg("...", "candidates, evaluated left to right"),),
+        "Returns the first argument that is not null.",
+        'coalesce(UDF_Currency, CurrencyCode, "CNY")', 1, None,
+    ),
 )
 
 _FUNCTION_BY_NAME: Dict[str, FunctionDef] = {f.name: f for f in FUNCTION_CATALOG}
+
+# The document line-aggregate variable names (AC-02-07) - a header formula's
+# ONE way to see the shape of its own lines. Shared here (not mapping.py) so
+# both the engine (facts injection) and the save-time known-variables gate
+# import ONE list.
+LINE_AGGREGATE_NAMES: FrozenSet[str] = frozenset({
+    "lines.count",
+    "lines.open_count",
+    "lines.ordered_sum",
+    "lines.fulfilled_sum",
+    "lines.outstanding_sum",
+})
 
 # Operator reference for the builder's operator buttons (not callable functions).
 OPERATOR_CATALOG: Tuple[Dict[str, str], ...] = (
@@ -470,9 +510,27 @@ TRANSFORM_PRESET: Dict[str, str] = {
 }
 
 
+# The document line-aggregate variables, described for the builder's
+# reference panel (sprint-5/02, AC-02-07) - entity-agnostic content (every
+# document profile exposes the same five names; the CALLER decides whether
+# to offer them, e.g. only for a document entity's header row).
+LINE_AGGREGATE_VARIABLES: Tuple[Dict[str, str], ...] = (
+    {"name": "lines.count", "description": "how many lines this document has"},
+    {"name": "lines.open_count", "description": "lines with outstanding quantity"},
+    {"name": "lines.ordered_sum", "description": "the sum of every line's ordered quantity"},
+    {"name": "lines.fulfilled_sum", "description": "the sum of every line's delivered/received quantity"},
+    {"name": "lines.outstanding_sum", "description": "the sum of every line's ordered minus fulfilled (never negative)"},
+)
+
+
 def catalog_payload() -> Dict[str, Any]:
     """The wire payload the builder consumes (AC-16-13/15): functions grouped by
-    category, operators, presets, and the date-token vocabulary."""
+    category, operators, presets, and the date-token vocabulary.
+
+    ``variables`` (sprint-5/02, AC-02-07) lists the document line-aggregate
+    names - unconditionally today (a master/GRN mapping simply never has a
+    reason to insert one; the builder's Variables panel decides what to
+    surface per entity/scope on the frontend)."""
     return {
         "functions": [f.to_dict() for f in FUNCTION_CATALOG],
         "operators": [dict(op) for op in OPERATOR_CATALOG],
@@ -481,6 +539,7 @@ def catalog_payload() -> Dict[str, Any]:
             "name": "value",
             "description": "the raw AutoCount source value for this field",
         },
+        "variables": [dict(v) for v in LINE_AGGREGATE_VARIABLES],
         "dateTokens": [dict(t) for t in DATE_TOKENS],
         "dateInputFormats": list(DATE_INPUT_FORMATS),
         "dateOutputFormats": list(DATE_OUTPUT_FORMATS),
@@ -491,10 +550,18 @@ def catalog_payload() -> Dict[str, Any]:
 
 
 class _Parser:
-    def __init__(self, tokens: List[_Token]) -> None:
+    def __init__(
+        self, tokens: List[_Token], known_variables: AbstractSet[str] = frozenset()
+    ) -> None:
         self._tokens = tokens
         self._pos = 0
         self._depth = 0
+        # sprint-5/02 (AC-02-07/09) - the ONLY names (besides the built-in
+        # ``value``) this formula may reference as a variable. Empty by
+        # default, which reproduces the pre-existing single-`value` grammar
+        # byte-for-byte (every bare identifier still requires a `(` or is an
+        # "Unknown name" parse error).
+        self._known_variables = frozenset(known_variables)
 
     def _peek(self) -> _Token:
         return self._tokens[self._pos]
@@ -609,6 +676,17 @@ class _Parser:
                 return _ValueRef()
             if name in ("and", "or", "not"):
                 raise FormulaParseError(f"Unexpected operator {name!r}.")
+            # A NAMED VARIABLE (sprint-5/02) - only when the name is in the
+            # known set AND not immediately followed by '(' (a known variable
+            # name that IS called stays a function-call attempt below, so a
+            # collision reads as "unknown function" rather than silently
+            # swallowing the call syntax).
+            if (
+                name in self._known_variables
+                and self._tokens[self._pos + 1].kind != _TK_LPAREN
+            ):
+                self._advance()
+                return _VarRef(name)
             # Anything else must be a function call: IDENT '(' args ')'.
             self._advance()
             if self._peek().kind != _TK_LPAREN:
@@ -670,10 +748,18 @@ class ParsedFormula:
     ast: object
 
 
-def parse_formula(formula: str) -> ParsedFormula:
+def parse_formula(
+    formula: str, known_variables: AbstractSet[str] = frozenset()
+) -> ParsedFormula:
     """Parse + validate a formula. Raises ``FormulaParseError`` on any syntax
     error, unknown name/function, bad arity or over-length string. This is the
-    save-time gate (AC-16-03) - a formula that parses clean is storable."""
+    save-time gate (AC-16-03) - a formula that parses clean is storable.
+
+    ``known_variables`` (sprint-5/02, AC-02-07/09/20) - the NAMED facts this
+    formula may reference besides ``value`` (a document header's own AC source
+    columns + the ``lines.*`` aggregates). Empty by default - every existing
+    call site keeps the exact single-`value` grammar.
+    """
     if not isinstance(formula, str) or not formula.strip():
         raise FormulaParseError("The formula must not be empty.")
     if len(formula) > MAX_FORMULA_LEN:
@@ -681,13 +767,39 @@ def parse_formula(formula: str) -> ParsedFormula:
             f"The formula exceeds the {MAX_FORMULA_LEN}-character limit."
         )
     tokens = _tokenise(formula)
-    ast = _Parser(tokens).parse()
+    ast = _Parser(tokens, known_variables).parse()
     return ParsedFormula(source=formula.strip(), ast=ast)
 
 
-def validate_formula(formula: str) -> None:
+def validate_formula(formula: str, known_variables: AbstractSet[str] = frozenset()) -> None:
     """Parse purely for the side effect of raising on an invalid formula."""
-    parse_formula(formula)
+    parse_formula(formula, known_variables)
+
+
+def string_literals(parsed: ParsedFormula) -> List[str]:
+    """Every STRING literal reachable in ``parsed``'s AST, in encounter order
+    (sprint-5/02, AC-02-08) - the raw material for the status-vocabulary save
+    gate: a formula targeting ``status`` may only use the fixed five words as
+    string literals, checked without caring where in the expression they sit
+    (an ``if``/``coalesce`` branch, a comparison operand, ...)."""
+    out: List[str] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, _Lit):
+            if isinstance(node.value, str):
+                out.append(node.value)
+        elif isinstance(node, _Unary):
+            walk(node.operand)
+        elif isinstance(node, _Binary):
+            walk(node.left)
+            walk(node.right)
+        elif isinstance(node, _Call):
+            for arg in node.args:
+                walk(arg)
+        # _ValueRef / _VarRef carry no literal.
+
+    walk(parsed.ast)
+    return out
 
 
 # ── evaluator ─────────────────────────────────────────────────────────────────
@@ -919,6 +1031,10 @@ def _fn_concat(a: List[Value]) -> Value:
     return "".join(_stringify(x) for x in a)
 
 
+def _fn_startswith(a: List[Value]) -> Value:
+    return _stringify(a[0]).startswith(_stringify(a[1]))
+
+
 def _fn_number(a: List[Value]) -> Value:
     return _to_number(a[0])
 
@@ -950,6 +1066,7 @@ _EAGER_FUNCS: Dict[str, Callable[[List[Value]], Value]] = {
     "contains": _fn_contains,
     "replace": _fn_replace,
     "concat": _fn_concat,
+    "startswith": _fn_startswith,
     "number": _fn_number,
     "round": _fn_round,
     "abs": _fn_abs,
@@ -1005,20 +1122,23 @@ def _type_name(v: Value) -> str:
     return "text"
 
 
-def _eval(node: object, value: Value) -> Value:
+def _eval(node: object, value: Value, facts: Optional[Dict[str, Any]] = None) -> Value:
     if isinstance(node, _Lit):
         return node.value
     if isinstance(node, _ValueRef):
         return value
+    if isinstance(node, _VarRef):
+        raw = (facts or {}).get(node.name)
+        return _to_formula_value(raw)
     if isinstance(node, _Unary):
         if node.op == "not":
-            return not _to_bool_strict(_eval(node.operand, value))
+            return not _to_bool_strict(_eval(node.operand, value, facts))
         # unary minus
-        return -_to_number(_eval(node.operand, value), ctx="negation")
+        return -_to_number(_eval(node.operand, value, facts), ctx="negation")
     if isinstance(node, _Binary):
-        return _eval_binary(node, value)
+        return _eval_binary(node, value, facts)
     if isinstance(node, _Call):
-        return _eval_call(node, value)
+        return _eval_call(node, value, facts)
     raise FormulaRuntimeError("Corrupt formula node.")
 
 
@@ -1032,19 +1152,19 @@ def _to_bool_strict(v: Value) -> bool:
     )
 
 
-def _eval_binary(node: _Binary, value: Value) -> Value:
+def _eval_binary(node: _Binary, value: Value, facts: Optional[Dict[str, Any]] = None) -> Value:
     op = node.op
     if op == "and":
-        return _to_bool_strict(_eval(node.left, value)) and _to_bool_strict(
-            _eval(node.right, value)
+        return _to_bool_strict(_eval(node.left, value, facts)) and _to_bool_strict(
+            _eval(node.right, value, facts)
         )
     if op == "or":
-        return _to_bool_strict(_eval(node.left, value)) or _to_bool_strict(
-            _eval(node.right, value)
+        return _to_bool_strict(_eval(node.left, value, facts)) or _to_bool_strict(
+            _eval(node.right, value, facts)
         )
 
-    left = _eval(node.left, value)
-    right = _eval(node.right, value)
+    left = _eval(node.left, value, facts)
+    right = _eval(node.right, value, facts)
 
     if op == "==":
         return _values_equal(left, right)
@@ -1070,23 +1190,40 @@ def _eval_binary(node: _Binary, value: Value) -> Value:
     raise FormulaRuntimeError(f"Unknown operator {op!r}.")
 
 
-def _eval_call(node: _Call, value: Value) -> Value:
+def _eval_call(node: _Call, value: Value, facts: Optional[Dict[str, Any]] = None) -> Value:
     name = node.name
     if name == "if":
-        cond = _to_bool_strict(_eval(node.args[0], value))
+        cond = _to_bool_strict(_eval(node.args[0], value, facts))
         # Lazy: only the taken branch is evaluated (so the untaken branch may
         # legitimately be an expression that would error on this input).
-        return _eval(node.args[1], value) if cond else _eval(node.args[2], value)
+        return (
+            _eval(node.args[1], value, facts)
+            if cond
+            else _eval(node.args[2], value, facts)
+        )
     if name == "default":
-        first = _eval(node.args[0], value)
-        return first if first is not None else _eval(node.args[1], value)
+        first = _eval(node.args[0], value, facts)
+        return first if first is not None else _eval(node.args[1], value, facts)
+    if name == "coalesce":
+        # Lazy, left to right - the FIRST non-null candidate wins, and a later
+        # candidate that would itself error on this input never runs.
+        result: Value = None
+        for arg in node.args:
+            result = _eval(arg, value, facts)
+            if result is not None:
+                return result
+        return result
     impl = _EAGER_FUNCS.get(name)
     if impl is None:
         raise FormulaRuntimeError(f"Unknown function {name!r}.")
-    return impl([_eval(arg, value) for arg in node.args])
+    return impl([_eval(arg, value, facts) for arg in node.args])
 
 
-def evaluate_formula(formula: Union[str, ParsedFormula], value: Any) -> Value:
+def evaluate_formula(
+    formula: Union[str, ParsedFormula],
+    value: Any,
+    facts: Optional[Dict[str, Any]] = None,
+) -> Value:
     """Evaluate ``formula`` with the input ``value`` and return a language value
     (None | bool | float | str | FormulaDate).
 
@@ -1094,9 +1231,20 @@ def evaluate_formula(formula: Union[str, ParsedFormula], value: Any) -> Value:
     ``FormulaRuntimeError`` on any evaluation fault. The mapping path passes a
     non-blank ``value`` (blank is short-circuited to None upstream, mirroring the
     named transforms) and turns a raised error into a NAMED per-field failure.
+
+    ``facts`` (sprint-5/02, AC-02-07/09) - named-variable facts (a document
+    header's own raw record + the ``lines.*`` aggregates); their KEYS also
+    become this call's ``known_variables`` when ``formula`` is a raw string,
+    so a fact dict naturally widens what the formula may reference. Omitted
+    (``None``) reproduces the exact pre-existing single-`value` behaviour.
     """
-    parsed = formula if isinstance(formula, ParsedFormula) else parse_formula(formula)
-    return _eval(parsed.ast, _to_formula_value(value))
+    known = frozenset(facts.keys()) if facts else frozenset()
+    parsed = (
+        formula
+        if isinstance(formula, ParsedFormula)
+        else parse_formula(formula, known)
+    )
+    return _eval(parsed.ast, _to_formula_value(value), facts)
 
 
 def result_to_json(v: Value) -> Any:

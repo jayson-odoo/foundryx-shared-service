@@ -309,6 +309,10 @@ class MappingViewResponse(ApiModel):
     # AutoCount source paths (discovery; a free dotted path is still allowed).
     sorentoFields: List[SorentoFieldOut]
     acFields: List[str]
+    # sprint-5/02 (AC-02-02) - a document entity's LINE catalog. Empty for a
+    # non-document entity (master/GRN have no line scope).
+    lineSorentoFields: List[SorentoFieldOut] = []
+    lineAcFields: List[str] = []
 
 
 class MappingUpdateRow(ApiModel):
@@ -320,6 +324,9 @@ class MappingUpdateRow(ApiModel):
     # Optional safe transform formula (slice 16). NULL/blank ⇒ the named
     # transform runs. Validated (parsed) server-side at save (AC-16-03).
     formula: Optional[str] = None
+    # sprint-5/02 (AC-02-01) - which scope this row targets. Defaulting to
+    # ``header`` reproduces every pre-existing (master/GRN) save request.
+    scope: str = "header"
 
 
 class MappingUpdateRequest(ApiModel):
@@ -526,14 +533,13 @@ class EtlSourceConfigIn(ApiModel):
     # `DocDate` - deliberately separate from `watermarkColumn`/`LastModified`,
     # which drives change detection, not the sync's date floor).
     docDateColumn: Optional[str] = None
-    # The lineQuery result column carrying the line's own key (AutoCount's
-    # DtlKey) - composed into the line's `source_ref`.
-    lineKeyColumn: Optional[str] = None
-    # The lineQuery result columns minting the two master refs a line can
-    # carry (Appendix A6 item 3) - `product_ref` (required by Sorento) and
-    # `warehouse_ref` (optional).
-    lineProductColumn: Optional[str] = None
-    lineWarehouseColumn: Optional[str] = None
+    # sprint-5/02 (AC-02-11) - a document task's optional header filter,
+    # authored ONLY via the AutocountFormulaBuilder (never free text). The
+    # line-column pickers this slot replaces (`lineKeyColumn`/
+    # `lineProductColumn`/`lineWarehouseColumn`) are gone - a document's line
+    # fields are persisted `ac_field_mapping` rows now (AC-02-01), saved
+    # through the mapping editor's PUT, not this task-config PUT.
+    filterFormula: Optional[str] = None
     incrementalMinutes: int = 15
     reconcileMode: str = "dailyAt"
     reconcileHours: Optional[int] = None
@@ -562,6 +568,9 @@ class EtlTaskResponse(ApiModel):
     # The saved query's result columns, from the validation preview every PUT
     # runs - the Mapping tab's source picker (AC-22-09).
     resultColumns: List[str] = []
+    # The saved LINE query's result columns (sprint-5/02, AC-02-06) - the
+    # Mapping tab's Line-fields source picker.
+    lineResultColumns: List[str] = []
     # The activate-once gate (AC-22-18); CLEARED by every config save.
     lastPreviewAt: Optional[datetime] = None
     # The last preview's genuinely-``failed`` count (S5 review SHOULD-FIX 4b) -

@@ -46,7 +46,6 @@ from modules.autocount.mapping import (
     MappingRow,
     SCOPE_HEADER,
     SCOPE_LINE,
-    document_line_rows,
     flat_profile,
     flat_source_ref,
     mint_master_ref,
@@ -240,8 +239,16 @@ def test_header_and_line_refs_follow_the_two_tier_A6_scheme_end_to_end():
         MappingRow("DocNo", "so_number", "string", SCOPE_HEADER),
         MappingRow("Status", "status", "string", SCOPE_HEADER),
     ]
-    config = {"lineKeyColumn": "DtlKey", "lineProductColumn": "ItemCode", "lineWarehouseColumn": "Location"}
-    rows = header_rows + document_line_rows(ENTITY_SALES_ORDER, config)
+    # sprint-5/02 (AC-02-01/04): line rows are now persisted, operator-
+    # editable data - the fixed `document_line_rows` column-name convention
+    # this test used to exercise is gone. Same scenario, built by hand.
+    line_rows = [
+        MappingRow("DtlKey", "source_ref", "string", SCOPE_LINE, is_required=True),
+        MappingRow("ItemCode", "product_ref", "ref_product", SCOPE_LINE, is_required=True),
+        MappingRow("Location", "warehouse_ref", "ref_warehouse", SCOPE_LINE),
+        MappingRow("qty_ordered", "qty_ordered", "decimal", SCOPE_LINE, is_required=True),
+    ]
+    rows = header_rows + line_rows
     engine = MappingEngine(
         rows, entity_type=ENTITY_SALES_ORDER,
         profile=flat_profile(ENTITY_SALES_ORDER, ["DocKey"]), database_name=DB,
@@ -259,39 +266,6 @@ def test_header_and_line_refs_follow_the_two_tier_A6_scheme_end_to_end():
     assert line.product_ref == f"{DB}:P1"
     assert line.warehouse_ref == f"{DB}:W1"
     assert line.qty_ordered == Decimal("10")
-
-
-# ── document_line_rows: the FIXED column-name convention generator ──────────
-
-
-def test_document_line_rows_is_empty_without_a_line_key_column():
-    assert document_line_rows(ENTITY_SALES_ORDER, {}) == []
-    assert document_line_rows(ENTITY_SALES_ORDER, {"lineProductColumn": "ItemCode"}) == []
-
-
-def test_document_line_rows_marks_source_ref_and_product_ref_required():
-    rows = document_line_rows(
-        ENTITY_SALES_ORDER,
-        {"lineKeyColumn": "DtlKey", "lineProductColumn": "ItemCode"},
-    )
-    by_field = {r.canonical_field: r for r in rows}
-    assert by_field["source_ref"].is_required is True
-    assert by_field["product_ref"].is_required is True
-    assert "warehouse_ref" not in by_field  # no column configured -> no row
-    assert by_field["qty_ordered"].is_required is True  # Sorento's own required field
-    assert by_field["uom"].is_required is False
-
-
-def test_document_line_rows_fixed_names_differ_between_so_and_po():
-    so_fields = {r.canonical_field for r in document_line_rows(
-        ENTITY_SALES_ORDER, {"lineKeyColumn": "DtlKey", "lineProductColumn": "ItemCode"}
-    )}
-    po_fields = {r.canonical_field for r in document_line_rows(
-        ENTITY_PURCHASE_ORDER, {"lineKeyColumn": "DtlKey", "lineProductColumn": "ItemCode"}
-    )}
-    assert "qty_delivered" in so_fields and "qty_delivered" not in po_fields
-    assert "qty_received" in po_fields and "qty_received" not in so_fields
-    assert "currency" in po_fields and "currency" not in so_fields
 
 
 # ── flat_profile carries line_model/detail_key/line_ref_prefix for docs ─────
@@ -495,30 +469,23 @@ def test_a_document_task_requires_a_watermark_column():
     assert "LastModified" in errors["watermarkColumn"] or "line" in errors["watermarkColumn"].lower()
 
 
-def test_a_document_task_requires_the_line_ref_and_date_columns():
+def test_a_document_task_requires_the_date_column():
+    """sprint-5/02: the line/ref column pickers (`lineKeyColumn`/
+    `lineProductColumn`) this test used to also require are GONE (AC-02-05) -
+    a document's line fields are persisted `ac_field_mapping` rows now,
+    validated by `CompanyService.replace_mapping`, not `validate_source_
+    config`. Only the header's own date-column requirement remains here."""
     from modules.autocount.services.etl_service import validate_source_config
 
     clean, errors = validate_source_config(
         ENTITY_SALES_ORDER,
-        _base_so_config(docDateColumn=None, lineKeyColumn=None, lineProductColumn=None),
+        _base_so_config(docDateColumn=None),
         _HEADER_COLUMNS,
         line_columns=_LINE_COLUMNS,
     )
     assert "docDateColumn" in errors
-    assert "lineKeyColumn" in errors
-    assert "lineProductColumn" in errors
-
-
-def test_a_document_task_line_columns_are_checked_against_the_line_preview():
-    from modules.autocount.services.etl_service import validate_source_config
-
-    clean, errors = validate_source_config(
-        ENTITY_SALES_ORDER,
-        _base_so_config(lineProductColumn="NotAColumn"),
-        _HEADER_COLUMNS,
-        line_columns=_LINE_COLUMNS,
-    )
-    assert "lineProductColumn" in errors
+    assert "lineKeyColumn" not in errors
+    assert "lineProductColumn" not in errors
 
 
 def test_a_document_task_requires_the_line_query_to_bind_doc_key():
@@ -562,8 +529,6 @@ def test_a_valid_document_config_saves_clean():
     )
     assert errors == {}
     assert clean["docDateColumn"] == "DocDate"
-    assert clean["lineKeyColumn"] == "DtlKey"
-    assert clean["lineProductColumn"] == "ItemCode"
 
 
 def test_a_non_document_entity_never_carries_the_new_fields():
@@ -575,7 +540,6 @@ def test_a_non_document_entity_never_carries_the_new_fields():
         {"AccNo": "string"},
     )
     assert clean["docDateColumn"] is None
-    assert clean["lineKeyColumn"] is None
 
 
 # ── SqlDbSource - document extraction end to end (SQLite rig) ───────────────
@@ -915,7 +879,7 @@ def test_a_second_run_with_only_a_line_change_reports_it_as_an_update(rig):
 
 
 def test_the_full_pipeline_maps_a_header_and_its_lines_with_prefixed_refs(rig):
-    from modules.autocount.mapping import MappingEngine, document_line_rows
+    from modules.autocount.mapping import MappingEngine
 
     db, company, config, _engine = rig
     source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_SALES_ORDER)
@@ -927,7 +891,14 @@ def test_the_full_pipeline_maps_a_header_and_its_lines_with_prefixed_refs(rig):
         MappingRow("doc_no", "so_number", "string", SCOPE_HEADER),
         MappingRow("status", "status", "string", SCOPE_HEADER),
     ]
-    rows = header_rows + document_line_rows(ENTITY_SALES_ORDER, config.source_config)
+    # sprint-5/02: line rows are persisted operator-editable data now, built
+    # by hand here (the fixed `document_line_rows` convention is gone).
+    line_rows = [
+        MappingRow("dtl_key", "source_ref", "string", SCOPE_LINE, is_required=True),
+        MappingRow("item_code", "product_ref", "ref_product", SCOPE_LINE, is_required=True),
+        MappingRow("qty_ordered", "qty_ordered", "decimal", SCOPE_LINE, is_required=True),
+    ]
+    rows = header_rows + line_rows
     engine = MappingEngine(
         rows, entity_type=ENTITY_SALES_ORDER,
         profile=flat_profile(ENTITY_SALES_ORDER, config.source_config["keyColumns"]),
