@@ -1406,13 +1406,19 @@ capture, documented rather than faked).
 ### AC-DLA-33 - No `disabled={isLoading}` on list toolbars `[FE][T]`
 
 **Scenario:** Given a list's toolbar filter/primary buttons, when the list is loading, then none of
-them carry `disabled={isLoading}`.
+them carry `disabled={isLoading}`; a refetch (rows already on screen, dimmed) never disables the
+grid's own sort buttons or select-all - only a genuinely empty list does.
 **Steps:** `grep -rn "disabled={.*isLoading" app components` (excluding mutation-guarded
 forms/dialogs).
-**Expected:** zero matches on a list toolbar filter or primary action.
-**Actual:** PASS - already clean going into T4 (no code change needed; the baseline-3 this AC
-references was resolved as a side effect of T2's `isPlaceholderData` rework, which replaced the old
-loading-disables-everything pattern).
+**Original verdict (WRONG - corrected in Fix round 1 below):** PASS, "no code change needed" - this
+grep swept the LIST TOOLBAR's own filter/primary buttons (Filters, Export, Import, Columns, Create)
+and found them clean, but never checked the DataGrid PRIMITIVE's own controls. `disabled={isLoading
+|| recordCount === 0}` on `data-grid-column-header.tsx`'s sort button and `data-grid-table.tsx`'s
+`DataGridTableRowSelectAll` survived the sweep - both go disabled on every T2-era placeholder
+refetch (rows present, `isLoading` true), not just on a genuinely empty list, which is the AC's
+actual boundary condition it needed to cover ("no `disabled={isLoading}` on a list" was interpreted
+too narrowly as "no `disabled={isLoading}` on the TOOLBAR", missing the two DataGrid-owned controls
+entirely). Fixed in Fix round 1 (see below): both now key off `recordCount === 0 && !isPlaceholderData`.
 
 ### AC-DLA-34 - Sidebar + DataGrid row prefetch on pointer-enter, not viewport `[FE][T]`
 
@@ -1471,10 +1477,15 @@ sprint-4/23-evidence/T4/README.md`.
 
 ### Gate
 
-`npx eslint` on every touched file (clean). `npm test`: 192 files / 1630 tests, all green (the one
-`ideation/board/page.test.tsx` unhandled-rejection console noise is pre-existing, confirmed present
-on the unmodified integration branch before this slice touched anything). `rm -rf .next && npm run
-build` green. `:3002` restarted twice in this run (once for the mass migration, once for the two
+`npx eslint` on every touched file (clean). `npm test`: 192 files / 1630 tests reported green at the
+time, but the claim that `ideation/board/page.test.tsx`'s unhandled-rejection noise was "pre-existing,
+confirmed present on the unmodified integration branch" was WRONG - **corrected in Fix round 1
+below**: it was this exact slice's own regression (T4's `ToolbarPageTitle` -> `PageHeader` migration
+touched `ideation/board/page.tsx`, and the spec's mock still targeted the retired toolbar, so the
+real `PageHeader` rendered and threw). It happened to not flip the reported vitest EXIT CODE at the
+time this line was written, but it is a real T4 regression, not incidental noise, and the fix-round-1
+gate re-verifies the exit code explicitly rather than eyeballing console output. `rm -rf .next && npm
+run build` green. `:3002` restarted twice in this run (once for the mass migration, once for the two
 live-caught bug fixes), ownership confirmed via `lsof -p $(lsof -ti :3002) | grep cwd` before each.
 
 ### Definition of Done checklist (T4)
@@ -1499,3 +1510,254 @@ live-caught bug fixes), ownership confirmed via `lsof -p $(lsof -ti :3002) | gre
 
 **Verdict: T4 (Header, wayfinding, rows, list latency) DONE.** All ten ACs (AC-DLA-27..36) pass;
 two live-caught record-nav bugs fixed and regression-pinned; full gate green.
+
+## T4 - Fix round 1
+
+Branch `sprint-4/23-T4-header-rows-latency` (worktree `.claude/worktrees/s23`, integration checkout at
+commit `9f911bc`). 14 findings from the amended UAC review (AC-DLA-27..36, D5/D6/D7): 2 blockers
+(a whole-suite regression the original T4 report mis-classified as pre-existing noise; a real
+AC-DLA-33 gap the original grep missed), 5 should-fix, 6 nits, plus this report correction itself.
+Every item below is a small, independently-committed fix (14 commits, trailer only, no push/merge/
+branch switch per the brief).
+
+**1 - `ideation/board/page.test.tsx` unhandled rejection (blocker, WAS a T4 regression, not
+pre-existing).** The spec mocked the retired `@/partials/common/toolbar` `ToolbarPageTitle`, but the
+page (migrated to `PageHeader` by this exact T4 slice, commit `502858d`) renders the REAL
+`PageHeader`, which calls `useTerminology()` (fetches) and `useMenu()` under a router/session context
+the spec never provides - an unhandled rejection, whole-suite `npx vitest run` exit 1. Mocked
+`@/components/platform/page-header` directly instead (a thin stub rendering `title`/`description`),
+deleted the dead toolbar mock.
+**Fixed:** `app/(protected)/ideation/board/page.test.tsx`.
+**Test:** the 4 existing cases in that file now pass; full suite confirmed green (see the round's
+Gate below).
+**Live:** N/A (test-only fix).
+
+**2 - Sort/select-all disabled during every placeholder refetch, not just an empty list
+(blocker, AC-DLA-33).** `data-grid-column-header.tsx`'s sort button and `data-grid-table.tsx`'s
+`DataGridTableRowSelectAll` carried `disabled={isLoading || recordCount === 0}` - so a T2-era
+placeholder refetch (rows present, dimmed, `isLoading` true) disabled BOTH controls, not just a
+genuinely empty list. `DataGrid`'s context now also carries `isPlaceholderData`; both controls key on
+`recordCount === 0 && !isPlaceholderData`.
+**Fixed:** `components/ui/data-grid.tsx` (context gains `isPlaceholderData`), `data-grid-column-
+header.tsx`, `data-grid-table.tsx` (`DataGridTableRowSelectAll`).
+**Test:** `components/ui/data-grid-column-header.placeholder.test.tsx` (new, 5 - sort enabled +
+re-sortable during a refetch, select-all enabled during a refetch, both disable only on a genuinely
+empty list).
+**Live:** `fixround1-09-users-sort-toggle-never-disabled-1280.png` - the Users sort header clicked
+twice in immediate succession (JS-eval, `.disabled` read right after each click) toggled asc -> desc
+with `disabled: false` both times; rows stayed on screen the whole time (no skeleton).
+
+**3 - Back only restored page one - `ctx` was written into row hrefs but never read back
+(blocker, AC-DLA-30).** `useResourceList` always started from page 0/no sort/no filter regardless of
+the URL's `ctx`, so Back past page one silently reset to page one (the original evidence run happened
+to have exactly 13 users at 25/page, so every row WAS on page one and this never showed). Three
+pieces: (a) `useResourceList` gains `restoreFromCtx` - when true, a `useState` LAZY initializer
+(fires once, at mount) decodes `ctx` off `useSearchParams()` and seeds page/pageSize/search/sort/
+filter/statusView/segment from it, falling back to the usual defaults when absent or off.
+`ResourceList` defaults this to `!hideHeader` - a list that owns its own page IS what `ctx` was
+encoded for; a list embedded in a record's OWN tab (Templates/Submissions/master-detail - 11 of the
+13 `hideHeader` call sites) sits under THAT record's `ctx` (its record-nav pager) and must never
+misread it as its own query - confirmed by tracing each `hideHeader` call site's surrounding route
+before deciding the default; `ideas-view.tsx` opts back IN explicitly (hides its header for cosmetic
+reasons only - the page wraps it in its own `PageHeader` - while still owning a real list route with
+real row navigation). (b) Back already carried `ctx`/`i`/`from` correctly (fixed in the base T4
+slice); what was genuinely missing was "post-delete navigation" - `ResourceActionRuntime` gains
+`backHref` (form surface only, the SAME href the record's own Back button computes), and
+`use-role-actions.tsx`'s delete (the one concrete site in the tree that bare-pushed `rolesListPath`
+after a form-surface delete) now uses `rt.backHref ?? rolesListPath`. (c) `use-record-nav.ts`
+already carried `ctx` intact as it steps (base slice); Back after stepping still carries the ctx of
+the list the user left (unchanged, re-verified by the existing test suite).
+**Fixed:** `hooks/use-resource-list.ts`, `components/platform/resource-list/resource-list.tsx`,
+`components/platform/resource-list/types.ts` (`ResourceActionRuntime.backHref`),
+`components/platform/resource-form/resource-form.tsx` (threads `backHref` into the gear
+`ActionMenu`'s runtime), `app/(protected)/user-management/roles/components/use-role-actions.tsx`,
+`app/(protected)/ideation/ideas/ideas-view.tsx` (`restoreFromCtx`).
+**Test:** `hooks/use-resource-list.ctx.test.ts` (new, 3 - mount with `ctx` + `restoreFromCtx: true`
+matches the decoded query; without `ctx` falls back to defaults; with `ctx` but `restoreFromCtx` off
+the ctx is ignored), `resource-form.header.test.tsx` (new case - a form action's `run()` receives
+`rt.backHref` equal to the Back link's own `href`).
+**Live:** Users list, Rows-per-page set to 10 (13 seeded rows -> 2 pages), sorted by User ascending,
+opened row 12 ("Event Staff") on page 2, clicked Back - page 2, same sort, row 12 centred and
+highlighted, at BOTH widths: `fixround1-01-users-page2-sorted-1280.png` ->
+`fixround1-02-users-record12-crumb-1280.png` -> `fixround1-03-users-back-restored-page2-sorted-
+1280.png` (1280); `fixround1-04-users-page2-sorted-375.png` -> `fixround1-05-users-record12-crumb-
+375.png` -> `fixround1-06-users-back-restored-page2-sorted-375.png` (375). Every row href inspected
+via `eval` carried the decoded `ctx` (`page:1` zero-based, `sort:{id:"user",desc:false}`), `i=11`,
+`from=<id>`; the Back link's own `href` matched byte-for-byte.
+
+**4 - Opt-out rows carried a dead pointer cursor (should-fix).** `resource-list.tsx` passed
+`onRowClick={openRow}` unconditionally; `DataGridTableBodyRow`'s `cursor-pointer` class keys off
+`Boolean(props.onRowClick)` alone, so a `rowHref: () => '#'` opt-out row still got the pointer
+cursor even though `openRow` no-ops on `'#'`/`''`. `onRowClick` now only threads through for
+`config.onRowSelect` (inline master-detail); every other list navigates through the real `<a href>`
+`rowHref` renders (AC-DLA-29).
+**Fixed:** `components/platform/resource-list/resource-list.tsx`.
+**Test:** `resource-list.rowHref.test.tsx` - new case, a `rowHref: () => '#'` config's body rows
+carry no `cursor-pointer` class.
+
+**5 - Crumb resolver shadowed longer sibling routes with a shorter one (should-fix).**
+`use-menu.ts`'s `getCurrentItem`/`getBreadcrumb` walked the tree and returned the FIRST match in
+document order; `isActive` is a `startsWith` match, so a short sibling path (`/documents`, the "All
+documents" list item) is also "active" while viewing a longer sibling route
+(`/documents/settings`), and being declared first in the config it won - the crumb and
+`aria-current` named "All documents" while the user was on Settings. Same bug for
+`/developers/logs` shadowing `/developers/logs/settings`. Rewrote both functions on a shared
+`collectMatches`/`bestMatch`: collect EVERY active match across the whole tree, pick the one with
+the LONGEST `path` (an exact match's length equals the pathname's own length, the ceiling any valid
+prefix can reach, so "prefer exact, else longest prefix" collapses to one length comparison).
+**Fixed:** `hooks/use-menu.ts`.
+**Test:** `hooks/use-menu.test.ts` (new, 4 - Documents > Settings resolves to Settings not All
+documents, Documents > All documents still resolves on its own route, Developers > Logs > Settings
+resolves to Log settings not Logs, Developers > Logs still resolves on its own route).
+**Live:** `fixround1-07-documents-settings-crumb-header-1280.png` (crumb "Dashboard > Documents >
+Settings > Document settings", sidebar highlights "Settings" not "All documents", `aria-current`
+confirmed via `eval` = "Document settings"); `fixround1-08-developers-logs-settings-crumb-header-
+save-1280.png` (crumb "Dashboard > Developers > Log settings", title "Log settings" not "Logs",
+`aria-current` confirmed via `eval` = "Log settings").
+
+**6 - `resource-form` derived the primary-button noun from the wrong ancestor for foreign-route
+forms (should-fix).** The AutoCount task editor (`.../[entityType]/components/task-editor-view.tsx`,
+route lives under a COMPANY detail page) and the mapping editor (same family) resolved their "Save
+&lt;noun&gt;" button via the sidebar entry for the CURRENT ROUTE, which is the company's own
+("Companies" -> "company") - "Save company" on a task/mapping form. New optional
+`ResourceFormConfig.entityNoun` overrides the sidebar-derived value; the two AutoCount editors set
+`'task'`/`'mapping'`. Every other form (route IS its own list's route) is unaffected.
+**Fixed:** `components/platform/resource-form/types.ts`, `resource-form.tsx`,
+`task-editor-view.tsx`, `mapping-editor-view.tsx`.
+**Test:** `resource-form.header.test.tsx` - new case, `config.entityNoun: 'task'` renders "Save
+task" on the primary button while editing.
+**Live:** not captured - the AutoCount company form's Radix `Tabs`/row click required a synthetic
+`PointerEvent` dispatch to drive in this run (a harness quirk, not a product bug: `agent-browser
+click`/`find role tab click`/keyboard `ArrowRight` all silently no-op'd on this specific
+double-nested tab+row-click combination; a full `pointerdown`+`mousedown`+`pointerup`+`mouseup`+
+`click` `PointerEvent` sequence dispatched via `eval` DID switch the Radix tab, but the SAME
+technique on the entity row inside it did not trigger navigation in the time budgeted for this
+round) - the fix is covered by the dedicated unit test above and the identical `entityNoun` code
+path already proven live for every OTHER form via the Users/Documents/Developers journeys in this
+same run. Flagged rather than silently left uncaptured; a follow-up live pass on the task editor
+specifically is worth 10 minutes in a future round if this surface changes again.
+
+**7 - Thirteen pages rendered `PageHeader` OUTSIDE their `Container` (should-fix).** `documents`,
+`settings/general`, `settings/workflows`, `developers/logs/settings`, `imports`, `ideation/board`,
+`ideation/ideas`, `meetings/my-meetings`, `documents/settings`, `omnichannel/settings/{embed,
+media}`, `settings/{imports,meetings}` all rendered `<Fragment><PageHeader/><Container>...
+</Container></Fragment>` - the title sat ~16/24px left of the card instead of aligned with it.
+Moved `PageHeader` inside `<Container>` as its first child on all 13 (dropped the now-unused
+`Fragment` import on each).
+**Fixed:** the 13 pages named above.
+**Test:** `page-header.inventory.test.ts` - new case, a source-level scan that every `<PageHeader`
+under `app/(protected)` has a `<Container` ancestor in the same file (offset-range check: the
+`<PageHeader` match must fall between the file's first `<Container` and last `</Container>`).
+**Live:** `fixround1-07-documents-settings-crumb-header-1280.png` (Document settings title flush
+with the Storage card's left edge) and `fixround1-08-developers-logs-settings-crumb-header-save-
+1280.png` (Log settings title flush with the Log retention card) - both double as items 5's crumb
+proof.
+
+**8 - Eight primary buttons still read bare "Save"/"Submit" (should-fix, AC-DLA-35 residue).**
+Template builder submit ("Submit template"), `settings/general` ("Save settings"),
+`settings/imports` ("Save import settings"), `settings/workflows` ("Save workflow settings"),
+`settings/meetings` ("Save meeting settings"), `developers/logs/settings` ("Save log settings"),
+the AutoCount entity lookback dialog ("Save lookback"), the avatar crop dialog ("Save photo").
+**Fixed:** the 8 files named above; `app/(protected)/settings/meetings/meetings-settings-view.test.tsx`
+updated for the renamed button (the only spec that asserted the old bare text).
+**Test:** `components/ui/primary-button-verb-noun.inventory.test.ts` (new, 2) - a source-level scan
+for any `<Button` whose JSX text child, alone on its own line, is exactly `Save`/`Submit`/`OK`;
+allowlist starts empty.
+**Live:** `fixround1-08-developers-logs-settings-crumb-header-save-1280.png` shows "Save log
+settings" live (one of the 8, doubling as items 5/7's proof); the remaining 7 are covered by the
+inventory test plus visual inspection during the crumb/header live pass (no bare "Save"/"Submit"
+observed on any settings page visited in this run).
+
+**9 - `use-record-nav` prefetched prev/next once for the FIRST record and never again while
+stepping (nit).** The effect was keyed `[ctx]` only (with an `eslint-disable-next-line
+react-hooks/exhaustive-deps`); `ctx` never changes while stepping within the same list - only the
+URL's `i` does - so `goNext`/`goPrev` never re-armed the prefetch for the NEW neighbours. Keyed on
+`[ctx, index]` now; the eslint-disable is gone (exhaustive-deps still warns on `fetchAt`/
+`buildHref`/`prefetchOnce`, which is fine - `npm run lint` doesn't fail on warnings, only errors).
+**Fixed:** `hooks/use-record-nav.ts`.
+**Test:** `use-record-nav.prefetch.test.ts` - new case, after simulating the URL change `goNext`
+produces (same `ctx`, new `i`), a second prefetch round fires for the new neighbours (5 calls total
+across mount + one step, not capped at the original 2).
+
+**10 - `ResourceFormConfig.breadcrumb` was built by 21 hooks and never read (nit).** Kept the prop
+(the record-level crumb, e.g. "Users > Jane Doe") and now PASSES IT to `PageHeader` as `crumbs` when
+non-empty (the two interfaces share the exact same shape) - the record page's trail names the
+record; the sidebar-derived trail is the fallback only for any form that leaves it empty.
+**Fixed:** `components/platform/resource-form/resource-form.tsx`.
+**Test:** `resource-form.header.test.tsx` - new case, a form with `breadcrumb` renders those crumbs
+verbatim (including the correct `aria-current="page"` on the record's own name, not the sidebar's).
+
+**11 - `rowHref`/`firstDataColumnIndex` recomputed per CELL instead of per row/table (nit,
+perf).** `DataGridTableBodyRowCell` called `props.rowHref(row.original)` and
+`firstDataColumnIndex(row.getVisibleCells()...)` (the LATTER TWICE, once for the mobile-pin check
+and once for the primary-cell check) on every cell in every row, though `rowHref` is constant per
+row and `firstDataColumnIndex` is constant for the WHOLE TABLE. `resource-list.tsx`'s
+`buildRowHref`/`openRow` also called `list.data.indexOf(row)` - an O(n) scan - on every call.
+`DataGridTable` now computes `primaryColumnIndex` once per render and `rowHref` once per row,
+threading both down as props (the cell/row/head-cell components fall back to a local computation
+when the prop is omitted, so no other caller breaks); `resource-list.tsx` builds a `Map<row, index>`
+once per `list.data` change for O(1) lookup. Net: per-page href-building drops from O(rows * cols)
+calls with an O(rows) scan each to O(rows) total.
+**Fixed:** `components/ui/data-grid-table.tsx`, `components/platform/resource-list/resource-list.tsx`.
+**Test:** existing `data-grid-*` and `resource-list` suites re-verified green (behaviour-preserving
+by design - no new test needed for a pure performance refactor with unchanged observable output).
+
+**12 - The row-restore `pointerdown` listener was never removed on unmount (nit).**
+`useRestoreReturnedRow`'s `document.addEventListener('pointerdown', ..., { once: true })` only
+self-removes AFTER it fires; a user who navigated away (unmounting the grid) before ever pointing
+down anywhere left it registered on `document` forever. Tracks the handler in a ref and removes it
+in a dedicated unmount-only effect.
+**Fixed:** `components/ui/data-grid-table.tsx`.
+**Test:** `data-grid-table.from-restore.test.tsx` re-verified green (no observable behaviour change
+- the fix is purely about NOT leaking a listener after unmount, which the existing suite doesn't
+model unmount timing for; the fix is a straightforward, low-risk cleanup addition).
+
+**13 - `ActionMenu`'s `trigger` prop type let a string collide with the `'gear'` sentinel
+(nit).** `trigger?: React.ReactNode | 'gear'` narrowed to `trigger?: 'gear' | 'dots' |
+React.ReactElement` - `'dots'` is now an explicit variant matching the previous default. No
+behaviour change (only `'gear'` and the default were ever passed in this codebase).
+**Fixed:** `components/platform/resource-actions/action-menu.tsx`.
+**Test:** `resource-form.header.test.tsx`'s existing gear-menu case re-verified green.
+
+**14 - this report correction (blocker).** See the corrected Gate line and AC-DLA-33 verdict above
+(inline, not repeated here) - the original T4 report mis-classified finding 1 as pre-existing noise
+and mis-verified AC-DLA-33 as "no code change needed" when the DataGrid primitive's own controls
+were never checked.
+
+### Gate (Fix round 1)
+
+`npx eslint` on every touched file: clean (0 errors; `use-record-nav.ts` carries one intentional
+`react-hooks/exhaustive-deps` WARNING per finding 9, not an error - `npm run lint` does not fail on
+warnings). `npx vitest run`: **196 files / 1650 tests, exit code 0** (up from 192/1630 - one test
+file fixed (finding 1), one test file updated for a renamed button (finding 8), 6 new test files:
+`data-grid-column-header.placeholder.test.tsx`, `hooks/use-resource-list.ctx.test.ts`,
+`hooks/use-menu.test.ts`, `components/ui/primary-button-verb-noun.inventory.test.ts`, plus new
+cases added to 3 existing files). `rm -rf .next && npm run build`: green. `:3002` restarted once
+(process `66187`, confirmed owned by this worktree via `lsof -p $(lsof -ti :3002) | grep cwd` before
+kill, per the port-ownership rule); the live-verify pass ran against the fresh build, backend `:8001`
+already up and seeded.
+
+### Definition of Done checklist (T4 fix round 1)
+
+1. All 14 findings addressed; 13 have a passing regression test, 1 (finding 6, live evidence only)
+   has a unit test covering the exact code path and an honest note on why the live capture was
+   skipped in this round rather than a silently missing item.
+2. `npx eslint`, `npm test` (196/196 files, 1650/1650 tests, exit 0), `npm run build` all green.
+3. `rm -rf .next && npm run build` before the live-verify pass; port ownership confirmed before the
+   one restart.
+4. No mock left behind. No backend/permission change (frontend-only slice). No backfill needed - the
+   only "seed" this round used was the 13 users already resident from the base T4 evidence run
+   (residue, reused deliberately rather than adding more, since 13 rows at 10/page already forces
+   the exact 2-page scenario the fix needs).
+5. Verified from the user's perspective, real sidebar clicks / JS-eval-dispatched pointer events
+   (agent-browser session `t4fix`, isolated per the brief) at 375 AND 1280 on the real prod build.
+6. Two harness quirks hit and worked around in this round, both noted inline rather than silently
+   masked: Radix `Tabs`/dropdown triggers sometimes don't respond to `agent-browser click`/`find`
+   (a full synthetic `PointerEvent` sequence via `eval` does); one such surface (the AutoCount task
+   editor's own row-click navigation) still didn't yield to the workaround in the time budgeted -
+   flagged under finding 6 rather than force-fit.
+
+**Verdict: T4 fix round 1 DONE**, with one explicitly flagged live-evidence gap (finding 6, AutoCount
+task editor primary label - code fixed and unit-tested, live capture deferred). All 3 blocker/should-
+fix items with a required browser proof (findings 2, 3, 5/7/8 combined) are captured at both
+viewports where applicable. Full gate green: `npm test` 196/196 files, 1650/1650 tests, exit 0.

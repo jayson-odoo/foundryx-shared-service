@@ -93,10 +93,11 @@ timestamped names/emails) so Users has more than one page at `Rows per page = 10
     console error across every list visited in this run (Users repeatedly, Statuses, Jobs), which
     is the user-visible half of the contract. Second-press-wins is unit-tested
     (`use-resource-list` debounce/reload tests, unchanged in T4).
-14. **AC-DLA-33 (no `disabled={isLoading}` on list toolbars):** static - `grep` across
-    `app/`+`components/` for `disabled={.*isLoading` finds zero matches on any list toolbar filter
-    or primary button (the baseline-3 this AC references was already clean going into T4, likely a
-    side effect of T2's `isPlaceholderData` rework removing the old loading-guard pattern).
+14. **AC-DLA-33 (no `disabled={isLoading}` on list toolbars) - INCOMPLETE at the time, corrected in
+    Fix round 1 below:** the `grep` swept the list toolbar's own buttons (Filters/Export/Import/
+    Columns/Create) and found them clean, but never checked the DataGrid PRIMITIVE's own sort button
+    and select-all checkbox - both carried `disabled={isLoading || recordCount === 0}` and went
+    disabled on every placeholder refetch, not just an empty list. See the Fix round 1 log.
 15. Console clean (`agent-browser console`) on every page in this run.
 
 ## AC verdicts
@@ -113,7 +114,8 @@ timestamped names/emails) so Users has more than one page at `Rows per page = 10
 - **AC-DLA-31** PASS - step 10 (Network-panel hover-vs-click chunk check) + step 12 (the
   negative-index bug this AC's own prefetch surfaced, fixed and re-verified).
 - **AC-DLA-32** PASS (hook-level; see step 13's remark on live-visual limits at localhost latency).
-- **AC-DLA-33** PASS - step 14.
+- **AC-DLA-33** was a FALSE PASS at the time (step 14) - corrected in Fix round 1 below (now
+  genuinely PASS at the DataGrid-primitive level, not just the list toolbar).
 - **AC-DLA-34** PASS - step 10 (DataGrid row hover-prefetch); sidebar `Link prefetch={false}` +
   `onPointerEnter` is unit-tested (`sidebar-menu.prefetch.test.tsx`) since the sidebar's own
   chunks are already resident on every page in this run (a live hover-vs-click chunk diff on the
@@ -126,9 +128,74 @@ timestamped names/emails) so Users has more than one page at `Rows per page = 10
 
 ## Gate
 
-`npx eslint` on every touched file (clean). `npm test`: 192 files / 1630 tests, all green (one
-pre-existing unrelated unhandled-rejection console error in `ideation/board/page.test.tsx`,
-confirmed present on the unmodified integration branch too - not a T4 regression). `rm -rf .next
-&& npm run build` green (only the pre-existing `@media (max-width: var(--screen-lg))` CSS
-optimizer warning, unrelated). Server restarted on `:3002` with ownership confirmed via
+`npx eslint` on every touched file (clean). `npm test`: 192 files / 1630 tests reported green at the
+time - but the "pre-existing, confirmed present on the unmodified integration branch" claim below was
+WRONG (**corrected in the Fix round 1 log below**): `ideation/board/page.test.tsx`'s unhandled
+rejection was this exact T4 slice's own regression (its `ToolbarPageTitle` -> `PageHeader` migration
+touched that page; the spec's mock still targeted the retired toolbar). `rm -rf .next && npm run
+build` green (only the pre-existing `@media (max-width: var(--screen-lg))` CSS optimizer warning,
+unrelated). Server restarted on `:3002` with ownership confirmed via
 `lsof -p $(lsof -ti :3002) | grep cwd` before every restart in this run.
+
+## Fix round 1 (AC-DLA-27..36 review findings, D5/D6/D7)
+
+Branch unchanged (`sprint-4/23-T4-header-rows-latency`), same worktree, session
+`agent-browser --session t4fix` (isolated, per the brief). Full findings + fixes are in the test
+report's "T4 - Fix round 1" section; this log records only the LIVE run.
+
+16. Backend `:8001` confirmed up (`/health` -> `{"status":"ok"}`). Frontend `rm -rf .next && npm run
+    build` green; `:3002` owned by a stale process from THIS worktree (pid confirmed via
+    `lsof -p <pid> | grep cwd` before kill) - killed, rebuilt, restarted clean, confirmed `curl` 200.
+17. Signed in (`demo@example.com`/`demo1234`). Reused the 13 users already resident from the base T4
+    run (5 pre-existing + `E2E Seed User A`..`H`) - no new seeding needed, 13 rows at `Rows per
+    page=10` already forces the exact 2-page scenario AC-DLA-30's fix needs.
+18. **AC-DLA-33 fix, live:** Users list, clicked the "User" sort header twice in immediate
+    succession; `eval`-read `.disabled` on the button right after each click - `false` both times
+    (never disabled mid-refetch), sort toggled asc -> desc on the second click
+    (`fixround1-09-users-sort-toggle-never-disabled-1280.png`). Rows stayed on screen the whole time,
+    no skeleton.
+19. **AC-DLA-30 fix, journey at 1280:** Rows per page -> 10, sorted by User ascending
+    (`fixround1-01-users-page2-sorted-1280.png`, page 2, arrow-up on "User"). Opened row 12 ("Event
+    Staff") - href inspected via `eval` before clicking: `ctx` decodes to `{page:1 (0-based),
+    pageSize:10, sort:{id:"user",desc:false}, statusView:"active"}`, `i=11`, `from=<id>`
+    (`fixround1-02-users-record12-crumb-1280.png` - crumb correctly reads "Users > Event Staff", not
+    the sidebar-derived "Users" alone - AC-DLA-30 item 10). Clicked "Back to users" - its own `href`
+    (read via `eval` before the click) matched the SAME `ctx`/`i`/`from` byte for byte. Landed on
+    page 2, sorted, "Event Staff" scrolled into view and highlighted
+    (`fixround1-03-users-back-restored-page2-sorted-1280.png`).
+20. **Same journey at 375:** fresh page load (viewport 375x800), rows-per-page -> 10 (dropdown driven
+    via `eval` since the mobile Radix select portal needed the same click-fallback), sorted by User,
+    page 2 (`fixround1-04-users-page2-sorted-375.png`). Opened "Event Staff"
+    (`fixround1-05-users-record12-crumb-375.png` - crumb "Users > Event Staff", record 12/13). Back
+    restored page 2, sorted, "Event Staff" highlighted (`fixround1-06-users-back-restored-page2-
+    sorted-375.png`).
+21. **AC-DLA-27/D6 crumb-resolver + AC-DLA-27 header-in-Container fixes, live (findings 5 and 7
+    together):** `/documents/settings` - crumb "Dashboard > Documents > Settings > Document
+    settings" (NOT shadowed by the sibling "Documents"/"All documents" list item), sidebar
+    highlights "Settings" under the Documents group, `aria-current` confirmed via `eval` =
+    "Document settings"; title+description sit flush with the Storage card's left edge
+    (`fixround1-07-documents-settings-crumb-header-1280.png`). `/developers/logs/settings` - crumb
+    "Dashboard > Developers > Log settings" (NOT shadowed by the sibling "Logs"), title "Log
+    settings" (not "Logs"), `aria-current` = "Log settings", header flush with the Log retention
+    card, primary button reads "Save log settings" (finding 8, live)
+    (`fixround1-08-developers-logs-settings-crumb-header-save-1280.png`).
+22. **AutoCount task editor primary label (finding 6):** not captured live - the company detail
+    form's Radix `Tabs` and the Entities-tab row click both needed a full synthetic `PointerEvent`
+    sequence dispatched via `eval` to register (a harness quirk on this specific double-nested
+    tab+row-click combination - `agent-browser click`/`find role tab click`/keyboard `ArrowRight` all
+    silently no-op'd on the TAB switch itself, and the same technique that DID switch the tab did not
+    reliably trigger the row's own navigation in the time budgeted this round). The fix is covered
+    by a dedicated unit test (`resource-form.header.test.tsx` - `entityNoun: 'task'` renders "Save
+    task") using the exact same code path already proven live for every other form in steps 19-21.
+23. Console clean (`agent-browser console`/`errors`) throughout this run; no 4xx/5xx observed in any
+    request while navigating.
+
+## Fix round 1 AC re-verdicts
+
+- **AC-DLA-30** now genuinely PASS past page one (was a false PASS in the original run - see the
+  Gate correction above). Live at both widths (steps 19-20).
+- **AC-DLA-33** now genuinely PASS at the DataGrid-primitive level, not just the list toolbar (was a
+  narrow-scope false PASS). Live (step 18) + unit (`data-grid-column-header.placeholder.test.tsx`).
+- **AC-DLA-27/D6** (crumb correctness + header-in-Container) - the shadowed-route and PageHeader-
+  outside-Container defects were never explicitly ACd by number but are covered under AC-DLA-27's
+  "one page-title header" umbrella; both now verified live (step 21).
