@@ -171,7 +171,7 @@ export function SidebarMenu() {
           key={index}
           value={item.path || `child-${level}-${index}`}
         >
-          <AccordionMenuSubTrigger className="text-[13px]">
+          <AccordionMenuSubTrigger className="text-2sm">
             {item.collapse ? (
               <span className="text-muted-foreground">
                 <span className="hidden [[data-state=open]>span>&]:inline">
@@ -209,7 +209,7 @@ export function SidebarMenu() {
         <AccordionMenuItem
           key={index}
           value={item.path || ''}
-          className="text-[13px]"
+          className="text-2sm"
         >
           <Link href={item.path || '#'}>{menuLabel(item)}</Link>
         </AccordionMenuItem>
@@ -226,7 +226,7 @@ export function SidebarMenu() {
       <AccordionMenuItem
         key={index}
         value={`disabled-child-${level}-${index}`}
-        className="text-[13px]"
+        className="text-2sm"
       >
         <span data-slot="accordion-menu-title">{menuLabel(item)}</span>
         {item.disabled && (

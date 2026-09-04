@@ -226,16 +226,16 @@ export function SqlSchemaTree({
           data-testid="sql-columns-panel"
         >
           <div className="mb-2 flex items-center justify-between gap-2">
-            <span className="min-w-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <span className="min-w-0 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
               <ClampedText text={`Columns · ${selected.table.name}`} lines={1} />
             </span>
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-2xs text-muted-foreground">
               {selected.table.columns.length}
             </span>
           </div>
           <ul className="flex max-h-56 flex-col gap-0.5 overflow-y-auto">
             {selected.table.columns.map((col) => (
-              <li key={col.name} className="flex items-baseline justify-between gap-2 font-mono text-[11px]">
+              <li key={col.name} className="flex items-baseline justify-between gap-2 font-mono text-2xs">
                 <span className="min-w-0 text-foreground">
                   <ClampedText text={col.name} lines={1} />
                 </span>

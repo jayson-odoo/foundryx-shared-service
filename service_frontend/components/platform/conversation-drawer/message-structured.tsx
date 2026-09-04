@@ -42,7 +42,7 @@ function InteractiveCard({ def }: { def: InteractiveDefinition }) {
         <div className="text-sm font-semibold">{def.header.text}</div>
       )}
       {def.header && def.header.type !== 'text' && (
-        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        <div className="text-2xs font-medium uppercase tracking-wide text-muted-foreground">
           {def.header.type} header
         </div>
       )}

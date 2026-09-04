@@ -78,7 +78,7 @@ function TriggerButton({
     >
       <Icon className="size-4.5!" />
       {count > 0 && (
-        <span className="absolute -right-0.5 -top-0.5 flex size-4 items-center justify-center rounded-full bg-primary text-[10px] font-medium text-primary-foreground">
+        <span className="absolute -right-0.5 -top-0.5 flex size-4 items-center justify-center rounded-full bg-primary text-2xs font-medium text-primary-foreground">
           {count}
         </span>
       )}

@@ -634,7 +634,7 @@ export function Composer({
                 <div className="max-h-64 space-y-2 overflow-y-auto">
                   {EMOJI_GROUPS.map((group) => (
                     <div key={group.label}>
-                      <div className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      <div className="px-1 pb-1 text-2xs font-medium uppercase tracking-wide text-muted-foreground">
                         {group.label}
                       </div>
                       <div className="grid grid-cols-8 gap-0.5">

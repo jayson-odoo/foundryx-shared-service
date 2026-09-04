@@ -108,7 +108,7 @@ export function Palette({ disabled, onAdd }: PaletteProps) {
                   <ChevronRight className="size-3.5" />
                 )}
                 <span className="flex-1 text-start">{category.label}</span>
-                <span className="text-[10px] font-normal">{category.types.length}</span>
+                <span className="text-2xs font-normal">{category.types.length}</span>
               </button>
               {open && (
                 <div className="flex flex-col gap-1 px-1 pb-1.5 pt-0.5">

@@ -168,7 +168,7 @@ export function FormulaBuilder({
                     onClick={() => insert(v.token)}
                   >
                     <span className="truncate">{v.label}</span>
-                    <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{v.token}</span>
+                    <span className="shrink-0 font-mono text-2xs text-muted-foreground">{v.token}</span>
                   </button>
                 ))
               )}

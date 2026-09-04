@@ -65,7 +65,7 @@ function PaletteItem({ entry, disabled, onAdd }: PaletteItemProps) {
       </span>
       <span className="min-w-0">
         <span className="block text-xs font-medium text-foreground">{entry.label}</span>
-        <ClampedText text={entry.description} lines={2} className="text-[11px] leading-tight text-muted-foreground" />
+        <ClampedText text={entry.description} lines={2} className="text-2xs leading-tight text-muted-foreground" />
       </span>
     </button>
   );

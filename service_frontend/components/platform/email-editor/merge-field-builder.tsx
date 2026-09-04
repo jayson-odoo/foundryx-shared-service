@@ -131,7 +131,7 @@ export function MergeFieldBuilder({
                     onClick={() => insert(field.key)}
                   >
                     <span className="truncate">{field.label}</span>
-                    <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                    <span className="shrink-0 font-mono text-2xs text-muted-foreground">
                       {`{{${field.key}}}`}
                     </span>
                   </button>

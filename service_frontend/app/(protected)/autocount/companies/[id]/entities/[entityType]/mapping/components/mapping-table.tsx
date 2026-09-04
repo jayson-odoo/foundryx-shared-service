@@ -221,7 +221,7 @@ export function MappingTable({
                           <ClampedText
                             text={row.formula}
                             lines={2}
-                            className="font-mono text-[11px] text-muted-foreground/80"
+                            className="font-mono text-2xs text-muted-foreground/80"
                           />
                         )}
                       </div>

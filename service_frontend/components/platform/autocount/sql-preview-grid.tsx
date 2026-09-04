@@ -72,7 +72,7 @@ export function SqlPreviewGrid({ state }: SqlPreviewGridProps) {
                   scope="col"
                 >
                   <span className="block text-foreground">{col.name}</span>
-                  <span className="block font-mono text-[10px] font-normal text-muted-foreground">
+                  <span className="block font-mono text-2xs font-normal text-muted-foreground">
                     {col.type}
                   </span>
                 </th>

@@ -139,7 +139,7 @@ export function WorkflowRuns({
             >
               <div className="flex items-center justify-between gap-2">
                 <RunStatusBadge status={run.status} size="sm" />
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-2xs text-muted-foreground">
                   {formatDuration(run.durationMs)}
                 </span>
               </div>
@@ -150,7 +150,7 @@ export function WorkflowRuns({
                 {run.isTest && <FlaskConical className="size-3" />}
               </div>
               {run.correlationKey && (
-                <div className="font-mono text-[11px] text-muted-foreground">
+                <div className="font-mono text-2xs text-muted-foreground">
                   <ClampedText text={run.correlationKey} lines={1} />
                 </div>
               )}
