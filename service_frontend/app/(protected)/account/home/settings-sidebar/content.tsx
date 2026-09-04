@@ -73,7 +73,7 @@ export function AccountSettingsSidebarContent() {
           <div
             className={cn(
               'w-[230px]',
-              sidebarSticky && `fixed z-10 start-auto ${stickyClass}`,
+              sidebarSticky && `fixed z-(--z-sticky-content) start-auto ${stickyClass}`,
             )}
           >
             <Scrollspy offset={100} targetRef={parentRef}>
