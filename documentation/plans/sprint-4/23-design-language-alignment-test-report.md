@@ -1244,3 +1244,258 @@ confirmed via `lsof -p $(lsof -ti :3002) | grep cwd` before every kill).
 
 **Verdict: T2 fix round 3 (pin polish) DONE.** Both named defects + one live-caught related defect
 resolved and re-verified; full gate green.
+
+## T4 - Header, wayfinding, rows, list latency
+
+### AC-DLA-27 - `PageHeader` is the one page-title header `[FE][T]`
+
+**Scenario:** Given the retired `ToolbarPageTitle`, when any page under `app/(protected)` renders,
+then it shows exactly one `PageHeader` (title at one scale, sidebar-derived breadcrumb rooted at
+"Dashboard", termKey-aware, last crumb the only `aria-current="page"`), and zero `ToolbarPageTitle`/
+raw `<h1>` sites remain outside `page-header.tsx`.
+**Steps:** `npx vitest run components/platform/page-header`; live sidebar clicks across Users,
+Statuses, Jobs (evidence T4 steps 2, 8, 20-21).
+**Expected:** inventory test 5/5; `PageHeader` unit test 8/8; live pages show one h1 + a correct
+breadcrumb, no `ToolbarPageTitle`/duplicate header anywhere.
+**Actual:** PASS.
+**Fixed:** `components/platform/page-header/page-header.tsx` (new); `ResourceList`/`ResourceForm`
+render it (`hideHeader` prop on `ResourceList` for embedded lists in a tab/master-detail);
+`app/components/partials/common/toolbar.tsx` `ToolbarPageTitle` deleted (`Toolbar`/`ToolbarActions`/
+`ToolbarHeading`/`ToolbarDescription` stay); 79 real `ToolbarPageTitle` sites + a handful of raw
+`<h1>` sites (an unused legacy `Toolbar` component, `NoPermission`, an i18n dev page, an account
+demo dialog, three bespoke fill/submission/template-builder headers) migrated - mechanical sweep
+via a small Python transform script (JSX-tag-aware, not naive regex) for the ~75 uniform
+`<Toolbar><ToolbarPageTitle/></Toolbar>`-above-`<ResourceList>` sites, hand-migrated for the ~4
+bespoke pages (job detail, AutoCount review-batch) whose header carried custom action clusters.
+**Test:** `components/platform/page-header/page-header.test.tsx` (8), `page-header.inventory.test.ts`
+(5, scoped to `app/(protected)` + `app/components/partials` + `components/platform` +
+`components/common` - pre-auth/public/embed route groups and the unused Metronic `demo1..demo10`
+layouts never had `ToolbarPageTitle` and are out of scope by design, not silently excluded).
+**Live:** T4 evidence `01`, `02`, `03`, `12`, `13`, `20`, `21`.
+**Scope decision:** page-level description captions (the old `ToolbarDescription` text, e.g. "Manage
+users, their roles and access.") were DROPPED during the mechanical sweep rather than threaded
+through every `useXListConfig()` hook as a new `pageDescription` field - `PageHeader` DOES support
+an optional `description` prop (used live where it mattered: `jobs/[id]/page.tsx`'s status badge,
+the AutoCount review-batch's status badge, `RulesPage`'s own description prop), but re-plumbing
+~75 config hooks purely to preserve marketing-style captions was judged out of scope for this
+slice's budget - noted as a real, intentional trade-off, not an oversight.
+
+### AC-DLA-28 - `resource-form` = Sorento D6 (toolbar row + RecordActions) `[FE][T]`
+
+**Scenario:** Given a record's form, when rendered, then the toolbar row is `PageHeader` with
+crumbs + title left and exactly one Back right (carrying `ctx`/`i`/`from`); the record card shows
+identity left and, right, in order: pager, gear (secondary, separator, destructive last), primary
+(Edit, or Cancel+Save while editing) - wrapping under the identity at 375.
+**Steps:** `npx vitest run components/platform/resource-form/resource-form.header.test.tsx`; live
+Users new/detail flow (T4 evidence steps 3-4, 16).
+**Expected:** 7/7 unit assertions; live: one breadcrumb nav + one Back link on the toolbar row,
+Back's `href` carries `ctx`/`i`/`from`, `h2` identity (not a second `h1`), gear menu orders
+secondary-then-destructive-with-a-separator, RecordActions wraps under the identity at 375.
+**Actual:** PASS.
+**Fixed:** `components/platform/resource-form/resource-form.tsx` rewritten per D5/D6; Back's href
+built via `lib/list-context.ts buildListNav(config.backHref, {ctx, i, from})` - `from` read off the
+URL's own last path segment (the `paths.ts` `.../<id>` convention every entity already follows, so
+no per-entity config change was needed); the primary Save/Create button now reads "Save
+&lt;noun&gt;"/"Create &lt;noun&gt;" (AC-DLA-35, see below) derived the same way `PageHeader` derives
+its own title - the current sidebar entry's termKey singular or a naive English singularization,
+never a new prop threaded through every `useXForm` hook (skipped for `embedded` form-in-form
+instances, whose route belongs to the PARENT record).
+**Test:** `resource-form.header.test.tsx` (7 - toolbar row, Back href, h2 not h1, gear ordering,
+primary label swap, RecordActions `flex-wrap`, embedded mode).
+**Live:** T4 evidence `02`, `03`, `04`, `07`, `10`, `13`, `16`, `17`.
+
+### AC-DLA-29 - `resource-list` `rowHref` carries ctx/i/from; true `<a href>` in the primary cell `[FE][T]`
+
+**Scenario:** Given a navigable list config, when rendered, then rows use `rowHref` (not
+`onRowClick`) carrying `ctx`+the row's global index+`from=<rowId>`, the primary cell renders a real
+`<a href>`, `onRowSelect` configs keep the in-place open, and a `'#'`/`''` `rowHref` keeps the
+opt-out.
+**Steps:** `npx vitest run components/platform/resource-list/resource-list.rowHref.test.tsx
+components/ui/data-grid-table.rowHref.test.tsx`; live Users list (T4 evidence steps 2, 5, 10).
+**Expected:** 3/3 + 12/12 unit; live: `role="link"` on every real row's primary cell, hrefs carry
+`ctx`/`i`/`from`, hover fires a Network prefetch, click reuses the already-warmed chunk.
+**Actual:** PASS.
+**Fixed:** `components/platform/resource-list/resource-list.tsx` - `rowHrefFn` built via the new
+`buildRowHref` (config's `rowHref` + `buildListNav`), passed to `DataGrid` as `rowHref` (was
+`onRowClick`); `onRowClick={openRow}` stays as the fallback branch for `onRowSelect` (master-detail,
+never gets a `rowHref`) and for card view (same href/ctx logic, pushed imperatively).
+`components/ui/data-grid-table.tsx` `DataGridTableBodyRowCell` renders a `next/link` `<a href>`
+(`display: contents`, `tabIndex={-1}` - the row stays the single Tab stop) in the primary (first
+real data) cell when the row is linkable; a click landing on a cell-owned control nested inside it
+(checkbox, inline button) `preventDefault()`s the anchor's own navigation (invalid-but-real
+`<a><button/></a>` HTML would otherwise let the click bubble into the link) via a new selector
+scoped to exclude the anchor itself.
+**Test:** `data-grid-table.rowHref.test.tsx` updated (a T2 assertion of "no links" is the exact
+OPPOSITE of what T4 was tasked to add - now asserts a real link with the right href, tabIndex=-1,
+and the pre-existing cell-owned-control non-navigation behaviour still holds through the new
+anchor); `resource-list.rowHref.test.tsx` (new, 3 - ctx/i/from on every anchor, `'#'` opt-out,
+`onRowSelect` skip).
+**Live:** T4 evidence `01`, `05`, `06`, `07`, `10` + the Network-panel hover-vs-click chunk check
+(step 10 in the T4 README).
+
+### AC-DLA-30 - Back restores the row `[FE][T][E2E]`
+
+**Scenario:** Given `from` names a row on the list's current page, when the list mounts, then that
+row scrolls into view (`block: 'center'`) and is highlighted (`bg-primary/5`) until the next
+pointer event.
+**Steps:** `npx vitest run components/ui/data-grid-table.from-restore.test.tsx`; live: Users (13
+seeded rows, `Rows per page=10`) open row 11/13 on page 2, Back; separately, open row 1, step
+`Next record` three times, Back; Settings > Statuses open "Idea", Back.
+**Expected:** 5/5 unit; live: the named row is scrolled into view + `bg-primary/5`-tinted in every
+journey, clears on the next pointer event, at both 375 and 1280.
+**Actual:** PASS.
+**Fixed:** `components/ui/data-grid-table.tsx` `useRestoreReturnedRow` (mounted from
+`DataGridTableBase`, scoped to THIS grid's own scroller so two grids on one page can never
+cross-match a row id) reads `from` via `useSearchParams()`, `scrollIntoView`s + sets
+`data-returned="true"` on the matching `[data-row-id]`, cleared on the next `document`
+`pointerdown`. `data-row-id={row.id}` added to both row-rendering branches;
+`data-[returned=true]:bg-primary/5` added to the shared row class builder (unconditional
+`transition-[background-color,opacity]`, matching AC-DLA-15's existing precedent).
+**Test:** `data-grid-table.from-restore.test.tsx` (new, 5 - scroll+mark, highlight class present,
+clears on pointerdown, no `from` = nothing marked, `from` not on this page = nothing marked/no
+throw).
+**Live:** T4 evidence `07`-`11`, `13`-`14` + two `eval`-based DOM checks (`data-returned="true"` on
+the correct id; clears to `false` after a synthetic `pointerdown`).
+
+### AC-DLA-31 - `use-record-nav` prefetches prev/next + carries `from` `[FE][T]`
+
+**Scenario:** Given a record with a carried list query, when it mounts, then it prefetches the
+prev/next neighbours' hrefs (one `fetchAt` each) and every step (`goPrev`/`goNext`) pushes
+`from=<the record navigated to>`.
+**Steps:** `npx vitest run hooks/use-record-nav.prefetch.test.ts`; live Network-panel hover check
+(T4 evidence step 10) + the record-nav-stepping journey (step 7).
+**Expected:** 4/4 unit; live: hovering a row fires the detail chunk, `Next record` pushes a URL with
+an updated `from` on every step.
+**Actual:** PASS.
+**Fixed:** `hooks/use-record-nav.ts` - the total-fetch and prev/next-prefetch resolution merged into
+ONE sequenced effect (a second bug found live - see below - forced this from the original two-
+effect design); `go()` builds its push href via `buildListNav(buildHref(...), { from: recordId })`.
+**Test:** `use-record-nav.prefetch.test.ts` (new, 4 - both neighbours prefetched with `from` +
+`ctx`, no prefetch when `total<=1`, `goNext` carries an updated `from` each step, the first
+record's "prev" wraps to the last index without ever fetching a negative one).
+**Live:** T4 evidence step 10 (hover/click chunk diff) + steps 7, 18 (see the two bug write-ups
+below).
+**Bugs found + fixed live (both regressions, both pinned in tests):**
+1. `buildListNav`'s `ctx` handling unconditionally deleted the key on any call that didn't supply
+   it - but `use-record-nav.ts` calls it with only `{ from }` (relying on `buildHref` having
+   already embedded `ctx`). Every record-nav step silently dropped `ctx` from the URL, so Back
+   after stepping lost the carried list query. Fixed to match `i`/`from`'s existing "omitted key
+   leaves the href alone, explicit null/undefined deletes it" contract.
+   `lib/list-context.test.ts` gained the omitted-key regression case.
+2. The prev-neighbour prefetch fetched a naively unwrapped `index - 1` (−1 for the first record in
+   a set) - the endpoint 422s a negative index. Caught via the Network panel while re-verifying
+   fix #1. Restructured into one effect so the wrap uses the real `total` the record's own
+   `fetchAt` call resolves, before ever calling `fetchAt` on a neighbour.
+
+### AC-DLA-32 - Rows stay while loading, dimmed `[FE][T][E2E]`
+
+**Scenario:** Given a page/sort/filter/search change, when the new page is loading, then the
+current rows stay on screen dimmed (no skeleton after first load); pressing Next twice, the second
+press wins.
+**Steps:** `use-resource-list` + `data-grid.inventory.test.ts` (T2, unchanged); live Next/sort on
+Users, Statuses, Jobs.
+**Expected:** hook contract green; live: no skeleton flash, no console error, list stays responsive
+across every navigation in this run.
+**Actual:** PASS (hook-level fully covered by T2's tests, which this slice did not touch; live
+verification confirms the user-visible half of the contract - no skeleton flash, no error - but a
+local backend's sub-millisecond response makes a screenshot of the DIM state itself unreliable to
+capture, documented rather than faked).
+**Live:** every list visited in the T4 run (Users repeatedly across 21 screenshots, Statuses, Jobs)
+- zero console errors, zero skeleton flashes observed.
+
+### AC-DLA-33 - No `disabled={isLoading}` on list toolbars `[FE][T]`
+
+**Scenario:** Given a list's toolbar filter/primary buttons, when the list is loading, then none of
+them carry `disabled={isLoading}`.
+**Steps:** `grep -rn "disabled={.*isLoading" app components` (excluding mutation-guarded
+forms/dialogs).
+**Expected:** zero matches on a list toolbar filter or primary action.
+**Actual:** PASS - already clean going into T4 (no code change needed; the baseline-3 this AC
+references was resolved as a side effect of T2's `isPlaceholderData` rework, which replaced the old
+loading-disables-everything pattern).
+
+### AC-DLA-34 - Sidebar + DataGrid row prefetch on pointer-enter, not viewport `[FE][T]`
+
+**Scenario:** Given a sidebar menu item or a DataGrid row, when hovered, then its route is
+prefetched (once per href); Network panel shows the detail chunk on hover and none on the click
+that follows.
+**Steps:** `npx vitest run app/components/layouts/demo1/components/sidebar-menu.prefetch.test.tsx`;
+live Network-panel check on a Users row (T4 evidence step 10).
+**Expected:** 3/3 unit; live: hover fires the RSC prefetch + JS chunk, click does not re-fetch the
+chunk.
+**Actual:** PASS.
+**Fixed:** `app/components/layouts/demo1/components/sidebar-menu.tsx` - both `<Link>` sites gain
+`prefetch={false}` + `onPointerEnter={() => item.path && prefetchOnce(item.path)}` (the shared
+`usePrefetchOnce`, already used by the DataGrid row and the record-nav prefetch above - one "prefetch
+at most once per href" implementation for the whole app). `DataGrid` row prefetch was already T2's
+work; this slice only verified it end to end.
+**Test:** `sidebar-menu.prefetch.test.tsx` (new, 3).
+**Live:** T4 evidence step 10 (the DataGrid row case; the sidebar's own chunks are already resident
+by the time any of this run's screenshots were taken, so a live hover-vs-click chunk diff on the
+sidebar itself would not show anything the DataGrid case hasn't already demonstrated for the same
+shared primitive).
+
+### AC-DLA-35 - Verb + noun on every primary; no raw id fallback `[FE]`
+
+**Scenario:** Given a form or dialog's primary button, when rendered, then it reads verb + noun
+("Save user", "Create role") - never a bare "Submit"/"OK"/"Save"; no title renders a raw
+`id.slice(`/`id.substring(` fragment.
+**Steps:** `grep` sweep across `app/`+`components/` for bare `'Save'`/`'Create'`/`'Submit'`/`'OK'`
+button text; the inventory test's own `id.slice(`/`substring(` check; live Users create/edit flow.
+**Expected:** zero remaining bare labels outside status badges/unrelated matches; live "Add
+user"/"Create user"/"Save user" observed.
+**Actual:** PASS.
+**Fixed:** `components/platform/resource-form/resource-form.tsx` (the shared Save/Create button,
+see AC-DLA-28); `components/platform/form-renderer/form-renderer.tsx` default `submitLabel` "Submit"
+-> "Submit form"; 8 more sites by hand - `term-edit-dialog.tsx` ("Save label"),
+`number-edit-dialog.tsx` ("Save numbering"), `quick-reply-dialog.tsx` ("Save quick reply"/"Create
+quick reply"), `media-caps-form.tsx` ("Save media settings"), `documents/types/page.tsx` ("Save
+type"/"Create type"), `status-drawer.tsx` ("Save status"/"Create status"), `transition-drawer.tsx`
+("Save transition"), `document-drive/drive-explorer.tsx`'s two `NameDialog` uses ("Create
+folder"/"Rename folder"/"Rename file").
+**Test:** `page-header.inventory.test.ts`'s `id.slice(`/`substring(` check (part of AC-DLA-27's
+suite, shared); matching test-file assertions updated for every renamed button
+(`form-renderer.test.tsx`, `quick-reply-dialog.test.tsx`, `media-caps-form.test.tsx`,
+`status-engine.test.tsx`).
+**Live:** T4 evidence `02`, `03`.
+
+### AC-DLA-36 - Users + Settings > Statuses journeys at 375 and 1280 `[FE][E2E]`
+
+**Scenario:** Given the Users list and Settings > Statuses, when a row is opened then Back is
+clicked, then the row restores (AC-DLA-30) at both viewport widths.
+**Steps:** see the T4 evidence README run log (steps 2-9).
+**Expected:** both journeys work identically at 375 and 1280, console clean throughout.
+**Actual:** PASS.
+**Live:** T4 evidence `01`-`19` (all screenshots for this run); README `documentation/plans/
+sprint-4/23-evidence/T4/README.md`.
+
+### Gate
+
+`npx eslint` on every touched file (clean). `npm test`: 192 files / 1630 tests, all green (the one
+`ideation/board/page.test.tsx` unhandled-rejection console noise is pre-existing, confirmed present
+on the unmodified integration branch before this slice touched anything). `rm -rf .next && npm run
+build` green. `:3002` restarted twice in this run (once for the mass migration, once for the two
+live-caught bug fixes), ownership confirmed via `lsof -p $(lsof -ti :3002) | grep cwd` before each.
+
+### Definition of Done checklist (T4)
+
+1. Every AC-DLA-27..36 item verified live and/or by a new/updated test (see each AC section above);
+   two real bugs were caught and fixed DURING live verification (not just unit tests) and both are
+   now pinned by regression tests.
+2. `npx eslint`, `npm test` (192/192 files, 1630/1630 tests), `npm run build` all green.
+3. `rm -rf .next && npm run build` before every live-verify pass in this run; port ownership
+   confirmed via `lsof -p $(lsof -ti :3002) | grep cwd` before every restart.
+4. No mock left behind. No backend/permission change in this slice (frontend-only). No backfill
+   needed.
+5. Verified from the user's perspective, real sidebar clicks (`agent-browser`, with the isolated
+   `--session` workaround for a shared-tab hijack noted in the evidence README - never a scripted
+   shortcut around the actual UI), at 375 AND 1280, on the real prod build, with 13 seeded
+   (timestamped) users to force real pagination for the Back-restore journey.
+6. **Scope decision flagged, not silently deviated from:** page-level description captions were
+   dropped in the `ToolbarPageTitle` -> `PageHeader` mechanical sweep rather than threaded through
+   ~75 list-config hooks as a new field - `PageHeader.description` exists and is used where a
+   caller genuinely needed it live (job/AutoCount-review status badges, `RulesPage`). Recorded
+   under AC-DLA-27 above.
+
+**Verdict: T4 (Header, wayfinding, rows, list latency) DONE.** All ten ACs (AC-DLA-27..36) pass;
+two live-caught record-nav bugs fixed and regression-pinned; full gate green.
