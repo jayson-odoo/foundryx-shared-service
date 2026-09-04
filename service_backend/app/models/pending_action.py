@@ -26,12 +26,14 @@ from app.models.utc_datetime import UTCDateTime
 _JSON = GenericJSON(none_as_null=True)
 
 PENDING_ACTION_PENDING = "pending"
+PENDING_ACTION_COMMITTING = "committing"
 PENDING_ACTION_COMMITTED = "committed"
 PENDING_ACTION_CANCELLED = "cancelled"
 PENDING_ACTION_FAILED = "failed"
 
 PENDING_ACTION_STATUSES = (
     PENDING_ACTION_PENDING,
+    PENDING_ACTION_COMMITTING,
     PENDING_ACTION_COMMITTED,
     PENDING_ACTION_CANCELLED,
     PENDING_ACTION_FAILED,
@@ -62,7 +64,7 @@ class PendingAction(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending','committed','cancelled','failed')",
+            "status IN ('pending','committing','committed','cancelled','failed')",
             name="ck_pending_actions_status",
         ),
         # One PENDING action per record - a settled row (committed/cancelled/
