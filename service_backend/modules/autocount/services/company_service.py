@@ -1402,7 +1402,8 @@ class CompanyService:
         """
         accepted = line_accepted_field_names(entity_type)
         required = line_required_field_names(entity_type)
-        known_vars = frozenset(config.line_result_columns or [])
+        line_columns = config.line_result_columns
+        known_vars = frozenset(line_columns or [])
         seen: set = set()
         clean: List[MappingWriteRow] = []
         for row in rows:
@@ -1410,6 +1411,22 @@ class CompanyService:
             if not source_path:
                 raise AutocountServiceError(
                     "A mapping row is missing its AutoCount source field."
+                )
+            #     !!  S1 (should-fix, AC-02-06) - MIRRORS THE HEADER
+            #         PREVIEW-COLUMN CONTRACT.  !!
+            # `line_result_columns` is only checked against FORMULA named
+            # variables below (`known_vars`) - a plain `source_path` was
+            # never validated at all, so a typo'd/renamed line source column
+            # saved silently and pushed null forever. Gated on the task
+            # having previewed its line query at least once (`line_columns
+            # is not None`) - a task that has never previewed yet has no
+            # column list to check against (same "test first" convention as
+            # `validate_source_config`'s `filterFormula` gate), so it stays
+            # permissive rather than rejecting every line row.
+            if line_columns is not None and source_path not in known_vars:
+                raise AutocountServiceError(
+                    f"'{source_path}' is not among the line query's last "
+                    f"preview columns - test the line query again."
                 )
             if row.transform not in TRANSFORMS:
                 raise AutocountServiceError(
