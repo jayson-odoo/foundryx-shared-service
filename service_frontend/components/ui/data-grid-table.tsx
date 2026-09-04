@@ -48,11 +48,23 @@ function getPinningStyles<TData>(column: Column<TData>): CSSProperties {
 }
 
 /**
- * True while a row-select checkbox owns the first leaf column - so the "first
- * DATA column" (AC-DLA-13's mobile pin) is index 1, not 0.
+ * The index of the first leaf column that is real record DATA - not a
+ * selection checkbox, a drag handle, or any other structural column
+ * (AC-DLA-13's mobile pin, fix round 1: generalised past the original
+ * `select`-only check). A column is skipped when its id is `select` or
+ * `__drag` (the two structural ids this shell mints itself), OR its meta
+ * marks it `reorderable: false` (the existing convention EVERY fixed/action
+ * column in the app already sets) OR `utility: true`. Returns -1 (never
+ * matches a real column index) if every leaf column is structural.
  */
 function firstDataColumnIndex<TData>(leafColumns: Column<TData>[]): number {
-  return leafColumns[0]?.id === 'select' ? 1 : 0;
+  return leafColumns.findIndex((column) => {
+    if (column.id === 'select' || column.id === '__drag') return false;
+    const meta = column.columnDef.meta;
+    if (meta?.reorderable === false) return false;
+    if (meta?.utility === true) return false;
+    return true;
+  });
 }
 
 /**
@@ -66,8 +78,21 @@ function firstDataColumnIndex<TData>(leafColumns: Column<TData>[]): number {
 // selector `[&_>:first-child]:relative>:first-child` outranks a bare class by
 // specificity too - would otherwise win the `position` property over this
 // (same-specificity) responsive variant regardless of source order.
-const MOBILE_PIN_CLASS =
-  'max-sm:sticky! max-sm:start-0! max-sm:z-(--z-sticky-content)! max-sm:bg-background! max-sm:data-pinned:static!';
+//
+// Split head/body (fix round 1, AC-DLA-13): the pinned cell must never
+// differ in colour from the rest of its row, so its background follows the
+// SAME hover/selected/striped conditions the row itself carries - via
+// `group-*:` variants keyed off `group` on the `<tr>` (DataGridTableHeadRow /
+// dataGridBodyRowClass below). The header row's own background is the
+// common `bg-muted/40` case; the stripped/no-header-background permutations
+// are not separately mirrored here (a documented simplification, not a
+// silent gap).
+const MOBILE_PIN_CLASS_HEAD =
+  'max-sm:sticky! max-sm:start-0! max-sm:z-(--z-sticky-content)! max-sm:bg-muted/40! max-sm:data-pinned:static!';
+const MOBILE_PIN_CLASS_BODY =
+  'max-sm:sticky! max-sm:start-0! max-sm:z-(--z-sticky-content)! max-sm:bg-background! max-sm:data-pinned:static! ' +
+  'group-hover:max-sm:bg-muted/40! group-data-[state=selected]:max-sm:bg-muted/50! ' +
+  'group-odd:max-sm:bg-muted/90! group-hover:group-odd:max-sm:bg-muted!';
 
 /**
  * Skeleton rows render ONLY while there is nothing worth showing yet
@@ -111,7 +136,7 @@ function DataGridTableBase({ children }: { children: ReactNode }) {
       <div
         ref={scrollerRef}
         data-slot="data-grid-scroller"
-        className="overflow-x-auto overscroll-x-contain"
+        className={cn('overflow-x-auto overscroll-x-contain', props.tableClassNames?.scroller)}
       >
         <table
           data-slot="data-grid-table"
@@ -126,13 +151,15 @@ function DataGridTableBase({ children }: { children: ReactNode }) {
           {children}
         </table>
       </div>
-      {isFading && (
-        <div
-          aria-hidden="true"
-          data-slot="data-grid-fade"
-          className="pointer-events-none absolute inset-y-0 end-0 w-8 bg-gradient-to-l from-background to-transparent"
-        />
-      )}
+      {/* Always mounted (AC-DLA-14 fix round 1) - no mount/unmount, no
+          mask-image toggling. `data-fade` alone drives the opacity so a
+          fast resize/reorder never races a conditional render. */}
+      <div
+        aria-hidden="true"
+        data-slot="data-grid-fade"
+        data-fade={isFading}
+        className="pointer-events-none absolute inset-y-0 end-0 w-8 bg-gradient-to-l from-background to-transparent opacity-0 transition-opacity duration-(--duration-fast) data-[fade=true]:opacity-100"
+      />
     </div>
   );
 }
@@ -164,8 +191,10 @@ function DataGridTableHeadRow<TData>({
   return (
     <tr
       key={headerGroup.id}
+      // `group`: the mobile-pinned header cell (AC-DLA-13) matches this row's
+      // own background rather than carrying a hardcoded one of its own.
       className={cn(
-        'bg-muted/40',
+        'group bg-muted/40',
         props.tableLayout?.headerBorder && '[&>th]:border-b',
         props.tableLayout?.cellBorder && '[&_>:last-child]:border-e-0',
         props.tableLayout?.stripped && 'bg-transparent',
@@ -219,7 +248,7 @@ function DataGridTableHeadRowCell<TData>({
         headerCellSpacing,
         props.tableLayout?.cellBorder && 'border-e',
         props.tableLayout?.columnsResizable && column.getCanResize() && 'truncate',
-        isMobilePinned && MOBILE_PIN_CLASS,
+        isMobilePinned && MOBILE_PIN_CLASS_HEAD,
         props.tableLayout?.columnsPinnable &&
           column.getCanPin() &&
           '[&:not([data-pinned]):has(+[data-pinned])_div.cursor-col-resize:last-child]:opacity-0 [&[data-last-col=left]_div.cursor-col-resize:last-child]:opacity-0 [&[data-pinned=left][data-last-col=left]]:border-e! [&[data-pinned=right]:last-child_div.cursor-col-resize:last-child]:opacity-0 [&[data-pinned=right][data-last-col=right]]:border-s! [&[data-pinned][data-last-col]]:border-border data-pinned:bg-muted/90 data-pinned:backdrop-blur-xs',
@@ -269,9 +298,15 @@ function DataGridTableBody({ children }: { children: ReactNode }) {
       className={cn(
         '[&_tr:last-child]:border-0',
         props.tableLayout?.rowRounded && '[&_td:first-child]:rounded-s-lg [&_td:last-child]:rounded-e-lg',
+        // AC-DLA-15 fix round 1: the transition is UNCONDITIONAL so the
+        // RESTORE (opacity-60 -> opacity-100, when isPlaceholderData flips
+        // back off) eases too, not just the dim - a conditional transition
+        // class would be absent the instant the condition clears, so the
+        // restore would snap.
+        'transition-opacity duration-(--duration-fast) ease-(--ease-standard)',
         // AC-DLA-15: the rows on screen are the PREVIOUS page's while the next
         // one loads - dimmed rather than replaced by a skeleton.
-        props.isPlaceholderData && 'opacity-60 transition-opacity duration-(--duration-fast) ease-(--ease-standard)',
+        props.isPlaceholderData && 'opacity-60',
         props.tableClassNames?.body,
       )}
     >
@@ -346,10 +381,21 @@ function dataGridBodyRowClass<TData>(
   isLinkRow: boolean,
 ): string {
   return cn(
-    'hover:bg-muted/40 data-[state=selected]:bg-muted/50',
+    // `group`: the mobile-pinned body cell (AC-DLA-13) matches this row's
+    // own hover/selected/striped state rather than carrying a flat
+    // background of its own.
+    'group hover:bg-muted/40 data-[state=selected]:bg-muted/50',
     (props.rowHref || props.onRowClick) && 'cursor-pointer',
     isLinkRow &&
-      'active:bg-muted/60 transition-opacity duration-(--duration-fast) ease-(--ease-standard) motion-reduce:transition-none',
+      // AC-DLA-14 fix round 1: `background-color` (the active/hover states)
+      // AND `opacity` (T5's pending-row dim) both transition; no
+      // `motion-reduce:transition-none` - the tokens already collapse to
+      // ~0 under reduced motion (T1's preference block), so a second,
+      // per-component override here was redundant.
+      'active:bg-muted/60 transition-[background-color,opacity] duration-(--duration-fast) ease-(--ease-standard) ' +
+        // Inset ring (fix round 1): the scroller clips an outer
+        // focus-visible ring, so the row needs its own visible indicator.
+        'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
     !props.tableLayout?.stripped &&
       props.tableLayout?.rowBorder &&
       'border-b border-border [&:not(:last-child)>td]:border-b',
@@ -396,10 +442,14 @@ function DataGridTableBodyRow<TData>({
 }
 
 /**
- * The row when the list gave it a record to open (AC-DLA-14): a real link
- * target - `role="link"`, keyboard-reachable, middle-click opens a new tab,
- * hover prefetches once. Split out so `useRouter`/`usePrefetchOnce` are only
- * called by a grid that actually navigates.
+ * The row when the list gave it a record to open (AC-DLA-14): keyboard-
+ * reachable (`tabIndex=0`, click and Enter/Space push), middle-click opens a
+ * new tab, hover prefetches once. NO `role="link"` (fix round 1) - it would
+ * REPLACE the implicit `row` role for assistive tech, so a linkable row would
+ * stop being a table row. The real, accessible `<a href>` lands in the
+ * primary cell when T4 wires `rowHref` through `ResourceList` (AC-DLA-29).
+ * Split out so `useRouter`/`usePrefetchOnce` are only called by a grid that
+ * actually navigates.
  */
 function LinkableDataGridTableBodyRow<TData>({
   href,
@@ -433,7 +483,6 @@ function LinkableDataGridTableBodyRow<TData>({
     <tr
       ref={dndRef}
       style={{ ...(dndStyle ? dndStyle : null) }}
-      role="link"
       tabIndex={0}
       data-state={table.options.enableRowSelection && row.getIsSelected() ? 'selected' : undefined}
       onClick={(event) => {
@@ -522,7 +571,7 @@ function DataGridTableBodyRowCell<TData>({
         props.tableLayout?.cellBorder && 'border-e',
         props.tableLayout?.columnsResizable && column.getCanResize() && 'truncate',
         cell.column.columnDef.meta?.cellClassName,
-        isMobilePinned && MOBILE_PIN_CLASS,
+        isMobilePinned && MOBILE_PIN_CLASS_BODY,
         props.tableLayout?.columnsPinnable &&
           column.getCanPin() &&
           '[&[data-pinned=left][data-last-col=left]]:border-e! [&[data-pinned=right][data-last-col=right]]:border-s! [&[data-pinned][data-last-col]]:border-border data-pinned:bg-background/90 data-pinned:backdrop-blur-xs"',

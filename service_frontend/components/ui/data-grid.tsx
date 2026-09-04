@@ -12,6 +12,16 @@ declare module '@tanstack/react-table' {
     cellClassName?: string;
     skeleton?: ReactNode;
     expandedContent?: (row: TData) => ReactNode;
+    /**
+     * A structural column that never carries record data - a drag handle, an
+     * icon-only affordance column, etc. Excluded from the mobile first-data-
+     * column pin (AC-DLA-13) the same way `reorderable: false` columns are;
+     * kept as its own flag because "not reorderable" and "not real data" are
+     * different reasons a column can be structural (a fixed but genuinely
+     * pinnable data column, e.g. an id column, sets `reorderable: false`
+     * without being a utility column).
+     */
+    utility?: boolean;
   }
 }
 
@@ -96,6 +106,14 @@ export interface DataGridProps<TData extends object> {
     bodyRow?: string;
     footer?: string;
     edgeCell?: string;
+    /**
+     * The ONE element that scrolls both axes (AC-DLA-13): bounded vertically
+     * by `max-h-(--grid-max-h)` so `headerSticky` has something to stick
+     * inside, and horizontally by `overflow-x-auto`. Override per list (a
+     * tall embedded grid inside a tab/dialog needs its own bound instead of
+     * the shell-relative default).
+     */
+    scroller?: string;
   };
 }
 
@@ -163,6 +181,12 @@ function DataGrid<TData extends object>({ children, table, ...props }: DataGridP
       bodyRow: '',
       footer: '',
       edgeCell: '',
+      // Bounded on the SAME element that scrolls sideways (AC-DLA-13 fix
+      // round 1) - a separate horizontal-only scroller with an outer
+      // vertical bound never actually lets the sticky header stick, since
+      // `position: sticky`'s containing block is whichever ancestor
+      // actually scrolls.
+      scroller: 'max-h-(--grid-max-h) overflow-y-auto',
     },
   };
 
