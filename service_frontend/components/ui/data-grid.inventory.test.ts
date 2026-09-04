@@ -54,6 +54,28 @@ describe('AC-DLA-13 DataGrid defaults + scroller + pinned column + tabular-nums'
     expect(src).toContain('useHorizontalOverflow');
   });
 
+  it('the scroller is vertically bounded on the SAME element that scrolls sideways (fix round 1: headerSticky is a no-op otherwise - position:sticky sticks to whichever ancestor actually scrolls)', () => {
+    const dataGridSrc = read('components/ui/data-grid.tsx');
+    expect(dataGridSrc).toContain('max-h-(--grid-max-h) overflow-y-auto');
+    expect(dataGridSrc).toMatch(/scroller\?:\s*string/);
+    const tableSrc = read('components/ui/data-grid-table.tsx');
+    expect(tableSrc).toMatch(
+      /data-slot="data-grid-scroller"[\s\S]{0,120}className=\{cn\('overflow-x-auto overscroll-x-contain', props\.tableClassNames\?\.scroller\)\}/,
+    );
+  });
+
+  it('--grid-max-h is defined in config.reui.css', () => {
+    const css = read('css/config.reui.css');
+    expect(css).toMatch(/--grid-max-h:\s*calc\(/);
+  });
+
+  it('the right-edge fade is an always-mounted opacity overlay, never conditionally rendered (fix round 1)', () => {
+    const src = read('components/ui/data-grid-table.tsx');
+    expect(src).not.toMatch(/\{isFading\s*&&\s*\(/);
+    expect(src).toMatch(/data-slot="data-grid-fade"[\s\S]{0,80}data-fade=\{isFading\}/);
+    expect(src).toMatch(/opacity-0 transition-opacity duration-\(--duration-fast\) data-\[fade=true\]:opacity-100/);
+  });
+
   it('the table body carries tabular-nums', () => {
     const src = read('components/ui/data-grid-table.tsx');
     expect(src).toMatch(/data-slot="data-grid-table"[\s\S]{0,400}tabular-nums/);
@@ -67,6 +89,38 @@ describe('AC-DLA-13 DataGrid defaults + scroller + pinned column + tabular-nums'
   it('under sm the first non-select column pins left (head + body cells)', () => {
     const src = read('components/ui/data-grid-table.tsx');
     expect(src).toContain('max-sm:sticky');
+  });
+
+  it('the mobile-pin column selector generalises past select-only (fix round 1): skips id select/__drag and meta reorderable:false/utility:true', () => {
+    const src = read('components/ui/data-grid-table.tsx');
+    expect(src).toMatch(/function firstDataColumnIndex[\s\S]{0,400}findIndex/);
+    expect(src).toContain("column.id === 'select' || column.id === '__drag'");
+    expect(src).toContain('meta?.reorderable === false');
+    expect(src).toContain('meta?.utility === true');
+    // The `utility` meta field is declared on ColumnMeta so a caller can opt
+    // a structural column out without also lying about `reorderable`.
+    const gridSrc = read('components/ui/data-grid.tsx');
+    expect(gridSrc).toMatch(/utility\?:\s*boolean/);
+  });
+
+  it('the pinned cell carries the row-select drag column exemption already used by resource-list.tsx rowReorder lists', () => {
+    // `__drag` (resource-list.tsx's grip column, id: '__drag') already sets
+    // meta: { reorderable: false } - confirms the mobile pin skips it via
+    // the SAME convention every fixed/action column in the app already uses.
+    const resourceListSrc = read('components/platform/resource-list/resource-list.tsx');
+    expect(resourceListSrc).toMatch(/id:\s*'__drag'/);
+    expect(resourceListSrc).toMatch(/id:\s*'__drag'[\s\S]{0,400}meta:\s*\{\s*reorderable:\s*false\s*\}/);
+  });
+
+  it('the pinned cell background matches its row state via group-* variants, not a flat colour (fix round 1)', () => {
+    const src = read('components/ui/data-grid-table.tsx');
+    expect(src).toContain('group-hover:max-sm:bg-muted/40');
+    expect(src).toContain('group-data-[state=selected]:max-sm:bg-muted/50');
+    expect(src).toContain('group-odd:max-sm:bg-muted/90');
+    // The row itself carries `group` so the pinned cell has an ancestor to
+    // key off - both the header row and the shared body-row class builder.
+    expect(src).toContain("'group bg-muted/40'");
+    expect(src).toContain("'group hover:bg-muted/40 data-[state=selected]:bg-muted/50'");
   });
 
   it('every grid-item wrapper around DataGridTableBase carries min-w-0 (else the PAGE scrolls sideways, not the grid)', () => {
@@ -83,14 +137,46 @@ describe('AC-DLA-13 DataGrid defaults + scroller + pinned column + tabular-nums'
     }
   });
 
-  it('zero list under components/platform/** wraps DataGridTableDnd/DataGridTableDndRows/DataGridTable in a ScrollArea', () => {
-    const offenders = walk(['components/platform'])
+  /**
+   * Fix round 1 widens the walk to `app/**` too (was `components/platform`
+   * only). The 14 genuine hits are ALL `account/**` Metronic demo pages plus
+   * the `demo1/light-sidebar` showcase team - dead code slated for wholesale
+   * deletion in T7 (AC-DLA-57/60), not touched here. A new offender anywhere
+   * else in the tree still fails the build.
+   */
+  const SCROLL_AREA_AROUND_GRID_ALLOWLIST = new Set([
+    'app/(protected)/components/demo1/light-sidebar/components/teams.tsx',
+    'app/(protected)/account/security/current-sessions/components/current-sessions.tsx',
+    'app/(protected)/account/security/device-management/components/device.tsx',
+    'app/(protected)/account/security/backup-and-recovery/components/backup.tsx',
+    'app/(protected)/account/security/allowed-ip-addresses/components/ip-addresses.tsx',
+    'app/(protected)/account/security/security-log/components/security-log.tsx',
+    'app/(protected)/account/appearance/components/api-integrations.tsx',
+    'app/(protected)/account/api-keys/components/api-integrations.tsx',
+    'app/(protected)/account/members/permissions-toggle/components/members.tsx',
+    'app/(protected)/account/members/team-members/components/members.tsx',
+    'app/(protected)/account/members/teams/components/teams.tsx',
+    'app/(protected)/account/members/team-info/components/members.tsx',
+    'app/(protected)/account/billing/history/components/invoicing.tsx',
+    'app/(protected)/account/invite-a-friend/components/invites.tsx',
+  ]);
+
+  it('zero list under app/** or components/platform/** wraps DataGridTableDnd/DataGridTableDndRows/DataGridTable in a ScrollArea, outside the recorded account/**+demo1 allowlist (deleted in T7)', () => {
+    const offenders = walk(['app', 'components/platform'])
       .filter((f) => {
         const src = read(f);
         if (!src.includes('<ScrollArea')) return false;
         return /<ScrollArea[^]*?<DataGridTable(Dnd|DndRows)?[\s/]/.test(src) && /<\/ScrollArea>/.test(src);
       })
-      .map((f) => f.replace(repoRoot + path.sep, ''));
+      .map((f) => f.replace(repoRoot + path.sep, ''))
+      .filter((f) => !SCROLL_AREA_AROUND_GRID_ALLOWLIST.has(f));
     expect(offenders).toEqual([]);
+  });
+
+  it('records the ScrollArea-around-grid allowlist as exactly 14 files', () => {
+    expect(SCROLL_AREA_AROUND_GRID_ALLOWLIST.size).toBe(14);
+    for (const f of SCROLL_AREA_AROUND_GRID_ALLOWLIST) {
+      expect(fs.existsSync(path.join(repoRoot, f)), f).toBe(true);
+    }
   });
 });

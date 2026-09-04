@@ -12,8 +12,14 @@ import * as React from 'react';
  * container fits or once the user has reached the end, or it reads as a
  * permanently half-drawn column.
  *
- * Ported verbatim (API-compatible) from `sorento_crm`
- * `hooks/use-horizontal-overflow.ts` (plan 23 section 3.2).
+ * Ported (API-compatible) from `sorento_crm` `hooks/use-horizontal-overflow.ts`
+ * (plan 23 section 3.2), with two fix-round-1 hardenings (AC-DLA-14):
+ * - the scroll handler is rAF-guarded, so a fast scroll never queues more
+ *   than one measure per frame;
+ * - the FIRST CHILD (the table / the tab strip itself) is ALSO observed, not
+ *   just the scroller - a column resize, a column hide/show, a reorder, or a
+ *   late-added tab changes the CHILD's content width while the scroller's
+ *   own box stays the same size, so watching only the scroller misses it.
  */
 export function useHorizontalOverflow<T extends HTMLElement>() {
   const ref = React.useRef<T | null>(null);
@@ -36,15 +42,28 @@ export function useHorizontalOverflow<T extends HTMLElement>() {
     const el = ref.current;
     if (!el) return;
 
-    const observer = new ResizeObserver(measure);
+    // rAF-guard: a scroll event can fire many times per frame, and only the
+    // LAST position before paint matters for this measurement.
+    let rafId: number | null = null;
+    const scheduleMeasure = () => {
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        measure();
+      });
+    };
+
+    const observer = new ResizeObserver(scheduleMeasure);
     observer.observe(el);
-    el.addEventListener('scroll', measure, { passive: true });
-    window.addEventListener('resize', measure);
+    if (el.firstElementChild) observer.observe(el.firstElementChild);
+    el.addEventListener('scroll', scheduleMeasure, { passive: true });
+    window.addEventListener('resize', scheduleMeasure);
 
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
       observer.disconnect();
-      el.removeEventListener('scroll', measure);
-      window.removeEventListener('resize', measure);
+      el.removeEventListener('scroll', scheduleMeasure);
+      window.removeEventListener('resize', scheduleMeasure);
     };
   }, [measure]);
 
