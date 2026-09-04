@@ -214,3 +214,15 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   `partial` on SALES orders is stored and read back as `open` (PO `partial` unchanged). Sorento S6
   (review + full suite) follows; any wire change will be announced before the proof completes.
   Production flip = BL-SS-049, on their release tag.
+- 2026-09-05 (Sorento review round, wire unchanged, four tightenings): (1) caps -> record `failed`
+  when exceeded: `customer_code`/`supplier_code` <= 50 chars, `spo_number` <= 50, lines <= 2000 per
+  document, `from_so_numbers` <= 50 per line; (2) `warehouse_unresolved` fires only when a
+  warehouse ref/code was SENT and missed; warnings deduped per record; (3) non-domain failures
+  return `errors {"_": "internal error; see server logs"}`; cross-company conflicts read "already
+  claimed outside this company anchor" under the field key; (4) SPO: a second DocKey for an
+  `spo_number` with OPEN rows under another DocKey -> `failed` (`errors.spo_number` "already linked
+  to another source"), closed rows do not block; quantities round half-up to integer columns; a
+  cancelled SPO reads back `closed`. Sorento's full v2 deviation list: their
+  `documentation/plans/autocount/PLAN-autocount-cross-repo-contract.md` §9 (14 items). ESB
+  follow-up: the SPO push must send one DocKey per spo_number (the filter formula + preset already
+  do; a duplicate DocNo across AutoCount PO rows would surface as this `failed`).
