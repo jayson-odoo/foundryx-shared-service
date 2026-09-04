@@ -1150,7 +1150,7 @@ class CompanyService:
             MappingRowView(
                 source_path=row.source_path,
                 transform=row.transform,
-                sorento_field=sorento_field_for(entity_type, row.canonical_field),
+                sorento_field=sorento_field_for(entity_type, row.canonical_field, row.scope),
                 canonical_field=row.canonical_field,
                 scope=row.scope,
                 is_required=row.is_required,
@@ -1522,6 +1522,8 @@ class CompanyService:
         entity_type: str,
         record: Dict[str, Any],
         draft_rows: Optional[List[MappingWriteRow]] = None,
+        *,
+        lines: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Run the REAL MappingEngine over a MOCK AutoCount record → the projected
         Sorento record + per-field results (AC-16-30). Writes NOTHING.
@@ -1531,6 +1533,13 @@ class CompanyService:
         + guarded exactly like ``replace_mapping``, but never persisted), while
         the saved provenance rows (``last_modified``, identity source) are kept so
         identity still mints. When absent, the saved rows are used as-is.
+
+        ``lines`` (sprint-5/02, AC-02-22) - a document entity's mock line
+        records, run through the SAME line rows/aggregates/status formula a
+        real sync would (``MappingEngine.project_document`` already reads
+        them off the profile's own ``detail_key`` - nesting them there is
+        the ONLY wiring this needs). ``None`` previews the header alone,
+        exactly as before this parameter existed.
         """
         self._require_entity(tenant_id, company_id, entity_type)
         company = self.get(tenant_id, company_id)
@@ -1545,7 +1554,15 @@ class CompanyService:
             entity_type=entity_type,
             database_name=company.database_name,
         )
-        return engine.project_document(record)
+        mock_record = dict(record)
+        if lines is not None and engine.detail_key is not None:
+            mock_record[engine.detail_key] = lines
+        result = engine.project_document(mock_record)
+        # A convenience top-level mirror of the mapped document's `status`
+        # (None for a non-document entity, or a rejected record) - the
+        # simulate-with-lines caller wants it without reaching into `record`.
+        result["status"] = (result.get("record") or {}).get("status")
+        return result
 
     def _draft_engine_rows(
         self,
@@ -1561,9 +1578,65 @@ class CompanyService:
         ``last_modified``) are appended so the simulation mints identity and
         advances nothing it shouldn't. Mirrors ``replace_mapping``'s guards so a
         simulate can't preview a mapping the save-gate would reject.
+
+        !!  HEADER AND LINE ROWS VALIDATE AGAINST THEIR OWN CATALOG.  !!
+        (Caught in sprint-5/02 S3 live-verify: this used to check EVERY draft
+        row - header AND line - against the header-only accepted/required
+        sets and stamp every resulting ``MappingRow`` ``scope=SCOPE_HEADER``,
+        so a document's line-scope draft (e.g. ``source_ref``/``product_ref``)
+        always 422'd "not a Sorento field accepted" the instant the operator
+        clicked Simulate with unsaved line edits - the S2 mapping-engine test
+        suite never caught it because it only exercises this path with
+        ``draft_rows=None``. Mirrors ``replace_mapping``'s header/line split.)
         """
-        accepted = accepted_field_names(entity_type)
-        required = required_field_names(entity_type)
+        header_draft = [r for r in draft_rows if getattr(r, "scope", SCOPE_HEADER) != SCOPE_LINE]
+        line_draft = [r for r in draft_rows if getattr(r, "scope", SCOPE_HEADER) == SCOPE_LINE]
+
+        engine_rows: List[MappingRow] = []
+        engine_rows.extend(
+            self._draft_engine_rows_for_scope(
+                header_draft,
+                scope=SCOPE_HEADER,
+                accepted=accepted_field_names(entity_type),
+                required=required_field_names(entity_type),
+                ref_pairs=FIELD_REF_TRANSFORMS,
+                known_vars=None,
+            )
+        )
+        engine_rows.extend(
+            self._draft_engine_rows_for_scope(
+                line_draft,
+                scope=SCOPE_LINE,
+                accepted=line_accepted_field_names(entity_type),
+                required=line_required_field_names(entity_type),
+                ref_pairs=LINE_FIELD_REF_TRANSFORMS,
+                known_vars=None,
+            )
+        )
+
+        # Keep the saved NON-deliverable rows (identity/provenance) so the
+        # simulated record still correlates and stamps its watermark source -
+        # each checked against ITS OWN scope's accepted set.
+        header_accepted = accepted_field_names(entity_type)
+        line_accepted = line_accepted_field_names(entity_type)
+        for saved in self.mapping_rows(tenant_id, company_id, entity_type):
+            accepted_for_saved = line_accepted if saved.scope == SCOPE_LINE else header_accepted
+            if saved.canonical_field not in accepted_for_saved:
+                engine_rows.append(saved)
+        return engine_rows
+
+    def _draft_engine_rows_for_scope(
+        self,
+        draft_rows: List[MappingWriteRow],
+        *,
+        scope: str,
+        accepted: frozenset,
+        required: frozenset,
+        ref_pairs: Dict[str, str],
+        known_vars: Optional[frozenset],
+    ) -> List[MappingRow]:
+        """One scope's slice of ``_draft_engine_rows`` - the guard chain
+        shared by header and line, parameterised by which catalog applies."""
         seen: set = set()
         engine_rows: List[MappingRow] = []
         for row in draft_rows:
@@ -1577,31 +1650,31 @@ class CompanyService:
             target = row.sorento_field
             if target not in accepted:
                 raise AutocountServiceError(
-                    f"'{target}' is not a Sorento field accepted for {entity_type}."
+                    f"'{target}' is not a Sorento {scope} field accepted."
                 )
             if target in seen:
                 raise AutocountServiceError(
-                    f"The Sorento field '{target}' is mapped more than once."
+                    f"The Sorento {scope} field '{target}' is mapped more than once."
                 )
             seen.add(target)
             # Same ref-transform pairing as ``replace_mapping`` (S5 review
             # BLOCKER 2) - a simulate must not preview a mapping the save
             # gate would reject.
-            if row.transform in REF_TRANSFORM_ENTITIES and FIELD_REF_TRANSFORMS.get(target) != row.transform:
+            if row.transform in REF_TRANSFORM_ENTITIES and ref_pairs.get(target) != row.transform:
                 raise AutocountServiceError(
                     f"'{row.transform}' cannot be used for '{target}' - it mints a "
                     f"reference for a different field."
                 )
-            if target in FIELD_REF_TRANSFORMS and row.transform != FIELD_REF_TRANSFORMS[target]:
+            if target in ref_pairs and row.transform != ref_pairs[target]:
                 raise AutocountServiceError(
-                    f"'{target}' must be mapped with the '{FIELD_REF_TRANSFORMS[target]}' "
+                    f"'{target}' must be mapped with the '{ref_pairs[target]}' "
                     f"transform - a plain value would send the raw AutoCount code, which "
                     f"Sorento cannot resolve as a reference."
                 )
             formula = (row.formula or "").strip() or None
             if formula is not None:
                 try:
-                    parse_formula(formula)
+                    parse_formula(formula, known_vars) if known_vars is not None else parse_formula(formula)
                 except FormulaParseError as exc:
                     raise AutocountServiceError(
                         f"The formula for '{target}' is invalid: {exc}"
@@ -1611,15 +1684,10 @@ class CompanyService:
                     source_path=source_path,
                     canonical_field=target,
                     transform=row.transform,
-                    scope=SCOPE_HEADER,
+                    scope=scope,
                     is_required=target in required,
                     is_enabled=True,
                     formula=formula,
                 )
             )
-        # Keep the saved NON-deliverable rows (identity/provenance) so the
-        # simulated record still correlates and stamps its watermark source.
-        for saved in self.mapping_rows(tenant_id, company_id, entity_type):
-            if saved.canonical_field not in accepted:
-                engine_rows.append(saved)
         return engine_rows

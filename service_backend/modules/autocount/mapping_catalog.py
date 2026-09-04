@@ -54,10 +54,13 @@ from .canonical.masters import (
 from .canonical.documents import (
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
+    ENTITY_SHIPPING_ORDER,
     CanonicalPurchaseOrder,
     CanonicalPurchaseOrderLine,
     CanonicalSalesOrder,
     CanonicalSalesOrderLine,
+    CanonicalShippingOrder,
+    CanonicalShippingOrderLine,
 )
 
 # Identity is minted, never mapped (masters.py) - so it is not a mappable target.
@@ -72,23 +75,27 @@ _REQUIRED_MASTER_FIELDS = frozenset({"code", "name", "is_active"})
 _REQUIRED_DOCUMENT_FIELDS: Dict[str, frozenset] = {
     ENTITY_SALES_ORDER: frozenset({"so_number", "status"}),
     ENTITY_PURCHASE_ORDER: frozenset({"po_number", "status"}),
+    ENTITY_SHIPPING_ORDER: frozenset({"spo_number", "status"}),
 }
 
 # sprint-5/02 (addendum §1, AC-02-14) - the customer/supplier's CODE+NAME
 # fallback fields, offered as mappable header targets alongside the ref
 # fields so an operator can fill Sorento's back-create ladder even when the
-# SQL login exposes only the document tables (no master task at all). These
-# land in a document record's `extras` bag today (they are not yet declared
-# `CanonicalSalesOrder`/`CanonicalPurchaseOrder` fields - that wiring, and the
-# contract-version gate on the actual PUSH, is sprint-5/02 slice S3/AC-02-27).
-# Offering the TARGET now (this slice) so the mapping editor is never blocked
-# on a later slice landing.
+# SQL login exposes only the document tables (no master task at all). Real
+# `CanonicalSalesOrder`/`CanonicalPurchaseOrder`/`CanonicalShippingOrder`
+# fields since slice S3 - `sink_payload(contract_version=)` gates whether
+# they actually cross the wire (AC-02-27); this catalog only decides whether
+# the mapping editor OFFERS the target.
 _SO_FALLBACK_FIELDS: Tuple[str, ...] = ("customer_code", "customer_name", "agent_code")
 _PO_FALLBACK_FIELDS: Tuple[str, ...] = ("supplier_code", "supplier_name", "agent_code")
+_SPO_FALLBACK_FIELDS: Tuple[str, ...] = ("supplier_code", "supplier_name", "agent_code")
 
 # The line-scope equivalent (addendum §1): a line's own product/warehouse
-# code+name fallbacks, same "extras bag today, wired at push in S3" story.
-_LINE_FALLBACK_FIELDS: Tuple[str, ...] = ("product_code", "product_name", "warehouse_code")
+# code+name fallbacks + `line_number` (AutoCount `Seq`, addendum §9) - real
+# `CanonicalDocumentLine` fields since S3, contract-version-2-gated at push.
+_LINE_FALLBACK_FIELDS: Tuple[str, ...] = (
+    "product_code", "product_name", "warehouse_code", "line_number",
+)
 
 # sprint-5/02 (AC-02-02/03) - a document's LINE fields are now first-class,
 # operator-editable mapping rows (the fixed column-name convention is gone).
@@ -97,6 +104,7 @@ _LINE_FALLBACK_FIELDS: Tuple[str, ...] = ("product_code", "product_name", "wareh
 _REQUIRED_LINE_FIELDS: Dict[str, frozenset] = {
     ENTITY_SALES_ORDER: frozenset({"source_ref", "product_ref", "qty_ordered"}),
     ENTITY_PURCHASE_ORDER: frozenset({"source_ref", "product_ref", "qty_ordered"}),
+    ENTITY_SHIPPING_ORDER: frozenset({"source_ref", "product_ref", "qty_ordered"}),
 }
 
 
@@ -163,6 +171,10 @@ SORENTO_FIELDS: Dict[str, Tuple[SorentoFieldDef, ...]] = {
         CanonicalPurchaseOrder.SINK_FIELDS + _PO_FALLBACK_FIELDS,
         _REQUIRED_DOCUMENT_FIELDS[ENTITY_PURCHASE_ORDER],
     ),
+    ENTITY_SHIPPING_ORDER: _accepted(
+        CanonicalShippingOrder.SINK_FIELDS + _SPO_FALLBACK_FIELDS,
+        _REQUIRED_DOCUMENT_FIELDS[ENTITY_SHIPPING_ORDER],
+    ),
 }
 
 # ── LINE catalog (sprint-5/02, AC-02-02/03) ───────────────────────────────────
@@ -177,6 +189,10 @@ SORENTO_LINE_FIELDS: Dict[str, Tuple[SorentoFieldDef, ...]] = {
     ENTITY_PURCHASE_ORDER: _accepted_line(
         CanonicalPurchaseOrderLine.SINK_FIELDS + _LINE_FALLBACK_FIELDS,
         _REQUIRED_LINE_FIELDS[ENTITY_PURCHASE_ORDER],
+    ),
+    ENTITY_SHIPPING_ORDER: _accepted_line(
+        CanonicalShippingOrderLine.SINK_FIELDS + _LINE_FALLBACK_FIELDS,
+        _REQUIRED_LINE_FIELDS[ENTITY_SHIPPING_ORDER],
     ),
 }
 
@@ -253,9 +269,21 @@ def ac_source_fields(entity_type: str) -> Tuple[str, ...]:
     return tuple(seen)
 
 
-def sorento_field_for(entity_type: str, canonical_field: str) -> Optional[str]:
+def sorento_field_for(
+    entity_type: str, canonical_field: str, scope: str = "header"
+) -> Optional[str]:
     """The Sorento-facing name for a stored ``canonical_field``, or ``None`` when
     the field is not delivered to Sorento (identity/provenance like
     ``last_modified``, or an ``extras`` key) - projected as non-delivered
-    (plan §2)."""
-    return canonical_field if canonical_field in accepted_field_names(entity_type) else None
+    (plan §2).
+
+    ``scope`` (sprint-5/02 S2 bugfix, caught in S3 live-verify) - a LINE row's
+    canonical field (``source_ref``/``product_ref``/...) never appears in the
+    HEADER accepted-field set, so a scope-blind lookup always returned
+    ``None`` for every line mapping and the Mapping tab's "Line fields" table
+    showed "No deliverable fields mapped yet" even when properly configured.
+    Checks the matching scope's accepted-field set instead."""
+    names = line_accepted_field_names(entity_type) if scope == "line" else accepted_field_names(
+        entity_type
+    )
+    return canonical_field if canonical_field in names else None

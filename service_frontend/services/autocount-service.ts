@@ -43,7 +43,6 @@ import type {
   AutocountSyncRun,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
-import { withPhase1DocumentMappingMock } from './autocount-service.mock';
 import { realAutocountService } from './autocount-service.real';
 
 export interface AutocountListQuery {
@@ -398,17 +397,14 @@ export interface AutocountService {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PHASE 1 MOCK (sprint-5/02 S1) - every AutoCount surface except document
-// field mapping is real end to end (companies, sync, staged review, ETL
-// tasks, plan 22/sprint-5/01). `withPhase1DocumentMappingMock` overlays
-// `getMapping`/`updateMapping`/`simulateMapping`/`listMappingPresets` with an
-// in-memory mock ONLY for document entities (sales_order/purchase_order/
-// shipping_order) so the two-section Mapping tab, the formula builder's
-// Variables panel, presets and Simulate-with-lines are tunable with no
-// backend; a master/GRN call passes straight through to `real`. Phase 2
-// (sprint-5/02 S2/S3 backend) swap = `export const autocountService =
-// realAutocountService` bare, same pattern as the plan-22 S2/S3 mocks before
-// it (see `services/autocount-service.mock.ts withPhase1DocumentMappingMock`
-// for the exact contract the backend must match).
+// The whole AutoCount surface is backed by FastAPI end to end (companies,
+// sync, staged review, ETL tasks, document field mapping incl. line rows/
+// aggregates/status formula/presets/Simulate-with-lines - sprint-5/02
+// S1-S3). The `withPhase1DocumentMappingMock` overlay this used to carry is
+// gone now that `GET /autocount/presets/{entityType}` and
+// `CompanyService.simulate_mapping`'s `lines=` param are both real
+// (`modules/autocount/routers/sync.py`/`services/company_service.py`); a
+// `.mock` sibling still exists as frontend-first scaffolding for the
+// Vitest suite (the house service-trio pattern).
 // ═══════════════════════════════════════════════════════════════════════════
-export const autocountService: AutocountService = withPhase1DocumentMappingMock(realAutocountService);
+export const autocountService: AutocountService = realAutocountService;

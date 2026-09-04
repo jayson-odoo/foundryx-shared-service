@@ -145,6 +145,11 @@ class FetchResult:
     # clean batch (the DB source's own mark, which need not be a datetime).
     # ``None`` = leave the stored cursor untouched.
     cursor: Optional[Dict[str, Any]] = None
+    # sprint-5/02 (AC-02-11) - headers dropped by a document task's
+    # `filterFormula` BEFORE line fetch/mapping/staging: never a delete
+    # candidate (it never enters `current_refs` either), just excluded from
+    # this run's population entirely. 0 for every non-document source.
+    skipped_by_filter: int = 0
 
 
 class EntitySource(Protocol):

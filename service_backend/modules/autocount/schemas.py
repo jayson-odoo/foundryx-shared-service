@@ -363,6 +363,10 @@ class SimulateRequest(ApiModel):
 
     record: Dict[str, Any]
     rows: Optional[List[MappingUpdateRow]] = None
+    # sprint-5/02 (AC-02-22) - a document entity's fetched line records for
+    # the picked header, so Simulate can preview the header AND its lines
+    # together (aggregates, status formula) without saving anything.
+    lines: Optional[List[Dict[str, Any]]] = None
 
 
 class SimulateFieldResult(ApiModel):
@@ -389,6 +393,29 @@ class SimulateResponse(ApiModel):
     headerFields: List[SimulateFieldResult] = []
     lineFields: List[List[SimulateFieldResult]] = []
     errors: List[Dict[str, Any]] = []
+    # sprint-5/02 (AC-02-22) - the mapped document's `status`, mirrored to the
+    # top level for a document simulate (None for a non-document entity, or
+    # when the record was rejected).
+    status: Optional[str] = None
+
+
+class MappingPresetOut(ApiModel):
+    """One documented AutoCount SQL-pack preset for a document entity
+    (sprint-5/02 S3, AC-02-16 "Use preset" action) - database-substituted,
+    read-only. Empty list from the endpoint = no preset registered for this
+    entity (a non-document entity, or a family not yet documented)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    entityType: str
+    label: str
+    headerQuery: str
+    lineQuery: Optional[str] = None
+    keyColumns: List[str] = []
+    watermarkColumn: Optional[str] = None
+    docDateColumn: Optional[str] = None
+    fromDate: Optional[str] = None
+    filterFormula: Optional[str] = None
 
 
 class SyncRunItem(ApiModel):

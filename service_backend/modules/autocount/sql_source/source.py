@@ -52,6 +52,7 @@ from ..canonical.documents import (
     is_document_entity,
 )
 from ..client import CallRecord
+from ..formula import evaluate_row_filter
 from ..mapping import IdentityError, flat_source_ref
 from ..models import (
     RUN_MODE_MANUAL,
@@ -336,6 +337,8 @@ class SqlDbSource:
         self.line_query: Optional[str] = None
         self.doc_date_column: Optional[str] = None
         self.from_date: Optional[date] = None
+        self.filter_formula: Optional[str] = None
+        self._last_skipped_by_filter = 0
         if self.is_document:
             #     !!  A DOCUMENT TASK REQUIRES A HEADER WATERMARK COLUMN.  !!
             # Save-time validation already refuses to persist a document task
@@ -414,6 +417,10 @@ class SqlDbSource:
             # fields are persisted, operator-editable `ac_field_mapping` rows
             # now (`CompanyService.replace_mapping`), never source_config
             # picks. Nothing to validate or store here any more.
+            # sprint-5/02 (AC-02-11) - a row-set filter (e.g. the PO/SPO
+            # sibling-task split), evaluated against the RAW header row
+            # before line fetch. Blank/absent = every header passes.
+            self.filter_formula = str(config.get("filterFormula") or "").strip() or None
 
         # A STORED connection id, re-resolved tenant- AND provider-scoped on
         # every run (AC-22-29) - never a bare get-by-id.
@@ -618,15 +625,20 @@ class SqlDbSource:
         # connection that dropped mid-extract must never read as "everything
         # else vanished too".
         #
-        #     !!  A DOCUMENT NEVER COMPUTES DELETE INTENTS AT ALL (plan 22 S5).  !!
-        # ``fromDate`` bounds the extract to a WINDOW, not the whole standing
-        # set - a header outside today's window is indistinguishable, from
-        # inside this diff, from one genuinely gone at the source. Computing
-        # (and guarding) delete_refs for a windowed population would be
-        # actively wrong, not just unnecessary, so documents skip this whole
-        # block; ``sync._stage_deletes`` mirrors the same skip at staging.
+        #     !!  A DOCUMENT NOW COMPUTES DELETE INTENTS TOO (sprint-5/02, S3,
+        #         AC-02-13 - reverses the plan-22 S5 decision below).  !!
+        # The plan-22 S5 reasoning was: `fromDate` bounds the extract to a
+        # WINDOW, not the whole standing set, so a header outside today's
+        # window would be indistinguishable from one genuinely gone. That
+        # reasoning does not survive scrutiny: `fromDate` is a PERMANENT scope
+        # boundary (module docstring), never a moving one-time lookback, and
+        # AutoCount dates do not travel backwards - a header that was ever
+        # inside the window stays inside it forever, so its disappearance from
+        # a later extract IS genuine evidence of deletion, not a window
+        # artifact. `sync._stage_deletes` mirrors this reversal (no more
+        # document special-case there either).
         delete_refs: List[str] = []
-        if full_extract and known and not self.is_document:
+        if full_extract and known:
             #     !!  A ZERO-ROW FULL EXTRACT IS NEVER A GENUINE TOTAL WIPE.  !!
             # (S3 review BLOCKER 2.) The ratio/absolute guard below is INERT on
             # a small (<=50-row) known population: e.g. known=20 gives a
@@ -687,6 +699,7 @@ class SqlDbSource:
                 if self.watermark_column and new_mark is not None
                 else None
             ),
+            skipped_by_filter=self._last_skipped_by_filter,
         )
 
     def _read(self, mark: Any) -> List[Dict[str, Any]]:
@@ -735,7 +748,21 @@ class SqlDbSource:
             # ``SQL_DOC_LINES_KEY`` so ``MappingEngine``'s EXISTING nested-
             # detail mechanism (built for the API path's vendor envelope)
             # reads it with zero engine changes - see ``mapping.flat_profile``.
+            self._last_skipped_by_filter = 0
             if self.is_document:
+                #     !!  THE ROW-SET FILTER RUNS BEFORE LINE FETCH (AC-02-11).  !!
+                # A header the filter drops (e.g. the SPO-numbered rows a PO
+                # task's sibling task owns) never fetches lines, never enters
+                # `rows` at all - so it cannot be staged, mapped, or counted
+                # as a delete candidate either.
+                if self.filter_formula:
+                    kept = []
+                    for header in rows:
+                        if evaluate_row_filter(self.filter_formula, header):
+                            kept.append(header)
+                        else:
+                            self._last_skipped_by_filter += 1
+                    rows = kept
                 #     !!  CAP THE FAN-OUT (S5 review SHOULD-FIX 3).  !!
                 # This is an N+1 by design (module doc) - a run with an
                 # unbounded number of changed headers would hold that many

@@ -112,7 +112,10 @@ export function sourceKindLabel(kind: string): string {
  * guaranteed 422 (foolproof-UI: only valid options).
  *
  * PARITY-PINNED (S2): `tests/test_autocount_entity_parity.py` reads this
- * literal and fails if it drifts from `ENTITY_PROFILES` minus GRN.
+ * literal and fails if it drifts from `ENTITY_PROFILES` minus GRN. Ten with
+ * `shipping_order` (sprint-5/02, AC-02-10) - a sql_db-only entity (no
+ * confirmed vendor API payload, so it is DB-only exactly like the other
+ * documents), listed last as the newest addition.
  */
 export const AC_SQL_DB_ENTITY_TYPES: string[] = [
   'customer',
@@ -124,6 +127,7 @@ export const AC_SQL_DB_ENTITY_TYPES: string[] = [
   'sales_agent',
   'sales_order',
   'purchase_order',
+  'shipping_order',
 ];
 
 /** The Add-entity picker's candidate list for a company of the given kind. */

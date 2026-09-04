@@ -2078,44 +2078,12 @@ function mockMappingPresets(databaseName: string, entityType: string): Autocount
   ];
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// PHASE 1 MOCK, NARROWED AT sprint-5/02 S2 - document field mapping.
-//
-// S2 (backend, this slice) wired the REAL `getMapping`/`updateMapping` for
-// document entities too: scope-on-write, the line catalog
-// (`lineSorentoFields`/`lineAcFields`), line-aggregate facts, the default
-// status formula + vocabulary guard, and preset-seed-on-first-save all now
-// live server-side (`modules/autocount/services/company_service.py`,
-// `presets.py`). So `getMapping`/`updateMapping` pass straight through to
-// `real` for EVERY entity now, document or not - there is no more
-// document-specific mock branch for them.
-//
-// Still mocked (S3 backend scope, not yet built): `simulateMapping`'s
-// `lines=` overload (`CompanyService.simulate_mapping` has no `lines` param
-// yet - a document Simulate-with-lines preview stays client-only) and
-// `listMappingPresets` (no `GET /autocount/presets/{entityType}` route yet -
-// the picker's "Use preset" action stays mocked). Both apply ONLY to
-// document entities; a master/GRN call already passed straight through to
-// `real` and still does. `listMappingPresets` still asks the REAL backend
-// for the company's `databaseName` (a mock company would substitute the
-// WRONG database into the preset queries).
-//
-// Phase 3 (S3 backend) swap = drop this overlay entirely and export
-// `realAutocountService` bare, same pattern as the plan-22 S2/S3 mocks
-// before it.
-// ═══════════════════════════════════════════════════════════════════════════
-export function withPhase1DocumentMappingMock(real: AutocountService): AutocountService {
-  return {
-    ...real,
-    simulateMapping(companyId, entityType, record, rows, lines) {
-      return isDocumentEntity(entityType) && lines
-        ? mockAutocountService.simulateMapping(companyId, entityType, record, rows, lines)
-        : real.simulateMapping(companyId, entityType, record, rows);
-    },
-    async listMappingPresets(companyId, entityType) {
-      if (!isDocumentEntity(entityType)) return [];
-      const detail = await real.getCompany(companyId);
-      return mockMappingPresets(detail.company.databaseName, entityType);
-    },
-  };
-}
+// sprint-5/02 S3 closed the PHASE 1 MOCK entirely: `simulateMapping`'s
+// `lines=` overload and `listMappingPresets` (`GET /autocount/presets/
+// {entityType}`) are both real server-side now (`modules/autocount/
+// routers/sync.py`, `presets.py`), same as `getMapping`/`updateMapping`
+// since S2. `autocount-service.ts` exports `realAutocountService` bare -
+// there is no more mock overlay to bind. `mockMappingPresets`/
+// `documentMappingView`/`mockMappingView` above remain as the Vitest
+// fixture data (`mockAutocountService`) the builder's frontend-first tests
+// exercise directly.

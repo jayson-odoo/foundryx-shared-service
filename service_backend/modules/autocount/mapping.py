@@ -60,11 +60,14 @@ from .canonical.masters import (
 from .canonical.documents import (
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
+    ENTITY_SHIPPING_ORDER,
     SQL_DOC_LINES_KEY,
     CanonicalPurchaseOrder,
     CanonicalPurchaseOrderLine,
     CanonicalSalesOrder,
     CanonicalSalesOrderLine,
+    CanonicalShippingOrder,
+    CanonicalShippingOrderLine,
     is_document_entity,
 )
 
@@ -939,6 +942,21 @@ PURCHASE_ORDER_PROFILE = EntityProfile(
     line_fulfilled_field="qty_received",
 )
 
+# sprint-5/02 S3 (addendum section 3) - a LINE-SET entity on Sorento's side,
+# but an ordinary document on the ESB's own fetch/mapping side: same shape as
+# the PO family (a receiving document), zero engine changes needed here.
+SHIPPING_ORDER_PROFILE = EntityProfile(
+    entity_type=ENTITY_SHIPPING_ORDER,
+    record_model=CanonicalShippingOrder,
+    identity=doc_key_identity,
+    display_path="DocNo",
+    line_model=CanonicalShippingOrderLine,
+    detail_key=SQL_DOC_LINES_KEY,
+    identity_path="DocKey",
+    line_ref_prefix=True,
+    line_fulfilled_field="qty_received",
+)
+
 ENTITY_PROFILES: Dict[str, EntityProfile] = {
     GRN_PROFILE.entity_type: GRN_PROFILE,
     SUPPLIER_PROFILE.entity_type: SUPPLIER_PROFILE,
@@ -950,6 +968,7 @@ ENTITY_PROFILES: Dict[str, EntityProfile] = {
     SALES_AGENT_PROFILE.entity_type: SALES_AGENT_PROFILE,
     SALES_ORDER_PROFILE.entity_type: SALES_ORDER_PROFILE,
     PURCHASE_ORDER_PROFILE.entity_type: PURCHASE_ORDER_PROFILE,
+    SHIPPING_ORDER_PROFILE.entity_type: SHIPPING_ORDER_PROFILE,
 }
 
 

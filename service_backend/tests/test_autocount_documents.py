@@ -337,7 +337,10 @@ def test_sorento_supported_entities_label_is_derived_from_the_entity_path_map():
     documents joined ``_ENTITY_PATH`` (plan 22 S5). The label is generated
     FROM the map so it can never drift again - every current entry (masters
     AND documents) appears, in the map's own order, joined with a trailing
-    'and' (no serial comma), and GRN (absent from the map) does not."""
+    'and' (no serial comma), and GRN (absent from the map) does not.
+
+    sprint-5/02 S3 (AC-02-10) added `shipping_order` to `_ENTITY_PATH` too -
+    exactly the kind of join this test exists to catch without going stale."""
     label = sorento_supported_entities_label()
     for entity_type in (
         "supplier",
@@ -349,9 +352,10 @@ def test_sorento_supported_entities_label_is_derived_from_the_entity_path_map():
         "sales agent",
         "sales order",
         "purchase order",
+        "shipping order",
     ):
         assert entity_type in label
-    assert label.endswith("sales agent, sales order and purchase order")
+    assert label.endswith("purchase order and shipping order")
     assert "goods received note" not in label
     assert "grn" not in label.lower()
 
@@ -832,7 +836,11 @@ def test_a_document_cap_trip_surfaces_as_a_named_error_code_through_sync(rig, mo
     assert config.last_run_error_code == "DOCUMENT_CAP"
 
 
-def test_reconcile_reports_no_delete_refs_even_when_a_header_is_missing(rig):
+def test_reconcile_now_reports_a_delete_ref_for_a_missing_header(rig):
+    """sprint-5/02 S3 (AC-02-13) reverses this: a document's missing header
+    IS now a delete candidate, exactly like a master's - the plan-22 S5
+    "documents never compute delete_refs" exemption is gone (see
+    `SqlDbSource.fetch_changes`'s own updated docstring for why)."""
     db, company, config, engine = rig
     SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_SALES_ORDER).fetch_changes(
         Watermark()
@@ -842,9 +850,9 @@ def test_reconcile_reports_no_delete_refs_even_when_a_header_is_missing(rig):
     result = SqlDbSource(
         _ctx(db, company, config), entity_type=ENTITY_SALES_ORDER, mode=RUN_MODE_RECONCILE
     ).fetch_changes(Watermark())
-    # A shrink that WOULD trip the guard for a master (1 of 2 known = 50%,
-    # over the ratio floor) is a complete non-event for a document.
-    assert result.delete_refs == []
+    # 1 of 2 known missing (50% ratio) stays UNDER the absolute floor (50), so
+    # the guard does not fire - but the ref is now a real delete candidate.
+    assert result.delete_refs == ["AED_VSOFT:D002"]
 
 
 def test_a_document_writes_one_hash_per_header_keyed_on_the_header_ref(rig):
@@ -920,8 +928,12 @@ def test_the_full_pipeline_maps_a_header_and_its_lines_with_prefixed_refs(rig):
 # ── sync._stage_deletes: documents suppress delete intents entirely ─────────
 
 
-def test_stage_deletes_suppresses_document_delete_intents(session_factory):
+def test_stage_deletes_now_stages_a_document_delete_intent(session_factory):
+    """sprint-5/02 S3 (AC-02-13) reverses this: a document's missing header
+    now stages an ordinary delete intent exactly like a master - the
+    plan-22 S5 "drop only the local hash row" suppression is gone."""
     from app.models.background_job import JOB_DONE, BackgroundJob
+    from modules.autocount.models import STAGED, STAGED_OP_DELETE
     from modules.autocount.repositories import StagedRecordRepository
     from modules.autocount.sync import _stage_deletes
 
@@ -941,12 +953,12 @@ def test_stage_deletes_suppresses_document_delete_intents(session_factory):
         db, job, [f"{DB}:GONE"], tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
         entity_type=ENTITY_SALES_ORDER, current_refs=[],
     )
-    assert staged == 0
-    assert StagedRecordRepository(db).list_for_job(DEFAULT_TENANT_ID, company.id, job.id) == []
-    # The local hash row for the missing ref IS dropped (so a re-appearance
-    # stages as a fresh add, never a phantom update) - same treatment as a
-    # shared entity.
-    assert RowHashRepository(db).all_hashes(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER) == {}
+    assert staged == 1
+    rows = StagedRecordRepository(db).list_for_job(DEFAULT_TENANT_ID, company.id, job.id)
+    assert len(rows) == 1
+    assert rows[0].op == STAGED_OP_DELETE
+    assert rows[0].status == STAGED
+    assert rows[0].source_ref == f"{DB}:GONE"
     db.close()
 
 

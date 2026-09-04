@@ -406,7 +406,8 @@ def simulate_mapping(
             else None
         )
         result = CompanyService(db).simulate_mapping(
-            current_user.tenant_id, company_id, entity_type, body.record, draft
+            current_user.tenant_id, company_id, entity_type, body.record, draft,
+            lines=body.lines,
         )
     except AutocountServiceError as exc:
         _raise(exc)

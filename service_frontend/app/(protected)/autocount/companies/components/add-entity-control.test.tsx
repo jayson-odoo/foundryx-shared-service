@@ -83,15 +83,15 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     expect(screen.queryByRole('option', { name: 'Goods received note' })).not.toBeInTheDocument();
   });
 
-  it('a DB company offers all nine sql_db entities incl. customer + supplier, never GRN', () => {
+  it('a DB company offers all ten sql_db entities incl. customer + supplier, never GRN', () => {
     render(<AddEntityControl entities={[]} sourceKind="db" onAdd={vi.fn()} />);
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(9);
+    expect(names).toHaveLength(10);
     expect(names).toEqual(
       expect.arrayContaining([
         'Customer', 'Supplier', 'Product category', 'Unit of measure', 'Warehouse',
-        'Product', 'Sales agent', 'Sales order', 'Purchase order',
+        'Product', 'Sales agent', 'Sales order', 'Purchase order', 'Shipping order',
       ]),
     );
     expect(names).not.toContain('Goods received note');
@@ -107,7 +107,7 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     );
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(7);
+    expect(names).toHaveLength(8);
     expect(names).not.toContain('Customer');
     expect(names).not.toContain('Sales order');
     expect(names).toContain('Supplier');

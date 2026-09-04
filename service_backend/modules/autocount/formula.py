@@ -1258,3 +1258,56 @@ def result_to_json(v: Value) -> Any:
             return int(v)  # type: ignore[arg-type]
         return v
     return v
+
+
+# ── row-filter formulas (sprint-5/02, AC-02-11) ───────────────────────────────
+#
+# A document task's `source_config.filterFormula` runs over the RAW header
+# row a SQL extract returned - BEFORE the mapping engine ever sees it (a
+# skipped header never fetches lines, is never staged, never a delete
+# candidate). This is a DIFFERENT calling shape from every other formula use
+# in this module: those all run against a value the CALLER already resolved
+# to a specific known-cased name (a mapping row's own `source_path`, or
+# `_header_facts`' `dict(raw)` where the formula was authored against that
+# SAME raw dict). A filter formula is authored from the DOCUMENTED preset
+# text (`presets.py`, PascalCase column ALIASES like `DocNo`) but may run
+# over a task whose own SQL text returns any case/spelling at all (a plain
+# driver-returned column is routinely snake_case, e.g. `doc_no`) - so
+# variable resolution here matches on the ALPHANUMERIC-ONLY, lower-cased
+# form of both the formula's identifier tokens and the raw row's keys
+# (`DocNo`/`doc_no`/`DOC_NO` all fold to `docno`). This never affects any
+# other formula caller: it is a distinct entry point, not a change to
+# `_Parser`/`_eval`'s exact-case matching.
+_FILTER_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]")
+
+
+def _fold_ident(name: str) -> str:
+    return _NON_ALNUM_RE.sub("", str(name).lower())
+
+
+def evaluate_row_filter(formula: Optional[str], raw: Dict[str, Any]) -> bool:
+    """Whether ``raw`` (a document header row) passes ``filterFormula``.
+
+    Returns ``True`` (row KEPT) when ``formula`` is blank, when it evaluates
+    truthy, or when it fails to parse/evaluate - a broken filter must fail
+    OPEN (never silently swallow every header; a bad formula is instead
+    caught at PUT-time by ``validate_source_config``'s own parse check).
+    """
+    text = (formula or "").strip()
+    if not text:
+        return True
+    raw_folded = {_fold_ident(k): v for k, v in raw.items()}
+    facts: Dict[str, Any] = {}
+    for token in set(_FILTER_IDENT_RE.findall(text)):
+        folded = _fold_ident(token)
+        if folded in raw_folded:
+            facts[token] = raw_folded[folded]
+    try:
+        result = evaluate_formula(text, None, facts)
+    except FormulaError:
+        return True
+    try:
+        return _to_bool(result)
+    except FormulaError:
+        return True

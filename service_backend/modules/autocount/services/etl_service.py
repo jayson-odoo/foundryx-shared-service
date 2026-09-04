@@ -34,6 +34,7 @@ from ..canonical.documents import (
     DOCUMENT_ENTITY_TYPES,
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
+    ENTITY_SHIPPING_ORDER,
     LINE_QUERY_DOC_KEY_PARAM,
     is_document_entity,
 )
@@ -112,6 +113,7 @@ ETL_ENTITY_TYPES = (
     ENTITY_SALES_AGENT,
     ENTITY_SALES_ORDER,
     ENTITY_PURCHASE_ORDER,
+    ENTITY_SHIPPING_ORDER,
     ENTITY_GOODS_RECEIVED_NOTE,
 )
 
@@ -994,6 +996,14 @@ class EtlService:
 
         On success ``last_preview_at`` is stamped, which is the ONLY thing that
         unlocks Activate (AC-22-18).
+
+        The returned dict may carry a ``warnings`` key (sprint-5/02, AC-02-12/14)
+        - non-blocking, omitted entirely when there is nothing to report:
+        ``overlappingDocuments`` (this run's own headers also known to a
+        SIBLING document task on the same company - e.g. a PO/SPO split gone
+        wrong) and ``contractVersionMismatch`` (Sorento's own advertised
+        ``/contract`` version is HIGHER than this connection's configured
+        one - advisory only, never auto-applied).
         """
         from ..sinks_sorento import SinkAnchorError, SorentoSinkError
 
@@ -1001,13 +1011,26 @@ class EtlService:
         self._require_runnable(config)
 
         sink = self.companies.sink_for_company(tenant_id, company, entity_type)
-        if not hasattr(sink, "dry_run"):
+        previewable = hasattr(sink, "dry_run")
+        records: List[Any] = []
+        current_refs: List[str] = []
+        # AC-02-12 - the overlap warning needs THIS run's own fetched refs,
+        # which requires actually reading the source; that is worth doing
+        # even for a document with no consumer wired up yet (an operator
+        # commonly builds the sibling PO/SPO tasks before pointing either at
+        # Sorento), so this extraction is NOT gated on ``previewable``.
+        if previewable or is_document_entity(entity_type):
+            records, current_refs = self._extract_and_map(
+                tenant_id, company, config, entity_type
+            )
+
+        if not previewable:
             # A logging-sink company has no consumer to ask. Reported honestly
             # rather than as a failure - and deliberately NOT stamped, so the
             # activation gate stays shut (a DB task auto-pushes; activating one
             # with nowhere to push would be a task that runs and delivers
             # nothing, forever).
-            return self._task_view(company_id, entity_type, config), {
+            payload: Dict[str, Any] = {
                 "previewable": False,
                 "sink": sink.name,
                 "reason": (
@@ -1015,8 +1038,11 @@ class EtlService:
                     "nothing to dry-run. Point the company at Sorento first."
                 ),
             }
+            warnings = self._preview_warnings(tenant_id, company_id, entity_type, current_refs, sink)
+            if warnings:
+                payload["warnings"] = warnings
+            return self._task_view(company_id, entity_type, config), payload
 
-        records = self._extract_and_map(tenant_id, company, config, entity_type)
         try:
             result = sink.dry_run([r for r in records if r is not None])
         except SinkAnchorError as exc:
@@ -1037,7 +1063,10 @@ class EtlService:
         config.last_preview_failed_count = int(result.summary.get("failed") or 0)
         self.db.commit()
         self.db.refresh(config)
-        return self._task_view(company_id, entity_type, config), {
+
+        warnings = self._preview_warnings(tenant_id, company_id, entity_type, current_refs, sink)
+
+        payload = {
             "previewable": True,
             "sink": sink.name,
             "summary": result.summary,
@@ -1053,6 +1082,62 @@ class EtlService:
                 for p in result.predictions
             ],
         }
+        if warnings:
+            payload["warnings"] = warnings
+        return self._task_view(company_id, entity_type, config), payload
+
+    def _preview_warnings(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        current_refs: List[str],
+        sink: Any,
+    ) -> Dict[str, Any]:
+        """The activation preview's non-blocking warnings (sprint-5/02,
+        AC-02-12/14) - computed the same way whether or not the company has
+        a real consumer wired up yet (see the two call sites in
+        ``preview_task``)."""
+        from ..sinks_sorento import SorentoSink
+
+        warnings: Dict[str, Any] = {}
+        if is_document_entity(entity_type) and current_refs:
+            overlaps = self._overlapping_documents(
+                tenant_id, company_id, entity_type, current_refs
+            )
+            if overlaps:
+                warnings["overlappingDocuments"] = overlaps
+        if isinstance(sink, SorentoSink):
+            advertised = sink.fetch_contract()
+            if advertised is not None and advertised > sink.contract_version:
+                warnings["contractVersionMismatch"] = {
+                    "configured": sink.contract_version,
+                    "advertised": advertised,
+                }
+        return warnings
+
+    def _overlapping_documents(
+        self, tenant_id: str, company_id: str, entity_type: str, current_refs: List[str],
+    ) -> List[Dict[str, Any]]:
+        """AC-02-12: which of THIS run's own headers are also known to a
+        SIBLING document task on the same company (a PO/SPO filter-formula
+        split that lets a DocKey through to both sides, most likely) -
+        non-blocking, purely informational."""
+        from ..repositories import RowHashRepository
+
+        refs = set(current_refs)
+        if not refs:
+            return []
+        hashes = RowHashRepository(self.db)
+        overlaps: List[Dict[str, Any]] = []
+        for other in DOCUMENT_ENTITY_TYPES:
+            if other == entity_type:
+                continue
+            other_refs = set(hashes.all_hashes(tenant_id, company_id, other))
+            shared = sorted(refs & other_refs)
+            if shared:
+                overlaps.append({"entityType": other, "sourceRefs": shared})
+        return overlaps
 
     def _extract_and_map(self, tenant_id: str, company, config, entity_type: str):
         """Run the saved query and map every row - NO staging, NO hash writes.
@@ -1104,13 +1189,12 @@ class EtlService:
                 f"'{entity_type}' is not yet extractable via a database task - "
                 "its AutoCount mapping is not implemented yet."
             ) from exc
-        # A document's LINE rows are code-generated from its source_config
-        # (plan 22 S5's "FIXED column-name convention", ``mapping.
-        # document_line_rows``), never read from ``ac_field_mapping`` -
-        # ``mapping_rows`` stays HEADER-only, same as before this slice.
-        # ``build_mapping_rows_for_run`` is the ONE gate for this (S5 review
-        # NIT - shared with ``sync.py``'s real-run path so the two can never
-        # drift). This method only ever runs against a freshly-built
+        # ``mapping_rows`` returns BOTH scopes (header AND line, sprint-5/02) -
+        # a document's line fields are real, persisted, operator-editable
+        # ``ac_field_mapping`` rows now, not a code-generated fixed-column
+        # convention. ``build_mapping_rows_for_run`` is the ONE gate here (S5
+        # review NIT - shared with ``sync.py``'s real-run path so the two can
+        # never drift). This method only ever runs against a freshly-built
         # ``SqlDbSource`` above - always the DB source, never the API path.
         rows = build_mapping_rows_for_run(
             entity_type,
@@ -1125,7 +1209,11 @@ class EtlService:
             database_name=company.database_name,
         )
         mapped = [engine.map_document(record.raw) for record in result.records]
-        return [m.record for m in mapped if m.ok]
+        # ``current_refs`` (sprint-5/02, AC-02-12) is returned alongside the
+        # mapped records so ``preview_task`` can cross-check this run's own
+        # fetched headers against a SIBLING document task's known refs
+        # (the overlap warning) without re-reading the source a second time.
+        return [m.record for m in mapped if m.ok], list(result.current_refs)
 
     def activate_task(self, tenant_id: str, company_id: str, entity_type: str) -> EtlTaskView:
         """draft|paused → active (AC-22-18).
