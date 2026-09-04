@@ -29,27 +29,44 @@ The plugin was written for a different repo. Two standing overrides:
    hand it the whole feature - scope it to the backend phase only (PRINCIPLES.md
    step 4), or run the frontend-mock phase yourself first.
 
-## Who executes each step
+## Who executes each step (delegation is part of the order)
 
-- **Main session** (holds the grill context): grill, UAC, plan, plan review, all
-  user-in-the-loop moments, orchestration. Planning is not delegated for a normal
-  feature - only module/engine-sized work (a new core engine, a new Service)
-  benefits from a dedicated exploration pass first.
-- **`coder` agent** (Agent tool, `isolation: "worktree"` when the user may be
-  coding concurrently in the main checkout - see CLAUDE.md "Concurrent plans"):
-  frontend-mock phase and backend-TDD phase implementation. Its prompt is ONLY
-  the PLAN path, the UAC path, and which phase (frontend-mock / backend) - the
-  files are the contract, don't paraphrase them into the prompt. **Every
-  coder/tester brief MUST embed PRINCIPLES.md's Design mandates + DoD gate +
-  hard-fail rules** (CLAUDE.md "Agents-team orchestration").
-- **`tester` agent**: test authoring/running when split from the coder, and the
-  Playwright E2E pass. Asserts against UAC ids; produces the Test Execution
-  Report (`AI_Agent_Orchestration_Guide.md` §6).
-- **`reviewer` agent + `/code-review`**: review phase. Optionally follow with
-  `/codex-review` (this repo's ported skill - OpenAI model family, second
-  opinion) on risky or large diffs.
-- Trivial one-file changes may run inline in the main session; say so instead of
-  silently absorbing a real slice.
+Every step has a named executor in `.claude/agents/` (ported from sorento-crm's crew v2,
+2026-09-05). Running a step in the wrong seat - e.g. a `general-purpose` agent doing a
+coder/tester/reviewer job - is the same process violation as skipping the step.
+
+- **Main session** (the captain, strongest model, holds the grill context): grill, UAC, plan,
+  plan review (`lavish` markup + grill), all user-in-the-loop moments, orchestration, briefs.
+  Planning is NEVER delegated for a normal feature; `planner` exists only for module/engine-sized
+  work needing parallel exploration.
+- **`tester` agent** (sonnet): writes Phase 2's failing tests BEFORE the coder sees the slice -
+  from the UAC, the Phase 1 contract block in the service file, and the captain's test list (one
+  line per UAC id: test name + the assertion in words) - with no implementation to look at,
+  confirms each fails for the right reason, commits `test(<slug>): red tests for <slice>`. Also
+  runs the end-of-lane browser verification (`agent-browser`, headless) and writes the AC-keyed
+  Test Execution Report.
+- **`coder` agent** (sonnet): Phase 1 and Phase 2 implementation, ONE agent kept alive for the
+  whole lane - the captain continues it with a message for later slices and fix rounds instead of
+  respawning, so worktree state and context carry over. Spawn with its own worktree
+  (`.claude/worktrees/<lane>/`, own `npm install`, `.env`/`.venv`/`.env.local` symlinked, NEVER
+  `node_modules`). Its prompt is ONLY the PLAN path, the UAC path, the slice id and the phase -
+  the files are the contract. In Phase 2 it makes the tester's red tests green; it never authors
+  or deletes a test.
+- **`reviewer`** (opus) + **`security-reviewer`** (opus) + browser verification (`tester`):
+  Phase 3, run in **parallel**, once per lane, not per slice. `reviewer` runs the hard-fail rules,
+  the DoD gate and a **kill test** (disable the implementing branch for 2-3 UAC lines, the test
+  must go red). `security-reviewer` runs only when the diff touches its trigger paths (auth, RBAC,
+  tenant scoping, public/API-key gateways, uploads/storage, secrets, SQL source). Optional
+  `/codex-review` for a cross-model second opinion on large diffs.
+- **`guide-writer`** (sonnet): after review passes, when the lane touched a consumer-visible
+  contract (public gateway, sink payload) - updates the ONE guide file for that contract.
+- **Model routing**: execution agents run on Sonnet; review + planner on Opus. Escalate a single
+  spawn to Opus (`model: "opus"` on the Agent call, never by editing the agent files) only for
+  tangled architecture, a bug that survived a Sonnet pass, a critical security review, or drift
+  control (a Sonnet coder that rewrote the plan). Never spawn subagents on Fable. Name the reason
+  in the brief.
+- Trivial one-file changes may run inline in the main session; say so instead of silently
+  absorbing a real slice.
 
 ## The pipeline
 
@@ -82,9 +99,10 @@ Service-Repository, tenant scoping) and must not become the shipped code.
 
 ### Step 3 - Review the plan
 
-`mattpocock-skills:grilling` again, this time on the written plan itself - grill
-before code, always. Render it with the `lavish` skill first if a visual
-mockup/diagram will sharpen the user's feedback.
+Render the plan with **`lavish-axi`** (`.lavish/<sprint>-<NN>-<slug>.html`, playbooks `plan` +
+`input`, this app's design tokens) so the user marks it up in the browser, `lavish-axi poll`
+for the feedback, then `mattpocock-skills:grilling` on the plan itself. Grill before code,
+always. This step is mandatory, not optional.
 
 ### Step 4 - Component-library discipline (applies throughout)
 
@@ -114,6 +132,11 @@ Models → migration → schema → service → route (Service-Repository layeri
 matching the Phase 1 contract exactly. Then swap the mock for the real
 `api-client` call at the service boundary - a one-line change.
 
+**Tester writes the red tests FIRST.** Before the coder opens the slice, the `tester` agent
+gets the UAC, the Phase 1 contract block and the captain's test list, writes the failing tests
+with no implementation to look at, confirms each fails for the right reason, commits them.
+**Then the same lane `coder` makes them green** (continued via message, not respawned).
+
 **Red → green → refactor, not test-after.** `mattpocock-skills:tdd` drives this
 loop, scoped to this phase only (never the whole feature - see the override
 above). Write the failing test, watch it fail for the right reason, implement
@@ -142,8 +165,10 @@ full:
 5. Verified from the user's perspective - real clicks, real data, fresh build,
    **375px AND 1280px**, correct ports (3001 FE / 8001 backend).
 
-### Step 8 - Review
+### Step 8 - Review, in parallel
 
+Once the coder is green for the whole lane, run `reviewer` + `security-reviewer` (when in
+scope) + the `tester`'s browser verification **in parallel, once per lane**. The reviewer's
 `code-review` (this session's built-in skill - the repo's own diff review) is
 the primary pass; `mattpocock-skills:code-review` (parallel Standards + Spec
 review) is a useful second lens for a large or ambiguous diff. Then
@@ -176,11 +201,14 @@ active plan.
 | 1b terms shifting | `mattpocock-skills:domain-modeling` | main session |
 | 2 UAC + plan | manual - files are the contract | main session (plan mode) |
 | 2b design options | `mattpocock-skills:prototype` (throwaway) | main session |
-| 3 plan review | `lavish` then `mattpocock-skills:grilling` | main session (user in loop) |
+| 3 plan review | `lavish-axi` (mandatory) then `mattpocock-skills:grilling` | main session (user in loop) |
 | 5 Phase 1 FE mock | `agent-browser` CLI to verify (headless) | `coder` agent (worktree if concurrent) |
-| 6 Phase 2 TDD | `mattpocock-skills:tdd` (scoped to backend phase) | `coder` agent; tests may split to `tester` |
+| 6 red tests | UAC + contract block + captain's test list, no implementation | `tester` agent, BEFORE the coder |
+| 6 Phase 2 TDD | `mattpocock-skills:tdd` (scoped to backend phase) | the lane `coder` agent (same instance) |
 | 6 hard bugs | `mattpocock-skills:diagnosing-bugs` | main session or `coder` agent |
-| 8 review | `code-review` (built-in), then `mattpocock-skills:code-review`, then `/codex-review` | `reviewer` agent + main session |
+| 8 review | `code-review` (built-in) + kill test, then optional `/codex-review` | `reviewer` agent, parallel with `security-reviewer` + tester browser verify |
+| 8 security review | trigger paths in `.claude/agents/security-reviewer.md` | `security-reviewer` agent |
+| 8 contract guide | ONE guide file per contract | `guide-writer` agent, after review |
 | periodic | `mattpocock-skills:codebase-design` | main session |
 | context capture | `mattpocock-skills:research` | main session or background agent |
 

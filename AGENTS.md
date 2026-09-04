@@ -485,6 +485,23 @@ As the codebase grows the early design principles (frontend-first, reuse, foolpr
 4. **A new core/module permission does NOT reach existing tenants' Admin** - the grant is computed at provision/seed. Adding a perm needs a grant sweep (migration or `tenant_admin_grant` re-run) for existing tenants, else the feature silently 403s / the action is invisible. (Recurring - the Nominate action was hidden until re-granted.)
 5. **Verify end-to-end with REAL data from the user's perspective**, at 375px AND 1280px, on a freshly REBUILT frontend (`rm -rf .next && npm run build`) against correctly-owned ports (3001 frontend, 8001 = Foundryx - kill any sorento squatting 8001). Tests passing ≠ user-verifiable: conftest uses `create_all`, so a broken Alembic migration (e.g. a revision id > 32 chars vs `alembic_version.version_num VARCHAR(32)`) passes the suite yet breaks every real deploy.
 
+### Subagent crew v2 (standing rule, 2026-09-05 - ported from sorento-crm)
+The crew lives in `.claude/agents/`: `coder`, `tester`, `reviewer`, `security-reviewer`,
+`planner`, `guide-writer`, `triage`. `/feature` (`.claude/skills/feature/SKILL.md`) names the
+executor for every step; a `general-purpose` agent doing one of these jobs is a process
+violation. Rules that changed the old team: **tester writes the red tests BEFORE the coder**
+(from the UAC + the Phase 1 contract block + the captain's test list); **one coder per lane,
+continued via message, never respawned** (worktree state + context carry over); **reviewer +
+security-reviewer + tester browser-verify run in PARALLEL once per lane**, not per slice, and the
+reviewer runs a **kill test** (disable the implementing branch, the test must go red); **plan
+review = `lavish-axi` markup + grill, mandatory**. Model routing: execution on Sonnet
+(`coder`/`tester`/`guide-writer`/`triage`), review + planner on Opus; escalate a single spawn to
+Opus only for tangled architecture, a bug that survived Sonnet, a critical security review, or
+drift control - never edit the agent files to do it, never spawn on Fable. Browser verification
+= `agent-browser` CLI, headless; Playwright MCP is retired for verification. Worktrees:
+`.env`/`.venv`/`.env.local` symlinked, `node_modules` installed per worktree, isolated ports
+:8002/:3002.
+
 ### Agents-team orchestration (what works - sprint-4/05)
 Building a slice with a subagent team (coder → tester → reviewer, looped on findings) held quality far better than solo as the codebase grew. Make it repeatable:
 - **Every coder/tester brief MUST embed the Definition-of-Done gate above + the hard-fail rules** - a subagent starts with zero project memory, so the brief is its only guardrail. Don't assume it knows frontend-first/reuse/foolproof-UI; state them.

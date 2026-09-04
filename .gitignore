@@ -60,3 +60,13 @@ Thumbs.db
 .claude/*
 !.claude/skills/
 !.claude/skills/**
+
+# crew v2 agent definitions + skills are part of the repo process (sorento-crm parity)
+!.claude/
+.claude/*
+!.claude/agents/
+!.claude/skills/
+!.claude/handoffs/
+.claude/handoffs/*
+!.claude/handoffs/README.md
+.lavish/
