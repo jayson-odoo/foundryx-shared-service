@@ -46,7 +46,7 @@ orders, CNY default, back-create, post-write hooks) - that delta is the addendum
   catalog` / builder). Formula catalog endpoint lists the aggregates as variables for document
   entities (`scope: "aggregate"`).
 - Default status formula seeded by the preset:
-  `if(Cancelled == "T", "cancelled", if(lines.open_count == 0, "closed", "open"))`. Save-time:
+  `if(Cancelled == "T", "cancelled", if(lines.count == 0, "open", if(lines.open_count == 0, "closed", "open")))`. Save-time:
   string literals in a `status` formula must be in the vocabulary (422).
 
 ### 2.3 Shipping orders (AC-02-10..12)

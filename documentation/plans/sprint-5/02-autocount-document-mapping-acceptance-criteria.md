@@ -80,9 +80,13 @@ whole document and sweeps unnamed lines (deleted, or cancelled in place when ref
 **Given** an existing document task whose `source_config` carries `lineKeyColumn` /
 `lineProductColumn` / `lineWarehouseColumn`
 **When** the module migration runs
-**Then** three line rows are created (`→source_ref` string, `→product_ref` ref_product,
-`→warehouse_ref` ref_warehouse) once, idempotently, and the three keys are removed from
-`source_config`
+**Then** the three picker rows are created (`→source_ref` string, `→product_ref` ref_product,
+`→warehouse_ref` ref_warehouse) PLUS one row per entry of the former fixed convention
+(`DOCUMENT_LINE_FIXED_FIELDS`: SO `qty_ordered`, `qty_delivered`, `unit_price`, `discount`,
+`line_total`, `uom`, `required_date`; PO/SPO `qty_ordered`, `qty_received`, `unit_cost`,
+`discount`, `line_total`, `uom`, `currency`, `expected_date`; `source_path == canonical_field`),
+once, idempotently, and the three keys are removed from `source_config`; a repair migration
+(0011) completes tasks that 0010 left with only the three picker rows (review B1)
 **And** `validate_source_config` no longer requires them.
 
 ### AC-02-06 `[BE]` `line_result_columns` persisted on the task
@@ -105,7 +109,8 @@ entities.
 ### AC-02-08 `[BE]` Default status formula
 **Given** a document task born from the preset
 **Then** its `status` row carries the formula
-`if(Cancelled == "T", "cancelled", if(lines.open_count == 0, "closed", "open"))`
+`if(Cancelled == "T", "cancelled", if(lines.count == 0, "open", if(lines.open_count == 0, "closed", "open")))`
+(a header with ZERO mapped lines is `open`, mirroring the SQL pack's CASE - review S5)
 **And** the output vocabulary stays `open|partial|fulfilled|closed|cancelled` (422 at save for a
 literal outside it; runtime = record failed).
 
