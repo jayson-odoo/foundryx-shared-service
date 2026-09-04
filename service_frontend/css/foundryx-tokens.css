@@ -147,22 +147,27 @@
   --destructive: var(--foundryx-danger);
   --destructive-foreground: var(--foundryx-white);
 
+  /* success/info/warning solid hues clear 4.5:1 against black ink but NOT against
+     white (AC-DLA-07, css/design-tokens.test.ts) - the foreground was white before
+     this pass. The base hue is identical light/dark (Tokens Studio export), so a
+     single --foundryx-black (a true constant, never overridden under .dark) foreground
+     stays correct in both themes rather than flipping via --foundryx-dark. */
   --success: var(--foundryx-success);
-  --success-foreground: var(--foundryx-white);
+  --success-foreground: var(--foundryx-black);
   --success-active: var(--foundryx-success-active);
   --success-accent: var(--foundryx-success-accent);
   --success-soft: var(--foundryx-success-soft);
   --success-transparent: var(--foundryx-success-transparent);
 
   --info: var(--foundryx-info);
-  --info-foreground: var(--foundryx-white);
+  --info-foreground: var(--foundryx-black);
   --info-active: var(--foundryx-info-active);
   --info-accent: var(--foundryx-info-accent);
   --info-soft: var(--foundryx-info-soft);
   --info-transparent: var(--foundryx-info-transparent);
 
   --warning: var(--foundryx-warning);
-  --warning-foreground: var(--foundryx-white);
+  --warning-foreground: var(--foundryx-black);
   --warning-active: var(--foundryx-warning-active);
   --warning-accent: var(--foundryx-warning-accent);
   --warning-soft: var(--foundryx-warning-soft);
