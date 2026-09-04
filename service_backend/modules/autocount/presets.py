@@ -209,7 +209,11 @@ PO_PRESET = DocumentPreset(
         # PODTL's own line, a separate concern - see the header query's
         # own comment above).
         PresetField("CurrencyCode", "currency", "string"),
-        PresetField("Note", "internal_note", "string"),
+        # SF-a (code-review round) - the pack is explicit: "Do NOT map
+        # internal_note on PO" (section 3). A Note->internal_note row was
+        # left over from copying SO's shape; PO's header query no longer
+        # even selects Note (SF2), so this row would have sat is_enabled
+        # =False forever - deleted outright rather than left disabled.
         PresetField("Cancelled", "status", "string", formula=DEFAULT_STATUS_FORMULA, required=True),
         PresetField("CreditorCode", "supplier_code", "string"),
         PresetField("CreditorName", "supplier_name", "string"),
