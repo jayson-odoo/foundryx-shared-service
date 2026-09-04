@@ -135,6 +135,9 @@ SO_PRESET = DocumentPreset(
         PresetField("ItemCode", "product_code", "string"),
         PresetField("Description", "product_name", "string"),
         PresetField("Location", "warehouse_code", "string"),
+        # S3 (AC-02-27) - the line queries already SELECT Seq; without a
+        # preset row consuming it, line_number never reaches Sorento.
+        PresetField("Seq", "line_number", "string"),
     ),
 )
 
@@ -208,6 +211,9 @@ PO_PRESET = DocumentPreset(
         PresetField("ItemCode", "product_code", "string"),
         PresetField("Description", "product_name", "string"),
         PresetField("Location", "warehouse_code", "string"),
+        # S3 (AC-02-27) - the line queries already SELECT Seq; without a
+        # preset row consuming it, line_number never reaches Sorento.
+        PresetField("Seq", "line_number", "string"),
     ),
 )
 
@@ -251,6 +257,9 @@ SPO_PRESET = DocumentPreset(
         PresetField("ItemCode", "product_code", "string"),
         PresetField("Description", "product_name", "string"),
         PresetField("Location", "warehouse_code", "string"),
+        # S3 (AC-02-27) - the line queries already SELECT Seq; without a
+        # preset row consuming it, line_number never reaches Sorento.
+        PresetField("Seq", "line_number", "string"),
     ),
 )
 
