@@ -2,15 +2,10 @@
 
 import { Fragment } from 'react';
 import Link from 'next/link';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { useSettings } from '@/providers/settings-provider';
 import { Button } from '@/components/ui/button';
 import { Container } from '@/components/common/container';
+import { PageHeader } from '@/components/platform/page-header';
 import { PageNavbar } from '@/app/(protected)/account/page-navbar';
 import { AccountGetStartedContent } from '@/app/(protected)/auth/get-started/content';
 
@@ -22,10 +17,9 @@ export default function AccountGetStartedPage() {
       <PageNavbar />
       {settings?.layout === 'demo1' && (
         <Container>
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>
+          <PageHeader
+            description={
+              <>
                 <div className="flex items-center gap-2 text-sm font-medium">
                   <span className="text-foreground font-medium">
                     Jayson Tatum
@@ -41,9 +35,9 @@ export default function AccountGetStartedPage() {
                     <Link href="/account/members/team-info">Personal Info</Link>
                   </Button>
                 </div>
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
+              </>
+            }
+          />
         </Container>
       )}
       <Container>

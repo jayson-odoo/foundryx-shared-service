@@ -2,15 +2,10 @@
 
 import { Fragment, useState } from 'react';
 import Link from 'next/link';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { WelcomeMessageDialog } from '@/partials/dialogs/welcome-message-dialog';
 import { Button } from '@/components/ui/button';
 import { Container } from '@/components/common/container';
+import { PageHeader } from '@/components/platform/page-header';
 import { AccountGetStartedContent } from '@/app/(protected)/account/home/get-started/content';
 import { PageNavbar } from '@/app/(protected)/account/page-navbar';
 
@@ -24,10 +19,9 @@ export default function AuthWelcomeMessagePage() {
     <Fragment>
       <PageNavbar />
       <Container>
-        <Toolbar>
-          <ToolbarHeading>
-            <ToolbarPageTitle />
-            <ToolbarDescription>
+        <PageHeader
+          description={
+            <>
               <div className="flex items-center gap-2 text-sm font-medium">
                 <span className="text-foreground font-medium">
                   Jayson Tatum
@@ -43,9 +37,9 @@ export default function AuthWelcomeMessagePage() {
                   <Link href="/account/members/team-info">Personal Info</Link>
                 </Button>
               </div>
-            </ToolbarDescription>
-          </ToolbarHeading>
-        </Toolbar>
+            </>
+          }
+        />
       </Container>
       <Container>
         <AccountGetStartedContent />
