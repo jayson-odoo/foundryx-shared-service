@@ -209,9 +209,9 @@ export function TemplateBuilderView({ channelId, templateId }: TemplateBuilderVi
           </div>
         </div>
 
-        <h1 className="font-heading text-xl font-semibold">
+        <h2 className="font-heading text-xl font-semibold">
           {templateId ? doc.name || 'Template' : 'New template'}
-        </h1>
+        </h2>
 
         <div className="flex flex-col gap-4 lg:flex-row">
           <Card className="lg:flex-1">
