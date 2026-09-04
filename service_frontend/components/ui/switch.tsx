@@ -83,7 +83,7 @@ const switchThumbVariants = cva(
 );
 
 const switchIndicatorVariants = cva(
-  'text-sm font-medium absolute mx-[2px] top-1/2 w-1/2 -translate-y-1/2 flex pointer-events-none items-center justify-center text-center transition-transform duration-300 [transition-timing-function:cubic-bezier(0.16,1,0.3,1)]',
+  'text-sm font-medium absolute mx-[2px] top-1/2 w-1/2 -translate-y-1/2 flex pointer-events-none items-center justify-center text-center transition-transform ease-(--ease-standard) duration-(--duration-slow)',
   {
     variants: {
       state: {

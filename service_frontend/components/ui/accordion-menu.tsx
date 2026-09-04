@@ -330,7 +330,7 @@ function AccordionMenuSubTrigger({
           <ChevronDown
             data-slot="accordion-menu-sub-indicator"
             className={cn(
-              'ms-auto size-3.5! shrink-0 text-muted-foreground transition-transform duration-200 [[data-state=open]>&]:-rotate-180',
+              'ms-auto size-3.5! shrink-0 text-muted-foreground transition-transform ease-(--ease-standard) duration-(--duration-base) [[data-state=open]>&]:-rotate-180',
             )}
           />
         </>
@@ -388,7 +388,7 @@ function AccordionMenuSubContent({
       data-slot="accordion-menu-sub-content"
       className={cn(
         'ps-5',
-        'overflow-hidden transition-all data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down',
+        'overflow-hidden transition-colors ease-(--ease-standard) data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down',
         classNames?.subContent,
         className,
       )}
