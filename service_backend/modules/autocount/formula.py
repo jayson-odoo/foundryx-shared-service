@@ -810,24 +810,32 @@ def string_literals(parsed: ParsedFormula) -> List[str]:
     the raw material for the status-vocabulary save gate: a formula targeting
     ``status`` may only use the fixed five words as string literals.
 
-    Descends into ``if``/``coalesce`` branches (the only functions that PASS
-    AN ARGUMENT THROUGH as their result) and non-comparison ``_Binary``
-    nodes (string concatenation, arithmetic) - anywhere a literal could
-    surface as the eventual output. Does NOT descend into:
+    Descends into non-comparison ``_Binary`` nodes (string concatenation,
+    arithmetic) and every VALUE-RETURNING call's arguments (``lower``/
+    ``upper``/``trim``/``replace``/``concat``/``default``/``formatDate``/
+    ``if``/``coalesce``, ... - a literal fed to any of these can surface
+    unchanged or reshaped as the eventual output) - anywhere a literal
+    could plausibly become the formula's result. Does NOT descend into:
     - a COMPARISON ``_Binary``'s operands (``==``/``!=``/``<``/``<=``/``>``/
       ``>=``) - a comparison always evaluates to a bool that only GATES a
       branch, so its operands can never themselves be the formula's result
       (review-round F3 fix: the seeded ``DEFAULT_STATUS_FORMULA`` compares
       ``Cancelled == "T"`` - "T" is a raw AutoCount boolean flag being
       tested, never a candidate status value);
-    - any OTHER function call's arguments (review-round SF2/nit fix:
-      ``startswith(DocNo, "SPO")``'s ``"SPO"`` is a MATCH TARGET for a
-      bool-returning predicate, exactly the same class as a comparison
-      operand - only ``if``/``coalesce`` pass an argument through
-      UNCHANGED as their own result).
+    - a PREDICATE call's arguments (``_PREDICATE_CALLS`` - ``contains``/
+      ``startswith``/``bool``, the fixed, short list of functions that
+      always return a bool and whose args are MATCH TARGETS/inputs, never
+      a value that could become the string result) - review-round SF-b
+      fix: the FIRST version of this deny-list was inverted into an
+      allow-list of only ``if``/``coalesce``, which over-corrected and
+      made a genuinely value-returning call like
+      ``if(startswith(DocNo, "SPO"), upper(trim(status)), "open")``'s
+      ``upper(trim(...))`` branch invisible to the vocabulary gate too -
+      a deny-list of the FEW predicate calls is the correct shape, not an
+      allow-list of the many value-returning ones.
     """
     out: List[str] = []
-    _PASSTHROUGH_CALLS = frozenset({"if", "coalesce"})
+    _PREDICATE_CALLS = frozenset({"contains", "startswith", "bool"})
 
     def walk(node: object) -> None:
         if isinstance(node, _Lit):
@@ -841,7 +849,7 @@ def string_literals(parsed: ParsedFormula) -> List[str]:
             walk(node.left)
             walk(node.right)
         elif isinstance(node, _Call):
-            if node.name not in _PASSTHROUGH_CALLS:
+            if node.name in _PREDICATE_CALLS:
                 return
             for arg in node.args:
                 walk(arg)
