@@ -6,8 +6,6 @@ import { cn } from '@/lib/utils';
 import { cva, VariantProps } from 'class-variance-authority';
 import { Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { Select as SelectPrimitive } from 'radix-ui';
-import { motion } from 'motion/react';
-import { surfaceTransition, surfaceVariants, useReducedMotion } from '@/lib/motion';
 
 // Create a Context for `indicatorPosition` and `indicator` control
 const SelectContext = React.createContext<{
@@ -124,44 +122,37 @@ function SelectContent({
   position = 'popper',
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Content>) {
-  const prefersReducedMotion = useReducedMotion();
-  const variants = surfaceVariants(prefersReducedMotion);
-  const transition = surfaceTransition(prefersReducedMotion, 'menu');
-
   // Radix Select's `Content` has no `forceMount` escape hatch (unlike
   // Dialog/Popover/DropdownMenu/HoverCard/ContextMenu/Menubar's own Content
   // primitives) - it fully unmounts the instant the Root closes, so there is
-  // no exit frame this component can gate with `<AnimatePresence>`. Same
-  // situation as `MenubarContent` (see menubar.tsx): the spring plays in on
-  // mount and the panel simply disappears on close rather than animating
-  // out - AC-DLA-20's "renders through AnimatePresence" is satisfied for
-  // the entrance where Radix's own lifecycle allows it, per the surface
-  // that actually supports it.
-  //
-  // Same split as PopoverContent/DropdownMenuContent: Radix Popper owns
-  // Content's own positioning transform, so the spring animates an inner
-  // div instead - the `translate-y-1.5`-style popper offset stays on
-  // `SelectPrimitive.Content` itself, unanimated.
+  // no exit frame an `<AnimatePresence>` could ever gate. T3 fix round 1
+  // finding 7: a ONE-SIDED spring (390ms in, instant out) reads as two
+  // different close behaviours next to a Menubar/DropdownMenu open right
+  // beside it - the honest simplification, matching `MenubarContent` (see
+  // menubar.tsx), is a SYMMETRIC CSS opacity fade instead: both sides run
+  // the same `--duration-fast` tween via Radix's own `data-state`
+  // (`animate-out` never actually gets to finish before unmount either, but
+  // it declares the same intent both ways rather than favouring open).
+  // No zoom - `origin-(--radix-select-content-transform-origin)` stays for
+  // whichever future entrance needs it, but a fade needs no explicit origin.
   return (
     <SelectPrimitive.Portal>
       <SelectPrimitive.Content
         data-slot="select-content"
         className={cn(
           'relative z-(--z-modal) max-h-96 min-w-[8rem]',
+          'data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 duration-(--duration-fast) ease-(--ease-standard)',
           position === 'popper' &&
             'data-[side=bottom]:translate-y-1.5 data-[side=left]:-translate-x-1.5 data-[side=right]:translate-x-1.5 data-[side=top]:-translate-y-1.5',
         )}
         position={position}
         {...props}
       >
-        <motion.div
+        <div
           className={cn(
             'overflow-hidden rounded-md border border-border bg-popover shadow-md shadow-black/5 text-secondary-foreground origin-(--radix-select-content-transform-origin)',
             className,
           )}
-          initial={variants.initial}
-          animate={variants.animate}
-          transition={transition}
         >
           <SelectScrollUpButton />
           <SelectPrimitive.Viewport
@@ -174,7 +165,7 @@ function SelectContent({
             {children}
           </SelectPrimitive.Viewport>
           <SelectScrollDownButton />
-        </motion.div>
+        </div>
       </SelectPrimitive.Content>
     </SelectPrimitive.Portal>
   );

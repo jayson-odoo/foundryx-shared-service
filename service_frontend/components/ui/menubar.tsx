@@ -126,16 +126,16 @@ function MenubarContent({
   sideOffset = 8,
   ...props
 }: React.ComponentProps<typeof MenubarPrimitive.Content>) {
-  const prefersReducedMotion = useReducedMotion();
-  const variants = surfaceVariants(prefersReducedMotion);
-  const transition = surfaceTransition(prefersReducedMotion, 'menu');
-
-  // No exit here: the panel plays the menu spring in on mount and simply
-  // unmounts on close, because Radix still owns Content's mount/unmount
-  // lifecycle (no forceMount, no <AnimatePresence> gate) - MenubarMenu takes
-  // a `value` this repo's Menubar wrapper does not derive an open signal
-  // from, and Menubar has no real product call site yet to justify the
-  // extra context plumbing (ported unchanged from sorento_crm).
+  // T3 fix round 1 finding 7: no exit here regardless, because Radix still
+  // owns Content's mount/unmount lifecycle (no `forceMount`, no
+  // `<AnimatePresence>` gate) - MenubarMenu takes a `value` this repo's
+  // Menubar wrapper does not derive an open signal from, and Menubar has no
+  // real product call site yet to justify the extra context plumbing. Given
+  // that, a ONE-SIDED spring entrance (390ms in, instant unmount out) was
+  // the wrong asymmetry - the honest simplification, matching
+  // `SelectContent` (see select.tsx), is a SYMMETRIC CSS opacity fade: both
+  // directions run the same `--duration-fast` tween via Radix's own
+  // `data-state`, no zoom.
   return (
     <MenubarPrimitive.Portal>
       <MenubarPrimitive.Content
@@ -143,20 +143,17 @@ function MenubarContent({
         align={align}
         alignOffset={alignOffset}
         sideOffset={sideOffset}
-        className="z-(--z-modal)"
+        className="z-(--z-modal) data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 duration-(--duration-fast) ease-(--ease-standard)"
         {...props}
       >
-        <motion.div
+        <div
           className={cn(
             'space-y-0.5 min-w-[12rem] overflow-hidden rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-md shadow-black/5 origin-(--radix-menubar-content-transform-origin)',
             className,
           )}
-          initial={variants.initial}
-          animate={variants.animate}
-          transition={transition}
         >
           {children}
-        </motion.div>
+        </div>
       </MenubarPrimitive.Content>
     </MenubarPrimitive.Portal>
   );
