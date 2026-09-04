@@ -21,3 +21,63 @@ Branch `sprint-4/23-T0-playwright-retirement`, worktree `.claude/worktrees/s23-t
 - **One unrelated pre-existing lint error was fixed in passing** (`services/import-service.mock.ts:33` - unused `_i: CreateImportInput` parameter/import, `@typescript-eslint/no-unused-vars`) because it blocked the `npm run lint` gate this slice's DoD requires; the fix is a one-line removal with zero behavior change, called out here for visibility since it is outside T0's Playwright scope.
 - **Two directories were judged out of scope and excluded from the guard test, both documented inline in the test file:** `documentation/preliminary_planning/**` (pre-repo founding planning docs, treated as historical record like `documentation/plans/**` since rewriting them to describe today's tooling would misrepresent history) and `service_backend/modules/meetings/bot/**` (a shipped Google-Meet-joining bot that genuinely depends on the `playwright` PyPI package as its own headless-browser engine - an unrelated product feature, not this repo's E2E test tooling).
 - `documentation/backlogs/backlog.md` (BL-061, BL-069) and `documentation/development_process/{AI_Agent_Orchestration_Guide.md,EMS_Developer_Governance_Framework.md}` and `documentation/research/template-engine-builder-landscape.md` were swept and reworded even though the brief's literal sweep grep excludes `documentation/` - rule (a) explicitly calls these "process guides" out for rewriting, and the AC-DLA-69 guard walks them.
+
+---
+
+## T0 - Fix round 1 (code review)
+
+`/code-review` returned 10 confirmed findings against the T0 slice above. The UAC was amended at
+`5661cbd` (AC-DLA-68/69/70 in `23-design-language-alignment-acceptance-criteria.md`) to define
+"done" for this round; findings are grouped under the amended AC they close. Same branch/worktree.
+The worktree's `node_modules` was fixed to a real `npm ci` install (not a symlink) by the main
+session before this round started - `npm run build` was already green going in; this round did
+not touch `node_modules`.
+
+| # | Finding | What changed |
+|---|---|---|
+| F1 | The guard test walked the filesystem (`readdirSync` recursion from the repo root) instead of scoping to git-tracked content - gitignored artefacts and untracked local scratch files could decide the verdict. | Rewritten around ONE `git grep -Iin playwright -- . <pathspecs>` call (`execFileSync`), matching `git ls-files`' notion of "tracked". |
+| F2 | The old walk silently swallowed `readdirSync`/`readFileSync`/`lstatSync` errors (`try { } catch { continue/return }`), so a permissions or race error would silently under-scan instead of failing the test. | The rewrite has exactly one place an error can occur (the `execFileSync` calls) and rethrows with context on any exit code other than git grep's expected "no matches" (1); a `git rev-parse` failure (not a repo) throws loudly too. |
+| F3 | An arbitrary 2MB file-size cap could hide a real hit in a large tracked file. | Removed - `git grep` has no such cap. |
+| F4 | The walk ran under jsdom (the default vitest environment for this project) for a test that never touches the DOM - unnecessary overhead and a category error. | `// @vitest-environment node` on the guard test. This required a defensive fix to the shared `vitest.setup.ts` (`if (typeof Element !== 'undefined')` around its jsdom-only polyfills), since that file runs for every test file regardless of its own declared environment and previously assumed `Element` always exists. |
+| F5 | AC-DLA-69 was enforced only by the frontend vitest suite - a backend-only PR (or any PR that skips `npm test`) could reintroduce Playwright with nothing to catch it. | Added a "No stray play[w]right mentions..." step to the existing `lint-conventions` job in `.github/workflows/deploy.yml`, same `git grep` pathspecs, same style as the neighbouring em-dash/brand-spelling steps (bracket-expression pattern so the step's own script text never self-matches, same trick as the file's existing `Foundry[X]` check). |
+| F6 | `.gitignore`/`.dockerignore` had genuinely lost the `playwright-report/`, `playwright/.cache/`, `.playwright-mcp/` lines - these are real local artefact dirs that can still exist on a developer's disk from before the purge, and un-ignoring them risks `git add -A` staging them as junk. | Restored in both files as bracket-expression patterns (`[p]laywright-report/`, `[p]laywright/.cache/`, `.[p]laywright-mcp/`) with a one-line comment explaining why, verified with `git check-ignore -v` against dummy files (deleted after verification) - the patterns ignore correctly and the guard test does not flag the `.gitignore`/`.dockerignore` lines themselves. `test-results/` was already kept. |
+| F7 | `AGENTS.md` had 13 dangling citations to deleted `e2e/*.spec.ts` files and `e2e/helpers/mailbox.ts` (lines 158, 169, 179, 207, 220, 236, 248, 253, 281, 302, 315, 419, plus one inside a sub-bullet). | Each citation reworded to "Coverage = the slice's agent-browser evidence run" (keeping any still-relevant substance - journey counts, report paths, isolation lessons) or dropped where it named only a deleted helper file. Verified: `grep -n "e2e/\|\.spec\.ts" AGENTS.md` now returns nothing. |
+| F8 | Four `AGENTS.md` sub-bullets directly under the retirement sentence (methodology step 7, lines 461-465) still described Playwright-specific mechanics: `fullyParallel`, the Meta-env Embedded-Signup spec "fails by design", `tenants.spec.ts` page-1 residue, and the mailbox rig "for specs". | Rewritten as lessons for `agent-browser` evidence runs: dedicated tenant before a shared-state-mutating run, unset the Meta env for the simulated Embedded Signup flow, timestamp every name a run creates, and the same mailbox rig for reading delivered mail during a run. The un-touched fifth sub-bullet (`Wrong-build gotcha`) needed no change - it never cited a spec file. |
+| F9 | Four code comments (`status-engine.test.tsx:86`, `canvas-editor.test.tsx:3`, `node-palette.tsx:9`, `palette.tsx:7`) claimed in the present tense that a live E2E run asserts the drag/edge/canvas behaviour jsdom can't - no such run exists anymore, so the claim was false. | Reworded as explicit gaps: "not asserted in jsdom; ... needs a recorded agent-browser check in any slice that touches it." `node-palette.tsx:9` additionally dropped the Playwright-specific `dragTo` API name (now describes it generically as "scripted mouse-event drag automation"). |
+| F10 | The T0 test report's AC-DLA-68/69/70 rows were written against the pre-amendment UAC wording (`.gitignore` DROPS the lines; guard test = filesystem walk) and needed re-verification against the amended text. | This section re-verifies all three ACs against the amended wording (below) and re-runs `npm run lint && npm test && rm -rf .next && npm run build` in full. |
+
+### Re-verification against the amended AC-DLA-68/69/70
+
+| AC | Amended wording (key deltas from round 0) | Result | Proof |
+|----|----|----|----|
+| AC-DLA-68 | `.gitignore` now KEEPS `playwright-report/`/`playwright/.cache/`/`.playwright-mcp/`/`test-results/` (reversed from round 0: "drops" -> "keeps"), with a one-line comment; `npm run lint`/`npm test`/`npm run build` green. | **PASS** | See F6 for the gitignore restoration + `git check-ignore` proof. Lint/test/build tails below - all green, no errors. |
+| AC-DLA-69 | Scope = TRACKED tree only (`git ls-files`), not gitignored/untracked disk state; named exclusions now include `documentation/preliminary_planning/**` explicitly (was an unwritten judgment call in round 0, now in the contract) and drop the earlier `node_modules` wording (moot under git-grep scoping); guard = ONE `git grep -Iil playwright -- <pathspecs>` call, `@vitest-environment node`, repo root via `git rev-parse --show-toplevel`, ALSO fails on any tracked path NAME containing `playwright`; `.claude/**` is gitignored so it is explicitly out of this guard's scope (covered by the user's own main-checkout copies instead). | **PASS** | `service_frontend/no-playwright.guard.test.ts` rewritten per spec (F1-F4); `npx vitest run no-playwright.guard.test.ts` -> 1 passed, 72-108ms (well under 1s). Verified both directions with a throwaway tracked file (`stray-pw-test.md` containing the word, staged then removed): the guard test AND the CI step both fail loudly on it, and both pass clean once removed. `git ls-files \| grep -i playwright` returns only the guard test's own filename (excluded by name in the test). |
+| AC-DLA-70 | Unchanged in substance; `AGENTS.md`'s "every lesson bullet that cited a deleted `e2e/*.spec.ts` or helper (13 sites) or described the deleted runner" is now explicit in the AC text (was implicit before review). | **PASS** | F7 + F8 above; `grep -n "e2e/\|\.spec\.ts" AGENTS.md` -> no matches. `AGENTS.md`/`PRINCIPLES.md` each still carry exactly one retirement sentence (asserted by the guard test's `RETIREMENT_LINE_ALLOWANCE` check, `toBeLessThanOrEqual(1)`). |
+
+### Command tails (this round, after all fixes)
+
+`npm run lint`:
+```
+✖ 3 problems (0 errors, 3 warnings)
+  0 errors and 2 warnings potentially fixable with the `--fix` option.
+```
+(same 3 pre-existing, unrelated warnings as round 0 - `idea-attachment-preview-dialog.tsx`,
+`use-connections-list-config.tsx`, `share-browser.tsx`.)
+
+`npm test`:
+```
+ Test Files  172 passed (172)
+      Tests  1412 passed (1412)
+   Duration  28.89s
+```
+(includes `no-playwright.guard.test.ts` - 1 passed. One unrelated `stderr` accessibility warning
+from `share-dialog.test.tsx` prints during the run - a pre-existing console warning inside a
+passing test, not a failure.)
+
+`rm -rf .next && npm run build`:
+```
+ ✓ Compiled successfully in 23.0s
+   Linting and checking validity of types ...
+```
+exit code 0. (One pre-existing, unrelated CSS-optimizer warning - "Invalid media query" on a
+Metronic `.kt-scrollable` rule - prints during the build; not new, not fatal.)
