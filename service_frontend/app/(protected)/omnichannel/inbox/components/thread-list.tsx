@@ -84,7 +84,9 @@ export function ThreadList({
           value={filters.assignee}
           onValueChange={(v) => setFilters({ assignee: v as ConversationFilters['assignee'] })}
         >
-          <TabsList className="w-full">
+          {/* Segmented filter switch, not content navigation (AC-DLA-12) -
+              pinned explicitly, the tab strip default is now `line`. */}
+          <TabsList className="w-full" variant="default">
             <TabsTrigger value="all" className="flex-1" data-testid="bucket-all">
               All
             </TabsTrigger>

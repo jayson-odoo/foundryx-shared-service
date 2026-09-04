@@ -158,7 +158,9 @@ export function AutocountFormulaBuilder({
 
         <DialogBody>
           <Tabs value={tab} onValueChange={setTab}>
-            <TabsList className="mb-3">
+            {/* Segmented mode switch, not content navigation (AC-DLA-12) -
+                pinned explicitly, the tab strip default is now `line`. */}
+            <TabsList className="mb-3" variant="default">
               <TabsTrigger value="formula">Formula</TabsTrigger>
               <TabsTrigger value="testing">Testing</TabsTrigger>
             </TabsList>
