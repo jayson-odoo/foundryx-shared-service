@@ -1,7 +1,8 @@
 /**
  * Canvas-editor sub-component tests (palette + inspector). The Konva Stage is
- * exercised in the live Playwright E2E (jsdom has no canvas); here we verify the
- * click-to-add palette and the inspector's geometry/unit + binding wiring.
+ * exercised in a live browser-automation E2E run (jsdom has no canvas); here we
+ * verify the click-to-add palette and the inspector's geometry/unit + binding
+ * wiring.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
