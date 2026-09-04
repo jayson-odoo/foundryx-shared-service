@@ -81,6 +81,40 @@ class ConnectionRepository:
             .first()
         )
 
+    def get_for_providers(
+        self, tenant_id: str, connection_id: str, providers: Sequence[str]
+    ) -> Optional[Connection]:
+        """``get_for_provider`` for a connection that may be ANY of several
+        providers (a company's source connection is ``autocount`` OR
+        ``sql_database``, plan sprint-5/01 AC-01-01). Still tenant-scoped,
+        still one query - the caller branches on ``.provider``."""
+        return (
+            self.db.query(Connection)
+            .filter(
+                Connection.tenant_id == tenant_id,
+                Connection.id == connection_id,
+                Connection.provider.in_(list(providers)),
+            )
+            .first()
+        )
+
+    def get_many(
+        self, tenant_id: str, connection_ids: Sequence[str]
+    ) -> dict[str, Connection]:
+        """Batch, TENANT-scoped id→connection lookup (the companies list's
+        ``sourceKind`` derivation, AC-01-07) - ONE ``IN`` query, never one per
+        row. A stored id resolved here is filtered by tenant, so a company row
+        can never surface another tenant's connection."""
+        ids = list({cid for cid in connection_ids if cid})
+        if not ids:
+            return {}
+        rows = (
+            self.db.query(Connection)
+            .filter(Connection.tenant_id == tenant_id, Connection.id.in_(ids))
+            .all()
+        )
+        return {row.id: row for row in rows}
+
     def list_for_provider(self, tenant_id: str, provider: str) -> List[Connection]:
         """Every ACTIVE connection of one provider for THIS tenant (the task
         editor's connection picker, AC-22-29) - never a bare provider fetch."""

@@ -63,8 +63,9 @@ export interface AutocountService {
    * `config.database`, verified by a live probe. 409 names the company already
    * holding the database/connection; 422 `{fieldErrors: {connectionId}}` is a
    * probe mismatch / connect failure. Every `CompanyItem` carries the derived
-   * `sourceKind` + (detail only) `documentPrerequisites` - the full S2 contract
-   * is spelled out in `autocount-service.mock.ts` ("DB-only company fixtures").
+   * `sourceKind` + (detail only) `documentPrerequisites` - LIVE since S2
+   * (`modules/autocount/schemas.py CompanyItem`; the mock's "DB-only company
+   * fixtures" block is the same contract, kept as the Vitest double).
    */
   createCompany(input: AutocountCompanyCreateInput): Promise<AutocountCompany>;
   /**

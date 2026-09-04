@@ -18,6 +18,7 @@ from ..schemas import (
     CompanyItem,
     CompanyListResponse,
     CompanySinkUpdate,
+    DocumentPrerequisiteOut,
     EntityConfigItem,
     EntityConfigUpdate,
     EtlPreviewResponse,
@@ -38,9 +39,11 @@ from ..schemas import (
 from ..services import (
     AutocountServiceError,
     CompanyAlreadyExists,
+    CompanyNotApiBacked,
     CompanyNotFound,
     CompanyService,
     ConnectionNotFound,
+    ConnectionValidationError,
     EntityConfigNotFound,
     EtlAnchorError,
     EtlService,
@@ -51,6 +54,7 @@ from ..services import (
     MappingWriteRow,
     PreviewUnavailable,
     SinkTargetValidationError,
+    document_prerequisites,
 )
 from ..sql_source.errors import SqlSourceError
 from .sql import raise_sql_error
@@ -63,7 +67,7 @@ def _raise(exc: AutocountServiceError) -> None:
     operator-safe (no stack traces, no credentials)."""
     if isinstance(exc, (CompanyNotFound, ConnectionNotFound, EntityConfigNotFound)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
-    if isinstance(exc, CompanyAlreadyExists):
+    if isinstance(exc, (CompanyAlreadyExists, CompanyNotApiBacked)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message)
     raise HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
@@ -83,6 +87,19 @@ def _field_errors(field_errors: dict, message: str) -> JSONResponse:
     )
 
 
+def _company_item(company, *, source_kind: str, prerequisites=()) -> CompanyItem:
+    """The row PLUS the derived wire fields (plan sprint-5/01 AC-01-07/11):
+    ``sourceKind`` comes from the service (the connection's provider - never
+    stored on the row) and ``documentPrerequisites`` from the detail's entity
+    states (the list sends ``[]``)."""
+    item = CompanyItem.model_validate(company)
+    item.sourceKind = source_kind
+    item.documentPrerequisites = [
+        DocumentPrerequisiteOut.model_validate(p) for p in prerequisites
+    ]
+    return item
+
+
 @router.get("", response_model=CompanyListResponse)
 def list_companies(
     current_user: User = Depends(require_permission("autocount.companies.read")),
@@ -90,11 +107,14 @@ def list_companies(
     page: int = Query(0, ge=0),
     page_size: int = Query(25, ge=1, le=200),
 ) -> CompanyListResponse:
-    rows, total = CompanyService(db).list(
-        current_user.tenant_id, page=page, page_size=page_size
-    )
+    service = CompanyService(db)
+    rows, total = service.list(current_user.tenant_id, page=page, page_size=page_size)
+    # ONE batched, tenant-scoped connection query for the whole page (AC-01-07).
+    kinds = service.source_kind_map(current_user.tenant_id, rows)
     return CompanyListResponse(
-        data=[CompanyItem.model_validate(row) for row in rows], total=total, page=page
+        data=[_company_item(row, source_kind=kinds[row.id]) for row in rows],
+        total=total,
+        page=page,
     )
 
 
@@ -103,15 +123,24 @@ def create_company(
     body: CompanyCreate,
     current_user: User = Depends(require_permission("autocount.companies.manage")),
     db: Session = Depends(get_db),
-) -> CompanyItem:
-    """Register an AutoCount company by DISCOVERING it from its connection."""
+):
+    """Register an AutoCount company by DISCOVERING it from its connection -
+    the vendor login for an ``autocount`` connection, the connection's own
+    ``database`` (verified by a live probe) for a ``sql_database`` one (plan
+    sprint-5/01 AC-01-01). A probe mismatch / connect failure is a per-field
+    422 on ``connectionId`` (AC-01-02)."""
+    service = CompanyService(db)
     try:
-        company = CompanyService(db).create_from_connection(
+        company = service.create(
             current_user.tenant_id, body.connectionId, name=body.name
         )
+    except ConnectionValidationError as exc:
+        return _field_errors(exc.field_errors, exc.message)
     except AutocountServiceError as exc:
         _raise(exc)
-    return CompanyItem.model_validate(company)
+    return _company_item(
+        company, source_kind=service.source_kind_for(current_user.tenant_id, company)
+    )
 
 
 @router.get("/{company_id}", response_model=CompanyDetailResponse)
@@ -129,7 +158,12 @@ def get_company(
     except AutocountServiceError as exc:
         _raise(exc)
     return CompanyDetailResponse(
-        company=CompanyItem.model_validate(company),
+        company=_company_item(
+            company,
+            source_kind=service.source_kind_for(current_user.tenant_id, company),
+            # Pure, over the states already loaded above - no extra query.
+            prerequisites=document_prerequisites(entities),
+        ),
         entities=[EntityConfigItem.model_validate(row) for row in entities],
     )
 

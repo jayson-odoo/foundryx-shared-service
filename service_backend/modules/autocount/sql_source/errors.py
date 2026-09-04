@@ -42,3 +42,10 @@ class SqlDocumentCapExceeded(SqlSourceError):
     headers in a single run, or one header's own line count. Raised from
     ``SqlDbSource._read`` BEFORE any hash write, same fail-safe contract as
     ``SqlDeleteGuardExceeded``: nothing is staged or pushed."""
+
+
+class SqlProbeFailed(SqlSourceError):
+    """A company-onboarding probe (current database / profile name, plan
+    sprint-5/01 AC-01-02) could not connect or its statement failed. Carries
+    the SANITISED runtime message; the company service maps it to a per-field
+    422 on ``connectionId``."""

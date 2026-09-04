@@ -87,6 +87,9 @@ from ..repositories import (
 from ..sinks import EntitySink, UnknownSinkImpl, sink_for
 from ..sinks_sorento import sorento_sink_from_connection, sorento_supports_entity
 from ..sorento_provider import SORENTO_PROVIDER_KEY
+from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
+from ..sql_source.errors import SqlProbeFailed
+from ..sql_source.probe import probe_current_database, read_profile_name
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -114,6 +117,40 @@ from ..envelopes import ENVELOPE_ROW_ARRAY, ENVELOPE_STATUS_DICT  # noqa: E402
 from ..sources import INITIAL_LOAD_FULL, INITIAL_LOAD_WINDOWED  # noqa: E402
 
 SEEDED_ENTITIES = (ENTITY_GOODS_RECEIVED_NOTE, ENTITY_SUPPLIER, ENTITY_CUSTOMER)
+
+# ── company source kind (plan sprint-5/01, AC-01-07) ─────────────────────────
+# DERIVED from the company's ONE connection's provider at read time - never
+# stored, never client-supplied. ``autocount`` → the vendor HTTP API;
+# ``sql_database`` → a direct read-only database (every entity is a ``sql_db``
+# task locked to that connection). A connection that no longer resolves reads
+# as ``api`` so the row stays renderable (the historical default kind).
+SOURCE_KIND_API = "api"
+SOURCE_KIND_DB = "db"
+# The providers a company's source connection may carry - ``_source_connection``
+# resolves against exactly these (any other provider is a uniform 404).
+SOURCE_PROVIDERS = (PROVIDER_KEY, SQL_DATABASE_PROVIDER_KEY)
+
+# ── document prerequisites (AC-01-11, decision Q17) ──────────────────────────
+# The masters a document's rows reference and Sorento cannot NULL: a sales
+# order needs its customer + products, a purchase order its supplier +
+# products. While any is missing/inactive the document's rows stay
+# ``retryable`` (never lost), so the surface WARNS - it never blocks.
+DOCUMENT_PREREQUISITES: Dict[str, Tuple[str, ...]] = {
+    "sales_order": (ENTITY_CUSTOMER, "product"),
+    "purchase_order": (ENTITY_SUPPLIER, "product"),
+}
+
+NOT_API_BACKED_MESSAGE = (
+    "This company is connected by database; the AutoCount API is not available."
+)
+
+
+def source_kind(connection: Optional[Connection]) -> str:
+    """``'db'`` for a ``sql_database`` connection, ``'api'`` otherwise
+    (including a deleted connection, AC-01-07)."""
+    if connection is not None and connection.provider == SQL_DATABASE_PROVIDER_KEY:
+        return SOURCE_KIND_DB
+    return SOURCE_KIND_API
 
 
 @dataclass(frozen=True)
@@ -194,6 +231,60 @@ class SinkTargetValidationError(AutocountServiceError):
 
 class EntityConfigNotFound(AutocountServiceError):
     pass
+
+
+class CompanyNotApiBacked(AutocountServiceError):
+    """A vendor-API path was asked to run for a DB company (AC-01-08) - a
+    409: the request is well-formed, the COMPANY has no API to reach. Never
+    ``ConnectionNotFound`` (the connection exists; it is a database)."""
+
+    def __init__(self, message: str = NOT_API_BACKED_MESSAGE):
+        super().__init__(message)
+
+
+class ConnectionValidationError(AutocountServiceError):
+    """A company create rejected ON ITS CONNECTION (AC-01-02) - the probe
+    landed on a different database than the connection names, or the source
+    could not be opened. Rendered ``422 {fieldErrors: {connectionId}}`` so the
+    message sits under the picker the operator is looking at (the
+    ``SinkTargetValidationError`` shape)."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.field_errors = {"connectionId": message}
+
+
+@dataclass(frozen=True)
+class DocumentPrerequisite:
+    """One configured document entity's prerequisite-master status
+    (AC-01-11). ``missing`` = no config row at all; ``inactive`` = a row that
+    is not ``active`` or is disabled. Flat + snake_cased so
+    ``DocumentPrerequisiteOut.model_validate`` maps it through."""
+
+    entity_type: str
+    missing: List[str]
+    inactive: List[str]
+
+
+def document_prerequisites(entities: List["EntityState"]) -> List[DocumentPrerequisite]:
+    """Pure: the prerequisite status of every CONFIGURED document entity, in
+    the company's entity order (AC-01-11). Empty when no document entity is
+    configured. Runs over the states the detail already loaded - no query."""
+    by_type = {state.entity_type: state for state in entities}
+    out: List[DocumentPrerequisite] = []
+    for state in entities:
+        masters = DOCUMENT_PREREQUISITES.get(state.entity_type)
+        if masters is None:
+            continue
+        missing = [m for m in masters if m not in by_type]
+        inactive = [
+            m
+            for m in masters
+            if m in by_type
+            and (by_type[m].etl_status != ETL_STATUS_ACTIVE or not by_type[m].enabled)
+        ]
+        out.append(DocumentPrerequisite(state.entity_type, missing, inactive))
+    return out
 
 
 # The first sync of a brand-new company reaches back exactly this far
@@ -395,7 +486,7 @@ class CompanyService:
           on ``etl_status``; leaving it active under a source that no longer
           runs it would be a task that looks live and does nothing.
         """
-        self.get(tenant_id, company_id)  # tenant-scope guard before any write
+        company = self.get(tenant_id, company_id)  # tenant-scope guard before any write
         config = self.configs.get(tenant_id, company_id, entity_type)
         if config is None:
             raise EntityConfigNotFound(
@@ -407,6 +498,14 @@ class CompanyService:
                     f"Unknown source '{source_impl}'. Choose "
                     f"{' or '.join(SOURCE_IMPLS)}."
                 )
+            # A DB company has no vendor API to switch to (AC-01-08) - a named
+            # 409, checked BEFORE the entity-catalogue guard below so the
+            # operator reads the real reason, not a catalogue message.
+            if (
+                source_impl == SOURCE_IMPL_AUTOCOUNT_READ
+                and self.source_kind_for(tenant_id, company) == SOURCE_KIND_DB
+            ):
+                raise CompanyNotApiBacked()
             #     !!  NEVER OFFER "AutoCount API" FOR AN ENTITY WITH NO PROBED
             #         VENDOR PAYLOAD.  !!
             # (Plan 22 S4.) ``SEEDED_ENTITIES`` is exactly the entity catalogue
@@ -495,6 +594,35 @@ class CompanyService:
         if conn is None:
             raise ConnectionNotFound("That AutoCount connection was not found.")
         return conn
+
+    def _source_connection(self, tenant_id: str, connection_id: str) -> Connection:
+        """The company's SOURCE connection - ``autocount`` OR ``sql_database``
+        (plan sprint-5/01 AC-01-01). Tenant-scoped, one query; any other
+        provider or another tenant's row is the SAME uniform 404 (never
+        reveals which)."""
+        conn = self.connections.get_for_providers(
+            tenant_id, connection_id, SOURCE_PROVIDERS
+        )
+        if conn is None:
+            raise ConnectionNotFound("That connection was not found.")
+        return conn
+
+    def source_kind_map(self, tenant_id: str, companies: List[AcCompany]) -> Dict[str, str]:
+        """``{company_id: 'api'|'db'}`` for a PAGE of companies in ONE batched,
+        tenant-scoped connection query (AC-01-07) - never one per row. A
+        company whose connection is gone reads ``'api'``."""
+        by_id = self.connections.get_many(
+            tenant_id, [company.connection_id for company in companies]
+        )
+        return {
+            company.id: source_kind(by_id.get(company.connection_id))
+            for company in companies
+        }
+
+    def source_kind_for(self, tenant_id: str, company: AcCompany) -> str:
+        """One company's kind (detail / guards) - tenant-scoped resolution of
+        the stored connection id, ``'api'`` when it no longer resolves."""
+        return self.source_kind_map(tenant_id, [company])[company.id]
 
     def _consumer_connection(self, tenant_id: str, connection_id: str) -> Connection:
         """Tenant- AND provider-scoped lookup of the outbound Sorento connection.
@@ -661,10 +789,13 @@ class CompanyService:
         self.db.refresh(company)
         return company
 
-    def credentials(self, connection: Connection) -> Dict[str, Any]:
+    def credentials(
+        self, connection: Connection, *, reenter: str = "the AppId and password"
+    ) -> Dict[str, Any]:
         """Decrypt a connection's credentials. A wrong/rotated ``FERNET_KEY``
         yields a CLEAN rejection, never a 500 - and the message never echoes any
-        ciphertext."""
+        ciphertext. ``reenter`` names what the operator must re-enter (a SQL
+        connection holds a database password, not an AppId)."""
         if not connection.credentials_json:
             return {}
         try:
@@ -672,18 +803,144 @@ class CompanyService:
         except InvalidToken as exc:
             raise AutocountServiceError(
                 "This connection's stored credentials can no longer be decrypted. "
-                "Re-enter the AppId and password."
+                f"Re-enter {reenter}."
             ) from exc
 
     def client_for(
         self, tenant_id: str, company: AcCompany, *, transport: Any = None
     ) -> AutoCountClient:
+        """The vendor HTTP client for an API company. A DB company has no
+        vendor API at all - refused by NAME (``CompanyNotApiBacked``, AC-01-08)
+        before the provider-pinned lookup below could misreport it as a
+        missing connection."""
+        if self.source_kind_for(tenant_id, company) == SOURCE_KIND_DB:
+            raise CompanyNotApiBacked()
         conn = self._connection(tenant_id, company.connection_id)
         return client_from_connection(
             conn.config_json or {}, self.credentials(conn), transport=transport
         )
 
     # ── create (discovery) ───────────────────────────────────────────────────
+
+    def create(
+        self,
+        tenant_id: str,
+        connection_id: str,
+        *,
+        name: str = "",
+        transport: Any = None,
+    ) -> AcCompany:
+        """Register a company from its connection, branching on the
+        connection's PROVIDER (plan sprint-5/01 AC-01-01): ``autocount`` signs
+        in and discovers the company (``create_from_connection``, unchanged);
+        ``sql_database`` derives it from the connection itself
+        (``create_from_sql_connection``). One tenant-scoped resolution; any
+        other provider / another tenant's row = the uniform 404."""
+        conn = self._source_connection(tenant_id, connection_id)
+        if conn.provider == SQL_DATABASE_PROVIDER_KEY:
+            return self.create_from_sql_connection(tenant_id, conn, name=name)
+        return self.create_from_connection(
+            tenant_id, connection_id, name=name, transport=transport
+        )
+
+    def create_from_sql_connection(
+        self, tenant_id: str, conn: Connection, *, name: str = ""
+    ) -> AcCompany:
+        """A DB company (AC-01-02..06): identity = the connection's
+        ``config.database`` (trimmed), VERIFIED by the dialect's live
+        current-database probe; ``company_name`` best-effort off
+        ``dbo.Profile``; NO API-shaped seeds (every entity is born later as a
+        ``sql_db`` task); the same ``discover company`` activity channel.
+
+        Order matters: (1) the connection may hold ONE company; (2) one
+        company per database across BOTH kinds - checked before the probe so
+        a duplicate never pays a network round-trip; (3) the probe - a
+        mismatch or a connect failure is a 422 on ``connectionId`` and
+        creates NOTHING; (4) the profile read never fails the create.
+        """
+        existing_for_conn = self.companies.get_by_connection(tenant_id, conn.id)
+        if existing_for_conn is not None:
+            raise CompanyAlreadyExists(
+                self._already_connected_message(existing_for_conn)
+            )
+
+        config = conn.config_json or {}
+        database_name = str(config.get("database") or "").strip()
+        if not database_name:
+            raise ConnectionValidationError(
+                "This connection has no database name. Edit the connection first."
+            )
+
+        holder = self.companies.get_by_database_name(tenant_id, database_name)
+        if holder is not None:
+            raise CompanyAlreadyExists(self._already_connected_message(holder))
+
+        credentials = self.credentials(conn, reenter="the database password")
+        try:
+            probed = probe_current_database(conn.id, config, credentials)
+        except SqlProbeFailed as exc:
+            self._record_sql_discovery_error(tenant_id, conn.id, exc.message)
+            raise ConnectionValidationError(exc.message) from exc
+        if probed != database_name:
+            message = (
+                f"This login lands on '{probed}', but the connection names "
+                f"'{database_name}'."
+            )
+            self._record_sql_discovery_error(tenant_id, conn.id, message)
+            raise ConnectionValidationError(message)
+
+        company_name = read_profile_name(conn.id, config, credentials)
+
+        record_activity(
+            self.db,
+            tenant_id=tenant_id,
+            operation="discover company",
+            status=ACTIVITY_SUCCESS,
+            trace_id=f"acdiscover-{uuid.uuid4()}",
+            external_ref=database_name,
+            response={
+                "databaseName": database_name,
+                "companyName": company_name,
+                "source": SQL_DATABASE_PROVIDER_KEY,
+            },
+        )
+
+        company = self.companies.add(
+            AcCompany(
+                tenant_id=tenant_id,
+                connection_id=conn.id,
+                database_name=database_name,
+                company_name=company_name,
+                name=(name or company_name or database_name).strip(),
+                is_active=True,
+            )
+        )
+        # Deliberately NO ``seed_company_defaults`` (D13): its rows are the
+        # vendor-API shape (``autocount_read`` + vendor-path mappings) and a
+        # DB company has no API - the task editor births each entity.
+        self.db.commit()
+        return company
+
+    @staticmethod
+    def _already_connected_message(holder: AcCompany) -> str:
+        return (
+            f"'{holder.database_name}' is already connected as company "
+            f"'{holder.name or holder.database_name}'."
+        )
+
+    def _record_sql_discovery_error(
+        self, tenant_id: str, connection_id: str, message: str
+    ) -> None:
+        record_activity(
+            self.db,
+            tenant_id=tenant_id,
+            operation="discover company",
+            status=ACTIVITY_ERROR,
+            trace_id=f"acdiscover-{uuid.uuid4()}",
+            external_ref=connection_id,
+            error_message=message,
+            request={"source": SQL_DATABASE_PROVIDER_KEY},
+        )
 
     def create_from_connection(
         self,

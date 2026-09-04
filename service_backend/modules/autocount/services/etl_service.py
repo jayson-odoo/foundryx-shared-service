@@ -83,6 +83,7 @@ from ..sql_source.runtime import (
 )
 from ..sql_source.source import build_document_header_wrap, build_incremental_wrap
 from .company_service import (
+    SOURCE_KIND_DB,
     AutocountServiceError,
     CompanyService,
     ConnectionNotFound,
@@ -736,6 +737,25 @@ class EtlService:
         errors: Dict[str, str] = {}
 
         connection_id = str(raw.get("connectionId") or "").strip() or None
+        if self.companies.source_kind_for(tenant_id, company) == SOURCE_KIND_DB:
+            #     !!  A DB COMPANY READS ONLY FROM ITS OWN CONNECTION.  !!
+            # (Plan sprint-5/01 AC-01-09/10.) Its identity IS that
+            # connection's database, so the editor never offers a picker: an
+            # omitted id is FILLED with the company connection, a different
+            # one is a per-field 422 (no confirm-and-proceed). And GRN has no
+            # Sorento path and an API-only envelope - not addable here.
+            if entity_type == ENTITY_GOODS_RECEIVED_NOTE:
+                raise AutocountServiceError(
+                    f"'{entity_type}' is not available on a database company."
+                )
+            if connection_id is None:
+                connection_id = company.connection_id
+                raw = {**raw, "connectionId": connection_id}
+            elif connection_id != company.connection_id:
+                errors["connectionId"] = (
+                    "A database company reads only from its own connection."
+                )
+                connection_id = None
         conn: Optional[Connection] = None
         if connection_id:
             try:

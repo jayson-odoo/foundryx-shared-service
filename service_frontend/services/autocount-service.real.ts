@@ -51,6 +51,9 @@ function stagedParams(query: AutocountStagedQuery = {}): URLSearchParams {
 }
 
 export const realAutocountService: AutocountService = {
+  // Companies: `sourceKind` (list + detail) and `documentPrerequisites`
+  // (detail; the list sends `[]`) ride the backend JSON through untouched
+  // (plan sprint-5/01 AC-01-07/11 - `CompanyItem` in `modules/autocount/schemas.py`).
   listCompanies(query = {}) {
     return apiFetch<ListResult<AutocountCompany>>(
       `/autocount/companies?${pageParams(query).toString()}`,

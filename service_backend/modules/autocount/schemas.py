@@ -24,9 +24,12 @@ from app.schemas.base import ApiModel
 class CompanyCreate(ApiModel):
     """The operator supplies ONLY a connection (and an optional label).
 
-    There is deliberately no company field: the vendor API resolves the company
-    from the ``AppId`` header, so any value typed here would be silently
-    overridden (AC-13-01, foolproof-UI - never ask for something we determine).
+    There is deliberately no company field: the identity is DISCOVERED - from
+    the vendor login for an ``autocount`` connection (the API resolves the
+    company from the ``AppId`` header, so any value typed here would be
+    silently overridden, AC-13-01) or from the connection's own ``database``,
+    verified by a live probe, for a ``sql_database`` connection (plan
+    sprint-5/01 AC-01-02). Foolproof-UI: never ask for something we determine.
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -98,6 +101,19 @@ class EntityConfigUpdate(ApiModel):
     sourceImpl: Optional[str] = None
 
 
+class DocumentPrerequisiteOut(ApiModel):
+    """One configured document entity's prerequisite-master status (plan
+    sprint-5/01, AC-01-11). ``missing`` = no config row; ``inactive`` = a row
+    that is not ``active`` or is disabled. Detail only - the list carries
+    ``[]`` (pinned by the phase-1 frontend contract)."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    entityType: str = Field(validation_alias="entity_type")
+    missing: List[str] = []
+    inactive: List[str] = []
+
+
 class CompanyItem(ApiModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -120,6 +136,13 @@ class CompanyItem(ApiModel):
         default=None, validation_alias="sorento_company_code"
     )
     createdAt: Optional[datetime] = Field(default=None, validation_alias="created_at")
+    # ── plan sprint-5/01 (AC-01-07/11) - DERIVED, set by the router from the
+    # service, never read off the row (``ac_company`` stores no kind): how the
+    # company is connected (``'api'`` = vendor HTTP API, ``'db'`` = a direct
+    # ``sql_database`` connection) and, on the DETAIL only, the prerequisite-
+    # master status of each configured document entity.
+    sourceKind: str = "api"
+    documentPrerequisites: List[DocumentPrerequisiteOut] = []
 
 
 class CompanySinkUpdate(ApiModel):
