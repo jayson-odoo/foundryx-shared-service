@@ -88,6 +88,15 @@
  *    `slide-in-from-right-52!`). Layering this block in `@layer base` - not
  *    dropping the two navigation-menu `!` utilities, which resolve a real
  *    simultaneous-data-attribute conflict unrelated to motion - restores the win.
+ *
+ *    This reset's own `animation-duration`/`transition-duration: 150ms` (T1 fix
+ *    round 3 finding 5) is a DELIBERATE, separate constant from the token-layer
+ *    collapse's 1ms above - not an oversight to tighten. A dropdown/popover/overlay
+ *    entry still needs to FADE under reduced motion (only its slide/scale/rotate
+ *    TRAVEL is stripped, per WCAG's own guidance - an instant opacity snap reads as a
+ *    flicker, not a fade); the 1ms token collapse is for every OTHER duration-token
+ *    consumer (switch, accordion, progress, the sidebar width transition, ...),
+ *    which have no such fade requirement.
  */
 @layer base {
   /* `dialog-content` and `sheet-content` are excluded: T3 migrates those two
@@ -98,7 +107,7 @@
      would smear that jump over 150ms instead). Popover and DropdownMenu don't need
      the exclusion: their animated child carries no `-content` slot of its own. */
   @media (prefers-reduced-motion: reduce) {
-    [data-slot$='-content']:not([data-slot='dialog-content']):not([data-slot='sheet-content']),
+    [data-slot$='-content']:not([data-slot='dialog-content']):not([data-slot='sheet-content']):not([data-vaul-drawer]),
     [data-radix-popper-content-wrapper],
     [data-radix-popper-content-wrapper] > * {
       --tw-enter-translate-x: 0 !important;
