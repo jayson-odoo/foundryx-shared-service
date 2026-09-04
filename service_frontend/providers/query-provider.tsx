@@ -1,5 +1,4 @@
 'use client';
-'use client';
 
 import { ReactNode, useState } from 'react';
 import { RiErrorWarningFill } from '@remixicon/react';
@@ -20,19 +19,17 @@ const QueryProvider = ({ children }: { children: ReactNode }) => {
             const message =
               error.message || 'Something went wrong. Please try again.';
 
-            toast.custom(
-              () => (
-                <Alert variant="mono" icon="destructive" close={false}>
-                  <AlertIcon>
-                    <RiErrorWarningFill />
-                  </AlertIcon>
-                  <AlertTitle>{message}</AlertTitle>
-                </Alert>
-              ),
-              {
-                position: 'top-center',
-              },
-            );
+            // No per-call `position` (AC-DLA-17): the ONE `<Toaster>` mount
+            // (`components/ui/sonner.tsx`) already renders `top-center` for
+            // every toast.
+            toast.custom(() => (
+              <Alert variant="mono" icon="destructive" close={false}>
+                <AlertIcon>
+                  <RiErrorWarningFill />
+                </AlertIcon>
+                <AlertTitle>{message}</AlertTitle>
+              </Alert>
+            ));
           },
         }),
       }),
