@@ -49,8 +49,12 @@ itself non-writable from the payload.
 
 ## 3. Shipping orders as an ingest entity
 
-New `shipping_orders` entity → `spo_allocations` (never `purchase_orders`). Proposed schema,
-mirroring what `_write_spo_lines` writes today:
+**Sorento correction (2026-09-05):** there is no shipping-order header table; a shipping order is
+the set of `spo_allocations` rows keyed `(company_id, spo_number, spo_line_number)`. So
+`shipping_orders` ingest is a LINE-SET entity: Sorento adds `spo_allocations.source_ref` (DtlKey)
++ `source_doc_ref` (DocKey), looks the header up by `source_doc_ref`, adopts xlsx-era rows by
+`spo_number`, closes absent lines IN PLACE (GRN lines + claims point at them), returns header
+`entity_id: null`, and does not use `integration_references` for SPO. Wire shape as proposed:
 
 ```
 CanonicalShippingOrder: source_ref* (DocKey), spo_number* (DocNo), supplier_ref?, supplier_code?,
@@ -78,12 +82,23 @@ all).
 
 ## 5. Document deletions
 
+**Sorento correction:** `/deletions` ALREADY exists for `sales_orders` and `purchase_orders`
+(`deletion_service.ENTITY_MODELS` includes `DOCUMENT_SPECS`, two-stage line probe, cancel-in-place
+when referenced; `tests/test_ingest_deletions.py`). Only `shipping_orders` needs adding.
+
 `POST /api/v1/external/ingest/{sales_orders|purchase_orders|shipping_orders}/deletions` with
 `{"companyCode", "source_refs": [header refs]}`: hard-delete the header + lines when nothing
 references them; otherwise set header `cancelled` and every line `cancelled` in place (the
 masters' hard-delete-with-fallback rule). Line-level deletes already ride re-push (`_sync_lines`).
 
 ## 6. Status vocabulary and committed demand
+
+**Sorento answer:** `scm.committed_v` is `so.status='open' AND sol.line_status='open'`. Their
+plan maps canonical `partial` -> stored `open` for SALES orders (per-line `qty_delivered` carries
+the partial fact; read-back reports `open`). The ESB may emit `partial` once v2 ships; until then
+the default formula stays `cancelled|closed|open`.
+
+Original ask kept for the record:
 
 Confirm (or widen) `scm.committed_v` / the SO binding's `live_statuses=("open",)`: an SO ingested
 as `partial` → `partially_delivered` currently drops out of committed demand and out of
@@ -117,3 +132,24 @@ We will sequence masters → SO/PO/SPO with reconcile disabled until the first f
 Per-entity ingest tests for the new fields, back-create paths, `shipping_orders` round-trip,
 `/deletions` on documents, `from_so_numbers` claims, and a v1-compat test proving a v1 payload
 (no new keys) still ingests identically.
+
+## 11. Agreed answers to Sorento's questions (2026-09-05)
+
+- ESB always sends `*_ref` next to the code/name fallbacks; Sorento registers a back-created row
+  under the ref it was given (never mints `{DatabaseName}:{code}` itself).
+- Customer back-create only when BOTH `customer_code` and `customer_name` are sent (customers'
+  unique index is the pair); code-only -> `debtor_code` written, no link, warning.
+- Warnings vocabulary (per record, omitted when empty): `customer_created`,
+  `customer_unresolved`, `supplier_created`, `agent_created`, `unclassified_demand`,
+  `warehouse_unresolved`. Product stays `retryable`, never a warning.
+- `agent_code` on PO/SPO accepted and ignored; `product_name` accepted and never used.
+- `from_so_numbers`: claim uses the resolved product's `product_code`; an SO Sorento does not
+  hold yet still gets a claim, resolved when it arrives.
+- v2 hooks: plan-exception batch, CRM-raised PO supersede, order-inquiry relink run on ingest;
+  `planning_change` batches deferred (Sorento-side parity gap); SPO close-by-absence is the ESB's
+  via reconcile -> `/ingest/shipping_orders/deletions`.
+- `GET /api/v1/external/contract` -> `{"version": 2, "entities": [...]}`, permission
+  `integration.contract.read` granted with `scm.sales_orders.edit`. The ESB reads `version` at
+  sink construction and gates v2 fields on `>= 2`.
+- Sorento UAC/plan: `documentation/plans/autocount/autocount-document-ingest-v2-acceptance-criteria.md`
+  (AC-V0..V6) + `PLAN-autocount-document-ingest-v2.md` (D1-D9, S0-S6) on sorento-crm main.

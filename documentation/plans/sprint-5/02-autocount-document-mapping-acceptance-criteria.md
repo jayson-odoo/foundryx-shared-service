@@ -115,7 +115,9 @@ literal outside it; runtime = record failed).
 ### AC-02-10 `[BE]` `shipping_order` entity
 **Given** the autocount module
 **Then** `ENTITY_SHIPPING_ORDER = "shipping_order"` exists: `sql_db`-only, document profile,
-canonical `CanonicalShippingOrder` (+ line) per the Sorento addendum's `shipping_orders` schema,
+canonical `CanonicalShippingOrder` (+ line) per the Sorento addendum §3 (a LINE-SET entity on
+Sorento's side: header `entity_id` comes back `null`, lines are the identity - the sink must
+not treat a null header id as a failure),
 sink path `shipping_orders`, in `_DEPENDENT_ENTITIES`, in the DB company add-entity set (ten),
 parity test updated.
 
@@ -135,12 +137,16 @@ warning (`overlapping_documents`), never blocking.
 
 ## Group D - Deletes + fallback fields `[BE]`
 
+> Sorento's v2 plan maps canonical `partial` -> stored `open` for sales orders, so `partial`
+> becomes safe to emit once v2 ships (AC-02-15 default stays until then).
+
 ### AC-02-13 `[BE]` Document deletes propagate
 **Given** a reconcile run for a document task
 **When** a previously-seen header `source_ref` is absent from the extract (and not filtered out)
 **Then** a delete intent is staged and pushed to `POST /ingest/{entity}/deletions` (the
-plan-22 "documents skip deletes" branch is removed); the delete guard (`> max(20% known, 50)` →
-run fails) applies
+plan-22 "documents skip deletes" branch is removed; Sorento already serves it for
+`sales_orders`/`purchase_orders`, `shipping_orders` is `[XR]`); the delete guard
+(`> max(20% known, 50)` → run fails) applies
 **And** a header still present with `Cancelled='T'` is a status update, not a delete.
 
 ### AC-02-14 `[BE]` Fallback fields on the wire

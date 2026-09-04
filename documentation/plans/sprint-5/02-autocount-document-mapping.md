@@ -52,7 +52,9 @@ orders, CNY default, back-create, post-write hooks) - that delta is the addendum
 ### 2.3 Shipping orders (AC-02-10..12)
 - `canonical/documents.py`: `ENTITY_SHIPPING_ORDER`, `CanonicalShippingOrder` /
   `CanonicalShippingOrderLine` (header `spo_number`*, `supplier_ref`, `issue_date`,
-  `expected_date`, `currency`, `status`, fallbacks; line `source_ref`*, `product_ref`*,
+  `expected_date`, `currency`, `status`, fallbacks; Sorento stores it as a LINE-SET on
+  `spo_allocations` with `source_doc_ref`=DocKey, header verdict `entity_id: null` - the sink's
+  verdict parser must accept that; line `source_ref`*, `product_ref`*,
   `warehouse_ref`, `qty_ordered`*, `qty_received`, `unit_cost`, `uom`, `expected_date`,
   `from_so_numbers[]` `[XR]`, fallbacks) - exact shape per addendum §3. Profile, `_DEPENDENT_
   ENTITIES`, sink path `shipping_orders`, `ENTITY_PROFILES`, `AC_SQL_DB_ENTITY_TYPES` (ten),
@@ -66,10 +68,12 @@ orders, CNY default, back-create, post-write hooks) - that delta is the addendum
 ### 2.4 Deletes + fallback fields (AC-02-13, 14)
 - `sql_source/source.py`: remove the `not self.is_document` exclusion from the delete block;
   `sync._stage_deletes` stages document deletes; `SorentoSink.delete_batch` already posts
-  `/ingest/{entity}/deletions` (documents `[XR]` on the Sorento side - until then a 404
-  `UNKNOWN_ENTITY` from `/deletions` is mapped to `retryable`, not `failed`).
-- Canonical documents gain the fallback fields; `SorentoSink` reads `sorento_contract_version`
-  from the consumer connection config (default `1`); `sink_payload(contract_version)` drops
+  `/ingest/{entity}/deletions`; Sorento serves it for `sales_orders`/`purchase_orders` today,
+  `shipping_orders` is `[XR]` (a 404 `UNKNOWN_ENTITY` from `/deletions` maps to `retryable`,
+  not `failed`).
+- Canonical documents gain the fallback fields; `SorentoSink` reads the contract version from
+  `GET /api/v1/external/contract` at construction (fallback: consumer connection config
+  `sorento_contract_version`, default `1`); `sink_payload(contract_version)` drops
   `[XR]` fields (`customer_code/name`, `supplier_code/name`, `agent_code`, line
   `product_code/name`, `warehouse_code`, `from_so_numbers`) below version `2`. Flipping the
   connection to `2` when Sorento lands = slice B.
