@@ -1350,7 +1350,10 @@ class CompanyService:
                             f"one of {', '.join(DOCUMENT_STATUS_VALUES)}."
                         )
             clean.append(
-                MappingWriteRow(source_path, row.transform, target, formula=formula)
+                MappingWriteRow(
+                    source_path, row.transform, target, formula=formula,
+                    is_enabled=row.is_enabled,
+                )
             )
 
         #     !!  A REQUIRED FIELD LEFT UNMAPPED SLIPS THROUGH ACTIVATION.  !!
@@ -1398,7 +1401,7 @@ class CompanyService:
                     transform=row.transform,
                     formula=row.formula,
                     is_required=row.sorento_field in required,
-                    is_enabled=True,
+                    is_enabled=row.is_enabled,
                     sort_order=order,
                 )
             )
