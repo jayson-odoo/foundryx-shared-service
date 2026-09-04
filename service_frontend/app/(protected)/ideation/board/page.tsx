@@ -1,6 +1,5 @@
 'use client';
 
-import { Fragment } from 'react';
 import { Container } from '@/components/common/container';
 import { PageHeader } from '@/components/platform/page-header';
 import { TriageBoard } from './triage-board';
@@ -13,11 +12,9 @@ import { TriageBoard } from './triage-board';
  */
 export default function IdeationBoardPage() {
   return (
-    <Fragment>
+    <Container width="fluid">
       <PageHeader description="Drag across columns to change status, or within a column to reorder priority." />
-      <Container width="fluid">
-        <TriageBoard />
-      </Container>
-    </Fragment>
+      <TriageBoard />
+    </Container>
   );
 }

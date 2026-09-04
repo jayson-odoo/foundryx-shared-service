@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { useIntegrationLogSettings } from '@/hooks/use-integration-log-settings';
 import { Button } from '@/components/ui/button';
@@ -88,12 +88,10 @@ function LogRetentionForm() {
 export default function DeveloperLogSettingsPage() {
   return (
     <RequirePermission permission="integration_logs.manage">
-      <Fragment>
+      <Container width="fluid">
         <PageHeader description="How long integration activity is kept before it is automatically pruned." />
-        <Container width="fluid">
-          <LogRetentionForm />
-        </Container>
-      </Fragment>
+        <LogRetentionForm />
+      </Container>
     </RequirePermission>
   );
 }

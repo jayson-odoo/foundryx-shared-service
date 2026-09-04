@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { importService } from '@/services/import-service';
 import { Button } from '@/components/ui/button';
@@ -116,15 +116,13 @@ function ImportSettingsForm() {
 export default function ImportSettingsPage() {
   return (
     <RequirePermission permission="imports.read_all">
-      <Fragment>
+      <Container width="fluid">
         <PageHeader
           title="Import settings"
           description="Caps applied to every bulk import in this workspace."
         />
-        <Container width="fluid">
-          <ImportSettingsForm />
-        </Container>
-      </Fragment>
+        <ImportSettingsForm />
+      </Container>
     </RequirePermission>
   );
 }

@@ -73,6 +73,25 @@ describe('AC-DLA-27 PageHeader is the one page-title header', () => {
     expect(H1_ALLOWLIST).toEqual([]);
   });
 
+  it('every <PageHeader under app/(protected) has a <Container ancestor in the same file (fix round 1)', () => {
+    // Source-level check, not a real AST ancestor walk: a page rendering
+    // PageHeader OUTSIDE its Container (a sibling in a Fragment, say) put
+    // the title ~16/24px left of the card instead of aligned with it - the
+    // regression this pins. Assumes at most one Container "region" per
+    // file (true for every offender this fixed); a file with multiple
+    // disjoint Container blocks would need a real AST check instead.
+    const offenders = walk(["app/(protected)"]).filter((f) => {
+      const src = read(f);
+      const headerAt = src.indexOf('<PageHeader');
+      if (headerAt === -1) return false;
+      const containerOpenAt = src.indexOf('<Container');
+      const containerCloseAt = src.lastIndexOf('</Container>');
+      if (containerOpenAt === -1 || containerCloseAt === -1) return true;
+      return !(headerAt > containerOpenAt && headerAt < containerCloseAt);
+    });
+    expect(offenders).toEqual([]);
+  });
+
   it('no title renders a raw id fragment (id.slice(/id.substring() fallback, AC-DLA-35)', () => {
     const offenders = walk(['app', 'components']).filter((f) => {
       const src = read(f);

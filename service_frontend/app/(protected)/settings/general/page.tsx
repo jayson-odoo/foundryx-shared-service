@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { CURRENCY_OPTIONS } from '@/lib/money';
 import { useCan } from '@/hooks/use-can';
@@ -116,12 +116,10 @@ function GeneralSettingsForm() {
 export default function GeneralSettingsPage() {
   return (
     <RequirePermission permission="settings.read">
-      <Fragment>
+      <Container width="fluid">
         <PageHeader description="General workspace settings." />
-        <Container width="fluid">
-          <GeneralSettingsForm />
-        </Container>
-      </Fragment>
+        <GeneralSettingsForm />
+      </Container>
     </RequirePermission>
   );
 }

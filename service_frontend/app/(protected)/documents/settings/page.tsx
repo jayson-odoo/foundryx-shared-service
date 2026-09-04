@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import type { DocumentSettings, PublicSharingPolicy } from '@/types/documents';
 import { documentService } from '@/services/document-service';
@@ -65,90 +65,85 @@ export default function DocumentSettingsPage() {
 
   return (
     <RequirePermission permission="documents.configure">
-      <Fragment>
+      <Container width="fluid">
         <PageHeader
           title="Document settings"
           description="Storage limits, default upload caps and sharing policy."
         />
-        <Container width="fluid">
-          <div className="grid max-w-2xl gap-5">
-            <Card>
-              <CardHeader>
-                <CardTitle>Storage</CardTitle>
-              </CardHeader>
-              <CardContent className="grid gap-4">
-                {settings && (
-                  <div>
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground">Used</span>
-                      <span>
-                        {formatBytes(settings.usedBytes)}
-                        {settings.storageQuotaMb != null
-                          ? ` of ${settings.storageQuotaMb} MB`
-                          : ''}
-                      </span>
-                    </div>
-                    {settings.storageQuotaMb != null && (
-                      <Progress value={usagePct} className="mt-2 h-2" />
-                    )}
+        <div className="grid max-w-2xl gap-5">
+          <Card>
+            <CardHeader>
+              <CardTitle>Storage</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-4">
+              {settings && (
+                <div>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">Used</span>
+                    <span>
+                      {formatBytes(settings.usedBytes)}
+                      {settings.storageQuotaMb != null
+                        ? ` of ${settings.storageQuotaMb} MB`
+                        : ''}
+                    </span>
                   </div>
-                )}
-                <div className="grid gap-2">
-                  <Label htmlFor="quota">Storage quota (MB)</Label>
-                  <Input
-                    id="quota"
-                    type="number"
-                    min={0}
-                    value={storageQuotaMb}
-                    placeholder="Blank = unlimited"
-                    onChange={(e) => setStorageQuotaMb(e.target.value)}
-                  />
+                  {settings.storageQuotaMb != null && (
+                    <Progress value={usagePct} className="mt-2 h-2" />
+                  )}
                 </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="defaultmax">Default max file size (MB)</Label>
-                  <Input
-                    id="defaultmax"
-                    type="number"
-                    min={1}
-                    value={defaultMaxFileMb}
-                    onChange={(e) => setDefaultMaxFileMb(e.target.value)}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Applies to uploads with no document type assigned.
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Sharing policy</CardTitle>
-              </CardHeader>
-              <CardContent className="grid gap-2">
-                <Label>Public link sharing</Label>
-                <SearchSelect
-                  options={SHARING_OPTIONS}
-                  value={publicSharing}
-                  onChange={(v) => setPublicSharing(v as PublicSharingPolicy)}
+              )}
+              <div className="grid gap-2">
+                <Label htmlFor="quota">Storage quota (MB)</Label>
+                <Input
+                  id="quota"
+                  type="number"
+                  min={0}
+                  value={storageQuotaMb}
+                  placeholder="Blank = unlimited"
+                  onChange={(e) => setStorageQuotaMb(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="defaultmax">Default max file size (MB)</Label>
+                <Input
+                  id="defaultmax"
+                  type="number"
+                  min={1}
+                  value={defaultMaxFileMb}
+                  onChange={(e) => setDefaultMaxFileMb(e.target.value)}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Internal and specific-user links are always available. This
-                  ceiling caps what anonymous public links can do.
+                  Applies to uploads with no document type assigned.
                 </p>
-              </CardContent>
-            </Card>
+              </div>
+            </CardContent>
+          </Card>
 
-            <div className="flex justify-end">
-              <Button
-                onClick={() => void save()}
-                disabled={saving || !settings}
-              >
-                {saving ? 'Saving…' : 'Save changes'}
-              </Button>
-            </div>
+          <Card>
+            <CardHeader>
+              <CardTitle>Sharing policy</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-2">
+              <Label>Public link sharing</Label>
+              <SearchSelect
+                options={SHARING_OPTIONS}
+                value={publicSharing}
+                onChange={(v) => setPublicSharing(v as PublicSharingPolicy)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Internal and specific-user links are always available. This
+                ceiling caps what anonymous public links can do.
+              </p>
+            </CardContent>
+          </Card>
+
+          <div className="flex justify-end">
+            <Button onClick={() => void save()} disabled={saving || !settings}>
+              {saving ? 'Saving…' : 'Save changes'}
+            </Button>
           </div>
-        </Container>
-      </Fragment>
+        </div>
+      </Container>
     </RequirePermission>
   );
 }

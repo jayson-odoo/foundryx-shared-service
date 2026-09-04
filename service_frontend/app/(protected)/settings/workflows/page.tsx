@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { workflowService } from '@/services/workflow-service';
 import { Button } from '@/components/ui/button';
@@ -98,12 +98,10 @@ function WorkflowSettingsForm() {
 export default function WorkflowSettingsPage() {
   return (
     <RequirePermission permission="workflows.manage">
-      <Fragment>
+      <Container width="fluid">
         <PageHeader description="Run retention and other workflow engine settings for this workspace." />
-        <Container width="fluid">
-          <WorkflowSettingsForm />
-        </Container>
-      </Fragment>
+        <WorkflowSettingsForm />
+      </Container>
     </RequirePermission>
   );
 }
