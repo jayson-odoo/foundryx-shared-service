@@ -75,7 +75,9 @@ orders, CNY default, back-create, post-write hooks) - that delta is the addendum
   `GET /api/v1/external/contract` at construction (fallback: consumer connection config
   `sorento_contract_version`, default `1`); `sink_payload(contract_version)` drops
   `[XR]` fields (`customer_code/name`, `supplier_code/name`, `agent_code`, line
-  `product_code/name`, `warehouse_code`, `from_so_numbers`) below version `2`. Flipping the
+  `product_code/name`, `warehouse_code`, `from_so_numbers`, `line_number`) below version `2`.
+  `line_number` (AutoCount `Seq`) exists so Sorento can adopt an xlsx-era ref-less line by
+  position (AC-02-27; Sorento side = addendum §9). Flipping the
   connection to `2` when Sorento lands = slice B.
 
 ### 2.5 Presets (AC-02-16, 17)
@@ -94,7 +96,11 @@ orders, CNY default, back-create, post-write hooks) - that delta is the addendum
   `scope` on each row; save sends both. Required-warning per scope.
 - `query-tab.tsx`: remove the three pickers; add "Filter" formula field (reuses
   `AutocountFormulaBuilder` with header columns), "Use preset" SearchSelect.
-- Builder: aggregates group + status literals when the row's target is `status`.
+- Builder = the ONLY formula input (lavish Q16). `AutocountFormulaBuilder` gains a Variables
+  panel (header columns typed from `result_columns`, line columns for line rows, `lines.*`
+  aggregates grouped, status literals when the target is `status`); the table cell and the
+  Query-tab Filter field render the formula read-only (`ClampedText` chip + `f`). Live
+  validation rejects unknown variables (PUT 422 backstop).
 - `mapping-simulator.tsx`: header-row SearchSelect (preview rows by `keyColumns[0]`), calls
   `POST .../mapping/simulate` with `{docKey}`; backend `simulate_mapping` fetches lines through
   `SqlDbSource._read_lines`, uses `flat_profile`, runs aggregates + formulas, returns
@@ -140,7 +146,9 @@ documents.py` (fixed-convention tests → persisted rows), `test_autocount_entit
 - **BL-SS-049** Wire the `[XR]` fields (contract version 2) once the Sorento addendum lands;
   flip the consumer connection default; remove the gate.
 - **BL-SS-050** Cutover playbook: first AutoCount push of a document previously loaded by xlsx
-  deletes/cancels its ref-less lines (Sorento `_sync_lines`) - document the sequence
-  (masters → SO/PO/SPO, reconcile off until first full load) + a dry-run report before go-live.
+  must ADOPT its ref-less lines in place (Sorento `_sync_lines`, addendum §9) so the rows stay
+  identical (same ids, allocations/claims intact); only lines absent in AutoCount are
+  deleted/cancelled. Document the sequence (masters → SO/PO/SPO, reconcile off until first full
+  load) + a dry-run report listing adopted / unmatched lines before go-live.
 - **BL-SS-051** Overlap check as a hard activation gate (today: warning).
 - **BL-SS-045** → Closed by this plan.

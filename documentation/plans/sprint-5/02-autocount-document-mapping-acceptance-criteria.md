@@ -189,6 +189,13 @@ defaults, replacing `AED_SORENTO` with the company's `database_name`
 **And** the preset header query includes the `l.*` aggregates only as helper columns; status is a
 formula, not SQL (the CASE from the SQL pack is dropped).
 
+### AC-02-27 `[BE]` Line position rides the wire for cutover adoption
+**Given** the SO / PO / SPO presets
+**Then** each line mapping carries `Seq → line_number` (integer, `[XR]`, gated with the other
+contract-v2 fields) so Sorento can adopt an xlsx-loaded ref-less line by position when the
+business key is ambiguous
+**And** `Simulate` shows `line_number` on every line at contract version 2 and omits it at 1.
+
 ## Group F - Mapping tab UI `[FE]`
 
 ### AC-02-18 `[FE]` Two sections
@@ -203,10 +210,18 @@ formula, not SQL (the CASE from the SQL pack is dropped).
 block keeps Line query + Test line query + preview grid + a "Filter" formula field (with `f`
 builder) for the family filter.
 
-### AC-02-20 `[FE]` Status row formula builder knows aggregates
-**Given** the `f` builder on a header row of a document task
-**Then** the variable list includes the five `lines.*` aggregates (grouped "Line aggregates")
-and the status vocabulary is offered as literals.
+### AC-02-20 `[FE]` Every formula is authored in the formula builder, never free text
+**Given** a header row, a line row, or the Query tab's Filter field of a document task
+**When** the operator clicks its `f`
+**Then** the existing `AutocountFormulaBuilder` opens (the same dialog masters use today) and
+the table/field itself shows the formula read-only (`ClampedText` chip); there is no free-text
+formula input anywhere on the Mapping or Query tab
+**And** the builder gains a **Variables** panel next to the function catalog: the task's header
+columns (typed from `result_columns`), the line columns for a line row (`line_result_columns`),
+the five `lines.*` aggregates grouped "Line aggregates" (header rows only), and, when the row's
+target is `status`, the status vocabulary offered as literal chips; each inserts at the caret
+**And** a formula whose variables are unknown to the current query fails the builder's live
+validation (cannot Apply) - the PUT 422 stays the backstop.
 
 ### AC-02-21 `[FE]` Disabled/seeded rows
 **Then** a seeded row whose column is missing renders greyed with a source picker to fix it; a
@@ -271,3 +286,5 @@ timestamped, purged.
 | Q10/Q14 | `shipping_order` = separate entity, own query/filter/mapping/sink; default = `SPO-` prefix. |
 | Q11/Q15 | Create/update/delete at header + line; AutoCount is truth; Sorento hard-deletes or cancels-in-place when referenced. |
 | Q12 | Slice A (this), B (wire XR fields when Sorento lands), C (Sorento addendum). |
+| Q16 (lavish 2026-09-05) | Formulas are built ONLY in the existing `AutocountFormulaBuilder` (+ a Variables panel); no free-text formula fields (AC-02-20, AC-02-19). |
+| Q17 (lavish 2026-09-05) | Cutover must keep xlsx-loaded lines identical: Sorento ADOPTS a ref-less line in place (same row id) by business key, then position; only truly absent lines are deleted/cancelled. ESB sends `line_number` (AC-02-27); Sorento side = addendum §9. |

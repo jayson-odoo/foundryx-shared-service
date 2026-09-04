@@ -22,7 +22,8 @@ codes/names the documents carry; refs are sent too whenever the master task exis
 Add to `CanonicalSalesOrder`: `customer_code?`, `customer_name?`, `agent_code?`.
 Add to `CanonicalPurchaseOrder` (+ `CanonicalShippingOrder`): `supplier_code?`,
 `supplier_name?`, `agent_code?`.
-Add to every line: `product_code?`, `product_name?`, `warehouse_code?`.
+Add to every line: `product_code?`, `product_name?`, `warehouse_code?`, `line_number?` (int,
+AutoCount `Seq`; see §9).
 
 Resolution order per FK, mirroring `outstanding_import_service`:
 1. `*_ref` via `integration_references` (existing behaviour).
@@ -121,11 +122,31 @@ batch run the same hooks `outstanding_import_service.apply` runs:
 PO/SPO header + line `currency` absent → `CNY` (`DEFAULT_PO_CURRENCY`), as the upload does. The
 ESB also defaults it in its mapping, so this is belt-and-braces.
 
-## 9. Cutover note (for your awareness, ESB owns the playbook - BL-SS-050)
+## 9. Cutover: ADOPT xlsx-loaded lines in place (revised 2026-09-05, captain's ask)
 
-The first AutoCount push of a document previously loaded by xlsx deletes (or cancels in place)
-its ref-less lines via `_sync_lines`. Header adoption by `so_number`/`po_number` is automatic.
-We will sequence masters → SO/PO/SPO with reconcile disabled until the first full load.
+Today `_sync_lines` deletes (or cancels in place when referenced) every ref-less line of a header
+adopted by number, then inserts the pushed lines fresh. The captain's requirement: **ingested
+lines must be identical to the xlsx-loaded lines** (same rows, same ids) except where AutoCount
+changed them after the upload. So, for a header adopted by `so_number`/`po_number`/`spo_number`
+whose lines carry no `source_ref`, please ADOPT before you delete:
+
+1. Match each incoming line to one remaining ref-less line by business key
+   `(product_id, warehouse_id-or-NULL, qty_ordered)`; if several remain, take the one whose
+   position equals `line_number` (else the first in stored order).
+2. Else match by `(product_id, warehouse_id-or-NULL)` when exactly one remains.
+3. Else match by `line_number` position among the remaining ref-less lines when the counts agree.
+4. A matched row keeps its id: stamp `source_ref` (DtlKey) on it, register it in
+   `integration_references`, then update its values (qty/price/dates) from the payload -
+   allocations, claims, GRN links stay attached.
+5. Only the ref-less lines still unmatched after 1-3 are deleted (or cancelled in place when
+   referenced) - the existing rule, now applied to the true remainder.
+6. Report per record: `lines_adopted`, `lines_created`, `lines_deleted`, `lines_cancelled` (the
+   dry run must show the same counts so the cutover playbook BL-SS-050 can be rehearsed).
+
+The ESB sends `line_number` (AutoCount `Seq`) on every line at contract v2 and always sends
+`product_ref`/`warehouse_ref` (+ code fallbacks) so step 1 resolves the same masters the upload
+linked. Header adoption by number stays automatic. Go-live sequence: masters → SO/PO/SPO with
+reconcile disabled until the first full load.
 
 ## 10. Tests we will rely on
 
@@ -153,3 +174,10 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   sink construction and gates v2 fields on `>= 2`.
 - Sorento UAC/plan: `documentation/plans/autocount/autocount-document-ingest-v2-acceptance-criteria.md`
   (AC-V0..V6) + `PLAN-autocount-document-ingest-v2.md` (D1-D9, S0-S6) on sorento-crm main.
+
+## 12. Change log
+
+- 2026-09-05: §9 rewritten from a note into an ask (adopt ref-less lines in place; `line_number`
+  added to §1). Sorento D1-D10 as reported (ladder, customer code+name, SPO line-set, unclassified
+  warning, SPO-under-PO failed, `partial`->`open`, hooks, contract endpoint, warnings vocabulary,
+  `warehouse_unresolved`) accepted without change.
