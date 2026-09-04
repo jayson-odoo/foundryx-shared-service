@@ -39,12 +39,10 @@ export function useRoleActions(): ResourceAction<RoleListItem>[] {
         surfaces: { row: true, bulk: true, form: true },
         // Hidden entirely when any selected row is a system role.
         isVisible: (rows) => rows.length > 0 && rows.every((r) => !r.isSystem),
-        confirm: {
-          title: 'Delete this role?',
-          description:
-            'Users currently assigned to it will have their role unset. This action cannot be undone.',
-          confirmLabel: 'Delete role',
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm
+        // dialog; the form surface's commit navigates via ResourceForm's own
+        // `backHref`-aware handler (AC-DLA-30), row/bulk stay put + reload.
+        deferred: { actionKey: 'roles.delete', entityType: 'role', window: 'destructive' },
         run: async (rows, rt) => {
           await Promise.all(rows.map((r) => roleService.remove(r.id)));
           toast.success(`Deleted ${rows.length} role(s).`);
