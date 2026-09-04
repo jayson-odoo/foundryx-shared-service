@@ -1821,20 +1821,25 @@ def test_so_po_spo_presets_seed_line_number_from_seq(session_factory):
 
 
 def test_po_spo_currency_formula_has_udf_fallback():
-    """S4 (AC-02-16): the PO and SPO presets' `currency` row must be
-    `coalesce(UDF_Currency, CurrencyCode, "CNY")` (AutoCount's UDF override,
-    falling back to the header's own CurrencyCode, falling back to the
-    documented default currency) - not a plain CurrencyCode passthrough
-    with no formula at all."""
+    """SF2 (security re-review round, SUPERSEDES the original S4 assertion
+    below): the S4 design assumed PO had its own `h.UDF_Currency` HEADER
+    column with a `"CNY"` documented default - neither exists in the real
+    SQL pack (`documentation/plans/sprint-4/22-autocount-db-etl-autocount-
+    sql.md` section 3). The pack's PO/SPO header `currency` is a PLAIN
+    `h.CurrencyCode` passthrough, no override, no formula at all - the UDF
+    currency override the pack DOES define lives on PODTL, a per-LINE
+    concern (`CanonicalPurchaseOrderLine.currency`), not this header's.
+    This test now pins the CORRECTED (pack-accurate) shape - a bare
+    passthrough - rather than the disproven S4 coalesce formula."""
     from modules.autocount.presets import PO_PRESET, SPO_PRESET
 
-    expected = 'coalesce(UDF_Currency, CurrencyCode, "CNY")'
     for preset, label in ((PO_PRESET, "PO"), (SPO_PRESET, "SPO")):
         currency_rows = [f for f in preset.header if f.canonical_field == "currency"]
         assert currency_rows, f"{label} preset has no currency row at all"
-        assert currency_rows[0].formula == expected, (
-            f"{label} preset currency formula must be {expected!r} - got "
-            f"{currency_rows[0].formula!r}"
+        assert currency_rows[0].formula is None, (
+            f"{label} preset header currency must be a PLAIN CurrencyCode "
+            f"passthrough (no formula) - PO has no UDF override at the "
+            f"header level (SF2) - got formula={currency_rows[0].formula!r}"
         )
 
 

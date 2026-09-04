@@ -145,17 +145,31 @@ SO_PRESET = DocumentPreset(
 # ── Purchase Order ────────────────────────────────────────────────────────────
 # Same S2 table-name/AutoKey-join fix as SO above. `PurchaseAgent` (not
 # `SalesAgent` - the earlier query's copy-paste from the SO header) is the
-# pack's real PO agent column. `UDF_Currency` is selected alongside
-# `CurrencyCode` for the S4 currency-fallback formula below.
+# pack's real PO agent column.
+#
+#     !!  ExpectedDate + currency MATCH THE PACK EXACTLY (SF2, security
+#         re-review round) - PO HAS NO UDF_DelDate/UDF_Currency COLUMN.  !!
+# The earlier version of this query invented `h.UDF_DelDate`/`h.UDF_Currency`
+# by copying SO's "header UDF override" shape - PO has no such columns at
+# all (documentation/plans/sprint-4/22-autocount-db-etl-autocount-sql.md
+# section 3). The pack derives `ExpectedDate` via `OUTER APPLY MIN(d.
+# DeliveryDate)` over PODTL (the first line's delivery date) and reads
+# `currency` straight off `h.CurrencyCode` with NO override at the header
+# level at all - `CanonicalPurchaseOrderLine` separately carries its OWN
+# per-line `currency` (`COALESCE(d.UDF_Currency, h.CurrencyCode)`, pack
+# section 4's line query) which is a LINE concern, not this header's.
 _PO_HEADER_QUERY = (
     "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, s.AutoKey AS CreditorAutoKey, "
     "h.PurchaseAgent AS SalesAgent, h.DocDate AS DocDate, "
-    "h.UDF_DelDate AS ExpectedDate, h.Note AS Note, h.Cancelled AS Cancelled, "
+    "CAST(l.FirstDeliveryDate AS date) AS ExpectedDate, h.Cancelled AS Cancelled, "
     "h.CreditorCode AS CreditorCode, h.CreditorName AS CreditorName, "
-    "h.CurrencyCode AS CurrencyCode, h.UDF_Currency AS UDF_Currency, "
-    "h.LastModified AS LastModified "
+    "h.CurrencyCode AS CurrencyCode, h.LastModified AS LastModified "
     "FROM {database}.dbo.PO AS h "
-    "LEFT JOIN {database}.dbo.Creditor AS s ON s.AccNo = h.CreditorCode"
+    "LEFT JOIN {database}.dbo.Creditor AS s ON s.AccNo = h.CreditorCode "
+    "OUTER APPLY ("
+    "SELECT MIN(d.DeliveryDate) AS FirstDeliveryDate "
+    "FROM {database}.dbo.PODTL AS d WHERE d.DocKey = h.DocKey"
+    ") AS l"
 )
 _PO_LINE_QUERY = (
     "SELECT d.DtlKey AS DtlKey, i.AutoKey AS ItemAutoKey, "
@@ -190,13 +204,11 @@ PO_PRESET = DocumentPreset(
         PresetField("CreditorAutoKey", "supplier_ref", "ref_supplier"),
         PresetField("DocDate", "issue_date", "date"),
         PresetField("ExpectedDate", "expected_date", "date"),
-        # S4 (AC-02-16) - AutoCount's UDF currency override wins, falling
-        # back to the header's own CurrencyCode, falling back to the
-        # documented default currency.
-        PresetField(
-            "CurrencyCode", "currency", "string",
-            formula='coalesce(UDF_Currency, CurrencyCode, "CNY")',
-        ),
+        # SF2 (security re-review round) - matches the pack exactly: PO
+        # has no UDF currency override at the HEADER level (that lives on
+        # PODTL's own line, a separate concern - see the header query's
+        # own comment above).
+        PresetField("CurrencyCode", "currency", "string"),
         PresetField("Note", "internal_note", "string"),
         PresetField("Cancelled", "status", "string", formula=DEFAULT_STATUS_FORMULA, required=True),
         PresetField("CreditorCode", "supplier_code", "string"),
@@ -245,13 +257,11 @@ SPO_PRESET = DocumentPreset(
         PresetField("CreditorAutoKey", "supplier_ref", "ref_supplier"),
         PresetField("DocDate", "issue_date", "date"),
         PresetField("ExpectedDate", "expected_date", "date"),
-        # S4 (AC-02-16) - AutoCount's UDF currency override wins, falling
-        # back to the header's own CurrencyCode, falling back to the
-        # documented default currency.
-        PresetField(
-            "CurrencyCode", "currency", "string",
-            formula='coalesce(UDF_Currency, CurrencyCode, "CNY")',
-        ),
+        # SF2 (security re-review round) - matches the pack exactly: PO
+        # has no UDF currency override at the HEADER level (that lives on
+        # PODTL's own line, a separate concern - see the header query's
+        # own comment above).
+        PresetField("CurrencyCode", "currency", "string"),
         PresetField("Cancelled", "status", "string", formula=DEFAULT_STATUS_FORMULA, required=True),
         PresetField("CreditorCode", "supplier_code", "string"),
         PresetField("CreditorName", "supplier_name", "string"),
