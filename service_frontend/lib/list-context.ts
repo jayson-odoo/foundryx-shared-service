@@ -3,7 +3,7 @@
  * form's record-nav can re-run the same server query at index±1 (refresh- and
  * share-safe). Kept tiny + dependency-free. See plan 02 §3b.
  */
-import type { ListQuery } from '@/types/resource';
+import type { FilterGroup, FilterRule, ListQuery, SortState, StatusView } from '@/types/resource';
 
 /** URL-safe base64 of the query JSON. */
 export function encodeListQuery(query: ListQuery): string {
@@ -16,12 +16,73 @@ export function encodeListQuery(query: ListQuery): string {
   }
 }
 
+const STATUS_VIEWS: StatusView[] = ['active', 'trashed'];
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isValidSort(value: unknown): value is SortState | null | undefined {
+  if (value === null || value === undefined) return true;
+  return isPlainObject(value) && typeof value.id === 'string' && typeof value.desc === 'boolean';
+}
+
+/**
+ * Shallow-but-real shape check on a filter rule/group - deep enough to catch
+ * a foreign payload (wrong `kind`, a non-array `rules`, a non-string
+ * `field`), not a full re-validation of every operator/value combination
+ * (that is the SERVER's job via `filter_translator.py`'s own whitelist -
+ * this is only about refusing to hand a malformed tree to the filter
+ * builder UI, not re-litigating what's a legal filter).
+ */
+function isValidFilterRule(value: unknown, depth = 0): value is FilterRule {
+  if (depth > 8 || !isPlainObject(value)) return false;
+  if (value.kind === 'condition') {
+    return typeof value.field === 'string' && typeof value.operator === 'string';
+  }
+  if (value.kind === 'group') {
+    return (
+      (value.combinator === 'and' || value.combinator === 'or') &&
+      Array.isArray(value.rules) &&
+      value.rules.every((rule) => isValidFilterRule(rule, depth + 1))
+    );
+  }
+  return false;
+}
+
+function isValidFilter(value: unknown): value is FilterGroup | null | undefined {
+  if (value === null || value === undefined) return true;
+  return isValidFilterRule(value);
+}
+
+/**
+ * Shape-guards a decoded `ctx` payload against the `ListQuery` contract (fix
+ * round 2) - `JSON.parse` on a tampered/foreign `ctx` (or one crafted by
+ * hand) happily returns ANY object shape; without this check a
+ * structurally-wrong payload sailed straight into `useResourceList`'s state
+ * (page/pageSize as non-numbers, an unknown `statusView`, ...) with no
+ * further validation downstream. Every field beyond `page`/`pageSize` is
+ * OPTIONAL per `ListQuery`, so `undefined` passes; a WRONG type never does.
+ */
+function isValidListQuery(value: unknown): value is ListQuery {
+  if (!isPlainObject(value)) return false;
+  if (!Number.isInteger(value.page) || (value.page as number) < 0) return false;
+  if (!Number.isInteger(value.pageSize) || (value.pageSize as number) < 0) return false;
+  if (value.search !== undefined && typeof value.search !== 'string') return false;
+  if (!isValidSort(value.sort)) return false;
+  if (!isValidFilter(value.filter)) return false;
+  if (value.statusView !== undefined && !STATUS_VIEWS.includes(value.statusView as StatusView)) return false;
+  if (value.segment !== undefined && typeof value.segment !== 'string') return false;
+  return true;
+}
+
 export function decodeListQuery(value: string | null | undefined): ListQuery | null {
   if (!value) return null;
   try {
     const b64 = value.replace(/-/g, '+').replace(/_/g, '/');
     const json = typeof window === 'undefined' ? Buffer.from(b64, 'base64').toString() : window.atob(b64);
-    return JSON.parse(json) as ListQuery;
+    const parsed: unknown = JSON.parse(json);
+    return isValidListQuery(parsed) ? parsed : null;
   } catch {
     return null;
   }

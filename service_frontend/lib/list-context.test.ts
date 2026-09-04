@@ -30,6 +30,60 @@ describe('encodeListQuery / decodeListQuery (existing contract, unchanged)', () 
   });
 });
 
+/** URL-safe base64 (matches encodeListQuery's own alphabet, no dependency on it). */
+function toCtx(obj: unknown): string {
+  const json = JSON.stringify(obj);
+  const b64 = typeof window === 'undefined' ? Buffer.from(json).toString('base64') : window.btoa(json);
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+describe('decodeListQuery shape guard (fix round 2)', () => {
+  it('rejects a foreign-shape payload (valid JSON, wrong shape) instead of trusting it', () => {
+    expect(decodeListQuery(toCtx({ foo: 'bar' }))).toBeNull();
+    expect(decodeListQuery(toCtx('a plain string'))).toBeNull();
+    expect(decodeListQuery(toCtx(42))).toBeNull();
+    expect(decodeListQuery(toCtx(null))).toBeNull();
+    expect(decodeListQuery(toCtx([1, 2, 3]))).toBeNull();
+  });
+
+  it('rejects non-integer/negative page or pageSize', () => {
+    expect(decodeListQuery(toCtx({ page: -1, pageSize: 25 }))).toBeNull();
+    expect(decodeListQuery(toCtx({ page: 1.5, pageSize: 25 }))).toBeNull();
+    expect(decodeListQuery(toCtx({ page: '1', pageSize: 25 }))).toBeNull();
+    expect(decodeListQuery(toCtx({ page: 0, pageSize: -5 }))).toBeNull();
+  });
+
+  it('rejects an unknown statusView', () => {
+    expect(decodeListQuery(toCtx({ page: 0, pageSize: 25, statusView: 'deleted' }))).toBeNull();
+  });
+
+  it('rejects a malformed sort/filter/search of the wrong type', () => {
+    expect(decodeListQuery(toCtx({ page: 0, pageSize: 25, sort: 'name' }))).toBeNull();
+    expect(decodeListQuery(toCtx({ page: 0, pageSize: 25, sort: { id: 'name' } }))).toBeNull();
+    expect(decodeListQuery(toCtx({ page: 0, pageSize: 25, filter: 'active' }))).toBeNull();
+    expect(decodeListQuery(toCtx({ page: 0, pageSize: 25, filter: { kind: 'condition' } }))).toBeNull();
+    expect(decodeListQuery(toCtx({ page: 0, pageSize: 25, search: 123 }))).toBeNull();
+  });
+
+  it('accepts the minimal valid shape (only page/pageSize) and a fully-populated one', () => {
+    expect(decodeListQuery(toCtx({ page: 0, pageSize: 25 }))).toEqual({ page: 0, pageSize: 25 });
+    const full = {
+      page: 2,
+      pageSize: 10,
+      search: 'jay',
+      sort: { id: 'name', desc: true },
+      filter: {
+        kind: 'group',
+        combinator: 'and',
+        rules: [{ kind: 'condition', field: 'status', operator: 'eq', value: 'active' }],
+      },
+      statusView: 'trashed',
+      segment: 'pending',
+    };
+    expect(decodeListQuery(toCtx(full))).toEqual(full);
+  });
+});
+
 describe('buildListNav (AC-DLA-29/30/31)', () => {
   it('appends ctx/i/from onto a bare path', () => {
     const href = buildListNav('/user-management/users/u1', { ctx: 'CTX', i: 4, from: 'u1' });
