@@ -4,8 +4,11 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { ArrowLeft, ChevronLeft, ChevronRight, Pencil } from 'lucide-react';
+import { MENU_SIDEBAR } from '@/config/menu.config';
 import { buildListNav } from '@/lib/list-context';
 import { useCan } from '@/hooks/use-can';
+import { useMenu } from '@/hooks/use-menu';
+import { useTerminology } from '@/hooks/use-terminology';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,6 +31,20 @@ export interface ResourceFormProps<T> {
 }
 
 /**
+ * Naive English singularization for the sidebar's OWN label ("Users" ->
+ * "user", "Templates" -> "template", "Statuses" -> "status") - good enough
+ * for this app's regular-plural menu labels; entities with a terminology
+ * `termKey` use the engine's real singular instead (see below) and never hit
+ * this path.
+ */
+function singularize(plural: string): string {
+  if (/ies$/i.test(plural)) return plural.replace(/ies$/i, 'y');
+  if (/(s|x|z|ch|sh)es$/i.test(plural)) return plural.replace(/es$/i, '');
+  if (/s$/i.test(plural) && !/ss$/i.test(plural)) return plural.replace(/s$/i, '');
+  return plural;
+}
+
+/**
  * The system-wide form view (plan 02 §3b, restyled per plan 23 D5/D6): a
  * `PageHeader` toolbar row (crumbs + title left, ONE Back right, carrying
  * `ctx`/`i`/`from`) and, below it, the record card - identity (avatar, title,
@@ -46,6 +63,23 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
   const canEdit = !config.editPermission || can(config.editPermission);
   const pathname = usePathname() ?? '';
   const searchParams = useSearchParams();
+  const { getCurrentItem } = useMenu(pathname);
+  const { label } = useTerminology();
+
+  // Verb + noun on the primary Save/Create button (AC-DLA-35: no bare
+  // "Save"/"Submit"/"OK") - derived from the SAME sidebar entry PageHeader
+  // resolves its own title from, never a per-entity prop to thread through
+  // every `useXForm` hook. Skipped for `embedded` (form-in-form) instances,
+  // whose page route belongs to the PARENT record, not this one - a wrong
+  // noun is worse than none.
+  const currentItem = config.embedded ? undefined : getCurrentItem(MENU_SIDEBAR);
+  const entityNoun = currentItem?.termKey
+    ? label(currentItem.termKey).toLowerCase()
+    : currentItem?.title
+      ? singularize(currentItem.title).toLowerCase()
+      : undefined;
+  const saveLabel = entityNoun ? `Save ${entityNoun}` : 'Save';
+  const createLabel = entityNoun ? `Create ${entityNoun}` : 'Create';
 
   // Warn on browser-level leave while there are unsaved edits.
   useEffect(() => {
@@ -132,7 +166,7 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
         onClick={handleSave}
         disabled={saving}
       >
-        {config.editable ? 'Save' : config.backLabel ? 'Create' : 'Save'}
+        {config.editable ? saveLabel : config.backLabel ? createLabel : saveLabel}
       </Button>
     </>
   ) : (
