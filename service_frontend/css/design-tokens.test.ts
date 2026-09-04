@@ -30,10 +30,18 @@ function forJsdom(css: string): string {
   return css.replace(/@theme(\s+inline)?\s*\{/g, ':root {');
 }
 
+// Injected once per theme (not once per test/describe): every describe block below
+// calls this many times, and jsdom's getComputedStyle re-evaluates the cascade on
+// every call anyway - appending a duplicate <style> tag per call bought nothing but
+// slower CI and O(n) accumulated tags. One <style> per theme is the real cost.
+let styleInjected = false;
 function injectStylesheet(themeClass?: 'dark'): CSSStyleDeclaration {
-  const style = document.createElement('style');
-  style.textContent = `${forJsdom(configCss)}\n${forJsdom(foundryxCss)}`;
-  document.head.appendChild(style);
+  if (!styleInjected) {
+    const style = document.createElement('style');
+    style.textContent = `${forJsdom(configCss)}\n${forJsdom(foundryxCss)}`;
+    document.head.appendChild(style);
+    styleInjected = true;
+  }
   document.documentElement.classList.toggle('dark', themeClass === 'dark');
   return getComputedStyle(document.documentElement);
 }
@@ -133,13 +141,17 @@ describe('AC-DLA-02 material tokens', () => {
 });
 
 describe('AC-DLA-03 named z-scale', () => {
+  // --z-banner sits ABOVE --z-modal (fix round 1 finding 2): the operator must
+  // always be able to end an impersonation, including while a dialog/sheet/drawer is
+  // open over the page - the banner and its Exit control can never be buried under
+  // an overlay.
   const steps: Array<[string, number]> = [
     ['--z-sticky-content', 5],
     ['--z-sticky-content-corner', 6],
     ['--z-header', 10],
     ['--z-sidebar', 20],
-    ['--z-banner', 30],
     ['--z-modal', 50],
+    ['--z-banner', 60],
   ];
 
   it.each(steps)('defines %s as %i', (name, expected) => {
@@ -147,14 +159,14 @@ describe('AC-DLA-03 named z-scale', () => {
     expect(Number(cs.getPropertyValue(name).trim())).toBe(expected);
   });
 
-  it('orders the scale: sticky-content < header < sidebar < banner < modal', () => {
+  it('orders the scale: sticky-content < header < sidebar < modal < banner', () => {
     const cs = injectStylesheet();
     const n = (name: string) => Number(cs.getPropertyValue(name).trim());
     expect(n('--z-sticky-content')).toBeLessThan(n('--z-sticky-content-corner'));
     expect(n('--z-sticky-content-corner')).toBeLessThan(n('--z-header'));
     expect(n('--z-header')).toBeLessThan(n('--z-sidebar'));
-    expect(n('--z-sidebar')).toBeLessThan(n('--z-banner'));
-    expect(n('--z-banner')).toBeLessThan(n('--z-modal'));
+    expect(n('--z-sidebar')).toBeLessThan(n('--z-modal'));
+    expect(n('--z-modal')).toBeLessThan(n('--z-banner'));
   });
 
   it('references the named steps in the shell instead of an ad-hoc z-[N]', () => {
@@ -169,14 +181,27 @@ describe('AC-DLA-03 named z-scale', () => {
   });
 
   it('offsets the header and sidebar below the impersonation banner instead of being covered by it', () => {
-    const offset = 'top-[var(--impersonation-banner-height,0px)]';
+    const offset = 'top-[var(--shell-top-offset,0px)]';
     expect(read('app/components/layouts/demo1/components/header.tsx')).toContain(offset);
     expect(read('app/components/layouts/demo1/components/sidebar.tsx')).toContain(`lg:${offset}`);
     // The banner is the one that SETS the offset - it must not hardcode a top-0
     // placement that would just stack on top of the header at the same layer.
-    expect(read('components/impersonation/impersonation-banner.tsx')).toContain(
-      '--impersonation-banner-height',
-    );
+    expect(read('components/impersonation/impersonation-banner.tsx')).toContain('--shell-top-offset');
+    // A hardcoded constant undercounts the real (wrapping) rendered height (fix round
+    // 1 finding 1) - the banner has to MEASURE itself.
+    expect(read('components/impersonation/impersonation-banner.tsx')).toContain('ResizeObserver');
+    expect(read('components/impersonation/impersonation-banner.tsx')).not.toMatch(/BANNER_HEIGHT/);
+  });
+
+  it('carries --shell-top-offset into the wrapper padding-top and the settings sticky nav, on top of --header-height', () => {
+    const demo1Css = read('css/demos/demo1.css');
+    const offsetFormula = 'calc(var(--header-height) + var(--shell-top-offset, 0px))';
+    // Both wrapper rules (unpinned sidebar, sidebar-fixed) - the header alone
+    // dropping while the wrapper stayed at a bare --header-height hid the page title
+    // under it (fix round 1 finding 1).
+    expect((demo1Css.match(new RegExp(offsetFormula.replace(/[()+]/g, '\\$&'), 'g')) ?? []).length).toBeGreaterThanOrEqual(2);
+    const settingsSidebar = read('app/(protected)/account/home/settings-sidebar/content.tsx');
+    expect(settingsSidebar).toContain('calc(var(--header-height)+var(--shell-top-offset,0px)+1rem)');
   });
 
   it('leaves no ad-hoc z-[N] under app/** or components/**', () => {
@@ -184,6 +209,41 @@ describe('AC-DLA-03 named z-scale', () => {
       .filter((f) => /\.(tsx?|css)$/.test(f))
       .filter((f) => /\bz-\[\d+\]/.test(fs.readFileSync(f, 'utf8')));
     expect(offenders.map((f) => path.relative(root, f))).toEqual([]);
+  });
+
+  /**
+   * T1 fix round 1 finding 7 widens the guard past the Tailwind `z-[N]` class
+   * vocabulary to a raw `zIndex:` inline style (navigation-menu.tsx's indicator used
+   * exactly this before this fix-round, specifically to dodge the `z-[N]` ban - an
+   * escape hatch that needed closing too). The five that remain all compute the
+   * value from RUNTIME drag/pin state (`isDragging ? 1 : 0`), which a static
+   * Tailwind class cannot express - a real exception, not an oversight, so they are
+   * an explicit allowlist rather than a silent pass.
+   */
+  const zIndexInlineStyleAllowlist = new Set([
+    'components/ui/data-grid-table.tsx',
+    'components/ui/data-grid-table-dnd.tsx',
+    'components/ui/data-grid-table-dnd-rows.tsx',
+    'components/ui/avatar-group.tsx',
+  ]);
+
+  it('leaves no zIndex: inline style outside the runtime-drag/-pin allowlist', () => {
+    const offenders = walk(['app', 'components'])
+      .filter((f) => /\.tsx?$/.test(f))
+      .filter((f) => !zIndexInlineStyleAllowlist.has(rel(f)))
+      .filter((f) => /\bzIndex\s*:/.test(fs.readFileSync(f, 'utf8')))
+      .map(rel);
+    expect(offenders).toEqual([]);
+  });
+
+  it('documents the remaining bare numeric z-<N> utilities as a baseline (Sorento parity - allowed, not banned)', () => {
+    const hits = walk(['app', 'components'])
+      .filter((f) => /\.tsx?$/.test(f))
+      .flatMap((f) => fs.readFileSync(f, 'utf8').match(/\bz-\d+\b/g) ?? []);
+    // A specific count would be brittle busywork to maintain by hand on every
+    // unrelated PR; a wide ceiling still catches an accidental mass-revert.
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.length).toBeLessThan(120);
   });
 });
 
@@ -278,19 +338,37 @@ describe('AC-DLA-05 accessibility preference blocks', () => {
     expect(reduced).toMatch(/\[class\*='transition-\['\]\s*\{\s*transition-duration:\s*1ms\s*!important/);
   });
 
-  it('drops the backdrop filter and uses a 72% scrim under reduced transparency', () => {
-    const reducedTransparencyBlock = reducedTransparency();
-    expect(reducedTransparencyBlock).toContain('backdrop-filter: none');
-    expect(reducedTransparencyBlock).toContain('[data-pinned]');
-    expect(reducedTransparencyBlock).toContain('dialog-overlay');
-    expect(reducedTransparencyBlock).toMatch(/--scrim:[^;]*72%/);
-    expect(reducedTransparencyBlock).toMatch(/--material-regular:\s*var\(--background\)/);
+  // T1 fix round 1 finding 6: reduced-transparency and prefers-contrast: more used to
+  // carry two independent copies of the same material/scrim/pinned flattening (and
+  // prefers-contrast: more was MISSING the overlay scrim rule reduced-transparency
+  // had). One merged `@media (prefers-reduced-transparency: reduce), (prefers-
+  // contrast: more)` query now carries the shared flattening; `moreContrast()` below
+  // (searching for the bare `@media (prefers-contrast: more)` selector, which the
+  // merged query's text does not contain as a standalone string) resolves to the
+  // SEPARATE, contrast-only delta block.
+  it('merges reduced-transparency and prefers-contrast: more into one shared flattening query', () => {
+    const merged = reducedTransparency();
+    expect(merged).toContain('backdrop-filter: none');
+    expect(merged).toContain('[data-pinned]');
+    expect(merged).toContain('dialog-overlay');
+    expect(merged).toMatch(/--scrim:[^;]*72%/);
+    expect(merged).toMatch(/--material-regular:\s*var\(--background\)/);
+    // The overlay scrim rule now applies under EITHER preference, not just
+    // reduced-transparency - the gap prefers-contrast: more had before this fix.
+    expect(merged).toMatch(/background-color:\s*var\(--scrim\)\s*!important/);
+    const mediaSelector = stylesCss.slice(
+      stylesCss.indexOf('@media (prefers-reduced-transparency: reduce)'),
+      stylesCss.indexOf('{', stylesCss.indexOf('@media (prefers-reduced-transparency: reduce)')),
+    );
+    expect(mediaSelector).toContain('(prefers-contrast: more)');
   });
 
-  it('raises borders/muted-foreground/material-edge under prefers-contrast: more (light and dark)', () => {
+  it('raises borders/muted-foreground/material-edge under prefers-contrast: more ONLY (light and dark)', () => {
     const moreContrastBlock = moreContrast();
-    expect(moreContrastBlock).toContain('backdrop-filter: none');
-    expect(moreContrastBlock).toContain('[data-pinned]');
+    // The shared flattening (backdrop-filter/pinned/scrim) lives in the merged query
+    // above now - this block carries only the deltas reduced-transparency does not.
+    expect(moreContrastBlock).not.toContain('backdrop-filter');
+    expect(moreContrastBlock).not.toContain('[data-pinned]');
     expect(moreContrastBlock).toMatch(/--border:/);
     expect(moreContrastBlock).toMatch(/--input:/);
     expect(moreContrastBlock).toMatch(/--muted-foreground:/);
@@ -318,11 +396,12 @@ function walk(dirs: string[]): string[] {
   return out;
 }
 
+/** Repo-root-relative, forward-slashed path (used by every inventory sweep below). */
+const rel = (f: string) => path.relative(root, f).split(path.sep).join('/');
+
 describe('AC-DLA-06 literal-sweep (motion/typography classes must resolve through tokens)', () => {
   const scanFiles = walk(['app', 'components']).filter((f) => /\.(tsx|ts)$/.test(f) && !f.endsWith('.test.ts') && !f.endsWith('.test.tsx'));
   const cssFiles = walk(['css']).filter((f) => f.endsWith('.css'));
-
-  const rel = (f: string) => path.relative(root, f).split(path.sep).join('/');
 
   it('leaves no raw cubic-bezier( outside config.reui.css', () => {
     const offenders = [...scanFiles, ...cssFiles]
@@ -399,5 +478,73 @@ describe('AC-DLA-07 semantic ink contrast', () => {
     const base = resolveVar(`--${name}`, cs);
     const fg = resolveVar(`--${name}-foreground`, cs);
     expect(contrast(base, fg)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // Sorento's own comment on this token block states the DOUBLE constraint: a
+  // semantic ink has to clear 4.5:1 both (a) as a fill's ink against its foreground
+  // (asserted above) AND (b) used directly as text ON --background (a bare
+  // `text-success` toast/body-copy use, not paired with any foreground at all). The
+  // raw brand hue fails (b) in light mode at 3.49:1 - --success/--info/--warning
+  // point at --foundryx-*-active (or -accent for warning) specifically to pass this.
+  it.each(semantic)('clears 4.5:1 as ink directly on --background (light, constraint b)', (name) => {
+    const cs = injectStylesheet();
+    const base = resolveVar(`--${name}`, cs);
+    const bg = resolveVar('--background', cs);
+    expect(contrast(base, bg)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it.each(semantic)('clears 4.5:1 as ink directly on --background (dark, constraint b)', (name) => {
+    const cs = injectStylesheet('dark');
+    const base = resolveVar(`--${name}`, cs);
+    const bg = resolveVar('--background', cs);
+    expect(contrast(base, bg)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // alert.tsx's `appearance="light"` icon sits on the TINTED `-soft` background, not
+  // on a solid fill - that is a different pairing than "foreground on the ink" above,
+  // and using --success-foreground there (white/black, a fill-ink colour) was
+  // measured at 1.13:1 on --success-soft (nearly invisible) before this fix. The icon
+  // now reads off --success-accent/-info-accent/-warning-accent directly.
+  const alertHues = ['success', 'info', 'warning'];
+
+  it.each(alertHues)("alert.tsx light-appearance icon (--%s-accent) reads on its -soft tint (light)", (name) => {
+    const cs = injectStylesheet();
+    const accent = resolveVar(`--${name}-accent`, cs);
+    const soft = resolveVar(`--${name}-soft`, cs);
+    expect(contrast(accent, soft)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it.each(alertHues)("alert.tsx light-appearance icon (--%s-accent) reads on its -soft tint (dark)", (name) => {
+    const cs = injectStylesheet('dark');
+    const accent = resolveVar(`--${name}-accent`, cs);
+    const soft = resolveVar(`--${name}-soft`, cs);
+    expect(contrast(accent, soft)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // badge.tsx's DEFAULT (solid, non-"light") success/warning/info variant is
+  // `bg-<hue>-accent text-<hue>-foreground` (components/ui/badge.tsx) - verify that
+  // pairing directly rather than assuming it inherits constraint (a)'s pass (that one
+  // paired the foreground against --success itself, i.e. -active, not -accent).
+  it.each(alertHues)('badge.tsx default appearance (-foreground on -accent) clears 4.5:1 (light)', (name) => {
+    const cs = injectStylesheet();
+    const accent = resolveVar(`--${name}-accent`, cs);
+    const fg = resolveVar(`--${name}-foreground`, cs);
+    expect(contrast(accent, fg)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it.each(alertHues)('badge.tsx default appearance (-foreground on -accent) clears 4.5:1 (dark)', (name) => {
+    const cs = injectStylesheet('dark');
+    const accent = resolveVar(`--${name}-accent`, cs);
+    const fg = resolveVar(`--${name}-foreground`, cs);
+    expect(contrast(accent, fg)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('sends alert.tsx light-appearance icons to -accent, not -foreground (a fill-ink colour, not a tint-safe one)', () => {
+    const alertSrc = read('components/ui/alert.tsx');
+    for (const name of alertHues) {
+      // The three appearance="light" compound variants (not the "mono" variant's
+      // icon-on-solid-fill compounds, which correctly keep -foreground).
+      expect(alertSrc).toContain(`[&_[data-slot=alert-icon]]:text-[var(--color-${name}-accent,`);
+    }
   });
 });
