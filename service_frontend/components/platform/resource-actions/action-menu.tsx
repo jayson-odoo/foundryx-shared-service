@@ -5,7 +5,7 @@ import { MoreHorizontal, Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useCan } from '@/hooks/use-can';
 import { useDeferredAction } from '@/hooks/use-deferred-action';
-import { presentContinuous } from '@/lib/deferred-verb';
+import { deferredDoneMessage, entityNoun, presentContinuous } from '@/lib/deferred-verb';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -96,17 +96,38 @@ export function ActionMenu<T>({
   const [pending, setPending] = useState<ResourceAction<T> | null>(null);
   const { can } = useCan();
 
-  const activeRef = useRef<{ ids: string[]; toastId: string | number } | null>(null);
+  const activeRef = useRef<{
+    ids: string[];
+    toastId: string | number;
+    label: string;
+    entityType: string;
+  } | null>(null);
+  const settleActive = () => {
+    const active = activeRef.current;
+    if (active) {
+      untrackPendingEntities(active.ids);
+      dismissDeferredToast(active.toastId);
+    }
+    activeRef.current = null;
+    return active;
+  };
   const deferred = useDeferredAction({
     onCommitted: () => {
-      const active = activeRef.current;
-      if (active) {
-        untrackPendingEntities(active.ids);
-        dismissDeferredToast(active.toastId);
-      }
-      activeRef.current = null;
-      toast.success('Done.');
+      const active = settleActive();
+      toast.success(
+        active ? deferredDoneMessage(active.label, active.entityType, active.ids.length) : 'Done.',
+      );
       runtime.reload();
+    },
+    onFailed: (error) => {
+      settleActive();
+      toast.error(error || 'The action failed.');
+    },
+    onCancelledElsewhere: () => {
+      // A teammate cancelled this SAME action from another tab/session
+      // (fix round 1 item 1/2) - reconcile our own toast/dim WITHOUT
+      // treating it as a success.
+      settleActive();
     },
   });
 
@@ -134,26 +155,38 @@ export function ActionMenu<T>({
         return;
       }
       const label = typeof action.label === 'function' ? action.label(rows) : action.label;
+      const entityType = action.deferred.entityType;
       trackPendingEntities(entityIds);
       try {
-        const { commitAt, windowSeconds } = await deferred.start(
-          action.deferred.actionKey,
-          entityIds.map((id) => ({ entityType: action.deferred!.entityType, entityId: id })),
-        );
+        const { commitAt, windowSeconds, failedCount, parkedEntityIds: parkedIds } =
+          await deferred.start(
+            action.deferred.actionKey,
+            entityIds.map((id) => ({ entityType, entityId: id })),
+          );
+        untrackPendingEntities(entityIds.filter((id) => !parkedIds.includes(id)));
         const toastId = `pending-action-${entityIds[0]}`;
-        activeRef.current = { ids: entityIds, toastId };
+        activeRef.current = { ids: parkedIds, toastId, label, entityType };
         deferredToast({
           id: toastId,
           verb: presentContinuous(label),
           commitAt,
           windowSeconds,
+          count: parkedIds.length > 1 ? parkedIds.length : undefined,
+          noun: parkedIds.length > 1 ? entityNoun(entityType, parkedIds.length) : undefined,
           onCancel: () => {
             void deferred.cancel();
-            untrackPendingEntities(entityIds);
+            untrackPendingEntities(parkedIds);
             dismissDeferredToast(toastId);
             activeRef.current = null;
           },
         });
+        if (failedCount > 0) {
+          // Fix round 1 item 3: the parks that succeeded stay tracked above;
+          // ONE toast names how many could not be started.
+          toast.error(
+            `Could not start "${label}" on ${failedCount} of ${entityIds.length} - another action may already be pending on ${failedCount === 1 ? 'it' : 'them'}.`,
+          );
+        }
       } catch (error) {
         untrackPendingEntities(entityIds);
         toast.error(error instanceof Error ? error.message : 'Could not start that action.');

@@ -5,7 +5,7 @@ import { ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { useCan } from '@/hooks/use-can';
 import { useDeferredAction } from '@/hooks/use-deferred-action';
-import { presentContinuous } from '@/lib/deferred-verb';
+import { deferredDoneMessage, entityNoun, presentContinuous } from '@/lib/deferred-verb';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -36,27 +36,6 @@ function defaultEntityId<T>(row: T): string {
   return String((row as { id?: unknown }).id ?? '');
 }
 
-/** A friendlier plural noun for the bulk countdown copy ("Deleting 3 users
- * in 8s") than a bare `entityType + 's'` - covers the registered keys; an
- * unmapped type still gets a naive plural rather than nothing. */
-const ENTITY_NOUNS: Record<string, string> = {
-  user: 'users',
-  role: 'roles',
-  workflow: 'workflows',
-  form: 'forms',
-  template: 'templates',
-  connection: 'connections',
-  ai_agent: 'AI agents',
-  ai_skill: 'AI skills',
-  document_file: 'files',
-  document_share: 'links',
-  tenant: 'tenants',
-};
-
-function nounFor(entityType: string): string {
-  return ENTITY_NOUNS[entityType] ?? `${entityType}s`;
-}
-
 /**
  * Bulk toolbar as a single dropdown (plan 02 review) - scales as more bulk
  * actions are added per list. Typed-confirmation actions route through
@@ -74,17 +53,35 @@ export function BulkActions<T>({
   const [pending, setPending] = useState<ResourceAction<T> | null>(null);
   const { can } = useCan();
 
-  const activeRef = useRef<{ ids: string[]; toastId: string | number } | null>(null);
+  const activeRef = useRef<{
+    ids: string[];
+    toastId: string | number;
+    label: string;
+    entityType: string;
+  } | null>(null);
+  const settleActive = () => {
+    const active = activeRef.current;
+    if (active) {
+      untrackPendingEntities(active.ids);
+      dismissDeferredToast(active.toastId);
+    }
+    activeRef.current = null;
+    return active;
+  };
   const deferred = useDeferredAction({
     onCommitted: () => {
-      const active = activeRef.current;
-      if (active) {
-        untrackPendingEntities(active.ids);
-        dismissDeferredToast(active.toastId);
-      }
-      activeRef.current = null;
-      toast.success('Done.');
+      const active = settleActive();
+      toast.success(
+        active ? deferredDoneMessage(active.label, active.entityType, active.ids.length) : 'Done.',
+      );
       runtime.reload();
+    },
+    onFailed: (error) => {
+      settleActive();
+      toast.error(error || 'The action failed.');
+    },
+    onCancelledElsewhere: () => {
+      settleActive();
     },
   });
 
@@ -100,28 +97,38 @@ export function BulkActions<T>({
     if (action.deferred) {
       const entityIds = rows.map(getEntityId);
       const label = typeof action.label === 'function' ? action.label(rows) : action.label;
+      const entityType = action.deferred.entityType;
       trackPendingEntities(entityIds);
       try {
-        const { commitAt, windowSeconds } = await deferred.start(
-          action.deferred.actionKey,
-          entityIds.map((id) => ({ entityType: action.deferred!.entityType, entityId: id })),
-        );
+        const { commitAt, windowSeconds, failedCount, parkedEntityIds: parkedIds } =
+          await deferred.start(
+            action.deferred.actionKey,
+            entityIds.map((id) => ({ entityType, entityId: id })),
+          );
+        untrackPendingEntities(entityIds.filter((id) => !parkedIds.includes(id)));
         const toastId = `pending-action-bulk-${Date.now()}`;
-        activeRef.current = { ids: entityIds, toastId };
+        activeRef.current = { ids: parkedIds, toastId, label, entityType };
         deferredToast({
           id: toastId,
           verb: presentContinuous(label),
           commitAt,
           windowSeconds,
-          count: entityIds.length > 1 ? entityIds.length : undefined,
-          noun: nounFor(action.deferred.entityType),
+          count: parkedIds.length > 1 ? parkedIds.length : undefined,
+          noun: entityNoun(entityType, parkedIds.length),
           onCancel: () => {
             void deferred.cancel();
-            untrackPendingEntities(entityIds);
+            untrackPendingEntities(parkedIds);
             dismissDeferredToast(toastId);
             activeRef.current = null;
           },
         });
+        if (failedCount > 0) {
+          // Fix round 1 item 3: `start()` used `Promise.allSettled` - the
+          // rows that DID park stay tracked above; ONE toast names the rest.
+          toast.error(
+            `Could not start "${label}" on ${failedCount} of ${entityIds.length} - another action may already be pending on ${failedCount === 1 ? 'it' : 'them'}.`,
+          );
+        }
       } catch (error) {
         untrackPendingEntities(entityIds);
         toast.error(error instanceof Error ? error.message : 'Could not start that action.');
