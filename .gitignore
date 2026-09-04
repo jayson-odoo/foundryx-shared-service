@@ -45,8 +45,6 @@ pnpm-debug.log*
 
 # ---- Test / E2E artifacts ----
 test-results/
-playwright-report/
-playwright/.cache/
 
 # ---- OS / Editor ----
 .DS_Store
@@ -55,8 +53,6 @@ Thumbs.db
 .vscode/
 *.swp
 
-# ---- Playwright MCP scratch ----
-.playwright-mcp/
 .claude/*
 !.claude/skills/
 !.claude/skills/**

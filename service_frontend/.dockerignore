@@ -12,10 +12,6 @@ next-env.d.ts
 .git/
 .gitignore
 test-results/
-playwright-report/
-playwright/.cache/
-.playwright-mcp/
-e2e/
 *.log
 Dockerfile
 .dockerignore
