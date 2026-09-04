@@ -244,7 +244,10 @@ export function SearchDialog({ trigger }: { trigger: ReactNode }) {
   return (
     <Dialog>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="lg:max-w-[600px] lg:top-[15%] lg:translate-y-0 p-0 [&_[data-slot=dialog-close]]:top-5.5 [&_[data-slot=dialog-close]]:end-5.5">
+      <DialogContent
+        position="top"
+        className="lg:max-w-[600px] p-0 [&_[data-slot=dialog-close]]:top-5.5 [&_[data-slot=dialog-close]]:end-5.5"
+      >
         <DialogHeader className="px-4 py-1 mb-1">
           <DialogTitle></DialogTitle>
           <DialogDescription></DialogDescription>
