@@ -18,7 +18,7 @@ fills only rows that lack a value, and is safe to run repeatedly.
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import sqlalchemy as sa
 
@@ -200,7 +200,10 @@ def backfill_document_line_mapping_pickers(
     next_order = len(existing_fields)
     created = 0
 
-    def _add(source_path: str, canonical_field: str, transform: str, required: bool) -> None:
+    def _add(
+        source_path: str, canonical_field: str, transform: str, required: bool,
+        *, enabled: bool = True,
+    ) -> None:
         nonlocal created, next_order
         if not source_path or canonical_field in existing_fields:
             return
@@ -209,7 +212,7 @@ def backfill_document_line_mapping_pickers(
                 tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
                 scope=SCOPE_LINE, source_path=source_path,
                 canonical_field=canonical_field, transform=transform,
-                is_required=required, is_enabled=True, sort_order=next_order,
+                is_required=required, is_enabled=enabled, sort_order=next_order,
             )
         )
         existing_fields.add(canonical_field)
@@ -220,15 +223,33 @@ def backfill_document_line_mapping_pickers(
     _add(line_product_column, "product_ref", "ref_product", True)
     _add(line_warehouse_column, "warehouse_ref", "ref_warehouse", False)
 
-    # The FIXED fields (B1) - unconditional on the picker columns, keyed by
-    # the FIXED column-name convention (source_path == canonical_field).
+    #     !!  R1 (blocker, code-review round) - A FIXED FIELD ABSENT FROM
+    #         THE PREVIEW SEEDS DISABLED.  !!
+    # The FIXED column-name convention (source_path == canonical_field)
+    # assumes the lineQuery returns a column literally spelled like the
+    # canonical field - a real AutoCount column almost never is
+    # (`DiscountAmt`, not `discount`). Seeding every fixed field ENABLED
+    # regardless left the S1 preview-column gate rejecting the operator's
+    # very first Mapping-tab save (live task 48e2b593 - "'discount' is not
+    # among the line query's last preview columns"). A NEVER-previewed task
+    # (`line_result_columns is None`) has nothing to check against yet, so
+    # it stays permissive (enabled) - same "test first" convention as
+    # `validate_source_config`'s `filterFormula` gate.
+    line_columns = config.line_result_columns
+    known_line_columns = frozenset(line_columns) if line_columns is not None else None
     for canonical_field, transform, required in DOCUMENT_LINE_FIXED_FIELDS.get(entity_type, ()):
-        _add(canonical_field, canonical_field, transform, required)
+        enabled = known_line_columns is None or canonical_field in known_line_columns
+        _add(canonical_field, canonical_field, transform, required, enabled=enabled)
 
     # Strip the picker keys EVERY call (idempotent w.r.t. the config half
     # too, independent of whether rows were just created) - a JSON column
     # needs a FRESH dict reassigned, never an in-place mutation of the
     # existing one, or SQLAlchemy misses the change (the house gotcha).
+    _strip_picker_keys_and_flush(db, config, source_config)
+    return created
+
+
+def _strip_picker_keys_and_flush(db: Any, config: Any, source_config: Dict[str, Any]) -> None:
     stripped = {
         k: v for k, v in source_config.items()
         if k not in ("lineKeyColumn", "lineProductColumn", "lineWarehouseColumn")
@@ -237,4 +258,52 @@ def backfill_document_line_mapping_pickers(
         config.source_config = stripped
 
     db.flush()
-    return created
+
+
+def disable_line_rows_missing_from_preview(
+    db: Any, tenant_id: str, company_id: str, entity_type: str
+) -> int:
+    """R1(c) repair (code-review round): flips an existing ENABLED line row
+    whose ``source_path`` is not among the task's saved ``line_result_
+    columns`` to ``is_enabled=False`` - the migration-0011 aftermath (a
+    fixed field seeded enabled regardless of the preview, e.g. live task
+    48e2b593) repaired in place, on the SAME "is this row's source_path
+    real" question the S1 save-time gate asks. Idempotent (a second call
+    touches nothing more); a NEVER-previewed task (``line_result_columns
+    is None``) has nothing to check against yet and is left ENTIRELY
+    alone - same "test first" convention as everywhere else in this file.
+    Returns the number of rows disabled.
+    """
+    if not is_document_entity(entity_type):
+        return 0
+    config = (
+        db.query(AcEntityConfig)
+        .filter(
+            AcEntityConfig.tenant_id == tenant_id,
+            AcEntityConfig.company_id == company_id,
+            AcEntityConfig.entity_type == entity_type,
+        )
+        .one_or_none()
+    )
+    if config is None or config.line_result_columns is None:
+        return 0
+
+    known_line_columns = frozenset(config.line_result_columns)
+    rows = (
+        db.query(AcFieldMapping)
+        .filter(
+            AcFieldMapping.tenant_id == tenant_id,
+            AcFieldMapping.company_id == company_id,
+            AcFieldMapping.entity_type == entity_type,
+            AcFieldMapping.scope == SCOPE_LINE,
+            AcFieldMapping.is_enabled.is_(True),
+        )
+        .all()
+    )
+    touched = 0
+    for row in rows:
+        if row.source_path not in known_line_columns:
+            row.is_enabled = False
+            touched += 1
+    db.flush()
+    return touched

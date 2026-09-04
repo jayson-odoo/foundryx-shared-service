@@ -334,6 +334,12 @@ class MappingUpdateRow(ApiModel):
     # coerce through `getattr(row, "scope", SCOPE_HEADER) != SCOPE_LINE`
     # everywhere it is read.
     scope: Literal["header", "line"] = "header"
+    # R1 (code-review round) - write-side twin of the read-side
+    # `MappingRowOut.isEnabled`. A backfill/preset can seed a fixed-field
+    # line row disabled (its source_path doesn't match a real preview
+    # column); the operator toggles it once they've fixed the source
+    # column, or leaves it disabled to save the rest of the draft.
+    isEnabled: bool = True
 
 
 class MappingUpdateRequest(ApiModel):

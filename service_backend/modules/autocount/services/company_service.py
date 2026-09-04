@@ -356,9 +356,17 @@ class MappingWriteRow:
 
     ``sorento_field`` is the Sorento-facing target the operator picked; the
     service maps it back to the stored ``canonical_field`` (they are equal for
-    master sink fields). Only these three are operator-authored - ``scope`` and
-    the required/enabled flags are derived server-side so the editor cannot
-    invent them.
+    master sink fields). ``scope`` and the required flag are derived
+    server-side so the editor cannot invent them.
+
+    ``is_enabled`` (R1, code-review round) mirrors the read-side
+    ``MappingRowView.is_enabled`` on the WRITE side too - a backfill/preset
+    can seed a fixed-field row `disabled` (its ``source_path`` doesn't match
+    a real preview column yet), and the operator must be able to save the
+    REST of the draft without that one stale row 422ing the whole save; a
+    disabled row's own ``source_path`` is exempt from the S1 preview-column
+    gate (it is visibly greyed, not silently accepted as correct). Defaults
+    ``True`` - every pre-R1 call site byte-for-byte.
     """
 
     source_path: str
@@ -371,6 +379,7 @@ class MappingWriteRow:
     # ``header`` reproduces every pre-existing call site byte-for-byte (they
     # never touch a document's line catalog at all).
     scope: str = SCOPE_HEADER
+    is_enabled: bool = True
 
 
 @dataclass
@@ -1445,7 +1454,16 @@ class CompanyService:
             # column list to check against (same "test first" convention as
             # `validate_source_config`'s `filterFormula` gate), so it stays
             # permissive rather than rejecting every line row.
-            if line_columns is not None and source_path not in known_vars:
+            #
+            #     !!  R1 (blocker, code-review round) - A DISABLED ROW IS
+            #         EXEMPT.  !!
+            # A backfill/preset-seeded fixed field whose source_path does
+            # not match a real preview column lands `is_enabled=False`
+            # (visibly greyed, never silently accepted as correct) - it
+            # must NOT block the operator from saving the REST of the
+            # draft. An ENABLED row with the exact same unknown source_path
+            # still 422s; only the disabled state is exempt.
+            if row.is_enabled and line_columns is not None and source_path not in known_vars:
                 raise AutocountServiceError(
                     f"'{source_path}' is not among the line query's last "
                     f"preview columns - test the line query again."
@@ -1485,7 +1503,10 @@ class CompanyService:
                         f"The formula for '{target}' is invalid: {exc}"
                     ) from exc
             clean.append(
-                MappingWriteRow(source_path, row.transform, target, formula=formula)
+                MappingWriteRow(
+                    source_path, row.transform, target, formula=formula,
+                    is_enabled=row.is_enabled,
+                )
             )
 
         #     !!  source_ref/product_ref/qty_ordered ARE REQUIRED THE MOMENT
@@ -1515,7 +1536,7 @@ class CompanyService:
                     transform=row.transform,
                     formula=row.formula,
                     is_required=row.sorento_field in required,
-                    is_enabled=True,
+                    is_enabled=row.is_enabled,
                     sort_order=order,
                 )
             )

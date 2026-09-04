@@ -339,6 +339,7 @@ def replace_entity_mapping(
                     sorento_field=row.sorentoField,
                     formula=row.formula,
                     scope=row.scope,
+                    is_enabled=row.isEnabled,
                 )
                 for row in combined_rows
             ],
