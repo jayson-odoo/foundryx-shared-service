@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 import { Drawer as DrawerPrimitive } from 'vaul';
+import { OVERLAY_CLASS_STATIC } from '@/components/ui/primitive-classes';
 
 const Drawer = ({ shouldScaleBackground = true, ...props }: React.ComponentProps<typeof DrawerPrimitive.Root>) => (
   <DrawerPrimitive.Root shouldScaleBackground={shouldScaleBackground} {...props} />
@@ -24,7 +25,7 @@ function DrawerOverlay({ className, ...props }: React.ComponentProps<typeof Draw
   return (
     <DrawerPrimitive.Overlay
       data-slot="drawer-overlay"
-      className={cn('fixed inset-0 z-(--z-modal) bg-black/80', className)}
+      className={cn(OVERLAY_CLASS_STATIC, className)}
       {...props}
     />
   );
@@ -36,17 +37,34 @@ function DrawerContent({ className, children, ...props }: React.ComponentProps<t
       <DrawerOverlay />
       <DrawerPrimitive.Content
         data-slot="drawer-content"
+        // vaul drives its own drag-tracked, velocity-dismissed open/close
+        // animation (AC-DLA-23) - it stamps `data-vaul-drawer-direction` on
+        // this element itself, so every side's box shape lives here rather
+        // than a `side` prop the way Sheet takes one.
         className={cn(
-          'bg-background fixed inset-x-0 bottom-0 z-(--z-modal) mt-24 flex h-auto flex-col rounded-t-[10px] border',
+          'group/drawer-content bg-background fixed z-(--z-modal) flex flex-col border',
+          'data-[vaul-drawer-direction=bottom]:inset-x-0 data-[vaul-drawer-direction=bottom]:bottom-0 data-[vaul-drawer-direction=bottom]:mt-24 data-[vaul-drawer-direction=bottom]:max-h-[80vh] data-[vaul-drawer-direction=bottom]:rounded-t-[10px] data-[vaul-drawer-direction=bottom]:border-t',
+          'data-[vaul-drawer-direction=top]:inset-x-0 data-[vaul-drawer-direction=top]:top-0 data-[vaul-drawer-direction=top]:mb-24 data-[vaul-drawer-direction=top]:max-h-[80vh] data-[vaul-drawer-direction=top]:rounded-b-[10px] data-[vaul-drawer-direction=top]:border-b',
+          'data-[vaul-drawer-direction=left]:inset-y-0 data-[vaul-drawer-direction=left]:start-0 data-[vaul-drawer-direction=left]:h-full data-[vaul-drawer-direction=left]:w-3/4 data-[vaul-drawer-direction=left]:border-e data-[vaul-drawer-direction=left]:sm:max-w-sm',
+          'data-[vaul-drawer-direction=right]:inset-y-0 data-[vaul-drawer-direction=right]:end-0 data-[vaul-drawer-direction=right]:h-full data-[vaul-drawer-direction=right]:w-3/4 data-[vaul-drawer-direction=right]:border-s data-[vaul-drawer-direction=right]:sm:max-w-sm',
           className,
         )}
         {...props}
       >
-        <div className="mx-auto mt-4 h-2 w-[100px] rounded-full bg-muted" />
+        {/* The pull handle only makes sense on a top/bottom sheet - a
+            left/right nav drawer is dismissed by swiping the edge, not a
+            handle. */}
+        <div className="mx-auto mt-4 h-2 w-[100px] shrink-0 rounded-full bg-muted group-data-[vaul-drawer-direction=left]/drawer-content:hidden group-data-[vaul-drawer-direction=right]/drawer-content:hidden" />
         {children}
       </DrawerPrimitive.Content>
     </DrawerPortal>
   );
+}
+
+function DrawerBody({ className, ...props }: React.ComponentProps<'div'>) {
+  // Same role as SheetBody: the part that scrolls, so the header/footer
+  // stay put.
+  return <div data-slot="drawer-body" className={cn('min-h-0 flex-1 overflow-y-auto', className)} {...props} />;
 }
 
 const DrawerHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
@@ -61,7 +79,7 @@ function DrawerTitle({ className, ...props }: React.ComponentProps<typeof Drawer
   return (
     <DrawerPrimitive.Title
       data-slot="drawer-title"
-      className={cn('text-lg font-semibold leading-none tracking-tight', className)}
+      className={cn('text-lg font-semibold leading-tight tracking-normal', className)}
       {...props}
     />
   );
@@ -79,6 +97,7 @@ function DrawerDescription({ className, ...props }: React.ComponentProps<typeof 
 
 export {
   Drawer,
+  DrawerBody,
   DrawerClose,
   DrawerContent,
   DrawerDescription,
