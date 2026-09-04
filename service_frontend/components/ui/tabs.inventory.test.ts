@@ -42,12 +42,23 @@ describe('AC-DLA-12 tabs default variant + segmented keepers', () => {
     expect(src).toMatch(/variant = 'line'/);
   });
 
-  it('TabsList base class scrolls horizontally with a hidden scrollbar and a right-edge mask', () => {
+  it('TabsList base class scrolls horizontally with a hidden scrollbar', () => {
     const src = read('components/ui/tabs.tsx');
     expect(src).toContain('overflow-x-auto');
     expect(src).toContain('[scrollbar-width:none]');
-    expect(src).toContain("data-[fade=true]:[mask-image:linear-gradient(to_right,black_calc(100%-24px),transparent)]");
     expect(src).toContain('useHorizontalOverflow');
+  });
+
+  it('the right-edge fade is an always-mounted opacity overlay, never mask-image toggling (AC-DLA-14 fix round 1)', () => {
+    const src = read('components/ui/tabs.tsx');
+    expect(src).not.toContain('[mask-image:');
+    expect(src).toMatch(/data-slot="tabs-fade"[\s\S]{0,120}data-fade=\{isFading\}/);
+    expect(src).toMatch(/opacity-0 transition-opacity duration-\(--duration-fast\) data-\[fade=true\]:opacity-100/);
+  });
+
+  it('TabsTrigger uses an inset, zero-offset focus ring (fix round 1: the scroller clips an outer ring)', () => {
+    const src = read('components/ui/tabs.tsx');
+    expect(src).toMatch(/focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0/);
   });
 
   it('TabsTrigger carries PRESSED_CLASS', () => {

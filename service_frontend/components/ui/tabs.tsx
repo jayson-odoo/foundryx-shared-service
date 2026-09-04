@@ -11,9 +11,11 @@ import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 const tabsListVariants = cva(
   // The list owns its scroller (AC-DLA-12): without one, a long strip widens
   // the page instead of scrolling. The scrollbar is hidden because it would
-  // sit on top of the tab labels, so the right-edge mask (driven by
-  // `data-fade`) is what says there is more to the right.
-  'flex items-center shrink-0 min-w-0 max-w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden data-[fade=true]:[mask-image:linear-gradient(to_right,black_calc(100%-24px),transparent)]',
+  // sit on top of the tab labels; a sibling always-mounted fade overlay (see
+  // `TabsList` below, same solution as the DataGrid scroller, AC-DLA-14 fix
+  // round 1) marks the right edge instead of a toggled `mask-image`, which
+  // switches abruptly with no transition.
+  'flex items-center shrink-0 min-w-0 max-w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
   {
     variants: {
       variant: {
@@ -91,15 +93,19 @@ const tabsListVariants = cva(
 
 // Variants for TabsTrigger
 const tabsTriggerVariants = cva(
+  // Inset focus ring, zero offset (fix round 1): the trigger sits inside
+  // TabsList's own `overflow-x-auto` scroller, which clips anything an
+  // OUTER ring/offset would draw past the trigger's own box - an inset ring
+  // needs no room outside it.
   PRESSED_CLASS +
-    ' shrink-0 cursor-pointer whitespace-nowrap inline-flex justify-center items-center font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:shrink-0 [&_svg]:text-muted-foreground [&:hover_svg]:text-primary [&[data-state=active]_svg]:text-primary',
+    ' shrink-0 cursor-pointer whitespace-nowrap inline-flex justify-center items-center font-medium focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0 disabled:pointer-events-none disabled:opacity-50 data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:shrink-0 [&_svg]:text-muted-foreground [&:hover_svg]:text-primary [&[data-state=active]_svg]:text-primary',
   {
     variants: {
       variant: {
         default:
           'text-muted-foreground data-[state=active]:bg-background hover:text-foreground data-[state=active]:text-foreground data-[state=active]:shadow-xs data-[state=active]:shadow-black/5',
         button:
-          'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-lg text-accent-foreground hover:text-foreground data-[state=active]:bg-accent data-[state=active]:text-foreground',
+          'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0 rounded-lg text-accent-foreground hover:text-foreground data-[state=active]:bg-accent data-[state=active]:text-foreground',
         line: 'border-b-2 text-muted-foreground border-transparent data-[state=active]:border-primary hover:text-primary data-[state=active]:text-primary data-[state=active]:border-primary data-[state=active]:text-primary',
       },
       size: {
@@ -186,13 +192,23 @@ function TabsList({
 
   return (
     <TabsContext.Provider value={{ variant: variant || 'line', size: size || 'md' }}>
-      <TabsPrimitive.List
-        data-slot="tabs-list"
-        data-fade={isFading}
-        className={cn(tabsListVariants({ variant, shape, size }), className)}
-        {...props}
-        ref={mergedRef}
-      />
+      <div className="relative min-w-0 max-w-full">
+        <TabsPrimitive.List
+          data-slot="tabs-list"
+          className={cn(tabsListVariants({ variant, shape, size }), className)}
+          {...props}
+          ref={mergedRef}
+        />
+        {/* Always mounted (AC-DLA-14 fix round 1), same solution as the
+            DataGrid's right-edge fade - opacity only, never mount/unmount or
+            mask-image toggling. */}
+        <div
+          aria-hidden="true"
+          data-slot="tabs-fade"
+          data-fade={isFading}
+          className="pointer-events-none absolute inset-y-0 end-0 w-6 bg-gradient-to-l from-background to-transparent opacity-0 transition-opacity duration-(--duration-fast) data-[fade=true]:opacity-100"
+        />
+      </div>
     </TabsContext.Provider>
   );
 }
