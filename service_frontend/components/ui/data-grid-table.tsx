@@ -181,6 +181,11 @@ function useRestoreReturnedRow(scrollerRef: React.RefObject<HTMLDivElement | nul
   const { table } = useDataGrid();
   const searchParams = useSearchParams();
   const done = useRef(false);
+  // Fix round 1: `{ once: true }` only removes the listener AFTER it fires -
+  // a user who navigates away (unmounting this grid) before ever pointing
+  // down anywhere left it registered on `document` forever. Tracked here so
+  // the unmount effect below can remove whichever one is currently live.
+  const clearHighlightRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (done.current) return;
@@ -202,12 +207,18 @@ function useRestoreReturnedRow(scrollerRef: React.RefObject<HTMLDivElement | nul
     done.current = true;
     el.scrollIntoView({ block: 'center' });
     el.setAttribute('data-returned', 'true');
-    document.addEventListener(
-      'pointerdown',
-      () => el.removeAttribute('data-returned'),
-      { once: true },
-    );
+    const clearHighlight = () => el.removeAttribute('data-returned');
+    document.addEventListener('pointerdown', clearHighlight, { once: true });
+    clearHighlightRef.current = clearHighlight;
   });
+
+  useEffect(() => {
+    return () => {
+      if (clearHighlightRef.current) {
+        document.removeEventListener('pointerdown', clearHighlightRef.current);
+      }
+    };
+  }, []);
 }
 
 function DataGridTableBase({ children }: { children: ReactNode }) {
