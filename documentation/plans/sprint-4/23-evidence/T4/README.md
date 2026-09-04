@@ -199,3 +199,33 @@ report's "T4 - Fix round 1" section; this log records only the LIVE run.
 - **AC-DLA-27/D6** (crumb correctness + header-in-Container) - the shadowed-route and PageHeader-
   outside-Container defects were never explicitly ACd by number but are covered under AC-DLA-27's
   "one page-title header" umbrella; both now verified live (step 21).
+
+## Fix round 2 (ctx round trip PARTIAL -> DONE, 4 smaller findings)
+
+Session `agent-browser --session t4fix2` (isolated, per the brief). Full findings + fixes are in the
+test report's "T4 - Fix round 2" section; this log records only the LIVE run.
+
+24. Backend `:8001` already up. `:3002`'s prior process (pid confirmed owned by this worktree via
+    `lsof -p <pid> | grep cwd`) killed, `rm -rf .next && npm run build` green, restarted clean,
+    `curl` confirmed 200.
+25. Signed in. Users list had 13 active rows (residue from prior rounds); trimmed to exactly 11 via
+    the row action menu's "Trash" on 2 `E2E Seed User` residue rows (each confirmed via the "Move to
+    trash?" dialog) - matching the coordinator's exact 11-row scenario without touching any real
+    demo account.
+26. **AC-DLA-30 clamp fix, live (item 2):** `Rows per page` -> 10 (11 rows -> page 1 shows 10, page 2
+    shows exactly 1: "KT Demo", "11 - 11 of 11"). Trashed "KT Demo" from ITS OWN row action menu (the
+    only row on page 2) -> the list landed on page 1 showing all 10 remaining rows ("1 - 10 of 10"),
+    no empty "No records" flash, no stray page-2 control left over
+    (`fixround2-01-users-delete-sole-row-page2-clamps-to-page1-1280.png`).
+27. **Cleanup:** switched to the Trashed view (3 rows: the 2 seed users + KT Demo), selected all via
+    the header checkbox, bulk Actions -> Restore -> toast "Restored 3 user(s)", Trashed view back to
+    "No data available" - the shared `default` tenant's Users list is exactly as it was before this
+    run (13 active, 0 trashed).
+28. Console clean throughout (`agent-browser console`/`errors`); no 4xx/5xx observed.
+
+## Fix round 2 AC re-verdicts
+
+- **AC-DLA-30** was PARTIAL after fix round 1 (Back restored the CURRENT page correctly, but a
+  restored/delete-shrunk OUT-OF-RANGE page committed an empty result instead of clamping to the real
+  last page) - now genuinely DONE, live (step 26) + unit
+  (`hooks/use-resource-list.clamp.test.ts`).

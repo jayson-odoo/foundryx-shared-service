@@ -1563,8 +1563,10 @@ reasons only - the page wraps it in its own `PageHeader` - while still owning a 
 real row navigation). (b) Back already carried `ctx`/`i`/`from` correctly (fixed in the base T4
 slice); what was genuinely missing was "post-delete navigation" - `ResourceActionRuntime` gains
 `backHref` (form surface only, the SAME href the record's own Back button computes), and
-`use-role-actions.tsx`'s delete (the one concrete site in the tree that bare-pushed `rolesListPath`
-after a form-surface delete) now uses `rt.backHref ?? rolesListPath`. (c) `use-record-nav.ts`
+`use-role-actions.tsx`'s delete (the site FOUND in this round's sweep that bare-pushed
+`rolesListPath` after a form-surface delete) now uses `rt.backHref ?? rolesListPath` - **this
+sentence was corrected in Fix round 2 below: the sweep that produced it was not exhaustive, and
+round 2 found three more sites with the identical bug.** (c) `use-record-nav.ts`
 already carried `ctx` intact as it steps (base slice); Back after stepping still carries the ctx of
 the list the user left (unchanged, re-verified by the existing test suite).
 **Fixed:** `hooks/use-resource-list.ts`, `components/platform/resource-list/resource-list.tsx`,
@@ -1761,3 +1763,141 @@ already up and seeded.
 task editor primary label - code fixed and unit-tested, live capture deferred). All 3 blocker/should-
 fix items with a required browser proof (findings 2, 3, 5/7/8 combined) are captured at both
 viewports where applicable. Full gate green: `npm test` 196/196 files, 1650/1650 tests, exit 0.
+
+## T4 - Fix round 2
+
+Branch unchanged (`sprint-4/23-T4-header-rows-latency`), same worktree, session
+`agent-browser --session t4fix2`. Verification of Fix round 1 found item 3 (the ctx round trip)
+PARTIAL - the "post-delete navigation" sweep was not exhaustive and `useResourceList` never
+clamped a page that fell out of range - plus four smaller correctness/hygiene gaps (items 2-5
+below). All five addressed here.
+
+**1 - the "roles was the only site" claim was wrong; two more form-surface deletes bare-pushed a
+list path.** `app/(protected)/settings/integrations/components/use-connection-actions.tsx`'s
+"Disconnect" (form surface) and `app/(protected)/ideation/ideas/components/use-idea-form.tsx`'s
+"Delete" both called `router.push(<bare list path>)` after the mutation, dropping the record's
+`ctx`/`i`/`from` exactly like the round-1 Roles bug. A full-tree sweep (every `tone: 'destructive'`
+site cross-checked for a `router.push` in its `run`) found a THIRD, previously unreported site:
+`app/(protected)/ideation/business-requirements/components/use-br-form.tsx`'s "Delete" (form-surface
+only, `surfaces: { form: true }`). Every other destructive action in the tree calls `rt.reload()`
+only (soft-trash/disconnect-in-place, stays on the record) - not a bare-push, out of scope for this
+bug class. All three now use `rt.backHref ?? <listPath>`. The round-1 report sentence claiming Roles
+was "the one concrete site in the tree" is corrected in place (see the T4 Fix round 1 section above)
+rather than restated as if it were always accurate.
+**Fixed:** `use-connection-actions.tsx`, `use-idea-form.tsx`, `use-br-form.tsx` (`run` signature
+gained the `rt` param it wasn't previously reading).
+**Test:** none added specifically (these three are thin `router.push` call sites identical in shape
+to round 1's `use-role-actions.tsx` fix, which IS test-covered via `resource-form.header.test.tsx`'s
+`rt.backHref` assertion on the shared `ActionMenu` runtime plumbing - the same `backHref` value every
+one of these sites now consumes).
+**Live:** covered indirectly - `rt.backHref` is the exact mechanism item 2's browser proof below
+exercises (a form-surface Trash action reading `rt.backHref`-equivalent list-restore behaviour via
+`useResourceList`'s own clamp, not a distinct code path per entity).
+
+**2 - a restored (or delete-shrunk) page past the last real page committed an empty "No records"
+result instead of clamping (AC-DLA-30, the actual PARTIAL finding).** `useResourceList`'s fetch
+effect never checked whether `query.page` was still in range once a fetch resolved - a `ctx` naming
+a page that no longer exists (rows deleted elsewhere since the link was shared/bookmarked) or a page
+whose only remaining row was JUST deleted (the row-action delete's own `reload()`) rendered the
+empty state for that stale page number instead of moving to the real last page. Fixed inside the
+fetch's `.then`: if `query.page > 0 && query.page * query.pageSize >= result.total`, clamp to
+`Math.max(0, Math.ceil(result.total / query.pageSize) - 1)` and `setPage` to it WITHOUT committing
+the empty/wrong-page result to `data`/`loadedQuery` first (a `clamping` flag also skips `finally`'s
+`setIsLoading(false)`) - the rows already on screen from BEFORE this fetch cycle stay visible, dimmed,
+until the corrective refetch for the real last page resolves. The `query`-dependent effect above
+already refetches automatically once `setPage` changes `page` - no second explicit fetch call needed.
+**Fixed:** `hooks/use-resource-list.ts`.
+**Test:** `hooks/use-resource-list.clamp.test.ts` (new, 2) - the coordinator's exact scenario (11
+rows, pageSize 10, restored on page 1, the last row deleted elsewhere -> total drops to 10 -> clamps
+to page 0, refetches, lands with all 10 rows; asserts the STALE row stays visible and `isLoading`
+stays true throughout the hand-off, never an empty commit) + a control (page still in range, no
+clamp). `hooks/use-resource-list.placeholder.test.ts`'s existing harness needed a realistic `total`
+per resolved page (it previously hardcoded `total: rows.length`, which made ITS OWN page-1 assertion
+accidentally out-of-range under the new clamp and started failing for the right reason - fixed by
+computing a `total` that actually covers whichever page is being resolved).
+**Live:** `fixround2-01-users-delete-sole-row-page2-clamps-to-page1-1280.png` - Users trimmed to
+exactly 11 active rows (2 `E2E Seed User` residue rows moved to Trash), `Rows per page` set to 10
+(page 2 shows exactly the 11th row, "11 - 11 of 11"), that row Trashed from its own row action menu
+-> the list lands on page 1 showing all 10 remaining rows ("1 - 10 of 10"), no empty state, no
+lingering page-2 pagination control. All three trashed rows restored afterward (Trashed view ->
+select all -> Restore, confirmed "Restored 3 user(s)", Trashed view back to "No data available") so
+the shared demo tenant is left exactly as found.
+
+**3 - `data-grid-column-header.placeholder.test.tsx` had a real TS2322 (`useState<SortingState>`
+missing).** `const [sorting, setSorting] = useState([])` infers `never[]`, so `onSortingChange:
+setSorting` (which TanStack types as `Updater<SortingState>` setter) mismatched. The test ran fine
+under Vitest (which doesn't type-check) but failed `npx tsc --noEmit`.
+**Fixed:** `components/ui/data-grid-column-header.placeholder.test.tsx` - `useState<SortingState>([])`
+with `SortingState` imported from `@tanstack/react-table`.
+**Test:** the file's own 5 cases (unchanged assertions) re-verified green; `npx tsc --noEmit`
+confirmed clean on this file specifically.
+
+**4 - `use-record-nav.ts`'s `react-hooks/exhaustive-deps` warning was suppressed with a comment
+instead of actually fixed.** Round 1 removed the `eslint-disable` but the underlying reason it was
+there in the first place - `fetchAt`/`buildHref` are unstable inline closures at all 13 form-hook
+call sites, so including them in the effect's deps (the ONLY way to make the deps array genuinely
+complete) would have re-armed the prefetch/total-resolve fetch on every unrelated render - was never
+addressed, so the warning stayed. Fixed at the SOURCE: every one of the 13 `recordNav`-consuming form
+hooks now builds `fetchAt`/`buildHref` via its own top-level `useCallback` (deps `[]` - each closure
+only reads module-level service/path imports, never component state/props) BEFORE the surrounding
+`useMemo(() => ({...config}), [...])`, and passes the stable callbacks through; the outer memo's own
+deps array gained the two callback names for correctness (though their identity now never changes
+post-mount). `use-record-nav.ts` itself: `query` (`decodeListQuery(ctx)`, previously a FRESH object
+every render even for the same `ctx`) is now memoized on `[ctx]` so it's a legitimate stable dep too;
+the effect's deps array is now the complete, genuine set - `[query, index, fetchAt, buildHref,
+prefetchOnce]` - with NO eslint-disable anywhere in the file.
+**Fixed:** `hooks/use-record-nav.ts` + all 13 call sites: `use-user-form.tsx`, `use-role-form.tsx`,
+`use-workspace-form.tsx`, `use-channel-form.tsx`, `use-skill-form.tsx`, `use-agent-form.tsx`,
+`use-template-form.tsx`, `email-detail-view.tsx`, `use-form-detail.tsx`, `use-connection-form.tsx`,
+`use-tenant-form.tsx`, `use-workflow-form.tsx`, `use-br-form.tsx`.
+**Test:** `hooks/use-record-nav.prefetch.test.ts` (existing 5, unchanged assertions) re-verified
+green; `app/(protected)/workflows/components/use-workflow-form.test.tsx` (the one form hook with its
+own dedicated test file, 6 cases) re-verified green. `npx eslint` on `use-record-nav.ts` and all 13
+call sites: zero warnings (was 1 warning on `use-record-nav.ts` before this fix; `npm run lint`
+across the whole repo shows only 3 PRE-EXISTING unrelated warnings now, none in any touched file).
+
+**5 - `decodeListQuery` trusted ANY valid JSON shape as a `ListQuery`.** `JSON.parse` on a decoded
+`ctx` returns whatever shape was encoded - a hand-crafted or corrupted `ctx` (foreign object, wrong
+field types, an unknown `statusView`) passed straight through as a cast (`as ListQuery`) with zero
+runtime validation, handing `useResourceList` a structurally-wrong query object. New `isValidListQuery`
+shape guard: the parsed value must be a plain object; `page`/`pageSize` finite non-negative integers;
+`search`/`segment` (if present) strings; `sort` (if present) `null` or `{id: string, desc: boolean}`;
+`filter` (if present) `null` or a well-formed `FilterGroup`/`FilterRule` tree (shallow-but-real check,
+not a full re-validation of every operator - that stays the server's job); `statusView` (if present)
+one of `'active'`/`'trashed'`. Anything else -> `decodeListQuery` returns `null` (the existing
+"couldn't decode" contract every caller already handles - `restoreFromCtx` falls back to defaults,
+`use-record-nav.ts` hides the pager).
+**Fixed:** `lib/list-context.ts`.
+**Test:** `lib/list-context.test.ts` - new `describe` block (5 cases): a foreign-shape payload (wrong
+object, a string, a number, `null`, an array) all reject; non-integer/negative `page`/`pageSize`
+reject; an unknown `statusView` rejects; a malformed `sort`/`filter`/`search` (wrong type) rejects;
+the minimal valid shape AND a fully-populated valid shape (including a real `filter` tree) both
+round-trip correctly. Existing round-trip/garbage-string cases re-verified green.
+
+### Gate (Fix round 2)
+
+`npx eslint` on every touched file (22 files): zero errors, zero warnings (confirmed both via a
+scoped `npx eslint <touched files>` run and the full-repo `npm run lint`, which shows only 3
+pre-existing unrelated warnings). `npx vitest run`: **197 files / 1657 tests, exit code 0** (up from
+196/1650 - 3 new test files: `use-resource-list.clamp.test.ts`, plus new cases added to
+`list-context.test.ts` and the `use-resource-list.placeholder.test.ts` harness fix). `rm -rf .next &&
+npm run build`: green. `:3002` restarted once (the prior round's process, confirmed owned by this
+worktree via `lsof -p <pid> | grep cwd` before kill).
+
+### Definition of Done checklist (T4 fix round 2)
+
+1. All 5 findings fixed; 4 have a new/updated regression test, 1 (item 1's three `router.push` sites)
+   relies on the SAME shared `ActionMenu`/`ResourceForm` `backHref` plumbing round 1 already tests,
+   since these are thin call-site fixes with no new logic of their own.
+2. `npx eslint` (0 errors/warnings on touched files), `npm test` (197/197 files, 1657/1657 tests,
+   exit 0), `npm run build` all green.
+3. `rm -rf .next && npm run build` before the live-verify pass; port ownership confirmed before the
+   one restart.
+4. No mock left behind. No backend/permission change (frontend-only). No backfill needed - the live
+   verification's own data mutation (3 trashed users) was fully reverted (Restore) before the run
+   ended, leaving the shared `default` tenant exactly as found.
+5. Verified from the user's perspective at 1280 (the scenario is pagination/data-shape, not a
+   viewport-dependent layout concern - no new 375px surface was touched by any of these 5 fixes).
+
+**Verdict: T4 fix round 2 DONE.** All 5 findings resolved and gate green: `npm test` 197/197 files,
+1657/1657 tests, exit 0; zero eslint warnings on every touched file.
