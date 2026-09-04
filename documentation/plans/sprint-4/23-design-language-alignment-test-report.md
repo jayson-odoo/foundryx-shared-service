@@ -253,3 +253,79 @@ out of scope rather than fixed.
 
 **Verdict: T1 fix round 2 DONE.** 1/1 finding resolved and verified; print-fallback gap
 recorded as accepted, not fixed; full gate green.
+
+---
+
+## T1 - Fix round 3
+
+10 findings from a third `/code-review` pass over the fix-round-2 diff, applied as written
+(same branch/worktree). Findings 1+2 REVERT fix round 1's `-active`/`-accent` remap of
+`--success`/`--info`/`--warning` (it disconnected the tenant Branding controls from those
+semantic vars) and fix it one layer down instead - see the hex/ratio table below.
+
+| # | Finding | Fix | Proof |
+|---|---|---|---|
+| 1+2 | `--success`/`--info`/`--warning` pointed at `--foundryx-*-active`/`-accent` (fix round 1), which the tenant Branding editor never writes to - a tenant's picked Success/Info/Warning colour became invisible to any consumer of the semantic var; `--warning`'s dark hue also read as a tan/olive off-shade | Semantic vars reverted to a plain pass-through (`--success: var(--foundryx-success)`, same for info/warning); the DARKENING moved to the `--foundryx-success/-info/-warning` primitives THEMSELVES (light only - `.dark` already passed unmodified) so the raw hue clears 4.5:1 both as ink-on-`--background` and against a white foreground at once (same bound, `--background` is white in light). `warning`'s raw hue cannot pass while staying lighter than its OWN original `-active`/`-accent`, so those two are darkened in proportion too (whole amber scale moves down together, never crosses over itself) - `-soft` untouched throughout. `-transparent` recomputed from each new base RGB. Branding defaults (`lib/branding-tokens.ts`, `app/branding/token_whitelist.py`) updated to the same hex; `service_backend/tests/test_branding.py`'s one hardcoded default (`"#1f9d54"`) updated to match | Hex + ratio table below; `css/design-tokens.test.ts` "AC-DLA-07 semantic ink contrast" (unchanged assertions, now measuring the new values) - 80/80 green; `service_backend/.venv/bin/python -m pytest service_backend/tests/test_branding.py -q` - 28/28 green (parity test `test_frontend_defaults_parity` unaffected, it diffs the two files against each other, not against a fixed hex); `fixround3-02-alert-warning-variants-{1280,375}-{light,dark}.png` |
+| 3 | `--z-banner` comment (and its test mirror) implied clickability under a modal - it only means paint order | Reworded both comments to "paint order only" and explicit non-claim of clickability, pointing at a new backlog row for the real gap | `css/config.reui.css` (`--z-banner` comment), `css/design-tokens.test.ts` (matching comment); `documentation/backlogs/backlog.md` `BL-SS-050` |
+| 4 | Hand-rolled sticky surfaces still at `z-10`: `sql-preview-grid.tsx:66`, `branding-editor.tsx:203`, `settings-sidebar/content.tsx:76` | All three -> `z-(--z-sticky-content)`. Guard widened: a NEW test bans bare `z-<N>` under `app/**`+`components/platform/**` outside an explicit, fully-enumerated allowlist (10 files - the genuine remaining stacking-order consumers this sweep found: avatar-group hover-to-front, canvas drag-handle locals, context-menu/inspector portals); `components/ui/**` stays under the pre-existing loose ceiling (Sorento parity) | `css/design-tokens.test.ts` "bans bare z-<N> under app/\*\* and components/platform/\*\* outside the recorded baseline allowlist" + "records the ... baseline as exactly 10 files"; the 3 fixed files' diffs |
+| 5 | Reduced-motion `[data-slot$='-content']` selector could still hit a vaul drawer once T3 mounts it (only dialog-content/sheet-content were excluded) | Added `:not([data-vaul-drawer])` to the selector; comment rewritten to state the literal 150ms is DELIBERATE (an overlay must still fade, not instant-snap, under reduced motion) and separate from the 1ms token-layer collapse (which covers every OTHER duration-token consumer) - replaces the old "token collapse covers every consumer" framing | `css/styles.css` selector + comment; `css/design-tokens.test.ts` "excludes dialog-content/sheet-content..." unaffected (still matches the widened selector) |
+| 6 | `email-editor/canvas.tsx` DropGap's `transition-[height,margin,background-color,border-color]` omits `border-width`, so a state change that flips `border` from none to `border-dashed` (or vice versa) snaps the border THICKNESS instantly while color/height still animate | Added `border-width` to the transition property list | `components/platform/email-editor/canvas.tsx` DropGap diff |
+| 7 | `alert.tsx`'s "mono" variant `icon` compounds (success/warning/info) tinted the icon with `-foreground` (a fill-ink white/black constant meant for text ON a solid hue fill) instead of a hue tint - wrong role, and on a neutral mono surface a near-white/near-black icon barely reads as "coloured" at all | Mono+icon compounds -> `-accent`, matching the already-correct `appearance="light"` compounds exactly (same CSS var, same fallback shade) | `components/ui/alert.tsx` 3 compound diffs; `css/design-tokens.test.ts` "sends alert.tsx light-appearance AND mono+icon compounds to -accent, not -foreground" (asserts exactly 2 `-accent` occurrences per hue - light-appearance + mono - and zero `-foreground` occurrences on the icon selector); `fixround3-02-alert-warning-variants-*.png` (both the light-appearance AND solid/outline mono rows read clearly) |
+| 8 | `ProgressRadial`'s indicator transitioned `stroke-dashoffset`, but its arc is drawn via a recomputed `d` (path) attribute on every value change - `stroke-dashoffset` is never set, so the transition target doesn't exist (dead declaration, silently a no-op) | -> `transition-[stroke,color]` (what the component actually varies: `stroke="currentColor"` following a `text-*` colour change, plus any future stroke-colour swap); `ProgressCircle` (which DOES use `strokeDashoffset`) is untouched | `components/ui/progress.tsx` `ProgressRadial` diff (line ~212), `ProgressCircle` diff unchanged (verified by inspection, not touched) |
+| 9 | `data-grid.tsx`'s `headerSticky` classes (`bg-background/90 backdrop-blur-xs`) fought the T1 material system - a sticky table header showing rows blur/ghost through it reads as a bug, not a material, on a plain content surface (not a header/sidebar shell layer) | -> `bg-background` (solid, no blur); z-scale token (`z-(--z-sticky-content)`, from fix round 1) untouched; does not flip the grid's default `headerSticky: false` (T2's job) | `components/ui/data-grid.tsx` line 144 diff |
+| 10 | `config.reui.css` carried an unused `--z-sticky-content-corner` (zero consumers) and a `.dark` `--material-blur: 24px` re-declaration identical to `:root`'s (dead weight); `--grid-max-h`'s comment was stale; `dialog.tsx`/`alert-dialog.tsx`/`sheet.tsx` overlays hardcoded `bg-black/30` instead of the `--scrim` token, so the preference blocks' `--scrim` raise (fix round 1 finding 6) never reached them | Dropped `--z-sticky-content-corner` (+ its two z-scale test rows) and the `.dark` `--material-blur` duplicate; `--grid-max-h` comment -> "consumer = T2 DataGrid scroller"; all three overlays -> `bg-(--scrim)` (3 literals removed) | `css/config.reui.css` diffs; `css/design-tokens.test.ts` z-scale steps/ordering (5 steps now, was 6) - 80/80 green; `components/ui/{dialog,alert-dialog,sheet}.tsx` overlay diffs (`grep -c bg-black/30` -> 0 in these three files) |
+
+### Semantic hue hex + contrast table (findings 1+2)
+
+All ratios computed via the same WCAG relative-luminance formula `css/design-tokens.test.ts`
+uses (sRGB gamma-correct, `(L1+0.05)/(L2+0.05)`). Light `--background` is white; dark
+`--background` (`--foundryx-light` under `.dark`) is `#0c0b0a` (near-black) - both round to
+the same ~4.5:1 threshold against a black/white foreground, which is why dark needed no
+primitive change (the ORIGINAL dark hues already cleared it).
+
+| Token (light) | Old hex | New hex | vs white (constraint a: fg=white, and b: ink-on-`--background`) |
+|---|---|---|---|
+| `--foundryx-success` | `#1f9d54` | `#1b8648` | 3.49:1 -> **4.62:1** |
+| `--foundryx-info` | `#2c7ff7` | `#0f6ef6` | 3.83:1 -> **4.58:1** |
+| `--foundryx-warning` | `#e8a318` | `#9b6d0f` | 2.17:1 -> **4.58:1** |
+| `--foundryx-warning-active` | `#c2860d` | `#7e5708` | 3.13:1 -> **6.45:1** (kept strictly darker than the new base) |
+| `--foundryx-warning-accent` | `#8f6107` | `#5b3e04` | 5.41:1 -> **9.83:1** (kept strictly darker than the new active) |
+
+| Token (dark, UNCHANGED) | Hex | vs black (constraint a, fg=black) | vs `--background` dark #0c0b0a (constraint b) |
+|---|---|---|---|
+| `--foundryx-success` | `#1f9d54` | 6.01:1 | 5.63:1 |
+| `--foundryx-info` | `#2c7ff7` | 5.49:1 | 5.14:1 |
+| `--foundryx-warning` | `#e8a318` | 9.68:1 | 9.07:1 |
+
+Derived pairings re-verified with the new hex (unaffected code paths, since `alert.tsx`'s
+light-appearance and `badge.tsx`'s default compounds already read `-accent`/`-foreground`
+directly, not the semantic `--warning` var that moved):
+
+| Pairing | success | info | warning (the only hue whose `-accent` changed) |
+|---|---|---|---|
+| alert.tsx light-appearance icon (`-accent`) on `-soft` (light) | 7.12:1 | 7.33:1 | **8.72:1** (was 4.80:1 pre-round-1) |
+| badge.tsx default (`-foreground` on `-accent`, light) | 8.08:1 | 8.53:1 | **9.83:1** (was 5.41:1 pre-round-1) |
+
+Dark-theme derived pairings are unaffected (dark `-accent`/`-active` untouched): success
+7.53/9.81:1, info 8.88/10.84:1, warning 7.72/10.02:1 (alert-icon-on-soft / badge-default),
+all already >= 4.5:1 from fix round 1.
+
+**Reviewer-facing colour change (flagged, not silently absorbed):** the light-theme
+`--success`/`--info`/`--warning` semantic ink (and, for warning only, its `-active`/`-accent`
+steps) is visibly darker than before this round - any consumer reading the bare `--success`/
+etc var directly (not `-accent`/`-foreground`, which were already the darkest steps and are
+mostly unchanged except warning's) picks up the new colour. Grep at the time of this report
+found no other call site of the bare `--success`/`--info`/`--warning` var outside
+`alert.tsx`'s solid/outline compounds (which read the CORRECT var for "the ink itself", so
+this is the fix, not a side effect) and `badge.tsx`'s solid compound (same).
+
+**Gate:** `npx eslint` (all touched files - clean), `npx vitest run` (172 files / 1491 tests,
+80/80 in `css/design-tokens.test.ts` alone - was 79/79 in fix round 2, net +1 after dropping
+2 `-corner` assertions and adding 3 new ones), `rm -rf .next && npm run build` (green), served
+on :3002; `service_backend/.venv/bin/python -m pytest service_backend/tests/test_branding.py -q`
+(28/28 green); full backend suite run for regression (tail below in the coder's final report).
+Evidence: `fixround3-01-users-list-{1280-light,1280-dark,375-dark}.png`,
+`fixround3-02-alert-warning-variants-{1280,375}-{light,dark}.png`.
+
+**Verdict: T1 fix round 3 DONE.** 10/10 findings resolved and re-verified; one deliberate,
+reviewer-facing colour change flagged above (not silently absorbed); full gate green.

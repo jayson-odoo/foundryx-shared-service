@@ -159,3 +159,25 @@ a warning/success/info Alert or a default-appearance Badge without deeper, unrel
   pass (the impersonation feature's own permission rule, unrelated to this CSS fix - not
   investigated further); a Member-role target's session started fine and independently
   confirmed the real banner height is 45px, which is the exact value applied above.
+
+## Fix round 3 (10 `/code-review` findings - see the test report's "T1 - Fix round 3"
+section for the full per-finding table)
+
+Additional screenshots, `fixround3-NN-*.png` in this directory. Environment: same worktree
+venv/build discipline as above; `rm -rf .next && npm run build` (green) re-served on :3002
+before this pass; backend :8001 healthy throughout.
+
+- `fixround3-01-users-list-1280-{light,dark}.png`, `fixround3-01-users-list-375-dark.png` -
+  the Users list post-fix: header/sidebar materials still translucent, the semantic-hue
+  darkening (findings 1+2) does not touch neutrals/borders/scrim so the shell reads
+  identically; the "Active" pill's dark-mode illegibility is the PRE-EXISTING `badge.tsx`
+  bug already documented above (T2 territory, not this slice's regression).
+- `fixround3-02-alert-warning-variants-{1280,375}-{light,dark}.png` - three REAL `alert.tsx`
+  class strings injected onto a live page via `agent-browser eval` (same technique as
+  fix round 1's `fixround1-03`/`-04`, since no reachable page in this build renders a bare
+  warning Alert without unrelated AutoCount setup): `variant=mono appearance=solid
+  icon=warning` (finding 7 - was `-foreground` on a near-black solid fill, now `-accent`),
+  `variant=mono appearance=outline icon=warning` (finding 7, same fix), and
+  `variant=warning appearance=light` (unchanged code, re-verified against the new darker
+  `--foundryx-warning-accent`). All three read clearly in both themes at both widths - no
+  invisible/near-invisible icon, matching the AC-DLA-07 contrast assertions.
