@@ -5,10 +5,32 @@ import { cn } from '@/lib/utils';
 import { buttonVariants } from '@/components/ui/button';
 import { VariantProps } from 'class-variance-authority';
 import { AlertDialog as AlertDialogPrimitive } from 'radix-ui';
-import { OVERLAY_CLASS } from '@/components/ui/primitive-classes';
+import { AnimatePresence, motion } from 'motion/react';
+import { OVERLAY_CLASS_STATIC } from '@/components/ui/primitive-classes';
+import {
+  surfaceExitTransition,
+  surfaceTransition,
+  surfaceVariants,
+  useOpenState,
+  useReducedMotion,
+} from '@/lib/motion';
 
-function AlertDialog({ ...props }: React.ComponentProps<typeof AlertDialogPrimitive.Root>) {
-  return <AlertDialogPrimitive.Root data-slot="alert-dialog" {...props} />;
+// Mirrors the Root's open state so AlertDialogContent can gate its own
+// <AnimatePresence> - see the identical DialogOpenContext in dialog.tsx.
+const AlertDialogOpenContext = React.createContext(true);
+
+function AlertDialog({
+  open: openProp,
+  defaultOpen = false,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof AlertDialogPrimitive.Root>) {
+  const [open, setOpen] = useOpenState(openProp, defaultOpen, onOpenChange);
+  return (
+    <AlertDialogOpenContext.Provider value={open}>
+      <AlertDialogPrimitive.Root data-slot="alert-dialog" open={open} onOpenChange={setOpen} {...props} />
+    </AlertDialogOpenContext.Provider>
+  );
 }
 
 function AlertDialogTrigger({ ...props }: React.ComponentProps<typeof AlertDialogPrimitive.Trigger>) {
@@ -19,29 +41,61 @@ function AlertDialogPortal({ ...props }: React.ComponentProps<typeof AlertDialog
   return <AlertDialogPrimitive.Portal data-slot="alert-dialog-portal" {...props} />;
 }
 
-function AlertDialogOverlay({ className, ...props }: React.ComponentProps<typeof AlertDialogPrimitive.Overlay>) {
-  return (
-    <AlertDialogPrimitive.Overlay
-      data-slot="alert-dialog-overlay"
-      className={cn(OVERLAY_CLASS, className)}
-      {...props}
-    />
-  );
-}
+function AlertDialogContent({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<typeof AlertDialogPrimitive.Content>) {
+  const open = React.useContext(AlertDialogOpenContext);
+  const prefersReducedMotion = useReducedMotion();
+  // Same lightbox spring as Dialog - a confirmation is a lightbox too, not a
+  // menu, so it opens on the 0.3s response and closes on 0.2s exactly like
+  // Dialog/Sheet (AC-DLA-20).
+  const base = surfaceVariants(prefersReducedMotion);
+  const centerOffset = { x: '-50%', y: '-50%' };
+  const variants = {
+    initial: { ...base.initial, ...centerOffset },
+    animate: { ...base.animate, ...centerOffset },
+    exit: { ...base.exit, ...centerOffset },
+  };
+  const transition = surfaceTransition(prefersReducedMotion, 'lightbox');
+  const exitTransition = surfaceExitTransition(prefersReducedMotion);
 
-function AlertDialogContent({ className, ...props }: React.ComponentProps<typeof AlertDialogPrimitive.Content>) {
   return (
-    <AlertDialogPortal>
-      <AlertDialogOverlay />
-      <AlertDialogPrimitive.Content
-        data-slot="alert-dialog-content"
-        className={cn(
-          'fixed left-[50%] top-[50%] z-(--z-modal) grid w-full max-w-lg max-h-[90dvh] overflow-y-auto translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg shadow-black/5 duration-(--duration-base) data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-lg',
-          className,
-        )}
-        {...props}
-      />
-    </AlertDialogPortal>
+    <AnimatePresence>
+      {open && (
+        <AlertDialogPortal forceMount>
+          <AlertDialogPrimitive.Overlay asChild forceMount data-slot="alert-dialog-overlay">
+            <motion.div
+              className={OVERLAY_CLASS_STATIC}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0, transition: exitTransition }}
+              transition={transition}
+            />
+          </AlertDialogPrimitive.Overlay>
+          <AlertDialogPrimitive.Content asChild forceMount data-slot="alert-dialog-content" {...props}>
+            <motion.div
+              className={cn(
+                // `max-h` + `overflow-y-auto`: a long confirmation (a bulk
+                // delete listing its rows) otherwise runs off a phone
+                // screen with its buttons below the fold. The open/close
+                // motion is the spring above, so no `animate-in`/`duration`/
+                // `ease` classes here (AC-DLA-20, matches DialogContent).
+                'fixed left-[50%] top-[50%] z-(--z-modal) grid max-h-[90dvh] w-full max-w-lg gap-4 overflow-y-auto border bg-background p-6 shadow-lg shadow-black/5 sm:rounded-lg',
+                className,
+              )}
+              initial={variants.initial}
+              animate={variants.animate}
+              exit={{ ...variants.exit, transition: exitTransition }}
+              transition={transition}
+            >
+              {children}
+            </motion.div>
+          </AlertDialogPrimitive.Content>
+        </AlertDialogPortal>
+      )}
+    </AnimatePresence>
   );
 }
 
@@ -116,7 +170,6 @@ export {
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
-  AlertDialogOverlay,
   AlertDialogPortal,
   AlertDialogTitle,
   AlertDialogTrigger,
