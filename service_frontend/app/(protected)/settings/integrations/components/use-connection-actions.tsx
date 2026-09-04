@@ -76,12 +76,8 @@ export function useConnectionActions(): ResourceAction<Connection>[] {
         // Making it active retires the others; new uploads land here.
         isVisible: (rows) =>
           rows.length === 1 && rows[0].type === 'storage' && !rows[0].isActive,
-        confirm: {
-          title: 'Make this the active storage bucket?',
-          description:
-            'New uploads will be written here. Files already stored on the current bucket keep resolving from it. Only one storage connection can be active at a time.',
-          confirmLabel: 'Set as active',
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm.
+        deferred: { actionKey: 'connections.activate', entityType: 'connection', window: 'reversible' },
         run: async ([connection], rt) => {
           if (!connection) return;
           await integrationService.activate(connection.id);
@@ -107,12 +103,8 @@ export function useConnectionActions(): ResourceAction<Connection>[] {
         tone: 'destructive',
         permission: 'integrations.manage',
         surfaces: { row: true, bulk: true, form: true },
-        confirm: {
-          title: 'Disconnect this integration?',
-          description:
-            'The connection and its stored credentials will be removed. Features using it fall back to the platform default until you reconnect.',
-          confirmLabel: 'Disconnect',
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm.
+        deferred: { actionKey: 'connections.delete', entityType: 'connection', window: 'destructive' },
         run: async (rows, rt) => {
           for (const row of rows) {
             await integrationService.remove(row.id);
