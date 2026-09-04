@@ -64,7 +64,7 @@ and phase; those files ARE the contract - read them first, do not rely on the pr
 - Foolproof-UI: no instructional/hint copy on screen; only offer options that will work; warn on
   missing prerequisites. White-label: tenant-facing copy never says "Foundryx".
 - Responsive 375px + 1280px. No `<style>` / raw CSS, Metronic utilities only. No `any`; export
-  explicit TS interfaces. No em/en dashes anywhere (`—`/`–` fail the CI lint).
+  explicit TS interfaces. No em/en dashes anywhere (U+2014 / U+2013 fail the CI lint).
 - Phase 1 mocks are tagged `PHASE 1 MOCK` with the API contract documented at the top of the
   service file; the real binding in `<x>-service.ts` is restored before you commit.
 - `npx eslint <files>` before `npm run build`; lint gates the prod build.
