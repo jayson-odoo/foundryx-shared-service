@@ -31,7 +31,27 @@ function DrawerOverlay({ className, ...props }: React.ComponentProps<typeof Draw
   );
 }
 
+// T3 fix round 1 finding 11 - the same `hasDialogTitleInChildren` fallback
+// `DialogContent` has (dialog.tsx): a Radix `Content` with no `Title`
+// descendant throws an accessibility warning (and screen readers announce
+// nothing), and this repo's nav/mega-menu drawers (header.tsx) shipped with
+// no `DrawerTitle` at all. A caller that DOES render one keeps it (this
+// fallback stays sr-only and never displaces a real heading).
+function hasDrawerTitleInChildren(children: React.ReactNode): boolean {
+  const check = (nodes: React.ReactNode): boolean => {
+    return React.Children.toArray(nodes).some((child) => {
+      if (!React.isValidElement(child)) return false;
+      if (child.type === DrawerTitle) return true;
+      const grandChildren = (child.props as { children?: React.ReactNode })?.children;
+      if (grandChildren !== undefined) return check(grandChildren);
+      return false;
+    });
+  };
+  return check(children);
+}
+
 function DrawerContent({ className, children, ...props }: React.ComponentProps<typeof DrawerPrimitive.Content>) {
+  const needsFallbackTitle = !hasDrawerTitleInChildren(children);
   return (
     <DrawerPortal>
       <DrawerOverlay />
@@ -41,12 +61,26 @@ function DrawerContent({ className, children, ...props }: React.ComponentProps<t
         // animation (AC-DLA-23) - it stamps `data-vaul-drawer-direction` on
         // this element itself, so every side's box shape lives here rather
         // than a `side` prop the way Sheet takes one.
+        //
+        // T3 fix round 1 finding 10: the left/right variants used to default
+        // `w-3/4 sm:max-w-sm` - a data-ATTRIBUTE-scoped Tailwind utility,
+        // which compiles to a two-selector rule
+        // (`[data-vaul-drawer-direction=left].w-3\/4{...}`) and so
+        // OUT-SPECIFIES a plain unmodified `w-[275px]` on the consumer's
+        // `className` regardless of source order - `header.tsx`'s nav
+        // drawer asked for 275px and silently got 75% of the viewport
+        // instead. No default width here; the one drawer this repo ships
+        // (`header.tsx`'s mobile nav) already sets its own width via
+        // `className`, and a future left/right consumer that wants a
+        // default should size itself explicitly too rather than rely on a
+        // primitive default that can't be overridden without out-specifying
+        // it back.
         className={cn(
           'group/drawer-content bg-background fixed z-(--z-modal) flex flex-col border',
           'data-[vaul-drawer-direction=bottom]:inset-x-0 data-[vaul-drawer-direction=bottom]:bottom-0 data-[vaul-drawer-direction=bottom]:mt-24 data-[vaul-drawer-direction=bottom]:max-h-[80vh] data-[vaul-drawer-direction=bottom]:rounded-t-[10px] data-[vaul-drawer-direction=bottom]:border-t',
           'data-[vaul-drawer-direction=top]:inset-x-0 data-[vaul-drawer-direction=top]:top-0 data-[vaul-drawer-direction=top]:mb-24 data-[vaul-drawer-direction=top]:max-h-[80vh] data-[vaul-drawer-direction=top]:rounded-b-[10px] data-[vaul-drawer-direction=top]:border-b',
-          'data-[vaul-drawer-direction=left]:inset-y-0 data-[vaul-drawer-direction=left]:start-0 data-[vaul-drawer-direction=left]:h-full data-[vaul-drawer-direction=left]:w-3/4 data-[vaul-drawer-direction=left]:border-e data-[vaul-drawer-direction=left]:sm:max-w-sm',
-          'data-[vaul-drawer-direction=right]:inset-y-0 data-[vaul-drawer-direction=right]:end-0 data-[vaul-drawer-direction=right]:h-full data-[vaul-drawer-direction=right]:w-3/4 data-[vaul-drawer-direction=right]:border-s data-[vaul-drawer-direction=right]:sm:max-w-sm',
+          'data-[vaul-drawer-direction=left]:inset-y-0 data-[vaul-drawer-direction=left]:start-0 data-[vaul-drawer-direction=left]:h-full data-[vaul-drawer-direction=left]:border-e',
+          'data-[vaul-drawer-direction=right]:inset-y-0 data-[vaul-drawer-direction=right]:end-0 data-[vaul-drawer-direction=right]:h-full data-[vaul-drawer-direction=right]:border-s',
           className,
         )}
         {...props}
@@ -55,6 +89,7 @@ function DrawerContent({ className, children, ...props }: React.ComponentProps<t
             left/right nav drawer is dismissed by swiping the edge, not a
             handle. */}
         <div className="mx-auto mt-4 h-2 w-[100px] shrink-0 rounded-full bg-muted group-data-[vaul-drawer-direction=left]/drawer-content:hidden group-data-[vaul-drawer-direction=right]/drawer-content:hidden" />
+        {needsFallbackTitle ? <DrawerTitle className="sr-only">Panel</DrawerTitle> : null}
         {children}
       </DrawerPrimitive.Content>
     </DrawerPortal>

@@ -25,6 +25,7 @@ import {
   DrawerBody,
   DrawerContent,
   DrawerHeader,
+  DrawerTitle,
   DrawerTrigger,
 } from '@/components/ui/drawer';
 import { Container } from '@/components/common/container';
@@ -84,7 +85,9 @@ export function Header() {
                   </Button>
                 </DrawerTrigger>
                 <DrawerContent className="p-0 gap-0 w-[275px] max-w-[275px]">
-                  <DrawerHeader className="p-0 gap-0" />
+                  <DrawerHeader className="p-0 gap-0">
+                    <DrawerTitle className="sr-only">Navigation</DrawerTitle>
+                  </DrawerHeader>
                   <DrawerBody className="p-0">
                     <SidebarMenu />
                   </DrawerBody>
@@ -104,7 +107,9 @@ export function Header() {
                   </Button>
                 </DrawerTrigger>
                 <DrawerContent className="p-0 gap-0 w-[275px] max-w-[275px]">
-                  <DrawerHeader className="p-0 gap-0" />
+                  <DrawerHeader className="p-0 gap-0">
+                    <DrawerTitle className="sr-only">Apps</DrawerTitle>
+                  </DrawerHeader>
                   <DrawerBody className="p-0">
                     <MegaMenuMobile />
                   </DrawerBody>
