@@ -3,11 +3,39 @@
 import * as React from 'react';
 import * as ContextMenuPrimitive from '@radix-ui/react-context-menu';
 import { CheckIcon, ChevronRightIcon, CircleIcon } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { PRESSED_TRANSFORM_CLASS } from '@/components/ui/primitive-classes';
+import {
+  surfaceExitTransition,
+  surfaceTransition,
+  surfaceVariants,
+  useOpenState,
+  useReducedMotion,
+} from '@/lib/motion';
 
-function ContextMenu({ ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Root>) {
-  return <ContextMenuPrimitive.Root data-slot="context-menu" {...props} />;
+// Mirrors the Root's open state so ContextMenuContent can gate its own
+// <AnimatePresence> - see the identical DialogOpenContext in dialog.tsx.
+// Unlike Dialog/Popover, Radix's ContextMenu Root has no controlled `open`
+// prop (it is always positioned at the right-click point, never opened
+// programmatically), so this tracks it purely off the `onOpenChange`
+// callback rather than through `useOpenState`.
+const ContextMenuOpenContext = React.createContext(true);
+
+function ContextMenu({ onOpenChange, ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Root>) {
+  const [open, setOpen] = React.useState(false);
+  const handleOpenChange = React.useCallback(
+    (next: boolean) => {
+      setOpen(next);
+      onOpenChange?.(next);
+    },
+    [onOpenChange],
+  );
+  return (
+    <ContextMenuOpenContext.Provider value={open}>
+      <ContextMenuPrimitive.Root data-slot="context-menu" onOpenChange={handleOpenChange} {...props} />
+    </ContextMenuOpenContext.Provider>
+  );
 }
 
 function ContextMenuTrigger({ ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Trigger>) {
@@ -22,8 +50,23 @@ function ContextMenuPortal({ ...props }: React.ComponentProps<typeof ContextMenu
   return <ContextMenuPrimitive.Portal data-slot="context-menu-portal" {...props} />;
 }
 
-function ContextMenuSub({ ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Sub>) {
-  return <ContextMenuPrimitive.Sub data-slot="context-menu-sub" {...props} />;
+// Mirrors the Sub's own open state so ContextMenuSubContent can gate its own
+// <AnimatePresence> - same reason as ContextMenuOpenContext above, except
+// Sub DOES support controlled open/defaultOpen, so useOpenState fits.
+const ContextMenuSubOpenContext = React.createContext(true);
+
+function ContextMenuSub({
+  open: openProp,
+  defaultOpen = false,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof ContextMenuPrimitive.Sub>) {
+  const [open, setOpen] = useOpenState(openProp, defaultOpen, onOpenChange);
+  return (
+    <ContextMenuSubOpenContext.Provider value={open}>
+      <ContextMenuPrimitive.Sub data-slot="context-menu-sub" open={open} onOpenChange={setOpen} {...props} />
+    </ContextMenuSubOpenContext.Provider>
+  );
 }
 
 function ContextMenuRadioGroup({ ...props }: React.ComponentProps<typeof ContextMenuPrimitive.RadioGroup>) {
@@ -54,31 +97,75 @@ function ContextMenuSubTrigger({
   );
 }
 
-function ContextMenuSubContent({ className, ...props }: React.ComponentProps<typeof ContextMenuPrimitive.SubContent>) {
+function ContextMenuSubContent({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<typeof ContextMenuPrimitive.SubContent>) {
+  const open = React.useContext(ContextMenuSubOpenContext);
+  const prefersReducedMotion = useReducedMotion();
+  const variants = surfaceVariants(prefersReducedMotion);
+  const transition = surfaceTransition(prefersReducedMotion, 'menu');
+  const exitTransition = surfaceExitTransition(prefersReducedMotion);
+
+  // Radix Popper owns Content/SubContent's own positioning transform (same
+  // split as DropdownMenuContent), so the spring animates an inner div.
   return (
-    <ContextMenuPrimitive.SubContent
-      data-slot="context-menu-sub-content"
-      className={cn(
-        'bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] origin-(--radix-context-menu-content-transform-origin) overflow-hidden rounded-md border p-1 shadow-lg',
-        className,
+    <AnimatePresence>
+      {open && (
+        <ContextMenuPrimitive.Portal forceMount>
+          <ContextMenuPrimitive.SubContent forceMount data-slot="context-menu-sub-content" className="z-(--z-modal)" {...props}>
+            <motion.div
+              className={cn(
+                'bg-popover text-popover-foreground min-w-[8rem] origin-(--radix-context-menu-content-transform-origin) overflow-hidden rounded-md border p-1 shadow-lg',
+                className,
+              )}
+              initial={variants.initial}
+              animate={variants.animate}
+              exit={{ ...variants.exit, transition: exitTransition }}
+              transition={transition}
+            >
+              {children}
+            </motion.div>
+          </ContextMenuPrimitive.SubContent>
+        </ContextMenuPrimitive.Portal>
       )}
-      {...props}
-    />
+    </AnimatePresence>
   );
 }
 
-function ContextMenuContent({ className, ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Content>) {
+function ContextMenuContent({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<typeof ContextMenuPrimitive.Content>) {
+  const open = React.useContext(ContextMenuOpenContext);
+  const prefersReducedMotion = useReducedMotion();
+  const variants = surfaceVariants(prefersReducedMotion);
+  const transition = surfaceTransition(prefersReducedMotion, 'menu');
+  const exitTransition = surfaceExitTransition(prefersReducedMotion);
+
   return (
-    <ContextMenuPrimitive.Portal>
-      <ContextMenuPrimitive.Content
-        data-slot="context-menu-content"
-        className={cn(
-          'bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 max-h-(--radix-context-menu-content-available-height) min-w-[8rem] origin-(--radix-context-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border p-1 shadow-md',
-          className,
-        )}
-        {...props}
-      />
-    </ContextMenuPrimitive.Portal>
+    <AnimatePresence>
+      {open && (
+        <ContextMenuPrimitive.Portal forceMount>
+          <ContextMenuPrimitive.Content forceMount data-slot="context-menu-content" className="z-(--z-modal)" {...props}>
+            <motion.div
+              className={cn(
+                'bg-popover text-popover-foreground max-h-(--radix-context-menu-content-available-height) min-w-[8rem] origin-(--radix-context-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border p-1 shadow-md',
+                className,
+              )}
+              initial={variants.initial}
+              animate={variants.animate}
+              exit={{ ...variants.exit, transition: exitTransition }}
+              transition={transition}
+            >
+              {children}
+            </motion.div>
+          </ContextMenuPrimitive.Content>
+        </ContextMenuPrimitive.Portal>
+      )}
+    </AnimatePresence>
   );
 }
 

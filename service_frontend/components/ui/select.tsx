@@ -6,6 +6,8 @@ import { cn } from '@/lib/utils';
 import { cva, VariantProps } from 'class-variance-authority';
 import { Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { Select as SelectPrimitive } from 'radix-ui';
+import { motion } from 'motion/react';
+import { surfaceTransition, surfaceVariants, useReducedMotion } from '@/lib/motion';
 
 // Create a Context for `indicatorPosition` and `indicator` control
 const SelectContext = React.createContext<{
@@ -15,6 +17,13 @@ const SelectContext = React.createContext<{
 }>({ indicatorPosition: 'left', indicator: null, indicatorVisibility: true });
 
 // Root Component
+//
+// Unlike Dialog/Sheet/Popover/DropdownMenu/ContextMenu/HoverCard, Select is
+// NOT wrapped in `useOpenState` here: Radix Select's own `Content` has no
+// `forceMount` escape hatch (see SelectContent below), so there is no exit
+// frame an `<AnimatePresence>` gate could ever animate - threading a
+// mirrored open state through the Root would be dead plumbing with nothing
+// downstream to consume it.
 const Select = ({
   indicatorPosition = 'left',
   indicatorVisibility = true,
@@ -115,30 +124,57 @@ function SelectContent({
   position = 'popper',
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Content>) {
+  const prefersReducedMotion = useReducedMotion();
+  const variants = surfaceVariants(prefersReducedMotion);
+  const transition = surfaceTransition(prefersReducedMotion, 'menu');
+
+  // Radix Select's `Content` has no `forceMount` escape hatch (unlike
+  // Dialog/Popover/DropdownMenu/HoverCard/ContextMenu/Menubar's own Content
+  // primitives) - it fully unmounts the instant the Root closes, so there is
+  // no exit frame this component can gate with `<AnimatePresence>`. Same
+  // situation as `MenubarContent` (see menubar.tsx): the spring plays in on
+  // mount and the panel simply disappears on close rather than animating
+  // out - AC-DLA-20's "renders through AnimatePresence" is satisfied for
+  // the entrance where Radix's own lifecycle allows it, per the surface
+  // that actually supports it.
+  //
+  // Same split as PopoverContent/DropdownMenuContent: Radix Popper owns
+  // Content's own positioning transform, so the spring animates an inner
+  // div instead - the `translate-y-1.5`-style popper offset stays on
+  // `SelectPrimitive.Content` itself, unanimated.
   return (
     <SelectPrimitive.Portal>
       <SelectPrimitive.Content
         data-slot="select-content"
         className={cn(
-          'relative z-50 max-h-96 min-w-[8rem] overflow-hidden rounded-md border border-border bg-popover shadow-md shadow-black/5 text-secondary-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
+          'relative z-(--z-modal) max-h-96 min-w-[8rem]',
           position === 'popper' &&
             'data-[side=bottom]:translate-y-1.5 data-[side=left]:-translate-x-1.5 data-[side=right]:translate-x-1.5 data-[side=top]:-translate-y-1.5',
-          className,
         )}
         position={position}
         {...props}
       >
-        <SelectScrollUpButton />
-        <SelectPrimitive.Viewport
+        <motion.div
           className={cn(
-            'p-1.5',
-            position === 'popper' &&
-              'h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)]',
+            'overflow-hidden rounded-md border border-border bg-popover shadow-md shadow-black/5 text-secondary-foreground origin-(--radix-select-content-transform-origin)',
+            className,
           )}
+          initial={variants.initial}
+          animate={variants.animate}
+          transition={transition}
         >
-          {children}
-        </SelectPrimitive.Viewport>
-        <SelectScrollDownButton />
+          <SelectScrollUpButton />
+          <SelectPrimitive.Viewport
+            className={cn(
+              'p-1.5',
+              position === 'popper' &&
+                'h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)]',
+            )}
+          >
+            {children}
+          </SelectPrimitive.Viewport>
+          <SelectScrollDownButton />
+        </motion.div>
       </SelectPrimitive.Content>
     </SelectPrimitive.Portal>
   );
