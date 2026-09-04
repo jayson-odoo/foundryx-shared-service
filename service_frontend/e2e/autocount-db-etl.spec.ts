@@ -1,9 +1,20 @@
-import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { existsSync } from 'node:fs';
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
-import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import {
+  expect,
+  test,
+  type APIRequestContext,
+  type Locator,
+  type Page,
+} from '@playwright/test';
 
 /**
  * Plan 22 (AutoCount direct-DB ETL) - slice S6 E2E, AC-22-31/32. Real clicks
@@ -69,7 +80,11 @@ interface SorentoRecordSeen {
 
 interface FakeSorento {
   url: string;
-  ingestCalls: { path: string; dryRun: boolean; body: Record<string, unknown> }[];
+  ingestCalls: {
+    path: string;
+    dryRun: boolean;
+    body: Record<string, unknown>;
+  }[];
   close(): Promise<void>;
 }
 
@@ -78,70 +93,93 @@ async function startFakeSorento(): Promise<FakeSorento> {
   const seen = new Map<string, SorentoRecordSeen>();
   const ingestCalls: FakeSorento['ingestCalls'] = [];
 
-  const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (c: Buffer) => chunks.push(c));
-    req.on('end', () => {
-      const raw = Buffer.concat(chunks).toString('utf8');
-      let body: Record<string, unknown> = {};
-      try {
-        body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-      } catch {
-        body = {};
-      }
-      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-      const send = (payload: unknown) => {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(payload));
-      };
-
-      // The Sorento provider's Test-connection probe (`sorento_provider.py`,
-      // `_PROBE_PATH`) - authenticates, writes nothing.
-      if (url.pathname.startsWith('/api/v1/external/read/')) {
-        send({ records: [], not_found: body.source_refs ?? [] });
-        return;
-      }
-
-      if (url.pathname.endsWith('/deletions')) {
-        ingestCalls.push({ path: url.pathname, dryRun: false, body });
-        const refs = (body.source_refs as string[] | undefined) ?? [];
-        const records = refs.map((ref) => {
-          seen.delete(ref);
-          return { source_ref: ref, outcome: 'deleted', entity_id: null };
-        });
-        send({
-          summary: { total: refs.length, deleted: refs.length, deactivated: 0, not_found: 0, failed: 0 },
-          records,
-        });
-        return;
-      }
-
-      if (url.pathname.startsWith('/api/v1/external/ingest/')) {
-        const dryRun = url.searchParams.get('dry_run') === 'true';
-        ingestCalls.push({ path: url.pathname, dryRun, body });
-        const records = (body.records as Record<string, unknown>[] | undefined) ?? [];
-        const outRecords = records.map((r) => {
-          const ref = String(r.source_ref ?? '');
-          const existing = seen.get(ref);
-          const outcome = existing ? 'updated' : 'created';
-          const entityId = existing?.entityId ?? `stub-${Math.random().toString(36).slice(2, 10)}`;
-          // A DRY RUN must not mutate the sink's own state (AC-14-21's "rolled
-          // back" contract) - only a real push (dry_run=false) commits it here.
-          if (!dryRun) seen.set(ref, { entityId });
-          return { source_ref: ref, outcome, entity_id: entityId, diff: {}, errors: {} };
-        });
-        const summary = { total: outRecords.length, created: 0, updated: 0, failed: 0, retryable: 0 };
-        for (const r of outRecords) {
-          summary[r.outcome as 'created' | 'updated'] += 1;
+  const server: Server = createServer(
+    (req: IncomingMessage, res: ServerResponse) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        let body: Record<string, unknown> = {};
+        try {
+          body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+        } catch {
+          body = {};
         }
-        send({ summary, records: outRecords });
-        return;
-      }
+        const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+        const send = (payload: unknown) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(payload));
+        };
 
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ message: `unexpected path ${url.pathname}` }));
-    });
-  });
+        // The Sorento provider's Test-connection probe (`sorento_provider.py`,
+        // `_PROBE_PATH`) - authenticates, writes nothing.
+        if (url.pathname.startsWith('/api/v1/external/read/')) {
+          send({ records: [], not_found: body.source_refs ?? [] });
+          return;
+        }
+
+        if (url.pathname.endsWith('/deletions')) {
+          ingestCalls.push({ path: url.pathname, dryRun: false, body });
+          const refs = (body.source_refs as string[] | undefined) ?? [];
+          const records = refs.map((ref) => {
+            seen.delete(ref);
+            return { source_ref: ref, outcome: 'deleted', entity_id: null };
+          });
+          send({
+            summary: {
+              total: refs.length,
+              deleted: refs.length,
+              deactivated: 0,
+              not_found: 0,
+              failed: 0,
+            },
+            records,
+          });
+          return;
+        }
+
+        if (url.pathname.startsWith('/api/v1/external/ingest/')) {
+          const dryRun = url.searchParams.get('dry_run') === 'true';
+          ingestCalls.push({ path: url.pathname, dryRun, body });
+          const records =
+            (body.records as Record<string, unknown>[] | undefined) ?? [];
+          const outRecords = records.map((r) => {
+            const ref = String(r.source_ref ?? '');
+            const existing = seen.get(ref);
+            const outcome = existing ? 'updated' : 'created';
+            const entityId =
+              existing?.entityId ??
+              `stub-${Math.random().toString(36).slice(2, 10)}`;
+            // A DRY RUN must not mutate the sink's own state (AC-14-21's "rolled
+            // back" contract) - only a real push (dry_run=false) commits it here.
+            if (!dryRun) seen.set(ref, { entityId });
+            return {
+              source_ref: ref,
+              outcome,
+              entity_id: entityId,
+              diff: {},
+              errors: {},
+            };
+          });
+          const summary = {
+            total: outRecords.length,
+            created: 0,
+            updated: 0,
+            failed: 0,
+            retryable: 0,
+          };
+          for (const r of outRecords) {
+            summary[r.outcome as 'created' | 'updated'] += 1;
+          }
+          send({ summary, records: outRecords });
+          return;
+        }
+
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ message: `unexpected path ${url.pathname}` }));
+      });
+    },
+  );
 
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as AddressInfo).port;
@@ -179,9 +217,18 @@ function runSeed(args: string[]): Promise<string> {
     execFile(
       PYTHON_BIN,
       ['-m', 'scripts.seed_etl_demo_source', ...args],
-      { cwd: BACKEND_DIR, encoding: 'utf8', env: { ...process.env, PYTHONPATH: BACKEND_DIR } },
+      {
+        cwd: BACKEND_DIR,
+        encoding: 'utf8',
+        env: { ...process.env, PYTHONPATH: BACKEND_DIR },
+      },
       (error, stdout, stderr) => {
-        if (error) reject(new Error(`seed_etl_demo_source ${args.join(' ')} failed: ${stderr || error.message}`));
+        if (error)
+          reject(
+            new Error(
+              `seed_etl_demo_source ${args.join(' ')} failed: ${stderr || error.message}`,
+            ),
+          );
         else resolve(stdout);
       },
     );
@@ -192,7 +239,11 @@ function runSeed(args: string[]): Promise<string> {
 
 async function demoToken(request: APIRequestContext): Promise<string> {
   const res = await request.post(`${API}/auth/login`, {
-    data: { email: 'demo@example.com', password: 'demo1234', tenantSlug: 'default' },
+    data: {
+      email: 'demo@example.com',
+      password: 'demo1234',
+      tenantSlug: 'default',
+    },
   });
   if (!res.ok()) throw new Error(`demo login failed: ${await res.text()}`);
   return (await res.json()).access_token as string;
@@ -227,11 +278,18 @@ async function signIn(page: Page) {
   await page.getByPlaceholder('Your email').fill('demo@example.com');
   await page.getByPlaceholder('Your password').fill('demo1234');
   await page.getByRole('button', { name: /sign in/i }).click();
-  await page.waitForURL((url) => !url.pathname.startsWith('/signin'), { timeout: 60_000 });
+  await page.waitForURL((url) => !url.pathname.startsWith('/signin'), {
+    timeout: 60_000,
+  });
 }
 
 /** Sidebar section -> child link. Expands the section when collapsed. */
-async function openViaSidebar(page: Page, section: string, child: string, urlRe: RegExp) {
+async function openViaSidebar(
+  page: Page,
+  section: string,
+  child: string,
+  urlRe: RegExp,
+) {
   // `.first()` - a detail page's OWN breadcrumb can carry a same-named link
   // (e.g. "Integrations" on a connection's own breadcrumb), which would
   // otherwise strict-mode-violate alongside the sidebar's.
@@ -242,7 +300,10 @@ async function openViaSidebar(page: Page, section: string, child: string, urlRe:
     // tick and fail the actionability check even though the element is fully
     // visible; the click itself is still real (CDP-dispatched at the element's
     // coordinates), not a shortcut around a genuine UI block.
-    await page.getByText(section, { exact: true }).first().click({ force: true });
+    await page
+      .getByText(section, { exact: true })
+      .first()
+      .click({ force: true });
     await expect(link).toBeVisible({ timeout: 15_000 });
   }
   await link.click();
@@ -276,7 +337,12 @@ async function expectNoPageScroll(page: Page, where: string) {
 /** Settings -> Integrations -> New -> the SQL Database provider, pointed at
  * this very Foundryx Postgres (a real, reachable source - AC-22-01/04). */
 async function createSqlDatabaseConnection(page: Page, name: string) {
-  await openViaSidebar(page, 'Settings', 'Integrations', /\/settings\/integrations$/);
+  await openViaSidebar(
+    page,
+    'Settings',
+    'Integrations',
+    /\/settings\/integrations$/,
+  );
   await page.getByRole('button', { name: 'Connect integration' }).click();
   await page.waitForURL(/\/settings\/integrations\/new$/);
 
@@ -296,19 +362,32 @@ async function createSqlDatabaseConnection(page: Page, name: string) {
   await page.locator('input[type="password"]').fill('foundryx');
 
   await page.getByRole('button', { name: 'Create', exact: true }).click();
-  await page.waitForURL(/\/settings\/integrations\/(?!new)[\w-]+$/, { timeout: 20_000 });
+  await page.waitForURL(/\/settings\/integrations\/(?!new)[\w-]+$/, {
+    timeout: 20_000,
+  });
 
   await page.getByRole('button', { name: 'Actions' }).click();
   await page.getByRole('menuitem', { name: 'Test connection' }).click();
-  await expect(page.getByText(/Connected to foundryx_service/).first()).toBeVisible({
+  await expect(
+    page.getByText(/Connected to foundryx_service/).first(),
+  ).toBeVisible({
     timeout: 20_000,
   });
 }
 
 /** Settings -> Integrations -> New -> the Sorento provider, pointed at the
  * scripted consumer this spec stood up. */
-async function createSorentoConnection(page: Page, name: string, baseUrl: string) {
-  await openViaSidebar(page, 'Settings', 'Integrations', /\/settings\/integrations$/);
+async function createSorentoConnection(
+  page: Page,
+  name: string,
+  baseUrl: string,
+) {
+  await openViaSidebar(
+    page,
+    'Settings',
+    'Integrations',
+    /\/settings\/integrations$/,
+  );
   await page.getByRole('button', { name: 'Connect integration' }).click();
   await page.waitForURL(/\/settings\/integrations\/new$/);
 
@@ -320,16 +399,25 @@ async function createSorentoConnection(page: Page, name: string, baseUrl: string
   await page.locator('input[type="password"]').fill('e2e-fake-sorento-key');
 
   await page.getByRole('button', { name: 'Create', exact: true }).click();
-  await page.waitForURL(/\/settings\/integrations\/(?!new)[\w-]+$/, { timeout: 20_000 });
+  await page.waitForURL(/\/settings\/integrations\/(?!new)[\w-]+$/, {
+    timeout: 20_000,
+  });
 
   await page.getByRole('button', { name: 'Actions' }).click();
   await page.getByRole('menuitem', { name: 'Test connection' }).click();
-  await expect(page.getByText(/Connected to Sorento/).first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText(/Connected to Sorento/).first()).toBeVisible({
+    timeout: 20_000,
+  });
 }
 
 /** AutoCount -> Companies -> ETL Demo Co. */
 async function openDemoCompany(page: Page) {
-  await openViaSidebar(page, 'AutoCount', 'Companies', /\/autocount\/companies$/);
+  await openViaSidebar(
+    page,
+    'AutoCount',
+    'Companies',
+    /\/autocount\/companies$/,
+  );
   // Match on the name AND the EXACT "Company database" column cell - an
   // earlier session left a second, differently-misconfigured row also named
   // "ETL Demo Co" whose stale `database_name` otherwise substring-collides
@@ -341,46 +429,124 @@ async function openDemoCompany(page: Page) {
     .click();
   // The Resource shell carries record-nav state on the URL (`?ctx=&i=`) - never
   // anchor this at the end.
-  await page.waitForURL(/\/autocount\/companies\/[\w-]+(\?|$)/, { timeout: 20_000 });
+  await page.waitForURL(/\/autocount\/companies\/[\w-]+(\?|$)/, {
+    timeout: 20_000,
+  });
   await expect(page.getByText(demoDatabaseName).first()).toBeVisible();
+}
+
+function companyIdFromUrl(page: Page): string {
+  const m = /\/autocount\/companies\/([\w-]+)/.exec(
+    new URL(page.url()).pathname,
+  );
+  if (!m) throw new Error(`not on a company page: ${page.url()}`);
+  return m[1];
 }
 
 /** Overview tab: Edit -> Delivery = Sorento -> pick `connectionName` -> fill
  * the Sorento company code -> Save (AC-22-18's anchor prerequisite). */
-async function setSorentoPushTarget(page: Page, connectionName: string, companyCode: string) {
+async function setSorentoPushTarget(
+  page: Page,
+  connectionName: string,
+  companyCode: string,
+) {
   await page.getByRole('tab', { name: 'Overview' }).click();
-  await page.getByRole('button', { name: /^Edit$/ }).first().click();
+  await page
+    .getByRole('button', { name: /^Edit$/ })
+    .first()
+    .click();
 
   await page.getByRole('combobox', { name: 'Push delivery target' }).click();
   await page.getByRole('option', { name: 'Sorento', exact: true }).click();
 
-  await page.getByRole('combobox', { name: 'Sorento consumer connection' }).click();
+  await page
+    .getByRole('combobox', { name: 'Sorento consumer connection' })
+    .click();
   await page.getByRole('option', { name: new RegExp(connectionName) }).click();
 
   await page.getByTestId('sink-company-code').fill(companyCode);
   await page.getByRole('button', { name: /^Save/ }).first().click();
-  await expect(page.getByTestId('sink-company-code-value')).toHaveText(companyCode, {
-    timeout: 20_000,
-  });
+  await expect(page.getByTestId('sink-company-code-value')).toHaveText(
+    companyCode,
+    {
+      timeout: 20_000,
+    },
+  );
 }
 
-/** Entities tab -> Customer row -> Change source -> Database. Re-runnable:
- * an entity already on the DB source shows no diff, so the warning/Save is
- * simply absent. */
-async function switchCustomerToDatabase(page: Page) {
+/** Entities tab -> the Customer task editor, whatever state the demo company
+ * is in. Since plan sprint-5/01 the demo company is a DB company (`sourceKind`
+ * derives from its `sql_database` connection), so (a) a fresh rig has NO
+ * Customer row at all - it is born `sql_db` on the first query save via
+ * "Add entity" (AC-01-10/17); (b) an already-born row offers "Configure
+ * database query" but never "Change source" (AC-01-18 hides the API-only
+ * actions); (c) a legacy fixture row seeded `autocount_read` before that plan
+ * still shows "Change source" - taken when offered, otherwise skipped, since
+ * activation flips `source_impl` to `sql_db` regardless (asserted in AC-22-31
+ * via the API after Activate). */
+async function openCustomerTaskEditor(page: Page) {
   await page.getByRole('tab', { name: 'Entities' }).click();
   const customer = page.getByRole('row', { name: /Customer/ }).first();
-  await expect(customer).toBeVisible({ timeout: 20_000 });
+  const addEntity = page.getByRole('combobox', { name: 'Add entity' });
+  await expect(customer.or(addEntity).first()).toBeVisible({ timeout: 20_000 });
+  // The embedded list settles a tick after the tab mounts - re-check the row
+  // rather than trusting the very first paint.
+  await page.waitForTimeout(300);
 
-  await rowAction(page, customer, /change source/i);
-  await page.getByRole('combobox', { name: 'Entity source' }).click();
-  await page.getByRole('option', { name: 'Database', exact: true }).click();
-  if (await page.getByTestId('source-switch-warning').isVisible().catch(() => false)) {
-    await page.getByTestId('save-source').click();
-    await expect(page.getByTestId('save-source')).toBeHidden({ timeout: 20_000 });
+  if (await customer.isVisible().catch(() => false)) {
+    await customer.getByRole('button', { name: 'Actions' }).first().click();
+    const changeSource = page.getByRole('menuitem', { name: /change source/i });
+    if (await changeSource.isVisible().catch(() => false)) {
+      await changeSource.click();
+      await page.getByRole('combobox', { name: 'Entity source' }).click();
+      await page.getByRole('option', { name: 'Database', exact: true }).click();
+      if (
+        await page
+          .getByTestId('source-switch-warning')
+          .isVisible()
+          .catch(() => false)
+      ) {
+        await page.getByTestId('save-source').click();
+        await expect(page.getByTestId('save-source')).toBeHidden({
+          timeout: 20_000,
+        });
+      } else {
+        await page
+          .getByRole('button', { name: /^Cancel$/ })
+          .first()
+          .click();
+      }
+      await rowAction(page, customer, /configure database query/i);
+    } else {
+      await page
+        .getByRole('menuitem', { name: /configure database query/i })
+        .click();
+    }
   } else {
-    await page.getByRole('button', { name: /^Cancel$/ }).first().click();
+    await addEntity.click();
+    await page.getByRole('option', { name: 'Customer', exact: true }).click();
+    await page.getByTestId('add-entity-configure').click();
   }
+  await page.waitForURL(/\/entities\/customer(\?|$)/, { timeout: 20_000 });
+}
+
+/** The company detail via the API: the Customer entity's persisted source.
+ * `EtlService.activate_task` is the switch to the DB path ("Activation IS the
+ * switch") - a row that still read from the vendor API after activation would
+ * push records nobody previewed. */
+async function customerSourceImpl(
+  request: APIRequestContext,
+  companyId: string,
+): Promise<string | undefined> {
+  const token = await demoToken(request);
+  const res = await request.get(`${API}/autocount/companies/${companyId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok()) throw new Error(`company detail failed: ${await res.text()}`);
+  const body = (await res.json()) as {
+    entities: { entityType: string; sourceImpl: string }[];
+  };
+  return body.entities.find((e) => e.entityType === 'customer')?.sourceImpl;
 }
 
 /** Set a MultiSelect to exactly `labels` - clear existing chips one at a time
@@ -389,8 +555,15 @@ async function switchCustomerToDatabase(page: Page) {
 async function setMultiSelect(page: Page, trigger: Locator, labels: string[]) {
   for (let guard = 0; guard < 20; guard += 1) {
     const text = (await trigger.innerText()).trim();
-    const chips = text.split('\n').map((t) => t.trim()).filter(Boolean);
-    if (chips.length === 0 || /^(Pick columns|All except|Run Test)/.test(chips[0])) break;
+    const chips = text
+      .split('\n')
+      .map((t) => t.trim())
+      .filter(Boolean);
+    if (
+      chips.length === 0 ||
+      /^(Pick columns|All except|Run Test)/.test(chips[0])
+    )
+      break;
     await trigger.getByText(chips[0], { exact: true }).first().click();
   }
   if (labels.length === 0) return;
@@ -408,29 +581,56 @@ async function configureQuery(page: Page, connectionName: string) {
   await expect(editToggle).toBeVisible({ timeout: 60_000 });
   await editToggle.click();
 
-  const connection = page.getByRole('combobox', { name: 'Connection' });
-  await expect(connection).toBeEnabled({ timeout: 30_000 });
-  await connection.click();
-  await page.getByRole('option', { name: new RegExp(connectionName) }).click();
+  // A DB company's task is LOCKED to the company connection (plan sprint-5/01
+  // AC-01-19): a read-only row replaces the picker, so the connection created
+  // above is only exercised as a connection (AC-22-01/02/04), not picked
+  // here. An API company (legacy fixture) still shows the picker.
+  const locked = page.getByTestId('locked-connection');
+  const isLocked = await locked.isVisible().catch(() => false);
+  if (isLocked) {
+    await expect(locked).toContainText('foundryx_service');
+    await expect(
+      page.getByRole('combobox', { name: 'Connection' }),
+    ).toHaveCount(0);
+  } else {
+    const connection = page.getByRole('combobox', { name: 'Connection' });
+    await expect(connection).toBeEnabled({ timeout: 30_000 });
+    await connection.click();
+    await page
+      .getByRole('option', { name: new RegExp(connectionName) })
+      .click();
+  }
 
   // Schema tree -> search the demo table -> click it -> Insert SELECT * (the
   // table-click/starter path, AC-22-31).
   await page.getByLabel('Search tables').fill('etl_demo_customers');
-  await page.getByRole('treeitem', { name: /etl_demo_customers/ }).first().click();
+  await page
+    .getByRole('treeitem', { name: /etl_demo_customers/ })
+    .first()
+    .click();
   await page.getByTestId('sql-insert-starter').click();
 
   await page.getByTestId('sql-test-query').click();
-  await expect(page.getByTestId('sql-preview-badge')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('sql-preview-badge')).toBeVisible({
+    timeout: 30_000,
+  });
 
+  // Comboboxes on the tab, in order: [Connection (API company only)], Key
+  // columns, Watermark column, Compared columns.
   const combos = page.getByRole('combobox');
-  await setMultiSelect(page, combos.nth(1), ['acc_no']);
+  const offset = isLocked ? 0 : 1;
+  await setMultiSelect(page, combos.nth(offset), ['acc_no']);
   await page.getByRole('combobox', { name: 'Watermark column' }).click();
-  await page.getByRole('option', { name: 'last_modified', exact: true }).click();
+  await page
+    .getByRole('option', { name: 'last_modified', exact: true })
+    .click();
   // Empty = "all result columns except the keys" (AC-22-11's default).
-  await setMultiSelect(page, page.getByRole('combobox').nth(3), []);
+  await setMultiSelect(page, page.getByRole('combobox').nth(offset + 2), []);
 
   await page.getByRole('button', { name: /^Save/ }).first().click();
-  await expect(page.getByTestId('task-save-error')).toBeHidden().catch(() => undefined);
+  await expect(page.getByTestId('task-save-error'))
+    .toBeHidden()
+    .catch(() => undefined);
   await expect(editToggle).toBeVisible({ timeout: 30_000 });
 }
 
@@ -438,26 +638,51 @@ async function configureQuery(page: Page, connectionName: string) {
  * columns, AC-22-09) -> Save. */
 async function configureMapping(page: Page) {
   await page.getByRole('tab', { name: 'Mapping' }).click();
+  // A row born on THIS visit (fresh rig: "Add entity" -> first query save)
+  // was fetched by the Mapping tab BEFORE it existed (404), and the editor
+  // does not re-fetch the mapping after that save (pre-existing plan 22 S4
+  // gap - `task-mapping-error` stays up until a refresh). Do what an operator
+  // does: refresh the page, then open the tab again.
+  if (
+    await page
+      .getByTestId('task-mapping-error')
+      .isVisible()
+      .catch(() => false)
+  ) {
+    await page.reload();
+    await page.getByRole('tab', { name: 'Mapping' }).click();
+  }
   const editToggle = page.getByRole('button', { name: /^Edit$/ }).first();
   await expect(editToggle).toBeVisible({ timeout: 30_000 });
   await editToggle.click();
 
-  // Switching a customer's source does NOT rewrite its mapping - `Customer`
-  // was seeded with the standard API-path DEFAULT_MAPPINGS (every Sorento
-  // target already used, incl. code/name/email/is_active, which is why
-  // "Add field" is disabled here), so the fix is to RE-POINT the existing
-  // rows' "Source column" at the DB path's flat preview columns - never add
-  // new ones (AC-22-09). Rows 1-4 are conveniently code/name/email/is_active
-  // in that order.
-  const picker = (row: number) => page.getByRole('combobox', { name: `Source column for row ${row}` });
-  await expect(picker(1)).toBeVisible({ timeout: 15_000 });
-  const rows: [number, string][] = [
-    [1, 'acc_no'],
-    [2, 'company_name'],
-    [3, 'email'],
-    [4, 'is_active'],
+  // A Customer row born `sql_db` (plan sprint-5/01 - the rig no longer seeds
+  // API-path rows) starts with NO mapping rows: add the four deliverable
+  // fields (code/name/email/is_active <- the flat preview columns). A row
+  // that still carries the legacy API-path DEFAULT_MAPPINGS (every Sorento
+  // target already used, so "Add field" is disabled) is instead RE-POINTED
+  // at the flat columns - rows 1-4 are code/name/email/is_active in that
+  // order either way (AC-22-09).
+  const picker = (row: number) =>
+    page.getByRole('combobox', { name: `Source column for row ${row}` });
+  const target = (row: number) =>
+    page.getByRole('combobox', { name: `Sorento field for row ${row}` });
+  const rows: [number, string, RegExp][] = [
+    [1, 'acc_no', /^Code( \*)?$/],
+    [2, 'company_name', /^Name( \*)?$/],
+    [3, 'email', /^Email( \*)?$/],
+    [4, 'is_active', /^Is active( \*)?$/],
   ];
-  for (const [rowIndex, source] of rows) {
+  await page.waitForTimeout(300);
+  const seeded = await picker(1)
+    .isVisible()
+    .catch(() => false);
+  for (const [rowIndex, source, sorentoField] of rows) {
+    if (!seeded) {
+      await page.getByRole('button', { name: 'Add field' }).click();
+      await target(rowIndex).click();
+      await page.getByRole('option', { name: sorentoField }).click();
+    }
     await picker(rowIndex).click();
     await page.getByRole('option', { name: source, exact: true }).click();
   }
@@ -472,13 +697,17 @@ async function configureMapping(page: Page) {
  * without proving THIS click's run actually finished. */
 async function clickRunNow(page: Page) {
   const runResponse = page.waitForResponse(
-    (r) => /\/entities\/customer\/etl-task\/run$/.test(new URL(r.url()).pathname) && r.request().method() === 'POST',
+    (r) =>
+      /\/entities\/customer\/etl-task\/run$/.test(new URL(r.url()).pathname) &&
+      r.request().method() === 'POST',
     { timeout: 60_000 },
   );
   await page.getByTestId('etl-run-now').click();
   await runResponse;
   await expect(
-    page.getByTestId('etl-last-run-at').or(page.getByTestId('task-last-run-error')),
+    page
+      .getByTestId('etl-last-run-at')
+      .or(page.getByTestId('task-last-run-error')),
   ).toBeVisible({ timeout: 30_000 });
 }
 
@@ -488,17 +717,23 @@ async function clickRunNow(page: Page) {
 async function activateAndRun(page: Page) {
   await page.getByRole('tab', { name: /review/i }).click();
   await page.getByTestId('etl-run-preview').click();
-  await expect(page.getByTestId('etl-preview-passed')).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId('etl-preview-passed')).toBeVisible({
+    timeout: 60_000,
+  });
 
   const activate = page.getByTestId('etl-activate');
   if (await activate.isVisible().catch(() => false)) await activate.click();
-  await expect(page.getByTestId('etl-run-now')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('etl-run-now')).toBeVisible({
+    timeout: 30_000,
+  });
 
   await clickRunNow(page);
 }
 
 /** Runs tab -> the newest row's cells (header row is index 0). */
-async function latestRunCells(page: Page): Promise<{ mode: string; added: string; updated: string; deleted: string }> {
+async function latestRunCells(
+  page: Page,
+): Promise<{ mode: string; added: string; updated: string; deleted: string }> {
   await page.getByRole('tab', { name: /^Runs$/i }).click();
   const row = page.getByRole('row').nth(1);
   const cells = row.getByRole('cell');
@@ -521,8 +756,15 @@ let sorento: FakeSorento;
 test.beforeAll(async ({ request }) => {
   await runSeed([]); // idempotent: creates/tops-up the etl_demo_* source tables
   const companyOut = await runSeed(['--company']); // idempotent: finds-or-creates the demo company + seeds Customer/Supplier/GRN configs
-  const dbNameMatch = /Company '([^']+)'/.exec(companyOut) ?? /company database_name '[^']+' -> '([^']+)'/.exec(companyOut);
-  if (!dbNameMatch) throw new Error(`could not read the demo company's database_name from:\n${companyOut}`);
+  // The rig prints `Company '<db>' already exists` on a re-run and `Created
+  // company '<db>'` the first time - accept both (a fresh DB used to die here).
+  const dbNameMatch =
+    /[Cc]ompany '([^']+)'/.exec(companyOut) ??
+    /company database_name '[^']+' -> '([^']+)'/.exec(companyOut);
+  if (!dbNameMatch)
+    throw new Error(
+      `could not read the demo company's database_name from:\n${companyOut}`,
+    );
   demoDatabaseName = dbNameMatch[1];
   sorento = await startFakeSorento();
 
@@ -545,6 +787,7 @@ test.afterAll(async () => {
 
 test('AC-22-31 golden path: connection -> query -> mapping -> activate -> run -> run history', async ({
   page,
+  request,
 }) => {
   const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const sqlConnName = `E2E ETL Demo Postgres ${stamp}`;
@@ -559,11 +802,8 @@ test('AC-22-31 golden path: connection -> query -> mapping -> activate -> run ->
   // ── the company + entity ──────────────────────────────────────────────────
   await openDemoCompany(page);
   await setSorentoPushTarget(page, sorentoConnName, 'ETLDEMO');
-  await switchCustomerToDatabase(page);
-
-  const customerRow = page.getByRole('row', { name: /Customer/ }).first();
-  await rowAction(page, customerRow, /configure database query/i);
-  await page.waitForURL(/\/entities\/customer(\?|$)/, { timeout: 20_000 });
+  const companyId = companyIdFromUrl(page);
+  await openCustomerTaskEditor(page);
 
   // ── Query tab ──────────────────────────────────────────────────────────────
   await configureQuery(page, sqlConnName);
@@ -595,6 +835,10 @@ test('AC-22-31 golden path: connection -> query -> mapping -> activate -> run ->
   await activateAndRun(page);
   await expectNoPageScroll(page, 'task editor / review & activate @1280');
 
+  // Activation flipped (or confirmed) the persisted source to the DB path -
+  // regardless of whether "Change source" was offered above.
+  expect(await customerSourceImpl(request, companyId)).toBe('sql_db');
+
   // ── Runs tab: real delivered counts ────────────────────────────────────────
   const first = await latestRunCells(page);
   expect(first.mode).toMatch(/Manual|Incremental/);
@@ -603,9 +847,11 @@ test('AC-22-31 golden path: connection -> query -> mapping -> activate -> run ->
 
   // Real delivery, not just local staging - the scripted consumer actually
   // received an ingest call (AC-22-20's push reuses the real SorentoSink path).
-  expect(sorento.ingestCalls.some((c) => c.path.endsWith('/ingest/customers') && !c.dryRun)).toBe(
-    true,
-  );
+  expect(
+    sorento.ingestCalls.some(
+      (c) => c.path.endsWith('/ingest/customers') && !c.dryRun,
+    ),
+  ).toBe(true);
 
   // ── responsive: the same two surfaces at 375px (user mandate) ─────────────
   await page.setViewportSize({ width: 375, height: 812 });
@@ -638,7 +884,14 @@ test('AC-22-32 change detection: incremental catches an update, reconcile catche
   // so a fresh test run otherwise has no baseline to diff row 5's deletion
   // against). Not asserted - purely setup, the same "no UI affordance"
   // backend helper used below.
-  await runSeed(['--trigger-run', 'customer', '--run-mode', 'reconcile', '--company-database', demoDatabaseName]);
+  await runSeed([
+    '--trigger-run',
+    'customer',
+    '--run-mode',
+    'reconcile',
+    '--company-database',
+    demoDatabaseName,
+  ]);
 
   // Mutate row 3 (bumps `company_name` + `last_modified`) and delete row 5 -
   // the seed rig's own documented E2E fixtures.
@@ -662,7 +915,14 @@ test('AC-22-32 change detection: incremental catches an update, reconcile catche
   // production); the seed rig's `--trigger-run` is the documented backend
   // helper for it (same `JobService.create_and_enqueue` "Run now" itself
   // calls, just with `mode=reconcile`).
-  await runSeed(['--trigger-run', 'customer', '--run-mode', 'reconcile', '--company-database', demoDatabaseName]);
+  await runSeed([
+    '--trigger-run',
+    'customer',
+    '--run-mode',
+    'reconcile',
+    '--company-database',
+    demoDatabaseName,
+  ]);
 
   await page.reload();
   await page.getByRole('tab', { name: /^Runs$/i }).click();
@@ -672,5 +932,7 @@ test('AC-22-32 change detection: incremental catches an update, reconcile catche
   expect(Number(reconcileRun.deleted)).toBe(1);
 
   // The deletion actually reached the scripted consumer (AC-22-21).
-  expect(sorento.ingestCalls.some((c) => c.path.endsWith('/customers/deletions'))).toBe(true);
+  expect(
+    sorento.ingestCalls.some((c) => c.path.endsWith('/customers/deletions')),
+  ).toBe(true);
 });

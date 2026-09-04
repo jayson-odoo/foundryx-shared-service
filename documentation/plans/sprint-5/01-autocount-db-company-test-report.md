@@ -80,9 +80,10 @@ count(*) FROM tenants WHERE slug LIKE 'e2e-dbco-%'` = **0** after the run (no re
    opens for a not-yet-born entity (the Mapping tab probes for rows that do not exist yet). The
    editor handles it (no error surfaced, the save succeeded) and it predates this slice (plan 22
    S4 "Add entity" behaviour) - noted, not a finding against this plan.
-3. **Pre-existing `autocount-db-etl.spec.ts` is broken BY this branch's semantics** - see the
-   regression section below. Not fixed here (test-owned files, but the brief scoped this slice to
-   the new spec + report; the fix is proposed there for the coder).
+3. **Pre-existing `autocount-db-etl.spec.ts` was broken BY this branch's semantics** - see the
+   regression section below; reconciled in test-owned files on the coordinator's instruction
+   (spec + dev seed rig), no product code touched. It also surfaced a pre-existing plan-22 S4
+   product gap (stale Mapping tab after a born row) that is recorded there, not fixed.
 
 ## Results by AC id
 
@@ -139,48 +140,76 @@ count(*) FROM tenants WHERE slug LIKE 'e2e-dbco-%'` = **0** after the run (no re
 |------|--------|-------|
 | `autocount.spec.ts` | **2/2 PASS** | Both GRN journeys (~10s each). Note: plan 22's report recorded this spec failing on the "Sync now" `.first()` selector; it passes on this stack. |
 | `autocount-mapping.spec.ts` | **2/2 PASS** | Both mapping/formula journeys. |
-| `autocount-db-etl.spec.ts` | **FAIL on this branch / PASS on `main`** | See below. |
+| `autocount-db-etl.spec.ts` | **2/2 PASS after the test-owned reconciliation below** (initially FAIL on this branch / PASS on `main`) | Fresh-rig run 14.5s / 4.0s, immediate re-run 11.6s / 4.0s; the new spec re-run green afterwards (6.3s) - no interference. |
 
-### Finding: `autocount-db-etl.spec.ts` AC-22-31 fails on this branch at "Change source"
+### Finding (resolved in test-owned files): `autocount-db-etl.spec.ts` AC-22-31 failed on this branch at "Change source"
 
-- **Repro**: `npx playwright test e2e/autocount-db-etl.spec.ts` against this branch's stack →
-  `locator.click: Timeout 3000ms exceeded. waiting for getByRole('menuitem', { name: /change
-  source/i })` inside `switchCustomerToDatabase` (spec line 375). The ORIGINAL spec against the
-  main checkout's `main` stack (:3001/:8001, same shared Postgres) passes **2/2 (33.9s / 10.4s)**
-  - so this is branch-induced, not environment.
+- **Repro (before the fix)**: `npx playwright test e2e/autocount-db-etl.spec.ts` against this
+  branch's stack → `locator.click: Timeout 3000ms exceeded. waiting for getByRole('menuitem', {
+  name: /change source/i })` inside `switchCustomerToDatabase`. The ORIGINAL spec against the
+  main checkout's `main` stack (:3001/:8001, same shared Postgres) passed **2/2 (33.9s / 10.4s)**
+  - branch-induced, not environment.
 - **Root cause**: plan 22's dev rig (`scripts/seed_etl_demo_source.py --company`,
-  `ensure_demo_company`) builds the `ETL Demo Co` company DIRECTLY via the ORM with a
-  `sql_database` connection (`foundryx_service`) and then calls
-  `CompanyService.seed_company_defaults` to seed the API-shaped
+  `ensure_demo_company`) built the `ETL Demo Co` company DIRECTLY via the ORM on a
+  `sql_database` connection (`foundryx_service`) and then called
+  `CompanyService.seed_company_defaults`, seeding the API-shaped
   `goods_received_note/supplier/customer` rows (`source_impl='autocount_read'`), because on
   `main` a company could only be created from an `autocount` connection and the S2 live-verify
   reached the DB path through "Change source". Under this plan `sourceKind` is DERIVED from the
-  connection's provider (AC-01-07), so that company now reports `sourceKind: 'db'` (confirmed:
-  `GET /autocount/companies` on :8002 → `ETL Demo Co | foundryx_service | db`), and AC-01-18
-  correctly hides `change-source` on a DB company. The demo company is a hybrid the product can no
-  longer create: a DB company that (contrary to AC-01-05) carries API-seeded rows, including a
-  GRN row that AC-01-10 says is not available on a DB company.
-- **Blast radius**: dev fixture only. No real company can be in this state - on `main` the create
-  path never accepted a `sql_database` connection, and this branch's DoD claim "existing API
-  companies all report `'api'`" holds for every company created through the product (`V Soft
-  Trading` = `api`). The only `db`-reporting row on the shared dev DB is this rig's.
-- **The row is still reachable through the product**: `configure-task` stays visible (AC-01-18),
-  and `EtlService.activate_task` flips `source_impl` to `sql_db` at activation ("Activation IS the
-  switch to the DB path"), so the spec's remaining journey (Configure database query → Query →
-  Mapping → Review & Activate) works without the Change-source dialog - after the `main` run the
-  demo company's Customer row indeed reads `customer sql_db active`.
-- **Proposed fix (test-owned files, for the coder; NOT applied here per the S3 brief)**:
-  (a) `e2e/autocount-db-etl.spec.ts` `switchCustomerToDatabase`: skip the "Change source" step
-  when the row menu does not offer it (a DB company never does now), or drop the step entirely
-  since activation performs the switch; (b) `scripts/seed_etl_demo_source.py`
-  `ensure_demo_company`: stop calling `seed_company_defaults` for a `sql_database`-connected
-  company (it violates AC-01-05/AC-01-10 and seeds a GRN row a DB company cannot use) - the
-  Customer row is then born `sql_db` on the first query save exactly like the E2E in this report;
-  (c) same file, first-create path prints `Created company '...'` which the spec's
-  `/Company '([^']+)'/` parse misses (case) - on a DB with no demo company yet the spec fails in
-  `beforeAll` before anything runs (hit here on the first attempt; the second attempt found the
-  row and got to the real failure). Pre-existing, not a plan-01 regression, worth fixing in the
-  same pass.
+  connection's provider (AC-01-07), so that company reports `sourceKind: 'db'` (confirmed: `GET
+  /autocount/companies` → `ETL Demo Co | foundryx_service | db`), and AC-01-18 correctly hides
+  `change-source` on a DB company. The fixture was a hybrid the product can no longer create: a
+  DB company carrying API-seeded rows (contrary to AC-01-05), including a GRN row a DB company
+  cannot use (AC-01-10).
+- **Blast radius**: dev fixture only. No product-created company can be in this state - on
+  `main` the create path never accepted a `sql_database` connection, and every product-created
+  company on the shared dev DB reports `api` (`V Soft Trading`).
+- **Fix applied (test-owned files only, no product code)**, on the coordinator's instruction:
+  1. `service_frontend/e2e/autocount-db-etl.spec.ts` - `switchCustomerToDatabase` became
+     `openCustomerTaskEditor`: no Customer row → **Add entity → Customer → Configure** (the
+     product path on a DB company); row present → "…" → "Change source" ONLY when offered
+     (legacy API-seeded row), else straight to "Configure database query". `configureQuery`
+     honours the **locked connection row** (AC-01-19; the spec-created `sql_database`
+     connection is still exercised as a connection, AC-22-01/02/04, just not picked) and
+     addresses the key/compared pickers by offset instead of hardcoded indices.
+     `configureMapping` handles a born `sql_db` row with **no mapping rows** (Add field ×4:
+     code/name/email/is_active ← the flat preview columns) as well as the legacy re-point path.
+     **New assertion**: after Activate, `GET /autocount/companies/{id}` must report the Customer
+     entity `sourceImpl === 'sql_db'` regardless of which path was taken ("Activation IS the
+     switch to the DB path", `EtlService.activate_task`).
+  2. `service_backend/scripts/seed_etl_demo_source.py` - `--company` no longer calls
+     `seed_company_defaults` (docstring note added: a `sql_database`-connected company IS a DB
+     company and must never carry `autocount_read` seeds, AC-01-05/10). Verified on a throwaway
+     tenant: first run prints `Created company '…' … with no entity configs.` (0
+     `ac_entity_config` rows), second run prints `Company '…' already exists`; tenant archived +
+     purged afterwards (0 leftover connections). Not imported by any pytest module, so the
+     backend suite was not re-run for it.
+  3. The spec's `beforeAll` parse now accepts BOTH output forms (`/[Cc]ompany '([^']+)'/`) - on a
+     DB with no demo company yet it used to die in `beforeAll` before anything ran (hit on the
+     very first attempt here; pre-existing).
+- **Shared-DB reconciliation**: the existing `ETL Demo Co` row's legacy fixture rows (its
+  `autocount_read` GRN/supplier configs, the customer config + 41 mapping rows) were deleted
+  (`app_autocount.ac_entity_config` / `ac_field_mapping` for that company id only - dev-fixture
+  rows the rig documents as droppable) so the shared demo company matches the fixture's new
+  shape AND so the fresh-rig path could be exercised for real. Row hashes/watermarks were left;
+  the spec re-baselines them itself.
+- **Verification**: fresh path (no Customer row, no mapping rows) **2/2 PASS (14.5s / 4.0s)**,
+  then an immediate re-run against the born row + 4 mapping rows **2/2 PASS (11.6s / 4.0s)**,
+  then `autocount-db-company.spec.ts` once more **1/1 PASS (6.3s)**.
+
+### Finding (pre-existing, product code, NOT fixed): Mapping tab is stale after a born row
+
+While driving the fresh path: the task editor fetches the mapping when it mounts, i.e. BEFORE
+"Add entity → first query save" births the row (`GET .../entities/customer/mapping` → 404), and
+`task-editor-view.tsx`'s `onSave` never calls `mapping.reload()` afterwards - so the Mapping tab
+keeps showing "The mapping could not be loaded." (`task-mapping-error`, its `Add field` button
+disabled because no Sorento targets were loaded) until the page is refreshed. Plan 22 S4's "Add
+entity" flow has had this since it shipped; this plan makes the path the DEFAULT for every DB
+company, so it is worth a backlog item (candidate: `onSave` → `mapping.reload()` after a
+successful task save when `mapping.notFound`). The spec does what an operator does (refreshes
+when that alert is showing) and documents the gap in a comment. The new
+`autocount-db-company.spec.ts` never opens the Mapping tab, so it was unaffected.
+
 - **Residue note**: running the rig created `ETL Demo Co` + a `sql_database` connection in the
   `default` tenant and the `public.etl_demo_*` tables on the shared dev Postgres. That is the
   rig's designed, documented state (plan 22), left in place.
@@ -207,6 +236,6 @@ count(*) FROM tenants WHERE slug LIKE 'e2e-dbco-%'` = **0** after the run (no re
 
 Already registered by the plan: **BL-SS-045** (AutoCount SQL presets in the task editor),
 **BL-SS-046** (attach a second, API connection to a DB company), **BL-SS-047** (migration 0006
-queries the live ORM model). New from this report, not yet backlogged: the
-`autocount-db-etl.spec.ts` + `seed_etl_demo_source.py` reconciliation above (test-owned; three
-small edits).
+queries the live ORM model). New from this report, not yet backlogged: the task editor's Mapping
+tab stays on its pre-birth 404 state after the first query save births the row (plan 22 S4 gap,
+product code - see the regression section; one `mapping.reload()` after a successful save).
