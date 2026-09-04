@@ -5,8 +5,9 @@
  * sections with counts + a search box (house node-palette pattern). Each entry
  * is BOTH click-to-add (appends to the selected/last section - the E2E path,
  * dnd-kit drags aren't drivable via scripted browser automation) AND dnd-kit
- * draggable onto a section/gap in the canvas. No instructional copy
- * (foolproof-UI mandate).
+ * draggable onto a section/gap in the canvas. Not asserted in jsdom; the
+ * drag-onto-canvas behaviour needs a recorded agent-browser check in any
+ * slice that touches it. No instructional copy (foolproof-UI mandate).
  */
 import { useMemo, useState } from 'react';
 import { useDraggable } from '@dnd-kit/core';

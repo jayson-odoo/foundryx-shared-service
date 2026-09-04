@@ -83,8 +83,8 @@ function canvasNodes() {
 describe('FlowCanvas + StatusFlowNode', () => {
   it('renders status nodes from graph data', async () => {
     // Edge SVG paths need real layout measurement (inert ResizeObserver in
-    // jsdom) - edge rendering is asserted by a live browser-automation E2E
-    // run instead.
+    // jsdom) - not asserted in jsdom; edge rendering needs a recorded
+    // agent-browser check in any slice that touches it.
     const { container } = render(
       <FlowCanvas
         nodes={canvasNodes()}

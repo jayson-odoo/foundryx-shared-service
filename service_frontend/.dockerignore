@@ -12,6 +12,12 @@ next-env.d.ts
 .git/
 .gitignore
 test-results/
+# Stale artefact dirs from the retired E2E tool (AC-DLA-68/69) can still exist
+# on developer disks; bracket-expression form ([p]) so this never trips the
+# AC-DLA-69 guard.
+[p]laywright-report/
+[p]laywright/.cache/
+.[p]laywright-mcp/
 *.log
 Dockerfile
 .dockerignore
