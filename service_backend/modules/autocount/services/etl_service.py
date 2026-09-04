@@ -39,6 +39,7 @@ from ..canonical.documents import (
     is_document_entity,
 )
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
+from ..formula import FormulaError, known_filter_variables, parse_formula
 from ..canonical.masters import (
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
@@ -349,11 +350,31 @@ def validate_source_config(
     # ── documents: line query + from-date + filter formula (S5, sprint-5/02) ─
     from_date: Optional[str] = None
     doc_date_column: Optional[str] = None
-    # sprint-5/02 (AC-02-11) - stored as-is; the AutocountFormulaBuilder
-    # already validates it client-side, and the server-side parse/evaluate
-    # gate at fetch time is slice S3. Never blank-required (a document with
-    # no filter simply stages every header, today's behaviour).
+    # Never blank-required (a document with no filter simply stages every
+    # header, today's behaviour).
     filter_formula = str(raw.get("filterFormula") or "").strip() or None
+    if document and filter_formula:
+        #     !!  A FILTER FORMULA MUST PARSE AGAINST WHAT IT WILL RUN OVER.  !!
+        # (F2/B3, sprint-5/02 review round - the security review's SHOULD-FIX
+        # F2 and the code review's B3.) `evaluate_row_filter` used to fail
+        # OPEN silently on any parse error, citing THIS check as the reason
+        # it was safe to - except this check never existed, so an
+        # unparseable or unknown-variable filter saved clean and silently
+        # kept every header, forever, with no visible sign the PO/SPO split
+        # (or any other filter) was disabled. Parsed here with the SAME
+        # fold-matched known-variable set `evaluate_row_filter` resolves at
+        # run time (`known_filter_variables`), so a save-time PASS here is a
+        # genuine guarantee the run-time filter can resolve every name it
+        # references.
+        if columns is None:
+            errors["filterFormula"] = (
+                "Test a query first - the filter is checked against its result."
+            )
+        else:
+            try:
+                parse_formula(filter_formula, known_filter_variables(filter_formula, columns))
+            except FormulaError as exc:
+                errors["filterFormula"] = str(exc)
     if document:
         raw_from = str(raw.get("fromDate") or "").strip()
         if not raw_from:

@@ -52,7 +52,7 @@ from ..canonical.documents import (
     is_document_entity,
 )
 from ..client import CallRecord
-from ..formula import evaluate_row_filter
+from ..formula import FormulaError, evaluate_row_filter
 from ..mapping import IdentityError, flat_source_ref
 from ..models import (
     RUN_MODE_MANUAL,
@@ -72,6 +72,7 @@ from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
 from .errors import (
     SqlDeleteGuardExceeded,
     SqlDocumentCapExceeded,
+    SqlFilterFormulaError,
     SqlQueryError,
     SqlSourceError,
 )
@@ -757,11 +758,27 @@ class SqlDbSource:
                 # as a delete candidate either.
                 if self.filter_formula:
                     kept = []
-                    for header in rows:
-                        if evaluate_row_filter(self.filter_formula, header):
-                            kept.append(header)
-                        else:
-                            self._last_skipped_by_filter += 1
+                    try:
+                        for header in rows:
+                            if evaluate_row_filter(self.filter_formula, header):
+                                kept.append(header)
+                            else:
+                                self._last_skipped_by_filter += 1
+                    except FormulaError as exc:
+                        #     !!  A RUNTIME FILTER FAULT IS A NAMED TASK
+                        #         ERROR, NEVER A SILENT KEEP-EVERYTHING.  !!
+                        # (F2/B3.) `validate_source_config` already proved
+                        # this formula PARSES against the saved result
+                        # columns - a failure reaching here is a genuine
+                        # per-row runtime fault (a value that doesn't coerce
+                        # the way the formula expects). Fails the WHOLE run,
+                        # same fail-safe contract as the delete guard/document
+                        # caps: nothing staged, nothing pushed, hashes
+                        # untouched.
+                        raise SqlFilterFormulaError(
+                            f"The filter could not be evaluated: {exc}. Nothing "
+                            f"was staged or pushed."
+                        ) from exc
                     rows = kept
                 #     !!  CAP THE FAN-OUT (S5 review SHOULD-FIX 3).  !!
                 # This is an N+1 by design (module doc) - a run with an

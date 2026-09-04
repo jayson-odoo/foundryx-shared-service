@@ -52,7 +52,18 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import AbstractSet, Any, Callable, Dict, FrozenSet, List, Optional, Tuple, Union
+from typing import (
+    AbstractSet,
+    Any,
+    Callable,
+    Dict,
+    FrozenSet,
+    Iterable,
+    List,
+    Optional,
+    Tuple,
+    Union,
+)
 
 from app.services.filter_translator import MAX_GROUP_DEPTH as _MAX_DEPTH
 
@@ -1286,13 +1297,38 @@ def _fold_ident(name: str) -> str:
     return _NON_ALNUM_RE.sub("", str(name).lower())
 
 
+def known_filter_variables(formula: str, columns: Iterable[str]) -> FrozenSet[str]:
+    """The subset of ``formula``'s identifier tokens that fold-match a name in
+    ``columns`` (sprint-5/02 review round F2/B3) - mirrors
+    ``evaluate_row_filter``'s ALPHANUMERIC-ONLY, lower-cased matching exactly,
+    so a save-time ``parse_formula(formula, known_filter_variables(...))``
+    check accepts precisely what the run-time filter will resolve (``DocNo``
+    against a saved ``doc_no`` result column) and rejects every other name -
+    a formula that references nothing real must be a named 422 at save time,
+    never a filter that saves clean and fails OPEN (keeps every header) at
+    every run forever."""
+    folded_columns = {_fold_ident(c) for c in columns}
+    return frozenset(
+        token
+        for token in set(_FILTER_IDENT_RE.findall(formula))
+        if _fold_ident(token) in folded_columns
+    )
+
+
 def evaluate_row_filter(formula: Optional[str], raw: Dict[str, Any]) -> bool:
     """Whether ``raw`` (a document header row) passes ``filterFormula``.
 
-    Returns ``True`` (row KEPT) when ``formula`` is blank, when it evaluates
-    truthy, or when it fails to parse/evaluate - a broken filter must fail
-    OPEN (never silently swallow every header; a bad formula is instead
-    caught at PUT-time by ``validate_source_config``'s own parse check).
+    Returns ``True`` (row KEPT) when ``formula`` is blank. RAISES
+    ``FormulaError`` on a parse or evaluate failure (sprint-5/02 review round
+    F2/B3) - a broken filter is now caught at PUT-time by
+    ``validate_source_config``'s own parse gate (``known_filter_variables``
+    above), so a failure reaching here at RUN time is a genuine runtime
+    fault (a row whose value doesn't coerce the way the formula expects) and
+    must surface as a NAMED task error the operator can see and fix, never
+    silently fail OPEN and keep every header forever with no visible sign
+    anything is wrong. The caller (``SqlDbSource._read``) wraps this into
+    ``SqlFilterFormulaError`` - the same fail-safe contract as the delete
+    guard and the document caps: nothing is staged or pushed for the run.
     """
     text = (formula or "").strip()
     if not text:
@@ -1303,11 +1339,5 @@ def evaluate_row_filter(formula: Optional[str], raw: Dict[str, Any]) -> bool:
         folded = _fold_ident(token)
         if folded in raw_folded:
             facts[token] = raw_folded[folded]
-    try:
-        result = evaluate_formula(text, None, facts)
-    except FormulaError:
-        return True
-    try:
-        return _to_bool(result)
-    except FormulaError:
-        return True
+    result = evaluate_formula(text, None, facts)
+    return _to_bool(result)
