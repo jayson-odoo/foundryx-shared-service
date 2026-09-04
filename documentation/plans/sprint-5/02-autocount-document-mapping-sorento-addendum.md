@@ -209,3 +209,8 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   `order_link_claim` per (so_number, po_number, product_code), source `autocount`; blanks dropped;
   a non-list fails the record with `lines.N.from_so_numbers`. ESB: split `FromSODocList` on commas,
   strip, drop blanks, always a list (never a string).
+- 2026-09-05 (Sorento "S5 green"): every build slice S0-S5 live on the local lane :8042; the local
+  consumer connection may run at `sorento_contract_version = 2`. D6a confirmed: canonical
+  `partial` on SALES orders is stored and read back as `open` (PO `partial` unchanged). Sorento S6
+  (review + full suite) follows; any wire change will be announced before the proof completes.
+  Production flip = BL-SS-049, on their release tag.
