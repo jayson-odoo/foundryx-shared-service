@@ -1525,3 +1525,430 @@ def test_simulate_accepts_default_status_formula_and_line_formula(client, sessio
         f"known-variable set as replace_mapping) - got {response.status_code}: "
         f"{response.text}"
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Group H (continued) - code-review round, RED tests for B1/B4/S1/S3-S5/S7
+# (lane sprint-5/02 @ eab8ba0 review findings file). Written before the coder
+# addresses them.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_backfill_document_line_mapping_pickers_also_creates_fixed_fields(session_factory):
+    """B1 (BLOCKER): the picker-to-row backfill must ALSO emit the FIXED
+    line fields the old (deleted) `document_line_rows` code-generated for
+    this entity (SO: qty_ordered*/qty_delivered/unit_price/discount/
+    line_total/uom/required_date; PO: qty_ordered*/qty_received/unit_cost/
+    discount/line_total/uom/currency/expected_date) - not just the 2-3
+    picker-derived rows (key/product/warehouse). Today's gap leaves a
+    migrated task with only 2-3 line rows, so every fixed-field push (e.g.
+    `qty_ordered`) goes out null forever.
+
+    ASSUMPTION (not yet chosen by the coder, flagged per this file's own
+    convention): `modules.autocount.mapping.DOCUMENT_LINE_FIXED_FIELDS`
+    (the exact name/shape the deleted `document_line_rows` used -
+    `Dict[str, Tuple[Tuple[canonical_field, transform, required], ...]]`)
+    is reintroduced, and `backfill_document_line_mapping_pickers` seeds one
+    row per entry with `source_path == canonical_field` (the FIXED
+    column-name convention the removed code-gen path relied on).
+    """
+    from modules.autocount.backfill import backfill_document_line_mapping_pickers
+    from modules.autocount.mapping import DOCUMENT_LINE_FIXED_FIELDS
+
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_B1A", name="src")
+    company = _company(db, conn.id, database="AED_B1A", name="B1 Co A")
+    _document_config(
+        db, company, conn.id,
+        lineKeyColumn="DtlKey", lineProductColumn="ItemAutoKey", lineWarehouseColumn=None,
+    )
+
+    created = backfill_document_line_mapping_pickers(
+        db, DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER
+    )
+    db.commit()
+
+    fixed_fields = DOCUMENT_LINE_FIXED_FIELDS[ENTITY_SALES_ORDER]
+    expected_fixed = {canonical for canonical, _transform, _required in fixed_fields}
+    rows = db.query(AcFieldMapping).filter(
+        AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+        AcFieldMapping.company_id == company.id,
+        AcFieldMapping.entity_type == ENTITY_SALES_ORDER,
+        AcFieldMapping.scope == SCOPE_LINE,
+    ).all()
+    by_field = {r.canonical_field: r for r in rows}
+    missing = expected_fixed - set(by_field)
+    assert not missing, (
+        "the backfill must also seed the FIXED line fields the old "
+        f"document_line_rows code-generated - missing {missing}"
+    )
+    for canonical in expected_fixed:
+        assert by_field[canonical].source_path == canonical, (
+            f"a fixed line field row's source_path must equal its canonical "
+            f"field name (the FIXED column-name convention) - got "
+            f"{by_field[canonical].source_path!r} for {canonical!r}"
+        )
+    # 2 picker rows (source_ref + product_ref; no warehouse configured) plus
+    # one row per fixed field.
+    assert created == 2 + len(fixed_fields), (
+        f"expected 2 picker rows + {len(fixed_fields)} fixed rows = "
+        f"{2 + len(fixed_fields)}, got {created}"
+    )
+
+    # Idempotent: a second call is a no-op once the full line set exists.
+    created_again = backfill_document_line_mapping_pickers(
+        db, DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER
+    )
+    assert created_again == 0
+    db.close()
+
+
+def test_backfill_document_line_mapping_pickers_repairs_picker_only_task(session_factory):
+    """B1: the SAME backfill function must REPAIR a task that already has
+    ONLY the picker-derived line rows (exactly what the 0010 migration left
+    live task 8bc3496b with) by adding the missing fixed fields - the guard
+    cannot simply be "does ANY line row exist", or a picker-only task can
+    never be repaired by re-running the backfill (which migration 0011
+    does). A task with a FULL line set already (every fixed field present
+    too) must be left untouched.
+    """
+    from modules.autocount.backfill import backfill_document_line_mapping_pickers
+    from modules.autocount.mapping import DOCUMENT_LINE_FIXED_FIELDS
+
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_B1B", name="src")
+    company = _company(db, conn.id, database="AED_B1B", name="B1 Co B")
+    _document_config(db, company, conn.id, entity_type=ENTITY_SALES_ORDER)
+
+    # A task left with ONLY the two picker rows by the 0010 backfill
+    # (source_config already stripped of the picker keys - the 0010 path
+    # already ran once).
+    _seed_line_row(db, company, ENTITY_SALES_ORDER, "DtlKey", "source_ref", "string", required=True)
+    _seed_line_row(db, company, ENTITY_SALES_ORDER, "ItemAutoKey", "product_ref", "ref_product", required=True)
+
+    touched = backfill_document_line_mapping_pickers(
+        db, DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER
+    )
+    db.commit()
+
+    fixed_fields = DOCUMENT_LINE_FIXED_FIELDS[ENTITY_SALES_ORDER]
+    expected_fixed = {canonical for canonical, _t, _r in fixed_fields}
+    rows = db.query(AcFieldMapping).filter(
+        AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+        AcFieldMapping.company_id == company.id,
+        AcFieldMapping.entity_type == ENTITY_SALES_ORDER,
+        AcFieldMapping.scope == SCOPE_LINE,
+    ).all()
+    by_field = {r.canonical_field: r for r in rows}
+    assert expected_fixed <= set(by_field), (
+        "the repair must add the missing fixed line fields to a picker-only "
+        f"task - missing {expected_fixed - set(by_field)}"
+    )
+    assert touched == len(fixed_fields), (
+        f"expected exactly the {len(fixed_fields)} missing fixed rows to be "
+        f"added, got touched={touched}"
+    )
+    # The two original picker rows must survive untouched.
+    assert by_field["source_ref"].source_path == "DtlKey"
+    assert by_field["product_ref"].source_path == "ItemAutoKey"
+
+    # A DIFFERENT task with a FULL line set (fixed fields already present
+    # too) is left alone - zero rows added, zero duplicates.
+    other_company = _company(db, conn.id, database="AED_B1B2", name="B1 Co B2")
+    _document_config(db, other_company, conn.id, entity_type=ENTITY_SALES_ORDER)
+    _seed_line_row(db, other_company, ENTITY_SALES_ORDER, "DtlKey", "source_ref", "string", required=True)
+    _seed_line_row(db, other_company, ENTITY_SALES_ORDER, "ItemAutoKey", "product_ref", "ref_product", required=True)
+    for canonical, transform, required in fixed_fields:
+        _seed_line_row(
+            db, other_company, ENTITY_SALES_ORDER, canonical, canonical, transform,
+            required=required,
+        )
+    before_count = db.query(AcFieldMapping).filter(
+        AcFieldMapping.company_id == other_company.id,
+        AcFieldMapping.scope == SCOPE_LINE,
+    ).count()
+
+    touched_again = backfill_document_line_mapping_pickers(
+        db, DEFAULT_TENANT_ID, other_company.id, ENTITY_SALES_ORDER
+    )
+    db.commit()
+    after_count = db.query(AcFieldMapping).filter(
+        AcFieldMapping.company_id == other_company.id,
+        AcFieldMapping.scope == SCOPE_LINE,
+    ).count()
+    assert touched_again == 0, "a task with a full line set must not be touched"
+    assert after_count == before_count
+    db.close()
+
+
+def test_filtered_header_is_never_a_delete_candidate(session_factory):
+    """B4 (BLOCKER, AC-02-11): a header the row-filter drops (e.g. an
+    SPO-numbered header a PO task's filterFormula excludes) must NEVER be
+    treated as a deletion, and its stale row hash must be dropped rather
+    than staged as a delete intent (a later unfiltered re-appearance should
+    stage as a fresh add, not a phantom update).
+
+    Today's gap: `_read` filters `rows` (and therefore the `current_refs`
+    built from it) BEFORE the header ever reaches `fetch_changes`'s
+    `known - current_refs` delete diff - so a previously-known filtered
+    header's ref is simply absent from `current_refs` and reads as a
+    genuine delete.
+    """
+    header_rows = [
+        ("D001", "PO-001", "open", "F", "2026-08-01", "2026-08-01 09:00:00"),
+        ("D002", "SPO-001", "open", "F", "2026-08-02", "2026-08-02 09:00:00"),
+    ]
+    lines = {
+        "D001": [("D001-1", "ITEM-A", "10", "0", 1)],
+        "D002": [("D002-1", "ITEM-B", "5", "0", 1)],
+    }
+    db = session_factory()
+    engine = _source_engine(header_rows, lines)
+    conn = _sql_connection(db, engine, database="AED_B4", name="src")
+    company = _company(db, conn.id, database="AED_B4", name="B4 Co")
+    config = _document_config(
+        db, company, conn.id, entity_type=ENTITY_PURCHASE_ORDER,
+        filterFormula='not(startswith(upper(trim(DocNo)), "SPO-"))',
+    )
+
+    # Both headers were previously known/hashed - as if the filter formula
+    # was only just added (or D002 was staged before the sibling SPO task
+    # existed).
+    known = {"AED_B4:D001": "h1", "AED_B4:D002": "h2"}
+    RowHashRepository(db).upsert_many(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PURCHASE_ORDER, known, seen_at=None
+    )
+    db.commit()
+
+    source = SqlDbSource(
+        _ctx(db, company, config), entity_type=ENTITY_PURCHASE_ORDER, mode=RUN_MODE_RECONCILE,
+    )
+    result = source.fetch_changes(Watermark())
+    assert "AED_B4:D002" not in result.delete_refs, (
+        "a header dropped by filterFormula must never be a delete candidate "
+        f"- got delete_refs={result.delete_refs}"
+    )
+
+    remaining = RowHashRepository(db).all_hashes(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PURCHASE_ORDER
+    )
+    assert "AED_B4:D002" not in remaining, (
+        "a filtered header's stale row hash must be dropped (so a later "
+        "unfiltered re-appearance stages as a fresh add, not a phantom "
+        f"update) - got remaining={remaining}"
+    )
+    db.close()
+
+
+def test_line_source_path_checked_against_line_preview(session_factory):
+    """S1 (should-fix, AC-02-06): saving a line row whose `source_path` is
+    not among the task's saved `line_result_columns` (the last successful
+    lineQuery preview) must be rejected (422) naming the offending field -
+    reinstates the deleted `test_a_document_task_line_columns_are_checked_
+    against_the_line_preview` intent. Today `_replace_line_mapping` never
+    checks `source_path` at all - `line_result_columns` is only read to
+    build formula `known_vars` - so a typo'd/renamed source column saves
+    silently and pushes null forever.
+    """
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_S1A", name="src")
+    company = _company(db, conn.id, database="AED_S1A", name="S1 Co")
+    config = _document_config(db, company, conn.id, entity_type=ENTITY_SALES_ORDER)
+    config.line_result_columns = ["DtlKey", "ItemAutoKey", "Qty"]
+    db.add(config)
+    db.commit()
+
+    service = CompanyService(db)
+    with pytest.raises(AutocountServiceError) as excinfo:
+        service.replace_mapping(
+            DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER,
+            [
+                MappingWriteRow(source_path="DocNo", transform="string", sorento_field="so_number"),
+                MappingWriteRow(source_path="Cancelled", transform="string", sorento_field="status"),
+                MappingWriteRow(
+                    source_path="NotAPreviewedColumn", transform="string",
+                    sorento_field="source_ref", scope="line",
+                ),
+                MappingWriteRow(
+                    source_path="ItemAutoKey", transform="ref_product",
+                    sorento_field="product_ref", scope="line",
+                ),
+                MappingWriteRow(
+                    source_path="Qty", transform="decimal", sorento_field="qty_ordered",
+                    scope="line",
+                ),
+            ],
+        )
+    assert "NotAPreviewedColumn" in str(excinfo.value), (
+        "the 422 must name the offending source column, not a generic "
+        f"message - got {excinfo.value}"
+    )
+    db.close()
+
+
+def test_so_po_spo_presets_seed_line_number_from_seq(session_factory):
+    """S3 (AC-02-27): each of the SO/PO/SPO presets must seed a
+    `Seq -> line_number` line row (the v2 fallback field, addendum §9) -
+    the line queries already SELECT `Seq`, but no preset field consumes it
+    yet, so `line_number` never reaches Sorento."""
+    from modules.autocount.canonical.documents import ENTITY_SHIPPING_ORDER  # noqa: F401
+    from modules.autocount.presets import PO_PRESET, SO_PRESET, SPO_PRESET
+
+    for preset, label in ((SO_PRESET, "SO"), (PO_PRESET, "PO"), (SPO_PRESET, "SPO")):
+        line_number_rows = [f for f in preset.line if f.canonical_field == "line_number"]
+        assert line_number_rows, f"{label} preset has no line_number row yet (AC-02-27)"
+        assert line_number_rows[0].source_path == "Seq", (
+            f"{label} preset's line_number row must source from 'Seq' - got "
+            f"{line_number_rows[0].source_path!r}"
+        )
+
+
+def test_po_spo_currency_formula_has_udf_fallback():
+    """S4 (AC-02-16): the PO and SPO presets' `currency` row must be
+    `coalesce(UDF_Currency, CurrencyCode, "CNY")` (AutoCount's UDF override,
+    falling back to the header's own CurrencyCode, falling back to the
+    documented default currency) - not a plain CurrencyCode passthrough
+    with no formula at all."""
+    from modules.autocount.presets import PO_PRESET, SPO_PRESET
+
+    expected = 'coalesce(UDF_Currency, CurrencyCode, "CNY")'
+    for preset, label in ((PO_PRESET, "PO"), (SPO_PRESET, "SPO")):
+        currency_rows = [f for f in preset.header if f.canonical_field == "currency"]
+        assert currency_rows, f"{label} preset has no currency row at all"
+        assert currency_rows[0].formula == expected, (
+            f"{label} preset currency formula must be {expected!r} - got "
+            f"{currency_rows[0].formula!r}"
+        )
+
+
+def test_default_status_formula_zero_lines_is_open():
+    """S5 (AC-02-16): DEFAULT_STATUS_FORMULA must resolve a header with
+    ZERO mapped lines to "open" (the documented AutoCount SQL pack's CASE
+    maps "no lines yet" to open) - while all-lines-fulfilled still reads
+    "closed", any-line-open still reads "open", and Cancelled == "T" always
+    wins.
+
+    Today's formula (`if(lines.open_count == 0, "closed", "open")`) cannot
+    distinguish "no lines exist yet" from "every line is fulfilled" - both
+    read `open_count == 0` - so a header with zero lines wrongly reads
+    "closed".
+    """
+    engine = _aggregate_engine()
+
+    zero_lines = engine.map_document({
+        "DocKey": "D-zero", "DocNo": "SO-1", "Cancelled": "F", "_lines": [],
+    })
+    assert zero_lines.ok, [e.message() for e in zero_lines.errors]
+    assert zero_lines.record.status == "open", (
+        f"a header with zero lines must resolve to 'open' - got "
+        f"{zero_lines.record.status!r}"
+    )
+
+    all_fulfilled = engine.map_document({
+        "DocKey": "D-full", "DocNo": "SO-1", "Cancelled": "F",
+        "_lines": [{"DtlKey": "L1", "ItemAutoKey": "P1", "Qty": "10", "TransferedQty": "10"}],
+    })
+    assert all_fulfilled.ok, [e.message() for e in all_fulfilled.errors]
+    assert all_fulfilled.record.status == "closed"
+
+    any_open = engine.map_document({
+        "DocKey": "D-open", "DocNo": "SO-1", "Cancelled": "F",
+        "_lines": [{"DtlKey": "L1", "ItemAutoKey": "P1", "Qty": "10", "TransferedQty": "0"}],
+    })
+    assert any_open.ok, [e.message() for e in any_open.errors]
+    assert any_open.record.status == "open"
+
+    cancelled = engine.map_document({
+        "DocKey": "D-cancel", "DocNo": "SO-1", "Cancelled": "T",
+        "_lines": [{"DtlKey": "L1", "ItemAutoKey": "P1", "Qty": "10", "TransferedQty": "0"}],
+    })
+    assert cancelled.ok, [e.message() for e in cancelled.errors]
+    assert cancelled.record.status == "cancelled"
+
+
+def test_replace_mapping_explicit_empty_line_list_wipes_lines(session_factory):
+    """S7 (should-fix): PUT mapping with an EXPLICIT empty line-row
+    submission (the operator cleared every line row in the editor's Lines
+    tab and saved) must wipe the entity's existing line rows - symmetric
+    with an empty HEADER submission, which already wipes unconditionally
+    (`_replace_header_mapping` runs no matter what).
+
+    ASSUMPTION (name not yet chosen by the coder, flagged per this file's
+    convention): `CompanyService.replace_mapping` gains a
+    `line_rows_submitted: bool = False` keyword - the router passes True
+    whenever the request actually carried the Lines-tab payload (even
+    empty), False when the caller never touched line scope at all. Today
+    `replace_mapping` cannot express this distinction at all: an empty
+    line-row list and an omitted one both arrive as `line_rows == []` and
+    are both silently skipped (`if line_rows and is_document_entity(...)`).
+    """
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_S7A", name="src")
+    company = _company(db, conn.id, database="AED_S7A", name="S7 Co A")
+    _document_config(db, company, conn.id, entity_type=ENTITY_SALES_ORDER)
+
+    _seed_line_row(db, company, ENTITY_SALES_ORDER, "DtlKey", "source_ref", "string", required=True)
+    _seed_line_row(db, company, ENTITY_SALES_ORDER, "ItemAutoKey", "product_ref", "ref_product", required=True)
+
+    service = CompanyService(db)
+    service.replace_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER,
+        [
+            MappingWriteRow(source_path="DocNo", transform="string", sorento_field="so_number"),
+            MappingWriteRow(source_path="Cancelled", transform="string", sorento_field="status"),
+        ],
+        line_rows_submitted=True,
+    )
+
+    remaining = db.query(AcFieldMapping).filter(
+        AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+        AcFieldMapping.company_id == company.id,
+        AcFieldMapping.entity_type == ENTITY_SALES_ORDER,
+        AcFieldMapping.scope == SCOPE_LINE,
+    ).all()
+    assert remaining == [], (
+        "an explicit empty line-row submission must wipe existing line rows "
+        f"- got {[r.canonical_field for r in remaining]}"
+    )
+    db.close()
+
+
+def test_replace_mapping_omitted_line_scope_leaves_lines_untouched(session_factory):
+    """Control for S7: a save that never touches the Lines tab at all
+    (`line_rows_submitted` not passed) must leave existing line rows
+    exactly as they were - proves the fix is scope-aware, not a blanket
+    "empty list always wipes" regression that would break every ordinary
+    header-only save on a document task."""
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_S7B", name="src")
+    company = _company(db, conn.id, database="AED_S7B", name="S7 Co B")
+    _document_config(db, company, conn.id, entity_type=ENTITY_SALES_ORDER)
+
+    _seed_line_row(db, company, ENTITY_SALES_ORDER, "DtlKey", "source_ref", "string", required=True)
+    _seed_line_row(db, company, ENTITY_SALES_ORDER, "ItemAutoKey", "product_ref", "ref_product", required=True)
+
+    service = CompanyService(db)
+    service.replace_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER,
+        [
+            MappingWriteRow(source_path="DocNo", transform="string", sorento_field="so_number"),
+            MappingWriteRow(source_path="Cancelled", transform="string", sorento_field="status"),
+        ],
+    )
+
+    remaining = db.query(AcFieldMapping).filter(
+        AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+        AcFieldMapping.company_id == company.id,
+        AcFieldMapping.entity_type == ENTITY_SALES_ORDER,
+        AcFieldMapping.scope == SCOPE_LINE,
+    ).all()
+    assert {r.canonical_field for r in remaining} == {"source_ref", "product_ref"}, (
+        "a save that never touched line scope must leave existing line rows "
+        f"untouched - got {[r.canonical_field for r in remaining]}"
+    )
+    db.close()
