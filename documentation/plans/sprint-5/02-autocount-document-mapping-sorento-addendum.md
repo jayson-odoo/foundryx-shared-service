@@ -199,3 +199,9 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   single candidate -> position); verdict carries `lines: {adopted, created, updated, deleted,
   cancelled}` (dry run too). A push is authoritative for the WHOLE document: unnamed lines are
   swept. ESB rule (AC-02-04): always send the full line set per header, never a delta.
+- 2026-09-05 (Sorento S3 green): `/ingest/shipping_orders`, `/read/shipping_orders`,
+  `/ingest/shipping_orders/deletions` live (slugs `scm.shipping_orders.edit/view/delete`). Rows land
+  in `spo_allocations` (`source_ref`/`source_doc_ref`), header `entity_id` null, leftover lines on
+  a re-push are ALWAYS closed in place (hard delete only via the deletions call), read-back keyed by
+  DocKey; `SPO-` under `purchase_orders` -> `failed` with `errors.po_number`. S4 (`from_so_numbers`)
+  and S5 (hooks, `partial`->`open`) pending; v1 payloads until "S5 green".
