@@ -1218,3 +1218,310 @@ def test_existing_autocount_suite_still_green_reference():
     profile = flat_profile("customer", ["AccNo"])
     assert profile.line_model is None
     assert profile.line_ref_prefix is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Group H - security-review round (findings F1-F3), RED tests written before
+# the coder sees them.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _auth(client, email="demo@example.com", password="demo1234") -> Dict[str, str]:
+    response = client.post("/auth/login", json={"email": email, "password": password})
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+def test_narrowing_source_config_rebaselines_row_hashes(session_factory):
+    """F1 (BLOCKER): narrowing a live document task's population-defining
+    `source_config` (here: `fromDate` moved forward) must RE-BASELINE the
+    task's row-hash rows, never leave them stale to manufacture phantom
+    deletes.
+
+    Today's gap: `EtlService.update_task` clears `last_preview_at` /
+    `last_preview_failed_count` on every save but never touches
+    `RowHashRepository` - a header that falls out of the new scope (still
+    exists in AutoCount, just outside the new `fromDate` floor) stays in the
+    OLD hash population, so the next full-extract reconcile's `known -
+    current_refs` diff reads its absence from THIS run's narrower window as a
+    genuine deletion and stages a delete intent nobody asked for.
+    """
+    import datetime as dt
+
+    header_rows = [
+        ("D001", "SO-001", "open", "F", dt.date(2026, 1, 10), dt.datetime(2026, 1, 10, 9, 0, 0)),
+        ("D002", "SO-002", "open", "F", dt.date(2026, 2, 10), dt.datetime(2026, 2, 10, 9, 0, 0)),
+        ("D003", "SO-003", "open", "F", dt.date(2026, 3, 10), dt.datetime(2026, 3, 10, 9, 0, 0)),
+    ]
+    lines = {
+        "D001": [("D001-1", "ITEM-A", "10", "0", 1)],
+        "D002": [("D002-1", "ITEM-A", "10", "0", 1)],
+        "D003": [("D003-1", "ITEM-A", "10", "0", 1)],
+    }
+    db = session_factory()
+    engine = _source_engine_typed(header_rows, lines)
+    conn = _sql_connection(db, engine, database="AED_F1A", name="src")
+    company = _company(db, conn.id, database="AED_F1A", name="F1 Co A")
+
+    base_payload = {
+        "connectionId": conn.id, "query": HEADER_QUERY, "lineQuery": LINE_QUERY,
+        "keyColumns": ["doc_key"], "watermarkColumn": "last_modified",
+        "comparedColumns": [], "docDateColumn": "doc_date",
+        "incrementalMinutes": 15, "reconcileMode": "dailyAt", "reconcileAt": "02:00",
+    }
+
+    service = EtlService(db)
+    service.update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER,
+        {**base_payload, "fromDate": "2026-01-01"},
+    )
+
+    # Simulate an ACTIVE task with a standing hash population from prior runs
+    # (all three headers previously seen and reconciled).
+    known = {"AED_F1A:D001": "h1", "AED_F1A:D002": "h2", "AED_F1A:D003": "h3"}
+    RowHashRepository(db).upsert_many(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, known, seen_at=None
+    )
+    db.commit()
+    assert RowHashRepository(db).all_hashes(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER
+    ) == known
+
+    # Narrow the population: fromDate moves forward past D001.
+    service.update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER,
+        {**base_payload, "fromDate": "2026-02-01"},
+    )
+
+    remaining = RowHashRepository(db).all_hashes(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER
+    )
+    assert remaining == {}, (
+        "narrowing a population-defining source_config key must clear this "
+        f"entity's row-hash rows so the next reconcile re-baselines instead "
+        f"of manufacturing deletes for out-of-scope headers - got {remaining}"
+    )
+
+    config = (
+        db.query(AcEntityConfig)
+        .filter(
+            AcEntityConfig.tenant_id == DEFAULT_TENANT_ID,
+            AcEntityConfig.company_id == company.id,
+            AcEntityConfig.entity_type == ENTITY_SALES_ORDER,
+        )
+        .one()
+    )
+    source = SqlDbSource(
+        _ctx(db, company, config), entity_type=ENTITY_SALES_ORDER, mode=RUN_MODE_RECONCILE,
+    )
+    result = source.fetch_changes(Watermark())
+    assert result.delete_refs == [], (
+        "a header that merely fell outside the new fromDate scope (D001) must "
+        f"never be staged as a delete intent - got {result.delete_refs}"
+    )
+    refs = {r.raw.get("doc_key") for r in result.records}
+    assert refs == {"D002", "D003"}, f"unexpected in-scope headers: {refs}"
+    assert result.added_count == 2, (
+        "with the hash population re-baselined, both still-present headers "
+        f"must stage as ADDS, not (falsely) as updates - got added={result.added_count}"
+    )
+    db.close()
+
+
+def test_schedule_only_save_keeps_row_hashes(session_factory):
+    """Control for F1: a save that changes ONLY schedule fields (never a
+    population-defining key: connection/query/lineQuery/keyColumns/
+    watermarkColumn/fromDate/filterFormula) must NOT clear the task's
+    row-hash rows - pairs with the mutation test above so a coder cannot
+    satisfy F1 by clearing hashes on every save unconditionally."""
+    import datetime as dt
+
+    header_rows = [
+        ("D001", "SO-001", "open", "F", dt.date(2026, 1, 10), dt.datetime(2026, 1, 10, 9, 0, 0)),
+    ]
+    lines = {"D001": [("D001-1", "ITEM-A", "10", "0", 1)]}
+    db = session_factory()
+    engine = _source_engine_typed(header_rows, lines)
+    conn = _sql_connection(db, engine, database="AED_F1B", name="src")
+    company = _company(db, conn.id, database="AED_F1B", name="F1 Co B")
+
+    base_payload = {
+        "connectionId": conn.id, "query": HEADER_QUERY, "lineQuery": LINE_QUERY,
+        "keyColumns": ["doc_key"], "watermarkColumn": "last_modified",
+        "comparedColumns": [], "docDateColumn": "doc_date", "fromDate": "2026-01-01",
+        "incrementalMinutes": 15, "reconcileMode": "dailyAt", "reconcileAt": "02:00",
+    }
+    service = EtlService(db)
+    service.update_task(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, base_payload)
+
+    known = {"AED_F1B:D001": "h1"}
+    RowHashRepository(db).upsert_many(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, known, seen_at=None
+    )
+    db.commit()
+
+    # Re-save with ONLY the schedule changed - no population-defining key moved.
+    service.update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER,
+        {
+            **base_payload,
+            "incrementalMinutes": 30,
+            "reconcileMode": "interval",
+            "reconcileHours": 4,
+        },
+    )
+
+    remaining = RowHashRepository(db).all_hashes(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER
+    )
+    assert remaining == known, (
+        "a schedule-only save must never clear row-hash rows (only "
+        f"population-defining keys should) - got {remaining}"
+    )
+    db.close()
+
+
+def test_update_task_rejects_unparseable_filter_formula(session_factory):
+    """F2 (should-fix): `validate_source_config` must reject an unparseable
+    `filterFormula` at PUT time with a field error on `filterFormula` (422).
+    `formula.py`'s own `evaluate_row_filter` docstring already promises this
+    ("a bad formula is instead caught at PUT-time by
+    `validate_source_config`'s own parse check") but `validate_source_config`
+    never calls into the formula parser at all today - it only strips
+    whitespace, so a formula that will fail to parse at EVERY run instead
+    saves clean and silently fails OPEN (every header kept) forever.
+    """
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_F2A", name="src")
+    company = _company(db, conn.id, database="AED_F2A", name="F2 Co A")
+    config = _document_config(
+        db, company, conn.id, entity_type=ENTITY_PURCHASE_ORDER,
+        filterFormula='startswith(upper(trim(DocNo)), "SPO-"',  # missing ')'
+    )
+
+    _clean, errors = validate_source_config(
+        ENTITY_PURCHASE_ORDER,
+        config.source_config,
+        {"doc_key": "string", "doc_no": "string", "status": "string",
+         "cancelled": "string", "doc_date": "date", "last_modified": "datetime"},
+        line_columns={"dtl_key": "string", "item_code": "string"},
+    )
+    assert "filterFormula" in errors, (
+        "an unparseable filterFormula must be rejected with a field error at "
+        f"save time - got errors={errors}"
+    )
+
+
+def test_update_task_rejects_filter_formula_unknown_variable(session_factory):
+    """F2: a `filterFormula` referencing a name that is not in the saved
+    header `result_columns` must be a save-time 422 on `filterFormula`, not
+    silently accepted (and then fail OPEN - every header kept - at every run
+    since the name never resolves against any real row)."""
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_F2B", name="src")
+    company = _company(db, conn.id, database="AED_F2B", name="F2 Co B")
+    config = _document_config(
+        db, company, conn.id, entity_type=ENTITY_PURCHASE_ORDER,
+        filterFormula='startswith(upper(trim(NotAColumnAtAll)), "SPO-")',
+    )
+
+    _clean, errors = validate_source_config(
+        ENTITY_PURCHASE_ORDER,
+        config.source_config,
+        {"doc_key": "string", "doc_no": "string", "status": "string",
+         "cancelled": "string", "doc_date": "date", "last_modified": "datetime"},
+        line_columns={"dtl_key": "string", "item_code": "string"},
+    )
+    assert "filterFormula" in errors, (
+        "a filterFormula referencing a variable outside the saved header "
+        f"result_columns must be rejected - got errors={errors}"
+    )
+
+
+def test_update_task_accepts_valid_filter_formula(session_factory):
+    """Control for F2: a `filterFormula` that parses clean against the
+    header's own result_columns (fold-matched exactly like
+    `evaluate_row_filter` already matches at run time - `DocNo` against a
+    `doc_no` result column) must still save with NO `filterFormula` error -
+    the new parse gate must not reject the exact convention the PO/SPO
+    presets already ship (`presets.py` `_PO_FILTER_FORMULA`)."""
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_F2C", name="src")
+    company = _company(db, conn.id, database="AED_F2C", name="F2 Co C")
+    config = _document_config(
+        db, company, conn.id, entity_type=ENTITY_PURCHASE_ORDER,
+        filterFormula='not(startswith(upper(trim(DocNo)), "SPO-"))',
+    )
+
+    _clean, errors = validate_source_config(
+        ENTITY_PURCHASE_ORDER,
+        config.source_config,
+        {"doc_key": "string", "doc_no": "string", "status": "string",
+         "cancelled": "string", "doc_date": "date", "last_modified": "datetime"},
+        line_columns={"dtl_key": "string", "item_code": "string"},
+    )
+    assert "filterFormula" not in errors, (
+        "a legitimate filterFormula referencing a real header column "
+        f"(case/format-folded) must not be rejected - got errors={errors}"
+    )
+
+
+def test_simulate_accepts_default_status_formula_and_line_formula(client, session_factory):
+    """F3 (should-fix): Simulate must accept ANY formula the save gate
+    (`CompanyService.replace_mapping`) accepts.
+
+    Today's gap: `_draft_engine_rows`/`_draft_engine_rows_for_scope` call
+    `parse_formula` with `known_vars=None` for BOTH header and line drafts -
+    unlike `replace_mapping`, which builds `known_vars` from
+    `config.result_columns` / `config.line_result_columns` (+
+    `LINE_AGGREGATE_NAMES` for the header) - so a draft header row carrying
+    the seeded `DEFAULT_STATUS_FORMULA` (`Cancelled`, `lines.open_count`) or a
+    draft line row referencing a line column both 422 "Unknown name" at
+    Simulate even though the identical row would save cleanly via PUT
+    mapping.
+    """
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_F3A", name="src")
+    company = _company(db, conn.id, database="AED_F3A", name="F3 Co")
+    config = _document_config(db, company, conn.id, entity_type=ENTITY_SALES_ORDER)
+    # Match a real preset's PascalCase result columns - what the default
+    # status formula's `Cancelled` reference resolves against, and what
+    # `replace_mapping` would build `known_vars` from for this task.
+    config.result_columns = ["DocKey", "DocNo", "Status", "Cancelled", "DocDate", "LastModified"]
+    config.line_result_columns = ["DtlKey", "ItemAutoKey", "Qty", "TransferedQty"]
+    db.add(config)
+    db.commit()
+    company_id = company.id
+    db.close()
+
+    headers = _auth(client)
+    response = client.post(
+        f"/autocount/companies/{company_id}/entities/{ENTITY_SALES_ORDER}/mapping/simulate",
+        headers=headers,
+        json={
+            "record": {
+                "DocKey": "D001", "DocNo": "SO-001", "Status": "open", "Cancelled": "F",
+            },
+            "rows": [
+                {
+                    "sourcePath": "Cancelled", "transform": "string", "sorentoField": "status",
+                    "formula": DEFAULT_STATUS_FORMULA, "scope": "header",
+                },
+                {
+                    "sourcePath": "TransferedQty", "transform": "decimal",
+                    "sorentoField": "qty_ordered",
+                    "formula": 'if(TransferedQty == "0", 0, 1)', "scope": "line",
+                },
+            ],
+            "lines": [{"ItemAutoKey": "P1", "TransferedQty": "0"}],
+        },
+    )
+    assert response.status_code == 200, (
+        "Simulate must accept a formula the save gate would accept (same "
+        f"known-variable set as replace_mapping) - got {response.status_code}: "
+        f"{response.text}"
+    )
