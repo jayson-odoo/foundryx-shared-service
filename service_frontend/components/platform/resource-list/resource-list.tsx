@@ -39,7 +39,6 @@ import { DataGridTableDndRows } from '@/components/ui/data-grid-table-dnd-rows';
 import { Input } from '@/components/ui/input';
 import { SearchSelect } from '@/components/platform/search-select';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Badge } from '@/components/ui/badge';
 import { BulkActions } from '@/components/platform/resource-actions/bulk-actions';
@@ -570,18 +569,19 @@ export function ResourceList<T extends object>({ config }: ResourceListProps<T>)
             )}
           </div>
         ) : (
+          // The grid brings its own horizontal scroller (AC-DLA-13,
+          // `DataGridTableBase`) - wrapping it in a Radix `ScrollArea` gives it
+          // a `display: table` ancestor that shrink-fits, so the grid never
+          // measures an overflow and the page cannot scroll sideways at all.
           <CardTable>
-            <ScrollArea>
-              {config.rowReorder ? (
-                <DataGridTableDndRows
-                  handleDragEnd={handleRowDragEnd}
-                  dataIds={list.data.map((r) => config.getRowId(r))}
-                />
-              ) : (
-                <DataGridTableDnd handleDragEnd={handleColumnDragEnd} />
-              )}
-              <ScrollBar orientation="horizontal" />
-            </ScrollArea>
+            {config.rowReorder ? (
+              <DataGridTableDndRows
+                handleDragEnd={handleRowDragEnd}
+                dataIds={list.data.map((r) => config.getRowId(r))}
+              />
+            ) : (
+              <DataGridTableDnd handleDragEnd={handleColumnDragEnd} />
+            )}
           </CardTable>
         )}
 

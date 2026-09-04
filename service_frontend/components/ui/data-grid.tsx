@@ -52,6 +52,20 @@ export interface DataGridProps<TData extends object> {
   recordCount: number;
   children?: ReactNode;
   onRowClick?: (row: TData) => void;
+  /**
+   * Each body row becomes a real link target to this href (AC-DLA-14): click,
+   * Enter/Space and middle-click all open it, hover prefetches it once. Stays
+   * undefined for lightbox-edited lists, which keep `onRowClick`. Neither prop
+   * set = no pointer cursor, no row-level interaction.
+   */
+  rowHref?: (row: TData) => string;
+  /**
+   * True while the CURRENT rows are stale (a new page/sort/filter/search is
+   * resolving) but kept on screen rather than replaced by a skeleton
+   * (AC-DLA-15). Dims the body; the pagination strip stays mounted and
+   * interactive throughout.
+   */
+  isPlaceholderData?: boolean;
   isLoading?: boolean;
   loadingMode?: 'skeleton' | 'spinner';
   loadingMessage?: ReactNode | string;
@@ -126,14 +140,17 @@ function DataGrid<TData extends object>({ children, table, ...props }: DataGridP
       rowBorder: true,
       rowRounded: false,
       stripped: false,
-      headerSticky: false,
+      // AC-DLA-13: sticky by default - the grid brings its own bounded
+      // scroller (DataGridTableBase), so a sticky header has something to
+      // stick against. Per-list overridable (`--grid-max-h` is the bound).
+      headerSticky: true,
       headerBackground: true,
       headerBorder: true,
       width: 'fixed',
       columnsVisibility: false,
-      columnsResizable: false,
+      columnsResizable: true,
       columnsPinnable: false,
-      columnsMovable: false,
+      columnsMovable: true,
       columnsDraggable: false,
       rowsDraggable: false,
     },

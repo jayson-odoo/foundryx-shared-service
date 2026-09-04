@@ -1,10 +1,15 @@
+'use client';
+
 import * as React from 'react';
-import { CSSProperties, Fragment, ReactNode } from 'react';
+import { CSSProperties, Fragment, ReactNode, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useDataGrid } from '@/components/ui/data-grid';
-import { Cell, Column, flexRender, Header, HeaderGroup, Row } from '@tanstack/react-table';
+import { Cell, Column, flexRender, Header, HeaderGroup, Row, Table } from '@tanstack/react-table';
 import { cva } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
+import { useHorizontalOverflow } from '@/hooks/use-horizontal-overflow';
+import { usePrefetchOnce } from '@/hooks/use-prefetch-once';
 
 const headerCellSpacingVariants = cva('', {
   variants: {
@@ -42,21 +47,93 @@ function getPinningStyles<TData>(column: Column<TData>): CSSProperties {
   };
 }
 
+/**
+ * True while a row-select checkbox owns the first leaf column - so the "first
+ * DATA column" (AC-DLA-13's mobile pin) is index 1, not 0.
+ */
+function firstDataColumnIndex<TData>(leafColumns: Column<TData>[]): number {
+  return leafColumns[0]?.id === 'select' ? 1 : 0;
+}
+
+/**
+ * Under `sm`, the first non-select column pins to the start edge while the
+ * rest of the row scrolls sideways underneath it (AC-DLA-13) - a purely
+ * CSS/viewport-driven pin, independent of TanStack's `columnsPinnable` state
+ * (which stays a desktop, explicitly-opted-in feature).
+ */
+// `!` (important) on every declaration: a plain `.relative` utility class -
+// header/body cells already carry one, and the row-select stripe compound
+// selector `[&_>:first-child]:relative>:first-child` outranks a bare class by
+// specificity too - would otherwise win the `position` property over this
+// (same-specificity) responsive variant regardless of source order.
+const MOBILE_PIN_CLASS =
+  'max-sm:sticky! max-sm:start-0! max-sm:z-(--z-sticky-content)! max-sm:bg-background! max-sm:data-pinned:static!';
+
+/**
+ * Skeleton rows render ONLY while there is nothing worth showing yet
+ * (AC-DLA-15) - a first load, or `loadingMode="skeleton"` with zero rows.
+ * `isPlaceholderData` (kept rows, dimmed) is a SEPARATE state and must never
+ * also draw skeletons on top of the rows it is holding.
+ */
+function shouldShowSkeletonRows<TData>(
+  props: { loadingMode?: 'skeleton' | 'spinner'; isPlaceholderData?: boolean },
+  isLoading: boolean,
+  table: Table<TData>,
+): boolean {
+  return Boolean(
+    props.loadingMode === 'skeleton' &&
+      isLoading &&
+      !props.isPlaceholderData &&
+      table.getRowModel().rows.length === 0 &&
+      table.getState().pagination?.pageSize,
+  );
+}
+
 function DataGridTableBase({ children }: { children: ReactNode }) {
-  const { props } = useDataGrid();
+  const { props, table } = useDataGrid();
+  const { ref: scrollerRef, isFading } = useHorizontalOverflow<HTMLDivElement>();
+
+  // `getTotalSize()` is the sum of the visible leaf columns' widths - a
+  // DEFINITE length the browser can resolve, unlike `min-w-max` on a
+  // `table-layout: fixed` table (fixed layout ignores content by design, so
+  // Chrome resolves `max-content` to its "infinite" sentinel and scales every
+  // column up to fill it instead of the grid actually overflowing).
+  const totalSize = table.getTotalSize();
 
   return (
-    <table
-      data-slot="data-grid-table"
-      className={cn(
-        'w-full align-middle caption-bottom text-left rtl:text-right text-foreground font-normal text-sm',
-        !props.tableLayout?.columnsDraggable && 'border-separate border-spacing-0',
-        props.tableLayout?.width === 'fixed' ? 'table-fixed' : 'table-auto',
-        props.tableClassNames?.base,
+    // `min-w-0`: `CardTable` (the usual ancestor) is `display: grid`, and a
+    // grid/flex item defaults to `min-width: auto` - without this the item
+    // refuses to shrink below the TABLE's full intrinsic width, so the
+    // scroller never actually clips and the whole PAGE scrolls sideways
+    // instead of just the grid (caught live on Users at 375, not by any
+    // unit test - jsdom has no real layout to reproduce it).
+    <div className="relative min-w-0">
+      <div
+        ref={scrollerRef}
+        data-slot="data-grid-scroller"
+        className="overflow-x-auto overscroll-x-contain"
+      >
+        <table
+          data-slot="data-grid-table"
+          style={totalSize > 0 ? { minWidth: `${totalSize}px` } : undefined}
+          className={cn(
+            'w-full tabular-nums align-middle caption-bottom text-left rtl:text-right text-foreground font-normal text-sm',
+            !props.tableLayout?.columnsDraggable && 'border-separate border-spacing-0',
+            props.tableLayout?.width === 'fixed' ? 'table-fixed' : 'table-auto',
+            props.tableClassNames?.base,
+          )}
+        >
+          {children}
+        </table>
+      </div>
+      {isFading && (
+        <div
+          aria-hidden="true"
+          data-slot="data-grid-fade"
+          className="pointer-events-none absolute inset-y-0 end-0 w-8 bg-gradient-to-l from-background to-transparent"
+        />
       )}
-    >
-      {children}
-    </table>
+    </div>
   );
 }
 
@@ -121,6 +198,8 @@ function DataGridTableHeadRowCell<TData>({
   const headerCellSpacing = headerCellSpacingVariants({
     size: props.tableLayout?.dense ? 'dense' : 'default',
   });
+  const isMobilePinned =
+    !isPinned && column.getIndex() === firstDataColumnIndex(header.headerGroup.headers.map((h) => h.column));
 
   return (
     <th
@@ -140,6 +219,7 @@ function DataGridTableHeadRowCell<TData>({
         headerCellSpacing,
         props.tableLayout?.cellBorder && 'border-e',
         props.tableLayout?.columnsResizable && column.getCanResize() && 'truncate',
+        isMobilePinned && MOBILE_PIN_CLASS,
         props.tableLayout?.columnsPinnable &&
           column.getCanPin() &&
           '[&:not([data-pinned]):has(+[data-pinned])_div.cursor-col-resize:last-child]:opacity-0 [&[data-last-col=left]_div.cursor-col-resize:last-child]:opacity-0 [&[data-pinned=left][data-last-col=left]]:border-e! [&[data-pinned=right]:last-child_div.cursor-col-resize:last-child]:opacity-0 [&[data-pinned=right][data-last-col=right]]:border-s! [&[data-pinned][data-last-col]]:border-border data-pinned:bg-muted/90 data-pinned:backdrop-blur-xs',
@@ -156,13 +236,20 @@ function DataGridTableHeadRowCell<TData>({
 
 function DataGridTableHeadRowCellResize<TData>({ header }: { header: Header<TData, unknown> }) {
   const { column } = header;
+  const resizeHandler = header.getResizeHandler();
 
   return (
     <div
       {...{
         onDoubleClick: () => column.resetSize(),
-        onMouseDown: header.getResizeHandler(),
-        onTouchStart: header.getResizeHandler(),
+        // Pointer capture (AC-DLA-13): a fast drag that leaves the 16px handle
+        // - or leaves the window - keeps resizing instead of silently
+        // stopping.
+        onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => {
+          (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+        },
+        onMouseDown: resizeHandler,
+        onTouchStart: resizeHandler,
         className:
           'absolute top-0 h-full w-4 cursor-col-resize user-select-none touch-none -end-2 z-10 flex justify-center before:absolute before:w-px before:inset-y-0 before:bg-border before:-translate-x-px',
       }}
@@ -182,6 +269,9 @@ function DataGridTableBody({ children }: { children: ReactNode }) {
       className={cn(
         '[&_tr:last-child]:border-0',
         props.tableLayout?.rowRounded && '[&_td:first-child]:rounded-s-lg [&_td:last-child]:rounded-e-lg',
+        // AC-DLA-15: the rows on screen are the PREVIOUS page's while the next
+        // one loads - dimmed rather than replaced by a skeleton.
+        props.isPlaceholderData && 'opacity-60 transition-opacity duration-(--duration-fast) ease-(--ease-standard)',
         props.tableClassNames?.body,
       )}
     >
@@ -194,21 +284,7 @@ function DataGridTableBodyRowSkeleton({ children }: { children: ReactNode }) {
   const { table, props } = useDataGrid();
 
   return (
-    <tr
-      className={cn(
-        'hover:bg-muted/40 data-[state=selected]:bg-muted/50',
-        props.onRowClick && 'cursor-pointer',
-        !props.tableLayout?.stripped &&
-          props.tableLayout?.rowBorder &&
-          'border-b border-border [&:not(:last-child)>td]:border-b',
-        props.tableLayout?.cellBorder && '[&_>:last-child]:border-e-0',
-        props.tableLayout?.stripped && 'odd:bg-muted/90 hover:bg-transparent odd:hover:bg-muted',
-        table.options.enableRowSelection && '[&_>:first-child]:relative',
-        props.tableClassNames?.bodyRow,
-      )}
-    >
-      {children}
-    </tr>
+    <tr className={dataGridBodyRowClass(props, table.options.enableRowSelection ?? false, false)}>{children}</tr>
   );
 }
 
@@ -239,6 +315,51 @@ function DataGridTableBodyRowSkeletonCell<TData>({ children, column }: { childre
   );
 }
 
+/**
+ * Anything inside a row that owns its own click - a checkbox, a menu trigger,
+ * an inline action button. A row that opens a record must not also swallow
+ * one of these, and the alternative is every one of them remembering
+ * `stopPropagation` (AC-DLA-14).
+ */
+const ROW_INTERACTIVE_SELECTOR =
+  'a,button,input,select,textarea,label,[role="checkbox"],[role="menuitem"],[role="combobox"]';
+
+function fromOwnRowControl(target: EventTarget | null): boolean {
+  return Boolean((target as Element | null)?.closest?.(ROW_INTERACTIVE_SELECTOR));
+}
+
+/**
+ * The shared row classes for BOTH branches (`rowHref` and `onRowClick`), so
+ * the skeleton row's cursor and the live row's cursor cannot drift apart.
+ */
+function dataGridBodyRowClass<TData>(
+  props: {
+    rowHref?: (row: TData) => string;
+    onRowClick?: (row: TData) => void;
+    tableLayout?: { stripped?: boolean; rowBorder?: boolean; cellBorder?: boolean };
+    tableClassNames?: { bodyRow?: string };
+  },
+  // TanStack's `enableRowSelection` table option is `boolean | ((row) =>
+  // boolean)`; only truthiness matters here (a per-row select COLUMN exists
+  // or it does not), never which row it is evaluated for.
+  enableRowSelection: unknown,
+  isLinkRow: boolean,
+): string {
+  return cn(
+    'hover:bg-muted/40 data-[state=selected]:bg-muted/50',
+    (props.rowHref || props.onRowClick) && 'cursor-pointer',
+    isLinkRow &&
+      'active:bg-muted/60 transition-opacity duration-(--duration-fast) ease-(--ease-standard) motion-reduce:transition-none',
+    !props.tableLayout?.stripped &&
+      props.tableLayout?.rowBorder &&
+      'border-b border-border [&:not(:last-child)>td]:border-b',
+    props.tableLayout?.cellBorder && '[&_>:last-child]:border-e-0',
+    props.tableLayout?.stripped && 'odd:bg-muted/90 hover:bg-transparent odd:hover:bg-muted',
+    Boolean(enableRowSelection) && '[&_>:first-child]:relative',
+    props.tableClassNames?.bodyRow,
+  );
+}
+
 function DataGridTableBodyRow<TData>({
   children,
   row,
@@ -251,6 +372,15 @@ function DataGridTableBodyRow<TData>({
   dndStyle?: CSSProperties;
 }) {
   const { props, table } = useDataGrid();
+  const href = props.rowHref ? props.rowHref(row.original) : undefined;
+
+  if (href) {
+    return (
+      <LinkableDataGridTableBodyRow href={href} dndRef={dndRef} dndStyle={dndStyle} row={row}>
+        {children}
+      </LinkableDataGridTableBodyRow>
+    );
+  }
 
   return (
     <tr
@@ -258,17 +388,78 @@ function DataGridTableBodyRow<TData>({
       style={{ ...(dndStyle ? dndStyle : null) }}
       data-state={table.options.enableRowSelection && row.getIsSelected() ? 'selected' : undefined}
       onClick={() => props.onRowClick && props.onRowClick(row.original)}
-      className={cn(
-        'hover:bg-muted/40 data-[state=selected]:bg-muted/50',
-        props.onRowClick && 'cursor-pointer',
-        !props.tableLayout?.stripped &&
-          props.tableLayout?.rowBorder &&
-          'border-b border-border [&:not(:last-child)>td]:border-b',
-        props.tableLayout?.cellBorder && '[&_>:last-child]:border-e-0',
-        props.tableLayout?.stripped && 'odd:bg-muted/90 hover:bg-transparent odd:hover:bg-muted',
-        table.options.enableRowSelection && '[&_>:first-child]:relative',
-        props.tableClassNames?.bodyRow,
-      )}
+      className={dataGridBodyRowClass(props, table.options.enableRowSelection ?? false, false)}
+    >
+      {children}
+    </tr>
+  );
+}
+
+/**
+ * The row when the list gave it a record to open (AC-DLA-14): a real link
+ * target - `role="link"`, keyboard-reachable, middle-click opens a new tab,
+ * hover prefetches once. Split out so `useRouter`/`usePrefetchOnce` are only
+ * called by a grid that actually navigates.
+ */
+function LinkableDataGridTableBodyRow<TData>({
+  href,
+  row,
+  dndRef,
+  dndStyle,
+  children,
+}: {
+  href: string;
+  row: Row<TData>;
+  dndRef?: React.Ref<HTMLTableRowElement>;
+  dndStyle?: CSSProperties;
+  children: ReactNode;
+}) {
+  const { props, table } = useDataGrid();
+  const router = useRouter();
+  const prefetchOnce = usePrefetchOnce();
+
+  const open = useCallback(
+    (newTab: boolean) => {
+      if (newTab) {
+        window.open(href, '_blank', 'noopener,noreferrer');
+      } else {
+        router.push(href);
+      }
+    },
+    [href, router],
+  );
+
+  return (
+    <tr
+      ref={dndRef}
+      style={{ ...(dndStyle ? dndStyle : null) }}
+      role="link"
+      tabIndex={0}
+      data-state={table.options.enableRowSelection && row.getIsSelected() ? 'selected' : undefined}
+      onClick={(event) => {
+        // Primary button only - a synthetic dispatch or assistive tech can
+        // deliver a `click` carrying button 1 (middle), and React's onClick
+        // does not filter by button; auxclick owns the new tab.
+        if (event.button !== 0) return;
+        if (fromOwnRowControl(event.target)) return;
+        open(event.metaKey || event.ctrlKey || event.shiftKey);
+      }}
+      onAuxClick={(event) => {
+        if (event.button !== 1) return;
+        if (fromOwnRowControl(event.target)) return;
+        event.preventDefault();
+        open(true);
+      }}
+      onKeyDown={(event) => {
+        // Only the ROW's own keystrokes - Space in a cell's input types a
+        // space, Space on the selection checkbox ticks the row.
+        if (event.target !== event.currentTarget) return;
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        open(event.metaKey || event.ctrlKey || event.shiftKey);
+      }}
+      onPointerEnter={() => prefetchOnce(href)}
+      className={dataGridBodyRowClass(props, table.options.enableRowSelection ?? false, true)}
     >
       {children}
     </tr>
@@ -310,6 +501,9 @@ function DataGridTableBodyRowCell<TData>({
   const bodyCellSpacing = bodyCellSpacingVariants({
     size: props.tableLayout?.dense ? 'dense' : 'default',
   });
+  const isMobilePinned =
+    !isPinned &&
+    column.getIndex() === firstDataColumnIndex(row.getVisibleCells().map((c) => c.column));
 
   return (
     <td
@@ -328,6 +522,7 @@ function DataGridTableBodyRowCell<TData>({
         props.tableLayout?.cellBorder && 'border-e',
         props.tableLayout?.columnsResizable && column.getCanResize() && 'truncate',
         cell.column.columnDef.meta?.cellClassName,
+        isMobilePinned && MOBILE_PIN_CLASS,
         props.tableLayout?.columnsPinnable &&
           column.getCanPin() &&
           '[&[data-pinned=left][data-last-col=left]]:border-e! [&[data-pinned=right][data-last-col=right]]:border-s! [&[data-pinned][data-last-col]]:border-border data-pinned:bg-background/90 data-pinned:backdrop-blur-xs"',
@@ -414,6 +609,7 @@ function DataGridTableRowSelectAll({ size }: { size?: 'sm' | 'md' | 'lg' }) {
 function DataGridTable<TData>() {
   const { table, isLoading, props } = useDataGrid();
   const pagination = table.getState().pagination;
+  const showSkeleton = shouldShowSkeletonRows(props, isLoading, table);
 
   return (
     <DataGridTableBase>
@@ -441,7 +637,7 @@ function DataGridTable<TData>() {
       {(props.tableLayout?.stripped || !props.tableLayout?.rowBorder) && <DataGridTableRowSpacer />}
 
       <DataGridTableBody>
-        {props.loadingMode === 'skeleton' && isLoading && pagination?.pageSize ? (
+        {showSkeleton && pagination?.pageSize ? (
           Array.from({ length: pagination.pageSize }).map((_, rowIndex) => (
             <DataGridTableBodyRowSkeleton key={rowIndex}>
               {table.getVisibleFlatColumns().map((column, colIndex) => {
@@ -496,4 +692,6 @@ export {
   DataGridTableRowSelect,
   DataGridTableRowSelectAll,
   DataGridTableRowSpacer,
+  firstDataColumnIndex,
+  shouldShowSkeletonRows,
 };
