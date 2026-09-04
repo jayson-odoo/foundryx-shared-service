@@ -340,6 +340,12 @@ class SqlDbSource:
         self.from_date: Optional[date] = None
         self.filter_formula: Optional[str] = None
         self._last_skipped_by_filter = 0
+        # The headers `filterFormula` dropped this run (B4, sprint-5/02
+        # review round) - `fetch_changes` needs these to keep a filtered-out
+        # header from ever reading as a "vanished" delete, and to drop its
+        # stale row hash so a later unfiltered re-appearance stages as a
+        # fresh ADD, not a phantom update.
+        self._filtered_out_headers: List[Dict[str, Any]] = []
         if self.is_document:
             #     !!  A DOCUMENT TASK REQUIRES A HEADER WATERMARK COLUMN.  !!
             # Save-time validation already refuses to persist a document task
@@ -638,6 +644,22 @@ class SqlDbSource:
         # a later extract IS genuine evidence of deletion, not a window
         # artifact. `sync._stage_deletes` mirrors this reversal (no more
         # document special-case there either).
+        #     !!  A FILTERED-OUT HEADER IS NEVER A DELETE CANDIDATE (B4,
+        #         AC-02-11).  !!
+        # `_read` already dropped these rows before they ever reached
+        # `current_refs` above - indistinguishable, from here, from a header
+        # genuinely gone at source. Compute their refs the SAME way a kept
+        # row's ref is computed, and treat them as neither current nor
+        # missing: excluded from the delete diff below, and their stale hash
+        # (if the filter was only just added/tightened) is dropped so a
+        # later unfiltered re-appearance stages as a fresh ADD, not a
+        # phantom update.
+        filtered_refs: set[str] = {
+            ref
+            for ref in (self._source_ref(header) for header in self._filtered_out_headers)
+            if ref is not None
+        }
+
         delete_refs: List[str] = []
         if full_extract and known:
             #     !!  A ZERO-ROW FULL EXTRACT IS NEVER A GENUINE TOTAL WIPE.  !!
@@ -657,7 +679,9 @@ class SqlDbSource:
                     f"full deletion. Check the query and the connection, then "
                     f"re-run reconcile."
                 )
-            delete_refs = sorted(ref for ref in known if ref not in current_refs)
+            delete_refs = sorted(
+                ref for ref in known if ref not in current_refs and ref not in filtered_refs
+            )
             threshold = max(DELETE_GUARD_RATIO * len(known), DELETE_GUARD_MIN_ABSOLUTE)
             if len(delete_refs) > threshold:
                 raise SqlDeleteGuardExceeded(
@@ -667,14 +691,23 @@ class SqlDbSource:
                     f"query and the connection, then re-run reconcile."
                 )
 
-        if self.persist_hashes and hashes:
-            RowHashRepository(self._ctx.db).upsert_many(
-                self._ctx.tenant_id,
-                self._ctx.company.id,
-                self.entity_type,
-                hashes,
-                seen_at=window_to,
-            )
+        stale_filtered_refs = [ref for ref in filtered_refs if ref in known]
+        if self.persist_hashes and (hashes or stale_filtered_refs):
+            if hashes:
+                RowHashRepository(self._ctx.db).upsert_many(
+                    self._ctx.tenant_id,
+                    self._ctx.company.id,
+                    self.entity_type,
+                    hashes,
+                    seen_at=window_to,
+                )
+            if stale_filtered_refs:
+                RowHashRepository(self._ctx.db).delete_many(
+                    self._ctx.tenant_id,
+                    self._ctx.company.id,
+                    self.entity_type,
+                    stale_filtered_refs,
+                )
             # The sync handler committed immediately before calling us and does
             # not write again until after ``record_client_calls`` (which commits
             # of its own accord), so this boundary is ours to own.
@@ -750,6 +783,7 @@ class SqlDbSource:
             # detail mechanism (built for the API path's vendor envelope)
             # reads it with zero engine changes - see ``mapping.flat_profile``.
             self._last_skipped_by_filter = 0
+            self._filtered_out_headers = []
             if self.is_document:
                 #     !!  THE ROW-SET FILTER RUNS BEFORE LINE FETCH (AC-02-11).  !!
                 # A header the filter drops (e.g. the SPO-numbered rows a PO
@@ -764,6 +798,7 @@ class SqlDbSource:
                                 kept.append(header)
                             else:
                                 self._last_skipped_by_filter += 1
+                                self._filtered_out_headers.append(header)
                     except FormulaError as exc:
                         #     !!  A RUNTIME FILTER FAULT IS A NAMED TASK
                         #         ERROR, NEVER A SILENT KEEP-EVERYTHING.  !!
