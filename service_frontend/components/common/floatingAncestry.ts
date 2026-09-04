@@ -26,11 +26,36 @@ export function focusIsInsideFloating(node: Element | null): boolean {
 }
 
 /**
- * Is this element physically rendered inside an open Dialog/AlertDialog's own content -
- * i.e. would a popover anchored here need to win Dialog's `react-remove-scroll` lock to
- * scroll on a real wheel gesture?
+ * Radix's `onPointerDownOutside`/`onInteractOutside`/`onFocusOutside` all wrap
+ * the real DOM event in a `CustomEvent` whose `detail.originalEvent` carries the
+ * actual pointer/focus event - `event.target` on the CustomEvent itself is the
+ * DialogContent/AlertDialogContent/SheetContent node, not the thing that was
+ * actually clicked. `dialog.tsx`/`alert-dialog.tsx`/`sheet.tsx` each mount this
+ * with their own `mountedAtRef` (T3 fix round 1 finding 8; factored out here in
+ * T3 fix round 2 finding 5 so the guard logic is unit-testable in one place
+ * instead of duplicated verbatim in three files).
+ *
+ * Two independent reasons to swallow the interaction (`event.preventDefault()`,
+ * which stops Radix reading it as "close me"):
+ * 1. The target is inside ANOTHER floating surface (a menu/select/popover that
+ *    just opened this one, or a dialog stacked above this one) -
+ *    `focusIsInsideFloating`.
+ * 2. The event fires within a short grace window after this content mounted -
+ *    the trailing pointer/focus event from whatever surface opened this one,
+ *    which can still be unwinding its own unmount on the same tick.
  */
-export function isInsideOpenDialog(node: Element | null): boolean {
-  if (!node) return false;
-  return Boolean(node.closest('[data-slot="dialog-content"], [data-slot="alert-dialog-content"]'));
+export function createOutsideInteractionGuard(mountedAtRef: { current: number }) {
+  return (event: Event) => {
+    const detail = (event as CustomEvent<{ originalEvent?: Event }>).detail;
+    const original = detail?.originalEvent;
+    const target = (original?.target ?? event.target) as Element | null;
+    if (focusIsInsideFloating(target)) {
+      event.preventDefault();
+      return;
+    }
+    if (mountedAtRef.current && performance.now() - mountedAtRef.current < 300) {
+      event.preventDefault();
+      return;
+    }
+  };
 }

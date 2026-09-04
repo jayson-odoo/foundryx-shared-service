@@ -7,7 +7,7 @@ import { X } from 'lucide-react';
 import { Dialog as SheetPrimitive } from 'radix-ui';
 import { AnimatePresence, motion } from 'motion/react';
 import { OVERLAY_CLASS_STATIC } from '@/components/ui/primitive-classes';
-import { focusIsInsideFloating } from '@/components/common/floatingAncestry';
+import { createOutsideInteractionGuard } from '@/components/common/floatingAncestry';
 import { surfaceExitTransition, surfaceTransition, useOpenState, useReducedMotion } from '@/lib/motion';
 
 // Mirrors the Root's open state so SheetContent can gate its own
@@ -161,19 +161,9 @@ function SheetContent({
     event.preventDefault();
     opener.focus();
   };
-  const guardOutsideInteraction = (event: Event) => {
-    const detail = (event as CustomEvent<{ originalEvent?: Event }>).detail;
-    const original = detail?.originalEvent;
-    const target = (original?.target ?? event.target) as Element | null;
-    if (focusIsInsideFloating(target)) {
-      event.preventDefault();
-      return;
-    }
-    if (mountedAtRef.current && performance.now() - mountedAtRef.current < 300) {
-      event.preventDefault();
-      return;
-    }
-  };
+  // T3 fix round 2 finding 5: factored into `createOutsideInteractionGuard`
+  // (`floatingAncestry.ts`) so the guard logic is unit-testable in one place.
+  const guardOutsideInteraction = createOutsideInteractionGuard(mountedAtRef);
 
   return (
     <AnimatePresence>

@@ -7,7 +7,7 @@ import { VariantProps } from 'class-variance-authority';
 import { AlertDialog as AlertDialogPrimitive } from 'radix-ui';
 import { AnimatePresence, motion } from 'motion/react';
 import { OVERLAY_CLASS, OVERLAY_CLASS_STATIC } from '@/components/ui/primitive-classes';
-import { focusIsInsideFloating } from '@/components/common/floatingAncestry';
+import { createOutsideInteractionGuard } from '@/components/common/floatingAncestry';
 import {
   surfaceExitTransition,
   surfaceTransition,
@@ -107,20 +107,10 @@ function AlertDialogContent({
   // dismissable by an outside click at all, by design (it demands an explicit
   // choice). Only `onFocusOutside` survives that Omit, so this guard is wired
   // to that alone below - still useful for the identical stacked-surface /
-  // trailing-event cases `dialog.tsx`'s guard documents.
-  const guardOutsideInteraction = (event: Event) => {
-    const detail = (event as CustomEvent<{ originalEvent?: Event }>).detail;
-    const original = detail?.originalEvent;
-    const target = (original?.target ?? event.target) as Element | null;
-    if (focusIsInsideFloating(target)) {
-      event.preventDefault();
-      return;
-    }
-    if (mountedAtRef.current && performance.now() - mountedAtRef.current < 300) {
-      event.preventDefault();
-      return;
-    }
-  };
+  // trailing-event cases `dialog.tsx`'s guard documents. T3 fix round 2
+  // finding 5: factored into `createOutsideInteractionGuard`
+  // (`floatingAncestry.ts`) so the guard logic is unit-testable in one place.
+  const guardOutsideInteraction = createOutsideInteractionGuard(mountedAtRef);
 
   return (
     <AnimatePresence>

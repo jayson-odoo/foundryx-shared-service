@@ -102,7 +102,7 @@ export function Header() {
                 shouldScaleBackground={false}
               >
                 <DrawerTrigger asChild>
-                  <Button variant="ghost" mode="icon">
+                  <Button variant="ghost" mode="icon" aria-label="Open apps menu">
                     <SquareChevronRight className="text-muted-foreground/70" />
                   </Button>
                 </DrawerTrigger>

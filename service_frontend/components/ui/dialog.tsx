@@ -7,7 +7,7 @@ import { X } from 'lucide-react';
 import { Dialog as DialogPrimitive } from 'radix-ui';
 import { AnimatePresence, motion } from 'motion/react';
 import { OVERLAY_CLASS, OVERLAY_CLASS_STATIC } from '@/components/ui/primitive-classes';
-import { focusIsInsideFloating } from '@/components/common/floatingAncestry';
+import { createOutsideInteractionGuard } from '@/components/common/floatingAncestry';
 import {
   REDUCED_MOTION_TRANSITION,
   surfaceExitTransition,
@@ -42,6 +42,16 @@ const dialogContentVariants = cva(
         top: 'top-[15%]',
       },
     },
+    // T3 fix round 2 finding 1: `variant: 'default'`'s own `max-h-[90dvh]`
+    // was never position-aware - combined with `position="top"`'s
+    // `top-[15%]` offset, the cap alone could push the dialog's bottom
+    // edge below the fold (measured at 1280x577: top 86.5 + height 519 =
+    // 605.8 > 577). `85dvh - 2rem` keeps offset + cap <= 100dvh with 2rem
+    // of breathing room at the bottom, at any viewport height - only
+    // applies to `variant: 'default'` (the only variant `position="top"`
+    // is ever paired with; `fullscreen` already fills the viewport via
+    // `inset-5`).
+    compoundVariants: [{ variant: 'default', position: 'top', class: 'max-h-[calc(85dvh-2rem)]' }],
     defaultVariants: {
       variant: 'default',
       position: 'center',
@@ -236,36 +246,12 @@ function DialogContent({
     event.preventDefault();
     opener.focus();
   };
-  // Radix wraps these in a CustomEvent whose `target` is the DialogContent
-  // itself. The actual click/pointer/focus target is on
-  // `event.detail.originalEvent.target`.
-  const guardOutsideInteraction = (event: Event) => {
-    const detail = (event as CustomEvent<{ originalEvent?: Event }>).detail;
-    const original = detail?.originalEvent;
-    const target = (original?.target ?? event.target) as Element | null;
-    // Ignore the trailing pointer/focus event from the Radix surface that
-    // OPENED this dialog (dropdown menu / popover / select / context menu).
-    // Those surfaces are unmounting during the same tick the dialog mounts;
-    // their event would otherwise be misread as an outside click.
-    //
-    // Also ignore interactions that land inside ANOTHER dialog stacked above
-    // this one. Nested dialogs are portaled as React siblings (not DOM/React
-    // descendants), so Radix reads any click in the child dialog as
-    // "outside" the parent and would dismiss the parent - closing a stacked
-    // dialog must be explicit, never a side effect of the one beneath it.
-    if (focusIsInsideFloating(target)) {
-      event.preventDefault();
-      return;
-    }
-    // Same trailing-event problem when the closing surface was already
-    // unmounted by the time the event fires - target lands on body/html.
-    // Suppress any outside interaction within a short grace window after
-    // mount; this is well under the click-to-real-outside-click latency.
-    if (mountedAtRef.current && performance.now() - mountedAtRef.current < 300) {
-      event.preventDefault();
-      return;
-    }
-  };
+  // T3 fix round 2 finding 5: factored into `createOutsideInteractionGuard`
+  // (`floatingAncestry.ts`) so the guard logic is unit-testable in one
+  // place - see that file for the full rationale (Radix wraps these in a
+  // CustomEvent whose `target` is the DialogContent itself; the actual
+  // click/pointer/focus target is on `event.detail.originalEvent.target`).
+  const guardOutsideInteraction = createOutsideInteractionGuard(mountedAtRef);
 
   return (
     <AnimatePresence>

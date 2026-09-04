@@ -362,3 +362,87 @@ errors.
   outside click by design, confirmed against `@radix-ui/react-alert-dialog`'s own `.d.mts`; the
   guard's `onFocusOutside` + `onCloseAutoFocus` wiring stayed, the two unsupported props were
   dropped from `alert-dialog.tsx`).
+
+## T3 - Fix round 2 (2026-09-05)
+
+Same worktree/branch, `agent-browser --session t3fix2` on every call (coordinator's session-isolation
+request). Server restarted from THIS worktree (`rm -rf .next && npm run build` then
+`npx next start -p 3003`; killed the prior fix-round-1 process first, ownership re-confirmed via
+`lsof -p $(lsof -ti :3003) | grep cwd` both before the kill and after the restart). Same shared
+backend :8001, same CORS-3003 gap as both prior rounds (documented above) - every check below
+targets surfaces that don't need live backend data.
+
+1. **Finding 1 - `position="top"` + `max-h-[90dvh]` overflow.** Header search icon at **1280x577**:
+   `getBoundingClientRect()` on `[data-slot="dialog-content"]` = `top: 86.5, height: 458.4,
+   bottom: 545.0` - inside the 577px viewport with ~32px of breathing room at the bottom (was
+   `top 86.5 + height 519 = 605.8 > 577` pre-fix). `fixround2-01-search-dialog-1280x577.png`. Same
+   check at **1280x900**: `top: 135, height: 609, bottom: 744` - well inside 900px (the dialog's
+   natural content height never approaches the `85dvh - 2rem` cap at this taller viewport, so this
+   is a regression check, not a cap-triggering one). `fixround2-02-search-dialog-1280x900.png`.
+2. **Finding 2 - collapsed-rail presentation still qualified on a hover negation.** `agent-browser`
+   still has no way to toggle `pointer: coarse`/`hover: none` in this CLI version (re-confirmed:
+   none of the built-in device presets - iPad Pro, Pixel 9 - flip `matchMedia('(pointer: coarse)')`
+   at all). Verified via the actual SERVED build CSS instead (`curl` the `_next/static/css/*.css`
+   bundle containing `sidebar-collapse`): the base rules
+   (`.demo1.sidebar-collapse .sidebar .default-logo{display:none}` etc.) now carry **zero** hover
+   qualifier of any kind, and the ENTIRE restore-on-hover half (width-expand + all 6 presentation
+   restores) sits inside the single `@media (hover:hover) and (pointer:fine){...}` block, scoped to
+   `.sidebar:hover` - byte-for-byte matching the source. Live regression check with the real (fine)
+   pointer: collapsed-not-hovered renders the 80px icon-only rail correctly
+   (`fixround2-03-sidebar-collapsed-unconditional-1280.png`); hovering the rail still expands it to
+   280px with full labels/logo restored (`fixround2-07-sidebar-hover-expand-1280.png`, `.sidebar`
+   `getBoundingClientRect().width === 280`).
+3. **Finding 3 - vaul normal-motion pin cascade-shadowing the reduced-motion pin.** Verified via the
+   served build CSS: `[data-vaul-drawer],[data-vaul-overlay]{animation-duration:var(--duration-slow)
+   !important}` is now nested INSIDE `@media (prefers-reduced-motion:no-preference){...}` (previously
+   unconditional, in the same `@layer base` as the reduced-motion block's own `!important` pin, and
+   later in source - so it silently won the cascade under reduced motion too, masked only by
+   `--duration-slow` itself collapsing to `1ms` under reduced motion). Live re-check at 375, both
+   states unchanged in OUTCOME (as expected - the fix is structural, not a value change):
+   reduced motion `animationDuration: "0.001s"` (`fixround2-04-mobile-drawer-reduced-motion-375.png`),
+   normal motion `animationDuration: "0.3s"` (`fixround2-05-mobile-drawer-normal-375.png`) - **these
+   two screenshots are byte-identical to each other AND to the fix-round-1 pair**, for the same
+   reason disclosed there: both are settled-state screenshots of a fully-open drawer, which cannot
+   visually differ by duration; the `animationDuration` values are the actual proof.
+4. **Finding 4 - dead `isInsideOpenDialog` export.** Deleted (zero importers, re-confirmed via grep
+   before deleting). No live check applicable - code-only.
+5. **Finding 5 - `guardOutsideInteraction`/`focusIsInsideFloating` test coverage.** Factored the
+   duplicated closure in `dialog.tsx`/`alert-dialog.tsx`/`sheet.tsx` into
+   `createOutsideInteractionGuard` (`floatingAncestry.ts`), then unit-tested directly (no browser
+   needed - this is DOM/event logic, not rendering): a `CustomEvent` whose
+   `detail.originalEvent.target` is inside `[data-slot="dropdown-menu-content"]` is prevented; one
+   outside any floating surface, well past the mount-grace window, is NOT prevented; one inside the
+   window (both a static "just mounted" case and a `performance.now()`-spied "301ms later" case) IS
+   prevented; plus two edge cases (`detail.originalEvent` absent, falls back to `event.target`;
+   `mountedAtRef.current === 0` - content already unmounted - never triggers the grace window).
+   `npx vitest run components/common/floatingAncestry.test.ts` - 10/10 green.
+6. **Finding 6 - missing `aria-label` on the mega-menu drawer trigger.** Added
+   `aria-label="Open apps menu"` (its sibling, the hamburger trigger, already carries
+   `aria-label="Open navigation"`). Live-verified at 375: the button's accessible name now reads
+   "Open apps menu" in the `agent-browser snapshot` output, and clicking it still opens the
+   mega-menu drawer with the correct `DrawerTitle` ("Apps") - `fixround2-06-mega-menu-aria-label-
+   375.png`. **Pre-existing, unrelated layout note** (not caused by this diff, not in scope for this
+   round): at 375px the `ActivityTriggers` icon group (Uploads/Imports/Jobs/Downloads) and the
+   hamburger+apps-menu icon group visually OVERLAP by ~20px (`getBoundingClientRect()` confirmed
+   `[132.6,168.6]` vs `[147.5,181.5]` on the x-axis at the same y) - a coordinate-based click near
+   that boundary can land on the wrong button (hit the "Uploads" activity Sheet instead of the Apps
+   drawer trigger twice during this verification, each time leaving a stuck
+   `document.body{pointer-events:none}` lock until its own Close button was clicked - the SAME
+   modal-lock mechanism this whole slice is about, just triggered by a misdirected click rather
+   than a slow exit spring). Worth a follow-up ticket for the header's icon-group layout at narrow
+   widths; out of scope for T3.
+
+### Console
+
+`agent-browser console`/`errors` checked after every navigation and after resolving the one stuck
+Sheet noted above. Zero NEW console errors introduced by this round's changes; the same pre-existing
+`Missing Description` a11y warnings (T7 territory, unrelated to this slice) recurred identically.
+
+### Gate (this round)
+
+- `npx vitest run` - **192 files / 1642 tests, all green** (10 new in `floatingAncestry.test.ts`,
+  including a fix mid-round: the "grace window elapsed" case needed `vi.spyOn(performance, 'now')`
+  rather than `vi.useFakeTimers()` + `vi.advanceTimersByTime` - this vitest version's fake timers do
+  not fake `performance.now()` by default).
+- `npx eslint` on every touched file - 0 errors (same 3 pre-existing warnings elsewhere).
+- `rm -rf .next && npm run build` - green, no compile errors this round.

@@ -212,6 +212,41 @@ describe('AC-DLA-03 named z-scale', () => {
   });
 
   /**
+   * T3 fix round 2 finding 2: the collapsed-rail presentation rules
+   * (logo swap, label/badge/sub-indicator hiding) moved outside the
+   * hover-pointer gate in fix round 1, but stayed qualified on
+   * `.sidebar:not(:hover)` - `:hover` STICKS after a tap on a coarse
+   * pointer (no "unhover" event), so a single tap anywhere in the rail on
+   * a touch device un-hid every label/badge inside the still-80px rail.
+   * The base rules must be UNCONDITIONAL (no `:not(:hover)` anywhere);
+   * the restore-on-hover half belongs INSIDE the
+   * `(hover: hover) and (pointer: fine)` block, next to the width-expand
+   * rule.
+   */
+  it('makes the collapsed-rail presentation unconditional and moves the hover restore inside the hover-pointer gate', () => {
+    const demo1Css = read('css/demos/demo1.css');
+    expect(demo1Css).not.toMatch(/:not\(:hover\)/);
+
+    // The base (unqualified) hiding rules exist, outside any hover media query.
+    expect(demo1Css).toMatch(/\.demo1\.sidebar-collapse \.sidebar \.default-logo\s*\{\s*display:\s*none/);
+    expect(demo1Css).toMatch(/\.demo1\.sidebar-collapse \.sidebar \.small-logo\s*\{\s*display:\s*flex/);
+    expect(demo1Css).toMatch(
+      /\.demo1\.sidebar-collapse \.sidebar \[data-slot='accordion-menu-title'\][\s\S]{0,400}display:\s*none\s*!important/,
+    );
+
+    // The restore-on-hover rules live INSIDE the hover-pointer gate, alongside
+    // the width-expand rule, and target `.sidebar:hover` explicitly.
+    const hoverGate = block(demo1Css, '@media (hover: hover) and (pointer: fine)');
+    expect(hoverGate).toContain('.demo1.sidebar-collapse .sidebar:hover');
+    expect(hoverGate).toMatch(/\.sidebar:hover\s*\{\s*width:\s*var\(--sidebar-default-width\)/);
+    expect(hoverGate).toMatch(/\.sidebar:hover \.default-logo\s*\{\s*display:\s*flex/);
+    expect(hoverGate).toMatch(/\.sidebar:hover \.small-logo\s*\{\s*display:\s*none/);
+    expect(hoverGate).toContain("[data-slot='accordion-menu-title']");
+    expect(hoverGate).toContain("[data-slot='badge']");
+    expect(hoverGate).toContain("[data-slot='accordion-menu-sub-indicator']");
+  });
+
+  /**
    * T1 fix round 2: the sidebar box itself already shrinks with the banner
    * (lg:top-(--shell-top-offset) lg:bottom-0), but the menu scroller kept a
    * `100vh`-relative cap (`calc(100vh-5.5rem)`) instead of being bounded by the
@@ -417,9 +452,31 @@ describe('AC-DLA-05 accessibility preference blocks', () => {
     expect(reduced).toMatch(/\[class\*='transition-\['\]\s*\{\s*transition-duration:\s*1ms\s*!important/);
   });
 
-  it('pins the normal-motion vaul drawer/overlay animation to --duration-slow, outside the reduced-motion query', () => {
-    expect(stylesCss).toMatch(
+  /**
+   * T3 fix round 2 finding 3: this pin used to sit UNCONDITIONALLY (outside
+   * any media query) in the same `@layer base` as the reduced-motion
+   * block's own `animation-duration: 1ms !important` above - two
+   * `!important` declarations at equal specificity in the same layer, so
+   * the LATER one (this one) actually won the cascade under reduced
+   * motion too. It was harmless only because `--duration-slow` itself
+   * collapses to `1ms` under reduced motion (`config.reui.css`), masking
+   * the wrong precedence with a coincidentally-right value. The honest
+   * fix - and the honest test - is structural: this pin must be wrapped in
+   * `@media (prefers-reduced-motion: no-preference)` so it can never even
+   * apply under reduced motion, rather than relying on what its value
+   * happens to resolve to.
+   */
+  it('pins the normal-motion vaul drawer/overlay animation to --duration-slow, wrapped in prefers-reduced-motion: no-preference', () => {
+    const noPreference = block(stylesCss, '@media (prefers-reduced-motion: no-preference)');
+    expect(noPreference).toMatch(
       /\[data-vaul-drawer\],\s*\n?\s*\[data-vaul-overlay\]\s*\{\s*animation-duration:\s*var\(--duration-slow\)\s*!important/,
+    );
+    // And NOT present unconditionally outside that query - the whole point
+    // is that it can no longer win the cascade under reduced motion by
+    // source-order alone.
+    const outsideNoPreference = stylesCss.replace(noPreference, '');
+    expect(outsideNoPreference).not.toMatch(
+      /\[data-vaul-drawer\],\s*\n?\s*\[data-vaul-overlay\]\s*\{\s*animation-duration:\s*var\(--duration-slow\)/,
     );
   });
 

@@ -167,20 +167,37 @@
    to a 500ms animation (AC-DLA-23) - slower than every other migrated surface
    in this app. Pinned to this app's own `--duration-slow` (300ms) so the one
    surface still on CSS keyframes (not the `lib/motion.ts` spring - vaul owns
-   its own drag-tracked animation) reads at the same pace as the rest. Sits
-   OUTSIDE the reduced-motion media query above, which already collapses both
-   properties to 1ms.
+   its own drag-tracked animation) reads at the same pace as the rest.
 
    `!important`, same reasoning as the reduced-motion block's own comment
    above: vaul injects its CSS as a plain, UNLAYERED `<style>` tag, and an
    unlayered declaration always beats a layered one at equal specificity
    REGARDLESS of source order - `@layer base`'s own `animation-duration`
    would silently lose to vaul's without it. `!important` is what reverses
-   that ordering back in this stylesheet's favour. */
+   that ordering back in this stylesheet's favour.
+
+   T3 fix round 2 finding 3: this pin used to sit OUTSIDE any media query,
+   unconditional - but it is STILL an `!important` declaration at the SAME
+   specificity as the reduced-motion block's own `animation-duration: 1ms
+   !important` above, in the SAME `@layer base`, and it comes LATER in the
+   file. For two `!important` declarations of equal specificity in the same
+   layer, the LATER one wins the cascade regardless of which media query
+   (if any) it sits in - so under reduced motion, THIS unconditional
+   300ms pin actually won over the reduced-motion block's 1ms pin. It was
+   harmless only because `--duration-slow` ITSELF collapses to `1ms` under
+   `prefers-reduced-motion: reduce` (`config.reui.css`), so `var(--duration-
+   slow)` evaluated to 1ms anyway - the correct OUTCOME by coincidence, not
+   by correct precedence. Wrapping this in `@media (prefers-reduced-motion:
+   no-preference)` makes it structurally never apply under reduced motion,
+   so the reduced-motion block above is unambiguously the one true source
+   for that case - no longer resting on a token happening to collapse to
+   the same value. */
 @layer base {
-  [data-vaul-drawer],
-  [data-vaul-overlay] {
-    animation-duration: var(--duration-slow) !important;
+  @media (prefers-reduced-motion: no-preference) {
+    [data-vaul-drawer],
+    [data-vaul-overlay] {
+      animation-duration: var(--duration-slow) !important;
+    }
   }
 }
 
