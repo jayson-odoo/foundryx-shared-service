@@ -6,7 +6,14 @@
  * was quietly re-fetching the next page.
  */
 import { useMemo, useState } from 'react';
-import { flexRender, getCoreRowModel, getSortedRowModel, useReactTable, type ColumnDef } from '@tanstack/react-table';
+import {
+  flexRender,
+  getCoreRowModel,
+  getSortedRowModel,
+  useReactTable,
+  type ColumnDef,
+  type SortingState,
+} from '@tanstack/react-table';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { DataGrid } from './data-grid';
@@ -35,7 +42,7 @@ function SortHarness({ isLoading, isPlaceholderData, recordCount }: { isLoading:
     ],
     [],
   );
-  const [sorting, setSorting] = useState([]);
+  const [sorting, setSorting] = useState<SortingState>([]);
   const table = useReactTable({
     data: rows,
     columns,
