@@ -205,3 +205,7 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   a re-push are ALWAYS closed in place (hard delete only via the deletions call), read-back keyed by
   DocKey; `SPO-` under `purchase_orders` -> `failed` with `errors.po_number`. S4 (`from_so_numbers`)
   and S5 (hooks, `partial`->`open`) pending; v1 payloads until "S5 green".
+- 2026-09-05 (Sorento S4 green): `from_so_numbers: list[str]` on PO + SPO lines -> one
+  `order_link_claim` per (so_number, po_number, product_code), source `autocount`; blanks dropped;
+  a non-list fails the record with `lines.N.from_so_numbers`. ESB: split `FromSODocList` on commas,
+  strip, drop blanks, always a list (never a string).
