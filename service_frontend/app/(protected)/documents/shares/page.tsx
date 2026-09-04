@@ -9,27 +9,24 @@
 import { Fragment, useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { File as FileIcon, Folder, Slash } from 'lucide-react';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
-import { Container } from '@/components/common/container';
-import { RequirePermission } from '@/components/common/require-permission';
+import type { ShareRow } from '@/types/documents';
+import { useDatetime } from '@/hooks/use-datetime';
+import { documentService } from '@/services/document-service';
 import { Badge } from '@/components/ui/badge';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import {
   DataGridTableRowSelect,
   DataGridTableRowSelectAll,
 } from '@/components/ui/data-grid-table';
-import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
+import { Container } from '@/components/common/container';
+import { RequirePermission } from '@/components/common/require-permission';
 import { ClampedText } from '@/components/platform/clamped-text';
-import { ResourceList, type ResourceListConfig } from '@/components/platform/resource-list';
+import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
+import {
+  ResourceList,
+  type ResourceListConfig,
+} from '@/components/platform/resource-list';
 import type { ResourceAction } from '@/components/platform/resource-list';
-import { useDatetime } from '@/hooks/use-datetime';
-import { documentService } from '@/services/document-service';
-import type { ShareRow } from '@/types/documents';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 const ACCESS_LABEL: Record<ShareRow['generalAccess'], string> = {
@@ -52,7 +49,8 @@ export default function DocumentSharesPage() {
         permission: 'documents.share',
         confirm: {
           title: 'Revoke link(s)?',
-          description: 'Revoked links stop working immediately. This keeps the audit trail.',
+          description:
+            'Revoked links stop working immediately. This keeps the audit trail.',
           confirmLabel: 'Revoke',
           // Bulk revoke = typed confirm (AC-OVERSIGHT-03 / AC-UX-03).
           input: {
@@ -93,7 +91,9 @@ export default function DocumentSharesPage() {
         id: 'target',
         accessorFn: (row) => row.targetName ?? row.targetId,
         meta: { headerTitle: 'Target' },
-        header: ({ column }) => <DataGridColumnHeader title="Target" column={column} />,
+        header: ({ column }) => (
+          <DataGridColumnHeader title="Target" column={column} />
+        ),
         cell: ({ row }) => (
           <div className="flex min-w-0 items-center gap-2">
             {row.original.targetKind === 'folder' ? (
@@ -115,14 +115,18 @@ export default function DocumentSharesPage() {
         id: 'access',
         accessorFn: (row) => row.generalAccess,
         meta: { headerTitle: 'General access' },
-        header: ({ column }) => <DataGridColumnHeader title="General access" column={column} />,
+        header: ({ column }) => (
+          <DataGridColumnHeader title="General access" column={column} />
+        ),
         cell: ({ row }) => (
           <div className="flex items-center gap-1.5">
             <Badge variant="secondary" appearance="light" size="sm">
               {ACCESS_LABEL[row.original.generalAccess]}
             </Badge>
             {row.original.people.length > 0 && (
-              <span className="text-xs text-muted-foreground">+{row.original.people.length}</span>
+              <span className="text-xs text-muted-foreground">
+                +{row.original.people.length}
+              </span>
             )}
           </div>
         ),
@@ -133,9 +137,13 @@ export default function DocumentSharesPage() {
         id: 'capability',
         accessorFn: (row) => row.capability,
         meta: { headerTitle: 'Access' },
-        header: ({ column }) => <DataGridColumnHeader title="Access" column={column} />,
+        header: ({ column }) => (
+          <DataGridColumnHeader title="Access" column={column} />
+        ),
         cell: ({ row }) => (
-          <span className="text-sm capitalize text-foreground">{row.original.capability}</span>
+          <span className="text-sm capitalize text-foreground">
+            {row.original.capability}
+          </span>
         ),
         size: 100,
         enableSorting: true,
@@ -144,9 +152,13 @@ export default function DocumentSharesPage() {
         id: 'creator',
         accessorFn: (row) => row.createdByName ?? '',
         meta: { headerTitle: 'Created by' },
-        header: ({ column }) => <DataGridColumnHeader title="Created by" column={column} />,
+        header: ({ column }) => (
+          <DataGridColumnHeader title="Created by" column={column} />
+        ),
         cell: ({ row }) => (
-          <span className="text-sm text-foreground">{row.original.createdByName ?? '-'}</span>
+          <span className="text-sm text-foreground">
+            {row.original.createdByName ?? '-'}
+          </span>
         ),
         size: 160,
         enableSorting: false,
@@ -155,10 +167,18 @@ export default function DocumentSharesPage() {
         id: 'expiry',
         accessorFn: (row) => row.expiresAt ?? '',
         meta: { headerTitle: 'Expiry' },
-        header: ({ column }) => <DataGridColumnHeader title="Expiry" column={column} />,
+        header: ({ column }) => (
+          <DataGridColumnHeader title="Expiry" column={column} />
+        ),
         cell: ({ row }) =>
           row.original.expiresAt ? (
-            <span className={row.original.isExpired ? 'text-sm text-warning' : 'text-sm text-foreground'}>
+            <span
+              className={
+                row.original.isExpired
+                  ? 'text-sm text-warning'
+                  : 'text-sm text-foreground'
+              }
+            >
               {formatDate(row.original.expiresAt)}
               {row.original.isExpired && ' (expired)'}
             </span>
@@ -172,9 +192,13 @@ export default function DocumentSharesPage() {
         id: 'createdAt',
         accessorFn: (row) => row.createdAt,
         meta: { headerTitle: 'Created' },
-        header: ({ column }) => <DataGridColumnHeader title="Created" column={column} />,
+        header: ({ column }) => (
+          <DataGridColumnHeader title="Created" column={column} />
+        ),
         cell: ({ row }) => (
-          <span className="text-sm text-foreground">{formatDate(row.original.createdAt)}</span>
+          <span className="text-sm text-foreground">
+            {formatDate(row.original.createdAt)}
+          </span>
         ),
         size: 140,
         enableSorting: true,
@@ -206,9 +230,16 @@ export default function DocumentSharesPage() {
       // No per-row detail page - actions (Revoke) live in the row menu.
       rowHref: () => '#',
       fetcher: (query) =>
-        documentService.listShares(query, query.statusView === 'trashed' ? 'revoked' : 'active'),
+        documentService.listShares(
+          query,
+          query.statusView === 'trashed' ? 'revoked' : 'active',
+        ),
       exporter: (query, columns) =>
-        documentService.exportShares(query, columns, query.statusView === 'trashed' ? 'revoked' : 'active'),
+        documentService.exportShares(
+          query,
+          columns,
+          query.statusView === 'trashed' ? 'revoked' : 'active',
+        ),
       searchPlaceholder: 'Search links…',
       searchHints: ['General access', 'Role'],
       defaultSort: { id: 'createdAt', desc: true },
@@ -232,16 +263,6 @@ export default function DocumentSharesPage() {
   return (
     <RequirePermission permission="documents.share">
       <Fragment>
-        <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle text="Shared links" />
-              <ToolbarDescription>
-                Every active share link across the workspace. Revoke any link to cut access immediately.
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
         <Container width="fluid">
           <ResourceList config={config} />
         </Container>

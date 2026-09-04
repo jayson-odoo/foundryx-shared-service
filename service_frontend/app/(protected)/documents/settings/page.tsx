@@ -2,23 +2,18 @@
 
 import { Fragment, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
-import { Container } from '@/components/common/container';
-import { RequirePermission } from '@/components/common/require-permission';
+import type { DocumentSettings, PublicSharingPolicy } from '@/types/documents';
+import { documentService } from '@/services/document-service';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
-import { SearchSelect } from '@/components/platform/search-select';
+import { Container } from '@/components/common/container';
+import { RequirePermission } from '@/components/common/require-permission';
 import { formatBytes } from '@/components/platform/document-drive/lib';
-import { documentService } from '@/services/document-service';
-import type { DocumentSettings, PublicSharingPolicy } from '@/types/documents';
+import { PageHeader } from '@/components/platform/page-header';
+import { SearchSelect } from '@/components/platform/search-select';
 
 const SHARING_OPTIONS = [
   { value: 'off', label: 'Off - no public links' },
@@ -30,14 +25,17 @@ export default function DocumentSettingsPage() {
   const [settings, setSettings] = useState<DocumentSettings | null>(null);
   const [defaultMaxFileMb, setDefaultMaxFileMb] = useState('');
   const [storageQuotaMb, setStorageQuotaMb] = useState('');
-  const [publicSharing, setPublicSharing] = useState<PublicSharingPolicy>('off');
+  const [publicSharing, setPublicSharing] =
+    useState<PublicSharingPolicy>('off');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     documentService.getSettings().then((s) => {
       setSettings(s);
       setDefaultMaxFileMb(String(s.defaultMaxFileMb));
-      setStorageQuotaMb(s.storageQuotaMb != null ? String(s.storageQuotaMb) : '');
+      setStorageQuotaMb(
+        s.storageQuotaMb != null ? String(s.storageQuotaMb) : '',
+      );
       setPublicSharing(s.publicSharing);
     });
   }, []);
@@ -59,22 +57,19 @@ export default function DocumentSettingsPage() {
 
   const usagePct =
     settings && settings.storageQuotaMb
-      ? Math.min(100, (settings.usedBytes / (settings.storageQuotaMb * 1024 * 1024)) * 100)
+      ? Math.min(
+          100,
+          (settings.usedBytes / (settings.storageQuotaMb * 1024 * 1024)) * 100,
+        )
       : 0;
 
   return (
     <RequirePermission permission="documents.configure">
       <Fragment>
-        <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle text="Document settings" />
-              <ToolbarDescription>
-                Storage limits, default upload caps and sharing policy.
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
+        <PageHeader
+          title="Document settings"
+          description="Storage limits, default upload caps and sharing policy."
+        />
         <Container width="fluid">
           <div className="grid max-w-2xl gap-5">
             <Card>
@@ -137,14 +132,17 @@ export default function DocumentSettingsPage() {
                   onChange={(v) => setPublicSharing(v as PublicSharingPolicy)}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Internal and specific-user links are always available. This ceiling caps what
-                  anonymous public links can do.
+                  Internal and specific-user links are always available. This
+                  ceiling caps what anonymous public links can do.
                 </p>
               </CardContent>
             </Card>
 
             <div className="flex justify-end">
-              <Button onClick={() => void save()} disabled={saving || !settings}>
+              <Button
+                onClick={() => void save()}
+                disabled={saving || !settings}
+              >
                 {saving ? 'Saving…' : 'Save changes'}
               </Button>
             </div>
