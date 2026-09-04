@@ -43,16 +43,41 @@ export function useRecordNav({ fetchAt, buildHref }: UseRecordNavOptions): UseRe
 
   const query = decodeListQuery(ctx);
 
-  // Resolve total for the carried query (once per ctx).
+  // Resolve total for the carried query, THEN prefetch the prev/next
+  // neighbours' form routes (AC-DLA-31) - one more `fetchAt` each, the exact
+  // same resolution `goPrev`/`goNext` already do. Sequenced behind the first
+  // call (not a second, independent effect) because wrapping needs a real
+  // `total` to wrap BY: the first record's "prev" is the LAST record, and
+  // fetching that neighbour with a naively unwrapped negative index (-1) hit
+  // the endpoint's own validation and 422'd on every single-record-set-of-1
+  // form open (caught live - the fetch was harmlessly `.catch()`-swallowed,
+  // but wasteful and noisy). Only fires once per `ctx` - a mid-set `i` change
+  // from stepping goes through `go()` below, which pushes a brand new URL.
   useEffect(() => {
     if (!query) {
       setTotal(0);
       return;
     }
     let active = true;
+    const encodedCtx = encodeListQuery(query);
+    const prefetchNeighbour = (total: number, delta: number) => {
+      const wrapped = ((index + delta) % total + total) % total;
+      if (wrapped === index) return; // total===1: no real neighbour to warm
+      fetchAt(query, wrapped)
+        .then(({ recordId }) => {
+          if (!active || !recordId) return;
+          prefetchOnce(buildListNav(buildHref(recordId, encodedCtx, wrapped), { from: recordId }));
+        })
+        .catch(() => {});
+    };
     fetchAt(query, index)
       .then((r) => {
-        if (active) setTotal(r.total);
+        if (!active) return;
+        setTotal(r.total);
+        if (r.total > 1) {
+          prefetchNeighbour(r.total, -1);
+          prefetchNeighbour(r.total, 1);
+        }
       })
       .catch(() => {
         if (active) setTotal(0);
@@ -62,34 +87,6 @@ export function useRecordNav({ fetchAt, buildHref }: UseRecordNavOptions): UseRe
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx]);
-
-  // Prefetch the prev/next neighbours' form routes on mount (AC-DLA-31) - one
-  // `fetchAt` each, the exact same resolution `goPrev`/`goNext` already do, so
-  // stepping the pager never waits on a round trip it didn't already warm.
-  // Each neighbour's own `total` (not the outer `total` state, which may not
-  // have resolved yet) decides whether it wraps to a real row.
-  useEffect(() => {
-    if (!query) return;
-    let active = true;
-    const encodedCtx = encodeListQuery(query);
-    const prefetchNeighbour = (delta: number) => {
-      fetchAt(query, index + delta)
-        .then(({ recordId, total: neighbourTotal }) => {
-          if (!active || !recordId || neighbourTotal <= 1) return;
-          const wrapped = ((index + delta) % neighbourTotal + neighbourTotal) % neighbourTotal;
-          prefetchOnce(
-            buildListNav(buildHref(recordId, encodedCtx, wrapped), { from: recordId }),
-          );
-        })
-        .catch(() => {});
-    };
-    prefetchNeighbour(-1);
-    prefetchNeighbour(1);
-    return () => {
-      active = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ctx, index]);
 
   const go = useCallback(
     (nextIndex: number) => {

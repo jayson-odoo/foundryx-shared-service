@@ -56,6 +56,14 @@ describe('buildListNav (AC-DLA-29/30/31)', () => {
     expect(url.searchParams.has('from')).toBe(false);
   });
 
+  it('an OMITTED key leaves the href\'s own value alone (regression: use-record-nav calling with only {from} must not drop the ctx buildHref already embedded)', () => {
+    const href = buildListNav('/records/r2?ctx=CTX&i=1', { from: 'r2' });
+    const url = new URL(href, 'http://x');
+    expect(url.searchParams.get('ctx')).toBe('CTX');
+    expect(url.searchParams.get('i')).toBe('1');
+    expect(url.searchParams.get('from')).toBe('r2');
+  });
+
   it('preserves a trailing hash', () => {
     const href = buildListNav('/records/r1#comments', { ctx: 'CTX', i: 0, from: 'r1' });
     expect(href.endsWith('#comments')).toBe(true);

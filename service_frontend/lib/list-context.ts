@@ -60,8 +60,13 @@ export function buildListNav(href: string, params: ListNavParams): string {
   const [path, search = ''] = base.split('?');
   const qs = new URLSearchParams(search);
 
+  // Every key follows the same "omitted key = leave the href's own value
+  // alone, explicit null/undefined = delete" rule (a real bug this fixed:
+  // `use-record-nav.ts` calls this with ONLY `{ from }` - `buildHref` already
+  // embedded `ctx` in the href it built, and an unconditional delete-when-
+  // falsy on `ctx` here was silently dropping it from every record-nav step).
   if (params.ctx) qs.set('ctx', params.ctx);
-  else qs.delete('ctx');
+  else if ('ctx' in params) qs.delete('ctx');
 
   if (typeof params.i === 'number' && Number.isFinite(params.i)) qs.set('i', String(params.i));
   else if ('i' in params) qs.delete('i');

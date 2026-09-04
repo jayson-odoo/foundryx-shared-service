@@ -52,9 +52,37 @@ describe('AC-DLA-31 use-record-nav prefetch + from carry', () => {
 
     await waitFor(() => expect(prefetch).toHaveBeenCalledTimes(2));
     const prefetched = prefetch.mock.calls.map((c) => c[0] as string);
-    // Prev (index 0) and next (index 2), each carrying its OWN id as `from`.
-    expect(prefetched.some((h) => h.includes('/records/r0') && h.includes('from=r0'))).toBe(true);
-    expect(prefetched.some((h) => h.includes('/records/r2') && h.includes('from=r2'))).toBe(true);
+    // Prev (index 0) and next (index 2), each carrying its OWN id as `from`
+    // AND the ctx buildHref embedded (regression: buildListNav's {from}-only
+    // merge must never drop it).
+    expect(
+      prefetched.some((h) => h.includes('/records/r0') && h.includes('from=r0') && h.includes('ctx=')),
+    ).toBe(true);
+    expect(
+      prefetched.some((h) => h.includes('/records/r2') && h.includes('from=r2') && h.includes('ctx=')),
+    ).toBe(true);
+  });
+
+  it('wraps the FIRST record\'s "prev" to the LAST index, never fetches a negative index (regression - caught live, a naive index-1 422\'d the endpoint on every record opened at index 0)', async () => {
+    vi.mocked(useSearchParams).mockReturnValue(paramsFor(0) as unknown as ReturnType<typeof useSearchParams>);
+    const fetchAt = vi.fn((_q: ListQuery, index: number) =>
+      Promise.resolve({ recordId: `r${index}`, total: 5 }),
+    );
+    const buildHref = (recordId: string, ctx: string, index: number) => `/records/${recordId}?ctx=${ctx}&i=${index}`;
+
+    renderHook(() => useRecordNav({ fetchAt, buildHref }));
+
+    await waitFor(() => expect(prefetch).toHaveBeenCalledTimes(2));
+    // Every fetchAt call gets a non-negative index - the wrap happens BEFORE
+    // the fetch, using the total the record's OWN fetchAt(index) call
+    // already resolved, not after a call that would have 422'd.
+    for (const call of fetchAt.mock.calls) {
+      const index = call[1] as number;
+      expect(index).toBeGreaterThanOrEqual(0);
+    }
+    const prefetched = prefetch.mock.calls.map((c) => c[0] as string);
+    expect(prefetched.some((h) => h.includes('/records/r4'))).toBe(true); // prev wraps to the last (total-1)
+    expect(prefetched.some((h) => h.includes('/records/r1'))).toBe(true); // next
   });
 
   it('does not prefetch a neighbour when the set has only one record (total<=1)', async () => {
@@ -88,5 +116,9 @@ describe('AC-DLA-31 use-record-nav prefetch + from carry', () => {
     const [href] = push.mock.calls[0] as [string];
     expect(href).toContain('/records/r1');
     expect(href).toContain('from=r1');
+    // Regression: buildHref already embeds ctx in the href it returns -
+    // buildListNav's own {from} merge must never drop it (AC-DLA-30/31 - a
+    // Back click after stepping must still carry the ORIGINAL list query).
+    expect(href).toContain('ctx=');
   });
 });
