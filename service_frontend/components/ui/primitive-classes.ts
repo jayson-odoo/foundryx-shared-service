@@ -2,10 +2,10 @@
  * Class strings shared by more than one primitive.
  *
  * Three lightbox surfaces (dialog, alert dialog, sheet) and a set of controls
- * (button, checkbox, switch, radio, toggle, tab trigger, slider thumb, and the
- * keyboard-navigable menu items) have to agree on the scrim, the pressed state
- * and the touch target. Written once here so they cannot drift apart one file
- * at a time.
+ * (button, checkbox, switch, radio, toggle, tab trigger, and the
+ * keyboard-navigable menu items) have to agree on the scrim, the pressed
+ * state and the touch target. Written once here so they cannot drift apart
+ * one file at a time.
  *
  * Ported from `sorento_crm` `components/ui/primitive-classes.ts` (see plan 23
  * section 3.2, AC-DLA-09). This repo's `PRESSED_CLASS` already carries the
@@ -17,15 +17,15 @@
  */
 
 /**
- * The one scrim: `--scrim` (50%/62% black, see `css/config.reui.css`) with a
- * blur, faded in and out with the surface via `data-state`.
+ * The one scrim: `--scrim` (50%/62% black, see `css/config.reui.css`) with an
+ * 8px blur, faded in and out with the surface via `data-state`.
  *
  * `prefers-reduced-transparency` and `prefers-contrast: more` are handled by
  * the merged preference block in `css/styles.css` (T1) - no arbitrary media
  * query duplicated here.
  */
 export const OVERLAY_CLASS =
-  'fixed inset-0 z-(--z-modal) bg-(--scrim) backdrop-blur-md ' +
+  'fixed inset-0 z-(--z-modal) bg-(--scrim) backdrop-blur-sm ' +
   'data-[state=open]:animate-in data-[state=closed]:animate-out ' +
   'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0';
 
@@ -40,17 +40,39 @@ export const OVERLAY_CLASS =
  * primitive yet in T2 - T3 swaps Dialog/Sheet onto it when they move to the
  * spring (plan 23 section 3.2 risk note).
  */
-export const OVERLAY_CLASS_STATIC = 'fixed inset-0 z-(--z-modal) bg-(--scrim) backdrop-blur-md';
+export const OVERLAY_CLASS_STATIC = 'fixed inset-0 z-(--z-modal) bg-(--scrim) backdrop-blur-sm';
 
 /**
  * Pressed feedback: the control answers on pointer DOWN, not on release.
  *
  * A 3% shrink is enough to read as a physical press at every control size,
  * and it is suppressed for anyone who asked for less motion.
+ *
+ * `scale` is named in the transition list ALONGSIDE `transform` (fix round
+ * 1, AC-DLA-09): Tailwind 4 compiles `active:scale-[0.97]` to the standalone
+ * CSS `scale` property, not `transform` - `transition-[transform,...]` alone
+ * never animates it and the press snaps instead of easing. Applied to
+ * Button (lg/md/icon), checkbox, switch, radio, toggle, tab trigger.
  */
 export const PRESSED_CLASS =
-  'transition-[transform,color,background-color,border-color,box-shadow] ' +
+  'transition-[transform,scale,color,background-color,border-color,box-shadow] ' +
   'duration-(--duration-fast) ease-(--ease-standard) ' +
+  'active:scale-[0.97] motion-reduce:active:scale-100';
+
+/**
+ * The shrink alone, no colour transition - for a roving-focus item (Radix
+ * `DropdownMenuItem`/`ContextMenuItem`/`MenubarItem`): arrow keys move
+ * `focus:bg-accent` between siblings, and a colour EASE on that move reads as
+ * motion triggered by the keyboard, not the click - a hard-fail this plan's
+ * own design-language rules land in T8. `CommandItem` (keyboard-driven,
+ * 100+/day) and the slider thumb (a drag is a hold) carry NEITHER class.
+ *
+ * Same `scale` fix as `PRESSED_CLASS` (`transition-transform` covers both
+ * `transform` and the standalone `scale` Tailwind 4 property, so a single
+ * property name is enough here where colour is not in the list at all).
+ */
+export const PRESSED_TRANSFORM_CLASS =
+  'transition-transform duration-(--duration-fast) ease-(--ease-standard) ' +
   'active:scale-[0.97] motion-reduce:active:scale-100';
 
 /**
