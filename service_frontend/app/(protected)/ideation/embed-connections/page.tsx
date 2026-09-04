@@ -1,21 +1,15 @@
 'use client';
 
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
-import { Container } from '@/components/common/container';
-import { ResourceList } from '@/components/platform/resource-list';
-import { RequirePermission } from '@/components/common/require-permission';
-import { ideationService } from '@/services/ideation-service';
-import type { Product } from '@/types/ideation';
 import type { EmbedConnectionItem } from '@/types/embed-connection';
-import { useEmbedConnectionsListConfig } from './use-embed-connections-list-config';
+import type { Product } from '@/types/ideation';
+import { ideationService } from '@/services/ideation-service';
+import { Container } from '@/components/common/container';
+import { RequirePermission } from '@/components/common/require-permission';
+import { ResourceList } from '@/components/platform/resource-list';
 import { EmbedConnectionCreateDialog } from './embed-connection-create-dialog';
 import { RotateSecretDialog } from './rotate-secret-dialog';
+import { useEmbedConnectionsListConfig } from './use-embed-connections-list-config';
 
 /**
  * Embed connections admin (PLAN-ideation-embed-sso §7, AC-E-5/12) on the shared
@@ -66,17 +60,6 @@ function EmbedConnectionsView() {
 export default function EmbedConnectionsPage() {
   return (
     <RequirePermission permission="ideation.triage.manage">
-      <Container width="fluid">
-        <Toolbar>
-          <ToolbarHeading>
-            <ToolbarPageTitle />
-            <ToolbarDescription>
-              Host apps allowed to embed this tenant&apos;s Ideas workspace. The signing secret is
-              shown once on create or rotate - paste the same value into the host&apos;s embed config.
-            </ToolbarDescription>
-          </ToolbarHeading>
-        </Toolbar>
-      </Container>
       <Container width="fluid">
         <EmbedConnectionsView />
       </Container>

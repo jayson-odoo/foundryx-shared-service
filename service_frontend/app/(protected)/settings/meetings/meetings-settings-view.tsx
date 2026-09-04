@@ -165,7 +165,7 @@ export function MeetingsSettingsView() {
           {runsError ? (
             <p className="py-5 text-sm text-destructive">{runsError}</p>
           ) : (
-            <ResourceList config={botRunsConfig} />
+            <ResourceList config={botRunsConfig} hideHeader />
           )}
         </CardContent>
       </Card>
@@ -225,7 +225,7 @@ export function MeetingsSettingsView() {
           {canManage && (
             <div>
               <Button disabled={saving || loading} onClick={() => void onSave()}>
-                Save
+                Save meeting settings
               </Button>
             </div>
           )}

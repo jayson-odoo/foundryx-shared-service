@@ -60,9 +60,9 @@ export function AccountSettingsModal({
           <DialogDescription></DialogDescription>
           <div className="flex items-center justify-between flex-wrap grow gap-5 pb-7.5">
             <div className="flex flex-col justify-center gap-2">
-              <h1 className="text-xl font-semibold leading-none text-mono">
+              <h2 className="text-xl font-semibold leading-none text-mono">
                 Settings - Modal
-              </h1>
+              </h2>
               <div className="flex items-center gap-2 text-sm font-normal text-secondary-foreground">
                 Dynamic, Focused Adjustment Interface
               </div>

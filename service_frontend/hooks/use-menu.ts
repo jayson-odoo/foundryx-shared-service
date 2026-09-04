@@ -36,55 +36,57 @@ export const useMenu = (pathname: string): UseMenuReturn => {
     );
   };
 
-  const getCurrentItem = (items: MenuConfig): MenuItem | undefined => {
+  /**
+   * Every item (at any depth) whose own `path` is active for the current
+   * pathname, paired with its ancestor chain. `isActive` is a `startsWith`
+   * match, so a short SIBLING path (e.g. `/documents`) is "active" on a
+   * longer sibling's route (`/documents/settings`) too - both land in this
+   * list; `bestMatch` below is what actually disambiguates them.
+   */
+  const collectMatches = (
+    items: MenuConfig,
+    breadcrumb: MenuItem[] = [],
+  ): { item: MenuItem; breadcrumb: MenuItem[] }[] => {
+    const matches: { item: MenuItem; breadcrumb: MenuItem[] }[] = [];
     for (const item of items) {
+      const currentBreadcrumb = [...breadcrumb, item];
       if (item.path && isActive(item.path)) {
-        if (item.children && item.children.length > 0) {
-          const childMatch = getCurrentItem(item.children);
-          return childMatch || item;
-        }
-        return item;
+        matches.push({ item, breadcrumb: currentBreadcrumb });
       }
       if (item.children && item.children.length > 0) {
-        const childMatch = getCurrentItem(item.children);
-        if (childMatch) {
-          return childMatch;
-        }
+        matches.push(...collectMatches(item.children, currentBreadcrumb));
       }
     }
-    return undefined;
+    return matches;
   };
 
-  const getBreadcrumb = (items: MenuConfig): MenuItem[] => {
-    const findBreadcrumb = (
-      nodes: MenuItem[],
-      breadcrumb: MenuItem[] = [],
-    ): MenuItem[] => {
-      for (const item of nodes) {
-        const currentBreadcrumb = [...breadcrumb, item];
-
-        // Check if this item is active
-        if (item.path && isActive(item.path)) {
-          return currentBreadcrumb; // Return the breadcrumb up to this point
-        }
-
-        // If item has children, recurse and check them
-        if (item.children && item.children.length > 0) {
-          const childBreadcrumb = findBreadcrumb(
-            item.children,
-            currentBreadcrumb,
-          );
-          if (childBreadcrumb.length > currentBreadcrumb.length) {
-            return childBreadcrumb; // Return the deeper breadcrumb if found
-          }
-        }
-      }
-      return breadcrumb; // Return current breadcrumb if no match found
-    };
-
-    const breadcrumb = findBreadcrumb(items);
-    return breadcrumb.length > 0 ? breadcrumb : [];
+  /**
+   * The LONGEST matching path wins (exact match first, fix round 1): a
+   * `/documents` list item and its own `/documents/settings` sibling are
+   * BOTH "active" (startsWith) while viewing Settings - resolving to
+   * whichever came first in document order let the parent shadow the more
+   * specific page, so both the crumb and the current-item highlight named
+   * the wrong page. An exact match's path length equals the pathname's own
+   * length, the ceiling any valid prefix can reach, so "prefer exact, else
+   * longest prefix" collapses to a single length comparison.
+   */
+  const bestMatch = (
+    items: MenuConfig,
+  ): { item: MenuItem; breadcrumb: MenuItem[] } | undefined => {
+    const matches = collectMatches(items);
+    if (matches.length === 0) return undefined;
+    return matches.reduce((best, candidate) =>
+      (candidate.item.path?.length ?? 0) > (best.item.path?.length ?? 0)
+        ? candidate
+        : best,
+    );
   };
+
+  const getCurrentItem = (items: MenuConfig): MenuItem | undefined =>
+    bestMatch(items)?.item;
+
+  const getBreadcrumb = (items: MenuConfig): MenuItem[] =>
+    bestMatch(items)?.breadcrumb ?? [];
 
   const getChildren = (items: MenuConfig, level: number): MenuConfig | null => {
     const hasActiveChildAtLevel = (items: MenuConfig): boolean => {

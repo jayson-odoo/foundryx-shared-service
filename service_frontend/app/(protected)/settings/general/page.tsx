@@ -1,23 +1,24 @@
 'use client';
 
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
-import { Container } from '@/components/common/container';
-import { RequirePermission } from '@/components/common/require-permission';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardHeading, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { SearchSelect } from '@/components/platform/search-select';
+import { CURRENCY_OPTIONS } from '@/lib/money';
 import { useCan } from '@/hooks/use-can';
 import { emsService } from '@/services/ems-service';
-import { CURRENCY_OPTIONS } from '@/lib/money';
+import { Button } from '@/components/ui/button';
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardHeading,
+  CardTitle,
+} from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Container } from '@/components/common/container';
+import { RequirePermission } from '@/components/common/require-permission';
+import { PageHeader } from '@/components/platform/page-header';
+import { SearchSelect } from '@/components/platform/search-select';
 
 const CURRENCIES = CURRENCY_OPTIONS;
 
@@ -51,7 +52,10 @@ function GeneralSettingsForm() {
     }
     setSaving(true);
     try {
-      const s = await emsService.setTenantSettings({ defaultCurrency: currency, priceDecimals: dp });
+      const s = await emsService.setTenantSettings({
+        defaultCurrency: currency,
+        priceDecimals: dp,
+      });
       setCurrency(s.defaultCurrency);
       setDecimals(String(s.priceDecimals));
       toast.success('Settings saved.');
@@ -78,7 +82,8 @@ function GeneralSettingsForm() {
             options={CURRENCIES}
           />
           <p className="text-xs text-muted-foreground">
-            Used for catalog prices and quotations unless a product or quotation sets its own.
+            Used for catalog prices and quotations unless a product or quotation
+            sets its own.
           </p>
         </div>
         <div className="flex max-w-xs flex-col gap-1.5">
@@ -92,12 +97,14 @@ function GeneralSettingsForm() {
             disabled={loading || !canManage}
             onChange={(e) => setDecimals(e.target.value)}
           />
-          <p className="text-xs text-muted-foreground">How many decimals to show on money amounts (0-6).</p>
+          <p className="text-xs text-muted-foreground">
+            How many decimals to show on money amounts (0-6).
+          </p>
         </div>
         {canManage && (
           <div>
             <Button onClick={() => void save()} disabled={saving || loading}>
-              Save
+              Save settings
             </Button>
           </div>
         )}
@@ -109,19 +116,10 @@ function GeneralSettingsForm() {
 export default function GeneralSettingsPage() {
   return (
     <RequirePermission permission="settings.read">
-      <Fragment>
-        <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>General workspace settings.</ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
-        <Container width="fluid">
-          <GeneralSettingsForm />
-        </Container>
-      </Fragment>
+      <Container width="fluid">
+        <PageHeader description="General workspace settings." />
+        <GeneralSettingsForm />
+      </Container>
     </RequirePermission>
   );
 }

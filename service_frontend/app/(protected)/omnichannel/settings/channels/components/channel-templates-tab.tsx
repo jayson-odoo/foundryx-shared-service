@@ -89,7 +89,7 @@ export function ChannelTemplatesTab({ channelId }: { channelId: string }) {
         </div>
       )}
 
-      <ResourceList key={reloadKey} config={config} />
+      <ResourceList key={reloadKey} config={config} hideHeader />
 
       <Dialog open={payloadOf !== null} onOpenChange={(o) => !o && setPayloadOf(null)}>
         <DialogContent className="max-w-2xl">

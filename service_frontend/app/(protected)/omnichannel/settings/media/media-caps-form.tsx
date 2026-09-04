@@ -190,7 +190,7 @@ export function MediaCapsForm() {
       </div>
       <div>
         <Button onClick={() => void onSave()} disabled={saving || !dirty}>
-          {saving ? 'Saving…' : 'Save'}
+          {saving ? 'Saving…' : 'Save media settings'}
         </Button>
       </div>
     </div>

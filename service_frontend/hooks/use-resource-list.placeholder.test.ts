@@ -21,10 +21,14 @@ function deferredFetcher() {
     new Promise<ListResult<Row>>((resolve) => {
       pending.push({ page: query.page, resolve });
     });
-  const resolveNext = (rows: Row[]) => {
+  const resolveNext = (rows: Row[], total?: number) => {
     const next = pending.shift();
     if (!next) throw new Error('no pending fetch to resolve');
-    act(() => next.resolve({ data: rows, total: rows.length, page: next.page }));
+    // A realistic `total` for whichever page this fetch is FOR - the round-2
+    // out-of-range clamp (use-resource-list.ts) would otherwise treat page 1
+    // as past-the-end for a `total` that only covers page 0's own rows.
+    const resolvedTotal = total ?? next.page * 25 + rows.length;
+    act(() => next.resolve({ data: rows, total: resolvedTotal, page: next.page }));
   };
   return { fetcher, resolveNext, pendingCount: () => pending.length };
 }

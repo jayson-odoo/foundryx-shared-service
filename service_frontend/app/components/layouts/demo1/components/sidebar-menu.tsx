@@ -9,6 +9,7 @@ import { MenuConfig, MenuItem } from '@/config/types';
 import { useInstalledModules } from '@/hooks/use-app-store';
 import { useTerminology } from '@/hooks/use-terminology';
 import { useCan } from '@/hooks/use-can';
+import { usePrefetchOnce } from '@/hooks/use-prefetch-once';
 import { filterMenu } from '@/lib/menu-filter';
 import { cn } from '@/lib/utils';
 import {
@@ -28,6 +29,7 @@ export function SidebarMenu() {
   const { data: session } = useSession();
   const { can } = useCan();
   const { labelPlural } = useTerminology();
+  const prefetchOnce = usePrefetchOnce();
   // Relabelable entries (F10): a `termKey` resolves the plural via terminology;
   // the static title is the never-blank fallback.
   const menuLabel = (item: MenuItem): string | undefined =>
@@ -116,6 +118,8 @@ export function SidebarMenu() {
         >
           <Link
             href={item.path || '#'}
+            prefetch={false}
+            onPointerEnter={() => item.path && prefetchOnce(item.path)}
             className="flex items-center grow gap-2"
           >
             {item.icon && <item.icon data-slot="accordion-menu-icon" />}
@@ -211,7 +215,13 @@ export function SidebarMenu() {
           value={item.path || ''}
           className="text-2sm"
         >
-          <Link href={item.path || '#'}>{menuLabel(item)}</Link>
+          <Link
+            href={item.path || '#'}
+            prefetch={false}
+            onPointerEnter={() => item.path && prefetchOnce(item.path)}
+          >
+            {menuLabel(item)}
+          </Link>
         </AccordionMenuItem>
       );
     }

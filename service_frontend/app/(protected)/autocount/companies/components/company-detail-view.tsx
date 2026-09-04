@@ -402,7 +402,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
               {canManage && (
                 <AddEntityControl entities={detail?.entities ?? []} onAdd={onAddEntity} />
               )}
-              <ResourceList config={entitiesConfig} />
+              <ResourceList config={entitiesConfig} hideHeader />
             </div>
           ),
         },
@@ -412,7 +412,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
           icon: History,
           render: () => (
             <div className="py-2">
-              <ResourceList key={runsKey} config={runsConfig} />
+              <ResourceList key={runsKey} config={runsConfig} hideHeader />
             </div>
           ),
         },

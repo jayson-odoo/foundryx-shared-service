@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useSession } from 'next-auth/react';
@@ -8,6 +8,7 @@ import { useForm, type UseFormReturn } from 'react-hook-form';
 import { KeyRound, Shield, User as UserIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ListQuery } from '@/types/resource';
 import { userService } from '@/services/user-service';
 import { rolesService } from '@/services/roles-service';
 import type { Role, User } from '@/types/user';
@@ -89,6 +90,23 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, creating]);
+
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - use-record-nav.ts's
+  // prefetch effect lists these in its deps array; an inline closure here
+  // would recreate them every render and re-arm the prefetch/total-resolve
+  // fetch on every render instead of only on ctx/index changes.
+  const fetchRecordAt = useCallback(
+    (query: ListQuery, index: number) =>
+      userService.getAt(query, index).then((r) => ({
+        recordId: r.user?.id ?? null,
+        total: r.total,
+      })),
+    [],
+  );
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => userFormHref(recordId, { ctx, index }),
+    [],
+  );
 
   const config = useMemo<ResourceFormConfig<User> | null>(() => {
     if (isLoading || notFound) return null;
@@ -215,16 +233,25 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
       onCancel,
       recordNav: creating
         ? undefined
-        : {
-            fetchAt: (query, index) =>
-              userService.getAt(query, index).then((r) => ({
-                recordId: r.user?.id ?? null,
-                total: r.total,
-              })),
-            buildHref: (recordId, ctx, index) => userFormHref(recordId, { ctx, index }),
-          },
+        : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
-  }, [isLoading, notFound, creating, isSelf, user, roles, actions, form, initialEditing, userId, router, can, userAvatar]);
+  }, [
+    isLoading,
+    notFound,
+    creating,
+    isSelf,
+    user,
+    roles,
+    actions,
+    form,
+    initialEditing,
+    userId,
+    router,
+    can,
+    userAvatar,
+    fetchRecordAt,
+    buildRecordHref,
+  ]);
 
   return { config, form, isLoading, notFound };
 }

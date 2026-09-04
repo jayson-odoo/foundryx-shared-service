@@ -49,7 +49,11 @@ export function useRoleActions(): ResourceAction<RoleListItem>[] {
           await Promise.all(rows.map((r) => roleService.remove(r.id)));
           toast.success(`Deleted ${rows.length} role(s).`);
           rt.reload();
-          router.push(rolesListPath);
+          // Form surface (AC-DLA-30 fix round 1): rt.backHref already carries
+          // this record's own ctx/i/from, so leaving via delete restores the
+          // exact list state (page/sort/filter) the user came from - not just
+          // page one. Row/bulk surfaces never set backHref and stay put.
+          router.push(rt.backHref ?? rolesListPath);
         },
       },
     ];

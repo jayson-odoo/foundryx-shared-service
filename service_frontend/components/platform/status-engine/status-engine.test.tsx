@@ -127,7 +127,7 @@ describe('StatusDrawer', () => {
     render(
       <StatusDrawer {...baseProps} status={null} canManage onCreate={onCreate} />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create status' }));
     expect(await screen.findByText('Label is required.')).toBeInTheDocument();
     expect(onCreate).not.toHaveBeenCalled();
   });
@@ -139,7 +139,7 @@ describe('StatusDrawer', () => {
     );
     fireEvent.change(screen.getByLabelText(/Label/), { target: { value: 'On Hold' } });
     fireEvent.click(screen.getByRole('switch', { name: 'Blocks access' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create status' }));
     await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
     // The picker works in hex (default = the gray token swatch).
     expect(onCreate).toHaveBeenCalledWith('On Hold', '#6B7280', expect.objectContaining({
@@ -161,7 +161,7 @@ describe('StatusDrawer', () => {
 
   it('hides ALL manage controls without statuses.manage', () => {
     render(<StatusDrawer {...baseProps} status={pending} canManage={false} />);
-    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save status' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
     expect(screen.getByLabelText(/Label/)).toBeDisabled();
   });
@@ -248,7 +248,7 @@ describe('TransitionDrawer', () => {
         canManage={false}
       />,
     );
-    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save transition' })).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Delete transition' }),
     ).not.toBeInTheDocument();
@@ -304,7 +304,7 @@ describe('TransitionDrawer', () => {
         onUpdate={onUpdate}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save transition' }));
     expect(
       await screen.findByText('An automatic transition needs at least one condition.'),
     ).toBeInTheDocument();

@@ -112,7 +112,7 @@ export function IdeasView() {
       <IdeaClusterSuggestions
         onPromote={(cluster, meta) => promoteIdeasToBr(cluster, router, meta)}
       />
-      <ResourceList key={version} config={config} />
+      <ResourceList key={version} config={config} hideHeader restoreFromCtx />
       {dialogOpen && (
         <IdeaCaptureDialog
           products={products}

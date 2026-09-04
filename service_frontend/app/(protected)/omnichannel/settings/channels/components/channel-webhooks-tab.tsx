@@ -62,7 +62,7 @@ export function ChannelWebhooksTab({ channelId }: { channelId: string }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <ResourceList key={reloadKey} config={config} />
+      <ResourceList key={reloadKey} config={config} hideHeader />
 
       <WebhookEndpointDialog
         channelId={channelId}

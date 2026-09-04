@@ -1,15 +1,9 @@
 'use client';
 
-import {
-  Toolbar,
-  ToolbarActions,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { useSettings } from '@/providers/settings-provider';
 import { Button } from '@/components/ui/button';
 import { Container } from '@/components/common/container';
+import { PageHeader } from '@/components/platform/page-header';
 import { AccountEnterpriseContent } from '@/app/(protected)/account/billing/enterprise/content';
 import { PageNavbar } from '@/app/(protected)/account/page-navbar';
 
@@ -21,17 +15,14 @@ export default function AccountEnterprisePage() {
       <PageNavbar />
       {settings?.layout === 'demo1' && (
         <Container>
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>
-                Advanced Billing Solutions for Large Businesses
-              </ToolbarDescription>
-            </ToolbarHeading>
-            <ToolbarActions>
-              <Button variant="outline">Order History</Button>
-            </ToolbarActions>
-          </Toolbar>
+          <PageHeader
+            description="Advanced Billing Solutions for Large Businesses"
+            actions={
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant="outline">Order History</Button>
+              </div>
+            }
+          />
         </Container>
       )}
       <Container>

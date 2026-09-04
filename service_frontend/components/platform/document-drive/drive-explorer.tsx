@@ -506,7 +506,7 @@ export function DriveExplorer() {
         open={newFolderParent !== null}
         title="New folder"
         label="Folder name"
-        confirmLabel="Create"
+        confirmLabel="Create folder"
         onSubmit={async (name) => {
           await drive.createFolder(name, newFolderParent?.parentId ?? null);
           setTreeKey((k) => k + 1);
@@ -517,6 +517,7 @@ export function DriveExplorer() {
         open={!!rename}
         title={rename?.kind === 'folder' ? 'Rename folder' : 'Rename file'}
         label="Name"
+        confirmLabel={rename?.kind === 'folder' ? 'Rename folder' : 'Rename file'}
         initialValue={rename?.name}
         onSubmit={async (name) => {
           if (!rename) return;

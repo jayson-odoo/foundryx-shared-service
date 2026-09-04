@@ -76,7 +76,7 @@ export function FormRenderer({
   paged = false,
   onSubmit,
   submitting = false,
-  submitLabel = 'Submit',
+  submitLabel = 'Submit form',
   flat = false,
   submissionId,
   fileFetcher,

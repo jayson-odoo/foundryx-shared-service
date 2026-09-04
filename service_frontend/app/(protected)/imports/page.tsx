@@ -1,16 +1,13 @@
 'use client';
 
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
-import { Container } from '@/components/common/container';
-import { Card, CardContent } from '@/components/ui/card';
+import type { ImportJob } from '@/types/import';
+import { useDatetime } from '@/hooks/use-datetime';
+import { useTerminology } from '@/hooks/use-terminology';
+import { importService } from '@/services/import-service';
 import { Badge } from '@/components/ui/badge';
+import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
@@ -20,12 +17,13 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { useDatetime } from '@/hooks/use-datetime';
-import { useTerminology } from '@/hooks/use-terminology';
-import { importService } from '@/services/import-service';
-import type { ImportJob } from '@/types/import';
+import { Container } from '@/components/common/container';
+import { PageHeader } from '@/components/platform/page-header';
 
-const STATUS_TONE: Record<string, 'success' | 'destructive' | 'secondary' | 'primary'> = {
+const STATUS_TONE: Record<
+  string,
+  'success' | 'destructive' | 'secondary' | 'primary'
+> = {
   done: 'success',
   failed: 'destructive',
   validated: 'primary',
@@ -50,67 +48,70 @@ export default function ImportsHistoryPage() {
   }, []);
 
   return (
-    <Fragment>
-      <Container width="fluid">
-        <Toolbar>
-          <ToolbarHeading>
-            <ToolbarPageTitle text={labelPlural('import')} />
-            <ToolbarDescription>Bulk-import history across your workspace.</ToolbarDescription>
-          </ToolbarHeading>
-        </Toolbar>
-      </Container>
-      <Container width="fluid">
-        <Card>
-          <CardContent className="p-0">
-            {jobs === null ? (
-              <div className="space-y-3 p-5">
-                {Array.from({ length: 4 }).map((_, i) => (
-                  <Skeleton key={i} className="h-10 w-full" />
-                ))}
-              </div>
-            ) : jobs.length === 0 ? (
-              <p className="text-muted-foreground p-8 text-center text-sm">No imports yet.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Entity</TableHead>
-                      <TableHead>Mode</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Rows</TableHead>
-                      <TableHead>Created</TableHead>
+    <Container width="fluid">
+      <PageHeader
+        title={labelPlural('import')}
+        description="Bulk-import history across your workspace."
+      />
+      <Card>
+        <CardContent className="p-0">
+          {jobs === null ? (
+            <div className="space-y-3 p-5">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-10 w-full" />
+              ))}
+            </div>
+          ) : jobs.length === 0 ? (
+            <p className="text-muted-foreground p-8 text-center text-sm">
+              No imports yet.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Entity</TableHead>
+                    <TableHead>Mode</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Rows</TableHead>
+                    <TableHead>Created</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {jobs.map((j) => (
+                    <TableRow
+                      key={j.id}
+                      className="cursor-pointer"
+                      onClick={() => router.push(`/imports/${j.id}`)}
+                    >
+                      <TableCell className="font-medium">
+                        {j.entityType}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {j.mode}
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={STATUS_TONE[j.status] ?? 'secondary'}
+                          appearance="light"
+                        >
+                          {j.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        {j.validRows}/{j.totalRows}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {formatDateTime(j.createdAt)}
+                      </TableCell>
                     </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {jobs.map((j) => (
-                      <TableRow
-                        key={j.id}
-                        className="cursor-pointer"
-                        onClick={() => router.push(`/imports/${j.id}`)}
-                      >
-                        <TableCell className="font-medium">{j.entityType}</TableCell>
-                        <TableCell className="text-muted-foreground">{j.mode}</TableCell>
-                        <TableCell>
-                          <Badge variant={STATUS_TONE[j.status] ?? 'secondary'} appearance="light">
-                            {j.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          {j.validRows}/{j.totalRows}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {formatDateTime(j.createdAt)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </Container>
-    </Fragment>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </Container>
   );
 }

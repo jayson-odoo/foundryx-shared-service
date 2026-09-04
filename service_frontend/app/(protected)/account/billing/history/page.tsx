@@ -1,16 +1,10 @@
 'use client';
 
 import { Fragment } from 'react';
-import {
-  Toolbar,
-  ToolbarActions,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { useSettings } from '@/providers/settings-provider';
 import { Button } from '@/components/ui/button';
 import { Container } from '@/components/common/container';
+import { PageHeader } from '@/components/platform/page-header';
 import { AccountHistoryContent } from '@/app/(protected)/account/billing/history/content';
 import { PageNavbar } from '@/app/(protected)/account/page-navbar';
 
@@ -22,17 +16,14 @@ export default function AccountHistoryPage() {
       <PageNavbar />
       {settings?.layout === 'demo1' && (
         <Container>
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>
-                Central Hub for Personal Customization
-              </ToolbarDescription>
-            </ToolbarHeading>
-            <ToolbarActions>
-              <Button variant="outline">Billing</Button>
-            </ToolbarActions>
-          </Toolbar>
+          <PageHeader
+            description="Central Hub for Personal Customization"
+            actions={
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant="outline">Billing</Button>
+              </div>
+            }
+          />
         </Container>
       )}
       <Container>

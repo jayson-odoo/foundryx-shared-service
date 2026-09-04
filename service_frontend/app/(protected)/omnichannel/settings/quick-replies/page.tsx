@@ -2,24 +2,18 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
-import { Container } from '@/components/common/container';
-import { ResourceList } from '@/components/platform/resource-list';
-import { RequirePermission } from '@/components/common/require-permission';
-import { useQuickReplies } from '@/hooks/use-quick-replies';
-import { workspaceService } from '@/services/workspace-service';
 import type { QuickReply } from '@/types/omnichannel';
+import { useQuickReplies } from '@/hooks/use-quick-replies';
 import type {
   QuickReplyCreateInput,
   QuickReplyUpdateInput,
 } from '@/services/quick-reply-service';
-import { useQuickRepliesListConfig } from './use-quick-replies-list-config';
+import { workspaceService } from '@/services/workspace-service';
+import { Container } from '@/components/common/container';
+import { RequirePermission } from '@/components/common/require-permission';
+import { ResourceList } from '@/components/platform/resource-list';
 import { QuickReplyDialog } from './quick-reply-dialog';
+import { useQuickRepliesListConfig } from './use-quick-replies-list-config';
 
 /**
  * Quick-replies settings (plan sprint-3/12) - canned responses the inbox
@@ -32,7 +26,9 @@ function QuickRepliesView() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [resolving, setResolving] = useState(true);
   useEffect(() => {
-    const override = new URLSearchParams(window.location.search).get('workspaceId');
+    const override = new URLSearchParams(window.location.search).get(
+      'workspaceId',
+    );
     if (override) {
       setWorkspaceId(override);
       setResolving(false);
@@ -83,7 +79,11 @@ function QuickRepliesView() {
           await remove(item.id);
           toast.success('Quick reply deleted.');
         } catch (e) {
-          toast.error(e instanceof Error ? e.message : 'Could not delete the quick reply.');
+          toast.error(
+            e instanceof Error
+              ? e.message
+              : 'Could not delete the quick reply.',
+          );
         }
       },
     }),
@@ -131,16 +131,6 @@ export default function QuickRepliesPage() {
   return (
     <RequirePermission permission="workspaces.manage">
       <Fragment>
-        <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>
-                Canned responses agents insert from the inbox composer.
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
         <Container width="fluid">
           <QuickRepliesView />
         </Container>

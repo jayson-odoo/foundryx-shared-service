@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { FileText, GitBranch, History, Lightbulb, MessageSquare, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ListQuery } from '@/types/resource';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { ApiError } from '@/lib/api-client';
 import { businessRequirementService } from '@/services/business-requirement-service';
@@ -162,6 +163,20 @@ export function useBrForm(
     onFieldErrors: setServerFieldErrors,
   });
 
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
+  const fetchRecordAt = useCallback(async (query: ListQuery, index: number) => {
+    const all = await businessRequirementService.list({
+      filter: query.statusView === 'trashed' ? 'archived' : 'active',
+      search: query.search,
+    });
+    const row = all[index];
+    return { recordId: row?.id ?? null, total: all.length };
+  }, []);
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => brFormHref(recordId, { ctx, index }),
+    [],
+  );
+
   const config = useMemo<ResourceFormConfig<BusinessRequirementDetail> | null>(() => {
     if (!br) return null;
 
@@ -179,10 +194,12 @@ export function useBrForm(
             'This permanently removes the BR and its idea links. This action cannot be undone.',
           confirmLabel: 'Delete',
         },
-        run: async () => {
+        run: async (_rows, rt) => {
           await businessRequirementService.remove(brId);
           toast.success('Business requirement deleted.');
-          router.push(BR_PATH);
+          // Carry the record's own ctx/i/from back to the list (AC-DLA-30
+          // fix round 2) instead of a bare list path.
+          router.push(rt.backHref ?? BR_PATH);
         },
       },
     ];
@@ -257,17 +274,7 @@ export function useBrForm(
       isDirty,
       onSave,
       onCancel,
-      recordNav: {
-        fetchAt: async (query, index) => {
-          const all = await businessRequirementService.list({
-            filter: query.statusView === 'trashed' ? 'archived' : 'active',
-            search: query.search,
-          });
-          const row = all[index];
-          return { recordId: row?.id ?? null, total: all.length };
-        },
-        buildHref: (recordId, ctx, index) => brFormHref(recordId, { ctx, index }),
-      },
+      recordNav: { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
     answers,
@@ -285,6 +292,8 @@ export function useBrForm(
     onSave,
     router,
     serverFieldErrors,
+    fetchRecordAt,
+    buildRecordHref,
   ]);
 
   return { config, isLoading, notFound };

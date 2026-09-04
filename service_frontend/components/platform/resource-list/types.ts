@@ -31,6 +31,16 @@ export interface ResourceActionRuntime {
   ctx?: string;
   /** Global index of the row within the current query (row surface only). */
   index?: number;
+  /**
+   * The list href a FORM-surface action should navigate to after a delete/
+   * trash success (AC-DLA-30 fix round 1, "post-delete navigation") - the
+   * SAME href the record's own Back button computes: `config.backHref` with
+   * the record's current `ctx`/`i`/`from` reattached, so leaving via a
+   * delete restores the exact list state the user came from rather than a
+   * bare default path. Form surface only (row/bulk actions already have
+   * `ctx` and stay on the list).
+   */
+  backHref?: string;
   /** Refresh the list after a mutating action. */
   reload: () => void;
 }
@@ -80,6 +90,13 @@ export interface ExportColumn {
 export interface ResourceListConfig<T extends object> {
   /** Stable key for per-user column prefs (e.g. 'users.list'). */
   viewKey: string;
+  /**
+   * Overrides `PageHeader`'s auto-resolved (menu-derived) title. Omit for the
+   * common case - the sidebar entry's own label already reads right.
+   */
+  pageTitle?: string;
+  /** Optional meta line under the `PageHeader` breadcrumb trail. */
+  pageDescription?: import('react').ReactNode;
   columns: ColumnDef<T>[];
   /**
    * Optional card renderer. When set, the list offers a card/list view toggle

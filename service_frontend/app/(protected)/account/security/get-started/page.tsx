@@ -2,15 +2,10 @@
 
 import { Fragment } from 'react';
 import Link from 'next/link';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { useSettings } from '@/providers/settings-provider';
 import { Button } from '@/components/ui/button';
 import { Container } from '@/components/common/container';
+import { PageHeader } from '@/components/platform/page-header';
 import { PageNavbar } from '@/app/(protected)/account/page-navbar';
 import { AccountSecurityGetStartedContent } from '@/app/(protected)/account/security/get-started/content';
 
@@ -22,10 +17,9 @@ export default function AccountSecurityGetStartedPage() {
       <PageNavbar />
       {settings?.layout === 'demo1' && (
         <Container>
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>
+          <PageHeader
+            description={
+              <>
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-secondary-foreground">
                     19 issues need your attention
@@ -37,9 +31,9 @@ export default function AccountSecurityGetStartedPage() {
                     </Link>
                   </Button>
                 </div>
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
+              </>
+            }
+          />
         </Container>
       )}
       <Container>

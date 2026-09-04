@@ -1,8 +1,9 @@
 'use client';
 
 import * as React from 'react';
-import { CSSProperties, Fragment, ReactNode, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { CSSProperties, Fragment, ReactNode, useCallback, useEffect, useRef } from 'react';
+import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useDataGrid } from '@/components/ui/data-grid';
 import { Cell, Column, flexRender, Header, HeaderGroup, Row, Table } from '@tanstack/react-table';
@@ -164,9 +165,66 @@ function shouldShowSkeletonRows<TData>(
   );
 }
 
+/**
+ * "Back restores the row" (AC-DLA-30): on list mount, when `from` names a row
+ * on the CURRENT page, scroll it into view and mark it `data-returned` for a
+ * highlight the row's own class list turns into `bg-primary/5` - cleared on
+ * the next pointer event (a deliberate interaction, not raw mouse jitter).
+ * Scoped to THIS grid's own scroller (never a bare `document.querySelector`)
+ * so two grids on one page can never cross-match a row id. A one-shot ref
+ * guard, not a dependency array, because the target only becomes queryable
+ * once TanStack's row model AND the DOM have both caught up with a fetch that
+ * resolves after mount - re-checking every render until it succeeds (or the
+ * id turns out not to be on this page) is cheap and self-terminating.
+ */
+function useRestoreReturnedRow(scrollerRef: React.RefObject<HTMLDivElement | null>) {
+  const { table } = useDataGrid();
+  const searchParams = useSearchParams();
+  const done = useRef(false);
+  // Fix round 1: `{ once: true }` only removes the listener AFTER it fires -
+  // a user who navigates away (unmounting this grid) before ever pointing
+  // down anywhere left it registered on `document` forever. Tracked here so
+  // the unmount effect below can remove whichever one is currently live.
+  const clearHighlightRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    if (done.current) return;
+    const from = searchParams.get('from');
+    if (!from) {
+      done.current = true;
+      return;
+    }
+    const rows = table.getRowModel().rows;
+    if (rows.length === 0) return; // data not loaded yet - retry next render
+    if (!rows.some((r) => r.id === from)) {
+      done.current = true; // `from` names a row that isn't on this page
+      return;
+    }
+    const el = scrollerRef.current?.querySelector<HTMLElement>(
+      `[data-row-id="${CSS.escape(from)}"]`,
+    );
+    if (!el) return; // TanStack row exists but its <tr> hasn't painted yet
+    done.current = true;
+    el.scrollIntoView({ block: 'center' });
+    el.setAttribute('data-returned', 'true');
+    const clearHighlight = () => el.removeAttribute('data-returned');
+    document.addEventListener('pointerdown', clearHighlight, { once: true });
+    clearHighlightRef.current = clearHighlight;
+  });
+
+  useEffect(() => {
+    return () => {
+      if (clearHighlightRef.current) {
+        document.removeEventListener('pointerdown', clearHighlightRef.current);
+      }
+    };
+  }, []);
+}
+
 function DataGridTableBase({ children }: { children: ReactNode }) {
   const { props, table } = useDataGrid();
   const { ref: scrollerRef, isFading } = useHorizontalOverflow<HTMLDivElement>();
+  useRestoreReturnedRow(scrollerRef);
 
   // `getTotalSize()` is the sum of the visible leaf columns' widths - a
   // DEFINITE length the browser can resolve, unlike `min-w-max` on a
@@ -262,11 +320,20 @@ function DataGridTableHeadRowCell<TData>({
   header,
   dndRef,
   dndStyle,
+  primaryColumnIndex,
 }: {
   children: ReactNode;
   header: Header<TData, unknown>;
   dndRef?: React.Ref<HTMLTableCellElement>;
   dndStyle?: CSSProperties;
+  /**
+   * The table's primary-column index, computed ONCE by `DataGridTable`
+   * (fix round 1) - column order/visibility is uniform across every header
+   * cell, so recomputing `firstDataColumnIndex` per cell was pure waste.
+   * Falls back to a local computation for any direct caller that doesn't
+   * pass it (none in this codebase; kept for API compatibility).
+   */
+  primaryColumnIndex?: number;
 }) {
   const { props } = useDataGrid();
 
@@ -277,8 +344,9 @@ function DataGridTableHeadRowCell<TData>({
   const headerCellSpacing = headerCellSpacingVariants({
     size: props.tableLayout?.dense ? 'dense' : 'default',
   });
-  const isMobilePinned =
-    !isPinned && column.getIndex() === firstDataColumnIndex(header.headerGroup.headers.map((h) => h.column));
+  const resolvedPrimaryIndex =
+    primaryColumnIndex ?? firstDataColumnIndex(header.headerGroup.headers.map((h) => h.column));
+  const isMobilePinned = !isPinned && column.getIndex() === resolvedPrimaryIndex;
 
   return (
     <th
@@ -416,6 +484,20 @@ function fromOwnRowControl(target: EventTarget | null): boolean {
 }
 
 /**
+ * Same idea as `ROW_INTERACTIVE_SELECTOR`, minus `a` - for `PrimaryCellLink`
+ * (AC-DLA-14/29): a cell-owned control (a checkbox, an inline action button)
+ * nested inside the primary cell's now-real `<a>` is invalid-but-real HTML
+ * (`<a><button/></a>`), and a click on it bubbles to the anchor same as any
+ * other descendant - the browser follows the link unless something stops it.
+ * `ROW_INTERACTIVE_SELECTOR` itself can't be reused here: every element the
+ * check runs against is already inside the anchor, so `closest('a,...')`
+ * would trivially match the anchor itself on ANY click, not just one aimed
+ * at a nested control.
+ */
+const PRIMARY_CELL_OWN_CONTROL_SELECTOR =
+  'button,input,select,textarea,label,[role="checkbox"],[role="menuitem"],[role="combobox"]';
+
+/**
  * `'#'`/`''` from a `rowHref` callback is AC-DLA-29's sentinel for "this
  * particular row has no detail page" (a list otherwise wired for navigation
  * can still have non-navigable rows) - the primitive itself must treat it as
@@ -458,6 +540,8 @@ function dataGridBodyRowClass<TData>(
     // own hover/selected/striped state rather than carrying a flat
     // background of its own.
     'group hover:bg-muted/40 data-[state=selected]:bg-muted/50',
+    // AC-DLA-30: the row Back restored, until the next pointer event.
+    'transition-[background-color,opacity] duration-(--duration-fast) ease-(--ease-standard) data-[returned=true]:bg-primary/5',
     (isLinkRow || Boolean(props.onRowClick) || (unknownHref && Boolean(props.rowHref))) && 'cursor-pointer',
     isLinkRow &&
       // AC-DLA-14 fix round 1: `background-color` (the active/hover states)
@@ -465,7 +549,7 @@ function dataGridBodyRowClass<TData>(
       // `motion-reduce:transition-none` - the tokens already collapse to
       // ~0 under reduced motion (T1's preference block), so a second,
       // per-component override here was redundant.
-      'active:bg-muted/60 transition-[background-color,opacity] duration-(--duration-fast) ease-(--ease-standard) ' +
+      'active:bg-muted/60 ' +
         // Inset ring (fix round 1): the scroller clips an outer
         // focus-visible ring, so the row needs its own visible indicator.
         'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
@@ -484,14 +568,22 @@ function DataGridTableBodyRow<TData>({
   row,
   dndRef,
   dndStyle,
+  href: hrefProp,
 }: {
   children: ReactNode;
   row: Row<TData>;
   dndRef?: React.Ref<HTMLTableRowElement>;
   dndStyle?: CSSProperties;
+  /**
+   * This row's resolved href, computed ONCE by the caller (`DataGridTable`,
+   * fix round 1) so the SAME value reaches both this row and its cells
+   * instead of each recomputing `props.rowHref(row.original)` itself. Falls
+   * back to a local computation when omitted (API compatibility).
+   */
+  href?: string;
 }) {
   const { props, table } = useDataGrid();
-  const href = props.rowHref ? props.rowHref(row.original) : undefined;
+  const href = hrefProp ?? (props.rowHref ? props.rowHref(row.original) : undefined);
 
   if (hasRowHref(href)) {
     return (
@@ -505,6 +597,7 @@ function DataGridTableBodyRow<TData>({
     <tr
       ref={dndRef}
       style={{ ...(dndStyle ? dndStyle : null) }}
+      data-row-id={row.id}
       data-state={table.options.enableRowSelection && row.getIsSelected() ? 'selected' : undefined}
       onClick={() => props.onRowClick && props.onRowClick(row.original)}
       className={dataGridBodyRowClass(props, table.options.enableRowSelection ?? false, false)}
@@ -557,6 +650,7 @@ function LinkableDataGridTableBodyRow<TData>({
       ref={dndRef}
       style={{ ...(dndStyle ? dndStyle : null) }}
       tabIndex={0}
+      data-row-id={row.id}
       data-state={table.options.enableRowSelection && row.getIsSelected() ? 'selected' : undefined}
       onClick={(event) => {
         // Primary button only - a synthetic dispatch or assistive tech can
@@ -603,16 +697,72 @@ function DataGridTableBodyRowExpandded<TData>({ row }: { row: Row<TData> }) {
   );
 }
 
+/**
+ * The real, accessible `<a href>` inside the primary (first data) cell (AC-
+ * DLA-29): a `next/link` under `display: contents` (`className="contents"`)
+ * so it takes no box of its own - the cell's normal content fills the same
+ * space. `tabIndex={-1}` on purpose: the ROW is the single Tab stop
+ * (AC-DLA-14, unchanged); this anchor is for the OTHER access paths a plain
+ * row click can't give - table/browse-mode screen readers finding a real
+ * link inside the cell, ctrl/cmd-click, "open link in new tab", drag-to-
+ * bookmark, hover status-bar URL preview. A raw click ON this element is
+ * left to the browser/Next router entirely: `fromOwnRowControl` (the row's
+ * own click handler) already treats any `<a>` as "handled by the control
+ * itself" and bails, so the row-level handler DELEGATES to this anchor
+ * rather than double-navigating. `prefetch={false}` - hover prefetch is
+ * already owned by the row's own `onPointerEnter` (`usePrefetchOnce`, once
+ * per href); Link's own viewport-based prefetch would be a second,
+ * uncoordinated path to the same cache.
+ */
+function PrimaryCellLink({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <Link
+      href={href}
+      prefetch={false}
+      tabIndex={-1}
+      className="contents"
+      onClick={(event) => {
+        // A cell-owned control (see the selector's own comment) must never
+        // trigger this anchor's navigation just because it happens to sit
+        // inside it - the row's own click handler already stopPropagation's-
+        // equivalent (`fromOwnRowControl`) for the SAME reason.
+        if ((event.target as Element).closest(PRIMARY_CELL_OWN_CONTROL_SELECTOR)) {
+          event.preventDefault();
+        }
+      }}
+    >
+      {children}
+    </Link>
+  );
+}
+
 function DataGridTableBodyRowCell<TData>({
   children,
   cell,
   dndRef,
   dndStyle,
+  primaryColumnIndex,
+  rowHref: rowHrefProp,
 }: {
   children: ReactNode;
   cell: Cell<TData, unknown>;
   dndRef?: React.Ref<HTMLTableCellElement>;
   dndStyle?: CSSProperties;
+  /**
+   * The table's primary-column index, computed ONCE by `DataGridTable` (fix
+   * round 1, nit) - it was being recomputed from `row.getVisibleCells()`
+   * TWICE per cell (once for the mobile-pin check, once for the primary-
+   * cell check) though it never varies across rows or cells. Falls back to
+   * a local per-cell computation when omitted (API compatibility).
+   */
+  primaryColumnIndex?: number;
+  /**
+   * This row's resolved href, computed ONCE by `DataGridTableBodyRow` (fix
+   * round 1) - was recomputed here via `props.rowHref(row.original)` on
+   * EVERY cell in the row (once per column) instead of once per row. Falls
+   * back to a local computation when omitted.
+   */
+  rowHref?: string;
 }) {
   const { props } = useDataGrid();
 
@@ -623,9 +773,20 @@ function DataGridTableBodyRowCell<TData>({
   const bodyCellSpacing = bodyCellSpacingVariants({
     size: props.tableLayout?.dense ? 'dense' : 'default',
   });
-  const isMobilePinned =
-    !isPinned &&
-    column.getIndex() === firstDataColumnIndex(row.getVisibleCells().map((c) => c.column));
+  const resolvedPrimaryIndex =
+    primaryColumnIndex ?? firstDataColumnIndex(row.getVisibleCells().map((c) => c.column));
+  const isMobilePinned = !isPinned && column.getIndex() === resolvedPrimaryIndex;
+  // The primary cell concept is independent of desktop pin state (unlike the
+  // mobile-pin visual above) - it is whichever leaf column is the first REAL
+  // data column, pinned or not.
+  const isPrimaryCell = column.getIndex() === resolvedPrimaryIndex;
+  const rowHref = rowHrefProp ?? (props.rowHref ? props.rowHref(row.original) : undefined);
+  const content =
+    isPrimaryCell && hasRowHref(rowHref) ? (
+      <PrimaryCellLink href={rowHref}>{children}</PrimaryCellLink>
+    ) : (
+      children
+    );
 
   return (
     <td
@@ -654,7 +815,7 @@ function DataGridTableBodyRowCell<TData>({
           : '',
       )}
     >
-      {isMobilePinned ? <div className={MOBILE_PIN_CONTENT_CLASS_BODY}>{children}</div> : children}
+      {isMobilePinned ? <div className={MOBILE_PIN_CONTENT_CLASS_BODY}>{content}</div> : content}
     </td>
   );
 }
@@ -715,12 +876,12 @@ function DataGridTableRowSelect<TData>({ row, size }: { row: Row<TData>; size?: 
 }
 
 function DataGridTableRowSelectAll({ size }: { size?: 'sm' | 'md' | 'lg' }) {
-  const { table, recordCount, isLoading } = useDataGrid();
+  const { table, recordCount, isPlaceholderData } = useDataGrid();
 
   return (
     <Checkbox
       checked={table.getIsAllPageRowsSelected() || (table.getIsSomePageRowsSelected() && 'indeterminate')}
-      disabled={isLoading || recordCount === 0}
+      disabled={recordCount === 0 && !isPlaceholderData}
       onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
       aria-label="Select all"
       size={size}
@@ -733,6 +894,11 @@ function DataGridTable<TData>() {
   const { table, isLoading, props } = useDataGrid();
   const pagination = table.getState().pagination;
   const showSkeleton = shouldShowSkeletonRows(props, isLoading, table);
+  // Computed ONCE for the whole table (fix round 1, nit): column order/
+  // visibility is uniform across every row and header cell, so this used to
+  // be needlessly recomputed per cell (twice, even, in the body) via each
+  // cell's own `row.getVisibleCells()`/`header.headerGroup.headers` walk.
+  const primaryColumnIndex = firstDataColumnIndex(table.getVisibleLeafColumns());
 
   return (
     <DataGridTableBase>
@@ -744,7 +910,7 @@ function DataGridTable<TData>() {
                 const { column } = header;
 
                 return (
-                  <DataGridTableHeadRowCell header={header} key={index}>
+                  <DataGridTableHeadRowCell header={header} key={index} primaryColumnIndex={primaryColumnIndex}>
                     {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
                     {props.tableLayout?.columnsResizable && column.getCanResize() && (
                       <DataGridTableHeadRowCellResize header={header} />
@@ -774,12 +940,22 @@ function DataGridTable<TData>() {
           ))
         ) : table.getRowModel().rows.length ? (
           table.getRowModel().rows.map((row: Row<TData>, index) => {
+            // Computed ONCE per row (fix round 1) - was recomputed by every
+            // cell in the row via its own `props.rowHref(row.original)` call
+            // (each of which, for a Resource list, re-ran an O(n) row-index
+            // lookup + rebuilt a URLSearchParams - see resource-list.tsx).
+            const rowHref = props.rowHref ? props.rowHref(row.original) : undefined;
             return (
               <Fragment key={row.id}>
-                <DataGridTableBodyRow row={row} key={index}>
+                <DataGridTableBodyRow row={row} key={index} href={rowHref}>
                   {row.getVisibleCells().map((cell: Cell<TData, unknown>, colIndex) => {
                     return (
-                      <DataGridTableBodyRowCell cell={cell} key={colIndex}>
+                      <DataGridTableBodyRowCell
+                        cell={cell}
+                        key={colIndex}
+                        primaryColumnIndex={primaryColumnIndex}
+                        rowHref={rowHref}
+                      >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </DataGridTableBodyRowCell>
                     );
