@@ -73,11 +73,12 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
   // whose page route belongs to the PARENT record, not this one - a wrong
   // noun is worse than none.
   const currentItem = config.embedded ? undefined : getCurrentItem(MENU_SIDEBAR);
-  const entityNoun = currentItem?.termKey
+  const derivedNoun = currentItem?.termKey
     ? label(currentItem.termKey).toLowerCase()
     : currentItem?.title
       ? singularize(currentItem.title).toLowerCase()
       : undefined;
+  const entityNoun = config.entityNoun ?? derivedNoun;
   const saveLabel = entityNoun ? `Save ${entityNoun}` : 'Save';
   const createLabel = entityNoun ? `Create ${entityNoun}` : 'Create';
 

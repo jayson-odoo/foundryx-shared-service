@@ -109,6 +109,13 @@ describe('AC-DLA-28 ResourceForm header restructure', () => {
     expect(items[0].className).not.toContain('text-destructive');
   });
 
+  it('config.entityNoun overrides the sidebar-derived noun on the primary button (AC-DLA-35 fix round 1)', async () => {
+    render(<ResourceForm config={baseConfig({ entityNoun: 'task' })} />);
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByRole('button', { name: /edit/i }));
+    expect(screen.getByRole('button', { name: 'Save task' })).toBeInTheDocument();
+  });
+
   it('the primary is Edit when not editing, Cancel+Save while editing', async () => {
     render(<ResourceForm config={baseConfig()} />);
     expect(screen.getByRole('button', { name: /edit/i })).toBeInTheDocument();

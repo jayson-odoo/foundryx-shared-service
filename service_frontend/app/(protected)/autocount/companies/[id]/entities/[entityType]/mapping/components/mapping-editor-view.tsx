@@ -66,6 +66,10 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
         { label: `${entityLabel(entityType)} mapping` },
       ],
       backHref: acCompanyHref(companyId),
+      // This route lives under the company detail page (not its own list),
+      // so the sidebar-derived noun would resolve to "company" (AC-DLA-35
+      // fix round 1) - override with the actual entity being saved.
+      entityNoun: 'mapping',
       title: `${entityLabel(entityType)} field mapping`,
       subtitle: companyName ?? undefined,
       tabs: [
