@@ -1,9 +1,9 @@
-# AutoCount direct-DB SQL pack — SO / PO (+ masters) → Sorento
+# AutoCount direct-DB SQL pack - SO / PO (+ masters) → Sorento
 
 Companion to `22-autocount-db-etl.md`. These are the first real AutoCount
 (SQL Server) queries for the `sql_db` source. Written against the customer's
 schema dump (`AED_SORENTO.dbo.*`, AutoCount 2.x). Replace `AED_SORENTO` with
-the company database name configured on the AutoCount company row — the
+the company database name configured on the AutoCount company row - the
 `source_ref` qualifier (`{DatabaseName}:{key}`) is taken from THAT config, not
 from the SQL.
 
@@ -18,7 +18,7 @@ from the SQL.
 | Line mapping is FIXED: result column name == canonical field | Alias `Qty AS qty_ordered`, `UnitPrice AS unit_price`, … exactly. A misnamed column is silently dropped. |
 | `lineKeyColumn` / `lineProductColumn` / `lineWarehouseColumn` are picked in the UI | Keep those as native-named columns. |
 | `customer_ref` / `supplier_ref` mint `{DatabaseName}:{value}` via `ref_customer` / `ref_supplier` | `value` MUST equal the master task's key. Customers/suppliers already in Sorento are keyed on **`AutoKey`** (API-path convention), so the header JOINs Debtor/Creditor and exposes `AutoKey`. |
-| `product_ref` / `warehouse_ref` mint `{DatabaseName}:{lineProductColumn}` / `{…:lineWarehouseColumn}` | Must equal the product / warehouse master task's `keyColumns`. This pack keys BOTH on `AutoKey` (one rule; `ItemCode`/`Location` can be renamed in AutoCount — FKs are `ON UPDATE CASCADE`). |
+| `product_ref` / `warehouse_ref` mint `{DatabaseName}:{lineProductColumn}` / `{…:lineWarehouseColumn}` | Must equal the product / warehouse master task's `keyColumns`. This pack keys BOTH on `AutoKey` (one rule; `ItemCode`/`Location` can be renamed in AutoCount - FKs are `ON UPDATE CASCADE`). |
 | `sales_agent_ref` mints `agent:{CODE}` (upper, unqualified) | Pass `SalesAgent` code raw. |
 | `status` vocabulary: `open · partial · fulfilled · closed · cancelled` | Derived in SQL from `Cancelled` (`'T'/'F'`), header `Transferable`, and line `TransferedQty` vs `Qty`; mapped with plain `string`. |
 | `d_Boolean` = `'T'`/`'F'` strings | Compare as strings; masters' `is_active` uses transform `t_f_bool`. |
@@ -28,7 +28,7 @@ from the SQL.
 
 ---
 
-## 1. Sales Order — header query
+## 1. Sales Order - header query
 
 Task: entity `sales_order`, `source_impl = sql_db`.
 
@@ -107,7 +107,7 @@ Header mapping rows (operator-authored on the Mapping tab)
 | `status` | `status` (required) | `string` |
 | `Note` | `internal_note` | `string` |
 
-## 2. Sales Order — line query
+## 2. Sales Order - line query
 
 ```sql
 SELECT
@@ -145,7 +145,7 @@ Notes
 
 ---
 
-## 3. Purchase Order — header query
+## 3. Purchase Order - header query
 
 Task: entity `purchase_order`, `source_impl = sql_db`.
 
@@ -189,7 +189,7 @@ OUTER APPLY (
 ) AS l
 ```
 
-`source_config` — identical to §1 except `query`/`lineQuery`.
+`source_config` - identical to §1 except `query`/`lineQuery`.
 
 Header mapping rows
 
@@ -204,7 +204,7 @@ Header mapping rows
 
 Do **not** map `internal_note` on PO.
 
-## 4. Purchase Order — line query
+## 4. Purchase Order - line query
 
 ```sql
 SELECT
@@ -240,9 +240,9 @@ Documents are `_DEPENDENT_ENTITIES`: an unresolved `*_ref` is a `retryable`
 verdict and the document stays staged until the master lands. Sync order:
 customers / suppliers / products / warehouses / sales agents → SO → PO.
 
-All keyed on `AutoKey` so refs line up with §1–§4.
+All keyed on `AutoKey` so refs line up with §1 - §4.
 
-### 5.1 Customer (`customer`) — replaces the API-path task if switching to DB
+### 5.1 Customer (`customer`) - replaces the API-path task if switching to DB
 
 ```sql
 SELECT
@@ -309,7 +309,7 @@ SELECT
     i.LastModified       AS LastModified
 FROM AED_SORENTO.dbo.Item AS i
 ```
-`keyColumns: ["AutoKey"]`, `watermarkColumn: "LastModified"`. Omit `[Image]` (varbinary MAX — hashing cost, no consumer field).
+`keyColumns: ["AutoKey"]`, `watermarkColumn: "LastModified"`. Omit `[Image]` (varbinary MAX - hashing cost, no consumer field).
 
 ### 5.4 Warehouse (`warehouse`)
 
@@ -328,7 +328,7 @@ SELECT
     w.IsActive      AS IsActive
 FROM AED_SORENTO.dbo.Location AS w
 ```
-`keyColumns: ["AutoKey"]`, no watermark (no `LastModified`; tiny table, full snapshot each run — `incrementalMinutes` floor is 15 without a watermark).
+`keyColumns: ["AutoKey"]`, no watermark (no `LastModified`; tiny table, full snapshot each run - `incrementalMinutes` floor is 15 without a watermark).
 
 ### 5.5 Product category (`product_category`)
 
@@ -346,7 +346,7 @@ FROM AED_SORENTO.dbo.ItemGroup AS g
 Not in the schema dump. AutoCount stores agents in `dbo.Agent`
 (`Agent`, `Description`, `IsActive`). Task query
 `SELECT a.Agent AS Agent, a.Description AS Description, a.IsActive AS IsActive FROM AED_SORENTO.dbo.Agent AS a`,
-`keyColumns: ["Agent"]` — ref is `agent:{AGENT}` (upper-cased, unqualified),
+`keyColumns: ["Agent"]` - ref is `agent:{AGENT}` (upper-cased, unqualified),
 which is exactly what `SO.SalesAgent` feeds into `sales_agent_ref`.
 
 ---
@@ -359,14 +359,13 @@ which is exactly what `SO.SalesAgent` feeds into `sales_agent_ref`.
    `SODTL` change detection (code change).
 2. **`DocStatus` semantics.** `char(1)` + `ExpiryTimeStamp` index suggests
    draft/expired documents. `SELECT DocStatus, COUNT(*) FROM SO GROUP BY DocStatus`.
-   If drafts exist (e.g. `'D'`), add `AND h.DocStatus = 'A'` — but note the
+   If drafts exist (e.g. `'D'`), add `AND h.DocStatus = 'A'` - but note the
    header wrap ANDs its own predicates, so filter inside the query body.
-3. **Non-stock lines.** `SELECT DtlType, COUNT(*) FROM SODTL WHERE ItemCode IS NULL GROUP BY DtlType`
-   — confirm `ItemCode IS NOT NULL` is the right cut.
+3. **Non-stock lines.** `SELECT DtlType, COUNT(*) FROM SODTL WHERE ItemCode IS NULL GROUP BY DtlType` - confirm `ItemCode IS NOT NULL` is the right cut.
 4. **Read-only login.** `pymssql` only, SQL auth; grant `db_datareader` on the
-   company DB and nothing else (no session read-only on MSSQL — the guard +
+   company DB and nothing else (no session read-only on MSSQL - the guard +
    login ARE the boundary).
-5. **Preview each query in the task editor first** — key/watermark/docDate
+5. **Preview each query in the task editor first** - key/watermark/docDate
    pickers only populate from a fresh preview, and the save-time wrap run
    surfaces MSSQL 8155/duplicate-name errors as a 422 instead of at run time.
 6. **`fromDate` sizing.** 2000 headers/run cap. Count
@@ -377,5 +376,5 @@ which is exactly what `SO.SalesAgent` feeds into `sales_agent_ref`.
    anchor, ref-keyed masters, per-line `source_ref`). Sorento `main` has masters
    only → `404 UNKNOWN_ENTITY`; the older `fix/ingest-status-codes-and-dry-run`
    branch uses `/external/sales-orders/ingest` + code-keyed lines → also 404.
-   The local `sorento-crm` clone is stale (tip 2026-08-14) — fetch before
+   The local `sorento-crm` clone is stale (tip 2026-08-14) - fetch before
    testing hop 2.
