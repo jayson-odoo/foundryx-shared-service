@@ -122,8 +122,10 @@ export function useConnectionActions(): ResourceAction<Connection>[] {
               ? `${rows[0].name} disconnected.`
               : `${rows.length} connections disconnected.`,
           );
-          // From the form surface the record is gone - return to the list.
-          if (pathname !== integrationsListPath) router.push(integrationsListPath);
+          // From the form surface the record is gone - return to the list,
+          // carrying the record's own ctx/i/from (AC-DLA-30 fix round 2) so
+          // the list restores exactly where the user left it.
+          if (pathname !== integrationsListPath) router.push(rt.backHref ?? integrationsListPath);
           else rt.reload();
         },
       },

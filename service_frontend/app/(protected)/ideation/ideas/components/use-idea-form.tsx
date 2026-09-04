@@ -180,10 +180,12 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           description: 'This permanently removes the idea from the repository.',
           confirmLabel: 'Delete',
         },
-        run: async (rows) => {
+        run: async (rows, rt) => {
           await ideationService.remove(rows[0].id);
           toast.success('Idea deleted.');
-          router.push(paths.listHref);
+          // Carry the record's own ctx/i/from back to the list (AC-DLA-30
+          // fix round 2) instead of a bare list path.
+          router.push(rt.backHref ?? paths.listHref);
         },
       },
     ];
