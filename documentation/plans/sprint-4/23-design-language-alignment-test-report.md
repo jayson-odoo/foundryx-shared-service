@@ -1136,3 +1136,111 @@ via `lsof -p $(lsof -ti :3002) | grep cwd` before every kill, per the worktree r
    confirming the header now paints correctly above a scrolling pinned column at both sizes.
 
 **Verdict: T2 fix round 2 DONE.** 8/8 findings resolved and re-verified; full gate green.
+
+## T2 - Fix round 3 (pin polish)
+
+Branch `sprint-4/23-T2b-pin-polish` off `sprint-4/23-design-language-alignment` (integration branch
+at `8cac6ec`, T2 already merged in). Two defects visible in fix round 2's own evidence screenshot
+(`fixround2-01-sticky-header-pinned-375.png`, Workflows list at 375 scrolled sideways): the pinned
+HEADER cell was translucent (scrolled-under header text showed through it) and the pinned BODY
+cell's content wasn't reliably clipped (long names bled into the next column). Both diagnosed via
+`agent-browser eval` on the real DOM (`getComputedStyle`) before any code change, per the brief.
+
+**1 - the pinned HEADER cell was translucent (`bg-muted/40`), letting the scrolled-under header
+text of another column show straight through it.** Live DOM check confirmed the exact mechanism:
+`getComputedStyle` on the pinned `th` returned `background-color: oklab(... / 0.4)` - the SAME
+`bg-muted/40` the header ROW paints underneath every `th` (itself correct - the row blends into
+its ancestor card). But the pinned cell has no such ancestor at those screen pixels; the columns
+sliding underneath it on scroll are unrelated data, not a backdrop. `MOBILE_PIN_CLASS_HEAD` now
+uses solid `bg-muted` (opaque) instead of `bg-muted/40`. The z-index/size diagnosis from the brief
+turned out clean on inspection - `z-index: 6` already matched the sticky `thead` (fix round 2's
+own fix) and the pinned `th`'s rendered width (`240px`) already matched its column exactly
+(`props.tableLayout.width` defaults to `'fixed'`, every real list uses the default) - only the
+opacity was wrong.
+**Fixed:** `components/ui/data-grid-table.tsx` (`MOBILE_PIN_CLASS_HEAD`).
+**Test:** `components/ui/data-grid.inventory.test.ts` - new assertion the declaration contains
+`max-sm:bg-muted!` and not `bg-muted/40`.
+**Live:** `fixround3-01-workflows-375-h-scroll-light.png` (scrolled to `scrollWidth`, "Name" header
+fully opaque, no "Published"/other-column text bleeding through) +
+`fixround3-02-workflows-375-midscroll-light.png` (a partial scroll position, same result).
+
+**2 - the pinned BODY cell's content overflowed into the neighbour column** ("Fan-out edges
+1788080274192" running into the next cell's text with no separation). Root cause: a
+`position: sticky` table cell does not reliably clip its own overflowing content via
+`overflow: hidden` - a real, documented cross-browser rendering gap on sticky cells inside a
+table. The cell's content here is a `flex flex-col` wrapper (title + `ClampedText` subtitle), not
+a bare text node; the `nowrap` the cell's own conditional `truncate` class sets is INHERITED down
+into that flex box, so a long title refuses to wrap and can grow past the cell's box - and the
+sticky `<td>`'s `overflow: hidden` does not reliably clip that overflow (confirmed via live
+`getBoundingClientRect` measurement across scroll positions). Fix: wrap the pinned body cell's
+`children` in a plain, NON-sticky `<div className="max-sm:overflow-hidden max-sm:truncate">` -
+an ordinary block box establishes its own clip that is not subject to the sticky-cell bug,
+applied ONLY when `isMobilePinned` so every other cell's DOM/layout is untouched. Also converted
+the two lists exercised by this evidence run (Workflows' `name` column, Users' `user` column) to
+render their primary label through `ClampedText` (already used for the WORKFLOWS subtitle, not
+yet the title) rather than a bare `<span>`, so the truncated text stays recoverable via ClampedText's
+tooltip-on-real-overflow contract, not just visually clipped.
+**Fixed:** `components/ui/data-grid-table.tsx` (`MOBILE_PIN_CONTENT_CLASS_BODY`, new wrapper on
+`DataGridTableBodyRowCell`), `app/(protected)/workflows/components/use-workflows-list-config.tsx`,
+`app/(protected)/user-management/users/components/use-users-list-config.tsx`.
+**Test:** `components/ui/data-grid.inventory.test.ts` - new assertion the wrapper class carries
+`max-sm:overflow-hidden`/`max-sm:truncate` and the conditional wrapper JSX is present verbatim.
+**Live:** `fixround3-01`/`-02` (Workflows, "Fan-out edges …" names now end in an ellipsis, no
+overlap with the "Updated"/"Trigger" text next to them).
+
+**3 - found live while re-verifying finding 2: the pinned cell's hover/selected/striped states
+were STILL translucent** (`group-hover:max-sm:bg-muted/40`, `group-data-[state=selected]:max-sm:
+bg-muted/50`, `group-odd:max-sm:bg-muted/90`) - the same bleed-through defect as finding 1, just
+gated on row state instead of always-on. Selecting a row and scrolling live reproduced it exactly:
+the Users list's selected "Admin User" pinned cell showed a scrolled-under date ("…Jul 2026,
+12:43") straight through the 50%-alpha selected tint. Fix: three new opaque tokens in
+`css/config.reui.css` (`--pinned-cell-hover`, `--pinned-cell-selected`, `--pinned-cell-striped`),
+each a `color-mix(in oklab, var(--muted) N%, var(--background))` - the SAME alpha math the old
+`bg-muted/N` classes expressed, pre-mixed against `--background` (the pinned cell's own resting
+colour) into a solid result. This keeps the intended visual WEIGHT (selected reads a touch
+stronger than hover, matching the row's own hierarchy) while leaving nothing to bleed through.
+One declaration each (`:root` only) - `--muted`/`--background` already flip under `.dark`, so the
+tokens recompute correctly per theme with no separate `.dark` entry needed (same pattern
+`--material-blur` already uses in the same file). The ROW itself is untouched and stays
+translucent (`bg-muted/40`/`bg-muted/50` etc.) - it blends into its ancestor card/dialog
+correctly; only the PINNED CELL needed the opaque swap, since it alone sits over unrelated
+scrolled-under content rather than a backdrop.
+**Fixed:** `css/config.reui.css` (3 new tokens), `components/ui/data-grid-table.tsx`
+(`MOBILE_PIN_CLASS_BODY`, `MOBILE_PIN_CLASS_BODY_STRIPED`).
+**Test:** `components/ui/data-grid.inventory.test.ts` - updated the existing "pinned cell
+background matches its row state" assertion to the new token classes (the row-level classes it
+also checks are unchanged) + a new assertion the three `color-mix` token declarations exist in
+`css/config.reui.css`.
+**Live:** `fixround3-09-users-375-selected-light.png` / `fixround3-10-users-375-selected-dark.png`
+(Admin User row selected, scrolled to the far right, pinned cell solid in both themes - a
+`getComputedStyle` check on the selected pinned `td` confirmed `background-color: oklab(...)` with
+NO alpha component) + `fixround3-04-workflows-375-selected-dark.png` (same check on Workflows,
+dark theme, mid-scroll).
+
+### Gate
+
+`npx eslint` on every touched file (clean), `npm test` (184 files / 1584 tests, +1 test file
+assertion net vs the round-2 baseline of 184/1581 - one existing assertion updated in place, three
+new assertions added), `rm -rf .next && npm run build` (green), restarted `:3002` (port ownership
+confirmed via `lsof -p $(lsof -ti :3002) | grep cwd` before every kill).
+
+### Definition of Done checklist (T2 fix round 3)
+
+1. Both named defects fixed, each with a code change + a test; a third related defect (hover/
+   selected/striped pinned-cell opacity) found live while re-verifying defect 2 and fixed the same
+   way, per the brief's own checklist item ("Check the pinned cell's own background is opaque...
+   in light AND dark, hover, selected and striped states").
+2. `npx eslint`, `npm test` (184/184 files, 1584/1584 tests), `npm run build` all green.
+3. `rm -rf .next && npm run build` before the final live check; port ownership confirmed via
+   `lsof -p $(lsof -ti :3002) | grep cwd` before the restart.
+4. No mock left behind, no backfill needed, no new permission - primitives-only fix round.
+5. Verified from the user's perspective at 375 AND 1280 on the real prod build, light AND dark, a
+   plain row AND a selected row, scrolled sideways AND vertically (page-level, `window.scrollTo`,
+   since the seeded Workflows/Users lists are too short to overflow the grid's own bounded
+   vertical scroller at these viewport heights) - Workflows and Users lists, real sidebar clicks
+   from `/` (mobile nav `Sheet` trigger + accordion + link, eval-`click()`'d per the existing
+   house note that a fresh Radix trigger sometimes needs a native `.click()` bridge rather than
+   the CDP click helper).
+
+**Verdict: T2 fix round 3 (pin polish) DONE.** Both named defects + one live-caught related defect
+resolved and re-verified; full gate green.
