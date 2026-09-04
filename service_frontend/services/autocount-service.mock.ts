@@ -1461,7 +1461,15 @@ export const mockAutocountService: AutocountService = {
   ): Promise<AutocountMappingView> {
     const view = mockMappingView(entityType);
     const headerRows = input.rows.filter((r) => (r.scope ?? 'header') === 'header');
-    const lineRows = input.rows.filter((r) => r.scope === 'line');
+    // Mirrors the real service's backward-compat fold (security re-review
+    // should-fix, sprint-5/02 review round): the dedicated `lineRows` field
+    // wins when present (even `[]`); a caller still folding scope='line'
+    // items into `rows` (the pre-existing shape) is honoured the same way
+    // for one release.
+    const lineRows =
+      input.lineRows !== undefined
+        ? input.lineRows
+        : input.rows.filter((r) => r.scope === 'line');
 
     // A required Sorento target left unmapped is the real failure the editor
     // guards; a target outside the accepted set is a 422 server-side. The mock

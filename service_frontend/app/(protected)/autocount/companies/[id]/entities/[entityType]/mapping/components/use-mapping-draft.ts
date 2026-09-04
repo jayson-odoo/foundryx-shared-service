@@ -74,8 +74,20 @@ export interface UseMappingDraftResult {
   onApplyFormula: (formula: string) => void;
   simulatorOpen: boolean;
   setSimulatorOpen: (open: boolean) => void;
-  /** The rows as the PUT sends them (trimmed source paths, scope-tagged). */
+  /** The rows as the PUT sends them (trimmed source paths, scope-tagged) -
+   * BOTH scopes combined, for Simulate previews (which take no wipe/
+   * untouched distinction - it never persists anything). */
   writeRows: () => AutocountMappingWriteRow[];
+  /**
+   * The split a real SAVE needs (security re-review should-fix, sprint-5/02
+   * review round): `rows` is header-only; `lineRows` is `undefined` for a
+   * master/GRN entity (no Lines tab at all - line scope stays untouched by
+   * definition), else the CURRENT line draft (possibly `[]` when the
+   * operator cleared it) - the editor's one Save button always resubmits
+   * its whole current draft, so a document entity's line scope is always
+   * "submitted" on save, an empty array included.
+   */
+  writeRowsForSave: () => { rows: AutocountMappingWriteRow[]; lineRows?: AutocountMappingWriteRow[] };
   /** The foolproof pre-save check - the message to show, or null when sendable. */
   validate: () => string | null;
   /** Revert to the loaded view. */
@@ -181,20 +193,33 @@ export function useMappingDraft(view: AutocountMappingView | null): UseMappingDr
     [builderTarget, header, lineScope],
   );
 
-  const writeRows = useCallback((): AutocountMappingWriteRow[] => {
-    const toWrite = (rows: MappingEditableRow[], scope: 'header' | 'line'): AutocountMappingWriteRow[] =>
+  const toWrite = useCallback(
+    (rows: MappingEditableRow[], scope: 'header' | 'line'): AutocountMappingWriteRow[] =>
       rows.map((r) => ({
         sourcePath: r.sourcePath.trim(),
         transform: r.transform,
         formula: r.formula,
         sorentoField: r.sorentoField,
         scope,
-      }));
-    return [
-      ...toWrite(header.rows, 'header'),
-      ...(hasLineScope ? toWrite(lineScope.rows, 'line') : []),
-    ];
-  }, [hasLineScope, header.rows, lineScope.rows]);
+      })),
+    [],
+  );
+
+  const writeRows = useCallback((): AutocountMappingWriteRow[] => [
+    ...toWrite(header.rows, 'header'),
+    ...(hasLineScope ? toWrite(lineScope.rows, 'line') : []),
+  ], [hasLineScope, header.rows, lineScope.rows, toWrite]);
+
+  const writeRowsForSave = useCallback((): {
+    rows: AutocountMappingWriteRow[];
+    lineRows?: AutocountMappingWriteRow[];
+  } => ({
+    rows: toWrite(header.rows, 'header'),
+    // `undefined` (no Lines tab at all - master/GRN) vs the current line
+    // draft, `[]` included, when this entity HAS one - the wire signal a
+    // header-only save needs (security re-review should-fix).
+    lineRows: hasLineScope ? toWrite(lineScope.rows, 'line') : undefined,
+  }), [hasLineScope, header.rows, lineScope.rows, toWrite]);
 
   const validate = useCallback((): string | null => {
     // Foolproof: every row needs a source + a target before it can be sent.
@@ -221,6 +246,7 @@ export function useMappingDraft(view: AutocountMappingView | null): UseMappingDr
     simulatorOpen,
     setSimulatorOpen,
     writeRows,
+    writeRowsForSave,
     validate,
     reset,
   };

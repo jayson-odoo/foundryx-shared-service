@@ -150,7 +150,8 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
         toast.error(problem);
         return false;
       }
-      const ok = await mapping.save(draft.writeRows());
+      const { rows, lineRows } = draft.writeRowsForSave();
+      const ok = await mapping.save(rows, lineRows);
       if (!ok) return false;
     }
     toast.success('Task saved.');

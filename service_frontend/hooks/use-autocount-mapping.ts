@@ -20,11 +20,15 @@ export interface UseAutocountMappingResult {
   saveError: string | null;
   isSaving: boolean;
   /**
-   * Persist the deliverable rows (`PUT .../mapping`). Returns true on success;
-   * on a server guard rejection (422) it returns false and populates
+   * Persist the deliverable rows (`PUT .../mapping`). `lineRows` is the wire
+   * signal a header-only save needs (security re-review should-fix,
+   * sprint-5/02 review round) - omit it entirely to leave a document
+   * entity's line rows untouched, pass `[]` to explicitly wipe them, pass
+   * the current line draft to replace it. Returns true on success; on a
+   * server guard rejection (422) it returns false and populates
    * `saveError` - the shell stays in edit mode so the operator can fix it.
    */
-  save: (rows: AutocountMappingWriteRow[]) => Promise<boolean>;
+  save: (rows: AutocountMappingWriteRow[], lineRows?: AutocountMappingWriteRow[]) => Promise<boolean>;
   /**
    * Server-authoritative single-formula eval (AC-16-21) - the parity check the
    * builder's Testing tab calls on demand. Never throws for a bad formula/value
@@ -82,11 +86,11 @@ export function useAutocountMapping(
   }, [companyId, entityType, reloadKey]);
 
   const save = useCallback(
-    async (rows: AutocountMappingWriteRow[]): Promise<boolean> => {
+    async (rows: AutocountMappingWriteRow[], lineRows?: AutocountMappingWriteRow[]): Promise<boolean> => {
       setIsSaving(true);
       setSaveError(null);
       try {
-        const next = await autocountService.updateMapping(companyId, entityType, { rows });
+        const next = await autocountService.updateMapping(companyId, entityType, { rows, lineRows });
         setView(next);
         return true;
       } catch (error) {

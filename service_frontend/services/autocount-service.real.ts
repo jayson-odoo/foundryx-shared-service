@@ -161,7 +161,15 @@ export const realAutocountService: AutocountService = {
       `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/mapping`,
       {
         method: 'PUT',
-        body: JSON.stringify({ rows: input.rows.map(writeRow) }),
+        // `lineRows` omitted (never sent as `undefined`, JSON.stringify
+        // drops it) leaves line scope untouched server-side; an explicit
+        // `[]` wipes it - the caller (use-mapping-draft) decides which by
+        // whether it passes `lineRows` at all (security re-review
+        // should-fix, sprint-5/02 review round).
+        body: JSON.stringify({
+          rows: input.rows.map(writeRow),
+          ...(input.lineRows ? { lineRows: input.lineRows.map(writeRow) } : {}),
+        }),
       },
     );
   },

@@ -443,7 +443,17 @@ export interface AutocountMappingWriteRow {
 
 /** `PUT .../mapping` body - replaces the entity's deliverable rows transactionally. */
 export interface AutocountMappingUpdate {
+  /** Header-scope rows (a master/GRN entity's whole mapping). */
   rows: AutocountMappingWriteRow[];
+  /**
+   * The wire signal a header-only save needs (security re-review should-fix,
+   * sprint-5/02 review round) - a document entity's line rows are a
+   * SEPARATE scope now: omit this field entirely to leave line rows
+   * untouched, send `[]` to explicitly wipe them, send the current line
+   * draft to replace it. `rows` alone can never express "no lineRows key"
+   * vs "lineRows: []" once both arrive as an empty slice.
+   */
+  lineRows?: AutocountMappingWriteRow[];
 }
 
 // ── mapping/query presets (sprint-5/02, AC-02-16/17) ─────────────────────────
