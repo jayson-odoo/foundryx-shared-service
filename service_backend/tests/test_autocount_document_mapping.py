@@ -2523,3 +2523,270 @@ def test_runtime_filter_formula_fault_fails_the_run(session_factory, monkeypatch
     )
     assert remaining == known, f"row hashes must be untouched by a failed run - got {remaining}"
     db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Group H (continued) - final review round: isEnabled round trip (B1),
+# PO Note absence (SF-a), literal-capture deny-list (SF-b), header
+# is_enabled honoured (SF-c), and the lineRows-item scope-forcing nit.
+#
+# Investigation note (stated up front per this file's convention): by the
+# time this round was written, the coder had ALREADY landed SF-a (PO_PRESET
+# has no `Note -> internal_note` row), SF-b (`string_literals` uses a
+# `_PREDICATE_CALLS` DENY-list, not an `if`/`coalesce` allow-list), SF-c
+# (`_replace_header_mapping` threads `row.is_enabled` into both the `clean`
+# dataclass and the final INSERT), and the router Nit (`_to_write_row(...,
+# force_scope=SCOPE_LINE)` for every `lineRows` item regardless of its own
+# `scope` key). Those four tests below are there as LOCKING/CONFIRMATION
+# tests (they assert the fix, not a bug) - each says so in its own
+# docstring and is run first to report its actual (green) status honestly.
+# The one item that IS still genuinely broken end-to-end is the FRONTEND:
+# the mapping editor never sends `isEnabled` at all (see the vitest
+# additions in use-mapping-draft.test.ts and autocount-service.test.ts),
+# which is what let R1's backfill-disabled rows come back and 422 through
+# the UI (B1). The one new BACKEND test in this section - the lineRows
+# isEnabled HTTP round trip - is expected to already work given the S1/R1
+# fixes above; written as a control that pins the full HTTP contract.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_put_mapping_line_row_disabled_off_preview_persists(client, session_factory):
+    """B1 backend half: PUT .../mapping with `lineRows` carrying
+    `isEnabled: false` for a `source_path` NOT in the task's
+    `line_result_columns` must 200 AND persist that row `is_enabled=false`
+    (never 422 on the S1 preview-column gate, since a disabled row is
+    exempt from it - R1(b)). This is the wire-level companion to the
+    service-level `test_...` R1(b) test above; expected to already pass
+    given the router's `isEnabled=row.isEnabled` wiring and the S1 gate's
+    `if row.is_enabled and ...` guard - written to confirm the full HTTP
+    round trip, not just the service call.
+    """
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_B1_HTTP", name="src")
+    company = _company(db, conn.id, database="AED_B1_HTTP", name="B1 HTTP Co")
+    config = _document_config(db, company, conn.id, entity_type=ENTITY_SALES_ORDER)
+    config.line_result_columns = ["DtlKey", "ItemAutoKey", "Qty"]
+    db.add(config)
+    db.commit()
+    company_id = company.id
+    db.close()
+
+    headers = _auth(client)
+    response = client.put(
+        f"/autocount/companies/{company_id}/entities/{ENTITY_SALES_ORDER}/mapping",
+        headers=headers,
+        json={
+            "rows": [
+                {"sourcePath": "DocNo", "transform": "string", "sorentoField": "so_number"},
+                {"sourcePath": "Cancelled", "transform": "string", "sorentoField": "status"},
+            ],
+            "lineRows": [
+                {"sourcePath": "DtlKey", "transform": "string", "sorentoField": "source_ref", "scope": "line"},
+                {"sourcePath": "ItemAutoKey", "transform": "ref_product", "sorentoField": "product_ref", "scope": "line"},
+                {"sourcePath": "Qty", "transform": "decimal", "sorentoField": "qty_ordered", "scope": "line"},
+                {
+                    "sourcePath": "discount", "transform": "decimal", "sorentoField": "discount",
+                    "scope": "line", "isEnabled": False,
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    db2 = session_factory()
+    row = db2.query(AcFieldMapping).filter(
+        AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+        AcFieldMapping.company_id == company_id,
+        AcFieldMapping.entity_type == ENTITY_SALES_ORDER,
+        AcFieldMapping.scope == SCOPE_LINE,
+        AcFieldMapping.canonical_field == "discount",
+    ).one()
+    assert row.is_enabled is False, (
+        f"a disabled off-preview lineRows item must persist is_enabled=False - "
+        f"got {row.is_enabled}"
+    )
+    assert row.source_path == "discount"
+    db2.close()
+
+
+def test_po_preset_header_has_no_internal_note_row():
+    """SF-a (CONFIRMATION - already fixed): the pack is explicit ("Do NOT
+    map internal_note on PO", section 3). PO_PRESET.header must carry no
+    row targeting `internal_note` at all - the SF2 rewrite of the PO header
+    query no longer even selects `Note`, so a leftover row copied from SO's
+    shape would have sat permanently unmappable. Investigation confirmed
+    this is ALREADY fixed (the row was deleted outright, not just
+    disabled) - this test locks it against a future regression rather than
+    reproducing a live bug.
+    """
+    from modules.autocount.presets import PO_PRESET
+
+    targets = {field.canonical_field for field in PO_PRESET.header}
+    assert "internal_note" not in targets, (
+        f"PO_PRESET.header must not map internal_note - got fields {sorted(targets)}"
+    )
+
+
+def test_string_literals_deny_list_catches_value_returning_calls():
+    """SF-b, pure-function half (CONFIRMATION - already fixed): a literal
+    fed to a VALUE-RETURNING function (`lower`/`concat`/`replace`, ...) can
+    surface as the formula's actual result and must be captured by
+    `string_literals`; a literal fed only to a PREDICATE call
+    (`startswith`/`contains`) or a comparison operand can never become the
+    result and must stay exempt. Investigation confirmed `string_literals`
+    already uses a `_PREDICATE_CALLS` DENY-list (not an `if`/`coalesce`
+    allow-list) - this pins the exact matrix from the review round.
+    """
+    from modules.autocount.formula import parse_formula, string_literals
+
+    known = frozenset({"DocNo", "Cancelled", "status"})
+
+    captured_cases = [
+        'lower("Open")',
+        'concat("cancelled", DocNo)',
+        'replace(DocNo, "a", "bogus")',
+    ]
+    for formula in captured_cases:
+        parsed = parse_formula(formula, known)
+        literals = string_literals(parsed)
+        assert literals, f"{formula!r} must capture at least one literal - got {literals}"
+
+    exempt_cases = [
+        'startswith(DocNo, "SPO")',
+        'contains(DocNo, "SPO")',
+        'Cancelled == "T"',
+    ]
+    for formula in exempt_cases:
+        parsed = parse_formula(formula, known)
+        literals = string_literals(parsed)
+        assert literals == [], (
+            f"{formula!r} is a predicate/comparison - its literal must stay "
+            f"exempt from the vocabulary gate, got {literals}"
+        )
+
+
+def test_status_formula_rejects_value_returning_literal_at_save(session_factory):
+    """SF-b, integration half (CONFIRMATION - already fixed): a `status`
+    formula that funnels a bad literal through a value-returning function
+    (`lower("Open")` - "Open" is not one of the fixed five vocabulary
+    words) must 422 at save, exactly like a bare bad literal would. Proves
+    the deny-list fix reaches the actual save-time gate in
+    `_replace_header_mapping`, not just the pure function.
+    """
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_SFB_INT", name="src")
+    company = _company(db, conn.id, database="AED_SFB_INT", name="SFB Co")
+    _document_config(db, company, conn.id, entity_type=ENTITY_SALES_ORDER)
+
+    service = CompanyService(db)
+    with pytest.raises(AutocountServiceError):
+        service.replace_mapping(
+            DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER,
+            [
+                MappingWriteRow(source_path="DocNo", transform="string", sorento_field="so_number"),
+                MappingWriteRow(
+                    source_path="Cancelled", transform="string", sorento_field="status",
+                    formula='lower("Open")',
+                ),
+            ],
+        )
+    db.close()
+
+
+def test_replace_header_mapping_honours_is_enabled(session_factory):
+    """SF-c (CONFIRMATION - already fixed): a header row saved with
+    `is_enabled=False` must persist `is_enabled=False` on the
+    `ac_field_mapping` row - `_replace_header_mapping` used to hardcode
+    `is_enabled=True` for every header row regardless of what the caller
+    passed. Investigation confirmed this is already threaded through both
+    the `clean` list and the final INSERT.
+    """
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_SFC", name="src")
+    company = _company(db, conn.id, database="AED_SFC", name="SFC Co")
+    _document_config(db, company, conn.id, entity_type=ENTITY_SALES_ORDER)
+
+    service = CompanyService(db)
+    service.replace_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER,
+        [
+            MappingWriteRow(source_path="DocNo", transform="string", sorento_field="so_number"),
+            MappingWriteRow(source_path="Cancelled", transform="string", sorento_field="status"),
+            MappingWriteRow(
+                source_path="Remark", transform="string", sorento_field="internal_note",
+                is_enabled=False,
+            ),
+        ],
+    )
+    row = db.query(AcFieldMapping).filter(
+        AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+        AcFieldMapping.company_id == company.id,
+        AcFieldMapping.entity_type == ENTITY_SALES_ORDER,
+        AcFieldMapping.scope == SCOPE_HEADER,
+        AcFieldMapping.canonical_field == "internal_note",
+    ).one()
+    assert row.is_enabled is False, (
+        f"a header row saved is_enabled=False must persist as such - got {row.is_enabled}"
+    )
+    db.close()
+
+
+def test_put_mapping_line_row_without_scope_key_lands_as_line(client, session_factory):
+    """Nit (CONFIRMATION - already fixed): a `lineRows` item submitted with
+    NO explicit `"scope"` key at all must still land as `scope="line"` in
+    the DB - the router forces `scope=SCOPE_LINE` for every item that
+    ARRIVED via the `lineRows` array, never trusting the item's own
+    (Pydantic-defaulted-to-"header") `scope` field. Chosen scenario:
+    `source_ref` is accepted for LINE scope but not HEADER scope on a
+    sales_order, so a header-scope misfile would 422 naming
+    "'source_ref' is not a Sorento field accepted for sales_order" instead
+    of persisting as a line row.
+    """
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_NIT", name="src")
+    company = _company(db, conn.id, database="AED_NIT", name="Nit Co")
+    _document_config(db, company, conn.id, entity_type=ENTITY_SALES_ORDER)
+    company_id = company.id
+    db.close()
+
+    headers = _auth(client)
+    response = client.put(
+        f"/autocount/companies/{company_id}/entities/{ENTITY_SALES_ORDER}/mapping",
+        headers=headers,
+        json={
+            "rows": [
+                {"sourcePath": "DocNo", "transform": "string", "sorentoField": "so_number"},
+                {"sourcePath": "Cancelled", "transform": "string", "sorentoField": "status"},
+            ],
+            "lineRows": [
+                # Deliberately NO "scope" key on this lineRows item.
+                {"sourcePath": "DtlKey", "transform": "string", "sorentoField": "source_ref"},
+                {
+                    "sourcePath": "ItemAutoKey", "transform": "ref_product",
+                    "sorentoField": "product_ref", "scope": "line",
+                },
+                {
+                    "sourcePath": "Qty", "transform": "decimal",
+                    "sorentoField": "qty_ordered", "scope": "line",
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    db2 = session_factory()
+    row = db2.query(AcFieldMapping).filter(
+        AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+        AcFieldMapping.company_id == company_id,
+        AcFieldMapping.entity_type == ENTITY_SALES_ORDER,
+        AcFieldMapping.canonical_field == "source_ref",
+    ).one()
+    assert row.scope == SCOPE_LINE, (
+        f"a lineRows item without an explicit scope key must land as "
+        f"scope='line' - got {row.scope!r}"
+    )
+    db2.close()

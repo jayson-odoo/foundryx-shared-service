@@ -180,6 +180,22 @@ describe('autocount service (real boundary)', () => {
     ]);
   });
 
+  it('sends isEnabled on save for both rows and lineRows (final review round B1) - a backfill-disabled off-preview row round-trips as disabled, not silently re-enabled', async () => {
+    apiFetch.mockResolvedValue({ entityType: 'sales_order', rows: [], sorentoFields: [], acFields: [] });
+    await realAutocountService.updateMapping('c1', 'sales_order', {
+      rows: [
+        { sourcePath: 'DocNo', transform: 'string', sorentoField: 'so_number', isEnabled: true } as never,
+      ],
+      lineRows: [
+        { sourcePath: 'discount', transform: 'decimal', sorentoField: 'discount', scope: 'line', isEnabled: false } as never,
+      ],
+    });
+    const [, init] = apiFetch.mock.calls[0];
+    const body = JSON.parse(init.body as string);
+    expect(body.rows[0].isEnabled).toBe(true);
+    expect(body.lineRows[0].isEnabled).toBe(false);
+  });
+
   it('tests a single formula server-side (AC-16-21)', async () => {
     apiFetch.mockResolvedValue({ ok: true, output: true, error: null });
     await realAutocountService.testFormula('c1', 'supplier', 'if(value == "T", true, false)', 'T');
