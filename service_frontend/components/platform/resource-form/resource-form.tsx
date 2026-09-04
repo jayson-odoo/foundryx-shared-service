@@ -1,8 +1,10 @@
 'use client';
 
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { ArrowLeft, ChevronLeft, ChevronRight, Pencil } from 'lucide-react';
+import { buildListNav } from '@/lib/list-context';
 import { useCan } from '@/hooks/use-can';
 import {
   AlertDialog,
@@ -14,16 +16,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from '@/components/ui/breadcrumb';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { PageHeader } from '@/components/platform/page-header';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { RecordNav } from './record-nav';
 import type { ResourceFormConfig } from './types';
@@ -33,9 +28,13 @@ export interface ResourceFormProps<T> {
 }
 
 /**
- * The system-wide form view (plan 02 §3b): breadcrumb, identifier header,
- * top-right record-nav + primary button + "…" actions, icon tabs, and a global
- * read/edit toggle with a single save + unsaved-changes guard.
+ * The system-wide form view (plan 02 §3b, restyled per plan 23 D5/D6): a
+ * `PageHeader` toolbar row (crumbs + title left, ONE Back right, carrying
+ * `ctx`/`i`/`from`) and, below it, the record card - identity (avatar, title,
+ * subtitle) left and `RecordActions` right: record pager, a gear "…" menu
+ * (secondary actions, a separator, then destructive last), then the primary
+ * (Edit, or Cancel + Save while editing). Icon tabs and a global read/edit
+ * toggle with a single save + unsaved-changes guard follow.
  */
 export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
   const [editing, setEditing] = useState(config.initialEditing ?? false);
@@ -45,6 +44,8 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
   const [saving, setSaving] = useState(false);
   const { can } = useCan();
   const canEdit = !config.editPermission || can(config.editPermission);
+  const pathname = usePathname() ?? '';
+  const searchParams = useSearchParams();
 
   // Warn on browser-level leave while there are unsaved edits.
   useEffect(() => {
@@ -86,37 +87,111 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
     });
   }
 
+  // Back carries ctx/i/from (AC-DLA-28/30): `from` is the record currently
+  // open, read off the URL's own last path segment - every form route is
+  // `.../<id>` (the `paths.ts` convention every entity already follows), so
+  // this restores the right row on Back for any entity with no per-entity
+  // wiring.
+  const recordId = pathname.split('/').filter(Boolean).pop();
+  const iParam = searchParams.get('i');
+  const backHref = config.embedded
+    ? null
+    : buildListNav(config.backHref, {
+        ctx: searchParams.get('ctx'),
+        i:
+          iParam !== null && Number.isFinite(Number(iParam))
+            ? Number(iParam)
+            : null,
+        from: recordId,
+      });
+
+  const gear =
+    !editing && config.actions.some((a) => a.surfaces.form) ? (
+      <ActionMenu
+        actions={config.actions}
+        rows={config.actionRows}
+        runtime={{ reload: config.onReload ?? (() => {}) }}
+        surface="form"
+        trigger="gear"
+      />
+    ) : null;
+
+  const primary = editing ? (
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={handleCancel}
+        disabled={saving}
+      >
+        Cancel
+      </Button>
+      <Button
+        variant="primary"
+        size="sm"
+        onClick={handleSave}
+        disabled={saving}
+      >
+        {config.editable ? 'Save' : config.backLabel ? 'Create' : 'Save'}
+      </Button>
+    </>
+  ) : (
+    config.editable &&
+    canEdit && (
+      <Button variant="primary" size="sm" onClick={() => setEditing(true)}>
+        <Pencil />
+        Edit
+      </Button>
+    )
+  );
+
   return (
     <div className="flex flex-col gap-5">
-      {/* Breadcrumb + top-right cluster */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        {config.embedded ? (
-          <span />
-        ) : (
-          <Breadcrumb>
-            <BreadcrumbList>
-              {config.breadcrumb.map((step, i) => {
-                const last = i === config.breadcrumb.length - 1;
-                return (
-                  <Fragment key={`${step.label}-${i}`}>
-                    <BreadcrumbItem>
-                      {last || !step.href ? (
-                        <BreadcrumbPage>{step.label}</BreadcrumbPage>
-                      ) : (
-                        <BreadcrumbLink asChild>
-                          <Link href={step.href}>{step.label}</Link>
-                        </BreadcrumbLink>
-                      )}
-                    </BreadcrumbItem>
-                    {!last && <BreadcrumbSeparator />}
-                  </Fragment>
-                );
-              })}
-            </BreadcrumbList>
-          </Breadcrumb>
-        )}
+      {/* Toolbar row = PageHeader (D6): crumbs + title left, ONE Back right. */}
+      {!config.embedded && (
+        <PageHeader
+          actions={
+            <Button variant="outline" size="sm" asChild>
+              <Link href={backHref ?? config.backHref}>
+                <ArrowLeft />
+                {config.backLabel ?? 'Back'}
+              </Link>
+            </Button>
+          }
+        />
+      )}
 
-        <div className="flex items-center gap-2">
+      {/* Record card top: identity left, RecordActions right (D5). Wraps
+          under the identity at 375. */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          {config.avatar}
+          <div className="flex min-w-0 flex-col">
+            {/* Heading level 2 (AC-DLA-27) - `PageHeader` above owns the
+                page's one top-level heading; this is the record's identity,
+                not the page title. */}
+            <h2 className="truncate text-xl font-semibold font-heading leading-tight">
+              {config.title}
+            </h2>
+            {config.subtitle && (
+              <span className="text-sm text-muted-foreground">
+                {config.subtitle}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div
+          className="flex flex-wrap items-center gap-2"
+          data-slot="record-actions"
+        >
+          {config.embedded && (
+            <Button variant="outline" size="sm" onClick={config.onBack}>
+              <ArrowLeft />
+              {config.backLabel ?? 'Back'}
+            </Button>
+          )}
+
           {config.inlineNav && config.inlineNav.total > 1 && !editing && (
             <div className="flex items-center gap-1">
               <Button
@@ -150,80 +225,8 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
             />
           )}
 
-          {editing ? (
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleCancel}
-                disabled={saving}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={handleSave}
-                disabled={saving}
-              >
-                {config.editable
-                  ? 'Save'
-                  : config.backLabel
-                    ? 'Create'
-                    : 'Save'}
-              </Button>
-            </>
-          ) : (
-            config.editable &&
-            canEdit && (
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => setEditing(true)}
-              >
-                <Pencil />
-                Edit
-              </Button>
-            )
-          )}
-
-          {!editing && config.actions.some((a) => a.surfaces.form) && (
-            <ActionMenu
-              actions={config.actions}
-              rows={config.actionRows}
-              runtime={{ reload: config.onReload ?? (() => {}) }}
-              surface="form"
-            />
-          )}
-
-          {config.embedded ? (
-            <Button variant="outline" size="sm" onClick={config.onBack}>
-              <ArrowLeft />
-              {config.backLabel ?? 'Back'}
-            </Button>
-          ) : (
-            <Button variant="outline" size="sm" asChild>
-              <Link href={config.backHref}>
-                <ArrowLeft />
-                {config.backLabel ?? 'Back'}
-              </Link>
-            </Button>
-          )}
-        </div>
-      </div>
-
-      {/* Identifier header */}
-      <div className="flex items-center gap-3">
-        {config.avatar}
-        <div className="flex flex-col">
-          <h1 className="text-xl font-semibold font-heading leading-tight">
-            {config.title}
-          </h1>
-          {config.subtitle && (
-            <span className="text-sm text-muted-foreground">
-              {config.subtitle}
-            </span>
-          )}
+          {gear}
+          {primary}
         </div>
       </div>
 

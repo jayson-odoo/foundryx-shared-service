@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { ListQuery } from '@/types/resource';
-import { decodeListQuery, encodeListQuery } from '@/lib/list-context';
+import { buildListNav, decodeListQuery, encodeListQuery } from '@/lib/list-context';
+import { usePrefetchOnce } from './use-prefetch-once';
 
 export interface UseRecordNavOptions {
   /** Resolve the record id + total at a position within the carried query. */
@@ -38,6 +39,7 @@ export function useRecordNav({ fetchAt, buildHref }: UseRecordNavOptions): UseRe
 
   const [total, setTotal] = useState(0);
   const [isNavigating, setIsNavigating] = useState(false);
+  const prefetchOnce = usePrefetchOnce();
 
   const query = decodeListQuery(ctx);
 
@@ -61,6 +63,34 @@ export function useRecordNav({ fetchAt, buildHref }: UseRecordNavOptions): UseRe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx]);
 
+  // Prefetch the prev/next neighbours' form routes on mount (AC-DLA-31) - one
+  // `fetchAt` each, the exact same resolution `goPrev`/`goNext` already do, so
+  // stepping the pager never waits on a round trip it didn't already warm.
+  // Each neighbour's own `total` (not the outer `total` state, which may not
+  // have resolved yet) decides whether it wraps to a real row.
+  useEffect(() => {
+    if (!query) return;
+    let active = true;
+    const encodedCtx = encodeListQuery(query);
+    const prefetchNeighbour = (delta: number) => {
+      fetchAt(query, index + delta)
+        .then(({ recordId, total: neighbourTotal }) => {
+          if (!active || !recordId || neighbourTotal <= 1) return;
+          const wrapped = ((index + delta) % neighbourTotal + neighbourTotal) % neighbourTotal;
+          prefetchOnce(
+            buildListNav(buildHref(recordId, encodedCtx, wrapped), { from: recordId }),
+          );
+        })
+        .catch(() => {});
+    };
+    prefetchNeighbour(-1);
+    prefetchNeighbour(1);
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx, index]);
+
   const go = useCallback(
     (nextIndex: number) => {
       if (!query || total <= 0) return;
@@ -68,7 +98,14 @@ export function useRecordNav({ fetchAt, buildHref }: UseRecordNavOptions): UseRe
       setIsNavigating(true);
       fetchAt(query, wrapped)
         .then(({ recordId }) => {
-          if (recordId) router.push(buildHref(recordId, encodeListQuery(query), wrapped));
+          // `from=<recordId>` (AC-DLA-30/31): the row Back should restore is
+          // whichever record the pager is CURRENTLY on, not the one first
+          // opened from the list - it updates every step.
+          if (recordId) {
+            router.push(
+              buildListNav(buildHref(recordId, encodeListQuery(query), wrapped), { from: recordId }),
+            );
+          }
         })
         .finally(() => setIsNavigating(false));
     },
