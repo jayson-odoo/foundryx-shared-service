@@ -6,6 +6,13 @@ from each screenshot back to its finding live in the "T2 - Fix round 1" section 
 `documentation/plans/sprint-4/23-design-language-alignment-test-report.md` rather than duplicated
 here, to keep one narrative per fix.
 
+**Fix round 2 (8 findings from an amended-UAC re-read):** `fixround2-01` through `fixround2-02`,
+mapping in the "T2 - Fix round 2" section of the test report.
+
+**Fix round 3 (mobile-pin polish - 2 defects from `fixround2-01`'s own screenshot):**
+`fixround3-01` through `fixround3-11`, mapping in the "T2 - Fix round 3 (pin polish)" section of
+the test report.
+
 Branch `sprint-4/23-T2-primitives` (off `sprint-4/23-design-language-alignment`, T0+T1 merged).
 Backend `service_backend` (this worktree's venv) on :8001; frontend `rm -rf .next && npm run build`
 (green) served via `npx next start -p 3002` (this worktree, port ownership confirmed via
