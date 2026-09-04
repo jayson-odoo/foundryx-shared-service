@@ -30,7 +30,9 @@ clicks, `demo@example.com` / `demo1234`.
    `DropdownMenuItem`s carry `PRESSED_CLASS`; destructive "Trash" red and last.
 6. Clicked "Trash" -> `AlertDialog` (`05-user-record-trash-dialog-1280.png`) - modal (Radix
    AlertDialog is always modal, no `modal` prop exists to disable it), scrim
-   `bg-(--scrim) backdrop-blur-md` via the shared `OVERLAY_CLASS`. Escape closed it (confirmed
+   `bg-(--scrim) backdrop-blur-sm` via the shared `OVERLAY_CLASS` (T2 fix round 2 correction -
+   this step originally logged `backdrop-blur-md`, the pre-fix-round-1 value; the live overlay has
+   been `backdrop-blur-sm` since fix round 1's C14). Escape closed it (confirmed
    via a follow-up snapshot showing the sidebar again, no dialog).
 7. Sidebar "Settings" -> "Statuses" (`06-settings-statuses-1280.png`) and "Templates"
    (`07-settings-templates-1280.png`) at 1280. Both render on the Resource shell, no clipping.

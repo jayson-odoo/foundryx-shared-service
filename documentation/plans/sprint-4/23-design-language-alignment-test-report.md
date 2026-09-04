@@ -981,3 +981,158 @@ docs), each trailer exactly `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic
 
 **Verdict: T2 fix round 1 DONE.** 19/19 rulings (21/21 findings) resolved and re-verified; full
 gate green.
+
+## T2 - Fix round 2
+
+Amended UAC re-read for AC-DLA-03/09/10/13/14/15/29 (integration checkout, today's date). 8
+findings from the round-2 review, addressed as 8 rulings.
+
+**1 - BLOCKER: pinned body column painted OVER the sticky header on scroll (<=640px).**
+`MOBILE_PIN_CLASS_HEAD` (the sticky `<thead>` and its mobile-pinned header cell) and
+`MOBILE_PIN_CLASS_BODY` (pinned body cells) shared ONE z-scale step (`--z-sticky-content`), so
+paint order between them was DOM-order-dependent, not z-order-dependent - a pinned body cell
+scrolling past the header could paint on top of it (the round-1 evidence's own
+`fixround1-02-sticky-header-scrolled-375.png` shows exactly this: a body cell rendered inside the
+header row). Added `--z-sticky-header: 6` to `css/config.reui.css` (one step above
+`--z-sticky-content: 5`, both below `--z-header`), doc comment explains the relationship (no
+stale `--z-sticky-content-corner` mention existed in this file to remove - it lives only in
+`design-tokens.test.ts`'s own comment, about an unrelated doubly-pinned-cell token, left as is).
+`data-grid.tsx`'s `headerSticky` default and `data-grid-table.tsx`'s `MOBILE_PIN_CLASS_HEAD` now
+both reference `z-(--z-sticky-header)`; `MOBILE_PIN_CLASS_BODY` stays on `--z-sticky-content`.
+**Fixed:** `css/config.reui.css`, `components/ui/data-grid.tsx`, `components/ui/data-grid-table.tsx`.
+**Test:** `css/design-tokens.test.ts` (`--z-sticky-header` defined as 6, ordered between
+sticky-content and header); `components/ui/data-grid.inventory.test.ts` (thead references
+`z-(--z-sticky-header)` not `z-(--z-sticky-content)`; `MOBILE_PIN_CLASS_HEAD`/`_BODY` reference the
+right step each).
+**Live:** `fixround2-01-sticky-header-pinned-375.png` (Workflows list, window narrowed to ~500px
+tall so the 8 rows genuinely overflow - `scrollHeight` 475 vs `clientHeight` 228 - scrolled BOTH
+directions, `scrollTop:150/scrollLeft:400`; a `getComputedStyle` check confirmed `thead` z-index 6,
+every mobile-pinned body cell z-index 5) + `fixround2-01b-sticky-header-vertical-only-375.png`
+(same list, vertical scroll only, scrollLeft 0 - a clean, unambiguous shot of the header staying
+crisp with a row scrolled/clipped cleanly underneath, no bleed into the header text) +
+`fixround2-02-sticky-header-scrolled-1280.png` (1280 re-check, same list, `scrollTop:200` -
+`thead` z-index 6 confirmed, header intact with a partial row clipped just above it).
+
+**2 - `useHorizontalOverflow` only ever watched `el.firstElementChild`, which for `Tabs` is the
+first TRIGGER, not the strip.** `TabsList` refs the list element itself (`ref={mergedRef}` on
+`TabsPrimitive.List`), so "the strip's own first child" is a single tab, not a stand-in for the
+whole strip's content width - a resize/rename/reorder among the OTHER triggers went unnoticed.
+Now every child of the scroller is `ResizeObserver`'d (`for (const child of Array.from(el.children))
+observer.observe(child)` - `Array.from` per the house `downlevelIteration` rule for iterating a
+`HTMLCollection`), AND a `MutationObserver` on the scroller itself (`childList`) re-measures AND
+re-observes on any add/remove - so a tab added/removed/relabelled, or a DataGrid column
+reordered, keeps the fade accurate without a remount.
+**Fixed:** `hooks/use-horizontal-overflow.ts`.
+**Test:** new `hooks/use-horizontal-overflow.test.tsx` (3 cases, fake `ResizeObserver` spy +
+jsdom's real `MutationObserver`) - every initial child is observed (not just the first); a child
+added after mount via rerender is re-observed; a mutation triggers a real re-measure
+(`scrollWidth`/`clientWidth` stubbed on the element, `isOverflowing` flips from false to true once
+a rerender both grows the content and a `requestAnimationFrame` flush runs).
+
+**3 - the pinned cell's striped legs (`group-odd:max-sm:bg-muted/90`/
+`group-hover:group-odd:max-sm:bg-muted`) were unconditional, but a row only stripes when
+`tableLayout.stripped` is true.** Split them into a separate `MOBILE_PIN_CLASS_BODY_STRIPED`
+constant, applied at the usage site only when `isMobilePinned && props.tableLayout?.stripped` -
+mirrors exactly how the ROW itself gates its own `odd:bg-muted/90` class
+(`dataGridBodyRowClass`'s `props.tableLayout?.stripped && 'odd:bg-muted/90 ...'`), so a
+non-stripped list's pinned cell no longer darkens on odd rows for no reason.
+**Fixed:** `components/ui/data-grid-table.tsx`.
+**Test:** `components/ui/data-grid.inventory.test.ts` new assertion (the gated expression is
+present verbatim).
+
+**4 - `rowHref` returning `'#'`/`''` (AC-DLA-29's documented opt-out sentinel) was only handled by
+the FALSY branch (`''`); `'#'` is truthy, so a sentinel row still rendered as a full
+`LinkableDataGridTableBodyRow`** (tabIndex, click-to-push to literally `'#'`, prefetch of `'#'`,
+pointer cursor) - the opposite of "no detail page for this row". New `hasRowHref(href): href is
+string` type guard (`Boolean(href) && href !== '#'`) replaces the plain truthiness check in
+`DataGridTableBodyRow`, so a sentinel row takes the plain (non-link) branch. The plain branch's
+own cursor computation also had to change: it previously read `props.rowHref` (the LIST-level
+callback, always truthy once configured) rather than the per-row resolution, so an opted-out row
+still showed `cursor-pointer`. `dataGridBodyRowClass` gained a 4th param `unknownHref` (default
+false) - the skeleton row (which has no `row.original` to resolve `rowHref` against yet) passes
+`true` to keep its pre-existing "this list navigates" cursor heuristic; a real resolved row passes
+its actual `isLinkRow`, so cursor-pointer now correctly tracks the SPECIFIC row's opt-out.
+**Fixed:** `components/ui/data-grid-table.tsx`.
+**Test:** `components/ui/data-grid-table.rowHref.test.tsx` - `it.each(['#', ''])` (no tabIndex, no
+cursor, click does not push) + a mixed-list case (one row sentinel, one row real - only the
+sentinel row opts out, the other still navigates).
+
+**5 - stale comment in `badge.tsx` claimed circle badges (`shape="circle"`) default to the solid
+`appearance="default"` fill.** They do not - `defaultVariants.appearance` is `'light'` for every
+shape (removed entirely in fix round 1's C15, which made the default caller-driven); a solid
+circle badge requires the caller to pass `appearance="default"` explicitly, as the two real
+callers (`resource-list.tsx`'s selection-count pill, the omnichannel unread badge) already do.
+Corrected the comment to state the caller-driven contract instead of the old JS-level override
+that no longer exists.
+**Fixed:** `components/ui/badge.tsx` (comment only, no behaviour change).
+
+**6 - animation-review nits (4 items, one per bullet in the brief).**
+- `MOBILE_PIN_CLASS_BODY` gained `transition-[background-color] duration-(--duration-fast)
+  ease-(--ease-standard)` so the pinned cell's background eases with its row's
+  hover/select/stripe change instead of snapping (it already inherited the row's OWN transition
+  via nothing - the pinned cell is a `<td>`, a sibling of the row, not a child that inherits the
+  row's `transition-[...]` class).
+- `group-hover:` legs: investigated whether to wrap them in `[@media(hover:hover)]:`. Checked
+  `css/` - **no project override exists**; Tailwind v4's OWN default `hover` variant already
+  compiles to `&:hover { @media (hover: hover) { ... } }` (confirmed by inspecting
+  `node_modules/tailwindcss/dist/lib.js`'s variant registration), so `group-hover:` here is
+  ALREADY hover-capable-gated with zero code change needed - added a code comment recording this
+  so a future pass doesn't re-litigate it or add a redundant arbitrary-variant wrapper.
+- Named `ease-(--ease-standard)` on both edge-fade transitions (`data-grid-table.tsx`'s
+  `data-grid-fade`, `tabs.tsx`'s `tabs-fade`) - previously `transition-opacity
+  duration-(--duration-fast)` with no explicit easing (inherited Tailwind's default curve, which
+  happens to already BE the house curve per `config.reui.css`'s
+  `--default-transition-timing-function`, but naming it explicitly on every hand-tuned transition
+  is the house convention every other transition in this diff follows).
+- Retitled the stale `modal-defaults.test.tsx` test name from `backdrop-blur-md` to
+  `backdrop-blur-sm` (the assertion body never checked the literal blur value - source has read
+  `backdrop-blur-sm` since fix round 1's C14 - only the test's OWN title string was stale).
+**Fixed:** `components/ui/data-grid-table.tsx`, `components/ui/tabs.tsx`,
+`components/ui/modal-defaults.test.tsx`.
+**Test:** `components/ui/data-grid.inventory.test.ts` + `components/ui/tabs.inventory.test.ts`
+regexes updated to include `ease-(--ease-standard)` in the expected fade class string.
+
+**7 - `npx prettier --write` on the two files the brief named as newly unformatted.** Confirmed
+first that `npx prettier --check` fails on effectively every file in the tree at `HEAD` (prettier
+is not lint-gated in this repo - `npm run format` is opt-in, `npx eslint` is the actual build
+gate) - so "already unformatted before this branch" is the norm, not the exception, and reformatting
+broadly would inflate this diff with unrelated churn. Ran `--write` on exactly the two named files:
+`hooks/use-horizontal-overflow.ts` (this round's own edit had drifted from the 80-col wrap) and
+`app/(protected)/account/security/allowed-ip-addresses/components/ip-addresses.tsx` (fix round 1's
+C16 bare-dot fix left one line over 80 cols, and the import order had drifted - `Badge` was
+sorted ahead of `cn` instead of after per the `@ianvs/prettier-plugin-sort-imports` groups).
+**Fixed:** `hooks/use-horizontal-overflow.ts`,
+`app/(protected)/account/security/allowed-ip-addresses/components/ip-addresses.tsx` (formatting
+only, no behaviour change - both re-ran through the affected test suites afterward).
+
+**8 - evidence README step 6 mis-recorded the scrim as `backdrop-blur-md`.** The T2 original run
+log (step 6) logged the OLD pre-fix-round-1 blur value even though the live overlay was already
+`backdrop-blur-sm` by the time that run executed (fix round 1's C14 changed the source before the
+evidence doc was corrected) - a copy-paste-from-memory error, not a re-verification of a stale
+build. Corrected the line to `bg-(--scrim) backdrop-blur-sm` with a note explaining the
+discrepancy's origin so a future reader doesn't wonder whether the value regressed.
+**Fixed:** `documentation/plans/sprint-4/23-evidence/T2/README.md` (doc only).
+
+### Gate
+
+`npm run lint` (0 errors, 3 pre-existing warnings unrelated to this diff), `npm test` (184 files /
+1581 tests, +1 file / +9 tests vs the fix-round-1 baseline of 183/1572), `rm -rf .next && npm run
+build` (green, run twice - once mid-fix to catch the `Array.from` downlevel-iteration build error
+on finding 2's `for...of HTMLCollection`, once final), restarted `:3002` (port ownership confirmed
+via `lsof -p $(lsof -ti :3002) | grep cwd` before every kill, per the worktree rule).
+
+### Definition of Done checklist (T2 fix round 2)
+
+1. All 8 findings addressed, each with a code change + a test (or, for 5/7/8, a doc/comment-only
+   fix where no behaviour changed) - 3 with new live `agent-browser` evidence (finding 1, the
+   BLOCKER, at both 375 and 1280).
+2. `npm run lint`, `npm test` (184/184 files, 1581/1581 tests), `npm run build` all green.
+3. `rm -rf .next && npm run build` before the final live check; port ownership confirmed via
+   `lsof -p $(lsof -ti :3002) | grep cwd` before the restart.
+4. No mock left behind, no backfill needed, no new permission - primitives-only fix round.
+5. Verified from the user's perspective at 375 AND 1280 on the real prod build: the BLOCKER's
+   fix reproduced live in the SAME narrowed-viewport-height technique fix round 1 used (a
+   legitimate reproduction, not a different code path than a real short window would exercise),
+   confirming the header now paints correctly above a scrolling pinned column at both sizes.
+
+**Verdict: T2 fix round 2 DONE.** 8/8 findings resolved and re-verified; full gate green.
