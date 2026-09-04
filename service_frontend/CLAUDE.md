@@ -14,7 +14,7 @@ UI component → custom hook → service → `lib/api-client` → FastAPI. **Com
 - **Responsive** - verify 375px AND 1280px (Playwright `setViewportSize` or screenshot both). Side-by-side panels stack on mobile.
 - **White-label** - never render "Foundryx" to tenants; branded tenant w/o logo → its name.
 - **Truncation** - `ClampedText`/`OverflowPills`, never bare `truncate`/`line-clamp`.
-- **No `<style>` / raw CSS** - Tailwind/Metronic utilities only. Brand tokens = `css/foundryx-tokens.css`.
+- **No `<style>` tags / no raw CSS in components or pages - Tailwind/Metronic utilities only. The ONLY sanctioned CSS files are `css/config.reui.css` (tokens), `css/foundryx-tokens.css` (brand), `css/styles.css` (utilities + the three accessibility preference blocks) and `css/demos/demo1.css` (shell); a rule that belongs to one component goes on the component as utilities.**
 - **Datetimes** - `lib/datetime.ts` via `useDatetime()`; never `new Date(iso)` a backend timestamp directly.
 - **Menu gating** - tag a gated entry with its page's permission key in ALL menu arrays (`MENU_SIDEBAR`/`MENU_MEGA`/`MENU_MEGA_MOBILE`); `filterMenu` prunes.
 - **ActionMenu/BulkActions** `onSelect` must `preventDefault` + explicit `setOpen(false)`.
