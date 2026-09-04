@@ -71,7 +71,10 @@ accepted (422 otherwise).
 **When** an extract / activation preview / push runs
 **Then** `build_mapping_rows_for_run` = header rows + persisted line rows (the fixed
 `document_line_rows` convention is GONE) and the line key row composes
-`{header_source_ref}:{DtlKey}` exactly as before.
+`{header_source_ref}:{DtlKey}` exactly as before
+**And** every pushed document carries its FULL line set (the line query runs per header with
+`:doc_key`; a line-level delta is never sent) - Sorento treats a push as authoritative for the
+whole document and sweeps unnamed lines (deleted, or cancelled in place when referenced).
 
 ### AC-02-05 `[BE]` Migration of the three pickers
 **Given** an existing document task whose `source_config` carries `lineKeyColumn` /

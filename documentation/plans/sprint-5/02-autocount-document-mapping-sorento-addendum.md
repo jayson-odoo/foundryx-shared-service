@@ -195,3 +195,7 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   `errors.source_ref`. Consequence for the ESB: masters-first sequencing is a hard prerequisite
   only for products + warehouses; the `documentPrerequisites` card and the cutover playbook
   (BL-SS-050) should say so, and the sink's error mapper must read the field-named keys.
+- 2026-09-05 (Sorento S1b green): `line_number` accepted; adopt-in-place live (outstanding key ->
+  single candidate -> position); verdict carries `lines: {adopted, created, updated, deleted,
+  cancelled}` (dry run too). A push is authoritative for the WHOLE document: unnamed lines are
+  swept. ESB rule (AC-02-04): always send the full line set per header, never a delta.
