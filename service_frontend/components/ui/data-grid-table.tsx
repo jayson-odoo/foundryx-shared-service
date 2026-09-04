@@ -87,11 +87,27 @@ function firstDataColumnIndex<TData>(leafColumns: Column<TData>[]): number {
 // common `bg-muted/40` case; the stripped/no-header-background permutations
 // are not separately mirrored here (a documented simplification, not a
 // silent gap).
+// `--z-sticky-header` (T2 fix round 2, not `--z-sticky-content`): the pinned
+// HEADER cell must sit at the SAME step as the sticky `<thead>` it belongs
+// to, one above pinned BODY cells - else at <=640px the pinned body column
+// scrolls OVER the header instead of sliding under it.
 const MOBILE_PIN_CLASS_HEAD =
-  'max-sm:sticky! max-sm:start-0! max-sm:z-(--z-sticky-content)! max-sm:bg-muted/40! max-sm:data-pinned:static!';
+  'max-sm:sticky! max-sm:start-0! max-sm:z-(--z-sticky-header)! max-sm:bg-muted/40! max-sm:data-pinned:static!';
+// `group-hover:` here is already hover-capable-gated by Tailwind v4's OWN
+// default `hover` variant (compiles to `&:hover { @media (hover: hover) }`)
+// - no project override in `css/` and none needed, so no arbitrary
+// `[@media(hover:hover)]:` wrapper (T2 fix round 2 animation-review nit).
+// Eases with `transition-[background-color]` (T2 fix round 2) so the pinned
+// cell's background follows its row's hover/select/stripe change instead of
+// snapping.
 const MOBILE_PIN_CLASS_BODY =
   'max-sm:sticky! max-sm:start-0! max-sm:z-(--z-sticky-content)! max-sm:bg-background! max-sm:data-pinned:static! ' +
-  'group-hover:max-sm:bg-muted/40! group-data-[state=selected]:max-sm:bg-muted/50! ' +
+  'transition-[background-color] duration-(--duration-fast) ease-(--ease-standard) ' +
+  'group-hover:max-sm:bg-muted/40! group-data-[state=selected]:max-sm:bg-muted/50!';
+// Striped legs (T2 fix round 2 finding 3): only apply when the row itself
+// stripes (`tableLayout.stripped`) - unconditional before this, so a
+// non-stripped list's pinned cell darkened on odd rows for no reason.
+const MOBILE_PIN_CLASS_BODY_STRIPED =
   'group-odd:max-sm:bg-muted/90! group-hover:group-odd:max-sm:bg-muted!';
 
 /**
@@ -158,7 +174,7 @@ function DataGridTableBase({ children }: { children: ReactNode }) {
         aria-hidden="true"
         data-slot="data-grid-fade"
         data-fade={isFading}
-        className="pointer-events-none absolute inset-y-0 end-0 w-8 bg-gradient-to-l from-background to-transparent opacity-0 transition-opacity duration-(--duration-fast) data-[fade=true]:opacity-100"
+        className="pointer-events-none absolute inset-y-0 end-0 w-8 bg-gradient-to-l from-background to-transparent opacity-0 transition-opacity duration-(--duration-fast) ease-(--ease-standard) data-[fade=true]:opacity-100"
       />
     </div>
   );
@@ -319,7 +335,9 @@ function DataGridTableBodyRowSkeleton({ children }: { children: ReactNode }) {
   const { table, props } = useDataGrid();
 
   return (
-    <tr className={dataGridBodyRowClass(props, table.options.enableRowSelection ?? false, false)}>{children}</tr>
+    <tr className={dataGridBodyRowClass(props, table.options.enableRowSelection ?? false, false, true)}>
+      {children}
+    </tr>
   );
 }
 
@@ -364,8 +382,28 @@ function fromOwnRowControl(target: EventTarget | null): boolean {
 }
 
 /**
+ * `'#'`/`''` from a `rowHref` callback is AC-DLA-29's sentinel for "this
+ * particular row has no detail page" (a list otherwise wired for navigation
+ * can still have non-navigable rows) - the primitive itself must treat it as
+ * an opt-out (no tabIndex, no push, no prefetch, no pointer cursor), not
+ * leave it to every caller to remember (T2 fix round 2). A type guard, not a
+ * plain boolean check, so the caller's `href` narrows to `string`.
+ */
+function hasRowHref(href: string | undefined): href is string {
+  return Boolean(href) && href !== '#';
+}
+
+/**
  * The shared row classes for BOTH branches (`rowHref` and `onRowClick`), so
  * the skeleton row's cursor and the live row's cursor cannot drift apart.
+ *
+ * `unknownHref` (T2 fix round 2) is the skeleton placeholder's case ONLY: a
+ * skeleton row has no `row.original` to resolve `rowHref` against yet, so it
+ * keeps the old list-level "this list navigates" cursor heuristic
+ * (`props.rowHref` configured at all). A REAL row instead passes the
+ * per-row `isLinkRow` it actually resolved - so a `'#'`/`''` opt-out (AC-
+ * DLA-29) correctly drops the cursor even though the list's `rowHref` prop
+ * is otherwise set.
  */
 function dataGridBodyRowClass<TData>(
   props: {
@@ -379,13 +417,14 @@ function dataGridBodyRowClass<TData>(
   // or it does not), never which row it is evaluated for.
   enableRowSelection: unknown,
   isLinkRow: boolean,
+  unknownHref = false,
 ): string {
   return cn(
     // `group`: the mobile-pinned body cell (AC-DLA-13) matches this row's
     // own hover/selected/striped state rather than carrying a flat
     // background of its own.
     'group hover:bg-muted/40 data-[state=selected]:bg-muted/50',
-    (props.rowHref || props.onRowClick) && 'cursor-pointer',
+    (isLinkRow || Boolean(props.onRowClick) || (unknownHref && Boolean(props.rowHref))) && 'cursor-pointer',
     isLinkRow &&
       // AC-DLA-14 fix round 1: `background-color` (the active/hover states)
       // AND `opacity` (T5's pending-row dim) both transition; no
@@ -420,7 +459,7 @@ function DataGridTableBodyRow<TData>({
   const { props, table } = useDataGrid();
   const href = props.rowHref ? props.rowHref(row.original) : undefined;
 
-  if (href) {
+  if (hasRowHref(href)) {
     return (
       <LinkableDataGridTableBodyRow href={href} dndRef={dndRef} dndStyle={dndStyle} row={row}>
         {children}
@@ -572,6 +611,7 @@ function DataGridTableBodyRowCell<TData>({
         props.tableLayout?.columnsResizable && column.getCanResize() && 'truncate',
         cell.column.columnDef.meta?.cellClassName,
         isMobilePinned && MOBILE_PIN_CLASS_BODY,
+        isMobilePinned && props.tableLayout?.stripped && MOBILE_PIN_CLASS_BODY_STRIPED,
         props.tableLayout?.columnsPinnable &&
           column.getCanPin() &&
           '[&[data-pinned=left][data-last-col=left]]:border-e! [&[data-pinned=right][data-last-col=right]]:border-s! [&[data-pinned][data-last-col]]:border-border data-pinned:bg-background/90 data-pinned:backdrop-blur-xs"',

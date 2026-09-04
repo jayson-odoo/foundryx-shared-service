@@ -42,9 +42,16 @@ describe('AC-DLA-13 DataGrid defaults + scroller + pinned column + tabular-nums'
     expect(defaultsBlock).toMatch(/columnsMovable:\s*true/);
   });
 
-  it('the sticky header class references the named z-scale token, not a bare number', () => {
+  it('the sticky header class references the named z-scale token, one step above pinned body cells (T2 fix round 2)', () => {
     const src = read('components/ui/data-grid.tsx');
-    expect(src).toContain('z-(--z-sticky-content)');
+    expect(src).toContain('z-(--z-sticky-header)');
+    expect(src).not.toContain('z-(--z-sticky-content)');
+  });
+
+  it('the mobile-pinned HEADER cell shares the sticky thead z step; the mobile-pinned BODY cell stays one below (T2 fix round 2 - else the pinned body column paints over the header on scroll)', () => {
+    const src = read('components/ui/data-grid-table.tsx');
+    expect(src).toMatch(/MOBILE_PIN_CLASS_HEAD\s*=[\s\S]{0,200}z-\(--z-sticky-header\)/);
+    expect(src).toMatch(/MOBILE_PIN_CLASS_BODY\s*=[\s\S]{0,300}z-\(--z-sticky-content\)/);
   });
 
   it('DataGridTableBase owns an overflow-x-auto overscroll-x-contain scroller with a right-edge fade', () => {
@@ -73,7 +80,7 @@ describe('AC-DLA-13 DataGrid defaults + scroller + pinned column + tabular-nums'
     const src = read('components/ui/data-grid-table.tsx');
     expect(src).not.toMatch(/\{isFading\s*&&\s*\(/);
     expect(src).toMatch(/data-slot="data-grid-fade"[\s\S]{0,80}data-fade=\{isFading\}/);
-    expect(src).toMatch(/opacity-0 transition-opacity duration-\(--duration-fast\) data-\[fade=true\]:opacity-100/);
+    expect(src).toMatch(/opacity-0 transition-opacity duration-\(--duration-fast\) ease-\(--ease-standard\) data-\[fade=true\]:opacity-100/);
   });
 
   it('the table body carries tabular-nums', () => {
@@ -121,6 +128,11 @@ describe('AC-DLA-13 DataGrid defaults + scroller + pinned column + tabular-nums'
     // key off - both the header row and the shared body-row class builder.
     expect(src).toContain("'group bg-muted/40'");
     expect(src).toContain("'group hover:bg-muted/40 data-[state=selected]:bg-muted/50'");
+  });
+
+  it('the pinned cell striped legs are gated on tableLayout.stripped (T2 fix round 2 - a non-stripped list must not darken odd rows)', () => {
+    const src = read('components/ui/data-grid-table.tsx');
+    expect(src).toMatch(/isMobilePinned && props\.tableLayout\?\.stripped && MOBILE_PIN_CLASS_BODY_STRIPED/);
   });
 
   it('every grid-item wrapper around DataGridTableBase carries min-w-0 (else the PAGE scrolls sideways, not the grid)', () => {

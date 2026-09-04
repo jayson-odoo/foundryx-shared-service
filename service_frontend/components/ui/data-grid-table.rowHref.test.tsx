@@ -145,4 +145,27 @@ describe('AC-DLA-14 DataGrid rowHref link semantics', () => {
       expect(row).not.toHaveAttribute('tabindex');
     }
   });
+
+  it.each(['#', ''])(
+    'rowHref returning %j is an opt-out (AC-DLA-29 sentinel): no tabIndex, no cursor, click does not push (T2 fix round 2)',
+    (sentinel) => {
+      render(<Harness rowHref={() => sentinel} />);
+      const rowsEl = bodyRows();
+      for (const row of rowsEl) {
+        expect(row).not.toHaveAttribute('tabindex');
+        expect(row.className).not.toContain('cursor-pointer');
+      }
+      fireEvent.click(rowsEl[0]);
+      expect(push).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rowHref returning "#" for one row and a real path for another opts out only the sentinel row', () => {
+    render(<Harness rowHref={(row) => (row.id === '1' ? '#' : `/records/${row.id}`)} />);
+    const rowsEl = bodyRows();
+    expect(rowsEl[0]).not.toHaveAttribute('tabindex');
+    expect(rowsEl[1]).toHaveAttribute('tabindex', '0');
+    fireEvent.click(rowsEl[1]);
+    expect(push).toHaveBeenCalledWith('/records/2');
+  });
 });
