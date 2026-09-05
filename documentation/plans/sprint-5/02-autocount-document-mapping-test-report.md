@@ -257,3 +257,91 @@ Via `agent-browser` (headless), Part A live proof:
 | XLS masters-twin comparison (same source, second company) | `AcCompany.database_name` is unique per tenant, and the "Connect company" picker excludes an already-claimed connection - a genuine UI/design gap between this addendum's own "share source refs" guidance and what the product currently allows | One of the three options logged in the addendum's own entry for this (relax the uniqueness to include `sorento_company_code`, a documented second-database masters-twin workflow, or Sorento receiving the SRT export directly) |
 | AC-02-20 / AC-02-21 frontend isEnabled round-trip | A coder fix round (backend half already landed, frontend half - "B1" - not started as of this report) | The coder's frontend fix for the 4 named vitest cases |
 | `Simulate mapping`'s identity-resolver bug (Findings §3) | Not addendum-gated - a local code fix (`doc_key_identity()` should use `flat_source_ref()` for sql_db document tasks) | A future fix round; logged here so it is not lost |
+
+## 2026-09-05 - Re-push on fresh Sorento DB (`sorento_ingest_v3`, company SRT)
+
+Sorento shipped round-2 fixes on a FRESH database behind the same `http://localhost:8042` + the
+same API key (company SRT, zero rows at the start of this section): a `ref_mismatch` warning
+replaces the earlier products crash, and the `customers` table now accepts inserts. Root cause of
+the ORIGINAL products crash (Findings §1 item 1, this report) turned out to be **our own proof
+config**, not Sorento's: the `product` master task was saved with `keyColumns:
+["AutoKey","LastModified"]` (a watermark column wrongly ALSO added as a second key column), so
+every `source_ref` carried the current watermark value baked in and drifted on every re-run,
+which is exactly what produced a duplicate `integration_references` row for the SAME underlying
+product each time. Corrected before this re-push: `keyColumns: ["AutoKey"]` only, watermark
+column set separately to `LastModified` (it had never actually been set - a second config gap
+this same mis-click caused). Every OTHER master task's key was already the single AutoKey/Code/
+Agent column the SQL pack prescribes - confirmed by inspecting `source_config.keyColumns` for
+all seven tasks before starting.
+
+**A second local-only gap surfaced during this re-push (not a Sorento-side bug and not fixed -
+"do not touch code" per this section's own brief):** `sync_service.py`'s `CANONICAL_MODELS` dict
+is missing an entry for `shipping_order` (`ENTITY_SHIPPING_ORDER: CanonicalShippingOrder`).
+The dry-run preview path reads mapped records directly and never touches this dict, so
+`shipping_order`'s "Review & Activate preview passes" step is unaffected and stayed green - but
+the REAL push (`Run now`) rehydrates each STAGED row through `CANONICAL_MODELS.get(row.entity_type)`,
+gets `None` back for `shipping_order`, and every row is reported `"not pushable"` -
+`ac_entity_config.last_run_error = 'not pushable'`, `ac_sync_run.pushed_count = 0` even though
+`added_count = 5` (the rows staged locally fine). Zero `spo_allocations` rows reached Sorento as a
+result. This is a genuine, narrowly-scoped code fix (one dict entry) - logged here for the coder,
+not applied by this tester pass per the coordinator's explicit "do not touch code" instruction for
+this re-verification step.
+
+**Also fixed live-state only (not a file/code edit) for two masters whose local watermark/row-hash
+bookkeeping still pointed at the OLD (now-replaced) Sorento database:** `supplier`'s and
+`sales_agent`'s FIRST "Run now" click after the fresh-DB switch reported success but pushed 0 rows
+(`rows_scanned: 0`, "No changes" - an INCREMENTAL/MANUAL run diffs against the locally-cached
+`ac_row_hash`/watermark, which still said "already synced" from the prior Sorento instance). Used
+the pre-existing, already-committed `scripts/seed_etl_demo_source.trigger_run(database_name,
+entity_type, mode="reconcile")` helper (documented in its own docstring as "the SAME
+`JobService.create_and_enqueue` call the backend's own Run now button makes, just with an
+explicit mode override" - not a shortcut, not code touched) to force a full reconcile scan for
+`supplier`, `sales_agent`, and (after the key-column fix invalidated its old hashes and its own
+reconcile hit the delete-safety-guard at 205/410 rows) `product`, whose stale `ac_row_hash` rows
+(410, under the OLD two-column key scheme) were deleted first (`DELETE FROM
+app_autocount.ac_row_hash WHERE company_id=... AND entity_type='product'` - live-state cleanup,
+same category as every other SQL adjustment in this report, no file touched) so the reconcile
+started from a clean baseline instead of tripping the guard again.
+
+### Results per entity (Sorento's own `app.api.v1.external.ingest` log lines, `sorento_ingest_v3`)
+
+| Entity | Pushed / Created | Updated | Failed | Retryable | Warnings | Notes |
+|---|---|---|---|---|---|---|
+| product_categories | 1 / 1 | 0 | 0 | 0 | none | |
+| units_of_measure | 1 / 1 | 0 | 0 | 0 | none | |
+| suppliers | 6 / 6 | 0 | 0 | 0 | none | first "Run now" pushed 0 (stale local cache), forced via `trigger_run(reconcile)` |
+| warehouses | 14 / 14 | 0 | 0 | 0 | none | |
+| customers | 27 / 27 | 0 | 0 | 0 | none | Sorento's round-2 fix confirmed - the `credit_limit` crash is gone |
+| sales_agents | 18 / 18 | 0 | 0 | 0 | none | same stale-cache issue as suppliers, same fix |
+| products | first attempt: 0 / 0, `retryable=205` (categories/UOM had not landed yet, self-resolved); after masters landed: `created=205, updated=205, failed=0, retryable=0` on the corrected `["AutoKey"]`-only key | - | 0 | 0 (after masters landed) | **ZERO `ref_mismatch`** (confirmed both by the absence of the string anywhere in Sorento's log for this run AND by every count matching the `ac_sim` source exactly) | root-caused to the ESB's own two-column key misconfiguration, corrected above |
+| sales_orders | 64 / 64 | 0 | 0 | 0 | none | 461 lines landed alongside (`sales_order_lines` count) |
+| purchase_orders | 6 / 6 | 0 | 0 | 0 | none | 19 lines landed alongside |
+| shipping_orders | **0 pushed** (5 staged, `added_count=5`, `pushed_count=0`) | 0 | 5 "not pushable" (ESB-side, before ever reaching Sorento) | - | n/a - never reached Sorento | blocked by the local `CANONICAL_MODELS` gap above, NOT a Sorento-side issue; the dry-run preview (which does not go through this code path) still shows 5/5 clean |
+
+**`psql sorento_ingest_v3` final counts (company SRT):** `product_categories`=1, `units_of_measure`=1,
+`suppliers`=6, `warehouses`=14, `products`=205, `sales_agents`=18, `customers`=27,
+`sales_orders`=64 / `sales_order_lines`=461, `purchase_orders`=6 / `purchase_order_lines`=19,
+`spo_allocations`=0 (blocked, see above). Every landed count matches the `ac_sim` source exactly;
+`purchase_orders`=6 correctly excludes the 5 `SPO-`-prefixed rows the (still-blocked)
+`shipping_order` task owns.
+
+**Warning-word check (the exact ask): `ref_mismatch` = ZERO occurrences** across every
+`ingest.batch` log line for this entire re-push (confirmed by direct grep of Sorento's live
+process log, not inference) - the round-2 fix plus the ESB's own key-column correction together
+eliminate it. No other warning words (`customer_created`, `supplier_created`, `agent_created`,
+`warehouse_unresolved`, `unclassified_demand`) appeared either - every master row resolved
+cleanly on the first pushable attempt, so no back-create/fallback path was exercised this time.
+Sorento's structured log line format (`ingest.batch entity=... created=... updated=... failed=...
+retryable=...`) does not itself carry a `warnings` array - the ESB's own `Prediction` dataclass
+(`sinks_sorento.py`) also does not currently parse `warnings` from Sorento's response body, only
+`errors`; noted as a minor observability gap, not chased further since every count is clean.
+
+**AC-02-26 impact**: none - the E2E spec's scripted Sorento consumer is unaffected by any of this
+(a stub server, never the real Sorento instance), stays green.
+
+**AC-02-13/AC-02-14/AC-02-27 status update**: sales_order and purchase_order now have a REAL,
+successful Sorento round trip (created/pushed counts above) - AC-02-14's fallback fields and
+AC-02-27's `line_number` wire format are confirmed delivered end-to-end for those two entities
+(contract v2, this connection). `shipping_order` remains blocked, now by the local
+`CANONICAL_MODELS` gap above rather than the Sorento bug this report originally logged - the
+Deferred-items table entry for AC-02-13/AC-02-27 is updated accordingly (see below).
