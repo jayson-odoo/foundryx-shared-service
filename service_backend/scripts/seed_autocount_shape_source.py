@@ -297,11 +297,38 @@ def clone_spo_docs(
     return new_headers, new_lines
 
 
-def assign_keys(natural_keys: Sequence[str]) -> Dict[str, int]:
-    """Stable 1-based integer id per DISTINCT natural key, assigned by
-    sorting the keys - "deterministic from row order" (same input set ->
-    same ids every run, never random/hash-based)."""
-    return {key: i + 1 for i, key in enumerate(sorted(set(natural_keys)))}
+def assign_keys(
+    natural_keys: Sequence[str], existing: Optional[Dict[str, int]] = None
+) -> Dict[str, int]:
+    """Stable integer id per DISTINCT natural key.
+
+    Without ``existing``: a 1-based id assigned by sorting the keys -
+    "deterministic from row order" (same input set -> same ids every run,
+    never random/hash-based).
+
+    With ``existing`` (rig defect fix, coordinator finding): a real
+    AutoCount key never moves once assigned, so a RE-SEED must never
+    renumber a code that is already present in the target table. Every
+    natural key already in ``existing`` KEEPS its existing id untouched;
+    only genuinely NEW natural keys are minted, starting at
+    ``max(existing.values()) + 1`` and counting up in sorted order (so two
+    new codes arriving in the same run still rank deterministically
+    relative to each other, not by incidental iteration order)."""
+    distinct = sorted(set(natural_keys))
+    if not existing:
+        return {key: i + 1 for i, key in enumerate(distinct)}
+    result: Dict[str, int] = {}
+    new_codes = []
+    for key in distinct:
+        if key in existing:
+            result[key] = existing[key]
+        else:
+            new_codes.append(key)
+    next_id = max(existing.values(), default=0) + 1
+    for key in sorted(new_codes):
+        result[key] = next_id
+        next_id += 1
+    return result
 
 
 def derive_debtors(so_headers: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -523,6 +550,19 @@ def _guard() -> None:
         )
 
 
+def _read_existing_keys(conn, table: str, key_col: str, natural_col: str) -> Dict[str, int]:
+    """Rig defect fix (coordinator finding): the natural-key -> integer-id map
+    already committed in the target table, read back so a re-seed can REUSE
+    every key that's already there instead of re-ranking the whole set from
+    scratch (a real AutoCount key never moves once assigned). Empty on a
+    fresh table - `assign_keys` falls back to its from-scratch numbering
+    then, unchanged from before this fix."""
+    rows = conn.execute(
+        text(f'SELECT "{natural_col}", "{key_col}" FROM {SCHEMA}."{table}"')
+    ).all()
+    return {str(r[0]): int(r[1]) for r in rows}
+
+
 def _upsert_header(conn, table: str, key_col: str, row: Dict[str, Any], cols: List[str]) -> None:
     col_list = ", ".join(f'"{c}"' for c in [key_col] + cols)
     placeholders = ", ".join(f":{c}" for c in [key_col] + cols)
@@ -556,25 +596,49 @@ def seed(
     locations = derive_locations(so_lines, po_lines_sorted)
     agents = derive_sales_agents(so_headers, po_headers)
 
-    so_doc_keys = assign_keys(so_headers.keys())
-    po_doc_keys = assign_keys(po_headers.keys())
-    so_dtl_keys = assign_keys(
-        f"{r['doc_no']}::{r['item_code']}::{i}" for i, r in enumerate(so_lines)
-    )
-    po_dtl_keys = assign_keys(
-        f"{r['doc_no']}::{r['item_code']}::{i}" for i, r in enumerate(po_lines_sorted)
-    )
-    debtor_keys = assign_keys(d["acc_no"] for d in debtors)
-    creditor_keys = assign_keys(c["acc_no"] for c in creditors)
-    item_keys = assign_keys(i["item_code"] for i in items)
-    location_keys = assign_keys(l["location"] for l in locations)
-
     counts: Dict[str, int] = {}
     with engine.begin() as conn:
         for statement in DDL.strip().split(";"):
             statement = statement.strip()
             if statement:
                 conn.execute(text(statement))
+
+        # Rig defect fix (coordinator finding): read back whatever the
+        # target already has BEFORE minting any keys, so a re-seed with a
+        # different derived set (SO+PO books, --open-po/--spo flags) never
+        # renumbers a code/doc that's already there - a real AutoCount key
+        # never moves. SODTL/PODTL keep their pre-existing from-scratch
+        # numbering (their natural key already embeds a per-run line
+        # position, a separate concern from this fix - never referenced as
+        # a cross-run "ref" the way Item/Debtor/Creditor/SO/PO ids are).
+        so_doc_keys = assign_keys(
+            so_headers.keys(), existing=_read_existing_keys(conn, "SO", "DocKey", "DocNo")
+        )
+        po_doc_keys = assign_keys(
+            po_headers.keys(), existing=_read_existing_keys(conn, "PO", "DocKey", "DocNo")
+        )
+        so_dtl_keys = assign_keys(
+            f"{r['doc_no']}::{r['item_code']}::{i}" for i, r in enumerate(so_lines)
+        )
+        po_dtl_keys = assign_keys(
+            f"{r['doc_no']}::{r['item_code']}::{i}" for i, r in enumerate(po_lines_sorted)
+        )
+        debtor_keys = assign_keys(
+            (d["acc_no"] for d in debtors),
+            existing=_read_existing_keys(conn, "Debtor", "AutoKey", "AccNo"),
+        )
+        creditor_keys = assign_keys(
+            (c["acc_no"] for c in creditors),
+            existing=_read_existing_keys(conn, "Creditor", "AutoKey", "AccNo"),
+        )
+        item_keys = assign_keys(
+            (i["item_code"] for i in items),
+            existing=_read_existing_keys(conn, "Item", "AutoKey", "ItemCode"),
+        )
+        location_keys = assign_keys(
+            (l["location"] for l in locations),
+            existing=_read_existing_keys(conn, "Location", "AutoKey", "Location"),
+        )
 
         for doc_no, header in so_headers.items():
             _upsert_header(

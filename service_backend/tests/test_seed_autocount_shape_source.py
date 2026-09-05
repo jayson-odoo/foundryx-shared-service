@@ -274,6 +274,37 @@ def test_assign_keys_is_deterministic_and_1_based():
     assert again == keys
 
 
+def test_assign_keys_reuses_existing_and_never_renumbers():
+    """Rig defect (coordinator finding): re-seeding with a different derived
+    set (SO + PO books, --open-po/--spo flags) changed WHICH natural keys
+    exist, and `assign_keys`'s pure sorted-rank assignment re-minted
+    different AutoKeys/DocKeys/DtlKeys for codes that were already present -
+    a real AutoCount key never moves once assigned, so the rig must not
+    either. Given an existing key map (as read back from the target table on
+    a re-run) and the current natural-key set, `assign_keys` must KEEP every
+    already-known key exactly as it was and mint brand-new keys (max+1,
+    upward from the existing map's own high-water mark) ONLY for codes that
+    are genuinely new - never re-rank/re-sort the whole set from scratch.
+    """
+    existing = {"A": 1, "C": 2}
+    keys = assign_keys(["A", "B", "C"], existing=existing)
+    assert keys == {"A": 1, "C": 2, "B": 3}
+
+
+def test_assign_keys_reuse_still_deterministic_for_multiple_new_codes():
+    """Two new codes arriving in the same run must still get stable,
+    order-independent ids relative to each other (sorted-order tie-break,
+    same discipline as the no-existing-map path) - not e.g. insertion order,
+    which would make the SAME logical re-seed mint different ids depending
+    on incidental dict/list ordering."""
+    existing = {"A": 1}
+    keys = assign_keys(["A", "Z", "M"], existing=existing)
+    assert keys["A"] == 1
+    # "M" sorts before "Z" - the new codes still rank deterministically.
+    assert keys["M"] == 2
+    assert keys["Z"] == 3
+
+
 # ---------------------------------------------------------------------------
 # master derivation
 # ---------------------------------------------------------------------------
