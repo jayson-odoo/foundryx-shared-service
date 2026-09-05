@@ -1125,6 +1125,14 @@ def _run_paged_sql_db(
             "lastKey": None,
             "pass": None,
         }
+        # The public "watermark at" surface (`last_modified_at`) is stamped
+        # from `top_mark` (see the tail of this function) - a fresh pass
+        # starting from `mark=None` must not leave the OLD scheme's stamp
+        # sitting there looking current. Nulled here so it advances again
+        # only once THIS pass has genuinely read something under the NEW
+        # scheme, never reading ahead of what a reshaped task has actually
+        # re-verified.
+        watermark_row.last_modified_at = None
         db.commit()
 
     cursor = PageCursor.from_watermark_row(

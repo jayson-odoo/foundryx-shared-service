@@ -251,11 +251,23 @@
     bypassing `update_task`).** A new `CURSOR_KEY_COLUMNS` (`sqlKeyColumns`) fingerprint is
     written into `cursor_json` alongside `sqlWatermarkColumn` on every write. At the top of every
     run, a stored fingerprint that does not match the task's CURRENT `key_columns` clears the
-    entity's hashes and resets the whole cursor (`sqlWatermark`/`lastKey`/`pass` all `None`) for
-    a genuinely fresh, adds-only pass. A `None` stored fingerprint (a row that has never run
-    under this check) is treated as "unknown, assume unchanged" - never a spurious reset for an
-    untouched task, and a harmless one-time bootstrap cost for a task that genuinely did reshape
-    before this code shipped.
+    entity's hashes and resets the whole cursor (`sqlWatermark`/`lastKey`/`pass`, and
+    `AcWatermark.last_modified_at` itself, all `None`, so the public "watermark at" surface never
+    reads ahead of a pass that has not actually re-verified anything yet) for a genuinely fresh,
+    adds-only pass. A `None` stored fingerprint (a row that has never run under this check) is
+    treated as "unknown, assume unchanged" - never a spurious reset for an untouched task, and a
+    harmless one-time bootstrap cost for a task that genuinely did reshape before this code
+    shipped. One consequence of that bootstrap rule is worth calling out explicitly: a task whose
+    `keyColumns` changed BEFORE this release carries no fingerprint at all, so the very first run
+    after upgrade cannot tell "always been this shape" apart from "just reshaped" - both ref
+    schemes' hashes sit in `ac_row_hash` at once, and the next reconcile fails LOUDLY on the
+    delete-guard threshold (never a silent phantom-delete wave) until the task is re-saved once
+    (via `update_task`, which clears unconditionally on any `keyColumns` diff regardless of
+    fingerprint history) to re-baseline cleanly. Separately, a reshape's reset is ADDS-ONLY by
+    design (S2's own point: the old scheme's rows are not evidence of deletion, just of a
+    different identity) - rows already pushed to Sorento under the OLD ref scheme are never
+    retracted or re-pushed under the new one, so a reshaped task's Sorento-side history keeps
+    both schemes' entries side by side; this is operator-visible and expected, not a bug.
   - **S2-a (second line of defence, `PageCursor.from_watermark_row`).** A stored `lastKey` whose
     SHAPE does not match `len(key_columns)` (scalar vs list, or a list of the wrong length) is
     treated as no stored position, in both the resume and fresh-pass branches - never threaded
