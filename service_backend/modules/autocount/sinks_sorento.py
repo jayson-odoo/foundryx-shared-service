@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence
@@ -555,13 +556,64 @@ class SorentoSink:
 
         A record's ``delivered`` is True only for a ``created``/``updated``
         outcome - Sorento's own verdict, never inferred from the HTTP status.
+
+        ``settings.autocount_sink_concurrency`` (S5b, performance round;
+        read at CALL time, never cached) lets up to N chunk POSTs run WITH
+        REAL OVERLAP instead of one at a time. The ALL-OR-NOTHING contract
+        is unchanged at every concurrency level, concurrency 1 included:
+        this method returns verdicts ONLY once every chunk has succeeded,
+        in submission order - one chunk failing (a transport error, a
+        5xx, a rate-limit exhaustion) propagates the SAME exception a
+        purely sequential loop always raised, and the caller
+        (``SyncService._auto_push_upserts``) already treats that as "apply
+        nothing, every row stays STAGED, the next run re-offers
+        everything" - concurrency only changes how many POSTs are in
+        flight, never what a failure means.
         """
         record_list = list(records)
+        chunks = [
+            record_list[start : start + SORENTO_MAX_BATCH]
+            for start in range(0, len(record_list), SORENTO_MAX_BATCH)
+        ]
+        if not chunks:
+            return []
+
+        from app.config import settings as _settings
+
+        concurrency = int(getattr(_settings, "autocount_sink_concurrency", 1) or 1)
+        concurrency = max(1, min(concurrency, len(chunks)))
+
+        if concurrency == 1:
+            #     !!  BYTE-IDENTICAL TO BEFORE S5b - ONE POST AT A TIME, THE
+            #         SAME ORDER.  !!
+            bodies = [
+                self._post(self._to_records(chunk), dry_run=False) for chunk in chunks
+            ]
+        else:
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                futures = [
+                    executor.submit(self._post, self._to_records(chunk), dry_run=False)
+                    for chunk in chunks
+                ]
+                bodies = []
+                try:
+                    for future in futures:
+                        bodies.append(future.result())
+                except BaseException:
+                    # A chunk failed - never submit/await anything further
+                    # than the context manager already will: cancel every
+                    # NOT-YET-STARTED future (a genuine no-op call to
+                    # Sorento avoided), let anything already running finish
+                    # in the background (the ``with`` block's own exit
+                    # waits for it), and propagate exactly like the
+                    # sequential path always did - no verdict from this
+                    # method reaches the caller either way.
+                    for pending in futures:
+                        pending.cancel()
+                    raise
+
         results: List[WriteResult] = []
-        for start in range(0, len(record_list), SORENTO_MAX_BATCH):
-            chunk = record_list[start : start + SORENTO_MAX_BATCH]
-            projected = self._to_records(chunk)
-            body = self._post(projected, dry_run=False)
+        for chunk, body in zip(chunks, bodies):
             by_ref = {str(r.get("source_ref") or ""): r for r in body.get("records", [])}
             for record in chunk:
                 ref = getattr(record, "source_ref", "")

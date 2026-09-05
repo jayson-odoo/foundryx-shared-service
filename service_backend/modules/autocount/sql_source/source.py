@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, time as dt_time, timezone
 from decimal import Decimal
@@ -44,6 +45,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import sqlalchemy as sa
 from cryptography.fernet import InvalidToken
 from sqlalchemy.engine import Engine
+from sqlalchemy.pool import StaticPool
 
 from app.secrets import decrypt_secret
 
@@ -1354,11 +1356,11 @@ class SqlDbSource:
                     changed_headers.append(header)
                     changed_stamps[id(header)] = stamp
 
-                #     !!  LINES ONLY FOR CHANGED/NEW HEADERS (plan §2.1).  !!
+                #     !!  LINES ONLY FOR CHANGED/NEW HEADERS (plan §2.1) -
+                #         UP TO N CONCURRENT CONNECTIONS (S5, performance
+                #         round).  !!
                 if self.is_document and changed_headers:
-                    for header in changed_headers:
-                        doc_key_value = header.get(key_column_name)
-                        header[SQL_DOC_LINES_KEY] = self._read_lines(conn, doc_key_value)
+                    self._attach_lines(conn, changed_headers, key_column_name)
 
                 #     !!  A CHANGED HEADER'S ``SourceRecord`` IS BUILT ONLY
                 #         AFTER LINES ARE ATTACHED (URGENT fix, review round
@@ -1592,6 +1594,77 @@ class SqlDbSource:
                 f"staged or pushed. Check the line query's WHERE clause."
             )
         return rows
+
+    def _attach_lines(
+        self,
+        conn: Any,
+        changed_headers: List[Dict[str, Any]],
+        key_column_name: str,
+    ) -> None:
+        """Fetch every changed/new header's lines for THIS page (S5,
+        performance round) - sequential over the page's OWN ``conn`` when
+        there is nothing to gain from concurrency, or a small thread pool
+        when there is.
+
+        A live pass over ZeroTier (~25ms RTT) spent ~60s per page on 2,000
+        sequential line queries. ``settings.autocount_line_fetch_workers``
+        (read at CALL time, never cached) bounds how many run at once, each
+        on its OWN ``open_readonly`` connection off ``self._engine`` -
+        NEVER the page's shared ``conn``, which is a single DB-API
+        connection object and is not safe to use from more than one
+        thread. Results are attached back onto each header IN THE SAME
+        ORDER ``changed_headers`` already has (never by which worker
+        happened to finish first), so the ``records``/``hashes`` built
+        from ``changed_headers`` immediately afterwards are byte-identical
+        to the old sequential path regardless of concurrency - only the
+        wall-clock time changes. One header's line query failing
+        propagates exactly like the OLD sequential loop did (whatever
+        ``_read_lines`` raises bubbles straight out of ``fetch_page`` -
+        nothing staged, the top-level cursor untouched); any OTHER
+        header's future still in the pool's queue (not yet started) is
+        cancelled rather than left to make a wasted call.
+
+        ``workers <= 1`` OR a single-connection pool (``StaticPool`` - the
+        in-memory SQLite rig every other test in this suite uses, which
+        hands back the SAME underlying connection every time) both fall
+        back to the exact old sequential loop: a second ``open_readonly``
+        against a ``StaticPool`` engine while the first is still open would
+        deadlock or corrupt the shared cursor, never run genuinely in
+        parallel.
+        """
+        from app.config import settings as _settings
+
+        workers = int(getattr(_settings, "autocount_line_fetch_workers", 4) or 4)
+        if workers <= 1 or isinstance(self._engine.pool, StaticPool):
+            for header in changed_headers:
+                doc_key_value = header.get(key_column_name)
+                header[SQL_DOC_LINES_KEY] = self._read_lines(conn, doc_key_value)
+            return
+
+        workers = min(workers, len(changed_headers))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [
+                executor.submit(
+                    self._read_lines_own_connection, header.get(key_column_name)
+                )
+                for header in changed_headers
+            ]
+            try:
+                for header, future in zip(changed_headers, futures):
+                    header[SQL_DOC_LINES_KEY] = future.result()
+            except BaseException:
+                for pending in futures:
+                    pending.cancel()
+                raise
+
+    def _read_lines_own_connection(self, doc_key_value: Any) -> List[Dict[str, Any]]:
+        """A worker's OWN ``open_readonly`` connection off ``self._engine``
+        (S5) - never the page's shared connection, which is not safe to
+        use from more than one thread at once."""
+        with open_readonly(
+            self._engine, timeout_s=self.timeout_s, secrets=self._secrets
+        ) as worker_conn:
+            return self._read_lines(worker_conn, doc_key_value)
 
     def _line_count_mismatch(self, header: Dict[str, Any]) -> Optional[str]:
         """The ``LineCount`` fingerprint mismatch guard (S2, review round 4).

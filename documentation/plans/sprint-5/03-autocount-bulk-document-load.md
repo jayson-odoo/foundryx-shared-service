@@ -284,6 +284,53 @@
   binds as that stringified/hex text, not its native type - accepted because a paged task's key
   column is virtually always a business code or a plain int.
 
+**Review round 6 amendments (S5 performance - concurrent line fetch + sink push concurrency):**
+- **S5 (concurrent line fetch).** A live pass over ZeroTier (~25ms RTT) spent ~60s per page on
+  2,000 sequential line queries - one `_read_lines` call per changed header, always waiting for
+  the previous one's round trip before starting the next. `SqlDbSource._attach_lines` (called
+  from the same "LINES ONLY FOR CHANGED/NEW HEADERS" spot in `fetch_page`) now fetches up to
+  `settings.autocount_line_fetch_workers` (env `AUTOCOUNT_LINE_FETCH_WORKERS`, default 4, bounds
+  1..8) headers' lines CONCURRENTLY, each worker opening its OWN `open_readonly` connection off
+  `self._engine` (`_read_lines_own_connection`) - never the page's own shared connection, which
+  is a single DB-API object and unsafe across threads. Results are attached back onto each
+  header in the SAME order `changed_headers` already has, so the page's `records`/`hashes` stay
+  byte-identical to the sequential path regardless of finish order - only wall-clock time
+  changes (`test_workers_one_matches_workers_four_byte_for_byte`). One header's line query
+  failing still fails the WHOLE page exactly like before (whatever `_read_lines` raises bubbles
+  straight out of `fetch_page` - nothing staged, the top-level cursor untouched); any other
+  header's future still queued (not yet started) is cancelled rather than left to make a wasted
+  call. `workers <= 1` OR a single-connection pool (`StaticPool` - the in-memory SQLite rig every
+  other test in this suite uses) both fall back to the OLD sequential loop over the page's own
+  connection - a second `open_readonly` against a `StaticPool` engine while the first is still
+  open would deadlock or corrupt the shared cursor, never run genuinely in parallel.
+  `runtime.py`'s `engine_for` bumps `pool_size` to `max(2, workers)` (read at engine-construction
+  time, same as `query_timeout`) so a high worker count can never starve the pool waiting for a
+  connection the header page's own read already holds. `MAX_DOCUMENT_LINES_PER_HEADER` is
+  unchanged (still enforced per header, inside `_read_lines` itself, worker or not).
+  `BL-SS-055` (batched line fetch - one `IN` query per page of DocKeys) stays open as the
+  alternative approach this round did not take (fewer round trips per page rather than more
+  connections in flight) - either can land later without conflicting with the other.
+- **S5b (sink push concurrency).** `SorentoSink.write_batch` chunked its POSTs at
+  `SORENTO_MAX_BATCH` SEQUENTIALLY, always waiting for one chunk's response before starting the
+  next. `settings.autocount_sink_concurrency` (env `AUTOCOUNT_SINK_CONCURRENCY`, default 1,
+  bounds 1..4) lets up to N chunk POSTs run with real overlap via a small `ThreadPoolExecutor` -
+  the sink holds no DB session at all (a pure HTTP client wrapper), so this never crosses a
+  SQLAlchemy session across threads; each worker only performs the HTTP call and returns the
+  parsed body, the calling thread still builds every `WriteResult`. The ALL-OR-NOTHING contract
+  is UNCHANGED at every concurrency level (a deliberate ruling, superseding an earlier "keep
+  already-succeeded chunks' verdicts" framing that would have changed `write_batch`'s own
+  return contract): `write_batch` returns verdicts ONLY once every chunk has succeeded, in
+  submission order - one chunk failing (a transport error, a 5xx, a rate-limit exhaustion) never
+  applies a verdict to ANY row, even one from an already-completed sibling chunk, and propagates
+  the exact same exception a purely sequential loop always raised;
+  `SyncService._auto_push_upserts`'s existing generic `except Exception` handler (`"The push
+  failed before the consumer resolved it"`) needed no changes at all. Concurrency 1 is
+  byte-identical to before this round (same request order, one POST in flight). Ops note:
+  default stays 1 - an operator raises `AUTOCOUNT_SINK_CONCURRENCY` only once the RECEIVING side
+  has confirmed it can take concurrent batches (a per-connection-serialised commit or an
+  aggressive rate limit on their end would turn "faster" into "more 429s/5xxs", the opposite of
+  the intent).
+
 ### 2.2 Run loop, change-only staging, watermark (`sync.py`)
 
 `run_autocount_sync`, sql_db branch with a watermark column:
@@ -419,17 +466,25 @@ tasks are saved with `2023-09-01` during live verification.
 
 ### 2.7 Files
 
-- `service_backend/app/config.py` (+3 settings, validators - `autocount_page_size`,
-  `autocount_run_time_budget_seconds`, and round 5's `autocount_sink_timeout_seconds`)
+- `service_backend/app/config.py` (+5 settings, validators - `autocount_page_size`,
+  `autocount_run_time_budget_seconds`, round 5's `autocount_sink_timeout_seconds`, and the S5
+  performance round's `autocount_line_fetch_workers`/`autocount_sink_concurrency`)
 - `service_backend/modules/autocount/sql_source/source.py` (paged wrap, `fetch_page`, hash diff
-  before lines, cap removal), `sql_source/errors.py` (drop `SqlDocumentCapExceeded`)
+  before lines, cap removal, S5's `_attach_lines`/`_read_lines_own_connection` concurrent line
+  fetch), `sql_source/errors.py` (drop `SqlDocumentCapExceeded`), `sql_source/runtime.py` (S5 -
+  `engine_for`'s pool size fits the configured worker count)
 - `service_backend/modules/autocount/sync.py` (page loop, change-only staging, watermark rule,
   seen stamps, deletes at completion, round 5's keyColumns-reshape identity reset)
 - `service_backend/modules/autocount/sinks_sorento.py` (round 5 - `SorentoSink`'s HTTP client
   timeout follows `settings.autocount_sink_timeout_seconds`, connect phase stays short; ops
   note: a slow-but-alive Sorento ingesting a large document batch used to record a push FAILURE
   at the old hard-coded 30s even though the batch itself was fine - retune
-  `AUTOCOUNT_SINK_TIMEOUT_SECONDS` (default 300s, floor 30s) instead of changing code)
+  `AUTOCOUNT_SINK_TIMEOUT_SECONDS` (default 300s, floor 30s) instead of changing code. S5b -
+  `write_batch` sends up to `settings.autocount_sink_concurrency` chunk POSTs with real overlap,
+  same all-or-nothing contract at every concurrency level; ops note: default stays 1
+  (byte-identical to the old fully sequential loop) - raise `AUTOCOUNT_SINK_CONCURRENCY` (max 4)
+  only once the RECEIVING side has confirmed it can take concurrent batches, since a rate limit
+  or per-connection-serialised commit on their end would turn "faster" into "more 429s/5xxs")
 - `service_backend/modules/autocount/repositories/autocount_repository.py` (`touch_seen`,
   `stale_refs`)
 - `service_backend/modules/autocount/scheduler.py` (continuation due), `services/etl_service.py`

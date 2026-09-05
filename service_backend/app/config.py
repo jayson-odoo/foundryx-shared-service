@@ -308,6 +308,24 @@ class Settings(BaseSettings):
     # timeout stays short regardless (a dead endpoint should fail fast);
     # this setting only widens the read/write/pool budget.
     autocount_sink_timeout_seconds: int = 300
+    # A page's changed-header LINE fetch, one connection each, sequential
+    # (S5, plan sprint-5/03 performance round) - a live pass over ZeroTier
+    # (~25ms RTT) spent ~60s per page on 2,000 sequential line queries.
+    # Read at CALL time by `SqlDbSource._attach_lines` (never cached), same
+    # "retune without a restart" contract as `autocount_page_size`. Bounded
+    # 1..8 - `workers=1` is the exact old sequential loop (no thread pool at
+    # all); the source engine's own pool (`pool_size`, `runtime.py`) is
+    # bumped to fit the configured worker count plus the page's own header
+    # connection, so a high worker count can never starve the pool.
+    autocount_line_fetch_workers: int = 4
+    # The sink's chunked push, up to N POSTs in flight (S5b, same
+    # performance round) - `SorentoSink.write_batch` keeps its EXISTING
+    # all-or-nothing contract at every concurrency: one chunk failing
+    # discards every chunk's verdict, exactly like the fully sequential
+    # loop always has. Default 1 (byte-identical to today, same request
+    # order) - an operator raises it only once the RECEIVING side (Sorento)
+    # has confirmed it can take concurrent batches. Bounded 1..4.
+    autocount_sink_concurrency: int = 1
 
     @field_validator("autocount_page_size")
     @classmethod
@@ -333,6 +351,24 @@ class Settings(BaseSettings):
         if v < 30:
             raise ValueError(
                 "autocount_sink_timeout_seconds must be at least 30 seconds."
+            )
+        return v
+
+    @field_validator("autocount_line_fetch_workers")
+    @classmethod
+    def _autocount_line_fetch_workers_bounds(cls, v: int) -> int:
+        if v < 1 or v > 8:
+            raise ValueError(
+                "autocount_line_fetch_workers must be between 1 and 8."
+            )
+        return v
+
+    @field_validator("autocount_sink_concurrency")
+    @classmethod
+    def _autocount_sink_concurrency_bounds(cls, v: int) -> int:
+        if v < 1 or v > 4:
+            raise ValueError(
+                "autocount_sink_concurrency must be between 1 and 4."
             )
         return v
 
