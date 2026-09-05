@@ -3298,18 +3298,24 @@ def test_sql_pack_documents_the_pseudo_line_exclusion_rule():
 _LINE_FILTER_PREDICATES = ("d.ItemCode IS NOT NULL", "d.Qty IS NOT NULL")
 
 
-@pytest.mark.parametrize("label", ["SO", "PO", "SPO"])
-def test_document_preset_line_query_and_header_fingerprint_apply_the_same_line_filter(label):
-    from modules.autocount import presets
+# Parametrized over the registry itself (not a hardcoded SO/PO/SPO list) so
+# a fourth document preset cannot ship without this guard covering it.
+from modules.autocount.presets import DOCUMENT_PRESETS as _DOCUMENT_PRESETS  # noqa: E402
 
-    preset = {"SO": presets.SO_PRESET, "PO": presets.PO_PRESET, "SPO": presets.SPO_PRESET}[label]
+
+@pytest.mark.parametrize(
+    "entity_type", sorted(_DOCUMENT_PRESETS), ids=sorted(_DOCUMENT_PRESETS)
+)
+def test_document_preset_line_query_and_header_fingerprint_apply_the_same_line_filter(entity_type):
+    preset = _DOCUMENT_PRESETS[entity_type]
     for predicate in _LINE_FILTER_PREDICATES:
         assert predicate in preset.header_query, (
-            f"{label}_PRESET.header_query's fingerprint OUTER APPLY must filter "
-            f"{predicate} - got:\n{preset.header_query}"
+            f"DOCUMENT_PRESETS[{entity_type!r}].header_query's fingerprint OUTER "
+            f"APPLY must filter {predicate} - got:\n{preset.header_query}"
         )
         assert predicate in preset.line_query, (
-            f"{label}_PRESET.line_query must apply the SAME line filter as the "
-            f"header fingerprint ({predicate}) - a row the header never counts "
-            f"must never reach the mapper as a real line - got:\n{preset.line_query}"
+            f"DOCUMENT_PRESETS[{entity_type!r}].line_query must apply the SAME "
+            f"line filter as the header fingerprint ({predicate}) - a row the "
+            f"header never counts must never reach the mapper as a real line - "
+            f"got:\n{preset.line_query}"
         )
