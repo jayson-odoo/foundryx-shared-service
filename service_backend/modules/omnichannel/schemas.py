@@ -405,6 +405,34 @@ class ThreadListResponse(ApiModel):
     total: int
 
 
+# ── Conversation events (plan 27 A3, S1) ─────────────────────────────────────
+class ConversationEventItem(ApiModel):
+    """One append-only `conversation_events` row (AC-IVE-13). `fromLabel`/
+    `toLabel` are resolved tenant-scoped server-side (never a raw id echoed
+    without its label) - a THREAD status id, a core lifecycle status id, or a
+    user/external-agent display name, depending on `eventType`. `closeReasonId`/
+    `closeReasonName` stay null until plan 27 A3 slice S2 lands close reasons."""
+
+    id: str
+    eventType: str
+    actorName: Optional[str] = None
+    actorUserId: Optional[str] = None
+    fromValue: Optional[str] = None
+    fromLabel: Optional[str] = None
+    toValue: Optional[str] = None
+    toLabel: Optional[str] = None
+    closeReasonId: Optional[str] = None
+    closeReasonName: Optional[str] = None
+    note: Optional[str] = None
+    payload: Optional[dict] = None
+    createdAt: datetime
+
+
+class ConversationEventListResponse(ApiModel):
+    data: List[ConversationEventItem]
+    total: int
+
+
 class ThreadPatch(ApiModel):
     """PATCH /contacts/{id}. assignedUserId: explicit null = unassign (the
     handler distinguishes omitted vs null via model_fields_set). System-field +

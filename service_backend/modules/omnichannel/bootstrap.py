@@ -183,6 +183,9 @@ def create_schema_and_tables(engine: Engine) -> None:
                 ("language", "VARCHAR"),
                 ("country_code", "VARCHAR"),
                 ("lifecycle_status_id", "VARCHAR"),
+                # Plan 27 A3 (D-A3-12) - the ONE outbound seam's denormalized
+                # column; `create_all` never ALTERs an existing table.
+                ("last_agent_message_at", "TIMESTAMPTZ"),
             ]
             for col, coltype in _contact_cols:
                 conn.execute(
@@ -195,6 +198,12 @@ def create_schema_and_tables(engine: Engine) -> None:
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_omni_contacts_lifecycle_status_id "
                     f'ON "{OMNI_SCHEMA}".contacts (lifecycle_status_id)'
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_contacts_last_agent_message_at "
+                    f'ON "{OMNI_SCHEMA}".contacts (last_agent_message_at)'
                 )
             )
             # contact_fields.key / contact_tags.name → per-workspace UNIQUE
@@ -338,7 +347,8 @@ def install(engine: Engine, db: Session) -> None:
 
 def install_tenant(db: Session, tenant_id: str) -> None:
     """Per-tenant seed: statuses + the default 'General' workspace (+ its
-    lifecycle graph, plan 25 S2, AC-CDM-14). Idempotent.
+    lifecycle graph, plan 25 S2, AC-CDM-14) + the plan 27 A3 conversation-
+    events backfill (AC-IVE-12). Idempotent.
 
     Review round 1, finding 17: the pre-existing-workspace branch used to
     early-return with NOTHING materialized - a tenant that already had a
@@ -348,8 +358,10 @@ def install_tenant(db: Session, tenant_id: str) -> None:
     is idempotent + covers EVERY workspace (not just the default one) + stamps
     every `lifecycle_status_id IS NULL` contact, so calling it unconditionally
     before returning makes `install_tenant` self-healing on every call,
-    including this one."""
-    from .services import lifecycle_service
+    including this one. `event_service.backfill_tenant` is the same
+    self-healing shape for `conversation_events`/`last_agent_message_at` - a
+    no-op on a tenant with zero contacts (the fresh-workspace branch)."""
+    from .services import event_service, lifecycle_service
 
     statuses.ensure_statuses(db, tenant_id)
     exists = (
@@ -359,6 +371,7 @@ def install_tenant(db: Session, tenant_id: str) -> None:
     )
     if exists:
         lifecycle_service.backfill_tenant(db, tenant_id)
+        event_service.backfill_tenant(db, tenant_id)
         return
     ws = Workspace(
         tenant_id=tenant_id,
@@ -370,6 +383,7 @@ def install_tenant(db: Session, tenant_id: str) -> None:
     db.add(ws)
     db.flush()
     lifecycle_service.materialize_for_workspace(db, ws)
+    event_service.backfill_tenant(db, tenant_id)
 
 
 def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
@@ -384,14 +398,23 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     that already has a graph, or a contact that already carries a stage, is
     skipped) so re-running ``update`` (or a tenant already on 0.2.0 running it
     again) is a safe no-op.
+
+    0.2.0 -> 0.3.0 (plan 27 A3, S1, AC-IVE-12): every contact with NO
+    `conversation_events` yet is backfilled (`opened`/`closed`/`assigned`) and
+    `last_agent_message_at` is filled from AGENT-message history -
+    `event_service.backfill_tenant` is idempotent the same way, so it is
+    called unconditionally (never gated on `from_version`, matching the
+    lifecycle backfill above) - safe to re-run for a tenant already on 0.3.0.
+
     ``AppStoreService.update()`` already re-grants this module's permission
     catalog rows (incl. the four new ``contacts.*``/``contact_fields.manage``/
     ``contact_tags.manage`` keys) to the tenant's Admin role after this hook
     returns - no grant-sweep code needed here.
     """
-    from .services import lifecycle_service
+    from .services import event_service, lifecycle_service
 
     lifecycle_service.backfill_tenant(db, tenant_id)
+    event_service.backfill_tenant(db, tenant_id)
 
 
 def uninstall_tenant(db: Session, tenant_id: str) -> None:

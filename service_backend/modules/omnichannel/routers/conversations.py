@@ -41,6 +41,7 @@ from ..embed_auth import (
     resolve_native_actor,
 )
 from ..schemas import (
+    ConversationEventListResponse,
     LifecycleMoveOption,
     LifecycleMoveRequest,
     MessageItem,
@@ -51,6 +52,7 @@ from ..schemas import (
     ThreadListResponse,
     ThreadPatch,
 )
+from ..services import event_service
 from ..services.contact_profile_service import ProfilePatchError
 from ..services.conversation_service import (
     ConversationService,
@@ -200,6 +202,7 @@ def patch_thread(
             tag_ids=payload.tagIds if "tagIds" in sent else ...,
             actor=resolve_native_actor(principal, db),
             actor_id=principal.actor_user_id,
+            actor_external_agent_id=principal.external_agent_id if principal.is_embed else None,
             external_connection_id=principal.connection_id if principal.is_embed else None,
         )
     except ThreadNotFound:
@@ -208,6 +211,30 @@ def patch_thread(
         raise HTTPException(status_code=422, detail=exc.message)
     except ProfilePatchError as exc:
         raise HTTPException(status_code=422, detail={"fieldErrors": exc.errors})
+
+
+@router.get("/{contact_id}/events", response_model=ConversationEventListResponse)
+def list_events(
+    contact_id: str,
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
+    db: Session = Depends(get_db),
+    page: int = Query(0, ge=0),
+    page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
+) -> ConversationEventListResponse:
+    """Conversation events (plan 27 A3, S1) - newest-first, paginated
+    (AC-IVE-13). Same read gate + scope enforcement as `list_messages` (an
+    embed token sees its own thread's events, exactly like notes) - a foreign-
+    tenant contact_id is a uniform 404, never a 403."""
+    principal.require_read()
+    enforce_thread_access(db, principal, contact_id)
+    contact = ConversationService(db).repo.get_by_id(contact_id, principal.tenant_id)
+    if contact is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    rows, total = event_service.list_for_contact(
+        db, contact_id, principal.tenant_id, page=page, page_size=page_size
+    )
+    items = event_service.to_items(db, rows, principal.tenant_id)
+    return ConversationEventListResponse(data=items, total=total)
 
 
 @router.post("/{contact_id}/lifecycle", response_model=ThreadItem)

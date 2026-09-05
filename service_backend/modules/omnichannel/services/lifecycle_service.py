@@ -269,13 +269,27 @@ def move(
     Raises `LifecycleStageNotFound` (-> 404) when `to_status_id` isn't a stage
     of THIS contact's own workspace graph, BEFORE the machine ever runs - so a
     genuinely missing edge (-> 409, `status_machine.TransitionNotAllowed`)
-    stays distinguishable from a bad/foreign target id (AC-CDM-17)."""
+    stays distinguishable from a bad/foreign target id (AC-CDM-17).
+
+    Writes ONE `lifecycle_changed` conversation event (plan 27 A3, AC-IVE-08)
+    in the SAME unit of work - this is the ONE move seam shared by
+    `ConversationService.move_lifecycle`, `patch_thread`'s `lifecycle_status_id`
+    branch, and the gateway PATCH, so every caller is covered without a
+    separate writer per route."""
     if get_scope_status(db, ENTITY_TYPE, contact.tenant_id, contact.workspace_id, to_status_id) is None:
         raise LifecycleStageNotFound()
-    return status_machine.transition(
+    from_status_id = contact.lifecycle_status_id
+    result = status_machine.transition(
         db, ENTITY_TYPE, contact, to_status_id, actor=actor,
         tenant_id=contact.tenant_id, commit=False,
     )
+    from . import event_service
+
+    event_service.record(
+        db, contact, "lifecycle_changed", actor=actor,
+        from_value=from_status_id, to_value=to_status_id,
+    )
+    return result
 
 
 def fireable_moves(

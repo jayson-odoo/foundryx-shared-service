@@ -15,7 +15,7 @@ from app.models.user import User
 from ..models import Channel, Contact, ConversationMessage, Status
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import ContactLifecycleSummary, ContactTagRefItem, MessageItem, ReplyRefItem, ThreadItem
-from . import realtime, statuses
+from . import event_service, realtime, statuses
 from .contact_tag_service import ContactTagService
 from .lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY_TYPE
 from .lifecycle_service import fireable_moves as _lifecycle_fireable_moves
@@ -411,6 +411,7 @@ class ConversationService:
         lifecycle_status_id: Optional[str] = ...,
         actor: Optional[User] = None,
         actor_id: Optional[str] = None,
+        actor_external_agent_id: Optional[str] = None,
         external_connection_id: Optional[str] = None,
     ) -> ThreadItem:
         c = self.repo.get_by_id(contact_id, tenant_id)
@@ -418,6 +419,8 @@ class ConversationService:
             raise ThreadNotFound()
 
         if assigned_user_id is not ...:
+            prev_user_id = c.assigned_user_id
+            prev_external_agent_id = c.assigned_external_agent_id
             if external_connection_id is not None:
                 # Embed principal: the assignee id is an EXTERNAL agent id - it
                 # must belong to the token's connection (a token can only assign
@@ -445,10 +448,58 @@ class ConversationService:
                 c.assigned_user_id = assigned_user_id
                 c.assigned_external_agent_id = None
 
+            # `assigned`/`unassigned` events (plan 27 A3, AC-IVE-06) - a
+            # re-send of the SAME assignee writes nothing.
+            prev_assignee = prev_user_id or prev_external_agent_id
+            new_assignee = c.assigned_user_id or c.assigned_external_agent_id
+            if new_assignee != prev_assignee:
+                if new_assignee:
+                    kind = "user" if c.assigned_user_id else "external_agent"
+                    event_service.record(
+                        self.db, c, "assigned",
+                        actor=actor, actor_id=actor_id,
+                        external_agent_id=actor_external_agent_id,
+                        from_value=prev_assignee, to_value=new_assignee,
+                        payload={"assigneeKind": kind},
+                    )
+                else:
+                    event_service.record(
+                        self.db, c, "unassigned",
+                        actor=actor, actor_id=actor_id,
+                        external_agent_id=actor_external_agent_id,
+                        from_value=prev_assignee,
+                    )
+
         if status is not None:
             if status not in VALID_THREAD_STATUS:
                 raise InvalidPatch(f"Invalid thread status: {status}")
-            c.status_id = statuses.status_id_for(self.db, tenant_id, "THREAD", status)
+            new_status_id = statuses.status_id_for(self.db, tenant_id, "THREAD", status)
+            if new_status_id != c.status_id:
+                # `closed`/`reopened`/`snoozed`/`unsnoozed` (plan 27 A3,
+                # AC-IVE-05) - resolve the PREVIOUS key before overwriting so
+                # OPEN<-CLOSED (reopened) and OPEN<-SNOOZED (unsnoozed) stay
+                # distinguishable; a PATCH that re-sends the current status
+                # never reaches here (`new_status_id == c.status_id` above).
+                prev_status_id = c.status_id
+                prev_key = self._status_keys(tenant_id).get(prev_status_id)
+                event_type: Optional[str] = None
+                if status == "CLOSED":
+                    event_type = "closed"
+                elif status == "SNOOZED":
+                    event_type = "snoozed"
+                elif status == "OPEN":
+                    if prev_key == "CLOSED":
+                        event_type = "reopened"
+                    elif prev_key == "SNOOZED":
+                        event_type = "unsnoozed"
+                c.status_id = new_status_id
+                if event_type:
+                    event_service.record(
+                        self.db, c, event_type,
+                        actor=actor, actor_id=actor_id,
+                        external_agent_id=actor_external_agent_id,
+                        from_value=prev_status_id, to_value=new_status_id,
+                    )
 
         if priority is not None:
             if priority not in VALID_PRIORITY:

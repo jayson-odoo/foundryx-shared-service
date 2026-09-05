@@ -42,7 +42,7 @@ from .send_runner import (
     TransientSendError,
     run_send,
 )
-from . import realtime
+from . import event_service, realtime
 
 
 class SendRejected(Exception):
@@ -119,6 +119,35 @@ class MessageService:
         if external_agent_id:
             return None, external_agent_id
         return actor_user_id, None
+
+    def _mark_agent_message(
+        self,
+        contact: Contact,
+        now: datetime,
+        *,
+        actor_user_id: Optional[str],
+        external_agent_id: Optional[str],
+    ) -> None:
+        """Maintains `last_message_at` (every send) + `last_agent_message_at`
+        (plan 27 A3, AC-IVE-11/12 - the ONE outbound seam) and writes ONE
+        `first_agent_reply` event per open cycle (AC-IVE-07). Replaces the
+        three bare `contact.last_message_at = now` assignments (send_message /
+        send_media / `_structured_row`) - NEVER called by `add_internal_note`
+        (a SYSTEM note is never a reply)."""
+        contact.last_message_at = now
+        contact.last_agent_message_at = now
+        if event_service.is_first_reply_pending(self.db, contact):
+            payload = None
+            if contact.last_incoming_message_at is not None:
+                incoming = contact.last_incoming_message_at
+                if incoming.tzinfo is None:  # SQLite returns naive datetimes
+                    incoming = incoming.replace(tzinfo=timezone.utc)
+                payload = {"responseSeconds": int((now - incoming).total_seconds())}
+            event_service.record(
+                self.db, contact, "first_agent_reply",
+                actor_id=actor_user_id, external_agent_id=external_agent_id,
+                payload=payload,
+            )
 
     # ── Channel resolution ───────────────────────────────────────────────────
     def _channel_for_contact(
@@ -364,7 +393,9 @@ class MessageService:
             created_at=now,  # µs precision - keeps rapid messages ordered
         )
         self.db.add(row)
-        contact.last_message_at = now
+        self._mark_agent_message(
+            contact, now, actor_user_id=actor_user_id, external_agent_id=external_agent_id
+        )
         self.db.commit()
         self.db.refresh(row)
         return self._enqueue_and_finalize(row, contact)
@@ -430,7 +461,9 @@ class MessageService:
             created_at=now,
         )
         self.db.add(row)
-        contact.last_message_at = now
+        self._mark_agent_message(
+            contact, now, actor_user_id=actor_user_id, external_agent_id=external_agent_id
+        )
         self.db.commit()
         self.db.refresh(row)
         return self._enqueue_and_finalize(row, contact)
@@ -481,7 +514,9 @@ class MessageService:
             created_at=now,
         )
         self.db.add(row)
-        contact.last_message_at = now
+        self._mark_agent_message(
+            contact, now, actor_user_id=actor_user_id, external_agent_id=external_agent_id
+        )
         self.db.commit()
         self.db.refresh(row)
         return self._enqueue_and_finalize(row, contact)
@@ -712,6 +747,17 @@ class MessageService:
             created_at=datetime.now(timezone.utc),  # µs precision ordering
         )
         self.db.add(row)
+        self.db.flush()
+        # `comment_added` event (plan 27 A3, AC-IVE-09) - SAME unit of work as
+        # the note; `payload.messageId` links the event to the note bubble so
+        # the merged Activities feed can dedupe (never a duplicate line next
+        # to the note - AC-IVE-34). The gateway `add_comment` delegates to
+        # THIS method, so both paths are covered by the one call site.
+        event_service.record(
+            self.db, contact, "comment_added",
+            actor_id=actor_user_id, external_agent_id=external_agent_id,
+            payload={"messageId": row.id},
+        )
         self.db.commit()
         self.db.refresh(row)
         item = self.conversations.message_items([row])[0]
