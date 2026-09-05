@@ -1264,6 +1264,68 @@ def test_gateway_rio_shape_carries_contact_data_model_fields(client, session_fac
     assert row["custom_fields"] == [{"name": "source", "value": "Ads"}]
 
 
+def test_legacy_unregistered_custom_field_key_is_stripped_everywhere(client, session_factory):
+    """Review round 1, finding 5 - `customFields` is the workspace's
+    REGISTERED keys only, never the raw JSON blob. Simulate a stale key that
+    predates a registry delete/rename (written straight to the DB, bypassing
+    every validated write path on purpose - that's exactly how a real one
+    would arise) and confirm it never surfaces on ANY read path: internal
+    list/detail, gateway default, gateway rio, or the `contact.updated`
+    webhook object."""
+    ws = _default_workspace_id(session_factory)
+    _add_custom_field(client, ws, key="source", field_type="text")
+    hdr, cid = _seeded(client, session_factory, phone="+60555222013")
+    client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}", json={"customFields": {"source": "Ads"}}, headers=hdr
+    )
+
+    from modules.omnichannel.models import Contact
+
+    db = session_factory()
+    contact = db.query(Contact).filter(Contact.id == cid).first()
+    contact.custom_fields_json = dict(contact.custom_fields_json or {}, legacyKey="stale value")
+    db.commit()
+    db.close()
+
+    reg = client.post(
+        "/api/v1/omnichannel/webhooks",
+        json={"name": "w", "url": "https://hooks.example.com/w", "events": ["contact.updated"]},
+        headers=hdr,
+    )
+    assert reg.status_code == 201, reg.text
+
+    native = _auth(client)
+    detail = client.get(f"/omnichannel/contacts/{cid}", headers=native).json()
+    assert detail["customFields"] == {"source": "Ads"}
+    listed = client.get("/omnichannel/contacts", headers=native).json()["data"]
+    row = next(t for t in listed if t["id"] == cid)
+    assert row["customFields"] == {"source": "Ads"}
+
+    default_shape = client.get(f"/api/v1/omnichannel/contacts/{cid}", headers=hdr).json()
+    assert default_shape["customFields"] == {"source": "Ads"}
+    rio = client.get(f"/api/v1/omnichannel/contacts/{cid}?format=rio", headers=hdr).json()
+    assert rio["custom_fields"] == [{"name": "source", "value": "Ads"}]
+
+    # Any further PATCH re-triggers the webhook fan-out - assert the delivered
+    # payload also strips the legacy key.
+    client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}", json={"customFields": {"source": "Ads2"}}, headers=hdr
+    )
+    from modules.omnichannel.models import WebhookDelivery
+
+    db = session_factory()
+    delivery = (
+        db.query(WebhookDelivery)
+        .filter(WebhookDelivery.event_type == "contact.updated")
+        .order_by(WebhookDelivery.created_at.desc())
+        .first()
+    )
+    contact_payload = delivery.payload_json["data"]["contact"]
+    db.close()
+    assert contact_payload["customFields"] == {"source": "Ads2"}
+    assert "legacyKey" not in contact_payload["customFields"]
+
+
 def test_gateway_patch_tags_by_name_autocreate_and_reuse(client, session_factory):
     """AC-CDM-26/D8 - `tags: [name]` REPLACES the set; an unknown name is
     auto-created in the workspace's tag registry (respond.io parity); a
@@ -1446,3 +1508,50 @@ def test_gateway_webhook_contact_updated_payload_carries_new_fields(client, sess
     assert [t["name"] for t in contact["tags"]] == ["VIP"]
     assert contact["lifecycle"]["key"] == "hot_lead"
     assert contact["language"] is None and contact["countryCode"] is None
+
+
+def test_internal_lifecycle_move_also_fans_out_contact_updated_webhook(client, session_factory):
+    """Review round 1, finding 1 - `move_lifecycle` (the INTERNAL agent-facing
+    `POST /omnichannel/contacts/{id}/lifecycle`, distinct from the gateway
+    PATCH used above) used to call ONLY `realtime.publish`, so a lifecycle
+    move made from inside the app never reached a registered consumer
+    webhook even though the guide promises `contact.updated` on any
+    lifecycle change. Exactly ONE `contact.updated` delivery must be queued,
+    carrying the new `lifecycle` on the default contact shape."""
+    ws = _default_workspace_id(session_factory)
+    hdr, cid = _seeded(client, session_factory, phone="+60555222011")
+    _stamp_initial_lifecycle(session_factory, cid, ws)
+
+    reg = client.post(
+        "/api/v1/omnichannel/webhooks",
+        json={"name": "w", "url": "https://hooks.example.com/w", "events": ["contact.updated"]},
+        headers=hdr,
+    )
+    assert reg.status_code == 201, reg.text
+
+    graph = client.get(
+        "/statuses",
+        params={"entityType": "omnichannel_contact_lifecycle", "scopeId": ws},
+        headers=_auth(client),
+    ).json()
+    hot_lead_id = next(s["id"] for s in graph["statuses"] if s["key"] == "hot_lead")
+
+    moved = client.post(
+        f"/omnichannel/contacts/{cid}/lifecycle",
+        json={"toStatusId": hot_lead_id},
+        headers=_auth(client),
+    )
+    assert moved.status_code == 200, moved.text
+
+    from modules.omnichannel.models import WebhookDelivery
+
+    db = session_factory()
+    deliveries = (
+        db.query(WebhookDelivery).filter(WebhookDelivery.event_type == "contact.updated").all()
+    )
+    assert len(deliveries) == 1
+    contact = deliveries[0].payload_json["data"]["contact"]
+    db.close()
+
+    assert contact["id"] == cid
+    assert contact["lifecycle"]["key"] == "hot_lead"

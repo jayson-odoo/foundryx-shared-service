@@ -86,25 +86,39 @@ class ConversationService:
         return ExternalAgentService(self.db).names(ids, tenant_id)
 
     def _lifecycle_map(
-        self, status_ids: List[str], tenant_id: str
-    ) -> Dict[str, ContactLifecycleSummary]:
-        """Batched `lifecycle_status_id -> ContactLifecycleSummary`, resolved
-        tenant + entity-type scoped in ONE query (AC-CDM-19; the polymorphic
-        stored-id rule - never resolve a stored status id unscoped)."""
-        ids = [s for s in set(status_ids) if s]
-        if not ids:
+        self, contacts: List[Contact], tenant_id: str
+    ) -> Dict[Tuple[str, str], ContactLifecycleSummary]:
+        """Batched `(workspace_id, lifecycle_status_id) -> ContactLifecycleSummary`,
+        resolved tenant + entity-type + WORKSPACE (scope_id) scoped in ONE query
+        (AC-CDM-19; the polymorphic stored-id rule - never resolve a stored
+        status id unscoped). The lifecycle machine is scoped per workspace
+        (`Status.scope_id == workspace_id`), so a status id that happens to
+        exist for another workspace of the same tenant must NOT resolve -
+        keying by `(scope_id, status_id)` enforces that."""
+        pairs = {
+            (c.workspace_id, c.lifecycle_status_id)
+            for c in contacts
+            if c.lifecycle_status_id
+        }
+        if not pairs:
             return {}
+        status_ids = {sid for _, sid in pairs}
         rows = (
             self.db.query(CoreStatus)
             .filter(
-                CoreStatus.id.in_(ids),
+                CoreStatus.id.in_(status_ids),
                 CoreStatus.tenant_id == tenant_id,
                 CoreStatus.entity_type == LIFECYCLE_ENTITY_TYPE,
             )
             .all()
         )
-        return {
-            s.id: ContactLifecycleSummary(
+        by_id = {s.id: s for s in rows}
+        result: Dict[Tuple[str, str], ContactLifecycleSummary] = {}
+        for workspace_id, status_id in pairs:
+            s = by_id.get(status_id)
+            if s is None or s.scope_id != workspace_id:
+                continue
+            result[(workspace_id, status_id)] = ContactLifecycleSummary(
                 statusId=s.id,
                 key=s.key,
                 label=s.label,
@@ -112,8 +126,7 @@ class ConversationService:
                 isWon=bool(s.is_terminal),
                 isLost=bool(s.is_archived),
             )
-            for s in rows
-        }
+        return result
 
     def _channel_types(self, channel_ids: List[str], tenant_id: str) -> Dict[str, str]:
         """Tenant-scoped for the same reason as `_user_names` (lower impact -
@@ -127,6 +140,24 @@ class ConversationService:
             .all()
         )
         return {c.id: c.channel_type for c in rows}
+
+    def _field_registry(self, contacts: List[Contact], tenant_id: str) -> Dict[str, set]:
+        """`workspace_id -> {registered ContactField.key}`, ONE query per
+        DISTINCT workspace on the page (not per contact) - the guide (~716)
+        and AC-CDM promise registered keys only on the wire. Used to intersect
+        `custom_fields_json`'s raw blob so a legacy/unregistered key (a field
+        deleted from the registry after some contacts still carry stale JSON)
+        never surfaces on any read path (list/detail/gateway/webhook -
+        review round 1, finding 5)."""
+        from .contact_field_service import ContactFieldService
+
+        workspace_ids = {c.workspace_id for c in contacts if c.workspace_id}
+        if not workspace_ids:
+            return {}
+        svc = ContactFieldService(self.db)
+        return {
+            ws_id: {f.key for f in svc.list(ws_id, tenant_id)} for ws_id in workspace_ids
+        }
 
     # ── Mapping ──────────────────────────────────────────────────────────────
     def _thread_items(self, contacts: List[Contact], tenant_id: str) -> List[ThreadItem]:
@@ -144,9 +175,8 @@ class ConversationService:
             [previews[c.id].channel_id for c in contacts if c.id in previews], tenant_id
         )
         tag_refs = ContactTagService(self.db).refs_for_contacts(ids, tenant_id)
-        lifecycle_map = self._lifecycle_map(
-            [c.lifecycle_status_id for c in contacts], tenant_id
-        )
+        lifecycle_map = self._lifecycle_map(contacts, tenant_id)
+        field_registry = self._field_registry(contacts, tenant_id)
 
         items: List[ThreadItem] = []
         for c in contacts:
@@ -187,9 +217,17 @@ class ConversationService:
                     lastMessageAt=c.last_message_at,
                     lastMessagePreview=preview.body if preview else None,
                     unreadCount=unread.get(c.id, 0),
-                    customFields=c.custom_fields_json or {},
+                    customFields={
+                        k: v
+                        for k, v in (c.custom_fields_json or {}).items()
+                        if k in field_registry.get(c.workspace_id, set())
+                    },
                     tags=[ContactTagRefItem(**t) for t in tag_refs.get(c.id, [])],
-                    lifecycle=lifecycle_map.get(c.lifecycle_status_id) if c.lifecycle_status_id else None,
+                    lifecycle=(
+                        lifecycle_map.get((c.workspace_id, c.lifecycle_status_id))
+                        if c.lifecycle_status_id
+                        else None
+                    ),
                     createdAt=c.created_at,
                 )
             )
@@ -288,11 +326,44 @@ class ConversationService:
         self.db.commit()
         self.db.refresh(c)
         item = self.thread_item(c)
+        self._publish_contact_updated(c, item, tenant_id)
+        return item
+
+    def _publish_contact_updated(self, c: Contact, item: ThreadItem, tenant_id: str) -> None:
+        """ONE fan-out for every `contact.updated` producer - realtime WS/pubsub
+        for the internal inbox AND the consumer-webhook event the guide (`## 6`)
+        promises on "any lifecycle change". `move_lifecycle` and `patch_thread`
+        both call this (review round 1, finding 1) so an internal lifecycle move
+        (no profile fields touched) still fans out to consumer webhooks, not
+        just realtime. Fully isolated - the caller already committed, forwarding
+        must never fail the request."""
         realtime.publish(
             c.workspace_id,
             {"type": "contact.updated", "thread": item.model_dump(mode="json")},
         )
-        return item
+        # Endpoints are per-channel, so forward on the contact's current
+        # channel (its latest message's); skip if the contact has never
+        # messaged on a channel yet.
+        if not item.channelId:
+            return
+        try:
+            from .webhook_delivery import enqueue_event
+
+            channel = (
+                self.db.query(Channel)
+                .filter(Channel.id == item.channelId, Channel.tenant_id == tenant_id)
+                .first()
+            )
+            if channel is not None:
+                enqueue_event(
+                    self.db,
+                    channel,
+                    "contact.updated",
+                    f"{c.id}:{int(c.updated_at.timestamp())}",
+                    {"contact": item.model_dump(mode="json")},
+                )
+        except Exception:  # noqa: BLE001 - forwarding never breaks the caller
+            logger.exception("contact.updated webhook fan-out failed for %s", c.id)
 
     def lifecycle_moves(
         self, contact_id: str, tenant_id: str, actor: Optional[User] = None
@@ -392,7 +463,9 @@ class ConversationService:
         if profile_kwargs:
             from .contact_profile_service import ContactProfileService
 
-            ContactProfileService(self.db).patch(c, actor_id=actor_id, **profile_kwargs)
+            ContactProfileService(self.db).patch(
+                c, actor=actor, actor_id=actor_id, **profile_kwargs
+            )
 
         # A lifecycle move (plan 25 S3, gateway PATCH `lifecycle:`) rides the
         # SAME unit of work as the profile patch above - `_lifecycle_move`
@@ -408,32 +481,7 @@ class ConversationService:
         self.db.refresh(c)
         item = self.thread_item(c)
         # Other agents' inboxes update live (assignment moves threads between
-        # buckets; snooze/close changes the row chip).
-        realtime.publish(
-            c.workspace_id,
-            {"type": "contact.updated", "thread": item.model_dump(mode="json")},
-        )
-        # Fan out to consumer webhooks (Slice 4). Endpoints are per-channel, so
-        # forward on the contact's current channel (its latest message's); skip
-        # if the contact has never messaged on a channel yet. Fully isolated -
-        # the PATCH already committed, forwarding must never 500 the response.
-        if item.channelId:
-            try:
-                from .webhook_delivery import enqueue_event
-
-                channel = (
-                    self.db.query(Channel)
-                    .filter(Channel.id == item.channelId, Channel.tenant_id == tenant_id)
-                    .first()
-                )
-                if channel is not None:
-                    enqueue_event(
-                        self.db,
-                        channel,
-                        "contact.updated",
-                        f"{c.id}:{int(c.updated_at.timestamp())}",
-                        {"contact": item.model_dump(mode="json")},
-                    )
-            except Exception:  # noqa: BLE001 - forwarding never breaks the PATCH
-                logger.exception("contact.updated webhook fan-out failed for %s", c.id)
+        # buckets; snooze/close changes the row chip) AND fan out to consumer
+        # webhooks (Slice 4) - the ONE shared publisher (finding 1).
+        self._publish_contact_updated(c, item, tenant_id)
         return item

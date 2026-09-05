@@ -32,6 +32,7 @@ from app.dependencies import (
     _resolve_user,
     effective_permission_keys,
 )
+from app.models.user import User
 from app.repositories.module_repository import ModuleRepository
 from app.security import decode_access_token
 
@@ -262,6 +263,21 @@ def enforce_workspace(principal: ConversationPrincipal, workspace_id: str) -> No
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This resource is outside the token's workspace.",
         )
+
+
+def resolve_native_actor(principal: ConversationPrincipal, db: Session) -> Optional[User]:
+    """Native-only actor resolution for edge-role auth (embed has none -
+    `actor=None` fails closed on any actor-conditioned edge, by design). Tenant-
+    scoped (the polymorphic stored-id rule - `actor_user_id` is a stored id,
+    never resolved unscoped). Lives here, not in a router, so a router never
+    runs its own `db.query(User)` (review round 1, finding 3)."""
+    if principal.is_embed or not principal.actor_user_id:
+        return None
+    return (
+        db.query(User)
+        .filter(User.id == principal.actor_user_id, User.tenant_id == principal.tenant_id)
+        .first()
+    )
 
 
 def enforce_channel_workspace(

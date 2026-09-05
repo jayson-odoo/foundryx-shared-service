@@ -102,8 +102,60 @@ def upgrade() -> None:
             schema=SCHEMA,
         )
 
+    # Review round 1, finding 9: the app-level `_find_by_key`/`_find_by_name`
+    # case-insensitive checks race (two concurrent creates can both pass the
+    # SELECT before either INSERTs) - `resolve_or_create_by_name` on the public
+    # gateway is the exposed race. Add the DB backstop as a functional unique
+    # index (mirrors the `uq_channels_phone_number_id` partial-index pattern
+    # above). Best-effort auto-heal any pre-existing duplicate FIRST (a field's
+    # `key`/a tag's `name` is NOT NULL and user-visible, so - unlike
+    # `phone_number_id` - losers are renamed with a short id-derived suffix,
+    # never nulled) so the index can be created on a live DB with stray dupes.
+    op.execute(
+        f"""
+        WITH ranked AS (
+            SELECT id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY workspace_id, lower(key)
+                       ORDER BY created_at, id
+                   ) AS rn
+            FROM "{SCHEMA}".contact_fields
+        )
+        UPDATE "{SCHEMA}".contact_fields cf
+        SET key = substr(cf.key, 1, 30) || '_' || substr(cf.id, 1, 8)
+        FROM ranked
+        WHERE cf.id = ranked.id AND ranked.rn > 1
+        """
+    )
+    op.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_contact_fields_workspace_key "
+        f'ON "{SCHEMA}".contact_fields (workspace_id, lower(key))'
+    )
+    op.execute(
+        f"""
+        WITH ranked AS (
+            SELECT id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY workspace_id, lower(name)
+                       ORDER BY created_at, id
+                   ) AS rn
+            FROM "{SCHEMA}".contact_tags
+        )
+        UPDATE "{SCHEMA}".contact_tags ct
+        SET name = substr(ct.name, 1, 50) || '_' || substr(ct.id, 1, 8)
+        FROM ranked
+        WHERE ct.id = ranked.id AND ranked.rn > 1
+        """
+    )
+    op.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_contact_tags_workspace_name "
+        f'ON "{SCHEMA}".contact_tags (workspace_id, lower(name))'
+    )
+
 
 def downgrade() -> None:
+    op.execute(f'DROP INDEX IF EXISTS "{SCHEMA}".uq_contact_tags_workspace_name')
+    op.execute(f'DROP INDEX IF EXISTS "{SCHEMA}".uq_contact_fields_workspace_key')
     op.drop_table("contact_tag_links", schema=SCHEMA)
     op.drop_table("contact_tags", schema=SCHEMA)
     op.drop_table("contact_fields", schema=SCHEMA)

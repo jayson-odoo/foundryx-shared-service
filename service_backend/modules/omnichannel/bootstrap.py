@@ -194,6 +194,62 @@ def create_schema_and_tables(engine: Engine) -> None:
                     f'ON "{OMNI_SCHEMA}".contacts (lifecycle_status_id)'
                 )
             )
+            # contact_fields.key / contact_tags.name → per-workspace UNIQUE
+            # (case-insensitive), plan 25 review round 1 finding 9 - the
+            # DB backstop for `_find_by_key`/`_find_by_name`'s race (two
+            # concurrent creates, e.g. via `resolve_or_create_by_name` on the
+            # public gateway, can both pass the SELECT before either INSERTs).
+            # Best-effort auto-heal any pre-existing duplicate FIRST (unlike
+            # phone_number_id, key/name is NOT NULL + user-visible, so losers
+            # are renamed with a short id-derived suffix, never nulled).
+            conn.execute(
+                text(
+                    f"""
+                    WITH ranked AS (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY workspace_id, lower(key)
+                                   ORDER BY created_at, id
+                               ) AS rn
+                        FROM "{OMNI_SCHEMA}".contact_fields
+                    )
+                    UPDATE "{OMNI_SCHEMA}".contact_fields cf
+                    SET key = substr(cf.key, 1, 30) || '_' || substr(cf.id, 1, 8)
+                    FROM ranked
+                    WHERE cf.id = ranked.id AND ranked.rn > 1
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_contact_fields_workspace_key "
+                    f'ON "{OMNI_SCHEMA}".contact_fields (workspace_id, lower(key))'
+                )
+            )
+            conn.execute(
+                text(
+                    f"""
+                    WITH ranked AS (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY workspace_id, lower(name)
+                                   ORDER BY created_at, id
+                               ) AS rn
+                        FROM "{OMNI_SCHEMA}".contact_tags
+                    )
+                    UPDATE "{OMNI_SCHEMA}".contact_tags ct
+                    SET name = substr(ct.name, 1, 50) || '_' || substr(ct.id, 1, 8)
+                    FROM ranked
+                    WHERE ct.id = ranked.id AND ranked.rn > 1
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_contact_tags_workspace_name "
+                    f'ON "{OMNI_SCHEMA}".contact_tags (workspace_id, lower(name))'
+                )
+            )
             # phone_number_id → service-wide UNIQUE (plan Slice 3, AC-01-20) for
             # O(1) inbound routing. Reconcile any existing duplicates FIRST (keep
             # the earliest by created_at,id; NULL the losers) then add a partial
@@ -233,7 +289,19 @@ def install(engine: Engine, db: Session) -> None:
 
 def install_tenant(db: Session, tenant_id: str) -> None:
     """Per-tenant seed: statuses + the default 'General' workspace (+ its
-    lifecycle graph, plan 25 S2, AC-CDM-14). Idempotent."""
+    lifecycle graph, plan 25 S2, AC-CDM-14). Idempotent.
+
+    Review round 1, finding 17: the pre-existing-workspace branch used to
+    early-return with NOTHING materialized - a tenant that already had a
+    default workspace (installed before plan 25 S2, or re-running install on
+    a tenant whose workspace predates the lifecycle graph) never got a
+    lifecycle graph or contact stamping. `lifecycle_service.backfill_tenant`
+    is idempotent + covers EVERY workspace (not just the default one) + stamps
+    every `lifecycle_status_id IS NULL` contact, so calling it unconditionally
+    before returning makes `install_tenant` self-healing on every call,
+    including this one."""
+    from .services import lifecycle_service
+
     statuses.ensure_statuses(db, tenant_id)
     exists = (
         db.query(Workspace)
@@ -241,6 +309,7 @@ def install_tenant(db: Session, tenant_id: str) -> None:
         .first()
     )
     if exists:
+        lifecycle_service.backfill_tenant(db, tenant_id)
         return
     ws = Workspace(
         tenant_id=tenant_id,
@@ -251,8 +320,6 @@ def install_tenant(db: Session, tenant_id: str) -> None:
     )
     db.add(ws)
     db.flush()
-    from .services import lifecycle_service
-
     lifecycle_service.materialize_for_workspace(db, ws)
 
 

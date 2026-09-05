@@ -2,10 +2,25 @@
 service_frontend/types/omnichannel.ts). Status flags are resolved to string
 keys by the services before constructing these models.
 """
+import re
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, field_validator
+
+# Foolproof-UI (user mandate): a colour picker on the frontend only ever emits
+# a hex triplet, never a token name or arbitrary CSS - reject anything else at
+# the wire boundary (review round 1, finding 11) instead of piping tenant
+# input straight into a `style` attribute downstream.
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _validate_hex_color(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    if not _HEX_COLOR_RE.match(v):
+        raise ValueError("Color must be a 6-digit hex value, e.g. #FF5A00.")
+    return v
 
 from app.schemas.base import ApiModel
 
@@ -208,7 +223,7 @@ class ContactFieldCreate(ApiModel):
     description: Optional[str] = None
     type: str
     options: Optional[List[str]] = None
-    visibility: Optional[str] = "always"
+    visibility: Optional[Literal["always", "hidden"]] = "always"
 
 
 class ContactFieldUpdate(ApiModel):
@@ -220,7 +235,7 @@ class ContactFieldUpdate(ApiModel):
     label: Optional[str] = None
     description: Optional[str] = None
     options: Optional[List[str]] = None
-    visibility: Optional[str] = None
+    visibility: Optional[Literal["always", "hidden"]] = None
     sortOrder: Optional[int] = None
 
 
@@ -242,12 +257,22 @@ class ContactTagCreate(ApiModel):
     color: Optional[str] = None
     description: Optional[str] = None
 
+    @field_validator("color")
+    @classmethod
+    def _valid_color(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_hex_color(v)
+
 
 class ContactTagUpdate(ApiModel):
     name: Optional[str] = None
     emoji: Optional[str] = None
     color: Optional[str] = None
     description: Optional[str] = None
+
+    @field_validator("color")
+    @classmethod
+    def _valid_color(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_hex_color(v)
 
 
 class ContactTagRefItem(ApiModel):
@@ -386,14 +411,20 @@ class ThreadPatch(ApiModel):
     handler distinguishes omitted vs null via model_fields_set). System-field +
     custom-field + tag writes (plan 25) are a PARTIAL merge - `customFields`
     keys omitted are left unchanged, `null` clears a key; `tagIds` REPLACES the
-    whole tag set."""
+    whole tag set.
+
+    `phone` is accepted on the WIRE only so the router can detect it was SENT
+    (`model_fields_set`) and reject it with a named 422 - it is the inbound
+    stitch key (no uniqueness guard, outside the AC-22 whitelist) and is never
+    writable through this PATCH (review round 1, finding 12). The Contact
+    panel must render phone read-only."""
 
     assignedUserId: Optional[str] = None
     status: Optional[str] = None  # OPEN | SNOOZED | CLOSED
     priority: Optional[str] = None  # LOW | MEDIUM | HIGH | URGENT
     firstName: Optional[str] = None
     lastName: Optional[str] = None
-    phone: Optional[str] = None
+    phone: Optional[str] = None  # never applied - see docstring
     email: Optional[str] = None
     language: Optional[str] = None
     countryCode: Optional[str] = None

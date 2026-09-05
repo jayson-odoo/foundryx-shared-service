@@ -119,7 +119,12 @@ IDs: `AC-CDM-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
 ## Slice 4 - Backend: workflow-engine seam + gateway contract
 
 - **AC-CDM-22 [BE]** Given the module boots, then the workflow entity `omnichannel_contact`
-  (model `Contact`, `has_status = True`, `status_attr = "lifecycle_status_id"`,
+  (model `Contact`, `has_status = False` [changed in review round 1, finding 7 - the entity's
+  `entity_type` doesn't match the workspace-scoped lifecycle machine's registered
+  `omnichannel_contact_lifecycle` entity, so `has_status=True` produced an empty status
+  picker + a runtime `UnknownStatusEntity` on `entity.transition_status`; `entity.status_changed`
+  is unaffected - it fires via the generic `StatusEntity.workflow_entity_type` reverse pointer,
+  independent of this flag; tracked as a backlog row], `status_attr = "lifecycle_status_id"`,
   `fact_attrs` = first / last name, phone, email, language, country code, priority, assignee,
   csw / last-message timestamps; `writable` = `firstName`, `lastName`, `email`, `language`,
   `countryCode`, `priority`) is registered and `record:omnichannel_contact` facts resolve.

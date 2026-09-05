@@ -334,6 +334,41 @@ def test_create_tag_and_list(client):
     assert "name" in dup.json()["detail"]["fieldErrors"]
 
 
+# ── Review round 1, finding 11: pinned wire types (visibility / color) ──────
+def test_contact_field_visibility_rejects_unknown_value(client):
+    """`visibility` is a `Literal["always","hidden"]` at the wire boundary
+    (foolproof-UI - a picker must only offer valid options) - Pydantic 422s
+    before the request ever reaches the service."""
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    res = client.post(f"{_base(ws)}/contact-fields", headers=h, json={
+        "key": "sourceX", "label": "Source X", "type": "text", "visibility": "banana",
+    })
+    assert res.status_code == 422, res.text
+
+
+def test_contact_tag_color_rejects_non_hex_value(client):
+    """`color` must be a 6-digit hex value - the native `<input type=color>`
+    only ever emits one, and a non-hex string would render straight into the
+    tag chip's inline `style` on the frontend."""
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    res = client.post(f"{_base(ws)}/contact-tags", headers=h, json={
+        "name": "Bad Color", "color": "not-a-color",
+    })
+    assert res.status_code == 422, res.text
+
+    ok = client.post(f"{_base(ws)}/contact-tags", headers=h, json={
+        "name": "Good Color", "color": "#abcdef",
+    })
+    assert ok.status_code == 201, ok.text
+
+    update_bad = client.patch(f"{_base(ws)}/contact-tags/{ok.json()['id']}", headers=h, json={
+        "color": "red",
+    })
+    assert update_bad.status_code == 422, update_bad.text
+
+
 def test_tag_cap_500_per_workspace(client, session_factory):
     from modules.omnichannel.models import ContactTag
 
@@ -423,7 +458,12 @@ def test_omnichannel_contact_workflow_entity_registered_and_facts_resolve(sessio
 
     entity = get_workflow_entity("omnichannel_contact")
     assert entity is not None
-    assert entity.has_status is True
+    # `has_status=False` deliberately (review round 1, finding 7) - the
+    # entity's `entity_type` doesn't match the workspace-scoped
+    # `omnichannel_contact_lifecycle` status entity, so a naive True produced
+    # an empty status picker + a runtime `UnknownStatusEntity`.
+    # `status_attr` is kept as harmless metadata for a future fix.
+    assert entity.has_status is False
     assert entity.status_attr == "lifecycle_status_id"
     assert "email" in entity.writable and "first_name" in entity.writable
 
@@ -479,6 +519,32 @@ def test_contact_patch_emits_one_updated_entity_event_with_changes_diff(client, 
     db = session_factory()
     assert len(_runs_for(db, wid)) == 1
     db.close()
+
+
+def test_internal_patch_rejects_phone(client, session_factory):
+    """Review round 1, finding 12 - `phone` is the inbound stitch key (no
+    uniqueness guard, outside the AC-22 whitelist) and must never be
+    writable through the internal thread PATCH, even alongside a legitimate
+    field (nothing should be applied on the 422)."""
+    h = _auth(client)
+    cid = _seed_thread(session_factory, name="Phone Guard")
+
+    res = client.patch(
+        f"/omnichannel/contacts/{cid}", headers=h, json={"phone": "+60199999999"}
+    )
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"]["fieldErrors"]["phone"]
+
+    # Mixed with a field that WOULD otherwise be valid - the whole PATCH is
+    # still rejected (phone is checked before anything is applied).
+    mixed = client.patch(
+        f"/omnichannel/contacts/{cid}",
+        headers=h,
+        json={"firstName": "Should Not Apply", "phone": "+60199999999"},
+    )
+    assert mixed.status_code == 422, mixed.text
+    detail = client.get(f"/omnichannel/contacts/{cid}", headers=h).json()
+    assert detail["firstName"] != "Should Not Apply"
 
 
 # ── AC-CDM-28: permission gates (403 per write key) ──────────────────────────
@@ -602,6 +668,65 @@ def test_install_tenant_default_workspace_already_has_lifecycle_graph(client):
     ws = _workspace_id(client, h)
     graph = _lifecycle_graph(client, h, ws)
     assert len(graph["statuses"]) == 5
+
+
+def test_install_tenant_backfills_when_default_workspace_predates_the_graph(session_factory):
+    """Review round 1, finding 17: `install_tenant`'s pre-existing-workspace
+    branch used to early-return with NOTHING materialized. Simulate exactly
+    that: a DEFAULT workspace that predates the lifecycle graph (created
+    directly, bypassing `WorkspaceService`) + a contact with no
+    `lifecycle_status_id`. Re-running `install_tenant` (self-heal path, e.g.
+    a repeat App-Store install call) must materialize the graph AND stamp the
+    contact - not silently no-op."""
+    from modules.omnichannel.bootstrap import install_tenant
+    from modules.omnichannel.models import Contact, Workspace
+    from modules.omnichannel.services.lifecycle_service import stages_for_workspace
+
+    db = session_factory()
+    default_ws = (
+        db.query(Workspace)
+        .filter(Workspace.tenant_id == DEFAULT_TENANT_ID, Workspace.is_default.is_(True))
+        .first()
+    )
+    ws_id = default_ws.id
+    # Wipe out the graph conftest's real install already materialized, so this
+    # test starts from the exact "predates the graph" state the finding
+    # describes, then adds an un-stamped contact.
+    from modules.omnichannel.services.lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY
+    from app.models.status import Status as CoreStatus
+    from app.models.status_transition import StatusTransition
+
+    db.query(StatusTransition).filter(
+        StatusTransition.entity_type == LIFECYCLE_ENTITY, StatusTransition.tenant_id == DEFAULT_TENANT_ID
+    ).delete(synchronize_session=False)
+    db.query(CoreStatus).filter(
+        CoreStatus.entity_type == LIFECYCLE_ENTITY, CoreStatus.scope_id == ws_id
+    ).delete(synchronize_session=False)
+    legacy_contact = Contact(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws_id, first_name="Predates")
+    db.add(legacy_contact)
+    db.commit()
+    contact_id = legacy_contact.id
+    assert stages_for_workspace(db, DEFAULT_TENANT_ID, ws_id) == []
+    db.close()
+
+    db = session_factory()
+    install_tenant(db, DEFAULT_TENANT_ID)
+    db.commit()
+    stages = stages_for_workspace(db, DEFAULT_TENANT_ID, ws_id)
+    assert {s.key for s in stages} == _SEED_KEYS
+    initial = next(s for s in stages if s.is_initial)
+    contact = db.query(Contact).filter(Contact.id == contact_id).first()
+    assert contact.lifecycle_status_id == initial.id
+    db.close()
+
+    # Re-running again is a no-op (idempotent self-heal).
+    db = session_factory()
+    install_tenant(db, DEFAULT_TENANT_ID)
+    db.commit()
+    assert len(stages_for_workspace(db, DEFAULT_TENANT_ID, ws_id)) == 5
+    contact = db.query(Contact).filter(Contact.id == contact_id).first()
+    assert contact.lifecycle_status_id == initial.id
+    db.close()
 
 
 # ── AC-CDM-15: update_tenant backfill + idempotent re-run ───────────────────
@@ -921,6 +1046,40 @@ def test_thread_lifecycle_null_when_unset(client, session_factory):
     assert detail["lifecycle"] is None
 
 
+def test_thread_lifecycle_null_when_stage_id_belongs_to_another_workspace(client, session_factory):
+    """Review round 1, finding 4 - `_lifecycle_map` resolved a stored
+    `lifecycle_status_id` tenant + entity-type scoped but NOT WORKSPACE
+    scoped, so a status id that happens to exist for another workspace of the
+    SAME tenant (the machine is `scope_id`-per-workspace, ids are otherwise
+    ordinary rows) rendered as if it belonged here. Stamp a contact in
+    workspace A with a stage id borrowed from workspace B - it must render
+    `lifecycle: null`, never B's stage data."""
+    h = _auth(client)
+    ws_a = _workspace_id(client, h)
+    other = client.post("/omnichannel/workspaces", headers=h, json={"name": "Other WS"})
+    assert other.status_code == 201, other.text
+    ws_b = other.json()["id"]
+    graph_b = _lifecycle_graph(client, h, ws_b)
+    foreign_stage_id = _stage_ids(graph_b)["hot_lead"]
+
+    cid = _seed_thread(session_factory, name="Cross Workspace Stage")
+    from modules.omnichannel.models import Contact
+
+    db = session_factory()
+    contact = db.query(Contact).filter(Contact.id == cid).first()
+    contact.workspace_id = ws_a
+    contact.lifecycle_status_id = foreign_stage_id
+    db.commit()
+    db.close()
+
+    detail = client.get(f"/omnichannel/contacts/{cid}", headers=h).json()
+    assert detail["lifecycle"] is None
+
+    listed = client.get("/omnichannel/contacts", headers=h).json()["data"]
+    row = next(t for t in listed if t["id"] == cid)
+    assert row["lifecycle"] is None
+
+
 # ── AC-CDM-20: canvas edits apply directly, no fork; delete guard; single
 #    is_initial enforced (generic engine fix, not omnichannel-specific) ─────
 def test_lifecycle_canvas_edits_apply_directly_no_fork(client, session_factory):
@@ -993,6 +1152,19 @@ def test_lifecycle_delete_guard_blocks_stage_with_contacts(client, session_facto
     assert migrated.status_code == 200, migrated.text
     assert migrated.json()["migrated"] == 1
 
+    # `new_lead` is `seed_statuses`' sole `isInitial` stage - even with every
+    # record migrated off it, the review round 1 finding 6 guard (AC-20:
+    # exactly one `isInitial` per set, never zero) still blocks the delete.
+    still_initial = client.delete(f"/statuses/{ids['new_lead']}", headers=h)
+    assert still_initial.status_code == 422, still_initial.text
+    assert "initial" in still_initial.json()["detail"].lower()
+
+    # Once ANOTHER stage takes over as initial, the (now non-initial,
+    # record-free) stage is free to be deleted.
+    promoted = client.patch(f"/statuses/{ids['hot_lead']}", headers=h, json={
+        "flags": {"isInitial": True},
+    })
+    assert promoted.status_code == 200, promoted.text
     ok = client.delete(f"/statuses/{ids['new_lead']}", headers=h)
     assert ok.status_code == 204, ok.text
 
@@ -1082,3 +1254,68 @@ def test_status_changed_workflow_trigger_fires_on_lifecycle_move(client, session
     assert payload["toStatus"] == ids["hot_lead"]
     assert payload["recordId"] == cid
     db.close()
+
+
+# ── Review round 1, finding 7: has_status=False - no broken status picker,
+# no UnknownStatusEntity, entity.status_changed unaffected ─────────────────
+def test_omnichannel_contact_metadata_has_no_status_picker(client, session_factory):
+    """`GET /workflows/metadata` must never advertise a status picker for an
+    entity that has none to offer (foolproof-UI) - `omnichannel_contact`'s
+    real machine is workspace-scoped, so there is no single tenant-wide list."""
+    h = _auth(client)
+    res = client.get("/workflows/metadata", headers=h)
+    assert res.status_code == 200, res.text
+    by_type = {e["type"]: e for e in res.json()["entities"]}
+    assert by_type["omnichannel_contact"]["hasStatus"] is False
+    assert by_type["omnichannel_contact"]["statuses"] == []
+
+
+def test_entity_transition_status_action_rejects_omnichannel_contact_cleanly(session_factory):
+    """`entity.transition_status` must fail with the standard, caught
+    `ActionError` ("has no state machine") - NOT the raw
+    `UnknownStatusEntity` that `has_status=True` used to let through when the
+    entity's `entity_type` didn't match any registered status entity."""
+    from modules.omnichannel.models import Workspace
+
+    from app.workflow_engine.actions.entity_actions import ActionError, entity_transition_status
+
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+    cid = _seed_lifecycle_contact(session_factory, ws.id)
+    db.close()
+
+    db = session_factory()
+    with pytest.raises(ActionError, match="no state machine"):
+        entity_transition_status(
+            db,
+            DEFAULT_TENANT_ID,
+            {"entityType": "omnichannel_contact", "recordId": cid, "toStatus": "does-not-matter"},
+            {},
+        )
+    db.close()
+
+
+# ── Nit: reserved-key parity (backend ⊇ frontend), no test pinned it before ─
+def test_reserved_field_keys_frontend_is_subset_of_backend():
+    """`service_frontend/types/omnichannel.ts RESERVED_CONTACT_FIELD_KEYS` must
+    stay a SUBSET of the backend's `RESERVED_FIELD_KEYS` (the backend also
+    reserves a few structural wire keys - `id`/`workspaceId`/`customFields` -
+    that never appear as a frontend-registrable option). Mirrors the
+    `test_branding.py test_frontend_defaults_parity` pattern - pins the two
+    lists together so one drifting silently un-reserves a key on one side."""
+    import re
+    from pathlib import Path
+
+    from modules.omnichannel.services.contact_field_service import RESERVED_FIELD_KEYS
+
+    ts_path = (
+        Path(__file__).resolve().parents[2]
+        / "service_frontend" / "types" / "omnichannel.ts"
+    )
+    src = ts_path.read_text()
+    block = re.search(
+        r"RESERVED_CONTACT_FIELD_KEYS:\s*readonly string\[\]\s*=\s*\[(.*?)\];", src, re.DOTALL
+    ).group(1)
+    frontend_keys = set(re.findall(r"'([a-zA-Z0-9]+)'", block))
+    assert frontend_keys, "parsed zero frontend reserved keys - regex drifted from the TS source"
+    assert frontend_keys <= RESERVED_FIELD_KEYS

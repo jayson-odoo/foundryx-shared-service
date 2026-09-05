@@ -9,16 +9,16 @@ scopeId=<workspaceId>`, gated `statuses.manage` per D10) - this route just
 gives the workspace form a simple list to render the current stage badges."""
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.user import User
 
-from ..models import Workspace
 from ..rbac import require_any_permission
 from ..schemas import LifecycleStageItem
 from ..services.lifecycle_service import stages_for_workspace
+from ..services.workspace_service import WorkspaceService
 
 router = APIRouter()
 
@@ -29,13 +29,7 @@ def get_workspace_lifecycle(
     current_user: User = Depends(require_any_permission("conversations.read", "contacts.read")),
     db: Session = Depends(get_db),
 ) -> List[LifecycleStageItem]:
-    ws = (
-        db.query(Workspace)
-        .filter(Workspace.id == ws_id, Workspace.tenant_id == current_user.tenant_id)
-        .first()
-    )
-    if ws is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.")
+    WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
     rows = stages_for_workspace(db, current_user.tenant_id, ws_id)
     return [
         LifecycleStageItem(

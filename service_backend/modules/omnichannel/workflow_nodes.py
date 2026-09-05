@@ -15,11 +15,29 @@ MODULE_NAME = "omnichannel"
 def _register_contact_entity() -> None:
     """Workflow-engine entity registration (plan 25 S1, AC-CDM-22) - registers
     ``record:omnichannel_contact`` facts (for IF conditions + entity triggers)
-    and the ``entity.update`` writable whitelist. ``has_status``/`status_attr`
-    point at the S2 scoped lifecycle column; the entity is usable for
-    field/tag-driven triggers today, and the ``entity.status_changed`` trigger
-    lights up once S2 registers the status entity and starts writing
-    ``lifecycle_status_id``."""
+    and the ``entity.update`` writable whitelist.
+
+    ``has_status=False`` DELIBERATELY (review round 1, finding 7 - the
+    `WorkflowEntity.entity_type` used by `workflow_service.metadata()`'s
+    status lookup and `entity_actions.entity_transition_status`'s
+    `status_machine.transition()` call is `"omnichannel_contact"`, but the
+    contact's ACTUAL machine is a WORKSPACE-SCOPED status entity registered
+    as `"omnichannel_contact_lifecycle"` (`lifecycle_service.ENTITY_TYPE`,
+    `scope_id=workspace_id` - no single tenant-wide status list exists to
+    resolve). Leaving `has_status=True` produced an EMPTY status picker
+    (foolproof-UI violation) and `entity.transition_status` raised
+    `UnknownStatusEntity` at runtime for any author who tried it. `entity.
+    status_changed` is UNAFFECTED by this flag - it is a fixed trigger in
+    the catalog (not entity-gated) and the actual event emission already
+    goes through the GENERIC `StatusEntity.workflow_entity_type` reverse
+    pointer (`lifecycle_service.py`'s `omnichannel_contact_lifecycle`
+    registration sets `workflow_entity_type="omnichannel_contact"`, so
+    `status_machine.transition()` emits `entity.status_changed` keyed
+    `omnichannel_contact` regardless of this flag - AC-CDM-24 stays green).
+    `status_attr` is kept (harmless metadata, matches the model column) so a
+    future fix (a per-entity `status_entity_type` resolving THROUGH the
+    scoped-status registry) doesn't need to re-add it. Tracked as a backlog
+    row (workflow status picker / transition action for scoped machines)."""
     from app.workflow_engine.entities import WorkflowEntity, register_workflow_entity
 
     from .models import Contact
@@ -44,7 +62,7 @@ def _register_contact_entity() -> None:
             writable=frozenset(
                 {"first_name", "last_name", "email", "language", "country_code", "priority"}
             ),
-            has_status=True,
+            has_status=False,
             status_attr="lifecycle_status_id",
             module=MODULE_NAME,
         )

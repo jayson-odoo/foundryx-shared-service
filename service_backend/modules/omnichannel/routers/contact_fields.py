@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
 
-from ..models import ContactField, Workspace
+from ..models import ContactField
 from ..rbac import require_any_permission
 from ..schemas import ContactFieldCreate, ContactFieldItem, ContactFieldUpdate
 from ..services.contact_field_service import (
@@ -18,19 +18,9 @@ from ..services.contact_field_service import (
     FieldNotFound,
     FieldValidationError,
 )
+from ..services.workspace_service import WorkspaceService
 
 router = APIRouter()
-
-
-def _workspace(db: Session, ws_id: str, tenant_id: str) -> Workspace:
-    ws = (
-        db.query(Workspace)
-        .filter(Workspace.id == ws_id, Workspace.tenant_id == tenant_id)
-        .first()
-    )
-    if ws is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.")
-    return ws
 
 
 def _to_item(row: ContactField, counts: Dict[str, int]) -> ContactFieldItem:
@@ -55,7 +45,7 @@ def list_contact_fields(
     current_user: User = Depends(require_any_permission("conversations.read", "contacts.read")),
     db: Session = Depends(get_db),
 ) -> List[ContactFieldItem]:
-    _workspace(db, ws_id, current_user.tenant_id)
+    WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
     svc = ContactFieldService(db)
     rows = svc.list(ws_id, current_user.tenant_id)
     counts = svc.value_counts(ws_id, current_user.tenant_id)
@@ -71,7 +61,7 @@ def create_contact_field(
     current_user: User = Depends(require_any_permission("contact_fields.manage")),
     db: Session = Depends(get_db),
 ) -> ContactFieldItem:
-    _workspace(db, ws_id, current_user.tenant_id)
+    WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
     try:
         row = ContactFieldService(db).create(ws_id, current_user.tenant_id, body)
     except FieldValidationError as exc:
@@ -87,7 +77,7 @@ def update_contact_field(
     current_user: User = Depends(require_any_permission("contact_fields.manage")),
     db: Session = Depends(get_db),
 ) -> ContactFieldItem:
-    _workspace(db, ws_id, current_user.tenant_id)
+    WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
     svc = ContactFieldService(db)
     try:
         row = svc.update(field_id, ws_id, current_user.tenant_id, body)
@@ -106,7 +96,7 @@ def delete_contact_field(
     current_user: User = Depends(require_any_permission("contact_fields.manage")),
     db: Session = Depends(get_db),
 ) -> Response:
-    _workspace(db, ws_id, current_user.tenant_id)
+    WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
     try:
         ContactFieldService(db).delete(field_id, ws_id, current_user.tenant_id)
     except FieldNotFound:

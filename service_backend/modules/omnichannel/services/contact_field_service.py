@@ -7,7 +7,10 @@ create; label/description/options/visibility/sort_order editable, key + type
 immutable at update (422 if a changed value is sent). Delete strips the key
 from every contact's `custom_fields_json` in the SAME workspace (AC-CDM-04) -
 Postgres does it in ONE statement (jsonb `-` operator), SQLite (the pytest
-suite) falls back to a Python loop; both paths are covered by tests.
+suite) falls back to a Python loop. **Only the SQLite path is exercised by
+this suite** (conftest runs SQLite) - the Postgres branch is untested by
+pytest; verify it against live Postgres (see the S0 evidence "Carry to S4"
+note) before relying on it in production.
 
 `validate_values` (AC-CDM-06) is the seam `ContactProfileService` calls on
 every contact write that carries `customFields` - the single place a value is
@@ -20,6 +23,7 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from ..db import OMNI_SCHEMA
 from ..models import Contact, ContactField
 
 FIELD_KEY_RE = re.compile(r"^[a-z][a-zA-Z0-9_]{0,39}$")
@@ -90,9 +94,30 @@ class ContactFieldService:
         return row
 
     def value_counts(self, workspace_id: str, tenant_id: str) -> Dict[str, int]:
-        """`field.key -> number of contacts holding a non-null value` - ONE pass
-        over the workspace's contacts regardless of field count (used for the
-        list view + the delete-confirmation copy, AC-CDM-31)."""
+        """`field.key -> number of contacts holding a non-null value` - used for
+        the list view + the delete-confirmation copy (AC-CDM-31, `valuesCount`).
+
+        On Postgres this is ONE grouped SQL query (`jsonb_each` unnest + GROUP
+        BY, review round 1 finding 8) instead of loading every contact's whole
+        JSON blob into Python on every `GET`/PATCH `/contact-fields` - a
+        workspace with thousands of contacts paid for that scan on every list
+        render. SQLite (the pytest suite has no `jsonb_each`) keeps the
+        Python fallback."""
+        if self.db.get_bind().dialect.name == "postgresql":
+            rows = self.db.execute(
+                text(
+                    "SELECT kv.key, COUNT(*) "
+                    f'FROM "{OMNI_SCHEMA}".contacts c, '
+                    "jsonb_each(c.custom_fields_json::jsonb) AS kv(key, value) "
+                    "WHERE c.tenant_id = :tenant_id AND c.workspace_id = :workspace_id "
+                    "AND c.custom_fields_json IS NOT NULL "
+                    "AND kv.value IS DISTINCT FROM 'null'::jsonb "
+                    "GROUP BY kv.key"
+                ),
+                {"tenant_id": tenant_id, "workspace_id": workspace_id},
+            ).all()
+            return {key: count for key, count in rows}
+
         rows = (
             self.db.query(Contact.custom_fields_json)
             .filter(Contact.tenant_id == tenant_id, Contact.workspace_id == workspace_id)
@@ -226,7 +251,7 @@ class ContactFieldService:
         if self.db.get_bind().dialect.name == "postgresql":
             self.db.execute(
                 text(
-                    'UPDATE "app_omnichannel".contacts '
+                    f'UPDATE "{OMNI_SCHEMA}".contacts '
                     "SET custom_fields_json = (custom_fields_json::jsonb - :key)::json "
                     "WHERE tenant_id = :tenant_id AND workspace_id = :workspace_id "
                     "AND custom_fields_json IS NOT NULL "

@@ -28,7 +28,6 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.models.user import User
 from app.services.status_machine import (
     TransitionConditionsNotMet,
     TransitionForbidden,
@@ -38,6 +37,7 @@ from ..embed_auth import (
     ConversationPrincipal,
     enforce_thread_access,
     get_conversation_principal,
+    resolve_native_actor,
 )
 from ..schemas import (
     LifecycleMoveOption,
@@ -132,7 +132,6 @@ def list_messages(
 _PROFILE_KEYS = {
     "firstName",
     "lastName",
-    "phone",
     "email",
     "language",
     "countryCode",
@@ -154,6 +153,13 @@ def patch_thread(
     # omitted vs explicit-null for assignedUserId via model_fields_set (null =
     # unassign).
     sent = payload.model_fields_set
+    # `phone` is the inbound stitch key (no uniqueness guard, outside the
+    # AC-22 whitelist) - never writable through this PATCH (finding 12).
+    if "phone" in sent:
+        raise HTTPException(
+            status_code=422,
+            detail={"fieldErrors": {"phone": "Phone is not editable."}},
+        )
     wants_assign = "assignedUserId" in sent
     wants_lifecycle = payload.status is not None or payload.priority is not None
     wants_profile = bool(sent & _PROFILE_KEYS)
@@ -186,7 +192,6 @@ def patch_thread(
             priority=payload.priority,
             first_name=payload.firstName if "firstName" in sent else ...,
             last_name=payload.lastName if "lastName" in sent else ...,
-            phone=payload.phone if "phone" in sent else ...,
             email=payload.email if "email" in sent else ...,
             language=payload.language if "language" in sent else ...,
             country_code=payload.countryCode if "countryCode" in sent else ...,
@@ -201,18 +206,6 @@ def patch_thread(
         raise HTTPException(status_code=422, detail=exc.message)
     except ProfilePatchError as exc:
         raise HTTPException(status_code=422, detail={"fieldErrors": exc.errors})
-
-
-def _native_actor(principal: ConversationPrincipal, db: Session) -> Optional[User]:
-    """Native-only actor resolution for edge-role auth (embed has none -
-    `actor=None` fails closed on any actor-conditioned edge, by design)."""
-    if principal.is_embed or not principal.actor_user_id:
-        return None
-    return (
-        db.query(User)
-        .filter(User.id == principal.actor_user_id, User.tenant_id == principal.tenant_id)
-        .first()
-    )
 
 
 @router.post("/{contact_id}/lifecycle", response_model=ThreadItem)
@@ -232,7 +225,7 @@ def move_lifecycle(
     if "contacts.manage" not in principal.permission_keys:
         raise HTTPException(status_code=403, detail="Missing permission: contacts.manage")
 
-    actor = _native_actor(principal, db)
+    actor = resolve_native_actor(principal, db)
     try:
         return ConversationService(db).move_lifecycle(
             contact_id, principal.tenant_id, payload.toStatusId, actor=actor
@@ -257,16 +250,21 @@ def get_lifecycle_moves(
     db: Session = Depends(get_db),
 ) -> List[LifecycleMoveOption]:
     """Fireable outgoing edges for this contact right now (AC-CDM-18) - empty
-    on a won (`is_terminal`) stage."""
-    if not principal.is_embed and not (
-        {"conversations.read", "contacts.read"} & principal.permission_keys
-    ):
+    on a won (`is_terminal`) stage. Lifecycle is a native-only surface (like the
+    two lifecycle WRITE routes) - an embed principal is refused, consistent
+    with `move_lifecycle` / the `wants_profile` gate on `patch_thread` (D14)."""
+    if principal.is_embed:
+        raise HTTPException(
+            status_code=403,
+            detail="This token cannot read a contact's lifecycle moves.",
+        )
+    if not ({"conversations.read", "contacts.read"} & principal.permission_keys):
         raise HTTPException(
             status_code=403,
             detail="Missing permission: one of conversations.read, contacts.read",
         )
     enforce_thread_access(db, principal, contact_id)
-    actor = _native_actor(principal, db)
+    actor = resolve_native_actor(principal, db)
     try:
         edges = ConversationService(db).lifecycle_moves(
             contact_id, principal.tenant_id, actor=actor

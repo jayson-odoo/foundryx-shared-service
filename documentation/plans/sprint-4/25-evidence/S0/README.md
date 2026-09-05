@@ -88,3 +88,8 @@ tenant `default`, user `demo@example.com`. All navigation below is real clicks f
   correctly-shaped `ApiError(422, {fieldErrors})` and the dialog's generic
   `form.setError` mapping is shared code already proven via the Contact Field dialog's
   "Add at least one option." error (see `qa/qa-add-field-error-no-options.png`).
+
+## Carry to S4
+- Live-Postgres field delete strips values (`ContactFieldService._strip_values`'s
+  `jsonb -` UPDATE) is exercised only via SQLite in the pytest suite (conftest) -
+  verify it against real Postgres in the S4 evidence pass (review round 1, finding 10).
