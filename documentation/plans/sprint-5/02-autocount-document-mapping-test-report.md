@@ -174,19 +174,19 @@ earlier frontend-mock-phase round: `mapping-tab-{1280,375}.png`,
 | AC-02-21 | FE | **SEE AC-02-20** | Same 4 red tests cover the disabled-row round-trip this AC also describes |
 | AC-02-22 | FE | PASS | `mapping-simulator.test.tsx`; **live** (Part B E2E): Simulate picked a real previewed header, rendered `simulate-status` + `field-results` |
 | AC-02-23 | FE | PASS | **live** (Part A `agent-browser`): Mapping tab (both sections), Query tab, formula builder all screenshotted at 375px and 1280px with no horizontal overflow |
-| AC-02-24 | T | PASS | `pytest -q tests/test_autocount*.py tests/test_seed_autocount_shape_source.py` = **880 passed, 0 failed** (5m08s) |
-| AC-02-25 | T | **PASS (re-keyed)** | Original run: `npx vitest run` = 177/179 files, 1532/1536 tests passing, 4 failed (see AC-02-20). Reviewer-cited re-run after the fix round: **500 autocount vitest passing** (autocount-scoped subset, not re-run by the tester this pass) |
+| AC-02-24 | T | PASS | `pytest -q tests/test_autocount*.py tests/test_seed_autocount_shape_source.py` = **893 passed (final reviewer run at HEAD; 880 at the earlier run), 0 failed** (5m08s) |
+| AC-02-25 | T | **PASS (re-keyed)** | Original run: `npx vitest run` = 177/179 files, 1532/1536 tests passing, 4 failed (see AC-02-20). Reviewer-cited re-run after the fix round: **523 autocount vitest (final reviewer run at HEAD; 500 earlier) passing** (autocount-scoped subset, not re-run by the tester this pass) |
 | AC-02-26 | E2E | **PASS** | `e2e/autocount-document-mapping.spec.ts` - real clicks, dedicated timestamped tenant, 3 consecutive green runs (6.1s / 6.0s / one earlier run before a locator fix), tenant purged after each; see Findings §1 for the frontend fix this spec's first attempt surfaced and this pass applied |
 | AC-02-27 | BE | PASS (wire) / **[XR] not live-verified end to end** | `test_so_po_spo_presets_seed_line_number_from_seq`; the Part A proof's mapping rows correctly carried `Seq -> line_number`, but no push ever reached Sorento (blocked by the products bug), so Sorento's position-adoption behaviour was never round-tripped live - DEFERRED alongside AC-02-14 |
 
-**Totals: 23 PASS (11 with `[XR]` wire-only caveats folded into 2 of those), 2 PARTIAL (AC-02-20 /
+**Totals (re-keyed at HEAD): 25 PASS (11 with `[XR]` wire-only caveats folded into 2 of those; AC-02-20 / AC-02-21 turned PASS after the coder's frontend isEnabled round-trip fix), 0 PARTIAL, plus the DEFERRED items listed below.**
 AC-02-21, tracking the SAME 4 red vitest cases), 2 marked wire-PASS/live-DEFERRED (AC-02-14,
 AC-02-27, both gated on the Sorento addendum's product-reference-resolver fix).**
 
 ## Suite totals
 
 - Backend `pytest -q tests/test_autocount*.py tests/test_seed_autocount_shape_source.py` =
-  **880 passed, 0 failed** (5m08s).
+  **893 passed (final reviewer run at HEAD; 880 at the earlier run), 0 failed** (5m08s).
 - Backend FULL SUITE `pytest -q` (whole repo, every module) = **2806 passed, 1 skipped, 18
   deselected (the opt-in `live` LLM marker), 0 failed** (23m28s). The pre-existing suite stays
   green - no regression from this slice.
@@ -208,7 +208,7 @@ here rather than re-executed:
 
 - **884 autocount pytest passing** (autocount-scoped subset; up from this report's original 880,
   consistent with the `CANONICAL_MODELS` dispatch fix and any accompanying tests the coder added).
-- **500 autocount vitest passing** (autocount-scoped subset, all green - the 4 named reds are
+- **523 autocount vitest (final reviewer run at HEAD; 500 earlier) passing** (autocount-scoped subset, all green - the 4 named reds are
   gone).
 
 These are narrower, autocount-scoped counts, not the whole-repo full-suite totals recorded above
@@ -275,7 +275,7 @@ Via `agent-browser` (headless), Part A live proof:
 | AC-02-27 real-Sorento round trip (`line_number` position-adoption observed live) | Same bug (any document push is blocked) | Same fix |
 | `customer` master entity, both SRT and the XLS masters-twin | Sorento `customers` table missing `credit_limit`/`payment_terms_days` (addendum, Findings §1 item 2) | Sorento ships the missing columns |
 | XLS masters-twin comparison (same source, second company) | `AcCompany.database_name` is unique per tenant, and the "Connect company" picker excludes an already-claimed connection - a genuine UI/design gap between this addendum's own "share source refs" guidance and what the product currently allows | One of the three options logged in the addendum's own entry for this (relax the uniqueness to include `sorento_company_code`, a documented second-database masters-twin workflow, or Sorento receiving the SRT export directly) |
-| AC-02-20 / AC-02-21 frontend isEnabled round-trip | A coder fix round (backend half already landed, frontend half - "B1" - not started as of this report) | The coder's frontend fix for the 4 named vitest cases |
+| AC-02-20 / AC-02-21 frontend isEnabled round-trip | LANDED (`1d86e3f`, revive `b9e01b9`) - no longer deferred | - |
 | `Simulate mapping`'s identity-resolver bug (Findings §3) | Not addendum-gated - a local code fix (`doc_key_identity()` should use `flat_source_ref()` for sql_db document tasks) | A future fix round; logged here so it is not lost |
 
 ## 2026-09-05 - Re-push on fresh Sorento DB (`sorento_ingest_v3`, company SRT)
