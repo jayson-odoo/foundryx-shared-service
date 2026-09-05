@@ -12,3 +12,7 @@ api_keys,Workspace API Keys,read,Read,View workspace public-gateway API keys
 api_keys,Workspace API Keys,manage,Manage,Mint & revoke workspace API keys
 webhooks,Consumer Webhooks,read,Read,View a channel's consumer webhook endpoints & deliveries
 webhooks,Consumer Webhooks,manage,Manage,Register/rotate/enable/disable consumer webhook endpoints
+contacts,Contacts,read,Read,View a contact's fields tags and lifecycle
+contacts,Contacts,manage,Manage,Edit a contact's fields tags and lifecycle
+contact_fields,Contact Fields,manage,Manage,Create/edit/delete custom contact fields
+contact_tags,Contact Tags,manage,Manage,Create/edit/delete contact tags

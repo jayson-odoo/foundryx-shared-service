@@ -30,19 +30,34 @@ MotionGlobalConfig.skipAnimations = true;
 // no DOM globals at all - this setup file still runs for them, so it must
 // not crash before those tests get a chance to run.
 if (typeof Element !== 'undefined') {
-  class ResizeObserverStub {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
+  class ResizeObserverStub implements ResizeObserver {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).ResizeObserver = ResizeObserverStub;
+  globalThis.ResizeObserver = ResizeObserverStub;
   if (!Element.prototype.hasPointerCapture) {
     Element.prototype.hasPointerCapture = () => false;
   }
   if (!Element.prototype.scrollIntoView) {
     Element.prototype.scrollIntoView = () => {};
   }
+}
+// jsdom doesn't implement matchMedia (useIsMobile, useMediaQuery). Default to
+// "no match" (desktop) - tests that care about a specific breakpoint override
+// window.matchMedia per-test. Guarded on `typeof window` for the same
+// node-environment tests the ResizeObserver block above guards against.
+if (typeof window !== 'undefined' && !window.matchMedia) {
+  window.matchMedia = (query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  }) as MediaQueryList;
 }
 
 // next/navigation router stub (overridable per-test via vi.mocked)

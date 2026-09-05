@@ -211,11 +211,16 @@ def transition(
 
     # Workflow domain event (slice 09): buffered now, drained after commit →
     # matches `entity.status_changed` triggers. Loop-guarded by the run origin.
+    # Event entity_type = the entity's declared `workflow_entity_type` when set
+    # (plan 25 S2, generic) - a scoped machine's own `entity_type` may name the
+    # pipeline, not the record (e.g. `omnichannel_contact_lifecycle` vs the
+    # record's `omnichannel_contact` WorkflowEntity); defaults to `entity_type`
+    # for every existing adopter (unchanged behavior).
     from app.workflow_engine.entity_events import emit_entity_event
 
     emit_entity_event(
         db,
-        entity_type,
+        entity.workflow_entity_type or entity_type,
         "status_changed",
         record,
         tenant_id=notify_tenant_id,

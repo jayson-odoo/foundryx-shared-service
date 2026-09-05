@@ -148,7 +148,12 @@ class Contact(OmniBase):
     email = Column(String, nullable=True)
     phone = Column(String, nullable=True, index=True)
     avatar_url = Column(String, nullable=True)
-    custom_fields_json = Column(JSON, nullable=True)
+    # `none_as_null=True` (house rule) - without it a Python `None` assignment
+    # stores a JSON `null` scalar instead of a SQL NULL, which then breaks
+    # `jsonb_each`/`jsonb_typeof` on Postgres reads (review round 2, finding
+    # B) and confuses `IS NOT NULL` filters the same way plan-02's rule-engine
+    # lesson describes.
+    custom_fields_json = Column(JSON(none_as_null=True), nullable=True)
     assigned_user_id = Column(String,nullable=True)
     # Federated (embed) assignee - set instead of ``assigned_user_id`` when the
     # thread is assigned by an external agent (plan 11H Slice 1). Plain indexed
@@ -157,6 +162,15 @@ class Contact(OmniBase):
     assigned_external_agent_id = Column(String, nullable=True, index=True)
     status_id = Column(String, ForeignKey("statuses.id"), nullable=True)
     priority = Column(String, nullable=False, default="MEDIUM")
+    # ── Contact data model (plan 25 S1/S2) ──────────────────────────────────
+    # BCP-47 tag (e.g. "en", "zh-Hans"); ISO-3166 alpha-2 upper-cased.
+    language = Column(String, nullable=True)
+    country_code = Column(String, nullable=True)
+    # Plain indexed column pointing at a CORE `statuses` row - no cross-schema
+    # FK (BL-030 pattern, matches `assigned_external_agent_id` above). Set by
+    # S2 (the scoped `omnichannel_contact_lifecycle` status entity); stays NULL
+    # until that lands, and the wire `lifecycle` field stays null until then.
+    lifecycle_status_id = Column(String, nullable=True, index=True)
     csw_expires_at = Column(UTCDateTime(), nullable=True)
     last_incoming_message_at = Column(UTCDateTime(), nullable=True)
     last_message_at = Column(UTCDateTime(), nullable=True)
@@ -182,6 +196,69 @@ class ContactChannelIdentity(OmniBase):
 
     __table_args__ = (
         UniqueConstraint("channel_id", "external_user_id", name="uq_identity_channel_external"),
+    )
+
+
+class ContactField(OmniBase):
+    """A per-workspace registered custom field (plan 25 S1). Values live in
+    `Contact.custom_fields_json[key]`, validated against this row's `type` on
+    every write (`ContactFieldService`). `key` + `type` are immutable after
+    create (D6) - enforced in the service, not the DB. Uniqueness (per
+    workspace, case-insensitive) is also app-enforced (`func.lower` lookup) -
+    no DB constraint, so it stays portable across the SQLite test suite."""
+
+    __tablename__ = "contact_fields"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    key = Column(String, nullable=False)
+    label = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    type = Column(String, nullable=False)  # text|list|checkbox|email|number|url|date|time
+    options_json = Column(JSON(none_as_null=True), nullable=True)  # `list` type only
+    visibility = Column(String, nullable=False, default="always")  # always|hidden
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ContactTag(OmniBase):
+    """A per-workspace tag (plan 25 S1). Attached to contacts via
+    `ContactTagLink`. Name uniqueness (per workspace, case-insensitive) is
+    app-enforced, same reasoning as `ContactField.key`."""
+
+    __tablename__ = "contact_tags"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    emoji = Column(String, nullable=True)
+    color = Column(String, nullable=True)  # hex
+    description = Column(Text, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ContactTagLink(OmniBase):
+    """A contact <-> tag attachment (plan 25 S1). Replaced wholesale on every
+    `tagIds` PATCH (`ContactTagService.replace_links`) - never merged."""
+
+    __tablename__ = "contact_tag_links"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    contact_id = Column(String, ForeignKey("contacts.id"), nullable=False, index=True)
+    tag_id = Column(String, ForeignKey("contact_tags.id"), nullable=False, index=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("contact_id", "tag_id", name="uq_contact_tag_link"),
     )
 
 

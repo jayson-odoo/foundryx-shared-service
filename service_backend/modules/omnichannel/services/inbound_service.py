@@ -335,6 +335,8 @@ class InboundService:
             digits, channel.workspace_id, channel.tenant_id
         )
         if contact is None:
+            from .lifecycle_service import initial_status_id
+
             profile_name = event.get("profile_name") or ""
             first, _, last = profile_name.partition(" ")
             contact = Contact(
@@ -345,6 +347,12 @@ class InboundService:
                 phone=f"+{digits}",
                 status_id=statuses.status_id_for(self.db, channel.tenant_id, "THREAD", "OPEN"),
                 priority="MEDIUM",
+                # A workspace with no lifecycle graph "should not happen" post-
+                # backfill (plan 25 S2) - None just leaves the column NULL
+                # rather than crash the inbound pipeline (AC-CDM-16).
+                lifecycle_status_id=initial_status_id(
+                    self.db, channel.tenant_id, channel.workspace_id
+                ),
             )
             self.db.add(contact)
             self.db.flush()

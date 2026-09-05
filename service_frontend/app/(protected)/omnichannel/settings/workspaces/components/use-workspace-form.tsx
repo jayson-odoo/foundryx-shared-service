@@ -1,17 +1,29 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { KeyRound, MessageCircle, Settings as SettingsIcon, Users as UsersIcon } from 'lucide-react';
+import {
+  FormInput,
+  GitBranch,
+  KeyRound,
+  MessageCircle,
+  Settings as SettingsIcon,
+  Tag,
+  Users as UsersIcon,
+} from 'lucide-react';
 import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { LayoutController } from '@/components/platform/status-engine';
 import type { ListQuery } from '@/types/resource';
 import { workspaceService } from '@/services/workspace-service';
 import type { Workspace } from '@/types/omnichannel';
 import { SettingsTab, ChannelsTab, MembersTab } from './workspace-form-fields';
 import { ApiKeysTab } from './workspace-api-keys-tab';
+import { WorkspaceLifecycleTab } from './workspace-lifecycle-tab';
+import { WorkspaceContactFieldsTab } from './workspace-contact-fields-tab';
+import { WorkspaceTagsTab } from './workspace-tags-tab';
 import { useWorkspaceActions } from './use-workspace-actions';
 import { useCan } from '@/hooks/use-can';
 import { workspaceFormHref, workspaceFormPath, workspacesListPath } from './paths';
@@ -41,6 +53,10 @@ export function useWorkspaceForm(
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // Plan 25 - the Lifecycle tab's canvas layout draft plugs into this form's
+  // Save/Cancel exactly like the form engine's Flow tab (BL-064 pattern).
+  const [lifecycleDirty, setLifecycleDirty] = useState(false);
+  const lifecycleLayoutController = useRef<LayoutController | null>(null);
 
   const form = useForm<WorkspaceFormValues>({
     mode: 'onTouched',
@@ -111,12 +127,15 @@ export function useWorkspaceForm(
         }
         ok = true;
       })();
+      // The Lifecycle tab's layout draft commits with the same Save (BL-064).
+      if (ok) lifecycleLayoutController.current?.save();
       return ok;
     };
 
     const onCancel = () => {
       if (creating) router.push(workspacesListPath);
       else form.reset(toFormValues(workspace));
+      lifecycleLayoutController.current?.discard();
     };
 
     const tabs = [
@@ -140,6 +159,56 @@ export function useWorkspaceForm(
         icon: UsersIcon,
         render: () => <MembersTab workspaceId={workspace?.id ?? null} creating={creating} />,
       },
+      // F6 (plan-25 round-3 codex triage): Lifecycle is a STATUS-ENGINE
+      // surface (its canvas reads via `statuses.read` and edits via
+      // `statuses.manage`, same as every other `EntityFlow` embed) - gated
+      // SEPARATELY from the conversations/contacts-scoped tabs below, never
+      // bundled with `conversations.read`/`contacts.read` (a user holding
+      // ONLY those never held a status-engine permission at all). Edit mode
+      // is gated on `statuses.manage` INDEPENDENTLY of the form's own Edit
+      // toggle (`workspaces.manage`) - the two permissions are unrelated;
+      // toggling the workspace form into edit mode must never itself grant
+      // canvas-edit rights on the status engine.
+      ...(!creating && can('statuses.read')
+        ? [
+            {
+              id: 'lifecycle',
+              label: 'Lifecycle',
+              icon: GitBranch,
+              render: ({ editing }: { editing: boolean }) =>
+                workspace ? (
+                  <WorkspaceLifecycleTab
+                    workspaceId={workspace.id}
+                    workspaceName={workspace.name}
+                    editing={editing && can('statuses.manage')}
+                    onDirtyChange={setLifecycleDirty}
+                    layoutController={lifecycleLayoutController}
+                  />
+                ) : null,
+            },
+          ]
+        : []),
+      // Plan 25 - hidden while creating (AC-CDM-29): these hang off a real
+      // workspace id (per-workspace registries). Gated by permission (F15) -
+      // the backend GETs are `conversations.read` OR `contacts.read`; a user
+      // with neither never sees a tab that would just 403 (foolproof-UI,
+      // UX-only - the API is the real gate).
+      ...(!creating && (can('conversations.read') || can('contacts.read'))
+        ? [
+            {
+              id: 'contact-fields',
+              label: 'Contact fields',
+              icon: FormInput,
+              render: () => <WorkspaceContactFieldsTab workspaceId={workspace?.id ?? null} creating={creating} />,
+            },
+            {
+              id: 'tags',
+              label: 'Tags',
+              icon: Tag,
+              render: () => <WorkspaceTagsTab workspaceId={workspace?.id ?? null} creating={creating} />,
+            },
+          ]
+        : []),
       ...(can('api_keys.read')
         ? [
             {
@@ -170,7 +239,7 @@ export function useWorkspaceForm(
       editable: !creating,
       editPermission: 'workspaces.manage',
       initialEditing: creating ? true : initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: form.formState.isDirty || lifecycleDirty,
       onSave,
       onCancel,
       recordNav: creating
@@ -188,6 +257,7 @@ export function useWorkspaceForm(
     workspaceId,
     router,
     can,
+    lifecycleDirty,
     fetchRecordAt,
     buildRecordHref,
   ]);

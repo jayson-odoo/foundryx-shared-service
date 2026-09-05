@@ -354,6 +354,19 @@ class StatusService:
             raise StatusValidationError(f'A status with key "{key}" already exists.')
 
         siblings = self.statuses.list_for_entity(entity_type, scope, scope_id=scope_id)
+        flags = dict(flags or {})
+        if not siblings:
+            # B1 (plan-25 round-3): the very FIRST status of a brand new
+            # (entity_type, scope, scope_id) set must be `is_initial` - a
+            # caller that omits the flag here would otherwise leave the set
+            # with ZERO initial statuses (nowhere for a new record to
+            # start). Every OTHER adopter today materializes its first
+            # status set with `is_initial` already set (form/lifecycle
+            # seeds), so this only bites a future adopter using the raw
+            # create-status API on an empty set - force it rather than
+            # reject, matching the silent-converge pattern already used for
+            # `is_default`/`is_initial` below.
+            flags["is_initial"] = True
         status = Status(
             entity_type=entity_type,
             key=key,
@@ -390,6 +403,18 @@ class StatusService:
                 raise StatusValidationError(
                     "A terminal status cannot have outgoing transitions - remove them first."
                 )
+        # AC-20: `is_initial` converges to AT MOST one via the silent-converge
+        # below, but a set must never converge to ZERO either - turning the
+        # LAST initial stage off would leave new records with nowhere to
+        # start. Only relevant on an existing status (creation can't yet be
+        # the sole initial row being un-set).
+        if (
+            not creating
+            and "is_initial" in flags
+            and not flags["is_initial"]
+            and status.is_initial
+        ):
+            self._assert_not_sole_initial(status, scope, scope_id, entity)
         for flag, value in flags.items():
             setattr(status, flag, bool(value))
         # Single default per entity set (per SCOPE for scoped machines) -
@@ -404,6 +429,48 @@ class StatusService:
                     Status.id != status.id,
                 )
                 .update({Status.is_default: False}, synchronize_session=False)
+            )
+        # Exactly one ``is_initial`` per entity set (per SCOPE for scoped
+        # machines, generic - every adopter benefits, not just a module's
+        # entity) - converge silently, same pattern as ``is_default`` above.
+        if flags.get("is_initial"):
+            (
+                self.db.query(Status)
+                .filter(
+                    Status.entity_type == entity.entity_type,
+                    Status.tenant_id.is_(None) if scope is None else Status.tenant_id == scope,
+                    Status.scope_id.is_(None) if scope_id is None else Status.scope_id == scope_id,
+                    Status.id != status.id,
+                )
+                .update({Status.is_initial: False}, synchronize_session=False)
+            )
+
+    def _assert_not_sole_initial(
+        self,
+        status: Status,
+        scope: Optional[str],
+        scope_id: Optional[str],
+        entity: StatusEntity,
+    ) -> None:
+        """AC-20: EXACTLY one `is_initial` per (entity_type, scope, scope_id)
+        set - never zero. Raises a 422 if `status` is the only `is_initial=True`
+        row in its set (turning it off / deleting it would leave the set with
+        nowhere for a new record to start). Generic - applies to every
+        adopting entity, unscoped (`scope_id=None`) and scoped alike."""
+        still_initial = (
+            self.db.query(Status)
+            .filter(
+                Status.entity_type == entity.entity_type,
+                Status.tenant_id.is_(None) if scope is None else Status.tenant_id == scope,
+                Status.scope_id.is_(None) if scope_id is None else Status.scope_id == scope_id,
+                Status.id != status.id,
+                Status.is_initial.is_(True),
+            )
+            .count()
+        )
+        if still_initial == 0:
+            raise StatusValidationError(
+                "At least one status must be marked as the initial stage."
             )
 
     def update_status(
@@ -459,6 +526,12 @@ class StatusService:
         count = entity.count_records(self.db, status.id, scope)
         if count > 0:
             raise StatusReferenced(count)
+        # AC-20: even after migrate-records cleared every reference, deleting
+        # the SOLE `is_initial` status would strand the set with nowhere for
+        # a new record to start - same guard as `_apply_flags`'s
+        # is_initial:false path.
+        if status.is_initial:
+            self._assert_not_sole_initial(status, scope, scope_id, entity)
         # Deleting a node drops its connected edges (graph-editor semantics).
         self.transitions.delete_for_status(status.id)
         self.statuses.delete(status)

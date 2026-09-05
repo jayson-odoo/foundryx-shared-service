@@ -6,6 +6,7 @@ are driven by AppStoreService when a tenant installs/updates/uninstalls.
 Permission GRANTS are not this module's concern - the store grants/revokes
 against the tenant's roles (plan 08 §5).
 """
+import logging
 from pathlib import Path
 
 from sqlalchemy import text
@@ -17,6 +18,8 @@ from app.services.permission_service import load_csv
 from .db import OMNI_SCHEMA, OmniBase
 from .models import Workspace
 from .services import statuses
+
+logger = logging.getLogger(__name__)
 
 MODULE_NAME = "omnichannel"
 MODULE_CSV = Path(__file__).resolve().parent / "permissions" / "permissions.csv"
@@ -74,6 +77,12 @@ def register_engine_entities() -> None:
     from .workflow_nodes import register_omnichannel_workflow_nodes
 
     register_omnichannel_workflow_nodes()
+
+    # Contact lifecycle - the scoped status entity (plan 25 S2). Idempotent
+    # (re-registers on every bootstrap, same as the workflow nodes above).
+    from .services import lifecycle_service
+
+    lifecycle_service.register_lifecycle_entity()
 
     # Deferred (grace-window) actions (sprint-4/23, T5 fix round 1, item 15):
     # omnichannel's own confirm:-gated destructive actions register into the
@@ -175,6 +184,129 @@ def create_schema_and_tables(engine: Engine) -> None:
                         f"ADD COLUMN IF NOT EXISTS {col} {coltype}"
                     )
                 )
+            # Contact data model (plan 25 S1) - idempotent add for existing
+            # deployments (per-module Alembic migration 0008 is the real fix
+            # for a Postgres-tracked deploy; this covers the create_all path).
+            _contact_cols = [
+                ("language", "VARCHAR"),
+                ("country_code", "VARCHAR"),
+                ("lifecycle_status_id", "VARCHAR"),
+            ]
+            for col, coltype in _contact_cols:
+                conn.execute(
+                    text(
+                        f'ALTER TABLE "{OMNI_SCHEMA}".contacts '
+                        f"ADD COLUMN IF NOT EXISTS {col} {coltype}"
+                    )
+                )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_contacts_lifecycle_status_id "
+                    f'ON "{OMNI_SCHEMA}".contacts (lifecycle_status_id)'
+                )
+            )
+            # contact_fields.key / contact_tags.name → per-workspace UNIQUE
+            # (case-insensitive), plan 25 review round 1 finding 9 - the
+            # DB backstop for `_find_by_key`/`_find_by_name`'s race (two
+            # concurrent creates, e.g. via `resolve_or_create_by_name` on the
+            # public gateway, can both pass the SELECT before either INSERTs).
+            # Best-effort auto-heal any pre-existing duplicate FIRST (unlike
+            # phone_number_id, key/name is NOT NULL + user-visible, so losers
+            # are renamed with a short id-derived suffix, never nulled).
+            # Review round 2, finding E: renaming a losing field/tag key
+            # ORPHANS any contact values already stored under the old key
+            # (`custom_fields_json`/tag links aren't rewritten - a rewrite is
+            # out of scope, see the migration's note) - log every rename so an
+            # operator can find + reconcile them (tenant, workspace, old→new).
+            for row in conn.execute(
+                text(
+                    f"""
+                    SELECT id, tenant_id, workspace_id, key,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY workspace_id, lower(key)
+                               ORDER BY created_at, id
+                           ) AS rn
+                    FROM "{OMNI_SCHEMA}".contact_fields
+                    """
+                )
+            ).fetchall():
+                if row.rn > 1:
+                    new_key = f"{row.key[:30]}_{row.id[:8]}"
+                    logger.warning(
+                        "omnichannel contact_fields: renamed duplicate key "
+                        "%r -> %r (tenant=%s workspace=%s) - existing "
+                        "customFields values under the old key are NOT "
+                        "rewritten, reconcile manually",
+                        row.key, new_key, row.tenant_id, row.workspace_id,
+                    )
+            conn.execute(
+                text(
+                    f"""
+                    WITH ranked AS (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY workspace_id, lower(key)
+                                   ORDER BY created_at, id
+                               ) AS rn
+                        FROM "{OMNI_SCHEMA}".contact_fields
+                    )
+                    UPDATE "{OMNI_SCHEMA}".contact_fields cf
+                    SET key = substr(cf.key, 1, 30) || '_' || substr(cf.id, 1, 8)
+                    FROM ranked
+                    WHERE cf.id = ranked.id AND ranked.rn > 1
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_contact_fields_workspace_key "
+                    f'ON "{OMNI_SCHEMA}".contact_fields (workspace_id, lower(key))'
+                )
+            )
+            for row in conn.execute(
+                text(
+                    f"""
+                    SELECT id, tenant_id, workspace_id, name,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY workspace_id, lower(name)
+                               ORDER BY created_at, id
+                           ) AS rn
+                    FROM "{OMNI_SCHEMA}".contact_tags
+                    """
+                )
+            ).fetchall():
+                if row.rn > 1:
+                    new_name = f"{row.name[:50]}_{row.id[:8]}"
+                    logger.warning(
+                        "omnichannel contact_tags: renamed duplicate name "
+                        "%r -> %r (tenant=%s workspace=%s) - tag links are "
+                        "untouched, reconcile manually if the old name mattered",
+                        row.name, new_name, row.tenant_id, row.workspace_id,
+                    )
+            conn.execute(
+                text(
+                    f"""
+                    WITH ranked AS (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY workspace_id, lower(name)
+                                   ORDER BY created_at, id
+                               ) AS rn
+                        FROM "{OMNI_SCHEMA}".contact_tags
+                    )
+                    UPDATE "{OMNI_SCHEMA}".contact_tags ct
+                    SET name = substr(ct.name, 1, 50) || '_' || substr(ct.id, 1, 8)
+                    FROM ranked
+                    WHERE ct.id = ranked.id AND ranked.rn > 1
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_contact_tags_workspace_name "
+                    f'ON "{OMNI_SCHEMA}".contact_tags (workspace_id, lower(name))'
+                )
+            )
             # phone_number_id → service-wide UNIQUE (plan Slice 3, AC-01-20) for
             # O(1) inbound routing. Reconcile any existing duplicates FIRST (keep
             # the earliest by created_at,id; NULL the losers) then add a partial
@@ -213,7 +345,20 @@ def install(engine: Engine, db: Session) -> None:
 
 
 def install_tenant(db: Session, tenant_id: str) -> None:
-    """Per-tenant seed: statuses + the default 'General' workspace. Idempotent."""
+    """Per-tenant seed: statuses + the default 'General' workspace (+ its
+    lifecycle graph, plan 25 S2, AC-CDM-14). Idempotent.
+
+    Review round 1, finding 17: the pre-existing-workspace branch used to
+    early-return with NOTHING materialized - a tenant that already had a
+    default workspace (installed before plan 25 S2, or re-running install on
+    a tenant whose workspace predates the lifecycle graph) never got a
+    lifecycle graph or contact stamping. `lifecycle_service.backfill_tenant`
+    is idempotent + covers EVERY workspace (not just the default one) + stamps
+    every `lifecycle_status_id IS NULL` contact, so calling it unconditionally
+    before returning makes `install_tenant` self-healing on every call,
+    including this one."""
+    from .services import lifecycle_service
+
     statuses.ensure_statuses(db, tenant_id)
     exists = (
         db.query(Workspace)
@@ -221,33 +366,61 @@ def install_tenant(db: Session, tenant_id: str) -> None:
         .first()
     )
     if exists:
+        lifecycle_service.backfill_tenant(db, tenant_id)
         return
-    db.add(
-        Workspace(
-            tenant_id=tenant_id,
-            name="General",
-            status_id=statuses.status_id_for(db, tenant_id, "WORKSPACE", "ACTIVE"),
-            is_default=True,
-            is_trashed=False,
-        )
+    ws = Workspace(
+        tenant_id=tenant_id,
+        name="General",
+        status_id=statuses.status_id_for(db, tenant_id, "WORKSPACE", "ACTIVE"),
+        is_default=True,
+        is_trashed=False,
     )
+    db.add(ws)
     db.flush()
+    lifecycle_service.materialize_for_workspace(db, ws)
 
 
 def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     """Per-tenant data migration between provisioned versions (plan 08 D3).
 
-    All of omnichannel is 0.1.0 today - nothing to backfill yet. New seeds /
-    backfills land here guarded by ``from_version`` comparisons.
+    0.1.0 -> 0.2.0: the plan 25 S1 columns/registries need no backfill (see the
+    S1 note this replaced - nullable columns + empty registries read back
+    correctly as-is). The plan 25 S2 lifecycle backfill (AC-CDM-15, D13) DOES
+    apply here: materialize the seed graph for every workspace that predates
+    this slice + stamp every ``lifecycle_status_id IS NULL`` contact with its
+    workspace's initial stage. ``backfill_tenant`` is idempotent (a workspace
+    that already has a graph, or a contact that already carries a stage, is
+    skipped) so re-running ``update`` (or a tenant already on 0.2.0 running it
+    again) is a safe no-op.
+    ``AppStoreService.update()`` already re-grants this module's permission
+    catalog rows (incl. the four new ``contacts.*``/``contact_fields.manage``/
+    ``contact_tags.manage`` keys) to the tenant's Admin role after this hook
+    returns - no grant-sweep code needed here.
     """
+    from .services import lifecycle_service
+
+    lifecycle_service.backfill_tenant(db, tenant_id)
 
 
 def uninstall_tenant(db: Session, tenant_id: str) -> None:
-    """Wipe THIS tenant's rows from every module table (plan 08 §5).
+    """Wipe THIS tenant's rows from every module table (plan 08 §5), AND the
+    contact-lifecycle graphs this module wrote into the CORE ``statuses`` /
+    ``status_transitions`` tables (plan 25 S2, D12/AC-CDM-21) - the generic
+    per-table loop below only touches ``OmniBase`` (app_omnichannel) tables,
+    so the core rows need their own cleanup via the status engine's own
+    ``delete_scope`` helper (the sanctioned "module writes core status rows
+    through the engine's services" path - never a raw DELETE).
 
     The module schema and other tenants' rows are untouched - uninstall is
     per-tenant, never global. Reverse dependency order avoids FK violations.
     """
+    from app.status_engine.scoped import delete_scope
+
+    from .services import lifecycle_service
+
+    for ws in db.query(Workspace).filter(Workspace.tenant_id == tenant_id).all():
+        delete_scope(db, lifecycle_service.ENTITY_TYPE, tenant_id, ws.id)
+
     for table in reversed(OmniBase.metadata.sorted_tables):
         if "tenant_id" in table.c:
             db.execute(table.delete().where(table.c.tenant_id == tenant_id))
@@ -308,6 +481,10 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     snoozed_id = statuses.status_id_for(db, tenant_id, "THREAD", "SNOOZED")
     closed_id = statuses.status_id_for(db, tenant_id, "THREAD", "CLOSED")
 
+    from .services import lifecycle_service
+
+    initial_lifecycle_id = lifecycle_service.initial_status_id(db, tenant_id, ws.id)
+
     def hours(n):
         return now - timedelta(hours=n)
 
@@ -355,6 +532,7 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
             status_id=status_id,
             priority=priority,
             csw_expires_at=csw,
+            lifecycle_status_id=initial_lifecycle_id,
         )
         db.add(contact)
         db.flush()

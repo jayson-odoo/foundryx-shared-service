@@ -10,6 +10,8 @@ import type {
   ConversationMessage,
   ConversationSocketEvent,
   ConversationThread,
+  LifecycleMove,
+  PatchContactInput,
   QuickReply,
   ReactionResult,
   SendContactsInput,
@@ -61,11 +63,25 @@ export interface ConversationService {
   /** Canned responses for the workspace (★ composer picker). */
   listQuickReplies(workspaceId: string): Promise<QuickReply[]>;
   /**
+   * Plan 25 - system fields + typed custom fields + tag replace-set, ONE
+   * partial-merge PATCH (AC-CDM-06/07/10, AC-CDM-36). 422 `fieldErrors` map
+   * onto `customFields.<key>` / `tagIds` / `language` / `countryCode` / etc.
+   */
+  patchContact(contactId: string, patch: PatchContactInput): Promise<ConversationThread>;
+  /** Move the contact's lifecycle stage via the status-engine machine
+   *  (AC-CDM-17). 409 when no edge exists from the current stage. */
+  moveLifecycle(contactId: string, toStatusId: string): Promise<ConversationThread>;
+  /** The fireable outgoing edges from the contact's CURRENT stage only - the
+   *  "Move to" picker offers ONLY these (AC-CDM-18, foolproof-UI). */
+  lifecycleMoves(contactId: string): Promise<LifecycleMove[]>;
+  /**
    * Subscribe to realtime events for a workspace. Returns an unsubscribe fn.
    * Phase B: WebSocket + Redis pub/sub; Phase A: mock timer emitter.
    */
   subscribe(workspaceId: string, handler: (event: ConversationSocketEvent) => void): () => void;
 }
 
-// Phase B: real api-client + WS implementation. (Mock retained in *.mock.ts.)
+// Real backend (plan 25 S4) - the lifecycle/tags/customFields routes landed
+// in S1-S3; `conversation-service.mock.ts` remains the standing frontend-first
+// mock for future tuning, but the app talks to the live API.
 export const conversationService: ConversationService = realConversationService;

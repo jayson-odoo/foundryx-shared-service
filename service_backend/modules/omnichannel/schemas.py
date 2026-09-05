@@ -2,14 +2,28 @@
 service_frontend/types/omnichannel.ts). Status flags are resolved to string
 keys by the services before constructing these models.
 """
+import re
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, field_validator
 
 from app.schemas.base import ApiModel
-
 from app.schemas.filters import FilterGroup
+
+# Foolproof-UI (user mandate): a colour picker on the frontend only ever emits
+# a hex triplet, never a token name or arbitrary CSS - reject anything else at
+# the wire boundary (review round 1, finding 11) instead of piping tenant
+# input straight into a `style` attribute downstream.
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _validate_hex_color(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    if not _HEX_COLOR_RE.match(v):
+        raise ValueError("Color must be a 6-digit hex value, e.g. #FF5A00.")
+    return v
 
 
 # ── Workspaces ──────────────────────────────────────────────────────────────
@@ -187,6 +201,127 @@ class ExportRequest(ApiModel):
     filter: Optional[FilterGroup] = None
 
 
+# ── Contact fields (plan 25 S1) ───────────────────────────────────────────────
+class ContactFieldItem(ApiModel):
+    id: str
+    workspaceId: str
+    key: str
+    label: str
+    description: Optional[str] = None
+    type: str  # text|list|checkbox|email|number|url|date|time
+    options: Optional[List[str]] = None  # `list` type only
+    visibility: str = "always"  # always|hidden
+    sortOrder: int
+    valuesCount: int = 0
+    createdAt: datetime
+
+
+class ContactFieldCreate(ApiModel):
+    key: str
+    label: str
+    description: Optional[str] = None
+    type: str
+    options: Optional[List[str]] = None
+    visibility: Optional[Literal["always", "hidden"]] = "always"
+
+
+class ContactFieldUpdate(ApiModel):
+    """`key` + `type` are immutable after create (D6) - present-but-unchanged is
+    fine, present-and-different is a 422 (enforced in the service)."""
+
+    key: Optional[str] = None
+    type: Optional[str] = None
+    label: Optional[str] = None
+    description: Optional[str] = None
+    options: Optional[List[str]] = None
+    visibility: Optional[Literal["always", "hidden"]] = None
+    sortOrder: Optional[int] = None
+
+
+# ── Contact tags (plan 25 S1) ─────────────────────────────────────────────────
+class ContactTagItem(ApiModel):
+    id: str
+    workspaceId: str
+    name: str
+    emoji: Optional[str] = None
+    color: Optional[str] = None
+    description: Optional[str] = None
+    contactsCount: int = 0
+    createdAt: datetime
+
+
+class ContactTagCreate(ApiModel):
+    name: str
+    emoji: Optional[str] = None
+    color: Optional[str] = None
+    description: Optional[str] = None
+
+    @field_validator("color")
+    @classmethod
+    def _valid_color(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_hex_color(v)
+
+
+class ContactTagUpdate(ApiModel):
+    name: Optional[str] = None
+    emoji: Optional[str] = None
+    color: Optional[str] = None
+    description: Optional[str] = None
+
+    @field_validator("color")
+    @classmethod
+    def _valid_color(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_hex_color(v)
+
+
+class ContactTagRefItem(ApiModel):
+    """Compact tag ref carried on a `ThreadItem` (AC-CDM-12)."""
+
+    id: str
+    name: str
+    emoji: Optional[str] = None
+    color: Optional[str] = None
+
+
+class ContactLifecycleSummary(ApiModel):
+    """A contact's current lifecycle stage (AC-CDM-19, plan 25 S2)."""
+
+    statusId: str
+    key: str
+    label: str
+    color: Optional[str] = None
+    isWon: bool = False
+    isLost: bool = False
+
+
+# ── Lifecycle (plan 25 S2) - the scoped `omnichannel_contact_lifecycle`
+# status entity, one graph per workspace ─────────────────────────────────────
+class LifecycleStageItem(ApiModel):
+    """One stage of a workspace's lifecycle graph (AC-CDM contract §5.1)."""
+
+    statusId: str
+    key: str
+    label: str
+    color: Optional[str] = None
+    sortOrder: int
+    isInitial: bool
+    isWon: bool  # is_terminal
+    isLost: bool  # is_archived
+    isActive: bool  # any other stage
+
+
+class LifecycleMoveOption(ApiModel):
+    """A fireable outgoing edge for a contact right now (AC-CDM-18)."""
+
+    edgeId: str
+    toStatusId: str
+    label: str
+
+
+class LifecycleMoveRequest(ApiModel):
+    toStatusId: str
+
+
 # ── Conversations (plan 05) ──────────────────────────────────────────────────
 class ReplyRefItem(ApiModel):
     id: str
@@ -231,7 +366,14 @@ class ThreadItem(ApiModel):
     tenantId: str
     workspaceId: str
     name: str
+    # System fields (plan 25) - editable from the internal PATCH + the Contact
+    # panel Details tab. `name` (derived display name) stays for compatibility.
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
     phone: Optional[str] = None
+    email: Optional[str] = None
+    language: Optional[str] = None  # BCP-47 tag
+    countryCode: Optional[str] = None  # ISO-3166 alpha-2, upper-cased
     avatarUrl: Optional[str] = None
     assignedUserId: Optional[str] = None
     assignedUserName: Optional[str] = None
@@ -249,6 +391,12 @@ class ThreadItem(ApiModel):
     lastMessageAt: Optional[datetime] = None
     lastMessagePreview: Optional[str] = None
     unreadCount: int = 0
+    # Registered custom-field values, keyed by ContactField.key (plan 25).
+    customFields: dict = {}
+    # Tags attached to this contact (plan 25, AC-CDM-12).
+    tags: List[ContactTagRefItem] = []
+    # Current lifecycle stage; null until S2 registers the scoped status entity.
+    lifecycle: Optional[ContactLifecycleSummary] = None
     createdAt: datetime
 
 
@@ -259,11 +407,29 @@ class ThreadListResponse(ApiModel):
 
 class ThreadPatch(ApiModel):
     """PATCH /contacts/{id}. assignedUserId: explicit null = unassign (the
-    handler distinguishes omitted vs null via model_fields_set)."""
+    handler distinguishes omitted vs null via model_fields_set). System-field +
+    custom-field + tag writes (plan 25) are a PARTIAL merge - `customFields`
+    keys omitted are left unchanged, a key set to `null` clears that key, and
+    the WHOLE `customFields` value sent as `null` clears every registered
+    field's value at once; `tagIds` REPLACES the whole tag set.
+
+    `phone` is accepted on the WIRE only so the router can detect it was SENT
+    (`model_fields_set`) and reject it with a named 422 - it is the inbound
+    stitch key (no uniqueness guard, outside the AC-22 whitelist) and is never
+    writable through this PATCH (review round 1, finding 12). The Contact
+    panel must render phone read-only."""
 
     assignedUserId: Optional[str] = None
     status: Optional[str] = None  # OPEN | SNOOZED | CLOSED
     priority: Optional[str] = None  # LOW | MEDIUM | HIGH | URGENT
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
+    phone: Optional[str] = None  # never applied - see docstring
+    email: Optional[str] = None
+    language: Optional[str] = None
+    countryCode: Optional[str] = None
+    customFields: Optional[dict] = None
+    tagIds: Optional[List[str]] = None
 
 
 class SendMessageRequest(ApiModel):
@@ -487,13 +653,25 @@ class PublicContactListResponse(ApiModel):
 
 
 class PublicContactUpdateRequest(ApiModel):
-    """Partial update of a contact. Only the fields you SEND are changed;
-    ``assignedUserId``/``customFields`` sent as ``null`` clear the value."""
+    """Partial update of a contact (plan 25 S3). Only the fields you SEND are
+    changed; ``assignedUserId`` sent as ``null`` unassigns. ``customFields``
+    sent as ``null`` (the whole value) clears EVERY registered field's value;
+    sent as an object with a key set to ``null`` clears just that one key
+    (other keys untouched - partial merge); omitted, ``customFields`` is left
+    unchanged. ``tags`` REPLACES the whole tag set (names, auto-created if
+    unknown - respond.io parity, D8); ``null`` clears every tag.
+    ``lifecycle`` moves the contact along the workspace's lifecycle graph by
+    stage KEY or LABEL - it cannot be cleared (send nothing to leave it
+    unchanged)."""
     firstName: Optional[str] = None
     lastName: Optional[str] = None
     priority: Optional[str] = None  # LOW|MEDIUM|HIGH|URGENT
     assignedUserId: Optional[str] = None
     customFields: Optional[dict] = None
+    language: Optional[str] = None
+    countryCode: Optional[str] = None
+    tags: Optional[List[str]] = None
+    lifecycle: Optional[str] = None
 
 
 class PublicCommentRequest(ApiModel):

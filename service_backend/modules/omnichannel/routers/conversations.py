@@ -28,12 +28,21 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.database import get_db
+from app.services.status_machine import (
+    TransitionConditionsNotMet,
+    TransitionForbidden,
+    TransitionNotAllowed,
+)
 from ..embed_auth import (
     ConversationPrincipal,
     enforce_thread_access,
     get_conversation_principal,
+    resolve_effective_actor,
+    resolve_native_actor,
 )
 from ..schemas import (
+    LifecycleMoveOption,
+    LifecycleMoveRequest,
     MessageItem,
     SendContactsRequest,
     SendLocationRequest,
@@ -42,11 +51,13 @@ from ..schemas import (
     ThreadListResponse,
     ThreadPatch,
 )
+from ..services.contact_profile_service import ProfilePatchError
 from ..services.conversation_service import (
     ConversationService,
     InvalidPatch,
     ThreadNotFound,
 )
+from ..services.lifecycle_service import LifecycleStageNotFound
 from ..services.media_pipeline import META_CEILINGS, MediaRejected
 from ..services.message_service import MessageService, SendRejected
 
@@ -119,6 +130,17 @@ def list_messages(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
 
+_PROFILE_KEYS = {
+    "firstName",
+    "lastName",
+    "email",
+    "language",
+    "countryCode",
+    "customFields",
+    "tagIds",
+}
+
+
 @router.patch("/{contact_id}", response_model=ThreadItem)
 def patch_thread(
     contact_id: str,
@@ -127,17 +149,40 @@ def patch_thread(
     db: Session = Depends(get_db),
 ) -> ThreadItem:
     enforce_thread_access(db, principal, contact_id)
-    # Field-level gates (plan 05 §7): assignment vs lifecycle. Distinguish omitted
-    # vs explicit-null for assignedUserId via model_fields_set (null = unassign).
-    wants_assign = "assignedUserId" in payload.model_fields_set
+    # Field-level gates (plan 05 §7 + plan 25 AC-CDM-28): assignment vs
+    # lifecycle vs profile (system fields / custom fields / tags). Distinguish
+    # omitted vs explicit-null for assignedUserId via model_fields_set (null =
+    # unassign).
+    sent = payload.model_fields_set
+    # `phone` is the inbound stitch key (no uniqueness guard, outside the
+    # AC-22 whitelist) - never writable through this PATCH (finding 12).
+    if "phone" in sent:
+        raise HTTPException(
+            status_code=422,
+            detail={"fieldErrors": {"phone": "Phone is not editable."}},
+        )
+    wants_assign = "assignedUserId" in sent
     wants_lifecycle = payload.status is not None or payload.priority is not None
-    if not wants_assign and not wants_lifecycle:
+    wants_profile = bool(sent & _PROFILE_KEYS)
+    if not (wants_assign or wants_lifecycle or wants_profile):
         raise HTTPException(status_code=400, detail="Nothing to update")
     if wants_assign:
         principal.require(native_perm="conversations.assign", embed_cap="assign")
     if wants_lifecycle:
         # Close/priority ride the reply-class gate natively; embed maps to "close".
         principal.require(native_perm="conversations.reply", embed_cap="close")
+    if wants_profile:
+        # Profile edits (fields/tags) are a native-only surface in this slice -
+        # embed access tokens have no matching capability.
+        if principal.is_embed:
+            raise HTTPException(
+                status_code=403,
+                detail="This token cannot edit contact profile fields.",
+            )
+        if "contacts.manage" not in principal.permission_keys:
+            raise HTTPException(
+                status_code=403, detail="Missing permission: contacts.manage"
+            )
 
     try:
         return ConversationService(db).patch_thread(
@@ -146,12 +191,98 @@ def patch_thread(
             assigned_user_id=payload.assignedUserId if wants_assign else ...,
             status=payload.status,
             priority=payload.priority,
+            first_name=payload.firstName if "firstName" in sent else ...,
+            last_name=payload.lastName if "lastName" in sent else ...,
+            email=payload.email if "email" in sent else ...,
+            language=payload.language if "language" in sent else ...,
+            country_code=payload.countryCode if "countryCode" in sent else ...,
+            custom_fields=payload.customFields if "customFields" in sent else ...,
+            tag_ids=payload.tagIds if "tagIds" in sent else ...,
+            actor=resolve_native_actor(principal, db),
+            actor_id=principal.actor_user_id,
             external_connection_id=principal.connection_id if principal.is_embed else None,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
     except InvalidPatch as exc:
         raise HTTPException(status_code=422, detail=exc.message)
+    except ProfilePatchError as exc:
+        raise HTTPException(status_code=422, detail={"fieldErrors": exc.errors})
+
+
+@router.post("/{contact_id}/lifecycle", response_model=ThreadItem)
+def move_lifecycle(
+    contact_id: str,
+    payload: LifecycleMoveRequest,
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
+    db: Session = Depends(get_db),
+) -> ThreadItem:
+    """Move a contact's lifecycle stage (plan 25 S2, AC-CDM-17) - delegates
+    entirely to `status_machine.transition` via `lifecycle_service.move`."""
+    enforce_thread_access(db, principal, contact_id)
+    if principal.is_embed:
+        raise HTTPException(
+            status_code=403, detail="This token cannot move a contact's lifecycle."
+        )
+    if "contacts.manage" not in principal.permission_keys:
+        raise HTTPException(status_code=403, detail="Missing permission: contacts.manage")
+
+    # B5: edge-role/condition authorization runs AS the effective (impersonated
+    # target) user - `resolve_native_actor` (real admin) is for ATTRIBUTION
+    # only, never for a `status_machine.transition` auth check.
+    actor = resolve_effective_actor(principal, db)
+    try:
+        return ConversationService(db).move_lifecycle(
+            contact_id, principal.tenant_id, payload.toStatusId, actor=actor
+        )
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except LifecycleStageNotFound:
+        raise HTTPException(status_code=404, detail="Lifecycle stage not found.")
+    except TransitionForbidden as exc:
+        raise HTTPException(status_code=403, detail=exc.message)
+    except (TransitionNotAllowed, TransitionConditionsNotMet) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "lifecycle_move_not_allowed", "message": exc.message},
+        )
+
+
+@router.get("/{contact_id}/lifecycle-moves", response_model=List[LifecycleMoveOption])
+def get_lifecycle_moves(
+    contact_id: str,
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
+    db: Session = Depends(get_db),
+) -> List[LifecycleMoveOption]:
+    """Fireable outgoing edges for this contact right now (AC-CDM-18) - empty
+    on a won (`is_terminal`) stage. Lifecycle is a native-only surface (like the
+    two lifecycle WRITE routes) - an embed principal is refused, consistent
+    with `move_lifecycle` / the `wants_profile` gate on `patch_thread` (D14)."""
+    if principal.is_embed:
+        raise HTTPException(
+            status_code=403,
+            detail="This token cannot read a contact's lifecycle moves.",
+        )
+    if not ({"conversations.read", "contacts.read"} & principal.permission_keys):
+        raise HTTPException(
+            status_code=403,
+            detail="Missing permission: one of conversations.read, contacts.read",
+        )
+    enforce_thread_access(db, principal, contact_id)
+    # B5: same authorization-vs-attribution split as `move_lifecycle` above -
+    # the fireable-edges computation must reflect what the EFFECTIVE user can
+    # fire, not the real admin under impersonation.
+    actor = resolve_effective_actor(principal, db)
+    try:
+        edges = ConversationService(db).lifecycle_moves(
+            contact_id, principal.tenant_id, actor=actor
+        )
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return [
+        LifecycleMoveOption(edgeId=e.id, toStatusId=e.to_status_id, label=e.label)
+        for e in edges
+    ]
 
 
 @router.post("/{contact_id}/messages", response_model=MessageItem, status_code=201)

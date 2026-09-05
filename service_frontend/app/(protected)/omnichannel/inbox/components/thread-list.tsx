@@ -7,7 +7,7 @@
  */
 import { Search } from 'lucide-react';
 
-import { StatusBadge } from '@/components/platform/status-badge';
+import { StatusBadge, type StatusRegistry } from '@/components/platform/status-badge';
 import {
   THREAD_PRIORITY_REGISTRY,
   THREAD_STATUS_REGISTRY,
@@ -192,6 +192,38 @@ export function ThreadList({
                         {t.assignedUserName ?? 'Unassigned'}
                       </span>
                     </div>
+                    {/* Plan 25 - lifecycle stage + up to 2 tag chips (+N). Data
+                        already rides ThreadItem, no extra call (AC-CDM-39). */}
+                    {(t.lifecycle || t.tags.length > 0) && (
+                      <div className="mt-1 flex flex-wrap items-center gap-1">
+                        {t.lifecycle && (
+                          <StatusBadge
+                            status={t.lifecycle.key}
+                            registry={
+                              {
+                                [t.lifecycle.key]: {
+                                  label: t.lifecycle.label,
+                                  tone: 'secondary',
+                                  hex: t.lifecycle.color ?? undefined,
+                                },
+                              } as StatusRegistry<string>
+                            }
+                            size="sm"
+                          />
+                        )}
+                        {t.tags.slice(0, 2).map((tag) => (
+                          <Badge key={tag.id} variant="secondary" appearance="light" size="sm">
+                            {tag.emoji && <span aria-hidden>{tag.emoji}</span>}
+                            {tag.name}
+                          </Badge>
+                        ))}
+                        {t.tags.length > 2 && (
+                          <Badge variant="secondary" appearance="light" size="sm">
+                            +{t.tags.length - 2}
+                          </Badge>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </button>
               </li>

@@ -10,10 +10,15 @@
  * Seeds are Date.now()-relative (NOT a fixed epoch) because the CSW lock is a
  * comparison against the real clock in the UI.
  */
+import { ApiError } from '@/lib/api-client';
 import type {
   ConversationMessage,
   ConversationSocketEvent,
   ConversationThread,
+  ContactLifecycleSummary,
+  ContactTagRef,
+  LifecycleMove,
+  PatchContactInput,
   QuickReply,
   SendContactsInput,
   SendInteractiveInput,
@@ -28,7 +33,92 @@ import type {
 } from '@/types/omnichannel';
 // Type-only circular import (conversation-service binds this mock) - safe in TS.
 import type { ConversationService } from './conversation-service';
+import { __mockAllContactFields } from './contact-field-service.mock';
+import { __mockAllContactTags } from './contact-tag-service.mock';
 import { delay } from './mock-query';
+
+// ---------------------------------------------------------------------------
+// Plan 25 - lifecycle seed graph (mirrors the backend seed materialized per
+// workspace, plan §5.3). The mock enforces the SAME edge graph so the "Move
+// to" picker only ever offers a fireable move (foolproof-UI, AC-CDM-18).
+// ---------------------------------------------------------------------------
+
+interface MockStage {
+  id: string;
+  key: string;
+  label: string;
+  color: string;
+  isWon: boolean;
+  isLost: boolean;
+}
+
+const LIFECYCLE_STAGES: MockStage[] = [
+  { id: 'stg-new-lead', key: 'new_lead', label: '🆕 New Lead', color: '#3B82F6', isWon: false, isLost: false },
+  { id: 'stg-hot-lead', key: 'hot_lead', label: '🔥 Hot Lead', color: '#F97316', isWon: false, isLost: false },
+  { id: 'stg-payment', key: 'payment', label: '💵 Payment', color: '#F59E0B', isWon: false, isLost: false },
+  { id: 'stg-customer', key: 'customer', label: '🤩 Customer', color: '#22C55E', isWon: true, isLost: false },
+  { id: 'stg-cold-lead', key: 'cold_lead', label: '🧊 Cold Lead', color: '#64748B', isWon: false, isLost: true },
+];
+const ACTIVE_STAGE_KEYS = ['new_lead', 'hot_lead', 'payment'];
+
+function stageByKey(key: string): MockStage {
+  const s = LIFECYCLE_STAGES.find((x) => x.key === key);
+  if (!s) throw new Error(`Unknown lifecycle stage "${key}"`);
+  return s;
+}
+function stageById(id: string): MockStage | undefined {
+  return LIFECYCLE_STAGES.find((x) => x.id === id);
+}
+function toLifecycleSummary(stage: MockStage): ContactLifecycleSummary {
+  return { statusId: stage.id, key: stage.key, label: stage.label, color: stage.color, isWon: stage.isWon, isLost: stage.isLost };
+}
+/** Fireable outgoing edges from `fromKey` - won (`customer`) is terminal (no
+ *  outgoing edges); lost (`cold_lead`) only re-opens to New Lead. */
+function movesFrom(fromKey: string): LifecycleMove[] {
+  let targetKeys: string[] = [];
+  if (ACTIVE_STAGE_KEYS.includes(fromKey)) {
+    targetKeys = [...ACTIVE_STAGE_KEYS.filter((k) => k !== fromKey), 'customer', 'cold_lead'];
+  } else if (fromKey === 'cold_lead') {
+    targetKeys = ['new_lead'];
+  }
+  return targetKeys.map((key) => {
+    const target = stageByKey(key);
+    return { edgeId: `edge-${fromKey}-${key}`, toStatusId: target.id, label: `Move to ${target.label}` };
+  });
+}
+
+function validateCustomFieldValue(
+  def: { type: string; options: string[] | null },
+  value: string | number | boolean,
+): string | null {
+  switch (def.type) {
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value) ? null : 'Enter a number.';
+    case 'checkbox':
+      return typeof value === 'boolean' ? null : 'Invalid value.';
+    case 'email':
+      return typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+        ? null
+        : 'Enter a valid email address.';
+    case 'url':
+      try {
+        void new URL(String(value));
+        return null;
+      } catch {
+        return 'Enter a valid URL.';
+      }
+    case 'date':
+      return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? null : 'Use YYYY-MM-DD.';
+    case 'time':
+      return typeof value === 'string' && /^\d{2}:\d{2}$/.test(value) ? null : 'Use HH:MM.';
+    case 'list':
+      return typeof value === 'string' && (def.options ?? []).includes(value)
+        ? null
+        : 'Choose one of the listed options.';
+    default: // text
+      return typeof value === 'string' && value.length <= 2000 ? null : 'Text is too long.';
+  }
+}
 
 const TENANT = 'default';
 const HOUR = 3_600_000;
@@ -54,62 +144,101 @@ const isoIn = (msAhead: number) => new Date(Date.now() + msAhead).toISOString();
 
 type ThreadRow = ConversationThread;
 
+/** Tag refs by name, resolved fresh from the contact-tag mock seed so the
+ *  Tags tab and the thread chips agree on id/emoji/color at boot. */
+function tagRef(name: string): ContactTagRef {
+  const t = __mockAllContactTags('wsp-001').find((x) => x.name === name);
+  if (!t) throw new Error(`Mock seed tag "${name}" not found`);
+  return { id: t.id, name: t.name, emoji: t.emoji, color: t.color };
+}
+
 function seedThreads(): ThreadRow[] {
   return [
     {
-      // Open CSW window, assigned to me - the happy free-form path.
+      // Open CSW window, assigned to me - the happy free-form path. Plan 25:
+      // Hot Lead stage, tagged VIP, 2 registered custom-field values.
       id: 'cnt-001', tenantId: TENANT, workspaceId: 'wsp-001',
-      name: 'Sarah Chen', phone: '+60 12-345 6789', avatarUrl: null,
+      name: 'Sarah Chen', firstName: 'Sarah', lastName: 'Chen',
+      phone: '+60 12-345 6789', email: 'sarah.chen@example.com',
+      language: 'en', countryCode: 'MY', avatarUrl: null,
       assignedUserId: 'usr-demo', assignedUserName: 'Demo User',
       status: 'OPEN', priority: 'HIGH',
       channelId: 'chn-001', channelType: 'WHATSAPP',
       cswExpiresAt: isoIn(20 * HOUR), lastIncomingMessageAt: iso(4 * HOUR),
       lastMessageAt: iso(10 * MIN), lastMessagePreview: 'Can I change my booking to Saturday?',
-      unreadCount: 2, createdAt: iso(72 * HOUR),
+      unreadCount: 2,
+      customFields: { leadSource: 'Referral', company: 'Chen Events Sdn Bhd' },
+      tags: [tagRef('VIP')],
+      lifecycle: toLifecycleSummary(stageByKey('hot_lead')),
+      createdAt: iso(72 * HOUR),
     },
     {
-      // CSW EXPIRED - composer must lock, template-only.
+      // CSW EXPIRED - composer must lock, template-only. Payment stage.
       id: 'cnt-002', tenantId: TENANT, workspaceId: 'wsp-001',
-      name: 'Marcus Wong', phone: '+60 16-888 2211', avatarUrl: null,
+      name: 'Marcus Wong', firstName: 'Marcus', lastName: 'Wong',
+      phone: '+60 16-888 2211', email: 'marcus.wong@example.com',
+      language: 'en', countryCode: 'MY', avatarUrl: null,
       assignedUserId: 'usr-demo', assignedUserName: 'Demo User',
       status: 'OPEN', priority: 'MEDIUM',
       channelId: 'chn-001', channelType: 'WHATSAPP',
       cswExpiresAt: iso(3 * HOUR), lastIncomingMessageAt: iso(27 * HOUR),
       lastMessageAt: iso(27 * HOUR), lastMessagePreview: 'Thanks, see you then!',
-      unreadCount: 0, createdAt: iso(9 * 24 * HOUR),
+      unreadCount: 0,
+      customFields: { leadSource: 'Website' },
+      tags: [tagRef('Follow up')],
+      lifecycle: toLifecycleSummary(stageByKey('payment')),
+      createdAt: iso(9 * 24 * HOUR),
     },
     {
-      // Unassigned bucket - self-claim path.
+      // Unassigned bucket - self-claim path. Fresh New Lead, nothing set yet.
       id: 'cnt-003', tenantId: TENANT, workspaceId: 'wsp-001',
-      name: 'Priya Raj', phone: '+60 17-202 0303', avatarUrl: null,
+      name: 'Priya Raj', firstName: 'Priya', lastName: 'Raj',
+      phone: '+60 17-202 0303', email: null,
+      language: null, countryCode: null, avatarUrl: null,
       assignedUserId: null, assignedUserName: null,
       status: 'OPEN', priority: 'URGENT',
       channelId: 'chn-001', channelType: 'WHATSAPP',
       cswExpiresAt: isoIn(22 * HOUR), lastIncomingMessageAt: iso(30 * MIN),
       lastMessageAt: iso(30 * MIN), lastMessagePreview: 'Is the venue wheelchair accessible?',
-      unreadCount: 1, createdAt: iso(30 * MIN),
+      unreadCount: 1,
+      customFields: {},
+      tags: [],
+      lifecycle: toLifecycleSummary(stageByKey('new_lead')),
+      createdAt: iso(30 * MIN),
     },
     {
-      // Assigned to a colleague - reassign path.
+      // Assigned to a colleague - reassign path. All 3 tags (overflow "+N").
       id: 'cnt-004', tenantId: TENANT, workspaceId: 'wsp-001',
-      name: 'Daniel Lee', phone: '+60 11-555 7788', avatarUrl: null,
+      name: 'Daniel Lee', firstName: 'Daniel', lastName: 'Lee',
+      phone: '+60 11-555 7788', email: 'daniel.lee@example.com',
+      language: 'en', countryCode: 'SG', avatarUrl: null,
       assignedUserId: 'usr-amira', assignedUserName: 'Amira Tan',
       status: 'SNOOZED', priority: 'LOW',
       channelId: 'chn-001', channelType: 'WHATSAPP',
       cswExpiresAt: isoIn(2 * HOUR), lastIncomingMessageAt: iso(22 * HOUR),
       lastMessageAt: iso(21 * HOUR), lastMessagePreview: 'No rush - next week is fine.',
-      unreadCount: 0, createdAt: iso(6 * 24 * HOUR),
+      unreadCount: 0,
+      customFields: {},
+      tags: [tagRef('VIP'), tagRef('Follow up'), tagRef('Spam')],
+      lifecycle: toLifecycleSummary(stageByKey('new_lead')),
+      createdAt: iso(6 * 24 * HOUR),
     },
     {
-      // Closed thread.
+      // Closed thread. Won (Customer) - terminal, no fireable moves.
       id: 'cnt-005', tenantId: TENANT, workspaceId: 'wsp-001',
-      name: 'Aisha Abdullah', phone: '+60 19-444 9090', avatarUrl: null,
+      name: 'Aisha Abdullah', firstName: 'Aisha', lastName: 'Abdullah',
+      phone: '+60 19-444 9090', email: 'aisha.abdullah@example.com',
+      language: 'ms', countryCode: 'MY', avatarUrl: null,
       assignedUserId: 'usr-jon', assignedUserName: 'Jon Lim',
       status: 'CLOSED', priority: 'MEDIUM',
       channelId: 'chn-001', channelType: 'WHATSAPP',
       cswExpiresAt: iso(40 * HOUR), lastIncomingMessageAt: iso(64 * HOUR),
       lastMessageAt: iso(63 * HOUR), lastMessagePreview: 'Perfect, thank you so much!',
-      unreadCount: 0, createdAt: iso(12 * 24 * HOUR),
+      unreadCount: 0,
+      customFields: { dealValue: 15000, newsletterOptIn: true },
+      tags: [],
+      lifecycle: toLifecycleSummary(stageByKey('customer')),
+      createdAt: iso(12 * 24 * HOUR),
     },
   ];
 }
@@ -586,6 +715,98 @@ export const mockConversationService: ConversationService = {
   // Single-workspace mock - the workspaceId param is unused (same reasoning as listThreads).
   async listQuickReplies() {
     return delay([...QUICK_REPLIES], 150);
+  },
+
+  async patchContact(contactId, patch: PatchContactInput) {
+    const t = threadOf(contactId);
+    const fieldErrors: Record<string, string> = {};
+
+    if (patch.customFields) {
+      const registry = __mockAllContactFields(t.workspaceId);
+      for (const [key, value] of Object.entries(patch.customFields)) {
+        if (value === null) continue; // explicit clear - always valid
+        const def = registry.find((f) => f.key === key);
+        if (!def) {
+          fieldErrors[`customFields.${key}`] = 'This field is not registered for this workspace.';
+          continue;
+        }
+        const err = validateCustomFieldValue(def, value);
+        if (err) fieldErrors[`customFields.${key}`] = err;
+      }
+    }
+    if (patch.email !== undefined && patch.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(patch.email)) {
+      fieldErrors.email = 'Enter a valid email address.';
+    }
+    if (patch.language !== undefined && (patch.language?.length ?? 0) > 16) {
+      fieldErrors.language = 'Language tag is too long.';
+    }
+    if (patch.countryCode !== undefined && patch.countryCode && !/^[A-Za-z]{2}$/.test(patch.countryCode)) {
+      fieldErrors.countryCode = 'Use a 2-letter country code.';
+    }
+    let nextTags = t.tags;
+    if (patch.tagIds) {
+      const registry = __mockAllContactTags(t.workspaceId);
+      const validIds = new Set(registry.map((tag) => tag.id));
+      if (!patch.tagIds.every((id) => validIds.has(id))) {
+        fieldErrors.tagIds = 'One or more tags do not belong to this workspace.';
+      } else {
+        nextTags = registry
+          .filter((tag) => patch.tagIds!.includes(tag.id))
+          .map((tag) => ({ id: tag.id, name: tag.name, emoji: tag.emoji, color: tag.color }));
+      }
+    }
+    if (Object.keys(fieldErrors).length) {
+      throw new ApiError('Please fix the highlighted fields.', 422, null, { fieldErrors });
+    }
+
+    const nextCustomFields = { ...t.customFields };
+    if (patch.customFields) {
+      for (const [key, value] of Object.entries(patch.customFields)) {
+        if (value === null) delete nextCustomFields[key];
+        else nextCustomFields[key] = value;
+      }
+    }
+    const firstName = patch.firstName !== undefined ? patch.firstName : t.firstName;
+    const lastName = patch.lastName !== undefined ? patch.lastName : t.lastName;
+    const name = [firstName, lastName].filter(Boolean).join(' ').trim() || t.name;
+
+    const updated = touchThread(t, {
+      firstName,
+      lastName,
+      name,
+      phone: patch.phone !== undefined ? patch.phone : t.phone,
+      email: patch.email !== undefined ? patch.email : t.email,
+      language: patch.language !== undefined ? patch.language : t.language,
+      countryCode:
+        patch.countryCode !== undefined
+          ? (patch.countryCode ? patch.countryCode.toUpperCase() : patch.countryCode)
+          : t.countryCode,
+      customFields: nextCustomFields,
+      tags: nextTags,
+    });
+    emit(t.workspaceId, { type: 'contact.updated', thread: updated });
+    return delay({ ...updated }, 250);
+  },
+
+  async moveLifecycle(contactId, toStatusId) {
+    const t = threadOf(contactId);
+    if (!t.lifecycle) throw new Error('Lifecycle is not available for this contact.');
+    const move = movesFrom(t.lifecycle.key).find((m) => m.toStatusId === toStatusId);
+    const target = stageById(toStatusId);
+    if (!move || !target) {
+      throw new ApiError('No transition available to this stage.', 409, null, {
+        code: 'lifecycle_move_not_allowed',
+      });
+    }
+    const updated = touchThread(t, { lifecycle: toLifecycleSummary(target) });
+    emit(t.workspaceId, { type: 'contact.updated', thread: updated });
+    return delay({ ...updated }, 200);
+  },
+
+  async lifecycleMoves(contactId) {
+    const t = threadOf(contactId);
+    if (!t.lifecycle) return delay([], 150);
+    return delay(movesFrom(t.lifecycle.key), 150);
   },
 
   subscribe(_workspaceId, handler) {

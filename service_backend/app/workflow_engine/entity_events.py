@@ -289,9 +289,17 @@ def _passes_refine(config: Dict[str, Any], ev: Dict[str, Any], trigger_type: str
 
     if trigger_type == "entity.field_changed":
         wanted = config.get("field")
-        # The picker stores a camelCase field key; the emitted change-diff keys
-        # are snake_case model attrs - compare in the canonical space.
-        return bool(wanted) and attr_for(str(wanted)) in (ev.get("changes") or {})
+        if not wanted:
+            return False
+        # The picker stores a camelCase field key; MOST emitters' change-diff
+        # keys are snake_case model attrs, but some (e.g. omnichannel_contact,
+        # AC-CDM-23) deliberately emit WIRE camelCase keys instead (incl.
+        # dotted `customFields.<key>`). Canonicalize BOTH sides through the
+        # SAME `attr_for` so this matches either convention (B7, plan-25
+        # round-3 codex triage) - comparing only one side silently never
+        # matched the camelCase emitters.
+        wanted_attr = attr_for(str(wanted))
+        return any(attr_for(str(key)) == wanted_attr for key in (ev.get("changes") or {}))
     if trigger_type == "entity.status_changed":
         extra = ev.get("extra") or {}
         from_ok = not config.get("fromStatus") or config.get("fromStatus") == extra.get("from_status_id")

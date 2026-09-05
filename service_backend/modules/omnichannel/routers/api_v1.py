@@ -217,8 +217,14 @@ def update_contact(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ):
-    """Partial update - only sent fields change. Send ``assignedUserId``/
-    ``customFields`` as null to clear; omit to leave unchanged."""
+    """Partial update - only sent fields change. Send ``assignedUserId`` as
+    null to unassign. Send ``customFields`` as null (the whole value, not an
+    object) to clear EVERY registered field's value at once; send an object
+    with a key set to null to clear just that one key (partial merge, other
+    keys untouched); omit ``customFields`` entirely to leave it unchanged.
+    ``tags`` (names, auto-created if unknown) REPLACES the set; ``lifecycle``
+    (a stage key or label) moves the contact along the workspace's lifecycle
+    graph."""
     sent = payload.model_fields_set
     _S = ...  # sentinel = "not provided"
     return PublicGatewayService(db).update_contact(
@@ -228,6 +234,10 @@ def update_contact(
         priority=payload.priority if "priority" in sent else None,
         assigned_user_id=payload.assignedUserId if "assignedUserId" in sent else _S,
         custom_fields=payload.customFields if "customFields" in sent else _S,
+        language=payload.language if "language" in sent else _S,
+        country_code=payload.countryCode if "countryCode" in sent else _S,
+        tags=payload.tags if "tags" in sent else _S,
+        lifecycle=payload.lifecycle if "lifecycle" in sent else _S,
         fmt=fmt,
     )
 

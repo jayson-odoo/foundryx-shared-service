@@ -2,6 +2,7 @@
 (default-workspace protection, status resolution, membership)."""
 from typing import List, Optional, Tuple
 
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.models.tenant import DEFAULT_TENANT_ID
@@ -52,6 +53,17 @@ class WorkspaceService:
         cc = self.repo.channel_counts(ids)
         mc = self.repo.member_counts(ids)
         return [self._item(w, smap, cc, mc) for w in rows]
+
+    # ---- guard ----
+    def get_or_404(self, ws_id: str, tenant_id: str = DEFAULT_TENANT_ID) -> Workspace:
+        """Uniform tenant-scoped workspace guard for sibling routers
+        (`contact_fields`, `contact_tags`, `lifecycle`) - the ONE place that
+        checks a workspace exists in this tenant, so no router does its own
+        `db.query(Workspace)` (review round 1, finding 3)."""
+        ws = self.repo.get_by_id(ws_id, tenant_id)
+        if ws is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.")
+        return ws
 
     # ---- reads ----
     def list(
@@ -105,6 +117,12 @@ class WorkspaceService:
             is_trashed=False,
         )
         self.db.add(ws)
+        self.db.flush()
+        # Materialize the contact-lifecycle graph in the SAME unit of work
+        # (plan 25 S2, AC-CDM-14) - a workspace never exists without one.
+        from .lifecycle_service import materialize_for_workspace
+
+        materialize_for_workspace(self.db, ws)
         self.db.commit()
         self.db.refresh(ws)
         return self._items([ws], tenant_id)[0]

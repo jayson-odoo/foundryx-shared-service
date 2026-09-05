@@ -196,6 +196,155 @@ def test_reverse_dep_guard_blocks_deactivate_and_uninstall(client, session_facto
     db.close()
 
 
+def test_backfill_tenant_modules_runs_install_tenant_and_grants(client, session_factory):
+    """B4 (plan-25 round-3 codex triage): a pre-App-Store tenant (module data
+    exists, no `tenant_modules` row) must come out of `_backfill_tenant_modules`
+    exactly as if it had gone through `AppStoreService.install` - the module's
+    `install_tenant` seed hook ran (omnichannel: statuses + the workspace's
+    lifecycle graph materialized) AND the module's permission keys were
+    granted to the tenant's Admin role. Previously it was stamped ACTIVE at
+    the current code version with NEITHER, and since installed_version was
+    already current, no later `update_tenant` could ever repair it."""
+    from app.models.module import Module, TenantModule
+    from app.models.permission import Permission
+    from app.models.role import Role, role_permissions
+    from app.services.tenant_service import TenantService
+    from app.module_loader import _backfill_tenant_modules
+    from modules.omnichannel.models import Workspace
+
+    db = session_factory()
+    tenant = TenantService(db).provision(
+        name="Legacy Backfill Co", slug="legacy-backfill-co",
+        admin_email="admin-legacybackfill@example.com",
+        admin_password="Password123!", admin_name="Admin",
+    )
+    db.flush()
+    tenant_id = tenant.id
+
+    # Simulate a pre-App-Store tenant: a Workspace row exists (the omnichannel
+    # `tenant_has_data` detector) but NO `tenant_modules` row, and none of the
+    # per-tenant seeding (`install_tenant`) has ever run.
+    ws = Workspace(tenant_id=tenant_id, name="General", is_default=True, is_trashed=False)
+    db.add(ws)
+    db.commit()
+
+    module = db.query(Module).filter(Module.name == "omnichannel").first()
+    assert (
+        db.query(TenantModule)
+        .filter(TenantModule.tenant_id == tenant_id, TenantModule.module_id == module.id)
+        .first()
+        is None
+    )
+
+    _backfill_tenant_modules(db)
+    db.commit()
+
+    state = (
+        db.query(TenantModule)
+        .filter(TenantModule.tenant_id == tenant_id, TenantModule.module_id == module.id)
+        .first()
+    )
+    assert state is not None and state.status == "ACTIVE"
+
+    # install_tenant ran: the module's static status rows + the workspace's
+    # lifecycle graph were materialized (not just the bare TenantModule row).
+    from modules.omnichannel.models import Status as OmniStatus
+    from modules.omnichannel.services import lifecycle_service
+
+    assert (
+        db.query(OmniStatus)
+        .filter(OmniStatus.tenant_id == tenant_id, OmniStatus.scope == "WORKSPACE")
+        .first()
+        is not None
+    )
+    assert lifecycle_service.stages_for_workspace(db, tenant_id, ws.id) != []
+
+    # The module's permission keys were granted to the tenant's Admin role.
+    admin_role = (
+        db.query(Role)
+        .filter(Role.tenant_id == tenant_id, Role.name == "Admin")
+        .first()
+    )
+    granted = {
+        p.key
+        for p in db.query(Permission)
+        .join(role_permissions, role_permissions.c.permission_id == Permission.id)
+        .filter(role_permissions.c.role_id == admin_role.id)
+        .all()
+    }
+    assert any(key.startswith("contacts.") for key in granted)
+    db.close()
+
+
+def test_backfill_tenant_modules_isolates_per_tenant_failure(client, session_factory, monkeypatch):
+    """Pre-merge review follow-up (plan 25): one tenant's `install_tenant` hook
+    raising must not corrupt the session for the rest of the backfill - it
+    must roll back ONLY that tenant's `TenantModule` row + partial seed
+    (`db.begin_nested()` SAVEPOINT), leaving the session usable so a later
+    tenant in the same loop still installs cleanly and bootstrap completes."""
+    from app.models.module import Module, TenantModule
+    from app.services.tenant_service import TenantService
+    from app.module_loader import _backfill_tenant_modules
+    from modules.omnichannel.models import Workspace
+    import modules.omnichannel.bootstrap as omni_bootstrap
+
+    db = session_factory()
+    tenant_a = TenantService(db).provision(
+        name="Backfill Fail Co", slug="backfill-fail-co",
+        admin_email="admin-backfillfail@example.com",
+        admin_password="Password123!", admin_name="Admin",
+    )
+    tenant_b = TenantService(db).provision(
+        name="Backfill Ok Co", slug="backfill-ok-co",
+        admin_email="admin-backfillok@example.com",
+        admin_password="Password123!", admin_name="Admin",
+    )
+    db.flush()
+    tenant_a_id, tenant_b_id = tenant_a.id, tenant_b.id
+
+    # Both look like pre-App-Store tenants (a Workspace row, no tenant_modules row).
+    db.add(Workspace(tenant_id=tenant_a_id, name="General", is_default=True, is_trashed=False))
+    db.add(Workspace(tenant_id=tenant_b_id, name="General", is_default=True, is_trashed=False))
+    db.commit()
+
+    real_install_tenant = omni_bootstrap.install_tenant
+
+    def _flaky_install_tenant(db_, tenant_id):
+        if tenant_id == tenant_a_id:
+            raise RuntimeError("boom - simulated install_tenant failure for tenant A")
+        return real_install_tenant(db_, tenant_id)
+
+    monkeypatch.setattr(omni_bootstrap, "install_tenant", _flaky_install_tenant)
+
+    # Must not raise - the per-tenant failure is caught and isolated.
+    _backfill_tenant_modules(db)
+    db.commit()
+
+    module = db.query(Module).filter(Module.name == "omnichannel").first()
+
+    # Tenant A: no TenantModule row at all (fully rolled back).
+    assert (
+        db.query(TenantModule)
+        .filter(TenantModule.tenant_id == tenant_a_id, TenantModule.module_id == module.id)
+        .first()
+        is None
+    )
+
+    # Tenant B: installed ACTIVE (bootstrap continued past A's failure).
+    state_b = (
+        db.query(TenantModule)
+        .filter(TenantModule.tenant_id == tenant_b_id, TenantModule.module_id == module.id)
+        .first()
+    )
+    assert state_b is not None and state_b.status == "ACTIVE"
+
+    # The session itself stayed usable (no PendingRollbackError) - prove it
+    # with an ordinary write on the same session.
+    db.add(Workspace(tenant_id=tenant_b_id, name="Sanity Check", is_default=False, is_trashed=False))
+    db.commit()
+    db.close()
+
+
 # ── terminology active-filter (D2) ──────────────────────────────────────────
 
 
