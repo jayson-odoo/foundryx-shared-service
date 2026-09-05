@@ -934,12 +934,47 @@ def _run_paged_sql_db(
         database_name=company.database_name,
     )
     hashes_repo = RowHashRepository(db)
+    # Snapshot of every ref ALREADY known before this run touches anything -
+    # the guard-failure rollback below needs to tell a genuinely PRE-
+    # EXISTING ref (whose hash a page may have legitimately refreshed) apart
+    # from a brand-new one this run introduced.
+    known_before_run = set(hashes_repo.all_hashes(tenant_id, company_id, entity_type))
+    run_seen_refs: set[str] = set()
 
     def _clear_pass() -> None:
         # JSON columns need a FRESH dict on every write (SQLAlchemy misses
         # in-place mutation) - never just `del cursor["pass"]` on the ORM's
         # own live dict.
         watermark_row.cursor_json = {**(watermark_row.cursor_json or {}), "pass": None}
+
+    def _discard_this_runs_staging() -> None:
+        """A guard trip is fail-SAFE, not fail-partial: the OLD, unpaged
+        guard fired BEFORE any staging or hash write happened at all (it ran
+        on the whole population in one shot), so "nothing was staged or
+        pushed, the known population untouched" was automatic. Paging
+        stages/commits page by page, so an EARLIER page's genuine adds/
+        updates may already sit in ``ac_staged_record``/``ac_row_hash`` by
+        the time a LATER page (or the post-loop ratio check) trips the
+        guard - this wipes every staged row THIS job wrote, and drops the
+        hash of every ref THIS RUN introduced for the first time (a
+        pre-existing ref's hash, legitimately refreshed by an earlier page,
+        is left as the newest read rather than reverted - a smaller
+        imperfection than leaving a PHANTOM new row behind), before
+        ``_fail`` records the failure.
+        """
+        db.query(AcStagedRecord).filter(
+            AcStagedRecord.tenant_id == tenant_id,
+            AcStagedRecord.company_id == company_id,
+            AcStagedRecord.job_id == job.id,
+        ).delete(synchronize_session=False)
+        new_this_run = [ref for ref in run_seen_refs if ref not in known_before_run]
+        if new_this_run:
+            hashes_repo.delete_many(tenant_id, company_id, entity_type, new_this_run)
+        run.staged_count = 0
+        run.failed_count = 0
+        run.added_count = 0
+        run.updated_count = 0
+        db.commit()
 
     cursor = PageCursor.from_watermark_row(
         watermark_row, mode, watermark_column=source.watermark_column
@@ -966,6 +1001,7 @@ def _run_paged_sql_db(
                     "autocount delete guard tripped for job %s: %s", job.id, exc.message
                 )
                 _clear_pass()
+                _discard_this_runs_staging()
                 record_client_calls(
                     db, source, tenant_id=tenant_id, trace_id=trace_id,
                     external_ref=company.database_name,
@@ -979,6 +1015,7 @@ def _run_paged_sql_db(
                 logger.warning(
                     "autocount document cap tripped for job %s: %s", job.id, exc.message
                 )
+                _discard_this_runs_staging()
                 record_client_calls(
                     db, source, tenant_id=tenant_id, trace_id=trace_id,
                     external_ref=company.database_name,
@@ -992,6 +1029,7 @@ def _run_paged_sql_db(
                 logger.warning(
                     "autocount filter formula failed for job %s: %s", job.id, exc.message
                 )
+                _discard_this_runs_staging()
                 record_client_calls(
                     db, source, tenant_id=tenant_id, trace_id=trace_id,
                     external_ref=company.database_name,
@@ -1040,6 +1078,7 @@ def _run_paged_sql_db(
                 hashes_repo.upsert_many(
                     tenant_id, company_id, entity_type, changed_hashes, seen_at=now
                 )
+                run_seen_refs.update(changed_hashes)
             if page.unchanged_refs:
                 hashes_repo.touch_seen(
                     tenant_id, company_id, entity_type, page.unchanged_refs, seen_at=now
@@ -1119,10 +1158,18 @@ def _run_paged_sql_db(
     delete_staged = 0
     if page is not None and page.complete:
         if mode == RUN_MODE_RECONCILE:
-            known_count = hashes_repo.count(tenant_id, company_id, entity_type)
+            # The FULL known population, not just a count (S3 review
+            # BLOCKER 1 mirror): a ref that is NOT stale reappeared/was
+            # always current this pass, and ``_stage_deletes`` needs that
+            # set as ``current_refs`` to cancel any STALE PARKED delete
+            # intent whose ref came back - a delete intent must not
+            # outlive the evidence that produced it.
+            known = hashes_repo.all_hashes(tenant_id, company_id, entity_type)
+            known_count = len(known)
             stale = hashes_repo.stale_refs(
                 tenant_id, company_id, entity_type, before=pass_started_at
             )
+            current_refs = [ref for ref in known if ref not in set(stale)]
             threshold = max(DELETE_GUARD_RATIO * known_count, DELETE_GUARD_MIN_ABSOLUTE)
             if stale and len(stale) > threshold:
                 message = (
@@ -1135,6 +1182,7 @@ def _run_paged_sql_db(
                     "autocount delete guard tripped for job %s: %s", job.id, message
                 )
                 _clear_pass()
+                _discard_this_runs_staging()
                 _fail(
                     db, service, job, run, watermark_row, message, started,
                     config=config, error_code="DELETE_GUARD",
@@ -1142,7 +1190,7 @@ def _run_paged_sql_db(
                 return
             delete_staged = _stage_deletes(
                 db, job, stale, tenant_id=tenant_id, company_id=company_id,
-                entity_type=entity_type, current_refs=[],
+                entity_type=entity_type, current_refs=current_refs,
             )
         # A completed pass's ``pass`` dict is LEFT AS-IS (``complete: true``
         # already written per-page above) - plan sprint-5/03 §2.2: only a
@@ -1254,7 +1302,11 @@ def _run_paged_sql_db(
             else ""
         ),
     )
-    holds_for_review = total_staged > 0 and push_summary is None
+    # A delete intent is JUST AS MUCH a batch awaiting review as an upsert -
+    # change-only staging (D2) means a steady-state reconcile's OWN
+    # ``total_staged`` (upserts) is routinely 0 while it still parks a
+    # delete intent, so that count alone would wrongly close the job.
+    holds_for_review = (total_staged + delete_staged) > 0 and push_summary is None
     service.finish(
         job,
         status=JOB_NEEDS_REVIEW if holds_for_review else JOB_DONE,
