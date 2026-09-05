@@ -157,14 +157,24 @@ export function QueryTab({
     () => columnOptions.filter((o) => !config.keyColumns.includes(o.value)),
     [columnOptions, config.keyColumns],
   );
-  const watermarkOptions = useMemo(
+  // BL-SS-052 (foolproof-UI half) - the watermark column is GUARANTEED to
+  // change on every update, so it can never also be a key column (a
+  // reconcile would mint a "new" ref for the same real-world record every
+  // time). Withhold the chosen watermark from the key-columns picker...
+  const keyColumnOptions = useMemo(
+    () => columnOptions.filter((o) => o.value !== config.watermarkColumn),
+    [columnOptions, config.watermarkColumn],
+  );
+  const watermarkOptions = useMemo(() => {
+    // ...and withhold the chosen key columns from the watermark picker,
+    // the same rule from the other picker's side.
+    const base = columnOptions.filter((o) => !config.keyColumns.includes(o.value));
     // A document task REQUIRES a watermark column (AutoCount stamps a
     // header's LastModified on any line edit - the S5 line-change-detection
     // decision), so "None" is never a valid choice for one (foolproof-UI -
     // only offer options that can actually work).
-    () => (isDocument ? columnOptions : [{ label: 'None', value: NO_WATERMARK }, ...columnOptions]),
-    [columnOptions, isDocument],
-  );
+    return isDocument ? base : [{ label: 'None', value: NO_WATERMARK }, ...base];
+  }, [columnOptions, config.keyColumns, isDocument]);
   const pickersEnabled = editing && columnOptions.length > 0;
 
   const canTest = Boolean(config.connectionId) && config.query.trim().length > 0 &&
@@ -467,7 +477,7 @@ export function QueryTab({
               </Label>
               {editing ? (
                 <MultiSelect
-                  options={columnOptions}
+                  options={keyColumnOptions}
                   value={config.keyColumns}
                   onChange={onKeyColumnsChange}
                   placeholder={pickersEnabled ? 'Pick columns' : 'Run Test query first'}
