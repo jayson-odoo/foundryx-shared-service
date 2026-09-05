@@ -3281,3 +3281,35 @@ def test_sql_pack_documents_the_pseudo_line_exclusion_rule():
         "the pack must state the REASON (a marker item at zero price), not "
         "just the predicate text"
     )
+
+
+# ── line query and header fingerprint apply the SAME line filter ────────────
+#
+# Live finding (2026-09-06 night): 283 SPO + 1 PO staged FAILED on required
+# ``product_ref``. Real PODTL rows with ``ItemCode`` NULL ('CURRENCY
+# ROUNDING DIFFERENCE', Qty 1, price 0.03) reached the mapper: the PO/SPO
+# LINE query presets carry only the ``Qty IS NOT NULL`` cut (90052a7), while
+# their HEADER fingerprint OUTER APPLY carries ``ItemCode IS NOT NULL`` too.
+# The two queries MUST apply the same line filter - the header's LineCount
+# is the fingerprint of exactly the rows lineQuery fetches (S2 review round
+# 4's mismatch guard depends on it), and a row the header would never count
+# must never reach the mapper as a real line either.
+
+_LINE_FILTER_PREDICATES = ("d.ItemCode IS NOT NULL", "d.Qty IS NOT NULL")
+
+
+@pytest.mark.parametrize("label", ["SO", "PO", "SPO"])
+def test_document_preset_line_query_and_header_fingerprint_apply_the_same_line_filter(label):
+    from modules.autocount import presets
+
+    preset = {"SO": presets.SO_PRESET, "PO": presets.PO_PRESET, "SPO": presets.SPO_PRESET}[label]
+    for predicate in _LINE_FILTER_PREDICATES:
+        assert predicate in preset.header_query, (
+            f"{label}_PRESET.header_query's fingerprint OUTER APPLY must filter "
+            f"{predicate} - got:\n{preset.header_query}"
+        )
+        assert predicate in preset.line_query, (
+            f"{label}_PRESET.line_query must apply the SAME line filter as the "
+            f"header fingerprint ({predicate}) - a row the header never counts "
+            f"must never reach the mapper as a real line - got:\n{preset.line_query}"
+        )
