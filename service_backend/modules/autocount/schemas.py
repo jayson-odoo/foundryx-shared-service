@@ -657,6 +657,12 @@ class EtlTaskResponse(ApiModel):
     # dispatches it).
     nextIncrementalAt: Optional[datetime] = None
     nextReconcileAt: Optional[datetime] = None
+    # ── continuation (plan sprint-5/03 S1/S4, AC-03-03/21) ───────────────────
+    # A paged pass in progress (initial, incremental or reconcile) - derived
+    # from ``AcWatermark.cursor_json["pass"]``. ``None`` once no pass is open
+    # (never configured, or the last one completed) - the FE offers no
+    # "continues" affordance in that case.
+    initialLoad: Optional[Dict[str, Any]] = None
 
 
 class EtlPreviewResponse(ApiModel):

@@ -78,14 +78,35 @@ class DocumentPreset:
 # mapping engine's OWN `lines.*` facts (`DEFAULT_STATUS_FORMULA` already
 # reads `lines.count`/`lines.open_count` that way), not a second SQL-side
 # computation of the same shape.
+#     !!  LINE FINGERPRINT (plan sprint-5/03 S4, AC-03-20).  !!
+# Live 2026-09-05: header `LastModified` moved for only 19% of fulfilled
+# June-2026 SOs - fulfilment (`TransferedQty` rising) is a LINE fact and
+# would otherwise reach the sync only through a full reconcile pass whose
+# HEADER hash happens to change for some unrelated reason. `LineCount`/
+# `QtySum`/`TransferedSum`/`SubTotalSum`/`MaxDtlKey` are computed here, over
+# the OUTER APPLY, so a line-only edit (a new line, a qty change, fulfilment)
+# changes the HEADER row's own hash - the change-detection engine has no
+# special knowledge of these columns at all, they are just ordinary result
+# columns that happen to be line-derived. `ItemCode IS NOT NULL` drops
+# description-only/sub-total display lines from the aggregate so a cosmetic
+# note does not masquerade as a fulfilment/qty change.
 _SO_HEADER_QUERY = (
     "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, c.AutoKey AS DebtorAutoKey, "
     "h.SalesAgent AS SalesAgent, h.DocDate AS DocDate, "
     "h.UDF_DelDate AS RequestedDeliveryDate, h.Note AS Note, "
     "h.Cancelled AS Cancelled, h.DebtorCode AS DebtorCode, "
-    "h.DebtorName AS DebtorName, h.LastModified AS LastModified "
+    "h.DebtorName AS DebtorName, h.LastModified AS LastModified, "
+    "l.LineCount AS LineCount, l.QtySum AS QtySum, l.TransferedSum AS TransferedSum, "
+    "l.SubTotalSum AS SubTotalSum, l.MaxDtlKey AS MaxDtlKey "
     "FROM {database}.dbo.SO AS h "
-    "LEFT JOIN {database}.dbo.Debtor AS c ON c.AccNo = h.DebtorCode"
+    "LEFT JOIN {database}.dbo.Debtor AS c ON c.AccNo = h.DebtorCode "
+    "OUTER APPLY ("
+    "SELECT COUNT(*) AS LineCount, SUM(d.Qty) AS QtySum, "
+    "SUM(d.TransferedQty) AS TransferedSum, SUM(d.SubTotal) AS SubTotalSum, "
+    "MAX(d.DtlKey) AS MaxDtlKey "
+    "FROM {database}.dbo.SODTL AS d "
+    "WHERE d.DocKey = h.DocKey AND d.ItemCode IS NOT NULL"
+    ") AS l"
 )
 _SO_LINE_QUERY = (
     "SELECT d.DtlKey AS DtlKey, i.AutoKey AS ItemAutoKey, "
@@ -158,17 +179,26 @@ SO_PRESET = DocumentPreset(
 # level at all - `CanonicalPurchaseOrderLine` separately carries its OWN
 # per-line `currency` (`COALESCE(d.UDF_Currency, h.CurrencyCode)`, pack
 # section 4's line query) which is a LINE concern, not this header's.
+# Line fingerprint (plan sprint-5/03 S4, AC-03-20 - see the SO header's own
+# comment above for the 19%-of-fulfilled-SOs finding this closes) - added to
+# the SAME `OUTER APPLY` that already computes `FirstDeliveryDate`, with the
+# SAME `ItemCode IS NOT NULL` line filter.
 _PO_HEADER_QUERY = (
     "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, s.AutoKey AS CreditorAutoKey, "
     "h.PurchaseAgent AS SalesAgent, h.DocDate AS DocDate, "
     "CAST(l.FirstDeliveryDate AS date) AS ExpectedDate, h.Cancelled AS Cancelled, "
     "h.CreditorCode AS CreditorCode, h.CreditorName AS CreditorName, "
-    "h.CurrencyCode AS CurrencyCode, h.LastModified AS LastModified "
+    "h.CurrencyCode AS CurrencyCode, h.LastModified AS LastModified, "
+    "l.LineCount AS LineCount, l.QtySum AS QtySum, l.TransferedSum AS TransferedSum, "
+    "l.SubTotalSum AS SubTotalSum, l.MaxDtlKey AS MaxDtlKey "
     "FROM {database}.dbo.PO AS h "
     "LEFT JOIN {database}.dbo.Creditor AS s ON s.AccNo = h.CreditorCode "
     "OUTER APPLY ("
-    "SELECT MIN(d.DeliveryDate) AS FirstDeliveryDate "
-    "FROM {database}.dbo.PODTL AS d WHERE d.DocKey = h.DocKey"
+    "SELECT MIN(d.DeliveryDate) AS FirstDeliveryDate, COUNT(*) AS LineCount, "
+    "SUM(d.Qty) AS QtySum, SUM(d.TransferedQty) AS TransferedSum, "
+    "SUM(d.SubTotal) AS SubTotalSum, MAX(d.DtlKey) AS MaxDtlKey "
+    "FROM {database}.dbo.PODTL AS d "
+    "WHERE d.DocKey = h.DocKey AND d.ItemCode IS NOT NULL"
     ") AS l"
 )
 _PO_LINE_QUERY = (

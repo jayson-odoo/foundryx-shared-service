@@ -24,7 +24,8 @@ from the SQL.
 | `d_Boolean` = `'T'`/`'F'` strings | Compare as strings; masters' `is_active` uses transform `t_f_bool`. |
 | `internal_note` is NOT on the PO wire | Do not map it for PO (Sorento `extra="forbid"`). |
 | Row hash = all result columns minus key (unless `comparedColumns` set) | Keep column types stable across runs; avoid `varchar` renderings of numbers. |
-| Caps: 2000 headers/run, 5000 lines/header, 200k rows | Start with a ~30-day `fromDate`, widen after the first load. |
+| Caps: 5000 lines/header, 200k rows/page; a page is `AUTOCOUNT_PAGE_SIZE` headers (default 2000) | Paged extraction (plan sprint-5/03) - no more fixed 2000-headers-per-run cap. |
+| **Line fingerprint** (plan sprint-5/03, AC-03-20) - `LineCount`/`QtySum`/`TransferedSum`/`SubTotalSum`/`MaxDtlKey` in the header's own `OUTER APPLY`, filtered `d.ItemCode IS NOT NULL` | Live 2026-09-05: header `LastModified` moved for only **19%** of fulfilled June-2026 SOs - fulfilment (`TransferedQty` rising) is a LINE fact. These columns are ordinary result columns (no engine knowledge of them); a line-only edit changes the header's row hash and so is picked up WITHOUT re-reading every header's lines on every pass. |
 
 ---
 
@@ -68,7 +69,12 @@ OUTER APPLY (
         COUNT(*)                                                   AS LineCount,
         SUM(CASE WHEN d.TransferedQty >= d.Qty THEN 1 ELSE 0 END)  AS DoneCount,
         SUM(CASE WHEN d.TransferedQty > 0      THEN 1 ELSE 0 END)  AS StartedCount,
-        MIN(d.DeliveryDate)                                        AS FirstDeliveryDate
+        MIN(d.DeliveryDate)                                        AS FirstDeliveryDate,
+        -- line fingerprint (plan sprint-5/03, AC-03-20) - see §0's note.
+        SUM(d.Qty)                                                 AS QtySum,
+        SUM(d.TransferedQty)                                       AS TransferedSum,
+        SUM(d.SubTotal)                                            AS SubTotalSum,
+        MAX(d.DtlKey)                                               AS MaxDtlKey
     FROM AED_SORENTO.dbo.SODTL AS d
     WHERE d.DocKey = h.DocKey
       AND d.ItemCode IS NOT NULL
@@ -182,7 +188,12 @@ OUTER APPLY (
         COUNT(*)                                                   AS LineCount,
         SUM(CASE WHEN d.TransferedQty >= d.Qty THEN 1 ELSE 0 END)  AS DoneCount,
         SUM(CASE WHEN d.TransferedQty > 0      THEN 1 ELSE 0 END)  AS StartedCount,
-        MIN(d.DeliveryDate)                                        AS FirstDeliveryDate
+        MIN(d.DeliveryDate)                                        AS FirstDeliveryDate,
+        -- line fingerprint (plan sprint-5/03, AC-03-20) - see §0's note.
+        SUM(d.Qty)                                                 AS QtySum,
+        SUM(d.TransferedQty)                                       AS TransferedSum,
+        SUM(d.SubTotal)                                            AS SubTotalSum,
+        MAX(d.DtlKey)                                               AS MaxDtlKey
     FROM AED_SORENTO.dbo.PODTL AS d
     WHERE d.DocKey = h.DocKey
       AND d.ItemCode IS NOT NULL

@@ -64,6 +64,7 @@ from ..repositories import (
     RowHashRepository,
     SyncJobRepository,
     SyncRunRepository,
+    WatermarkRepository,
 )
 from ..sources import INITIAL_LOAD_FULL
 from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
@@ -221,6 +222,8 @@ class EtlTaskView:
     # ── schedule (plan 22 S3, AC-22-12/13) ───────────────────────────────────
     next_incremental_at: Optional[datetime] = None
     next_reconcile_at: Optional[datetime] = None
+    # ── continuation (plan sprint-5/03 S1/S4, AC-03-03/21) ───────────────────
+    initial_load: Optional[Dict[str, Any]] = None
 
 
 def default_source_config(entity_type: str, *, today: Optional[date] = None) -> Dict[str, Any]:
@@ -703,7 +706,42 @@ class EtlService:
             next_reconcile_at=(
                 config.next_reconcile_at if config is not None else None
             ),
+            initial_load=self._initial_load(company_id, entity_type, config),
         )
+
+    def _initial_load(
+        self, company_id: str, entity_type: str, config: Optional[AcEntityConfig]
+    ) -> Optional[Dict[str, Any]]:
+        """The paged pass in progress, if any (plan sprint-5/03, AC-03-21) -
+        derived straight from ``AcWatermark.cursor_json["pass"]``, never a
+        second source of truth. A task never configured (or a company whose
+        watermark row was never created because it has never run) has none.
+        """
+        if config is None:
+            return None
+        watermark = WatermarkRepository(self.db).get(config.tenant_id, company_id, entity_type)
+        if watermark is None:
+            return None
+        cursor = watermark.cursor_json if isinstance(watermark.cursor_json, dict) else {}
+        pass_state = cursor.get("pass")
+        # ``None`` once no pass is OPEN (AC-03-21) - never configured, a
+        # guard failure cleared it, or the last one simply completed. The
+        # underlying ``cursor_json.pass.complete`` flag is left ``true``
+        # rather than removed (``sync.py``'s run loop) so a later run of the
+        # SAME mode is provably starting a FRESH pass, not resuming a
+        # finished one - this is just the second reader of that one flag.
+        if not isinstance(pass_state, dict) or pass_state.get("complete"):
+            return None
+        return {
+            "complete": bool(pass_state.get("complete")),
+            "pagesDone": int(pass_state.get("pagesDone") or 0),
+            # Scoped to the pass itself, not the shared top-level cursor
+            # mark (``sync.py``'s run loop writes both) - a stale mark left
+            # by a DIFFERENT, already-finished pass kind must never read as
+            # this pass's progress.
+            "lastMark": pass_state.get("mark"),
+            "kind": pass_state.get("kind"),
+        }
 
     def _probe_incremental_wrap(
         self, engine, secrets: List[str], query: str, watermark_column: str
@@ -1356,9 +1394,14 @@ class EtlService:
         # read from the vendor API would auto-push records the operator
         # previewed from a different source entirely.
         config.source_impl = SOURCE_IMPL_SQL_DB
-        config.next_incremental_at, config.next_reconcile_at = self.next_run_times(
+        _, config.next_reconcile_at = self.next_run_times(
             config.source_config or {}, now=now
         )
+        # plan sprint-5/03 §2.4 - the initial (paged) pass starts on the
+        # FIRST tick after activation, not after a full ``incrementalMinutes``
+        # wait: 148k SO headers finish in hours unattended only if the sweep
+        # fires immediately.
+        config.next_incremental_at = now
         self.db.commit()
         self.db.refresh(config)
         return self._task_view(company_id, entity_type, config)
