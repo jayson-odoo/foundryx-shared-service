@@ -47,6 +47,12 @@ const CommandDialog = ({ children, className, motion = false, ...props }: Comman
 };
 
 function CommandInput({ className, ...props }: React.ComponentProps<typeof CommandPrimitive.Input>) {
+  // T6 fix round 1 item 8: cmdk filters its option list SYNCHRONOUSLY (it's
+  // an already-loaded in-memory list, unlike ResourceList's server fetch),
+  // so a settling-spinner swap here was pure flash with nothing behind it
+  // to wait for - removed. `SearchSelect`/`MultiSelect` still debounce their
+  // own `value` for the actual filter/query, just without a leading-icon
+  // indicator (AC-DLA-54's leading icon stays `ListSearchInput`-only).
   return (
     <div className="flex items-center border-border border-b px-3" cmdk-input-wrapper="" data-slot="command-input">
       <Search className="me-2 h-4 w-4 shrink-0 opacity-50" />

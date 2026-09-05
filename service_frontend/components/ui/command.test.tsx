@@ -46,3 +46,21 @@ describe('CommandDialog defaults to motion={false} (AC-DLA-22)', () => {
     expect(content).toHaveAttribute('data-motion', 'off');
   });
 });
+
+/**
+ * T6 fix round 1 item 8 (supersedes the old AC-DLA-54 settling-indicator
+ * coverage here) - cmdk filters synchronously, so `CommandInput` no longer
+ * swaps its leading icon at all; it always renders the static Search glyph.
+ */
+describe('CommandInput leading icon (T6 fix round 1 item 8)', () => {
+  it('always renders the static Search glyph, never a settling spinner', () => {
+    render(
+      <CommandDialog open>
+        <CommandInput aria-label="Search" />
+        <CommandList />
+      </CommandDialog>,
+    );
+    expect(document.querySelector('[cmdk-input-wrapper] svg.lucide-search')).toBeInTheDocument();
+    expect(screen.queryByTestId('command-input-settling')).not.toBeInTheDocument();
+  });
+});

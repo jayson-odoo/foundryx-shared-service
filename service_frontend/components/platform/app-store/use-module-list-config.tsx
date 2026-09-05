@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { useSession } from 'next-auth/react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ColumnDef } from '@tanstack/react-table';
 import { ArrowUpCircle, Download, Power, RotateCw, Trash2 } from 'lucide-react';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';

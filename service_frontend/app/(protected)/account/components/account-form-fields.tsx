@@ -2,7 +2,7 @@
 
 import type { UseFormReturn } from 'react-hook-form';
 import { Info, LoaderCircleIcon } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';

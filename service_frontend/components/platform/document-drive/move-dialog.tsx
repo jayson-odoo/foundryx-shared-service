@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Skeleton } from '@/components/ui/skeleton';
 import { documentService } from '@/services/document-service';
 import type { FolderRow } from '@/types/documents';
 
@@ -95,7 +96,13 @@ export function MoveDialog({
 
         <ScrollArea className="h-64 rounded-md border">
           <div className="p-1">
-            {loading && <div className="p-4 text-sm text-muted-foreground">Loading…</div>}
+            {loading && (
+              <div className="space-y-1.5 p-1">
+                <Skeleton className="h-8 w-full" />
+                <Skeleton className="h-8 w-full" />
+                <Skeleton className="h-8 w-full" />
+              </div>
+            )}
             {!loading && folders.length === 0 && (
               <div className="p-4 text-sm text-muted-foreground">No sub-folders here.</div>
             )}

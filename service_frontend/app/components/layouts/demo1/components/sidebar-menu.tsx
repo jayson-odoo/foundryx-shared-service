@@ -11,7 +11,9 @@ import { useTerminology } from '@/hooks/use-terminology';
 import { useCan } from '@/hooks/use-can';
 import { usePrefetchOnce } from '@/hooks/use-prefetch-once';
 import { filterMenu } from '@/lib/menu-filter';
+import { collectMenuPaths, matchesMenuPath } from '@/lib/menu-path-match';
 import { cn } from '@/lib/utils';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import {
   AccordionMenu,
   AccordionMenuClassNames,
@@ -55,24 +57,38 @@ export function SidebarMenu() {
     [can, installed.isActive, installed.ready, showPlatform],
   );
 
-  // Memoize matchPath to prevent unnecessary re-renders
+  // AC-DLA-72 - "current" is segment-boundary + most-specific-wins against
+  // the VISIBLE menu (`lib/menu-path-match.ts`, ported from Sorento): a
+  // naive `startsWith` lit `/scm` up on `/scm-archive`, and a section's own
+  // landing page stayed lit beside its active child (both are prefixes of
+  // every page under them). Recomputed only when the visible menu or route
+  // changes - `AccordionMenu` calls `matchPath` once per rendered item.
+  const menuPaths = useMemo(() => collectMenuPaths(visibleMenu), [visibleMenu]);
   const matchPath = useCallback(
-    (path: string): boolean =>
-      path === pathname || (path.length > 1 && pathname.startsWith(path)),
-    [pathname],
+    (path: string): boolean => matchesMenuPath(path, pathname, menuPaths),
+    [pathname, menuPaths],
   );
 
-  // Global classNames for consistent styling
+  // Global classNames for consistent styling. `PRESSED_CLASS` (AC-DLA-72)
+  // on both `item` and `subTrigger` - an item answers on pointer-down like
+  // every other control; the `hover:bg-transparent` override that used to
+  // sit here is gone so items pick up the shared `hover:bg-accent
+  // hover:text-primary` instead of no hover feedback at all.
   const classNames: AccordionMenuClassNames = {
     root: 'lg:ps-1 space-y-3',
     group: 'gap-px',
     label:
       'uppercase text-xs font-medium text-muted-foreground/70 pt-2.25 pb-px',
     separator: '',
-    item: 'h-8 hover:bg-transparent text-accent-foreground hover:text-primary data-[selected=true]:text-primary data-[selected=true]:bg-muted data-[selected=true]:font-medium',
+    item: cn(
+      PRESSED_CLASS,
+      'h-8 text-accent-foreground hover:bg-accent hover:text-primary data-[selected=true]:text-primary data-[selected=true]:bg-muted data-[selected=true]:font-medium',
+    ),
     sub: '',
-    subTrigger:
-      'h-8 hover:bg-transparent text-accent-foreground hover:text-primary data-[selected=true]:text-primary data-[selected=true]:bg-muted data-[selected=true]:font-medium',
+    subTrigger: cn(
+      PRESSED_CLASS,
+      'h-8 text-accent-foreground hover:bg-accent hover:text-primary data-[selected=true]:text-primary data-[selected=true]:bg-muted data-[selected=true]:font-medium',
+    ),
     subContent: 'py-0',
     indicator: '',
   };

@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { useCan } from '@/hooks/use-can';
 import { useDeferredAction } from '@/hooks/use-deferred-action';
 import { deferredDoneMessage, entityNoun, presentContinuous } from '@/lib/deferred-verb';

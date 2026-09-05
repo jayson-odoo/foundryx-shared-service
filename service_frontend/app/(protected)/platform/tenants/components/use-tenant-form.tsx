@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Blocks, Building2, Palette } from 'lucide-react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { TenantDetail, TenantListItem } from '@/types/tenant-admin';
 import { tenantAdminService } from '@/services/tenant-admin-service';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';

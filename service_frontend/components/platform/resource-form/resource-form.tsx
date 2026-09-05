@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, ChevronLeft, ChevronRight, Pencil } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { MENU_SIDEBAR } from '@/config/menu.config';
 import { buildListNav } from '@/lib/list-context';
 import { deferredDoneMessage, presentContinuous } from '@/lib/deferred-verb';

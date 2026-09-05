@@ -96,14 +96,17 @@ const sheetVariants = cva(
   'flex flex-col items-strech fixed z-(--z-modal) gap-4 overflow-y-auto bg-background p-6 shadow-lg',
   {
     variants: {
-      // A left/right sheet is `h-full`, which already caps it at the
-      // viewport; a top/bottom one is sized by its content and needs the
-      // explicit cap.
+      // A left/right sheet is `h-dvh` (AC-DLA-52) - the DYNAMIC viewport
+      // height, which shrinks to the visible area when a mobile browser's
+      // toolbar is showing; `h-full`/`100vh` both resolve against the LARGE
+      // viewport and let the sheet's bottom sit behind mobile Safari's
+      // address bar. A top/bottom one is sized by its content and needs
+      // the explicit dvh-based cap.
       side: {
         top: 'inset-x-0 top-0 max-h-[90dvh] border-b',
         bottom: 'inset-x-0 bottom-0 max-h-[90dvh] border-t',
-        left: 'inset-y-0 start-0 h-full w-3/4 border-e sm:max-w-sm',
-        right: 'inset-y-0 end-0 h-full w-3/4 border-s sm:max-w-sm',
+        left: 'inset-y-0 start-0 h-dvh w-3/4 border-e sm:max-w-sm',
+        right: 'inset-y-0 end-0 h-dvh w-3/4 border-s sm:max-w-sm',
       },
     },
     defaultVariants: {

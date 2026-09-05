@@ -330,7 +330,9 @@ function AccordionMenuSubTrigger({
           <ChevronDown
             data-slot="accordion-menu-sub-indicator"
             className={cn(
-              'ms-auto size-3.5! shrink-0 text-muted-foreground transition-transform duration-(--duration-base) [[data-state=open]>&]:-rotate-180',
+              // AC-DLA-72: the rotation carries the shared standard ease,
+              // not the browser's default transition-timing-function.
+              'ms-auto size-3.5! shrink-0 text-muted-foreground transition-transform duration-(--duration-base) ease-(--ease-standard) [[data-state=open]>&]:-rotate-180',
             )}
           />
         </>

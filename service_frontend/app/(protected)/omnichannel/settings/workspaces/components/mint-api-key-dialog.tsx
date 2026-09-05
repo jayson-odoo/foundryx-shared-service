@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Check, Copy, KeyRound, Loader2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { useApiKeys } from './use-api-keys';
 
 export interface MintApiKeyDialogProps {
@@ -37,14 +38,13 @@ export function MintApiKeyDialog({
   const { mint, minting } = useApiKeys(workspaceId);
   const [name, setName] = useState('');
   const [fullKey, setFullKey] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const { isCopied, copyToClipboard } = useCopyToClipboard();
 
   // Clear all state whenever the dialog closes (never leave a plaintext key).
   useEffect(() => {
     if (!open) {
       setName('');
       setFullKey(null);
-      setCopied(false);
     }
   }, [open]);
 
@@ -57,18 +57,6 @@ export function MintApiKeyDialog({
       onMinted();
     } catch {
       toast.error('Could not mint the key. Please retry.');
-    }
-  };
-
-  const copy = async () => {
-    if (!fullKey) return;
-    try {
-      await navigator.clipboard.writeText(fullKey);
-      setCopied(true);
-      toast.success('API key copied to clipboard.');
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      toast.error('Could not copy. Select and copy the key manually.');
     }
   };
 
@@ -123,10 +111,10 @@ export function MintApiKeyDialog({
                 <Button
                   variant="outline"
                   mode="icon"
-                  onClick={copy}
+                  onClick={() => copyToClipboard(fullKey ?? '')}
                   aria-label="Copy API key"
                 >
-                  {copied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
+                  {isCopied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
                 </Button>
               </div>
               <p className="text-sm font-medium text-destructive">

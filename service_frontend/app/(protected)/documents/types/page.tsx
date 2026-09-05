@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
 import { ClampedText } from '@/components/platform/clamped-text';
@@ -299,9 +300,16 @@ function TypeFormDialog({
           <DialogTitle>{typeId ? 'Edit type' : 'New type'}</DialogTitle>
         </DialogHeader>
         {loading ? (
-          <p className="py-6 text-center text-sm text-muted-foreground">
-            Loading…
-          </p>
+          <div className="grid gap-4 py-2">
+            <div className="grid gap-2">
+              <Skeleton className="h-3.5 w-16" />
+              <Skeleton className="h-9 w-full" />
+            </div>
+            <div className="grid gap-2">
+              <Skeleton className="h-3.5 w-24" />
+              <Skeleton className="h-9 w-full" />
+            </div>
+          </div>
         ) : (
           <div className="grid gap-4">
             <div className="grid gap-2">

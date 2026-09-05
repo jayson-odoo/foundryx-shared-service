@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { CheckCheck, CircleStop, RotateCcw } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { jobsService } from '@/services/jobs-service';
 import type { Job } from '@/types/jobs';

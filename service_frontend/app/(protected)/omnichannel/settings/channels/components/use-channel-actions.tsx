@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { PlugZap, Pencil, PowerOff, RotateCcw, Trash2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { channelService } from '@/services/channel-service';
 import type { Channel } from '@/types/omnichannel';

@@ -102,7 +102,14 @@ export function useResourceList<T>({
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
-  const debouncedSearch = useDebounce(search, 300);
+  // 200ms (AC-DLA-54) - `ListSearchInput`'s own settling indicator debounces
+  // at the same 200ms, so the icon settles exactly when this fetch fires.
+  // `useDebounce`'s default (300) stays for non-search callers. (T6 fix
+  // round 1 item 7: `ListSearchInput` additionally gates its spinner behind
+  // its own 250ms SETTLING_SHOW_DELAY_MS on top of this 200ms - the fetch
+  // this debounce kicks off is also passed back in as `busy`, so a fetch
+  // that resolves inside that window never flashes the spinner at all.)
+  const debouncedSearch = useDebounce(search, 200);
 
   const query = useMemo<ListQuery>(
     () => ({ page, pageSize, search: debouncedSearch, sort, filter, statusView, segment }),

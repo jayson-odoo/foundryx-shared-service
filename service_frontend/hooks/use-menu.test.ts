@@ -61,3 +61,33 @@ describe('useMenu longest-match resolution', () => {
     expect(current?.title).toBe('Logs');
   });
 });
+
+/**
+ * Fix round 1 item 4 - AC-DLA-72 same-class defect: `isActive` fed
+ * `mega-menu.tsx`'s top-level link highlight via a naive `startsWith` (no
+ * segment boundary, no most-specific-wins). It now accepts an optional
+ * `menuPaths` list (`collectMenuPaths(visibleMenu)`) and routes through
+ * `matchesMenuPath` when provided - callers with no menu list at hand keep
+ * the old plain-prefix behaviour (verified below too).
+ */
+describe('useMenu.isActive with menuPaths - segment-boundary + most-specific-wins', () => {
+  const menuPaths = ['/scm', '/scm-archive', '/settings', '/settings/general'];
+
+  it('/scm does not match /scm-archive when menuPaths is provided', () => {
+    const { result } = renderHook(() => useMenu('/scm-archive'));
+    expect(result.current.isActive('/scm', menuPaths)).toBe(false);
+    expect(result.current.isActive('/scm-archive', menuPaths)).toBe(true);
+  });
+
+  it('a section root (Settings) is not active beside its own active child (General)', () => {
+    const { result } = renderHook(() => useMenu('/settings/general'));
+    expect(result.current.isActive('/settings', menuPaths)).toBe(false);
+    expect(result.current.isActive('/settings/general', menuPaths)).toBe(true);
+  });
+
+  it('without menuPaths, isActive falls back to the old plain-prefix behaviour (no regression)', () => {
+    const { result } = renderHook(() => useMenu('/scm-archive'));
+    // Documented pre-existing behaviour for callers with no menu list.
+    expect(result.current.isActive('/scm')).toBe(true);
+  });
+});

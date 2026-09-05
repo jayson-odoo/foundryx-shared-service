@@ -2897,3 +2897,130 @@ code change needed - the S4 gate already covered current/cancel), item 4 with a 
 drift-resistant doc comment pointing at the single source of truth, item 5 with a backlog entry
 for a deferred perf follow-up; no regressions (pytest 2759 vs 2756 before, vitest 1778 vs 1778
 before once re-run clean, build/lint unaffected); worktree clean.
+
+## T6 - Shells (loading, error, not-found, toast, dvh, search, sidebar feel)
+
+Branch `sprint-4/23-T6-shells` off `sprint-4/23-design-language-alignment` (integration at
+`e6ed34d`). Own stack for this frontend-only slice: this worktree's backend `:8003` (untouched),
+frontend prod build `:3002`. Evidence + run log: `documentation/plans/sprint-4/23-evidence/T6/README.md`.
+
+### AC-by-AC
+
+| AC | Verdict | Commit(s) | Notes |
+|---|---|---|---|
+| AC-DLA-48 | **PASS** | `496002a` | `components/platform/skeletons/{list-page-skeleton,record-page-skeleton}.tsx` + a `loading.tsx` generated for every qualifying segment. `app/(protected)/loading-inventory.test.tsx` IS the enumeration (a relative-import walk from each `page.tsx` detecting `ResourceList`/`DataGrid`/`ResourceForm` via a named import from an absolute module or a JSX tag - not a bare substring, which false-positived on a doc comment in the near-universal `PageHeader` during development). 66 segments qualify today (34 list-only, 20 record-only, 12 both - a record page with an embedded list tab, skeletoned as a record); baseline was 0 of ~127 segments (framework drift from the plan's 124 baseline, expected). |
+| AC-DLA-49 | **PASS** | `be5a296` | `ContentLoader` -> `Skeleton` block/card/inline variant; `ScreenLoader` keeps its spinner, drops the text; the unused duplicate `components/common/content.tsx` deleted; 16 other bare-string sites (SearchSelect placeholders, three "Load more" buttons, a `DataGrid` overlay, five document-drive panels, an i18n demo string) get a spinner icon or a `Skeleton` instead. `lib/no-bare-loading.inventory.test.ts` is a `git grep -P` word-boundary guard (`\bLoading(\.\.\.\|…)`) so "Uploading…" never false-positives on containing "loading". |
+| AC-DLA-50 | **PASS** (one disclosed partial) | `288dfa3`, `5d42f70` | `app/(protected)/error.tsx` (client, `reset`) + `not-found.tsx` both live one segment below `layout.tsx`, so the sidebar/header/footer survive by Next.js's own file-convention (verified live: evidence `07`-`09`). Unknown record id: `UserFormView` now calls the real `notFound()` (was a hand-rolled inline paragraph that never reached ANY route-level boundary - a real gap found while chasing this AC) - evidence `10`. **Disclosed partial**: "no vertical shift, loading Users then landed" was NOT captured as a live frame-diff (`agent-browser` has no chunk-throttling API and delaying the API fetch doesn't extend `loading.tsx`'s window - full root-cause + BL-SS-056 in the evidence README); verified instead by construction (`ListPageSkeleton` and `PageHeader` share the same `Container` + spacing, pinned by `skeletons.test.tsx`). |
+| AC-DLA-51 | **PASS** | `8c5a1a5` + 14 per-module refactor commits + `2e3885f` | `lib/toast.ts` wraps sonner (success/info/warning 4000ms, error `Infinity`+closeButton, `custom`/`dismiss`/`message` passthrough - `message` added mid-slice when `rm -rf .next && npm run build` caught 5 `account/**` files calling the bare sonner `toast(...)` callable, which the wrapper OBJECT isn't). All 98 `from 'sonner'` importers migrated, one module per commit. `lib/toast.inventory.test.ts` pins the three legitimate direct importers (the wrapper, `sonner.tsx`, the T5 `deferred-toast.tsx`, plus `branding.test.tsx` which mocks-and-reimports sonner to assert against it). |
+| AC-DLA-52 | **PASS** (one disclosed gap) | `a746a7e` | `Sheet`'s shared left/right `side` variant moves `h-full` -> `h-dvh` (fixes every side=left/right sheet at the primitive, including jobs/imports drawers); notifications sheet's inner scroll region and the omnichannel inbox's fixed-height shell move `100vh` -> `100dvh`. Chat sheet needed no change (already `flex-1` off an inset-based container). `Input`'s every density variant gains `pointer-coarse:text-base`. Evidence `13`-`17` show all four sheets/drawers' bottoms visible at 375 (device-emulated). **Disclosed gap**: "focusing an input does not zoom" - `agent-browser set device` sets viewport dimensions only (verified live: `matchMedia('(pointer: coarse)')` is `false`, `maxTouchPoints` is `0` even under emulation), so the `pointer-coarse:` variant never activates in this tool; the CSS is verified statically (`dvh-pointer-coarse.inventory.test.ts`) and by the CSS spec's standard behaviour, not a live zoom demonstration. No `maximum-scale` viewport meta exists anywhere (verified, not newly added). |
+| AC-DLA-53 | **PASS** | `7e3b91f` | `form-builder-tab.tsx`'s "Fill link"/"Public link" copy button fired `toast.success` with no `isCopied` feedback at all - now swaps to an inline checkmark like every other consumer. `hooks/use-copy-to-clipboard.inventory.test.ts` pins zero `onCopy`-callback consumers and requires every `copyToClipboard` consumer to also read `isCopied`, with a disclosed, named, asserted-exact baseline of 5 pre-existing `account/**` demo pages (D8, T7-scheduled for deletion) that show no feedback at all today. |
+| AC-DLA-54 | **PASS** | `61d14e6` | `components/platform/list-search-input.tsx` (200ms settling indicator + clear button) adopted directly by `ResourceList` and the palette (`sm` size variant); `SearchSelect`/`MultiSelect` get the identical debounce+settling behaviour applied to their shared `CommandInput` instead of a component swap (would drop cmdk's keyboard-nav wiring) - `MultiSelect`'s search state lifted to controlled for this. `use-resource-list`'s search debounce moves from the `useDebounce` default (300, kept for non-search callers) to an explicit 200. Zero hand-rolled search `setTimeout` debounce found or introduced (inventory-asserted). |
+| AC-DLA-55 | **PASS** (one disclosed gap, shared with AC-DLA-52) | evidence only | Evidence `13`-`17` (four sheets/drawers, bottoms visible, 375 device-emulated) and `18`/`19` (toast top-center at 375 and 1280). Focus-no-zoom shares AC-DLA-52's disclosed tooling gap above. |
+| AC-DLA-72 | **PASS** | `132c255` | `lib/menu-path-match.ts` (`matchesMenuPath`/`collectMenuPaths`/`isUnderPath`) ported verbatim from Sorento with its unit tests; wired into `sidebar-menu.tsx`'s `matchPath`. `PRESSED_CLASS` on both `classNames.item` and `classNames.subTrigger`; `hover:bg-transparent` override removed. `accordion-menu.tsx` chevron gains `ease-(--ease-standard)`. Unit test (`sidebar-menu.pressed-current.test.tsx`) asserts the pressed classes on a rendered leaf item and group sub-trigger, and that exactly one leaf carries `data-selected="true"` on a nested route. Evidence `01`/`02` (1280) + `04`/`05` (375, mobile drawer) are real held-mouse-button (`mouse down`/`up`, not a synthetic dispatch) pointer-down frames; `06` confirms exactly one lit item on a user record page via a live DOM query. |
+
+### Gate
+
+`npx eslint` on every touched file across all 28 commits: 0 errors (a handful of `Unused eslint-disable
+directive` warnings were fixed inline as found, e.g. the `error.tsx` scaffold). `npm test`: **230/230
+files, 1834/1834 tests** (up from 217/1755 at T5's close; two known-flaky-under-full-parallel-load tests,
+`timezone-card.test.tsx` and `resource-form.deferred.test.tsx`, each intermittently timeout only under
+the FULL suite's parallel worker load and pass every time run standalone - pre-existing, not introduced
+this slice, not investigated further per the T5 precedent). `rm -rf .next && npm run build`: green,
+run twice (once caught the `toast()`-callable TypeScript error from the 5 `account/**` files, fixed via
+`lib/toast.ts`'s `message` passthrough - a real bug vitest's mocked-sonner tests couldn't see, matching
+T5's "live-caught bug" precedent).
+
+### Definition of Done checklist (T6)
+
+1. Every AC-DLA-48..55, 72 verified by a test asserting the AC id and/or the `agent-browser` evidence run
+   above (`documentation/plans/sprint-4/23-evidence/T6/README.md`); two disclosed, root-caused, backlogged
+   partial gaps (AC-DLA-50's live frame-diff, AC-DLA-52/55's live zoom demonstration) - both are tooling
+   ceiling, not unverified product behaviour, and both have a static/structural proof standing in.
+2. `npx eslint` 0 errors, `npm test` 230/230 files green, `npm run build` green (twice, one real bug
+   caught + fixed mid-slice - the `toast()`-callable TypeScript error).
+3. `rm -rf .next && npm run build` before every live-verify pass in this run; port ownership confirmed
+   (`lsof -p <pid> | grep cwd`) before every `:3002` restart - this worktree's own stale `next-server`
+   and `uvicorn` were both correctly identified and only the frontend one was touched (T6 is
+   frontend-only).
+4. **No mock left behind** - nothing in this slice introduces a service-layer mock; `lib/toast.ts` is a
+   real wrapper over the real `sonner` package, shipped as-is. **No backfill needed** - zero new DB
+   columns/entities. **No new permission** - zero new permission keys. One disclosed, deliberate scope
+   reduction: `UserFormView` is the ONE of ~17 record forms converted to Next's `notFound()` (BL-SS-055
+   tracks the sweep), matching AC-DLA-72's own "Users > a user record" example rather than silently
+   picking an arbitrary one or claiming the full sweep.
+5. Verified from the user's perspective, real sidebar clicks, at 375 (device-emulated) AND 1280, against
+   the real backend on a fresh prod build (`documentation/plans/sprint-4/23-evidence/T6/README.md`).
+
+**Verdict: T6 (Shells) DONE**, with two disclosed, root-caused, backlogged partial gaps (BL-SS-056 - a
+live frame-diff for the loading-skeleton "no vertical shift" claim needs CDP-level chunk throttling
+`agent-browser` doesn't expose; the AC-DLA-52/55 live-zoom demonstration needs full touch/pointer
+emulation the tool's `set device` doesn't provide) and one disclosed, deliberate scope reduction
+(BL-SS-055 - 16 of 17 record forms still use their pre-existing inline "not found" pattern, not a T6
+regression). All AC-DLA-48..55 and AC-DLA-72 pass either fully or via a disclosed, reasoned, tracked
+deviation - none silently skipped.
+
+## T6 - Fix round 1
+
+Worktree `.claude/worktrees/s23`, branch `sprint-4/23-T6-shells`, starting HEAD `296148d` (clean).
+Frontend-only - backend `:8003` untouched throughout. 12 findings from a review pass over the T6
+"Shells" slice above; items 1-4 were completed by a previous coder instance and are summarized here
+from their commits (the diffs, not a re-run) since this instance picked up mid-slice. Items 5-11 are
+this instance's own work, each its own commit + `npx eslint` before committing. Evidence for item 12:
+`documentation/plans/sprint-4/23-evidence/T6/README.md` ("T6 - Fix round 1" section).
+
+### Items 1-4 (previous coder, summarized from their commits)
+
+| # | Commit | Ruling | What shipped |
+|---|---|---|---|
+| 1 | `3bb9700` | Neutral `PageSkeleton` at the group root; list/record skeletons strictly per-segment | The group-root `app/(protected)/loading.tsx` exported `ListPageSkeleton`, so every one of the ~61 segments with no `loading.tsx` of their own (settings/general, branding, imports, jobs/[id], ...) flashed a grid+pagination skeleton before swapping to an unrelated real layout. Adds a neutral `components/platform/skeletons/page-skeleton.tsx` (title block + one section card, no rows/pagination) as the group root's export; all three skeleton components gain a `data-skeleton` discriminator so `loading-inventory.test.tsx` can assert a qualifying segment renders the RIGHT skeleton, not just "some skeleton". One disclosed exception: the group root's own dashboard demo page embeds a bare `data-grid` widget the JSX-tag scan can't distinguish from a real list page - excluded with a comment. |
+| 2 | `427a112` | Only a real 404 reaches `notFound()` | `use-user-form.tsx`'s `.catch(() => setNotFound(true))` turned ANY load failure (500, network error, 403) into a terminal "user not found", hiding real backend/permission problems. Now classifies the catch: `ApiError` status 404 -> `notFound` (unchanged); anything else -> a new `loadError` thrown during render, caught by the existing `app/(protected)/error.tsx` boundary (chrome intact, Reset button) instead of lying about the record's existence. |
+| 3 | `6e8bb39` | Copy-to-clipboard: checkmark only, no toast (AC-DLA-53) | Three call sites (`secret-reveal.tsx`, `webhook-secret-panel.tsx`, `mint-api-key-dialog.tsx`) called `navigator.clipboard.writeText` directly and fired `toast.success`/`toast.error`, bypassing `useCopyToClipboard` entirely - invisible to that hook's own inventory test since it only checks existing hook consumers. Converted all three to the hook + the `isCopied` Check/Copy glyph swap; widened `use-copy-to-clipboard.inventory.test.ts` to fail on any file calling `writeText` AND firing a toast in the same file (one disclosed, named allowlist entry for a T7-scheduled-for-deletion demo page). |
+| 4 | `296148d` | Mega menus route "current" through `menu-path-match` | `mega-menu-mobile.tsx`'s inline `matchPath` and `hooks/use-menu.ts`'s `isActive` (feeding the desktop mega-menu's top-level highlight) both used a naive prefix match with no segment boundary and no most-specific-wins - the same class of bug AC-DLA-72 fixed in the sidebar (`/scm` lighting up `/scm-archive`; a section root staying lit beside its active child). Both now resolve current-ness via `collectMenuPaths`/`matchesMenuPath` from `lib/menu-path-match.ts`, the same module the sidebar fix already introduced. |
+
+### Items 5-11 (this instance)
+
+| # | Commit | AC | Ruling | What shipped |
+|---|---|---|---|---|
+| 5 | `655acb0` | AC-DLA-52/55 | `top-5 bottom-5 h-auto max-h-[calc(100dvh-2.5rem)]`, not `inset-5 h-auto` | `chat-sheet.tsx`/`notifications-sheet.tsx` overrode `SheetContent`'s className with `inset-5 start-auto h-auto`, which tailwind-merge resolves OVER the shared `side` variant's `h-dvh`/`end-0` (the very fix `a746a7e` shipped earlier in T6) - a uniform `inset-5` collapses the sheet back to a static height a mobile browser's toolbar can eat into. Switched both to `top-5 bottom-5 h-auto max-h-[calc(100dvh-2.5rem)]` so only the vertical edges are pinned and the variant's `end-0` still owns the horizontal edge. Added assertions to `lib/dvh-pointer-coarse.inventory.test.ts`. |
+| 7 | `23fc37b` | (list search settling) | Delay-gate the spinner behind 250ms of continuous `settling \|\| busy`, cleared immediately on false | `list-search-input.tsx`'s `settling = value !== debounced` flashed a Search->Loader->Search swap on every keystroke pause, turning OFF exactly when the list's own 200ms debounce fired the request (spinner gone the instant the fetch actually started). Added a `busy?: boolean` prop (`ResourceList` passes `list.isLoading`, covering sort/filter/page fetches too) and a `SETTLING_SHOW_DELAY_MS = 250` timer gate: the spinner glyph shows only once `settling \|\| busy` has been continuously true for >= 250ms, clearing on the same tick it goes false. The spinner glyph carries `motion-reduce:hidden` with the static `Search` icon mounted underneath at the same position, so a reduced-motion reader still sees a glyph instead of an empty slot. `collapsible-palette.tsx` (no busy source) is unchanged - passes nothing. Tests cover the delay gate with `vi.useFakeTimers()` (fast-typing-never-shows, persists-past-gate-shows, clears-immediately-on-settle, `busy`-alone). Comment cross-references `hooks/use-resource-list.ts`'s 200ms debounce. |
+| 8 | `2a2324e` | AC-DLA-54 (supersedes) | Drop the `CommandInput` settling glyph swap entirely | cmdk (`SearchSelect`/`MultiSelect`) filters an already-loaded, in-memory option list SYNCHRONOUSLY - there is no fetch for a settling spinner to represent, so the swap was pure flash. `CommandInput` now always renders the static `Search` icon; the unused debounce/settling state and `LoaderCircleIcon` import are removed. `command.test.tsx`'s settling-indicator describe block replaced with one asserting the static icon and no settling testid. `SearchSelect`/`MultiSelect` are unchanged (still `useDebounce`/`value` for their own filtering, per the ruling - no hand-rolled `setTimeout`). |
+| 9 | `9dbd16b` | (reduced motion / toast) | Add `[data-sonner-toast]`/`[data-sonner-toaster]` to the vaul-style reduced-motion selector group | sonner injects its own `dist/styles.css` driving toasts via a plain CSS `transition` (transform/opacity/height, 400ms) and a `sonner-fade-in` CSS `animation` (300ms mount) - the same shape of library-injected motion as vaul, and equally invisible to the tw-animate-var reset the reduced-motion block already applies. Joined the existing vaul selector group in `css/styles.css` (the one sanctioned CSS file for this); `css/design-tokens.test.ts`'s matching regex assertion updated for the wider selector list. |
+| 10 | `3b09170` | (skeleton parity) | `h-8.5` search box (matches `Input variant="md"`), `h-10` header row (matches the real `DataGrid` header `<th>`) | `list-page-skeleton.tsx`'s search box was `h-9` (real `ListSearchInput` renders at `h-8.5`) and its header row was `h-11` (the real `DataGrid` header cell is `h-10`, `data-grid-table.tsx`'s `relative h-10` class) - both fixed, with comments naming the real component/class each height mirrors, plus a comment on the 60px body row noting there is no shared height constant to import (it's derived from `px-4 py-3` padding + content, not a literal token). |
+| 11 | `4f314fe` | (dead code) | Delete dead `transition-opacity`/duration classes from `ScreenLoader` | The loader has no opacity-toggling state (mounted or not) - `transition-opacity ease-(--ease-standard) duration-(--duration-slow)` never had anything to transition. |
+
+Items 6 (n/a - not assigned a fix in this round) is absent by design; the round's items are numbered
+1-12 with 12 being the evidence-only requirement below.
+
+### Item 12 - evidence
+
+Session `agent-browser --session t6fix1`, real clicks from `/`, login `demo@example.com`/`demo1234`,
+against this worktree's rebuilt `:3002` + untouched `:8003`. Full run log, screenshots, and one disclosed
+tooling limitation (a held mouse press at 375 produced no observable `:active`/click effect in this
+session on this Chrome-for-Testing build, at either 375 or 1280 - confirmed by cross-checking
+`document.querySelector(':active')` and an accordion's `data-state` immediately after `mouse down`/
+`mouse up`) are in `documentation/plans/sprint-4/23-evidence/T6/README.md` under "T6 - Fix round 1".
+Per the fix brief's own fallback instruction, the existing `01-sidebar-root-pointerdown-1280.png` /
+`02-sidebar-child-pointerdown-1280.png` (captured with the identical technique when it worked, in the
+original T6 run) stand in as the press proof. Captured live:
+
+- `fixround1-02-settings-general-skeleton-1280.png` - Settings > General mid-navigation at 1280,
+  showing the neutral `PageSkeleton` from item 1 (two title bars + one section card, no rows/pagination)
+  rendering in the content pane while the sidebar/header chrome stays mounted - won by firing the
+  `General` link click and the screenshot back-to-back with no intervening `wait`, racing the client-side
+  route transition.
+
+### Gate (fix round 1, verbatim)
+
+- `npx eslint .`: **0 errors** (3 pre-existing warnings, unrelated files, not touched this round).
+- `npx vitest run`: **232 files passed, 1853 tests passed**.
+- `rm -rf .next && npm run build`: green.
+- `:3002` restarted from this worktree (`lsof -p <pid> | grep cwd` confirmed the killed pid's cwd was
+  this worktree's `service_frontend` before kill); backend `:8003` untouched throughout.
+- Worktree clean after the final commit (verified via `git status`).
+
+**Verdict: T6 fix round 1 - all 12 items DONE.** Items 1-4 (previous coder) verified by reading their
+commits' diffs; items 5, 7-11 (this instance) each shipped with a passing test and a passing lint/build
+gate; item 12's evidence is captured with one disclosed, root-caused, non-blocking tooling limitation
+(the 375 press-crop) that does not indicate a product defect - item 5's fix is CSS-only on
+`SheetContent`, unrelated to the sidebar's `PRESSED_CLASS`/`:active` styling, which fix round 1 does not
+touch.

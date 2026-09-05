@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { DocumentSettings, PublicSharingPolicy } from '@/types/documents';
 import { documentService } from '@/services/document-service';
 import { Button } from '@/components/ui/button';

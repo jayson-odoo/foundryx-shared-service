@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/context-menu';
 import { documentService } from '@/services/document-service';
 import { cn } from '@/lib/utils';
+import { Skeleton } from '@/components/ui/skeleton';
 import type { FolderRow } from '@/types/documents';
 
 /** Folder-level actions surfaced by right-clicking a tree node (sprint-3/04b). */
@@ -135,7 +136,10 @@ function TreeLevel({
 
   if (folders === null) {
     return depth === 0 ? (
-      <div className="px-2 py-1 text-xs text-muted-foreground">Loading…</div>
+      <div className="space-y-1 px-2 py-1">
+        <Skeleton className="h-4 w-3/4" />
+        <Skeleton className="h-4 w-1/2" />
+      </div>
     ) : null;
   }
 

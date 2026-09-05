@@ -12,7 +12,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertIcon, AlertTitle } from '@/components/ui/alert';

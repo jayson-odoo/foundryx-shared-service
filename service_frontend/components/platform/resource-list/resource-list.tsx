@@ -21,7 +21,6 @@ import {
   LayoutGrid,
   List,
   Plus,
-  Search,
   Upload,
   X,
 } from 'lucide-react';
@@ -52,7 +51,6 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from '@/components/ui/hover-card';
-import { Input } from '@/components/ui/input';
 import {
   Popover,
   PopoverContent,
@@ -60,6 +58,7 @@ import {
 } from '@/components/ui/popover';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { ListSearchInput } from '@/components/platform/list-search-input';
 import { PageHeader } from '@/components/platform/page-header';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { BulkActions } from '@/components/platform/resource-actions/bulk-actions';
@@ -448,27 +447,17 @@ export function ResourceList<T extends object>({
           <CardHeader className="flex-wrap gap-3 py-4">
             <CardHeading>
               <div className="flex flex-wrap items-center gap-2.5">
-                <div className="relative">
-                  <Search className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-                  <Input
-                    className="ps-9 w-64"
-                    placeholder={config.searchPlaceholder ?? 'Search…'}
-                    value={list.search}
-                    onChange={(e) => list.setSearch(e.target.value)}
-                  />
-                  {list.search && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      mode="icon"
-                      className="absolute end-1 top-1/2 -translate-y-1/2 size-7"
-                      onClick={() => list.setSearch('')}
-                      aria-label="Clear search"
-                    >
-                      <X />
-                    </Button>
-                  )}
-                </div>
+                <ListSearchInput
+                  className="w-64"
+                  value={list.search}
+                  onChange={list.setSearch}
+                  placeholder={config.searchPlaceholder ?? 'Search…'}
+                  ariaLabel={config.searchPlaceholder ?? 'Search'}
+                  // T6 fix round 1 item 7 - also gate the settling spinner
+                  // on the list's OWN in-flight fetch (sort/filter/page
+                  // changes, not just search), same 250ms delay gate.
+                  busy={list.isLoading}
+                />
 
                 {config.searchHints && config.searchHints.length > 0 && (
                   <HoverCard openDelay={100} closeDelay={50}>

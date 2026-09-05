@@ -74,8 +74,12 @@ describe('Settings > General - deferred actions grace windows', () => {
       fireEvent.click(saveButtons[saveButtons.length - 1]);
     });
 
+    // The component now goes through `lib/toast` (AC-DLA-51), which always
+    // passes its default options (`duration: Infinity, closeButton: true`
+    // for an error) alongside the message.
     expect(toastError).toHaveBeenCalledWith(
       'Delete countdown must be a whole number between 1 and 60.',
+      { duration: Infinity, closeButton: true },
     );
     expect(setTenantSettings).not.toHaveBeenCalled();
   });

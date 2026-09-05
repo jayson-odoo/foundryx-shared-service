@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { Ban, RotateCcw } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { emailLogService } from '@/services/email-log-service';
 import type { EmailLogListItem } from '@/types/templates';

@@ -46,14 +46,18 @@ export function NotificationsSheet({ trigger }: { trigger: ReactNode }) {
   return (
     <Sheet>
       <SheetTrigger asChild>{trigger}</SheetTrigger>
-      <SheetContent className="p-0 gap-0 sm:w-[500px] sm:max-w-none inset-5 start-auto h-auto rounded-lg p-0 sm:max-w-none [&_[data-slot=sheet-close]]:top-4.5 [&_[data-slot=sheet-close]]:end-5">
+      {/* AC-DLA-52/55 fix round 1 item 5: top/bottom insets only (never a
+          uniform inset shorthand) leave the shared side variant's end-0 in
+          charge of the horizontal edge; max-h caps off the DYNAMIC viewport
+          so mobile Safari's toolbar never eats the bottom of the sheet. */}
+      <SheetContent className="p-0 gap-0 sm:w-[500px] sm:max-w-none top-5 bottom-5 h-auto max-h-[calc(100dvh-2.5rem)] start-auto rounded-lg p-0 sm:max-w-none [&_[data-slot=sheet-close]]:top-4.5 [&_[data-slot=sheet-close]]:end-5">
         <SheetHeader className="mb-0">
           <SheetTitle className="p-3">
             Notifications
           </SheetTitle>
         </SheetHeader>
         <SheetBody className="p-0">
-          <ScrollArea className="h-[calc(100vh-10.5rem)]">
+          <ScrollArea className="h-[calc(100dvh-10.5rem)]">
             <Tabs defaultValue="all" className="w-full relative">
               <TabsList variant="line" className="w-full px-5 mb-5">
                 <TabsTrigger value="all">All</TabsTrigger>

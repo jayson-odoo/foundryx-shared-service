@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { History, LoaderCircleIcon, RotateCcw } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';

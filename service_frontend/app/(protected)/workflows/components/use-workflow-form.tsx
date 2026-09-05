@@ -9,7 +9,7 @@ import {
   Workflow as WorkflowIcon,
 } from 'lucide-react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type {
   Workflow,
   WorkflowDefinition,

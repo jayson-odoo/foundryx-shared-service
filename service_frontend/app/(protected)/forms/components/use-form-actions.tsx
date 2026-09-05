@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Archive, ArchiveRestore, CloudOff, CloudUpload, Pencil, Trash2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { FormPublishError, formService } from '@/services/form-service';
 import type { FormRow } from '@/types/forms';

@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { LoaderCircleIcon, Pencil, Trash2, Upload } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { AVATAR_ACCEPT, validateAvatarFile } from '@/lib/image-crop';
 import {
   DropdownMenu,

@@ -1,7 +1,7 @@
 'use client';
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { QuickReply } from '@/types/omnichannel';
 import { useQuickReplies } from '@/hooks/use-quick-replies';
 import type {

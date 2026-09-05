@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Check, ChevronDown, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
@@ -53,6 +53,14 @@ export function MultiSelect({
   disabled = false,
 }: MultiSelectProps) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  // Clear the typed search whenever the popover closes (same reasoning as
+  // SearchSelect: a programmatic close via a select doesn't fire
+  // onOpenChange, so the next open's text would otherwise append to stale
+  // query text).
+  useEffect(() => {
+    if (!open) setQuery('');
+  }, [open]);
 
   const selected = options.filter((o) => value.includes(o.value));
   const toggle = (v: string) =>
@@ -106,7 +114,7 @@ export function MultiSelect({
         align="start"
       >
         <Command>
-          <CommandInput placeholder={searchPlaceholder} />
+          <CommandInput placeholder={searchPlaceholder} value={query} onValueChange={setQuery} />
           <div className="flex items-center justify-between border-b border-border px-2 py-1.5">
             <span className="text-xs text-muted-foreground">
               {value.length} selected

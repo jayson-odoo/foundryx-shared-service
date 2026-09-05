@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { KeyRound, MailCheck, Pencil, RotateCcw, Send, Trash2, UserCog } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { userService } from '@/services/user-service';
 import { useImpersonation } from '@/hooks/use-impersonation';

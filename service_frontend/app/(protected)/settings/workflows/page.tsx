@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { workflowService } from '@/services/workflow-service';
 import { Button } from '@/components/ui/button';
 import {

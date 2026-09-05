@@ -27,7 +27,7 @@ import type {
 } from '@/types/forms';
 import { useState } from 'react';
 import { Download } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { countryName } from './countries';
 import { TableField } from './table-field';
 import { useFileFetcher, useSubmissionId } from './submission-context';
