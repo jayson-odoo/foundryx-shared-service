@@ -953,6 +953,133 @@ def test_a_stale_cursor_missing_sql_key_columns_is_treated_as_unknown_not_a_resh
     db.close()
 
 
+def test_a_schedule_only_save_leaves_hashes_and_the_cursor_untouched(
+    session_factory, monkeypatch, consumer
+):
+    """A schedule-only ``update_task`` save (``incrementalMinutes``/
+    ``reconcileMode``/``reconcileAt`` changed, everything else - query,
+    keyColumns, watermarkColumn, comparedColumns, connectionId -
+    byte-identical) is NOT in ``POPULATION_DEFINING_KEYS`` and does not
+    touch ``watermarkColumn`` either, so neither the round-2 "clear the
+    pass" branch nor the round-5 "keyColumns reshape resets identity"
+    branch may fire: ``ac_row_hash`` rows, ``cursor_json`` (mark, lastKey,
+    pass) and ``AcWatermark.last_modified_at`` must all survive a pure
+    schedule edit byte-for-byte.
+
+    ``update_task`` (unlike a run) re-validates the watermark column
+    against a LIVE preview at save time - a plain TEXT sqlite column (this
+    file's usual ``_source_engine``) always reads back as ``str``, which
+    the watermark check rejects, so this test builds its own typed
+    (``sqlite3.PARSE_DECLTYPES``) engine, exactly like
+    ``test_autocount_document_mapping.py``'s ``_source_engine_typed``."""
+    import sqlite3
+
+    from modules.autocount.services.etl_service import EtlService
+
+    db = session_factory()
+    engine = sa.create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False, "detect_types": sqlite3.PARSE_DECLTYPES},
+        poolclass=StaticPool,
+    )
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE debtor (acc_no TEXT PRIMARY KEY, company_name TEXT, "
+            "email TEXT, last_modified TIMESTAMP)"
+        )
+    sql_conn = _connection(
+        db, "sql_database",
+        {"dbType": "postgresql", "host": "db.example.com", "port": "5432",
+         "database": DB_NAME, "username": "readonly"},
+        {"password": PASSWORD},
+    )
+    RUNTIME.put_engine(sql_conn.id, engine)
+    company = _company(db)
+    sorento = _connection(
+        db, "sorento", {"baseUrl": "https://sorento.example.com"}, {"apiKey": "k"}
+    )
+    CompanyService(db).set_sink_target(
+        DEFAULT_TENANT_ID, company.id, sink_impl="sorento",
+        sink_connection_id=sorento.id, sorento_company_code=CODE,
+    )
+    config = (
+        db.query(AcEntityConfig)
+        .filter(
+            AcEntityConfig.tenant_id == DEFAULT_TENANT_ID,
+            AcEntityConfig.company_id == company.id,
+            AcEntityConfig.entity_type == ENTITY_CUSTOMER,
+        )
+        .one()
+    )
+    config.source_impl = "sql_db"
+    config.source_config = {
+        "connectionId": sql_conn.id, "query": QUERY, "keyColumns": ["acc_no"],
+        "watermarkColumn": "last_modified", "comparedColumns": [],
+        "incrementalMinutes": 15, "reconcileMode": "dailyAt", "reconcileAt": "02:00",
+    }
+    config.result_columns = list(RESULT_COLUMNS)
+    config.etl_status = ETL_STATUS_ACTIVE
+    db.commit()
+    _map_customer(db, company)
+    company_id = company.id
+
+    with engine.begin() as conn:
+        for i in range(5):
+            conn.execute(
+                sa.text("INSERT INTO debtor VALUES (:acc, :name, :email, :lm)"),
+                {
+                    "acc": f"300-B{i:04d}", "name": f"Company {i}", "email": f"c{i}@x.com",
+                    "lm": datetime(2026, 8, 1, 0, i + 1, 0),
+                },
+            )
+
+    job1 = _run(db, company_id, RUN_MODE_INCREMENTAL)
+    assert job1.status == JOB_DONE
+    hashes_before = _hashes(db, company_id)
+    assert len(hashes_before) == 5
+
+    config_before = _config_row(db, company_id)
+    source_config_before = dict(config_before.source_config)
+    watermark_before = _watermark_row(db, company_id)
+    cursor_before = dict(watermark_before.cursor_json or {})
+    last_modified_before = watermark_before.last_modified_at
+
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER,
+        {
+            **source_config_before,
+            "incrementalMinutes": 30,
+            "reconcileMode": "dailyAt",
+            "reconcileAt": "03:00",
+        },
+    )
+
+    hashes_after = _hashes(db, company_id)
+    assert hashes_after == hashes_before, (
+        "a schedule-only save must never touch ac_row_hash"
+    )
+
+    watermark_after = _watermark_row(db, company_id)
+    cursor_after = watermark_after.cursor_json or {}
+    assert cursor_after.get(CURSOR_MARK) == cursor_before.get(CURSOR_MARK), (
+        "a schedule-only save must never touch the top-level sqlWatermark"
+    )
+    assert cursor_after.get("lastKey") == cursor_before.get("lastKey"), (
+        "a schedule-only save must never touch the top-level lastKey"
+    )
+    assert cursor_after.get("pass") == cursor_before.get("pass"), (
+        "a schedule-only save must never clear/touch cursor_json['pass']"
+    )
+    assert watermark_after.last_modified_at == last_modified_before, (
+        "a schedule-only save must never touch AcWatermark.last_modified_at"
+    )
+
+    config_after = _config_row(db, company_id)
+    assert config_after.source_config.get("incrementalMinutes") == 30
+    assert config_after.source_config.get("reconcileAt") == "03:00"
+    db.close()
+
+
 def test_a_delete_guard_failure_clears_the_pass_for_the_next_reconcile(
     session_factory, monkeypatch, consumer
 ):
