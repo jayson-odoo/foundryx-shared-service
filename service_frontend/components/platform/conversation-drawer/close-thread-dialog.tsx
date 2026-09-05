@@ -6,7 +6,7 @@
  * chosen (foolproof-UI - no partial/invalid submit is possible).
  */
 import { useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 import { SearchSelect, type SearchSelectOption } from '@/components/platform/search-select';
 import { Button } from '@/components/ui/button';

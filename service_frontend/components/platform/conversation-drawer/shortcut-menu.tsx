@@ -9,7 +9,7 @@
  * typical Agent should be able to fire a shortcut without a builder grant).
  */
 import { useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 import { SearchSelect, type SearchSelectOption } from '@/components/platform/search-select';
 import { useCan } from '@/hooks/use-can';

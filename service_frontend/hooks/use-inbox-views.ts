@@ -5,7 +5,7 @@
  * the save-view dialog. Mirrors `use-contact-tags.ts` / `use-close-reasons.ts`.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/api-client';
 import { inboxViewService } from '@/services/inbox-view-service';
 import type { CreateInboxViewInput, InboxView, UpdateInboxViewInput } from '@/types/omnichannel';

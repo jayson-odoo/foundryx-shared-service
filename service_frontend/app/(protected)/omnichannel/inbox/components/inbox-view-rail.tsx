@@ -22,6 +22,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -154,6 +155,7 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
               type="button"
               onClick={() => select(e)}
               className={cn(
+                PRESSED_CLASS,
                 'flex items-center rounded-md px-2.5 py-1.5 text-start text-sm font-medium transition-colors hover:bg-accent',
                 selectedKey === e.key && 'bg-accent text-accent-foreground',
               )}
@@ -176,6 +178,7 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
                   type="button"
                   onClick={() => select(e)}
                   className={cn(
+                    PRESSED_CLASS,
                     'flex items-center gap-2 rounded-md px-2.5 py-1.5 text-start text-sm transition-colors hover:bg-accent',
                     selectedKey === e.key && 'bg-accent font-medium text-accent-foreground',
                   )}
@@ -217,7 +220,7 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
                   <button
                     type="button"
                     onClick={() => select(e)}
-                    className="min-w-0 flex-1 truncate rounded-md px-1.5 py-1 text-start text-sm"
+                    className={cn(PRESSED_CLASS, 'min-w-0 flex-1 truncate rounded-md px-1.5 py-1 text-start text-sm')}
                     data-testid={`rail-view-${e.viewId}`}
                   >
                     {e.label}
