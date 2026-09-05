@@ -88,25 +88,26 @@ function DropGap({
     );
   }
 
-  // Fixed height at all times (T8 animation review, AC-DLA-67 item 1): the
-  // gap used to animate `height`/`margin` between rest/dragActive/isOver,
-  // which are LAYOUT properties - animating them during a live dnd-kit drag
-  // forces a reflow on every frame, fighting the drag's own transform.
-  // Reveal is now opacity + colour only (compositor-only properties), so the
-  // drop target's footprint never changes - only its visibility does.
+  // Zero rest footprint at all times (T8 fix round 1, item 1): the wrapper
+  // keeps the original `-my-1 h-2` net-0px box every rest/dragActive/isOver
+  // state shares, so a 4-block template never grows dead space. The visible
+  // drop target is an INNER absolutely-positioned overlay, revealed via
+  // opacity + colour only (compositor-only properties, no layout) - it
+  // overlaps neighbouring content instead of pushing it, so the drag's own
+  // transform never fights a live reflow.
   return (
-    <div
-      ref={setNodeRef}
-      data-testid={`drop-gap-${columnId}-${index}`}
-      className={cn(
-        'my-1 h-6 rounded border border-dashed transition-[opacity,background-color] duration-(--duration-fast) ease-(--ease-standard)',
-        isOver
-          ? 'border-primary bg-primary/10 opacity-100'
-          : dragActive
-            ? 'border-primary/40 bg-primary/5 opacity-100'
-            : 'border-transparent bg-transparent opacity-0',
-      )}
-    />
+    <div ref={setNodeRef} data-testid={`drop-gap-${columnId}-${index}`} className="relative -my-1 h-2">
+      <div
+        className={cn(
+          'absolute inset-x-0 top-1/2 h-6 -translate-y-1/2 rounded border border-dashed transition-[opacity,background-color,border-color] duration-(--duration-fast) ease-(--ease-standard)',
+          isOver
+            ? 'border-primary bg-primary/10 opacity-100'
+            : dragActive
+              ? 'border-primary/40 bg-primary/5 opacity-100'
+              : 'border-transparent bg-transparent opacity-0',
+        )}
+      />
+    </div>
   );
 }
 
