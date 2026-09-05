@@ -117,3 +117,64 @@ describe('writeRowsForSave preserves isEnabled and the lineRows tri-state', () =
     expect(enabledLine?.isEnabled).toBe(true);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// B1-b (final reviewer pass) - a disabled mapping row (isEnabled=false, e.g.
+// after migration 0012's disable-off-preview repair) can never be
+// re-enabled from the UI today: fixing its source column leaves
+// isEnabled=false and the field silently pushes nothing forever. Contract:
+// in `onChangeRow`, a patch that sets `sourcePath` to a column PRESENT in
+// the scope's `acFields` revives the row (`isEnabled: true`); a patch to a
+// column NOT in `acFields` leaves it disabled - the operator sees it stay
+// greyed until they pick a real column.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('onChangeRow revives a disabled row once its source column resolves (B1-b)', () => {
+  it('fixing sourcePath to a column present in acFields flips isEnabled back to true', () => {
+    const { result } = renderHook(() => useMappingDraft(documentView([
+      lineRow({
+        sourcePath: 'stale_col', sorentoField: 'discount', canonicalField: 'discount',
+        isEnabled: false,
+      }),
+    ])));
+    const idx = result.current.line?.rows.findIndex((r) => r.sorentoField === 'discount') ?? -1;
+    expect(idx).toBeGreaterThanOrEqual(0);
+    act(() => {
+      // 'discount' IS in documentView's lineAcFields - a real, pickable column.
+      result.current.line?.onChangeRow(idx, { sourcePath: 'discount' });
+    });
+    const row = result.current.line?.rows[idx];
+    expect(row?.isEnabled).toBe(true);
+  });
+
+  it('fixing sourcePath to a column NOT in acFields leaves the row disabled', () => {
+    const { result } = renderHook(() => useMappingDraft(documentView([
+      lineRow({
+        sourcePath: 'stale_col', sorentoField: 'discount', canonicalField: 'discount',
+        isEnabled: false,
+      }),
+    ])));
+    const idx = result.current.line?.rows.findIndex((r) => r.sorentoField === 'discount') ?? -1;
+    act(() => {
+      // 'still_bogus' is NOT in documentView's lineAcFields (['DtlKey', 'discount']).
+      result.current.line?.onChangeRow(idx, { sourcePath: 'still_bogus' });
+    });
+    const row = result.current.line?.rows[idx];
+    expect(row?.isEnabled).toBe(false);
+  });
+
+  it('writeRowsForSave() emits the revived flag after a fixed sourcePath', () => {
+    const { result } = renderHook(() => useMappingDraft(documentView([
+      lineRow({
+        sourcePath: 'stale_col', sorentoField: 'discount', canonicalField: 'discount',
+        isEnabled: false,
+      }),
+    ])));
+    const idx = result.current.line?.rows.findIndex((r) => r.sorentoField === 'discount') ?? -1;
+    act(() => {
+      result.current.line?.onChangeRow(idx, { sourcePath: 'discount' });
+    });
+    const body = result.current.writeRowsForSave();
+    const revived = body.lineRows?.find((r) => r.sorentoField === 'discount');
+    expect(revived?.isEnabled).toBe(true);
+  });
+});

@@ -184,10 +184,10 @@ describe('autocount service (real boundary)', () => {
     apiFetch.mockResolvedValue({ entityType: 'sales_order', rows: [], sorentoFields: [], acFields: [] });
     await realAutocountService.updateMapping('c1', 'sales_order', {
       rows: [
-        { sourcePath: 'DocNo', transform: 'string', sorentoField: 'so_number', isEnabled: true } as never,
+        { sourcePath: 'DocNo', transform: 'string', sorentoField: 'so_number', isEnabled: true },
       ],
       lineRows: [
-        { sourcePath: 'discount', transform: 'decimal', sorentoField: 'discount', scope: 'line', isEnabled: false } as never,
+        { sourcePath: 'discount', transform: 'decimal', sorentoField: 'discount', scope: 'line', isEnabled: false },
       ],
     });
     const [, init] = apiFetch.mock.calls[0];

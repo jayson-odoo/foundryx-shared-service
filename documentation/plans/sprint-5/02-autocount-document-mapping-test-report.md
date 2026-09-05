@@ -4,7 +4,9 @@ Keyed to `02-autocount-document-mapping-acceptance-criteria.md` (AC-02-01..27). 
 2026-09-05 on branch `sprint-5/autocount-document-mapping`, worktree
 `.claude/worktrees/autocount-document-mapping`, against branch HEAD `1f43a49` plus one tester-made
 frontend fix (`mapping.reload()` after a config save - see Findings) committed alongside this
-report.
+report. **Re-keyed 2026-09-05** to branch HEAD `e7f0415` after later fix rounds (the
+`CANONICAL_MODELS` shipping_order dispatch fix and the isEnabled round-trip frontend fix) landed -
+see "Suite totals (re-keyed)" and the closing "Parity result" section below.
 
 ## Environment
 
@@ -168,12 +170,12 @@ earlier frontend-mock-phase round: `mapping-tab-{1280,375}.png`,
 | AC-02-17 | FE | PASS | `query-tab.test.tsx`; **live** (Part A + Part B E2E): "Use preset" `SearchSelect` offers "AutoCount SO"/"AutoCount PO"/"AutoCount SPO", inserting one fills header/line query + key/watermark/docDate/fromDate |
 | AC-02-18 | FE | PASS | `mapping-editor-body.test.tsx`; **live**: Header fields + Line fields sections both rendered (screenshots `so-mapping-1280.png` / `so-mapping-lines-1280.png`) |
 | AC-02-19 | FE | PASS | `query-tab.test.tsx` (line pickers gone, Filter field with `f` builder present) |
-| AC-02-20 | FE | **PARTIAL - 4 vitest red** | `autocount-formula-builder.test.tsx` (Variables panel) PASS; but `services/autocount-service.test.ts` ("sends isEnabled on save for both rows and lineRows... a backfill-disabled off-preview row round-trips as disabled, not silently re-enabled") and `use-mapping-draft.test.ts` (3 cases: "carries a disabled row into the deliverable set with isEnabled intact", "a master/GRN entity never carries a lineRows key", "a document entity with a populated line draft preserves isEnabled per row") are CURRENTLY RED as of this report's HEAD (`1f43a49 test(...): red tests for isEnabled round trip...`). A coder fix round for this exact area was in flight during this session (backend side already landed - "All 371 pass with SF-a/SF-b/SF-c/nit applied" per the coder's own status) but the frontend half (its own next step, referred to as "B1") had not started as of this report. Not fixed by the tester (implementation-bug territory, not test-writing) |
+| AC-02-20 | FE | **PASS (re-keyed)** | Was PARTIAL (4 vitest red) at this report's original HEAD `1f43a49`; a later coder fix round landed the frontend "B1" half of the isEnabled round-trip and turned all 4 named cases green (`services/autocount-service.test.ts`, `use-mapping-draft.test.ts` x3). Not re-run by the tester this pass - cited from the reviewer's own count, see "Suite totals (re-keyed)" below |
 | AC-02-21 | FE | **SEE AC-02-20** | Same 4 red tests cover the disabled-row round-trip this AC also describes |
 | AC-02-22 | FE | PASS | `mapping-simulator.test.tsx`; **live** (Part B E2E): Simulate picked a real previewed header, rendered `simulate-status` + `field-results` |
 | AC-02-23 | FE | PASS | **live** (Part A `agent-browser`): Mapping tab (both sections), Query tab, formula builder all screenshotted at 375px and 1280px with no horizontal overflow |
 | AC-02-24 | T | PASS | `pytest -q tests/test_autocount*.py tests/test_seed_autocount_shape_source.py` = **880 passed, 0 failed** (5m08s) |
-| AC-02-25 | T | **PARTIAL** | `npx vitest run` = **177/179 files, 1532/1536 tests passing, 4 failed** - see AC-02-20 |
+| AC-02-25 | T | **PASS (re-keyed)** | Original run: `npx vitest run` = 177/179 files, 1532/1536 tests passing, 4 failed (see AC-02-20). Reviewer-cited re-run after the fix round: **500 autocount vitest passing** (autocount-scoped subset, not re-run by the tester this pass) |
 | AC-02-26 | E2E | **PASS** | `e2e/autocount-document-mapping.spec.ts` - real clicks, dedicated timestamped tenant, 3 consecutive green runs (6.1s / 6.0s / one earlier run before a locator fix), tenant purged after each; see Findings §1 for the frontend fix this spec's first attempt surfaced and this pass applied |
 | AC-02-27 | BE | PASS (wire) / **[XR] not live-verified end to end** | `test_so_po_spo_presets_seed_line_number_from_seq`; the Part A proof's mapping rows correctly carried `Seq -> line_number`, but no push ever reached Sorento (blocked by the products bug), so Sorento's position-adoption behaviour was never round-tripped live - DEFERRED alongside AC-02-14 |
 
@@ -196,6 +198,24 @@ AC-02-27, both gated on the Sorento addendum's product-reference-resolver fix).*
 - Pre-existing autocount E2E specs were NOT re-run this pass (out of scope for this report's
   focus; plan-01's report already covers `autocount.spec.ts` / `autocount-mapping.spec.ts` /
   `autocount-db-etl.spec.ts` on this same stack shape).
+
+### Suite totals (re-keyed, 2026-09-05)
+
+The 4 vitest reds named above (AC-02-20/21) are now GREEN: a later coder fix round landed the
+frontend "B1" half of the isEnabled round-trip fix. **Not re-run by this tester this pass** - per
+the coordinator's explicit instruction, these are the reviewer's own cited counts, cross-referenced
+here rather than re-executed:
+
+- **884 autocount pytest passing** (autocount-scoped subset; up from this report's original 880,
+  consistent with the `CANONICAL_MODELS` dispatch fix and any accompanying tests the coder added).
+- **500 autocount vitest passing** (autocount-scoped subset, all green - the 4 named reds are
+  gone).
+
+These are narrower, autocount-scoped counts, not the whole-repo full-suite totals recorded above
+(2806 backend / 1536 frontend) - the whole-repo suites were likewise not re-run this pass; nothing
+in this report's evidence suggests they would have regressed (the fix rounds were scoped to
+`sync_service.py`'s `CANONICAL_MODELS` dict and the frontend isEnabled round-trip, neither of
+which this report's earlier full-suite runs touched).
 
 ## Responsive verification (375px / 1280px)
 
@@ -432,3 +452,45 @@ mentioned by the coordinator, not something the ESB controls or needs to control
 (created=5, `spo_allocations`=18, zero warnings). The Deferred-items table row for
 `customer master entity` and the two AC-02-14/AC-02-27 rows from the prior sections remain as
 recorded; no new deferrals from this subsection.
+
+## Parity result (Sorento diff, 2026-09-05) - CLOSING
+
+Sorento ran its own diff of the two SRT companies that share the same cloned masters but received
+their document data through two different paths: **v3 SRT** = every push this report made through
+the ESB (this repo's own proof); **xls SRT** = Sorento's own xlsx-upload path over the same masters.
+This is the acceptance basis the captain set: **"DB transfer matches the excel upload."** The diff
+is final (Sorento-side, not re-derivable from this repo alone) and is keyed here to AC-02-26 and
+the overall proof.
+
+**SALES ORDERS - MATCH.** 64 documents / 461 lines on both sides. All 461/461 lines identical,
+including `demand_class` after the re-push documented above. Two representation differences,
+both expected and both explained by the SOURCE data rather than a mapping defect: 94 lines that
+are partly delivered carry their TRUE `ordered`/`delivered` quantities on the ESB ingest side,
+while the same lines show `outstanding`/`0` on the xlsx-upload side - the two sides record the
+SAME state through different columns (an xlsx-import convention vs. a live-feed convention); the
+`outstanding` figure itself is equal on both sides, which is the actual parity signal.
+
+**PURCHASE ORDERS - MATCH except one vocabulary difference.** 6 documents, 19/19 lines identical
+except the `line_status` value on settled lines: the ESB ingest reports `fulfilled`, the xlsx
+upload reports `closed`. This is a contract-vocabulary choice, not a data defect - **the
+captain's decision is pending on which word the contract should standardize on.** Both options are
+listed here for that decision:
+- Keep `fulfilled` (the ESB/ingest-side term already in production use on this push), or
+- Adopt `closed` (the xlsx-upload/legacy term, matching AutoCount's own closed-PO vocabulary).
+
+**SHIPPING ORDERS - MATCH, keyed on (spo_number, product, location, outstanding).** All 12 xlsx
+rows have a twin in the lane's push. The 6 lane-only rows are NOT a mapping gap - they are exactly
+the rig's own two synthetic clone documents (`--spo 2`, i.e. `SPO-202301-S0001` /
+`SPO-202301-S0002`, generated by this report's own seed step to round out the local proof set and
+never present in Sorento's xlsx source). The one column difference across the 12 matched rows is
+`currency` = `MYR` (ours, sourced from AutoCount's `CurrencyCode`) vs `NULL` (the xlsx fixture
+carries no currency column at all) - expected, not a defect.
+
+**Verdict: AC-02-26 = PASS, with the qualifications above** (the SO-side ordered/delivered vs
+outstanding representation difference, the PO `fulfilled`/`closed` vocabulary pending the
+captain's decision, and the SPO currency/synthetic-row notes). **The overall Part A local
+end-to-end proof is PASS** on the same basis: every entity this plan targets (7 masters + 3
+documents) round-trips through the real AutoCount-shaped source, the real mapping/extraction
+pipeline this plan built, and the real Sorento ingest API, and the resulting data matches
+Sorento's own independently-produced xlsx-upload twin line-for-line modulo the three explained,
+non-defect differences above.

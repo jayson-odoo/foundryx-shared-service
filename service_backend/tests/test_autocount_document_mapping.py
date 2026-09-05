@@ -2855,3 +2855,97 @@ def test_validate_source_config_allows_disjoint_key_and_watermark_columns():
         line_columns={"dtl_key": "string", "item_code": "string"},
     )
     assert "keyColumns" not in errors, f"unexpected keyColumns error: {errors}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SF2 (final reviewer pass) - the activation preview must warn when a saved
+# (legacy) source_config still has the watermark column inside keyColumns -
+# `validate_source_config` blocks this at SAVE time going forward (see the
+# `test_validate_source_config_rejects_watermark_column_as_a_key_column`
+# test above), but an EXISTING task saved before that guard existed carries
+# the bad shape in the DB right now and needs a visible, non-blocking
+# warning on its activation preview so the operator notices and fixes it.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _master_config(db, company, connection_id: str, entity_type: str, **overrides) -> "AcEntityConfig":
+    """A MASTER entity's (non-document) task config, built directly - the
+    real bug this pins was on `product` (Item), which has no single-key
+    document constraint (`SqlDbSource` requires exactly one key column for a
+    DOCUMENT task only). Uses the default (logging) sink so `preview_task`
+    takes the non-previewable branch and never has to actually run this
+    query against a real connection.
+    """
+    config = AcEntityConfig(
+        tenant_id=DEFAULT_TENANT_ID,
+        company_id=company.id,
+        entity_type=entity_type,
+        source_impl=SOURCE_IMPL_SQL_DB,
+        etl_status=ETL_STATUS_DRAFT,
+    )
+    source_config = {
+        "connectionId": connection_id,
+        "query": "SELECT AutoKey, ItemCode, LastModified FROM Item",
+        "keyColumns": ["AutoKey"],
+        "watermarkColumn": "LastModified",
+        "comparedColumns": [],
+    }
+    source_config.update(overrides)
+    config.source_config = source_config
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+def test_preview_warns_when_watermark_column_is_inside_key_columns(session_factory):
+    """SF2 (final reviewer pass) - Sorento's real product-master task was
+    saved with `keyColumns=["AutoKey", "LastModified"]` - the watermark
+    column doubling as part of the row's own identity, so every reconcile
+    minted a "new" ref for the same real Item. `validate_source_config`
+    blocks this shape going forward at SAVE time (see
+    `test_validate_source_config_rejects_watermark_column_as_a_key_column`
+    above), but an EXISTING task saved before that guard existed carries the
+    bad shape in the DB right now - the activation preview must surface
+    `warnings.watermarkInKey` naming the offending column, non-blocking, so
+    the operator notices and fixes it.
+    """
+    from modules.autocount.canonical.masters import ENTITY_PRODUCT
+
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_SF2", name="src")
+    company = _company(db, conn.id, database="AED_SF2", name="SF2 Co")
+    _master_config(
+        db, company, conn.id, entity_type=ENTITY_PRODUCT,
+        keyColumns=["AutoKey", "LastModified"], watermarkColumn="LastModified",
+    )
+
+    _, preview = EtlService(db).preview_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    warnings = preview.get("warnings") or {}
+    assert warnings.get("watermarkInKey") == "LastModified", (
+        f"a legacy watermark-inside-keyColumns config must warn "
+        f"watermarkInKey='LastModified' - got {warnings}"
+    )
+    db.close()
+
+
+def test_preview_no_watermark_warning_for_a_normal_config(session_factory):
+    """Control: a task where the watermark column is NOT also a key column
+    must never carry the warning - this is the ordinary, correct shape."""
+    from modules.autocount.canonical.masters import ENTITY_PRODUCT
+
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database="AED_SF2B", name="src")
+    company = _company(db, conn.id, database="AED_SF2B", name="SF2 Co B")
+    _master_config(
+        db, company, conn.id, entity_type=ENTITY_PRODUCT,
+        keyColumns=["AutoKey"], watermarkColumn="LastModified",
+    )
+
+    _, preview = EtlService(db).preview_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    warnings = preview.get("warnings") or {}
+    assert "watermarkInKey" not in warnings, f"unexpected watermarkInKey warning: {warnings}"
+    db.close()
+

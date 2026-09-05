@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type {
   AutocountEtlSourceConfig,
@@ -279,5 +279,67 @@ describe('QueryTab - DB company connection lock (plan sprint-5/01, AC-01-19)', (
   it('an API company with no SQL connection still gets the warning (regression pin)', () => {
     renderQueryTab({ entityType: 'customer', cfg: config({ lineQuery: null }), connections: [] });
     expect(screen.getByTestId('no-sql-connection')).toBeInTheDocument();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SF3/SF4 (final reviewer pass) - the key-columns MultiSelect / watermark
+// SearchSelect withhold each other's chosen column (BL-SS-052's foolproof
+// half) by filtering the SHARED OPTIONS list. That's correct for a NORMAL
+// save, but a LEGACY config saved before the guard existed can have the
+// watermark column sitting INSIDE keyColumns - and today the exclusion
+// filters that value out of BOTH pickers' options, which SILENTLY HIDES the
+// already-selected value entirely (MultiSelect's pills + SearchSelect's
+// trigger label both derive from `options`, not from `value` directly) -
+// the operator can't even see what's wrong, let alone fix it by
+// deselecting. Only UNSELECTED values should ever be excluded.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('QueryTab - key/watermark exclusion keeps an already-selected offending column visible (SF3/SF4)', () => {
+  function legacyCfg() {
+    return config({
+      keyColumns: ['DocKey', 'LastModified'],
+      watermarkColumn: 'LastModified',
+    });
+  }
+
+  it('SF3: the key-columns MultiSelect still shows a pill for a legacy watermark-inside-keyColumns value', () => {
+    renderQueryTab({
+      cfg: legacyCfg(),
+      preview: successPreview(['DocKey', 'DocNo', 'Status', 'LastModified']),
+    });
+    const keyColumnsLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Key columns'),
+    );
+    const keyColumnsBox = keyColumnsLabel.parentElement as HTMLElement;
+    expect(within(keyColumnsBox).getByText('LastModified')).toBeInTheDocument();
+  });
+
+  it('SF3: the watermark SearchSelect still shows its selected value, not the "None" placeholder, when that value is also (legacy) a key column', () => {
+    renderQueryTab({
+      cfg: legacyCfg(),
+      preview: successPreview(['DocKey', 'DocNo', 'Status', 'LastModified']),
+    });
+    const watermarkPicker = screen.getByLabelText('Watermark column');
+    expect(watermarkPicker).toHaveTextContent('LastModified');
+  });
+
+  it('SF4 (no test today, control): in the NORMAL (non-legacy) state the exclusion still works both ways - a chosen watermark is not offered as a key-column choice, and a chosen key column is not offered as a watermark choice', () => {
+    renderQueryTab({
+      cfg: config({ keyColumns: ['DocKey'], watermarkColumn: 'LastModified' }),
+      preview: successPreview(['DocKey', 'DocNo', 'Status', 'LastModified']),
+    });
+    // Key-columns popover: LastModified (the watermark) must not be an
+    // available option to add.
+    const keyColumnsLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Key columns'),
+    );
+    const keyColumnsBox = keyColumnsLabel.parentElement as HTMLElement;
+    fireEvent.click(within(keyColumnsBox).getByRole('combobox'));
+    expect(screen.queryByRole('option', { name: 'LastModified' })).not.toBeInTheDocument();
+
+    // Watermark popover: DocKey (the key column) must not be an available
+    // option to pick as the watermark.
+    fireEvent.click(screen.getByLabelText('Watermark column'));
+    expect(screen.queryByRole('option', { name: 'DocKey' })).not.toBeInTheDocument();
   });
 });
