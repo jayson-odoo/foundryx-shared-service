@@ -306,3 +306,12 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   "share source refs" goal), or (c) Sorento receiving the SRT-side masters export directly rather
   than via a second ESB company. Recommend picking one of these explicitly rather than leaving the
   masters-twin comparison blocked on a UI limitation.
+- 2026-09-05 (LOCAL PARITY PROOF PASSED - Sorento diff v3 vs xls): SO 461/461 lines identical incl.
+  demand_class; PO 19/19 identical except settled `line_status` (`fulfilled` ingest vs `closed`
+  upload - captain to decide: ESB maps settled -> `closed`, or Sorento normalises at ingest); SPO all
+  12 xlsx rows matched, 6 lane-only rows = the rig's synthetic clones, currency MYR vs NULL expected.
+  Bugs found on the way: Sorento (a) product reference INSERT crash -> `ref_mismatch` warning
+  (root cause was the ESB proof config: watermark inside keyColumns, BL-SS-052), (b) customers
+  `credit_limit`/`payment_terms_days` schema drift -> accepted-and-ignored; ESB (c) `CANONICAL_MODELS`
+  lacked shipping_order (fixed 3dce123 + drift guard), (d) `DOCUMENT_PREREQUISITES` lacked
+  shipping_order (fixed). Sorento posts the final table on PR #670.
