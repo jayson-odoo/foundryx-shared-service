@@ -32,8 +32,10 @@ function warning(message: Message, options?: ExternalToast): string | number {
 }
 
 // Passthrough - callers already control their own duration/id for a custom
-// JSX toast (e.g. the deferred-action countdown) or a plain dismiss.
+// JSX toast (e.g. the deferred-action countdown), a plain untyped toast
+// with its own action/description (`message`), or a plain dismiss.
 const custom = sonnerToast.custom;
 const dismiss = sonnerToast.dismiss;
+const message = sonnerToast.message;
 
-export const toast = { success, error, info, warning, custom, dismiss };
+export const toast = { success, error, info, warning, custom, dismiss, message };

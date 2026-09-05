@@ -102,7 +102,10 @@ export function useResourceList<T>({
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
-  const debouncedSearch = useDebounce(search, 300);
+  // 200ms (AC-DLA-54) - `ListSearchInput`'s own settling indicator debounces
+  // at the same 200ms, so the icon settles exactly when this fetch fires.
+  // `useDebounce`'s default (300) stays for non-search callers.
+  const debouncedSearch = useDebounce(search, 200);
 
   const query = useMemo<ListQuery>(
     () => ({ page, pageSize, search: debouncedSearch, sort, filter, statusView, segment }),

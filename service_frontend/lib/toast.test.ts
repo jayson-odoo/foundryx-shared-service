@@ -11,9 +11,10 @@ const info = vi.fn();
 const warning = vi.fn();
 const custom = vi.fn();
 const dismiss = vi.fn();
+const message = vi.fn();
 
 vi.mock('sonner', () => ({
-  toast: { success, error, info, warning, custom, dismiss },
+  toast: { success, error, info, warning, custom, dismiss, message },
 }));
 
 describe('AC-DLA-51 lib/toast.ts', () => {
@@ -43,12 +44,14 @@ describe('AC-DLA-51 lib/toast.ts', () => {
     expect(warning).toHaveBeenCalledWith('Careful.', { duration: 4000 });
   });
 
-  it('custom and dismiss pass straight through to sonner', async () => {
+  it('custom, dismiss and message pass straight through to sonner', async () => {
     const { toast } = await import('./toast');
     const jsx: Parameters<typeof toast.custom>[0] = () => null as never;
     toast.custom(jsx, { id: 'x' });
     expect(custom).toHaveBeenCalledWith(jsx, { id: 'x' });
     toast.dismiss('x');
     expect(dismiss).toHaveBeenCalledWith('x');
+    toast.message('Plain toast.', { description: 'Detail.' });
+    expect(message).toHaveBeenCalledWith('Plain toast.', { description: 'Detail.' });
   });
 });

@@ -527,7 +527,7 @@ const IPAddresses = () => {
     const selectedRowIds = Object.keys(rowSelection);
 
     if (selectedRowIds.length > 0) {
-      toast(`Total ${selectedRowIds.length} are selected.`, {
+      toast.message(`Total ${selectedRowIds.length} are selected.`, {
         description: `Selected row IDs: ${selectedRowIds}`,
         action: {
           label: 'Undo',

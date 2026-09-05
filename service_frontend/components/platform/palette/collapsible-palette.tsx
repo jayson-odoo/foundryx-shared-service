@@ -8,8 +8,8 @@
  * button, click button, …) via `renderItem`; this owns search + collapse only.
  */
 import { useMemo, useState, type ReactNode } from 'react';
-import { ChevronDown, ChevronRight, Search } from 'lucide-react';
-import { Input } from '@/components/ui/input';
+import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ListSearchInput } from '@/components/platform/list-search-input';
 
 export interface PaletteCategory<T extends string> {
   id: string;
@@ -58,16 +58,7 @@ export function CollapsiblePalette<T extends string>({
 
   return (
     <div className="flex flex-col gap-2" data-testid={testId}>
-      <div className="relative">
-        <Search className="pointer-events-none absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={searchPlaceholder}
-          aria-label={searchPlaceholder}
-          className="h-8 ps-8 text-xs"
-        />
-      </div>
+      <ListSearchInput size="sm" value={query} onChange={setQuery} placeholder={searchPlaceholder} ariaLabel={searchPlaceholder} />
       <div className="flex flex-col gap-1">
         {filtered.map((category) => {
           const open = term ? true : openIds.has(category.id);
