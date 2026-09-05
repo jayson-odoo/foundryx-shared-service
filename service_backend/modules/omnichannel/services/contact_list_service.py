@@ -46,7 +46,7 @@ class ContactListService:
         self.conv = ConversationService(db)
         self.segments = ContactSegmentService(db)
 
-    def list(
+    def _build_query(
         self,
         tenant_id: str,
         workspace_id: str,
@@ -56,11 +56,12 @@ class ContactListService:
         segment_id: Optional[str] = None,
         sort_by: Optional[str] = None,
         sort_dir: str = "desc",
-        page: int = 0,
-        page_size: int = DEFAULT_PAGE_SIZE,
-    ) -> Tuple[List[ContactListItem], int]:
-        """Raises `SegmentNotFound` (router -> 404) and `FilterError` (router
-        -> 422, unknown field / unknown sort key / nesting too deep)."""
+    ):
+        """The ONE filter/segment/sort query builder shared by `.list()` (page +
+        `_decorate`) and `.query_for_export()` (plan 26 S3, D-A2-6a - the
+        export handler streams raw `Contact` rows through THIS same builder,
+        never `_decorate`, which pays for a thread/message join per row).
+        Raises `SegmentNotFound`/`FilterError` exactly like `.list()` did."""
         segment_tree: Optional[FilterGroup] = None
         if segment_id:
             # Raises SegmentNotFound for a foreign/missing id - uniform 404
@@ -82,8 +83,6 @@ class ContactListService:
         if clause is not None:
             q = q.filter(clause)
 
-        total = q.count()
-
         if sort_by:
             column = CONTACT_SORT_COLUMNS[sort_by]
             q = q.order_by(column.desc() if sort_dir == "desc" else column.asc())
@@ -91,10 +90,63 @@ class ContactListService:
             # AC-CTM-14 default: lastMessageAt desc nulls last, then createdAt desc.
             q = q.order_by(Contact.last_message_at.desc().nullslast(), Contact.created_at.desc())
         q = q.order_by(Contact.id.asc())  # stable tiebreak (deterministic paging)
+        return q
 
+    def list(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        *,
+        search: Optional[str] = None,
+        filter_group: Optional[FilterGroup] = None,
+        segment_id: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        sort_dir: str = "desc",
+        page: int = 0,
+        page_size: int = DEFAULT_PAGE_SIZE,
+    ) -> Tuple[List[ContactListItem], int]:
+        """Raises `SegmentNotFound` (router -> 404) and `FilterError` (router
+        -> 422, unknown field / unknown sort key / nesting too deep)."""
+        q = self._build_query(
+            tenant_id, workspace_id, search=search, filter_group=filter_group,
+            segment_id=segment_id, sort_by=sort_by, sort_dir=sort_dir,
+        )
+        total = q.count()
         rows = q.offset(page * page_size).limit(page_size).all()
         items = self._decorate(rows, tenant_id)
         return items, total
+
+    def query_for_export(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        *,
+        ids: Optional[List[str]] = None,
+        search: Optional[str] = None,
+        filter_group: Optional[FilterGroup] = None,
+        segment_id: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        sort_dir: str = "desc",
+    ):
+        """Unpaginated `Contact` query for the export job (D-A2-6a, AC-CTM-42).
+        An explicit `ids` selection WINS over search/filter/segment/sort (the
+        frontend contract, `ContactExportRequest`'s own docstring) - a bulk
+        "export just these rows" must never be silently narrowed by whatever
+        list state happened to be on screen when it was chosen."""
+        if ids:
+            return (
+                self.db.query(Contact)
+                .filter(
+                    Contact.tenant_id == tenant_id,
+                    Contact.workspace_id == workspace_id,
+                    Contact.id.in_(ids),
+                )
+                .order_by(Contact.id.asc())
+            )
+        return self._build_query(
+            tenant_id, workspace_id, search=search, filter_group=filter_group,
+            segment_id=segment_id, sort_by=sort_by, sort_dir=sort_dir,
+        )
 
     def _decorate(self, rows: List[Contact], tenant_id: str) -> List[ContactListItem]:
         if not rows:

@@ -92,6 +92,21 @@ def register_engine_entities() -> None:
 
     register_omnichannel_deferred_actions()
 
+    # Contacts CSV importer (plan 26 S3, AC-CTM-34) - registered here like
+    # every other engine adoption in this hook, idempotent.
+    from .importers import register_contacts_importer
+
+    register_contacts_importer()
+
+    # Contacts export job handler (plan 26 S3, AC-CTM-39) - the API process
+    # creates + (eager dev/test) runs jobs inline; a real Celery worker needs
+    # this import too (mirrors the autocount-sync handler's own note) - see
+    # `app/jobs/worker.py`'s task, which only dispatches by registered type so
+    # ANY process that never imports this module leaves the job type unknown.
+    from .services.contact_export_service import register_contacts_export_handler
+
+    register_contacts_export_handler()
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""

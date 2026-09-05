@@ -478,6 +478,20 @@ class BulkLifecycleRequest(ApiModel):
     toStatusId: str
 
 
+class ContactExportRequest(ApiModel):
+    """Export job request (plan 26 S3, D-A2-6a). An explicit `ids` selection
+    WINS over search/filter/segment/sort (`ContactListService.query_for_
+    export`) - the current list query is otherwise honoured exactly."""
+
+    columns: List[str]
+    ids: Optional[List[str]] = None
+    search: Optional[str] = None
+    filter: Optional[FilterGroup] = None
+    segment: Optional[str] = None
+    sortBy: Optional[str] = None
+    sortDir: Optional[Literal["asc", "desc"]] = None
+
+
 class ContactSegmentItem(ApiModel):
     id: str
     workspaceId: str

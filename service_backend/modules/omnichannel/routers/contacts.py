@@ -7,17 +7,22 @@ logic here (Router -> Service -> Repository).
 S1 shipped the list read (AC-CTM-14..23); S2 adds create + the three bulk
 routes on this SAME router file (plan §4, AC-CTM-24..33) - reads stay gated
 `contacts.read`, writes `contacts.manage`."""
+import io
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_actor_user_id, require_permission
+from app.jobs.service import JobService
+from app.models.background_job import JOB_DONE
 from app.models.user import User
 from app.schemas.filters import FilterGroup
 from app.services.filter_translator import FilterError
+from app.services.storage import storage_for_tenant
 
 from ..schemas import (
     BulkAssignRequest,
@@ -25,6 +30,7 @@ from ..schemas import (
     BulkResult,
     BulkTagsRequest,
     ContactCreate,
+    ContactExportRequest,
     ContactListItem,
     ContactListResponse,
 )
@@ -33,6 +39,7 @@ from ..services.contact_admin_service import (
     ContactAdminService,
     ContactCreateError,
 )
+from ..services.contact_export_service import EXPORT_JOB_TYPE, create_export_job
 from ..services.contact_list_service import DEFAULT_PAGE_SIZE, ContactListService
 from ..services.contact_segment_service import SegmentNotFound
 from ..services.workspace_service import WorkspaceService
@@ -161,3 +168,65 @@ def bulk_lifecycle_contacts(
         actor=current_user,
         actor_id=actor_user_id,
     )
+
+
+# ── Export (plan 26 S3, D-A2-6a/6b, AC-CTM-39..42) ──────────────────────────
+@router.post("/{ws_id}/contacts/export", response_model=dict, status_code=status.HTTP_201_CREATED)
+def export_contacts(
+    ws_id: str,
+    body: ContactExportRequest,
+    current_user: User = Depends(require_permission("contacts.export")),
+    actor_user_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> dict:
+    WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
+    try:
+        job = create_export_job(db, current_user.tenant_id, ws_id, actor_user_id, body)
+    except SegmentNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Segment not found.")
+    except FilterError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+    return {"jobId": job.id}
+
+
+@router.get("/{ws_id}/contacts/export/{job_id}/file")
+def download_contacts_export(
+    ws_id: str,
+    job_id: str,
+    current_user: User = Depends(require_permission("contacts.export")),
+    db: Session = Depends(get_db),
+):
+    """Authed streaming download (D-A2-6b - never a bearer-less signed URL for
+    a CSV of an entire contact database). Uniform 404 unless the job belongs
+    to THIS caller's tenant AND workspace AND is of THIS type AND has finished
+    (AC-CTM-41) - never immutable-cached, CSP-sandboxed + nosniff (the PII-
+    egress precedent shared with the form-submission file route)."""
+    WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
+    job = JobService(db).get(current_user.tenant_id, job_id)
+    if (
+        job is None
+        or job.type != EXPORT_JOB_TYPE
+        or (job.payload_json or {}).get("workspaceId") != ws_id
+        or job.status != JOB_DONE
+        or not (job.result_json or {}).get("fileKey")
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Export not found.")
+
+    store = storage_for_tenant(db, current_user.tenant_id)
+    kind, value = store.resolve(job.result_json["fileKey"])
+    if kind == "path":
+        with open(value, "rb") as fh:
+            content = fh.read()
+    else:
+        import urllib.request
+
+        content = urllib.request.urlopen(value).read()  # noqa: S310 (own storage)
+
+    filename = f"contacts-export-{job.created_at:%Y%m%d-%H%M%S}.csv"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, max-age=0, no-store",
+    }
+    return StreamingResponse(io.BytesIO(content), media_type="text/csv", headers=headers)
