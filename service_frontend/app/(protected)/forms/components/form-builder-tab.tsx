@@ -4,7 +4,7 @@
  * Unpublish + state badges) above the builder. Preview renders the DRAFT
  * (author-only, D9); Publish runs the validate gate and snapshots a version. */
 import { CloudOff, CloudUpload, Eye, Link2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { FormBuilder } from '@/components/platform/form-builder';
