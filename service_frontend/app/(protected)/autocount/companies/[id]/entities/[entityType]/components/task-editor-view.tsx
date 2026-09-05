@@ -203,12 +203,11 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
         permission: AC_COMPANIES_MANAGE,
         isVisible: () => status === 'active',
         isDisabled: () => lifecycle.busy !== null,
-        confirm: {
-          title: 'Pause this task?',
-          description:
-            'Scheduled runs stop until it is resumed. A run already in progress finishes.',
-          confirmLabel: 'Pause',
-        },
+        // Fix round 1 item 15: Pause is reversible with a single click
+        // (Resume, right below, has never had a confirm) - a run already in
+        // progress finishes regardless, so there's nothing destructive to
+        // gate. Genuinely not a delete/detach action, so it drops `confirm`
+        // entirely rather than moving to the grace-window engine.
         run: async () => {
           if (await lifecycle.pause()) toast.success('Task paused.');
         },
