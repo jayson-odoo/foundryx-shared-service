@@ -27,6 +27,16 @@
  * (`cursor-grab` in the element's own className), not a per-file allowlist
  * - the second `it` below proves the exemption actually matches real drag
  * handles rather than being a silent no-op.
+ *
+ * T8 fix round 1 - `cursor-grab` alone is too loose a signal (any button
+ * could carry the CLASS without actually being a wired-up dnd-kit handle,
+ * e.g. a copy-paste leftover), so the exemption is narrowed to
+ * `isCursorGrabDragHandle(tag)`: `cursor-grab` in the className AND either
+ * `{...listeners}` (dnd-kit's `useDraggable` spread) or
+ * `aria-roledescription` (dnd-kit's own a11y convention for a drag handle)
+ * on the SAME opening tag. A `cursor-grab` button with neither is not
+ * proven to be a real drag handle and still must carry `PRESSED_CLASS` -
+ * the fourth `it` below pins that.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -92,6 +102,17 @@ function findRawButtonTags(src: string): string[] {
   return out;
 }
 
+/**
+ * `cursor-grab` alone is not proof of a wired-up dnd-kit drag handle - it
+ * needs `{...listeners}` (the `useDraggable` spread) or
+ * `aria-roledescription` (dnd-kit's own drag-handle a11y convention) on the
+ * SAME opening tag too. A `cursor-grab` button with neither is treated as an
+ * ordinary press target and still must carry `PRESSED_CLASS`.
+ */
+function isCursorGrabDragHandle(tag: string): boolean {
+  return tag.includes('cursor-grab') && (tag.includes('{...listeners}') || tag.includes('aria-roledescription'));
+}
+
 describe('AC-DLA-58 every raw <button element carries pressed feedback', () => {
   it('every raw <button element carries PRESSED_CLASS in its className, or is a cursor-grab drag handle (allowlist empty)', () => {
     const allowed = new Set(ALLOWLIST.map((f) => path.join(repoRoot, f)));
@@ -102,7 +123,7 @@ describe('AC-DLA-58 every raw <button element carries pressed feedback', () => {
       if (!src.includes('<button')) continue;
       const rel = file.replace(repoRoot + path.sep, '');
       for (const tag of findRawButtonTags(src)) {
-        if (tag.includes('cursor-grab')) continue; // a hold, not a press - see file doc comment
+        if (isCursorGrabDragHandle(tag)) continue; // a hold, not a press - see file doc comment
         if (!tag.includes('PRESSED_CLASS')) {
           offenders.push(`${rel}: ${tag.slice(0, 140).replace(/\s+/g, ' ')}`);
         }
@@ -117,10 +138,30 @@ describe('AC-DLA-58 every raw <button element carries pressed feedback', () => {
       const src = fs.readFileSync(file, 'utf8');
       if (!src.includes('<button')) continue;
       for (const tag of findRawButtonTags(src)) {
-        if (tag.includes('cursor-grab')) dragHandleCount += 1;
+        if (isCursorGrabDragHandle(tag)) dragHandleCount += 1;
       }
     }
     expect(dragHandleCount).toBeGreaterThan(0);
+  });
+
+  it('a cursor-grab button WITHOUT listeners/aria-roledescription is still required to carry PRESSED_CLASS', () => {
+    // A `cursor-grab` class alone is not proof of a real dnd-kit drag handle
+    // - it could be a copy-paste leftover on an ordinary press target. Such
+    // a tag must NOT be exempted (isCursorGrabDragHandle === false) and must
+    // still fail the requirement when PRESSED_CLASS is absent.
+    const plainCursorGrab = '<button type="button" className="cursor-grab rounded p-1" onClick={onClick}>';
+    expect(isCursorGrabDragHandle(plainCursorGrab)).toBe(false);
+
+    const src = `function C() { return (\n  ${plainCursorGrab}\n    <GripVertical />\n  </button>\n); }`;
+    const offenders = findRawButtonTags(src).filter(
+      (tag) => !isCursorGrabDragHandle(tag) && !tag.includes('PRESSED_CLASS'),
+    );
+    expect(offenders).toEqual([plainCursorGrab]);
+
+    // Sanity: a genuine listeners-carrying drag handle IS exempted.
+    const realHandle =
+      '<button type="button" aria-label="Drag" className="cursor-grab" {...listeners} {...attributes}>';
+    expect(isCursorGrabDragHandle(realHandle)).toBe(true);
   });
 
   it('the reorder-only drag handles (no click affordance) carry no PRESSED_CLASS', () => {
