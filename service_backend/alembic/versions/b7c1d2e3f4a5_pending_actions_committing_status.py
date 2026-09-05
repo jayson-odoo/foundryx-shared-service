@@ -31,6 +31,21 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # T5 fix round 2, N4: re-adding the 4-value CHECK below would fail
+    # outright on a live DB carrying any row still `committing` (a real
+    # possibility - it's the beat-sweep atomic-claim state, not a rare
+    # edge case). Reassign those rows to `failed` first - honest (a
+    # downgrade mid-commit means the app can no longer resolve their
+    # outcome) and never destructive (the row + its error/audit trail
+    # survive, only the transient status changes). Plain `UPDATE`, so this
+    # is a no-op (0 rows) on a DB that never reached this revision, and
+    # works identically on SQLite (module/core migration tests) and
+    # Postgres.
+    op.execute(
+        "UPDATE pending_actions SET status='failed', "
+        "error_text=COALESCE(error_text, 'Downgraded while committing.') "
+        "WHERE status='committing'"
+    )
     op.drop_constraint('ck_pending_actions_status', 'pending_actions', type_='check')
     op.create_check_constraint(
         'ck_pending_actions_status',
