@@ -98,8 +98,13 @@ function DropGap({
   return (
     <div ref={setNodeRef} data-testid={`drop-gap-${columnId}-${index}`} className="relative -my-1 h-2">
       <div
+        // pointer-events-none: this h-6 overlay overflows the h-2 wrapper by
+        // 8px on each side (by design, so the drop target is easier to hit
+        // than the zero-footprint rest state) - without this it silently
+        // steals hover/click from the neighbouring block's own area even
+        // while fully transparent.
         className={cn(
-          'absolute inset-x-0 top-1/2 h-6 -translate-y-1/2 rounded border border-dashed transition-[opacity,background-color,border-color] duration-(--duration-fast) ease-(--ease-standard)',
+          'pointer-events-none absolute inset-x-0 top-1/2 h-6 -translate-y-1/2 rounded border border-dashed transition-[opacity,background-color,border-color] duration-(--duration-fast) ease-(--ease-standard)',
           isOver
             ? 'border-primary bg-primary/10 opacity-100'
             : dragActive
