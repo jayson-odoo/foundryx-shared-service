@@ -62,12 +62,14 @@ from app.models import DEFAULT_TENANT_ID
 from app.models.background_job import JOB_DONE
 from modules.autocount.canonical.masters import ENTITY_CUSTOMER
 from modules.autocount.models import (
+    RUN_FAILED,
     RUN_MODE_INCREMENTAL,
     RUN_MODE_MANUAL,
     RUN_MODE_RECONCILE,
     AcStagedRecord,
 )
 from modules.autocount.sql_source.runtime import RUNTIME
+from modules.autocount.sql_source.source import CURSOR_MARK
 
 from tests.test_autocount_bulk_load import (
     Consumer,
@@ -117,7 +119,14 @@ def test_build_paged_wrap_first_page_orders_by_watermark_then_key(dialect):
         "SELECT acc_no, last_modified FROM debtor", quoted_wm, None, None,
         dialect=dialect, page_size=500, quoted_key=quoted_key, last_key=None,
     )
-    assert sql.rstrip().endswith(f"ORDER BY t.{quoted_wm}, t.{quoted_key}"), sql
+    order_by = f"ORDER BY t.{quoted_wm}, t.{quoted_key}"
+    assert order_by in sql, sql
+    if dialect == "mssql":
+        # TOP form has no trailing row-limiting clause - ORDER BY is last.
+        assert sql.rstrip().endswith(order_by), sql
+    else:
+        # LIMIT must follow ORDER BY (SQL syntax) on every other dialect.
+        assert sql.rstrip().endswith(f"{order_by} LIMIT :page_size"), sql
     assert ":mark" not in sql
     assert ":last_key" not in sql
     for forbidden in ("OFFSET", "FETCH", ":skip"):
@@ -146,7 +155,12 @@ def test_build_paged_wrap_later_page_is_a_seek_predicate(dialect, page_prefix):
         f"WHERE (t.{quoted_wm} > :mark) OR "
         f"(t.{quoted_wm} = :mark AND t.{quoted_key} > :last_key)"
     ) in sql, sql
-    assert sql.rstrip().endswith(f"ORDER BY t.{quoted_wm}, t.{quoted_key}"), sql
+    order_by = f"ORDER BY t.{quoted_wm}, t.{quoted_key}"
+    assert order_by in sql, sql
+    if dialect == "mssql":
+        assert sql.rstrip().endswith(order_by), sql
+    else:
+        assert sql.rstrip().endswith(f"{order_by} LIMIT :page_size"), sql
     for forbidden in ("OFFSET", "FETCH", ":skip"):
         assert forbidden not in sql, f"{forbidden!r} must never appear - got:\n{sql}"
     assert "300-A001" not in sql, "last_key must ride as a bind, never spliced"
@@ -406,4 +420,102 @@ def test_a_continued_manual_pass_is_swept_as_incremental_or_reconcile_never_manu
     assert new_run.mode in (RUN_MODE_INCREMENTAL, RUN_MODE_RECONCILE), (
         f"a scheduler-driven tick must never record mode='manual' even when "
         f"continuing an open manual pass - got {new_run.mode!r}"
+    )
+
+
+# ── S3 (reviewer re-check, round 3b) - a NULL tail watermark must fail the
+# run loudly, never loop. The tail row (the row a page keeps, whose own
+# mark/key seeds the NEXT page's seek) with a NULL watermark leaves
+# ``last_mark`` UNCHANGED (the current code only updates it ``if
+# tail_mark_value is not None``) - the next page would re-run the EXACT
+# SAME query forever, a livelock, not a crash. ``autocount_page_size=1``
+# and a NULL-watermark row that sorts first (SQLite: NULLs first
+# ascending) makes it page 1's own single kept row.
+
+
+def test_a_null_tail_watermark_fails_loudly_instead_of_looping(
+    session_factory, monkeypatch, consumer,
+):
+    company_id, sql_id, engine = _make_rig(session_factory)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO debtor VALUES (?, ?, ?, ?)",
+            ("300-N001", "Null Watermark Co", "n@x.com", None),
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO debtor VALUES (?, ?, ?, ?)",
+            ("300-N002", "Second", "s@x.com", "2026-09-01 00:00:00"),
+        )
+    cfg = __import__("app.config", fromlist=["settings"]).settings
+    monkeypatch.setattr(cfg, "autocount_page_size", 1, raising=False)
+    # Bounded on purpose: WITHOUT the guard this scenario asks for, the run
+    # loop's mark never moves and it would otherwise re-run the identical
+    # first-page statement for the whole wall-clock budget (a genuine
+    # livelock, not a crash) - a small budget keeps an unfixed run's own RED
+    # failure fast (mismatched outcome/statement count) instead of hanging.
+    monkeypatch.setattr(cfg, "autocount_run_time_budget_seconds", 1, raising=False)
+
+    statements = {"n": 0}
+
+    def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        if "debtor" in statement.lower():
+            statements["n"] += 1
+
+    sa.event.listen(engine, "before_cursor_execute", before_cursor_execute)
+    db = session_factory()
+    try:
+        job = _run(db, company_id, RUN_MODE_MANUAL)
+        run = _run_row(db, company_id, job.id)
+    finally:
+        sa.event.remove(engine, "before_cursor_execute", before_cursor_execute)
+
+    assert statements["n"] == 1, (
+        f"a NULL-tail page must fail on its OWN read, never loop into a "
+        f"second statement - executed {statements['n']}"
+    )
+    assert run.outcome == RUN_FAILED, (
+        f"expected FAILED (a named guard), got outcome={run.outcome!r} "
+        f"truncated={run.truncated!r} error={run.error!r}"
+    )
+    assert "last_modified" in (run.error or ""), (
+        f"the error must name the offending column - got {run.error!r}"
+    )
+    watermark = _watermark_row(db, company_id)
+    assert (watermark.cursor_json or {}).get(CURSOR_MARK) is None, (
+        "a failed first page must leave the public cursor untouched"
+    )
+
+
+# ── NIT (optional, round 3b) - a real run must not carry preview_records ──
+
+
+def test_preview_records_are_empty_on_a_real_run(session_factory, monkeypatch, consumer):
+    """``PageResult.preview_records`` exists only so a PREVIEW can report the
+    page's real row count without change-only staging hiding it (R2-S1) - a
+    REAL run (``persist_hashes=True``) has no reader for it and must not pay
+    to build a second, throwaway copy of every row on every page."""
+    from modules.autocount.models import AcCompany, AcEntityConfig
+    from modules.autocount.services.company_service import CompanyService
+    from modules.autocount.sources import SourceContext
+    from modules.autocount.sql_source.source import PageCursor, SqlDbSource
+
+    company_id, sql_id, engine = _make_rig(session_factory)
+    _insert_rows(engine, _rows(5))
+    db = session_factory()
+    company = db.query(AcCompany).filter(AcCompany.id == company_id).one()
+    config = db.query(AcEntityConfig).filter(
+        AcEntityConfig.tenant_id == DEFAULT_TENANT_ID, AcEntityConfig.company_id == company_id,
+        AcEntityConfig.entity_type == ENTITY_CUSTOMER,
+    ).one()
+    source = SqlDbSource(
+        SourceContext(
+            db=db, tenant_id=DEFAULT_TENANT_ID, company=company, entity_config=config,
+            company_service=CompanyService(db),
+        ),
+        entity_type=ENTITY_CUSTOMER, persist_hashes=True,
+    )
+    page = source.fetch_page(PageCursor())
+    assert page.preview_records == [], (
+        f"a real run (persist_hashes=True) must not build preview_records - "
+        f"got {len(page.preview_records)} row(s)"
     )

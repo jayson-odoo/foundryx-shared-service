@@ -841,18 +841,20 @@ def test_deletes_are_staged_only_when_the_reconcile_pass_completes(
             .all()
         )
 
-    job1 = _run(db, company_id, RUN_MODE_RECONCILE)  # page 1/3 (2 of 4 live rows)
+    # page_size=2, 4 live rows: fetch_page peeks page_size+1 to know
+    # completion from its OWN read (round 3) - page 1 (2 of 4 live rows)
+    # reads 3 rows and trims the peeked-ahead one back off, so it is NOT
+    # complete; page 2 reads the remaining 2 (an exact multiple, no
+    # trailing empty page needed) and IS complete.
+    job1 = _run(db, company_id, RUN_MODE_RECONCILE)  # page 1/2 (2 of 4 live rows)
     run1 = _run_row(db, company_id, job1.id)
     assert run1.truncated is True
     assert delete_intents() == [], "no delete intent before the pass completes"
 
-    job2 = _run(db, company_id, RUN_MODE_RECONCILE)  # page 2/3 (last 2 live rows)
-    run2 = _run_row(db, company_id, job2.id)
-    assert delete_intents() == [], "still incomplete - 4 live rows read across 2 full pages"
-
-    # page 3/3 - 0 rows, completes - driven through the REAL scheduler tick.
-    run3 = _sweep_tick(db, company_id, reconcile=True)
-    assert run3.truncated is False
+    # page 2/2 - the last 2 live rows, completes - driven through the REAL
+    # scheduler tick.
+    run2 = _sweep_tick(db, company_id, reconcile=True)
+    assert run2.truncated is False
 
     intents = delete_intents()
     assert [r.source_ref for r in intents] == [deleted_ref]

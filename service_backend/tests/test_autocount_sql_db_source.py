@@ -825,13 +825,13 @@ def test_a_pass_reads_pages_of_page_size_and_stages_each_before_the_next(rig, mo
     assert page1.complete is False
 
     page2 = source.fetch_page(
-        PageCursor(mark=page1.last_mark, tie_refs=page1.tie_refs, pages_done=1)
+        PageCursor(mark=page1.last_mark, last_key=page1.last_key, pages_done=1)
     )
     assert page2.rows_scanned == 4
     assert page2.complete is False
 
     page3 = source.fetch_page(
-        PageCursor(mark=page2.last_mark, tie_refs=page2.tie_refs, pages_done=2)
+        PageCursor(mark=page2.last_mark, last_key=page2.last_key, pages_done=2)
     )
     assert page3.rows_scanned == 3
     assert page3.complete is True
@@ -1070,7 +1070,7 @@ def test_a_filtered_out_header_is_never_a_delete_candidate_after_paging(session_
         all_refs |= {r.raw["doc_key"] for r in page.records}
         if page.complete:
             break
-        cursor = PageCursor(mark=page.last_mark, tie_refs=page.tie_refs)
+        cursor = PageCursor(mark=page.last_mark, last_key=page.last_key)
     else:
         pytest.fail("the 3-header pass never completed at page size 1")
 
@@ -1079,4 +1079,148 @@ def test_a_filtered_out_header_is_never_a_delete_candidate_after_paging(session_
     assert f"{DB_NAME}:D2" not in remaining_hashes, (
         "D2's stale hash must be dropped once the filter excludes it, so a "
         "later unfiltered re-appearance stages as a fresh ADD, not an update"
+    )
+
+
+# ── S1 (reviewer re-check, round 3b) - a STRING key holding date-shaped text
+# must ride the seek bind as the original string, never through the mark
+# decoder (which round-trips an ISO-looking string into a real datetime -
+# correct for the WATERMARK, wrong for a key that only LOOKS like a date).
+
+
+def test_last_key_bind_keeps_a_string_key_as_a_string_not_a_decoded_date(
+    session_factory, monkeypatch
+):
+    from app.config import settings as cfg
+    from modules.autocount.sql_source.source import PageCursor
+
+    db = session_factory()
+    engine = sa.create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE dated_key (doc_key TEXT PRIMARY KEY, name TEXT, wm TEXT)"
+        )
+        for row in [
+            # same watermark - a tie group, so page 2's seek must fall back
+            # to the KEY column to disambiguate.
+            ("2026-08-01", "First", "2026-09-01 00:00:00"),
+            ("2026-08-02", "Second", "2026-09-01 00:00:00"),
+        ]:
+            conn.exec_driver_sql("INSERT INTO dated_key VALUES (?, ?, ?)", row)
+
+    conn_row = _sql_connection(db, engine)
+    company = _company(db)
+    config = _configure(
+        db, company,
+        query="SELECT doc_key, name, wm FROM dated_key",
+        key_columns=("doc_key",),
+        watermark="wm",
+        connection_id=conn_row.id,
+        result_columns=("doc_key", "name", "wm"),
+    )
+    monkeypatch.setattr(cfg, "autocount_page_size", 1, raising=False)
+
+    captured: dict = {}
+    real_execute = sa.engine.Connection.execute
+
+    def counting_execute(self, statement, parameters=None, *a, **kw):
+        if (
+            parameters
+            and isinstance(parameters, dict)
+            and parameters.get("last_key") is not None
+        ):
+            captured["value"] = parameters["last_key"]
+        return real_execute(self, statement, parameters, *a, **kw)
+
+    monkeypatch.setattr(sa.engine.Connection, "execute", counting_execute)
+
+    source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_CUSTOMER)
+    cursor = PageCursor()
+    seen: set[str] = set()
+    for _ in range(5):
+        page = source.fetch_page(cursor)
+        seen |= {r.raw["doc_key"] for r in page.records}
+        if page.complete:
+            break
+        cursor = PageCursor(mark=page.last_mark, last_key=page.last_key)
+    else:
+        pytest.fail("the tie group never completed")
+
+    assert "value" in captured, "the second page must bind a last_key"
+    assert isinstance(captured["value"], str), (
+        f"last_key must ride as the ORIGINAL string, never decoded into a "
+        f"date - got {type(captured['value'])!r} ({captured['value']!r})"
+    )
+    assert captured["value"] == "2026-08-01"
+    assert seen == {"2026-08-01", "2026-08-02"}, (
+        "both rows in the tie group must be staged - a mis-typed last_key "
+        "bind can silently drop the second one"
+    )
+
+
+# ── S2 (reviewer re-check, round 3b) - a task with TWO key columns. Today
+# ``fetch_page`` seeks on ``key_columns[0]`` ONLY - two rows sharing
+# ``(watermark, key0)`` but differing in ``key1`` collapse to the SAME
+# seek position, so the row trimmed off page 1 (re-read "next page") can
+# never be found again once its sibling has already consumed that exact
+# ``(mark, key0)`` frontier.
+
+
+def test_a_two_column_key_either_seeks_on_every_column_or_fails_loudly(
+    session_factory, monkeypatch
+):
+    from app.config import settings as cfg
+    from modules.autocount.sql_source.source import PageCursor
+
+    db = session_factory()
+    engine = sa.create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE composite_key (key0 TEXT, key1 TEXT, name TEXT, wm TEXT)"
+        )
+        for row in [
+            # same (wm, key0) - only key1 tells the two apart.
+            ("K1", "A", "Row A", "2026-09-01 00:00:00"),
+            ("K1", "B", "Row B", "2026-09-01 00:00:00"),
+        ]:
+            conn.exec_driver_sql("INSERT INTO composite_key VALUES (?, ?, ?, ?)", row)
+
+    conn_row = _sql_connection(db, engine)
+    company = _company(db)
+    try:
+        config = _configure(
+            db, company,
+            query="SELECT key0, key1, name, wm FROM composite_key",
+            key_columns=("key0", "key1"),
+            watermark="wm",
+            connection_id=conn_row.id,
+            result_columns=("key0", "key1", "name", "wm"),
+        )
+        monkeypatch.setattr(cfg, "autocount_page_size", 1, raising=False)
+        source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_CUSTOMER)
+    except SqlTaskNotConfigured:
+        # Acceptable per the review brief's second branch: a composite key
+        # is refused loudly at construction time rather than silently
+        # dropping rows.
+        return
+
+    cursor = PageCursor()
+    seen: set[str] = set()
+    for _ in range(5):
+        page = source.fetch_page(cursor)
+        seen |= {r.raw["key1"] for r in page.records}
+        if page.complete:
+            break
+        cursor = PageCursor(mark=page.last_mark, last_key=page.last_key)
+    else:
+        pytest.fail("the pass never completed")
+
+    assert seen == {"A", "B"}, (
+        "both rows sharing (watermark, key0) but differing in key1 must be "
+        "staged exactly once - a seek keyed on key0 ALONE can never tell "
+        "them apart once one has been taken"
     )

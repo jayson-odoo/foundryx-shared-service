@@ -279,6 +279,106 @@ def test_preview_reads_at_most_one_page_of_headers_and_fans_out_no_further(
 def test_an_abort_between_pages_delivers_page_one_exactly_once_via_the_scheduler(
     session_factory, monkeypatch, consumer,
 ):
+    # page_size=1, 4 rows: with round-3's page_size+1 peek, this pass needs
+    # FOUR statements/pages (page1..3 each read 2 rows and trim the peeked
+    # one back off; page4 reads the last remaining row and completes) - the
+    # injected abort below lands on statement #2, a NON-final page
+    # (round-3b: page_size=2 made statement #2 the LAST page for a 4-row
+    # population, which tested an abort on the FINAL page instead of a
+    # mid-pass one - see BL-SS-061 for that separate scenario).
+    monkeypatch.setattr(
+        __import__("app.config", fromlist=["settings"]).settings,
+        "autocount_page_size", 1, raising=False,
+    )
+    company_id, sql_id, engine = _make_rig(session_factory)
+    rows = _rows(4)
+    _insert_rows(engine, rows)
+    expected_refs = {f"{DB_NAME}:{r[0]}" for r in rows}
+
+    calls = {"n": 0}
+    aborted_once = {"done": False}
+    aborting = session_factory()
+
+    def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        if "debtor" not in statement.lower():
+            return
+        calls["n"] += 1
+        if calls["n"] == 2 and not aborted_once["done"]:
+            aborted_once["done"] = True
+            job_id = aborting.execute(
+                sa.text(
+                    "SELECT id FROM background_jobs WHERE tenant_id = :t "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"t": DEFAULT_TENANT_ID},
+            ).scalar()
+            aborting.execute(
+                sa.text("UPDATE background_jobs SET status = :s WHERE id = :i"),
+                {"s": JOB_ABORTED, "i": job_id},
+            )
+            aborting.commit()
+
+    sa.event.listen(engine, "before_cursor_execute", before_cursor_execute)
+    db = session_factory()
+    try:
+        run1 = _sweep_tick(db, company_id, reconcile=False)
+        assert run1.outcome == RUN_ABORTED
+    finally:
+        sa.event.remove(engine, "before_cursor_execute", before_cursor_execute)
+    aborting.close()
+
+    def _pending_count() -> int:
+        return (
+            db.query(AcStagedRecord)
+            .filter(
+                AcStagedRecord.tenant_id == DEFAULT_TENANT_ID,
+                AcStagedRecord.company_id == company_id,
+                AcStagedRecord.status == STAGED,
+            )
+            .count()
+        )
+
+    # Drive the continuation ticks (real scheduler entry point each time)
+    # until every staged row has actually been PUSHED (round 3b: "the pass
+    # completed" is not the same question - an aborted run can leave a
+    # complete pass with its own page's rows staged but never auto-pushed,
+    # S4/BL-SS-061) - a generous cap, defensive about exactly how many
+    # pages/ticks 4 rows needs.
+    for _ in range(10):
+        if _pending_count() == 0:
+            break
+        _sweep_tick(db, company_id, reconcile=False)
+    else:
+        pytest.fail("staged rows were never fully pushed within the tick budget")
+
+    upsert_calls = [r for r in consumer.requests if not r["path"].endswith("/deletions")]
+    pushed_refs: List[str] = []
+    for call in upsert_calls:
+        pushed_refs.extend(r["source_ref"] for r in call["json"].get("records") or [])
+
+    assert set(pushed_refs) == expected_refs, (
+        f"every document must reach the sink eventually - got {sorted(pushed_refs)}, "
+        f"expected {sorted(expected_refs)}"
+    )
+    duplicates = [ref for ref in expected_refs if pushed_refs.count(ref) > 1]
+    assert duplicates == [], f"no document may be pushed twice - duplicated: {duplicates}"
+    db.close()
+
+
+def test_an_abort_on_the_final_page_still_gets_pushed_by_the_next_ordinary_tick(
+    session_factory, monkeypatch, consumer,
+):
+    """S4 / BL-SS-061 refutation. Abort lands on the FINAL page's own
+    statement (page_size=2, 4 rows -> exactly 2 statements/pages) - that
+    page's rows are staged and committed (the abort is only detected AFTER
+    the page's own commit), and ``pass.complete`` is written True before the
+    abort check runs, so the pass is never resumed. The claim was that
+    those rows are then STRANDED because no later tick "continues" a
+    complete pass - refuted here: ``auto_push`` runs unconditionally on
+    EVERY run of an ACTIVE task (new rows fetched or not), so the very next
+    ORDINARY incremental tick (which finds nothing new to fetch) still
+    drains the entity's pending staged rows and pushes every one exactly
+    once."""
     monkeypatch.setattr(
         __import__("app.config", fromlist=["settings"]).settings,
         "autocount_page_size", 2, raising=False,
@@ -320,25 +420,39 @@ def test_an_abort_between_pages_delivers_page_one_exactly_once_via_the_scheduler
         sa.event.remove(engine, "before_cursor_execute", before_cursor_execute)
     aborting.close()
 
-    # Drive the continuation ticks (real scheduler entry point each time)
-    # until the pass completes - a generous cap, defensive against exactly
-    # how many pages the current paging mechanics need for 4 rows.
-    for _ in range(10):
-        watermark = _watermark_row(db, company_id)
-        if ((watermark.cursor_json or {}).get("pass") or {}).get("complete"):
-            break
-        _sweep_tick(db, company_id, reconcile=False)
-    else:
-        pytest.fail("the pass never completed within the tick budget")
+    watermark = _watermark_row(db, company_id)
+    assert ((watermark.cursor_json or {}).get("pass") or {}).get("complete") is True, (
+        "the final page's own read must have completed the pass before the "
+        "abort was detected - otherwise this is not the BL-SS-061 scenario"
+    )
+    pending_before = (
+        db.query(AcStagedRecord)
+        .filter(
+            AcStagedRecord.tenant_id == DEFAULT_TENANT_ID,
+            AcStagedRecord.company_id == company_id,
+            AcStagedRecord.status == STAGED,
+        )
+        .count()
+    )
+    assert pending_before == 4, (
+        f"all 4 rows must have been staged (final page committed before the "
+        f"abort) - found {pending_before} pending"
+    )
+
+    # The NEXT tick is an ORDINARY incremental sweep - the pass is already
+    # complete, so it starts a fresh (empty) incremental read; it must still
+    # drain and push the stranded rows via its own unconditional auto_push.
+    run2 = _sweep_tick(db, company_id, reconcile=False)
+    assert run2.outcome == RUN_SUCCESS
 
     upsert_calls = [r for r in consumer.requests if not r["path"].endswith("/deletions")]
     pushed_refs: List[str] = []
     for call in upsert_calls:
         pushed_refs.extend(r["source_ref"] for r in call["json"].get("records") or [])
-
     assert set(pushed_refs) == expected_refs, (
-        f"every document must reach the sink eventually - got {sorted(pushed_refs)}, "
-        f"expected {sorted(expected_refs)}"
+        f"the stranded final-page rows must be delivered by the very next "
+        f"ordinary tick's auto_push - got {sorted(pushed_refs)}, expected "
+        f"{sorted(expected_refs)}"
     )
     duplicates = [ref for ref in expected_refs if pushed_refs.count(ref) > 1]
     assert duplicates == [], f"no document may be pushed twice - duplicated: {duplicates}"
@@ -489,10 +603,12 @@ def test_resuming_a_pass_after_the_watermark_column_changed_starts_fresh(
 def test_a_tie_group_larger_than_3x_page_size_stays_bounded_per_page(
     session_factory, monkeypatch, consumer,
 ):
-    """F5. ``bind_limit = page_size + len(exclude_refs)`` and ``tie_refs``
-    keeps ACCUMULATING across a same-mark tie group - the bound parameter
-    fed to the real SQL statement must not grow past a small, fixed
-    multiple of ``page_size`` as an oversized tie group is paged through."""
+    """F5 (round 3: composite ``(watermark, key)`` seek replaces the old
+    ``bind_limit = page_size + len(exclude_refs)`` OFFSET-retry design) - the
+    bound ``page_size`` parameter fed to the real SQL statement must not grow
+    past a small, fixed multiple of ``page_size`` as an oversized tie group
+    is paged through (it must stay flat at ``page_size + 1``, never
+    accumulate with the tie group's size)."""
     from modules.autocount.sql_source.source import PageCursor, SqlDbSource
     from modules.autocount.sources import SourceContext, Watermark
     from modules.autocount.services.company_service import CompanyService
@@ -543,7 +659,7 @@ def test_a_tie_group_larger_than_3x_page_size_stays_bounded_per_page(
         seen_refs |= {r.raw["acc_no"] for r in page.records}
         if page.complete:
             break
-        cursor = PageCursor(mark=page.last_mark, tie_refs=page.tie_refs)
+        cursor = PageCursor(mark=page.last_mark, last_key=page.last_key)
     else:
         pytest.fail("the oversized tie group never completed within the tick budget")
 
@@ -769,10 +885,23 @@ def test_a_bare_legacy_cursor_resumes_as_a_plain_incremental(
 def test_a_later_pages_empty_read_completes_normally_not_a_guard_trip(
     session_factory, monkeypatch, consumer,
 ):
+    """Round 3b: ``fetch_page`` now peeks ``page_size + 1`` rows to know
+    completion from its OWN read, so an EMPTY page is always the pass's
+    LAST page (0 raw rows can never be a page with more still to come) -
+    the "a later page reads empty but the pass has more pages left" shape
+    this test originally built no longer exists. What still must hold: the
+    completed-pass guard reads the PASS's CUMULATIVE ``rows_scanned``
+    (across every page/run so far), not this one page's own count - so a
+    pass whose FIRST page (this run's own page) genuinely read some rows,
+    followed by a LATER page (a later run, same pass) whose own read comes
+    back empty purely because its own boundary row was concurrently
+    deleted, must complete normally, never trip the zero-rows guard (3
+    known rows exist for this entity; the pass's cumulative scan is 1, not
+    0)."""
     from app.config import settings as cfg
 
     company_id, sql_id, engine = _make_rig(session_factory)
-    rows = _rows(2)
+    rows = _rows(3)
     _insert_rows(engine, rows)
 
     db = session_factory()
@@ -782,23 +911,27 @@ def test_a_later_pages_empty_read_completes_normally_not_a_guard_trip(
     monkeypatch.setattr(cfg, "autocount_page_size", 1, raising=False)
     monkeypatch.setattr(cfg, "autocount_run_time_budget_seconds", 0, raising=False)
 
-    run1 = _run(db, company_id, RUN_MODE_RECONCILE)
-    # After page 1, the boundary row (row 1) is genuinely deleted at source -
-    # a normal concurrent edit, not a mass wipe (row 2 is untouched).
-    with engine.begin() as conn:
-        conn.exec_driver_sql("DELETE FROM debtor WHERE acc_no = ?", (rows[0][0],))
-    run2 = _run(db, company_id, RUN_MODE_RECONCILE)  # reads row 2
+    # Page 1/N: page_size=1 peeks 2 rows out of 3 -> not complete, one row
+    # (rows[0]) staged, cumulative rows_scanned = 1.
+    run1 = _run_row(db, company_id, _run(db, company_id, RUN_MODE_RECONCILE).id)
+    assert run1.truncated is True
+
+    # Both remaining rows vanish at source between page 1 and page 2 - a
+    # normal concurrent edit mid-pass, not a mass wipe (page 1 already
+    # proved the pass is reading real data).
     with engine.begin() as conn:
         conn.exec_driver_sql("DELETE FROM debtor WHERE acc_no = ?", (rows[1][0],))
-    # This page's raw read is now genuinely empty (both rows gone) purely
-    # because the boundary row from run2 is gone - this must complete the
-    # pass normally, never a guard trip (2 known rows still exist in
-    # ac_row_hash, but that is not what THIS page's empty read means).
-    run3 = _run_row(db, company_id, _run(db, company_id, RUN_MODE_RECONCILE).id)
-    assert run3.outcome == RUN_SUCCESS, (
-        f"a later page's empty raw read (its own boundary row concurrently "
+        conn.exec_driver_sql("DELETE FROM debtor WHERE acc_no = ?", (rows[2][0],))
+
+    # Page 2's own raw read is genuinely empty (0 rows) purely because its
+    # own boundary rows are gone - 0 <= page_size means THIS page completes
+    # the pass, but the pass's CUMULATIVE scan (1, from page 1) is not 0, so
+    # the zero-rows guard must not fire.
+    run2 = _run_row(db, company_id, _run(db, company_id, RUN_MODE_RECONCILE).id)
+    assert run2.outcome == RUN_SUCCESS, (
+        f"a later page's empty raw read (its own boundary rows concurrently "
         f"deleted) must complete the pass normally, not trip the zero-rows "
-        f"guard - got outcome={run3.outcome!r} error={run3.error!r}"
+        f"guard - got outcome={run2.outcome!r} error={run2.error!r}"
     )
 
 

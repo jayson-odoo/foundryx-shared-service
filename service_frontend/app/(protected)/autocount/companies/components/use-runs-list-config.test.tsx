@@ -1,5 +1,7 @@
 import { render, renderHook, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ReactNode } from 'react';
+import type { ColumnDef } from '@tanstack/react-table';
 import type { AutocountSyncRun } from '@/types/autocount';
 
 vi.mock('@/hooks/use-datetime', () => ({
@@ -116,9 +118,10 @@ describe('runs list config - task variant (plan 22 S2, AC-22-17)', () => {
     const c = cfg();
     const outcomeColumn = c.columns.find((col) => col.id === 'outcome');
     expect(outcomeColumn?.cell).toBeTruthy();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const cellFn = outcomeColumn!.cell as any;
-    const node = cellFn({ row: { original: run({ truncated: true, outcome: 'SUCCESS' }) } });
+    const cellFn = outcomeColumn!.cell as ColumnDef<AutocountSyncRun>['cell'];
+    const node = (
+      cellFn as (ctx: { row: { original: AutocountSyncRun } }) => ReactNode
+    )({ row: { original: run({ truncated: true, outcome: 'SUCCESS' }) } });
     render(<>{node}</>);
     expect(screen.getByText('Partial, continues')).toBeInTheDocument();
   });
