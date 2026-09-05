@@ -41,6 +41,7 @@ from ..embed_auth import (
     resolve_native_actor,
 )
 from ..schemas import (
+    CloseThreadRequest,
     ConversationEventListResponse,
     LifecycleMoveOption,
     LifecycleMoveRequest,
@@ -53,12 +54,14 @@ from ..schemas import (
     ThreadPatch,
 )
 from ..services import event_service
+from ..services.close_reason_service import CloseReasonInactive, CloseReasonNotFound
 from ..services.contact_profile_service import ProfilePatchError
 from ..services.conversation_service import (
     ConversationService,
     InvalidPatch,
     ThreadNotFound,
 )
+from ..services.inbox_view_service import InboxViewNotFound, InboxViewService
 from ..services.lifecycle_service import LifecycleStageNotFound
 from ..services.media_pipeline import META_CEILINGS, MediaRejected
 from ..services.message_service import MessageService, SendRejected
@@ -70,18 +73,42 @@ router = APIRouter()
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
 
 
+def _csv(v: Optional[str]) -> Optional[List[str]]:
+    if v is None:
+        return None
+    return [x.strip() for x in v.split(",") if x.strip()]
+
+
 @router.get("", response_model=ThreadListResponse)
 def list_threads(
     principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
     workspace_id: Optional[str] = Query(None, alias="workspaceId"),
-    assignee: str = Query("all", pattern="^(all|me|unassigned)$"),
+    assignee: Optional[str] = Query(None, pattern="^(all|me|unassigned|user)$"),
+    assignee_user_ids: Optional[str] = Query(None, alias="assigneeUserIds"),
     thread_status: Optional[str] = Query(None, alias="status"),
     priority: Optional[str] = None,
     search: Optional[str] = None,
+    lifecycle_stage_ids: Optional[str] = Query(None, alias="lifecycleStageIds"),
+    tag_ids: Optional[str] = Query(None, alias="tagIds"),
+    channel_ids: Optional[str] = Query(None, alias="channelIds"),
+    unreplied: Optional[bool] = Query(None),
+    sort: Optional[str] = Query(
+        None, pattern="^(newest|oldest|unreplied_first|longest_waiting)$"
+    ),
+    view_id: Optional[str] = Query(None, alias="viewId"),
+    segment_id: Optional[str] = Query(None, alias="segmentId"),
     page: int = Query(0, ge=0),
     page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
 ) -> ThreadListResponse:
+    """Thread list (plan 05; plan 27 A3 S2 widens it - AC-IVE-15/16/17). All
+    filtering/sorting happens in the repository, never Python. `viewId`
+    expands a saved view's stored filter server-side; any EXPLICIT param sent
+    alongside overrides that value (AC-IVE-17) - the sentinel for "not sent"
+    is `None` on every new param, so a view's value survives unless the
+    caller actually set that param. `segmentId` is reserved for A2 (plan 26,
+    not on this branch yet) - accepted on the wire, refused with a named 422
+    until then (D-A3-17)."""
     principal.require_read()
     # A thread-scoped embed token cannot list the workspace.
     principal.enforce_list()
@@ -89,15 +116,60 @@ def list_threads(
     # query is ignored for tenancy - never trust it).
     if principal.is_embed:
         workspace_id = principal.workspace_id
+    if segment_id:
+        raise HTTPException(
+            status_code=422, detail="Contact segments are not available yet."
+        )
+
+    view_kwargs: dict = {}
+    if view_id:
+        try:
+            view = InboxViewService(db).get_visible(
+                view_id, principal.tenant_id, principal.actor_user_id
+            )
+        except InboxViewNotFound:
+            raise HTTPException(status_code=404, detail="View not found")
+        if workspace_id and workspace_id != view.workspace_id:
+            raise HTTPException(status_code=404, detail="View not found")
+        workspace_id = view.workspace_id
+        view_kwargs = InboxViewService(db).expand(view)
+
+    final_status_key = None
+    final_status_keys = view_kwargs.get("status_keys")
+    if thread_status is not None:
+        final_status_key = None if thread_status == "ALL" else thread_status
+        final_status_keys = None
+
     items, total = ConversationService(db).list_threads(
         principal.tenant_id,
         workspace_id=workspace_id,
-        assignee=assignee,
+        assignee=assignee if assignee is not None else view_kwargs.get("assignee", "all"),
+        assignee_user_ids=(
+            _csv(assignee_user_ids)
+            if assignee_user_ids is not None
+            else view_kwargs.get("assignee_user_ids")
+        ),
         me_user_id=principal.actor_user_id,
         me_external_agent_id=principal.external_agent_id,
-        status_key=None if thread_status in (None, "ALL") else thread_status,
-        priority=None if priority in (None, "ALL") else priority,
+        status_key=final_status_key,
+        status_keys=final_status_keys,
+        priority=(
+            (None if priority in (None, "ALL") else priority)
+            if priority is not None
+            else view_kwargs.get("priority")
+        ),
         search=search,
+        lifecycle_stage_ids=(
+            _csv(lifecycle_stage_ids)
+            if lifecycle_stage_ids is not None
+            else view_kwargs.get("lifecycle_stage_ids")
+        ),
+        tag_ids=_csv(tag_ids) if tag_ids is not None else view_kwargs.get("tag_ids"),
+        channel_ids=(
+            _csv(channel_ids) if channel_ids is not None else view_kwargs.get("channel_ids")
+        ),
+        unreplied=unreplied if unreplied is not None else view_kwargs.get("unreplied"),
+        sort=sort if sort is not None else view_kwargs.get("sort"),
         page=page,
         page_size=page_size,
     )
@@ -211,6 +283,40 @@ def patch_thread(
         raise HTTPException(status_code=422, detail=exc.message)
     except ProfilePatchError as exc:
         raise HTTPException(status_code=422, detail={"fieldErrors": exc.errors})
+
+
+@router.post("/{contact_id}/close", response_model=ThreadItem)
+def close_thread(
+    contact_id: str,
+    payload: CloseThreadRequest,
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
+    db: Session = Depends(get_db),
+) -> ThreadItem:
+    """Close with a required reason + optional note (plan 27 A3, S2 -
+    AC-IVE-28/29). Reuses `patch_thread`'s existing `closed` write (no
+    duplicate event insert) and its `_publish_contact_updated` fan-out - the
+    realtime WS event and the consumer `contact.updated` webhook both still
+    fire exactly once."""
+    principal.require(native_perm="conversations.reply", embed_cap="close")
+    enforce_thread_access(db, principal, contact_id)
+    try:
+        return ConversationService(db).close_thread(
+            contact_id,
+            principal.tenant_id,
+            close_reason_id=payload.closeReasonId,
+            note=payload.note,
+            actor=resolve_native_actor(principal, db),
+            actor_id=principal.actor_user_id,
+            actor_external_agent_id=principal.external_agent_id if principal.is_embed else None,
+        )
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except CloseReasonNotFound:
+        raise HTTPException(status_code=404, detail="Close reason not found")
+    except CloseReasonInactive:
+        raise HTTPException(
+            status_code=422, detail={"fieldErrors": {"closeReasonId": "This close reason is inactive."}}
+        )
 
 
 @router.get("/{contact_id}/events", response_model=ConversationEventListResponse)

@@ -7,16 +7,29 @@ inbox sorts/filters on.
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
 
 from ..models import (
     Contact,
     ContactChannelIdentity,
+    ContactTagLink,
     ConversationMessage,
     MessageReaction,
     Status,
 )
+
+
+def _unreplied_expr():
+    """AC-IVE Definitions - `unreplied` = there IS an inbound message and
+    either no agent reply has ever landed or the last one predates it."""
+    return and_(
+        Contact.last_incoming_message_at.isnot(None),
+        or_(
+            Contact.last_agent_message_at.is_(None),
+            Contact.last_agent_message_at < Contact.last_incoming_message_at,
+        ),
+    )
 
 
 class ContactRepository:
@@ -29,12 +42,19 @@ class ContactRepository:
         tenant_id: str,
         *,
         workspace_id: Optional[str] = None,
-        assignee: str = "all",  # all | me | unassigned
+        assignee: str = "all",  # all | me | unassigned | user
+        assignee_user_ids: Optional[List[str]] = None,
         me_user_id: Optional[str] = None,
         me_external_agent_id: Optional[str] = None,
         status_key: Optional[str] = None,  # OPEN | SNOOZED | CLOSED | None=ALL
+        status_keys: Optional[List[str]] = None,  # a saved view's multi-status filter
         priority: Optional[str] = None,
         search: Optional[str] = None,
+        lifecycle_stage_ids: Optional[List[str]] = None,
+        tag_ids: Optional[List[str]] = None,
+        channel_ids: Optional[List[str]] = None,
+        unreplied: Optional[bool] = None,
+        sort: Optional[str] = None,  # newest | oldest | unreplied_first | longest_waiting
         page: int = 0,
         page_size: int = 50,
     ) -> Tuple[List[Contact], int]:
@@ -54,10 +74,38 @@ class ContactRepository:
                 Contact.assigned_user_id.is_(None),
                 Contact.assigned_external_agent_id.is_(None),
             )
-        if status_key:
+        elif assignee == "user" and assignee_user_ids:
+            q = q.filter(Contact.assigned_user_id.in_(assignee_user_ids))
+        if status_keys:
+            q = q.join(Status, Contact.status_id == Status.id).filter(Status.key.in_(status_keys))
+        elif status_key:
             q = q.join(Status, Contact.status_id == Status.id).filter(Status.key == status_key)
         if priority:
             q = q.filter(Contact.priority == priority)
+        if lifecycle_stage_ids:
+            q = q.filter(Contact.lifecycle_status_id.in_(lifecycle_stage_ids))
+        if tag_ids:
+            tag_match = (
+                self.db.query(ContactTagLink.id)
+                .filter(
+                    ContactTagLink.contact_id == Contact.id,
+                    ContactTagLink.tag_id.in_(tag_ids),
+                )
+                .exists()
+            )
+            q = q.filter(tag_match)
+        if channel_ids:
+            channel_match = (
+                self.db.query(ContactChannelIdentity.id)
+                .filter(
+                    ContactChannelIdentity.contact_id == Contact.id,
+                    ContactChannelIdentity.channel_id.in_(channel_ids),
+                )
+                .exists()
+            )
+            q = q.filter(channel_match)
+        if unreplied:
+            q = q.filter(_unreplied_expr())
         if search and search.strip():
             term = f"%{search.strip()}%"
             # WhatsApp-style: name/phone OR any message body in the thread.
@@ -80,12 +128,32 @@ class ContactRepository:
                 )
             )
         total = q.count()
-        rows = (
-            q.order_by(Contact.last_message_at.desc().nullslast(), Contact.id.asc())
-            .offset(page * page_size)
-            .limit(page_size)
-            .all()
-        )
+
+        # Sorts (AC-IVE-16) - every ordering ends `id ASC` for stable pagination.
+        if sort == "oldest":
+            order_bys = [Contact.last_message_at.asc().nullslast(), Contact.id.asc()]
+        elif sort == "unreplied_first":
+            unreplied_rank = case((_unreplied_expr(), 0), else_=1)
+            order_bys = [
+                unreplied_rank.asc(),
+                Contact.last_message_at.desc().nullslast(),
+                Contact.id.asc(),
+            ]
+        elif sort == "longest_waiting":
+            unreplied_rank = case((_unreplied_expr(), 0), else_=1)
+            waiting_since = case(
+                (_unreplied_expr(), Contact.last_incoming_message_at), else_=None
+            )
+            order_bys = [
+                unreplied_rank.asc(),
+                waiting_since.asc().nullslast(),
+                Contact.last_message_at.desc().nullslast(),
+                Contact.id.asc(),
+            ]
+        else:  # "newest" (today's default) or unspecified
+            order_bys = [Contact.last_message_at.desc().nullslast(), Contact.id.asc()]
+
+        rows = q.order_by(*order_bys).offset(page * page_size).limit(page_size).all()
         return rows, total
 
     def get_by_id(self, contact_id: str, tenant_id: str) -> Optional[Contact]:

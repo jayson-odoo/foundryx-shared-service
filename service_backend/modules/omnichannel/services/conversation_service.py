@@ -409,6 +409,8 @@ class ConversationService:
         custom_fields: Optional[dict] = ...,
         tag_ids: Optional[list] = ...,
         lifecycle_status_id: Optional[str] = ...,
+        close_reason_id: Optional[str] = None,
+        note: Optional[str] = None,
         actor: Optional[User] = None,
         actor_id: Optional[str] = None,
         actor_external_agent_id: Optional[str] = None,
@@ -494,11 +496,19 @@ class ConversationService:
                         event_type = "unsnoozed"
                 c.status_id = new_status_id
                 if event_type:
+                    # `close_thread` (plan 27 A3, S2) reuses THIS write - it
+                    # calls `patch_thread(status="CLOSED", close_reason_id=,
+                    # note=)` rather than duplicating the closed-event insert;
+                    # `close_reason_id`/`note` are only ever non-None here when
+                    # `event_type == "closed"` (a plain status PATCH never
+                    # sets them).
                     event_service.record(
                         self.db, c, event_type,
                         actor=actor, actor_id=actor_id,
                         external_agent_id=actor_external_agent_id,
                         from_value=prev_status_id, to_value=new_status_id,
+                        close_reason_id=close_reason_id if event_type == "closed" else None,
+                        note=note if event_type == "closed" else None,
                     )
 
         if priority is not None:
@@ -553,3 +563,42 @@ class ConversationService:
         # webhooks (Slice 4) - the ONE shared publisher (finding 1).
         self._publish_contact_updated(c, item, tenant_id)
         return item
+
+    # ── Close with reason (plan 27 A3, S2) ──────────────────────────────────
+    def close_thread(
+        self,
+        contact_id: str,
+        tenant_id: str,
+        *,
+        close_reason_id: str,
+        note: Optional[str] = None,
+        actor: Optional[User] = None,
+        actor_id: Optional[str] = None,
+        actor_external_agent_id: Optional[str] = None,
+    ) -> ThreadItem:
+        """`POST /{id}/close` (AC-IVE-28/29). Validates the reason BEFORE
+        touching the thread (nothing is written on a bad reason), then
+        delegates entirely to `patch_thread`'s existing `closed` write - this
+        never duplicates that event insert, it just carries the reason + note
+        through to it. Reopening afterwards keeps the full history (D-A3-3)."""
+        c = self.repo.get_by_id(contact_id, tenant_id)
+        if c is None:
+            raise ThreadNotFound()
+
+        from .close_reason_service import CloseReasonService
+
+        # Raises CloseReasonNotFound (missing/foreign workspace or tenant) or
+        # CloseReasonInactive - both propagate to the router untouched; the
+        # thread stays open on either.
+        reason = CloseReasonService(self.db).get_active(close_reason_id, c.workspace_id, tenant_id)
+
+        return self.patch_thread(
+            contact_id,
+            tenant_id,
+            status="CLOSED",
+            close_reason_id=reason.id,
+            note=(note or "").strip() or None,
+            actor=actor,
+            actor_id=actor_id,
+            actor_external_agent_id=actor_external_agent_id,
+        )

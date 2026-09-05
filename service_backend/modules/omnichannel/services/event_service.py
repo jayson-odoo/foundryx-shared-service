@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.models.status import Status as CoreStatus
 from app.models.user import User
 
-from ..models import Contact, ConversationEvent, ConversationMessage
+from ..models import CloseReason, Contact, ConversationEvent, ConversationMessage
 from ..models import Status as ThreadStatus
 from ..schemas import ConversationEventItem
 
@@ -197,8 +197,10 @@ def to_items(
     db: Session, events: List[ConversationEvent], tenant_id: str
 ) -> List[ConversationEventItem]:
     """Map rows → the wire shape, resolving actor + from/to labels tenant-
-    scoped in ONE batched pass (AC-IVE-10, AC-IVE-13). `closeReasonName` stays
-    null until plan 27 A3 S2 registers the `close_reasons` table."""
+    scoped in ONE batched pass (AC-IVE-10, AC-IVE-13). `closeReasonName`
+    resolves the same way - a `close_reason_id` of another tenant/workspace
+    (should never happen, defense-in-depth) renders empty, never a foreign
+    reason's name (plan 27 A3, S2)."""
     actor_user_ids = {e.actor_user_id for e in events if e.actor_user_id}
     actor_names: Dict[str, str] = {}
     if actor_user_ids:
@@ -219,6 +221,16 @@ def to_items(
 
     value_labels = _label_map(db, tenant_id, events)
 
+    reason_ids = {e.close_reason_id for e in events if e.close_reason_id}
+    reason_names: Dict[str, str] = {}
+    if reason_ids:
+        for r in (
+            db.query(CloseReason)
+            .filter(CloseReason.tenant_id == tenant_id, CloseReason.id.in_(reason_ids))
+            .all()
+        ):
+            reason_names[r.id] = r.name
+
     items: List[ConversationEventItem] = []
     for e in events:
         if e.actor_external_agent_id:
@@ -238,7 +250,7 @@ def to_items(
                 toValue=e.to_value,
                 toLabel=value_labels.get(e.to_value) if e.to_value else None,
                 closeReasonId=e.close_reason_id,
-                closeReasonName=None,
+                closeReasonName=reason_names.get(e.close_reason_id) if e.close_reason_id else None,
                 note=e.note,
                 payload=e.payload_json,
                 createdAt=e.created_at,

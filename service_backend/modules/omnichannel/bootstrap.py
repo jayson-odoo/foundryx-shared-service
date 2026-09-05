@@ -369,7 +369,7 @@ def install_tenant(db: Session, tenant_id: str) -> None:
     including this one. `event_service.backfill_tenant` is the same
     self-healing shape for `conversation_events`/`last_agent_message_at` - a
     no-op on a tenant with zero contacts (the fresh-workspace branch)."""
-    from .services import event_service, lifecycle_service
+    from .services import close_reason_service, event_service, lifecycle_service
 
     statuses.ensure_statuses(db, tenant_id)
     exists = (
@@ -380,6 +380,7 @@ def install_tenant(db: Session, tenant_id: str) -> None:
     if exists:
         lifecycle_service.backfill_tenant(db, tenant_id)
         event_service.backfill_tenant(db, tenant_id)
+        close_reason_service.CloseReasonService(db).backfill_tenant(tenant_id)
         return
     ws = Workspace(
         tenant_id=tenant_id,
@@ -391,6 +392,9 @@ def install_tenant(db: Session, tenant_id: str) -> None:
     db.add(ws)
     db.flush()
     lifecycle_service.materialize_for_workspace(db, ws)
+    # Plan 27 A3, S2 (AC-IVE-27): the seeded close reasons for a NEW workspace,
+    # same unit of work as its create.
+    close_reason_service.CloseReasonService(db).seed_for_workspace(ws.id, tenant_id)
     event_service.backfill_tenant(db, tenant_id)
 
 
@@ -414,15 +418,22 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     called unconditionally (never gated on `from_version`, matching the
     lifecycle backfill above) - safe to re-run for a tenant already on 0.3.0.
 
+    0.3.0 -> 0.3.1 (plan 27 A3, S2, AC-IVE-27): every workspace with NO close
+    reasons yet gets the four seeded defaults - `close_reason_service.
+    backfill_tenant` is idempotent the same way (a workspace already carrying
+    any reason is skipped), called unconditionally so it also self-heals a
+    tenant that somehow reaches this hook more than once.
+
     ``AppStoreService.update()`` already re-grants this module's permission
-    catalog rows (incl. the four new ``contacts.*``/``contact_fields.manage``/
-    ``contact_tags.manage`` keys) to the tenant's Admin role after this hook
-    returns - no grant-sweep code needed here.
+    catalog rows (incl. `close_reasons.manage`/`inbox_views.manage`/
+    `conversations.shortcut`, AC-IVE-41) to the tenant's Admin role after this
+    hook returns - no grant-sweep code needed here.
     """
-    from .services import event_service, lifecycle_service
+    from .services import close_reason_service, event_service, lifecycle_service
 
     lifecycle_service.backfill_tenant(db, tenant_id)
     event_service.backfill_tenant(db, tenant_id)
+    close_reason_service.CloseReasonService(db).backfill_tenant(tenant_id)
 
 
 def uninstall_tenant(db: Session, tenant_id: str) -> None:

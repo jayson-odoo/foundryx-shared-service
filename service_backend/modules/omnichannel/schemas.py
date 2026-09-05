@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.base import ApiModel
 from app.schemas.filters import FilterGroup
@@ -431,6 +431,85 @@ class ConversationEventItem(ApiModel):
 class ConversationEventListResponse(ApiModel):
     data: List[ConversationEventItem]
     total: int
+
+
+# ── Close reasons (plan 27 A3, S2 - D-A3-3) ─────────────────────────────────
+class CloseReasonItem(ApiModel):
+    id: str
+    workspaceId: str
+    name: str
+    sortOrder: int
+    isActive: bool
+    # Count of events referencing this reason - Delete is offered only at 0,
+    # Deactivate otherwise (AC-IVE-31, D-A3-13).
+    usesCount: int = 0
+    createdAt: datetime
+
+
+class CloseReasonCreate(ApiModel):
+    name: str
+    sortOrder: Optional[int] = None
+    isActive: Optional[bool] = None
+
+
+class CloseReasonUpdate(ApiModel):
+    name: Optional[str] = None
+    sortOrder: Optional[int] = None
+    isActive: Optional[bool] = None
+
+
+class CloseThreadRequest(ApiModel):
+    """`POST /contacts/{id}/close` (AC-IVE-28/29). `closeReasonId` is required
+    (Close is disabled in the UI until one is picked); `note` is capped at
+    2000 chars - stored on the event, never on the thread."""
+
+    closeReasonId: str
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+
+# ── Saved inbox views (plan 27 A3, S2 - D-A3-2) ─────────────────────────────
+class InboxViewFilter(ApiModel):
+    """Typed saved-view filter - NOT a rule-engine tree. Unknown keys 422
+    (`extra="forbid"`, AC-IVE-18). `segmentId` is a reserved seam for A2
+    (plan 26's `contact_segments`) - unused until that lane merges (D-A3-17)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    statuses: Optional[List[Literal["OPEN", "SNOOZED", "CLOSED"]]] = None
+    assignee: Optional[Literal["all", "me", "unassigned", "user"]] = None
+    assigneeUserIds: Optional[List[str]] = None
+    lifecycleStageIds: Optional[List[str]] = None
+    tagIds: Optional[List[str]] = None
+    channelIds: Optional[List[str]] = None
+    priority: Optional[Literal["ALL", "URGENT", "HIGH", "MEDIUM", "LOW"]] = None
+    unreplied: Optional[bool] = None
+    sort: Optional[Literal["newest", "oldest", "unreplied_first", "longest_waiting"]] = None
+    segmentId: Optional[str] = None
+
+
+class InboxViewItem(ApiModel):
+    id: str
+    workspaceId: str
+    name: str
+    ownerUserId: str
+    ownerName: Optional[str] = None
+    isShared: bool
+    filter: InboxViewFilter
+    sortOrder: int
+    createdAt: datetime
+
+
+class InboxViewCreate(ApiModel):
+    name: str
+    isShared: bool = False
+    filter: InboxViewFilter = Field(default_factory=InboxViewFilter)
+
+
+class InboxViewUpdate(ApiModel):
+    name: Optional[str] = None
+    isShared: Optional[bool] = None
+    filter: Optional[InboxViewFilter] = None
+    sortOrder: Optional[int] = None
 
 
 class ThreadPatch(ApiModel):
