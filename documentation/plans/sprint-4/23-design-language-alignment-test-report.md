@@ -3132,3 +3132,283 @@ Users-list CSV import end-to-end, `/imports` populated.
 by a test (new or widened) asserting the fix; item 6a has no test to update (nothing
 enumerated the real config); item 6c is evidence-only (real UI import), with the
 export-gate unit test as its parity proof per the brief's own fallback instruction.
+
+## T8 - Guardrails and docs
+
+Worktree `.claude/worktrees/s23`, branch `sprint-4/23-T8-guardrails` off `sprint-4/23-design-language-alignment`
+(integration head `b8def0f`, T7 merge). No backend changes - `:8003`/`:3002` were never
+restarted (the brief's own scope note: T8 changes no runtime UI beyond the three animation-
+review fixes, which were re-verified via `npx vitest run` + a fresh prod build, not a live
+`agent-browser` session). Commits (`git log --oneline sprint-4/23-design-language-alignment..HEAD`):
+
+| # | Commit | Concern |
+|---|---|---|
+| 1 | `0ebffb5` | `chore(lint)` - AC-DLA-63 eslint guardrails |
+| 2 | `1522721` | `fix(motion)` - drop-gap reveal, opacity/colour not layout properties |
+| 3 | `146614c` | `fix(motion)` - mega-menu chevron duration aligned with accordion-menu |
+| 4 | `e7c43d1` | `fix(motion)` - no `PRESSED_CLASS` on hold-style drag handles |
+| 5 | `baae4d1` | `test(guardrails)` - AC-DLA-64 meta test |
+| 6 | `e821790` | `docs(design-language)` - AC-DLA-65 `docs/reference/design-language.md` |
+| 7 | `be944f1` | `docs(design-language)` - AC-DLA-66 feature-skill design slots + reviewer rows |
+| 8 | `abe316c` | `docs(design-language)` - AC-DLA-70 second-mention cleanup (SKILL.md) |
+| 9 | `c9499e5` | `docs(design-language)` - AC-DLA-69/70 second-mention cleanup (design-language.md) |
+| 10 | `2880032` | `docs(backlog)` - BL-SS-061 |
+
+### AC-DLA-67 (animation review) - addendum, applied mid-slice
+
+The coordinator relayed a completed `/review-animations` pass over the integrated diff:
+**Approve**, with three non-blocking polish items, applied here as commits 2-4 above.
+
+**Verdict (verbatim per the coordinator's relay):** Approve; grep counts on the integrated
+tree: `transition-all` 0, `scale(0)`/`scale-0` entrance 0, `ease-in` entrance 0, raw
+`cubic-bezier` outside `config.reui.css` 0, `scale-[x]` without `scale` in its transition list
+0, keyboard-triggered motion 0, reduced motion honoured at three layers (token collapse in
+`config.reui.css`, selector reset in `styles.css` incl. vaul + sonner, `lib/motion.ts` + per-
+component `motion-reduce:`); `scaleX(0)` in `deferred-action-button.tsx` is a linear drain, not
+an entrance; low-tier note: motion `x`/`y`/`scale` shorthands in `lib/motion.ts` and `sheet.tsx`
+are likely WAAPI-composited, worth a frame trace later - logged as **BL-SS-061**.
+
+Three items applied:
+1. `email-editor/canvas.tsx`'s `DropGap` animated `height`/`margin`/`background-color`/
+   `border-color`/`border-width` (layout properties) during a live `dnd-kit` drag - now a fixed
+   `h-6` at all times, revealed via `opacity`/colour only (compositor-only properties). Drop
+   behaviour (droppable id, `disabled`, insertion index) unchanged; no test previously pinned
+   the class list (none existed to update).
+2. `navigation-menu.tsx`'s chevron rotated over `--duration-slow` (300ms, a lightbox-family
+   duration a chevron flip has no reason to borrow) - now `--duration-base` (200ms), matching
+   `accordion-menu.tsx`'s identical rotation.
+3. `PRESSED_CLASS` removed from the 7 named `cursor-grab` reorder-drag handles
+   (`resource-list.tsx:86`, `form-builder/canvas.tsx:95,212,334`,
+   `form-builder/settings-panel.tsx:314,622`, `email-editor/canvas.tsx:194` after the item-1
+   reflow) - a drag is a HOLD, so a press-scale sat compressed for the whole gesture and
+   compounded with `dnd-kit`'s own transform. Unused `PRESSED_CLASS` imports dropped where that
+   was the only remaining usage (`resource-list.tsx`, `form-builder/canvas.tsx`,
+   `email-editor/canvas.tsx`). `components/ui/pressed-class.inventory.test.ts` now exempts any
+   `cursor-grab` element from the "must carry `PRESSED_CLASS`" requirement by CLASS CONTENT
+   (not a per-file allowlist), with two new assertions: the exemption matches real elements (not
+   a silent no-op - 3 real `cursor-grab` palette buttons found, correctly left untouched since
+   they are click-to-add press targets too), and the four named reorder-handle files specifically
+   carry no `PRESSED_CLASS` on their `cursor-grab` buttons. `docs/reference/design-language.md`
+   section 3's Rulings table and `PRINCIPLES.md`'s hard-fail row both gained "no press class on a
+   hold" per the addendum.
+
+Re-verified: `npx eslint` on all four touched files - 0 errors (pre-existing unrelated
+`jsx-a11y` warnings only); `npx vitest run components/platform/email-editor components/platform/
+form-builder components/platform/resource-list components/ui/navigation-menu` - 8 files / 61
+tests passed; full `npx vitest run` afterward - 248/248 files, 1927/1927 tests; full
+`rm -rf .next && npm run build` - green.
+
+### AC-DLA-63 [FE][T] - `eslint.config.mjs` guardrails
+
+**PASS.** `service_frontend/eslint.config.mjs`:
+- `jsx-a11y/click-events-have-key-events`, `jsx-a11y/no-static-element-interactions`,
+  `jsx-a11y/control-has-associated-label` added as `warn` (the plugin is already registered by
+  `next/core-web-vitals` via the `extends` array - no new plugin registration needed, matching
+  Sorento's own comment on why no package install is required here either).
+- `no-restricted-imports` (error) for `@/components/ui/select` (message points at `SearchSelect`/
+  `MultiSelect`), `@/components/ui/table` (allowed only in
+  `components/platform/form-renderer/table-field.tsx` and
+  `components/platform/email-editor/block-view.tsx` - measured 5 Sep 2026: zero files currently
+  import the primitive at all, T7 having migrated every consumer onto `DataGrid`), and `sonner`
+  (allowed only in `lib/toast.ts`, `components/ui/sonner.tsx`,
+  `components/platform/resource-actions/deferred-toast.tsx`, `branding.test.tsx` - measured:
+  exactly these four files import it, matching the brief's named list exactly).
+- Measured 9 pre-existing bare-`@/components/ui/select` importers (`idea-form-fields.tsx`,
+  `connection-form-fields.tsx`, `earnings-chart.tsx`, `workspace-form-fields.tsx`,
+  `thread-list.tsx`, `user-form-fields.tsx`, `data-grid-pagination.tsx`, `filter-builder.tsx`,
+  `channel-connect-wizard.tsx`) - all nine are OPEN, tracked backlog debt (BL-062 "searchable
+  dropdowns everywhere" + BL-SS-043 for the connections form specifically), not new to this
+  slice. Rather than widen the guardrail's blast radius by fixing 9 unrelated files in a
+  guardrails-only slice, or silently downgrade the rule to `warn` (which would also silence a
+  brand NEW violation), each of the 9 is named in its own file-level override block disabling
+  `no-restricted-imports` for that file, with a comment naming the backlog ids - the guardrail's
+  job (stop the count growing) still holds: any file OUTSIDE this named 9 that imports the bare
+  `Select` now fails the build.
+- Ported Sorento's local `no-px-text-class` rule (errors on `text-[Npx]` in a className string
+  or template literal) verbatim in logic, with `eslint.config.text-px-rule.test.ts` (6 cases,
+  ported from Sorento's `Linter`-driven proof + a config-scoping assertion). Measured 5 Sep 2026:
+  zero files anywhere in the tree (including the demo1 layout) currently use the banned pattern -
+  unlike Sorento's real 82-file debt list, this repo's exemption for
+  `app/components/layouts/demo1/**` is a forward allowance for Metronic-derived markup, not a
+  live debt list (disclosed, not silently invented as an unused list).
+- Smoke-tested the rule fires for real: a temporary fixture file importing `sonner`,
+  `@/components/ui/select` and `@/components/ui/table` produced exactly the 3 expected
+  `no-restricted-imports` errors (plus 2 unrelated pre-existing TS errors from the fixture's own
+  sloppy code) before being deleted.
+
+**`npm run lint` gate (final, verbatim):** `0 errors`, `205 warnings`. Per-rule warning counts:
+`jsx-a11y/click-events-have-key-events` 93, `jsx-a11y/no-static-element-interactions` 93,
+`jsx-a11y/control-has-associated-label` 16, `react-hooks/exhaustive-deps` 1 (pre-existing),
+2 pre-existing `Unused eslint-disable directive` warnings (unrelated files, not touched this
+slice). The three new `no-restricted-imports` paths and the new `local/no-px-text-class` rule
+contribute **0 errors and 0 warnings** to this count (every current violation is either absent
+from the tree or explicitly, narrowly allowlisted with a reason) - the a11y trio is the entire
+205.
+
+### AC-DLA-64 [FE][T] - guardrail-test inventory
+
+**PASS.** All 15 named test files exist and each contains its own AC id string (verified by
+grep before writing the meta test, then by the meta test itself,
+`lib/plan23-guardrails.inventory.test.ts`, 16 cases - one per file plus a non-empty-inventory
+self-check). One disclosed path deviation, per the brief's own instruction to note it rather than
+move the file: `components/ui/ui-table.inventory.test.ts` lives under `components/ui/` (T7's
+actual, correct location - that tree is explicitly excluded from the DataGrid-migration scan as
+"the primitives themselves, not product consumers"), not the AC text's literal
+`components/platform/resource-list/ui-table.inventory.test.ts`.
+
+| File | AC id |
+|---|---|
+| `css/design-tokens.test.ts` | AC-DLA-01..07 |
+| `lib/motion.test.ts` | AC-DLA-19 |
+| `components/ui/data-grid-table.rowHref.test.tsx` | AC-DLA-14 (row-open) |
+| `components/ui/tabs.inventory.test.ts` | AC-DLA-12 (tabs) |
+| `components/ui/data-grid.inventory.test.ts` | AC-DLA-13 (scroller) |
+| `components/ui/a11y-guardrails.inventory.test.ts` | AC-DLA-59 |
+| `components/ui/pressed-class.inventory.test.ts` | AC-DLA-58 |
+| `components/ui/deleted-motion-components.guard.test.ts` | AC-DLA-25 (deleted-components) |
+| `components/platform/page-header/page-header.inventory.test.ts` | AC-DLA-27 |
+| `app/(protected)/loading-inventory.test.tsx` | AC-DLA-48 |
+| `lib/toast.inventory.test.ts` | AC-DLA-51 |
+| `components/platform/resource-actions/confirm-carve-outs.inventory.test.ts` | AC-DLA-43 |
+| `components/ui/ui-table.inventory.test.ts` | AC-DLA-56 (path deviation, see above) |
+| `lib/white-label.guard.test.ts` | AC-DLA-71 |
+| `app/components/layouts/deleted-layouts.guard.test.ts` | AC-DLA-60 |
+
+All 15 run under `npm test` (part of the 248-file suite below).
+
+### AC-DLA-65 [FE] - `docs/reference/design-language.md`
+
+**PASS**, with one disclosed dependency gap. `docs/reference/` did not exist on this branch (the
+tree is introduced only by the user's docs refactor, uncommitted in the main checkout) - created
+per the brief's own fallback instruction. `docs/reference/design-language.md` (Sorento's
+`DESIGN-LANGUAGE.md` re-homed) carries all required sections: precedence; a tokens table
+(`css/config.reui.css` + `css/foundryx-tokens.css`, including the AC-DLA-07 semantic-ink-contrast
+retune); motion (the `lib/motion.ts` API, D16's measured-settle-time ruling with the exact
+generator numbers, the Rulings table incl. the two AC-DLA-67 additions, the frequency gate
+verbatim, the hard-fails list); the primitives roster in this repo's names (`ResourceList`,
+`ResourceForm`, `PageHeader`, `ActionMenu` gear, `DeferredActionButton`, `DataGrid`,
+`StatusBadge`, `Tabs`, `Dialog`/`Sheet`/`AlertDialog`, `SearchSelect`/`MultiSelect`,
+`ListSearchInput`, `ClampedText`, `OverflowPills`, `lib/toast`, the `PageSkeleton` family,
+`lib/menu-path-match`); the surviving D1-D16 decisions table plus a dedicated "T5 rulings" and
+"T6/T7 rulings" subsection folding in the four typed-confirm carve-outs + three disclosed
+plain-confirm exceptions, the committing-never-an-outcome fix, module-tagged deferred defs, the
+250ms search-settling gate, the group-root `PageSkeleton` ruling, sidebar press/hover/
+menu-path-match, per-element `PRESSED_CLASS` (incl. the new cursor-grab exemption), and the
+white-label guard; copy and content; responsive; and the external-skills-in-`/feature` table.
+
+`PRINCIPLES.md`'s code-review hard-fail section gained a new paragraph naming all 8 items the
+AC text lists (`transition-all`, `scale(0)` entrance, `ease-in` entrance, raw `cubic-bezier`
+outside `config.reui.css`, motion on a keyboard action, a new destructive confirm dialog outside
+the named carve-outs, a raw `<table>` outside the two content files, an unlabelled icon button)
+plus, per the AC-DLA-67 addendum, a bare `Loading...` string, a direct `sonner` import, a
+`text-[Npx]` class, and `PRESSED_CLASS` on a `cursor-grab` hold element.
+
+`AGENTS.md`/`CLAUDE.md` (a symlink to `AGENTS.md` in this worktree - confirmed via `ls -la`)
+gained one pointer bullet in the "Design system (Foundryx brand)" section naming
+`docs/reference/design-language.md` and its contents.
+
+**Disclosed dependency gap (not silently worked around):** `docs/reference/frontend-design-language.md`
+does not exist anywhere in this worktree - only `docs/reference/design-language.md` (the file
+this slice created) exists. The AC text's "`frontend-design-language.md` points at it" and the
+"one index row" instruction both assume the user's docs-refactor tree (which the main checkout's
+own `CLAUDE.md` - shown to this coder as background context - already references as if it
+exists) has landed here. It has not: this worktree's `AGENTS.md`/`CLAUDE.md` is still the
+pre-refactor monolithic file (no "Architecture map" bullet list, no "Deep reference index"
+table), and no `frontend-design-language.md` file exists to add a cross-link to. Per the brief's
+own instruction ("waits for it to land on main, or creates the folder if it has not"), this
+slice created the folder + the one file it owns and stopped there; the cross-link and the
+main-checkout's own index-table row are left for the main session to add when it mirrors this
+slice's doc hunks into the main checkout (which does carry the newer file structure).
+
+### AC-DLA-66 [FE] - `.claude/agents/reviewer.md` rows + `/feature` design slots
+
+**PASS.** `.claude/skills/feature/SKILL.md` gained a "Design-skill slots" table (8 rows: grill/
+`animation-vocabulary`, UAC/`find-animation-opportunities`, Phase 1/`animate`, review/
+`emil-design-eng`, review/`review-animations` - explicitly noting it runs as ONE `general-purpose`
+agent on Opus, never the built-in `/code-review` fork and never folded into the `reviewer`
+agent's own pass - plus `pick-ui-library`/`improve-animations`), cross-referencing
+`docs/reference/design-language.md` section 8.
+
+`.claude/agents/reviewer.md` is gitignored and absent from this worktree (`ls .claude/agents/`
+confirms the directory does not even exist here) - per the brief, the proposed rows were written
+instead to `documentation/plans/sprint-4/23-evidence/T8/reviewer-rows.md`: the Sorento
+`PR-CHECKLIST.md` "Apple Alignment" and "Design" sections, adapted to this repo's component
+names (`StatusBadge`, `DataGrid`, `PageHeader`, `docs/reference/design-language.md` in place of
+Sorento's `DESIGN-LANGUAGE.md`/`ADR-PRODUCT-STANDARDS.md`), plus a new "no Playwright anywhere"
+row (D15, cross-referencing `no-playwright.guard.test.ts`/AC-DLA-69) that Sorento's own checklist
+has no equivalent of. The main session applies these to its own gitignored copy.
+
+### AC-DLA-70 [FE] - Playwright mention audit
+
+**PASS**, with two mid-slice corrections (both fixed, not left as new violations). Grep results
+(exact commands + output):
+
+`grep -rn -i playwright PRINCIPLES.md AGENTS.md CLAUDE.md service_frontend/CLAUDE.md .claude/skills/feature/SKILL.md`
+returns exactly:
+```
+PRINCIPLES.md:15:6. **Browser verification** (Playwright is retired - user ruling 2026-09-04, plan 23 D15) - ...
+AGENTS.md:469:7. **Browser verification (Playwright is retired - user ruling 2026-09-04, plan 23 D15).** ...
+CLAUDE.md:469:7. **Browser verification (Playwright is retired - user ruling 2026-09-04, plan 23 D15).** ...
+```
+(`CLAUDE.md` is a symlink to `AGENTS.md`, so the plain filesystem `grep` above follows it and
+double-reports the identical line under both names - `git grep`, which does not follow symlink
+content by default, reports it once under `AGENTS.md` only, matching the guard test's own
+`RETIREMENT_LINE_ALLOWANCE` map which only needs `AGENTS.md`+`PRINCIPLES.md` entries.)
+`service_frontend/CLAUDE.md` and `.claude/skills/feature/SKILL.md` return **zero** hits - both
+clean, no retirement sentence needed in either (the SKILL.md's own step 5/6/skill-map text never
+named the tool to begin with).
+
+**Two corrections made during this slice, both self-inflicted and fixed before commit:**
+1. This slice's own AC-DLA-66 addition to `.claude/skills/feature/SKILL.md` ("Design-skill slots"
+   table) originally added a SECOND Playwright mention ("`webapp-testing` (Playwright-based,
+   idle per D15)") - caught by re-running this exact grep, reworded to "idle for this stack,
+   D15" (cross-referencing the decision instead of re-naming the tool). Commit `abe316c`.
+2. The repo-WIDE guard test `no-playwright.guard.test.ts` (AC-DLA-69, scans ALL tracked content
+   via `git grep`, not just these four files) caught a THIRD site this slice introduced:
+   `docs/reference/design-language.md`'s own D15 decision-table row named the tool directly.
+   Reworded to describe the retirement without repeating the word. Commit `c9499e5`. Re-ran
+   `npx vitest run no-playwright.guard.test.ts` after each fix - failed once (the
+   `design-language.md` hit), green after the fix; also re-verified with a manual
+   `git grep -Iin playwright -- . ':!documentation/plans' ':!documentation/preliminary_planning'
+   ':!service_backend/modules/meetings/bot' ':!service_frontend/package-lock.json'` matching the
+   test's own exclusion pathspecs - only the two allowlisted lines plus the guard test's own
+   self-referential content remain.
+
+No rewrite of any of the four AC-DLA-70-named files was needed beyond the SKILL.md correction
+above (which was this slice's own new content, not a pre-existing site) - the sites T0 already
+cleaned stayed clean throughout T1-T7.
+
+### AC-DLA-67 [FE] - see the dedicated section above (addendum, applied as commits 2-4)
+
+### AC-DLA-63/64/65/66/70 - Definition of Done checklist
+
+1. Every AC-DLA-63/64/65/66/70 verified above (test assertion and/or direct grep/inspection);
+   two disclosed items: AC-DLA-63's 9-file pre-existing bare-`Select` debt (tracked BL-062/
+   BL-SS-043, not widened or silently fixed) and AC-DLA-65's `frontend-design-language.md`
+   cross-link (blocked on the user's uncommitted docs refactor landing, not silently skipped).
+2. `npx eslint .` - **0 errors, 205 warnings** (93 + 93 + 16 jsx-a11y, 1 pre-existing
+   `exhaustive-deps`, 2 pre-existing `Unused eslint-disable directive`). `npx vitest run` -
+   **248 files passed, 1927 tests passed**. `rm -rf .next && npm run build` - green, run twice
+   this slice (once before the AC-DLA-67 addendum's fixes, once as the final gate) plus one
+   ad-hoc rebuild mid-slice to smoke-test the eslint rule.
+3. No backend changes - `:8003` untouched; `:3002` never restarted (T8 changes no runtime UI
+   the brief asked to be live-verified; the three AC-DLA-67 fixes were verified via `npx vitest
+   run` on the affected component suites + the full build, per the brief's explicit note that
+   T8 "changes no runtime UI").
+4. **No mock left behind** - zero service-layer changes this slice. **No backfill needed** - zero
+   DB changes (frontend/docs-only slice). **No new permission** - zero permission keys. Scope
+   reductions are disclosed, not silent: the AC-DLA-65 cross-link gap, the AC-DLA-70 SKILL.md
+   correction (fixed, not a residual gap), and BL-SS-061 (the WAAPI frame-trace follow-up).
+5. Not applicable in the live-clicks sense (T8 is guardrails + docs, no product UI changed
+   beyond the three motion-review polish fixes) - those three were verified structurally (lint +
+   targeted + full vitest + full build) per the brief's own scope note, not via a new
+   `agent-browser` evidence run.
+
+**Verdict: T8 (Guardrails and docs) DONE.** AC-DLA-63, 64, 65, 66, 70 all PASS (two disclosed,
+reasoned, tracked scope items - the pre-existing bare-Select debt and the
+`frontend-design-language.md` cross-link dependency gap - neither silently absorbed). AC-DLA-67
+(relayed by the coordinator): **Approve**, three polish items applied as their own commits and
+re-verified green. `AC-DLA-69` (Playwright purge) re-confirmed still green after two
+self-corrections. Full gate: `npm run lint` 0 errors/205 warnings, `npx vitest run` 248/248
+files (1927/1927 tests), `rm -rf .next && npm run build` green. Worktree clean
+(`git status --short` empty) across 10 commits.
