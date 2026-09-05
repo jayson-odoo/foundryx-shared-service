@@ -3,7 +3,6 @@
 import { useDndContext, useDraggable, useDroppable } from '@dnd-kit/core';
 import { ChevronDown, ChevronUp, GripVertical, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { cn } from '@/lib/utils';
 import type { BrandRenderValues } from '@/lib/template-render';
 import {
@@ -89,17 +88,24 @@ function DropGap({
     );
   }
 
+  // Fixed height at all times (T8 animation review, AC-DLA-67 item 1): the
+  // gap used to animate `height`/`margin` between rest/dragActive/isOver,
+  // which are LAYOUT properties - animating them during a live dnd-kit drag
+  // forces a reflow on every frame, fighting the drag's own transform.
+  // Reveal is now opacity + colour only (compositor-only properties), so the
+  // drop target's footprint never changes - only its visibility does.
   return (
     <div
       ref={setNodeRef}
       data-testid={`drop-gap-${columnId}-${index}`}
-      className={`rounded transition-[height,margin,background-color,border-color,border-width] ${
+      className={cn(
+        'my-1 h-6 rounded border border-dashed transition-[opacity,background-color] duration-(--duration-fast) ease-(--ease-standard)',
         isOver
-          ? 'my-1 h-9 border border-dashed border-primary bg-primary/10'
+          ? 'border-primary bg-primary/10 opacity-100'
           : dragActive
-            ? 'my-1 h-6 border border-dashed border-primary/40 bg-primary/5'
-            : '-my-1 h-2'
-      }`}
+            ? 'border-primary/40 bg-primary/5 opacity-100'
+            : 'border-transparent bg-transparent opacity-0',
+      )}
     />
   );
 }
@@ -184,7 +190,7 @@ function CanvasBlock({
             type="button"
             aria-label="Drag block"
             data-testid={`block-handle-${block.id}`}
-            className={cn(PRESSED_CLASS, 'cursor-grab rounded border border-input bg-background p-1 text-muted-foreground shadow-sm hover:text-foreground active:cursor-grabbing')}
+            className={cn('cursor-grab rounded border border-input bg-background p-1 text-muted-foreground shadow-sm hover:text-foreground active:cursor-grabbing')}
             {...listeners}
             {...attributes}
           >
