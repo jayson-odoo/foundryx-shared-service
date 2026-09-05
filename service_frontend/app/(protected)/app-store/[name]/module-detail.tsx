@@ -28,7 +28,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 
 export function ModuleDetail({ name }: { name: string }) {
   const { update } = useSession();
-  const form = useForm();
+  const form = useForm({ mode: 'onTouched' });
   const [module, setModule] = useState<StoreModule | null>(null);
   const [loading, setLoading] = useState(true);
   const [missing, setMissing] = useState(false);

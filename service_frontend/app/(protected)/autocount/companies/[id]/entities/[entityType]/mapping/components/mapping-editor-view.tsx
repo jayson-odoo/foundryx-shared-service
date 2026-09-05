@@ -36,7 +36,7 @@ export interface MappingEditorViewProps {
  */
 export function MappingEditorView({ companyId, entityType }: MappingEditorViewProps) {
   const { can } = useCan();
-  const form = useForm();
+  const form = useForm({ mode: 'onTouched' });
   const { detail } = useAutocountCompany(companyId);
   const { view, isLoading, notFound, saveError, save, testFormula, simulate } =
     useAutocountMapping(companyId, entityType);

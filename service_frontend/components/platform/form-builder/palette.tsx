@@ -13,6 +13,8 @@ import { useMemo, useState } from 'react';
 import { useDraggable } from '@dnd-kit/core';
 import { ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { Input } from '@/components/ui/input';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import type { FormFieldType } from '@/types/forms';
 import { FIELD_ICONS, PALETTE_CATEGORIES, fieldMeta } from './field-catalog';
 
@@ -38,11 +40,12 @@ function PaletteItem({
       type="button"
       data-testid={`palette-${type}`}
       onClick={() => !disabled && onAdd(type)}
-      className={`flex w-full items-center gap-2 rounded-md border border-input bg-background px-2.5 py-1.5 text-left text-xs text-foreground transition-colors ${
-        disabled
-          ? 'cursor-not-allowed opacity-50'
-          : 'cursor-grab hover:border-primary hover:text-primary'
-      } ${isDragging ? 'opacity-40' : ''}`}
+      className={cn(
+        PRESSED_CLASS,
+        'flex w-full items-center gap-2 rounded-md border border-input bg-background px-2.5 py-1.5 text-left text-xs text-foreground transition-colors',
+        disabled ? 'cursor-not-allowed opacity-50' : 'cursor-grab hover:border-primary hover:text-primary',
+        isDragging && 'opacity-40',
+      )}
       {...listeners}
       {...attributes}
     >
@@ -102,7 +105,7 @@ export function Palette({ disabled, onAdd }: PaletteProps) {
                 type="button"
                 data-testid={`palette-category-${category.id}`}
                 onClick={() => toggle(category.id)}
-                className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                className={cn(PRESSED_CLASS, 'flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground')}
               >
                 {open ? (
                   <ChevronDown className="size-3.5" />

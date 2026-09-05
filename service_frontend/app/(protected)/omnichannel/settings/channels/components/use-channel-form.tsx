@@ -51,6 +51,7 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
   const [notFound, setNotFound] = useState(false);
 
   const form = useForm<ChannelDetailValues>({
+    mode: 'onTouched',
     resolver: zodResolver(channelDetailSchema),
     defaultValues: toFormValues(null, null),
   });

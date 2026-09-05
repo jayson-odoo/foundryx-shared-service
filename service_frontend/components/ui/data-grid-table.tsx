@@ -574,7 +574,11 @@ function dataGridBodyRowClass<TData>(
     // imperatively, matching `useRestoreReturnedRow`'s pattern).
     'transition-[background-color,opacity] duration-(--duration-fast) ease-(--ease-standard) data-[returned=true]:bg-primary/5 data-[pending=true]:opacity-50',
     (isLinkRow || Boolean(props.onRowClick) || (unknownHref && Boolean(props.rowHref))) && 'cursor-pointer',
-    isLinkRow &&
+    // AC-DLA-58: every CLICKABLE row darkens on pointer-down, not just link
+    // rows - `onRowClick` rows (status-entity-detail, resource-list callers
+    // with no rowHref) are clickable too and used to get no pressed feedback
+    // at all.
+    (isLinkRow || Boolean(props.onRowClick)) &&
       // AC-DLA-14 fix round 1: `background-color` (the active/hover states)
       // AND `opacity` (T5's pending-row dim) both transition; no
       // `motion-reduce:transition-none` - the tokens already collapse to

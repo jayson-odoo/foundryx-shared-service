@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 import { toAbsoluteUrl } from '@/lib/helpers';
+import { cn } from '@/lib/utils';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import {
@@ -63,7 +64,7 @@ export function Header() {
           <Link href="/" className="shrink-0">
             <img
               src={toAbsoluteUrl('/media/app/mini-logo.svg')}
-              className="h-[25px] w-full"
+              className="h-[25px] w-[25px] object-contain"
               alt="mini-logo"
             />
           </Link>
@@ -124,8 +125,10 @@ export function Header() {
             pages, which left the real My Account page with an empty header.) */}
         {!mobileMode && <MegaMenu />}
 
-        {/* HeaderTopbar */}
-        <div className="flex items-center gap-3">
+        {/* HeaderTopbar - gap tightens on mobile (T7 fix round 1) so the
+            Uploads/Downloads triggers fit alongside Notifications/Chat/Apps/
+            the avatar without overlap at 375px. */}
+        <div className={cn('flex items-center', mobileMode ? 'gap-1' : 'gap-3')}>
           {
             <>
               {!mobileMode && (
@@ -135,6 +138,7 @@ export function Header() {
                       variant="ghost"
                       mode="icon"
                       shape="circle"
+                      aria-label="Search"
                       className="size-9 hover:bg-primary/10 hover:[&_svg]:text-primary"
                     >
                       <Search className="size-4.5!" />
@@ -142,13 +146,31 @@ export function Header() {
                   }
                 />
               )}
-              <ActivityTriggers />
+              {/* T7 (AC-DLA-62): all 4 icons (Uploads/Imports/Jobs/Downloads)
+                  with no wrap/shrink protection overflowed the 375px header
+                  and visually overlapped the hamburger + apps-menu drawer
+                  triggers on the left. Fix round 1: rather than hiding the
+                  whole group on mobile (which silently dropped the Uploads/
+                  Downloads drawers entirely), only Uploads + Downloads
+                  render on mobile - Imports/Jobs stay reachable via the
+                  sidebar drawer's own menu entries, where header width is
+                  tight. `compact` (mobile only) drops the invisible
+                  44px coarse-pointer touch pad (`COARSE_HIT_TARGET_CLASS`) -
+                  same visible size, but this is now a dense cluster (6 icons
+                  in a 375px header) where overlapping touch pads is the
+                  documented reason NOT to carry that class. */}
+              <ActivityTriggers
+                only={mobileMode ? ['uploads', 'downloads'] : undefined}
+                compact={mobileMode}
+              />
               <NotificationsSheet
                 trigger={
                   <Button
                     variant="ghost"
                     mode="icon"
+                    size={mobileMode ? 'sm' : undefined}
                     shape="circle"
+                    aria-label="Notifications"
                     className="size-9 hover:bg-primary/10 hover:[&_svg]:text-primary"
                   >
                     <Bell className="size-4.5!" />
@@ -160,7 +182,9 @@ export function Header() {
                   <Button
                     variant="ghost"
                     mode="icon"
+                    size={mobileMode ? 'sm' : undefined}
                     shape="circle"
+                    aria-label="Chat"
                     className="size-9 hover:bg-primary/10 hover:[&_svg]:text-primary"
                   >
                     <MessageCircleMore className="size-4.5!" />
@@ -172,7 +196,9 @@ export function Header() {
                   <Button
                     variant="ghost"
                     mode="icon"
+                    size={mobileMode ? 'sm' : undefined}
                     shape="circle"
+                    aria-label="Apps"
                     className="size-9 hover:bg-primary/10 hover:[&_svg]:text-primary"
                   >
                     <LayoutGrid className="size-4.5!" />

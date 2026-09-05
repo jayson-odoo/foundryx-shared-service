@@ -56,6 +56,7 @@ export function useTenantForm(
   const [notFound, setNotFound] = useState(false);
 
   const form = useForm<TenantFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(
       creating ? tenantProvisionSchema : tenantUpdateSchema,
     ),

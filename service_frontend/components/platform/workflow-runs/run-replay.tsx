@@ -24,6 +24,8 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import { FlowCanvas } from '@/components/platform/flow-canvas';
 import {
   WorkflowFlowNode,
@@ -221,7 +223,7 @@ function DataBlock({ label, value }: DataBlockProps) {
             type="button"
             onClick={handleCopy}
             aria-label={`Copy ${label}`}
-            className="hover:text-foreground text-muted-foreground transition-colors"
+            className={cn(PRESSED_CLASS, 'hover:text-foreground text-muted-foreground transition-colors')}
           >
             {copied ? (
               <Check className="size-3.5" />
@@ -269,7 +271,7 @@ function ErrorBlock({ error }: ErrorBlockProps) {
           type="button"
           onClick={handleCopy}
           aria-label="Copy Error"
-          className="hover:text-destructive text-muted-foreground transition-colors"
+          className={cn(PRESSED_CLASS, 'hover:text-destructive text-muted-foreground transition-colors')}
         >
           {copied ? (
             <Check className="size-3.5" />

@@ -174,6 +174,26 @@ describe('AC-DLA-48 loading.tsx inventory - every ResourceList/DataGrid/Resource
       // fallback (asserted separately below), so it's excluded here rather
       // than forced into ListPageSkeleton against its own fix-round-1 intent.
       if (s.dir === appProtected) continue;
+      // T7 (AC-DLA-56): `imports/[jobId]` and `jobs/[id]` are hand-built
+      // record/detail pages (Cards, no `ResourceForm` shell) that migrated
+      // a small embedded results/errors table onto `DataGrid` - the same
+      // heuristic limit as the group root above (a small embedded grid
+      // reads as "isList" to the JSX-tag scan, with no `ResourceForm` usage
+      // to flip `isRecord`). Both render RecordPageSkeleton (their real
+      // shape), asserted directly below instead of via the generic branch.
+      if (
+        s.rel === path.join('app', '(protected)', 'imports', '[jobId]') ||
+        s.rel === path.join('app', '(protected)', 'jobs', '[id]')
+      ) {
+        const loadingPath = path.join(s.dir, 'loading.tsx');
+        const mod = await import(/* @vite-ignore */ loadingPath);
+        const { container, unmount } = render(<mod.default />);
+        if (!container.querySelector('[data-skeleton="record"]')) {
+          mismatches.push(`${s.rel} should render RecordPageSkeleton`);
+        }
+        unmount();
+        continue;
+      }
       const loadingPath = path.join(s.dir, 'loading.tsx');
       const mod = await import(/* @vite-ignore */ loadingPath);
       const Loading = mod.default;

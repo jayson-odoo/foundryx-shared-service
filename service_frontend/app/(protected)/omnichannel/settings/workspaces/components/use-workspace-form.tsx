@@ -43,6 +43,7 @@ export function useWorkspaceForm(
   const [notFound, setNotFound] = useState(false);
 
   const form = useForm<WorkspaceFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(workspaceFormSchema),
     defaultValues: toFormValues(null),
   });

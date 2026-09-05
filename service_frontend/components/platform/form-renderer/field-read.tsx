@@ -10,14 +10,11 @@
  */
 import { formatDate, formatDateTime } from '@/lib/datetime';
 import { Badge } from '@/components/ui/badge';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
+import { type ColumnDef, getCoreRowModel, useReactTable } from '@tanstack/react-table';
+import { DataGrid } from '@/components/ui/data-grid';
+import { DataGridTable } from '@/components/ui/data-grid-table';
 import type {
   FormAddressAnswer,
   FormAnswerScalar,
@@ -25,7 +22,7 @@ import type {
   FormField,
   FormFileAnswer,
 } from '@/types/forms';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Download } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { countryName } from './countries';
@@ -156,6 +153,13 @@ function AddressRead({ value }: { value: FormAddressAnswer }) {
   );
 }
 
+/**
+ * AC-DLA-56 (T7) - a repeater's submitted rows, migrated off the raw
+ * @/components/ui/table primitive onto DataGrid + DataGridTable (sticky
+ * header + resizable/movable columns come free from DataGrid's own
+ * defaults, AC-DLA-13). Dynamic columns (one per repeater sub-field) built
+ * fresh per field, small in-memory row set - no pagination/sort needed.
+ */
 function RepeaterRead({
   field,
   value,
@@ -163,33 +167,36 @@ function RepeaterRead({
   field: FormField;
   value: Record<string, FormAnswerValue>[];
 }) {
-  const subs = field.repeater?.fields ?? [];
+  const columns = useMemo<ColumnDef<Record<string, FormAnswerValue>>[]>(
+    () =>
+      (field.repeater?.fields ?? []).map((sub) => ({
+        id: sub.id,
+        header: sub.label,
+        cell: ({ row }) => {
+          const cell = row.original[sub.key];
+          let display: string;
+          if (sub.type === 'yesno') display = cell === true ? 'Yes' : cell === false ? 'No' : EMPTY;
+          else if (cell === null || cell === undefined || cell === '') display = EMPTY;
+          else display = String(cell);
+          return display;
+        },
+      })),
+    [field.repeater],
+  );
+
+  const table = useReactTable({
+    data: value,
+    columns,
+    getRowId: (_row, index) => String(index),
+    getCoreRowModel: getCoreRowModel(),
+  });
+
   if (value.length === 0) return <span className="text-muted-foreground">{EMPTY}</span>;
   return (
-    <div className="overflow-x-auto rounded-md border border-border">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            {subs.map((sub) => (
-              <TableHead key={sub.id}>{sub.label}</TableHead>
-            ))}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {value.map((row, i) => (
-            <TableRow key={i}>
-              {subs.map((sub) => {
-                const cell = row[sub.key];
-                let display: string;
-                if (sub.type === 'yesno') display = cell === true ? 'Yes' : cell === false ? 'No' : EMPTY;
-                else if (cell === null || cell === undefined || cell === '') display = EMPTY;
-                else display = String(cell);
-                return <TableCell key={sub.id}>{display}</TableCell>;
-              })}
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+    <div className="rounded-md border border-border">
+      <DataGrid table={table} recordCount={value.length}>
+        <DataGridTable />
+      </DataGrid>
     </div>
   );
 }
@@ -261,7 +268,7 @@ function FileChip({ fieldKey, index, label }: { fieldKey: string; index: number;
       type="button"
       onClick={open}
       disabled={loading}
-      className="inline-flex items-center gap-1 rounded-md border border-border bg-secondary/40 px-2 py-1 text-xs text-foreground transition-colors hover:bg-accent disabled:opacity-50"
+      className={cn(PRESSED_CLASS, 'inline-flex items-center gap-1 rounded-md border border-border bg-secondary/40 px-2 py-1 text-xs text-foreground transition-colors hover:bg-accent disabled:opacity-50')}
     >
       <Download className="size-3" /> {label}
     </button>

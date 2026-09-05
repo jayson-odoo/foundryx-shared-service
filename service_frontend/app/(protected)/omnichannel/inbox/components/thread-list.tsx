@@ -27,6 +27,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { ConversationFilters } from '@/hooks/use-conversations';
 import { cn } from '@/lib/utils';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import type { ConversationThread, ThreadPriority, ThreadStatus } from '@/types/omnichannel';
 
 export interface ThreadListProps {
@@ -152,6 +153,7 @@ export function ThreadList({
                   type="button"
                   onClick={() => onSelect(t.id)}
                   className={cn(
+                    PRESSED_CLASS,
                     'flex w-full items-start gap-3 border-b px-3 py-2.5 text-start transition-colors hover:bg-accent',
                     selectedId === t.id && 'bg-accent',
                   )}

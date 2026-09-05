@@ -46,6 +46,7 @@ export function useRoleForm(roleId: string | undefined, initialEditing: boolean)
   const [notFound, setNotFound] = useState(false);
 
   const form = useForm<RoleFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(roleFormSchema),
     defaultValues: toFormValues(null),
   });

@@ -31,7 +31,7 @@ import { AC_COMPANIES_PATH, acCompanyHref } from '../../components/autocount-met
  */
 export function ConnectCompanyView() {
   const router = useRouter();
-  const form = useForm();
+  const form = useForm({ mode: 'onTouched' });
   const { options, isLoading, emptyReason } = useAutocountConnections();
   const [connectionId, setConnectionId] = useState<string | null>(null);
   const [label, setLabel] = useState('');

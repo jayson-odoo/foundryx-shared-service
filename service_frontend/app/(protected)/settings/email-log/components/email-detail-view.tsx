@@ -75,7 +75,7 @@ export function EmailDetailView({ emailId }: { emailId: string }) {
   const [reloadKey, setReloadKey] = useState(0);
   const actions = useEmailLogActions();
   const { formatDateTime } = useDatetime();
-  const form = useForm();
+  const form = useForm({ mode: 'onTouched' });
 
   useEffect(() => {
     let cancelled = false;

@@ -106,6 +106,27 @@ describe('ListSearchInput', () => {
     expect(screen.queryByTestId('list-search-settling')).not.toBeInTheDocument();
   });
 
+  it('spinner persists while busy stays true even after settling flips false (the fetch outlasts the debounce)', () => {
+    const { rerender } = render(<ControlledWithBusy busy={true} />);
+    // No typing at all - `busy` alone carries `active` past the 250ms gate.
+    act(() => {
+      vi.advanceTimersByTime(250);
+    });
+    expect(screen.getByTestId('list-search-settling')).toBeInTheDocument();
+
+    // `settling` is already false the whole time here (no typing happened),
+    // so this asserts the spinner is driven by `busy`, not by `settling`
+    // lingering true - the exact regression this case guards.
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(screen.getByTestId('list-search-settling')).toBeInTheDocument();
+
+    // Only when `busy` itself goes false does the spinner clear.
+    rerender(<ControlledWithBusy busy={false} />);
+    expect(screen.queryByTestId('list-search-settling')).not.toBeInTheDocument();
+  });
+
   it('clear button resets the value', () => {
     render(<Controlled />);
     const input = screen.getByRole('textbox', { name: 'Search' }) as HTMLInputElement;

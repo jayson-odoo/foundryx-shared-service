@@ -11,6 +11,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, LoaderCircle, Play, TriangleAlert } from 'lucide-react';
+import { type ColumnDef, getCoreRowModel, useReactTable } from '@tanstack/react-table';
 import {
   Dialog,
   DialogBody,
@@ -27,6 +28,8 @@ import {
   AlertIcon,
   AlertTitle,
 } from '@/components/ui/alert';
+import { DataGrid } from '@/components/ui/data-grid';
+import { DataGridTable } from '@/components/ui/data-grid-table';
 import { cn } from '@/lib/utils';
 import { humanizeFieldKey } from '@/lib/autocount-diff';
 import type {
@@ -64,24 +67,23 @@ function renderValue(value: unknown): string {
   return String(value);
 }
 
-function FieldResultRow({ field }: { field: AutocountSimulateFieldResult }) {
-  return (
-    <tr className="border-b align-top last:border-0">
-      <td className="px-2 py-1.5">
-        <span className="font-medium">{humanizeFieldKey(field.canonicalField)}</span>
-      </td>
-      <td className="px-2 py-1.5">
-        <code className="text-xs text-muted-foreground">{field.sourcePath}</code>
-      </td>
-      <td className="px-2 py-1.5">
-        {field.ok ? (
-          <code className="text-xs">{renderValue(field.value)}</code>
-        ) : (
-          <span className="text-xs font-medium text-destructive">{field.error}</span>
-        )}
-      </td>
-    </tr>
-  );
+/** AC-DLA-56 (T7) - flat, keyed field-result rows (columns below), migrated
+ *  off the raw <table> onto DataGrid + DataGridTable. */
+interface FieldResultRow {
+  id: string;
+  field: AutocountSimulateFieldResult;
+}
+
+function fieldResultRows(result: AutocountSimulateResult): FieldResultRow[] {
+  return [
+    ...result.headerFields.map((f) => ({
+      id: `h-${f.canonicalField}-${f.sourcePath}`,
+      field: f,
+    })),
+    ...result.lineFields.flatMap((line, li) =>
+      line.map((f) => ({ id: `l-${li}-${f.canonicalField}-${f.sourcePath}`, field: f })),
+    ),
+  ];
 }
 
 export function MappingSimulator({
@@ -139,6 +141,43 @@ export function MappingSimulator({
   const failedFields = result
     ? [...result.headerFields, ...result.lineFields.flat()].filter((f) => !f.ok)
     : [];
+
+  const resultRows = useMemo(() => (result ? fieldResultRows(result) : []), [result]);
+  const resultColumns = useMemo<ColumnDef<FieldResultRow>[]>(
+    () => [
+      {
+        id: 'sorentoField',
+        header: 'Sorento field',
+        cell: ({ row }) => (
+          <span className="font-medium">{humanizeFieldKey(row.original.field.canonicalField)}</span>
+        ),
+      },
+      {
+        id: 'source',
+        header: 'Source',
+        cell: ({ row }) => (
+          <code className="text-xs text-muted-foreground">{row.original.field.sourcePath}</code>
+        ),
+      },
+      {
+        id: 'value',
+        header: 'Value',
+        cell: ({ row }) =>
+          row.original.field.ok ? (
+            <code className="text-xs">{renderValue(row.original.field.value)}</code>
+          ) : (
+            <span className="text-xs font-medium text-destructive">{row.original.field.error}</span>
+          ),
+      },
+    ],
+    [],
+  );
+  const resultTable = useReactTable({
+    data: resultRows,
+    columns: resultColumns,
+    getRowId: (r) => r.id,
+    getCoreRowModel: getCoreRowModel(),
+  });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -230,29 +269,10 @@ export function MappingSimulator({
                 </Alert>
               )}
 
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[420px] text-sm" data-testid="field-results">
-                  <thead>
-                    <tr className="border-b text-start text-xs font-medium text-muted-foreground">
-                      <th className="px-2 py-1.5 text-start font-medium">Sorento field</th>
-                      <th className="px-2 py-1.5 text-start font-medium">Source</th>
-                      <th className="px-2 py-1.5 text-start font-medium">Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.headerFields.map((f) => (
-                      <FieldResultRow key={`h-${f.canonicalField}-${f.sourcePath}`} field={f} />
-                    ))}
-                    {result.lineFields.map((line, li) =>
-                      line.map((f) => (
-                        <FieldResultRow
-                          key={`l-${li}-${f.canonicalField}-${f.sourcePath}`}
-                          field={f}
-                        />
-                      )),
-                    )}
-                  </tbody>
-                </table>
+              <div data-testid="field-results">
+                <DataGrid table={resultTable} recordCount={resultRows.length}>
+                  <DataGridTable />
+                </DataGrid>
               </div>
               <div
                 className={cn(

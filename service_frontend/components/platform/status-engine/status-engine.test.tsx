@@ -313,8 +313,8 @@ describe('TransitionDrawer', () => {
 });
 
 describe('StatusTable', () => {
-  it('lists statuses and hides reorder handles without manage', () => {
-    render(
+  it('lists statuses (as DataGrid rows, AC-DLA-56) and hides reorder handles without manage', () => {
+    const { container } = render(
       <StatusTable
         statuses={[pending, approved]}
         canManage={false}
@@ -323,8 +323,10 @@ describe('StatusTable', () => {
         onRowClick={vi.fn()}
       />,
     );
-    expect(screen.getByTestId('status-row-pending')).toBeInTheDocument();
-    expect(screen.getByTestId('status-row-approved')).toBeInTheDocument();
+    // `DataGridTableBodyRow` stamps `data-row-id` off `getRowId` (status.id),
+    // not a bespoke per-surface testid - the generic DataGrid convention.
+    expect(container.querySelector(`[data-row-id="${pending.id}"]`)).toBeInTheDocument();
+    expect(container.querySelector(`[data-row-id="${approved.id}"]`)).toBeInTheDocument();
     expect(screen.queryByLabelText(/Reorder/)).not.toBeInTheDocument();
   });
 
@@ -339,5 +341,24 @@ describe('StatusTable', () => {
       />,
     );
     expect(screen.getByLabelText('Reorder Pending')).toBeInTheDocument();
+  });
+
+  it('a row click fires onRowClick with the status; a drag-handle click does not (AC-DLA-58 stopPropagation)', () => {
+    const onRowClick = vi.fn();
+    const { container } = render(
+      <StatusTable
+        statuses={[pending, approved]}
+        canManage
+        entityLabel="Ticket"
+        onReorder={vi.fn().mockResolvedValue(true)}
+        onRowClick={onRowClick}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Reorder Pending'));
+    expect(onRowClick).not.toHaveBeenCalled();
+
+    const row = container.querySelector(`[data-row-id="${pending.id}"]`) as HTMLElement;
+    fireEvent.click(row);
+    expect(onRowClick).toHaveBeenCalledWith(pending);
   });
 });

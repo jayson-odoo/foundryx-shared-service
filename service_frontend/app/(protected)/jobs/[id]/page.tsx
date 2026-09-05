@@ -10,14 +10,6 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { ClampedText } from '@/components/platform/clamped-text';
 import {
@@ -30,6 +22,7 @@ import { useDatetime } from '@/hooks/use-datetime';
 import { jobsService } from '@/services/jobs-service';
 import { JOB_IN_FLIGHT, type Job, type JobFailure, type JobLogEntry } from '@/types/jobs';
 import { useJobActions } from '../use-job-actions';
+import { FailedAssetsCard } from './failed-assets-card';
 
 const POLL_MS = 3000;
 
@@ -208,39 +201,7 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
         </CardContent>
       </Card>
 
-      {failures.length > 0 && (
-        <Card className="mt-5">
-          <CardHeader>
-            <CardHeading>
-              <CardTitle>Failed assets ({failures.length})</CardTitle>
-            </CardHeading>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Key</TableHead>
-                    <TableHead>Reason</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {failures.map((f, i) => (
-                    <TableRow key={i}>
-                      <TableCell className="max-w-xs font-mono text-xs">
-                        <ClampedText text={f.key} lines={1} />
-                      </TableCell>
-                      <TableCell className="text-destructive">
-                        <ClampedText text={f.reason} lines={2} />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {failures.length > 0 && <FailedAssetsCard failures={failures} />}
     </Container>
   );
 }

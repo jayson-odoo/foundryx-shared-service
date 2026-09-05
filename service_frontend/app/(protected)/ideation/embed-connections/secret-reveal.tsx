@@ -12,7 +12,7 @@ import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
  * host's (sorento's) embed config.
  */
 export function SecretReveal({ secret }: { secret: string }) {
-  const { isCopied, copyToClipboard } = useCopyToClipboard();
+  const { isCopied, error, copyToClipboard } = useCopyToClipboard();
 
   return (
     <div className="flex flex-col gap-3">
@@ -33,6 +33,11 @@ export function SecretReveal({ secret }: { secret: string }) {
           {isCopied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
         </Button>
       </div>
+      {error && (
+        <p className="text-sm font-medium text-destructive">
+          Could not copy. Select and copy manually.
+        </p>
+      )}
       <p className="text-sm font-medium text-destructive">
         Copy this secret now - it won&apos;t be shown again. Paste the SAME value into the host
         app&apos;s embed config.

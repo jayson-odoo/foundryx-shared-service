@@ -3,6 +3,8 @@
 import { useDndContext, useDraggable, useDroppable } from '@dnd-kit/core';
 import { ChevronDown, ChevronUp, GripVertical, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import type { BrandRenderValues } from '@/lib/template-render';
 import {
   SECTION_LAYOUT_COLUMNS,
@@ -182,7 +184,7 @@ function CanvasBlock({
             type="button"
             aria-label="Drag block"
             data-testid={`block-handle-${block.id}`}
-            className="cursor-grab rounded border border-input bg-background p-1 text-muted-foreground shadow-sm hover:text-foreground active:cursor-grabbing"
+            className={cn(PRESSED_CLASS, 'cursor-grab rounded border border-input bg-background p-1 text-muted-foreground shadow-sm hover:text-foreground active:cursor-grabbing')}
             {...listeners}
             {...attributes}
           >

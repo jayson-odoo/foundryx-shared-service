@@ -66,6 +66,16 @@ export function Demo1Layout({ children }: { children: ReactNode }) {
 
   return (
     <>
+      {/* AC-DLA-59: a keyboard user's first Tab stop jumps straight past the
+          sidebar/header chrome to the page content - visually hidden until
+          focused. */}
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:absolute focus:start-2 focus:top-2 focus:z-(--z-modal) focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-md focus:outline-none focus:ring-2 focus:ring-ring"
+      >
+        Skip to content
+      </a>
+
       {!isMobile && <Sidebar />}
 
       {/* min-w-0: the wrapper is a flex item of the horizontal body flex -
@@ -76,7 +86,9 @@ export function Demo1Layout({ children }: { children: ReactNode }) {
       <div className="wrapper flex min-w-0 grow flex-col">
         <Header />
 
-        <main className="grow pt-5" role="content">
+        {/* `<main>` already carries the implicit ARIA "main" role - the old
+            non-standard content-role attribute here was dropped (AC-DLA-59). */}
+        <main id="main" className="grow pt-5">
           {children}
         </main>
 

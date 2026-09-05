@@ -152,7 +152,7 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
                 />
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" mode="icon" size="sm">
+                    <Button variant="ghost" mode="icon" size="sm" aria-label="More options">
                       <MoreVertical className="size-4!" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -162,7 +162,7 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
                     align="end"
                   >
                     <DropdownMenuItem asChild>
-                      <Link href="/account/members/teams">
+                      <Link href="/user-management/users">
                         <Users /> Invite Users
                       </Link>
                     </DropdownMenuItem>
@@ -174,18 +174,18 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
                       <DropdownMenuPortal>
                         <DropdownMenuSubContent className="w-44">
                           <DropdownMenuItem asChild>
-                            <Link href="/account/members/import-members">
+                            <Link href="/user-management/users">
                               <Shield />
                               Find Members
                             </Link>
                           </DropdownMenuItem>
                           <DropdownMenuItem asChild>
-                            <Link href="/account/members/import-members">
+                            <Link href="/user-management/users">
                               <Calendar /> Meetings
                             </Link>
                           </DropdownMenuItem>
                           <DropdownMenuItem asChild>
-                            <Link href="/account/members/import-members">
+                            <Link href="/user-management/users">
                               <Shield /> Group Settings
                             </Link>
                           </DropdownMenuItem>
@@ -193,7 +193,7 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
                       </DropdownMenuPortal>
                     </DropdownMenuSub>
                     <DropdownMenuItem asChild>
-                      <Link href="/account/security/privacy-settings">
+                      <Link href="/account">
                         <Shield /> Group Settings
                       </Link>
                     </DropdownMenuItem>
@@ -314,7 +314,7 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
               className="w-full ps-12 pe-24 py-4 h-auto"
             />
             <div className="absolute end-7 top-1/2 -translate-y-1/2 flex gap-2">
-              <Button size="sm" variant="ghost" mode="icon">
+              <Button size="sm" variant="ghost" mode="icon" aria-label="Attach a file">
                 <Upload className="size-4!" />
               </Button>
               <Button size="sm" variant="mono">

@@ -134,6 +134,7 @@ export function ImpersonationBanner() {
             size="sm"
             mode="icon"
             onClick={() => setCollapsed(true)}
+            aria-label="Hide banner"
             title="Hide banner"
             className="text-amber-900 hover:bg-amber-200"
           >

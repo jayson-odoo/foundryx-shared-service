@@ -66,6 +66,7 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
   const [loadError, setLoadError] = useState<Error | null>(null);
 
   const form = useForm<UserFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(userFormSchema),
     defaultValues: toFormValues(null),
   });

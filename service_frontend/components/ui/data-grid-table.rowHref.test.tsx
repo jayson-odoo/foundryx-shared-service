@@ -150,11 +150,20 @@ describe('AC-DLA-14 DataGrid rowHref link semantics', () => {
     }
   });
 
+  it('AC-DLA-58: an onRowClick row (no rowHref) darkens on pointer-down like a linked row', () => {
+    render(<Harness onRowClick={() => {}} />);
+    for (const row of bodyRows()) {
+      expect(row.className).toContain('cursor-pointer');
+      expect(row.className).toContain('active:bg-muted/60');
+    }
+  });
+
   it('neither rowHref nor onRowClick set: no pointer cursor, no tabIndex', () => {
     render(<Harness />);
     const rowsEl = bodyRows();
     for (const row of rowsEl) {
       expect(row.className).not.toContain('cursor-pointer');
+      expect(row.className).not.toContain('active:bg-muted/60');
       expect(row).not.toHaveAttribute('tabindex');
     }
   });

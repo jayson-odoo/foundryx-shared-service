@@ -17,6 +17,8 @@ import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ClampedText } from '@/components/platform/clamped-text';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import type { AutocountSqlSchema, AutocountSqlTable } from '@/types/autocount';
 
 export interface SqlSchemaTreeProps {
@@ -178,7 +180,7 @@ export function SqlSchemaTree({
               >
                 <button
                   type="button"
-                  className="flex w-full items-center gap-1 rounded px-1 py-1 text-left hover:bg-muted"
+                  className={cn(PRESSED_CLASS, 'flex w-full items-center gap-1 rounded px-1 py-1 text-left hover:bg-muted')}
                   onClick={() => toggle(node.name)}
                 >
                   {isOpen(node.name) ? (
@@ -199,11 +201,12 @@ export function SqlSchemaTree({
                         <li key={table.name} role="treeitem" aria-selected={isSelected}>
                           <button
                             type="button"
-                            className={
+                            className={cn(
+                              PRESSED_CLASS,
                               isSelected
                                 ? 'flex w-full items-center gap-1.5 rounded bg-primary/10 px-1.5 py-1 text-left font-medium text-primary'
-                                : 'flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left hover:bg-muted'
-                            }
+                                : 'flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left hover:bg-muted',
+                            )}
                             onClick={() => setSelected({ schemaName: node.name, table })}
                           >
                             <Table2 className="size-3.5 shrink-0 text-muted-foreground" />

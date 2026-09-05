@@ -207,8 +207,12 @@ describe('AC-DLA-03 named z-scale', () => {
     // dropping while the wrapper stayed at a bare --header-height hid the page title
     // under it (fix round 1 finding 1).
     expect((demo1Css.match(new RegExp(offsetFormula.replace(/[()+]/g, '\\$&'), 'g')) ?? []).length).toBeGreaterThanOrEqual(2);
-    const settingsSidebar = read('app/(protected)/account/home/settings-sidebar/content.tsx');
-    expect(settingsSidebar).toContain('calc(var(--header-height)+var(--shell-top-offset,0px)+1rem)');
+    // The third consumer of this formula (a settings page's own sticky nav,
+    // `+1rem` on top of the shared offset) used to be
+    // `account/home/settings-sidebar/content.tsx` - deleted in plan-23 T7
+    // (AC-DLA-57, dead Metronic demo). No live surface uses a sticky
+    // in-page nav with this offset today; the wrapper/header/sidebar/banner
+    // consumers above remain the load-bearing assertions.
   });
 
   /**
