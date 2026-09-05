@@ -8,6 +8,7 @@
  */
 
 import type { UserStatus } from '@/types/user';
+import type { FilterGroup } from '@/types/resource';
 
 /** Channels the platform can connect. MVP builds WHATSAPP; others are later adapters. */
 export type ChannelType = 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM' | 'DOUYIN' | 'XIAOHONGSHU';
@@ -604,4 +605,147 @@ export interface PatchContactInput {
   countryCode?: string | null;
   customFields?: Record<string, string | number | boolean | null>;
   tagIds?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Plan 26 (A2, roadmap) - `ContactSegment` pulled forward pending A2's own
+// merge (plan 29 depends on it for the Broadcasts audience picker; A2 has not
+// landed on this base yet). Shape mirrors the `s26` worktree's
+// `contact-segment-service` contract EXACTLY (field-for-field) so A2's merge
+// is a straight replace, never a rewrite - see plan 29 §"Segments come from
+// plan 26" and `contact-segment-service.ts` below.
+// ---------------------------------------------------------------------------
+
+/** A saved, named filter tree on a workspace - stores the EXACT `FilterGroup`
+ *  shape the Resource shell's filter builder emits, applied in SQL (A2). */
+export interface ContactSegment {
+  id: string;
+  workspaceId: string;
+  name: string;
+  description: string | null;
+  filter: FilterGroup;
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
+}
+
+export interface CreateContactSegmentInput {
+  name: string;
+  description?: string | null;
+  filter: FilterGroup;
+}
+
+export interface UpdateContactSegmentInput {
+  name?: string;
+  description?: string | null;
+  filter?: FilterGroup;
+}
+
+// ---------------------------------------------------------------------------
+// Plan 29 - Omnichannel Broadcasts v1 (roadmap A4). See
+// documentation/plans/sprint-4/29-omnichannel-broadcasts.md §5.2.
+// ---------------------------------------------------------------------------
+
+export type BroadcastStatus = 'DRAFT' | 'SCHEDULED' | 'SENDING' | 'SENT' | 'CANCELLED' | 'FAILED';
+
+/** How one WhatsApp template parameter slot is filled (D-A4-4 - structured,
+ *  never a merge-string micro-render; anti-SSTI by construction). */
+export type TemplateBinding =
+  | { source: 'static'; text: string }
+  | { source: 'contactField'; field: string; fallback: string };
+
+/** `TemplateBinding.field` whitelist (plan §5.2). */
+export const CONTACT_FIELD_BINDING_OPTIONS: { label: string; value: string }[] = [
+  { label: 'First name', value: 'firstName' },
+  { label: 'Last name', value: 'lastName' },
+  { label: 'Phone', value: 'phone' },
+  { label: 'Email', value: 'email' },
+  { label: 'Language', value: 'language' },
+  { label: 'Country code', value: 'countryCode' },
+  { label: 'Lifecycle stage', value: 'lifecycle' },
+];
+
+/** The audience CONFIGURATION - exactly one of a saved segment, an inline
+ *  filter, or an explicit contact-id list. Never a stored recipient list
+ *  until send time (D-A4-2). */
+export interface BroadcastAudience {
+  kind: 'segment' | 'filter' | 'contacts';
+  segmentId?: string;
+  segmentName?: string;
+  filter?: FilterGroup;
+  contactIds?: string[];
+}
+
+export interface BroadcastBindings {
+  header: TemplateBinding[];
+  body: TemplateBinding[];
+  buttons: TemplateBinding[];
+}
+
+export interface BroadcastCounts {
+  total: number;
+  sent: number;
+  delivered: number;
+  read: number;
+  failed: number;
+  skipped: number;
+}
+
+export interface Broadcast {
+  id: string;
+  workspaceId: string;
+  name: string;
+  labels: string[];
+  channelId: string;
+  channelName: string;
+  audience: BroadcastAudience;
+  templateId: string;
+  templateName: string;
+  templateLanguage: string;
+  bindings: BroadcastBindings;
+  status: BroadcastStatus;
+  statusLabel: string;
+  scheduledAt: string | null; // ISO
+  startedAt: string | null; // ISO
+  finishedAt: string | null; // ISO
+  counts: BroadcastCounts;
+  jobId: string | null;
+  error: string | null;
+  createdByUserId: string | null;
+  createdByName: string | null;
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
+}
+
+export interface CreateBroadcastInput {
+  name: string;
+  labels?: string[];
+  channelId: string;
+  audience: BroadcastAudience;
+  templateId: string;
+  bindings: BroadcastBindings;
+  scheduledAt?: string | null;
+}
+
+export type UpdateBroadcastInput = Partial<CreateBroadcastInput>;
+
+export type BroadcastRecipientState = 'queued' | 'sent' | 'delivered' | 'read' | 'failed' | 'skipped';
+
+export type BroadcastSkipReason =
+  | 'no_identity'
+  | 'duplicate'
+  | 'channel_inactive'
+  | 'cancelled'
+  | 'missing_variable';
+
+export interface BroadcastRecipient {
+  id: string;
+  contactId: string;
+  contactName: string;
+  phone: string | null;
+  state: BroadcastRecipientState;
+  skipReason?: BroadcastSkipReason;
+  errorCode?: string;
+  errorText?: string;
+  messageId?: string;
+  attemptedAt: string | null; // ISO
 }

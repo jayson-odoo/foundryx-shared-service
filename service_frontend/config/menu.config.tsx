@@ -319,6 +319,13 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/omnichannel/inbox',
         permission: 'conversations.read',
       },
+      // Broadcasts (plan 29, roadmap A4) - after Inbox (Contacts, from A2,
+      // is not on this base yet - it lands right after Inbox too).
+      {
+        title: 'Broadcasts',
+        path: '/omnichannel/broadcasts',
+        permission: 'broadcasts.read',
+      },
       {
         title: 'Channels',
         path: '/omnichannel/settings/channels',
@@ -431,6 +438,41 @@ export const MENU_MEGA: MenuConfig = [
           },
         ],
       },
+      // Omnichannel (plan 29, roadmap A4) - at `d302ea7` neither mega menu
+      // carried an Omnichannel block at all (sidebar-only); this pass adds it
+      // properly tagged (module + per-child permission) rather than tagging
+      // only the sidebar, mirroring the sidebar's own children plus the new
+      // Broadcasts entry after Inbox.
+      {
+        title: 'Omnichannel',
+        module: 'omnichannel',
+        children: [
+          {
+            children: [
+              {
+                title: 'Inbox',
+                path: '/omnichannel/inbox',
+                permission: 'conversations.read',
+              },
+              {
+                title: 'Broadcasts',
+                path: '/omnichannel/broadcasts',
+                permission: 'broadcasts.read',
+              },
+              {
+                title: 'Channels',
+                path: '/omnichannel/settings/channels',
+                permission: 'channels.read',
+              },
+              {
+                title: 'Workspaces',
+                path: '/omnichannel/settings/workspaces',
+                permission: 'workspaces.read',
+              },
+            ],
+          },
+        ],
+      },
       // Meetings (sprint-5 S0) - the DESKTOP mega menu copy. Same module +
       // permission tags, so `filterMenu` prunes it identically in all three.
       {
@@ -513,6 +555,35 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Log settings',
         path: '/developers/logs/settings',
         permission: 'integration_logs.manage',
+      },
+    ],
+  },
+  // Omnichannel (plan 29, roadmap A4) - third menu copy (mobile mega); same
+  // module + per-child permission tags, mirroring MENU_SIDEBAR/MENU_MEGA.
+  {
+    title: 'Omnichannel',
+    icon: MessageSquare,
+    module: 'omnichannel',
+    children: [
+      {
+        title: 'Inbox',
+        path: '/omnichannel/inbox',
+        permission: 'conversations.read',
+      },
+      {
+        title: 'Broadcasts',
+        path: '/omnichannel/broadcasts',
+        permission: 'broadcasts.read',
+      },
+      {
+        title: 'Channels',
+        path: '/omnichannel/settings/channels',
+        permission: 'channels.read',
+      },
+      {
+        title: 'Workspaces',
+        path: '/omnichannel/settings/workspaces',
+        permission: 'workspaces.read',
       },
     ],
   },
