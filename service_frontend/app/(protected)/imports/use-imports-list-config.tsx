@@ -94,7 +94,6 @@ export function useImportsListConfig(): ResourceListConfig<ImportJob> {
         importService
           .list({ page: q.page, pageSize: q.pageSize })
           .then((r) => ({ data: r.items, total: r.total, page: q.page })),
-      exporter: async () => '',
       filterFields: [],
       exportColumns: [],
       actions: [],

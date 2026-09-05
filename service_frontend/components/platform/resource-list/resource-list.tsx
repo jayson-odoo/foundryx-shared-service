@@ -394,7 +394,10 @@ export function ResourceList<T extends object>({
   const runtime = { reload: list.reload };
   const filterCount = countConditions(list.filter);
 
+  const canExport = config.exportColumns.length > 0 && Boolean(config.exporter);
+
   async function handleExport(columnIds: string[]) {
+    if (!config.exporter) return;
     const csv = await config.exporter(
       list.query,
       columnIds,
@@ -584,13 +587,15 @@ export function ResourceList<T extends object>({
                     runtime={runtime}
                     getEntityId={config.getEntityId}
                   />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setExportOpen(true)}
-                  >
-                    <Upload /> Export
-                  </Button>
+                  {canExport && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setExportOpen(true)}
+                    >
+                      <Upload /> Export
+                    </Button>
+                  )}
                   <Button
                     variant="ghost"
                     size="sm"
@@ -646,14 +651,16 @@ export function ResourceList<T extends object>({
                     </Button>
                   )}
 
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setExportOpen(true)}
-                  >
-                    <Upload />
-                    Export
-                  </Button>
+                  {canExport && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setExportOpen(true)}
+                    >
+                      <Upload />
+                      Export
+                    </Button>
+                  )}
 
                   {!cardView && (
                     <DataGridColumnVisibility

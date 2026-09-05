@@ -148,7 +148,6 @@ export function useJobsListConfig(): ResourceListConfig<Job> {
             status: q.segment ? SEGMENT_STATUS[q.segment] : undefined,
           })
           .then((r) => ({ data: r.items, total: r.total, page: q.page })),
-      exporter: async () => '',
       filterFields: [],
       exportColumns: [],
       actions,

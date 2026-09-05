@@ -176,7 +176,13 @@ export interface ResourceListConfig<T extends object> {
    */
   onRowSelect?: (row: T, index: number, rows: T[]) => void;
   fetcher: (query: ListQuery) => Promise<ListResult<T>>;
-  exporter: (
+  /**
+   * Omit (rather than a no-op returning `''`) when the list has nothing to
+   * export - the shell hides the Export button entirely when `exportColumns`
+   * is empty (T7 fix round 1: a no-op exporter still rendered an Export
+   * button that produced an empty file).
+   */
+  exporter?: (
     query: ListQuery,
     columns: string[],
     ids?: string[],
