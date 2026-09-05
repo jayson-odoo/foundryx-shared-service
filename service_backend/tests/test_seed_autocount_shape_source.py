@@ -353,3 +353,98 @@ def test_derive_sales_agents_covers_both_sales_and_purchase_role():
     po_headers = {"PO-1": {"purchase_agent": "TAIYANG"}, "PO-2": {"purchase_agent": "LCL"}}
     agents = derive_sales_agents(so_headers, po_headers)
     assert {a["agent"] for a in agents} == {"LCL", "TAIYANG"}
+
+
+# ---------------------------------------------------------------------------
+# rig tables match the SQL pack's master queries (coordinator finding, live
+# re-push) - the live tester had to hand-create FOUR compat views (Item /
+# Creditor / SalesAgent / Location) because the pack's master queries
+# (plan-22 SQL pack, section 5) name tables/columns this rig didn't carry.
+# Pure-function checks against the `DDL` string constant - no DB needed, the
+# same "read the DDL text" approach the real seed's tables are declared with.
+# ---------------------------------------------------------------------------
+
+import re
+
+from scripts.seed_autocount_shape_source import DDL, SCHEMA
+
+
+def _table_columns(ddl: str, table: str) -> set:
+    """Every quoted column name declared anywhere for `table` - a CREATE
+    TABLE block's own columns PLUS any later `ALTER TABLE ... ADD COLUMN`
+    statements for the same table (the idempotent-column-add pattern this
+    file already uses for `SO.UDF_DelDate`)."""
+    columns: set = set()
+    schema = re.escape(SCHEMA)
+    create_match = re.search(
+        rf'CREATE TABLE IF NOT EXISTS {schema}\."{table}" \((.*?)\n\);',
+        ddl, re.DOTALL,
+    )
+    if create_match:
+        columns.update(re.findall(r'"(\w+)"\s+\w', create_match.group(1)))
+    for alter_match in re.finditer(
+        rf'ALTER TABLE {schema}\."{table}" ADD COLUMN IF NOT EXISTS "(\w+)"',
+        ddl,
+    ):
+        columns.add(alter_match.group(1))
+    return columns
+
+
+def test_item_table_has_every_column_the_pack_product_master_query_selects():
+    """Plan-22 SQL pack section 5.3 (product master) selects these columns
+    off `AED_SORENTO.dbo.Item` - the rig's `Item` table must carry all of
+    them or the pack's query fails with "column does not exist" (the exact
+    live gap that forced a hand-made compat view)."""
+    required = {
+        "AutoKey", "ItemCode", "Description", "Desc2", "ItemGroup", "ItemType",
+        "ItemBrand", "ItemClass", "ItemCategory", "BaseUOM", "SalesUOM",
+        "PurchaseUOM", "StockControl", "HasSerialNo", "HasBatchNo", "TaxCode",
+        "PurchaseTaxCode", "TariffCode", "MainSupplier", "IsActive",
+        "Discontinued", "LastModified",
+    }
+    have = _table_columns(DDL, "Item")
+    missing = required - have
+    assert not missing, f"Item table is missing pack columns: {sorted(missing)}"
+
+
+def test_creditor_table_has_every_column_the_pack_supplier_master_query_selects():
+    """Section 5.2 (supplier master, "same as 5.1 [Debtor] but PurchaseAgent/
+    CreditorType") - the rig's `Creditor` table must carry every column the
+    pack's supplier query selects off `AED_SORENTO.dbo.Creditor`."""
+    required = {
+        "AutoKey", "AccNo", "CompanyName", "Desc2", "RegisterNo",
+        "Address1", "Address2", "Address3", "Address4", "PostCode",
+        "Attention", "Phone1", "Phone2", "Mobile", "Fax1", "EmailAddress",
+        "WebURL", "PurchaseAgent", "CreditorType", "AreaCode", "CurrencyCode",
+        "DisplayTerm", "CreditLimit", "TaxCode", "IsActive", "LastModified",
+    }
+    have = _table_columns(DDL, "Creditor")
+    missing = required - have
+    assert not missing, f"Creditor table is missing pack columns: {sorted(missing)}"
+
+
+def test_location_table_has_every_column_the_pack_warehouse_master_query_selects():
+    """Section 5.4 (warehouse master) - the rig's `Location` table must
+    carry every column the pack's warehouse query selects off
+    `AED_SORENTO.dbo.Location`."""
+    required = {
+        "AutoKey", "Location", "Description", "Address1", "Address2",
+        "Address3", "Address4", "PostCode", "Phone1", "Contact", "IsActive",
+    }
+    have = _table_columns(DDL, "Location")
+    missing = required - have
+    assert not missing, f"Location table is missing pack columns: {sorted(missing)}"
+
+
+def test_agent_view_exists_for_the_pack_sales_agent_master_query():
+    """Section 5.6 - the pack's sales_agent master query names the table
+    `Agent` (AutoCount's real underlying table), not `SalesAgent` (this
+    rig's original table name) - the rig must expose a compat `Agent` view
+    (or table) carrying `Agent`/`Description`/`IsActive`, or the pack's
+    query 404s on a table that doesn't exist here."""
+    schema = re.escape(SCHEMA)
+    assert re.search(rf'(CREATE TABLE IF NOT EXISTS|CREATE OR REPLACE VIEW) {schema}\."Agent"', DDL), (
+        "no `Agent` table/view is declared - the pack's sales_agent master "
+        "query (section 5.6) selects from AED_SORENTO.dbo.Agent, not "
+        "SalesAgent"
+    )

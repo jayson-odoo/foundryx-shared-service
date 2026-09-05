@@ -515,6 +515,30 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}."Creditor" (
     "IsActive"       char(1) NOT NULL DEFAULT 'T',
     "LastModified"   timestamptz NOT NULL DEFAULT now()
 );
+-- Rig-tables-match-SQL-pack-masters fix (coordinator finding, live re-push):
+-- the pack's supplier master query (section 5.2) selects these columns off
+-- AED_SORENTO.dbo.Creditor - ADD COLUMN IF NOT EXISTS keeps this idempotent
+-- against an already-seeded local database.
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "Desc2" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "RegisterNo" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "Address1" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "Address2" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "Address3" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "Address4" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "PostCode" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "Attention" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "Phone1" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "Phone2" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "Mobile" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "Fax1" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "EmailAddress" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "WebURL" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "CreditorType" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "AreaCode" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "CurrencyCode" text DEFAULT 'MYR';
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "DisplayTerm" text;
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "CreditLimit" numeric(18,4);
+ALTER TABLE {SCHEMA}."Creditor" ADD COLUMN IF NOT EXISTS "TaxCode" text;
 
 CREATE TABLE IF NOT EXISTS {SCHEMA}."Item" (
     "AutoKey"       integer PRIMARY KEY,
@@ -524,6 +548,24 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}."Item" (
     "IsActive"      char(1) NOT NULL DEFAULT 'T',
     "LastModified"  timestamptz NOT NULL DEFAULT now()
 );
+-- Rig-tables-match-SQL-pack-masters fix - the pack's product master query
+-- (section 5.3) selects these columns off AED_SORENTO.dbo.Item.
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "Desc2" text;
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "ItemGroup" text;
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "ItemType" text;
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "ItemBrand" text;
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "ItemClass" text;
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "ItemCategory" text;
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "SalesUOM" text;
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "PurchaseUOM" text;
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "StockControl" char(1) DEFAULT 'T';
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "HasSerialNo" char(1) DEFAULT 'F';
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "HasBatchNo" char(1) DEFAULT 'F';
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "TaxCode" text;
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "PurchaseTaxCode" text;
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "TariffCode" text;
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "MainSupplier" text;
+ALTER TABLE {SCHEMA}."Item" ADD COLUMN IF NOT EXISTS "Discontinued" char(1) DEFAULT 'F';
 
 CREATE TABLE IF NOT EXISTS {SCHEMA}."ItemUOM" (
     "AutoKey"            integer PRIMARY KEY,
@@ -538,12 +580,30 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}."Location" (
     "Location"      text NOT NULL UNIQUE,
     "IsActive"      char(1) NOT NULL DEFAULT 'T'
 );
+-- Rig-tables-match-SQL-pack-masters fix - the pack's warehouse master query
+-- (section 5.4) selects these columns off AED_SORENTO.dbo.Location.
+ALTER TABLE {SCHEMA}."Location" ADD COLUMN IF NOT EXISTS "Description" text;
+ALTER TABLE {SCHEMA}."Location" ADD COLUMN IF NOT EXISTS "Address1" text;
+ALTER TABLE {SCHEMA}."Location" ADD COLUMN IF NOT EXISTS "Address2" text;
+ALTER TABLE {SCHEMA}."Location" ADD COLUMN IF NOT EXISTS "Address3" text;
+ALTER TABLE {SCHEMA}."Location" ADD COLUMN IF NOT EXISTS "Address4" text;
+ALTER TABLE {SCHEMA}."Location" ADD COLUMN IF NOT EXISTS "PostCode" text;
+ALTER TABLE {SCHEMA}."Location" ADD COLUMN IF NOT EXISTS "Phone1" text;
+ALTER TABLE {SCHEMA}."Location" ADD COLUMN IF NOT EXISTS "Contact" text;
 
 CREATE TABLE IF NOT EXISTS {SCHEMA}."SalesAgent" (
     "Agent"         text PRIMARY KEY,
     "Description"   text,
     "IsActive"      char(1) NOT NULL DEFAULT 'T'
 );
+
+-- Rig-tables-match-SQL-pack-masters fix - the pack's sales_agent master
+-- query (section 5.6) names the table `Agent`, not `SalesAgent` (AutoCount's
+-- own name for the underlying table, per the pack's own note). A compat
+-- VIEW keeps the pack's query runnable UNCHANGED against this rig, never a
+-- second table this seed has to write twice.
+CREATE OR REPLACE VIEW {SCHEMA}."Agent" AS
+SELECT "Agent", "Description", "IsActive" FROM {SCHEMA}."SalesAgent";
 """
 
 
