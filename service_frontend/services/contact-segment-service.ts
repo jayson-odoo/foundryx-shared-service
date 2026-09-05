@@ -15,7 +15,7 @@
  * same way the list query validates it.
  */
 import type { ContactSegment, CreateContactSegmentInput, UpdateContactSegmentInput } from '@/types/omnichannel';
-import { mockContactSegmentService } from './contact-segment-service.mock';
+import { realContactSegmentService } from './contact-segment-service.real';
 
 export interface ContactSegmentService {
   list(workspaceId: string): Promise<ContactSegment[]>;
@@ -24,6 +24,5 @@ export interface ContactSegmentService {
   remove(workspaceId: string, segmentId: string): Promise<void>;
 }
 
-// S0 MOCK - swap to real in S4 (plan 26); `contact-segment-service.real.ts`
-// lands with the S1 backend routes above.
-export const contactSegmentService: ContactSegmentService = mockContactSegmentService;
+// Real backend (plan 26 S4) - routes landed in S1.
+export const contactSegmentService: ContactSegmentService = realContactSegmentService;

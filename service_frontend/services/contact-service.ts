@@ -31,7 +31,7 @@ import type {
   CreateContactInput,
 } from '@/types/omnichannel';
 import type { ListQuery, ListResult } from '@/types/resource';
-import { mockContactService } from './contact-service.mock';
+import { realContactService } from './contact-service.real';
 
 export interface ContactService {
   /** Workspace-scoped, server search/sort/filter/segment/paginate (D-A2-12 -
@@ -62,7 +62,6 @@ export interface ContactService {
   exportContacts(workspaceId: string, req: ContactExportRequest): Promise<string>;
 }
 
-// S0 MOCK - swap to real in S4 (plan 26). The routes above land in S1 (list +
-// segments) / S2 (create + bulk) / S3 (import + export); `contact-service.real.ts`
-// is added once those routes exist so this switch stays a one-line change.
-export const contactService: ContactService = mockContactService;
+// Real backend (plan 26 S4) - routes landed S1 (list + segments) / S2
+// (create + bulk) / S3 (import + export).
+export const contactService: ContactService = realContactService;
