@@ -4,8 +4,8 @@ import { Container } from '@/components/common/container';
 import { useTenantBranding } from '@/hooks/use-branding';
 
 /**
- * AC-DLA-71 - the Metronic footer rendered "Keenthemes Inc." and a
- * Docs/Purchase/FAQ/Support/License nav, none of which the product owns.
+ * AC-DLA-71 - the upstream demo footer rendered the template vendor's brand
+ * name and an external marketing nav, none of which the product owns.
  * White-label: shows the tenant name when branded, nothing when not (never
  * a hardcoded "Foundryx" in tenant-facing chrome) - no external nav at all,
  * since the product does not publish any of those pages today.
