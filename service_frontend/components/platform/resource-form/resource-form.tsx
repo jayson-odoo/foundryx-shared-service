@@ -236,6 +236,7 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
             .start(
               action.deferred!.actionKey,
               entityIds.map((id) => ({ entityType, entityId: id })),
+              action.deferred!.payload?.(config.actionRows),
             )
             .catch((error: unknown) => {
               untrackPendingEntities(entityIds);

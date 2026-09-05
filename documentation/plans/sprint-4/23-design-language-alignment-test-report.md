@@ -2410,3 +2410,117 @@ slice, see above).
 (BL-SS-051 - 17 `confirm:` sites still to migrate; BL-SS-052 - a fully general per-row-payload
 tenant-transition deferred action). All AC-DLA-37..47 pass either fully or via a disclosed,
 reasoned, tracked deviation - none silently skipped.
+
+## T5 - Fix round 1
+
+16 findings from the T5 review, all addressed on the same branch
+(`sprint-4/23-T5-deferred-actions`, worktree `.claude/worktrees/s23`). Full mapping + evidence:
+`documentation/plans/sprint-4/23-evidence/T5/README.md` ("T5 - Fix round 1" section).
+
+**Security blockers (1-3):**
+1. `cancel`/`current` were authenticated-only - any tenant user could veto or watch another
+   action's countdown. Both now resolve the parked action's OWN permission fresh from the
+   actor's roles (the same path `park` uses, plus the platform double-lock); `current` 404s
+   uniformly without it, `cancel` 403s. Any teammate HOLDING the permission may still cancel
+   (D2's "anyone with the permission may veto").
+2. A `cancelled` outcome (a teammate cancelling from ANOTHER tab) fell through to
+   `settle('done', ...)` - a success toast + navigation for a record that was never deleted.
+   `pollOnce` now short-circuits to `idle` via a new `onCancelledElsewhere` callback;
+   `onFailed` now actually fires for a genuine failure (previously unobserved).
+3. Bulk `start()` used `Promise.all` - one park rejecting (a 409 mid-batch) orphaned every row
+   that DID succeed. Switched to `Promise.allSettled`; `start()` returns
+   `{parkedEntityIds, failedCount}` so the caller tracks the successes and surfaces ONE toast
+   naming the rest.
+
+**Should-fix (4-7):**
+4. `commit_one` now claims `pending`→`committing` before running the handler (atomic,
+   `WHERE status='pending'`), so the beat sweep racing the frontend's lazy poll can never run a
+   handler twice; a stuck `committing` row (worker crash) is reaped `failed` by the next sweep
+   after a grace window. Migration `b7c1d2e3f4a5` adds `committing` to the status CHECK.
+5. `resource-form.tsx`'s `onDeferredStart` now has a `.catch` on `deferred.start()`, mirroring
+   `action-menu.tsx` (a park rejection used to vanish silently).
+6. Every handler resolves the acting user via `UserRepository.get_by_id(id, tenant_id, ...)`
+   instead of an unscoped `db.get(User, id)` (the polymorphic-target_id rule).
+7. `DeferredActionDef` gained a mandatory `exists(db, tenant_id, entity_id)` check wired to each
+   entity's own repository - `park()` 404s a target that's already gone. The three handlers
+   whose service call is a bulk-shaped `UPDATE ... WHERE id IN (...)` that silently no-ops on a
+   missing row (`users.trash`, `documents.trash`, `document_shares.revoke`) now assert the row
+   still exists immediately before calling the service, so a target that vanishes DURING the
+   window fails the commit loudly.
+
+**Animation blockers (8-10):**
+8. The countdown fill snapped `scaleX(0)`→`scaleX(1)` untransitioned at lapse (reads as a
+   glitch/reset at the exact moment the destructive action fires). Now holds `scaleX(0)`; the
+   track's colour swap (destructive→muted) animates via a class-level transition.
+9. Cancel gave no feedback until the round trip resolved. `cancel()` now leaves `pending`
+   SYNCHRONOUSLY (before its network call) - the countdown unmounts on the SAME click. The
+   dead `cancelling` prop on `DeferredCountdown` (never passed by any caller) is deleted rather
+   than wired to a button that no longer exists by the time it would matter.
+10. `remainingMs` for the armed transition was measured in the effect body (before either rAF
+    frame ran) - a hidden-tab throttle could arm a near-full-duration transition against an
+    already-mostly-elapsed clock. Now measured inside the second frame.
+
+**Nits (11-13):**
+11. `deferredVerbRef` was mutated directly during render and read back in the same render's
+    JSX. Replaced with a pure `useMemo` (`derivedDeferred`, fresh every render); a
+    `useLayoutEffect` caches the label/entityType ONLY for the later commit toast (never read
+    during render, so that ref write is fine).
+12. `ResourceAction<T>` is now a discriminated union - a `deferred` action carries no `run` (the
+    shell never calls it) and no `confirm`; a `confirm`/plain action requires `run`.
+    `deferred.window` (set at all 13 call sites, read nowhere - the server owns the window) is
+    deleted from the type; every migrated action's dead `run:` body is deleted (11 files);
+    `use-tenant-actions.tsx`'s conditional confirm-or-deferred action is restructured into two
+    fully separate branches.
+13. The three `toast.success('Done.')` sites now read `deferredDoneMessage(label, entityType,
+    count)` - "User trashed.", "3 users trashed.", "Role deleted." - composed from the label's
+    LEADING verb only (never the rest of a multi-word label like "Delete role", which would
+    otherwise double the noun).
+
+**Remaining migration (15, closes BL-SS-051):** all 17 `confirm:` sites migrated.
+- Core: `document_types.delete`, `jobs.abort`/`jobs.complete`, `email_outbox.cancel` (added to
+  `app/deferred_actions/handlers.py`).
+- `modules/ideation/deferred_actions.py` (new, registered from `bootstrap.register_engine_entities`):
+  `ideation_ideas.archive`/`.delete`, `ideation_business_requirements.delete`/`.unlink_idea`,
+  `ideation_embed_connections.delete`/`.set_active` (6 keys).
+- `modules/omnichannel/deferred_actions.py` (new, same registration pattern):
+  `channels.disconnect`/`.delete`, `wa_templates.delete`, `webhooks.set_active`/`.delete`,
+  `quick_replies.delete`, `api_keys.revoke`, `workspaces.trash` (8 keys).
+- AutoCount's 2 sites (`task-editor-view.tsx` Pause, `use-entities-list-config.tsx` Re-fetch
+  history) were genuinely non-destructive re-sync/pause actions - `confirm` DROPPED entirely
+  (no `deferred` needed), matching the item's own rule.
+- `confirm-carve-outs.inventory.test.ts`'s `PENDING_MIGRATION` is now `[]` (asserted empty by a
+  new test); the allowlist is exactly the three typed-confirmation carve-outs (module uninstall,
+  tenant purge, Users' Impersonate) plus the pre-existing BL-SS-052 tenant custom-status-edge
+  fallback. **BL-SS-051 closed** (row removed from the backlog); BL-SS-052 kept.
+- A new `ResourceListConfig.getEntityId`/`ActionMenu.onDeferredCommitted` seam was added for
+  the ideation BR<->idea unlink (a join row with no id of its own the frontend row type
+  carries) - documented in `components/platform/resource-list/types.ts` and
+  `action-menu.tsx`.
+
+**Item 14 (Settings provider):** confirmed NOT needed - the server's `windowSeconds` (read from
+`tenant_settings` at park time) is authoritative; Settings > General keeps fetching its own
+values directly via the existing `GET/PUT /settings/general` pair. No new provider added.
+
+**Gate (item 16):** `pytest -q` (Postgres, `foundryx_service_s23`) **2748 passed, 1 skipped, 18
+deselected** (0 failed - up from 2727/1/18 before this round's new tests). `npx eslint .`: 0
+errors (3 pre-existing, unrelated warnings). `npm test`: **214/214 files, 1770/1770 tests**.
+`rm -rf .next && npm run build`: green. Both `:8003`/`:3002` restarted from THIS worktree's own
+processes only (`lsof -p <pid> | grep cwd` confirmed before every kill). Evidence:
+`documentation/plans/sprint-4/23-evidence/T5/README.md` "T5 - Fix round 1" (17 new
+`fixround1-NN-*` screenshots/captures at 1280px + 375px covering: viewer-cannot-cancel via raw
+API capture, two-tab cancel-to-idle, bulk-with-one-409 (two dimmed rows + one error toast + the
+eventual "2 users trashed." commit toast), the optimistic-Cancel record view, a migrated
+omnichannel delete (workspace trash) counting down, and a newly-registered core action
+(`document_types.delete`) counting down at both widths).
+
+**Disclosed for this round:** ideation and AutoCount are not installed on the `default` tenant
+in this worktree's DB, so their deferred actions were verified via passing backend integration
+tests (`test_ideation_deferred_actions.py` x8, through the real HTTP API) plus the updated
+frontend unit tests, rather than live agent-browser clicks against that tenant - installing
+either module purely to screenshot it was judged a bigger tenant-state change than the gap
+justified. No AutoCount "delete" action exists in this migration's scope (both its sites were
+confirm-drops, not deferred deletes) - a second core action (`document_types.delete`)
+substitutes as the "second engine counting down" evidence alongside omnichannel.
+
+**Verdict: T5 fix round 1 DONE.** All 16 items addressed with tests/evidence; PENDING_MIGRATION
+ends empty; no regressions (pytest 2748/2748, vitest 1770/1770, build green).

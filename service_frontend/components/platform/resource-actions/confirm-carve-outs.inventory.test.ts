@@ -5,18 +5,21 @@
  * deletes) - PLUS the disclosed exceptions below. Every other action in the
  * app now carries `deferred` instead (the grace-window engine).
  *
- * This T5 pass migrated the actions AC-DLA-38 names explicitly (users,
- * roles, workflows, forms, templates x2, connections x2, ai_agents,
- * ai_skills, tenants x3, document_shares, products - 16 registered deferred
- * actions across 12 files) plus disclosed the 3 sites that don't fit the
- * grace-window model. The BASELINE below (18 files) is what's LEFT -
- * autocount task/entity delete, ideation BR/idea/embed-connection delete,
- * jobs abort, the omnichannel channel/template/webhook/quick-reply/api-key/
- * workspace deletes, and the email-log purge - tracked as BL-SS-XXX
- * (backlog: "T5 follow-up - migrate the remaining confirm: sites to
- * deferred"), not silently dropped. A file leaving this list (migrated) MUST
- * be deleted from `PENDING_MIGRATION` in the same commit; the baseline never
- * grows.
+ * T5 fix round 1 (item 15) migrated the remaining 17 files (closes
+ * BL-SS-051): autocount task pause + entity re-fetch-history (genuinely
+ * non-destructive re-sync/pause actions - `confirm` dropped entirely, no
+ * `deferred` needed, per the item's own "a resend/retry/re-sync needs no
+ * confirm" rule), document types delete, the ideation module (ideas
+ * archive/delete, BR delete, BR<->idea unlink, embed-connection delete/
+ * toggle - registered in `modules/ideation/deferred_actions.py`), jobs
+ * abort/complete, the omnichannel module (channel disconnect/delete,
+ * WhatsApp template delete, webhook endpoint disable/delete, quick-reply
+ * delete, API-key revoke, workspace trash - registered in
+ * `modules/omnichannel/deferred_actions.py`), and the email-log cancel
+ * (`email_outbox.cancel`, core). `PENDING_MIGRATION` is now EMPTY - the
+ * allowlist below is exactly the three typed-confirmation carve-outs
+ * (BL-SS-052 tracks the tenant custom-status-edge fallback separately, as
+ * a disclosed 4th CARVE_OUTS exception, not a migration gap).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -44,30 +47,12 @@ const CARVE_OUTS = [
 ];
 
 /**
- * NOT YET migrated to `deferred` (T5 follow-up, disclosed scope reduction -
- * see the T5 report and the file-header comment above). Every entry here is
- * a real gap, not a carve-out - remove an entry the moment its file no
- * longer defines `confirm:`.
+ * NOT YET migrated to `deferred` - empty since T5 fix round 1 item 15
+ * (closes BL-SS-051). Kept as a named, asserted-empty array (rather than
+ * deleted) so a future regression has somewhere obvious to land instead of
+ * silently growing the allowlist above.
  */
-const PENDING_MIGRATION = [
-  'app/(protected)/autocount/companies/[id]/entities/[entityType]/components/task-editor-view.tsx',
-  'app/(protected)/autocount/companies/components/use-entities-list-config.tsx',
-  'app/(protected)/documents/types/page.tsx',
-  'app/(protected)/ideation/business-requirements/components/br-ideas-tab.tsx',
-  'app/(protected)/ideation/business-requirements/components/use-br-form.tsx',
-  'app/(protected)/ideation/business-requirements/use-br-list-config.tsx',
-  'app/(protected)/ideation/embed-connections/use-embed-connections-list-config.tsx',
-  'app/(protected)/ideation/ideas/components/use-idea-form.tsx',
-  'app/(protected)/ideation/ideas/use-ideas-list-config.tsx',
-  'app/(protected)/jobs/use-job-actions.tsx',
-  'app/(protected)/omnichannel/settings/channels/components/use-channel-actions.tsx',
-  'app/(protected)/omnichannel/settings/channels/components/use-template-list.tsx',
-  'app/(protected)/omnichannel/settings/channels/components/use-webhook-list.tsx',
-  'app/(protected)/omnichannel/settings/quick-replies/use-quick-replies-list-config.tsx',
-  'app/(protected)/omnichannel/settings/workspaces/components/use-api-key-list.tsx',
-  'app/(protected)/omnichannel/settings/workspaces/components/use-workspace-actions.tsx',
-  'app/(protected)/settings/email-log/components/use-email-log-actions.tsx',
-];
+const PENDING_MIGRATION: string[] = [];
 
 function walk(dirs: string[]): string[] {
   const out: string[] = [];
@@ -97,6 +82,10 @@ function definesConfirm(file: string): boolean {
 }
 
 describe('AC-DLA-43/47 confirm: is reserved to the carve-outs + the disclosed pending baseline', () => {
+  it('T5 fix round 1 item 15: PENDING_MIGRATION ends EMPTY - every confirm: site is migrated or a disclosed carve-out', () => {
+    expect(PENDING_MIGRATION).toEqual([]);
+  });
+
   it('zero files outside the carve-outs + the pending baseline define a ResourceAction.confirm', () => {
     const dirs = ['app', 'components'];
     const allowed = new Set([

@@ -82,3 +82,55 @@ just the first").
 | AC-DLA-47 (confirm-action-dialog reserved to the two carve-outs) | PASS (3rd disclosed exception, see report) | `confirm-carve-outs.inventory.test.ts` |
 
 No Playwright used anywhere in this run (D15).
+
+## T5 - Fix round 1 (16 findings)
+
+Same worktree/stack (`.claude/worktrees/s23`, backend `:8003` on
+`foundryx_service_s23`, frontend prod build `:3002`), branch
+`sprint-4/23-T5-deferred-actions`. `agent-browser --session t5fix` (+
+`t5fix-b` for the two-tab item). Logged in as `demo@example.com`/`demo1234`.
+Every test row is timestamped; a viewer user (`t5-viewer@foundryx.io`,
+`users.read` only) was provisioned for the permission-gate checks.
+
+| # | Item | What was fixed | Evidence |
+|---|---|---|---|
+| 1 | Cancel/current authenticated-only | `cancel`/`current` now resolve the parked action's OWN permission fresh from the actor's roles (+ platform double-lock); uniform 404 on `current`, 403 on `cancel` | `fixround1-01-viewer-cannot-cancel-api.txt` (API capture: viewer gets 404 then 403); backend tests in `test_deferred_actions.py` |
+| 2 | `cancelled` reported as `done` | `pollOnce` now short-circuits a `cancelled` outcome to `idle` via `onCancelledElsewhere`, never `settle('done', …)` | `fixround1-05..08-two-tab-*.png` (tab A cancels, tab B - which never reloaded - returns to idle silently, no success toast, record intact); `hooks/use-deferred-action.test.ts` |
+| 3 | Bulk `Promise.all` orphans successes | `start()` uses `Promise.allSettled`; successes stay tracked, `parkedEntityIds`/`failedCount` returned | `fixround1-09-bulk-one-409-toasts-1280.png` (2 rows dimmed, 1 not, ONE error toast naming "1 of 3"), `fixround1-10-bulk-two-countdowns-toast-1280.png` (the 2 committed: "2 users trashed."); `hooks/use-deferred-action.test.ts` |
+| 4 | No atomic commit claim | `commit_one` claims `pending`→`committing` before running the handler; a stuck `committing` row is reaped `failed` after a grace window | `test_deferred_actions.py::test_two_concurrent_commit_attempts_run_the_handler_once` + migration `b7c1d2e3f4a5` |
+| 5 | resource-form missing catch | `onDeferredStart`'s `deferred.start()` now has `.catch` mirroring `action-menu.tsx` | `resource-form.deferred.test.tsx` |
+| 6 | Unscoped `db.get(User, actor_id)` | Every handler resolves the actor via `UserRepository.get_by_id(id, tenant_id, ...)` | code review (`app/deferred_actions/handlers.py`) |
+| 7 | No park-time existence check | `DeferredActionDef.exists` (mandatory) 404s a missing target at park; bulk-shaped handlers (`users.trash`, `documents.trash`, `document_shares.revoke`) assert the row still exists before calling the service | backend tests (`test_park_against_a_missing_target_is_404`, `test_target_vanishing_during_the_window_fails_the_commit`, `test_users_trash_handler_fails_when_the_user_is_gone`) |
+| 8 | Lapse snaps `scaleX(1)` | Holds `scaleX(0)`; track colour transitions instead | `deferred-action-button.test.tsx` new case; `fixround1-03-record-delete-commit-end-state-1280.png` (post-commit, back on the list - the transient frame is covered by the unit test, a screenshot can't reliably catch a <16ms frame) |
+| 9 | Cancel not interruptible on the form surface | `cancel()` leaves `pending` synchronously; the countdown unmounts on the SAME click; the dead `cancelling` prop deleted | `fixround1-04-optimistic-cancel-restored-1280.png` (Edit button back immediately, record untouched) |
+| 10 | `remainingMs` measured pre-frame | Measured inside the second rAF | `deferred-action-button.test.tsx` (existing double-rAF test still green; the fix is inside the same armed-once contract) |
+| 11 | Ref mutated during render | `derivedDeferred` via `useMemo` (pure), a `useLayoutEffect` caches label/entityType for the later commit toast only | `resource-form.deferred.test.tsx` (second-tab parity case) |
+| 12 | Dead `window`/`run` on `deferred` | `ResourceAction` is now a discriminated union (`deferred` XOR `confirm`+`run`); `window` deleted from the type and all 13 call sites | `use-products-list-config.test.tsx`, `use-embed-connections-list-config.test.tsx` |
+| 13 | Bare `toast.success('Done.')` | `lib/deferred-verb.ts` `deferredDoneMessage()` - "User trashed.", "2 users trashed." | `fixround1-04-optimistic-cancel-restored-1280.png` context (not shown, toast already dismissed) + `fixround1-10-bulk-two-countdowns-toast-1280.png` ("2 users trashed."), `lib/deferred-verb.test.ts` |
+| 14 | Settings provider unnecessary | Confirmed: General page keeps fetching its own values directly (`tenant_settings` via `GET/PUT /settings/general`) - no new provider added, server stays authoritative | N/A (report note only) |
+| 15 | 17 files still on `confirm:` | ALL migrated: core (`document_types.delete`, `jobs.abort`/`jobs.complete`, `email_outbox.cancel`), `modules/ideation/deferred_actions.py` (6 keys), `modules/omnichannel/deferred_actions.py` (8 keys); AutoCount's 2 sites (Pause, Re-fetch history) were genuinely non-destructive re-sync/pause actions - `confirm` dropped entirely, no `deferred` needed | `fixround1-12/13-document-type-delete-countdown-{1280,375}.png`, `fixround1-11-omnichannel-workspace-trash-countdown-1280.png`; backend `test_ideation_deferred_actions.py` (8), `test_omnichannel_deferred_actions.py` (8), `test_jobs_deferred_actions.py` (3), `test_deferred_actions.py` (`email_outbox.cancel`); `confirm-carve-outs.inventory.test.ts` (`PENDING_MIGRATION` now `[]`, asserted empty) |
+| 16 | This gate | pytest 2748 passed / 1 skipped / 18 deselected (0 failed); `npm run lint` 0 errors; `npm test` 1770/1770; `npm run build` green; both servers restarted on their owned ports | this README + `23-design-language-alignment-test-report.md` "T5 - Fix round 1" |
+
+**Disclosed scope notes for this round:**
+- AutoCount and ideation are NOT installed for the `default` tenant on this
+  worktree's DB (`GET /app-store/installed` returns only `omnichannel`) -
+  live UI evidence for the ideation deferred actions and for AutoCount's
+  confirm-drops was not captured via clicks against that tenant; ideation's
+  8 registered keys are instead verified end-to-end by
+  `tests/test_ideation_deferred_actions.py` (park→lapse→commit through the
+  real HTTP API against a `ideation_session_factory`-mounted test app), and
+  AutoCount's two confirm-drops are verified by the existing
+  `entities-list-config.test.tsx`/vitest suite (both updated this round).
+  Installing either module on a live tenant purely to screenshot it was
+  judged a bigger, riskier tenant-state change than the evidence gap
+  justified.
+- The "AutoCount delete counting down" item in the original brief does not
+  exist in this migration's scope - AutoCount's two `PENDING_MIGRATION`
+  sites (`task-editor-view.tsx` Pause, `use-entities-list-config.tsx`
+  Re-fetch history) are both non-destructive re-sync/pause actions per the
+  item's own rule ("a resend/retry/re-sync needs no confirm") and were
+  migrated by DROPPING `confirm` entirely, never by adding a `deferred`
+  delete. Substituted with a second freshly-registered CORE action
+  (`document_types.delete`) alongside the omnichannel workspace-trash
+  screenshot to still demonstrate two independently-registered engines
+  counting down live.

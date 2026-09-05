@@ -104,6 +104,7 @@ export function BulkActions<T>({
           await deferred.start(
             action.deferred.actionKey,
             entityIds.map((id) => ({ entityType, entityId: id })),
+            action.deferred.payload?.(rows),
           );
         untrackPendingEntities(entityIds.filter((id) => !parkedIds.includes(id)));
         const toastId = `pending-action-bulk-${Date.now()}`;
