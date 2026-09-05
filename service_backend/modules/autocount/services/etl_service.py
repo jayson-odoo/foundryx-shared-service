@@ -325,6 +325,21 @@ def validate_source_config(
     watermark = str(raw.get("watermarkColumn") or "").strip() or None
     compared = _clean_list(raw.get("comparedColumns"))
 
+    #     !!  BL-SS-052 - THE WATERMARK COLUMN CAN NEVER DOUBLE AS A KEY
+    #         COLUMN.  !!
+    # A value that is GUARANTEED to change on every update (that is the
+    # entire point of a watermark) can never also be part of what makes a
+    # row the "same" row - a task saved with keyColumns=["AutoKey",
+    # "LastModified"] mints a "new" ref on every reconcile for the same
+    # real-world record (the ac_sim ref-drift finding). Checked unconditional
+    # of whether the query has ever previewed - this is a pure config-shape
+    # defect, not a column-existence question.
+    if watermark is not None and watermark in key_columns:
+        errors["keyColumns"] = (
+            "The watermark column cannot be part of the key - refs would "
+            "change on every update."
+        )
+
     # ── columns vs the fresh preview ─────────────────────────────────────────
     picked = bool(key_columns or watermark or compared)
     if picked and columns is None:
