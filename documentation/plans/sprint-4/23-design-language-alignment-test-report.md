@@ -3412,3 +3412,184 @@ re-verified green. `AC-DLA-69` (Playwright purge) re-confirmed still green after
 self-corrections. Full gate: `npm run lint` 0 errors/205 warnings, `npx vitest run` 248/248
 files (1927/1927 tests), `rm -rf .next && npm run build` green. Worktree clean
 (`git status --short` empty) across 10 commits.
+
+## T8 - Fix round 1
+
+Worktree `.claude/worktrees/s23`, branch `sprint-4/23-T8-guardrails`, HEAD at brief time
+`e45931e`, frontend-only (backend/`:8003` untouched). Commits (7 total - item 1 needed a
+follow-up fix discovered during evidence-gathering, so it is 2 commits):
+
+| # | Commit | Item |
+|---|---|---|
+| 1 | `2ad7151` | 1 - zero-footprint `DropGap` wrapper + inner overlay |
+| 2 | `b17d005` | 1 (follow-up) - overlay `pointer-events-none` |
+| 3 | `1d7c0e9` | 2 - annotate the `frontend-design-language.md` dead pointer |
+| 4 | `fbfbe99` | 3 - tighten the `cursor-grab` `PRESSED_CLASS` exemption |
+| 5 | `99612fc` | 4 - narrow `no-restricted-imports` exemptions per file |
+| 6 | `c3b0e9e` | 5 - reword the table message, drop the dead table allowlist block |
+| 7 | `d48b80e` | 6 - nits (`lib.toast.ts` typo, `cn()`-single-literal removals) |
+
+### Item 1 - `email-editor/canvas.tsx` `DropGap` blocker
+
+**Fixed**, plus a real regression caught during evidence-gathering (disclosed, not silently
+absorbed). `DropGap`'s wrapper is back to the original zero-footprint box (`relative -my-1 h-2`,
+net 0px) at rest/dragActive/isOver alike - a 4-block template no longer carries the ~160px of
+dead space the T8 motion polish introduced (`my-1 h-6` at every gap, always). The visible dashed
+drop target is now an INNER `absolute inset-x-0 top-1/2 h-6 -translate-y-1/2` overlay, revealed
+via `opacity`/`background-color`/`border-color` only (still zero layout properties in the
+transition list - the T8 animation-review property stays honoured). Drop behaviour (droppable
+id, `disabled`, insertion index) is unchanged.
+
+**Follow-up fix (commit `b17d005`), found while capturing evidence, not by inspection:** the new
+`h-6` overlay overflows the `h-2` wrapper by 8px on each side (by design - the drop target needs
+to be easier to hit than the zero-footprint rest state), and while fully transparent it was still
+in the hit-test path - `document.elementFromPoint` over a neighbouring block's own content
+resolved to the DropGap overlay, not the block, silently swallowing that block's hover (so its
+drag handle never appeared) and click (so it could never be selected) whenever the pointer sat in
+the overlap band. Root-caused by hovering a block via `agent-browser` and finding
+`block-handle-*`'s `getBoundingClientRect()` came back all-zero even after a real hover event.
+Fixed with `pointer-events-none` on the overlay (decorative only - dnd-kit's collision detection
+reads the OUTER wrapper's registered rect via `useDroppable`, not real pointer delivery to that
+specific DOM node, so this doesn't affect drop detection). Re-verified after the fix:
+`elementFromPoint` over the same coordinates now resolves to the block's own content
+(`block-heading-blk_e6d4fc`), and hovering the block reveals its drag handle with a real
+non-zero rect.
+
+**Evidence** (`agent-browser --session t8fix1`, real clicks from `/`, `demo@example.com` /
+`demo1234`, against a freshly `rm -rf .next && npm run build` + `next start -p 3002` build of
+this worktree):
+- Navigation lesson (matches the process-lessons pattern, generalized): the sidebar's
+  accordion-wrapped nav links (`<button expanded=false><a href=...></a></button>`) did not
+  respond to `agent-browser click <ref>`/`find text ... click` - `get url` stayed on the prior
+  route after every attempt. A native `el.click()` via `eval --stdin` navigated correctly every
+  time; used throughout this run (Settings > Templates > Password reset > Edit).
+- `documentation/plans/sprint-4/23-evidence/T8/fixround1-01-email-editor-1280.png` - 1280px,
+  Design tab, Edit mode, hovering the "Hi {{recipient.firstName}}" text block: shows the drag
+  handle + up/down/delete controls revealed with NORMAL tight spacing to the header block above
+  and the button block below (no dead space).
+- `documentation/plans/sprint-4/23-evidence/T8/fixround1-02-email-editor-375.png` - 375px, same
+  page, palette stacked above the canvas per the responsive mandate.
+- `documentation/plans/sprint-4/23-evidence/T8/fixround1-03-drag-mid-frame.png` - a genuine
+  mid-drag frame (contrary to the brief's own caveat that `mouse down/up` "cannot produce
+  `:active`" - a raw `mouse down` → several `mouse move` steps → `screenshot` → `mouse up`
+  sequence DID drive dnd-kit's `PointerSensor` here, confirmed by the block order actually
+  changing after the drag). Shows the dragged "Heading" chip following the cursor and the
+  dashed drop-gap outlines revealed (opacity 100%) between every block pair without any of them
+  shifting position - the zero-footprint-at-rest / overlay-reveal-on-drag design working live.
+- The accidental reorders produced while proving the drag worked were undone (`Undo` button /
+  `Cancel` → "Discard changes") before ending the session - the platform-tier "Password reset"
+  template's `doc_json` is unchanged (verified: the read-mode canvas still shows the original
+  block order and text after discard).
+
+Re-verified narrow: `npx eslint components/platform/email-editor/canvas.tsx` - 0 errors (6
+pre-existing `jsx-a11y` warnings only, both times); `npx vitest run components/platform/
+email-editor` - 4 files / 25 tests passed, both times.
+
+### Item 2 - `docs/reference/design-language.md` dead pointer
+
+**Fixed.** Section 1's precedence row 3 now reads:
+
+> 3. `docs/reference/frontend-design-language.md` (...) (arrives with the docs refactor; until
+>    it lands, the Resource-shell + canvas-editor rules live in AGENTS.md's frontend section)
+
+No test pins this file's prose (grepped for `design-language.md` across `*.test.ts(x)` - zero
+hits), so no test update was needed.
+
+### Item 3 - `pressed-class.inventory.test.ts` cursor-grab exemption
+
+**Fixed.** The exemption predicate is now a named `isCursorGrabDragHandle(tag)` helper:
+`cursor-grab` in the className AND (`{...listeners}` OR `aria-roledescription`) on the SAME
+opening tag - not `cursor-grab` alone. The file header discloses the predicate (added a new
+paragraph). Both existing assertions (the file-wide requirement loop, and the "matches real
+elements, not a no-op" count) were switched onto the new helper. A FOURTH test was added: a
+synthetic `<button className="cursor-grab" onClick={...}>` (no listeners, no
+`aria-roledescription`) is asserted `isCursorGrabDragHandle() === false` AND is caught as an
+offender by the same offender-detection logic the real test uses (built via `findRawButtonTags`
+over an in-memory source string, not a real file edit) - proving a `cursor-grab` button without
+a genuine dnd-kit wiring still has to carry `PRESSED_CLASS`. A sanity check in the same test
+confirms a real listeners-carrying handle IS exempted.
+
+`npx vitest run components/ui/pressed-class.inventory.test.ts` - 1 file / **4 tests** passed
+(was 3; the new test is additive, explaining the suite-wide 1927→1928 test-count delta below).
+`npx eslint components/ui/pressed-class.inventory.test.ts` - 0 errors.
+
+### Item 4 - `eslint.config.mjs` narrow the exemptions
+
+**Fixed.** Each `no-restricted-imports` path entry (`select`/`table`/`sonner`) is now a named
+top-level const (`SELECT_RESTRICTION`/`TABLE_RESTRICTION`/`SONNER_RESTRICTION`) referenced by
+the base rule AND by each override block, which re-declares the rule with ONLY the entries it
+still needs rather than `'off'`. So `lib/toast.ts` (exempt from `sonner` only) is now still
+blocked from importing a bare `@/components/ui/select`/`@/components/ui/table`; the 9-file
+bare-Select debt list (exempt from `select` only) is still blocked from `table`/`sonner`.
+
+**Probe outputs (verbatim, `npx eslint --stdin`, from `service_frontend`):**
+
+`app/(protected)/probe.tsx` importing `@/components/ui/select` + `sonner` + `@/components/ui/table`:
+```
+1:1   error  '@/components/ui/select' import is restricted from being used. ...   no-restricted-imports
+2:1   error  'sonner' import is restricted from being used. ...                   no-restricted-imports
+3:1   error  '@/components/ui/table' import is restricted from being used. ...    no-restricted-imports
+✖ 6 problems (6 errors, 0 warnings)
+```
+(3 `no-restricted-imports` errors as required, plus 3 unrelated `@typescript-eslint/no-unused-vars`
+from the fixture's own unused imports.)
+
+`lib/toast.ts` (same body, named as the sanctioned `sonner` importer):
+```
+1:1   error  '@/components/ui/select' import is restricted from being used. ...   no-restricted-imports
+3:1   error  '@/components/ui/table' import is restricted from being used. ...    no-restricted-imports
+✖ 5 problems (5 errors, 0 warnings)
+```
+(exactly 2 `no-restricted-imports` errors - select + table, sonner allowed - plus 3 unrelated
+unused-var errors.)
+
+### Item 5 - table message reword + dead allowlist block
+
+**Fixed.** `TABLE_RESTRICTION`'s message no longer claims the primitive is "reserved for"
+`form-renderer/table-field.tsx`/`email-editor/block-view.tsx` - it now reads "Raw `<table>`
+markup is reserved for content renderers (a form table FIELD, a rendered email block) - every
+product table is a `DataGrid` (AC-DLA-56)." Measured (6 Sep 2026):
+`grep -rl "from '@/components/ui/table'"` across the whole frontend tree returns ZERO files -
+neither named content file imports the primitive (both render plain `<table>` markup directly).
+The now-genuinely-dead 2-file override block was DROPPED (it granted an allowance nothing used);
+disclosed here rather than left as an unused list. The base rule still fires for a future
+violation at either path (or anywhere else) - the guardrail's blast radius is unchanged, only
+the dead per-file carve-out is gone.
+
+### Item 6 - nits
+
+**Fixed**, all four named `cn()`-wrapping-a-single-literal sites plus the doc typo:
+- `documentation/plans/sprint-4/23-evidence/T8/reviewer-rows.md`: `lib.toast.ts` → `lib/toast.ts`.
+- `form-builder/canvas.tsx:94`, `form-builder/settings-panel.tsx:314`,
+  `resource-list/resource-list.tsx:85`, `email-editor/canvas.tsx:199` (line shifted from ~193
+  after item 1's edits): `className={cn('...')}` → `className="..."`.
+- **`cn` import kept in all four files** - each still has other `cn(...)` call sites (form-builder/
+  canvas.tsx 7 remaining, settings-panel.tsx 6, resource-list.tsx 2, email-editor/canvas.tsx 1 -
+  the new `DropGap` overlay from item 1). None became unused.
+- **Scope note (disclosed, not silently expanded):** the identical `cn('cursor-grab ...')`
+  single-literal pattern also exists at `form-builder/canvas.tsx:211,333` and
+  `form-builder/settings-panel.tsx:622` (2 more drag handles with the exact same shape) - the
+  brief named 4 specific locations and this round touched exactly those 4, leaving the other 3
+  as a small residual nit for a future pass rather than expanding this round's blast radius.
+
+`npx eslint` on all 5 touched files - 0 errors (18 pre-existing `jsx-a11y` warnings, unrelated).
+`npx vitest run components/platform/form-builder components/platform/resource-list
+components/platform/email-editor` - 8 files / 61 tests passed.
+
+### Final gate (verbatim)
+
+- `npm run lint` - **0 errors, 205 warnings** (unchanged from the T8 baseline - the a11y trio;
+  the new `no-restricted-imports`/`local/no-px-text-class` guardrail changes contribute 0
+  errors/0 warnings, same as before this round).
+- `npx vitest run` - **248 files passed, 1928 tests passed** (was 1927 - the +1 is item 3's new
+  `isCursorGrabDragHandle` unit test; no other count moved).
+- `rm -rf .next && npm run build` - green.
+- `:3002` restarted (killed only the pid whose `lsof -p <pid> | grep cwd` matched this
+  worktree's `service_frontend`) serving the fresh build - confirmed `curl -s -o /dev/null -w
+  '%{http_code}' http://localhost:3002/` → `200`.
+- Worktree clean (`git status --short` empty) after 7 commits.
+
+**Verdict: T8 fix round 1 DONE.** All 6 items fixed, including one self-caught follow-up
+regression on item 1 (disclosed as its own commit + report paragraph, not folded silently into
+item 1's original commit). No item skipped or scope-reduced beyond the one disclosed, deliberate
+exception (item 6's 3 identical-pattern sites left for later, named above).
