@@ -840,7 +840,13 @@ def test_a_pass_reads_pages_of_page_size_and_stages_each_before_the_next(rig, mo
 def test_a_tie_group_across_a_page_boundary_is_staged_exactly_once(rig, monkeypatch):
     """AC-03-02. Six rows share ONE watermark value straddling the page
     boundary (page size 4) - every one of them must be returned exactly
-    once across the two pages, none skipped, none duplicated."""
+    once across the two pages, none skipped, none duplicated.
+
+    Round 3 (T1) update: composite ``(watermark, key)`` ordering replaces
+    the ref-set ``tie_refs`` exclusion with a plain SEEK on ``(mark,
+    last_key)`` - this test now threads ``last_key`` instead of
+    ``tie_refs`` (the only allowed edit to an existing test per the
+    review-round-3 brief)."""
     from app.config import settings as cfg
     from modules.autocount.sql_source.source import PageCursor
 
@@ -859,7 +865,7 @@ def test_a_tie_group_across_a_page_boundary_is_staged_exactly_once(rig, monkeypa
     page1 = source.fetch_page(PageCursor())
     assert page1.rows_scanned == 4
     page2 = source.fetch_page(
-        PageCursor(mark=page1.last_mark, tie_refs=page1.tie_refs, pages_done=1)
+        PageCursor(mark=page1.last_mark, last_key=page1.last_key, pages_done=1)
     )
     all_refs = {r.raw["acc_no"] for r in page1.records} | {r.raw["acc_no"] for r in page2.records}
     assert all_refs == {f"300-T{i:03d}" for i in range(6)}
@@ -869,8 +875,12 @@ def test_a_tie_group_across_a_page_boundary_is_staged_exactly_once(rig, monkeypa
 
 def test_a_tie_group_larger_than_the_page_still_advances(rig, monkeypatch):
     """Plan section 5 risk note: a tie group BIGGER than the page size must
-    still terminate - ``exclude_refs`` grows across as many same-mark pages
-    as the group needs, rather than looping forever on the same mark."""
+    still terminate - the composite ``(watermark, key)`` SEEK advances past
+    each row taken, one key at a time, rather than looping forever on the
+    same mark.
+
+    Round 3 (T1) update: threads ``last_key`` instead of ``tie_refs`` (the
+    only allowed edit to an existing test per the review-round-3 brief)."""
     from app.config import settings as cfg
     from modules.autocount.sql_source.source import PageCursor
 
@@ -893,9 +903,9 @@ def test_a_tie_group_larger_than_the_page_still_advances(rig, monkeypatch):
         seen |= {r.raw["acc_no"] for r in page.records}
         if page.complete:
             break
-        cursor = PageCursor(mark=page.last_mark, tie_refs=page.tie_refs, pages_done=cursor.pages_done + 1)
+        cursor = PageCursor(mark=page.last_mark, last_key=page.last_key, pages_done=cursor.pages_done + 1)
     else:
-        pytest.fail("the tie group never completed - exclude_refs is not accumulating")
+        pytest.fail("the tie group never completed - the seek is not advancing")
     assert seen == {f"300-U{i:03d}" for i in range(7)}
 
 
