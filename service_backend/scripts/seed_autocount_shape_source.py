@@ -63,7 +63,12 @@ so the SPO path has live data too.
 Every table is a plain UPSERT keyed on its integer PK (``ON CONFLICT ...
 DO UPDATE``), so re-running with a DIFFERENT ``--open-po``/``--spo`` N
 updates the same deterministic rows in place rather than leaving stale state
-from an earlier run.
+from an earlier run. Header keys (``AutoKey``/``DocKey``) are stable across
+re-seeds (same sort => same id), but ``SODTL``/``PODTL`` ``DtlKey`` is
+re-minted from the CURRENT line count on every run (``--spo``/``--open-po``
+change which docs/lines exist), so a saved test/proof reference to a
+specific line by its ``DtlKey`` can drift if the rig is re-seeded with
+different flags in between - re-derive it rather than hardcoding one.
 
 xlsx columns this rig does NOT map into ``ac_sim`` (present in one of the two
 oracle books but with no target column in the SQL pack's SO/PO/PODTL shape,
