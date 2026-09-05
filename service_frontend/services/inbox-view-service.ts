@@ -2,8 +2,7 @@
  * Inbox-view (saved view) service - the boundary the view rail's "Save view"
  * dialog and the rail's Views section talk to (plan 27, §5.1).
  *
- * // S0 MOCK - swap to real in S4 (plan 27). The interface IS the backend
- * contract:
+ * Real backend since plan 27 S4. The interface IS the backend contract:
  *
  *   GET    /omnichannel/workspaces/{wsId}/inbox-views          (conversations.read)
  *   POST   /omnichannel/workspaces/{wsId}/inbox-views          (own: conversations.read;
@@ -19,7 +18,7 @@
  * unique per workspace case-insensitively.
  */
 import type { CreateInboxViewInput, InboxView, UpdateInboxViewInput } from '@/types/omnichannel';
-import { mockInboxViewService } from './inbox-view-service.mock';
+import { realInboxViewService } from './inbox-view-service.real';
 
 export interface InboxViewService {
   list(workspaceId: string): Promise<InboxView[]>;
@@ -28,5 +27,5 @@ export interface InboxViewService {
   remove(workspaceId: string, id: string): Promise<void>;
 }
 
-// S0 MOCK - swap to real in S4 (plan 27).
-export const inboxViewService: InboxViewService = mockInboxViewService;
+// Real backend since plan 27 S4 (routes live since S2).
+export const inboxViewService: InboxViewService = realInboxViewService;

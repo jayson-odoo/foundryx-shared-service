@@ -59,4 +59,21 @@ describe('CloseThreadDialog', () => {
     await user.click(screen.getByTestId('close-thread-submit'));
     expect(await screen.findByText('Choose an active close reason.')).toBeInTheDocument();
   });
+
+  it('a 409 {code, message} (e.g. already_closed) shows the structured machine message', async () => {
+    const onClose = vi
+      .fn()
+      .mockRejectedValue(
+        new ApiError('Conflict', 409, null, {
+          code: 'already_closed',
+          message: 'This conversation was already closed.',
+        }),
+      );
+    const user = userEvent.setup();
+    render(<CloseThreadDialog open onOpenChange={vi.fn()} reasons={REASONS} onClose={onClose} />);
+    await user.click(screen.getByRole('combobox', { name: 'Close reason' }));
+    await user.click(screen.getByText('General Inquiry'));
+    await user.click(screen.getByTestId('close-thread-submit'));
+    expect(await screen.findByText('This conversation was already closed.')).toBeInTheDocument();
+  });
 });

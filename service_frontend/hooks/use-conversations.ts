@@ -6,15 +6,13 @@
  * `contact.updated` upsert the thread and re-sort by lastMessageAt desc.
  *
  * Plan 27 (AC-IVE-15/16) adds the view-rail dimensions - `lifecycleStageIds`/
- * `tagIds`/`channelIds`/`unreplied`/`sort`/`viewId`. The base fetch still
- * calls the REAL `listThreads` (today's assignee/status/priority/search stay
- * server-side, unchanged); the new dimensions are applied client-side via
- * `applyInboxViewFilters` until the backend understands them (S1/S2) - see
- * that module's header comment for the exact contract + the one S0 proxy.
+ * `tagIds`/`channelIds`/`unreplied`/`sort`/`viewId`. ALL filtering and sorting
+ * happens server-side (`GET /omnichannel/contacts`, S2) - the hook only
+ * carries the filter state + issues the fetch; no client-side re-filter/
+ * re-sort layer (the S0 `applyInboxViewFilters` proxy is retired).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { applyInboxViewFilters } from '@/lib/inbox-view-filter';
 import { conversationService } from '@/services/conversation-service';
 import type {
   ConversationSocketEvent,
@@ -120,6 +118,9 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
   // re-sort (cheap). Filtered view: the event may move a thread IN or OUT of
   // the current bucket (e.g. self-claim leaves Unassigned) and 'me' can only
   // be resolved server-side - reconcile with a refetch instead of guessing.
+  // A non-default sort or an active saved view ALSO needs a refetch (the fast
+  // path below only ever re-sorts by lastMessageAt desc, and a view's stored
+  // filter can carry dimensions beyond what's mirrored into these fields).
   const isFiltered =
     filters.assignee !== 'all' ||
     filters.status !== 'ALL' ||
@@ -128,7 +129,9 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
     filters.lifecycleStageIds.length > 0 ||
     filters.tagIds.length > 0 ||
     filters.channelIds.length > 0 ||
-    filters.unreplied;
+    filters.unreplied ||
+    filters.sort !== 'newest' ||
+    !!filters.viewId;
   const onEvent = useCallback(
     (event: ConversationSocketEvent) => {
       if (event.type === 'message.status') return; // tick updates live in the drawer
@@ -156,20 +159,7 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
     setFiltersState((prev) => ({ ...prev, ...patch }));
   }, []);
 
-  // Plan 27 (AC-IVE-15/16) - client-side layer for the dimensions the real
-  // list route doesn't understand yet (see module header). `sort` always
-  // re-orders; `newest` is a no-op re-sort of what the server already gave us.
-  const threads = useMemo(
-    () =>
-      applyInboxViewFilters(rawThreads, {
-        lifecycleStageIds: filters.lifecycleStageIds,
-        tagIds: filters.tagIds,
-        channelIds: filters.channelIds,
-        unreplied: filters.unreplied,
-        sort: filters.sort,
-      }),
-    [rawThreads, filters.lifecycleStageIds, filters.tagIds, filters.channelIds, filters.unreplied, filters.sort],
-  );
-
-  return { threads, isLoading, error, filters, setFilters, reload: load };
+  // Server-filtered + server-sorted (AC-IVE-15/16) - `rawThreads` is already
+  // the exact page the backend computed for the current `query`.
+  return { threads: rawThreads, isLoading, error, filters, setFilters, reload: load };
 }

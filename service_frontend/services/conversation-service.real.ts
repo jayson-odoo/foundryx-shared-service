@@ -53,12 +53,17 @@ function threadQueryString(query: ThreadListQuery): string {
   if (query.status && query.status !== 'ALL') params.set('status', query.status);
   if (query.priority && query.priority !== 'ALL') params.set('priority', query.priority);
   if (query.search) params.set('search', query.search);
-  // Plan 27 (AC-IVE-15) - pass-through only; the backend doesn't read these
-  // yet (lands S1/S2). Sent now so S4 needs no further frontend change.
+  // Plan 27 (AC-IVE-15/16/17) - server-side filtering + sorting.
   if (query.lifecycleStageIds?.length) params.set('lifecycleStageIds', query.lifecycleStageIds.join(','));
   if (query.tagIds?.length) params.set('tagIds', query.tagIds.join(','));
   if (query.channelIds?.length) params.set('channelIds', query.channelIds.join(','));
-  if (query.unreplied) params.set('unreplied', 'true');
+  // `unreplied` is a bool, unlike every other param above - `false` is a
+  // meaningful EXPLICIT override of a saved view's stored `unreplied: true`
+  // (AC-IVE-17), so it must always be sent (a truthy-only check would let a
+  // toggled-off switch silently fall back to the view's value since the
+  // backend treats "param absent" as "no override").
+  if (query.viewId) params.set('unreplied', String(!!query.unreplied));
+  else if (query.unreplied) params.set('unreplied', 'true');
   if (query.sort) params.set('sort', query.sort);
   if (query.viewId) params.set('viewId', query.viewId);
   params.set('pageSize', String(THREAD_PAGE_SIZE));

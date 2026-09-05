@@ -14,6 +14,7 @@ import { toast } from '@/lib/toast';
 import { SearchSelect, type SearchSelectOption } from '@/components/platform/search-select';
 import { useCan } from '@/hooks/use-can';
 import { useShortcuts } from '@/hooks/use-shortcuts';
+import { ApiError } from '@/lib/api-client';
 
 export interface ShortcutMenuProps {
   contactId: string | null;
@@ -34,13 +35,18 @@ export function ShortcutMenu({ contactId }: ShortcutMenuProps) {
       value={value}
       onChange={async (workflowId) => {
         setValue(workflowId);
-        const result = await run(workflowId);
-        if (result) {
+        try {
+          const result = await run(workflowId);
           toast.success('Shortcut started.', {
             description: `Run ${result.runId}`,
           });
-        } else {
-          toast.error('Could not run the shortcut.');
+        } catch (error) {
+          // A 409 (e.g. the workflow's published version has an unauthorized
+          // Code node) carries a plain-string `detail` - api-client already
+          // promotes that into `ApiError.message` (F14 pattern, matching
+          // `lifecycle-move.tsx`) - show the server's own message rather
+          // than a generic one.
+          toast.error(error instanceof ApiError ? error.message : 'Could not run the shortcut.');
         }
         setValue(null);
       }}

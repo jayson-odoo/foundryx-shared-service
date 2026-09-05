@@ -4,11 +4,14 @@
  * the filter patch + URL key each entry maps to. Kept side-effect free so
  * vitest can cover the mapping without mounting the rail component.
  *
- * // S0 MOCK approximation - `InboxViewFilter.statuses` (an array) and
- * `assignee: 'user'` (specific assignee ids) are richer than today's list
- * query (`status` is a single value, `assignee` has no per-user option). A
+ * Frontend scope note: `InboxViewFilter.statuses` (an array) and
+ * `assignee: 'user'` (specific assignee ids) are richer than the inbox's
+ * current filter UI (`status` is single-value, `assignee` has no per-user
+ * option - there is no picker to author such a view from this surface). A
  * saved view carrying either collapses to the closest single-value
- * equivalent here; the real S2 route reconciles this properly.
+ * equivalent here; the backend list route (`GET /omnichannel/contacts`)
+ * fully supports both, so a view authored another way still filters
+ * correctly server-side even though this rail can't build one.
  */
 import type { ConversationFilters } from '@/hooks/use-conversations';
 import type { InboxView, ThreadStatus } from '@/types/omnichannel';

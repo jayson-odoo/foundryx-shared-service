@@ -7,29 +7,28 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 
-import { ApiError } from '@/lib/api-client';
 import { conversationService } from '@/services/conversation-service';
 import type { ShortcutItem, ShortcutRunResult } from '@/types/omnichannel';
-
-function describe(error: unknown): string {
-  if (error instanceof ApiError) return error.message;
-  return 'Could not run the shortcut.';
-}
 
 export interface UseShortcutsResult {
   shortcuts: ShortcutItem[];
   isLoading: boolean;
   isRunning: boolean;
-  run: (workflowId: string) => Promise<ShortcutRunResult | null>;
-  /** Last run failure, so the caller can surface the server message. */
-  runError: string | null;
+  /**
+   * Fires the shortcut and RETHROWS on failure (the caller reads
+   * `ApiError.message` - a 409 like "unauthorized Code node" carries a plain-
+   * string `detail` that `apiFetch` already promotes into `.message`, exactly
+   * the pattern `lifecycle-move.tsx` uses for its 409). Only `isRunning`
+   * bookkeeping happens here so the failure's own message is never swallowed
+   * behind a stale render's closure.
+   */
+  run: (workflowId: string) => Promise<ShortcutRunResult>;
 }
 
 export function useShortcuts(contactId: string | null | undefined): UseShortcutsResult {
   const [shortcuts, setShortcuts] = useState<ShortcutItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
-  const [runError, setRunError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!contactId) {
@@ -49,15 +48,11 @@ export function useShortcuts(contactId: string | null | undefined): UseShortcuts
   }, [contactId]);
 
   const run = useCallback(
-    async (workflowId: string): Promise<ShortcutRunResult | null> => {
-      if (!contactId) return null;
+    async (workflowId: string): Promise<ShortcutRunResult> => {
+      if (!contactId) throw new Error('No conversation selected.');
       setIsRunning(true);
-      setRunError(null);
       try {
         return await conversationService.runShortcut(contactId, workflowId);
-      } catch (error) {
-        setRunError(describe(error));
-        return null;
       } finally {
         setIsRunning(false);
       }
@@ -65,5 +60,5 @@ export function useShortcuts(contactId: string | null | undefined): UseShortcuts
     [contactId],
   );
 
-  return { shortcuts, isLoading, isRunning, run, runError };
+  return { shortcuts, isLoading, isRunning, run };
 }

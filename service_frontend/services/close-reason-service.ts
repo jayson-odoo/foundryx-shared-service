@@ -2,9 +2,8 @@
  * Close-reason service - the boundary the workspace "Close reasons" tab and
  * the drawer's Close dialog talk to (plan 27, §5.1).
  *
- * // S0 MOCK - swap to real in S4 (plan 27). Frontend-first bound the mock;
- * `close-reason-service.real.ts` is written against the exact contract below
- * so S4 is a one-line swap. The interface IS the backend contract:
+ * Real backend since plan 27 S4 - `close-reason-service.real.ts` is written
+ * against the exact contract below. The interface IS the backend contract:
  *
  *   GET    /omnichannel/workspaces/{wsId}/close-reasons        (conversations.read)
  *   POST   /omnichannel/workspaces/{wsId}/close-reasons        (close_reasons.manage)
@@ -17,7 +16,7 @@
  * reason up by name (AC-IVE-27).
  */
 import type { CloseReason, CreateCloseReasonInput, UpdateCloseReasonInput } from '@/types/omnichannel';
-import { mockCloseReasonService } from './close-reason-service.mock';
+import { realCloseReasonService } from './close-reason-service.real';
 
 export interface CloseReasonService {
   list(workspaceId: string): Promise<CloseReason[]>;
@@ -26,5 +25,5 @@ export interface CloseReasonService {
   remove(workspaceId: string, id: string): Promise<void>;
 }
 
-// S0 MOCK - swap to real in S4 (plan 27).
-export const closeReasonService: CloseReasonService = mockCloseReasonService;
+// Real backend since plan 27 S4 (routes live since S2).
+export const closeReasonService: CloseReasonService = realCloseReasonService;

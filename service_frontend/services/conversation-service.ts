@@ -30,7 +30,6 @@ import type {
   WhatsAppTemplate,
 } from '@/types/omnichannel';
 import { realConversationService } from './conversation-service.real';
-import { mockConversationService } from './conversation-service.mock';
 
 export interface ConversationService {
   /** Thread list for the inbox left panel, sorted by lastMessageAt desc. */
@@ -97,15 +96,8 @@ export interface ConversationService {
   runShortcut(contactId: string, workflowId: string): Promise<ShortcutRunResult>;
 }
 
-// Real backend (plan 25 S4) - the lifecycle/tags/customFields routes landed
-// in S1-S3; `conversation-service.mock.ts` remains the standing frontend-first
-// mock for future tuning, but the app talks to the live API.
-export const conversationService: ConversationService = {
-  ...realConversationService,
-  // S0 MOCK - swap to real in S4 (plan 27). Close/events/shortcuts have no
-  // backend yet (S1-S3); everything else above keeps hitting :8006 unchanged.
-  closeThread: mockConversationService.closeThread,
-  listEvents: mockConversationService.listEvents,
-  listShortcuts: mockConversationService.listShortcuts,
-  runShortcut: mockConversationService.runShortcut,
-};
+// Real backend (plan 25 S4 + plan 27 S4) - every method (including the plan-27
+// close/events/shortcuts additions, backed since S1-S3) hits the live API.
+// `conversation-service.mock.ts` remains the standing frontend-first mock for
+// future tuning, but the app no longer binds to it.
+export const conversationService: ConversationService = realConversationService;

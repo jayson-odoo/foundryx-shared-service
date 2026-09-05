@@ -351,7 +351,12 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
       if (!contactId) return false;
       try {
         const note = await conversationService.addInternalNote(contactId, body);
-        setMessages((prev) => [...prev, note]);
+        // The backend publishes `message.created` on the same WS room this
+        // response races - the `onEvent` handler above may already have
+        // appended it by the time this resolves. Dedupe by id (same pattern
+        // as `send`'s temp-bubble swap) so the note never renders twice in
+        // the Messages tab OR the merged Activities feed (plan 27, AC-IVE-32).
+        setMessages((prev) => (prev.some((m) => m.id === note.id) ? prev : [...prev, note]));
         return true;
       } catch (e: unknown) {
         setSendError(e instanceof Error ? e.message : 'Could not add the note');

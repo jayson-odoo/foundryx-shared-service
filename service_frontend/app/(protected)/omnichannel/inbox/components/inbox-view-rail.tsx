@@ -9,6 +9,7 @@
  * single `SearchSelect` collapsing the same options - AC-IVE-24).
  */
 import { useMemo, useState } from 'react';
+import { useSession } from 'next-auth/react';
 import { MoreHorizontal, Plus } from 'lucide-react';
 
 import {
@@ -56,6 +57,8 @@ function entryToOption(entry: InboxRailEntry) {
 
 export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sidebar', className }: InboxViewRailProps) {
   const { can } = useCan();
+  const { data: session } = useSession();
+  const currentUserId = session?.user?.id ?? null;
   const canManageShared = can('inbox_views.manage');
   // Scoped machine - never fire before the workspace id (its scope) resolves,
   // or the backend 422s "Workspace is required for this entity" on mount.
@@ -203,12 +206,12 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
             .filter((e): e is Extract<InboxRailEntry, { kind: 'view' }> => e.kind === 'view')
             .map((e) => {
               const view = views.find((v) => v.id === e.viewId);
-              // S0 MOCK convention: `inbox-view-service.mock.ts` stamps every
-              // created/seeded "own" view with the literal 'usr-demo' (mirrors
-              // `MOCK_CURRENT_USER` in conversation-service.mock.ts) rather
-              // than the real session user id - S4 wires this to the real
-              // `ownerUserId` returned by the backend (D-A3-11).
-              const mayManage = view ? view.ownerUserId === 'usr-demo' || canManageShared : false;
+              // D-A3-11: the owner may always manage their own view; a SHARED
+              // view or someone else's additionally needs `inbox_views.manage`
+              // (the server enforces this too - this only hides the control).
+              const mayManage = view
+                ? (currentUserId !== null && view.ownerUserId === currentUserId) || canManageShared
+                : false;
               return (
                 <div
                   key={e.key}

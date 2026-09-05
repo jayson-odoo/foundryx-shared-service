@@ -61,8 +61,13 @@ export function CloseThreadDialog({ open, onOpenChange, reasons, onClose }: Clos
       onOpenChange(false);
     } catch (e) {
       if (e instanceof ApiError) {
-        const fieldErrors = (e.detail as { fieldErrors?: Record<string, string> } | undefined)?.fieldErrors;
-        setError(fieldErrors?.closeReasonId ?? fieldErrors?.note ?? e.message);
+        const detail = e.detail as { fieldErrors?: Record<string, string>; code?: string; message?: string } | undefined;
+        // A 422 carries `{fieldErrors}` (missing/inactive/foreign reason); a
+        // 409 carries a structured `{code, message}` (e.g. `already_closed` -
+        // the thread was closed by someone else between load and submit) -
+        // api-client only promotes a STRING detail to `.message`, so read the
+        // structured message directly (same pattern as `lifecycle-move.tsx`).
+        setError(detail?.fieldErrors?.closeReasonId ?? detail?.fieldErrors?.note ?? detail?.message ?? e.message);
       } else {
         setError(e instanceof Error ? e.message : 'Could not close the conversation.');
       }
