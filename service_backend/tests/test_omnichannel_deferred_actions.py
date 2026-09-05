@@ -296,3 +296,69 @@ def test_workspaces_trash_fails_when_the_workspace_is_gone_by_commit_time(db):
     assert committed.status == "failed"
     assert committed.error_text
     assert db.get(Workspace, ws_id) is None
+
+
+# ── T5 fix round 2, S4: module gating - a tenant with omnichannel INACTIVE
+# cannot park (or keep observing) one of its actions. ──────────────────────
+
+
+def test_park_rejected_when_the_module_is_inactive_for_the_tenant(client, session_factory):
+    from app.models import Tenant
+    from app.services.app_store_service import AppStoreService
+    from app.services.tenant_service import TenantService
+    from modules.omnichannel.models import Workspace
+
+    db = session_factory()
+    TenantService(db).provision(
+        name="Beta", slug="beta-mod-gate", admin_name="Bea",
+        admin_email="admin@beta-mod-gate.example.com", admin_password="pw12345678",
+    )
+    tenant = db.query(Tenant).filter(Tenant.slug == "beta-mod-gate").first()
+    AppStoreService(db).install(tenant.id, "omnichannel")
+    ws = (
+        db.query(Workspace)
+        .filter(Workspace.tenant_id == tenant.id, Workspace.is_default.is_(True))
+        .first()
+    )
+    ws_id = ws.id
+    db.close()
+
+    login_res = client.post(
+        "/auth/login",
+        json={
+            "email": "admin@beta-mod-gate.example.com",
+            "password": "pw12345678",
+            "tenantSlug": "beta-mod-gate",
+        },
+    )
+    assert login_res.status_code == 200, login_res.text
+    h = {"Authorization": f"Bearer {login_res.json()['access_token']}"}
+
+    # Module ACTIVE - park succeeds (the admin's install-time grant covers
+    # `workspaces.manage`).
+    res = client.post(
+        "/api/v1/pending-actions",
+        json={"actionKey": "workspaces.trash", "entityType": "workspace", "entityId": ws_id},
+        headers=h,
+    )
+    assert res.status_code == 202, res.text
+
+    # Cancel it so the second park below isn't short-circuited by the
+    # idempotent-existing-pending-row path.
+    action_id = res.json()["id"]
+    cancel_res = client.post(f"/api/v1/pending-actions/{action_id}/cancel", headers=h)
+    assert cancel_res.status_code == 200, cancel_res.text
+
+    db2 = session_factory()
+    AppStoreService(db2).deactivate(tenant.id, "omnichannel")
+    db2.close()
+
+    # Module now INACTIVE - park is rejected even though the admin's role
+    # still carries the (now-inert) `workspaces.manage` grant from before
+    # deactivation (deactivate keeps grants, unlike uninstall).
+    res2 = client.post(
+        "/api/v1/pending-actions",
+        json={"actionKey": "workspaces.trash", "entityType": "workspace", "entityId": ws_id},
+        headers=h,
+    )
+    assert res2.status_code == 403, res2.text

@@ -53,6 +53,13 @@ class DeferredActionDef:
     #: (a plain permission-key check alone is not the double lock that
     #: dependency provides).
     platform: bool = False
+    #: T5 fix round 2, S4: mirrors every other engine's catalog (`StatusEntity`
+    #: /`TriggerDef`/`ImporterDef`, ...) - `'core'` is always visible, a
+    #: module's own key (e.g. `'omnichannel'`) is filtered through
+    #: `app.module_platform.active.active_modules`/`is_visible` in `park()`/
+    #: `_may_act_on()` so a tenant with the module INACTIVE can't park (or
+    #: keep observing/committing) a countdown against it.
+    module: str = "core"
 
 
 _REGISTRY: Dict[str, DeferredActionDef] = {}

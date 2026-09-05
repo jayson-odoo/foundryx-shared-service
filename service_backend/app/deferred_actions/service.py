@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.dependencies import effective_permission_keys
 from app.deferred_actions.registry import (
+    DeferredActionDef,
     DeferredActionWindow,
     UnknownDeferredAction,
     deferred_action_for,
@@ -149,7 +150,18 @@ class PendingActionService:
             return row
         return self.commit_one(row)
 
-    def _may_act_on(self, actor: User, action_key: str) -> bool:
+    def _module_active(self, tenant_id: str, action_def: DeferredActionDef) -> bool:
+        # Fix round 2, S4: mirrors every other catalog's `active_modules`/
+        # `is_visible` check (workflow triggers/actions, rule facts, status
+        # entities, importer, terminology, ...) - a tenant with the module
+        # INACTIVE can't park (or keep observing/committing) a countdown
+        # against one of its actions, even if a stale role grant still holds
+        # the permission key.
+        from app.module_platform.active import active_modules, is_visible
+
+        return is_visible(action_def.module, active_modules(self.db, tenant_id))
+
+    def _may_act_on(self, actor: User, action_key: str, tenant_id: Optional[str] = None) -> bool:
         try:
             action_def = deferred_action_for(action_key)
         except UnknownDeferredAction:
@@ -157,6 +169,8 @@ class PendingActionService:
         if action_def.permission not in effective_permission_keys(actor):
             return False
         if action_def.platform and not (actor.tenant and actor.tenant.is_platform):
+            return False
+        if tenant_id is not None and not self._module_active(tenant_id, action_def):
             return False
         return True
 
@@ -187,7 +201,7 @@ class PendingActionService:
             if committing
             else (last_outcome.action_key if last_outcome else None)
         )
-        if relevant_key is not None and not self._may_act_on(actor, relevant_key):
+        if relevant_key is not None and not self._may_act_on(actor, relevant_key, tenant_id):
             raise ActionNotFound("Pending action not found.")
 
         return {
@@ -220,6 +234,13 @@ class PendingActionService:
             raise UnknownActionKey(
                 f"Action {action_key!r} does not apply to entity type {entity_type!r}."
             )
+        if not self._module_active(tenant_id, action_def):
+            # Fix round 2, S4: a module action key stays REGISTERED globally
+            # (the registry has no tenant concept) - a tenant with the
+            # module INACTIVE must not be able to park (or keep observing/
+            # committing) a countdown against one of its actions, even
+            # holding the stale permission from before deactivation.
+            raise PermissionDenied(f"Missing permission: {action_def.permission}")
         if action_def.permission not in effective_permission_keys(actor):
             raise PermissionDenied(f"Missing permission: {action_def.permission}")
         if action_def.platform and not (actor.tenant and actor.tenant.is_platform):
@@ -283,7 +304,7 @@ class PendingActionService:
         # above, so this is a plain 403 (not a 404 - there's nothing to
         # enumerate that a 404 would hide beyond what the 200-path already
         # would have revealed by the row's existence).
-        if not self._may_act_on(actor, row.action_key):
+        if not self._may_act_on(actor, row.action_key, tenant_id):
             raise PermissionDenied(f"Missing permission for {row.action_key!r}.")
         if row.status != PENDING_ACTION_PENDING:
             raise AlreadySettled("This action already settled.")

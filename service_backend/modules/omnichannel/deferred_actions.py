@@ -51,6 +51,7 @@ def _channels_delete(db: Session, tenant_id: str, entity_id: str, payload: dict,
 
 CHANNELS_DISCONNECT = DeferredActionDef(
     key="channels.disconnect",
+    module="omnichannel",
     entity_type="channel",
     permission=CHANNELS_MANAGE,
     window="destructive",  # matches users.trash's precedent - restorable, still 10s
@@ -60,6 +61,7 @@ CHANNELS_DISCONNECT = DeferredActionDef(
 )
 CHANNELS_DELETE = DeferredActionDef(
     key="channels.delete",
+    module="omnichannel",
     entity_type="channel",
     permission=CHANNELS_MANAGE,
     window="destructive",
@@ -104,6 +106,7 @@ def _wa_templates_delete(db: Session, tenant_id: str, entity_id: str, payload: d
 
 WA_TEMPLATES_DELETE = DeferredActionDef(
     key="wa_templates.delete",
+    module="omnichannel",
     entity_type="wa_template",
     permission=WA_TEMPLATES_MANAGE,
     window="destructive",
@@ -141,6 +144,7 @@ def _webhooks_delete(db: Session, tenant_id: str, entity_id: str, payload: dict,
 
 WEBHOOKS_SET_ACTIVE = DeferredActionDef(
     key="webhooks.set_active",
+    module="omnichannel",
     entity_type="webhook_endpoint",
     permission=WEBHOOKS_MANAGE,
     window="reversible",  # "pause until you re-enable it"
@@ -150,6 +154,7 @@ WEBHOOKS_SET_ACTIVE = DeferredActionDef(
 )
 WEBHOOKS_DELETE = DeferredActionDef(
     key="webhooks.delete",
+    module="omnichannel",
     entity_type="webhook_endpoint",
     permission=WEBHOOKS_MANAGE,
     window="destructive",
@@ -191,6 +196,7 @@ def _quick_replies_delete(db: Session, tenant_id: str, entity_id: str, payload: 
 
 QUICK_REPLIES_DELETE = DeferredActionDef(
     key="quick_replies.delete",
+    module="omnichannel",
     entity_type="quick_reply",
     permission=WORKSPACES_MANAGE,  # matches the FE action's own gate
     window="destructive",
@@ -232,6 +238,7 @@ def _api_keys_revoke(db: Session, tenant_id: str, entity_id: str, payload: dict,
 
 API_KEYS_REVOKE = DeferredActionDef(
     key="api_keys.revoke",
+    module="omnichannel",
     entity_type="api_key",
     permission=API_KEYS_MANAGE,
     window="destructive",  # "cannot be undone - mint a new key"
@@ -266,6 +273,7 @@ def _workspaces_trash(db: Session, tenant_id: str, entity_id: str, payload: dict
 
 WORKSPACES_TRASH = DeferredActionDef(
     key="workspaces.trash",
+    module="omnichannel",
     entity_type="workspace",
     permission=WORKSPACES_MANAGE,
     window="destructive",

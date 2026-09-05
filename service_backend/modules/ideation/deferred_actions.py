@@ -44,6 +44,7 @@ def _ideas_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, ac
 
 IDEAS_ARCHIVE = DeferredActionDef(
     key="ideation_ideas.archive",
+    module="ideation",
     entity_type="ideation_idea",
     permission=MANAGE,
     window="reversible",  # Restore is one click away (D2)
@@ -53,6 +54,7 @@ IDEAS_ARCHIVE = DeferredActionDef(
 )
 IDEAS_DELETE = DeferredActionDef(
     key="ideation_ideas.delete",
+    module="ideation",
     entity_type="ideation_idea",
     permission=MANAGE,
     window="destructive",
@@ -84,6 +86,7 @@ def _br_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor
 
 BR_DELETE = DeferredActionDef(
     key="ideation_business_requirements.delete",
+    module="ideation",
     entity_type="ideation_business_requirement",
     permission=BR_MANAGE,
     window="destructive",
@@ -132,6 +135,7 @@ def _br_idea_unlink(db: Session, tenant_id: str, entity_id: str, payload: dict, 
 
 BR_IDEA_UNLINK = DeferredActionDef(
     key="ideation_business_requirements.unlink_idea",
+    module="ideation",
     entity_type="ideation_br_idea_link",
     permission=BR_MANAGE,
     window="reversible",  # re-linking is a click away
@@ -166,6 +170,7 @@ def _embed_connection_set_active(db: Session, tenant_id: str, entity_id: str, pa
 
 EMBED_CONNECTIONS_DELETE = DeferredActionDef(
     key="ideation_embed_connections.delete",
+    module="ideation",
     entity_type="ideation_embed_connection",
     permission=MANAGE,
     window="destructive",
@@ -175,6 +180,7 @@ EMBED_CONNECTIONS_DELETE = DeferredActionDef(
 )
 EMBED_CONNECTIONS_SET_ACTIVE = DeferredActionDef(
     key="ideation_embed_connections.set_active",
+    module="ideation",
     entity_type="ideation_embed_connection",
     permission=MANAGE,
     window="reversible",
