@@ -226,3 +226,83 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   `documentation/plans/autocount/PLAN-autocount-cross-repo-contract.md` §9 (14 items). ESB
   follow-up: the SPO push must send one DocKey per spo_number (the filter formula + preset already
   do; a duplicate DocNo across AutoCount PO rows would surface as this `failed`).
+- 2026-09-05 (ESB local proof, BLOCKING bug found in Sorento's product-reference resolution):
+  after the seven master tasks landed for company SRT (products=205 confirmed via `psql`),
+  `POST /api/v1/external/ingest/sales_orders?dry_run=true` fails EVERY row (64/64 `would fail`,
+  each with `errors: {"_": "internal error; see server logs"}` - the generic non-domain-failure
+  shape from the review round above). The real exception, read from Sorento's own uvicorn log
+  (`sorento_crm_backend`, `.claude/worktrees/autocount-ingest-v2`, port 8042), is:
+  ```
+  sqlalchemy.exc.IntegrityError: (psycopg2.errors.UniqueViolation) duplicate key value violates unique constraint "uq_integration_ref_entity"
+  DETAIL:  Key (entity_type, entity_id)=(products, faacf7f7-0178-496f-b1f3-03d64b0ab934) already exists.
+  [SQL: INSERT INTO integration_references (id, entity_type, entity_id, source_system, source_ref, source_doc_no, integration_id) VALUES (...) RETURNING ...]
+  [parameters: {'entity_type': 'products', 'entity_id': 'faacf7f7-0178-496f-b1f3-03d64b0ab934', 'source_system': 'autocount', 'source_ref': 'ac_sim:174', ...}]
+  ```
+  followed by `ingest.batch entity=sales_orders integration=esb-local company=00000000-0000-0000-0000-000000000001 dry_run=True created=0 updated=0 failed=64 retryable=0`. Root cause (from the
+  outside): when a sales-order LINE resolves its `item_code` to a product that a PRIOR masters
+  ingest already registered under `integration_references` (unique on `(entity_type, entity_id)`),
+  the document-ingest path attempts to INSERT a fresh `integration_references` row for that same
+  product instead of finding the existing one first - a get-or-create gap, not a data problem (the
+  product genuinely already has a reference, from the masters push, same `source_system=autocount`
+  `source_ref=ac_sim:174`). This blocks EVERY document row that references an already-mastered
+  product, i.e. it will block PO/SPO the same way once their lines resolve products. Masters-only
+  runs (no documents) are unaffected. Repro: run the ESB's seven master tasks for a company, THEN
+  push any document referencing one of those products (dry-run or real) - first push always hits
+  it. Workaround attempted from the ESB side: none available (this is Sorento's own resolve step,
+  not something the ESB payload shape can dodge without ALSO never running masters first, which
+  breaks D-something's masters-first sequencing). Blocks AC-02-26 ("Review & Activate preview
+  passes") and the whole SRT documents leg of the local parity proof until fixed. Suggest: the
+  product-ref resolver should SELECT existing `integration_references` by `(entity_type,
+  entity_id)` (or by `(source_system, source_ref)`) before insert, same get-or-create discipline
+  already used for customer/supplier/agent per the S1 ladder above.
+- 2026-09-05 (confirmation - all three document entities hit the SAME products bug, ESB side
+  proven clean): after the coder round rewrote the SO/PO/SPO presets to the real join-based
+  AutoCount SQL pack (table names `SO`/`SODTL`/`PO`/`PODTL`/`Debtor`/`Creditor`/`Item`/`Location`),
+  re-ran all three document tasks against the synthetic `ac_sim` source. Extraction + mapping
+  succeeded cleanly on the ESB side for every task - `sales_order` 64/64 Extracted, `purchase_order`
+  6/6 Extracted (11 PO-table rows minus the 5 `SPO-` prefixed ones the SPO task owns), `shipping_order`
+  5/5 Extracted (the 5 `SPO-` rows) - all correctly keyed (`ac_sim:<DocKey>`), all correctly split by
+  the `filterFormula`. Every one of the 75 rows fails Review & Activate with the IDENTICAL
+  `errors:{"_":"internal error; see server logs"}` from the products bug above (never a
+  mapping-shape error) - confirming the block is 100% Sorento's product-reference resolver, not an
+  ESB-side gap, across every document entity that references a mastered product.
+- 2026-09-05 (SECOND Sorento-side bug found, masters leg, `customers` table schema drift):
+  the `customer` master task (blocked all session on this) reports 27/27 `would fail` with an
+  UNSANITIZED raw SQLAlchemy traceback (not the `errors:{"_":...}` shape - a different, less-hardened
+  code path than the documents ingest):
+  ```
+  (psycopg2.errors.UndefinedColumn) column "credit_limit" of relation "customers" does not exist
+  LINE 1: ...email, phone_number, registration_number, tax_id, credit_lim...
+  [SQL: INSERT INTO customers (id, customer_code, customer_name, email, phone_number,
+  registration_number, tax_id, credit_limit, payment_terms_days, country, is_active, company_id)
+  VALUES (...)]
+  ```
+  Sorento's own `customers` table is missing the `credit_limit` (and, by the same INSERT, untested
+  whether `payment_terms_days` also fails once `credit_limit` is added) columns its OWN master
+  ingest code already references - a migration gap on their side, not an ESB mapping problem (the
+  ESB's customer query/mapping resolves `acc_no`/`company_name`/`sales_agent`/`is_active` cleanly;
+  Sorento's insert 500s before those even matter). Blocks the `customer` master entity for BOTH
+  SRT and the eventual XLS masters-twin comparison. Suggest: a Sorento-side migration adding the
+  missing `customers` columns (or dropping them from the INSERT if they were meant to be optional
+  with server defaults).
+- 2026-09-05 (masters proof final tally, company SRT): `product_categories`=1, `units_of_measure`=1
+  (both global, no `company_id`), `suppliers`=6, `warehouses`=14, `products`=205, `sales_agents`=18
+  (landed with a NULL `company_id` - unscoped, a Sorento-side observation, not re-raised here since
+  it does not block anything), `customers`=0 (blocked by the bug immediately above). Every one of
+  these six activated/ran masters entities matches the synthetic source's row count exactly
+  (`ac_sim` via `python -m scripts.seed_autocount_shape_source`).
+- 2026-09-05 (second-company XLS attempt, masters-twin per this addendum's own "share source refs"
+  guidance): creating a company with Sorento code `XLS` against a NEW `sql_database` connection
+  pointed at the SAME `ac_sim` Postgres database (required because the "Connect company" picker
+  excludes a connection already claimed by an existing company) was refused by the ESB itself,
+  before ever reaching Sorento, with the exact message: `'ac_sim' is already connected as company
+  'ac_sim'.` (a 409 from `AcCompany`'s `uq_ac_company_tenant_db` - one physical database per
+  company, tenant-wide). This is expected per plan-02's own design (AC-01-xx / the plan-01 company
+  uniqueness rule) and is NOT a bug - logged here only because this addendum's own guidance above
+  ("for the SRT/XLS masters twin they SHOULD share source refs... use the same `database_name`")
+  turns out to be un-satisfiable through the current UI/API without either (a) loosening the
+  uniqueness constraint to `(tenant_id, database_name, sorento_company_code)`, or (b) a documented
+  masters-twin workflow that seeds a SECOND physical database with IDENTICAL AutoKeys (defeats the
+  "share source refs" goal), or (c) Sorento receiving the SRT-side masters export directly rather
+  than via a second ESB company. Recommend picking one of these explicitly rather than leaving the
+  masters-twin comparison blocked on a UI limitation.

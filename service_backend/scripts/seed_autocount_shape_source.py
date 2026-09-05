@@ -413,8 +413,13 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}."SO" (
     "SalesAgent"    text,
     "CurrencyCode"  text DEFAULT 'MYR',
     "Note"          text,
-    "Cancelled"     char(1) NOT NULL DEFAULT 'F'
+    "Cancelled"     char(1) NOT NULL DEFAULT 'F',
+    "UDF_DelDate"   date
 );
+-- The SO preset (SF2) reads the requested-delivery-date override off this
+-- UDF column; ADD COLUMN IF NOT EXISTS keeps this idempotent against an
+-- already-seeded local database that predates the column.
+ALTER TABLE {SCHEMA}."SO" ADD COLUMN IF NOT EXISTS "UDF_DelDate" date;
 
 CREATE TABLE IF NOT EXISTS {SCHEMA}."SODTL" (
     "DtlKey"        integer PRIMARY KEY,

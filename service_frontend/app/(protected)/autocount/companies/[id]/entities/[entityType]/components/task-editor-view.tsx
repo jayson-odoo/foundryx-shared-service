@@ -143,6 +143,12 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     if (configDirty) {
       const ok = await save({ ...config, query: config.query.trim() });
       if (!ok) return false;
+      // A document entity's FIRST clean config save seeds its field mapping
+      // server-side (`seed_document_mapping`) - the Mapping tab's own hook
+      // mounted before that seed existed (its 404 latched `notFound=true`),
+      // so it never sees the new rows without an explicit reload. Cheap and
+      // safe on every OTHER save too (a no-op re-fetch of the same rows).
+      mapping.reload();
     }
     if (draft.dirty) {
       const problem = draft.validate();
