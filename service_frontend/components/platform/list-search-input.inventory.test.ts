@@ -27,7 +27,7 @@ describe('AC-DLA-54 list-search-input adoption', () => {
     expect(src).toContain('<ListSearchInput');
   });
 
-  it('SearchSelect and MultiSelect control CommandInput (so it can settle)', () => {
+  it('SearchSelect and MultiSelect keep controlled CommandInput value= wiring (their own filtering, no settling indicator per T6 fix round 1 item 8)', () => {
     const searchSelect = read('components/platform/search-select/search-select.tsx');
     const multiSelect = read('components/platform/multi-select/multi-select.tsx');
     expect(searchSelect).toMatch(/<CommandInput[\s\S]*?value=\{query\}/);
