@@ -6,8 +6,9 @@
  * 403 (foolproof-UI, UX-only; the API is the real gate).
  */
 import { renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Workspace } from '@/types/omnichannel';
+import type { useWorkspaceForm as UseWorkspaceForm } from './use-workspace-form';
 
 let can: (key: string) => boolean = () => true;
 vi.mock('@/hooks/use-can', () => ({
@@ -38,7 +39,15 @@ vi.mock('@/services/workspace-service', () => ({
   },
 }));
 
-const { useWorkspaceForm } = await import('./use-workspace-form');
+// Dynamic import (not a top-level `await`, which needs an ES2022+ module
+// target this project's tsconfig doesn't set) so the `vi.mock` calls above
+// are hoisted and applied before `./use-workspace-form` (and its
+// `workspace-service`/`use-can` imports) is evaluated.
+let useWorkspaceForm: typeof UseWorkspaceForm;
+
+beforeAll(async () => {
+  ({ useWorkspaceForm } = await import('./use-workspace-form'));
+});
 
 async function loadedConfig(workspaceId = 'wsp-1') {
   const { result } = renderHook(() => useWorkspaceForm(workspaceId, false));

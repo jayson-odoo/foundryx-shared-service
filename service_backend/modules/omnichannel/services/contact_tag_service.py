@@ -10,6 +10,7 @@ links only (AC-CDM-11) - the contacts themselves are untouched.
 from typing import Dict, List, Optional
 
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import Contact, ContactTag, ContactTagLink
@@ -149,12 +150,23 @@ class ContactTagService:
 
     def refs_for_contacts(self, contact_ids: List[str], tenant_id: str) -> Dict[str, List[dict]]:
         """Batched `contact_id -> [{id,name,emoji,color}]` (AC-CDM-12) - tenant-
-        scoped resolution of the stored link rows."""
+        scoped resolution of the stored link rows.
+
+        `ContactTag.tenant_id == tenant_id` is filtered on the JOINED tag row
+        too (review round 2, finding C), not just the link - a link row can
+        only ever point at a same-tenant tag in practice (`replace_links`/
+        `resolve_or_create_by_name` both validate/create within the caller's
+        own tenant+workspace), but a planted/corrupt link (the polymorphic
+        stored-id rule - never resolve a stored id unscoped) must not render
+        another tenant's tag name/emoji/color to this caller."""
         if not contact_ids:
             return {}
         rows = (
             self.db.query(ContactTagLink.contact_id, ContactTag)
-            .join(ContactTag, ContactTag.id == ContactTagLink.tag_id)
+            .join(
+                ContactTag,
+                (ContactTag.id == ContactTagLink.tag_id) & (ContactTag.tenant_id == tenant_id),
+            )
             .filter(
                 ContactTagLink.tenant_id == tenant_id,
                 ContactTagLink.contact_id.in_(contact_ids),
@@ -206,7 +218,31 @@ class ContactTagService:
         caller (`ContactProfileService.patch` via `ConversationService.
         patch_thread`) persists everything in ONE unit of work, so a
         downstream validation failure (e.g. bad `customFields`) rolls back the
-        whole request including any tag just auto-created for it."""
+        whole request including any tag just auto-created for it.
+
+        Concurrency (review round 2, finding D): two gateway PATCHes for the
+        SAME unknown name can both pass the `_find_by_name` SELECT before
+        either INSERTs. The DB backstop (`uq_contact_tags_workspace_name`,
+        Postgres functional unique index, review round 1 finding 9) then
+        raises `IntegrityError` for whichever `flush()` loses the race.
+
+        This deliberately does NOT wrap the insert in a `begin_nested()`
+        SAVEPOINT (the first version of this fix did, and it broke the
+        sibling atomicity test - `numbering_repository.get_or_create_counter_
+        for_update` uses that pattern safely because its whole call IS the
+        unit of work, but here a SUCCESSFULLY released SAVEPOINT survives a
+        LATER, unrelated `self.db.rollback()` on the SAME session under this
+        project's SQLite test engine - i.e. it stops being undone by the
+        request-level rollback a downstream 4xx triggers, silently breaking
+        "the entire PATCH is rejected and nothing is written"). A losing
+        `flush()` (no SAVEPOINT) instead takes the SAME recovery a `commit()`
+        failure anywhere else in this codebase takes: a full `self.db.
+        rollback()`, then re-look-up the name (the winner's row is now
+        visible) and reuse its id. This only stays correct because tag
+        resolution is the FIRST database write of the gateway PATCH (`Public
+        GatewayService.update_contact` calls this before `ConversationService.
+        patch_thread`) - a rollback here can't discard other already-applied
+        parts of the SAME request because there aren't any yet."""
         ids: List[str] = []
         seen: set = set()
         for raw in names or []:
@@ -230,7 +266,15 @@ class ContactTagService:
                 )
             row = ContactTag(tenant_id=tenant_id, workspace_id=workspace_id, name=name)
             self.db.add(row)
-            self.db.flush()
+            try:
+                self.db.flush()
+            except IntegrityError:
+                self.db.rollback()
+                winner = self._find_by_name(workspace_id, tenant_id, name)
+                if winner is None:
+                    raise  # not the expected race - surface the real error
+                ids.append(winner.id)
+                continue
             ids.append(row.id)
         return ids
 

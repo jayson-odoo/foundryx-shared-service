@@ -5,6 +5,7 @@ status keys + user display names, maintains the read marker, and applies the
 PATCH operations (assign / lifecycle / priority).
 """
 import logging
+import uuid
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -142,9 +143,10 @@ class ConversationService:
         return {c.id: c.channel_type for c in rows}
 
     def _field_registry(self, contacts: List[Contact], tenant_id: str) -> Dict[str, set]:
-        """`workspace_id -> {registered ContactField.key}`, ONE query per
-        DISTINCT workspace on the page (not per contact) - the guide (~716)
-        and AC-CDM promise registered keys only on the wire. Used to intersect
+        """`workspace_id -> {registered ContactField.key}` - ONE grouped query
+        for every DISTINCT workspace on the page (review round 2, finding F;
+        was one query PER workspace) - the guide (~716) and AC-CDM promise
+        registered keys only on the wire. Used to intersect
         `custom_fields_json`'s raw blob so a legacy/unregistered key (a field
         deleted from the registry after some contacts still carry stale JSON)
         never surfaces on any read path (list/detail/gateway/webhook -
@@ -154,10 +156,8 @@ class ConversationService:
         workspace_ids = {c.workspace_id for c in contacts if c.workspace_id}
         if not workspace_ids:
             return {}
-        svc = ContactFieldService(self.db)
-        return {
-            ws_id: {f.key for f in svc.list(ws_id, tenant_id)} for ws_id in workspace_ids
-        }
+        grouped = ContactFieldService(self.db).list_for_workspaces(list(workspace_ids), tenant_id)
+        return {ws_id: {f.key for f in fields} for ws_id, fields in grouped.items()}
 
     # ── Mapping ──────────────────────────────────────────────────────────────
     def _thread_items(self, contacts: List[Contact], tenant_id: str) -> List[ThreadItem]:
@@ -191,6 +191,11 @@ class ConversationService:
             else:
                 assigned_name = names.get(c.assigned_user_id) if c.assigned_user_id else None
                 assigned_avatar = None
+            # A legacy row can carry a non-object JSON blob (the old whole-
+            # object `customFields: null` path stored a JSON `null` scalar
+            # before `custom_fields_json` was `none_as_null=True` - review
+            # round 2, finding B) - never `.items()` a non-dict.
+            cf_blob = c.custom_fields_json if isinstance(c.custom_fields_json, dict) else {}
             items.append(
                 ThreadItem(
                     id=c.id,
@@ -219,7 +224,7 @@ class ConversationService:
                     unreadCount=unread.get(c.id, 0),
                     customFields={
                         k: v
-                        for k, v in (c.custom_fields_json or {}).items()
+                        for k, v in cf_blob.items()
                         if k in field_registry.get(c.workspace_id, set())
                     },
                     tags=[ContactTagRefItem(**t) for t in tag_refs.get(c.id, [])],
@@ -355,11 +360,23 @@ class ConversationService:
                 .first()
             )
             if channel is not None:
+                # `{contactId}:{...}` per the guide (§7) - the suffix used to be
+                # a second-granular epoch int (`int(updated_at.timestamp())`),
+                # which collides when two `contact.updated` events for the SAME
+                # contact fire within one wall-clock second (e.g. a fast
+                # workflow doing two PATCHes back to back) - a de-duping
+                # consumer would drop the second event as a "replay" of the
+                # first (review round 2, finding M). Append a short random
+                # segment so every event gets its OWN id regardless of clock
+                # granularity; the id is generated ONCE per event and then
+                # reused for every retry attempt of that same delivery row, so
+                # retry-dedup semantics are unaffected.
+                event_suffix = uuid.uuid4().hex[:8]
                 enqueue_event(
                     self.db,
                     channel,
                     "contact.updated",
-                    f"{c.id}:{int(c.updated_at.timestamp())}",
+                    f"{c.id}:{int(c.updated_at.timestamp())}:{event_suffix}",
                     {"contact": item.model_dump(mode="json")},
                 )
         except Exception:  # noqa: BLE001 - forwarding never breaks the caller

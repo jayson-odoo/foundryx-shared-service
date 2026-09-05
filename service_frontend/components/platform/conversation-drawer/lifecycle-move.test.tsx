@@ -22,9 +22,9 @@ vi.mock('@/hooks/use-can', () => ({
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 let moves: LifecycleMove[] = [];
-const lifecycleMoves = vi.fn(async () => moves);
+const lifecycleMoves = vi.fn<(contactId: string) => Promise<LifecycleMove[]>>(async () => moves);
 vi.mock('@/services/conversation-service', () => ({
-  conversationService: { lifecycleMoves: (...args: unknown[]) => lifecycleMoves(...args) },
+  conversationService: { lifecycleMoves: (contactId: string) => lifecycleMoves(contactId) },
 }));
 
 const LIFECYCLE: ContactLifecycleSummary = {

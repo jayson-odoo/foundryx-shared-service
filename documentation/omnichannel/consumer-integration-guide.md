@@ -369,7 +369,7 @@ Returns one `ThreadItem` (§9.1). `GET …/contacts/phone:+60123456789` works to
 
 ### Update a contact - `PATCH /api/v1/omnichannel/contacts/{identifier}`
 
-Partial - only fields you send change. Send `assignedUserId`/`customFields` as `null` to clear; omit to leave unchanged.
+Partial - only fields you send change. Send `assignedUserId` as `null` to unassign. Send `customFields` as `null` (the whole value, not an object) to clear EVERY registered field's value at once, or as an object with one key set to `null` to clear just that key; omit `customFields` entirely to leave it unchanged.
 
 ```json
 { "firstName": "Jayson", "lastName": "Teh",
@@ -381,7 +381,7 @@ Partial - only fields you send change. Send `assignedUserId`/`customFields` as `
 Assign a conversation to an agent by setting `assignedUserId`; unassign by sending it as `null`. Unknown assignee → `422 invalid_request`.
 
 * **`language`** - a BCP-47 tag (≤ 16 characters). **`countryCode`** - an ISO-3166 alpha-2 code (case-insensitive on write, always upper-cased on read). Either 422s if malformed.
-* **`customFields`** - values are validated against your workspace's custom-field registry (configured in the Foundryx dashboard): unknown key or a value that fails its field's type → `422 invalid_request` with `details` keyed `customFields.<key>`, and **nothing is written**. `null` clears one key; keys you omit are left unchanged (partial merge, never a replace).
+* **`customFields`** - values are validated against your workspace's custom-field registry (configured in the Foundryx dashboard): unknown key or a value that fails its field's type → `422 invalid_request` with `details` keyed `customFields.<key>`, and **nothing is written**. Send the whole `customFields` value as `null` to clear EVERY registered field's value at once (each cleared key appears in the webhook's `contact.updated` diff and the next `GET` shows `customFields: {}`); send an object with one key set to `null` to clear just that key (partial merge - other keys untouched); keys you omit are left unchanged.
 * **`tags`** - a list of tag **names**, and **REPLACES the whole set** (not a merge). An unknown name is auto-created in your workspace (so you never need a separate "create tag" call first). `null` clears every tag.
 * **`lifecycle`** - your workspace's lifecycle is a small pipeline of stages (e.g. New Lead → Hot Lead → Payment → Customer/Cold Lead, configurable in the dashboard). Send either the stage's **key** (e.g. `"hot_lead"`) or its display **label** (e.g. `"🔥 Hot Lead"`, emoji included) to move the contact there. A value matching no stage in your workspace → `422 invalid_request` with `details: {"lifecycle": "Unknown lifecycle stage."}`. A value that IS a real stage but has no path from the contact's *current* stage (e.g. the contact already won or lost) → `409 lifecycle_move_not_allowed`. `lifecycle` cannot be sent as `null` (there is always a current stage) - omit it to leave the contact where it is.
 * **All of the above apply atomically.** If any part of the payload fails validation (a bad `customFields` value, an unknown `lifecycle`, a blocked move), the **entire PATCH is rejected and nothing is written** - not even a `tags` name that would otherwise have been auto-created.
@@ -494,7 +494,7 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
   ```json
   { "targetMessageId":"8dbc5265-…", "reactorType":"CONTACT", "emoji":"❤️", "removed":false }
   ```
-* `**contact.updated**` - `id` = `{contactId}:{timestamp}`. Fires on assignment / status / priority changes AND on any `language`/`countryCode`/`customFields`/`tags`/`lifecycle` change - always the full current `ThreadItem`, never a diff.
+* `**contact.updated**` - `id` = `{contactId}:{timestamp}:{suffix}` (`suffix` is a short random hex segment, not epoch-derived - two updates to the same contact within the same second still get distinct ids, so a dedup-on-`id` consumer never drops the second one as a replay of the first). Fires on assignment / status / priority changes AND on any `language`/`countryCode`/`customFields`/`tags`/`lifecycle` change - always the full current `ThreadItem`, never a diff.
 
   ```json
   { "contact": { /* ThreadItem (§9.1) */ } }

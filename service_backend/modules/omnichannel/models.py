@@ -148,7 +148,12 @@ class Contact(OmniBase):
     email = Column(String, nullable=True)
     phone = Column(String, nullable=True, index=True)
     avatar_url = Column(String, nullable=True)
-    custom_fields_json = Column(JSON, nullable=True)
+    # `none_as_null=True` (house rule) - without it a Python `None` assignment
+    # stores a JSON `null` scalar instead of a SQL NULL, which then breaks
+    # `jsonb_each`/`jsonb_typeof` on Postgres reads (review round 2, finding
+    # B) and confuses `IS NOT NULL` filters the same way plan-02's rule-engine
+    # lesson describes.
+    custom_fields_json = Column(JSON(none_as_null=True), nullable=True)
     assigned_user_id = Column(String,nullable=True)
     # Federated (embed) assignee - set instead of ``assigned_user_id`` when the
     # thread is assigned by an external agent (plan 11H Slice 1). Plain indexed

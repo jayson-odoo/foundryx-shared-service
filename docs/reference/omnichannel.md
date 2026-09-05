@@ -37,3 +37,18 @@ row, plus four new module permission keys (`contacts.manage`,
   upgrade head` (module Alembic) or a fresh `bootstrap_modules()` call picks
   them up; `create_all` alone (a bare `init_db` on an existing DB) will NOT
   add them to a table that already exists.
+- **Both paths above dedup a pre-existing name/key clash before creating the
+  index** (review round 1, finding 9) by RENAMING the losing rows (`key`/
+  `name` suffixed with a short id-derived segment - see the migration/
+  bootstrap comment). This rename is deliberately NOT accompanied by a data
+  rewrite (review round 2, finding E - a full rewrite of every affected
+  contact's `custom_fields_json`/tag links was judged out of proportion for
+  what should be a rare stray-duplicate case): a contact's value is still
+  stored under the OLD key/name, but the registry row now advertises a NEW
+  one, so that value silently stops surfacing under the field/tag the
+  operator expects. Both the migration and the bootstrap path `logger.warning`
+  every rename (`tenant_id`, `workspace_id`, old key/name -> new key/name) -
+  **grep the deploy log for `renamed duplicate` after an upgrade that touches
+  this table and manually reconcile any hit** (re-key the affected contacts'
+  `custom_fields_json`, or rename the surviving field/tag back and the loser
+  forward, whichever preserves the data the tenant actually wants).

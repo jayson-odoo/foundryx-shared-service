@@ -197,6 +197,7 @@ def patch_thread(
             country_code=payload.countryCode if "countryCode" in sent else ...,
             custom_fields=payload.customFields if "customFields" in sent else ...,
             tag_ids=payload.tagIds if "tagIds" in sent else ...,
+            actor=resolve_native_actor(principal, db),
             actor_id=principal.actor_user_id,
             external_connection_id=principal.connection_id if principal.is_embed else None,
         )

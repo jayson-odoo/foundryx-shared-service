@@ -196,12 +196,16 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
         </div>
 
         <div className="flex flex-col gap-1">
-          <Label htmlFor="cd-phone" className="text-xs text-muted-foreground">
+          <Label id="cd-phone-label" className="text-xs text-muted-foreground">
             Phone
           </Label>
           {/* Read-only always - the backend never accepts `phone` on this
-              PATCH (it's the inbound stitch key, review round-1 finding). */}
-          <p id="cd-phone" className="text-sm">
+              PATCH (it's the inbound stitch key, review round-1 finding).
+              No `htmlFor` here - a `<label for>` must reference a focusable
+              form control, and this value is a plain `<p>`; `aria-labelledby`
+              is the correct association for a non-control value (review
+              round 2, finding J). */}
+          <p aria-labelledby="cd-phone-label" className="text-sm">
             {thread.phone || '-'}
           </p>
         </div>

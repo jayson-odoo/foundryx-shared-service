@@ -8,6 +8,9 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, field_validator
 
+from app.schemas.base import ApiModel
+from app.schemas.filters import FilterGroup
+
 # Foolproof-UI (user mandate): a colour picker on the frontend only ever emits
 # a hex triplet, never a token name or arbitrary CSS - reject anything else at
 # the wire boundary (review round 1, finding 11) instead of piping tenant
@@ -21,10 +24,6 @@ def _validate_hex_color(v: Optional[str]) -> Optional[str]:
     if not _HEX_COLOR_RE.match(v):
         raise ValueError("Color must be a 6-digit hex value, e.g. #FF5A00.")
     return v
-
-from app.schemas.base import ApiModel
-
-from app.schemas.filters import FilterGroup
 
 
 # ── Workspaces ──────────────────────────────────────────────────────────────
@@ -410,8 +409,9 @@ class ThreadPatch(ApiModel):
     """PATCH /contacts/{id}. assignedUserId: explicit null = unassign (the
     handler distinguishes omitted vs null via model_fields_set). System-field +
     custom-field + tag writes (plan 25) are a PARTIAL merge - `customFields`
-    keys omitted are left unchanged, `null` clears a key; `tagIds` REPLACES the
-    whole tag set.
+    keys omitted are left unchanged, a key set to `null` clears that key, and
+    the WHOLE `customFields` value sent as `null` clears every registered
+    field's value at once; `tagIds` REPLACES the whole tag set.
 
     `phone` is accepted on the WIRE only so the router can detect it was SENT
     (`model_fields_set`) and reject it with a named 422 - it is the inbound
@@ -654,8 +654,11 @@ class PublicContactListResponse(ApiModel):
 
 class PublicContactUpdateRequest(ApiModel):
     """Partial update of a contact (plan 25 S3). Only the fields you SEND are
-    changed; ``assignedUserId``/``customFields`` sent as ``null`` clear the
-    value. ``tags`` REPLACES the whole tag set (names, auto-created if
+    changed; ``assignedUserId`` sent as ``null`` unassigns. ``customFields``
+    sent as ``null`` (the whole value) clears EVERY registered field's value;
+    sent as an object with a key set to ``null`` clears just that one key
+    (other keys untouched - partial merge); omitted, ``customFields`` is left
+    unchanged. ``tags`` REPLACES the whole tag set (names, auto-created if
     unknown - respond.io parity, D8); ``null`` clears every tag.
     ``lifecycle`` moves the contact along the workspace's lifecycle graph by
     stage KEY or LABEL - it cannot be cleared (send nothing to leave it

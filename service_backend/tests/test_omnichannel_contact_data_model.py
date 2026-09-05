@@ -248,6 +248,91 @@ def test_patch_contact_custom_fields_full_type_matrix(client, session_factory):
     assert body["n"] == 42  # untouched
 
 
+def test_patch_contact_custom_fields_whole_null_clears_all_registered_values(client, session_factory):
+    """Review round 2 finding A - `customFields: null` (the WHOLE value, not a
+    per-key null inside an object) clears every REGISTERED field's value in
+    one PATCH, and the emitted `omnichannel_contact` `updated` entity event
+    carries one `customFields.<key>` change per key actually cleared (never a
+    silent no-op)."""
+    from tests.test_workflow_triggers import _edge, _email, _node, _publish, _runs_for
+
+    db = session_factory()
+    doc = {"schemaVersion": 1, "nodes": [
+        _node("trg", "trigger", "entity.updated", {"entityType": "omnichannel_contact"}),
+        _email("a"),
+    ], "edges": [_edge("trg", "a")]}
+    wid = _publish(db, doc)
+    db.close()
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    base = f"{_base(ws)}/contact-fields"
+    client.post(base, headers=h, json={"key": "ca", "label": "CA", "type": "text"})
+    client.post(base, headers=h, json={"key": "cb", "label": "CB", "type": "text"})
+
+    cid = _seed_thread(session_factory, name="Clear All Fields")
+    seeded = client.patch(f"/omnichannel/contacts/{cid}", headers=h, json={
+        "customFields": {"ca": "1", "cb": "2"},
+    })
+    assert seeded.status_code == 200, seeded.text
+
+    cleared = client.patch(f"/omnichannel/contacts/{cid}", headers=h, json={"customFields": None})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["customFields"] == {}
+
+    got = client.get(f"/omnichannel/contacts/{cid}", headers=h).json()
+    assert got["customFields"] == {}
+
+    db = session_factory()
+    runs = _runs_for(db, wid)
+    assert len(runs) == 2  # once for the seed PATCH, once for the clear-all
+    changes = runs[-1].trigger_payload_json["changes"]
+    assert changes["customFields.ca"] == {"from": "1", "to": None}
+    assert changes["customFields.cb"] == {"from": "2", "to": None}
+    db.close()
+
+    # A second whole-null PATCH (nothing left to clear) fires no extra run.
+    noop = client.patch(f"/omnichannel/contacts/{cid}", headers=h, json={"customFields": None})
+    assert noop.status_code == 200
+    db = session_factory()
+    assert len(_runs_for(db, wid)) == 2
+    db.close()
+
+
+def test_value_counts_and_customfields_read_tolerate_legacy_json_null_blob(client, session_factory):
+    """Review round 2 finding B - a LEGACY row whose `custom_fields_json` blob
+    is a JSON scalar `null` (predates `custom_fields_json` becoming
+    `none_as_null=True`) must not break the registry-intersection read
+    (ThreadItem `customFields`) or `value_counts` (list view / delete-
+    confirmation copy). Simulated via raw SQL bypassing the ORM's JSON type -
+    no code path can write this shape anymore, but old rows can still have it.
+    The Postgres `jsonb_typeof(...) = 'object'` guard on `value_counts`/
+    `_strip_values` is exercised against live Postgres in phase 2 (SQLite has
+    no `jsonb_each`/`jsonb_typeof`, so this suite only covers the Python
+    fallback paths)."""
+    from sqlalchemy import text
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    client.post(f"{_base(ws)}/contact-fields", headers=h, json={
+        "key": "co", "label": "Co", "type": "text",
+    })
+
+    cid = _seed_thread(session_factory, name="Legacy Null Blob")
+    db = session_factory()
+    db.execute(text("UPDATE contacts SET custom_fields_json = 'null' WHERE id = :id"), {"id": cid})
+    db.commit()
+    db.close()
+
+    got = client.get(f"/omnichannel/contacts/{cid}", headers=h)
+    assert got.status_code == 200
+    assert got.json()["customFields"] == {}
+
+    listed = client.get(f"{_base(ws)}/contact-fields", headers=h)
+    assert listed.status_code == 200
+    assert listed.json()[0]["valuesCount"] == 0
+
+
 # ── AC-CDM-07: language/countryCode validation ───────────────────────────────
 def test_patch_contact_language_country_code(client, session_factory):
     h = _auth(client)
@@ -318,6 +403,45 @@ def test_contact_tag_routes_tenant_isolation(client, session_factory):
     assert client.delete(f"{_base(ws)}/contact-tags/{tag['id']}", headers=h2).status_code == 404
 
 
+def test_contact_tag_ref_read_ignores_a_link_pointing_at_another_tenants_tag(client, session_factory):
+    """Review round 2 finding C - `refs_for_contacts` scopes the JOINED tag
+    row by tenant, not just the link. A planted/corrupt `ContactTagLink`
+    pointing at another tenant's tag id (the polymorphic stored-id rule -
+    never resolve a stored id unscoped) must render NO tag on this contact,
+    never that tenant's name/emoji/color."""
+    from modules.omnichannel.models import ContactTag, ContactTagLink
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    cid = _seed_thread(session_factory, name="Cross Tenant Tag Link")
+
+    h2 = _other_tenant_auth(client, session_factory, slug="other-cdm-tagref")
+    other_tenant_id = _tenant_id_for(session_factory, "other-cdm-tagref")
+
+    db = session_factory()
+    foreign_tag = ContactTag(tenant_id=other_tenant_id, workspace_id=ws, name="SecretTag")
+    db.add(foreign_tag)
+    db.commit()
+    db.add(ContactTagLink(tenant_id=DEFAULT_TENANT_ID, contact_id=cid, tag_id=foreign_tag.id))
+    db.commit()
+    db.close()
+
+    got = client.get(f"/omnichannel/contacts/{cid}", headers=h).json()
+    assert got["tags"] == []
+    listed = client.get("/omnichannel/contacts", headers=h).json()["data"]
+    row = next(t for t in listed if t["id"] == cid)
+    assert row["tags"] == []
+
+
+def _tenant_id_for(session_factory, slug: str) -> str:
+    from app.models import Tenant
+
+    db = session_factory()
+    tenant = db.query(Tenant).filter(Tenant.slug == slug).first()
+    db.close()
+    return tenant.id
+
+
 # ── AC-CDM-09: tag create/list + uniqueness + cap ────────────────────────────
 def test_create_tag_and_list(client):
     h = _auth(client)
@@ -332,6 +456,66 @@ def test_create_tag_and_list(client):
     dup = client.post(f"{_base(ws)}/contact-tags", headers=h, json={"name": "vip"})
     assert dup.status_code == 422
     assert "name" in dup.json()["detail"]["fieldErrors"]
+
+
+def test_resolve_or_create_by_name_recovers_from_concurrent_create_race(session_factory):
+    """Review round 2 finding D - two concurrent gateway PATCHes creating the
+    SAME unknown tag name can both pass the `_find_by_name` SELECT before
+    either INSERTs; the loser's `flush()` then hits the DB backstop
+    (`uq_contact_tags_workspace_name`, Postgres functional unique index) and
+    used to raise `IntegrityError` straight into the caller as a 500.
+
+    Simulates the race directly (SQLite has no such unique index, so a real
+    race can't be reproduced here - only the recovery logic is under test):
+    the WINNER's row is pre-committed (as if a concurrent request already
+    landed it), our first `_find_by_name` is patched to still miss it (the
+    race window before that commit was visible to our own SELECT), and our
+    `flush()` is patched to raise `IntegrityError` once (what the DB
+    constraint would raise for real). The loser must re-look-up and reuse the
+    winner's id, never duplicate the tag or propagate the error."""
+    from modules.omnichannel.models import ContactTag, Workspace
+    from modules.omnichannel.services.contact_tag_service import ContactTagService
+    from sqlalchemy.exc import IntegrityError
+
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+    winner = ContactTag(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, name="Urgent")
+    db.add(winner)
+    db.commit()
+
+    svc = ContactTagService(db)
+    real_find = svc._find_by_name
+    calls = {"n": 0}
+
+    def fake_find(workspace_id, tenant_id, name):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None  # our SELECT missed the not-yet-visible concurrent insert
+        return real_find(workspace_id, tenant_id, name)
+
+    svc._find_by_name = fake_find
+
+    real_flush = db.flush
+    flushed = {"n": 0}
+
+    def fake_flush(*a, **kw):
+        flushed["n"] += 1
+        if flushed["n"] == 1:
+            raise IntegrityError("insert", {}, Exception("duplicate key value"))
+        return real_flush(*a, **kw)
+
+    db.flush = fake_flush
+
+    ids = svc.resolve_or_create_by_name(ws.id, DEFAULT_TENANT_ID, ["Urgent"])
+    assert ids == [winner.id]
+
+    db.flush = real_flush
+    total = (
+        db.query(ContactTag)
+        .filter(ContactTag.tenant_id == DEFAULT_TENANT_ID, ContactTag.workspace_id == ws.id)
+        .count()
+    )
+    assert total == 1  # no duplicate row was left behind by the rolled-back savepoint
 
 
 # ── Review round 1, finding 11: pinned wire types (visibility / color) ──────
@@ -518,6 +702,38 @@ def test_contact_patch_emits_one_updated_entity_event_with_changes_diff(client, 
     client.patch(f"/omnichannel/contacts/{cid}", headers=h, json={"firstName": "Renamed"})
     db = session_factory()
     assert len(_runs_for(db, wid)) == 1
+    db.close()
+
+
+def test_internal_patch_emits_entity_event_with_real_actor_name_and_email(client, session_factory):
+    """Review round 2 finding L - the internal PATCH (`routers/conversations.
+    py patch_thread`) passed `actor_id=` but never `actor=` to `ConversationService.
+    patch_thread`, so the emitted `omnichannel_contact` `updated` event's actor
+    always had blank `name`/`email` (only `id`) - a workflow rendering
+    `{{ trigger.actor.name }}` in a notification would show nothing. The actor
+    must carry the real logged-in user's name/email, resolved the same way the
+    lifecycle-move path already does (`resolve_native_actor`)."""
+    from tests.test_workflow_triggers import _edge, _email, _node, _publish, _runs_for
+
+    db = session_factory()
+    doc = {"schemaVersion": 1, "nodes": [
+        _node("trg", "trigger", "entity.updated", {"entityType": "omnichannel_contact"}),
+        _email("a"),
+    ], "edges": [_edge("trg", "a")]}
+    wid = _publish(db, doc)
+    db.close()
+
+    h = _auth(client)
+    cid = _seed_thread(session_factory, name="Actor Diff")
+    res = client.patch(f"/omnichannel/contacts/{cid}", headers=h, json={"firstName": "Actorful"})
+    assert res.status_code == 200
+
+    db = session_factory()
+    runs = _runs_for(db, wid)
+    assert len(runs) == 1
+    actor = runs[0].trigger_payload_json["actor"]
+    assert actor["email"] == ACTIVE_EMAIL
+    assert actor["name"]  # non-empty - the real user's display name
     db.close()
 
 

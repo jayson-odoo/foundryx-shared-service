@@ -6,6 +6,7 @@ are driven by AppStoreService when a tenant installs/updates/uninstalls.
 Permission GRANTS are not this module's concern - the store grants/revokes
 against the tenant's roles (plan 08 §5).
 """
+import logging
 from pathlib import Path
 
 from sqlalchemy import text
@@ -17,6 +18,8 @@ from app.services.permission_service import load_csv
 from .db import OMNI_SCHEMA, OmniBase
 from .models import Workspace
 from .services import statuses
+
+logger = logging.getLogger(__name__)
 
 MODULE_NAME = "omnichannel"
 MODULE_CSV = Path(__file__).resolve().parent / "permissions" / "permissions.csv"
@@ -202,6 +205,32 @@ def create_schema_and_tables(engine: Engine) -> None:
             # Best-effort auto-heal any pre-existing duplicate FIRST (unlike
             # phone_number_id, key/name is NOT NULL + user-visible, so losers
             # are renamed with a short id-derived suffix, never nulled).
+            # Review round 2, finding E: renaming a losing field/tag key
+            # ORPHANS any contact values already stored under the old key
+            # (`custom_fields_json`/tag links aren't rewritten - a rewrite is
+            # out of scope, see the migration's note) - log every rename so an
+            # operator can find + reconcile them (tenant, workspace, old→new).
+            for row in conn.execute(
+                text(
+                    f"""
+                    SELECT id, tenant_id, workspace_id, key,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY workspace_id, lower(key)
+                               ORDER BY created_at, id
+                           ) AS rn
+                    FROM "{OMNI_SCHEMA}".contact_fields
+                    """
+                )
+            ).fetchall():
+                if row.rn > 1:
+                    new_key = f"{row.key[:30]}_{row.id[:8]}"
+                    logger.warning(
+                        "omnichannel contact_fields: renamed duplicate key "
+                        "%r -> %r (tenant=%s workspace=%s) - existing "
+                        "customFields values under the old key are NOT "
+                        "rewritten, reconcile manually",
+                        row.key, new_key, row.tenant_id, row.workspace_id,
+                    )
             conn.execute(
                 text(
                     f"""
@@ -226,6 +255,26 @@ def create_schema_and_tables(engine: Engine) -> None:
                     f'ON "{OMNI_SCHEMA}".contact_fields (workspace_id, lower(key))'
                 )
             )
+            for row in conn.execute(
+                text(
+                    f"""
+                    SELECT id, tenant_id, workspace_id, name,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY workspace_id, lower(name)
+                               ORDER BY created_at, id
+                           ) AS rn
+                    FROM "{OMNI_SCHEMA}".contact_tags
+                    """
+                )
+            ).fetchall():
+                if row.rn > 1:
+                    new_name = f"{row.name[:50]}_{row.id[:8]}"
+                    logger.warning(
+                        "omnichannel contact_tags: renamed duplicate name "
+                        "%r -> %r (tenant=%s workspace=%s) - tag links are "
+                        "untouched, reconcile manually if the old name mattered",
+                        row.name, new_name, row.tenant_id, row.workspace_id,
+                    )
             conn.execute(
                 text(
                     f"""

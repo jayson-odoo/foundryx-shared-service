@@ -12,6 +12,8 @@ Revision ID: 0008_omni_contact_model
 Revises: 0007_omni_merge_heads
 Create Date: 2026-09-05
 """
+import logging
+
 from alembic import op
 import sqlalchemy as sa
 
@@ -19,6 +21,8 @@ revision = "0008_omni_contact_model"
 down_revision = "0007_omni_merge_heads"
 branch_labels = None
 depends_on = None
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = "app_omnichannel"
 
@@ -111,6 +115,33 @@ def upgrade() -> None:
     # `key`/a tag's `name` is NOT NULL and user-visible, so - unlike
     # `phone_number_id` - losers are renamed with a short id-derived suffix,
     # never nulled) so the index can be created on a live DB with stray dupes.
+    #
+    # Review round 2, finding E: renaming a losing key/name ORPHANS any
+    # contact values already stored under the old key (`custom_fields_json`/
+    # tag links are not rewritten - see `docs/reference/omnichannel.md`'s
+    # deploy note) - log every rename BEFORE the UPDATE so an operator can
+    # find + reconcile them.
+    bind = op.get_bind()
+    for row in bind.execute(
+        sa.text(
+            f"""
+            SELECT id, tenant_id, workspace_id, key,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY workspace_id, lower(key)
+                       ORDER BY created_at, id
+                   ) AS rn
+            FROM "{SCHEMA}".contact_fields
+            """
+        )
+    ).fetchall():
+        if row.rn > 1:
+            new_key = f"{row.key[:30]}_{row.id[:8]}"
+            logger.warning(
+                "omnichannel contact_fields: renamed duplicate key %r -> %r "
+                "(tenant=%s workspace=%s) - existing customFields values "
+                "under the old key are NOT rewritten, reconcile manually",
+                row.key, new_key, row.tenant_id, row.workspace_id,
+            )
     op.execute(
         f"""
         WITH ranked AS (
@@ -131,6 +162,26 @@ def upgrade() -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_contact_fields_workspace_key "
         f'ON "{SCHEMA}".contact_fields (workspace_id, lower(key))'
     )
+    for row in bind.execute(
+        sa.text(
+            f"""
+            SELECT id, tenant_id, workspace_id, name,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY workspace_id, lower(name)
+                       ORDER BY created_at, id
+                   ) AS rn
+            FROM "{SCHEMA}".contact_tags
+            """
+        )
+    ).fetchall():
+        if row.rn > 1:
+            new_name = f"{row.name[:50]}_{row.id[:8]}"
+            logger.warning(
+                "omnichannel contact_tags: renamed duplicate name %r -> %r "
+                "(tenant=%s workspace=%s) - tag links are untouched, "
+                "reconcile manually if the old name mattered",
+                row.name, new_name, row.tenant_id, row.workspace_id,
+            )
     op.execute(
         f"""
         WITH ranked AS (

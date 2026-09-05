@@ -1,8 +1,8 @@
 /**
- * Real contact-tag service (plan 25, S1 backend). Not yet bound (see
- * contact-tag-service.ts) - the routes land in S1; this implementation is
- * written against the plan §5.1 contract so the S4 swap is a one-line change
- * once the backend exists.
+ * Real contact-tag service (plan 25) - `GET/POST/PATCH/DELETE
+ * /omnichannel/workspaces/{workspaceId}/contact-tags[/{tagId}]` against
+ * `lib/api-client`. Bound as the live `contactTagService` implementation
+ * since S4 (see `contact-tag-service.ts`).
  */
 import { apiFetch } from '@/lib/api-client';
 import type { ContactTag, CreateContactTagInput, UpdateContactTagInput } from '@/types/omnichannel';

@@ -79,6 +79,30 @@ class ContactFieldService:
             .all()
         )
 
+    def list_for_workspaces(
+        self, workspace_ids: List[str], tenant_id: str
+    ) -> Dict[str, List[ContactField]]:
+        """Batched `workspace_id -> [ContactField]` for every id in
+        `workspace_ids` - ONE `WHERE workspace_id IN (...)` query, grouped in
+        Python (review round 2, finding F) - `ConversationService.
+        _field_registry` used to pay one query PER DISTINCT workspace on a
+        page of contacts that span several workspaces."""
+        if not workspace_ids:
+            return {}
+        rows = (
+            self.db.query(ContactField)
+            .filter(
+                ContactField.tenant_id == tenant_id,
+                ContactField.workspace_id.in_(workspace_ids),
+            )
+            .order_by(ContactField.sort_order.asc(), ContactField.created_at.asc())
+            .all()
+        )
+        out: Dict[str, List[ContactField]] = {ws_id: [] for ws_id in workspace_ids}
+        for f in rows:
+            out.setdefault(f.workspace_id, []).append(f)
+        return out
+
     def get(self, field_id: str, workspace_id: str, tenant_id: str) -> ContactField:
         row = (
             self.db.query(ContactField)
@@ -102,7 +126,12 @@ class ContactFieldService:
         JSON blob into Python on every `GET`/PATCH `/contact-fields` - a
         workspace with thousands of contacts paid for that scan on every list
         render. SQLite (the pytest suite has no `jsonb_each`) keeps the
-        Python fallback."""
+        Python fallback.
+
+        `jsonb_typeof(...) = 'object'` (review round 2, finding B) guards a
+        LEGACY row whose blob is a JSON scalar `null` (predates
+        `custom_fields_json` becoming `none_as_null=True`) - `jsonb_each` on a
+        non-object JSON value raises `cannot call jsonb_each on a scalar`."""
         if self.db.get_bind().dialect.name == "postgresql":
             rows = self.db.execute(
                 text(
@@ -111,6 +140,7 @@ class ContactFieldService:
                     "jsonb_each(c.custom_fields_json::jsonb) AS kv(key, value) "
                     "WHERE c.tenant_id = :tenant_id AND c.workspace_id = :workspace_id "
                     "AND c.custom_fields_json IS NOT NULL "
+                    "AND jsonb_typeof(c.custom_fields_json::jsonb) = 'object' "
                     "AND kv.value IS DISTINCT FROM 'null'::jsonb "
                     "GROUP BY kv.key"
                 ),
@@ -255,6 +285,11 @@ class ContactFieldService:
                     "SET custom_fields_json = (custom_fields_json::jsonb - :key)::json "
                     "WHERE tenant_id = :tenant_id AND workspace_id = :workspace_id "
                     "AND custom_fields_json IS NOT NULL "
+                    # A legacy row's blob can be a JSON scalar `null` (predates
+                    # `none_as_null=True`) - the `-` operator errors on a
+                    # non-object/array jsonb value, so skip those rows (finding
+                    # B; there is nothing to strip from a scalar anyway).
+                    "AND jsonb_typeof(custom_fields_json::jsonb) = 'object' "
                     "AND custom_fields_json::jsonb ? :key"
                 ),
                 {"key": key, "tenant_id": tenant_id, "workspace_id": workspace_id},
@@ -279,12 +314,20 @@ class ContactFieldService:
         registered fields. Returns `(clean, errors)` - `clean` carries ONLY the
         keys that passed (`None` = clear that key); an unknown key or a value
         that fails its field's type check lands in `errors` keyed
-        `customFields.<key>`, and is never written."""
+        `customFields.<key>`, and is never written.
+
+        `partial=None` (the WHOLE `customFields` value sent as JSON `null`,
+        review round 2 finding A) clears every REGISTERED field's value - this
+        keeps the wire contract lossless (before plan 25, `customFields: null`
+        cleared the whole blob; now it clears every key `ContactProfileService`
+        actually diffs against, so AC-23's `changes` map stays honest per key
+        instead of silently no-op'ing). A per-key `null` inside an object
+        (`{"customFields": {"key": null}}`) still clears just that one key."""
+        registry = {f.key: f for f in self.list(workspace_id, tenant_id)}
         if partial is None:
-            return {}, {}
+            return {key: None for key in registry}, {}
         if not isinstance(partial, dict):
             return {}, {"customFields": "customFields must be an object."}
-        registry = {f.key: f for f in self.list(workspace_id, tenant_id)}
         clean: dict = {}
         errors: Dict[str, str] = {}
         for key, value in partial.items():

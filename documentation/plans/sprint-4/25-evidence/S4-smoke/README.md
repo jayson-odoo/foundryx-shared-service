@@ -12,7 +12,11 @@ default tenant, workspace "General" (`1d591b7a-c500-42cd-a820-caa3fa877966`).
    tab renders the REAL seed graph (5 stages: New Lead / Hot Lead / Payment /
    Customer / Cold Lead) via the core status-engine `EntityFlow` +
    `useStatusGraph('omnichannel_contact_lifecycle', workspaceId)`. Badge
-   "Customized" = this tenant already forked the graph (expected, two-tier).
+   "Customized" here just reflects `graph.source === 'tenant'` -
+   `omnichannel_contact_lifecycle` is a SCOPED entity (per-workspace,
+   materialized at workspace creation), so it is tenant-owned from birth and
+   never forks from a platform default; the badge is not evidence of a
+   two-tier fork on this graph (see BL-SS-048).
 2. `02-contact-fields-tab-1280.png` - Contact fields tab lists 2 pre-existing
    REAL fields (Lead Source, Age Probe) from the live backend (S1).
 3. `03-contact-field-added-1280.png` - added a `list` field "Preferred

@@ -1326,6 +1326,92 @@ def test_legacy_unregistered_custom_field_key_is_stripped_everywhere(client, ses
     assert "legacyKey" not in contact_payload["customFields"]
 
 
+def test_gateway_patch_custom_fields_whole_null_clears_all_registered_values(client, session_factory):
+    """Review round 2 finding A - `customFields` sent as the WHOLE value
+    `null` (not a per-key null inside an object) clears every REGISTERED
+    field's value in one PATCH: the response + the next `GET` both show
+    `customFields: {}`, and the fanned-out `contact.updated` webhook payload
+    carries the same cleared `{}` (never the stale pre-clear blob)."""
+    ws = _default_workspace_id(session_factory)
+    _add_custom_field(client, ws, key="a", field_type="text")
+    _add_custom_field(client, ws, key="b", field_type="text")
+    hdr, cid = _seeded(client, session_factory, phone="+60555222020")
+
+    seeded = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}",
+        json={"customFields": {"a": "1", "b": "2"}}, headers=hdr,
+    )
+    assert seeded.status_code == 200, seeded.text
+    assert seeded.json()["customFields"] == {"a": "1", "b": "2"}
+
+    # Register the webhook AFTER the seed PATCH (same pattern as the sibling
+    # legacy-key test) so exactly ONE `contact.updated` delivery is created
+    # below - safe to grab by event_type without an ordering assumption.
+    reg = client.post(
+        "/api/v1/omnichannel/webhooks",
+        json={"name": "w", "url": "https://hooks.example.com/w", "events": ["contact.updated"]},
+        headers=hdr,
+    )
+    assert reg.status_code == 201, reg.text
+
+    cleared = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}", json={"customFields": None}, headers=hdr
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["customFields"] == {}
+
+    got = client.get(f"/api/v1/omnichannel/contacts/{cid}", headers=hdr).json()
+    assert got["customFields"] == {}
+
+    from modules.omnichannel.models import WebhookDelivery
+
+    db = session_factory()
+    delivery = (
+        db.query(WebhookDelivery)
+        .filter(WebhookDelivery.event_type == "contact.updated")
+        .order_by(WebhookDelivery.created_at.desc())
+        .first()
+    )
+    contact_payload = delivery.payload_json["data"]["contact"]
+    db.close()
+    assert contact_payload["customFields"] == {}
+
+
+def test_contact_updated_webhook_event_id_unique_per_event_same_second(client, session_factory):
+    """Review round 2 finding M - the `contact.updated` webhook `id` used to be
+    `{contactId}:{int(updated_at.timestamp())}` (second-granular); two updates
+    to the same contact within the same wall-clock second collided on the
+    exact same id, so a dedup-on-`id` consumer silently dropped the second
+    event as a replay of the first. Both events must now get their OWN id,
+    both still prefixed `{contactId}:`."""
+    hdr, cid = _seeded(client, session_factory, phone="+60555222021")
+    reg = client.post(
+        "/api/v1/omnichannel/webhooks",
+        json={"name": "w", "url": "https://hooks.example.com/w", "events": ["contact.updated"]},
+        headers=hdr,
+    )
+    assert reg.status_code == 201, reg.text
+
+    r1 = client.patch(f"/api/v1/omnichannel/contacts/{cid}", json={"priority": "HIGH"}, headers=hdr)
+    assert r1.status_code == 200, r1.text
+    r2 = client.patch(f"/api/v1/omnichannel/contacts/{cid}", json={"priority": "LOW"}, headers=hdr)
+    assert r2.status_code == 200, r2.text
+
+    from modules.omnichannel.models import WebhookDelivery
+
+    db = session_factory()
+    rows = (
+        db.query(WebhookDelivery)
+        .filter(WebhookDelivery.event_type == "contact.updated")
+        .all()
+    )
+    db.close()
+    assert len(rows) == 2
+    event_ids = {r.event_id for r in rows}
+    assert len(event_ids) == 2  # distinct, never collide within the same second
+    assert all(eid.startswith(f"{cid}:") for eid in event_ids)
+
+
 def test_gateway_patch_tags_by_name_autocreate_and_reuse(client, session_factory):
     """AC-CDM-26/D8 - `tags: [name]` REPLACES the set; an unknown name is
     auto-created in the workspace's tag registry (respond.io parity); a

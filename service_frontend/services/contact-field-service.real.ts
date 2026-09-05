@@ -1,8 +1,8 @@
 /**
- * Real contact-field registry service (plan 25, S1 backend). Not yet bound
- * (see contact-field-service.ts) - the routes land in S1; this implementation
- * is written against the plan §5.1 contract so the S4 swap is a one-line
- * change once the backend exists.
+ * Real contact-field registry service (plan 25) - `GET/POST/PATCH/DELETE
+ * /omnichannel/workspaces/{workspaceId}/contact-fields[/{fieldId}]` against
+ * `lib/api-client`. Bound as the live `contactFieldService` implementation
+ * since S4 (see `contact-field-service.ts`).
  */
 import { apiFetch } from '@/lib/api-client';
 import type {
