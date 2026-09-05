@@ -160,3 +160,26 @@ pre-existing budget problem, not just a one-line gate flip:
 New/updated tests: `header.mobile-overlap.test.ts` gained two cases (the fixed-width logo
 guard, the mobile gap/compact-size guard) alongside the updated `ActivityTriggers`-gate
 regex (now matches the `compact={mobileMode}` prop too).
+
+### Item 6 - nits
+
+**(a) Dashboards sidebar submenu flattened.** `05` (Users, screenshot above list) and
+the `/` dashboard shot in this run both show the sidebar's "Dashboards" as a single
+leaf (no "Light Sidebar"/"Dark Sidebar" children) - confirms `menu.config.tsx`'s
+flattened `MENU_SIDEBAR` entry renders correctly live.
+
+**(b) Export button hidden when nothing to export.** `fixround1-02-imports-populated-1280.png`
+below shows `/imports`' toolbar with only "Columns" - no "Export" button (`exportColumns: []`).
+`/user-management/users` (screenshot mid-run, not saved separately) kept BOTH "Import" and
+"Export" - confirms the `canExport` gate doesn't regress a list that has real export columns.
+
+**(c) `/imports` populated via a real UI-triggered import.** `fixround1-02-imports-populated-1280.png`.
+A CSV importer IS reachable on the default tenant (Users list, `user-management/users` ->
+Import): built a 1-row CSV (`email,name,status` / `t7-fixround1-import@example.com,T7 Fix
+Round Import,ACTIVE`), uploaded it through the Import modal (native `.click()` bridge - the
+Test/Import buttons are freshly-mounted and hit the same synthetic-click harness quirk noted
+under item 4), auto-mapped columns, ran Test ("1 valid, 0 invalid, 1 total"), then Import -
+redirected back to `/user-management/users` where "T7 Fix Round Import" now appears as a real
+Active user. `/imports` then shows one real row: entity `user`, mode `create_only`, status
+`done`, rows `1/1` - and no Export button. The `resource-list.export-gate.test.tsx` unit test
+remains the parity proof for the gate logic itself (empty vs non-empty `exportColumns`).
