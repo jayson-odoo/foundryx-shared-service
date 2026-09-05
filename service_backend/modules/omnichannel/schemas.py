@@ -260,9 +260,7 @@ class ContactTagRefItem(ApiModel):
 
 
 class ContactLifecycleSummary(ApiModel):
-    """A contact's current lifecycle stage (AC-CDM-19) - lands with S2; the
-    `ThreadItem.lifecycle` field stays `None` until the scoped status entity
-    is registered."""
+    """A contact's current lifecycle stage (AC-CDM-19, plan 25 S2)."""
 
     statusId: str
     key: str
@@ -270,6 +268,34 @@ class ContactLifecycleSummary(ApiModel):
     color: Optional[str] = None
     isWon: bool = False
     isLost: bool = False
+
+
+# ── Lifecycle (plan 25 S2) - the scoped `omnichannel_contact_lifecycle`
+# status entity, one graph per workspace ─────────────────────────────────────
+class LifecycleStageItem(ApiModel):
+    """One stage of a workspace's lifecycle graph (AC-CDM contract §5.1)."""
+
+    statusId: str
+    key: str
+    label: str
+    color: Optional[str] = None
+    sortOrder: int
+    isInitial: bool
+    isWon: bool  # is_terminal
+    isLost: bool  # is_archived
+    isActive: bool  # any other stage
+
+
+class LifecycleMoveOption(ApiModel):
+    """A fireable outgoing edge for a contact right now (AC-CDM-18)."""
+
+    edgeId: str
+    toStatusId: str
+    label: str
+
+
+class LifecycleMoveRequest(ApiModel):
+    toStatusId: str
 
 
 # ── Conversations (plan 05) ──────────────────────────────────────────────────

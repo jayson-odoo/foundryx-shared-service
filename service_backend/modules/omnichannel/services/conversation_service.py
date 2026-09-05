@@ -9,12 +9,16 @@ from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.models.status import Status as CoreStatus
 from app.models.user import User
 from ..models import Channel, Contact, ConversationMessage, Status
 from ..repositories.contact_repository import ContactRepository
-from ..schemas import ContactTagRefItem, MessageItem, ReplyRefItem, ThreadItem
+from ..schemas import ContactLifecycleSummary, ContactTagRefItem, MessageItem, ReplyRefItem, ThreadItem
 from . import realtime, statuses
 from .contact_tag_service import ContactTagService
+from .lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY_TYPE
+from .lifecycle_service import fireable_moves as _lifecycle_fireable_moves
+from .lifecycle_service import move as _lifecycle_move
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +85,36 @@ class ConversationService:
             return {}
         return ExternalAgentService(self.db).names(ids, tenant_id)
 
+    def _lifecycle_map(
+        self, status_ids: List[str], tenant_id: str
+    ) -> Dict[str, ContactLifecycleSummary]:
+        """Batched `lifecycle_status_id -> ContactLifecycleSummary`, resolved
+        tenant + entity-type scoped in ONE query (AC-CDM-19; the polymorphic
+        stored-id rule - never resolve a stored status id unscoped)."""
+        ids = [s for s in set(status_ids) if s]
+        if not ids:
+            return {}
+        rows = (
+            self.db.query(CoreStatus)
+            .filter(
+                CoreStatus.id.in_(ids),
+                CoreStatus.tenant_id == tenant_id,
+                CoreStatus.entity_type == LIFECYCLE_ENTITY_TYPE,
+            )
+            .all()
+        )
+        return {
+            s.id: ContactLifecycleSummary(
+                statusId=s.id,
+                key=s.key,
+                label=s.label,
+                color=s.color,
+                isWon=bool(s.is_terminal),
+                isLost=bool(s.is_archived),
+            )
+            for s in rows
+        }
+
     def _channel_types(self, channel_ids: List[str], tenant_id: str) -> Dict[str, str]:
         """Tenant-scoped for the same reason as `_user_names` (lower impact -
         leaks only a channel_type - but the same stored-id resolution rule)."""
@@ -110,6 +144,9 @@ class ConversationService:
             [previews[c.id].channel_id for c in contacts if c.id in previews], tenant_id
         )
         tag_refs = ContactTagService(self.db).refs_for_contacts(ids, tenant_id)
+        lifecycle_map = self._lifecycle_map(
+            [c.lifecycle_status_id for c in contacts], tenant_id
+        )
 
         items: List[ThreadItem] = []
         for c in contacts:
@@ -152,9 +189,7 @@ class ConversationService:
                     unreadCount=unread.get(c.id, 0),
                     customFields=c.custom_fields_json or {},
                     tags=[ContactTagRefItem(**t) for t in tag_refs.get(c.id, [])],
-                    # Lifecycle lands in S2 (the scoped status entity + Status
-                    # registration) - stays null until then (pinned S1 scope).
-                    lifecycle=None,
+                    lifecycle=lifecycle_map.get(c.lifecycle_status_id) if c.lifecycle_status_id else None,
                     createdAt=c.created_at,
                 )
             )
@@ -237,6 +272,36 @@ class ConversationService:
         self.repo.mark_read(c)
         self.db.commit()
         return self.message_items(msgs)
+
+    # ── Lifecycle (plan 25 S2) ───────────────────────────────────────────────
+    def move_lifecycle(
+        self, contact_id: str, tenant_id: str, to_status_id: str, actor: Optional[User] = None
+    ) -> ThreadItem:
+        """Move a contact's lifecycle stage (AC-CDM-17). Raises
+        `LifecycleStageNotFound` / the `status_machine` errors on failure - the
+        router maps them to 404/403/409; nothing is written on any of them
+        (the executor validates before it ever calls `setattr`)."""
+        c = self.repo.get_by_id(contact_id, tenant_id)
+        if c is None:
+            raise ThreadNotFound()
+        _lifecycle_move(self.db, c, to_status_id, actor=actor)
+        self.db.commit()
+        self.db.refresh(c)
+        item = self.thread_item(c)
+        realtime.publish(
+            c.workspace_id,
+            {"type": "contact.updated", "thread": item.model_dump(mode="json")},
+        )
+        return item
+
+    def lifecycle_moves(
+        self, contact_id: str, tenant_id: str, actor: Optional[User] = None
+    ) -> list:
+        """Fireable outgoing edges for this contact right now (AC-CDM-18)."""
+        c = self.repo.get_by_id(contact_id, tenant_id)
+        if c is None:
+            raise ThreadNotFound()
+        return _lifecycle_fireable_moves(self.db, c, actor=actor)
 
     # ── Patch (assign / lifecycle / priority / profile) ─────────────────────
     def patch_thread(

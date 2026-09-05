@@ -457,6 +457,8 @@ class PublicGatewayService:
         existing = self.contacts.find_by_phone_in_workspace(digits, workspace_id, tenant_id)
         if existing is not None:
             return existing
+        from .lifecycle_service import initial_status_id
+
         contact = Contact(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -464,6 +466,7 @@ class PublicGatewayService:
             priority="MEDIUM",
             status_id=statuses.status_id_for(self.db, tenant_id, "THREAD", "OPEN"),
             created_at=datetime.now(timezone.utc),
+            lifecycle_status_id=initial_status_id(self.db, tenant_id, workspace_id),
         )
         self.db.add(contact)
         self.db.commit()

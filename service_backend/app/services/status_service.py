@@ -405,6 +405,20 @@ class StatusService:
                 )
                 .update({Status.is_default: False}, synchronize_session=False)
             )
+        # Exactly one ``is_initial`` per entity set (per SCOPE for scoped
+        # machines, generic - every adopter benefits, not just a module's
+        # entity) - converge silently, same pattern as ``is_default`` above.
+        if flags.get("is_initial"):
+            (
+                self.db.query(Status)
+                .filter(
+                    Status.entity_type == entity.entity_type,
+                    Status.tenant_id.is_(None) if scope is None else Status.tenant_id == scope,
+                    Status.scope_id.is_(None) if scope_id is None else Status.scope_id == scope_id,
+                    Status.id != status.id,
+                )
+                .update({Status.is_initial: False}, synchronize_session=False)
+            )
 
     def update_status(
         self,

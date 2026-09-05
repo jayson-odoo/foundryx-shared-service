@@ -28,12 +28,20 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.database import get_db
+from app.models.user import User
+from app.services.status_machine import (
+    TransitionConditionsNotMet,
+    TransitionForbidden,
+    TransitionNotAllowed,
+)
 from ..embed_auth import (
     ConversationPrincipal,
     enforce_thread_access,
     get_conversation_principal,
 )
 from ..schemas import (
+    LifecycleMoveOption,
+    LifecycleMoveRequest,
     MessageItem,
     SendContactsRequest,
     SendLocationRequest,
@@ -48,6 +56,7 @@ from ..services.conversation_service import (
     InvalidPatch,
     ThreadNotFound,
 )
+from ..services.lifecycle_service import LifecycleStageNotFound
 from ..services.media_pipeline import META_CEILINGS, MediaRejected
 from ..services.message_service import MessageService, SendRejected
 
@@ -192,6 +201,82 @@ def patch_thread(
         raise HTTPException(status_code=422, detail=exc.message)
     except ProfilePatchError as exc:
         raise HTTPException(status_code=422, detail={"fieldErrors": exc.errors})
+
+
+def _native_actor(principal: ConversationPrincipal, db: Session) -> Optional[User]:
+    """Native-only actor resolution for edge-role auth (embed has none -
+    `actor=None` fails closed on any actor-conditioned edge, by design)."""
+    if principal.is_embed or not principal.actor_user_id:
+        return None
+    return (
+        db.query(User)
+        .filter(User.id == principal.actor_user_id, User.tenant_id == principal.tenant_id)
+        .first()
+    )
+
+
+@router.post("/{contact_id}/lifecycle", response_model=ThreadItem)
+def move_lifecycle(
+    contact_id: str,
+    payload: LifecycleMoveRequest,
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
+    db: Session = Depends(get_db),
+) -> ThreadItem:
+    """Move a contact's lifecycle stage (plan 25 S2, AC-CDM-17) - delegates
+    entirely to `status_machine.transition` via `lifecycle_service.move`."""
+    enforce_thread_access(db, principal, contact_id)
+    if principal.is_embed:
+        raise HTTPException(
+            status_code=403, detail="This token cannot move a contact's lifecycle."
+        )
+    if "contacts.manage" not in principal.permission_keys:
+        raise HTTPException(status_code=403, detail="Missing permission: contacts.manage")
+
+    actor = _native_actor(principal, db)
+    try:
+        return ConversationService(db).move_lifecycle(
+            contact_id, principal.tenant_id, payload.toStatusId, actor=actor
+        )
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except LifecycleStageNotFound:
+        raise HTTPException(status_code=404, detail="Lifecycle stage not found.")
+    except TransitionForbidden as exc:
+        raise HTTPException(status_code=403, detail=exc.message)
+    except (TransitionNotAllowed, TransitionConditionsNotMet) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "lifecycle_move_not_allowed", "message": exc.message},
+        )
+
+
+@router.get("/{contact_id}/lifecycle-moves", response_model=List[LifecycleMoveOption])
+def get_lifecycle_moves(
+    contact_id: str,
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
+    db: Session = Depends(get_db),
+) -> List[LifecycleMoveOption]:
+    """Fireable outgoing edges for this contact right now (AC-CDM-18) - empty
+    on a won (`is_terminal`) stage."""
+    if not principal.is_embed and not (
+        {"conversations.read", "contacts.read"} & principal.permission_keys
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Missing permission: one of conversations.read, contacts.read",
+        )
+    enforce_thread_access(db, principal, contact_id)
+    actor = _native_actor(principal, db)
+    try:
+        edges = ConversationService(db).lifecycle_moves(
+            contact_id, principal.tenant_id, actor=actor
+        )
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return [
+        LifecycleMoveOption(edgeId=e.id, toStatusId=e.to_status_id, label=e.label)
+        for e in edges
+    ]
 
 
 @router.post("/{contact_id}/messages", response_model=MessageItem, status_code=201)

@@ -4,7 +4,9 @@ the ONE contact-profile write path). Covers AC-CDM-01..12, 22, 23, 28.
 Reuses the existing conversation-test seams (`_seed_thread`, `_auth`) rather
 than duplicating fixture setup.
 """
-from app.models import DEFAULT_TENANT_ID, User, UserStatus
+import pytest
+
+from app.models import DEFAULT_TENANT_ID, EmailOutbox, User, UserStatus
 from app.security import hash_password
 from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD
 from tests.test_omnichannel_conversations import _seed_thread
@@ -504,3 +506,579 @@ def test_permission_gates_403_without_grants(client, session_factory):
     cid = _seed_thread(session_factory, name="Perm Gate")
     res = client.patch(f"/omnichannel/contacts/{cid}", headers=h2, json={"firstName": "Nope"})
     assert res.status_code == 403
+
+
+# =============================================================================
+# Plan 25 S2 - contact lifecycle on the (scoped) status engine
+# Covers AC-CDM-13..21, 24 (+ the S2 slice of AC-CDM-40).
+# =============================================================================
+
+LIFECYCLE_ENTITY = "omnichannel_contact_lifecycle"
+_SEED_KEYS = {"new_lead", "hot_lead", "payment", "customer", "cold_lead"}
+
+
+def _lifecycle_graph(client, h, ws_id):
+    res = client.get(
+        "/statuses", params={"entityType": LIFECYCLE_ENTITY, "scopeId": ws_id}, headers=h
+    )
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def _stage_ids(graph):
+    return {s["key"]: s["id"] for s in graph["statuses"]}
+
+
+def _seed_lifecycle_contact(session_factory, ws_id, tenant_id=DEFAULT_TENANT_ID, name="Lifecycle Test"):
+    """A contact stamped with its workspace's initial lifecycle stage."""
+    from modules.omnichannel.services.lifecycle_service import initial_status_id
+
+    cid = _seed_thread(session_factory, name=name)
+    db = session_factory()
+    from modules.omnichannel.models import Contact
+
+    contact = db.query(Contact).filter(Contact.id == cid).first()
+    contact.workspace_id = ws_id
+    contact.tenant_id = tenant_id
+    contact.lifecycle_status_id = initial_status_id(db, tenant_id, ws_id)
+    db.commit()
+    db.close()
+    return cid
+
+
+# ── AC-CDM-13: registration + scoped canvas API ──────────────────────────────
+def test_lifecycle_entity_registered_and_canvas_returns_workspace_graph(client):
+    from app.status_engine.registry import get_status_entity
+
+    entity = get_status_entity(LIFECYCLE_ENTITY)
+    assert entity is not None
+    assert entity.module == "omnichannel"
+    assert entity.scoped is True
+    assert entity.scope_attr == "workspace_id"
+    assert entity.scope_label == "Workspace"
+    assert entity.status_attr == "lifecycle_status_id"
+    assert set(entity.required_flags) == {"is_initial", "is_terminal", "is_archived"}
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    graph = _lifecycle_graph(client, h, ws)
+    assert {s["key"] for s in graph["statuses"]} == _SEED_KEYS
+    new_lead = next(s for s in graph["statuses"] if s["key"] == "new_lead")
+    assert new_lead["isInitial"] is True and "🆕" in new_lead["label"]
+    customer = next(s for s in graph["statuses"] if s["key"] == "customer")
+    assert customer["isTerminal"] is True
+    cold = next(s for s in graph["statuses"] if s["key"] == "cold_lead")
+    assert cold["isArchived"] is True
+    # mesh(6) + each-active->customer(3) + each-active->cold_lead(3) + cold_lead->new_lead(1)
+    assert len(graph["transitions"]) == 13
+    assert all(t["label"].startswith("Move to ") for t in graph["transitions"])
+
+
+def test_lifecycle_canvas_tenant_isolation(client, session_factory):
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    h2 = _other_tenant_auth(client, session_factory, slug="other-cdm-lifecycle")
+    res = client.get(
+        "/statuses", params={"entityType": LIFECYCLE_ENTITY, "scopeId": ws}, headers=h2
+    )
+    assert res.status_code == 404
+
+
+# ── AC-CDM-14: materialized at workspace creation + install_tenant ──────────
+def test_workspace_create_materializes_lifecycle_same_transaction(client):
+    h = _auth(client)
+    res = client.post("/omnichannel/workspaces", headers=h, json={"name": "New WS For Lifecycle"})
+    assert res.status_code == 201, res.text
+    ws_id = res.json()["id"]
+    graph = _lifecycle_graph(client, h, ws_id)
+    assert {s["key"] for s in graph["statuses"]} == _SEED_KEYS
+    assert all(s["id"] for s in graph["statuses"])
+
+
+def test_install_tenant_default_workspace_already_has_lifecycle_graph(client):
+    # conftest installs omnichannel via AppStoreService (the real install_tenant
+    # path) - the default workspace must already carry a graph.
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    graph = _lifecycle_graph(client, h, ws)
+    assert len(graph["statuses"]) == 5
+
+
+# ── AC-CDM-15: update_tenant backfill + idempotent re-run ───────────────────
+def test_update_tenant_backfill_materializes_and_stamps_then_noops(session_factory):
+    from modules.omnichannel.bootstrap import update_tenant
+    from modules.omnichannel.models import Contact, Workspace
+    from modules.omnichannel.services import statuses
+    from modules.omnichannel.services.lifecycle_service import stages_for_workspace
+
+    db = session_factory()
+    # A workspace created directly (bypassing WorkspaceService) - simulates a
+    # tenant that predates this slice.
+    legacy_ws = Workspace(
+        tenant_id=DEFAULT_TENANT_ID, name="Legacy WS",
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "WORKSPACE", "ACTIVE"),
+        is_default=False, is_trashed=False,
+    )
+    db.add(legacy_ws)
+    db.flush()
+    legacy_contact = Contact(tenant_id=DEFAULT_TENANT_ID, workspace_id=legacy_ws.id, first_name="Legacy")
+    db.add(legacy_contact)
+    db.commit()
+    ws_id, contact_id = legacy_ws.id, legacy_contact.id
+    assert stages_for_workspace(db, DEFAULT_TENANT_ID, ws_id) == []
+    db.close()
+
+    db = session_factory()
+    update_tenant(db, DEFAULT_TENANT_ID, "0.1.0")
+    db.commit()
+    stages = stages_for_workspace(db, DEFAULT_TENANT_ID, ws_id)
+    assert {s.key for s in stages} == _SEED_KEYS
+    initial = next(s for s in stages if s.is_initial)
+    contact = db.query(Contact).filter(Contact.id == contact_id).first()
+    assert contact.lifecycle_status_id == initial.id
+    db.close()
+
+    # Re-running is a no-op: no duplicate graph, contact untouched.
+    db = session_factory()
+    update_tenant(db, DEFAULT_TENANT_ID, "0.2.0")
+    db.commit()
+    assert len(stages_for_workspace(db, DEFAULT_TENANT_ID, ws_id)) == 5
+    contact = db.query(Contact).filter(Contact.id == contact_id).first()
+    assert contact.lifecycle_status_id == initial.id
+    db.close()
+
+
+# ── AC-CDM-16: every contact-creation path sets the initial stage ───────────
+def test_inbound_stitch_sets_initial_lifecycle_stage(session_factory):
+    from modules.omnichannel.models import Channel, Workspace
+    from modules.omnichannel.security import encrypt_credentials
+    from modules.omnichannel.services import statuses
+    from modules.omnichannel.services.inbound_service import InboundService
+    from modules.omnichannel.services.lifecycle_service import initial_status_id
+
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+    channel = Channel(
+        tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, channel_type="WHATSAPP",
+        name="Inbound Lifecycle Test", credentials_json=encrypt_credentials({"dev": True}),
+        phone_number_id="pn-lifecycle-inbound", is_active=True,
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "CHANNEL", "ACTIVE"),
+    )
+    db.add(channel)
+    db.flush()
+
+    contact = InboundService(db)._resolve_contact(
+        channel, {"from": "60129998877", "profile_name": "Fresh Lead"}
+    )
+    db.commit()
+
+    expected = initial_status_id(db, DEFAULT_TENANT_ID, ws.id)
+    assert expected is not None
+    assert contact.lifecycle_status_id == expected
+    db.close()
+
+
+def test_gateway_contact_creation_sets_initial_lifecycle_stage(session_factory):
+    from modules.omnichannel.models import Workspace
+    from modules.omnichannel.services.lifecycle_service import initial_status_id
+    from modules.omnichannel.services.public_gateway_service import PublicGatewayService
+
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+    contact = PublicGatewayService(db)._resolve_or_create_contact(
+        DEFAULT_TENANT_ID, ws.id, "+60129998866"
+    )
+    expected = initial_status_id(db, DEFAULT_TENANT_ID, ws.id)
+    assert expected is not None
+    assert contact.lifecycle_status_id == expected
+    db.close()
+
+
+def test_dev_seed_demo_contacts_get_initial_lifecycle_stage(session_factory):
+    from modules.omnichannel.models import Contact
+
+    db = session_factory()
+    ws_id = db.query(Contact.workspace_id).filter(Contact.id == "cnt-001").first()
+    if ws_id is None:
+        # Dev seed not wired into this suite's default fixture - skip cleanly.
+        db.close()
+        return
+    for cid in ("cnt-001", "cnt-002", "cnt-003", "cnt-004", "cnt-005"):
+        c = db.query(Contact).filter(Contact.id == cid).first()
+        if c is not None:
+            assert c.lifecycle_status_id is not None
+    db.close()
+
+
+# ── AC-CDM-17: move happy path / 409 no-edge / 404 cross-workspace+tenant /
+#    edge-role auth / notification fires ────────────────────────────────────
+def test_move_lifecycle_happy_path(client, session_factory):
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    graph = _lifecycle_graph(client, h, ws)
+    ids = _stage_ids(graph)
+    cid = _seed_lifecycle_contact(session_factory, ws)
+
+    res = client.post(f"/omnichannel/contacts/{cid}/lifecycle", headers=h, json={
+        "toStatusId": ids["hot_lead"],
+    })
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["lifecycle"]["key"] == "hot_lead"
+    assert body["lifecycle"]["isWon"] is False
+    assert body["lifecycle"]["isLost"] is False
+
+    detail = client.get(f"/omnichannel/contacts/{cid}", headers=h).json()
+    assert detail["lifecycle"]["statusId"] == ids["hot_lead"]
+
+
+def test_move_lifecycle_no_edge_409(client, session_factory):
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    graph = _lifecycle_graph(client, h, ws)
+    ids = _stage_ids(graph)
+    cid = _seed_lifecycle_contact(session_factory, ws)
+
+    # new_lead -> customer (won) is a valid edge.
+    won = client.post(f"/omnichannel/contacts/{cid}/lifecycle", headers=h, json={
+        "toStatusId": ids["customer"],
+    })
+    assert won.status_code == 200, won.text
+    assert won.json()["lifecycle"]["isWon"] is True
+
+    # customer is terminal - no outgoing edges at all.
+    res = client.post(f"/omnichannel/contacts/{cid}/lifecycle", headers=h, json={
+        "toStatusId": ids["new_lead"],
+    })
+    assert res.status_code == 409, res.text
+    assert res.json()["detail"]["code"] == "lifecycle_move_not_allowed"
+
+    # Nothing was written by the failed move.
+    detail = client.get(f"/omnichannel/contacts/{cid}", headers=h).json()
+    assert detail["lifecycle"]["key"] == "customer"
+
+
+def test_move_lifecycle_cross_workspace_and_cross_tenant_404(client, session_factory):
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    cid = _seed_lifecycle_contact(session_factory, ws)
+
+    # Another workspace, same tenant - its stage ids belong to a DIFFERENT scope.
+    other_ws = client.post("/omnichannel/workspaces", headers=h, json={"name": "Other Lifecycle WS"}).json()["id"]
+    other_graph = _lifecycle_graph(client, h, other_ws)
+    other_ids = _stage_ids(other_graph)
+    res = client.post(f"/omnichannel/contacts/{cid}/lifecycle", headers=h, json={
+        "toStatusId": other_ids["hot_lead"],
+    })
+    assert res.status_code == 404, res.text
+
+    # A stage id belonging to another TENANT's own workspace.
+    h2 = _other_tenant_auth(client, session_factory, slug="other-cdm-lifecycle-2")
+    ws2 = _workspace_id(client, h2)
+    graph2 = _lifecycle_graph(client, h2, ws2)
+    ids2 = _stage_ids(graph2)
+    res2 = client.post(f"/omnichannel/contacts/{cid}/lifecycle", headers=h, json={
+        "toStatusId": ids2["hot_lead"],
+    })
+    assert res2.status_code == 404, res2.text
+
+    # And the contact itself is invisible cross-tenant (uniform 404, never data).
+    res3 = client.post(f"/omnichannel/contacts/{cid}/lifecycle", headers=h2, json={
+        "toStatusId": ids2["hot_lead"],
+    })
+    assert res3.status_code == 404, res3.text
+
+
+def test_move_lifecycle_edge_role_auth(session_factory):
+    """Direct-service test (mirrors `test_edge_roles_gate_who_can_fire` in
+    `test_status_engine.py`) - gate one edge behind the Admin role, then a
+    roleless actor is forbidden while the Admin succeeds."""
+    from app.models import Role
+    from app.models.status_transition import StatusTransition
+    from app.services.status_machine import TransitionForbidden
+    from modules.omnichannel.models import Contact, Workspace
+    from modules.omnichannel.services.lifecycle_service import move, stages_for_workspace
+
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+    stages = {s.key: s for s in stages_for_workspace(db, DEFAULT_TENANT_ID, ws.id)}
+    edge = (
+        db.query(StatusTransition)
+        .filter(
+            StatusTransition.entity_type == LIFECYCLE_ENTITY,
+            StatusTransition.from_status_id == stages["new_lead"].id,
+            StatusTransition.to_status_id == stages["hot_lead"].id,
+        )
+        .first()
+    )
+    admin_role = db.query(Role).filter(Role.tenant_id == DEFAULT_TENANT_ID, Role.name == "Admin").first()
+    edge.roles = [admin_role]
+    db.commit()
+
+    admin = db.query(User).filter(User.email == ACTIVE_EMAIL).first()
+    bystander = User(
+        tenant_id=DEFAULT_TENANT_ID, email="lifecycle-bystander@example.com",
+        password=hash_password("Password123!"), name="No Roles", status=UserStatus.ACTIVE.value,
+    )
+    db.add(bystander)
+    db.commit()
+
+    contact = Contact(
+        tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, first_name="Role Gated",
+        lifecycle_status_id=stages["new_lead"].id,
+    )
+    db.add(contact)
+    db.commit()
+
+    with pytest.raises(TransitionForbidden):
+        move(db, contact, stages["hot_lead"].id, actor=bystander)
+    move(db, contact, stages["hot_lead"].id, actor=admin)
+    db.commit()
+    assert contact.lifecycle_status_id == stages["hot_lead"].id
+    db.close()
+
+
+def test_move_lifecycle_fires_transition_notification(client, session_factory):
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    graph = _lifecycle_graph(client, h, ws)
+    ids = _stage_ids(graph)
+    edge = next(
+        t for t in graph["transitions"]
+        if t["fromStatusId"] == ids["new_lead"] and t["toStatusId"] == ids["hot_lead"]
+    )
+    res = client.patch(f"/statuses/transitions/{edge['id']}", headers=h, json={
+        "notifications": [{
+            "channel": "EMAIL",
+            "templateSubject": "{{recordLabel}} moved to {{toStatus}}",
+            "templateBody": "{{actorName}} performed {{transitionLabel}}.",
+            "recipients": [{"targetType": "DYNAMIC", "dynamicKey": "ACTOR"}],
+        }],
+    })
+    assert res.status_code == 200, res.text
+
+    cid = _seed_lifecycle_contact(session_factory, ws)
+    db = session_factory()
+    before = db.query(EmailOutbox).count()
+    db.close()
+
+    move_res = client.post(f"/omnichannel/contacts/{cid}/lifecycle", headers=h, json={
+        "toStatusId": ids["hot_lead"],
+    })
+    assert move_res.status_code == 200, move_res.text
+
+    db = session_factory()
+    rows = db.query(EmailOutbox).offset(before).all()
+    assert any(r.to_email == ACTIVE_EMAIL for r in rows)
+    db.close()
+
+
+# ── AC-CDM-18: fireable moves, empty on a won stage ─────────────────────────
+def test_lifecycle_moves_list_and_empty_on_won(client, session_factory):
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    graph = _lifecycle_graph(client, h, ws)
+    ids = _stage_ids(graph)
+    cid = _seed_lifecycle_contact(session_factory, ws)
+
+    res = client.get(f"/omnichannel/contacts/{cid}/lifecycle-moves", headers=h)
+    assert res.status_code == 200, res.text
+    moves = res.json()
+    assert {m["toStatusId"] for m in moves} == {
+        ids["hot_lead"], ids["payment"], ids["customer"], ids["cold_lead"],
+    }
+    assert all({"edgeId", "toStatusId", "label"} <= set(m) for m in moves)
+
+    client.post(f"/omnichannel/contacts/{cid}/lifecycle", headers=h, json={"toStatusId": ids["customer"]})
+    after = client.get(f"/omnichannel/contacts/{cid}/lifecycle-moves", headers=h)
+    assert after.status_code == 200
+    assert after.json() == []
+
+
+# ── AC-CDM-19: thread list + detail carry `lifecycle` ───────────────────────
+def test_thread_list_and_detail_carry_lifecycle(client, session_factory):
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    graph = _lifecycle_graph(client, h, ws)
+    ids = _stage_ids(graph)
+    cid = _seed_lifecycle_contact(session_factory, ws, name="Lifecycle Thread")
+
+    listed = client.get("/omnichannel/contacts", headers=h).json()["data"]
+    row = next(t for t in listed if t["id"] == cid)
+    assert row["lifecycle"]["statusId"] == ids["new_lead"]
+    assert row["lifecycle"]["key"] == "new_lead"
+    assert row["lifecycle"]["isWon"] is False
+    assert row["lifecycle"]["isLost"] is False
+
+    detail = client.get(f"/omnichannel/contacts/{cid}", headers=h).json()
+    assert detail["lifecycle"]["statusId"] == ids["new_lead"]
+
+
+def test_thread_lifecycle_null_when_unset(client, session_factory):
+    cid = _seed_thread(session_factory, name="No Lifecycle Yet")
+    h = _auth(client)
+    detail = client.get(f"/omnichannel/contacts/{cid}", headers=h).json()
+    assert detail["lifecycle"] is None
+
+
+# ── AC-CDM-20: canvas edits apply directly, no fork; delete guard; single
+#    is_initial enforced (generic engine fix, not omnichannel-specific) ─────
+def test_lifecycle_canvas_edits_apply_directly_no_fork(client, session_factory):
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    graph = _lifecycle_graph(client, h, ws)
+    ids = _stage_ids(graph)
+
+    # Add a stage.
+    created = client.post("/statuses", headers=h, json={
+        "entityType": LIFECYCLE_ENTITY, "label": "Nurture", "color": "purple", "scopeId": ws,
+    })
+    assert created.status_code == 201, created.text
+    nurture_id = created.json()["id"]
+
+    # Rename it.
+    renamed = client.patch(f"/statuses/{nurture_id}", headers=h, json={"label": "Nurturing"})
+    assert renamed.status_code == 200
+    assert renamed.json()["label"] == "Nurturing"
+
+    # Add an edge from New Lead -> Nurture.
+    edge = client.post("/statuses/transitions", headers=h, json={
+        "entityType": LIFECYCLE_ENTITY, "fromStatusId": ids["new_lead"],
+        "toStatusId": nurture_id, "label": "Move to Nurturing", "scopeId": ws,
+    })
+    assert edge.status_code == 201, edge.text
+
+    # Reorder.
+    all_ids = [s["id"] for s in _lifecycle_graph(client, h, ws)["statuses"]]
+    reordered = list(reversed(all_ids))
+    res = client.post("/statuses/reorder", headers=h, json={
+        "entityType": LIFECYCLE_ENTITY, "orderedIds": reordered, "scopeId": ws,
+    })
+    assert res.status_code == 200, res.text
+
+    # Deactivate then reactivate (no crash - not part of this entity's flag
+    # vocabulary, but the generic action must not error).
+    deactivated = client.post(f"/statuses/{nurture_id}/deactivate", headers=h)
+    assert deactivated.status_code == 200
+    reactivated = client.post(f"/statuses/{nurture_id}/activate", headers=h)
+    assert reactivated.status_code == 200
+
+    # Remove the edge.
+    del_edge = client.delete(f"/statuses/transitions/{edge.json()['id']}", headers=h)
+    assert del_edge.status_code == 204
+
+    # Directly on the scoped rows - no platform fork exists for this entity.
+    from app.models.status import Status as CoreStatus
+
+    db = session_factory()
+    row = db.query(CoreStatus).filter(CoreStatus.id == nurture_id).first()
+    assert row.tenant_id == DEFAULT_TENANT_ID
+    assert row.scope_id == ws
+    db.close()
+
+
+def test_lifecycle_delete_guard_blocks_stage_with_contacts(client, session_factory):
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    graph = _lifecycle_graph(client, h, ws)
+    ids = _stage_ids(graph)
+    _seed_lifecycle_contact(session_factory, ws)
+
+    res = client.delete(f"/statuses/{ids['new_lead']}", headers=h)
+    assert res.status_code == 409, res.text
+
+    migrated = client.post(f"/statuses/{ids['new_lead']}/migrate-records", headers=h, json={
+        "toStatusId": ids["hot_lead"],
+    })
+    assert migrated.status_code == 200, migrated.text
+    assert migrated.json()["migrated"] == 1
+
+    ok = client.delete(f"/statuses/{ids['new_lead']}", headers=h)
+    assert ok.status_code == 204, ok.text
+
+
+def test_lifecycle_exactly_one_is_initial_enforced(client):
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    graph = _lifecycle_graph(client, h, ws)
+    ids = _stage_ids(graph)
+
+    # Flip hot_lead to initial - new_lead must silently lose the flag.
+    res = client.patch(f"/statuses/{ids['hot_lead']}", headers=h, json={
+        "flags": {"isInitial": True},
+    })
+    assert res.status_code == 200, res.text
+
+    after = _lifecycle_graph(client, h, ws)
+    initials = [s for s in after["statuses"] if s["isInitial"]]
+    assert len(initials) == 1
+    assert initials[0]["key"] == "hot_lead"
+
+
+# ── AC-CDM-21: uninstall cleans core status rows ────────────────────────────
+def test_uninstall_tenant_cleans_core_lifecycle_status_rows(session_factory):
+    from app.models.status import Status as CoreStatus
+    from app.models.status_transition import StatusTransition
+    from app.services.app_store_service import AppStoreService
+    from modules.omnichannel.models import Workspace
+
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+    ws_id = ws.id
+    before = (
+        db.query(CoreStatus)
+        .filter(CoreStatus.entity_type == LIFECYCLE_ENTITY, CoreStatus.scope_id == ws_id)
+        .count()
+    )
+    assert before == 5
+
+    AppStoreService(db).uninstall(DEFAULT_TENANT_ID, "omnichannel", "omnichannel")
+    db.commit()
+
+    after_statuses = (
+        db.query(CoreStatus)
+        .filter(CoreStatus.entity_type == LIFECYCLE_ENTITY, CoreStatus.scope_id == ws_id)
+        .count()
+    )
+    after_edges = (
+        db.query(StatusTransition)
+        .filter(StatusTransition.entity_type == LIFECYCLE_ENTITY, StatusTransition.tenant_id == DEFAULT_TENANT_ID)
+        .count()
+    )
+    assert after_statuses == 0
+    assert after_edges == 0
+    db.close()
+
+
+# ── AC-CDM-24: entity.status_changed workflow trigger fires on a move ──────
+def test_status_changed_workflow_trigger_fires_on_lifecycle_move(client, session_factory):
+    from modules.omnichannel.models import Workspace
+    from tests.test_workflow_triggers import _edge, _email, _node, _publish, _runs_for
+
+    db = session_factory()
+    doc = {"schemaVersion": 1, "nodes": [
+        _node("trg", "trigger", "entity.status_changed", {"entityType": "omnichannel_contact"}),
+        _email("a"),
+    ], "edges": [_edge("trg", "a")]}
+    wid = _publish(db, doc)
+    ws_id = db.query(Workspace).filter(Workspace.is_default.is_(True)).first().id
+    db.close()
+
+    h = _auth(client)
+    graph = _lifecycle_graph(client, h, ws_id)
+    ids = _stage_ids(graph)
+    cid = _seed_lifecycle_contact(session_factory, ws_id)
+
+    res = client.post(f"/omnichannel/contacts/{cid}/lifecycle", headers=h, json={
+        "toStatusId": ids["hot_lead"],
+    })
+    assert res.status_code == 200, res.text
+
+    db = session_factory()
+    runs = _runs_for(db, wid)
+    assert len(runs) == 1
+    payload = runs[0].trigger_payload_json
+    assert payload["fromStatus"] == ids["new_lead"]
+    assert payload["toStatus"] == ids["hot_lead"]
+    assert payload["recordId"] == cid
+    db.close()

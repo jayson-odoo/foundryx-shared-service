@@ -105,6 +105,12 @@ class WorkspaceService:
             is_trashed=False,
         )
         self.db.add(ws)
+        self.db.flush()
+        # Materialize the contact-lifecycle graph in the SAME unit of work
+        # (plan 25 S2, AC-CDM-14) - a workspace never exists without one.
+        from .lifecycle_service import materialize_for_workspace
+
+        materialize_for_workspace(self.db, ws)
         self.db.commit()
         self.db.refresh(ws)
         return self._items([ws], tenant_id)[0]

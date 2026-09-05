@@ -81,6 +81,10 @@
       "prefix": "/omnichannel/workspaces"
     },
     {
+      "name": "lifecycle",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
       "name": "webhooks_subs",
       "prefix": "/omnichannel"
     },
