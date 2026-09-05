@@ -734,3 +734,69 @@ def test_email_outbox_cancel_missing_target_404_at_park(client):
         headers=h,
     )
     assert res.status_code == 404
+
+
+# ── T5 fix round 2, S2: module Deactivate migrated to `deferred` (reversible -
+# Reactivate is one click) - the storefront app-store surface. ────────────────
+
+
+def test_tenant_modules_deactivate_registered_and_commits(db):
+    from app.models.module import MODULE_STATUS_ACTIVE, MODULE_STATUS_INACTIVE
+    from app.repositories.module_repository import ModuleRepository
+
+    assert deferred_action_for("tenant_modules.deactivate").window == "reversible"
+    assert deferred_action_for("tenant_modules.deactivate").permission == "app_store.deactivate"
+
+    admin = _admin(db)
+    svc = PendingActionService(db)
+    pa = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+        action_key="tenant_modules.deactivate", entity_type="tenant_module", entity_id="omnichannel",
+    )
+    stored = db.get(PendingAction, pa.id)
+    stored.commit_at = _now() - timedelta(seconds=1)
+    db.commit()
+
+    result = svc.commit_one(pa)
+    assert result.status == PENDING_ACTION_COMMITTED
+
+    module = ModuleRepository(db).get_by_name("omnichannel")
+    state = ModuleRepository(db).get_state(DEFAULT_TENANT_ID, module.id)
+    assert state.status == MODULE_STATUS_INACTIVE
+
+    # Reactivate is one click (unaffected by this change) - restore for other
+    # tests sharing this DB.
+    state.status = MODULE_STATUS_ACTIVE
+    db.commit()
+
+
+def test_tenant_modules_deactivate_park_against_an_already_inactive_module_is_404(client, session_factory):
+    from app.models.module import MODULE_STATUS_ACTIVE, MODULE_STATUS_INACTIVE
+    from app.repositories.module_repository import ModuleRepository
+
+    db = session_factory()
+    module = ModuleRepository(db).get_by_name("omnichannel")
+    state = ModuleRepository(db).get_state(DEFAULT_TENANT_ID, module.id)
+    state.status = MODULE_STATUS_INACTIVE
+    db.commit()
+    db.close()
+
+    h = _login(client)
+    res = client.post(
+        "/api/v1/pending-actions",
+        json={
+            "actionKey": "tenant_modules.deactivate",
+            "entityType": "tenant_module",
+            "entityId": "omnichannel",
+        },
+        headers=h,
+    )
+    assert res.status_code == 404
+
+    db = session_factory()
+    state = ModuleRepository(db).get_state(
+        DEFAULT_TENANT_ID, ModuleRepository(db).get_by_name("omnichannel").id
+    )
+    state.status = MODULE_STATUS_ACTIVE
+    db.commit()
+    db.close()

@@ -741,6 +741,7 @@ export function ResourceList<T extends object>({
                           <ActionMenu
                             actions={config.actions}
                             rows={[row]}
+                            getEntityId={config.getEntityId}
                             runtime={runtime}
                             surface="row"
                           />

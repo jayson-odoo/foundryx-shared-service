@@ -294,6 +294,34 @@ def _email_outbox_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
     )
 
 
+def _tenant_modules_deactivate(
+    db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str
+) -> None:
+    # T5 fix round 2, S2: Deactivate is fully reversible (Reactivate is one
+    # click, data + permission assignments kept) - the storefront's OWN-tenant
+    # app-store surface only (the operator console acts cross-tenant, outside
+    # the actor's own tenant scope this engine assumes, and stays on the
+    # existing immediate confirm path). `entity_id` is the module's `name`
+    # (modules have no surrogate id). `AppStoreService.deactivate` already
+    # raises loudly (already-inactive/not-installed/has-dependents) - let it
+    # propagate so `commit_one` marks the row `failed`, never a silent no-op.
+    from app.services.app_store_service import AppStoreService
+
+    AppStoreService(db).deactivate(tenant_id, entity_id)
+
+
+def _tenant_modules_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.models.module import MODULE_STATUS_ACTIVE
+    from app.repositories.module_repository import ModuleRepository
+
+    repo = ModuleRepository(db)
+    module = repo.get_by_name(entity_id)
+    if module is None:
+        return False
+    state = repo.get_state(tenant_id, module.id)
+    return state is not None and state.status == MODULE_STATUS_ACTIVE
+
+
 USERS_TRASH = DeferredActionDef(
     key="users.trash",
     entity_type="user",
@@ -478,6 +506,15 @@ EMAIL_OUTBOX_CANCEL = DeferredActionDef(
     execute=_email_outbox_cancel,
     exists=_email_outbox_exists,
 )
+TENANT_MODULES_DEACTIVATE = DeferredActionDef(
+    key="tenant_modules.deactivate",
+    entity_type="tenant_module",
+    permission="app_store.deactivate",
+    window="reversible",  # Reactivate is one click (D2)
+    label="Deactivate",
+    execute=_tenant_modules_deactivate,
+    exists=_tenant_modules_exists,
+)
 
 _ALL = (
     USERS_TRASH,
@@ -500,6 +537,7 @@ _ALL = (
     JOBS_ABORT,
     JOBS_COMPLETE,
     EMAIL_OUTBOX_CANCEL,
+    TENANT_MODULES_DEACTIVATE,
 )
 
 

@@ -59,6 +59,12 @@ export interface ResourceFormConfig<T> {
   /** The record, wrapped for action runtime ([] when creating). */
   actionRows: T[];
   /**
+   * A `deferred` form action's park/current/cancel entity id (T5 fix round
+   * 2, S2) - defaults to `row.id`, which a record with no `id` field (e.g.
+   * `StoreModule`, keyed by `name`) doesn't have.
+   */
+  getEntityId?: (row: T) => string;
+  /**
    * Refresh the loaded record after a mutating form-surface action (e.g. a
    * Test that flips status). Without it, `runtime.reload` is a no-op on the
    * form (plan 06 - the connection Health card went stale otherwise).

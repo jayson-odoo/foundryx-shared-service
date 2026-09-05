@@ -91,6 +91,67 @@ function definesConfirm(file: string): boolean {
   return /^\s*confirm:\s*\{/m.test(src);
 }
 
+/**
+ * T5 fix round 2, S2: `definesConfirm` only asked "does this file contain a
+ * `confirm:` at all" - a file could be allowlisted for ONE disclosed plain
+ * confirm and grow a SECOND, unaccounted-for one and this inventory would
+ * stay green. Brace-match every `confirm: { ... }` object literal in a file
+ * (not just detect the opening token) so each one can be individually typed-
+ * checked below.
+ */
+function extractConfirmBlocks(src: string): string[] {
+  const blocks: string[] = [];
+  const opener = /^\s*confirm:\s*\{/gm;
+  let match: RegExpExecArray | null;
+  while ((match = opener.exec(src)) !== null) {
+    const openBraceIndex = match.index + match[0].length - 1;
+    let depth = 0;
+    let i = openBraceIndex;
+    for (; i < src.length; i += 1) {
+      if (src[i] === '{') depth += 1;
+      else if (src[i] === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          i += 1;
+          break;
+        }
+      }
+    }
+    blocks.push(src.slice(openBraceIndex, i));
+  }
+  return blocks;
+}
+
+const isTypedConfirmBlock = (block: string): boolean => /input\s*:/.test(block);
+
+/**
+ * Every PLAIN (non-typed) `confirm:` block that's allowed to survive inside
+ * an allowlisted carve-out file, named + counted so a NEW plain confirm
+ * (even inside an already-allowlisted file) fails loudly instead of hiding
+ * next to a disclosed one. Every confirm block NOT accounted for here must
+ * carry `confirm.input` (typed).
+ */
+const DISCLOSED_PLAIN_CONFIRMS: { file: string; count: number; reason: string }[] = [
+  {
+    file: 'app/(protected)/user-management/users/components/use-user-actions.tsx',
+    count: 1,
+    reason:
+      'Impersonate - a session action, not a delete/archive-style record mutation; D2\'s grace-window commit model has no sensible meaning for it.',
+  },
+  {
+    file: 'app/(protected)/platform/tenants/components/use-tenant-actions.tsx',
+    count: 1,
+    reason:
+      'tenant custom-status-edge fallback - an operator-added custom status sharing a well-known LABEL (archived/suspended/active) but a DIFFERENT key; the platform-owned graph is edge-agnostic for the three seeded keys only (BL-SS-052 tracks the general fix).',
+  },
+  {
+    file: 'components/platform/app-store/use-module-list-config.tsx',
+    count: 1,
+    reason:
+      'operator-console Deactivate acts on ANOTHER tenant (cross-tenant) - outside the deferred-actions engine\'s own-tenant scope (`PendingAction` is keyed to the actor\'s JWT tenant). The storefront (own-tenant) Deactivate uses `deferred` (T5 fix round 2, S2).',
+  },
+];
+
 describe('AC-DLA-43/47 confirm: is reserved to the carve-outs + the disclosed pending baseline', () => {
   it('T5 fix round 1 item 15: PENDING_MIGRATION ends EMPTY - every confirm: site is migrated or a disclosed carve-out', () => {
     expect(PENDING_MIGRATION).toEqual([]);
@@ -140,6 +201,37 @@ describe('AC-DLA-43/47 confirm: is reserved to the carve-outs + the disclosed pe
       expect(src, `${file} should still define confirm.input (typed)`).toMatch(
         /confirm:\s*\{[\s\S]*?input:/,
       );
+    }
+  });
+
+  // ── T5 fix round 2, S2: WHICH confirm blocks a carve-out file may contain,
+  // not just whether it contains one - a second, unaccounted-for plain
+  // confirm can no longer hide next to a disclosed one. ────────────────────
+
+  it('every confirm block in a carve-out file is either typed (confirm.input) or a disclosed, counted plain exception', () => {
+    for (const file of CARVE_OUTS) {
+      const src = fs.readFileSync(path.join(repoRoot, file), 'utf8');
+      const blocks = extractConfirmBlocks(src);
+      const plainCount = blocks.filter((b) => !isTypedConfirmBlock(b)).length;
+      const disclosedCount = DISCLOSED_PLAIN_CONFIRMS.filter((d) => d.file === file).reduce(
+        (sum, d) => sum + d.count,
+        0,
+      );
+      expect(
+        plainCount,
+        `${file}: ${plainCount} plain confirm block(s) found, but only ${disclosedCount} disclosed in DISCLOSED_PLAIN_CONFIRMS - every plain confirm must be a NAMED, counted exception`,
+      ).toBe(disclosedCount);
+    }
+  });
+
+  it('every DISCLOSED_PLAIN_CONFIRMS entry names a real carve-out file with that many plain confirm blocks', () => {
+    for (const { file, count } of DISCLOSED_PLAIN_CONFIRMS) {
+      expect(CARVE_OUTS, `${file} must be a CARVE_OUTS entry to host a disclosed plain confirm`).toContain(
+        file,
+      );
+      const src = fs.readFileSync(path.join(repoRoot, file), 'utf8');
+      const plain = extractConfirmBlocks(src).filter((b) => !isTypedConfirmBlock(b));
+      expect(plain.length, `${file}: expected ${count} plain confirm block(s)`).toBe(count);
     }
   });
 });

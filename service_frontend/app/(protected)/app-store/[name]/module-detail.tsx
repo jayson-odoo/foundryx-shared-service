@@ -107,6 +107,9 @@ export function ModuleDetail({ name }: { name: string }) {
       ],
       actions: buildModuleActions(undefined, update),
       actionRows: [module],
+      // T5 fix round 2, S2: `StoreModule` has no `.id` - Deactivate's
+      // `deferred` park/current/cancel needs an explicit entity id.
+      getEntityId: (m) => m.name,
       onReload: () => void load(),
       editable: false,
       isDirty: false,

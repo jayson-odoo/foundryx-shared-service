@@ -215,6 +215,7 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
       <ActionMenu
         actions={config.actions}
         rows={config.actionRows}
+        getEntityId={config.getEntityId}
         runtime={{
           reload: config.onReload ?? (() => {}),
           backHref: backHref ?? undefined,
