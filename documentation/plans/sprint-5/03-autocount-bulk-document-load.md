@@ -76,13 +76,17 @@ auto_push as today (pending across jobs, 5000 cap unchanged)
   last_error` = "N record(s) failed to map; see staged records" when N > 0, else None;
   `consecutive_failures` increments only on a run-level failure (exception), no longer on mapping
   failures.
-- `cursor_json` shape (no migration): `{"column": wm, "mark": <encoded>, "tieRefs": [...],
-  "pass": {"kind": "initial|incremental|reconcile", "startedAt": iso, "pagesDone": n,
-  "complete": bool}}`. `PageCursor.from_watermark_row` resumes when `pass.complete` is false and
-  `pass.kind` matches the run mode (a reconcile tick while an initial pass is unfinished
-  continues the initial pass first; the reconcile is re-armed by `next_run_times`). A completed
-  reconcile resets `startedAt`; a guard failure (AC-03-19) clears the pass so the next reconcile
-  starts fresh.
+- `cursor_json` shape (no migration, and no key rename): `{"sqlWatermarkColumn": wm,
+  "sqlWatermark": <encoded>, "tieRefs": [...], "pass": {"kind": "initial|incremental|reconcile",
+  "startedAt": iso, "pagesDone": n, "complete": bool}}` - the existing `CURSOR_COLUMN`/
+  `CURSOR_MARK` keys are kept VERBATIM (live rows on the real company already carry them; a
+  rename would orphan every task's stored mark and force a full re-read); `tieRefs` and `pass`
+  are the only ADDED keys. `PageCursor.from_watermark_row` resumes when `pass.complete` is false
+  and `pass.kind` matches the run mode (a reconcile tick while an initial pass is unfinished
+  continues the initial pass first; the reconcile is re-armed by `next_run_times`); a legacy row
+  with no `pass` key at all (or one from before this plan) resumes as a plain incremental from
+  its stored `sqlWatermark`, exactly as before. A completed reconcile resets `startedAt`; a guard
+  failure (AC-03-19) clears the pass so the next reconcile starts fresh.
 - Job log lines per page: "Page n: scanned S, changed C (A new, U updated), unchanged X skipped,
   failed F." Run row: `rows_scanned`, `added_count`, `updated_count`, `staged_count`,
   `failed_count`, `truncated`, `error` (continuation message "Budget reached after page n;

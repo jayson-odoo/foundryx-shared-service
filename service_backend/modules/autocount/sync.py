@@ -117,6 +117,8 @@ from .sql_source.errors import (
 # the handler but not the factory would fail every DB run with "no source
 # implementation registered", which reads like a config fault and is not one.
 from .sql_source.source import (
+    CURSOR_COLUMN,
+    CURSOR_MARK,
     DELETE_GUARD_MIN_ABSOLUTE,
     DELETE_GUARD_RATIO,
     PageCursor,
@@ -1109,8 +1111,13 @@ def _run_paged_sql_db(
             )
 
             watermark_row.cursor_json = {
-                "column": source.watermark_column,
-                "mark": max_mark,
+                # LEGACY keys, kept verbatim (coordinator fix-round): live
+                # rows on the real company already carry
+                # ``sqlWatermarkColumn``/``sqlWatermark`` - renaming them
+                # would orphan every task's mark and force a full re-read.
+                # ``tieRefs`` and ``pass`` are the only ADDED keys.
+                CURSOR_COLUMN: source.watermark_column,
+                CURSOR_MARK: max_mark,
                 "tieRefs": list(page.tie_refs),
                 "pass": {
                     "kind": mode,
@@ -1118,12 +1125,13 @@ def _run_paged_sql_db(
                     "pagesDone": pages_done,
                     "complete": page.complete,
                     # Scoped to THIS pass (plan sprint-5/03 §2.6, AC-03-21) -
-                    # deliberately separate from the top-level ``mark`` above
+                    # deliberately separate from the top-level mark above
                     # (which a DIFFERENT-kind pass, e.g. a plain incremental
                     # tick, also reads/writes to resume its OWN position):
                     # the wire's ``initialLoad.lastMark`` must show progress
                     # for the pass currently open, never a stale mark left
-                    # behind by an unrelated, already-finished one.
+                    # behind by an unrelated, already-finished one. A brand
+                    # new, pass-scoped field - not part of the legacy shape.
                     "mark": max_mark,
                 },
             }
@@ -1218,8 +1226,8 @@ def _run_paged_sql_db(
         watermark_row.last_modified_at = decoded_max.astimezone(timezone.utc)
     watermark_row.cursor_json = {
         **(watermark_row.cursor_json or {}),
-        "column": source.watermark_column,
-        "mark": max_mark,
+        CURSOR_COLUMN: source.watermark_column,
+        CURSOR_MARK: max_mark,
     }
     watermark_row.consecutive_failures = 0
     watermark_row.last_success_at = datetime.now(timezone.utc)

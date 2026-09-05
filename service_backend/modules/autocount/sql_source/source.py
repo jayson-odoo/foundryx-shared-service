@@ -379,7 +379,7 @@ class PageCursor:
             if not isinstance(started, datetime):
                 started = now
             return cls(
-                mark=cursor.get("mark"),
+                mark=cursor.get(CURSOR_MARK),
                 tie_refs=tuple(cursor.get("tieRefs") or ()),
                 pass_kind=mode,
                 pass_started_at=started,
@@ -390,11 +390,15 @@ class PageCursor:
         # "full <query> extract, ignore watermark"); an incremental/manual
         # pass resumes from the STORED watermark mark, when it was left by
         # THIS SAME watermark column (a reconfigured column's stored mark
-        # belongs to a different comparison and must never be reused).
+        # belongs to a different comparison and must never be reused). The
+        # cursor keeps the LEGACY keys (``CURSOR_COLUMN``/``CURSOR_MARK`` -
+        # live rows on real companies already carry them; renaming would
+        # orphan every task's mark and force a full re-read) - ``tieRefs``
+        # and ``pass`` are the only ADDED keys.
         start_mark = None
         start_tie_refs: Sequence[str] = ()
-        if mode != RUN_MODE_RECONCILE and cursor.get("column") == watermark_column:
-            start_mark = cursor.get("mark")
+        if mode != RUN_MODE_RECONCILE and cursor.get(CURSOR_COLUMN) == watermark_column:
+            start_mark = cursor.get(CURSOR_MARK)
             # The refs already taken at EXACTLY ``start_mark`` (from the
             # pass that left it) must travel with it - otherwise the very
             # row that PRODUCED the mark is re-included by the ``>=``
