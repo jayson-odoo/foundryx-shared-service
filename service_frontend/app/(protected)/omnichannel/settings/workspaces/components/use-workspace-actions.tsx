@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Pencil, RotateCcw, Trash2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { workspaceService } from '@/services/workspace-service';
 import type { Workspace } from '@/types/omnichannel';

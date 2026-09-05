@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { FileText, Pencil, Send, Trash2, Code2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import {
   DataGridTableRowSelect,

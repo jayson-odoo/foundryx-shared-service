@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ResourceList } from '@/components/platform/resource-list';
 import type { WebhookEndpoint } from '@/types/whatsapp-webhook';
 import { useWebhookList } from './use-webhook-list';
