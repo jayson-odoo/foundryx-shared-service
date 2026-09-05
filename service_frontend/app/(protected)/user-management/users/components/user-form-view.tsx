@@ -14,7 +14,13 @@ export interface UserFormViewProps {
 
 /** Loads + renders a user form (create when userId is absent). */
 export function UserFormView({ userId, initialEditing }: UserFormViewProps) {
-  const { config, form, isLoading, notFound: recordNotFound } = useUserForm(userId, initialEditing);
+  const {
+    config,
+    form,
+    isLoading,
+    notFound: recordNotFound,
+    loadError,
+  } = useUserForm(userId, initialEditing);
 
   if (isLoading) {
     return (
@@ -24,6 +30,13 @@ export function UserFormView({ userId, initialEditing }: UserFormViewProps) {
         </div>
       </Container>
     );
+  }
+
+  // Fix round 1 item 2 - a REAL load failure (500/network/403, never a 404)
+  // throws DURING RENDER so app/(protected)/error.tsx (Reset, chrome intact)
+  // catches it, instead of every failure being funneled into notFound().
+  if (loadError) {
+    throw loadError;
   }
 
   // AC-DLA-50 - an unknown user id renders the route's own not-found.tsx
