@@ -362,3 +362,92 @@ def test_park_rejected_when_the_module_is_inactive_for_the_tenant(client, sessio
         headers=h,
     )
     assert res2.status_code == 403, res2.text
+
+
+# ── T5 fix round 3, item 1: `commit_one`/`commit_due` must ALSO gate on
+# module activation - only the lazy `current()` path was gated before this
+# fix, so the beat sweep (or a racing `current` poll) could still run a
+# handler for an action whose module had since been deactivated. ──────────
+
+
+def test_commit_settles_failed_when_the_module_is_deactivated_during_the_window(session_factory):
+    """A park while ACTIVE, followed by a deactivation DURING the grace
+    window, must settle the row `failed` at commit time - never run the
+    (now module-less) handler."""
+    from app.services.app_store_service import AppStoreService
+    from modules.omnichannel.models import Workspace
+    from modules.omnichannel.services import statuses
+
+    db = session_factory()
+    admin = _admin(db)
+    ws = Workspace(
+        tenant_id=DEFAULT_TENANT_ID,
+        name="Deactivated-mid-window workspace",
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "WORKSPACE", "ACTIVE"),
+        is_default=False,
+        is_trashed=False,
+    )
+    db.add(ws)
+    db.commit()
+    db.refresh(ws)
+    ws_id = ws.id
+
+    svc = PendingActionService(db)
+    row = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+        action_key="workspaces.trash", entity_type="workspace", entity_id=ws_id,
+    )
+    pa = db.get(PendingAction, row.id)
+    pa.commit_at = _now() - timedelta(seconds=1)
+    db.commit()
+
+    AppStoreService(db).deactivate(DEFAULT_TENANT_ID, "omnichannel")
+
+    committed = svc.commit_one(row)
+    assert committed.status == "failed"
+    assert committed.error_text == "Module 'omnichannel' is not active"
+    db.refresh(ws)
+    assert ws.is_trashed is False
+    db.close()
+
+
+def test_commit_due_settles_failed_when_the_module_is_deactivated_during_the_window(session_factory):
+    """Same as above, via the beat sweep (`commit_due`) rather than a direct
+    `commit_one` call - the sweep must not bypass the module gate either."""
+    from app.services.app_store_service import AppStoreService
+    from modules.omnichannel.models import Workspace
+    from modules.omnichannel.services import statuses
+
+    db = session_factory()
+    admin = _admin(db)
+    ws = Workspace(
+        tenant_id=DEFAULT_TENANT_ID,
+        name="Swept-while-inactive workspace",
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "WORKSPACE", "ACTIVE"),
+        is_default=False,
+        is_trashed=False,
+    )
+    db.add(ws)
+    db.commit()
+    db.refresh(ws)
+    ws_id = ws.id
+
+    svc = PendingActionService(db)
+    row = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+        action_key="workspaces.trash", entity_type="workspace", entity_id=ws_id,
+    )
+    pa = db.get(PendingAction, row.id)
+    pa.commit_at = _now() - timedelta(seconds=1)
+    db.commit()
+
+    AppStoreService(db).deactivate(DEFAULT_TENANT_ID, "omnichannel")
+
+    swept = svc.commit_due()
+    assert swept == 1
+    db.refresh(pa)
+    assert pa.status == "failed"
+    assert pa.error_text == "Module 'omnichannel' is not active"
+    db.refresh(ws)
+    assert ws.is_trashed is False
+    db.close()

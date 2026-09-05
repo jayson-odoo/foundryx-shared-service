@@ -152,12 +152,18 @@ class PendingActionService:
         return self.commit_one(row)
 
     def _module_active(self, tenant_id: str, action_def: DeferredActionDef) -> bool:
-        # Fix round 2, S4: mirrors every other catalog's `active_modules`/
-        # `is_visible` check (workflow triggers/actions, rule facts, status
-        # entities, importer, terminology, ...) - a tenant with the module
-        # INACTIVE can't park (or keep observing/committing) a countdown
-        # against one of its actions, even if a stale role grant still holds
-        # the permission key.
+        # Fix round 2, S4 (park/current/cancel) + fix round 3, item 1
+        # (commit_one/commit_due): mirrors every other catalog's
+        # `active_modules`/`is_visible` check (workflow triggers/actions,
+        # rule facts, status entities, importer, terminology, ...) - a tenant
+        # with the module INACTIVE can't park, keep observing/cancelling, OR
+        # COMMIT a countdown against one of its actions, even if a stale role
+        # grant still holds the permission key. `park`/`_may_act_on` (current/
+        # cancel) gate BEFORE parking or answering; `commit_one` gates right
+        # after its atomic claim, before ever calling the handler - a row
+        # parked while ACTIVE but left to lapse after a mid-window
+        # deactivation settles `failed` instead of running the (now
+        # module-less) handler.
         from app.module_platform.active import active_modules, is_visible
 
         return is_visible(action_def.module, active_modules(self.db, tenant_id))
@@ -386,6 +392,23 @@ class PendingActionService:
         except UnknownDeferredAction as exc:
             row.status = PENDING_ACTION_FAILED
             row.error_text = str(exc)
+            row.ended_at = _now()
+            db.commit()
+            db.refresh(row)
+            return row
+
+        # Fix round 3, item 1: the module-activation gate previously only ran
+        # on the lazy `current()`/`park()` paths (`_may_act_on`/`park` above) -
+        # a row parked while the module was ACTIVE, then left to lapse AFTER
+        # the tenant deactivated that module mid-window, still ran the
+        # handler here (via the beat sweep OR a racing `current` poll that
+        # reaches the claim before its own now-moot permission check would
+        # even matter). Re-check right after the atomic claim, before ever
+        # calling the handler - a deactivated module settles the row `failed`
+        # instead, same as an unknown action key above.
+        if not self._module_active(row.tenant_id, action_def):
+            row.status = PENDING_ACTION_FAILED
+            row.error_text = f"Module {action_def.module!r} is not active"
             row.ended_at = _now()
             db.commit()
             db.refresh(row)
