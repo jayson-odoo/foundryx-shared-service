@@ -2760,3 +2760,140 @@ precisely than a screenshot of an error toast would.
 live evidence; two rulings (S1, S2) applied and their AC touchpoints noted for the main
 session's UAC integration; no regressions (pytest 2756 vs 2748 before, vitest 1778 vs 1770
 before, build green); worktree clean.
+
+## T5 - Fix round 3
+
+5 items from the T5 fix-round-3 review, all addressed on the same branch
+(`sprint-4/23-T5-deferred-actions`, worktree `.claude/worktrees/s23`). No frontend logic
+changes were needed this round (item 4 is a doc-comment-only edit), so :3002/the frontend
+build was left untouched per the brief - no new screenshots. Per-item commit shas below
+(`git log --oneline`).
+
+**Item 1 - module gate at commit time (`9252c99`).** `commit_one` (`service.py:357`) and the
+beat sweep `commit_due` (`:446`) executed a handler even if the action's module had since been
+deactivated for the tenant - only the lazy `current()`/`park()` paths (`_may_act_on`) were
+gated. **Ruling (as briefed):** in `commit_one`, right after the atomic `pending`->`committing`
+claim and before ever calling the handler, re-check `_module_active(row.tenant_id, action_def)`;
+if inactive, settle the row `failed` with `error_text = "Module '<name>' is not active"` and
+never run the handler. Covers both the direct `commit_one` path and the sweep (`commit_due`
+calls `commit_one` per overdue row, so one fix covers both).
+- Tests (`test_omnichannel_deferred_actions.py`, both confirmed red before the fix - `assert
+  'committed' == 'failed'`): `test_commit_settles_failed_when_the_module_is_deactivated_during_the_window`
+  (park `workspaces.trash` while omnichannel ACTIVE, deactivate mid-window, call `commit_one`
+  directly - row settles `failed`, the exact error text, workspace untouched);
+  `test_commit_due_settles_failed_when_the_module_is_deactivated_during_the_window` (same
+  scenario via `commit_due()` - the beat sweep path specifically).
+- `_module_active`'s doc comment (`service.py:154-163`) updated to describe park/current/cancel
+  AND commit as all gated (it previously only described park/current/cancel, from fix round 2).
+
+**Item 2 - `current()` denied-caller comment corrected to match the shipped 404 contract
+(`4d41c31`).** `service.py:211-216`'s comment (written fix round 1, item 1) claimed a caller
+lacking the permission gets a "uniform empty response" - the code has always raised
+`ActionNotFound`, which the router (`app/api/v1/pending_actions.py`) translates to a 404,
+matching the amended AC-DLA-40/43 contract (a denied caller 404s; only an AUTHORIZED caller
+with nothing pending gets the empty-but-200 `{pending: null, lastOutcome: null}` body).
+Comment-only fix, behaviour unchanged. Pinned both sides of the contract with an explicit
+status-code assertion: `test_current_with_nothing_parked` (`tests/test_deferred_actions.py`)
+now asserts `res.status_code == 200` for the authorized-nothing-pending case, alongside the
+pre-existing `test_current_without_the_actions_permission_is_uniform_404` for the denied case
+(404) - both tests already existed in substance; this pins the exact status code the comment
+now describes.
+
+**Item 3 - S4 coverage for `current`/`cancel` after module deactivation (`293ec5a`).** Fix
+round 2, S4 gated `park`/`current`/`cancel` via `_may_act_on`/`_module_active`, but the only
+regression test (`test_park_rejected_when_the_module_is_inactive_for_the_tenant`) covered only
+the `park` 403. Added `test_current_and_cancel_rejected_when_the_module_is_inactive_for_the_tenant`
+(dedicated tenant, installs omnichannel, parks `workspaces.trash` while ACTIVE, confirms
+`current` 200s with the pending row and cancel would work, deactivates the module, then asserts
+`GET .../current` -> **404** (matches the S4/S5 `ActionNotFound` contract, same as a denied
+caller) and `POST .../cancel` -> **403** (matches `park`'s own `PermissionDenied` -> 403
+contract - the id itself already resolved via the prior 200, so there's nothing left for a 404
+to hide). No code change was needed - the gate already existed; this closes the coverage gap.
+
+**Item 4 - `confirm-action-dialog.tsx` doc comment rewritten (`eb32d1b`).** The comment still
+described exactly three typed carve-out files "PLUS one disclosed fourth exception
+(Impersonate)" - stale since fix round 2 added a fourth typed `confirm.input` SITE (tenant
+purge gained a bulk-`DELETE`-typed input alongside its existing single-row typed-slug one, so
+tenant purge alone carries two typed sites) and a THIRD disclosed plain-confirm exception
+(operator-console module Deactivate, S2). Rewritten to: name the four typed sites across the
+three carve-out files (module uninstall; tenant purge - single typed-slug AND bulk typed-DELETE;
+Documents > Shares bulk revoke); and point at `DISCLOSED_PLAIN_CONFIRMS` inside
+`confirm-carve-outs.inventory.test.ts` as the SINGLE SOURCE OF TRUTH for the three disclosed
+plain-confirm exceptions (Impersonate, tenant custom-status-edge fallback, operator-console
+module Deactivate) rather than re-listing them in the dialog's comment where they can drift
+again (exactly what happened here). Comment-only; `npx eslint` clean.
+
+**Item 5 - backlog perf note, no code change (`9b0974c`).** `service.py:161`'s `_module_active`
+runs `active_modules(db, tenant_id)` on every `park`/`current`/`cancel`/`commit_one` call - the
+frontend's lazy `current()` poll re-queries the tenant's active-module set on every tick. Added
+`BL-SS-054` to `documentation/backlogs/backlog.md` (next free id after BL-SS-053) tracking the
+memoise/cache follow-up, gated on the poll window ever tightening past ~60s aggregate load.
+
+### Gate (real numbers)
+
+- **Backend**: `DATABASE_URL=postgresql://foundryx:foundryx@localhost:5432/foundryx_service_s23
+  .venv/bin/python -m pytest -q` -> **2759 passed, 1 skipped, 18 deselected** (0 failed; up from
+  2756/1/18 at the end of fix round 2 - +3 net new tests this round, all in
+  `test_omnichannel_deferred_actions.py`: the two item-1 commit-gate tests + the one item-3
+  current/cancel coverage test). Full run took ~34 minutes wall-clock on this shared, heavily
+  loaded machine (Postgres connections cycling steadily throughout - confirmed via
+  `pg_stat_activity`, not a hang); the targeted files re-ran in isolation afterward in 39s (46
+  passed, `tests/test_deferred_actions.py` + `tests/test_omnichannel_deferred_actions.py`).
+- **Frontend lint**: `npx eslint .` -> **0 errors** (3 pre-existing unrelated warnings, unchanged
+  from rounds 1/2 - `idea-attachment-preview-dialog.tsx`, `use-connections-list-config.tsx`,
+  `share-browser.tsx`).
+- **Frontend tests**: `npx vitest run` -> **215 files / 1778 tests passed** on a clean re-run
+  (unchanged from round 2's final count - no frontend test additions this round, only the
+  round-2-noted `test_current_reports_the_requester_name` etc. stay as-is). A first full run
+  under the same heavy host load transiently failed 2 unrelated timing-sensitive tests
+  (`resource-form.deferred.test.tsx`'s countdown-text assertion off by 1s, `timezone-card.test.tsx`
+  hitting a 5000ms timeout) - both pass individually and pass on a clean full re-run; neither
+  touches deferred-actions code from this round, confirmed pre-existing flakiness under load, not
+  a regression.
+- **Build**: not rebuilt this round - the brief's own scope note ("No frontend logic changes are
+  needed (only a comment), so do NOT rebuild :3002") explicitly excludes it; the last verified
+  build remains fix round 2's green `rm -rf .next && npm run build`.
+- **Servers**: not restarted this round per the brief (:8003 backend only needs a restart on a
+  backend CODE change - `service.py`'s `commit_one`/`_module_active` comment change is covered by
+  the pytest suite, not live-server behaviour that needed re-verifying via `agent-browser`; no
+  route/schema/permission change shipped this round). :3002 was left untouched entirely.
+
+### Evidence
+
+**No new screenshots this round** - every item is backend-test-verified (items 1, 3) or a
+comment-only change with no observable UI/behaviour delta (items 2, 4, 5). The brief explicitly
+scoped this round to backend TDD + one frontend comment + one backlog row, with no live-verify
+step required; the fix round 1/2 evidence directories (`documentation/plans/sprint-4/23-evidence/T5/`)
+remain the last agent-browser-recorded proof for the deferred-actions UI surfaces, unaffected by
+this round's changes.
+
+### Definition-of-Done checklist (mirrors fix rounds 1/2's gate)
+
+- [x] Every backend item has a failing-test-first commit before the fix (items 1) or an added
+      regression test confirmed to already pass under the existing contract (item 3); items 2/4/5
+      are comment/backlog-only with no test-affecting behaviour to red/green.
+- [x] No router does DB/service work directly - no router touched this round.
+- [x] No new permission without a grant path - no new permission introduced this round.
+- [x] Every repository/service query stays tenant-scoped - item 1's `_module_active` check reads
+      `row.tenant_id` (the row's OWN tenant, set at park time from the actor's JWT tenant), never
+      client input.
+- [x] No migration this round.
+- [x] Frontend: item 4's comment edit introduces no code change, no `any` types, no raw fetch;
+      `npx eslint` clean on the touched file.
+- [x] Responsive: no UI surface changed this round - nothing to capture at 375px/1280px.
+- [x] Foolproof-UI: no UI copy changed this round (item 1's `error_text` is a backend audit
+      field, never rendered to the tenant as instructional/hint copy).
+- [x] White-label: no "Foundryx" string introduced.
+- [x] Backend suite green (2759 passed, 1 skipped, 18 deselected, 0 failed), frontend suite
+      green on a clean run (1778/1778), lint 0 errors; build/servers correctly left untouched
+      per the brief's explicit scope.
+- [x] Worktree left clean - every item committed individually (5 commits, see shas above),
+      docs/backlog committed alongside.
+
+**Verdict: T5 fix round 3 DONE.** All 5 items (1-5) addressed - item 1 with a failing-test-first
+backend fix (module gate now covers commit as well as park/current/cancel), item 2 with a
+corrected comment + a pinned status-code assertion, item 3 with new regression coverage (no
+code change needed - the S4 gate already covered current/cancel), item 4 with a corrected,
+drift-resistant doc comment pointing at the single source of truth, item 5 with a backlog entry
+for a deferred perf follow-up; no regressions (pytest 2759 vs 2756 before, vitest 1778 vs 1778
+before once re-run clean, build/lint unaffected); worktree clean.
