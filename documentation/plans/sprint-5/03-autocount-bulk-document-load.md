@@ -331,6 +331,31 @@
   aggressive rate limit on their end would turn "faster" into "more 429s/5xxs", the opposite of
   the intent).
 
+**Review round 7 amendments (reviewer polish, no blocker):**
+- **Pool headroom for two concurrent paged tasks.** `runtime.py`'s `engine_for` now sizes
+  `max_overflow` as `workers + 3` (was a flat `3`) alongside its existing `pool_size=max(2,
+  workers)` - a real deployment runs more than one entity task at a time, and a flat overflow
+  sized for ONE task's worker pool could starve a SECOND task sharing the same connection
+  waiting for the first task's connections to come back.
+- **`SingletonThreadPool` joins the single-connection fallback guard.** `SqlDbSource._attach_
+  lines` already fell back to the old sequential loop for `StaticPool` (the in-memory SQLite
+  test rig); it now also recognises `sqlalchemy.pool.SingletonThreadPool` (the pool a bare
+  `sqlite://` URL defaults to without an explicit `poolclass`) - same one-connection-per-thread
+  ceiling, same deadlock risk under a real worker pool, same fallback.
+- **Ops notes next to the S5/S5b settings.** Changing `AUTOCOUNT_LINE_FETCH_WORKERS` needs a
+  BACKEND RESTART to take effect on an already-running connection - `runtime.py`'s `engine_for`
+  reads the setting once, at engine-CONSTRUCTION time, and a pool is not resizable after it is
+  built (the engine cache only rebuilds on a credential/config fingerprint change, never on a
+  bare settings edit). At `AUTOCOUNT_SINK_CONCURRENCY > 1`, Sorento's 429 retry budget
+  (`_max_rate_limit_waits`) is PER CHUNK, with no GLOBAL backoff across the chunks in flight
+  together - N concurrent chunks each independently retrying a 429 can still hit Sorento N times
+  over the same window, never coordinated into one shared wait.
+- **`BL-SS-062`** (new, `documentation/backlogs/backlog.md`) - `write_batch` opens a fresh
+  `httpx.Client` per chunk (`_call`'s `with httpx.Client(...) as client:`), so a multi-chunk push
+  pays a TLS handshake per chunk instead of reusing one connection-pooled client across the
+  whole batch. Low priority, out of this round's scope (the concurrent path already parallelises
+  the handshakes rather than serialising them, which is most of the win) - tracked for later.
+
 ### 2.2 Run loop, change-only staging, watermark (`sync.py`)
 
 `run_autocount_sync`, sql_db branch with a watermark column:
@@ -562,3 +587,6 @@ parallel at the end. Live load = AC-03-22/23 on the real company and `ac_sim`.
 - BL-SS-059 Preview does not count mapping-failed rows (tester BL-B/BL-C).
 - BL-SS-060 A DRAFT/paused paged task's page-in-flight abort can strand staged rows forever
   (security review round 2, F2 - investigated, not fixed; see the 2.1 amendment above).
+- BL-SS-062 `SorentoSink.write_batch` opens a fresh `httpx.Client` per chunk - a TLS handshake
+  per chunk instead of one connection-pooled client reused across the whole batch (review round
+  7 polish; see the round 7 amendment above).

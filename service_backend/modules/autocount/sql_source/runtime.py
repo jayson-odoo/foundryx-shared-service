@@ -323,11 +323,16 @@ class SqlSourceRuntime:
             from app.config import settings as _settings
 
             workers = int(getattr(_settings, "autocount_line_fetch_workers", 4) or 4)
+            # Headroom for TWO concurrent paged tasks sharing one connection
+            # on a real worker (a real deployment runs more than one entity
+            # task at a time) - `max_overflow` scales with `workers` too,
+            # not a flat 3, so a second task's own worker pool never starves
+            # waiting for the first task's to give connections back.
             engine = sa.create_engine(
                 url,
                 pool_pre_ping=True,
                 pool_size=max(2, workers),
-                max_overflow=3,
+                max_overflow=workers + 3,
                 pool_timeout=CONNECT_TIMEOUT_SECONDS,
                 pool_recycle=1800,
                 connect_args=connect_args_for(

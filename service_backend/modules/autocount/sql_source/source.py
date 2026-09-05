@@ -45,7 +45,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import sqlalchemy as sa
 from cryptography.fernet import InvalidToken
 from sqlalchemy.engine import Engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import SingletonThreadPool, StaticPool
 
 from app.secrets import decrypt_secret
 
@@ -1626,16 +1626,21 @@ class SqlDbSource:
 
         ``workers <= 1`` OR a single-connection pool (``StaticPool`` - the
         in-memory SQLite rig every other test in this suite uses, which
-        hands back the SAME underlying connection every time) both fall
-        back to the exact old sequential loop: a second ``open_readonly``
-        against a ``StaticPool`` engine while the first is still open would
-        deadlock or corrupt the shared cursor, never run genuinely in
-        parallel.
+        hands back the SAME underlying connection every time; or
+        ``SingletonThreadPool`` - SQLAlchemy's own single-connection-PER-
+        THREAD pool, which still only ever hands out ONE connection to a
+        given thread and is the pool a bare ``sqlite://`` URL defaults to
+        without an explicit ``poolclass``) both fall back to the exact old
+        sequential loop: a second ``open_readonly`` against either while
+        the first is still open would deadlock or corrupt the shared
+        cursor, never run genuinely in parallel.
         """
         from app.config import settings as _settings
 
         workers = int(getattr(_settings, "autocount_line_fetch_workers", 4) or 4)
-        if workers <= 1 or isinstance(self._engine.pool, StaticPool):
+        if workers <= 1 or isinstance(
+            self._engine.pool, (StaticPool, SingletonThreadPool)
+        ):
             for header in changed_headers:
                 doc_key_value = header.get(key_column_name)
                 header[SQL_DOC_LINES_KEY] = self._read_lines(conn, doc_key_value)
