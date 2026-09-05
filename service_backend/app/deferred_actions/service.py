@@ -175,7 +175,40 @@ class PendingActionService:
         return True
 
     def current(self, tenant_id: str, entity_type: str, entity_id: str, actor: User) -> dict:
-        row = self._commit_if_due(self._pending_for(tenant_id, entity_type, entity_id))
+        # Fix round 2, S5: resolve the row WITHOUT committing it, gate on
+        # permission (+ module, fix round 2 S4) FIRST, and only lazy-commit
+        # an overdue row once the caller is confirmed allowed to observe it.
+        # `_commit_if_due` on line one (the old order) ran the handler for
+        # ANY caller who happened to poll an overdue row before the
+        # permission check ever ran - a teammate without the permission
+        # could trigger the commit just by asking.
+        raw_pending = self._pending_for(tenant_id, entity_type, entity_id)
+        committing_before = (
+            self._committing_for(tenant_id, entity_type, entity_id) if raw_pending is None else None
+        )
+        last_outcome_before = (
+            None
+            if committing_before is not None
+            else self._last_outcome(tenant_id, entity_type, entity_id)
+        )
+
+        # Fix round 1 item 1: `current` is gated by the SAME permission the
+        # parked action itself requires (resolved fresh from the actor's
+        # roles, exactly like `park`) - a teammate who cannot fire the action
+        # cannot observe its countdown either. Uniform empty response (never
+        # a distinct error shape) so a caller lacking the permission cannot
+        # distinguish "nothing pending" from "pending, but not yours to see".
+        relevant_key = (
+            raw_pending.action_key
+            if raw_pending
+            else committing_before.action_key
+            if committing_before
+            else (last_outcome_before.action_key if last_outcome_before else None)
+        )
+        if relevant_key is not None and not self._may_act_on(actor, relevant_key, tenant_id):
+            raise ActionNotFound("Pending action not found.")
+
+        row = self._commit_if_due(raw_pending)
         pending = row if (row is not None and row.status == PENDING_ACTION_PENDING) else None
         # Fix round 2, B1: a row another caller (beat sweep, or a racing
         # `current` poll from another tab) already claimed is mid-commit -
@@ -187,22 +220,6 @@ class PendingActionService:
         # can't happen while one is already committing on this record).
         committing = self._committing_for(tenant_id, entity_type, entity_id) if pending is None else None
         last_outcome = None if committing is not None else self._last_outcome(tenant_id, entity_type, entity_id)
-
-        # Fix round 1 item 1: `current` is gated by the SAME permission the
-        # parked action itself requires (resolved fresh from the actor's
-        # roles, exactly like `park`) - a teammate who cannot fire the action
-        # cannot observe its countdown either. Uniform empty response (never
-        # a distinct error shape) so a caller lacking the permission cannot
-        # distinguish "nothing pending" from "pending, but not yours to see".
-        relevant_key = (
-            pending.action_key
-            if pending
-            else committing.action_key
-            if committing
-            else (last_outcome.action_key if last_outcome else None)
-        )
-        if relevant_key is not None and not self._may_act_on(actor, relevant_key, tenant_id):
-            raise ActionNotFound("Pending action not found.")
 
         return {
             "pending": pending if pending is not None else committing,

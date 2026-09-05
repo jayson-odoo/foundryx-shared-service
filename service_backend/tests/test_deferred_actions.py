@@ -553,6 +553,49 @@ def test_current_without_the_actions_permission_is_uniform_404(client, session_f
     assert ok.json()["pending"] is not None
 
 
+# ── T5 fix round 2, S5: the permission gate must run BEFORE the lazy commit
+# `current` performs on an overdue row - never commit on behalf of a caller
+# who isn't even allowed to see the countdown. ─────────────────────────────
+
+
+def test_current_without_permission_never_commits_an_overdue_row(client, session_factory, db):
+    _make_user(session_factory, "viewer-dla3@foundryx.io", perm_keys=["users.read"])
+    admin_h = _login(client)
+    row = client.post(
+        "/api/v1/pending-actions",
+        json={"actionKey": "widget.delete", "entityType": TEST_ENTITY, "entityId": "w-sec2"},
+        headers=admin_h,
+    ).json()
+    pa = db.get(PendingAction, row["id"])
+    pa.commit_at = _now() - timedelta(seconds=1)
+    db.commit()
+
+    viewer_h = _login(client, "viewer-dla3@foundryx.io", "pw12345678")
+    res = client.get(
+        "/api/v1/pending-actions/current",
+        params={"entityType": TEST_ENTITY, "entityId": "w-sec2"},
+        headers=viewer_h,
+    )
+    assert res.status_code == 404
+
+    # The row is UNTOUCHED - the unauthorized poll must not have triggered
+    # the handler.
+    db.expire_all()
+    still_pending = db.get(PendingAction, row["id"])
+    assert still_pending.status == PENDING_ACTION_PENDING
+    assert "w-sec2" not in _WIDGET_STATE
+
+    # The holder of the permission still lazily commits it, same as ever.
+    ok = client.get(
+        "/api/v1/pending-actions/current",
+        params={"entityType": TEST_ENTITY, "entityId": "w-sec2"},
+        headers=admin_h,
+    )
+    assert ok.status_code == 200
+    assert ok.json()["pending"] is None
+    assert ok.json()["lastOutcome"]["status"] == PENDING_ACTION_COMMITTED
+
+
 def test_cancel_without_the_actions_permission_is_403(client, session_factory):
     _make_user(session_factory, "viewer-dla2@foundryx.io", perm_keys=["users.read"])
     admin_h = _login(client)
