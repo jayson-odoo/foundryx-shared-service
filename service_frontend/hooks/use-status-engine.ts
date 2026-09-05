@@ -8,7 +8,7 @@
  * where the user dropped it; a refetch would make dragging feel janky).
  */
 import { useCallback, useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/api-client';
 import { statusEngineService } from '@/services/status-engine-service';
 import type {
