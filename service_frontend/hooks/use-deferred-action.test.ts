@@ -345,6 +345,62 @@ describe('useDeferredAction', () => {
     currentSpy.mockRestore();
   });
 
+  // ── N3: a `current()` that keeps ERRORING (e.g. a 404 after permission is
+  // revoked mid-countdown) must not strand the hook in `pending` forever. ──
+
+  it('current() erroring past the window settles failed after a grace, not stuck pending forever', async () => {
+    const onCommitted = vi.fn();
+    const onFailed = vi.fn();
+    const { result } = renderHook(() => useDeferredAction({ onCommitted, onFailed }));
+    await act(async () => {
+      await result.current.start('users.trash', { entityType: 'user', entityId: 'err1' });
+    });
+    expect(result.current.state.status).toBe('pending');
+
+    const currentSpy = vi
+      .spyOn(mockPendingActionsService, 'current')
+      .mockRejectedValue(new Error('network down'));
+
+    // Past the 10s window - every poll from here on errors.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11_000);
+    });
+    // One post-lapse error alone is tolerated (grace).
+    expect(result.current.state.status).toBe('pending');
+    expect(onFailed).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+
+    expect(result.current.state.status).toBe('failed');
+    expect(onFailed).toHaveBeenCalledWith("Could not confirm the action's outcome.");
+    expect(onCommitted).not.toHaveBeenCalled();
+
+    currentSpy.mockRestore();
+  });
+
+  it('current() erroring WHILE still counting down does not fail the action early', async () => {
+    const onFailed = vi.fn();
+    const { result } = renderHook(() => useDeferredAction({ onFailed }));
+    await act(async () => {
+      await result.current.start('users.trash', { entityType: 'user', entityId: 'err2' });
+    });
+
+    const currentSpy = vi
+      .spyOn(mockPendingActionsService, 'current')
+      .mockRejectedValue(new Error('blip'));
+
+    // Well within the 10s window - errors here are just a blip, never fatal.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(result.current.state.status).toBe('pending');
+    expect(onFailed).not.toHaveBeenCalled();
+
+    currentSpy.mockRestore();
+  });
+
   it('reset() clears back to idle without touching the server', async () => {
     const { result } = renderHook(() => useDeferredAction());
     await act(async () => {

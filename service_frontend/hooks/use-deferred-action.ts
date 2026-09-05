@@ -99,6 +99,10 @@ export interface UseDeferredActionResult {
 }
 
 const POLL_MS = 1000;
+// N3: how many consecutive POST-lapse poll errors to tolerate before giving
+// up on an unreachable `current()` and settling `failed` - a small grace so
+// one blip right at the window's close doesn't fail the action.
+const ERROR_GRACE_POLLS = 2;
 
 export function useDeferredAction(
   options: UseDeferredActionOptions = {},
@@ -115,8 +119,13 @@ export function useDeferredAction(
   // The parked action ids (one per entity, D13) + which entities they belong
   // to - kept in a ref so the poll loop always reads the live set without
   // re-subscribing.
-  const parkedRef = useRef<{ ids: string[]; entities: DeferredEntity[] } | null>(null);
+  const parkedRef = useRef<{ ids: string[]; entities: DeferredEntity[]; commitAt: string } | null>(
+    null,
+  );
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // N3: consecutive `current()` failures since the window lapsed - reset on
+  // every poll that gets a real answer, and on every fresh park/watch.
+  const lapsedErrorPollsRef = useRef(0);
   const onCommittedRef = useRef(onCommitted);
   onCommittedRef.current = onCommitted;
   const onFailedRef = useRef(onFailed);
@@ -168,7 +177,24 @@ export function useDeferredAction(
     // So every entity is checked, and the FIRST one still pending means
     // the whole batch is still counting down.
     const results = await Promise.all(parked.entities.map((e) => checkCurrent(e)));
-    if (results.some((r) => r === null)) return;
+    if (results.some((r) => r === null)) {
+      // N3: `current()` itself errored (e.g. a 404 after the actor's
+      // permission - or the module - was revoked mid-countdown). The old
+      // `return` here left the hook stuck in `pending` FOREVER: no toast,
+      // no navigation, an unkillable countdown. A blip while the window is
+      // still counting down is tolerated silently (the next tick likely
+      // succeeds); only once the window has actually lapsed AND a couple
+      // more polls keep failing does this give up and settle `failed` -
+      // the caller gets an explicit message instead of nothing.
+      const lapsed = Date.parse(parked.commitAt) <= Date.now();
+      if (!lapsed) return;
+      lapsedErrorPollsRef.current += 1;
+      if (lapsedErrorPollsRef.current > ERROR_GRACE_POLLS) {
+        settle('failed', parked.entities.length, "Could not confirm the action's outcome.");
+      }
+      return;
+    }
+    lapsedErrorPollsRef.current = 0;
     const stillCountingDown = results.some((r) => r!.pending && r!.pending.status !== 'committing');
     if (stillCountingDown) return;
     // Fix round 2, B1: at least one row was CLAIMED (beat sweep, or a
@@ -229,7 +255,12 @@ export function useDeferredAction(
         void (async () => {
           const result = await checkCurrent(watch);
           if (result?.pending) {
-            parkedRef.current = { ids: [result.pending.id], entities: [watch] };
+            parkedRef.current = {
+              ids: [result.pending.id],
+              entities: [watch],
+              commitAt: result.pending.commitAt,
+            };
+            lapsedErrorPollsRef.current = 0;
             // B1: found already mid-commit (the beat sweep claimed it just
             // before this focus-poll) - report `committing`, not a
             // countdown against an already-past `commitAt`.
@@ -261,7 +292,12 @@ export function useDeferredAction(
     void (async () => {
       const result = await checkCurrent(watch);
       if (cancelled || !result?.pending) return;
-      parkedRef.current = { ids: [result.pending.id], entities: [watch] };
+      parkedRef.current = {
+        ids: [result.pending.id],
+        entities: [watch],
+        commitAt: result.pending.commitAt,
+      };
+      lapsedErrorPollsRef.current = 0;
       setState(
         result.pending.status === 'committing'
           ? { status: 'committing', count: 1 }
@@ -320,11 +356,13 @@ export function useDeferredAction(
           ? firstError
           : new Error('Could not start that action.');
       }
+      const first = succeeded[0].result;
       parkedRef.current = {
         ids: succeeded.map((s) => s.result.id),
         entities: succeeded.map((s) => s.entity),
+        commitAt: first.commitAt,
       };
-      const first = succeeded[0].result;
+      lapsedErrorPollsRef.current = 0;
       setState({
         status: 'pending',
         actionKey,
@@ -369,7 +407,12 @@ export function useDeferredAction(
     const first = parked.entities[0];
     const outcome = first ? await checkCurrent(first) : null;
     if (outcome?.pending) {
-      parkedRef.current = { ids: parked.ids, entities: parked.entities };
+      parkedRef.current = {
+        ids: parked.ids,
+        entities: parked.entities,
+        commitAt: outcome.pending.commitAt,
+      };
+      lapsedErrorPollsRef.current = 0;
       setState({
         status: 'pending',
         actionKey: outcome.pending.actionKey,
@@ -399,6 +442,7 @@ export function useDeferredAction(
   const reset = useCallback(() => {
     stopPolling();
     parkedRef.current = null;
+    lapsedErrorPollsRef.current = 0;
     setState({ status: 'idle' });
   }, [stopPolling]);
 
