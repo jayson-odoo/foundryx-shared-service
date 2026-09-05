@@ -108,3 +108,55 @@ system working as designed (never surface a control that would 403).
 - `20-settings-branding-375.png` and `20-settings-branding-1280.png` confirm
   the AC-DLA-59 theme-token reset button's new `aria-label` didn't change
   its rendering.
+
+## T7 - Fix round 1 (branch `sprint-4/23-T7-sweep`)
+
+Session `agent-browser --session t7fix1`, real clicks/native `.click()` bridge, against
+this worktree's rebuilt prod build (`:3002`) + backend `:8003`, login `demo@example.com`
+/ `demo1234`. Evidence lands in `fixround1/`.
+
+### Item 4 - mobile header keeps Uploads/Downloads (AC-DLA-62 carry-over)
+
+`fixround1-01-header-375.png` / `fixround1-01-header-1280.png`.
+
+Extending `ActivityTriggers` to render Uploads+Downloads on mobile surfaced a real,
+pre-existing budget problem, not just a one-line gate flip:
+
+1. **The mobile mini-logo `<img>` has no static asset in this environment** (`public/media/`
+   is gitignored everywhere, confirmed 404 on `/media/app/mini-logo.svg`). With the old
+   `className="h-[25px] w-full"`, a broken `<img>` with no intrinsic size and `width:auto`-like
+   sizing falls back to a box sized to fit its ALT TEXT ("mini-logo") in Chromium - measured
+   87px wide, not the ~25px a real small square logo would be. That inflated box, plus the
+   9th-header-icon budget below, pushed the whole topbar past the 375px viewport and caused
+   real overlap between "Uploads" (x119-155 before the second fix, still landing inside the
+   hamburger group's box) and the apps-menu drawer trigger. Fixed to a real fixed box
+   (`className="h-[25px] w-[25px] object-contain"`) that holds regardless of whether the
+   asset loads - `w-auto`/`max-w-none` were tried first and do NOT constrain a broken image's
+   alt-text-driven box in Chromium; only an explicit pixel width does.
+2. **Even with the logo fixed, 6 topbar icons (Uploads/Downloads/Notifications/Chat/Apps/
+   avatar) at `size-9` (36px) + `gap-3` (12px) need 276px; only ~240px is available** at
+   375px after the (now-correct) logo+hamburger group. Fixed by, on mobile only: tightening
+   the topbar gap to `gap-1` (4px) and passing `size="sm"` to the Notifications/Chat/Apps
+   `Button`s + a new `compact` prop on `ActivityTriggers` (threaded to its `TriggerButton`)
+   for Uploads/Downloads - `size="sm"` is the one Button size variant that does NOT carry
+   `COARSE_HIT_TARGET_CLASS` (`primitive-classes.ts`'s own documented exception for "a
+   control in a dense cluster" - the exact case a 4px gap between six 36px icons is).
+   Desktop is untouched (`mobileMode` gates every change; `size={mobileMode ? 'sm' : undefined}`
+   defaults back to the existing `'md'` size on desktop).
+3. Live-measured post-fix (`getBoundingClientRect` on every header `button`/`a`, real
+   values, not eyeballed): Open navigation 51-85, Open apps menu 85-119, Uploads 123-159,
+   Downloads 163-199, Notifications 203-239, Chat 243-279, Apps 283-319, User menu 323-359 -
+   every button distinct, zero overlap, User menu (avatar) fully inside the 375px viewport
+   (previously clipped past it once the logo was fixed but before the gap/size fix, right
+   edge 395 > 375).
+4. Both drawers verified to actually open on mobile (native `.click()` bridge - the
+   `agent-browser click` synthetic dispatch didn't fire React's `onClick` on these
+   freshly-mounted trigger buttons, a known harness quirk, not a product bug): Uploads →
+   "No uploads yet.", Downloads → "My downloads" / "No downloads yet. Select files or a
+   folder and choose "Download as ZIP"."
+5. Desktop (1280px) re-verified unaffected: all 4 `ActivityTriggers` (Uploads/Imports/Jobs/
+   Downloads) still render, `gap-3`/default `'md'` size untouched.
+
+New/updated tests: `header.mobile-overlap.test.ts` gained two cases (the fixed-width logo
+guard, the mobile gap/compact-size guard) alongside the updated `ActivityTriggers`-gate
+regex (now matches the `compact={mobileMode}` prop too).
