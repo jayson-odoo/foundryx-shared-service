@@ -1049,6 +1049,23 @@ def test_is_initial_status_cannot_be_deleted_when_it_is_the_last_one(client):
     assert "initial" in res.json()["detail"].lower()
 
 
+def test_first_status_of_an_empty_set_is_forced_initial(client):
+    """B1 (plan-25 round-3 codex triage): the very FIRST status created for a
+    brand new (entity_type, scope, scope_id) set must become `is_initial`
+    even if the caller omits the flag - otherwise the set converges to ZERO
+    initial statuses and a new record has nowhere to start. Generic guard in
+    `StatusService.create_status`, not any one entity's code."""
+    operator = _operator(client)
+    a = _create_status(client, operator, "synthetic_ticket", "A")
+    assert a["isInitial"] is True
+    graph = _graph(client, operator, "synthetic_ticket")
+    assert next(s for s in graph["statuses"] if s["id"] == a["id"])["isInitial"] is True
+    # A second status created afterwards must NOT be force-initialed - only
+    # the very first row of an empty set gets the auto-promote.
+    b = _create_status(client, operator, "synthetic_ticket", "B")
+    assert b["isInitial"] is False
+
+
 def test_is_initial_status_can_be_deleted_once_another_becomes_initial(client):
     """The guard is about the SET, not the individual row - once a second
     status has taken over as the initial one, the (now non-initial) first

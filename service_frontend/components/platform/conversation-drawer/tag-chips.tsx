@@ -46,7 +46,13 @@ export function TagChips({ tags, workspaceTags, onChange }: TagChipsProps) {
     try {
       await onChange(nextIds);
     } catch (error) {
-      setOptimistic(tags); // revert
+      // F4 (plan-25 round-3 codex triage): clear the overlay, don't revert to
+      // the `tags` snapshot captured when this call STARTED - a WS push that
+      // landed while the PATCH was in flight already made `tags` (the prop)
+      // authoritative; reverting to the stale closed-over value would
+      // clobber it. `shown = optimistic ?? tags` then falls through to
+      // whatever `tags` IS right now.
+      setOptimistic(null);
       toast.error(error instanceof ApiError ? error.message : 'Could not update tags.');
     } finally {
       setBusy(false);

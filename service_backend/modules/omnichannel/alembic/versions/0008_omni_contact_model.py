@@ -56,7 +56,13 @@ def upgrade() -> None:
             "contact_fields",
             sa.Column("id", sa.String(), primary_key=True),
             sa.Column("tenant_id", sa.String(), nullable=False, index=True),
-            sa.Column("workspace_id", sa.String(), nullable=False, index=True),
+            sa.Column(
+                "workspace_id",
+                sa.String(),
+                sa.ForeignKey(f"{SCHEMA}.workspaces.id"),
+                nullable=False,
+                index=True,
+            ),
             sa.Column("key", sa.String(), nullable=False),
             sa.Column("label", sa.String(), nullable=False),
             sa.Column("description", sa.Text(), nullable=True),
@@ -78,7 +84,13 @@ def upgrade() -> None:
             "contact_tags",
             sa.Column("id", sa.String(), primary_key=True),
             sa.Column("tenant_id", sa.String(), nullable=False, index=True),
-            sa.Column("workspace_id", sa.String(), nullable=False, index=True),
+            sa.Column(
+                "workspace_id",
+                sa.String(),
+                sa.ForeignKey(f"{SCHEMA}.workspaces.id"),
+                nullable=False,
+                index=True,
+            ),
             sa.Column("name", sa.String(), nullable=False),
             sa.Column("emoji", sa.String(), nullable=True),
             sa.Column("color", sa.String(), nullable=True),
@@ -97,14 +109,81 @@ def upgrade() -> None:
             "contact_tag_links",
             sa.Column("id", sa.String(), primary_key=True),
             sa.Column("tenant_id", sa.String(), nullable=False, index=True),
-            sa.Column("contact_id", sa.String(), nullable=False, index=True),
-            sa.Column("tag_id", sa.String(), nullable=False, index=True),
+            sa.Column(
+                "contact_id",
+                sa.String(),
+                sa.ForeignKey(f"{SCHEMA}.contacts.id"),
+                nullable=False,
+                index=True,
+            ),
+            sa.Column(
+                "tag_id",
+                sa.String(),
+                sa.ForeignKey(f"{SCHEMA}.contact_tags.id"),
+                nullable=False,
+                index=True,
+            ),
             sa.Column(
                 "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
             ),
             sa.UniqueConstraint("contact_id", "tag_id", name="uq_contact_tag_link"),
             schema=SCHEMA,
         )
+
+    # B3 (plan-25 round-3 codex triage): a DB that already ran THIS migration
+    # before the FK columns above were added (e.g. this branch's own s25 lane)
+    # has the three tables WITHOUT foreign keys - diverging from a fresh
+    # `create_all` install (the ORM model has always declared them) and from
+    # every sibling omnichannel table. Idempotent backfill: add the missing
+    # constraints by name, guarded so a second run (or a genuinely fresh
+    # table that already has them via the create_table calls above) is a
+    # no-op.
+    existing_fks = {
+        table: {fk["name"] for fk in inspector.get_foreign_keys(table, schema=SCHEMA)}
+        for table in ("contact_fields", "contact_tags", "contact_tag_links")
+        if table in tables
+    }
+    if "contact_fields" in existing_fks and "contact_fields_workspace_id_fkey" not in existing_fks["contact_fields"]:
+        op.create_foreign_key(
+            "contact_fields_workspace_id_fkey",
+            "contact_fields",
+            "workspaces",
+            ["workspace_id"],
+            ["id"],
+            source_schema=SCHEMA,
+            referent_schema=SCHEMA,
+        )
+    if "contact_tags" in existing_fks and "contact_tags_workspace_id_fkey" not in existing_fks["contact_tags"]:
+        op.create_foreign_key(
+            "contact_tags_workspace_id_fkey",
+            "contact_tags",
+            "workspaces",
+            ["workspace_id"],
+            ["id"],
+            source_schema=SCHEMA,
+            referent_schema=SCHEMA,
+        )
+    if "contact_tag_links" in existing_fks:
+        if "contact_tag_links_contact_id_fkey" not in existing_fks["contact_tag_links"]:
+            op.create_foreign_key(
+                "contact_tag_links_contact_id_fkey",
+                "contact_tag_links",
+                "contacts",
+                ["contact_id"],
+                ["id"],
+                source_schema=SCHEMA,
+                referent_schema=SCHEMA,
+            )
+        if "contact_tag_links_tag_id_fkey" not in existing_fks["contact_tag_links"]:
+            op.create_foreign_key(
+                "contact_tag_links_tag_id_fkey",
+                "contact_tag_links",
+                "contact_tags",
+                ["tag_id"],
+                ["id"],
+                source_schema=SCHEMA,
+                referent_schema=SCHEMA,
+            )
 
     # Review round 1, finding 9: the app-level `_find_by_key`/`_find_by_name`
     # case-insensitive checks race (two concurrent creates can both pass the

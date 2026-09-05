@@ -12,6 +12,31 @@ from .services.workflow_test_data import build_test_payload, test_metadata
 
 MODULE_NAME = "omnichannel"
 
+def _contact_apply_update(db, record, changes, actor) -> None:
+    """B11 (plan-25 round-3 codex triage): `entity.update`'s write path for
+    `omnichannel_contact` - routes through `ConversationService.patch_thread`
+    (the SAME seam the internal thread PATCH and the public gateway PATCH
+    both use) instead of a raw `setattr` loop, so a workflow write gets the
+    identical validation/normalization (`language`/`countryCode` format,
+    `customFields`/`tagIds` - though only the scalar profile fields + priority
+    are in this entity's `writable` whitelist today) AND the realtime +
+    webhook `contact.updated` fan-out every other writer gets. `priority`
+    (also writable) is a THREAD field `patch_thread` already accepts directly
+    alongside the profile fields, so one call covers the whole whitelist.
+    Raises a plain exception on invalid input - `entity_actions.entity_update`
+    wraps it into the node's `ActionError` (this module deliberately does not
+    import the core action-error type - a plain exception is enough)."""
+    from .services.conversation_service import ConversationService, InvalidPatch
+    from .services.contact_profile_service import ProfilePatchError
+
+    try:
+        ConversationService(db).patch_thread(record.id, record.tenant_id, actor=actor, **changes)
+    except ProfilePatchError as exc:
+        raise ValueError("; ".join(f"{f}: {m}" for f, m in exc.errors.items())) from exc
+    except InvalidPatch as exc:
+        raise ValueError(str(exc)) from exc
+
+
 def _register_contact_entity() -> None:
     """Workflow-engine entity registration (plan 25 S1, AC-CDM-22) - registers
     ``record:omnichannel_contact`` facts (for IF conditions + entity triggers)
@@ -65,6 +90,7 @@ def _register_contact_entity() -> None:
             has_status=False,
             status_attr="lifecycle_status_id",
             module=MODULE_NAME,
+            apply_update=_contact_apply_update,
         )
     )
 

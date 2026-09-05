@@ -354,6 +354,26 @@ def test_patch_contact_language_country_code(client, session_factory):
     assert "language" in bad_lang.json()["detail"]["fieldErrors"]
 
 
+def test_patch_contact_language_format_is_bcp47_shaped(client, session_factory):
+    """B8 (plan-25 round-3 codex triage): `language` used to be validated by
+    LENGTH ONLY - any 1-16 char string ("123", "!!!", "xxxx") passed. Tighten
+    to a (still cheap, non-exhaustive) BCP-47-SHAPED regex: a 2-3 letter
+    primary subtag + optional hyphenated subtags. Full BCP-47 validation is a
+    backlog item (a real IANA subtag registry check), not this cheap gate."""
+    h = _auth(client)
+    cid = _seed_thread(session_factory, name="Lang Format Test")
+
+    for bad in ["123", "!!", "a", "toolongprimarytag"]:
+        res = client.patch(f"/omnichannel/contacts/{cid}", headers=h, json={"language": bad})
+        assert res.status_code == 422, f"{bad!r} should have been rejected: {res.text}"
+        assert "language" in res.json()["detail"]["fieldErrors"]
+
+    for good in ["en", "en-US", "zh-Hans", "zh-Hans-CN"]:
+        res = client.patch(f"/omnichannel/contacts/{cid}", headers=h, json={"language": good})
+        assert res.status_code == 200, f"{good!r} should have been accepted: {res.text}"
+        assert res.json()["language"] == good
+
+
 # ── AC-CDM-08: cross-tenant 404 on every new route ───────────────────────────
 def _other_tenant_auth(client, session_factory, slug="other-cdm"):
     from app.services.app_store_service import AppStoreService
@@ -516,6 +536,250 @@ def test_resolve_or_create_by_name_recovers_from_concurrent_create_race(session_
         .count()
     )
     assert total == 1  # no duplicate row was left behind by the rolled-back savepoint
+
+
+def test_resolve_or_create_by_name_batch_race_does_not_orphan_earlier_names(session_factory):
+    """B10 (plan-25 round-3 codex triage): resolving MULTIPLE new names in one
+    call used to flush+append an id per name IN THE SAME LOOP - a race on a
+    LATER name triggered a full `self.db.rollback()`, which discarded the row
+    (and id) already flushed for an EARLIER name in the SAME call, while
+    `ids` had already captured that (now nonexistent) id -> a dangling
+    `tag_id` in `ContactTagLink` / an FK failure on commit.
+
+    Fixed: resolve ALL names in a lookup pass, batch-create only the missing
+    ones, and on a race roll back the WHOLE (nothing-else-written) batch and
+    RESTART resolution from the lookup pass (bounded retries) - no id is ever
+    returned for a row whose flush didn't actually stick.
+
+    Simulates the race directly (SQLite has no functional unique index on
+    `contact_tags`, so a real concurrent race can't be reproduced here - only
+    the recovery logic is under test): "Bravo" is pre-committed (as if a
+    concurrent request already landed it), the FIRST lookup pass is patched
+    to miss everything (the race window before that commit was visible to
+    our own SELECT), and the FIRST `flush()` is patched to raise
+    `IntegrityError` once (what the DB constraint would raise for real for
+    the whole batch insert). The retry's lookup pass then finds "Bravo" and
+    only needs to create "Alpha" - both names must resolve to exactly one
+    row each, with "Bravo" reusing the pre-existing winner's id."""
+    from modules.omnichannel.models import ContactTag, Workspace
+    from modules.omnichannel.services.contact_tag_service import ContactTagService
+    from sqlalchemy.exc import IntegrityError
+
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+    winner = ContactTag(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, name="Bravo")
+    db.add(winner)
+    db.commit()
+    winner_id = winner.id
+
+    svc = ContactTagService(db)
+    real_lookup = svc._find_all_by_names
+    lookups = {"n": 0}
+
+    def fake_lookup(workspace_id, tenant_id, names):
+        lookups["n"] += 1
+        if lookups["n"] == 1:
+            return {}  # our lookup pass missed EVERYTHING, incl. the winner
+        return real_lookup(workspace_id, tenant_id, names)
+
+    svc._find_all_by_names = fake_lookup
+
+    real_flush = db.flush
+    flushed = {"n": 0}
+
+    def fake_flush(*a, **kw):
+        flushed["n"] += 1
+        if flushed["n"] == 1:
+            raise IntegrityError("insert", {}, Exception("duplicate key value"))
+        return real_flush(*a, **kw)
+
+    db.flush = fake_flush
+
+    ids = svc.resolve_or_create_by_name(ws.id, DEFAULT_TENANT_ID, ["Alpha", "Bravo"])
+
+    db.flush = real_flush
+    rows = db.query(ContactTag).filter(ContactTag.workspace_id == ws.id).all()
+    by_id = {r.id: r.name for r in rows}
+    assert len(rows) == 2  # exactly Alpha + Bravo - no dangling row, no duplicate
+    assert set(ids) == set(by_id.keys())
+    assert winner_id in ids  # Bravo reused the pre-existing winner, not a fresh row
+    assert by_id[winner_id] == "Bravo"
+
+
+def test_resolve_or_create_by_name_gives_up_after_bounded_retries(session_factory):
+    """B10: a persistent (not just one-shot) flush failure must raise a clean
+    validation error, never loop forever or leak the raw `IntegrityError`."""
+    from modules.omnichannel.models import Workspace
+    from modules.omnichannel.services.contact_tag_service import (
+        ContactTagService,
+        TagValidationError,
+    )
+    from sqlalchemy.exc import IntegrityError
+
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+    svc = ContactTagService(db)
+
+    def always_miss(workspace_id, tenant_id, names):
+        return {}
+
+    def always_raise(*a, **kw):
+        raise IntegrityError("insert", {}, Exception("duplicate key value"))
+
+    svc._find_all_by_names = always_miss
+    db.flush = always_raise
+
+    with pytest.raises(TagValidationError):
+        svc.resolve_or_create_by_name(ws.id, DEFAULT_TENANT_ID, ["Persistent"])
+
+
+def test_contact_field_create_race_is_a_422_not_a_500(session_factory):
+    """B6 (plan-25 round-3 codex triage): the app-level `_find_by_key` check
+    passes, then a concurrent request's row lands first - the DB backstop
+    (`uq_contact_fields_workspace_key`, Postgres functional unique index)
+    raises `IntegrityError` on our `commit()`. That must surface as the SAME
+    422 `{fieldErrors: {key: ...}}` a same-request duplicate gets, never an
+    unhandled 500. Simulated directly (SQLite has no such index): patch
+    `_find_by_key` to miss (the race window) and `db.commit()` to raise once."""
+    from modules.omnichannel.models import Workspace
+    from modules.omnichannel.services.contact_field_service import (
+        ContactFieldService,
+        FieldValidationError,
+    )
+    from sqlalchemy.exc import IntegrityError
+
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+    svc = ContactFieldService(db)
+    svc._find_by_key = lambda *a, **k: None
+
+    real_commit = db.commit
+    calls = {"n": 0}
+
+    def fake_commit(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise IntegrityError("insert", {}, Exception("duplicate key value"))
+        return real_commit(*a, **kw)
+
+    db.commit = fake_commit
+
+    class Payload:
+        key = "racyField"
+        type = "text"
+        label = "Racy"
+        description = None
+        options = None
+        visibility = "always"
+
+    with pytest.raises(FieldValidationError) as exc_info:
+        svc.create(ws.id, DEFAULT_TENANT_ID, Payload())
+    assert "key" in exc_info.value.errors
+
+    db.commit = real_commit
+    from modules.omnichannel.models import ContactField
+
+    assert (
+        db.query(ContactField.id)
+        .filter(ContactField.workspace_id == ws.id, ContactField.key == "racyField")
+        .count()
+        == 0
+    )  # the failed insert was rolled back, not left half-applied
+
+
+def test_contact_tag_create_race_is_a_422_not_a_500(session_factory):
+    """B9 (plan-25 round-3 codex triage): same class of bug as B6, for tag
+    CREATE - `_find_by_name` passes, a concurrent create wins the DB
+    backstop, our `commit()` raises `IntegrityError`. Must 422, never 500."""
+    from modules.omnichannel.models import Workspace
+    from modules.omnichannel.services.contact_tag_service import (
+        ContactTagService,
+        TagValidationError,
+    )
+    from sqlalchemy.exc import IntegrityError
+
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+    svc = ContactTagService(db)
+    svc._find_by_name = lambda *a, **k: None
+
+    real_commit = db.commit
+    calls = {"n": 0}
+
+    def fake_commit(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise IntegrityError("insert", {}, Exception("duplicate key value"))
+        return real_commit(*a, **kw)
+
+    db.commit = fake_commit
+
+    class Payload:
+        name = "Racy Tag"
+        emoji = None
+        color = None
+        description = None
+
+    with pytest.raises(TagValidationError) as exc_info:
+        svc.create(ws.id, DEFAULT_TENANT_ID, Payload())
+    assert exc_info.value.field == "name"
+
+    db.commit = real_commit
+    from modules.omnichannel.models import ContactTag
+
+    assert (
+        db.query(ContactTag.id)
+        .filter(ContactTag.workspace_id == ws.id, ContactTag.name == "Racy Tag")
+        .count()
+        == 0
+    )
+
+
+def test_contact_tag_rename_race_is_a_422_not_a_500(session_factory):
+    """B9: same class of bug for tag RENAME (update) - a concurrent rename to
+    the same target name wins the DB backstop; our `commit()` raises."""
+    from modules.omnichannel.models import ContactTag, Workspace
+    from modules.omnichannel.services.contact_tag_service import (
+        ContactTagService,
+        TagValidationError,
+    )
+    from sqlalchemy.exc import IntegrityError
+
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+    row = ContactTag(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, name="Original")
+    db.add(row)
+    db.commit()
+    row_id = row.id
+
+    svc = ContactTagService(db)
+    svc._find_by_name = lambda *a, **k: None
+
+    real_commit = db.commit
+    calls = {"n": 0}
+
+    def fake_commit(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise IntegrityError("insert", {}, Exception("duplicate key value"))
+        return real_commit(*a, **kw)
+
+    db.commit = fake_commit
+
+    class Payload:
+        model_fields_set = {"name"}
+        name = "Renamed Racy"
+        emoji = None
+        color = None
+        description = None
+
+    with pytest.raises(TagValidationError) as exc_info:
+        svc.update(row_id, ws.id, DEFAULT_TENANT_ID, Payload())
+    assert exc_info.value.field == "name"
+
+    db.commit = real_commit
+    db.refresh(row)
+    assert row.name == "Original"  # the failed rename was rolled back
 
 
 # ── Review round 1, finding 11: pinned wire types (visibility / color) ──────
@@ -734,6 +998,146 @@ def test_internal_patch_emits_entity_event_with_real_actor_name_and_email(client
     actor = runs[0].trigger_payload_json["actor"]
     assert actor["email"] == ACTIVE_EMAIL
     assert actor["name"]  # non-empty - the real user's display name
+    db.close()
+
+
+def test_field_changed_trigger_matches_omnichannel_contacts_camelcase_change_keys(
+    client, session_factory
+):
+    """B7 (plan-25 round-3 codex triage): `ContactProfileService.patch` emits
+    `omnichannel_contact` `updated` events with WIRE (camelCase) `changes`
+    keys (`firstName`, `customFields.<key>`) per AC-23 - deliberately kept,
+    not a bug. But `entity.field_changed`'s refinement canonicalized ONLY the
+    configured field through `attr_for` (camelCase -> snake_case) before
+    comparing it against the raw `changes` keys, so a trigger configured for
+    `firstName` compared `attr_for("firstName")` == `"first_name"` against a
+    `changes` dict that actually holds `"firstName"` - never matched. Fixed by
+    canonicalizing BOTH sides through the same `attr_for`, so a field-specific
+    trigger fires for a plain field (`firstName`) AND a dotted custom-field
+    key (`customFields.<key>`)."""
+    from tests.test_workflow_triggers import _edge, _email, _node, _publish, _runs_for
+
+    db = session_factory()
+    doc_first_name = {"schemaVersion": 1, "nodes": [
+        _node("trg", "trigger", "entity.field_changed", {
+            "entityType": "omnichannel_contact", "field": "firstName",
+        }),
+        _email("a"),
+    ], "edges": [_edge("trg", "a")]}
+    wid_first_name = _publish(db, doc_first_name)
+    db.close()
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    field = client.post(f"{_base(ws)}/contact-fields", headers=h, json={
+        "key": "notes", "label": "Notes", "type": "text",
+    })
+    assert field.status_code == 201, field.text
+    cid = _seed_thread(session_factory, name="Field Changed Trigger")
+
+    # Unrelated field changes - must NOT fire the firstName-specific trigger.
+    client.patch(f"/omnichannel/contacts/{cid}", headers=h, json={"lastName": "Nope"})
+    db = session_factory()
+    assert len(_runs_for(db, wid_first_name)) == 0
+    db.close()
+
+    # firstName changes - must fire.
+    res = client.patch(f"/omnichannel/contacts/{cid}", headers=h, json={"firstName": "Matched"})
+    assert res.status_code == 200, res.text
+    db = session_factory()
+    assert len(_runs_for(db, wid_first_name)) == 1
+    db.close()
+
+    # A dotted customFields.<key> trigger must also match.
+    db = session_factory()
+    doc_custom = {"schemaVersion": 1, "nodes": [
+        _node("trg2", "trigger", "entity.field_changed", {
+            "entityType": "omnichannel_contact", "field": "customFields.notes",
+        }),
+        _email("b"),
+    ], "edges": [_edge("trg2", "b")]}
+    wid_custom = _publish(db, doc_custom)
+    db.close()
+
+    res = client.patch(f"/omnichannel/contacts/{cid}", headers=h, json={
+        "customFields": {"notes": "hello"},
+    })
+    assert res.status_code == 200, res.text
+    db = session_factory()
+    assert len(_runs_for(db, wid_custom)) == 1
+    db.close()
+
+
+def test_workflow_entity_update_on_contact_validates_and_fans_out_webhook(client, session_factory):
+    """B11 (plan-25 round-3 codex triage): `entity.update` used to write
+    rendered strings straight onto `Contact` columns via `setattr`, bypassing
+    BOTH the contact-profile validation (`language`/`countryCode` format +
+    normalization) AND the realtime/webhook `contact.updated` fan-out every
+    OTHER contact write path gets. Fixed via `WorkflowEntity.apply_update`
+    routing through `ConversationService.patch_thread` (validation +
+    normalization + ONE `contact.updated` event + realtime + webhook - the
+    SAME seam the internal PATCH and the public gateway PATCH both use)."""
+    from app.services.workflow_service import WorkflowService
+    from modules.omnichannel.models import Contact, WebhookDelivery
+    from tests.test_omnichannel_api_gateway import _seeded
+    from tests.test_workflow_triggers import _actor, _edge, _node, _publish
+
+    hdr, cid = _seeded(client, session_factory, phone="+60177000011")
+    reg = client.post(
+        "/api/v1/omnichannel/webhooks",
+        json={"name": "w", "url": "https://hooks.example.com/w", "events": ["contact.updated"]},
+        headers=hdr,
+    )
+    assert reg.status_code == 201, reg.text
+
+    db = session_factory()
+    doc = {"schemaVersion": 1, "nodes": [
+        _node("trg", "trigger", "manual", {"inputs": []}),
+        _node("upd", "action", "entity.update", {
+            "entityType": "omnichannel_contact", "recordId": cid,
+            "assignments": [{"field": "countryCode", "value": "my"}],
+        }),
+    ], "edges": [_edge("trg", "upd")]}
+    wid = _publish(db, doc)
+    run = WorkflowService(db).run(wid, DEFAULT_TENANT_ID, inputs={}, is_test=False, actor=_actor(db))
+    assert run.status == "success", run.error
+
+    contact = db.query(Contact).filter(Contact.id == cid).first()
+    assert contact.country_code == "MY"  # normalized, not the raw rendered "my"
+
+    delivery = (
+        db.query(WebhookDelivery)
+        .filter(WebhookDelivery.event_type == "contact.updated")
+        .order_by(WebhookDelivery.created_at.desc())
+        .first()
+    )
+    assert delivery is not None  # exactly one contact.updated fan-out
+    assert delivery.payload_json["data"]["contact"]["countryCode"] == "MY"
+    db.close()
+
+
+def test_workflow_entity_update_on_contact_rejects_invalid_value(session_factory):
+    """B11: an invalid value must FAIL the node (through the SAME validation
+    every other write path enforces), never write straight through."""
+    from app.services.workflow_service import WorkflowService
+    from modules.omnichannel.models import Contact
+    from tests.test_workflow_triggers import _actor, _edge, _node, _publish
+
+    cid = _seed_thread(session_factory, name="Invalid CC Test")
+    db = session_factory()
+    doc = {"schemaVersion": 1, "nodes": [
+        _node("trg", "trigger", "manual", {"inputs": []}),
+        _node("upd", "action", "entity.update", {
+            "entityType": "omnichannel_contact", "recordId": cid,
+            "assignments": [{"field": "countryCode", "value": "not-a-code"}],
+        }),
+    ], "edges": [_edge("trg", "upd")]}
+    wid = _publish(db, doc)
+    run = WorkflowService(db).run(wid, DEFAULT_TENANT_ID, inputs={}, is_test=False, actor=_actor(db))
+    assert run.status == "failed"
+
+    contact = db.query(Contact).filter(Contact.id == cid).first()
+    assert contact.country_code is None  # rejected value never applied
     db.close()
 
 
@@ -1071,6 +1475,77 @@ def test_move_lifecycle_happy_path(client, session_factory):
 
     detail = client.get(f"/omnichannel/contacts/{cid}", headers=h).json()
     assert detail["lifecycle"]["statusId"] == ids["hot_lead"]
+
+
+def test_move_lifecycle_impersonation_authorizes_as_effective_user(client, session_factory):
+    """B5 (plan-25 round-3 codex triage): edge-role/condition authorization for
+    a lifecycle move must run as the EFFECTIVE (impersonated target) user, not
+    the real admin - `status_machine.transition`'s `actor` param is an
+    AUTHORIZATION identity everywhere else in the codebase (form_service,
+    tenant_service, ideation all pass the effective `current_user`), never the
+    real-admin attribution id. Condition the new_lead->hot_lead edge on
+    `actor.email == <target's email>` - the move must SUCCEED while
+    impersonating that target (their identity is what gets checked) even
+    though the real admin's own email never matches the condition."""
+    from app.models import Role
+    from app.models.status_transition import StatusTransition
+    from app.repositories.permission_repository import PermissionRepository
+    from tests.test_status_engine import _cond, _group
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    graph = _lifecycle_graph(client, h, ws)
+    ids = _stage_ids(graph)
+    cid = _seed_lifecycle_contact(session_factory, ws)
+
+    target_email = "impersonated-lifecycle@example.com"
+    db = session_factory()
+    # A role that can reach the endpoint (`contacts.manage`) but deliberately
+    # WITHOUT `users.impersonate` (a user who can also impersonate can't be
+    # impersonated - `ImpersonationService.start`).
+    role = Role(tenant_id=DEFAULT_TENANT_ID, name="Lifecycle Mover")
+    role.permissions = PermissionRepository(db).get_by_keys(["contacts.manage"])
+    db.add(role)
+    db.flush()
+    target = User(
+        tenant_id=DEFAULT_TENANT_ID, email=target_email, name="Impersonated Target",
+        password=hash_password("Password123!"), status=UserStatus.ACTIVE.value,
+    )
+    target.roles = [role]
+    db.add(target)
+    db.flush()
+    target_id = target.id
+
+    edge = (
+        db.query(StatusTransition)
+        .filter(
+            StatusTransition.entity_type == LIFECYCLE_ENTITY,
+            StatusTransition.tenant_id == DEFAULT_TENANT_ID,
+            StatusTransition.from_status_id == ids["new_lead"],
+            StatusTransition.to_status_id == ids["hot_lead"],
+        )
+        .first()
+    )
+    assert edge is not None
+    edge.conditions_json = _group(_cond("actor.email", "eq", target_email))
+    db.commit()
+    db.close()
+
+    start = client.post(
+        "/impersonation/start", headers=h, json={"targetUserId": target_id}
+    )
+    assert start.status_code == 200, start.text
+    headers = {**h, "X-Impersonate-User-Id": target_id}
+
+    # Real admin's own email never satisfies the condition - if the bug
+    # regresses (actor=real admin) this 409s instead of succeeding.
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/lifecycle",
+        headers=headers,
+        json={"toStatusId": ids["hot_lead"]},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["lifecycle"]["key"] == "hot_lead"
 
 
 def test_move_lifecycle_no_edge_409(client, session_factory):

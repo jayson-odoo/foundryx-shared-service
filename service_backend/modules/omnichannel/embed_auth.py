@@ -70,6 +70,13 @@ class ConversationPrincipal:
     is_embed: bool
     # Native attribution (real admin under impersonation); None for embed.
     actor_user_id: Optional[str] = None
+    # Native EFFECTIVE user (impersonation target when active, else same as
+    # `actor_user_id`) - B5: the identity `status_machine.transition` must
+    # authorize edge-role/condition checks AS, matching every other caller in
+    # the codebase (form_service, tenant_service, ideation all pass the
+    # effective `current_user`, never the real-admin attribution id). None
+    # for embed.
+    effective_user_id: Optional[str] = None
     # Federated attribution; None for native.
     external_agent_id: Optional[str] = None
     # Embed: the token's workspace (scope boundary). Native: None = all workspaces.
@@ -216,6 +223,7 @@ def get_conversation_principal(
         tenant_id=effective.tenant_id,
         is_embed=False,
         actor_user_id=str(actor.id),
+        effective_user_id=str(effective.id),
         permission_keys=effective_permission_keys(effective),
     )
 
@@ -276,6 +284,24 @@ def resolve_native_actor(principal: ConversationPrincipal, db: Session) -> Optio
     return (
         db.query(User)
         .filter(User.id == principal.actor_user_id, User.tenant_id == principal.tenant_id)
+        .first()
+    )
+
+
+def resolve_effective_actor(principal: ConversationPrincipal, db: Session) -> Optional[User]:
+    """B5: the EFFECTIVE-user counterpart to `resolve_native_actor`, for the
+    ONE use that is an AUTHORIZATION check, not attribution -
+    `status_machine.transition`'s edge-role/rule-condition gate (`move_lifecycle`
+    / `lifecycle_moves`, and the lifecycle sub-move inside `patch_thread`).
+    Under impersonation this is the TARGET (matches `permission_keys`, which
+    already reads the target's grants) - `resolve_native_actor` stays the real
+    admin for attribution (entity-event actor facts, `actor_id`). Tenant-scoped
+    (polymorphic stored-id rule); embed has no native actor at all."""
+    if principal.is_embed or not principal.effective_user_id:
+        return None
+    return (
+        db.query(User)
+        .filter(User.id == principal.effective_user_id, User.tenant_id == principal.tenant_id)
         .first()
     )
 

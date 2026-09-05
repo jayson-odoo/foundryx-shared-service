@@ -196,6 +196,86 @@ def test_reverse_dep_guard_blocks_deactivate_and_uninstall(client, session_facto
     db.close()
 
 
+def test_backfill_tenant_modules_runs_install_tenant_and_grants(client, session_factory):
+    """B4 (plan-25 round-3 codex triage): a pre-App-Store tenant (module data
+    exists, no `tenant_modules` row) must come out of `_backfill_tenant_modules`
+    exactly as if it had gone through `AppStoreService.install` - the module's
+    `install_tenant` seed hook ran (omnichannel: statuses + the workspace's
+    lifecycle graph materialized) AND the module's permission keys were
+    granted to the tenant's Admin role. Previously it was stamped ACTIVE at
+    the current code version with NEITHER, and since installed_version was
+    already current, no later `update_tenant` could ever repair it."""
+    from app.models.module import Module, TenantModule
+    from app.models.permission import Permission
+    from app.models.role import Role, role_permissions
+    from app.services.tenant_service import TenantService
+    from app.module_loader import _backfill_tenant_modules
+    from modules.omnichannel.models import Workspace
+
+    db = session_factory()
+    tenant = TenantService(db).provision(
+        name="Legacy Backfill Co", slug="legacy-backfill-co",
+        admin_email="admin-legacybackfill@example.com",
+        admin_password="Password123!", admin_name="Admin",
+    )
+    db.flush()
+    tenant_id = tenant.id
+
+    # Simulate a pre-App-Store tenant: a Workspace row exists (the omnichannel
+    # `tenant_has_data` detector) but NO `tenant_modules` row, and none of the
+    # per-tenant seeding (`install_tenant`) has ever run.
+    ws = Workspace(tenant_id=tenant_id, name="General", is_default=True, is_trashed=False)
+    db.add(ws)
+    db.commit()
+
+    module = db.query(Module).filter(Module.name == "omnichannel").first()
+    assert (
+        db.query(TenantModule)
+        .filter(TenantModule.tenant_id == tenant_id, TenantModule.module_id == module.id)
+        .first()
+        is None
+    )
+
+    _backfill_tenant_modules(db)
+    db.commit()
+
+    state = (
+        db.query(TenantModule)
+        .filter(TenantModule.tenant_id == tenant_id, TenantModule.module_id == module.id)
+        .first()
+    )
+    assert state is not None and state.status == "ACTIVE"
+
+    # install_tenant ran: the module's static status rows + the workspace's
+    # lifecycle graph were materialized (not just the bare TenantModule row).
+    from modules.omnichannel.models import Status as OmniStatus
+    from modules.omnichannel.services import lifecycle_service
+
+    assert (
+        db.query(OmniStatus)
+        .filter(OmniStatus.tenant_id == tenant_id, OmniStatus.scope == "WORKSPACE")
+        .first()
+        is not None
+    )
+    assert lifecycle_service.stages_for_workspace(db, tenant_id, ws.id) != []
+
+    # The module's permission keys were granted to the tenant's Admin role.
+    admin_role = (
+        db.query(Role)
+        .filter(Role.tenant_id == tenant_id, Role.name == "Admin")
+        .first()
+    )
+    granted = {
+        p.key
+        for p in db.query(Permission)
+        .join(role_permissions, role_permissions.c.permission_id == Permission.id)
+        .filter(role_permissions.c.role_id == admin_role.id)
+        .all()
+    }
+    assert any(key.startswith("contacts.") for key in granted)
+    db.close()
+
+
 # ── terminology active-filter (D2) ──────────────────────────────────────────
 
 

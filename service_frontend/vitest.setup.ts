@@ -8,13 +8,12 @@ afterEach(() => {
 
 // jsdom polyfills for components that measure (OverflowPills) or use Radix
 // (pointer capture / scrollIntoView are not implemented in jsdom).
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+class ResizeObserverStub implements ResizeObserver {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(globalThis as any).ResizeObserver = ResizeObserverStub;
+globalThis.ResizeObserver = ResizeObserverStub;
 if (!Element.prototype.hasPointerCapture) {
   Element.prototype.hasPointerCapture = () => false;
 }

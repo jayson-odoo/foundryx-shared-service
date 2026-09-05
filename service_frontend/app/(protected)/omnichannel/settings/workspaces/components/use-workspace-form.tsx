@@ -143,13 +143,17 @@ export function useWorkspaceForm(
         icon: UsersIcon,
         render: () => <MembersTab workspaceId={workspace?.id ?? null} creating={creating} />,
       },
-      // Plan 25 - hidden while creating (AC-CDM-29): these hang off a real
-      // workspace id (scoped lifecycle graph / per-workspace registries).
-      // Also gated by permission (F15) - the backend GETs are
-      // `conversations.read` OR `contacts.read`; a user with neither never
-      // sees a tab that would just 403 (foolproof-UI, UX-only - the API is
-      // the real gate).
-      ...(!creating && (can('conversations.read') || can('contacts.read'))
+      // F6 (plan-25 round-3 codex triage): Lifecycle is a STATUS-ENGINE
+      // surface (its canvas reads via `statuses.read` and edits via
+      // `statuses.manage`, same as every other `EntityFlow` embed) - gated
+      // SEPARATELY from the conversations/contacts-scoped tabs below, never
+      // bundled with `conversations.read`/`contacts.read` (a user holding
+      // ONLY those never held a status-engine permission at all). Edit mode
+      // is gated on `statuses.manage` INDEPENDENTLY of the form's own Edit
+      // toggle (`workspaces.manage`) - the two permissions are unrelated;
+      // toggling the workspace form into edit mode must never itself grant
+      // canvas-edit rights on the status engine.
+      ...(!creating && can('statuses.read')
         ? [
             {
               id: 'lifecycle',
@@ -160,12 +164,21 @@ export function useWorkspaceForm(
                   <WorkspaceLifecycleTab
                     workspaceId={workspace.id}
                     workspaceName={workspace.name}
-                    editing={editing}
+                    editing={editing && can('statuses.manage')}
                     onDirtyChange={setLifecycleDirty}
                     layoutController={lifecycleLayoutController}
                   />
                 ) : null,
             },
+          ]
+        : []),
+      // Plan 25 - hidden while creating (AC-CDM-29): these hang off a real
+      // workspace id (per-workspace registries). Gated by permission (F15) -
+      // the backend GETs are `conversations.read` OR `contacts.read`; a user
+      // with neither never sees a tab that would just 403 (foolproof-UI,
+      // UX-only - the API is the real gate).
+      ...(!creating && (can('conversations.read') || can('contacts.read'))
+        ? [
             {
               id: 'contact-fields',
               label: 'Contact fields',

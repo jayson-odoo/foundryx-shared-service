@@ -89,4 +89,39 @@ describe('LifecycleMove', () => {
     );
     expect(toast.error).not.toHaveBeenCalledWith('Request failed');
   });
+
+  it('F5: a rejected (409) move refetches the fireable-moves list', async () => {
+    const onMove = vi.fn().mockRejectedValue(
+      new ApiError('Request failed', 409, null, {
+        code: 'lifecycle_move_not_allowed',
+        message: 'No move from Customer to Hot Lead.',
+      }),
+    );
+    const user = userEvent.setup();
+    render(<LifecycleMoveSection contactId="cnt-001" lifecycle={LIFECYCLE} onMove={onMove} />);
+
+    await waitFor(() => expect(lifecycleMoves).toHaveBeenCalledTimes(1));
+    await user.click(await screen.findByRole('combobox', { name: 'Move to' }));
+    await user.click(await screen.findByRole('option', { name: 'Customer' }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    // The stale fireable-list that offered the now-rejected move gets
+    // refetched - the server is the source of truth on what's ACTUALLY
+    // fireable, and a 409 means our cached list disagreed with it.
+    await waitFor(() => expect(lifecycleMoves).toHaveBeenCalledTimes(2));
+  });
+
+  it('F5: a changeSignal change refetches even when the stage key is unchanged', async () => {
+    const { rerender } = render(
+      <LifecycleMoveSection contactId="cnt-001" lifecycle={LIFECYCLE} onMove={vi.fn()} changeSignal="a" />,
+    );
+    await waitFor(() => expect(lifecycleMoves).toHaveBeenCalledTimes(1));
+
+    // Same contact, same stage key - only the fingerprint of OTHER
+    // condition-relevant fields (priority/assignee/etc) changed.
+    rerender(
+      <LifecycleMoveSection contactId="cnt-001" lifecycle={LIFECYCLE} onMove={vi.fn()} changeSignal="b" />,
+    );
+    await waitFor(() => expect(lifecycleMoves).toHaveBeenCalledTimes(2));
+  });
 });

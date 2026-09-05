@@ -50,9 +50,16 @@ function toValues(tag: ContactTag | null): ContactTagFormValues {
   };
 }
 
+// F10 (plan-25 round-3 codex triage): a 422 `fieldErrors` key must ALWAYS map
+// onto something visible - the known form fields render their error inline;
+// anything else falls back to the dialog-level banner rather than being
+// silently dropped.
+const KNOWN_FIELD_KEYS = new Set<keyof ContactTagFormValues>(['name', 'emoji', 'color', 'description']);
+
 export function ContactTagDialog({ open, onOpenChange, tag, onCreate, onUpdate }: ContactTagDialogProps) {
   const editing = !!tag;
   const [submitting, setSubmitting] = useState(false);
+  const [unmappedErrors, setUnmappedErrors] = useState<string[]>([]);
 
   const form = useForm<ContactTagFormValues>({
     resolver: zodResolver(contactTagSchema),
@@ -60,12 +67,16 @@ export function ContactTagDialog({ open, onOpenChange, tag, onCreate, onUpdate }
   });
 
   useEffect(() => {
-    if (open) form.reset(toValues(tag));
+    if (open) {
+      form.reset(toValues(tag));
+      setUnmappedErrors([]);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, tag]);
 
   const submit = form.handleSubmit(async (values) => {
     setSubmitting(true);
+    setUnmappedErrors([]);
     try {
       if (editing) {
         await onUpdate(tag.id, values);
@@ -79,9 +90,16 @@ export function ContactTagDialog({ open, onOpenChange, tag, onCreate, onUpdate }
       if (error instanceof ApiError && error.status === 422) {
         const fieldErrors = (error.detail as { fieldErrors?: Record<string, string> } | undefined)?.fieldErrors;
         if (fieldErrors) {
+          const unmapped: string[] = [];
           for (const [name, message] of Object.entries(fieldErrors)) {
-            form.setError(name as keyof ContactTagFormValues, { message });
+            const target = name as keyof ContactTagFormValues;
+            if (KNOWN_FIELD_KEYS.has(target)) {
+              form.setError(target, { message });
+            } else {
+              unmapped.push(message);
+            }
           }
+          if (unmapped.length > 0) setUnmappedErrors(unmapped);
         } else {
           toast.error(error.message);
         }
@@ -102,6 +120,13 @@ export function ContactTagDialog({ open, onOpenChange, tag, onCreate, onUpdate }
           <DialogTitle>{editing ? 'Edit tag' : 'Create tag'}</DialogTitle>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-4">
+          {unmappedErrors.length > 0 && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
+              {unmappedErrors.map((message, i) => (
+                <p key={i}>{message}</p>
+              ))}
+            </div>
+          )}
           <div className="flex gap-3">
             <div className="flex w-20 flex-col gap-1.5">
               <Label htmlFor="tag-emoji">Emoji</Label>
@@ -112,6 +137,9 @@ export function ContactTagDialog({ open, onOpenChange, tag, onCreate, onUpdate }
                 placeholder="⭐"
                 className="text-center text-lg"
               />
+              {form.formState.errors.emoji && (
+                <p className="text-xs text-destructive">{form.formState.errors.emoji.message}</p>
+              )}
             </div>
             <div className="flex flex-1 flex-col gap-1.5">
               <Label htmlFor="tag-name">Name</Label>
@@ -158,6 +186,9 @@ export function ContactTagDialog({ open, onOpenChange, tag, onCreate, onUpdate }
                 />
               </label>
             </div>
+            {form.formState.errors.color && (
+              <p className="text-xs text-destructive">{form.formState.errors.color.message}</p>
+            )}
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -168,6 +199,9 @@ export function ContactTagDialog({ open, onOpenChange, tag, onCreate, onUpdate }
               value={form.watch('description')}
               onChange={(e) => form.setValue('description', e.target.value)}
             />
+            {form.formState.errors.description && (
+              <p className="text-xs text-destructive">{form.formState.errors.description.message}</p>
+            )}
           </div>
         </DialogBody>
         <DialogFooter>

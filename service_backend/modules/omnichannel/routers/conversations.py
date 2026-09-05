@@ -37,6 +37,7 @@ from ..embed_auth import (
     ConversationPrincipal,
     enforce_thread_access,
     get_conversation_principal,
+    resolve_effective_actor,
     resolve_native_actor,
 )
 from ..schemas import (
@@ -226,7 +227,10 @@ def move_lifecycle(
     if "contacts.manage" not in principal.permission_keys:
         raise HTTPException(status_code=403, detail="Missing permission: contacts.manage")
 
-    actor = resolve_native_actor(principal, db)
+    # B5: edge-role/condition authorization runs AS the effective (impersonated
+    # target) user - `resolve_native_actor` (real admin) is for ATTRIBUTION
+    # only, never for a `status_machine.transition` auth check.
+    actor = resolve_effective_actor(principal, db)
     try:
         return ConversationService(db).move_lifecycle(
             contact_id, principal.tenant_id, payload.toStatusId, actor=actor
@@ -265,7 +269,10 @@ def get_lifecycle_moves(
             detail="Missing permission: one of conversations.read, contacts.read",
         )
     enforce_thread_access(db, principal, contact_id)
-    actor = resolve_native_actor(principal, db)
+    # B5: same authorization-vs-attribution split as `move_lifecycle` above -
+    # the fireable-edges computation must reflect what the EFFECTIVE user can
+    # fire, not the real admin under impersonation.
+    actor = resolve_effective_actor(principal, db)
     try:
         edges = ConversationService(db).lifecycle_moves(
             contact_id, principal.tenant_id, actor=actor

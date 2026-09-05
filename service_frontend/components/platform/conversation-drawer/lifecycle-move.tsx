@@ -21,12 +21,16 @@ export interface LifecycleMoveProps {
   contactId: string;
   lifecycle: ContactLifecycleSummary | null;
   onMove: (toStatusId: string) => Promise<unknown>;
+  /** F5 (plan-25 round-3 codex triage): a fingerprint of the OTHER
+   *  condition-relevant contact fields (priority/assignee/CSW/…) - refetches
+   *  the fireable-moves list even when the stage itself hasn't changed. */
+  changeSignal?: string | null;
 }
 
-export function LifecycleMove({ contactId, lifecycle, onMove }: LifecycleMoveProps) {
+export function LifecycleMove({ contactId, lifecycle, onMove, changeSignal }: LifecycleMoveProps) {
   const { can } = useCan();
   const canManage = can('contacts.manage');
-  const { moves, loading } = useLifecycleMoves(contactId, lifecycle?.key);
+  const { moves, loading, refetch } = useLifecycleMoves(contactId, lifecycle?.key, changeSignal);
   const [moving, setMoving] = useState(false);
 
   if (!lifecycle) {
@@ -54,6 +58,10 @@ export function LifecycleMove({ contactId, lifecycle, onMove }: LifecycleMovePro
         // (F14, AC-CDM-37). Falls back to the generic HTTP message otherwise.
         const d = error.detail as { message?: string } | undefined;
         toast.error(d?.message ?? error.message);
+        // F5: a 409 means the cached fireable list already disagreed with
+        // the server (e.g. a condition-gated edge closed between load and
+        // click) - refetch so the picker doesn't keep offering it.
+        if (error.status === 409) refetch();
       } else {
         toast.error('Could not move this contact.');
       }

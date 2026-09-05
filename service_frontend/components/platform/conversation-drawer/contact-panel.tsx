@@ -27,7 +27,26 @@ export function ContactPanel({ thread, onPatchContact, onMoveLifecycle }: Contac
     <div className="flex h-full flex-col gap-4 overflow-y-auto p-4" data-testid="contact-panel">
       <ContactDetailsForm thread={thread} fields={fields} onSave={onPatchContact} />
       <div className="border-t pt-4">
-        <LifecycleMove contactId={thread.id} lifecycle={thread.lifecycle} onMove={onMoveLifecycle} />
+        <LifecycleMove
+          contactId={thread.id}
+          lifecycle={thread.lifecycle}
+          onMove={onMoveLifecycle}
+          // F5: a fingerprint of the fields a lifecycle-edge condition could
+          // reference (mirrors the `omnichannel_contact` workflow-entity
+          // fact set) - any of these changing refetches the fireable-moves
+          // list even though the stage itself didn't move.
+          changeSignal={[
+            thread.priority,
+            thread.assignedUserId,
+            thread.cswExpiresAt,
+            thread.lastMessageAt,
+            thread.language,
+            thread.countryCode,
+            thread.email,
+            thread.firstName,
+            thread.lastName,
+          ].join('|')}
+        />
       </div>
       <div className="border-t pt-4">
         <TagChips

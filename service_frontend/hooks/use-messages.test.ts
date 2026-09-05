@@ -70,6 +70,41 @@ describe('useMessages', () => {
     expect(last.body).toBe('On it!');
   });
 
+  it('F1: a slow patchContact for the PREVIOUS contact does not overwrite the newly selected thread', async () => {
+    const { mockConversationService } = await import('@/services/conversation-service.mock');
+
+    let resolvePatch!: (thread: import('@/types/omnichannel').ConversationThread) => void;
+    const pending = new Promise<import('@/types/omnichannel').ConversationThread>((resolve) => {
+      resolvePatch = resolve;
+    });
+    const spy = vi.spyOn(mockConversationService, 'patchContact').mockReturnValue(pending);
+
+    const { result, rerender } = renderHook(({ id }: { id: string }) => useMessages(id), {
+      initialProps: { id: 'cnt-001' },
+    });
+    await waitFor(() => expect(result.current.thread?.id).toBe('cnt-001'));
+
+    // Fire a patch for cnt-001 but never let it resolve yet.
+    let patchPromise!: Promise<unknown>;
+    act(() => {
+      patchPromise = result.current.patchContact({ firstName: 'Stale Edit' });
+    });
+
+    // User switches to a different contact before the patch above resolves.
+    rerender({ id: 'cnt-002' });
+    await waitFor(() => expect(result.current.thread?.id).toBe('cnt-002'));
+
+    // NOW the stale patch resolves - it must NOT clobber the newly selected thread.
+    const staleThread = await mockConversationService.getThread('cnt-001');
+    await act(async () => {
+      resolvePatch({ ...staleThread, firstName: 'Stale Edit' });
+      await patchPromise;
+    });
+
+    expect(result.current.thread?.id).toBe('cnt-002');
+    spy.mockRestore();
+  });
+
   it('addNote appends a SYSTEM bubble', async () => {
     const { result } = renderHook(() => useMessages('cnt-001'));
     await waitFor(() => expect(result.current.thread).not.toBeNull());
@@ -124,5 +159,31 @@ describe('useConversations', () => {
       const row = conversations.result.current.threads.find((t) => t.id === 'cnt-003');
       expect(row?.assignedUserId).toBe(MOCK_CURRENT_USER.id);
     });
+  });
+
+  it('F2: an event for a DIFFERENT workspace is ignored, not upserted into the list', async () => {
+    const { mockConversationService } = await import('@/services/conversation-service.mock');
+    const spy = vi.spyOn(mockConversationService, 'subscribe');
+
+    const { result } = renderHook(() => useConversations('wsp-001'));
+    await waitFor(() => expect(result.current.threads.length).toBeGreaterThan(0));
+    const before = result.current.threads.length;
+
+    const handler = spy.mock.calls[0][1];
+    act(() => {
+      handler({
+        type: 'contact.updated',
+        thread: {
+          ...result.current.threads[0],
+          id: 'cnt-foreign-workspace',
+          workspaceId: 'wsp-999',
+        },
+      });
+    });
+
+    // No new row from the foreign workspace, and the list is unchanged.
+    expect(result.current.threads.some((t) => t.id === 'cnt-foreign-workspace')).toBe(false);
+    expect(result.current.threads.length).toBe(before);
+    spy.mockRestore();
   });
 });

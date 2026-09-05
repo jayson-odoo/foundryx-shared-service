@@ -26,7 +26,12 @@ from .contact_tag_service import ContactTagService, TagValidationError
 
 _UNSET = object()
 
-_COUNTRY_RE = re.compile(r"^[A-Za-z]{2}$")
+_COUNTRY_RE = re.compile(r"^[A-Z]{2}$")
+# B8 (plan-25 round-3 codex triage): a cheap BCP-47-SHAPED gate (2-3 letter
+# primary subtag + optional hyphenated subtags), NOT full IANA subtag-registry
+# validation - that's a backlog item (BL-SS-049). Still bounded by
+# MAX_LANGUAGE_LEN below (the regex's repeated group is otherwise unbounded).
+_LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$")
 MAX_LANGUAGE_LEN = 16
 
 _WIRE_KEY = {
@@ -91,13 +96,17 @@ class ContactProfileService:
                 errors["tagIds"] = exc.message
 
         if language is not _UNSET and language is not None:
-            if not isinstance(language, str) or not (1 <= len(language) <= MAX_LANGUAGE_LEN):
+            if (
+                not isinstance(language, str)
+                or not (1 <= len(language) <= MAX_LANGUAGE_LEN)
+                or not _LANGUAGE_RE.match(language)
+            ):
                 errors["language"] = (
                     f"language must be a BCP-47 tag of {MAX_LANGUAGE_LEN} characters or fewer."
                 )
 
         if country_code is not _UNSET and country_code is not None:
-            if not isinstance(country_code, str) or not _COUNTRY_RE.match(country_code):
+            if not isinstance(country_code, str) or not _COUNTRY_RE.match(country_code.upper()):
                 errors["countryCode"] = "countryCode must be a 2-letter ISO-3166 code."
 
         if errors:

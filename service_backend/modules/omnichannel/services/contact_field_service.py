@@ -21,6 +21,7 @@ from datetime import date as date_cls
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..db import OMNI_SCHEMA
@@ -227,7 +228,17 @@ class ContactFieldService:
             sort_order=count,
         )
         self.db.add(row)
-        self.db.commit()
+        try:
+            self.db.commit()
+        except IntegrityError:
+            # B6 (plan-25 round-3 codex triage): the app-level `_find_by_key`
+            # check above passed, then a concurrent request's row landed
+            # first - the DB backstop (`uq_contact_fields_workspace_key`,
+            # Postgres functional unique index, review round 1 finding 9)
+            # raises here. Surface the SAME 422 a same-request duplicate
+            # gets, never an unhandled 500.
+            self.db.rollback()
+            raise FieldValidationError({"key": "A field with this ID already exists."})
         self.db.refresh(row)
         return row
 

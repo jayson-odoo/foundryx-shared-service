@@ -65,6 +65,15 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const fetchSeq = useRef(0);
+  // F1: the currently-selected contact, as a ref so async setters below can
+  // tell a STALE response (fired for the PREVIOUS contactId, resolving after
+  // the user already switched threads) from a current one - without this,
+  // e.g. a slow `patchContact` response for contact A can land after the
+  // user selected contact B and overwrite B's just-loaded thread with A's.
+  const activeContactIdRef = useRef(contactId);
+  useEffect(() => {
+    activeContactIdRef.current = contactId;
+  }, [contactId]);
 
   useEffect(() => {
     if (!contactId) {
@@ -347,53 +356,66 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     [contactId],
   );
 
+  // F1: only commit a resolved thread if `forContactId` is STILL the active
+  // selection - a response that resolves after the user switched threads is
+  // discarded (the caller still gets the resolved value back either way).
+  const commitThreadIfActive = useCallback(
+    (forContactId: string | null | undefined, updated: ConversationThread) => {
+      if (activeContactIdRef.current === forContactId) {
+        setThread(updated);
+      }
+      return updated;
+    },
+    [],
+  );
+
   const assign = useCallback(
     async (userId: string | null) => {
       if (!contactId) return;
-      setThread(await conversationService.assign(contactId, userId));
+      commitThreadIfActive(contactId, await conversationService.assign(contactId, userId));
     },
-    [contactId],
+    [contactId, commitThreadIfActive],
   );
 
   const assignToMe = useCallback(async () => {
     if (!contactId) return;
-    setThread(await conversationService.assignToMe(contactId));
-  }, [contactId]);
+    commitThreadIfActive(contactId, await conversationService.assignToMe(contactId));
+  }, [contactId, commitThreadIfActive]);
 
   const setStatus = useCallback(
     async (status: ThreadStatus) => {
       if (!contactId) return;
-      setThread(await conversationService.setStatus(contactId, status));
+      commitThreadIfActive(contactId, await conversationService.setStatus(contactId, status));
     },
-    [contactId],
+    [contactId, commitThreadIfActive],
   );
 
   const setPriority = useCallback(
     async (priority: ThreadPriority) => {
       if (!contactId) return;
-      setThread(await conversationService.setPriority(contactId, priority));
+      commitThreadIfActive(contactId, await conversationService.setPriority(contactId, priority));
     },
-    [contactId],
+    [contactId, commitThreadIfActive],
   );
 
   const patchContact = useCallback(
     async (patch: PatchContactInput) => {
       if (!contactId) throw new Error('No conversation selected.');
       const updated = await conversationService.patchContact(contactId, patch);
-      setThread(updated);
+      commitThreadIfActive(contactId, updated);
       return updated;
     },
-    [contactId],
+    [contactId, commitThreadIfActive],
   );
 
   const moveLifecycle = useCallback(
     async (toStatusId: string) => {
       if (!contactId) throw new Error('No conversation selected.');
       const updated = await conversationService.moveLifecycle(contactId, toStatusId);
-      setThread(updated);
+      commitThreadIfActive(contactId, updated);
       return updated;
     },
-    [contactId],
+    [contactId, commitThreadIfActive],
   );
 
   return { thread, messages, isLoading, error, isSending, sendError, send, sendTemplate, sendMedia, sendInteractive, sendLocation, sendContacts, react, addNote, assign, assignToMe, setStatus, setPriority, patchContact, moveLifecycle };

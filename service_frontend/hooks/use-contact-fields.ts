@@ -44,8 +44,13 @@ export function useContactFields(workspaceId: string | null): UseContactFieldsRe
   }, [workspaceId]);
 
   useEffect(() => {
+    // F7 (plan-25 round-3 codex triage): clear immediately on EVERY
+    // workspace change (not just to/from null) - otherwise the PREVIOUS
+    // workspace's fields stay visible until the new fetch resolves. The
+    // `cancelled` flag below already prevents an out-of-order response from
+    // clobbering a newer selection.
+    setFields([]);
     if (!workspaceId) {
-      setFields([]);
       setLoading(false);
       return;
     }

@@ -7,7 +7,7 @@
  * contact's stage changes (so a move immediately narrows to the new stage's
  * own outgoing edges).
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { ApiError } from '@/lib/api-client';
 import { conversationService } from '@/services/conversation-service';
@@ -21,6 +21,11 @@ function describe(error: unknown): string {
 export interface UseLifecycleMovesResult {
   moves: LifecycleMove[];
   loading: boolean;
+  /** F5 (plan-25 round-3 codex triage): force a refetch outside the
+   *  dependency changes below - the caller uses this after a REJECTED move
+   *  (409), since that means the cached fireable list already disagreed
+   *  with the server. */
+  refetch: () => void;
 }
 
 export function useLifecycleMoves(
@@ -28,9 +33,17 @@ export function useLifecycleMoves(
   /** Bust the cache when the contact's OWN stage key changes (a move should
    *  immediately re-narrow to the new stage's outgoing edges). */
   stageKey: string | null | undefined,
+  /** F5: an additional cheap "did the record change" signal - a rule-engine
+   *  condition on an outgoing edge can reference ANY contact field, not just
+   *  the stage, so the fireable set can shift even when `stageKey` hasn't
+   *  moved. The caller passes a fingerprint of the condition-relevant fields
+   *  (e.g. priority/assignee/CSW) so any of THOSE changing busts the cache
+   *  too. */
+  changeSignal?: string | null,
 ): UseLifecycleMovesResult {
   const [moves, setMoves] = useState<LifecycleMove[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refetchSeq, setRefetchSeq] = useState(0);
 
   useEffect(() => {
     if (!contactId) {
@@ -53,7 +66,9 @@ export function useLifecycleMoves(
     return () => {
       cancelled = true;
     };
-  }, [contactId, stageKey]);
+  }, [contactId, stageKey, changeSignal, refetchSeq]);
 
-  return { moves, loading };
+  const refetch = useCallback(() => setRefetchSeq((n) => n + 1), []);
+
+  return { moves, loading, refetch };
 }

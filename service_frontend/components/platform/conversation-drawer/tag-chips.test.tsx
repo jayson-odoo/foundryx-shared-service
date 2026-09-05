@@ -4,7 +4,7 @@
  * ONLY tags the contact doesn't already carry (foolproof-UI), and add/remove
  * controls are gated by `contacts.manage` (F16 - UX only, the API is the gate).
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -56,6 +56,39 @@ describe('TagChips', () => {
 
     // Reverts to the original (empty) set once the rejection settles.
     await waitFor(() => expect(screen.getByText('No tags yet.')).toBeInTheDocument());
+  });
+
+  it('F4: an error revert never clobbers a newer WS-authoritative tag set', async () => {
+    let rejectChange!: (err: Error) => void;
+    const onChange = vi.fn().mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectChange = reject;
+      }),
+    );
+    const user = userEvent.setup();
+    const { rerender } = render(<TagChips tags={NO_TAGS} workspaceTags={WORKSPACE_TAGS} onChange={onChange} />);
+
+    await user.click(screen.getByRole('combobox', { name: 'Add tag' }));
+    await user.click(await screen.findByRole('option', { name: /VIP/ }));
+    expect(screen.getByText('VIP')).toBeInTheDocument(); // optimistic
+
+    // A WS push lands WHILE the PATCH above is still in flight - some other
+    // agent's change is now the server-authoritative tag set.
+    const followUp: ContactTagRef[] = [{ id: 'tag-2', name: 'Follow up', emoji: null, color: '#0EA5E9' }];
+    rerender(<TagChips tags={followUp} workspaceTags={WORKSPACE_TAGS} onChange={onChange} />);
+
+    // NOW the in-flight PATCH rejects - must NOT revert to the stale
+    // (pre-WS-push) `tags` snapshot captured when the optimistic add fired.
+    // `act` flushes the catch handler's state update before we assert, so a
+    // regression (reverting to the stale snapshot AFTER the WS push already
+    // corrected the view) can't slip past a `waitFor` that was already
+    // satisfied before the rejection settled.
+    await act(async () => {
+      rejectChange(new Error('nope'));
+    });
+    expect(screen.getByText('Follow up')).toBeInTheDocument();
+    expect(screen.queryByText('VIP')).not.toBeInTheDocument();
+    expect(screen.queryByText('No tags yet.')).not.toBeInTheDocument();
   });
 
   it('removes a tag optimistically', async () => {

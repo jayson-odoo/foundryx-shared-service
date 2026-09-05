@@ -13,7 +13,7 @@ one already exists, e.g. the richer ``record:tenant`` the rule engine owns).
 """
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -41,6 +41,21 @@ class WorkflowEntity:
     has_status: bool = False
     status_attr: str = "status_id"
     module: str = "core"
+    # B11 (plan-25 round-3 codex triage): optional hook - when set,
+    # `entity.update` (`app/workflow_engine/actions/entity_actions.py`)
+    # delegates the whole write through THIS callable instead of a raw
+    # `setattr` loop. Lets an entity route workflow writes through its own
+    # validated write path (type coercion/normalization, realtime/webhook
+    # fan-out) rather than writing rendered strings straight to columns and
+    # skipping every OTHER writer's side effects. Signature:
+    # ``(db, record, changes, actor) -> None`` where ``changes`` is
+    # ``{attr: rendered_string_value}`` (already `attr_for`-canonicalized and
+    # whitelist-checked by the caller) and ``actor`` is the synthetic
+    # Workflow actor (``None`` in v1). Must raise on invalid input (the
+    # caller wraps it into the node's `ActionError`) - never swallow a
+    # rejection. May commit (some hooks own their own unit of work, same as
+    # `entity_transition_status`'s underlying `status_machine.transition`).
+    apply_update: Optional[Callable[[Session, Any, Dict[str, str], Optional[Any]], None]] = None
 
 
 _ENTITIES: Dict[str, WorkflowEntity] = {}

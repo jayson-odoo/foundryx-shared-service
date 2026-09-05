@@ -354,6 +354,19 @@ class StatusService:
             raise StatusValidationError(f'A status with key "{key}" already exists.')
 
         siblings = self.statuses.list_for_entity(entity_type, scope, scope_id=scope_id)
+        flags = dict(flags or {})
+        if not siblings:
+            # B1 (plan-25 round-3): the very FIRST status of a brand new
+            # (entity_type, scope, scope_id) set must be `is_initial` - a
+            # caller that omits the flag here would otherwise leave the set
+            # with ZERO initial statuses (nowhere for a new record to
+            # start). Every OTHER adopter today materializes its first
+            # status set with `is_initial` already set (form/lifecycle
+            # seeds), so this only bites a future adopter using the raw
+            # create-status API on an empty set - force it rather than
+            # reject, matching the silent-converge pattern already used for
+            # `is_default`/`is_initial` below.
+            flags["is_initial"] = True
         status = Status(
             entity_type=entity_type,
             key=key,

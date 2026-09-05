@@ -7,7 +7,7 @@
  * keys are never touched); 422 `fieldErrors` map onto the offending input;
  * Cancel restores the last-saved values.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, PencilLine } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -71,18 +71,78 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
+  // F3 (plan-25 round-3 codex triage): the values AT THE MOMENT Edit started
+  // (or last reconciled for an untouched field) - Save diffs the draft
+  // against THIS baseline, never the live `thread` prop, which keeps moving
+  // from incoming `contact.updated` pushes while the agent is mid-edit.
+  // `touchedRef` marks the keys the agent has actually typed into - only
+  // those are ever allowed to diff away from the baseline.
+  const baselineRef = useRef<{ system: SystemValues; custom: Record<string, CustomFieldValue> }>({
+    system: systemValuesOf(thread),
+    custom: customValuesOf(thread, fields),
+  });
+  const touchedSystemRef = useRef<Set<keyof SystemValues>>(new Set());
+  const touchedCustomRef = useRef<Set<string>>(new Set());
+
   // A different contact (or a fresh server value after a save/WS push) resets
-  // the form UNLESS the agent is mid-edit (never clobber unsaved typing).
+  // the form UNLESS the agent is mid-edit - and even then, ONLY the fields
+  // the agent hasn't touched are refreshed (+ re-baselined) from the incoming
+  // value; a touched field keeps exactly what the agent typed until
+  // Save/Cancel, so a concurrent change to some OTHER field is reflected
+  // live and never gets stomped by Save re-sending a stale value for it.
   useEffect(() => {
-    if (editing) return;
-    setSystem(systemValuesOf(thread));
-    setCustom(customValuesOf(thread, fields));
+    const freshSystem = systemValuesOf(thread);
+    const freshCustom = customValuesOf(thread, fields);
+    if (!editing) {
+      setSystem(freshSystem);
+      setCustom(freshCustom);
+      baselineRef.current = { system: freshSystem, custom: freshCustom };
+      touchedSystemRef.current = new Set();
+      touchedCustomRef.current = new Set();
+      return;
+    }
+    setSystem((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      (Object.keys(freshSystem) as (keyof SystemValues)[]).forEach((key) => {
+        if (!touchedSystemRef.current.has(key) && prev[key] !== freshSystem[key]) {
+          next[key] = freshSystem[key];
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+    setCustom((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const f of fields) {
+        if (!touchedCustomRef.current.has(f.key) && prev[f.key] !== freshCustom[f.key]) {
+          next[f.key] = freshCustom[f.key];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    const nextBaselineSystem = { ...baselineRef.current.system };
+    (Object.keys(freshSystem) as (keyof SystemValues)[]).forEach((key) => {
+      if (!touchedSystemRef.current.has(key)) nextBaselineSystem[key] = freshSystem[key];
+    });
+    const nextBaselineCustom = { ...baselineRef.current.custom };
+    for (const f of fields) {
+      if (!touchedCustomRef.current.has(f.key)) nextBaselineCustom[f.key] = freshCustom[f.key];
+    }
+    baselineRef.current = { system: nextBaselineSystem, custom: nextBaselineCustom };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [thread.id, thread.firstName, thread.lastName, thread.email, thread.language, thread.countryCode, thread.customFields, fields]);
+  }, [thread.id, thread.firstName, thread.lastName, thread.email, thread.language, thread.countryCode, thread.customFields, fields, editing]);
 
   const startEdit = () => {
-    setSystem(systemValuesOf(thread));
-    setCustom(customValuesOf(thread, fields));
+    const freshSystem = systemValuesOf(thread);
+    const freshCustom = customValuesOf(thread, fields);
+    setSystem(freshSystem);
+    setCustom(freshCustom);
+    baselineRef.current = { system: freshSystem, custom: freshCustom };
+    touchedSystemRef.current = new Set();
+    touchedCustomRef.current = new Set();
     setFieldErrors({});
     setEditing(true);
   };
@@ -97,7 +157,7 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
     setSaving(true);
     setFieldErrors({});
     try {
-      const before = systemValuesOf(thread);
+      const before = baselineRef.current.system;
       const patch: PatchContactInput = {};
       if (system.firstName !== before.firstName) patch.firstName = system.firstName || null;
       if (system.lastName !== before.lastName) patch.lastName = system.lastName || null;
@@ -105,7 +165,7 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
       if (system.language !== before.language) patch.language = system.language || null;
       if (system.countryCode !== before.countryCode) patch.countryCode = system.countryCode || null;
 
-      const beforeCustom = customValuesOf(thread, fields);
+      const beforeCustom = baselineRef.current.custom;
       const changedCustom: Record<string, CustomFieldValue> = {};
       let hasCustomChange = false;
       for (const f of fields) {
@@ -170,7 +230,10 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
             <Input
               id="cd-first-name"
               value={system.firstName}
-              onChange={(e) => setSystem((s) => ({ ...s, firstName: e.target.value }))}
+              onChange={(e) => {
+                touchedSystemRef.current.add('firstName');
+                setSystem((s) => ({ ...s, firstName: e.target.value }));
+              }}
               className="h-8"
             />
           ) : (
@@ -186,7 +249,10 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
             <Input
               id="cd-last-name"
               value={system.lastName}
-              onChange={(e) => setSystem((s) => ({ ...s, lastName: e.target.value }))}
+              onChange={(e) => {
+                touchedSystemRef.current.add('lastName');
+                setSystem((s) => ({ ...s, lastName: e.target.value }));
+              }}
               className="h-8"
             />
           ) : (
@@ -218,7 +284,10 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
               id="cd-email"
               type="email"
               value={system.email}
-              onChange={(e) => setSystem((s) => ({ ...s, email: e.target.value }))}
+              onChange={(e) => {
+                touchedSystemRef.current.add('email');
+                setSystem((s) => ({ ...s, email: e.target.value }));
+              }}
               className="h-8"
             />
           ) : (
@@ -236,7 +305,10 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
               id="cd-language"
               placeholder="en"
               value={system.language}
-              onChange={(e) => setSystem((s) => ({ ...s, language: e.target.value }))}
+              onChange={(e) => {
+                touchedSystemRef.current.add('language');
+                setSystem((s) => ({ ...s, language: e.target.value }));
+              }}
               className="h-8"
             />
           ) : (
@@ -254,7 +326,10 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
               placeholder="MY"
               maxLength={2}
               value={system.countryCode}
-              onChange={(e) => setSystem((s) => ({ ...s, countryCode: e.target.value.toUpperCase() }))}
+              onChange={(e) => {
+                touchedSystemRef.current.add('countryCode');
+                setSystem((s) => ({ ...s, countryCode: e.target.value.toUpperCase() }));
+              }}
               className="h-8 uppercase"
             />
           ) : (
@@ -272,7 +347,10 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
               field={f}
               editing={editing}
               value={custom[f.key] ?? null}
-              onChange={(v) => setCustom((c) => ({ ...c, [f.key]: v }))}
+              onChange={(v) => {
+                touchedCustomRef.current.add(f.key);
+                setCustom((c) => ({ ...c, [f.key]: v }));
+              }}
             />
             {errorFor(`customFields.${f.key}`) && (
               <p className="text-xs text-destructive">{errorFor(`customFields.${f.key}`)}</p>

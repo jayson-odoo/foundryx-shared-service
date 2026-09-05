@@ -130,4 +130,31 @@ describe('ContactDetailsForm', () => {
 
     expect(await screen.findByText('Invalid email address.')).toBeInTheDocument();
   });
+
+  it('F3: an incoming contact.updated push mid-edit is never clobbered by the untouched field on Save', async () => {
+    can = () => true;
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <ContactDetailsForm thread={thread({ firstName: 'Sarah', lastName: 'Chen' })} fields={[]} onSave={onSave} />,
+    );
+
+    await user.click(screen.getByTestId('contact-details-edit'));
+    // Agent edits ONLY firstName - lastName is never touched.
+    await user.clear(screen.getByLabelText('First name'));
+    await user.type(screen.getByLabelText('First name'), 'Sara');
+
+    // A concurrent WS push updates lastName server-side WHILE the form is
+    // mid-edit (the parent re-renders with a fresh `thread` prop, same id).
+    rerender(
+      <ContactDetailsForm thread={thread({ firstName: 'Sarah', lastName: 'Smith' })} fields={[]} onSave={onSave} />,
+    );
+
+    await user.click(screen.getByTestId('contact-details-save'));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patch = onSave.mock.calls[0][0];
+    expect(patch.firstName).toBe('Sara'); // the user's actual edit
+    expect(patch).not.toHaveProperty('lastName'); // never re-sends/overwrites the concurrent change
+  });
 });

@@ -56,10 +56,24 @@ function toValues(field: ContactField | null): ContactFieldFormValues {
   };
 }
 
+// F9 (plan-25 round-3 codex triage): a 422 `fieldErrors` key must ALWAYS map
+// onto something visible - the known form fields render their error inline;
+// anything else (a truly unmapped/unexpected server key) falls back to the
+// dialog-level banner below rather than being silently dropped.
+const KNOWN_FIELD_KEYS = new Set<keyof ContactFieldFormValues>([
+  'label',
+  'key',
+  'description',
+  'type',
+  'options',
+  'visibility',
+]);
+
 export function ContactFieldDialog({ open, onOpenChange, field, onCreate, onUpdate }: ContactFieldDialogProps) {
   const editing = !!field;
   const [keyTouched, setKeyTouched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [unmappedErrors, setUnmappedErrors] = useState<string[]>([]);
 
   const form = useForm<ContactFieldFormValues>({
     resolver: zodResolver(contactFieldSchema),
@@ -70,12 +84,14 @@ export function ContactFieldDialog({ open, onOpenChange, field, onCreate, onUpda
     if (open) {
       form.reset(toValues(field));
       setKeyTouched(editing); // existing key is user-authored - never auto-overwrite
+      setUnmappedErrors([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, field]);
 
   const submit = form.handleSubmit(async (values) => {
     setSubmitting(true);
+    setUnmappedErrors([]);
     try {
       if (editing) {
         await onUpdate(field.id, values);
@@ -89,10 +105,16 @@ export function ContactFieldDialog({ open, onOpenChange, field, onCreate, onUpda
       if (error instanceof ApiError && error.status === 422) {
         const fieldErrors = (error.detail as { fieldErrors?: Record<string, string> } | undefined)?.fieldErrors;
         if (fieldErrors) {
+          const unmapped: string[] = [];
           for (const [name, message] of Object.entries(fieldErrors)) {
-            const target = name.startsWith('customFields.') ? 'options' : name;
-            form.setError(target as keyof ContactFieldFormValues, { message });
+            const target = (name.startsWith('customFields.') ? 'options' : name) as keyof ContactFieldFormValues;
+            if (KNOWN_FIELD_KEYS.has(target)) {
+              form.setError(target, { message });
+            } else {
+              unmapped.push(message);
+            }
           }
+          if (unmapped.length > 0) setUnmappedErrors(unmapped);
         } else {
           toast.error(error.message);
         }
@@ -114,6 +136,13 @@ export function ContactFieldDialog({ open, onOpenChange, field, onCreate, onUpda
           <DialogTitle>{editing ? 'Edit field' : 'Add custom field'}</DialogTitle>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-4">
+          {unmappedErrors.length > 0 && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
+              {unmappedErrors.map((message, i) => (
+                <p key={i}>{message}</p>
+              ))}
+            </div>
+          )}
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="cf-label">Name</Label>
             <Input
@@ -158,6 +187,9 @@ export function ContactFieldDialog({ open, onOpenChange, field, onCreate, onUpda
               value={form.watch('description')}
               onChange={(e) => form.setValue('description', e.target.value)}
             />
+            {form.formState.errors.description && (
+              <p className="text-xs text-destructive">{form.formState.errors.description.message}</p>
+            )}
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -169,6 +201,9 @@ export function ContactFieldDialog({ open, onOpenChange, field, onCreate, onUpda
               disabled={editing}
               ariaLabel="Field type"
             />
+            {form.formState.errors.type && (
+              <p className="text-xs text-destructive">{form.formState.errors.type.message}</p>
+            )}
           </div>
 
           {type === 'list' && (
@@ -229,6 +264,9 @@ export function ContactFieldDialog({ open, onOpenChange, field, onCreate, onUpda
               onChange={(v) => form.setValue('visibility', v as ContactField['visibility'], { shouldValidate: true })}
               ariaLabel="Field visibility"
             />
+            {form.formState.errors.visibility && (
+              <p className="text-xs text-destructive">{form.formState.errors.visibility.message}</p>
+            )}
           </div>
         </DialogBody>
         <DialogFooter>

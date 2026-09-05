@@ -1,9 +1,15 @@
 /**
- * Workspace form tab gating (plan 25, F15 review finding) - the Lifecycle /
- * Contact fields / Tags tabs hang off a real workspace id AND are gated by
- * the SAME read permission the backend GETs require (`conversations.read` OR
- * `contacts.read`) - a user with neither never sees a tab that would just
- * 403 (foolproof-UI, UX-only; the API is the real gate).
+ * Workspace form tab gating (plan 25, F15 review finding + round-3 F6 fix) -
+ * the Contact fields / Tags tabs hang off a real workspace id AND are gated
+ * by the SAME read permission the backend GETs require (`conversations.read`
+ * OR `contacts.read`). The Lifecycle tab is a STATUS-ENGINE surface (its
+ * canvas reads via `statuses.read` and edits via `statuses.manage`, same as
+ * every other `EntityFlow` embed) - it is gated SEPARATELY on `statuses.read`,
+ * not on `conversations.read`/`contacts.read`, and its canvas is only
+ * editable (even while the FORM's own Edit toggle is on) with
+ * `statuses.manage`. A user with neither the right read perm nor
+ * `statuses.read` never sees a tab that would just 403 (foolproof-UI,
+ * UX-only; the API is the real gate).
  */
 import { renderHook, waitFor } from '@testing-library/react';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
@@ -56,25 +62,34 @@ async function loadedConfig(workspaceId = 'wsp-1') {
 }
 
 describe('useWorkspaceForm tab gating', () => {
-  it('shows Lifecycle/Contact fields/Tags when the user holds contacts.read', async () => {
+  it('shows Contact fields/Tags (not Lifecycle) with contacts.read alone', async () => {
     can = (key) => key === 'contacts.read';
     const config = await loadedConfig();
     const ids = config.tabs.map((t) => t.id);
-    expect(ids).toContain('lifecycle');
     expect(ids).toContain('contact-fields');
     expect(ids).toContain('tags');
+    expect(ids).not.toContain('lifecycle'); // F6 - needs statuses.read, not contacts.read
   });
 
-  it('shows them when the user holds conversations.read instead', async () => {
+  it('shows Contact fields/Tags with conversations.read instead', async () => {
     can = (key) => key === 'conversations.read';
     const config = await loadedConfig();
     const ids = config.tabs.map((t) => t.id);
-    expect(ids).toContain('lifecycle');
     expect(ids).toContain('contact-fields');
     expect(ids).toContain('tags');
+    expect(ids).not.toContain('lifecycle');
   });
 
-  it('hides all three when the user holds neither permission', async () => {
+  it('F6: shows Lifecycle with statuses.read alone (no contacts/conversations.read)', async () => {
+    can = (key) => key === 'statuses.read';
+    const config = await loadedConfig();
+    const ids = config.tabs.map((t) => t.id);
+    expect(ids).toContain('lifecycle');
+    expect(ids).not.toContain('contact-fields');
+    expect(ids).not.toContain('tags');
+  });
+
+  it('hides all four when the user holds none of the permissions', async () => {
     can = () => false;
     const config = await loadedConfig();
     const ids = config.tabs.map((t) => t.id);
@@ -95,5 +110,21 @@ describe('useWorkspaceForm tab gating', () => {
     expect(ids).not.toContain('lifecycle');
     expect(ids).not.toContain('contact-fields');
     expect(ids).not.toContain('tags');
+  });
+
+  it('F6: the Lifecycle canvas is READ-ONLY without statuses.manage even while the form is in Edit mode', async () => {
+    can = (key) => key === 'statuses.read'; // read, not manage
+    const config = await loadedConfig();
+    const tab = config.tabs.find((t) => t.id === 'lifecycle')!;
+    const el = tab.render({ editing: true }) as { props: { editing: boolean } } | null;
+    expect(el?.props.editing).toBe(false);
+  });
+
+  it('F6: the Lifecycle canvas is editable with statuses.manage while the form is in Edit mode', async () => {
+    can = (key) => key === 'statuses.read' || key === 'statuses.manage';
+    const config = await loadedConfig();
+    const tab = config.tabs.find((t) => t.id === 'lifecycle')!;
+    const el = tab.render({ editing: true }) as { props: { editing: boolean } } | null;
+    expect(el?.props.editing).toBe(true);
   });
 });

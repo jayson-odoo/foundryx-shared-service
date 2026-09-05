@@ -146,3 +146,59 @@ E2E run. No product code was changed by the tester.
   same page (e.g. "Actions", "Mint key", "Save") - `agent-browser find role button click --name`
   can hit the wrong one; prefer a fresh `snapshot -i -c` + click by the specific `@ref` right
   before each click when duplicates are likely.
+
+## Addendum - round 3 (2026-09-06, codex cross-model triage)
+
+**Commit:** `fix(omnichannel): plan 25 round 3 - codex triage: unique-index 422s, tag resolve
+retry, workflow update hook, drawer race guards, dialog errors` (branch `sprint-4/25-contact-data-model`,
+worktree `.claude/worktrees/s25`).
+
+Two Opus reviews (round 1 + round 2, already reflected in the test report above) passed the
+branch except for 22 CANDIDATE findings from an OpenAI Codex cross-model review. This round
+triaged all 22: 21 REAL (fixed test-first, red confirmed before each fix), 1 FALSE POSITIVE
+(B2, already a documented decision from round 2 - re-confirmed against the migration's own
+inline comments, no code change). Full verdict list, live probes, and any generic core changes
+are in the coder's session report; summary here for the AC/suite-count record.
+
+**Suite counts (both suites re-run in full after every fix):**
+
+| Suite | Before round 3 | After round 3 |
+|---|---|---|
+| Backend (`pytest -q`, full repo) | 2773 passed, 1 skipped | **2785 passed, 1 skipped, 18 deselected** (1535s) |
+| Frontend (`npx vitest run`, full repo) | 1440 passed | **1463 passed** (180 test files) |
+
+**ACs re-verified by test this round** (no AC changed meaning; these got NEW regression
+coverage as a side effect of the fixes): AC-CDM-06/07 (`language`/`countryCode` validation,
+tightened - B8), AC-CDM-09/31 and AC-CDM-32 (field/tag create 422 mapping incl. the DB-backstop
+race path - B6/B9/F9/F10), AC-CDM-10 (tag resolve-or-create batch race - B10), AC-CDM-17/18
+(lifecycle move/moves authorization + refetch - B5/F5), AC-CDM-23 (`entity.field_changed`
+trigger matching the documented camelCase `changes` keys - B7), AC-CDM-29/30 (Lifecycle tab
+gating - F6), AC-CDM-35/36/38 (Contact panel Details/Tags race guards - F1/F2/F3/F4/F7/F8).
+
+**Live probes run this round** (backend restarted PID 73686 on `:8004` with the SAME env as the
+S4 evidence run - `DATABASE_URL=...foundryx_service_s25`, `ENVIRONMENT=development`,
+`CORS_ORIGINS`/`CORS_ORIGIN_REGEX` - and frontend rebuilt + restarted PID 80111 on `:3003`):
+
+- `POST /omnichannel/workspaces/{ws}/contact-fields` with a duplicate `key` -> `422
+  {"fieldErrors":{"key":"..."}}` (not 500), confirmed live against the real Postgres app-level
+  duplicate check.
+- `psql "\d app_omnichannel.contact_fields"` / `contact_tags` on the LIVE `foundryx_service_s25`
+  database confirm the functional unique indexes `uq_contact_fields_workspace_key` /
+  `uq_contact_tags_workspace_name` genuinely exist in production - the DB-backstop `IntegrityError`
+  path B6/B9's fix catches is reachable outside of pytest's SQLite (which has no such index and
+  can only test the catch/recovery logic via a monkeypatched exception, per the existing
+  round-2 test convention this file's tests already followed).
+- B3 (missing FKs on `contact_fields`/`contact_tags`/`contact_tag_links`): applied the idempotent
+  ALTER TABLE ADD CONSTRAINT statements live on `foundryx_service_s25`, then re-ran `psql
+  "\d app_omnichannel.contact_tag_links"` - all three tables now carry FKs matching the ORM model,
+  matching every sibling omnichannel table.
+- Not run live this round (covered instead by the pytest/vitest suites, noted per the brief's
+  "anything unverified" instruction): B4's tenant-backfill scenario (would need provisioning a
+  genuinely pre-App-Store tenant state on `foundryx_service_s25`, awkward to stage safely against
+  a shared lane DB - the pytest test constructs this scenario directly and asserts both the
+  `install_tenant` side effects and the permission grant), B11's live workflow-run-produces-a-
+  webhook-delivery path (fully exercised by
+  `test_workflow_entity_update_on_contact_validates_and_fans_out_webhook`, which asserts a real
+  `WebhookDelivery` row with the normalized `countryCode`), and F6's role-permission-tweak UI
+  probe (covered instead by 7 passing vitest cases including a render-prop-level assertion on
+  the `editing` flag actually passed into the canvas).

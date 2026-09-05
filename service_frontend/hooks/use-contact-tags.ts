@@ -41,8 +41,13 @@ export function useContactTags(workspaceId: string | null): UseContactTagsResult
   }, [workspaceId]);
 
   useEffect(() => {
+    // F8 (plan-25 round-3 codex triage): clear immediately on EVERY
+    // workspace change (not just to/from null) - otherwise the PREVIOUS
+    // workspace's tags stay visible until the new fetch resolves. The
+    // `cancelled` flag below already prevents an out-of-order response from
+    // clobbering a newer selection.
+    setTags([]);
     if (!workspaceId) {
-      setTags([]);
       setLoading(false);
       return;
     }
