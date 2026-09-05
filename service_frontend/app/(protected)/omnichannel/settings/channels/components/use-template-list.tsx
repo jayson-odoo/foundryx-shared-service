@@ -113,22 +113,12 @@ export function useTemplateList(
         permission: 'wa_templates.manage',
         surfaces: { row: true, bulk: true },
         isVisible: (rows) => rows.length > 0,
-        confirm: {
-          title: 'Delete template?',
-          description:
-            'A local draft is removed here; a synced template is also deleted on Meta. This cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows, rt) => {
-          if (!rows.length) return;
-          try {
-            await Promise.all(rows.map((t) => whatsappTemplateService.remove(channelId, t.id)));
-            toast.success(`Deleted ${rows.length} template(s).`);
-            rt.reload();
-          } catch {
-            toast.error('Could not delete. Please retry.');
-          }
-        },
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered `wa_templates.delete`
+        // handler commits it server-side - it resolves the owning channel
+        // from the template row itself, so `entityId` stays the bare
+        // template id).
+        deferred: { actionKey: 'wa_templates.delete', entityType: 'wa_template' },
       },
     ],
     [channelId, onEdit, onViewPayload],

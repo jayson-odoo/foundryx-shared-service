@@ -55,17 +55,10 @@ export function useChannelActions(): ResourceAction<Channel>[] {
         surfaces: { row: true, bulk: true, form: true },
         // Active (non-trashed) channels only → moves them to the Trashed view.
         isVisible: (rows) => rows.length > 0 && rows.every((r) => !r.isTrashed),
-        confirm: {
-          title: 'Disconnect channel?',
-          description:
-            'The channel will stop sending and receiving messages and move to Trashed. You can reconnect it later via Connect with Facebook.',
-          confirmLabel: 'Disconnect',
-        },
-        run: async (rows, rt) => {
-          await channelService.disconnect(ids(rows));
-          toast.success(`Disconnected ${rows.length} channel(s).`);
-          rt.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered `channels.disconnect`
+        // handler commits it server-side).
+        deferred: { actionKey: 'channels.disconnect', entityType: 'channel' },
       },
       {
         id: 'restore',
@@ -90,17 +83,9 @@ export function useChannelActions(): ResourceAction<Channel>[] {
         surfaces: { row: true, bulk: true },
         // Only from the Trashed view - hard delete.
         isVisible: (rows) => rows.length > 0 && rows.every((r) => r.isTrashed),
-        confirm: {
-          title: 'Delete channel permanently?',
-          description:
-            'This permanently removes the channel and its configuration. This cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows, rt) => {
-          await channelService.remove(ids(rows));
-          toast.success(`Deleted ${rows.length} channel(s).`);
-          rt.reload();
-        },
+        // Grace-window deferred action - no confirm, no `run` (the
+        // registered `channels.delete` handler commits it server-side).
+        deferred: { actionKey: 'channels.delete', entityType: 'channel' },
       },
     ];
   }, [router]);
