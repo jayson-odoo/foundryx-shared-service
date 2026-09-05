@@ -8,8 +8,10 @@
  * (fix round 1 item 3) no file bypasses the hook entirely by calling
  * `navigator.clipboard.writeText` directly AND firing a toast on the result
  * (`secret-reveal.tsx`, `webhook-secret-panel.tsx`, `mint-api-key-dialog.tsx`
- * all did this pre-fix) - one disclosed exception, the `account/**` demo
- * page slated for deletion in plan 23 T7.
+ * all did this pre-fix). T7: the one remaining exception
+ * (`account/components/account-form-fields.tsx`, the real /account page's
+ * email-copy control, NOT dead demo) is fixed onto the hook too - the
+ * allowlist is now empty.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -34,16 +36,12 @@ const DEAD_DEMO_NO_FEEDBACK = [
 ];
 
 /**
- * The ONE file allowed to call `navigator.clipboard.writeText` directly AND
- * fire a toast on the result - a pre-existing `account/**` Metronic demo
- * page removed wholesale in plan 23 T7 (D8), not worth converting onto the
- * hook. Every other consumer must go through `useCopyToClipboard` +
- * `isCopied`, no toast (fix round 1 item 3).
+ * T7: every file that used to bypass the hook is now either fixed onto it
+ * (`account-form-fields.tsx`) or deleted (the other three, T6 fix round 1
+ * item 3). Empty on purpose - a future entry needs a named reason, not a
+ * silent re-add.
  */
-const RAW_WRITE_TEXT_WITH_TOAST_ALLOWED = [
-  // Removed in T7 - do not "fix" this by adding it to the hook.
-  'app/(protected)/account/components/account-form-fields.tsx',
-];
+const RAW_WRITE_TEXT_WITH_TOAST_ALLOWED: string[] = [];
 
 function sourceFiles(): string[] {
   const out: string[] = [];
