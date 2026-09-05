@@ -2790,3 +2790,68 @@ def test_put_mapping_line_row_without_scope_key_lands_as_line(client, session_fa
         f"scope='line' - got {row.scope!r}"
     )
     db2.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Group H (continued) - corrected root cause on the ac_sim ref-drift finding:
+# NOT a key re-mint (the rig's AutoKey 174 = SRTWCY8608 matched on both
+# sides); Sorento's product-master task was saved with
+# keyColumns=["AutoKey", "LastModified"] - the watermark column doubled as
+# part of the row's OWN IDENTITY, so the row's hash-keyed ref carries the
+# watermark and looks like a DIFFERENT record on every update (a value that
+# is supposed to change on every write can never also be part of what makes
+# a row the "same" row). `validate_source_config` must reject this shape at
+# save time - a task that would drift its own refs on every reconcile must
+# never be saveable.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_validate_source_config_rejects_watermark_column_as_a_key_column():
+    """The watermark column cannot double as a key column - a value that
+    changes on every update can never be part of a row's stable identity,
+    or every reconcile mints a "new" ref for the same real-world record.
+    Every OTHER required document field is filled in so the 422 isolates to
+    keyColumns, not a coincidental "fromDate is required" miss."""
+    clean, errors = validate_source_config(
+        ENTITY_SALES_ORDER,
+        {
+            "connectionId": "conn-1", "query": HEADER_QUERY, "lineQuery": LINE_QUERY,
+            "keyColumns": ["doc_key", "last_modified"],
+            "watermarkColumn": "last_modified",
+            "comparedColumns": [], "fromDate": "2026-01-01", "docDateColumn": "doc_date",
+            "incrementalMinutes": 15, "reconcileMode": "dailyAt", "reconcileAt": "02:00",
+        },
+        {
+            "doc_key": "string", "doc_no": "string", "status": "string",
+            "cancelled": "string", "doc_date": "date", "last_modified": "datetime",
+        },
+        line_columns={"dtl_key": "string", "item_code": "string"},
+    )
+    assert "keyColumns" in errors, (
+        f"a watermark column doubling as a key column must 422 on keyColumns "
+        f"- got errors={errors}, clean={clean}"
+    )
+    assert "watermark" in errors["keyColumns"].lower()
+    assert "key" in errors["keyColumns"].lower()
+
+
+def test_validate_source_config_allows_disjoint_key_and_watermark_columns():
+    """Control: a normal task where the watermark column is NOT also a key
+    column must save clean - this is the overwhelmingly common shape and
+    must never be caught by the new guard."""
+    _clean, errors = validate_source_config(
+        ENTITY_SALES_ORDER,
+        {
+            "connectionId": "conn-1", "query": HEADER_QUERY, "lineQuery": LINE_QUERY,
+            "keyColumns": ["doc_key"],
+            "watermarkColumn": "last_modified",
+            "comparedColumns": [], "fromDate": "2026-01-01", "docDateColumn": "doc_date",
+            "incrementalMinutes": 15, "reconcileMode": "dailyAt", "reconcileAt": "02:00",
+        },
+        {
+            "doc_key": "string", "doc_no": "string", "status": "string",
+            "cancelled": "string", "doc_date": "date", "last_modified": "datetime",
+        },
+        line_columns={"dtl_key": "string", "item_code": "string"},
+    )
+    assert "keyColumns" not in errors, f"unexpected keyColumns error: {errors}"
