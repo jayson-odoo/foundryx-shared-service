@@ -470,6 +470,12 @@ export const MENU_SIDEBAR: MenuConfig = [
         permission: 'conversations.read',
       },
       {
+        // Contacts module (plan 26, roadmap A2) - AC-CTM-01.
+        title: 'Contacts',
+        path: '/omnichannel/contacts',
+        permission: 'contacts.read',
+      },
+      {
         title: 'Channels',
         path: '/omnichannel/settings/channels',
         permission: 'channels.read',
@@ -1078,6 +1084,57 @@ export const MENU_MEGA: MenuConfig = [
           },
         ],
       },
+      // Omnichannel (D-A2-16, plan 26) - closes a pre-existing gap verified
+      // 2026-09-06: this DESKTOP mega menu had NO Omnichannel entry at all
+      // (only the sidebar copy was tagged), so a tenant without the module
+      // saw the Apps menu missing the section, but a page-URL guess would
+      // have 403'd correctly - the fix here is purely additive parity with
+      // the sidebar, same module + per-child permission tags.
+      {
+        title: 'Omnichannel',
+        module: 'omnichannel',
+        children: [
+          {
+            children: [
+              {
+                title: 'Inbox',
+                path: '/omnichannel/inbox',
+                permission: 'conversations.read',
+              },
+              {
+                title: 'Contacts',
+                path: '/omnichannel/contacts',
+                permission: 'contacts.read',
+              },
+              {
+                title: 'Channels',
+                path: '/omnichannel/settings/channels',
+                permission: 'channels.read',
+              },
+              {
+                title: 'Workspaces',
+                path: '/omnichannel/settings/workspaces',
+                permission: 'workspaces.read',
+              },
+              {
+                title: 'Media limits',
+                path: '/omnichannel/settings/media',
+                permission: 'channels.manage',
+              },
+              {
+                title: 'Quick replies',
+                path: '/omnichannel/settings/quick-replies',
+                permission: 'workspaces.manage',
+              },
+              {
+                title: 'Embed access',
+                path: '/omnichannel/settings/embed',
+                permission: 'workspaces.manage',
+              },
+            ],
+          },
+        ],
+      },
       // Meetings (sprint-5 S0) - the DESKTOP mega menu copy. Same module +
       // permission tags, so `filterMenu` prunes it identically in all three.
       {
@@ -1240,6 +1297,52 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Log settings',
         path: '/developers/logs/settings',
         permission: 'integration_logs.manage',
+      },
+    ],
+  },
+  // Omnichannel (D-A2-16, plan 26) - closes a pre-existing gap verified
+  // 2026-09-06: the mobile mega menu had NO Omnichannel block at all, so a
+  // tenant on a phone had no path to Inbox/Contacts/Channels/etc from this
+  // menu surface.
+  {
+    title: 'Omnichannel',
+    icon: MessageSquare,
+    module: 'omnichannel',
+    children: [
+      {
+        title: 'Inbox',
+        path: '/omnichannel/inbox',
+        permission: 'conversations.read',
+      },
+      {
+        title: 'Contacts',
+        path: '/omnichannel/contacts',
+        permission: 'contacts.read',
+      },
+      {
+        title: 'Channels',
+        path: '/omnichannel/settings/channels',
+        permission: 'channels.read',
+      },
+      {
+        title: 'Workspaces',
+        path: '/omnichannel/settings/workspaces',
+        permission: 'workspaces.read',
+      },
+      {
+        title: 'Media limits',
+        path: '/omnichannel/settings/media',
+        permission: 'channels.manage',
+      },
+      {
+        title: 'Quick replies',
+        path: '/omnichannel/settings/quick-replies',
+        permission: 'workspaces.manage',
+      },
+      {
+        title: 'Embed access',
+        path: '/omnichannel/settings/embed',
+        permission: 'workspaces.manage',
       },
     ],
   },

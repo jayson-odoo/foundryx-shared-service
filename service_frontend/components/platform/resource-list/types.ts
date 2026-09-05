@@ -2,6 +2,7 @@ import type { ColumnDef, RowData } from '@tanstack/react-table';
 import type { LucideIcon } from 'lucide-react';
 import type {
   FilterFieldDef,
+  FilterGroup,
   ListQuery,
   ListResult,
   SortState,
@@ -139,6 +140,12 @@ export interface ResourceListConfig<T extends object> {
   segments?: { id: string; label: string }[];
   /** Initial segment id (default = first entry). */
   defaultSegment?: string;
+  /**
+   * Read-only mirror of the current ad-hoc filter tree (plan 26, contacts
+   * module "Save as segment" flow) - fires whenever the applied filter
+   * changes. Purely additive side channel; existing consumers are unaffected.
+   */
+  onFilterChange?: (filter: FilterGroup | null) => void;
   /** Filename stem for CSV export (default 'export'). */
   exportFilename?: string;
   createLabel?: string;

@@ -109,6 +109,14 @@ export function ResourceList<T extends object>({ config }: ResourceListProps<T>)
   });
   const prefs = useViewPreferences(config.viewKey);
 
+  // Mirror the current ad-hoc filter tree out to the parent page (opt-in,
+  // plan 26 "Save as segment") - purely additive, no behavior change for
+  // configs that don't set onFilterChange.
+  const onFilterChange = config.onFilterChange;
+  useEffect(() => {
+    onFilterChange?.(list.filter);
+  }, [list.filter, onFilterChange]);
+
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
   const [filterOpen, setFilterOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
