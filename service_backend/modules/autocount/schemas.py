@@ -616,6 +616,18 @@ class EtlSourceConfigIn(ApiModel):
     reconcileAt: Optional[str] = None
 
 
+class InitialLoadProgress(ApiModel):
+    """A paged pass in progress (plan sprint-5/03 S1/S4, AC-03-03/21) - the
+    wire shape of ``AcWatermark.cursor_json["pass"]``, typed (NIT, review
+    round 2 - was a bare ``Dict[str, Any]``, which let the shape drift
+    silently)."""
+
+    complete: bool
+    pagesDone: int
+    lastMark: Optional[Any] = None
+    kind: Optional[str] = None
+
+
 class EtlTaskUpdate(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -662,7 +674,7 @@ class EtlTaskResponse(ApiModel):
     # from ``AcWatermark.cursor_json["pass"]``. ``None`` once no pass is open
     # (never configured, or the last one completed) - the FE offers no
     # "continues" affordance in that case.
-    initialLoad: Optional[Dict[str, Any]] = None
+    initialLoad: Optional[InitialLoadProgress] = None
 
 
 class EtlPreviewResponse(ApiModel):

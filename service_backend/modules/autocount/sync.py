@@ -122,7 +122,7 @@ from .sql_source.source import (
     DELETE_GUARD_MIN_ABSOLUTE,
     DELETE_GUARD_RATIO,
     PageCursor,
-    _decode_mark,
+    decode_mark,
     register_sql_db_source,
 )
 
@@ -170,6 +170,51 @@ class SyncConfigError(Exception):
 
 
 # ── cooperative abort ─────────────────────────────────────────────────────────
+
+
+def _advance_mark_and_ties(
+    existing_mark: Any,
+    existing_ties: List[str],
+    candidate_mark: Any,
+    candidate_ties: List[str],
+) -> Tuple[Any, List[str]]:
+    """The MAX of two stored marks, never backwards (F3, review round 2) -
+    and the tie-ref set that travels WITH whichever mark wins.
+
+    A tie-ref list belongs to the EXACT mark it was recorded against - if a
+    just-completed pass's own frontier LOSES the monotonic compare (the
+    public position was already ahead, left there by a different mode's
+    pass), its tie group must NOT overwrite the winning mark's own tie
+    group with one for a DIFFERENT mark value entirely. That silent
+    cross-contamination (an earlier version of this fix always replaced the
+    root ``tieRefs`` with whatever the CURRENT page produced, regardless of
+    mode) is exactly what makes a fresh incremental pass wrongly exclude an
+    unrelated ref merely because it once sat in some OTHER pass's tie group.
+
+    Both sides are whatever ``sql_source.source._encode_mark`` already
+    produced (a JSON-safe ISO string for a datetime, or the value as-is for
+    anything else) - decoded back to a comparable type before the compare so
+    an ISO string's own lexical order is never relied on. A type mismatch (a
+    task whose column type changed) falls back to keeping the CANDIDATE
+    rather than raising - this is bookkeeping for a display/resume position,
+    never a safety gate, so failing loud here would be the wrong trade.
+    """
+    if candidate_mark is None:
+        return existing_mark, existing_ties
+    if existing_mark is None:
+        return candidate_mark, list(candidate_ties)
+    try:
+        decoded_candidate = decode_mark(candidate_mark)
+        decoded_existing = decode_mark(existing_mark)
+    except TypeError:
+        return candidate_mark, list(candidate_ties)
+    if decoded_candidate > decoded_existing:
+        return candidate_mark, list(candidate_ties)
+    if decoded_candidate == decoded_existing:
+        # An EXACT tie between two independent passes' frontiers - merge
+        # rather than let either one silently evict the other's tie group.
+        return existing_mark, sorted(set(existing_ties) | set(candidate_ties))
+    return existing_mark, existing_ties
 
 
 def _aborted(db: Session, job_id: str) -> bool:
@@ -801,7 +846,7 @@ def _stage_documents(
 
     ``ref_fn`` (plan sprint-5/03 S2, AC-03-11/12) - the SAME identity
     function a paged ``sql_db`` run's ``fetch_page`` used to key
-    ``ac_row_hash`` (``SqlDbSource._source_ref``), so the caller can drop a
+    ``ac_row_hash`` (``SqlDbSource.source_ref``), so the caller can drop a
     failed row's hash and let the next full pass retry it fresh (D1: a
     failed row keeps NO hash). ``None`` for every other caller - a failed
     document's ref is meaningless there (the API path stores no hashes).
@@ -936,12 +981,28 @@ def _run_paged_sql_db(
         database_name=company.database_name,
     )
     hashes_repo = RowHashRepository(db)
-    # Snapshot of every ref ALREADY known before this run touches anything -
-    # the guard-failure rollback below needs to tell a genuinely PRE-
-    # EXISTING ref (whose hash a page may have legitimately refreshed) apart
-    # from a brand-new one this run introduced.
-    known_before_run = set(hashes_repo.all_hashes(tenant_id, company_id, entity_type))
-    run_seen_refs: set[str] = set()
+    staged_repo = StagedRecordRepository(db)
+    # Refs THIS RUN introduced for the first time (R-S4, review round 2) -
+    # accumulated from ``upsert_many``'s own return value (itself scoped to
+    # only the refs each page just touched), NEVER a snapshot of the whole
+    # known population taken up front. The guard-failure rollback below
+    # needs to tell a genuinely PRE-EXISTING ref (whose hash a page may have
+    # legitimately refreshed) apart from a brand-new one this run introduced
+    # - loading the ENTIRE population just to answer that, on every tick,
+    # success or not, is exactly the cost this refactor removes.
+    new_this_run: set[str] = set()
+
+    def _record_error_activity(message: str) -> None:
+        # F7 (review round 2) - the paged branch used to write NO activity
+        # rows at all; the legacy branch below in ``run_autocount_sync``
+        # writes one per failure, so this mirrors it exactly.
+        record_activity(
+            db, tenant_id=tenant_id, operation=f"sync {entity_type}",
+            status=ACTIVITY_ERROR, trace_id=trace_id,
+            external_ref=company.database_name,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            error_message=message,
+        )
 
     def _clear_pass() -> None:
         # JSON columns need a FRESH dict on every write (SQLAlchemy misses
@@ -964,14 +1025,9 @@ def _run_paged_sql_db(
         imperfection than leaving a PHANTOM new row behind), before
         ``_fail`` records the failure.
         """
-        db.query(AcStagedRecord).filter(
-            AcStagedRecord.tenant_id == tenant_id,
-            AcStagedRecord.company_id == company_id,
-            AcStagedRecord.job_id == job.id,
-        ).delete(synchronize_session=False)
-        new_this_run = [ref for ref in run_seen_refs if ref not in known_before_run]
+        staged_repo.discard_for_job(tenant_id, company_id, job.id)
         if new_this_run:
-            hashes_repo.delete_many(tenant_id, company_id, entity_type, new_this_run)
+            hashes_repo.delete_many(tenant_id, company_id, entity_type, list(new_this_run))
         run.staged_count = 0
         run.failed_count = 0
         run.added_count = 0
@@ -984,10 +1040,22 @@ def _run_paged_sql_db(
     pass_started_at = cursor.pass_started_at or datetime.now(timezone.utc)
     deadline = time.monotonic() + float(settings.autocount_run_time_budget_seconds)
 
+    # The public, monotonic top-level position (F3, review round 2) - read
+    # ONCE here, straight off the stored row, never off ``cursor.mark``
+    # (which for a fresh RECONCILE pass is deliberately ``None``, and for a
+    # RESUMED pass is the PASS-scoped position, not this one). It only ever
+    # moves forward (``_advance_mark_and_ties``), and for a reconcile it does
+    # not move AT ALL until the whole pass completes - see the tail below.
+    existing_cursor = watermark_row.cursor_json if isinstance(watermark_row.cursor_json, dict) else {}
+    top_mark: Any = existing_cursor.get(CURSOR_MARK)
+    top_tie_refs: List[str] = list(existing_cursor.get("tieRefs") or [])
+    pass_rows_scanned_before = cursor.rows_scanned
+
     total_rows_scanned = total_added = total_updated = total_staged = total_failed = 0
     truncated = False
     pages_done = cursor.pages_done
-    max_mark: Any = cursor.mark
+    pass_mark: Any = cursor.mark
+    cumulative_rows_scanned = pass_rows_scanned_before
     aborted_flag = False
     page = None
 
@@ -1008,6 +1076,7 @@ def _run_paged_sql_db(
                     db, source, tenant_id=tenant_id, trace_id=trace_id,
                     external_ref=company.database_name,
                 )
+                _record_error_activity(exc.message)
                 _fail(
                     db, service, job, run, watermark_row, exc.message, started,
                     config=config, error_code="DELETE_GUARD",
@@ -1022,6 +1091,7 @@ def _run_paged_sql_db(
                     db, source, tenant_id=tenant_id, trace_id=trace_id,
                     external_ref=company.database_name,
                 )
+                _record_error_activity(exc.message)
                 _fail(
                     db, service, job, run, watermark_row, exc.message, started,
                     config=config, error_code="DOCUMENT_CAP",
@@ -1036,6 +1106,7 @@ def _run_paged_sql_db(
                     db, source, tenant_id=tenant_id, trace_id=trace_id,
                     external_ref=company.database_name,
                 )
+                _record_error_activity(exc.message)
                 _fail(
                     db, service, job, run, watermark_row, exc.message, started,
                     config=config, error_code="FILTER_FORMULA",
@@ -1046,6 +1117,7 @@ def _run_paged_sql_db(
                     db, source, tenant_id=tenant_id, trace_id=trace_id,
                     external_ref=company.database_name,
                 )
+                _record_error_activity(exc.message)
                 _fail(db, service, job, run, watermark_row, exc.message, started, config=config)
                 return
             except Exception as exc:  # noqa: BLE001
@@ -1054,16 +1126,24 @@ def _run_paged_sql_db(
                     db, source, tenant_id=tenant_id, trace_id=trace_id,
                     external_ref=company.database_name,
                 )
+                _record_error_activity(f"Fetch failed: {exc}")
                 _fail(
                     db, service, job, run, watermark_row, f"Fetch failed: {exc}", started,
                     config=config,
                 )
                 return
 
+            # R-S7 (review round 2) - the RUNNING total is visible BEFORE
+            # this page stages anything, exactly like the legacy branch
+            # calls ``set_total`` before its own staging starts, rather than
+            # only once at the very end of the whole (possibly many-page)
+            # run.
+            service.set_total(job, total_rows_scanned + page.rows_scanned)
+
             staged, failed, failed_refs = _stage_documents(
                 db, service, job, page.records, engine=engine,
                 tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
-                ref_fn=source._source_ref, check_abort=False,
+                ref_fn=source.source_ref, check_abort=False,
             )
             failed_ref_set = set(failed_refs)
             now = datetime.now(timezone.utc)
@@ -1077,16 +1157,28 @@ def _run_paged_sql_db(
                 if ref not in page.unchanged_refs and ref not in failed_ref_set
             }
             if changed_hashes:
-                hashes_repo.upsert_many(
+                inserted_refs = hashes_repo.upsert_many(
                     tenant_id, company_id, entity_type, changed_hashes, seen_at=now
                 )
-                run_seen_refs.update(changed_hashes)
+                new_this_run.update(inserted_refs)
             if page.unchanged_refs:
                 hashes_repo.touch_seen(
                     tenant_id, company_id, entity_type, page.unchanged_refs, seen_at=now
                 )
             if failed_refs:
                 hashes_repo.delete_many(tenant_id, company_id, entity_type, failed_refs)
+            # R-S1 (review round 2) - a stale parked delete intent is
+            # cancelled the MOMENT its ref reappears in ANY page of ANY
+            # mode's run, not only once a full reconcile pass completes.
+            # This was previously the ONLY cancellation path (the post-loop
+            # reconcile-completion block below) - an INCREMENTAL run never
+            # ran it at all, so a ref that reappeared between two reconciles
+            # left its stale intent parked, ready to fire against a document
+            # that had already come back.
+            if page.hashes:
+                staged_repo.discard_stale_deletes(
+                    tenant_id, company_id, entity_type, list(page.hashes)
+                )
 
             record_client_calls(
                 db, source, tenant_id=tenant_id, trace_id=trace_id,
@@ -1099,8 +1191,20 @@ def _run_paged_sql_db(
             total_updated += page.updated
             total_staged += staged
             total_failed += failed
+            cumulative_rows_scanned = pass_rows_scanned_before + total_rows_scanned
             if page.last_mark is not None:
-                max_mark = page.last_mark
+                pass_mark = page.last_mark
+            # The TOP-LEVEL public position advances per page for a plain
+            # incremental/manual pass (unchanged, legacy-compatible
+            # behaviour a truncated MANUAL/INCREMENTAL run's own tests
+            # already pin) - a RECONCILE pass instead leaves it untouched
+            # until the whole pass completes (F3, below the loop), so an
+            # in-flight reconcile is never mistaken, mid-pass, for having
+            # already advanced past work it has not finished yet.
+            if mode != RUN_MODE_RECONCILE:
+                top_mark, top_tie_refs = _advance_mark_and_ties(
+                    top_mark, top_tie_refs, pass_mark, list(page.tie_refs)
+                )
 
             service.log(
                 job,
@@ -1115,10 +1219,13 @@ def _run_paged_sql_db(
                 # rows on the real company already carry
                 # ``sqlWatermarkColumn``/``sqlWatermark`` - renaming them
                 # would orphan every task's mark and force a full re-read.
-                # ``tieRefs`` and ``pass`` are the only ADDED keys.
+                # ``tieRefs`` and ``pass`` are the only ADDED keys. This
+                # TOP-LEVEL pair is the PUBLIC, monotonic position (F3) -
+                # separate from ``pass.mark``/``pass.tieRefs`` below, which
+                # is this SPECIFIC pass's own live per-page position.
                 CURSOR_COLUMN: source.watermark_column,
-                CURSOR_MARK: max_mark,
-                "tieRefs": list(page.tie_refs),
+                CURSOR_MARK: top_mark,
+                "tieRefs": top_tie_refs,
                 "pass": {
                     "kind": mode,
                     "startedAt": pass_started_at.isoformat(),
@@ -1132,7 +1239,14 @@ def _run_paged_sql_db(
                     # for the pass currently open, never a stale mark left
                     # behind by an unrelated, already-finished one. A brand
                     # new, pass-scoped field - not part of the legacy shape.
-                    "mark": max_mark,
+                    "mark": pass_mark,
+                    "tieRefs": list(page.tie_refs),
+                    # Cumulative across the WHOLE pass, not just this run
+                    # (R-NIT, review round 2) - the zero-rows delete guard
+                    # below reads this to tell "this pass never read
+                    # anything at all" apart from "a LATER page's own read
+                    # happened to be empty", which is normal completion.
+                    "rowsScanned": cumulative_rows_scanned,
                 },
             }
             run.rows_scanned = total_rows_scanned
@@ -1154,6 +1268,7 @@ def _run_paged_sql_db(
             cursor = PageCursor(
                 mark=page.last_mark, tie_refs=page.tie_refs, pass_kind=mode,
                 pass_started_at=pass_started_at, pages_done=pages_done,
+                rows_scanned=cumulative_rows_scanned,
             )
     finally:
         source.close()
@@ -1166,18 +1281,49 @@ def _run_paged_sql_db(
     delete_staged = 0
     if page is not None and page.complete:
         if mode == RUN_MODE_RECONCILE:
+            known = hashes_repo.all_hashes(tenant_id, company_id, entity_type)
+            known_count = len(known)
+            #     !!  A WHOLE PASS THAT NEVER READ A SINGLE ROW IS NEVER A
+            #         GENUINE TOTAL WIPE (R-NIT, review round 2).  !!
+            # This is the completed-pass counterpart of ``fetch_page``'s own
+            # (now removed) per-page zero-row guard: that version fired on
+            # EVERY page of a full extract, including a perfectly normal
+            # LATER page whose own read empties out near the end of a pass
+            # (the previous page's own boundary row can genuinely be gone by
+            # then) - not evidence of a wipe. Checking the PASS's cumulative
+            # total instead of any one page's own count is what tells those
+            # two apart.
+            if cumulative_rows_scanned == 0 and known_count:
+                message = (
+                    f"This run returned 0 rows across the whole reconcile pass "
+                    f"while {known_count} previously-known row(s) exist for "
+                    f"this entity - nothing was staged or pushed. This looks "
+                    f"like a broken query or connection, not a genuine full "
+                    f"deletion. Check the query and the connection, then "
+                    f"re-run reconcile."
+                )
+                logger.warning(
+                    "autocount delete guard tripped for job %s: %s", job.id, message
+                )
+                _clear_pass()
+                _discard_this_runs_staging()
+                _record_error_activity(message)
+                _fail(
+                    db, service, job, run, watermark_row, message, started,
+                    config=config, error_code="DELETE_GUARD",
+                )
+                return
             # The FULL known population, not just a count (S3 review
             # BLOCKER 1 mirror): a ref that is NOT stale reappeared/was
             # always current this pass, and ``_stage_deletes`` needs that
             # set as ``current_refs`` to cancel any STALE PARKED delete
             # intent whose ref came back - a delete intent must not
             # outlive the evidence that produced it.
-            known = hashes_repo.all_hashes(tenant_id, company_id, entity_type)
-            known_count = len(known)
             stale = hashes_repo.stale_refs(
                 tenant_id, company_id, entity_type, before=pass_started_at
             )
-            current_refs = [ref for ref in known if ref not in set(stale)]
+            stale_set = set(stale)  # R-S2 (review round 2) - built ONCE
+            current_refs = [ref for ref in known if ref not in stale_set]
             threshold = max(DELETE_GUARD_RATIO * known_count, DELETE_GUARD_MIN_ABSOLUTE)
             if stale and len(stale) > threshold:
                 message = (
@@ -1191,6 +1337,7 @@ def _run_paged_sql_db(
                 )
                 _clear_pass()
                 _discard_this_runs_staging()
+                _record_error_activity(message)
                 _fail(
                     db, service, job, run, watermark_row, message, started,
                     config=config, error_code="DELETE_GUARD",
@@ -1200,6 +1347,21 @@ def _run_paged_sql_db(
                 db, job, stale, tenant_id=tenant_id, company_id=company_id,
                 entity_type=entity_type, current_refs=current_refs,
             )
+            # The reconcile's OWN public position advances only NOW that the
+            # whole pass has genuinely finished (F3, review round 2) - never
+            # per page, and never past whatever an incremental tick may have
+            # already left ahead of it. Its tie-ref set travels WITH it (or
+            # not at all) - never overwriting a DIFFERENT, winning mark's own
+            # tie group (``_advance_mark_and_ties``).
+            top_mark, top_tie_refs = _advance_mark_and_ties(
+                top_mark, top_tie_refs, pass_mark, list(page.tie_refs)
+            )
+            watermark_row.cursor_json = {
+                **(watermark_row.cursor_json or {}),
+                CURSOR_COLUMN: source.watermark_column,
+                CURSOR_MARK: top_mark,
+                "tieRefs": top_tie_refs,
+            }
         # A completed pass's ``pass`` dict is LEFT AS-IS (``complete: true``
         # already written per-page above) - plan sprint-5/03 §2.2: only a
         # GUARD FAILURE clears it outright (``_clear_pass`` above). A later
@@ -1215,19 +1377,19 @@ def _run_paged_sql_db(
     run.updated_count = total_updated
     run.staged_count = total_staged + delete_staged
     run.failed_count = total_failed
-    service.set_total(job, total_rows_scanned)
     db.commit()
 
     #     !!  D1 REVERSAL: THE WATERMARK ADVANCES REGARDLESS OF MAPPING
     #         FAILURES (plan sprint-5/03 S2, AC-03-11) - a permanently bad
     #         document must never force a full re-extract every run.  !!
-    decoded_max = _decode_mark(max_mark) if max_mark is not None else None
+    decoded_max = decode_mark(pass_mark) if pass_mark is not None else None
     if isinstance(decoded_max, datetime):
         watermark_row.last_modified_at = decoded_max.astimezone(timezone.utc)
     watermark_row.cursor_json = {
         **(watermark_row.cursor_json or {}),
         CURSOR_COLUMN: source.watermark_column,
-        CURSOR_MARK: max_mark,
+        CURSOR_MARK: top_mark,
+        "tieRefs": top_tie_refs,
     }
     watermark_row.consecutive_failures = 0
     watermark_row.last_success_at = datetime.now(timezone.utc)
@@ -1272,9 +1434,37 @@ def _run_paged_sql_db(
         # The initial (or continuing) pass resumes on the VERY NEXT sweep
         # tick, not after a full `incrementalMinutes` wait (D3 - 148k SO
         # headers must finish in hours unattended, not overnight-per-page).
-        config.next_incremental_at = datetime.now(timezone.utc)
+        #     !!  THE VERY NEXT TICK, REGARDLESS OF WHICH CADENCE FIRES IT
+        #         (F3, review round 2 - the scheduler side of this fix).  !!
+        # A truncated pass of ANY kind re-arms ``next_incremental_at`` (the
+        # shorter of the two cadences, so the continuation lands soon) -
+        # ``next_reconcile_at`` is left exactly where the sweep's own claim
+        # step put it (already re-armed into the future when it was the one
+        # due this tick). The MODE actually used on that next tick is not
+        # decided here at all: ``scheduler._sweep_one``'s own open-pass
+        # override (F3's other half) makes an in-progress pass's ``kind``
+        # win over whichever schedule field happened to be due, so a
+        # truncated RECONCILE is continued as a reconcile even though it is
+        # the INCREMENTAL cadence that wakes the next tick. ``next_run_times``
+        # never returns ``None`` today, but the guard (R-NIT) is kept
+        # explicit rather than assumed.
+        from .services.etl_service import EtlService
+
+        next_incremental, _next_reconcile = EtlService.next_run_times(
+            config.source_config or {}, now=datetime.now(timezone.utc)
+        )
+        if next_incremental is not None:
+            config.next_incremental_at = datetime.now(timezone.utc)
     else:
         run.error = None
+
+    record_activity(
+        db, tenant_id=tenant_id, operation=f"sync {entity_type}", status=ACTIVITY_SUCCESS,
+        trace_id=trace_id, external_ref=company.database_name,
+        latency_ms=int((time.monotonic() - started) * 1000),
+        request={"mode": mode, "pagesDone": pages_done, "rowsScanned": total_rows_scanned},
+        response={"staged": total_staged, "failed": total_failed},
+    )
 
     summary = {
         "companyId": company_id,

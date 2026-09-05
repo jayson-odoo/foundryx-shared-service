@@ -46,7 +46,7 @@ from .models import (
     AcEntityConfig,
     AcSyncRun,
 )
-from .repositories import SyncJobRepository, SyncRunRepository
+from .repositories import SyncJobRepository, SyncRunRepository, WatermarkRepository
 from .services.etl_service import EtlService
 from .bootstrap import MODULE_NAME as AUTOCOUNT_MODULE_NAME
 
@@ -146,6 +146,27 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
     # job/run; the mechanics for a no-watermark task are the same diff either
     # way (AC-22-12 item 6), the source decides that on its own.
     mode = RUN_MODE_RECONCILE if due_reconcile else RUN_MODE_INCREMENTAL
+
+    #     !!  AN OPEN PASS WINS OVER WHICHEVER SCHEDULE HAPPENED TO FIRE (F3,
+    #         review round 2).  !!
+    # A paged pass (plan sprint-5/03) can span several ticks (D3). If it is
+    # still open when a DIFFERENT schedule fires - e.g. only the incremental
+    # cadence is due while a reconcile pass is mid-flight, because the sweep's
+    # own claim already re-armed ``next_reconcile_at`` into the future - the
+    # tick must continue THAT pass, not silently start a plain incremental
+    # one under a mismatched mode (which ``PageCursor.from_watermark_row``
+    # would refuse to resume, wasting the tick and leaving the real pass
+    # exactly where it was). The open pass's own ``kind`` always wins,
+    # regardless of which schedule field was actually due this tick.
+    watermark = WatermarkRepository(db).get(
+        config.tenant_id, config.company_id, config.entity_type
+    )
+    if watermark is not None and isinstance(watermark.cursor_json, dict):
+        pass_state = watermark.cursor_json.get("pass")
+        if isinstance(pass_state, dict) and not pass_state.get("complete", False):
+            open_kind = pass_state.get("kind")
+            if open_kind:
+                mode = open_kind
 
     next_incremental, next_reconcile = EtlService.next_run_times(
         config.source_config or {}, now=now

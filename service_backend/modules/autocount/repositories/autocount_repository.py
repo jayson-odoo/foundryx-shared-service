@@ -677,6 +677,25 @@ class StagedRecordRepository:
         self.db.flush()
         return discarded
 
+    def discard_for_job(self, tenant_id: str, company_id: str, job_id: str) -> int:
+        """Hard-delete every staged row THIS job wrote (NIT/R-S9, review round
+        2 - a paged run's own guard-failure rollback used to run this as a
+        raw ``db.query(AcStagedRecord)...delete()`` in ``sync.py`` instead of
+        through this repository). A guard trip is fail-SAFE: nothing this
+        job staged may survive it, so a hard delete (not a status flip) is
+        correct here - unlike ``mark(..., status=STAGED_DISCARDED)``, which
+        is for a row that DID legitimately exist and is merely being
+        superseded. Does not commit; the caller owns the transaction."""
+        return (
+            self.db.query(AcStagedRecord)
+            .filter(
+                AcStagedRecord.tenant_id == tenant_id,
+                AcStagedRecord.company_id == company_id,
+                AcStagedRecord.job_id == job_id,
+            )
+            .delete(synchronize_session=False)
+        )
+
     def pending_delete_refs(
         self,
         tenant_id: str,
@@ -756,15 +775,25 @@ class RowHashRepository:
         hashes: dict[str, str],
         *,
         seen_at: datetime,
-    ) -> int:
-        """Write/refresh the hash of every ref given. Returns rows touched.
+    ) -> List[str]:
+        """Write/refresh the hash of every ref given. Returns the refs that
+        were genuinely NEW (an INSERT, not an UPDATE).
 
-        Set-based: ONE read of the existing refs, then an UPDATE per changed
+        Set-based: ONE read of the existing refs - scoped to just the refs in
+        ``hashes``, never the whole population - then an UPDATE per changed
         ref and a bulk INSERT for the new ones - never a SELECT per row. Does
         not commit; the caller owns the transaction.
+
+        R-S4 (review round 2): a paged run's guard-failure rollback used to
+        snapshot the WHOLE known hash population up front just to work out
+        which refs it introduced this run, on every tick, success or not.
+        This ``existing`` lookup already answers exactly that question, for
+        free, scoped to only the rows THIS call is about to touch - so the
+        caller accumulates the returned inserted refs across pages instead
+        of diffing against a separate full-population snapshot.
         """
         if not hashes:
-            return 0
+            return []
         existing = self.hashes_for(tenant_id, company_id, entity_type, list(hashes))
         scope = {
             "tenant_id": tenant_id,
@@ -776,10 +805,10 @@ class RowHashRepository:
             for ref, value in hashes.items()
             if ref in existing
         ]
+        inserted_refs = [ref for ref in hashes if ref not in existing]
         inserts = [
-            {**scope, "source_ref": ref, "row_hash": value, "last_seen_at": seen_at}
-            for ref, value in hashes.items()
-            if ref not in existing
+            {**scope, "source_ref": ref, "row_hash": hashes[ref], "last_seen_at": seen_at}
+            for ref in inserted_refs
         ]
         # Both take the FULL composite PK, so SQLAlchemy batches each set into
         # one executemany - never a statement per row.
@@ -788,7 +817,7 @@ class RowHashRepository:
         if inserts:
             self.db.bulk_insert_mappings(AcRowHash, inserts)
         self.db.flush()
-        return len(hashes)
+        return inserted_refs
 
     def count(self, tenant_id: str, company_id: str, entity_type: str) -> int:
         return (

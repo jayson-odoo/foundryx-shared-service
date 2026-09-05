@@ -51,6 +51,42 @@
 - Hash persistence moves OUT of the source (see 2.2); `persist_hashes=False` (preview) reads
   one page and returns it, nothing written.
 
+**Review round 2 amendments (security review + follow-up):**
+- **F1 (preview one page).** `EtlService._extract_and_map`/`preview_task` no longer call the
+  unpaged `fetch_changes` for a watermarked task - they call `source.fetch_page(PageCursor())`
+  once (`persist_hashes=False`, nothing written) and report that ONE page's records. `preview_
+  task`'s payload gains `warnings.pagedPreview: true` when the page is not `complete` (AC-03-14).
+  A non-watermarked master is unaffected (still `fetch_changes`, one page = everything).
+- **F5/F6 (tie-group bound, row cap).** `build_paged_wrap` gained an OPTIONAL `skip: int = 0`
+  keyword (every existing caller/test that omits it gets byte-identical text) - when given, it
+  swaps `TOP (:page_size)`/`LIMIT :page_size` for `OFFSET :skip ROWS FETCH NEXT :page_size ROWS
+  ONLY` (mssql) / `LIMIT :page_size OFFSET :skip` (everyone else). `fetch_page` uses this
+  INTERNALLY, within ONE call, to walk past whatever it has already pulled THIS call without
+  ever inflating the bound `:page_size` itself - the persisted `tie_refs` (round-tripped via
+  `PageCursor`/`cursor_json`, unchanged shape) stays purely VALUE-based (a ref, matched against
+  the row's OWN mark too - see below) so nothing here depends on row POSITION being stable
+  ACROSS separate runs (an OFFSET that were persisted across calls would be unsafe the moment a
+  row is deleted between two runs - the whole point of the R-S1 fix below). The per-partition
+  row cap (F6) moved inside this per-batch read, matching `_read`.
+- **Exclusion is by (ref, mark), never ref alone (closes the R-S1 gap for STAGING, not just
+  deletes).** A row is only ever excluded from a page's `records` when its OWN current
+  watermark value equals the boundary `cursor.mark` being resumed - a ref that reappears with a
+  NEW, later mark (a delete then a fresh insert/edit with the same key) is never mistaken for
+  "already taken" just because that same ref sat in a tie group at some OLDER mark.
+- **F2 (abort between pages) - investigated, no code change.** The security review's literal fix
+  (roll back a just-staged page's hashes/cursor on a post-stage abort, discard that page's rows)
+  was NOT implemented: the tester's own real-entry-point test for this scenario
+  (`test_an_abort_between_pages_delivers_page_one_exactly_once_via_the_scheduler`) already passes
+  UNCHANGED, because an ACTIVE task's auto-push pulls STAGED rows ACROSS jobs
+  (`list_pending_for_entity`), so an aborted job's already-committed page still gets delivered
+  exactly once on a later successful run. Implementing the literal fix (discarding that page's
+  staged rows on abort) would instead BREAK the pre-existing, still-required-green
+  `test_an_abort_stops_after_the_page_in_flight`, which asserts the opposite (a page staged
+  before an abort landed stays staged, not discarded). The gap the finding names is real ONLY for
+  a DRAFT/paused task run manually past an abort (its rows are job-scoped and never reach a
+  review batch) - flagged to the backlog (§6), not fixed here, since no red test demands it and
+  the two existing tests actively disagree about which behaviour is correct.
+
 ### 2.2 Run loop, change-only staging, watermark (`sync.py`)
 
 `run_autocount_sync`, sql_db branch with a watermark column:
@@ -91,6 +127,52 @@ auto_push as today (pending across jobs, 5000 cap unchanged)
   failed F." Run row: `rows_scanned`, `added_count`, `updated_count`, `staged_count`,
   `failed_count`, `truncated`, `error` (continuation message "Budget reached after page n;
   continues on the next tick") - all existing columns.
+
+**Review round 2 amendments:**
+- **F3 (reconcile continuation + monotone top-level mark).** The TOP-LEVEL `sqlWatermark`/
+  `tieRefs` pair (the public, cross-mode resume position a plain incremental/manual pass reuses)
+  now advances per page for a manual/incremental pass exactly as before, but for a RECONCILE
+  pass it is frozen until the WHOLE pass completes, then advances ONCE via a monotonic
+  max-or-merge (`sync._merge_pass_completion_into_top_mark` - never backwards; an exact tie
+  between the frozen position and the just-finished pass's own frontier merges their tie-ref
+  sets rather than one silently replacing the other). The pass's OWN live per-page position now
+  lives ONLY in `cursor_json.pass.mark`/`pass.tieRefs`/`pass.rowsScanned` (new, pass-scoped keys)
+  - `PageCursor.from_watermark_row`'s RESUME branch reads from there, never from the top-level
+  pair. `scheduler._sweep_one` also gained an open-pass override: an incomplete pass's own
+  `kind` wins over whichever schedule field (`next_incremental_at`/`next_reconcile_at`) is
+  actually due this tick, so a reconcile mid-pass is continued as a reconcile even on a tick the
+  incremental cadence woke. A truncation still re-arms `next_incremental_at` to now regardless
+  of which mode truncated (unchanged from the original design - the shorter cadence wakes the
+  next tick; the scheduler's open-pass override is what makes that tick run the CORRECT mode).
+- **F4 (resume after a watermark-column/population change).** `PageCursor.from_watermark_row`'s
+  RESUME branch now applies the SAME `cursor[CURSOR_COLUMN] == watermark_column` check the
+  fresh-pass branch already had - a stored pass whose column no longer matches starts fresh
+  rather than resuming with a stale, cross-column mark. `EtlService.update_task` also clears
+  `cursor_json.pass` outright (save-time backstop, ANY `sql_db` entity, not just documents) when
+  `watermarkColumn` or any `POPULATION_DEFINING_KEYS` field changes.
+- **R-S1 (stale delete-intent cancellation on every page).** `StagedRecordRepository.
+  discard_stale_deletes` now runs on EVERY page of EVERY mode (using that page's own fetched
+  refs), not only once at reconcile completion - an incremental run that reads a reappeared ref
+  cancels its stale parked delete intent immediately.
+- **R-S4 (no full-population snapshot for the guard rollback).** `RowHashRepository.upsert_many`
+  now returns the refs it genuinely INSERTED (a lookup already scoped to just that page's
+  refs, free); the run loop accumulates these into `new_this_run` instead of diffing against a
+  `all_hashes()` snapshot of the WHOLE population taken at the start of every run.
+- **R-S7 (progress total before staging).** `JobService.set_total` is now called with the
+  RUNNING total before each page's `_stage_documents` call, not once after the whole (possibly
+  many-page) run.
+- **R-NIT (zero-rows guard, pass-cumulative).** The zero-rows delete guard moved OUT of
+  `fetch_page` (which used to re-check it on every page, misfiring on a normal LATER page whose
+  own read empties out near the end of a pass) and into the run loop's post-loop
+  reconcile-completion check, keyed on `cursor_json.pass.rowsScanned` accumulated ACROSS every
+  run of the pass (not just this run) - it only fires when a COMPLETED pass scanned zero rows in
+  total while a known population exists.
+- **NITs.** `db.query(AcStagedRecord)...delete()` in the guard-rollback path now goes through
+  `StagedRecordRepository.discard_for_job`; `SqlDbSource._source_ref` is now the public
+  `source_ref`; `_decode_mark` gained the public alias `decode_mark` (`sync.py` imports that,
+  not the underscored name); `EtlTaskResponse.initialLoad` is now the typed
+  `InitialLoadProgress` model instead of a bare dict; the paged branch now writes
+  `ACTIVITY_SUCCESS`/`ACTIVITY_ERROR` rows exactly like the legacy branch (F7).
 
 ### 2.3 Reconcile over pages (`sync.py` + repository)
 
@@ -220,3 +302,5 @@ parallel at the end. Live load = AC-03-22/23 on the real company and `ac_sim`.
 - BL-SS-057 Push cap per run as a setting (5,000 today).
 - BL-SS-058 Sink drops the consumer `warnings` key (tester BL-D).
 - BL-SS-059 Preview does not count mapping-failed rows (tester BL-B/BL-C).
+- BL-SS-060 A DRAFT/paused paged task's page-in-flight abort can strand staged rows forever
+  (security review round 2, F2 - investigated, not fixed; see the 2.1 amendment above).

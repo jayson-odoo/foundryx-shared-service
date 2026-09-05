@@ -983,6 +983,37 @@ class EtlService:
             )
             if narrowed:
                 RowHashRepository(self.db).clear_all(tenant_id, company_id, entity_type)
+        #     !!  A MID-PASS WATERMARK-COLUMN OR POPULATION EDIT MUST CLEAR
+        #         ANY OPEN PAGED PASS (F4, review round 2) - EVERY ENTITY,
+        #         NOT JUST DOCUMENTS.  !!
+        # A paged pass's own resume position (``cursor_json["pass"]["mark"]``)
+        # is a value under the OLD comparison - a new watermark column (or a
+        # narrower/wider population, which changes what the SAME column even
+        # means) makes that stored position meaningless to reuse.
+        # ``PageCursor.from_watermark_row`` already refuses to resume a pass
+        # whose stored column no longer matches (F4's other half, the RUN-time
+        # backstop); this is the SAVE-time half, so a mismatched pass never
+        # even sits there looking resumable in the meantime. Any ``sql_db``
+        # entity can be paged (a watermark column, not documents alone), so
+        # this check is deliberately NOT gated on ``is_document_entity``.
+        if previous_source_config is not None:
+            population_changed = any(
+                previous_source_config.get(key) != clean.get(key)
+                for key in POPULATION_DEFINING_KEYS
+            ) or previous_source_config.get("watermarkColumn") != clean.get("watermarkColumn")
+            if population_changed:
+                watermark_row = WatermarkRepository(self.db).get(
+                    tenant_id, company_id, entity_type
+                )
+                if (
+                    watermark_row is not None
+                    and isinstance(watermark_row.cursor_json, dict)
+                    and watermark_row.cursor_json.get("pass") is not None
+                ):
+                    # Fresh dict (SQLAlchemy misses in-place JSON mutation).
+                    watermark_row.cursor_json = {
+                        **watermark_row.cursor_json, "pass": None,
+                    }
         # The validation preview already proved what this query returns, so its
         # column names are stored (AC-22-09/11) - the Mapping tab's source
         # picker reads them instead of re-running the query per keystroke.
@@ -1138,13 +1169,14 @@ class EtlService:
         previewable = hasattr(sink, "dry_run")
         records: List[Any] = []
         current_refs: List[str] = []
+        page_complete: Optional[bool] = None
         # AC-02-12 - the overlap warning needs THIS run's own fetched refs,
         # which requires actually reading the source; that is worth doing
         # even for a document with no consumer wired up yet (an operator
         # commonly builds the sibling PO/SPO tasks before pointing either at
         # Sorento), so this extraction is NOT gated on ``previewable``.
         if previewable or is_document_entity(entity_type):
-            records, current_refs = self._extract_and_map(
+            records, current_refs, page_complete = self._extract_and_map(
                 tenant_id, company, config, entity_type
             )
 
@@ -1165,6 +1197,12 @@ class EtlService:
             warnings = self._preview_warnings(
                 tenant_id, company_id, entity_type, current_refs, sink, config
             )
+            # AC-03-14 (F1, review round 2) - a watermarked task's preview
+            # covers only its FIRST page; when more of the population
+            # remains beyond it, the caller must be told this is a partial
+            # look, not the whole thing.
+            if page_complete is False:
+                warnings["pagedPreview"] = True
             if warnings:
                 payload["warnings"] = warnings
             return self._task_view(company_id, entity_type, config), payload
@@ -1193,6 +1231,8 @@ class EtlService:
         warnings = self._preview_warnings(
             tenant_id, company_id, entity_type, current_refs, sink, config
         )
+        if page_complete is False:
+            warnings["pagedPreview"] = True
 
         payload = {
             "previewable": True,
@@ -1285,6 +1325,22 @@ class EtlService:
         Deferred import: the DB source imports the mapping + repository layers,
         and importing it at module level here would make this service part of
         that cycle for no benefit.
+
+        Returns ``(mapped_records, current_refs, page_complete)`` -
+        ``page_complete`` is ``None`` for a non-watermarked (unpaged) task,
+        and a bool for a watermarked one (see below).
+
+        !!  A WATERMARKED TASK'S PREVIEW READS AT MOST ONE PAGE (F1, review
+            round 2 BLOCKER).  !!
+        The OLD code always called the UNPAGED ``fetch_changes`` here, which
+        for a document task means "read the WHOLE from-date window, then run
+        one ``lineQuery`` per header, in ONE HTTP request" - a task with
+        148k headers issues 148k statements inside a single preview call.
+        Reusing the SAME paging primitive a real run uses (``fetch_page``,
+        one call, a fresh ``PageCursor``) caps a preview to exactly what a
+        real run's FIRST page would read - correct, since the preview's own
+        purpose (AC-22-18's activation gate) is to prove the shape of what
+        will be pushed, not to enumerate the whole population.
         """
         from ..mapping import (
             MappingEngine,
@@ -1293,7 +1349,7 @@ class EtlService:
             flat_profile,
         )
         from ..sources import SourceContext, Watermark
-        from ..sql_source.source import SqlDbSource
+        from ..sql_source.source import PageCursor, SqlDbSource
 
         source = SqlDbSource(
             SourceContext(
@@ -1309,10 +1365,21 @@ class EtlService:
             # recorded their hashes.
             persist_hashes=False,
         )
+        page_complete: Optional[bool] = None
         try:
-            # ``Watermark()`` = no mark, so this is the INITIAL LOAD - which is
-            # exactly what the activation gate is meant to show (AC-22-18).
-            result = source.fetch_changes(Watermark())
+            if source.watermark_column:
+                page = source.fetch_page(PageCursor())
+                raw_records = page.records
+                current_refs = list(page.hashes)
+                page_complete = page.complete
+            else:
+                # ``Watermark()`` = no mark, so this is the INITIAL LOAD -
+                # exactly what the activation gate is meant to show
+                # (AC-22-18). Only reachable for a task with no watermark
+                # column configured at all, which has no page concept.
+                result = source.fetch_changes(Watermark())
+                raw_records = result.records
+                current_refs = list(result.current_refs)
         finally:
             source.close()
 
@@ -1348,12 +1415,14 @@ class EtlService:
             profile=profile,
             database_name=company.database_name,
         )
-        mapped = [engine.map_document(record.raw) for record in result.records]
+        mapped = [engine.map_document(record.raw) for record in raw_records]
         # ``current_refs`` (sprint-5/02, AC-02-12) is returned alongside the
         # mapped records so ``preview_task`` can cross-check this run's own
         # fetched headers against a SIBLING document task's known refs
         # (the overlap warning) without re-reading the source a second time.
-        return [m.record for m in mapped if m.ok], list(result.current_refs)
+        # ``page_complete`` (F1, review round 2) lets ``preview_task`` warn
+        # when this preview covers only PART of the population.
+        return [m.record for m in mapped if m.ok], current_refs, page_complete
 
     def activate_task(self, tenant_id: str, company_id: str, entity_type: str) -> EtlTaskView:
         """draft|paused → active (AC-22-18).
