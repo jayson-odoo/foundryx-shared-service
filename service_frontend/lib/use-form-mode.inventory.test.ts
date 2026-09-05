@@ -26,7 +26,10 @@ function sourceFiles(): string[] {
       if (entry.isDirectory()) {
         if (entry.name === 'node_modules' || entry.name === '.next') continue;
         walk(full);
-      } else if (entry.name.endsWith('.tsx') && !entry.name.includes('.test.')) {
+      } else if (
+        (entry.name.endsWith('.tsx') || entry.name.endsWith('.ts')) &&
+        !entry.name.includes('.test.')
+      ) {
         out.push(full);
       }
     }
