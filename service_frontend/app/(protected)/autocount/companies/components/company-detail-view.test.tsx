@@ -142,7 +142,7 @@ describe('AutocountCompanyDetailView - Add entity per kind (AC-01-17)', () => {
     render(<AutocountCompanyDetailView companyId="c1" />);
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(9);
+    expect(names).toHaveLength(10);
     expect(names).toEqual(expect.arrayContaining(['Customer', 'Supplier']));
     expect(names).not.toContain('Goods received note');
   });

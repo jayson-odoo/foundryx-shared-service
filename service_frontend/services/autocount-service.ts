@@ -26,6 +26,7 @@ import type {
   AutocountEtlTaskUpdate,
   AutocountFormulaTestResult,
   AutocountJobListQuery,
+  AutocountMappingPreset,
   AutocountMappingUpdate,
   AutocountMappingView,
   AutocountMappingWriteRow,
@@ -166,14 +167,20 @@ export interface AutocountService {
   /**
    * Run the REAL MappingEngine over a MOCK AutoCount record
    * (`POST .../mapping/simulate`, AC-16-30) → the projected Sorento record +
-   * per-field results. `rows` (optional) previews UNSAVED draft edits. Writes
-   * NOTHING - pure transform preview, distinct from the slice-14 Sorento dry-run.
+   * per-field results. `rows` (optional) previews UNSAVED draft edits (now
+   * scope-tagged, sprint-5/02). `lines` (sprint-5/02, AC-02-22) - a document
+   * entity's fetched line records for the picked header (the caller fetches
+   * them itself via `previewSqlQuery`/`useLineFetcher`, bound to the header's
+   * `:doc_key` - the backend does the equivalent through
+   * `SqlDbSource._read_lines`). Writes NOTHING - pure transform preview,
+   * distinct from the slice-14 Sorento dry-run.
    */
   simulateMapping(
     companyId: string,
     entityType: string,
     record: Record<string, unknown>,
     rows?: AutocountMappingWriteRow[],
+    lines?: Array<Record<string, unknown>>,
   ): Promise<AutocountSimulateResult>;
 
   // ── direct-DB ETL (plan 22, slice S1 - AC-22-04..07/11) ────────────────────
@@ -341,9 +348,63 @@ export interface AutocountService {
     entityType: string,
     query?: AutocountListQuery,
   ): Promise<ListResult<AutocountSyncRun>>;
+
+  // ── document mapping (sprint-5/02, S1 - AC-02-01..09/16..22) ───────────────
+  //
+  // BACKEND CONTRACT (S2/S3 backend must match this EXACTLY - the mock is the
+  // spec). Additions to EXISTING routes first:
+  //
+  //   GET .../mapping  →  AutocountMappingView gains `lineSorentoFields` +
+  //        `lineAcFields` (AC-02-02) - both empty for a master/GRN entity, so
+  //        the Mapping tab renders a single section unchanged. Header
+  //        `sorentoFields` gains the header fallback fields (AC-02-14).
+  //
+  //   PUT .../mapping  {rows}  →  AutocountMappingView - each row carries
+  //        `scope: 'header' | 'line'` (default 'header', AC-02-01); a header
+  //        re-map never deletes a line row and vice versa. Line rows are
+  //        guarded exactly like header rows PLUS the ref-pairing +
+  //        required-field rules (AC-02-03): `product_ref` only via
+  //        `ref_product`, `warehouse_ref` only via `ref_warehouse`, and
+  //        `source_ref`/`product_ref`/`qty_ordered` required the moment any
+  //        line row is saved.
+  //
+  //   POST .../mapping/simulate  {record, rows, lines?}  →  AutocountSimulateResult
+  //        gains `status` (AC-02-08/22) - the header's computed status AFTER
+  //        the aggregates pass. `lines` (new, optional) - the picked header's
+  //        fetched line records (the FE fetches them itself via
+  //        `previewSqlQuery`/`useLineFetcher` bound to `:doc_key`, mirroring
+  //        `SqlDbSource._read_lines` server-side); omitted = master/GRN
+  //        behavior unchanged (`lineFields: []`).
+  //
+  //   GET .../mapping/functions  →  the formula catalog gains `startswith`,
+  //        `coalesce` (AC-02-09) and the five `lines.*` aggregate variables
+  //        for document entities (AC-02-07).
+  //
+  // New route:
+  //
+  //   GET /autocount/presets/{entityType}  →  AutocountMappingPreset | null
+  //        (AC-02-16/17) - the AutoCount SQL-pack preset for one document
+  //        entity, with `{database}` substituted for the company's
+  //        `databaseName`. Null/absent for a non-document entity or one with
+  //        no preset (foolproof-UI: "Use preset" is not offered then).
+  //        Gated `autocount.companies.manage`.
+
+  /** The AutoCount SQL-pack preset(s) for a document entity, database-substituted. */
+  listMappingPresets(
+    companyId: string,
+    entityType: string,
+  ): Promise<AutocountMappingPreset[]>;
 }
 
-// The S3 backend now puts `nextIncrementalAt`/`nextReconcileAt` on the wire
-// (`EtlTaskResponse`, plan 22 S3) - the `withPhase1NextRunMock` overlay this
-// comment used to describe is gone; every field is real data end to end.
+// ═══════════════════════════════════════════════════════════════════════════
+// The whole AutoCount surface is backed by FastAPI end to end (companies,
+// sync, staged review, ETL tasks, document field mapping incl. line rows/
+// aggregates/status formula/presets/Simulate-with-lines - sprint-5/02
+// S1-S3). The `withPhase1DocumentMappingMock` overlay this used to carry is
+// gone now that `GET /autocount/presets/{entityType}` and
+// `CompanyService.simulate_mapping`'s `lines=` param are both real
+// (`modules/autocount/routers/sync.py`/`services/company_service.py`); a
+// `.mock` sibling still exists as frontend-first scaffolding for the
+// Vitest suite (the house service-trio pattern).
+// ═══════════════════════════════════════════════════════════════════════════
 export const autocountService: AutocountService = realAutocountService;

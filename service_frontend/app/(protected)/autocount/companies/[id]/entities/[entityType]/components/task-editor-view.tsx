@@ -32,10 +32,11 @@ import {
   useAutocountSqlSchema,
   useEtlTaskLifecycle,
   useEtlTaskPreview,
+  useLineFetcher,
   useSqlPreview,
 } from '@/hooks/use-autocount-etl';
-import { useAutocountMapping } from '@/hooks/use-autocount-mapping';
-import { mappingSourceColumns } from '@/lib/autocount-etl';
+import { useAutocountMapping, useAutocountMappingPresets } from '@/hooks/use-autocount-mapping';
+import { isDocumentEntity, mappingSourceColumns } from '@/lib/autocount-etl';
 import type {
   AutocountEtlSourceConfig,
   AutocountEtlStatus,
@@ -84,6 +85,8 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
   const sqlConnections = useAutocountSqlConnections();
   const mapping = useAutocountMapping(companyId, entityType);
   const draft = useMappingDraft(mapping.view);
+  const { presets } = useAutocountMappingPresets(companyId, entityType);
+  const { fetchLines } = useLineFetcher();
   const etlPreview = useEtlTaskPreview(companyId, entityType, apply);
   const lifecycle = useEtlTaskLifecycle(companyId, entityType, apply);
   const runsConfig = useAutocountRunsListConfig(companyId, { variant: 'task', entityType });
@@ -140,6 +143,20 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     if (configDirty) {
       const ok = await save({ ...config, query: config.query.trim() });
       if (!ok) return false;
+      // A document entity's FIRST clean config save seeds its field mapping
+      // server-side (`seed_document_mapping`) - the Mapping tab's own hook
+      // mounted before that seed existed (its 404 latched `notFound=true`),
+      // so it never sees the new rows without an explicit reload.
+      //
+      // SF1 (final reviewer pass) - but ONLY when the mapping draft is
+      // CLEAN. `mapping.save()` below already sets the fresh view itself
+      // (`useAutocountMapping.save` calls `setView(next)`) - reloading here
+      // TOO when the draft is also dirty fires a second, redundant, RACY
+      // refetch that can resolve in either order against the save's own
+      // state update.
+      if (!draft.dirty) {
+        mapping.reload();
+      }
     }
     if (draft.dirty) {
       const problem = draft.validate();
@@ -147,7 +164,8 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
         toast.error(problem);
         return false;
       }
-      const ok = await mapping.save(draft.writeRows());
+      const { rows, lineRows } = draft.writeRowsForSave();
+      const ok = await mapping.save(rows, lineRows);
       if (!ok) return false;
     }
     toast.success('Task saved.');
@@ -183,9 +201,63 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       mappingSourceColumns(
         task?.resultColumns ?? [],
         previewColumns,
-        draft.rows.map((r) => r.sourcePath),
+        draft.header.rows.map((r) => r.sourcePath),
       ),
-    [draft.rows, previewColumns, task?.resultColumns],
+    [draft.header.rows, previewColumns, task?.resultColumns],
+  );
+
+  // The Mapping tab's LINE source picker (sprint-5/02, AC-02-02/06) - the
+  // task's persisted `line_result_columns` (via the mapping view's
+  // `lineAcFields`), plus this session's line preview, plus whatever the
+  // line rows already reference.
+  const linePreviewColumns = useMemo(
+    () => (linePreview.state.status === 'success' ? linePreview.state.preview.columns.map((c) => c.name) : []),
+    [linePreview.state],
+  );
+  const lineColumnTypes = useMemo(
+    () =>
+      linePreview.state.status === 'success'
+        ? Object.fromEntries(linePreview.state.preview.columns.map((c) => [c.name, c.type]))
+        : {},
+    [linePreview.state],
+  );
+  const lineSourceColumns = useMemo(
+    () =>
+      mappingSourceColumns(
+        mapping.view?.lineAcFields ?? [],
+        linePreviewColumns,
+        draft.line?.rows.map((r) => r.sourcePath) ?? [],
+      ),
+    [draft.line, linePreviewColumns, mapping.view?.lineAcFields],
+  );
+
+  // The Simulate dialog's document mode (AC-02-22) - the header query's last
+  // Test-query preview rows + a per-header line fetch bound to `:doc_key`.
+  const headerPreviewRows = useMemo(
+    () => (preview.state.status === 'success' ? preview.state.preview.rows : []),
+    [preview.state],
+  );
+  const onFetchLines = useCallback(
+    async (docKey: string) => {
+      if (!config?.connectionId || !config.lineQuery) return [];
+      const result = await fetchLines(config.connectionId, config.lineQuery, docKey);
+      return result.rows;
+    },
+    [config?.connectionId, config?.lineQuery, fetchLines],
+  );
+  const onUsePreset = useCallback(
+    (preset: import('@/types/autocount').AutocountMappingPreset) => {
+      onChange({
+        query: preset.headerQuery,
+        lineQuery: preset.lineQuery,
+        keyColumns: preset.keyColumns,
+        watermarkColumn: preset.watermarkColumn,
+        docDateColumn: preset.docDateColumn,
+        fromDate: preset.fromDate,
+        filterFormula: preset.filterFormula,
+      });
+    },
+    [onChange],
   );
 
   const resourceConfig = useMemo<ResourceFormConfig<AutocountEtlTask> | null>(() => {
@@ -308,6 +380,9 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 preview={preview}
                 linePreview={linePreview}
                 fieldErrors={fieldErrors}
+                presets={presets}
+                onUsePreset={onUsePreset}
+                onServerTest={mapping.testFormula}
               />
             </div>
           ),
@@ -337,11 +412,16 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                   saveError={mapping.saveError}
                   sourceMode="column"
                   sourceOptions={sourceColumns}
+                  lineSourceOptions={lineSourceColumns}
                   onServerTest={mapping.testFormula}
                   onSimulate={mapping.simulate}
                   entityLabel={label}
                   entityType={entityType}
                   columnTypes={columnTypes}
+                  lineColumnTypes={lineColumnTypes}
+                  headerPreviewRows={headerPreviewRows}
+                  headerKeyColumns={config.keyColumns}
+                  onFetchLines={isDocumentEntity(entityType) ? onFetchLines : undefined}
                 />
               )}
             </div>
@@ -424,15 +504,21 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     entityType,
     etlPreview,
     fieldErrors,
+    headerPreviewRows,
     initialTab,
     lifecycle,
+    lineColumnTypes,
     linePreview,
+    lineSourceColumns,
     lockedConnection,
     mapping,
     onCancel,
     onChange,
+    onFetchLines,
     onRan,
     onSave,
+    onUsePreset,
+    presets,
     preview,
     runsConfig,
     runsKey,

@@ -1,0 +1,317 @@
+# 02 - Sorento addendum: document ingest reaches xlsx-import parity (contract v2)
+
+> **Audience:** the Sorento CRM session (repo `sorento-crm`, `origin/main` b9150f49+).
+> **Requested by:** shared-service plan `sprint-5/02-autocount-document-mapping.md` (ESB side).
+> **Baseline contract:** `documentation/plans/autocount/PLAN-autocount-cross-repo-contract.md`
+> §3 (A3 document ingest) on Sorento origin/main; `app/schemas/canonical_documents.py`;
+> `app/services/document_ingest_service.py`.
+> **Goal:** `POST /api/v1/external/ingest/{sales_orders|purchase_orders|shipping_orders}` from
+> the ESB (AutoCount DB source of truth) produces the SAME Sorento state as
+> `POST /api/v1/scm/outstanding/{sales-orders|purchase-orders}/apply` does from the xlsx book,
+> then keeps it current (create / update / delete, header and line).
+> **Versioning:** the ESB gates every new field behind `sorento_contract_version = 2` on its
+> consumer connection, so v1 Sorento never receives an unknown key (`extra="forbid"` stays).
+> Please expose the version you implement (e.g. `GET /api/v1/external/contract` →
+> `{"version": 2}`) or tell us the release tag so we can flip the gate.
+
+## 1. Accept code+name fallbacks and back-create masters (parity with the upload)
+
+The customer's SQL login may expose only the document tables. The ESB therefore ALWAYS sends the
+codes/names the documents carry; refs are sent too whenever the master task exists.
+
+Add to `CanonicalSalesOrder`: `customer_code?`, `customer_name?`, `agent_code?`.
+Add to `CanonicalPurchaseOrder` (+ `CanonicalShippingOrder`): `supplier_code?`,
+`supplier_name?`, `agent_code?`.
+Add to every line: `product_code?`, `product_name?`, `warehouse_code?`, `line_number?` (int,
+AutoCount `Seq`; see §9).
+
+Resolution order per FK, mirroring `outstanding_import_service`:
+1. `*_ref` via `integration_references` (existing behaviour).
+2. else `*_code` against the master's code column (UPPER/TRIM, company-scoped).
+3. else (supplier only) `supplier_name` after stripping the `(RMB)`-style suffix
+   (`_CURRENCY_SUFFIX_RE`), as today.
+4. else back-create: supplier (`back_create_supplier`, slug code), sales agent
+   (`resolve_or_create`), customer (NEW - by code+name; today the upload keeps the raw code and
+   links nothing; please back-create instead so `customer_id` resolves), and **register the new
+   row in `integration_references` under the ref the ESB will send next time**
+   (`{DatabaseName}:{AutoKey}` when a ref was sent, else `{DatabaseName}:{code}`), so the next
+   push resolves by ref.
+   Product / warehouse: NOT back-created (a typo must never become a SKU) - a miss stays
+   `retryable` with the line error naming the code.
+Also write `sales_orders.debtor_code` = `customer_code` always (the upload does).
+
+## 2. Demand classification on ingest
+
+Run the upload's 4-step `_classify_demand` at ingest for sales orders: stored `order_type` →
+payload `order_type?` (new optional header field, fill-only) → agent `demand_class` → customer
+`market_segment_code`. Unclassifiable documents must NOT be refused (the ESB cannot fix them);
+land them and report `warnings: ["unclassified_demand"]` on the record. Keep `demand_class`
+itself non-writable from the payload.
+
+## 3. Shipping orders as an ingest entity
+
+**Sorento correction (2026-09-05):** there is no shipping-order header table; a shipping order is
+the set of `spo_allocations` rows keyed `(company_id, spo_number, spo_line_number)`. So
+`shipping_orders` ingest is a LINE-SET entity: Sorento adds `spo_allocations.source_ref` (DtlKey)
++ `source_doc_ref` (DocKey), looks the header up by `source_doc_ref`, adopts xlsx-era rows by
+`spo_number`, closes absent lines IN PLACE (GRN lines + claims point at them), returns header
+`entity_id: null`, and does not use `integration_references` for SPO. Wire shape as proposed:
+
+```
+CanonicalShippingOrder: source_ref* (DocKey), spo_number* (DocNo), supplier_ref?, supplier_code?,
+  supplier_name?, agent_code?, issue_date?, expected_date?, currency?, status*
+  (open|partial|fulfilled|closed|cancelled), lines[]
+CanonicalShippingOrderLine: source_ref* (DtlKey), product_ref*, product_code?, product_name?,
+  warehouse_ref?, warehouse_code?, qty_ordered* → allocated_quantity, qty_received →
+  quantity_received, unit_cost?, uom?, expected_date?, from_so_numbers?: list[str]
+```
+Line identity = `source_ref` (DtlKey) via `integration_references` (entity `spo_allocations`),
+replacing the upload's `(spo, item, location, occurrence)` → `spo_line_number` plan; keep
+writing `spo_line_number` for display. `receipt_status`/`line_status` derived as today
+(`pending|fully_received`, `open|closed`). `source_system='autocount'`.
+Family is the ESB's job (each task filters by your `doc_family` rule, `SPO-` prefix); Sorento
+should still refuse an `SPO-` number arriving under `purchase_orders` (per-record `failed`) as a
+guard.
+
+## 4. SO↔PO dedication from `FromSODocList`
+
+`CanonicalPurchaseOrderLine.from_so_numbers?: list[str]` (+ on SPO lines). On write, call
+`order_link_service.claim_book_pairing(so_number, po_number, item_code, source="autocount")` per
+value, then `resolve()` - the same as `_claim_stated_so_links`. The ESB splits AutoCount's
+comma-separated `FromSODocList` into the list (the upload ignores multi-value cells; we send them
+all).
+
+## 5. Document deletions
+
+**Sorento correction:** `/deletions` ALREADY exists for `sales_orders` and `purchase_orders`
+(`deletion_service.ENTITY_MODELS` includes `DOCUMENT_SPECS`, two-stage line probe, cancel-in-place
+when referenced; `tests/test_ingest_deletions.py`). Only `shipping_orders` needs adding.
+
+`POST /api/v1/external/ingest/{sales_orders|purchase_orders|shipping_orders}/deletions` with
+`{"companyCode", "source_refs": [header refs]}`: hard-delete the header + lines when nothing
+references them; otherwise set header `cancelled` and every line `cancelled` in place (the
+masters' hard-delete-with-fallback rule). Line-level deletes already ride re-push (`_sync_lines`).
+
+## 6. Status vocabulary and committed demand
+
+**Sorento answer:** `scm.committed_v` is `so.status='open' AND sol.line_status='open'`. Their
+plan maps canonical `partial` -> stored `open` for SALES orders (per-line `qty_delivered` carries
+the partial fact; read-back reports `open`). The ESB may emit `partial` once v2 ships; until then
+the default formula stays `cancelled|closed|open`.
+
+Original ask kept for the record:
+
+Confirm (or widen) `scm.committed_v` / the SO binding's `live_statuses=("open",)`: an SO ingested
+as `partial` → `partially_delivered` currently drops out of committed demand and out of
+`_existing_lines`, so a later xlsx upload would re-add its lines. The ESB will NOT emit `partial`
+by default until you confirm `partially_delivered` counts as committed.
+
+## 7. Post-write hooks
+
+`document_ingest_service` emits no lifecycle events. For parity, after a successful ingest
+batch run the same hooks `outstanding_import_service.apply` runs:
+- SO: `plan_exception_service.snapshot/generate_batch` for touched products;
+  `planning_change_service.build_batch` when the diff is material.
+- PO: `_supersede_crm_raised_pos` (close CRM-raised `scm_recommendation` POs the book supersedes),
+  `ProjectOrderInquiryService.relink_to_matching_lines(trigger="autocount_ingest")`, the
+  `FromSODocList` claims (§4).
+- SPO: close-by-absence of upload/ingest-owned SPO lines within the pushed documents' scope.
+
+## 8. Currency default
+
+PO/SPO header + line `currency` absent → `CNY` (`DEFAULT_PO_CURRENCY`), as the upload does. The
+ESB also defaults it in its mapping, so this is belt-and-braces.
+
+## 9. Cutover: ADOPT xlsx-loaded lines in place (revised 2026-09-05, captain's ask)
+
+Today `_sync_lines` deletes (or cancels in place when referenced) every ref-less line of a header
+adopted by number, then inserts the pushed lines fresh. The captain's requirement: **ingested
+lines must be identical to the xlsx-loaded lines** (same rows, same ids) except where AutoCount
+changed them after the upload. So, for a header adopted by `so_number`/`po_number`/`spo_number`
+whose lines carry no `source_ref`, please ADOPT before you delete:
+
+1. Match each incoming line to one remaining ref-less line by business key
+   `(product_id, warehouse_id-or-NULL, outstanding)` where `outstanding = qty_ordered -
+   qty_delivered|qty_received` on BOTH sides (Sorento correction: the upload stored
+   `qty_ordered = Remaining Qty` on insert, so raw `qty_ordered` is not comparable; the ESB side
+   is `Qty - TransferedQty`); if several remain, take the one whose position equals
+   `line_number` (else the first in `(created_at, id)` order).
+2. Else match by `(product_id, warehouse_id-or-NULL)` when exactly one remains.
+3. Else match by `line_number` position among the remaining ref-less lines when the counts agree.
+4. A matched row keeps its id: stamp `source_ref` (DtlKey) + `source_system='autocount'` on
+   the line COLUMN (lines are never registered in `integration_references` - A3 rule), then
+   update its values (qty/price/dates) from the payload - allocations, claims, GRN links stay
+   attached.
+5. Only the ref-less lines still unmatched after 1-3 are deleted (or cancelled in place when
+   referenced) - the existing rule, now applied to the true remainder.
+6. Report per record `lines: {adopted, created, updated, deleted, cancelled}` (dry run too) so
+   the cutover playbook BL-SS-050 can be rehearsed.
+`line_number` is position-only on the Sorento side (not persisted; `spo_line_number` stays
+Sorento's own sequence). Sorento: plan D11, UAC group V7, issue #668, slice S1b.
+
+The ESB sends `line_number` (AutoCount `Seq`) on every line at contract v2 and always sends
+`product_ref`/`warehouse_ref` (+ code fallbacks) so step 1 resolves the same masters the upload
+linked. Header adoption by number stays automatic. Go-live sequence: masters → SO/PO/SPO with
+reconcile disabled until the first full load.
+
+## 10. Tests we will rely on
+
+Per-entity ingest tests for the new fields, back-create paths, `shipping_orders` round-trip,
+`/deletions` on documents, `from_so_numbers` claims, and a v1-compat test proving a v1 payload
+(no new keys) still ingests identically.
+
+## 11. Agreed answers to Sorento's questions (2026-09-05)
+
+- ESB always sends `*_ref` next to the code/name fallbacks; Sorento registers a back-created row
+  under the ref it was given (never mints `{DatabaseName}:{code}` itself).
+- Customer back-create only when BOTH `customer_code` and `customer_name` are sent (customers'
+  unique index is the pair); code-only -> `debtor_code` written, no link, warning.
+- Warnings vocabulary (per record, omitted when empty): `customer_created`,
+  `customer_unresolved`, `supplier_created`, `agent_created`, `unclassified_demand`,
+  `warehouse_unresolved`. Product stays `retryable`, never a warning.
+- `agent_code` on PO/SPO accepted and ignored; `product_name` accepted and never used.
+- `from_so_numbers`: claim uses the resolved product's `product_code`; an SO Sorento does not
+  hold yet still gets a claim, resolved when it arrives.
+- v2 hooks: plan-exception batch, CRM-raised PO supersede, order-inquiry relink run on ingest;
+  `planning_change` batches deferred (Sorento-side parity gap); SPO close-by-absence is the ESB's
+  via reconcile -> `/ingest/shipping_orders/deletions`.
+- `GET /api/v1/external/contract` -> `{"version": 2, "entities": [...]}`, permission
+  `integration.contract.read` granted with `scm.sales_orders.edit`. The ESB reads `version` at
+  sink construction and gates v2 fields on `>= 2`.
+- Sorento UAC/plan: `documentation/plans/autocount/autocount-document-ingest-v2-acceptance-criteria.md`
+  (AC-V0..V6) + `PLAN-autocount-document-ingest-v2.md` (D1-D9, S0-S6) on sorento-crm main.
+
+## 12. Change log
+
+- 2026-09-05: §9 rewritten from a note into an ask (adopt ref-less lines in place; `line_number`
+  added to §1). Sorento D1-D10 as reported (ladder, customer code+name, SPO line-set, unclassified
+  warning, SPO-under-PO failed, `partial`->`open`, hooks, contract endpoint, warnings vocabulary,
+  `warehouse_unresolved`) accepted without change.
+- 2026-09-05 (Sorento S1 as built): a SENT-but-unresolved `customer_ref`/`supplier_ref`/
+  `sales_agent_ref` no longer makes the record retryable when a code/name rides alongside; the
+  ladder falls through to code -> name -> back-create and registers the new row under that ref.
+  Products stay retryable; warehouses land NULL + `warehouse_unresolved`. Cross-company conflicts
+  are filed under the field name (`errors.customer_ref`, `errors.supplier_ref`), not
+  `errors.source_ref`. Consequence for the ESB: masters-first sequencing is a hard prerequisite
+  only for products + warehouses; the `documentPrerequisites` card and the cutover playbook
+  (BL-SS-050) should say so, and the sink's error mapper must read the field-named keys.
+- 2026-09-05 (Sorento S1b green): `line_number` accepted; adopt-in-place live (outstanding key ->
+  single candidate -> position); verdict carries `lines: {adopted, created, updated, deleted,
+  cancelled}` (dry run too). A push is authoritative for the WHOLE document: unnamed lines are
+  swept. ESB rule (AC-02-04): always send the full line set per header, never a delta.
+- 2026-09-05 (Sorento S3 green): `/ingest/shipping_orders`, `/read/shipping_orders`,
+  `/ingest/shipping_orders/deletions` live (slugs `scm.shipping_orders.edit/view/delete`). Rows land
+  in `spo_allocations` (`source_ref`/`source_doc_ref`), header `entity_id` null, leftover lines on
+  a re-push are ALWAYS closed in place (hard delete only via the deletions call), read-back keyed by
+  DocKey; `SPO-` under `purchase_orders` -> `failed` with `errors.po_number`. S4 (`from_so_numbers`)
+  and S5 (hooks, `partial`->`open`) pending; v1 payloads until "S5 green".
+- 2026-09-05 (Sorento S4 green): `from_so_numbers: list[str]` on PO + SPO lines -> one
+  `order_link_claim` per (so_number, po_number, product_code), source `autocount`; blanks dropped;
+  a non-list fails the record with `lines.N.from_so_numbers`. ESB: split `FromSODocList` on commas,
+  strip, drop blanks, always a list (never a string).
+- 2026-09-05 (Sorento "S5 green"): every build slice S0-S5 live on the local lane :8042; the local
+  consumer connection may run at `sorento_contract_version = 2`. D6a confirmed: canonical
+  `partial` on SALES orders is stored and read back as `open` (PO `partial` unchanged). Sorento S6
+  (review + full suite) follows; any wire change will be announced before the proof completes.
+  Production flip = BL-SS-049, on their release tag.
+- 2026-09-05 (Sorento review round, wire unchanged, four tightenings): (1) caps -> record `failed`
+  when exceeded: `customer_code`/`supplier_code` <= 50 chars, `spo_number` <= 50, lines <= 2000 per
+  document, `from_so_numbers` <= 50 per line; (2) `warehouse_unresolved` fires only when a
+  warehouse ref/code was SENT and missed; warnings deduped per record; (3) non-domain failures
+  return `errors {"_": "internal error; see server logs"}`; cross-company conflicts read "already
+  claimed outside this company anchor" under the field key; (4) SPO: a second DocKey for an
+  `spo_number` with OPEN rows under another DocKey -> `failed` (`errors.spo_number` "already linked
+  to another source"), closed rows do not block; quantities round half-up to integer columns; a
+  cancelled SPO reads back `closed`. Sorento's full v2 deviation list: their
+  `documentation/plans/autocount/PLAN-autocount-cross-repo-contract.md` §9 (14 items). ESB
+  follow-up: the SPO push must send one DocKey per spo_number (the filter formula + preset already
+  do; a duplicate DocNo across AutoCount PO rows would surface as this `failed`).
+- 2026-09-05 (ESB local proof, BLOCKING bug found in Sorento's product-reference resolution):
+  after the seven master tasks landed for company SRT (products=205 confirmed via `psql`),
+  `POST /api/v1/external/ingest/sales_orders?dry_run=true` fails EVERY row (64/64 `would fail`,
+  each with `errors: {"_": "internal error; see server logs"}` - the generic non-domain-failure
+  shape from the review round above). The real exception, read from Sorento's own uvicorn log
+  (`sorento_crm_backend`, `.claude/worktrees/autocount-ingest-v2`, port 8042), is:
+  ```
+  sqlalchemy.exc.IntegrityError: (psycopg2.errors.UniqueViolation) duplicate key value violates unique constraint "uq_integration_ref_entity"
+  DETAIL:  Key (entity_type, entity_id)=(products, faacf7f7-0178-496f-b1f3-03d64b0ab934) already exists.
+  [SQL: INSERT INTO integration_references (id, entity_type, entity_id, source_system, source_ref, source_doc_no, integration_id) VALUES (...) RETURNING ...]
+  [parameters: {'entity_type': 'products', 'entity_id': 'faacf7f7-0178-496f-b1f3-03d64b0ab934', 'source_system': 'autocount', 'source_ref': 'ac_sim:174', ...}]
+  ```
+  followed by `ingest.batch entity=sales_orders integration=esb-local company=00000000-0000-0000-0000-000000000001 dry_run=True created=0 updated=0 failed=64 retryable=0`. Root cause (from the
+  outside): when a sales-order LINE resolves its `item_code` to a product that a PRIOR masters
+  ingest already registered under `integration_references` (unique on `(entity_type, entity_id)`),
+  the document-ingest path attempts to INSERT a fresh `integration_references` row for that same
+  product instead of finding the existing one first - a get-or-create gap, not a data problem (the
+  product genuinely already has a reference, from the masters push, same `source_system=autocount`
+  `source_ref=ac_sim:174`). This blocks EVERY document row that references an already-mastered
+  product, i.e. it will block PO/SPO the same way once their lines resolve products. Masters-only
+  runs (no documents) are unaffected. Repro: run the ESB's seven master tasks for a company, THEN
+  push any document referencing one of those products (dry-run or real) - first push always hits
+  it. Workaround attempted from the ESB side: none available (this is Sorento's own resolve step,
+  not something the ESB payload shape can dodge without ALSO never running masters first, which
+  breaks D-something's masters-first sequencing). Blocks AC-02-26 ("Review & Activate preview
+  passes") and the whole SRT documents leg of the local parity proof until fixed. Suggest: the
+  product-ref resolver should SELECT existing `integration_references` by `(entity_type,
+  entity_id)` (or by `(source_system, source_ref)`) before insert, same get-or-create discipline
+  already used for customer/supplier/agent per the S1 ladder above.
+- 2026-09-05 (confirmation - all three document entities hit the SAME products bug, ESB side
+  proven clean): after the coder round rewrote the SO/PO/SPO presets to the real join-based
+  AutoCount SQL pack (table names `SO`/`SODTL`/`PO`/`PODTL`/`Debtor`/`Creditor`/`Item`/`Location`),
+  re-ran all three document tasks against the synthetic `ac_sim` source. Extraction + mapping
+  succeeded cleanly on the ESB side for every task - `sales_order` 64/64 Extracted, `purchase_order`
+  6/6 Extracted (11 PO-table rows minus the 5 `SPO-` prefixed ones the SPO task owns), `shipping_order`
+  5/5 Extracted (the 5 `SPO-` rows) - all correctly keyed (`ac_sim:<DocKey>`), all correctly split by
+  the `filterFormula`. Every one of the 75 rows fails Review & Activate with the IDENTICAL
+  `errors:{"_":"internal error; see server logs"}` from the products bug above (never a
+  mapping-shape error) - confirming the block is 100% Sorento's product-reference resolver, not an
+  ESB-side gap, across every document entity that references a mastered product.
+- 2026-09-05 (SECOND Sorento-side bug found, masters leg, `customers` table schema drift):
+  the `customer` master task (blocked all session on this) reports 27/27 `would fail` with an
+  UNSANITIZED raw SQLAlchemy traceback (not the `errors:{"_":...}` shape - a different, less-hardened
+  code path than the documents ingest):
+  ```
+  (psycopg2.errors.UndefinedColumn) column "credit_limit" of relation "customers" does not exist
+  LINE 1: ...email, phone_number, registration_number, tax_id, credit_lim...
+  [SQL: INSERT INTO customers (id, customer_code, customer_name, email, phone_number,
+  registration_number, tax_id, credit_limit, payment_terms_days, country, is_active, company_id)
+  VALUES (...)]
+  ```
+  Sorento's own `customers` table is missing the `credit_limit` (and, by the same INSERT, untested
+  whether `payment_terms_days` also fails once `credit_limit` is added) columns its OWN master
+  ingest code already references - a migration gap on their side, not an ESB mapping problem (the
+  ESB's customer query/mapping resolves `acc_no`/`company_name`/`sales_agent`/`is_active` cleanly;
+  Sorento's insert 500s before those even matter). Blocks the `customer` master entity for BOTH
+  SRT and the eventual XLS masters-twin comparison. Suggest: a Sorento-side migration adding the
+  missing `customers` columns (or dropping them from the INSERT if they were meant to be optional
+  with server defaults).
+- 2026-09-05 (masters proof final tally, company SRT): `product_categories`=1, `units_of_measure`=1
+  (both global, no `company_id`), `suppliers`=6, `warehouses`=14, `products`=205, `sales_agents`=18
+  (landed with a NULL `company_id` - unscoped, a Sorento-side observation, not re-raised here since
+  it does not block anything), `customers`=0 (blocked by the bug immediately above). Every one of
+  these six activated/ran masters entities matches the synthetic source's row count exactly
+  (`ac_sim` via `python -m scripts.seed_autocount_shape_source`).
+- 2026-09-05 (second-company XLS attempt, masters-twin per this addendum's own "share source refs"
+  guidance): creating a company with Sorento code `XLS` against a NEW `sql_database` connection
+  pointed at the SAME `ac_sim` Postgres database (required because the "Connect company" picker
+  excludes a connection already claimed by an existing company) was refused by the ESB itself,
+  before ever reaching Sorento, with the exact message: `'ac_sim' is already connected as company
+  'ac_sim'.` (a 409 from `AcCompany`'s `uq_ac_company_tenant_db` - one physical database per
+  company, tenant-wide). This is expected per plan-02's own design (AC-01-xx / the plan-01 company
+  uniqueness rule) and is NOT a bug - logged here only because this addendum's own guidance above
+  ("for the SRT/XLS masters twin they SHOULD share source refs... use the same `database_name`")
+  turns out to be un-satisfiable through the current UI/API without either (a) loosening the
+  uniqueness constraint to `(tenant_id, database_name, sorento_company_code)`, or (b) a documented
+  masters-twin workflow that seeds a SECOND physical database with IDENTICAL AutoKeys (defeats the
+  "share source refs" goal), or (c) Sorento receiving the SRT-side masters export directly rather
+  than via a second ESB company. Recommend picking one of these explicitly rather than leaving the
+  masters-twin comparison blocked on a UI limitation.
+- 2026-09-05 (LOCAL PARITY PROOF PASSED - Sorento diff v3 vs xls): SO 461/461 lines identical incl.
+  demand_class; PO 19/19 identical except settled `line_status` (`fulfilled` ingest vs `closed`
+  upload - captain to decide: ESB maps settled -> `closed`, or Sorento normalises at ingest); SPO all
+  12 xlsx rows matched, 6 lane-only rows = the rig's synthetic clones, currency MYR vs NULL expected.
+  Bugs found on the way: Sorento (a) product reference INSERT crash -> `ref_mismatch` warning
+  (root cause was the ESB proof config: watermark inside keyColumns, BL-SS-052), (b) customers
+  `credit_limit`/`payment_terms_days` schema drift -> accepted-and-ignored; ESB (c) `CANONICAL_MODELS`
+  lacked shipping_order (fixed 3dce123 + drift guard), (d) `DOCUMENT_PREREQUISITES` lacked
+  shipping_order (fixed). Sorento posts the final table on PR #670.

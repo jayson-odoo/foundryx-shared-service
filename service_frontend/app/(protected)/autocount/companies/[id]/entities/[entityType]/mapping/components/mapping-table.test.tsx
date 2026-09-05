@@ -269,3 +269,92 @@ describe('column source mode (plan 22 S2, AC-22-09)', () => {
     expect(screen.getByRole('combobox', { name: 'AutoCount source for row 1' })).toBeInTheDocument();
   });
 });
+
+// sprint-5/02 (AC-02-16/21) - a preset-seeded row whose column vanished.
+describe('column mode - disabled/seeded rows (sprint-5/02, AC-02-21)', () => {
+  function rowsWithStaleSource(): import('./mapping-table').MappingEditableRow[] {
+    return [
+      { sourcePath: 'GoneColumn', transform: 'string', formula: null, sorentoField: 'code' },
+      { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'name' },
+    ];
+  }
+
+  it('greys a row whose source is not in acFields, with a "not in query" badge', () => {
+    render(
+      <MappingTable
+        editing
+        rows={rowsWithStaleSource()}
+        provenanceRows={[]}
+        sorentoFields={SORENTO}
+        acFields={['AccNo']}
+        sourceMode="column"
+        onChangeRow={vi.fn()}
+        onAddRow={vi.fn()}
+        onRemoveRow={vi.fn()}
+        onBuildRow={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Column not in query')).toBeInTheDocument();
+    // The trigger still shows the stale value, not the placeholder.
+    expect(screen.getByRole('combobox', { name: 'Source column for row 1' })).toHaveTextContent(
+      'GoneColumn',
+    );
+  });
+
+  it('never flags a legitimately-blank new row', () => {
+    render(
+      <MappingTable
+        editing
+        rows={[{ sourcePath: '', transform: 'string', formula: null, sorentoField: 'code' }]}
+        provenanceRows={[]}
+        sorentoFields={SORENTO}
+        acFields={['AccNo']}
+        sourceMode="column"
+        onChangeRow={vi.fn()}
+        onAddRow={vi.fn()}
+        onRemoveRow={vi.fn()}
+        onBuildRow={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('Column not in query')).not.toBeInTheDocument();
+  });
+
+  it('picking a valid column from a disabled row is offered (no dead options)', () => {
+    const onChangeRow = vi.fn();
+    render(
+      <MappingTable
+        editing
+        rows={rowsWithStaleSource()}
+        provenanceRows={[]}
+        sorentoFields={SORENTO}
+        acFields={['AccNo', 'CompanyName']}
+        sourceMode="column"
+        onChangeRow={onChangeRow}
+        onAddRow={vi.fn()}
+        onRemoveRow={vi.fn()}
+        onBuildRow={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('combobox', { name: 'Source column for row 1' }));
+    fireEvent.click(screen.getByRole('option', { name: 'CompanyName' }));
+    expect(onChangeRow).toHaveBeenCalledWith(0, expect.objectContaining({ sourcePath: 'CompanyName' }));
+  });
+
+  it('a row already on a real column never shows the badge', () => {
+    render(
+      <MappingTable
+        editing={false}
+        rows={[{ sourcePath: 'CompanyName', transform: 'string', formula: null, sorentoField: 'code' }]}
+        provenanceRows={[]}
+        sorentoFields={SORENTO}
+        acFields={['AccNo', 'CompanyName']}
+        sourceMode="column"
+        onChangeRow={vi.fn()}
+        onAddRow={vi.fn()}
+        onRemoveRow={vi.fn()}
+        onBuildRow={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('Column not in query')).not.toBeInTheDocument();
+  });
+});

@@ -52,9 +52,7 @@ function task(over: Partial<AutocountEtlTask> = {}): AutocountEtlTask {
       comparedColumns: [],
       fromDate: null,
       docDateColumn: null,
-      lineKeyColumn: null,
-      lineProductColumn: null,
-      lineWarehouseColumn: null,
+      filterFormula: null,
       incrementalMinutes: 5,
       reconcileMode: 'dailyAt',
       reconcileHours: null,
@@ -82,6 +80,7 @@ vi.mock('@/hooks/use-autocount-company', () => ({
 const taskBox = vi.hoisted(() => ({ current: null as unknown }));
 
 vi.mock('@/hooks/use-autocount-etl', () => ({
+  useLineFetcher: () => ({ fetchLines: vi.fn().mockResolvedValue([]) }),
   useAutocountEtlTask: () => ({
     task: taskBox.current,
     isLoading: false,
@@ -109,6 +108,7 @@ vi.mock('@/hooks/use-autocount-etl', () => ({
 }));
 
 vi.mock('@/hooks/use-autocount-mapping', () => ({
+  useAutocountMappingPresets: () => ({ presets: [], isLoading: false }),
   useAutocountMapping: () => ({
     view: null,
     isLoading: false,

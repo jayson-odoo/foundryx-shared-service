@@ -4,6 +4,8 @@ No DB query and no raw SQL lives here (code-review hard-fail). Every handler
 takes the tenant from the authenticated user - NEVER from client input - and
 hands off to a service.
 """
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -12,6 +14,8 @@ from app.database import get_db
 from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
+from ..canonical.documents import is_document_entity
+from ..mapping import SCOPE_LINE
 from ..schemas import (
     CompanyCreate,
     CompanyDetailResponse,
@@ -29,6 +33,7 @@ from ..schemas import (
     FormulaTestResponse,
     MappingRowOut,
     MappingUpdateRequest,
+    MappingUpdateRow,
     MappingViewResponse,
     SimulateRequest,
     SimulateResponse,
@@ -258,6 +263,8 @@ def _mapping_response(view: MappingView) -> MappingViewResponse:
         rows=[MappingRowOut.model_validate(row) for row in view.rows],
         sorentoFields=[SorentoFieldOut.model_validate(f) for f in view.sorento_fields],
         acFields=list(view.ac_fields),
+        lineSorentoFields=[SorentoFieldOut.model_validate(f) for f in view.line_sorento_fields],
+        lineAcFields=list(view.line_ac_fields),
     )
 
 
@@ -305,20 +312,50 @@ def replace_entity_mapping(
     rows are preserved; the write is seed-if-absent-safe (``update_tenant`` never
     reverts an operator edit).
     """
+    #     !!  SECURITY RE-REVIEW SHOULD-FIX - `lineRows` IS THE ONLY SIGNAL
+    #         THAT DISTINGUISHES "UNTOUCHED" FROM "EXPLICITLY WIPED".  !!
+    # `is_document_entity(entity_type)` alone (the old S7 wiring) made EVERY
+    # header-only PUT on a document entity wipe its line rows, because an
+    # omitted line scope and an explicit empty submission both collapsed to
+    # the same "no line rows in this request" shape. `body.lineRows` being
+    # present (even `[]`) is the operator's Lines tab actually being part of
+    # THIS save; `None` means the request never touched line scope at all.
+    #
+    # Backward compat (one release, documented on `MappingUpdateRequest`): a
+    # caller still sending its line rows folded INSIDE `rows` (`scope:
+    # "line"` items, the pre-existing combined shape) is honoured exactly as
+    # before - those rows count as a submitted line scope too.
+    line_rows_in_body = [row for row in body.rows if row.scope == SCOPE_LINE]
+    line_rows_submitted = (
+        body.lineRows is not None or bool(line_rows_in_body)
+    ) and is_document_entity(entity_type)
+
+    def _to_write_row(row: MappingUpdateRow, *, force_scope: Optional[str] = None) -> MappingWriteRow:
+        return MappingWriteRow(
+            source_path=row.sourcePath,
+            transform=row.transform,
+            sorento_field=row.sorentoField,
+            formula=row.formula,
+            # A `lineRows` item is unambiguously LINE scope by ARRIVING in
+            # this array (nit, code-review round) - forcing it rather than
+            # trusting the item's own `scope` field is defense-in-depth,
+            # the same class of guard as the polymorphic-target_id rule: a
+            # payload's OWN self-description is never the sole authority
+            # for where it lands.
+            scope=force_scope or row.scope,
+            is_enabled=row.isEnabled,
+        )
+
+    combined_rows = [_to_write_row(row) for row in body.rows] + [
+        _to_write_row(row, force_scope=SCOPE_LINE) for row in (body.lineRows or [])
+    ]
     try:
         view = CompanyService(db).replace_mapping(
             current_user.tenant_id,
             company_id,
             entity_type,
-            [
-                MappingWriteRow(
-                    source_path=row.sourcePath,
-                    transform=row.transform,
-                    sorento_field=row.sorentoField,
-                    formula=row.formula,
-                )
-                for row in body.rows
-            ],
+            combined_rows,
+            line_rows_submitted=line_rows_submitted,
         )
     except AutocountServiceError as exc:
         _raise(exc)
@@ -395,6 +432,7 @@ def simulate_mapping(
                     transform=row.transform,
                     sorento_field=row.sorentoField,
                     formula=row.formula,
+                    scope=row.scope,
                 )
                 for row in body.rows
             ]
@@ -402,7 +440,8 @@ def simulate_mapping(
             else None
         )
         result = CompanyService(db).simulate_mapping(
-            current_user.tenant_id, company_id, entity_type, body.record, draft
+            current_user.tenant_id, company_id, entity_type, body.record, draft,
+            lines=body.lines,
         )
     except AutocountServiceError as exc:
         _raise(exc)
@@ -420,6 +459,7 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
         activatedAt=view.activated_at,
         sourceConfig=view.source_config,
         resultColumns=view.result_columns,
+        lineResultColumns=view.line_result_columns,
         lastPreviewAt=view.last_preview_at,
         lastPreviewFailedCount=view.last_preview_failed_count,
         lastRunAt=view.last_run_at,

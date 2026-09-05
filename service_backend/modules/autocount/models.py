@@ -221,6 +221,12 @@ class AcEntityConfig(AutocountBase):
     # PUT runs (AC-22-11) - the Mapping tab's source picker reads them without
     # re-running the query (AC-22-09). NULL = no query saved yet.
     result_columns = Column(_JSON, nullable=True)
+    # The SAVED lineQuery's result column names, from the line preview a
+    # document task's PUT also runs (sprint-5/02, AC-02-06) - the Mapping
+    # tab's Line-fields source picker reads them, and a line row whose
+    # `source_path` is absent here is rejected at save time. NULL = the line
+    # query has never previewed clean yet ("Test the line query first").
+    line_result_columns = Column(_JSON, nullable=True)
     # When the last SUCCESSFUL dry-run preview completed (AC-22-18). CLEARED by
     # every config save - a preview of a superseded query must never unlock
     # Activate. NULL = Activate withheld.

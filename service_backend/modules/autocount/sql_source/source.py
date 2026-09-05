@@ -52,6 +52,7 @@ from ..canonical.documents import (
     is_document_entity,
 )
 from ..client import CallRecord
+from ..formula import FormulaError, evaluate_row_filter
 from ..mapping import IdentityError, flat_source_ref
 from ..models import (
     RUN_MODE_MANUAL,
@@ -71,6 +72,7 @@ from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
 from .errors import (
     SqlDeleteGuardExceeded,
     SqlDocumentCapExceeded,
+    SqlFilterFormulaError,
     SqlQueryError,
     SqlSourceError,
 )
@@ -336,9 +338,14 @@ class SqlDbSource:
         self.line_query: Optional[str] = None
         self.doc_date_column: Optional[str] = None
         self.from_date: Optional[date] = None
-        self.line_key_column: Optional[str] = None
-        self.line_product_column: Optional[str] = None
-        self.line_warehouse_column: Optional[str] = None
+        self.filter_formula: Optional[str] = None
+        self._last_skipped_by_filter = 0
+        # The headers `filterFormula` dropped this run (B4, sprint-5/02
+        # review round) - `fetch_changes` needs these to keep a filtered-out
+        # header from ever reading as a "vanished" delete, and to drop its
+        # stale row hash so a later unfiltered re-appearance stages as a
+        # fresh ADD, not a phantom update.
+        self._filtered_out_headers: List[Dict[str, Any]] = []
         if self.is_document:
             #     !!  A DOCUMENT TASK REQUIRES A HEADER WATERMARK COLUMN.  !!
             # Save-time validation already refuses to persist a document task
@@ -412,13 +419,15 @@ class SqlDbSource:
                 raise SqlTaskNotConfigured(
                     "This document task's from-date is not a valid date."
                 ) from exc
-            self.line_key_column = str(config.get("lineKeyColumn") or "").strip() or None
-            self.line_product_column = str(config.get("lineProductColumn") or "").strip() or None
-            self.line_warehouse_column = str(config.get("lineWarehouseColumn") or "").strip() or None
-            if not self.line_key_column:
-                raise SqlTaskNotConfigured(
-                    "This document task has no line key column chosen."
-                )
+            # sprint-5/02 (AC-02-05): the `lineKeyColumn`/`lineProductColumn`/
+            # `lineWarehouseColumn` pickers are gone - a document's line
+            # fields are persisted, operator-editable `ac_field_mapping` rows
+            # now (`CompanyService.replace_mapping`), never source_config
+            # picks. Nothing to validate or store here any more.
+            # sprint-5/02 (AC-02-11) - a row-set filter (e.g. the PO/SPO
+            # sibling-task split), evaluated against the RAW header row
+            # before line fetch. Blank/absent = every header passes.
+            self.filter_formula = str(config.get("filterFormula") or "").strip() or None
 
         # A STORED connection id, re-resolved tenant- AND provider-scoped on
         # every run (AC-22-29) - never a bare get-by-id.
@@ -623,15 +632,36 @@ class SqlDbSource:
         # connection that dropped mid-extract must never read as "everything
         # else vanished too".
         #
-        #     !!  A DOCUMENT NEVER COMPUTES DELETE INTENTS AT ALL (plan 22 S5).  !!
-        # ``fromDate`` bounds the extract to a WINDOW, not the whole standing
-        # set - a header outside today's window is indistinguishable, from
-        # inside this diff, from one genuinely gone at the source. Computing
-        # (and guarding) delete_refs for a windowed population would be
-        # actively wrong, not just unnecessary, so documents skip this whole
-        # block; ``sync._stage_deletes`` mirrors the same skip at staging.
+        #     !!  A DOCUMENT NOW COMPUTES DELETE INTENTS TOO (sprint-5/02, S3,
+        #         AC-02-13 - reverses the plan-22 S5 decision below).  !!
+        # The plan-22 S5 reasoning was: `fromDate` bounds the extract to a
+        # WINDOW, not the whole standing set, so a header outside today's
+        # window would be indistinguishable from one genuinely gone. That
+        # reasoning does not survive scrutiny: `fromDate` is a PERMANENT scope
+        # boundary (module docstring), never a moving one-time lookback, and
+        # AutoCount dates do not travel backwards - a header that was ever
+        # inside the window stays inside it forever, so its disappearance from
+        # a later extract IS genuine evidence of deletion, not a window
+        # artifact. `sync._stage_deletes` mirrors this reversal (no more
+        # document special-case there either).
+        #     !!  A FILTERED-OUT HEADER IS NEVER A DELETE CANDIDATE (B4,
+        #         AC-02-11).  !!
+        # `_read` already dropped these rows before they ever reached
+        # `current_refs` above - indistinguishable, from here, from a header
+        # genuinely gone at source. Compute their refs the SAME way a kept
+        # row's ref is computed, and treat them as neither current nor
+        # missing: excluded from the delete diff below, and their stale hash
+        # (if the filter was only just added/tightened) is dropped so a
+        # later unfiltered re-appearance stages as a fresh ADD, not a
+        # phantom update.
+        filtered_refs: set[str] = {
+            ref
+            for ref in (self._source_ref(header) for header in self._filtered_out_headers)
+            if ref is not None
+        }
+
         delete_refs: List[str] = []
-        if full_extract and known and not self.is_document:
+        if full_extract and known:
             #     !!  A ZERO-ROW FULL EXTRACT IS NEVER A GENUINE TOTAL WIPE.  !!
             # (S3 review BLOCKER 2.) The ratio/absolute guard below is INERT on
             # a small (<=50-row) known population: e.g. known=20 gives a
@@ -649,7 +679,9 @@ class SqlDbSource:
                     f"full deletion. Check the query and the connection, then "
                     f"re-run reconcile."
                 )
-            delete_refs = sorted(ref for ref in known if ref not in current_refs)
+            delete_refs = sorted(
+                ref for ref in known if ref not in current_refs and ref not in filtered_refs
+            )
             threshold = max(DELETE_GUARD_RATIO * len(known), DELETE_GUARD_MIN_ABSOLUTE)
             if len(delete_refs) > threshold:
                 raise SqlDeleteGuardExceeded(
@@ -659,14 +691,35 @@ class SqlDbSource:
                     f"query and the connection, then re-run reconcile."
                 )
 
-        if self.persist_hashes and hashes:
-            RowHashRepository(self._ctx.db).upsert_many(
-                self._ctx.tenant_id,
-                self._ctx.company.id,
-                self.entity_type,
-                hashes,
-                seen_at=window_to,
-            )
+        # Only ever finds anything on a FULL extract (review-round nit): on an
+        # incremental run `known` is `self._prior_hashes(raw_rows)` - built
+        # from the POST-FILTER `raw_rows` this method already returned above,
+        # so it can never contain a filtered-out ref to begin with. That is
+        # fine, not a gap: an incremental run's filtered-out header was never
+        # a "changed header" this pass (the watermark WHERE clause excluded
+        # it), so it cannot be carrying a stale hash from THIS run's extract
+        # either. The case this drop exists for - a filter newly added/
+        # tightened so a PREVIOUSLY-hashed header now falls outside it - only
+        # ever surfaces on a reconcile's full-population diff (F1 covers the
+        # sibling case: editing the filter itself re-baselines the whole
+        # entity's hashes at save time).
+        stale_filtered_refs = [ref for ref in filtered_refs if ref in known]
+        if self.persist_hashes and (hashes or stale_filtered_refs):
+            if hashes:
+                RowHashRepository(self._ctx.db).upsert_many(
+                    self._ctx.tenant_id,
+                    self._ctx.company.id,
+                    self.entity_type,
+                    hashes,
+                    seen_at=window_to,
+                )
+            if stale_filtered_refs:
+                RowHashRepository(self._ctx.db).delete_many(
+                    self._ctx.tenant_id,
+                    self._ctx.company.id,
+                    self.entity_type,
+                    stale_filtered_refs,
+                )
             # The sync handler committed immediately before calling us and does
             # not write again until after ``record_client_calls`` (which commits
             # of its own accord), so this boundary is ours to own.
@@ -692,6 +745,7 @@ class SqlDbSource:
                 if self.watermark_column and new_mark is not None
                 else None
             ),
+            skipped_by_filter=self._last_skipped_by_filter,
         )
 
     def _read(self, mark: Any) -> List[Dict[str, Any]]:
@@ -740,7 +794,39 @@ class SqlDbSource:
             # ``SQL_DOC_LINES_KEY`` so ``MappingEngine``'s EXISTING nested-
             # detail mechanism (built for the API path's vendor envelope)
             # reads it with zero engine changes - see ``mapping.flat_profile``.
+            self._last_skipped_by_filter = 0
+            self._filtered_out_headers = []
             if self.is_document:
+                #     !!  THE ROW-SET FILTER RUNS BEFORE LINE FETCH (AC-02-11).  !!
+                # A header the filter drops (e.g. the SPO-numbered rows a PO
+                # task's sibling task owns) never fetches lines, never enters
+                # `rows` at all - so it cannot be staged, mapped, or counted
+                # as a delete candidate either.
+                if self.filter_formula:
+                    kept = []
+                    try:
+                        for header in rows:
+                            if evaluate_row_filter(self.filter_formula, header):
+                                kept.append(header)
+                            else:
+                                self._last_skipped_by_filter += 1
+                                self._filtered_out_headers.append(header)
+                    except FormulaError as exc:
+                        #     !!  A RUNTIME FILTER FAULT IS A NAMED TASK
+                        #         ERROR, NEVER A SILENT KEEP-EVERYTHING.  !!
+                        # (F2/B3.) `validate_source_config` already proved
+                        # this formula PARSES against the saved result
+                        # columns - a failure reaching here is a genuine
+                        # per-row runtime fault (a value that doesn't coerce
+                        # the way the formula expects). Fails the WHOLE run,
+                        # same fail-safe contract as the delete guard/document
+                        # caps: nothing staged, nothing pushed, hashes
+                        # untouched.
+                        raise SqlFilterFormulaError(
+                            f"The filter could not be evaluated: {exc}. Nothing "
+                            f"was staged or pushed."
+                        ) from exc
+                    rows = kept
                 #     !!  CAP THE FAN-OUT (S5 review SHOULD-FIX 3).  !!
                 # This is an N+1 by design (module doc) - a run with an
                 # unbounded number of changed headers would hold that many

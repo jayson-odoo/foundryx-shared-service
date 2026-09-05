@@ -1,14 +1,21 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { AutocountEtlSourceConfig, AutocountSqlConnection } from '@/types/autocount';
+import type {
+  AutocountEtlSourceConfig,
+  AutocountFormulaTestResult,
+  AutocountMappingPreset,
+  AutocountSqlConnection,
+} from '@/types/autocount';
 import type { SqlPreviewState, UseAutocountSqlSchemaResult, UseSqlPreviewResult } from '@/hooks/use-autocount-etl';
 import { QueryTab, type LockedConnection } from './query-tab';
 
 /**
- * Query tab - plan 22 S5 additions (AC-22-24): the line-query test leg +
- * the docDateColumn/lineKeyColumn/lineProductColumn/lineWarehouseColumn
- * pickers, all gated on the LINE preview (never the header one) and hidden
- * entirely for a non-document entity (foolproof-UI: no dead controls).
+ * Query tab - plan 22 S5 additions (AC-22-24): the line-query test leg,
+ * gated on the LINE preview (never the header one) and hidden entirely for a
+ * non-document entity (foolproof-UI: no dead controls). Sprint-5/02
+ * (AC-02-19/20): the line key/product/warehouse pickers are GONE (they moved
+ * to persisted line mapping rows) - the document block instead carries a
+ * Filter formula field (builder-only, no free text) and "Use preset".
  */
 
 function config(over: Partial<AutocountEtlSourceConfig> = {}): AutocountEtlSourceConfig {
@@ -21,15 +28,17 @@ function config(over: Partial<AutocountEtlSourceConfig> = {}): AutocountEtlSourc
     comparedColumns: [],
     fromDate: '2026-08-30',
     docDateColumn: null,
-    lineKeyColumn: null,
-    lineProductColumn: null,
-    lineWarehouseColumn: null,
+    filterFormula: null,
     incrementalMinutes: 15,
     reconcileMode: 'dailyAt',
     reconcileHours: null,
     reconcileAt: '02:00',
     ...over,
   };
+}
+
+function passThroughServer(formula: string, value: unknown): Promise<AutocountFormulaTestResult> {
+  return Promise.resolve({ ok: true, output: value, error: null });
 }
 
 const CONNECTIONS: AutocountSqlConnection[] = [
@@ -69,8 +78,11 @@ function renderQueryTab(over: {
   onChange?: (patch: Partial<AutocountEtlSourceConfig>) => void;
   connections?: AutocountSqlConnection[];
   lockedConnection?: LockedConnection | null;
+  presets?: AutocountMappingPreset[];
+  onUsePreset?: (preset: AutocountMappingPreset) => void;
 } = {}) {
   const onChange = over.onChange ?? vi.fn();
+  const onUsePreset = over.onUsePreset ?? vi.fn();
   render(
     <QueryTab
       editing
@@ -84,9 +96,12 @@ function renderQueryTab(over: {
       preview={over.preview ?? idlePreview()}
       linePreview={over.linePreview ?? idlePreview()}
       fieldErrors={{}}
+      presets={over.presets}
+      onUsePreset={onUsePreset}
+      onServerTest={passThroughServer}
     />,
   );
-  return { onChange };
+  return { onChange, onUsePreset };
 }
 
 describe('QueryTab - document line/ref columns (plan 22 S5, AC-22-24)', () => {
@@ -118,23 +133,6 @@ describe('QueryTab - document line/ref columns (plan 22 S5, AC-22-24)', () => {
     expect(screen.getByTestId('sql-test-line-query')).toBeDisabled();
   });
 
-  it('line-column pickers are disabled until the line query has been tested', () => {
-    renderQueryTab({ linePreview: idlePreview() });
-    expect(screen.getByLabelText('Line key column')).toBeDisabled();
-    expect(screen.getByLabelText('Line product column')).toBeDisabled();
-    expect(screen.getByLabelText('Line warehouse column')).toBeDisabled();
-  });
-
-  it('line-column pickers enable and offer the LINE preview columns once tested', () => {
-    renderQueryTab({ linePreview: successPreview(['DtlKey', 'ItemCode', 'Location']) });
-    const keyPicker = screen.getByLabelText('Line key column');
-    expect(keyPicker).not.toBeDisabled();
-    fireEvent.click(keyPicker);
-    expect(screen.getByRole('option', { name: 'DtlKey' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'ItemCode' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'Location' })).toBeInTheDocument();
-  });
-
   it('the document date column picker is fed by the HEADER preview, not the line one', () => {
     renderQueryTab({
       preview: successPreview(['DocKey', 'DocNo', 'Status', 'DocDate']),
@@ -162,13 +160,77 @@ describe('QueryTab - document line/ref columns (plan 22 S5, AC-22-24)', () => {
     expect(screen.getByRole('option', { name: 'None' })).toBeInTheDocument();
   });
 
-  it('picking a line key/product column patches the config', () => {
-    const { onChange } = renderQueryTab({
-      linePreview: successPreview(['DtlKey', 'ItemCode']),
+});
+
+// sprint-5/02 (AC-02-19/20) - the line pickers are gone; a Filter formula
+// field (builder-only) + "Use preset" take their place.
+describe('QueryTab - Filter formula + presets (sprint-5/02)', () => {
+  it('the three line pickers no longer exist', () => {
+    renderQueryTab();
+    expect(screen.queryByLabelText('Line key column')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Line product column')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Line warehouse column')).not.toBeInTheDocument();
+  });
+
+  it('shows "no filter" when unset, and the formula read-only once set', () => {
+    renderQueryTab({ cfg: config({ filterFormula: null }) });
+    expect(screen.getByText(/no filter/i)).toBeInTheDocument();
+
+    renderQueryTab({ cfg: config({ filterFormula: 'startswith(upper(trim(DocNo)), "SPO-")' }) });
+    expect(screen.getByText('startswith(upper(trim(DocNo)), "SPO-")')).toBeInTheDocument();
+    // Never a free-text input for it (Q16 - builder-only).
+    expect(screen.queryByRole('textbox', { name: /filter/i })).not.toBeInTheDocument();
+  });
+
+  it('opens the formula builder to edit the filter, never a bare text field', () => {
+    renderQueryTab();
+    fireEvent.click(screen.getByRole('button', { name: 'Build the filter formula' }));
+    expect(screen.getByLabelText('Formula expression')).toBeInTheDocument();
+  });
+
+  it('applying a filter formula patches the config', () => {
+    // `DocKey` is the fixture's only known variable (no preview run yet, so
+    // the Variables panel offers only the saved key columns) - proves the
+    // Apply wiring without needing a full preview run in this test.
+    const { onChange } = renderQueryTab();
+    fireEvent.click(screen.getByRole('button', { name: 'Build the filter formula' }));
+    fireEvent.change(screen.getByLabelText('Formula expression'), {
+      target: { value: 'startswith(upper(trim(DocKey)), "SPO-")' },
     });
-    fireEvent.click(screen.getByLabelText('Line key column'));
-    fireEvent.click(screen.getByRole('option', { name: 'DtlKey' }));
-    expect(onChange).toHaveBeenCalledWith({ lineKeyColumn: 'DtlKey' });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    expect(onChange).toHaveBeenCalledWith({ filterFormula: 'startswith(upper(trim(DocKey)), "SPO-")' });
+  });
+
+  it('offers "Use preset" only when presets exist, and inserts on pick', () => {
+    const preset: AutocountMappingPreset = {
+      entityType: 'sales_order',
+      label: 'AutoCount SO',
+      headerQuery: 'SELECT DocKey, DocNo FROM AED.dbo.SO_Header',
+      lineQuery: 'SELECT DtlKey FROM AED.dbo.SO_Dtl WHERE DocKey = :doc_key',
+      keyColumns: ['DocKey'],
+      watermarkColumn: 'LastModified',
+      docDateColumn: 'DocDate',
+      fromDate: '2026-01-01',
+      filterFormula: null,
+    };
+    const { onUsePreset } = renderQueryTab({ presets: [preset] });
+    fireEvent.click(screen.getByRole('combobox', { name: 'Use preset' }));
+    fireEvent.click(screen.getByRole('option', { name: 'AutoCount SO' }));
+    expect(onUsePreset).toHaveBeenCalledWith(preset);
+  });
+
+  it('hides "Use preset" entirely when there is none (foolproof-UI)', () => {
+    renderQueryTab({ presets: [] });
+    expect(screen.queryByRole('combobox', { name: 'Use preset' })).not.toBeInTheDocument();
+  });
+
+  it('hides "Use preset" for a non-document entity even with presets passed', () => {
+    renderQueryTab({
+      entityType: 'customer',
+      cfg: config({ lineQuery: null }),
+      presets: [],
+    });
+    expect(screen.queryByRole('combobox', { name: 'Use preset' })).not.toBeInTheDocument();
   });
 });
 
@@ -217,5 +279,67 @@ describe('QueryTab - DB company connection lock (plan sprint-5/01, AC-01-19)', (
   it('an API company with no SQL connection still gets the warning (regression pin)', () => {
     renderQueryTab({ entityType: 'customer', cfg: config({ lineQuery: null }), connections: [] });
     expect(screen.getByTestId('no-sql-connection')).toBeInTheDocument();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SF3/SF4 (final reviewer pass) - the key-columns MultiSelect / watermark
+// SearchSelect withhold each other's chosen column (BL-SS-052's foolproof
+// half) by filtering the SHARED OPTIONS list. That's correct for a NORMAL
+// save, but a LEGACY config saved before the guard existed can have the
+// watermark column sitting INSIDE keyColumns - and today the exclusion
+// filters that value out of BOTH pickers' options, which SILENTLY HIDES the
+// already-selected value entirely (MultiSelect's pills + SearchSelect's
+// trigger label both derive from `options`, not from `value` directly) -
+// the operator can't even see what's wrong, let alone fix it by
+// deselecting. Only UNSELECTED values should ever be excluded.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('QueryTab - key/watermark exclusion keeps an already-selected offending column visible (SF3/SF4)', () => {
+  function legacyCfg() {
+    return config({
+      keyColumns: ['DocKey', 'LastModified'],
+      watermarkColumn: 'LastModified',
+    });
+  }
+
+  it('SF3: the key-columns MultiSelect still shows a pill for a legacy watermark-inside-keyColumns value', () => {
+    renderQueryTab({
+      cfg: legacyCfg(),
+      preview: successPreview(['DocKey', 'DocNo', 'Status', 'LastModified']),
+    });
+    const keyColumnsLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Key columns'),
+    );
+    const keyColumnsBox = keyColumnsLabel.parentElement as HTMLElement;
+    expect(within(keyColumnsBox).getByText('LastModified')).toBeInTheDocument();
+  });
+
+  it('SF3: the watermark SearchSelect still shows its selected value, not the "None" placeholder, when that value is also (legacy) a key column', () => {
+    renderQueryTab({
+      cfg: legacyCfg(),
+      preview: successPreview(['DocKey', 'DocNo', 'Status', 'LastModified']),
+    });
+    const watermarkPicker = screen.getByLabelText('Watermark column');
+    expect(watermarkPicker).toHaveTextContent('LastModified');
+  });
+
+  it('SF4 (no test today, control): in the NORMAL (non-legacy) state the exclusion still works both ways - a chosen watermark is not offered as a key-column choice, and a chosen key column is not offered as a watermark choice', () => {
+    renderQueryTab({
+      cfg: config({ keyColumns: ['DocKey'], watermarkColumn: 'LastModified' }),
+      preview: successPreview(['DocKey', 'DocNo', 'Status', 'LastModified']),
+    });
+    // Key-columns popover: LastModified (the watermark) must not be an
+    // available option to add.
+    const keyColumnsLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Key columns'),
+    );
+    const keyColumnsBox = keyColumnsLabel.parentElement as HTMLElement;
+    fireEvent.click(within(keyColumnsBox).getByRole('combobox'));
+    expect(screen.queryByRole('option', { name: 'LastModified' })).not.toBeInTheDocument();
+
+    // Watermark popover: DocKey (the key column) must not be an available
+    // option to pick as the watermark.
+    fireEvent.click(screen.getByLabelText('Watermark column'));
+    expect(screen.queryByRole('option', { name: 'DocKey' })).not.toBeInTheDocument();
   });
 });

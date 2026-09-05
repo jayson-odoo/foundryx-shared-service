@@ -381,25 +381,34 @@ class FieldMappingRepository:
         company_id: str,
         entity_type: str,
         canonical_fields: Sequence[str],
+        *,
+        scope: Optional[str] = None,
     ) -> int:
         """Delete the mapping rows whose ``canonical_field`` is in the given set -
         the DELIVERABLE rows the operator is replacing (plan 15 §2). Rows whose
         canonical field is NOT listed (identity/watermark provenance like
         ``last_modified``) are left untouched, so a full re-map can never wipe the
-        watermark mapping and silently break delta sync."""
+        watermark mapping and silently break delta sync.
+
+        ``scope`` (sprint-5/02, AC-02-01) - when given, ONLY rows in that scope
+        are touched. A document's header and line scopes both accept
+        ``product_ref``-shaped canonical field NAMES independently (a header
+        catalog and a line catalog are disjoint sets in practice, but the
+        filter is the actual guarantee, not the disjointness) - without it, a
+        header-only re-map's ``delete_unknown`` sweep (below) would delete
+        every LINE row too (the bug AC-02-01 pins)."""
         fields = list(canonical_fields)
         if not fields:
             return 0
-        deleted = (
-            self.db.query(AcFieldMapping)
-            .filter(
-                AcFieldMapping.tenant_id == tenant_id,
-                AcFieldMapping.company_id == company_id,
-                AcFieldMapping.entity_type == entity_type,
-                AcFieldMapping.canonical_field.in_(fields),
-            )
-            .delete(synchronize_session=False)
+        query = self.db.query(AcFieldMapping).filter(
+            AcFieldMapping.tenant_id == tenant_id,
+            AcFieldMapping.company_id == company_id,
+            AcFieldMapping.entity_type == entity_type,
+            AcFieldMapping.canonical_field.in_(fields),
         )
+        if scope is not None:
+            query = query.filter(AcFieldMapping.scope == scope)
+        deleted = query.delete(synchronize_session=False)
         self.db.flush()
         return deleted
 
@@ -409,6 +418,8 @@ class FieldMappingRepository:
         company_id: str,
         entity_type: str,
         keep: Sequence[str],
+        *,
+        scope: Optional[str] = None,
     ) -> int:
         """Sweep STALE rows on a mapping save (plan 22 S4 review S4) - a row
         whose ``canonical_field`` is neither an accepted Sorento target NOR an
@@ -428,14 +439,16 @@ class FieldMappingRepository:
         names = list(keep)
         if not names:
             return 0
+        query = self.db.query(AcFieldMapping).filter(
+            AcFieldMapping.tenant_id == tenant_id,
+            AcFieldMapping.company_id == company_id,
+            AcFieldMapping.entity_type == entity_type,
+            AcFieldMapping.canonical_field.notin_(names),
+        )
+        if scope is not None:
+            query = query.filter(AcFieldMapping.scope == scope)
         deleted = (
-            self.db.query(AcFieldMapping)
-            .filter(
-                AcFieldMapping.tenant_id == tenant_id,
-                AcFieldMapping.company_id == company_id,
-                AcFieldMapping.entity_type == entity_type,
-                AcFieldMapping.canonical_field.notin_(names),
-            )
+            query
             .delete(synchronize_session=False)
         )
         self.db.flush()
@@ -839,6 +852,28 @@ class RowHashRepository:
                 )
                 .delete(synchronize_session=False)
             )
+        self.db.flush()
+        return deleted
+
+    def clear_all(self, tenant_id: str, company_id: str, entity_type: str) -> int:
+        """Wipe EVERY hash row for one (tenant, company, entity) - the
+        re-baseline primitive a population-narrowing task save needs (F1,
+        sprint-5/02 review round): a header that merely fell out of a new,
+        narrower scope must never be diffed against a stale hash population
+        and read as a genuine deletion. The caller re-populates from a clean
+        slate on the next fetch (`upsert_many`), so a real deletion is only
+        ever detected again once the new population has had a chance to see
+        every record it is actually configured to see. Does not commit; the
+        caller owns the transaction."""
+        deleted = (
+            self.db.query(AcRowHash)
+            .filter(
+                AcRowHash.tenant_id == tenant_id,
+                AcRowHash.company_id == company_id,
+                AcRowHash.entity_type == entity_type,
+            )
+            .delete(synchronize_session=False)
+        )
         self.db.flush()
         return deleted
 

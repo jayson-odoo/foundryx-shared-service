@@ -50,8 +50,17 @@ from .base import CanonicalLine, CanonicalRecord
 
 ENTITY_SALES_ORDER = "sales_order"
 ENTITY_PURCHASE_ORDER = "purchase_order"
+# sprint-5/02 S3 (addendum section 3) - a LINE-SET entity on Sorento's side
+# (no header table, rows land in `spo_allocations`) but a normal document on
+# OUR side: own header+line fetch, own mapping/status/filter formula. The
+# ESB's "PO vs SPO" split is the documented `filterFormula` string on each
+# sibling task (SPO: `startswith`, PO: `not(startswith(...))`), never a
+# runtime branch here.
+ENTITY_SHIPPING_ORDER = "shipping_order"
 
-DOCUMENT_ENTITY_TYPES: Tuple[str, ...] = (ENTITY_SALES_ORDER, ENTITY_PURCHASE_ORDER)
+DOCUMENT_ENTITY_TYPES: Tuple[str, ...] = (
+    ENTITY_SALES_ORDER, ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER,
+)
 
 
 def is_document_entity(entity_type: str) -> bool:
@@ -100,14 +109,37 @@ class CanonicalDocumentLine(CanonicalLine):
     discount: Optional[Decimal] = None
     line_total: Optional[Decimal] = None
     uom: Optional[str] = Field(None, max_length=100)
+    # sprint-5/02 S3 (addendum section 1) - code/name fallbacks for a
+    # customer login that only exposes document tables (a master task never
+    # ran, so no ref exists yet); `line_number` (AutoCount `Seq`) so
+    # Sorento's cutover adoption can match a ref-less line by position
+    # (addendum section 9). ALL of these are contract-version 2 ONLY - see
+    # `sink_payload`.
+    product_code: Optional[str] = Field(None, max_length=100)
+    product_name: Optional[str] = None
+    warehouse_code: Optional[str] = Field(None, max_length=100)
+    line_number: Optional[int] = None
     extras: Dict[str, Any] = Field(default_factory=dict)
 
     #     !!  THE ONLY KEYS THAT MAY CROSS THE WIRE TO SORENTO.  !!
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = ()
+    # Fields gated behind `contract_version >= 2` (AC-02-14/27) - never sent
+    # to a v1 (pre-addendum) Sorento, which has no columns for them.
+    FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "product_code", "product_name", "warehouse_code", "line_number",
+    )
 
-    def sink_payload(self) -> Dict[str, Any]:
+    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
+        """The wire shape for ONE line. ``contract_version`` (default 1,
+        AC-02-14) is the connection's own ``sorento_contract_version``
+        setting - the AUTHORITATIVE gate. It is never inferred from what
+        Sorento's `/contract` endpoint advertises (that is advisory only,
+        see `sinks_sorento.py`)."""
         data = self.model_dump(mode="json")
-        return {key: data[key] for key in self.SINK_FIELDS if key in data}
+        keys = list(self.SINK_FIELDS)
+        if contract_version >= 2:
+            keys = keys + list(self.FALLBACK_FIELDS)
+        return {key: data[key] for key in keys if key in data}
 
 
 class CanonicalSalesOrderLine(CanonicalDocumentLine):
@@ -129,11 +161,38 @@ class CanonicalPurchaseOrderLine(CanonicalDocumentLine):
     unit_cost: Optional[Decimal] = None
     currency: Optional[str] = Field(None, max_length=3)
     expected_date: Optional[date] = None
+    # addendum section 4 - the AutoCount `FromSODocList` comma-separated cell,
+    # split/stripped/blank-dropped by the ESB (never sent as a raw string -
+    # Sorento's `order_link_service.claim_book_pairing` runs once per value).
+    from_so_numbers: Optional[List[str]] = None
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref", "product_ref", "warehouse_ref", "qty_ordered",
         "qty_received", "unit_cost", "discount", "line_total", "uom",
         "currency", "expected_date",
+    )
+    FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        CanonicalDocumentLine.FALLBACK_FIELDS + ("from_so_numbers",)
+    )
+
+
+class CanonicalShippingOrderLine(CanonicalDocumentLine):
+    """addendum section 3 - a shipping order's lines land in Sorento's
+    ``spo_allocations``, identified by ``source_ref`` (DtlKey) via
+    ``integration_references`` (entity ``spo_allocations``), NOT the
+    upload's ``(spo, item, location, occurrence)`` scheme."""
+
+    qty_received: Optional[Decimal] = Field(None, ge=0)
+    unit_cost: Optional[Decimal] = None
+    expected_date: Optional[date] = None
+    from_so_numbers: Optional[List[str]] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref", "product_ref", "warehouse_ref", "qty_ordered",
+        "qty_received", "unit_cost", "uom", "expected_date",
+    )
+    FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        CanonicalDocumentLine.FALLBACK_FIELDS + ("from_so_numbers",)
     )
 
 
@@ -147,6 +206,10 @@ class CanonicalDocument(CanonicalRecord):
     extras: Dict[str, Any] = Field(default_factory=dict)
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = ()
+    # Contract-version-2-only fields (AC-02-14/27) - empty on the shared base,
+    # each subclass declares its OWN (the field names differ: customer_* vs
+    # supplier_*).
+    FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = ()
 
     @field_validator("status")
     @classmethod
@@ -179,10 +242,18 @@ class CanonicalDocument(CanonicalRecord):
             )
         return self
 
-    def sink_payload(self) -> Dict[str, Any]:
+    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
+        """The connection's ``sorento_contract_version`` (default 1) is the
+        AUTHORITATIVE gate (AC-02-14) - never Sorento's own advertised
+        `/contract` version, which is advisory only."""
         data = self.model_dump(mode="json")
-        payload = {key: data[key] for key in self.SINK_FIELDS if key in data}
-        payload["lines"] = [line.sink_payload() for line in self.lines]
+        keys = list(self.SINK_FIELDS)
+        if contract_version >= 2:
+            keys = keys + list(self.FALLBACK_FIELDS)
+        payload = {key: data[key] for key in keys if key in data}
+        payload["lines"] = [
+            line.sink_payload(contract_version=contract_version) for line in self.lines
+        ]
         return payload
 
 
@@ -201,11 +272,19 @@ class CanonicalSalesOrder(CanonicalDocument):
     sales_agent_ref: Optional[str] = Field(None, max_length=255)
     doc_date: Optional[date] = None
     requested_delivery_date: Optional[date] = None
+    # addendum section 1 - code/name fallbacks (a customer login that only
+    # exposes document tables) + back-create hints. v2-only.
+    customer_code: Optional[str] = Field(None, max_length=50)
+    customer_name: Optional[str] = None
+    agent_code: Optional[str] = Field(None, max_length=100)
     lines: List[CanonicalSalesOrderLine] = Field(default_factory=list)
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref", "so_number", "customer_ref", "sales_agent_ref",
         "doc_date", "requested_delivery_date", "status", "internal_note",
+    )
+    FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "customer_code", "customer_name", "agent_code",
     )
 
 
@@ -219,6 +298,9 @@ class CanonicalPurchaseOrder(CanonicalDocument):
     issue_date: Optional[date] = None
     expected_date: Optional[date] = None
     currency: Optional[str] = Field(None, max_length=3)
+    supplier_code: Optional[str] = Field(None, max_length=50)
+    supplier_name: Optional[str] = None
+    agent_code: Optional[str] = Field(None, max_length=100)
     lines: List[CanonicalPurchaseOrderLine] = Field(default_factory=list)
 
     #     !!  NO `internal_note` HERE - LIVE-VERIFY CAUGHT THIS (plan 22 S5).  !!
@@ -231,4 +313,41 @@ class CanonicalPurchaseOrder(CanonicalDocument):
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref", "po_number", "supplier_ref", "issue_date",
         "expected_date", "currency", "status",
+    )
+    FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "supplier_code", "supplier_name", "agent_code",
+    )
+
+
+class CanonicalShippingOrder(CanonicalDocument):
+    """AutoCount SPO → Sorento ``shipping_orders`` (addendum section 3).
+
+    A LINE-SET entity on Sorento's side (rows land in ``spo_allocations``,
+    keyed ``(company_id, spo_number, spo_line_number)`` - no header table),
+    reflected in the response contract only: push/read always returns header
+    ``entity_id: null`` as a SUCCESS, never a failure (this ESB never branches
+    on it). ``spo_number`` is the field Sorento adopts an xlsx-loaded row by,
+    same DocKey-vs-DocNo split as SO/PO.
+    """
+
+    entity_type: str = ENTITY_SHIPPING_ORDER
+
+    spo_number: Optional[str] = Field(None, max_length=50)
+    supplier_ref: Optional[str] = Field(None, max_length=255)
+    issue_date: Optional[date] = None
+    expected_date: Optional[date] = None
+    currency: Optional[str] = Field(None, max_length=3)
+    supplier_code: Optional[str] = Field(None, max_length=50)
+    supplier_name: Optional[str] = None
+    agent_code: Optional[str] = Field(None, max_length=100)
+    lines: List[CanonicalShippingOrderLine] = Field(default_factory=list)
+
+    # No `internal_note` - same PO-shape rule above; Sorento's shipping-order
+    # read/ingest schema carries no such field either.
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref", "spo_number", "supplier_ref", "issue_date",
+        "expected_date", "currency", "status",
+    )
+    FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "supplier_code", "supplier_name", "agent_code",
     )

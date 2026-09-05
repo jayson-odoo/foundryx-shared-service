@@ -44,6 +44,19 @@ class SqlDocumentCapExceeded(SqlSourceError):
     ``SqlDeleteGuardExceeded``: nothing is staged or pushed."""
 
 
+class SqlFilterFormulaError(SqlSourceError):
+    """A document task's `filterFormula` failed to evaluate against an actual
+    header row AT RUN TIME (F2/B3, sprint-5/02 review round) - a genuine
+    runtime fault (a value that doesn't coerce the way the formula expects),
+    distinct from a save-time parse failure (caught by
+    `validate_source_config`'s own gate, which makes this exceedingly rare).
+    Raised from `SqlDbSource._read` BEFORE any hash write, same fail-safe
+    contract as `SqlDeleteGuardExceeded`/`SqlDocumentCapExceeded`: nothing is
+    staged or pushed - a broken filter must be a visible, named task error,
+    never a silent fail-open that keeps every header with no sign anything
+    is wrong."""
+
+
 class SqlProbeFailed(SqlSourceError):
     """A company-onboarding probe (current database / profile name, plan
     sprint-5/01 AC-01-02) could not connect or its statement failed. Carries

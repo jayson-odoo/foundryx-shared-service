@@ -1297,6 +1297,66 @@ def test_an_unknown_company_is_a_clean_404_not_a_500(client):
     assert "not found" in response.json()["detail"].lower()
 
 
+# ── mapping presets (sprint-5/02 S3, AC-02-16 "Use preset") ───────────────────
+
+
+def test_mapping_presets_are_database_substituted_for_a_document_entity(
+    client, session_factory, transports
+):
+    setup = session_factory()
+    company_id = _company(setup, transports, database_name="AED_PRESET_HTTP").id
+    setup.close()
+
+    response = client.get(
+        "/autocount/presets/sales_order?companyId=" + company_id, headers=_auth(client)
+    )
+    assert response.status_code == 200
+    presets = response.json()
+    assert len(presets) == 1
+    preset = presets[0]
+    assert preset["entityType"] == "sales_order"
+    assert "AED_PRESET_HTTP" in preset["headerQuery"]
+    assert "AED_PRESET_HTTP" in preset["lineQuery"]
+    assert preset["keyColumns"] == ["DocKey"]
+    assert preset["filterFormula"] is None
+
+
+def test_mapping_presets_is_empty_for_a_non_document_entity(client, session_factory, transports):
+    setup = session_factory()
+    company_id = _company(setup, transports, database_name="AED_PRESET_HTTP2").id
+    setup.close()
+
+    response = client.get(
+        "/autocount/presets/customer?companyId=" + company_id, headers=_auth(client)
+    )
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_mapping_presets_404s_an_unknown_company(client):
+    response = client.get(
+        "/autocount/presets/sales_order?companyId=nope", headers=_auth(client)
+    )
+    assert response.status_code == 404
+
+
+def test_the_spo_preset_filters_the_opposite_way_from_po(client, session_factory, transports):
+    setup = session_factory()
+    company_id = _company(setup, transports, database_name="AED_PRESET_HTTP3").id
+    setup.close()
+    headers = _auth(client)
+
+    po = client.get(
+        "/autocount/presets/purchase_order?companyId=" + company_id, headers=headers
+    ).json()[0]
+    spo = client.get(
+        "/autocount/presets/shipping_order?companyId=" + company_id, headers=headers
+    ).json()[0]
+    assert po["filterFormula"] == 'not(startswith(upper(trim(DocNo)), "SPO-"))'
+    assert spo["filterFormula"] == 'startswith(upper(trim(DocNo)), "SPO-")'
+    assert spo["entityType"] == "shipping_order"
+
+
 def test_approving_an_unknown_job_is_a_clean_404(client):
     response = client.post("/autocount/jobs/nope/approve", headers=_auth(client))
     assert response.status_code == 404

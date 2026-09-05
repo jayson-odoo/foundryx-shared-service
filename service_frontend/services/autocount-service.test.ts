@@ -169,9 +169,31 @@ describe('autocount service (real boundary)', () => {
     expect(path).toBe('/autocount/companies/c1/entities/supplier/mapping');
     expect(init.method).toBe('PUT');
     expect(JSON.parse(init.body as string).rows).toEqual([
-      { sourcePath: 'IsActive', transform: 't_f_bool', sorentoField: 'is_active', formula: 'if(value == "T", true, false)' },
-      { sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: null },
+      {
+        sourcePath: 'IsActive',
+        transform: 't_f_bool',
+        sorentoField: 'is_active',
+        formula: 'if(value == "T", true, false)',
+        scope: 'header',
+      },
+      { sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: null, scope: 'header' },
     ]);
+  });
+
+  it('sends isEnabled on save for both rows and lineRows (final review round B1) - a backfill-disabled off-preview row round-trips as disabled, not silently re-enabled', async () => {
+    apiFetch.mockResolvedValue({ entityType: 'sales_order', rows: [], sorentoFields: [], acFields: [] });
+    await realAutocountService.updateMapping('c1', 'sales_order', {
+      rows: [
+        { sourcePath: 'DocNo', transform: 'string', sorentoField: 'so_number', isEnabled: true },
+      ],
+      lineRows: [
+        { sourcePath: 'discount', transform: 'decimal', sorentoField: 'discount', scope: 'line', isEnabled: false },
+      ],
+    });
+    const [, init] = apiFetch.mock.calls[0];
+    const body = JSON.parse(init.body as string);
+    expect(body.rows[0].isEnabled).toBe(true);
+    expect(body.lineRows[0].isEnabled).toBe(false);
   });
 
   it('tests a single formula server-side (AC-16-21)', async () => {
@@ -196,7 +218,9 @@ describe('autocount service (real boundary)', () => {
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({
       record: { AccNo: 'A1' },
-      rows: [{ sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: null }],
+      rows: [
+        { sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: null, scope: 'header' },
+      ],
     });
   });
 

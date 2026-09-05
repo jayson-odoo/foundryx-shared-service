@@ -46,7 +46,6 @@ from modules.autocount.mapping import (
     MappingRow,
     SCOPE_HEADER,
     SCOPE_LINE,
-    document_line_rows,
     flat_profile,
     flat_source_ref,
     mint_master_ref,
@@ -240,8 +239,16 @@ def test_header_and_line_refs_follow_the_two_tier_A6_scheme_end_to_end():
         MappingRow("DocNo", "so_number", "string", SCOPE_HEADER),
         MappingRow("Status", "status", "string", SCOPE_HEADER),
     ]
-    config = {"lineKeyColumn": "DtlKey", "lineProductColumn": "ItemCode", "lineWarehouseColumn": "Location"}
-    rows = header_rows + document_line_rows(ENTITY_SALES_ORDER, config)
+    # sprint-5/02 (AC-02-01/04): line rows are now persisted, operator-
+    # editable data - the fixed `document_line_rows` column-name convention
+    # this test used to exercise is gone. Same scenario, built by hand.
+    line_rows = [
+        MappingRow("DtlKey", "source_ref", "string", SCOPE_LINE, is_required=True),
+        MappingRow("ItemCode", "product_ref", "ref_product", SCOPE_LINE, is_required=True),
+        MappingRow("Location", "warehouse_ref", "ref_warehouse", SCOPE_LINE),
+        MappingRow("qty_ordered", "qty_ordered", "decimal", SCOPE_LINE, is_required=True),
+    ]
+    rows = header_rows + line_rows
     engine = MappingEngine(
         rows, entity_type=ENTITY_SALES_ORDER,
         profile=flat_profile(ENTITY_SALES_ORDER, ["DocKey"]), database_name=DB,
@@ -259,39 +266,6 @@ def test_header_and_line_refs_follow_the_two_tier_A6_scheme_end_to_end():
     assert line.product_ref == f"{DB}:P1"
     assert line.warehouse_ref == f"{DB}:W1"
     assert line.qty_ordered == Decimal("10")
-
-
-# ── document_line_rows: the FIXED column-name convention generator ──────────
-
-
-def test_document_line_rows_is_empty_without_a_line_key_column():
-    assert document_line_rows(ENTITY_SALES_ORDER, {}) == []
-    assert document_line_rows(ENTITY_SALES_ORDER, {"lineProductColumn": "ItemCode"}) == []
-
-
-def test_document_line_rows_marks_source_ref_and_product_ref_required():
-    rows = document_line_rows(
-        ENTITY_SALES_ORDER,
-        {"lineKeyColumn": "DtlKey", "lineProductColumn": "ItemCode"},
-    )
-    by_field = {r.canonical_field: r for r in rows}
-    assert by_field["source_ref"].is_required is True
-    assert by_field["product_ref"].is_required is True
-    assert "warehouse_ref" not in by_field  # no column configured -> no row
-    assert by_field["qty_ordered"].is_required is True  # Sorento's own required field
-    assert by_field["uom"].is_required is False
-
-
-def test_document_line_rows_fixed_names_differ_between_so_and_po():
-    so_fields = {r.canonical_field for r in document_line_rows(
-        ENTITY_SALES_ORDER, {"lineKeyColumn": "DtlKey", "lineProductColumn": "ItemCode"}
-    )}
-    po_fields = {r.canonical_field for r in document_line_rows(
-        ENTITY_PURCHASE_ORDER, {"lineKeyColumn": "DtlKey", "lineProductColumn": "ItemCode"}
-    )}
-    assert "qty_delivered" in so_fields and "qty_delivered" not in po_fields
-    assert "qty_received" in po_fields and "qty_received" not in so_fields
-    assert "currency" in po_fields and "currency" not in so_fields
 
 
 # ── flat_profile carries line_model/detail_key/line_ref_prefix for docs ─────
@@ -363,7 +337,10 @@ def test_sorento_supported_entities_label_is_derived_from_the_entity_path_map():
     documents joined ``_ENTITY_PATH`` (plan 22 S5). The label is generated
     FROM the map so it can never drift again - every current entry (masters
     AND documents) appears, in the map's own order, joined with a trailing
-    'and' (no serial comma), and GRN (absent from the map) does not."""
+    'and' (no serial comma), and GRN (absent from the map) does not.
+
+    sprint-5/02 S3 (AC-02-10) added `shipping_order` to `_ENTITY_PATH` too -
+    exactly the kind of join this test exists to catch without going stale."""
     label = sorento_supported_entities_label()
     for entity_type in (
         "supplier",
@@ -375,9 +352,10 @@ def test_sorento_supported_entities_label_is_derived_from_the_entity_path_map():
         "sales agent",
         "sales order",
         "purchase order",
+        "shipping order",
     ):
         assert entity_type in label
-    assert label.endswith("sales agent, sales order and purchase order")
+    assert label.endswith("purchase order and shipping order")
     assert "goods received note" not in label
     assert "grn" not in label.lower()
 
@@ -495,30 +473,23 @@ def test_a_document_task_requires_a_watermark_column():
     assert "LastModified" in errors["watermarkColumn"] or "line" in errors["watermarkColumn"].lower()
 
 
-def test_a_document_task_requires_the_line_ref_and_date_columns():
+def test_a_document_task_requires_the_date_column():
+    """sprint-5/02: the line/ref column pickers (`lineKeyColumn`/
+    `lineProductColumn`) this test used to also require are GONE (AC-02-05) -
+    a document's line fields are persisted `ac_field_mapping` rows now,
+    validated by `CompanyService.replace_mapping`, not `validate_source_
+    config`. Only the header's own date-column requirement remains here."""
     from modules.autocount.services.etl_service import validate_source_config
 
     clean, errors = validate_source_config(
         ENTITY_SALES_ORDER,
-        _base_so_config(docDateColumn=None, lineKeyColumn=None, lineProductColumn=None),
+        _base_so_config(docDateColumn=None),
         _HEADER_COLUMNS,
         line_columns=_LINE_COLUMNS,
     )
     assert "docDateColumn" in errors
-    assert "lineKeyColumn" in errors
-    assert "lineProductColumn" in errors
-
-
-def test_a_document_task_line_columns_are_checked_against_the_line_preview():
-    from modules.autocount.services.etl_service import validate_source_config
-
-    clean, errors = validate_source_config(
-        ENTITY_SALES_ORDER,
-        _base_so_config(lineProductColumn="NotAColumn"),
-        _HEADER_COLUMNS,
-        line_columns=_LINE_COLUMNS,
-    )
-    assert "lineProductColumn" in errors
+    assert "lineKeyColumn" not in errors
+    assert "lineProductColumn" not in errors
 
 
 def test_a_document_task_requires_the_line_query_to_bind_doc_key():
@@ -562,8 +533,6 @@ def test_a_valid_document_config_saves_clean():
     )
     assert errors == {}
     assert clean["docDateColumn"] == "DocDate"
-    assert clean["lineKeyColumn"] == "DtlKey"
-    assert clean["lineProductColumn"] == "ItemCode"
 
 
 def test_a_non_document_entity_never_carries_the_new_fields():
@@ -575,7 +544,6 @@ def test_a_non_document_entity_never_carries_the_new_fields():
         {"AccNo": "string"},
     )
     assert clean["docDateColumn"] is None
-    assert clean["lineKeyColumn"] is None
 
 
 # ── SqlDbSource - document extraction end to end (SQLite rig) ───────────────
@@ -868,7 +836,11 @@ def test_a_document_cap_trip_surfaces_as_a_named_error_code_through_sync(rig, mo
     assert config.last_run_error_code == "DOCUMENT_CAP"
 
 
-def test_reconcile_reports_no_delete_refs_even_when_a_header_is_missing(rig):
+def test_reconcile_now_reports_a_delete_ref_for_a_missing_header(rig):
+    """sprint-5/02 S3 (AC-02-13) reverses this: a document's missing header
+    IS now a delete candidate, exactly like a master's - the plan-22 S5
+    "documents never compute delete_refs" exemption is gone (see
+    `SqlDbSource.fetch_changes`'s own updated docstring for why)."""
     db, company, config, engine = rig
     SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_SALES_ORDER).fetch_changes(
         Watermark()
@@ -878,9 +850,9 @@ def test_reconcile_reports_no_delete_refs_even_when_a_header_is_missing(rig):
     result = SqlDbSource(
         _ctx(db, company, config), entity_type=ENTITY_SALES_ORDER, mode=RUN_MODE_RECONCILE
     ).fetch_changes(Watermark())
-    # A shrink that WOULD trip the guard for a master (1 of 2 known = 50%,
-    # over the ratio floor) is a complete non-event for a document.
-    assert result.delete_refs == []
+    # 1 of 2 known missing (50% ratio) stays UNDER the absolute floor (50), so
+    # the guard does not fire - but the ref is now a real delete candidate.
+    assert result.delete_refs == ["AED_VSOFT:D002"]
 
 
 def test_a_document_writes_one_hash_per_header_keyed_on_the_header_ref(rig):
@@ -915,7 +887,7 @@ def test_a_second_run_with_only_a_line_change_reports_it_as_an_update(rig):
 
 
 def test_the_full_pipeline_maps_a_header_and_its_lines_with_prefixed_refs(rig):
-    from modules.autocount.mapping import MappingEngine, document_line_rows
+    from modules.autocount.mapping import MappingEngine
 
     db, company, config, _engine = rig
     source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_SALES_ORDER)
@@ -927,7 +899,14 @@ def test_the_full_pipeline_maps_a_header_and_its_lines_with_prefixed_refs(rig):
         MappingRow("doc_no", "so_number", "string", SCOPE_HEADER),
         MappingRow("status", "status", "string", SCOPE_HEADER),
     ]
-    rows = header_rows + document_line_rows(ENTITY_SALES_ORDER, config.source_config)
+    # sprint-5/02: line rows are persisted operator-editable data now, built
+    # by hand here (the fixed `document_line_rows` convention is gone).
+    line_rows = [
+        MappingRow("dtl_key", "source_ref", "string", SCOPE_LINE, is_required=True),
+        MappingRow("item_code", "product_ref", "ref_product", SCOPE_LINE, is_required=True),
+        MappingRow("qty_ordered", "qty_ordered", "decimal", SCOPE_LINE, is_required=True),
+    ]
+    rows = header_rows + line_rows
     engine = MappingEngine(
         rows, entity_type=ENTITY_SALES_ORDER,
         profile=flat_profile(ENTITY_SALES_ORDER, config.source_config["keyColumns"]),
@@ -949,8 +928,12 @@ def test_the_full_pipeline_maps_a_header_and_its_lines_with_prefixed_refs(rig):
 # ── sync._stage_deletes: documents suppress delete intents entirely ─────────
 
 
-def test_stage_deletes_suppresses_document_delete_intents(session_factory):
+def test_stage_deletes_now_stages_a_document_delete_intent(session_factory):
+    """sprint-5/02 S3 (AC-02-13) reverses this: a document's missing header
+    now stages an ordinary delete intent exactly like a master - the
+    plan-22 S5 "drop only the local hash row" suppression is gone."""
     from app.models.background_job import JOB_DONE, BackgroundJob
+    from modules.autocount.models import STAGED, STAGED_OP_DELETE
     from modules.autocount.repositories import StagedRecordRepository
     from modules.autocount.sync import _stage_deletes
 
@@ -970,12 +953,12 @@ def test_stage_deletes_suppresses_document_delete_intents(session_factory):
         db, job, [f"{DB}:GONE"], tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
         entity_type=ENTITY_SALES_ORDER, current_refs=[],
     )
-    assert staged == 0
-    assert StagedRecordRepository(db).list_for_job(DEFAULT_TENANT_ID, company.id, job.id) == []
-    # The local hash row for the missing ref IS dropped (so a re-appearance
-    # stages as a fresh add, never a phantom update) - same treatment as a
-    # shared entity.
-    assert RowHashRepository(db).all_hashes(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER) == {}
+    assert staged == 1
+    rows = StagedRecordRepository(db).list_for_job(DEFAULT_TENANT_ID, company.id, job.id)
+    assert len(rows) == 1
+    assert rows[0].op == STAGED_OP_DELETE
+    assert rows[0].status == STAGED
+    assert rows[0].source_ref == f"{DB}:GONE"
     db.close()
 
 
