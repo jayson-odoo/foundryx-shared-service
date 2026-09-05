@@ -592,6 +592,7 @@ export function ResourceList<T extends object>({
                     actions={config.actions}
                     rows={selectedRows}
                     runtime={runtime}
+                    getEntityId={config.getEntityId}
                   />
                   <Button
                     variant="outline"

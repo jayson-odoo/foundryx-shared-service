@@ -116,7 +116,18 @@ export type ResourceAction<T> =
        * ActionMenu/BulkActions/ResourceForm call site (AC-DLA-43's shape
        * omits it - a deliberate, disclosed addition; see the T5 report).
        */
-      deferred: { actionKey: string; entityType: string };
+      deferred: {
+        actionKey: string;
+        entityType: string;
+        /**
+         * A static park payload the server's handler reads (fix round 1, T5,
+         * item 15) - e.g. a toggle action's target state
+         * (`{ active: !rows[0].isActive }`). A function of the rows being
+         * acted on so a toggle's target can be derived from current state;
+         * omit for an action that needs no payload.
+         */
+        payload?: (rows: T[]) => Record<string, unknown>;
+      };
       run?: undefined;
     });
 
@@ -171,6 +182,14 @@ export interface ResourceListConfig<T extends object> {
   filterFields: FilterFieldDef[];
   exportColumns: ExportColumn[];
   actions: ResourceAction<T>[];
+  /**
+   * Row id extractor for a bulk `deferred` action's park (fix round 1, T5,
+   * item 15) - defaults to `getRowId`. Only needed when a bulk-surfaced
+   * deferred action's registered `entityId` isn't the row's own id (e.g. a
+   * parent-owned join row keyed off a composite id the row type doesn't
+   * carry, like the ideation BR<->idea unlink).
+   */
+  getEntityId?: (row: T) => string;
   searchPlaceholder?: string;
   /**
    * Human labels for the fields the general search matches (e.g. ['Name',

@@ -56,6 +56,14 @@ export interface ActionMenuProps<T> {
     action: ResourceAction<T>,
     entityIds: string[],
   ) => void;
+  /**
+   * Called after a self-contained (row-surface) deferred action actually
+   * COMMITS - alongside the generic toast + `runtime.reload()`, never
+   * instead of them (fix round 1, T5, item 15). For a caller that needs to
+   * react beyond a list refresh (e.g. bumping a sibling "reload" token so
+   * ANOTHER surface re-seeds after this one's commit).
+   */
+  onDeferredCommitted?: (action: ResourceAction<T>, entityIds: string[]) => void;
 }
 
 /**
@@ -91,6 +99,7 @@ export function ActionMenu<T>({
   align = 'end',
   getEntityId = defaultEntityId,
   onDeferredStart,
+  onDeferredCommitted,
 }: ActionMenuProps<T>) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<ResourceAction<T> | null>(null);
@@ -101,6 +110,7 @@ export function ActionMenu<T>({
     toastId: string | number;
     label: string;
     entityType: string;
+    action: ResourceAction<T>;
   } | null>(null);
   const settleActive = () => {
     const active = activeRef.current;
@@ -118,6 +128,7 @@ export function ActionMenu<T>({
         active ? deferredDoneMessage(active.label, active.entityType, active.ids.length) : 'Done.',
       );
       runtime.reload();
+      if (active) onDeferredCommitted?.(active.action, active.ids);
     },
     onFailed: (error) => {
       settleActive();
@@ -162,10 +173,11 @@ export function ActionMenu<T>({
           await deferred.start(
             action.deferred.actionKey,
             entityIds.map((id) => ({ entityType, entityId: id })),
+            action.deferred.payload?.(rows),
           );
         untrackPendingEntities(entityIds.filter((id) => !parkedIds.includes(id)));
         const toastId = `pending-action-${entityIds[0]}`;
-        activeRef.current = { ids: parkedIds, toastId, label, entityType };
+        activeRef.current = { ids: parkedIds, toastId, label, entityType, action };
         deferredToast({
           id: toastId,
           verb: presentContinuous(label),
