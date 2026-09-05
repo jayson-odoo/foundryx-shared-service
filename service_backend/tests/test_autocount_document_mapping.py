@@ -3174,6 +3174,7 @@ def test_mapping_view_header_source_columns_come_from_the_last_preview(session_f
     assert set(view.ac_fields) >= {"doc_key", "doc_no", "status", "cancelled", "doc_date"}, (
         f"header ac_fields must be the previewed result columns - got {view.ac_fields}"
     )
+    db.close()
 
 
 # ── plan sprint-5/03 - line fingerprint in the document presets (AC-03-20) ──
@@ -3223,4 +3224,3 @@ def test_sql_pack_documents_the_line_fingerprint_columns():
         "the pack must carry the 19%-of-fulfilled-SOs finding that motivates "
         "the line fingerprint (header LastModified alone is not enough)"
     )
-    db.close()

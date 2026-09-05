@@ -100,6 +100,7 @@ from modules.autocount.models import (
 )
 from modules.autocount.services.company_service import CompanyService
 from modules.autocount.sql_source.runtime import RUNTIME
+from modules.autocount.sql_source.source import CURSOR_MARK
 from modules.autocount.sync import AUTOCOUNT_SYNC
 
 PASSWORD = "S3cret!Pa55"
@@ -413,7 +414,7 @@ def test_the_budget_cuts_a_run_and_the_next_run_resumes_at_the_cursor(
 
     watermark = _watermark_row(db, company_id)
     cursor = watermark.cursor_json or {}
-    assert cursor.get("mark") == "2026-08-01 02:00:00", (
+    assert cursor.get(CURSOR_MARK) == "2026-08-01 02:00:00", (
         "the cursor must point at the LAST mark taken on the truncated page"
     )
 
@@ -636,7 +637,7 @@ def test_the_watermark_advances_past_mapping_failures(session_factory, monkeypat
 
     watermark = _watermark_row(db, company_id)
     max_mark = rows[-1][3]  # the last row's last_modified - the max seen
-    assert (watermark.cursor_json or {}).get("mark") == max_mark, (
+    assert (watermark.cursor_json or {}).get(CURSOR_MARK) == max_mark, (
         "the watermark/cursor must advance to the MAX mark seen on the page "
         "even though 2 rows failed to map"
     )
@@ -705,7 +706,7 @@ def test_a_retryable_pending_row_is_offered_again_without_a_refetch(
     _insert_rows(engine, rows)
     ref_a = f"{DB_NAME}:{rows[0][0]}"
     ref_b = f"{DB_NAME}:{rows[1][0]}"
-    consumer.script[ref_a] = ["retryable"]  # only the FIRST offer is retryable
+    consumer.script[ref_a] = ["retryable", "created"]  # only the FIRST offer is retryable
 
     db = session_factory()
     job1 = _run(db, company_id, RUN_MODE_MANUAL)

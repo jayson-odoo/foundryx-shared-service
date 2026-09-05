@@ -17,6 +17,11 @@ and therefore pinned here:
   preview leg;
 * sink routing + the "unknown ref -> retryable" carry-over;
 * read-back tolerating a line we never sent (Appendix A7).
+
+Note (plan sprint-5/03, AC-03-01): the header-count cap
+(``MAX_DOCUMENT_HEADERS_PER_RUN``) this file used to pin is REMOVED - a
+document task pages instead of capping; see
+``tests/test_autocount_sql_db_source.py`` for the paging coverage.
 """
 from __future__ import annotations
 
@@ -772,26 +777,15 @@ def test_only_a_changed_header_re_fetches_its_lines(rig):
 
 
 # ── document N+1 caps (S5 review SHOULD-FIX 3) ───────────────────────────────
-
-
-def test_too_many_changed_headers_trips_the_named_document_cap(rig, monkeypatch):
-    """A run fanning out to more changed headers than the safety cap fails
-    the WHOLE run (nothing staged/pushed), naming the DOCUMENT_CAP guard -
-    never a silent unbounded round-trip storm."""
-    db, company, config, _engine = rig
-    monkeypatch.setattr(sql_db_source_module, "MAX_DOCUMENT_HEADERS_PER_RUN", 1)
-    source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_SALES_ORDER)
-    with pytest.raises(SqlDocumentCapExceeded) as exc:
-        source.fetch_changes(Watermark())
-    assert "2" in str(exc.value)  # the rig has 2 headers, over the cap of 1
-
-
-def test_under_the_header_cap_runs_normally(rig, monkeypatch):
-    db, company, config, _engine = rig
-    monkeypatch.setattr(sql_db_source_module, "MAX_DOCUMENT_HEADERS_PER_RUN", 100)
-    source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_SALES_ORDER)
-    result = source.fetch_changes(Watermark())
-    assert len(result.records) == 2
+#
+# The HEADER-count cap (``MAX_DOCUMENT_HEADERS_PER_RUN``) is REMOVED by plan
+# sprint-5/03 (AC-03-01) - a document task now pages instead of capping, so
+# 4,500+ changed headers in one pass is the documented, supported shape, not
+# a safety trip. That coverage moved to
+# ``tests/test_autocount_sql_db_source.py::
+# test_a_pass_reads_pages_of_page_size_and_stages_each_before_the_next``. The
+# per-HEADER line-count cap (``MAX_DOCUMENT_LINES_PER_HEADER``) is unaffected
+# and stays pinned below.
 
 
 def test_a_header_with_too_many_line_rows_trips_the_named_document_cap(rig, monkeypatch):
@@ -813,27 +807,6 @@ def test_under_the_line_cap_runs_normally(rig, monkeypatch):
     result = source.fetch_changes(Watermark())
     by_doc_key = {r.raw["doc_key"]: r.raw for r in result.records}
     assert len(by_doc_key["D002"]["_lines"]) == 2
-
-
-def test_a_document_cap_trip_surfaces_as_a_named_error_code_through_sync(rig, monkeypatch):
-    """End to end through the real job handler (mirrors the DELETE_GUARD
-    sync-level test in test_autocount_reconcile_push.py): the run FAILS with
-    a distinct, unprefixed ``DOCUMENT_CAP`` error code - never a generic
-    ``Fetch failed:``."""
-    from app.models.background_job import JOB_FAILED
-
-    from modules.autocount.services.sync_service import SyncService
-
-    db, company, config, _engine = rig
-    monkeypatch.setattr(sql_db_source_module, "MAX_DOCUMENT_HEADERS_PER_RUN", 1)
-    job = SyncService(db).sync_now(
-        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, actor_user_id=None
-    )
-    db.refresh(job)
-    assert job.status == JOB_FAILED
-    assert not (job.error or "").startswith("Fetch failed:")
-    db.refresh(config)
-    assert config.last_run_error_code == "DOCUMENT_CAP"
 
 
 def test_reconcile_now_reports_a_delete_ref_for_a_missing_header(rig):
