@@ -221,19 +221,29 @@ export function useMappingDraft(view: AutocountMappingView | null): UseMappingDr
   );
 
   const toWrite = useCallback(
-    (rows: MappingEditableRow[], scope: 'header' | 'line'): AutocountMappingWriteRow[] =>
-      rows.map((r) => ({
-        sourcePath: r.sourcePath.trim(),
-        transform: r.transform,
-        formula: r.formula,
-        sorentoField: r.sorentoField,
-        scope,
-        // B1 (final review round) - must round-trip or a backfill-disabled
-        // off-preview row gets silently re-enabled on save (re-triggers the
-        // S1 preview-column gate).
-        isEnabled: r.isEnabled,
-      })),
-    [],
+    (rows: MappingEditableRow[], scope: 'header' | 'line'): AutocountMappingWriteRow[] => {
+      const acFields = scope === 'header' ? headerAcFields : lineAcFields;
+      return rows.map((r) => {
+        const sourcePath = r.sourcePath.trim();
+        return {
+          sourcePath,
+          transform: r.transform,
+          formula: r.formula,
+          sorentoField: r.sorentoField,
+          scope,
+          // B1 (final review round) - must round-trip or a backfill-disabled
+          // off-preview row gets silently re-enabled on save (re-triggers the
+          // S1 preview-column gate). Final reviewer pass: OR in a fresh
+          // resolution check too - a row disabled via onChangeRow's revive
+          // path already flips isEnabled locally, but a row that's STILL
+          // disabled in the draft (e.g. the query itself was repaired
+          // between loads, never touched via onChangeRow) revives here at
+          // save time the instant its column returns to the preview.
+          isEnabled: r.isEnabled || acFields.includes(sourcePath),
+        };
+      });
+    },
+    [headerAcFields, lineAcFields],
   );
 
   const writeRows = useCallback((): AutocountMappingWriteRow[] => [

@@ -821,11 +821,15 @@ _CATALOG_BOOL_RETURNING = frozenset(
     for f in FUNCTION_CATALOG
     if f.category == "Boolean" or f.description.startswith("True when ")
 )
-assert _PREDICATE_CALLS == _CATALOG_BOOL_RETURNING, (
-    "_PREDICATE_CALLS has drifted from FUNCTION_CATALOG's bool-returning "
-    f"entries: {sorted(_PREDICATE_CALLS)!r} vs {sorted(_CATALOG_BOOL_RETURNING)!r} "
-    "- update whichever side is stale."
-)
+if _PREDICATE_CALLS != _CATALOG_BOOL_RETURNING:
+    # A bare `assert` vanishes under `python -O` (PYTHONOPTIMIZE) - this
+    # guard exists precisely to be loud, so it must not depend on asserts
+    # being enabled.
+    raise RuntimeError(
+        "_PREDICATE_CALLS has drifted from FUNCTION_CATALOG's bool-returning "
+        f"entries: {sorted(_PREDICATE_CALLS)!r} vs {sorted(_CATALOG_BOOL_RETURNING)!r} "
+        "- update whichever side is stale."
+    )
 
 
 def string_literals(parsed: ParsedFormula) -> List[str]:

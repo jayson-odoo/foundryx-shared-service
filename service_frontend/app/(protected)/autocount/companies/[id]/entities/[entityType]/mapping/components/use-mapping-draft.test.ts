@@ -106,7 +106,12 @@ describe('writeRowsForSave preserves isEnabled and the lineRows tri-state', () =
   it('a document entity with a populated line draft preserves isEnabled per row (header AND line)', () => {
     const { result } = renderHook(() => useMappingDraft(documentView([
       lineRow({ sourcePath: 'DtlKey', sorentoField: 'source_ref', canonicalField: 'source_ref', isRequired: true, isEnabled: true }),
-      lineRow({ sourcePath: 'discount', sorentoField: 'discount', canonicalField: 'discount', isEnabled: false }),
+      // NOT 'discount' - final reviewer pass, toWrite now revives a row
+      // whose sourcePath already resolves against the current acFields
+      // (documentView's lineAcFields is ['DtlKey', 'discount']), so this
+      // row's source stays genuinely off-preview to keep testing "isEnabled
+      // preserved" rather than accidentally exercising the revive path.
+      lineRow({ sourcePath: 'stale_discount', sorentoField: 'discount', canonicalField: 'discount', isEnabled: false }),
     ])));
     const body = result.current.writeRowsForSave();
     expect(body.lineRows).toBeDefined();
@@ -173,6 +178,22 @@ describe('onChangeRow revives a disabled row once its source column resolves (B1
     act(() => {
       result.current.line?.onChangeRow(idx, { sourcePath: 'discount' });
     });
+    const body = result.current.writeRowsForSave();
+    const revived = body.lineRows?.find((r) => r.sorentoField === 'discount');
+    expect(revived?.isEnabled).toBe(true);
+  });
+
+  it('writeRowsForSave() also revives a row STILL disabled in the draft once its sourcePath already resolves - the query was repaired without touching onChangeRow', () => {
+    const { result } = renderHook(() => useMappingDraft(documentView([
+      // 'discount' IS in documentView's lineAcFields - the column returned
+      // to the preview (e.g. the saved query itself was fixed) - but this
+      // row was loaded straight from the view, never revived via
+      // onChangeRow, so isEnabled is still false in the draft.
+      lineRow({
+        sourcePath: 'discount', sorentoField: 'discount', canonicalField: 'discount',
+        isEnabled: false,
+      }),
+    ])));
     const body = result.current.writeRowsForSave();
     const revived = body.lineRows?.find((r) => r.sorentoField === 'discount');
     expect(revived?.isEnabled).toBe(true);
