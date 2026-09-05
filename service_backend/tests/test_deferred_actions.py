@@ -488,6 +488,31 @@ def test_park_under_impersonation_records_the_real_admin(client, session_factory
     db.close()
 
 
+# ── T5 fix round 2, N1: requester-name resolution moved from the router into
+# PendingActionService.requester_name (router stays HTTP/Pydantic only). ────
+
+
+def test_current_reports_the_requester_name(client, session_factory):
+    h = _login(client)
+    park = client.post(
+        "/api/v1/pending-actions",
+        json={"actionKey": "widget.delete", "entityType": TEST_ENTITY, "entityId": "w-name1"},
+        headers=h,
+    )
+    assert park.status_code == 202, park.text
+
+    res = client.get(
+        "/api/v1/pending-actions/current",
+        params={"entityType": TEST_ENTITY, "entityId": "w-name1"},
+        headers=h,
+    )
+    body = res.json()
+    db = session_factory()
+    admin = db.query(User).filter(User.email == ACTIVE_EMAIL).first()
+    db.close()
+    assert body["pending"]["requestedByName"] == admin.name
+
+
 # ── users.trash end to end ──────────────────────────────────────────────────
 
 

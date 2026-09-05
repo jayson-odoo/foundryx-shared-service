@@ -35,6 +35,7 @@ from app.models.tenant_settings import (
     TenantSettings,
 )
 from app.models.user import User
+from app.repositories.user_repository import UserRepository
 
 logger = logging.getLogger("foundryx.deferred_actions")
 
@@ -173,6 +174,21 @@ class PendingActionService:
         if tenant_id is not None and not self._module_active(tenant_id, action_def):
             return False
         return True
+
+    def requester_name(self, row: PendingAction) -> Optional[str]:
+        """Display name for `row.requested_by_id` - fix round 2, N1: moved
+        out of the router (`app/api/v1/pending_actions.py` used to run this
+        query itself, which is DB access in a layer that must stay HTTP/
+        Pydantic only). Tenant-scoped resolution of a stored user id at USE
+        time (the polymorphic-target_id rule) - `row.tenant_id` is the
+        acting tenant the park happened under, which is where
+        `requested_by_id` lives."""
+        if not row.requested_by_id:
+            return None
+        user = UserRepository(self.db).get_by_id(
+            row.requested_by_id, row.tenant_id, include_trashed=True
+        )
+        return user.name if user else "a teammate"
 
     def current(self, tenant_id: str, entity_type: str, entity_id: str, actor: User) -> dict:
         # Fix round 2, S5: resolve the row WITHOUT committing it, gate on

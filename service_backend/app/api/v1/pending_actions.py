@@ -25,7 +25,6 @@ from app.deferred_actions.service import (
 from app.dependencies import get_actor_user_id, get_current_user
 from app.models.pending_action import PendingAction
 from app.models.user import User
-from app.repositories.user_repository import UserRepository
 from app.schemas.pending_action import (
     PendingActionCancelResponse,
     PendingActionCreate,
@@ -38,17 +37,14 @@ from app.schemas.pending_action import (
 router = APIRouter()
 
 
-def _requester_name(db: Session, row: PendingAction) -> PendingActionOut:
+def _pending_out(service: PendingActionService, row: PendingAction) -> PendingActionOut:
+    # Fix round 2, N1: the requester-name lookup is a tenant-scoped DB query
+    # - it belongs in the service, not here. `PendingActionOut.requestedByName`
+    # is a plain (non-aliased) field, so setting it post-validation is the
+    # smallest way to merge the service's resolved name onto the ORM-mapped
+    # schema without a second constructor call.
     out = PendingActionOut.model_validate(row)
-    if row.requested_by_id:
-        # Tenant-scoped resolution of a stored user id at USE time (the
-        # polymorphic-target_id rule) - `row.tenant_id` is the acting
-        # tenant the park happened under, which is where `requested_by_id`
-        # lives.
-        user = UserRepository(db).get_by_id(
-            row.requested_by_id, row.tenant_id, include_trashed=True
-        )
-        out.requestedByName = user.name if user else "a teammate"
+    out.requestedByName = service.requester_name(row)
     return out
 
 
@@ -116,6 +112,6 @@ def get_current_pending_action(
     pending = result["pending"]
     last_outcome = result["last_outcome"]
     return PendingActionCurrentOut(
-        pending=_requester_name(db, pending) if pending else None,
+        pending=_pending_out(service, pending) if pending else None,
         lastOutcome=PendingActionOutcomeOut.model_validate(last_outcome) if last_outcome else None,
     )
