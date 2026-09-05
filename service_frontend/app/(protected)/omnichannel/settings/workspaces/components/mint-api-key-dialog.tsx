@@ -38,7 +38,7 @@ export function MintApiKeyDialog({
   const { mint, minting } = useApiKeys(workspaceId);
   const [name, setName] = useState('');
   const [fullKey, setFullKey] = useState<string | null>(null);
-  const { isCopied, copyToClipboard } = useCopyToClipboard();
+  const { isCopied, error: copyError, copyToClipboard } = useCopyToClipboard();
 
   // Clear all state whenever the dialog closes (never leave a plaintext key).
   useEffect(() => {
@@ -117,6 +117,11 @@ export function MintApiKeyDialog({
                   {isCopied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
                 </Button>
               </div>
+              {copyError && (
+                <p className="text-sm font-medium text-destructive">
+                  Could not copy. Select and copy manually.
+                </p>
+              )}
               <p className="text-sm font-medium text-destructive">
                 Copy this key now - it won&apos;t be shown again.
               </p>
