@@ -132,15 +132,27 @@ def _insert_rows(engine: sa.engine.Engine, rows: List[tuple]) -> None:
             conn.exec_driver_sql("INSERT INTO debtor VALUES (?, ?, ?, ?)", row)
 
 
-def _rows(n: int, *, start_hour: int = 1) -> List[tuple]:
-    """``n`` distinct rows, strictly increasing ``last_modified`` - a
-    deterministic page/watermark order."""
+def _rows(n: int, *, start_minute: int = 1) -> List[tuple]:
+    """``n`` distinct rows, STRICTLY increasing ``last_modified`` - a
+    deterministic page/watermark order.
+
+    Review-round fix: the earlier version formatted the hour as
+    ``(start_hour + i) % 24``, which WRAPS back to 0 past 24 rows - every
+    test seeding more than a day's worth of rows (the 100/200-row change-
+    only-staging and delete-guard tests in this file) got a mark sequence
+    that silently stopped increasing and repeated, which would have made
+    any assertion keyed on "the max mark seen" or "strictly after" unsound
+    for exactly the tests that most need a trustworthy ordering. A real
+    ``timedelta`` (one minute per row, from a fixed base) never wraps for
+    any ``n`` this file plausibly seeds.
+    """
+    base = datetime(2026, 8, 1, 0, 0, 0, tzinfo=timezone.utc)
     return [
         (
             f"300-B{i:04d}",
             f"Company {i}",
             f"c{i}@x.com",
-            f"2026-08-01 {(start_hour + i) % 24:02d}:00:00",
+            (base + timedelta(minutes=start_minute + i)).strftime("%Y-%m-%d %H:%M:%S"),
         )
         for i in range(n)
     ]
@@ -414,7 +426,7 @@ def test_the_budget_cuts_a_run_and_the_next_run_resumes_at_the_cursor(
 
     watermark = _watermark_row(db, company_id)
     cursor = watermark.cursor_json or {}
-    assert cursor.get(CURSOR_MARK) == "2026-08-01 02:00:00", (
+    assert cursor.get(CURSOR_MARK) == "2026-08-01 00:02:00", (
         "the cursor must point at the LAST mark taken on the truncated page"
     )
 
@@ -445,6 +457,13 @@ def test_a_short_last_page_completes_the_pass_and_the_next_run_is_incremental(
     run1 = _run_row(db, company_id, job1.id)
     assert run1.truncated is True  # page 1 of 2, budget=0 cuts it
 
+    # job1's truncation force-armed next_incremental_at to "now" (the
+    # continuation mechanism) - capture that BEFORE job2 so the assertion
+    # below proves job2 (which completes the pass) does NOT re-stamp it,
+    # rather than the earlier, vacuous "is None or > now - 1s" check (true
+    # for almost any timestamp, including the stale one job1 already left).
+    before_incremental_at = _config_row(db, company_id).next_incremental_at
+
     job2 = _run(db, company_id, RUN_MODE_MANUAL)
     run2 = _run_row(db, company_id, job2.id)
     assert run2.rows_scanned == 1
@@ -458,9 +477,11 @@ def test_a_short_last_page_completes_the_pass_and_the_next_run_is_incremental(
     assert (cursor.get("pass") or {}).get("complete") is True
 
     config = _config_row(db, company_id)
-    assert config.next_incremental_at is None or config.next_incremental_at > datetime.now(
-        timezone.utc
-    ) - timedelta(seconds=1), "a completed pass must not force an immediate re-tick"
+    assert config.next_incremental_at == before_incremental_at, (
+        "a completed (non-truncated) pass must NOT force next_incremental_at "
+        "to now the way a truncated run does - job2 must leave the schedule "
+        "field exactly as job1's truncation left it, not re-stamp it"
+    )
 
     # A further tick is now an ORDINARY incremental - nothing changed, 0 rows.
     job3 = _run(db, company_id, RUN_MODE_INCREMENTAL)
@@ -641,7 +662,9 @@ def test_the_watermark_advances_past_mapping_failures(session_factory, monkeypat
         "the watermark/cursor must advance to the MAX mark seen on the page "
         "even though 2 rows failed to map"
     )
-    assert watermark.last_modified_at == datetime(2026, 8, 1, int(max_mark[11:13]), tzinfo=timezone.utc)
+    assert watermark.last_modified_at == datetime.strptime(
+        max_mark, "%Y-%m-%d %H:%M:%S"
+    ).replace(tzinfo=timezone.utc)
     assert watermark.last_error == "2 record(s) failed to map; see staged records", (
         watermark.last_error
     )
@@ -760,6 +783,47 @@ def _reconcile_paging_rig(session_factory, monkeypatch, consumer, *, known_rows:
     return company_id, deleted_ref
 
 
+def _sweep_tick(db, company_id: str, *, reconcile: bool) -> AcSyncRun:
+    """Drive ONE tick through the REAL scheduler entry point
+    (``scheduler._sweep_one``) rather than the direct ``JobService.
+    create_and_enqueue`` helper ``_run`` uses - review-round ask: AC-03-16/17
+    must be proven through the scheduler at least once, since that is the
+    ACTUAL caller in production (a manual "Run now" is the only caller of
+    the direct path)."""
+    from modules.autocount.scheduler import _sweep_one
+
+    # Identify the NEW run by id-set difference, never by "newest first"
+    # ordering - two runs a fraction of a second apart share a `started_at`
+    # SECOND on SQLite, and `AcSyncRun.id` is a random UUID, so an
+    # `ORDER BY started_at DESC, id DESC` tiebreak is not actually
+    # chronological and flakes exactly the way
+    # `test_autocount_etl_task_routes.py`'s own runs-list test already
+    # documents.
+    before_ids = {
+        row.id
+        for row in db.query(AcSyncRun.id).filter(
+            AcSyncRun.tenant_id == DEFAULT_TENANT_ID, AcSyncRun.company_id == company_id
+        )
+    }
+    now = datetime.now(timezone.utc)
+    config = _config_row(db, company_id)
+    if reconcile:
+        config.next_reconcile_at = now
+    else:
+        config.next_incremental_at = now
+    db.commit()
+    outcome = _sweep_one(db, config, now=now)
+    assert outcome == "fired", f"the tick did not fire (outcome={outcome!r})"
+    after = (
+        db.query(AcSyncRun)
+        .filter(AcSyncRun.tenant_id == DEFAULT_TENANT_ID, AcSyncRun.company_id == company_id)
+        .all()
+    )
+    new_runs = [r for r in after if r.id not in before_ids]
+    assert len(new_runs) == 1, f"expected exactly one new run this tick, got {len(new_runs)}"
+    return new_runs[0]
+
+
 def test_deletes_are_staged_only_when_the_reconcile_pass_completes(
     session_factory, monkeypatch, consumer
 ):
@@ -786,8 +850,8 @@ def test_deletes_are_staged_only_when_the_reconcile_pass_completes(
     run2 = _run_row(db, company_id, job2.id)
     assert delete_intents() == [], "still incomplete - 4 live rows read across 2 full pages"
 
-    job3 = _run(db, company_id, RUN_MODE_RECONCILE)  # page 3/3 - 0 rows, completes
-    run3 = _run_row(db, company_id, job3.id)
+    # page 3/3 - 0 rows, completes - driven through the REAL scheduler tick.
+    run3 = _sweep_tick(db, company_id, reconcile=True)
     assert run3.truncated is False
 
     intents = delete_intents()
@@ -807,7 +871,8 @@ def test_the_pass_start_is_read_from_the_cursor_on_continuation(
     )
     assert started_1, "a truncated reconcile must record its pass start"
 
-    job2 = _run(db, company_id, RUN_MODE_RECONCILE)
+    # The continuation tick - driven through the REAL scheduler entry point.
+    _sweep_tick(db, company_id, reconcile=True)
     started_2 = ((_watermark_row(db, company_id).cursor_json or {}).get("pass") or {}).get(
         "startedAt"
     )

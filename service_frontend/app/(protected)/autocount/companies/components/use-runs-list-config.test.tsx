@@ -1,4 +1,4 @@
-import { renderHook } from '@testing-library/react';
+import { render, renderHook, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AutocountSyncRun } from '@/types/autocount';
 
@@ -106,5 +106,20 @@ describe('runs list config - task variant (plan 22 S2, AC-22-17)', () => {
     // Back returns to THIS task's Runs tab, not the company.
     expect(decodeURIComponent(c.rowHref(run()))).toContain('/entities/customer?tab=runs');
     expect(c.rowHref(run({ jobId: null, mode: 'skipped', outcome: 'SKIPPED' }))).toBe('#');
+  });
+
+  // Review-round R-S8 (guards AC-03-21): a paged run cut by the budget must
+  // never read like a stalled/failed run needing operator action - the
+  // "Partial, continues" badge is the whole point of surfacing `truncated`
+  // on the wire at all.
+  it('renders "Partial, continues" for a truncated run (AC-03-21)', () => {
+    const c = cfg();
+    const outcomeColumn = c.columns.find((col) => col.id === 'outcome');
+    expect(outcomeColumn?.cell).toBeTruthy();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cellFn = outcomeColumn!.cell as any;
+    const node = cellFn({ row: { original: run({ truncated: true, outcome: 'SUCCESS' }) } });
+    render(<>{node}</>);
+    expect(screen.getByText('Partial, continues')).toBeInTheDocument();
   });
 });
