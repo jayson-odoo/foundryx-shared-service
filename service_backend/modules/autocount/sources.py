@@ -103,6 +103,14 @@ class SourceRecord:
 
     raw: Dict[str, Any]
     last_modified: Optional[datetime] = None
+    # A pre-mapping fault the SOURCE itself already named (S2, review round
+    # 4 - the LineCount fingerprint mismatch guard) - ``None`` for every
+    # ordinary record. When set, ``_stage_documents`` stages this record
+    # FAILED with this exact message WITHOUT ever calling
+    # ``MappingEngine.map_document`` on it (D13: no canonical payload for a
+    # failed transaction), the same fail-safe contract a mapping-time
+    # failure gets, just detected one layer earlier.
+    error: Optional[str] = None
 
 
 @dataclass

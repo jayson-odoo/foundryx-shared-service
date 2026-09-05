@@ -220,7 +220,15 @@ def _advance_mark_and_key(
         if candidate_last_key is None:
             return existing_mark, existing_last_key
         try:
-            if decode_mark(candidate_last_key) > decode_mark(existing_last_key):
+            #     !!  COMPARED AS-IS, NEVER THROUGH ``decode_mark`` (S1,
+            #         review round 4).  !!
+            # ``decode_mark`` exists to turn an ISO-looking STRING back into
+            # a real ``datetime`` for a WATERMARK - wrong for a KEY, which
+            # can hold date-shaped TEXT that must never be reparsed. A plain
+            # Python ``>`` already gives the right lexicographic order for
+            # BOTH a scalar key and a multi-key ``list`` (S2 - Python
+            # compares two same-length lists element-by-element).
+            if candidate_last_key > existing_last_key:
                 return existing_mark, candidate_last_key
         except TypeError:
             pass
@@ -874,6 +882,38 @@ def _stage_documents(
     for position, source_record in enumerate(records, start=1):
         if check_abort and _aborted(db, job.id):
             break
+
+        if source_record.error is not None:
+            #     !!  A PRE-MAPPING FAULT THE SOURCE ITSELF ALREADY NAMED
+            #         (S2, review round 4 - the LineCount fingerprint
+            #         mismatch guard) - NEVER REACHES ``map_document``.  !!
+            # Same D13 contract as a mapping-time failure: no canonical
+            # payload stored, the ref's hash dropped (via ``failed_refs``,
+            # exactly like a mapping failure) so the next full pass retries
+            # it fresh.
+            ref = ref_fn(source_record.raw) if ref_fn is not None else None
+            staged_repo.add(
+                AcStagedRecord(
+                    tenant_id=tenant_id,
+                    company_id=company_id,
+                    entity_type=entity_type,
+                    job_id=job.id,
+                    source_ref=ref or f"unmapped:{job.id}:{position}",
+                    doc_no=None,
+                    source_last_modified=source_record.last_modified,
+                    raw_json=source_record.raw,
+                    canonical_json=None,
+                    errors_json=None,
+                    status=STAGED_FAILED,
+                    error=source_record.error[:4000],
+                )
+            )
+            failed += 1
+            if ref is not None:
+                failed_refs.append(ref)
+            service.advance(job, failed=1)
+            db.commit()
+            continue
 
         mapped: MappedDocument = engine.map_document(source_record.raw)
         raw_json = source_record.raw  # retained verbatim (AC-13-07)

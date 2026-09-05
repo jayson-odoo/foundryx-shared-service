@@ -154,15 +154,75 @@
   `test_a_later_pages_empty_read_completes_normally_not_a_guard_trip` similarly assumed a
   2nd read of exactly `page_size` rows stays open, so its 3rd call becomes a FRESH pass (not a
   continuation) that legitimately trips the zero-rows guard - correct per R-NIT's own control
-  case, just reached one call earlier than the test expected. One further, GENUINE gap the
-  peek-ahead surfaces (not merely a stale assumption): `test_an_abort_between_pages_delivers_
-  page_one_exactly_once_via_the_scheduler` now needs only 2 statements (not 3) to cover its
-  4-row fixture, so the SAME abort-injection point (the 2nd statement) lands on the FINAL,
-  pass-completing page instead of a middle one - the aborted job's cursor already shows
-  `pass.complete: true`, so nothing ever schedules a further tick to run `auto_push`, and the
-  already-staged rows are never pushed. Tracked as BL-SS-061 (§6) - a genuine, narrow gap
-  (an abort landing on the pass's OWN final page has no future run to auto-push it), out of
-  round 3's explicit scope.
+  case, just reached one call earlier than the test expected. An abort landing on the SAME
+  statement count now lands on the pass's own FINAL (completing) page instead of a middle one
+  in some fixtures - REFUTED as a gap (round 3b/4): the very next ordinary incremental tick's
+  unconditional `auto_push` (it runs on every run of an ACTIVE task, new rows or not) drains
+  and pushes the stranded final-page rows exactly once, the same mechanism BL-SS-060 already
+  relies on for a draft/paused task once it goes active - proven by
+  `test_an_abort_on_the_final_page_still_gets_pushed_by_the_next_ordinary_tick`.
+
+**Review round 4 amendments (URGENT live-load fix + LineCount guard + S1/S2/S3/NIT):**
+- **URGENT - a paged document run's `raw_json` never carried `_lines`.** A live load staged
+  6,000 sales-order headers whose `raw_json` had no `_lines` key and whose canonical `lines`
+  were `[]`, even though every header had lines at source. Root cause: `fetch_page` built a
+  changed header's `SourceRecord.raw` via `json_safe(header)` - a dict-comprehension SNAPSHOT,
+  not a live reference - INSIDE the hash-diff loop, BEFORE the separate `if self.is_document and
+  changed_headers: ... header[SQL_DOC_LINES_KEY] = self._read_lines(...)` loop mutated the SAME
+  `header` dict. The snapshot taken into `records` never saw the lines attached after it. Fixed
+  by deferring a changed header's `SourceRecord` construction to a THIRD loop, run after the
+  lines-attach loop, so its `json_safe` snapshot carries `_lines`.
+- **LineCount fingerprint mismatch guard (new).** A header row carrying a `LineCount` column
+  (`presets.LINE_COUNT_FINGERPRINT_COLUMN` - a plain column-name CONVENTION documented next to
+  the preset queries in `presets.py`, never an engine concept: both SO/PO presets already select
+  this aggregate for change detection) with a value greater than zero, whose own `lineQuery`
+  fetch came back with ZERO rows, is staged FAILED (`"LineCount {n} but 0 lines fetched for
+  DocKey {key}"`, D13's no-canonical-payload rule, counted in `failed_count`, never pushed) -
+  never silently accepted as a valid zero-line document. `LineCount` absent, or reporting zero,
+  keeps today's behaviour untouched - a real zero-line document is still valid (AC-13's rule).
+  Implemented as a NEW optional `SourceRecord.error` field: when set, `_stage_documents` stages
+  it FAILED WITHOUT ever calling `MappingEngine.map_document` - a pre-mapping fault the source
+  itself already named, one layer earlier than a mapping-time failure, same fail-safe contract.
+- **S1 (key values ride the seek bind AS-IS, never through `_decode_mark`).** `_decode_mark`
+  exists to turn an ISO-looking STRING back into a real `datetime` for a WATERMARK bind - correct
+  there because a watermark column genuinely is a timestamp. A KEY column is a business
+  identifier that can happen to hold date-shaped TEXT (`'2026-08-01'`) which must stay exactly
+  that text; reusing the mark decoder on `last_key` silently mangled it into a `datetime` a TEXT
+  column could never compare against, losing the second half of a tie group. `fetch_page` now
+  binds every key value verbatim (no decode step at all) - the simplest of the two options the
+  review offered, since a paged task's key column is virtually always a business code/string,
+  never a type `_encode_mark` would have needed to reverse to correctly compare.
+- **S2 (lexicographic multi-key seek - supersedes R2-B1's `key_columns[0]`-only design).**
+  `SqlDbSource._quoted_keys()` (renamed from `_quoted_key`) now returns EVERY key column, checked
+  and quoted the same way as the watermark. `build_paged_wrap`'s `quoted_key`/`last_key` accept
+  either a single column (unchanged, byte-identical text) or a list: `ORDER BY t.<wm>, t.<k0>,
+  t.<k1>, ...` with a RECURSIVE lexicographic predicate `t.<k0> > :last_key0 OR (t.<k0> =
+  :last_key0 AND (t.<k1> > :last_key1 OR ...))`, degenerating to today's exact single-key text
+  (`t.<k> > :last_key`, unindexed bind name) when there is only one key column - a single-key
+  task's generated SQL is unchanged byte-for-byte. `PageCursor`/`PageResult`'s `last_key` (and
+  `cursor_json`'s `lastKey`, both top-level and `pass`-scoped) stays a SCALAR for a single-key
+  task, becomes a LIST (one per `key_columns`, same order) for a multi-key one - pure JSON
+  passthrough needed no changes elsewhere. `sync._advance_mark_and_key`'s exact-tie compare now
+  uses a plain Python `>` on the raw `last_key` values instead of `decode_mark(...)` (S1's
+  concern applies here too, and Python already compares two same-length lists element-by-element
+  for the multi-key case, giving the right lexicographic order for free).
+- **S3 (a NULL watermark or key on a page's tail row fails loudly, never loops).** The tail row
+  is the one the NEXT page's seek resumes from; the old code only advanced `last_mark`/`last_key`
+  "if not None", silently leaving them at the PREVIOUS page's value otherwise - the next page
+  then re-runs the EXACT SAME statement forever (a livelock, not a crash: nothing ever raised,
+  the run just never progressed). `fetch_page` now raises a named `SqlSourceError` naming the
+  offending column (`"The watermark column '<col>' is NULL on the last row of this page..."` /
+  the same for a key column) the moment it finds one NULL on the kept tail row - one statement,
+  a FAILED run, the public cursor untouched (same contract as every other pre-hash-write guard
+  in this file).
+- **NIT (`preview_records` built only on a preview).** A real run (`persist_hashes=True`) has no
+  reader for `preview_records` (R2-S1's field exists for a PREVIEW's own row count) and must not
+  pay to build a second, throwaway copy of every row on every page - now gated behind `if not
+  self.persist_hashes`.
+- **BL-SS-061 REFUTED, removed from the backlog and this plan's round-3 amendment** (folded into
+  the round-3b abort-on-final-page bullet above) - the next ordinary incremental tick's
+  unconditional `auto_push` drains an aborted job's stranded final page across jobs; there is no
+  gap to track.
 
 ### 2.2 Run loop, change-only staging, watermark (`sync.py`)
 
@@ -381,5 +441,3 @@ parallel at the end. Live load = AC-03-22/23 on the real company and `ac_sim`.
 - BL-SS-059 Preview does not count mapping-failed rows (tester BL-B/BL-C).
 - BL-SS-060 A DRAFT/paused paged task's page-in-flight abort can strand staged rows forever
   (security review round 2, F2 - investigated, not fixed; see the 2.1 amendment above).
-- BL-SS-061 An abort landing on a pass's own FINAL (completing) page never gets auto-pushed
-  (surfaced by review round 3's peek-ahead fix; see the round 3 amendment above).

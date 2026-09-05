@@ -60,6 +60,20 @@ class DocumentPreset:
     line: Tuple[PresetField, ...]
 
 
+# ``LineCount`` fingerprint mismatch guard (S2, review round 4) - a plain
+# COLUMN-NAME CONVENTION, not an engine concept: both presets below select a
+# ``LineCount`` aggregate over the OUTER APPLY (see the "LINE FINGERPRINT"
+# note ahead of ``_SO_HEADER_QUERY``) purely for change detection. A paged
+# document run (``SqlDbSource.fetch_page``) additionally treats a header row
+# carrying this EXACT column name, with a value greater than zero, whose own
+# ``lineQuery`` fetch came back with ZERO rows, as a genuine mismatch (a
+# broken line query/join, not a real zero-line document) - staged FAILED,
+# never silently accepted and never pushed. A task with no such column, or
+# one reporting zero, is untouched by the guard - the engine itself stays
+# fingerprint-agnostic.
+LINE_COUNT_FINGERPRINT_COLUMN = "LineCount"
+
+
 # ── Sales Order ───────────────────────────────────────────────────────────────
 #
 #     !!  TABLE NAMES + AutoKey JOINS MATCH THE SQL PACK (S2, review round).  !!

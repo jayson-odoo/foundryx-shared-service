@@ -39,7 +39,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, time as dt_time, timezone
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import sqlalchemy as sa
 from cryptography.fernet import InvalidToken
@@ -61,6 +61,7 @@ from ..models import (
     SOURCE_IMPL_SQL_DB,
     AcRowHash,  # noqa: F401 - documents what ``persist_hashes`` writes
 )
+from ..presets import LINE_COUNT_FINGERPRINT_COLUMN
 from ..repositories import ConnectionRepository, RowHashRepository
 from ..sources import (
     FetchResult,
@@ -295,6 +296,24 @@ def build_document_header_wrap(
     )
 
 
+def _lexicographic_key_predicate(quoted_keys: List[str]) -> str:
+    """``t.k0 > :last_key0 OR (t.k0 = :last_key0 AND (t.k1 > :last_key1 OR
+    ...))`` - one key column degenerates to ``t.k > :last_key`` (the single
+    bind name ``last_key`` kept, unindexed, so a single-key task's generated
+    SQL text is byte-identical to before round 4's multi-key generalisation,
+    S2)."""
+    n = len(quoted_keys)
+
+    def build(idx: int) -> str:
+        column = quoted_keys[idx]
+        bind = "last_key" if n == 1 else f"last_key{idx}"
+        if idx == n - 1:
+            return f"t.{column} > :{bind}"
+        return f"(t.{column} > :{bind} OR (t.{column} = :{bind} AND {build(idx + 1)}))"
+
+    return build(0)
+
+
 def build_paged_wrap(
     query: str,
     quoted_watermark: str,
@@ -303,7 +322,7 @@ def build_paged_wrap(
     *,
     dialect: str,
     page_size: int,
-    quoted_key: Optional[str] = None,
+    quoted_key: Optional[Union[str, Sequence[str]]] = None,
     last_key: Any = None,
 ) -> str:
     """The PAGED statement shape (plan sprint-5/03 S1, AC-03-07; composite
@@ -351,12 +370,16 @@ def build_paged_wrap(
         raise SqlSourceError("page_size must be a positive bind value")
     inner = _strip_trailing_order_by(query).replace(":", r"\:")
 
+    quoted_keys: List[str] = (
+        [quoted_key] if isinstance(quoted_key, str) else list(quoted_key or [])
+    )
+
     seek_predicate: Optional[str] = None
     if mark is not None:
-        if quoted_key is not None:
+        if quoted_keys:
             seek_predicate = (
                 f"(t.{quoted_watermark} > :mark) OR "
-                f"(t.{quoted_watermark} = :mark AND t.{quoted_key} > :last_key)"
+                f"(t.{quoted_watermark} = :mark AND {_lexicographic_key_predicate(quoted_keys)})"
             )
         else:
             seek_predicate = f"t.{quoted_watermark} >= :mark"
@@ -365,12 +388,12 @@ def build_paged_wrap(
     if quoted_date_column is not None:
         predicates.append(f"t.{quoted_date_column} >= :from_date")
     if seek_predicate is not None:
-        needs_grouping = quoted_date_column is not None and quoted_key is not None
+        needs_grouping = quoted_date_column is not None and bool(quoted_keys)
         predicates.append(f"({seek_predicate})" if needs_grouping else seek_predicate)
     where = f" WHERE {' AND '.join(predicates)}" if predicates else ""
 
-    order_by = (
-        f"t.{quoted_watermark}, t.{quoted_key}" if quoted_key is not None else f"t.{quoted_watermark}"
+    order_by = ", ".join(
+        [f"t.{quoted_watermark}"] + [f"t.{column}" for column in quoted_keys]
     )
     if dialect == "mssql":
         return f"SELECT TOP (:page_size) * FROM ({inner}) AS t{where} ORDER BY {order_by}"
@@ -782,24 +805,29 @@ class SqlDbSource:
             )
         return self._engine.dialect.identifier_preparer.quote(column)
 
-    def _quoted_key(self) -> str:
-        """The task's FIRST key column, checked-then-quoted the same way the
-        watermark column is (F5, review round 3) - a paged task always seeks
-        on ``(watermark, key)`` together, even a multi-key task (the
-        reviewer's own call: ``keyColumns[0]`` disambiguates ties without
-        needing every key column in the ORDER BY)."""
-        column = self.key_columns[0] if self.key_columns else ""
+    def _quoted_keys(self) -> List[str]:
+        """EVERY key column, checked-then-quoted the same way the watermark
+        column is - a paged task seeks on ``(watermark, key0, key1, ...)``
+        lexicographically (S2, review round 4 - supersedes round 3's F5,
+        which seeked on ``keyColumns[0]`` alone: two rows sharing
+        ``(watermark, key0)`` but differing in a LATER key column silently
+        collapsed onto the same seek frontier, so one of them was never
+        seen again once the other had already consumed that exact
+        position)."""
         if not self.result_columns:
             raise SqlTaskNotConfigured(
                 "This task has no cached result columns to check the key "
-                "column against. Re-test the query and re-save the task."
+                "columns against. Re-test the query and re-save the task."
             )
-        if column not in self.result_columns:
-            raise SqlTaskNotConfigured(
-                f"The key column '{column}' is not one this task's query "
-                f"returns. Re-test the query and re-save the task."
-            )
-        return self._engine.dialect.identifier_preparer.quote(column)
+        quoted: List[str] = []
+        for column in self.key_columns:
+            if column not in self.result_columns:
+                raise SqlTaskNotConfigured(
+                    f"The key column '{column}' is not one this task's query "
+                    f"returns. Re-test the query and re-save the task."
+                )
+            quoted.append(self._engine.dialect.identifier_preparer.quote(column))
+        return quoted
 
     def _statement(self, mark: Any) -> Tuple[Any, Optional[Dict[str, Any]]]:
         """``(executable, params)`` for this run.
@@ -1048,9 +1076,12 @@ class SqlDbSource:
         re-reading a page already staged. Requires a watermark column - the
         caller only reaches this method for a task that has one.
 
-        ONE statement, ALWAYS - ``ORDER BY t.<wm>, t.<key>`` (``key`` =
-        ``key_columns[0]``, checked/quoted the same way as the watermark)
-        with a strict SEEK predicate makes the read order fully
+        ONE statement, ALWAYS - ``ORDER BY t.<wm>, t.<k0>, t.<k1>, ...`` over
+        EVERY key column (S2, review round 4 - `key_columns[0]` alone let
+        two rows sharing `(watermark, key0)` but differing in a later
+        column collapse onto the same seek frontier), checked/quoted the
+        same way as the watermark, with a strict lexicographic SEEK
+        predicate that makes the read order fully
         deterministic, so a page never needs to re-read a boundary and drop
         already-taken rows in Python (round 2's design, which relied on the
         database returning ties in a stable order across separate
@@ -1063,14 +1094,14 @@ class SqlDbSource:
         page_size = int(getattr(_settings, "autocount_page_size", 2000) or 2000)
 
         wm_column = self._quoted_watermark()
-        key_column = self._quoted_key()
+        key_columns = self._quoted_keys()
         date_column = self._quoted_doc_date_column() if self.is_document else None
         dialect = self._engine.dialect.name
 
         sql = build_paged_wrap(
             self.query, wm_column, date_column, cursor.mark,
             dialect=dialect, page_size=page_size,
-            quoted_key=key_column, last_key=cursor.last_key,
+            quoted_key=key_columns, last_key=cursor.last_key,
         )
         #     !!  BIND ``page_size + 1`` - PEEK ONE ROW AHEAD, ONE STATEMENT
         #         PER PAGE.  !!
@@ -1103,10 +1134,30 @@ class SqlDbSource:
             # then reads ``key > NULL``, which SQL evaluates to unknown/
             # false on every dialect - the predicate degrades cleanly to a
             # strict ``t.wm > :mark``, never a crash and never a duplicate).
-            decoded_last_key = _decode_mark(cursor.last_key) if cursor.last_key is not None else None
-            if isinstance(decoded_last_key, datetime) and decoded_last_key.tzinfo is not None:
-                decoded_last_key = decoded_last_key.astimezone(timezone.utc).replace(tzinfo=None)
-            params["last_key"] = decoded_last_key
+            #
+            #     !!  A KEY VALUE RIDES AS-IS, NEVER THROUGH ``_decode_mark``
+            #         (S1, review round 4).  !!
+            # ``_decode_mark`` exists to turn an ISO-looking STRING back into
+            # a real ``datetime`` for a WATERMARK bind - correct there
+            # because a watermark column genuinely IS a timestamp. A key
+            # column is a business identifier: it can happen to hold
+            # date-shaped TEXT ('2026-08-01') that must stay exactly that
+            # text, never get silently reparsed into a ``datetime`` (which
+            # a live task did, and lost the second half of a tie group to a
+            # type mismatch the driver could not compare against a TEXT
+            # column). ``last_key`` is one value for a single-key task, a
+            # list (one per ``key_columns``, same order) for a multi-key one
+            # (S2) - both bind their elements verbatim.
+            if len(key_columns) > 1:
+                last_key_values = (
+                    list(cursor.last_key) if cursor.last_key is not None else [None] * len(key_columns)
+                )
+                for index in range(len(key_columns)):
+                    params[f"last_key{index}"] = (
+                        last_key_values[index] if index < len(last_key_values) else None
+                    )
+            else:
+                params["last_key"] = cursor.last_key
         executable = sa.text(sql)
 
         started = time.monotonic()
@@ -1148,16 +1199,46 @@ class SqlDbSource:
                     raw_rows = raw_rows[:page_size]
 
                 # ── the frontier for the NEXT cursor ────────────────────────
+                #     !!  A NULL WATERMARK OR KEY ON THE TAIL ROW FAILS LOUD
+                #         (S3, review round 4) - NEVER SILENTLY RE-READS. !!
+                # The tail row is the one the NEXT page's seek resumes from;
+                # the old code only advanced ``last_mark``/``last_key`` "if
+                # not None", silently leaving them AT THE PREVIOUS PAGE'S
+                # value otherwise - the next page then re-runs the EXACT
+                # SAME statement forever (a livelock, not a crash: nothing
+                # ever raises, the run just never makes progress). A NULL
+                # watermark/key on the row a page keeps is a source-data
+                # fault this task cannot resume past; it must be a named,
+                # immediate failure - not a second statement, not a retry.
                 last_mark = cursor.mark
                 last_key = cursor.last_key
                 if raw_rows:
                     tail = raw_rows[-1]
                     tail_mark_value = tail.get(self.watermark_column)
-                    if tail_mark_value is not None:
-                        last_mark = _encode_mark(tail_mark_value)
-                    tail_key_value = tail.get(self.key_columns[0])
-                    if tail_key_value is not None:
-                        last_key = _encode_mark(tail_key_value)
+                    if tail_mark_value is None:
+                        raise SqlSourceError(
+                            f"The watermark column '{self.watermark_column}' is "
+                            f"NULL on the last row of this page - a paged task "
+                            f"cannot resume from a NULL watermark. Nothing was "
+                            f"staged or pushed."
+                        )
+                    last_mark = _encode_mark(tail_mark_value)
+                    tail_key_values: List[Any] = []
+                    for key_column in self.key_columns:
+                        tail_key_value = tail.get(key_column)
+                        if tail_key_value is None:
+                            raise SqlSourceError(
+                                f"The key column '{key_column}' is NULL on the "
+                                f"last row of this page - a paged task cannot "
+                                f"resume from a NULL key. Nothing was staged or "
+                                f"pushed."
+                            )
+                        tail_key_values.append(_encode_mark(tail_key_value))
+                    last_key = (
+                        tail_key_values[0]
+                        if len(tail_key_values) == 1
+                        else tail_key_values
+                    )
 
                 rows_scanned = len(raw_rows)
 
@@ -1184,6 +1265,7 @@ class SqlDbSource:
                 hashes: Dict[str, str] = {}
                 unchanged_refs: set = set()
                 changed_headers: List[Dict[str, Any]] = []
+                changed_stamps: Dict[int, Optional[datetime]] = {}
                 records: List[SourceRecord] = []
                 added = updated = 0
                 key_column_name = self.key_columns[0] if self.is_document else None
@@ -1212,7 +1294,7 @@ class SqlDbSource:
                     else:
                         added += 1
                     changed_headers.append(header)
-                    records.append(SourceRecord(raw=json_safe(header), last_modified=stamp))
+                    changed_stamps[id(header)] = stamp
 
                 #     !!  LINES ONLY FOR CHANGED/NEW HEADERS (plan §2.1).  !!
                 if self.is_document and changed_headers:
@@ -1220,8 +1302,34 @@ class SqlDbSource:
                         doc_key_value = header.get(key_column_name)
                         header[SQL_DOC_LINES_KEY] = self._read_lines(conn, doc_key_value)
 
+                #     !!  A CHANGED HEADER'S ``SourceRecord`` IS BUILT ONLY
+                #         AFTER LINES ARE ATTACHED (URGENT fix, review round
+                #         4) - NEVER BEFORE.  !!
+                # ``json_safe(header)`` is a dict-comprehension SNAPSHOT, not
+                # a live reference - a live load found ``raw_json`` missing
+                # ``_lines`` entirely because the OLD code built this
+                # ``SourceRecord`` right inside the loop above, BEFORE the
+                # lines-attach loop mutated the SAME ``header`` dict; the
+                # snapshot already taken never saw ``_lines`` land. Building
+                # every changed header's record here, after lines are
+                # attached, is the fix.
+                for header in changed_headers:
+                    stamp = changed_stamps.get(id(header))
+                    mismatch = (
+                        self._line_count_mismatch(header) if self.is_document else None
+                    )
+                    records.append(
+                        SourceRecord(
+                            raw=json_safe(header), last_modified=stamp, error=mismatch,
+                        )
+                    )
+
                 #     !!  PREVIEW NEEDS EVERY CANDIDATE, NOT JUST CHANGED ONES
-                #         (R2-S1, review round 3).  !!
+                #         (R2-S1, review round 3) - ONLY BUILT ON A PREVIEW,
+                #         NEVER ON A REAL RUN (NIT, review round 4: a real
+                #         run has no reader for it and must not pay to build
+                #         a second, throwaway copy of every row on every
+                #         page).  !!
                 # Built AFTER the lines-for-changed-headers step above, so a
                 # CHANGED document row's snapshot here carries its lines too
                 # - an UNCHANGED document row's does not (its lines were
@@ -1229,17 +1337,21 @@ class SqlDbSource:
                 # headers" rule above); a preview of an all-unchanged page
                 # still reports the right ROW COUNT either way, which is
                 # what regressed to 0.
-                preview_records: List[SourceRecord] = [
-                    SourceRecord(
-                        raw=json_safe(header),
-                        last_modified=(
-                            _as_utc(header.get(self.watermark_column))
-                            if self.watermark_column
-                            else None
-                        ),
-                    )
-                    for header in candidates
-                ]
+                preview_records: List[SourceRecord] = (
+                    [
+                        SourceRecord(
+                            raw=json_safe(header),
+                            last_modified=(
+                                _as_utc(header.get(self.watermark_column))
+                                if self.watermark_column
+                                else None
+                            ),
+                        )
+                        for header in candidates
+                    ]
+                    if not self.persist_hashes
+                    else []
+                )
 
                 #     !!  A FILTERED-OUT HEADER'S STALE HASH IS DROPPED HERE
                 #         (AC-03-18) - the ONLY write ``fetch_page`` itself
@@ -1422,6 +1534,38 @@ class SqlDbSource:
                 f"staged or pushed. Check the line query's WHERE clause."
             )
         return rows
+
+    def _line_count_mismatch(self, header: Dict[str, Any]) -> Optional[str]:
+        """The ``LineCount`` fingerprint mismatch guard (S2, review round 4).
+
+        Called AFTER ``_read_lines`` has already populated
+        ``header[SQL_DOC_LINES_KEY]``. A header carrying a ``LineCount``
+        column (``presets.LINE_COUNT_FINGERPRINT_COLUMN`` - a plain
+        column-name CONVENTION documented next to the preset queries, never
+        an engine concept) with a value greater than zero, whose own
+        ``lineQuery`` fetch came back with ZERO rows, is a genuine mismatch
+        (a broken line query/join) - never a silently-accepted, valid
+        zero-line document. A task with no such column, or one reporting
+        zero (a real lineless document, AC-13's own rule), is untouched.
+        """
+        if LINE_COUNT_FINGERPRINT_COLUMN not in header:
+            return None
+        raw_value = header.get(LINE_COUNT_FINGERPRINT_COLUMN)
+        if raw_value is None:
+            return None
+        try:
+            expected = int(raw_value)
+        except (TypeError, ValueError):
+            return None
+        if expected <= 0:
+            return None
+        fetched = len(header.get(SQL_DOC_LINES_KEY) or [])
+        if fetched > 0:
+            return None
+        doc_key_value = (
+            header.get(self.key_columns[0]) if self.key_columns else None
+        )
+        return f"LineCount {expected} but {fetched} lines fetched for DocKey {doc_key_value}"
 
     def source_ref(self, raw: Dict[str, Any]) -> Optional[str]:
         """The identity ``sync.py`` keys ``ac_row_hash``/a failed-row hash
