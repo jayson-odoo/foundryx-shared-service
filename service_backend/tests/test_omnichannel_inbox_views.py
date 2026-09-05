@@ -245,6 +245,49 @@ def test_close_route_reopen_keeps_history(client, session_factory):
     assert events[1]["closeReasonId"] == reason_id
 
 
+def test_close_route_already_closed_409(client, session_factory):
+    """Review round 1, finding 13: closing an ALREADY-CLOSED thread 409s
+    (`already_closed`) rather than silently accepting - and dropping - a new
+    reason/note. Reopen then close again is the way to change the reason."""
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    cid = _seed_thread(session_factory, status_key="OPEN", messages=[{"body": "hi"}])
+    reasons = client.get(f"{_base(ws)}/close-reasons", headers=h).json()
+    reason_id, other_reason_id = reasons[0]["id"], reasons[1]["id"]
+
+    first = client.post(
+        f"/omnichannel/contacts/{cid}/close",
+        headers=h,
+        json={"closeReasonId": reason_id, "note": "first close"},
+    )
+    assert first.status_code == 200
+
+    again = client.post(
+        f"/omnichannel/contacts/{cid}/close",
+        headers=h,
+        json={"closeReasonId": other_reason_id, "note": "should not apply"},
+    )
+    assert again.status_code == 409
+    assert again.json()["detail"]["code"] == "already_closed"
+
+    # the original reason/note stand - nothing overwritten.
+    events = client.get(f"/omnichannel/contacts/{cid}/events", headers=h).json()["data"]
+    assert events[0]["closeReasonId"] == reason_id
+    assert events[0]["note"] == "first close"
+
+    # reopen then close again DOES apply a new reason.
+    client.patch(f"/omnichannel/contacts/{cid}", headers=h, json={"status": "OPEN"})
+    reclose = client.post(
+        f"/omnichannel/contacts/{cid}/close",
+        headers=h,
+        json={"closeReasonId": other_reason_id, "note": "second close"},
+    )
+    assert reclose.status_code == 200
+    events2 = client.get(f"/omnichannel/contacts/{cid}/events", headers=h).json()["data"]
+    assert events2[0]["closeReasonId"] == other_reason_id
+    assert events2[0]["note"] == "second close"
+
+
 def test_close_route_permission_gate(client, session_factory):
     h_noperm = _no_perm_auth(client, session_factory, email="ive-close-noperm@example.com")
     cid = _seed_thread(session_factory, status_key="OPEN", messages=[{"body": "hi"}])
@@ -552,14 +595,21 @@ def test_view_id_expansion_and_override(client, session_factory):
         json={"name": "Unreplied View", "isShared": False, "filter": {"unreplied": True}},
     ).json()
 
-    res = client.get("/omnichannel/contacts", headers=h, params={"viewId": view["id"]})
+    # `workspaceId` sent explicitly (review round 1, finding 7: viewId no
+    # longer resolves a workspace on its own - the caller's resolved
+    # workspace must match).
+    res = client.get(
+        "/omnichannel/contacts", headers=h, params={"viewId": view["id"], "workspaceId": ws}
+    )
     ids = {t["id"] for t in res.json()["data"]}
     assert unreplied in ids
     assert replied not in ids
 
     # explicit unreplied=false OVERRIDES the view's stored true.
     res2 = client.get(
-        "/omnichannel/contacts", headers=h, params={"viewId": view["id"], "unreplied": "false"}
+        "/omnichannel/contacts",
+        headers=h,
+        params={"viewId": view["id"], "workspaceId": ws, "unreplied": "false"},
     )
     ids2 = {t["id"] for t in res2.json()["data"]}
     assert replied in ids2
@@ -573,6 +623,40 @@ def test_view_id_unknown_or_cross_tenant_404(client, session_factory):
     h2 = _other_tenant_auth(client, session_factory, slug="other-ive-view")
     res2 = client.get("/omnichannel/contacts", headers=h2, params={"viewId": "nope"})
     assert res2.status_code == 404
+
+
+def test_view_id_cross_workspace_404(client, session_factory):
+    """Review round 1, finding 7 (AC-IVE-17): a `viewId` from ANOTHER
+    workspace of the same tenant 404s - both when the caller sends an
+    explicitly conflicting `workspaceId`, AND when the caller sends none at
+    all (no cross-workspace portability)."""
+    h = _auth(client)
+    ws1 = _workspace_id(client, h)
+    ws2 = client.post(
+        "/omnichannel/workspaces", headers=h, json={"name": "Other WS", "status": "ACTIVE"}
+    ).json()["id"]
+    view = client.post(
+        f"{_base(ws1)}/inbox-views",
+        headers=h,
+        json={"name": "WS1 View", "isShared": False, "filter": {}},
+    ).json()
+
+    # explicit conflicting workspaceId.
+    res = client.get(
+        "/omnichannel/contacts", headers=h, params={"viewId": view["id"], "workspaceId": ws2}
+    )
+    assert res.status_code == 404
+
+    # no workspaceId at all - still 404 (view stays scoped to its own
+    # workspace, never silently adopted).
+    res2 = client.get("/omnichannel/contacts", headers=h, params={"viewId": view["id"]})
+    assert res2.status_code == 404
+
+    # matching workspaceId succeeds.
+    res3 = client.get(
+        "/omnichannel/contacts", headers=h, params={"viewId": view["id"], "workspaceId": ws1}
+    )
+    assert res3.status_code == 200
 
 
 def test_segment_id_not_available(client):
@@ -850,3 +934,61 @@ def test_tenant_isolation_on_new_routes(client, session_factory):
     assert client.post(
         f"/omnichannel/contacts/{cid}/close", headers=h2, json={"closeReasonId": reason_id}
     ).status_code == 404
+
+
+# ── review round 1, finding 2: migration timestamps carry server_default ───
+def test_migration_0009a_declares_created_updated_defaults(monkeypatch):
+    """Asserted by READING the revision (pytest never runs module Alembic -
+    it is Postgres-only, `run_module_migrations` no-ops under sqlite). House
+    convention (`0008`) is `server_default=sa.func.now()` on `created_at` AND
+    `updated_at` - without it a row inserted through raw DDL on a live
+    Postgres host (rather than the ORM's own `UTCDateTime(server_default=...)`
+    default) would violate NOT NULL."""
+    import importlib.util
+    import pathlib
+    import types
+
+    spec = importlib.util.spec_from_file_location(
+        "_omni_rev_0009a",
+        pathlib.Path(__file__).resolve().parents[1]
+        / "modules/omnichannel/alembic/versions/0009a_omni_inbox_views.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert len(module.revision) <= 32
+    assert module.down_revision == "0009_omni_conversation_events"
+
+    created_tables: dict = {}
+
+    def fake_create_table(name, *columns, **kwargs):
+        created_tables[name] = {c.name: c for c in columns}
+
+    class _FakeInspector:
+        def get_table_names(self, schema=None):
+            return []
+
+        def get_indexes(self, table, schema=None):
+            return []
+
+        def get_foreign_keys(self, table, schema=None):
+            return []
+
+    monkeypatch.setattr(module.sa, "inspect", lambda bind: _FakeInspector())
+    module.op = types.SimpleNamespace(
+        get_bind=lambda: None,
+        create_table=fake_create_table,
+        create_foreign_key=lambda *a, **k: None,
+        execute=lambda *a, **k: None,
+    )
+    module.upgrade()
+
+    assert set(created_tables) == {"close_reasons", "inbox_views"}
+    for table_name in ("close_reasons", "inbox_views"):
+        cols = created_tables[table_name]
+        for col_name in ("created_at", "updated_at"):
+            col = cols[col_name]
+            assert col.nullable is False
+            assert col.server_default is not None, (
+                f"{table_name}.{col_name} must carry server_default=sa.func.now()"
+            )

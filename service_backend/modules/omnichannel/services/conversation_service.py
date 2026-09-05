@@ -34,6 +34,14 @@ class InvalidPatch(Exception):
         self.message = message
 
 
+class ThreadAlreadyClosed(Exception):
+    """The thread targeted by `close_thread` is already CLOSED (review round
+    1, finding 13) - the supplied reason/note would otherwise be silently
+    dropped by a no-op `patch_thread` call. Reopen first to change a reason."""
+
+    pass
+
+
 VALID_THREAD_STATUS = {"OPEN", "SNOOZED", "CLOSED"}
 VALID_PRIORITY = {"LOW", "MEDIUM", "HIGH", "URGENT"}
 
@@ -54,7 +62,7 @@ class ConversationService:
         self.repo = ContactRepository(db)
 
     # ── Lookups ──────────────────────────────────────────────────────────────
-    def _status_keys(self, tenant_id: str) -> Dict[str, str]:
+    def status_keys(self, tenant_id: str) -> Dict[str, str]:
         rows = (
             self.db.query(Status)
             .filter(Status.tenant_id == tenant_id, Status.scope == "THREAD")
@@ -171,7 +179,7 @@ class ConversationService:
         ids = [c.id for c in contacts]
         previews = self.repo.previews_for(ids, tenant_id)
         unread = self.repo.unread_counts_for(contacts, tenant_id)
-        status_keys = self._status_keys(tenant_id)
+        status_keys = self.status_keys(tenant_id)
         names = self._user_names([c.assigned_user_id for c in contacts], tenant_id)
         agents = self._external_agents(
             [c.assigned_external_agent_id for c in contacts], tenant_id
@@ -488,7 +496,7 @@ class ConversationService:
                 # distinguishable; a PATCH that re-sends the current status
                 # never reaches here (`new_status_id == c.status_id` above).
                 prev_status_id = c.status_id
-                prev_key = self._status_keys(tenant_id).get(prev_status_id)
+                prev_key = self.status_keys(tenant_id).get(prev_status_id)
                 event_type: Optional[str] = None
                 if status == "CLOSED":
                     event_type = "closed"
@@ -585,10 +593,18 @@ class ConversationService:
         touching the thread (nothing is written on a bad reason), then
         delegates entirely to `patch_thread`'s existing `closed` write - this
         never duplicates that event insert, it just carries the reason + note
-        through to it. Reopening afterwards keeps the full history (D-A3-3)."""
+        through to it. Reopening afterwards keeps the full history (D-A3-3).
+
+        Review round 1, finding 13: an ALREADY-CLOSED thread raises
+        `ThreadAlreadyClosed` (409) rather than silently accepting - and
+        dropping - the supplied reason/note (`patch_thread`'s `closed` write
+        is a no-op when the status doesn't change). Reopen then close again
+        to change a reason."""
         c = self.repo.get_by_id(contact_id, tenant_id)
         if c is None:
             raise ThreadNotFound()
+        if self.status_keys(tenant_id).get(c.status_id) == "CLOSED":
+            raise ThreadAlreadyClosed()
 
         from .close_reason_service import CloseReasonService
 

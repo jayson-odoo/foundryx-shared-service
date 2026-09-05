@@ -51,8 +51,12 @@ def upgrade() -> None:
             sa.Column("name", sa.String(), nullable=False),
             sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
             sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
-            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column(
+                "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+            ),
+            sa.Column(
+                "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+            ),
             schema=SCHEMA,
         )
     existing_indexes = {ix["name"] for ix in inspector.get_indexes("close_reasons", schema=SCHEMA)} if "close_reasons" in tables else set()
@@ -81,8 +85,12 @@ def upgrade() -> None:
             sa.Column("filter_json", sa.JSON(), nullable=True),
             sa.Column("segment_id", sa.String(), nullable=True),
             sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
-            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column(
+                "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+            ),
+            sa.Column(
+                "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+            ),
             schema=SCHEMA,
         )
     existing_indexes = {ix["name"] for ix in inspector.get_indexes("inbox_views", schema=SCHEMA)} if "inbox_views" in tables else set()

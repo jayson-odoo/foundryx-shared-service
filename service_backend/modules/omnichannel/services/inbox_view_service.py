@@ -20,6 +20,8 @@ from typing import Dict, List, Optional
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from app.models.user import User
+
 from ..models import Channel, ContactTag, InboxView
 from ..schemas import InboxViewFilter
 
@@ -52,6 +54,18 @@ class InboxViewService:
             q = q.filter(InboxView.is_shared.is_(True))
         return q.order_by(InboxView.sort_order.asc(), func.lower(InboxView.name).asc()).all()
 
+    def owner_names(self, rows: List[InboxView], tenant_id: str) -> Dict[str, str]:
+        """Tenant-scoped display-name lookup for a batch of views' owners -
+        the ONE place that runs a `User` query for this resource (the router
+        stays HTTP/Pydantic only)."""
+        ids = {r.owner_user_id for r in rows if r.owner_user_id}
+        if not ids:
+            return {}
+        users = (
+            self.db.query(User).filter(User.tenant_id == tenant_id, User.id.in_(ids)).all()
+        )
+        return {u.id: (u.name or u.email) for u in users}
+
     def get(self, view_id: str, workspace_id: str, tenant_id: str) -> InboxView:
         row = (
             self.db.query(InboxView)
@@ -70,10 +84,12 @@ class InboxViewService:
         self, view_id: str, tenant_id: str, user_id: Optional[str]
     ) -> InboxView:
         """Tenant-scoped lookup for the thread-list `viewId` expansion
-        (AC-IVE-17) - workspace-portable (the view's own `workspace_id`
-        becomes the effective workspace), but only if the caller may SEE it
-        (own or shared) - a private view id can never be borrowed by guessing
-        it, even though it would only expand a filter, not expose data."""
+        (AC-IVE-17), gated on VISIBILITY only (own or shared) - a private
+        view id can never be borrowed by guessing it. The ROUTER separately
+        enforces that the view's `workspace_id` matches the caller's
+        resolved workspace (review round 1, finding 7 - no cross-workspace
+        portability: a viewId from another workspace 404s even if the
+        caller sent no explicit `workspaceId` at all)."""
         row = self.db.query(InboxView).filter(
             InboxView.id == view_id, InboxView.tenant_id == tenant_id
         ).first()

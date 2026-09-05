@@ -197,7 +197,7 @@ class InboundService:
         open_status_id = statuses.status_id_for(self.db, channel.tenant_id, "THREAD", "OPEN")
         if open_status_id != contact.status_id:
             prev_status_id = contact.status_id
-            prev_key = self.conversations._status_keys(channel.tenant_id).get(prev_status_id)
+            prev_key = self.conversations.status_keys(channel.tenant_id).get(prev_status_id)
             event_type = (
                 "reopened" if prev_key == "CLOSED"
                 else "unsnoozed" if prev_key == "SNOOZED"

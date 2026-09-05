@@ -307,14 +307,39 @@ merge-rendering `{{trigger.record.id}}` into its `contactId` field - no new acti
    extracting `create_run_for_event` out of core `app/workflow_engine/entity_events.py`. That is a
    core refactor inside a module slice; it is the only way to fire a PUBLISHED version without
    duplicating the Code-node authorization gate.
-8. **Shortcut permissions.** The plan reuses `workflows.run` per D-A3-5, but a typical Agent-level
-   user will not hold it, so the Shortcuts control will be invisible for most inbox users until the
-   tenant grants it. If shortcuts are meant to be an everyday agent tool, the alternative is a new
-   `conversations.shortcut` key gating the run route (and the workflow itself staying admin-authored).
-   Not chosen unilaterally - flagging it.
+8. **Shortcut permissions - DECIDED (main session, 2026-09-06).** The plan originally reused
+   `workflows.run` per D-A3-5, but a typical Agent-level user will not hold it, so the Shortcuts
+   control would be invisible for most inbox users until the tenant grants it. Decision: a new
+   `conversations.shortcut` key gates BOTH `GET /shortcuts` and `POST /shortcuts/{workflowId}`
+   (superseding the `conversations.read`+`workflows.read` / `conversations.reply`+`workflows.run`
+   pairs) - the workflow itself stays admin-authored (Publish is still gated `workflows.manage`).
+   AC-IVE-36/37/41 amended to match.
 9. **`contacts.last_agent_message_at` is a new denormalized column** (D-A3-12), not in the decision
    set. Unreplied and Longest waiting cannot be indexed without it.
 10. **Manifest version collision with plan 26** (both A2 and A3 bump to `0.3.0`) - D-A3-16 says the
     second lane to merge takes the next number and rebases its migration parent.
 11. **No `resolved` event type.** Roadmap D9 listed "resolved" alongside closed; `closed` +
     `close_reason_id` carries the same information, so the plan keeps the ten types from D-A3-1.
+12. **`POST /{id}/close` on an already-CLOSED thread - DECIDED (review round 1, 2026-09-06).**
+    Previously a no-op 200 that silently dropped the supplied reason/note (`patch_thread`'s
+    `closed` write only fires on an actual status change). Now `409 {code: "already_closed",
+    message}` - reopen then close again is the way to change the reason. `ThreadAlreadyClosed`
+    (`services/conversation_service.py`), mapped in the router.
+
+### Review round 1 - frontend follow-ups (pending)
+
+Backend-focused review round 1 (2026-09-06) also found frontend gaps, out of scope for the backend
+coder that closed the findings above - queued here for the next frontend pass on this branch:
+
+5. **Confirm dialogs → deferred actions.** The saved-view delete (`inbox-view-rail.tsx`) and the
+   close-reason delete (`workspace-close-reasons-tab.tsx`) use hand-rolled confirm `AlertDialog`s;
+   every other module delete on this branch goes through the deferred-actions grace-window pattern
+   (undo toast). Register both deletes as deferred-action handlers
+   (`modules/omnichannel/deferred_actions.py`) and swap the dialogs for `DeferredActionButton`.
+8. **Missing `DialogDescription`.** `inbox-view-dialog.tsx` and `close-thread-dialog.tsx` render a
+   `DialogTitle` with no `DialogDescription` (a11y - Radix warns on this).
+9. **Dead `comment_added` branch.** `activity-feed.tsx` has a rendering branch for the
+   `comment_added` event type that can never fire in practice (internal notes render as authored
+   bubbles, not activity-feed lines) - drop it or gate it behind an actual code path.
+12. **Shortcut success toast has no link.** AC-IVE-39 says "running one shows a success toast
+    linking to the run"; the shipped toast does not link anywhere - wire it to the run's route.

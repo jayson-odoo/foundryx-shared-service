@@ -80,7 +80,12 @@ IDs: `AC-IVE-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   an internal note NEVER counts as a reply.
 - **AC-IVE-08 [BE]** Given a lifecycle move (internal route, gateway PATCH, or workflow), then one
   `lifecycle_changed` event is written from the ONE move seam (`services/lifecycle_service.move`)
-  with `from_value` / `to_value` = core lifecycle status ids.
+  with `from_value` / `to_value` = core lifecycle status ids. *(amended 2026-09-06 (review round 1):
+  no workflow ACTION exists today that calls this seam - `omnichannel_contact`'s
+  `WorkflowEntity.has_status=False`, so no `entity.transition_status`/`entity.update` path can move
+  a contact's lifecycle stage. This AC is forward-looking: a future lifecycle-moving action MUST
+  route through `lifecycle_service.move` (never write `lifecycle_status_id` directly), which is
+  what actually produces the event this AC asserts.)*
 - **AC-IVE-09 [BE]** Given an internal note is added (internal route or gateway
   `POST /api/v1/omnichannel/contacts/{identifier}/comments`), then one `comment_added` event is
   written with `payload_json.messageId` = the created message id.
@@ -142,7 +147,9 @@ IDs: `AC-IVE-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
 - **AC-IVE-22 [FE]** Given the current filter state, then a "Save view" control opens a dialog with
   Name and a Shared switch (the switch is hidden for a user without `inbox_views.manage`); saving
   adds the view to the rail and selects it; a saved view row offers Rename / Delete (and Share
-  toggle with the permission), with the shell's confirm dialog on delete.
+  toggle with the permission). *(amended 2026-09-06 (review round 1): delete goes through the
+  platform's deferred-actions grace window (undo-toast, module-registered handler), matching every
+  other module delete on this branch - NOT a hand-rolled confirm `AlertDialog`.)*
 
 - **AC-IVE-23 [FE]** Given a live WS `contact.updated` / `message.created` event while a filtered
   view is active, then the list reconciles exactly as today (refetch under an active filter), and a
@@ -189,8 +196,11 @@ IDs: `AC-IVE-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   timezone), and the note composer at the bottom is unchanged.
 - **AC-IVE-33 [BE]** Given the internal-note path, then it keeps requiring `conversations.reply`
   (native) or the `note` embed cap, keeps publishing the realtime `message.created` event, and stays
-  excluded from every channel send and from the public gateway's message reads - verified by test,
-  not by inspection.
+  excluded from every channel send - verified by test, not by inspection. *(amended 2026-09-06
+  (review round 1): the public gateway's message reads DO include internal notes - pre-existing
+  behavior on `main`, unchanged by this plan - rendered with `senderType: "SYSTEM"` so a consumer
+  can filter them out; they are never delivered to the WhatsApp channel itself. The original wording
+  ("excluded from... the public gateway's message reads") did not match shipped behavior.)*
 - **AC-IVE-34 [FE]** Given a comment is added by another agent while the drawer is open, then it
   appears live in the Activities feed via the existing WS push, and its `comment_added` event does
   not render as a duplicate line next to the note bubble.
@@ -204,13 +214,17 @@ IDs: `AC-IVE-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
 - **AC-IVE-36 [BE]** Given `GET /omnichannel/contacts/{id}/shortcuts`, then it lists the tenant's
   workflows that are active, published (`current_version_id` set), not archived, with
   `trigger_type = entity.shortcut` and `trigger_entity_type = omnichannel_contact`, each as
-  `{workflowId, name}`; requires `conversations.read` AND `workflows.read`.
+  `{workflowId, name}`; requires `conversations.shortcut`. *(amended 2026-09-06 (review round 1):
+  supersedes the original `conversations.read` AND `workflows.read` pair - main-session decision;
+  see plan §8 item 8, now marked decided.)*
 - **AC-IVE-37 [BE]** Given `POST /omnichannel/contacts/{id}/shortcuts/{workflowId}` from a user with
-  `conversations.reply` AND `workflows.run`, then a run is created against the workflow's PUBLISHED
+  `conversations.shortcut`, then a run is created against the workflow's PUBLISHED
   version (never the draft) through the SAME helper the event bus uses, with
   `triggered_by = event`, `trigger.record.*` from the contact's registered facts,
   `trigger.actor.*` = the real actor (real admin under impersonation), and the response is
-  `{runId, status}`.
+  `{runId, status}`. *(amended 2026-09-06 (review round 1): supersedes the original
+  `conversations.reply` AND `workflows.run` pair - main-session decision; see plan §8 item 8, now
+  marked decided.)*
 - **AC-IVE-38 [BE]** Given the target workflow is unpublished / inactive / archived / of another
   tenant / not an `entity.shortcut` workflow / not bound to `omnichannel_contact`, then 404 or 409
   and no run is created; given its published version carries Code nodes without a
@@ -225,10 +239,12 @@ IDs: `AC-IVE-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
 
 ## Slice F - Permissions, tenant isolation
 
-- **AC-IVE-41 [BE]** Given the module permissions CSV, then it adds exactly `close_reasons.manage`
-  and `inbox_views.manage` (no core collision - verified against `app/permissions/permissions.csv`
-  2026-09-06), the manifest version is bumped, and `update_tenant` / the App Store update path
-  grants the new keys to every already-provisioned tenant's Admin role.
+- **AC-IVE-41 [BE]** Given the module permissions CSV, then it adds exactly `close_reasons.manage`,
+  `inbox_views.manage`, and `conversations.shortcut` (no core collision - verified against
+  `app/permissions/permissions.csv` 2026-09-06), the manifest version is bumped, and `update_tenant`
+  / the App Store update path grants the new keys to every already-provisioned tenant's Admin role.
+  *(amended 2026-09-06 (review round 1): the original two-key list omitted `conversations.shortcut`,
+  added per the AC-IVE-36/37 permission-split decision above.)*
 - **AC-IVE-42 [BE]** Given a tenant B user or API key, when they call ANY new route
   (`close-reasons`, `inbox-views`, `contacts/{id}/events`, `contacts/{id}/close`,
   `contacts/{id}/shortcuts*`) with tenant A ids, then the response is a uniform 404 - never 403,

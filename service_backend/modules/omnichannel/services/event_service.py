@@ -15,6 +15,7 @@ unresolvable/foreign id renders as an empty label, never another tenant's name.
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.status import Status as CoreStatus
@@ -274,10 +275,18 @@ def backfill_tenant(db: Session, tenant_id: str) -> Dict[str, int]:
     function is what pytest actually exercises (module Alembic is a
     Postgres-only no-op under the test suite); the migration is verified
     separately on live Postgres.
+
+    Review round 1 (finding 4): batched to TWO queries over the whole
+    contact set (which contacts already have an event; the latest AGENT
+    message per contact missing `last_agent_message_at`) instead of one of
+    each per contact - a tenant with thousands of contacts was doing
+    thousands of round trips.
     """
     contacts = db.query(Contact).filter(Contact.tenant_id == tenant_id).all()
     if not contacts:
         return {"contactsBackfilled": 0, "eventsWritten": 0}
+
+    contact_ids = [c.id for c in contacts]
 
     status_keys = {
         s.id: s.key
@@ -286,15 +295,41 @@ def backfill_tenant(db: Session, tenant_id: str) -> Dict[str, int]:
         .all()
     }
 
+    # Batch 1: which contacts already have at least one event.
+    has_event_ids = {
+        r[0]
+        for r in db.query(ConversationEvent.contact_id)
+        .filter(
+            ConversationEvent.tenant_id == tenant_id,
+            ConversationEvent.contact_id.in_(contact_ids),
+        )
+        .distinct()
+        .all()
+    }
+
+    # Batch 2: latest AGENT message per contact, only for contacts that still
+    # need `last_agent_message_at` filled.
+    needs_last_agent_ids = [c.id for c in contacts if c.last_agent_message_at is None]
+    latest_agent_at: Dict[str, datetime] = {}
+    if needs_last_agent_ids:
+        latest_agent_at = {
+            r[0]: r[1]
+            for r in db.query(
+                ConversationMessage.contact_id, func.max(ConversationMessage.created_at)
+            )
+            .filter(
+                ConversationMessage.tenant_id == tenant_id,
+                ConversationMessage.contact_id.in_(needs_last_agent_ids),
+                ConversationMessage.sender_type == "AGENT",
+            )
+            .group_by(ConversationMessage.contact_id)
+            .all()
+        }
+
     events_written = 0
     contacts_touched = 0
     for c in contacts:
-        has_event = (
-            db.query(ConversationEvent.id)
-            .filter(ConversationEvent.tenant_id == tenant_id, ConversationEvent.contact_id == c.id)
-            .first()
-        )
-        if has_event is None:
+        if c.id not in has_event_ids:
             db.add(
                 ConversationEvent(
                     tenant_id=tenant_id,
@@ -338,19 +373,9 @@ def backfill_tenant(db: Session, tenant_id: str) -> Dict[str, int]:
             contacts_touched += 1
 
         if c.last_agent_message_at is None:
-            latest_agent_at = (
-                db.query(ConversationMessage.created_at)
-                .filter(
-                    ConversationMessage.tenant_id == tenant_id,
-                    ConversationMessage.contact_id == c.id,
-                    ConversationMessage.sender_type == "AGENT",
-                )
-                .order_by(ConversationMessage.created_at.desc())
-                .limit(1)
-                .scalar()
-            )
-            if latest_agent_at is not None:
-                c.last_agent_message_at = latest_agent_at
+            at = latest_agent_at.get(c.id)
+            if at is not None:
+                c.last_agent_message_at = at
 
     db.flush()
     return {"contactsBackfilled": contacts_touched, "eventsWritten": events_written}

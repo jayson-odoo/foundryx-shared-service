@@ -424,6 +424,80 @@ def test_backfill_tenant_function(session_factory):
     db.close()
 
 
+def test_seed_demo_conversations_backfills_events(session_factory):
+    """Review round 1, finding 3 (AC-IVE-03): the dev demo inbox seed must not
+    leave its five fixed threads without `opened` events / `last_agent_
+    message_at` - Unreplied and Longest-waiting evidence would be
+    meaningless otherwise. `seed_demo_conversations` now calls
+    `event_service.backfill_tenant` before its own commit."""
+    from modules.omnichannel import bootstrap
+    from modules.omnichannel.models import Contact, ConversationEvent
+
+    db = session_factory()
+    bootstrap.seed_demo_conversations(db, DEFAULT_TENANT_ID)
+    db.close()
+
+    db = session_factory()
+    demo_ids = ["cnt-001", "cnt-002", "cnt-003", "cnt-004", "cnt-005"]
+    for cid in demo_ids:
+        events = {
+            e.event_type
+            for e in db.query(ConversationEvent).filter(ConversationEvent.contact_id == cid).all()
+        }
+        assert "opened" in events, f"{cid} missing its opened event"
+    closed_events = {
+        e.event_type
+        for e in db.query(ConversationEvent).filter(ConversationEvent.contact_id == "cnt-005").all()
+    }
+    assert "closed" in closed_events
+
+    # cnt-001/cnt-002/cnt-004/cnt-005 have an AGENT message in the seed
+    # (cnt-003 does not) - `last_agent_message_at` must be filled for the
+    # sort/unreplied filters.
+    for cid in ("cnt-001", "cnt-002", "cnt-004", "cnt-005"):
+        c = db.query(Contact).filter(Contact.id == cid).first()
+        assert c.last_agent_message_at is not None, f"{cid} missing last_agent_message_at"
+    db.close()
+
+
+def test_backfill_tenant_is_batched_not_n_plus_one(session_factory):
+    """Review round 1, finding 4: `backfill_tenant` must run a small CONSTANT
+    number of SELECTs against `conversation_events`/`conversation_messages`
+    regardless of contact count (previously one of each per contact)."""
+    from sqlalchemy import event
+
+    from modules.omnichannel.services import event_service
+
+    for i in range(12):
+        _seed_thread(
+            session_factory, phone=f"+601566{i:05d}", status_key="OPEN",
+            messages=[{"sender_type": "AGENT", "body": "hey"}],
+        )
+
+    engine = session_factory.kw["bind"]
+    selects = {"n": 0}
+
+    def _before(conn, cursor, statement, *a):
+        upper = statement.lstrip().upper()
+        if upper.startswith("SELECT") and (
+            "CONVERSATION_EVENTS" in upper or "CONVERSATION_MESSAGES" in upper
+        ):
+            selects["n"] += 1
+
+    db = session_factory()
+    event.listen(engine, "before_cursor_execute", _before)
+    try:
+        result = event_service.backfill_tenant(db, DEFAULT_TENANT_ID)
+    finally:
+        event.remove(engine, "before_cursor_execute", _before)
+    db.close()
+
+    assert result["contactsBackfilled"] == 12
+    # ONE query for existing events + ONE (grouped) query for latest AGENT
+    # message - never a per-contact pair (24 for 12 contacts pre-fix).
+    assert selects["n"] <= 2, f"expected 2 batched SELECTs, got {selects['n']}"
+
+
 def test_install_tenant_self_heals_events(session_factory):
     """`install_tenant` calls `event_service.backfill_tenant` unconditionally
     (self-healing, like the lifecycle backfill it already runs) - a contact
@@ -472,8 +546,10 @@ def test_list_events_route_shape_pagination_and_tenant_isolation(client, session
 # ── AC-IVE-14: uninstall wipes conversation_events with the rest ────────────
 def test_uninstall_tenant_deletes_conversation_events(session_factory):
     from app.services.app_store_service import AppStoreService
-    from modules.omnichannel.models import Contact, ConversationEvent
+    from modules.omnichannel.models import CloseReason, Contact, ConversationEvent, InboxView
+    from modules.omnichannel.schemas import InboxViewCreate
     from modules.omnichannel.services import event_service
+    from modules.omnichannel.services.inbox_view_service import InboxViewService
 
     cid = _seed_thread(session_factory, messages=[{"body": "hi"}])
     db = session_factory()
@@ -485,10 +561,31 @@ def test_uninstall_tenant_deletes_conversation_events(session_factory):
         >= 1
     )
 
+    # AC-IVE-14 (review round 1, finding 11): close_reasons/inbox_views are
+    # ALSO wiped - both are plain OmniBase tenant-scoped tables, so they ride
+    # the same generic per-table delete loop as conversation_events.
+    admin = db.query(User).filter(User.email == ACTIVE_EMAIL).first()
+    InboxViewService(db).create(
+        contact.workspace_id, DEFAULT_TENANT_ID, admin.id,
+        InboxViewCreate(name="Uninstall check", isShared=False),
+    )
+    assert (
+        db.query(CloseReason).filter(CloseReason.tenant_id == DEFAULT_TENANT_ID).count() >= 1
+    )
+    assert (
+        db.query(InboxView).filter(InboxView.tenant_id == DEFAULT_TENANT_ID).count() >= 1
+    )
+
     AppStoreService(db).uninstall(DEFAULT_TENANT_ID, "omnichannel", "omnichannel")
     db.commit()
     assert (
         db.query(ConversationEvent).filter(ConversationEvent.tenant_id == DEFAULT_TENANT_ID).count()
         == 0
+    )
+    assert (
+        db.query(CloseReason).filter(CloseReason.tenant_id == DEFAULT_TENANT_ID).count() == 0
+    )
+    assert (
+        db.query(InboxView).filter(InboxView.tenant_id == DEFAULT_TENANT_ID).count() == 0
     )
     db.close()

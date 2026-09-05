@@ -31,16 +31,6 @@ from ..services.workspace_service import WorkspaceService
 router = APIRouter()
 
 
-def _owner_names(db: Session, tenant_id: str, rows: List[InboxView]) -> Dict[str, str]:
-    ids = {r.owner_user_id for r in rows if r.owner_user_id}
-    if not ids:
-        return {}
-    users = (
-        db.query(User).filter(User.tenant_id == tenant_id, User.id.in_(ids)).all()
-    )
-    return {u.id: (u.name or u.email) for u in users}
-
-
 def _to_item(row: InboxView, names: Dict[str, str]) -> InboxViewItem:
     return InboxViewItem(
         id=row.id,
@@ -66,8 +56,9 @@ def list_inbox_views(
     db: Session = Depends(get_db),
 ) -> List[InboxViewItem]:
     WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
-    rows = InboxViewService(db).list(ws_id, current_user.tenant_id, current_user.id)
-    names = _owner_names(db, current_user.tenant_id, rows)
+    svc = InboxViewService(db)
+    rows = svc.list(ws_id, current_user.tenant_id, current_user.id)
+    names = svc.owner_names(rows, current_user.tenant_id)
     return [_to_item(r, names) for r in rows]
 
 
@@ -85,13 +76,14 @@ def create_inbox_view(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "Missing permission: inbox_views.manage"
         )
+    svc = InboxViewService(db)
     try:
-        row = InboxViewService(db).create(ws_id, current_user.tenant_id, current_user.id, body)
+        row = svc.create(ws_id, current_user.tenant_id, current_user.id, body)
     except InboxViewValidationError as exc:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, {"fieldErrors": {exc.field: exc.message}}
         )
-    names = _owner_names(db, current_user.tenant_id, [row])
+    names = svc.owner_names([row], current_user.tenant_id)
     return _to_item(row, names)
 
 
@@ -123,7 +115,7 @@ def update_inbox_view(
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, {"fieldErrors": {exc.field: exc.message}}
         )
-    names = _owner_names(db, current_user.tenant_id, [row])
+    names = svc.owner_names([row], current_user.tenant_id)
     return _to_item(row, names)
 
 

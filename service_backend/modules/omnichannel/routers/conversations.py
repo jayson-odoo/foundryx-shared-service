@@ -61,6 +61,7 @@ from ..services.contact_profile_service import ProfilePatchError
 from ..services.conversation_service import (
     ConversationService,
     InvalidPatch,
+    ThreadAlreadyClosed,
     ThreadNotFound,
 )
 from ..services.inbox_view_service import InboxViewNotFound, InboxViewService
@@ -131,9 +132,14 @@ def list_threads(
             )
         except InboxViewNotFound:
             raise HTTPException(status_code=404, detail="View not found")
-        if workspace_id and workspace_id != view.workspace_id:
+        # AC-IVE-17 (review round 1, finding 7): a viewId from another
+        # workspace 404s - INCLUDING when the caller resolved no workspace
+        # at all. `workspace_id` here is either the embed principal's own
+        # (forced above) or the caller's EXPLICIT `workspaceId` query param;
+        # there is no third "portable" reading where an absent param quietly
+        # adopts the view's own workspace.
+        if workspace_id != view.workspace_id:
             raise HTTPException(status_code=404, detail="View not found")
-        workspace_id = view.workspace_id
         view_kwargs = InboxViewService(db).expand(view)
 
     final_status_key = None
@@ -313,6 +319,11 @@ def close_thread(
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    except ThreadAlreadyClosed:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "already_closed", "message": "This conversation is already closed."},
+        )
     except CloseReasonNotFound:
         raise HTTPException(status_code=404, detail="Close reason not found")
     except CloseReasonInactive:

@@ -624,4 +624,13 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
         QuickReply(tenant_id=tenant_id, workspace_id=ws.id, shortcut="/hours", body="Our office hours are Mon-Fri 9am-6pm (MYT)."),
         QuickReply(tenant_id=tenant_id, workspace_id=ws.id, shortcut="/payment", body="You can pay via bank transfer or card - the link is in your invoice email."),
     ])
+    db.flush()
+
+    # Review round 1 (finding 3): the demo threads must carry the events the
+    # real inbox always writes (AC-IVE-03 names this seed for Unreplied/
+    # Longest-waiting evidence) - `backfill_tenant` is idempotent, so this is
+    # safe alongside any future real backfill of the same tenant.
+    from .services import event_service
+
+    event_service.backfill_tenant(db, tenant_id)
     db.commit()
