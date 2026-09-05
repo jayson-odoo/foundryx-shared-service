@@ -13,6 +13,8 @@ import { Badge } from '@/components/ui/badge';
 import { SearchSelect } from '@/components/platform/search-select';
 import { ApiError } from '@/lib/api-client';
 import { useCan } from '@/hooks/use-can';
+import { cn } from '@/lib/utils';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import type { ContactTag, ContactTagRef } from '@/types/omnichannel';
 
 export interface TagChipsProps {
@@ -99,7 +101,7 @@ export function TagChips({ tags, workspaceTags, onChange }: TagChipsProps) {
                 aria-label={`Remove ${tag.name}`}
                 onClick={() => removeTag(tag.id)}
                 disabled={busy}
-                className="ms-0.5 rounded-full hover:opacity-70"
+                className={cn('ms-0.5 rounded-full hover:opacity-70', PRESSED_CLASS)}
               >
                 <X className="size-3" />
               </button>

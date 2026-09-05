@@ -213,7 +213,7 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
             </Button>
             <Button variant="primary" size="sm" onClick={save} disabled={saving} data-testid="contact-details-save">
               {saving && <Loader2 className="size-3.5 animate-spin" />}
-              Save
+              Save details
             </Button>
           </div>
         )}

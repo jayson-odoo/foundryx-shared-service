@@ -24,6 +24,7 @@ import { Label } from '@/components/ui/label';
 import { STATUS_COLOR_SWATCHES } from '@/components/platform/status-badge';
 import { ApiError } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import type { ContactTag } from '@/types/omnichannel';
 import {
   contactTagSchema,
@@ -62,6 +63,7 @@ export function ContactTagDialog({ open, onOpenChange, tag, onCreate, onUpdate }
   const [unmappedErrors, setUnmappedErrors] = useState<string[]>([]);
 
   const form = useForm<ContactTagFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(contactTagSchema),
     defaultValues: toValues(null),
   });
@@ -167,6 +169,7 @@ export function ContactTagDialog({ open, onOpenChange, tag, onCreate, onUpdate }
                   onClick={() => form.setValue('color', swatch.hex)}
                   className={cn(
                     'size-7 rounded-full border transition-shadow',
+                    PRESSED_CLASS,
                     color.toLowerCase() === swatch.hex.toLowerCase()
                       ? 'border-primary ring-2 ring-primary/40'
                       : 'border-border hover:ring-2 hover:ring-muted-foreground/20',

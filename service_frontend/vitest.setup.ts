@@ -45,8 +45,9 @@ if (typeof Element !== 'undefined') {
 }
 // jsdom doesn't implement matchMedia (useIsMobile, useMediaQuery). Default to
 // "no match" (desktop) - tests that care about a specific breakpoint override
-// window.matchMedia per-test.
-if (!window.matchMedia) {
+// window.matchMedia per-test. Guarded on `typeof window` for the same
+// node-environment tests the ResizeObserver block above guards against.
+if (typeof window !== 'undefined' && !window.matchMedia) {
   window.matchMedia = (query: string) => ({
     matches: false,
     media: query,

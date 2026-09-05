@@ -76,6 +76,7 @@ export function ContactFieldDialog({ open, onOpenChange, field, onCreate, onUpda
   const [unmappedErrors, setUnmappedErrors] = useState<string[]>([]);
 
   const form = useForm<ContactFieldFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(contactFieldSchema),
     defaultValues: toValues(null),
   });
