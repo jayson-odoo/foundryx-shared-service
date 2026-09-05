@@ -134,9 +134,27 @@ function useScope(
     [rows, sorentoFields],
   );
 
-  const onChangeRow = useCallback((index: number, patch: Partial<MappingEditableRow>) => {
-    setRows((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
-  }, []);
+  const onChangeRow = useCallback(
+    (index: number, patch: Partial<MappingEditableRow>) => {
+      setRows((prev) =>
+        prev.map((r, i) => {
+          if (i !== index) return r;
+          const next = { ...r, ...patch };
+          // B1-b (final review round) - a backfill/preset-disabled row
+          // (its source column absent from the preview) REVIVES the
+          // instant the operator fixes it to a column that resolves - the
+          // same semantic as the backend's S1 preview-column gate, no new
+          // UI/copy needed. A patch to a column that still doesn't resolve
+          // leaves the row disabled (greyed) until it does.
+          if (patch.sourcePath !== undefined && acFields.includes(patch.sourcePath)) {
+            next.isEnabled = true;
+          }
+          return next;
+        }),
+      );
+    },
+    [acFields],
+  );
 
   const onAddRow = useCallback(() => {
     setRows((prev) => {
