@@ -145,7 +145,11 @@ export function useWorkspaceForm(
       },
       // Plan 25 - hidden while creating (AC-CDM-29): these hang off a real
       // workspace id (scoped lifecycle graph / per-workspace registries).
-      ...(!creating
+      // Also gated by permission (F15) - the backend GETs are
+      // `conversations.read` OR `contacts.read`; a user with neither never
+      // sees a tab that would just 403 (foolproof-UI, UX-only - the API is
+      // the real gate).
+      ...(!creating && (can('conversations.read') || can('contacts.read'))
         ? [
             {
               id: 'lifecycle',

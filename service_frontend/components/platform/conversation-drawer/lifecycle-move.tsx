@@ -14,6 +14,7 @@ import { SearchSelect } from '@/components/platform/search-select';
 import { StatusBadge, type StatusRegistry } from '@/components/platform/status-badge';
 import { ApiError } from '@/lib/api-client';
 import { useLifecycleMoves } from '@/hooks/use-lifecycle-moves';
+import { useCan } from '@/hooks/use-can';
 import type { ContactLifecycleSummary } from '@/types/omnichannel';
 
 export interface LifecycleMoveProps {
@@ -23,6 +24,8 @@ export interface LifecycleMoveProps {
 }
 
 export function LifecycleMove({ contactId, lifecycle, onMove }: LifecycleMoveProps) {
+  const { can } = useCan();
+  const canManage = can('contacts.manage');
   const { moves, loading } = useLifecycleMoves(contactId, lifecycle?.key);
   const [moving, setMoving] = useState(false);
 
@@ -44,7 +47,16 @@ export function LifecycleMove({ contactId, lifecycle, onMove }: LifecycleMovePro
     try {
       await onMove(toStatusId);
     } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : 'Could not move this contact.');
+      if (error instanceof ApiError) {
+        // A 409 carries a structured `detail = {code, message}` (the machine
+        // message, e.g. "No move from Customer.") - api-client only promotes a
+        // STRING detail to `message`, so read the structured message directly
+        // (F14, AC-CDM-37). Falls back to the generic HTTP message otherwise.
+        const d = error.detail as { message?: string } | undefined;
+        toast.error(d?.message ?? error.message);
+      } else {
+        toast.error('Could not move this contact.');
+      }
     } finally {
       setMoving(false);
     }
@@ -57,7 +69,7 @@ export function LifecycleMove({ contactId, lifecycle, onMove }: LifecycleMovePro
         <StatusBadge status={lifecycle.key} registry={registry} />
         {moving && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
       </div>
-      {!loading && moves.length > 0 && (
+      {canManage && !loading && moves.length > 0 && (
         <SearchSelect
           options={moves.map((m) => ({ label: m.label, value: m.toStatusId }))}
           value={null}

@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { SearchSelect } from '@/components/platform/search-select';
 import { ApiError } from '@/lib/api-client';
+import { useCan } from '@/hooks/use-can';
 import type { ContactTag, ContactTagRef } from '@/types/omnichannel';
 
 export interface TagChipsProps {
@@ -21,6 +22,8 @@ export interface TagChipsProps {
 }
 
 export function TagChips({ tags, workspaceTags, onChange }: TagChipsProps) {
+  const { can } = useCan();
+  const canManage = can('contacts.manage');
   const [optimistic, setOptimistic] = useState<ContactTagRef[] | null>(null);
   const [busy, setBusy] = useState(false);
   const shown = optimistic ?? tags;
@@ -84,19 +87,21 @@ export function TagChips({ tags, workspaceTags, onChange }: TagChipsProps) {
           >
             {tag.emoji && <span aria-hidden>{tag.emoji}</span>}
             {tag.name}
-            <button
-              type="button"
-              aria-label={`Remove ${tag.name}`}
-              onClick={() => removeTag(tag.id)}
-              disabled={busy}
-              className="ms-0.5 rounded-full hover:opacity-70"
-            >
-              <X className="size-3" />
-            </button>
+            {canManage && (
+              <button
+                type="button"
+                aria-label={`Remove ${tag.name}`}
+                onClick={() => removeTag(tag.id)}
+                disabled={busy}
+                className="ms-0.5 rounded-full hover:opacity-70"
+              >
+                <X className="size-3" />
+              </button>
+            )}
           </Badge>
         ))}
       </div>
-      {available.length > 0 && (
+      {canManage && available.length > 0 && (
         <SearchSelect
           options={available.map((t) => ({ label: `${t.emoji ? `${t.emoji} ` : ''}${t.name}`, value: t.id }))}
           value={null}

@@ -25,7 +25,7 @@ import type {
   ThreadStatus,
   WhatsAppTemplate,
 } from '@/types/omnichannel';
-import { mockConversationService } from './conversation-service.mock';
+import { realConversationService } from './conversation-service.real';
 
 export interface ConversationService {
   /** Thread list for the inbox left panel, sorted by lastMessageAt desc. */
@@ -81,12 +81,7 @@ export interface ConversationService {
   subscribe(workspaceId: string, handler: (event: ConversationSocketEvent) => void): () => void;
 }
 
-// S0 MOCK - swap to real in S4 (plan 25). The rest of the omnichannel message
-// pipeline (plan 05) already shipped against `realConversationService`
-// (conversation-service.real.ts); this slice temporarily rebinds to the mock
-// so the NEW contact-panel surfaces (lifecycle move, tag add/remove, typed
-// custom fields) are fully tunable with no backend - the lifecycle/tags/
-// customFields routes don't exist until S1-S3. `realConversationService` is
-// fully implemented (incl. the 3 new methods) and swaps back in with this one
-// line once the backend lands.
-export const conversationService: ConversationService = mockConversationService;
+// Real backend (plan 25 S4) - the lifecycle/tags/customFields routes landed
+// in S1-S3; `conversation-service.mock.ts` remains the standing frontend-first
+// mock for future tuning, but the app talks to the live API.
+export const conversationService: ConversationService = realConversationService;

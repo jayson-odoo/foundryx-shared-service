@@ -13,7 +13,7 @@
  * links but leaves contacts otherwise unchanged (AC-CDM-09/11).
  */
 import type { ContactTag, CreateContactTagInput, UpdateContactTagInput } from '@/types/omnichannel';
-import { mockContactTagService } from './contact-tag-service.mock';
+import { realContactTagService } from './contact-tag-service.real';
 
 export interface ContactTagService {
   list(workspaceId: string): Promise<ContactTag[]>;
@@ -22,5 +22,5 @@ export interface ContactTagService {
   remove(workspaceId: string, tagId: string): Promise<void>;
 }
 
-// S0 MOCK - swap to real in S4 (plan 25). Backend routes land in S1.
-export const contactTagService: ContactTagService = mockContactTagService;
+// Real backend (plan 25 S4) - routes landed in S1.
+export const contactTagService: ContactTagService = realContactTagService;

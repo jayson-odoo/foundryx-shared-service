@@ -15,6 +15,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { SearchSelect } from '@/components/platform/search-select';
 import { ApiError } from '@/lib/api-client';
+import { useCan } from '@/hooks/use-can';
 import type { ContactField, ConversationThread, PatchContactInput } from '@/types/omnichannel';
 
 export interface ContactDetailsFormProps {
@@ -28,17 +29,19 @@ type CustomFieldValue = string | number | boolean | null;
 type SystemValues = {
   firstName: string;
   lastName: string;
-  phone: string;
   email: string;
   language: string;
   countryCode: string;
 };
 
+// `phone` is READ-ONLY - it is the inbound stitch key and is never writable
+// through this PATCH (backend named 422 `fieldErrors.phone` if the wire key
+// is even present, review round-1 finding). Never include it in `SystemValues`
+// / the patch payload; render it as a plain read-only value below.
 function systemValuesOf(thread: ConversationThread): SystemValues {
   return {
     firstName: thread.firstName ?? '',
     lastName: thread.lastName ?? '',
-    phone: thread.phone ?? '',
     email: thread.email ?? '',
     language: thread.language ?? '',
     countryCode: thread.countryCode ?? '',
@@ -60,6 +63,8 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
     [fields],
   );
 
+  const { can } = useCan();
+  const canManage = can('contacts.manage');
   const [editing, setEditing] = useState(false);
   const [system, setSystem] = useState<SystemValues>(() => systemValuesOf(thread));
   const [custom, setCustom] = useState<Record<string, CustomFieldValue>>(() => customValuesOf(thread, fields));
@@ -73,7 +78,7 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
     setSystem(systemValuesOf(thread));
     setCustom(customValuesOf(thread, fields));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [thread.id, thread.firstName, thread.lastName, thread.phone, thread.email, thread.language, thread.countryCode, thread.customFields, fields]);
+  }, [thread.id, thread.firstName, thread.lastName, thread.email, thread.language, thread.countryCode, thread.customFields, fields]);
 
   const startEdit = () => {
     setSystem(systemValuesOf(thread));
@@ -96,7 +101,6 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
       const patch: PatchContactInput = {};
       if (system.firstName !== before.firstName) patch.firstName = system.firstName || null;
       if (system.lastName !== before.lastName) patch.lastName = system.lastName || null;
-      if (system.phone !== before.phone) patch.phone = system.phone || null;
       if (system.email !== before.email) patch.email = system.email || null;
       if (system.language !== before.language) patch.language = system.language || null;
       if (system.countryCode !== before.countryCode) patch.countryCode = system.countryCode || null;
@@ -137,9 +141,11 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
       <div className="flex items-center justify-between">
         <p className="text-xs font-medium text-muted-foreground uppercase">Details</p>
         {!editing ? (
-          <Button variant="ghost" size="sm" onClick={startEdit} data-testid="contact-details-edit">
-            <PencilLine className="size-3.5" /> Edit
-          </Button>
+          canManage && (
+            <Button variant="ghost" size="sm" onClick={startEdit} data-testid="contact-details-edit">
+              <PencilLine className="size-3.5" /> Edit
+            </Button>
+          )
         ) : (
           <div className="flex gap-1.5">
             <Button variant="ghost" size="sm" onClick={cancel} disabled={saving}>
@@ -193,17 +199,11 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
           <Label htmlFor="cd-phone" className="text-xs text-muted-foreground">
             Phone
           </Label>
-          {editing ? (
-            <Input
-              id="cd-phone"
-              value={system.phone}
-              onChange={(e) => setSystem((s) => ({ ...s, phone: e.target.value }))}
-              className="h-8"
-            />
-          ) : (
-            <p className="text-sm">{thread.phone || '-'}</p>
-          )}
-          {errorFor('phone') && <p className="text-xs text-destructive">{errorFor('phone')}</p>}
+          {/* Read-only always - the backend never accepts `phone` on this
+              PATCH (it's the inbound stitch key, review round-1 finding). */}
+          <p id="cd-phone" className="text-sm">
+            {thread.phone || '-'}
+          </p>
         </div>
         <div className="flex flex-col gap-1">
           <Label htmlFor="cd-email" className="text-xs text-muted-foreground">

@@ -19,7 +19,7 @@ import type {
   CreateContactFieldInput,
   UpdateContactFieldInput,
 } from '@/types/omnichannel';
-import { mockContactFieldService } from './contact-field-service.mock';
+import { realContactFieldService } from './contact-field-service.real';
 
 export interface ContactFieldService {
   list(workspaceId: string): Promise<ContactField[]>;
@@ -28,5 +28,5 @@ export interface ContactFieldService {
   remove(workspaceId: string, fieldId: string): Promise<void>;
 }
 
-// S0 MOCK - swap to real in S4 (plan 25). Backend routes land in S1.
-export const contactFieldService: ContactFieldService = mockContactFieldService;
+// Real backend (plan 25 S4) - routes landed in S1.
+export const contactFieldService: ContactFieldService = realContactFieldService;
