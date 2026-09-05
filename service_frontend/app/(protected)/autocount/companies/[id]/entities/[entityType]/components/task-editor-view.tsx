@@ -146,9 +146,17 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       // A document entity's FIRST clean config save seeds its field mapping
       // server-side (`seed_document_mapping`) - the Mapping tab's own hook
       // mounted before that seed existed (its 404 latched `notFound=true`),
-      // so it never sees the new rows without an explicit reload. Cheap and
-      // safe on every OTHER save too (a no-op re-fetch of the same rows).
-      mapping.reload();
+      // so it never sees the new rows without an explicit reload.
+      //
+      // SF1 (final reviewer pass) - but ONLY when the mapping draft is
+      // CLEAN. `mapping.save()` below already sets the fresh view itself
+      // (`useAutocountMapping.save` calls `setView(next)`) - reloading here
+      // TOO when the draft is also dirty fires a second, redundant, RACY
+      // refetch that can resolve in either order against the save's own
+      // state update.
+      if (!draft.dirty) {
+        mapping.reload();
+      }
     }
     if (draft.dirty) {
       const problem = draft.validate();
