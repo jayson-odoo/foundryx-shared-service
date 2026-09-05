@@ -49,6 +49,8 @@ from ..schemas import (
     SendContactsRequest,
     SendLocationRequest,
     SendMessageRequest,
+    ShortcutItem,
+    ShortcutRunResponse,
     ThreadItem,
     ThreadListResponse,
     ThreadPatch,
@@ -341,6 +343,62 @@ def list_events(
     )
     items = event_service.to_items(db, rows, principal.tenant_id)
     return ConversationEventListResponse(data=items, total=total)
+
+
+@router.get("/{contact_id}/shortcuts", response_model=List[ShortcutItem])
+def list_shortcuts(
+    contact_id: str,
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
+    db: Session = Depends(get_db),
+) -> List[ShortcutItem]:
+    """Published `entity.shortcut` workflows the drawer's Shortcuts control may
+    offer for this contact (plan 27 A3, S3 - AC-IVE-36). Gated
+    `conversations.shortcut` only (main-session decision 2026-09-06 supersedes
+    the plan's `conversations.read` + `workflows.read` pair - a typical agent
+    should not need core workflow-engine permissions to see the button); no
+    embed cap grants it (AC-IVE-40)."""
+    principal.require_native("conversations.shortcut")
+    enforce_thread_access(db, principal, contact_id)
+    try:
+        rows = ConversationService(db).list_shortcuts(contact_id, principal.tenant_id)
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return [ShortcutItem(workflowId=r["workflowId"], name=r["name"]) for r in rows]
+
+
+@router.post("/{contact_id}/shortcuts/{workflow_id}", response_model=ShortcutRunResponse)
+def run_shortcut(
+    contact_id: str,
+    workflow_id: str,
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
+    db: Session = Depends(get_db),
+) -> ShortcutRunResponse:
+    """Fire a shortcut workflow against this contact's PUBLISHED version
+    (never the draft) through the SAME helper the CRUD event bus uses (plan 27
+    A3, S3 - AC-IVE-37, D-A3-10). Gated `conversations.shortcut` only (see
+    `list_shortcuts` above); no embed cap grants it (AC-IVE-40). Every
+    "not a valid shortcut for this record" case (unpublished / inactive /
+    archived / foreign tenant / not an `entity.shortcut` workflow / not bound
+    to `omnichannel_contact`) is a uniform 404 (AC-IVE-38, AC-IVE-42); a
+    Code-node the publisher never authorized is a 409, not a run."""
+    principal.require_native("conversations.shortcut")
+    enforce_thread_access(db, principal, contact_id)
+    from app.services.workflow_service import ShortcutCodeNotAuthorized, ShortcutNotFound
+
+    try:
+        run = ConversationService(db).run_shortcut(
+            contact_id, principal.tenant_id, workflow_id, actor=resolve_native_actor(principal, db)
+        )
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except ShortcutNotFound:
+        raise HTTPException(status_code=404, detail="Shortcut not found")
+    except ShortcutCodeNotAuthorized:
+        raise HTTPException(
+            status_code=409,
+            detail="This workflow's published version has an unauthorized Code node.",
+        )
+    return ShortcutRunResponse(runId=run.id, status=run.status)
 
 
 @router.post("/{contact_id}/lifecycle", response_model=ThreadItem)

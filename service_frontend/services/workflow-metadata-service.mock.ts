@@ -16,6 +16,7 @@ const ENTITIES: WorkflowTriggerableEntity[] = [
     label: 'User',
     hasStatus: false,
     statuses: [],
+    supportsShortcut: false,
     fields: [
       { key: 'email', label: 'Email', type: 'string' },
       { key: 'name', label: 'Name', type: 'string' },
@@ -28,6 +29,7 @@ const ENTITIES: WorkflowTriggerableEntity[] = [
     label: 'Role',
     hasStatus: false,
     statuses: [],
+    supportsShortcut: false,
     fields: [
       { key: 'name', label: 'Name', type: 'string' },
       { key: 'description', label: 'Description', type: 'string' },
@@ -44,6 +46,7 @@ const ENTITIES: WorkflowTriggerableEntity[] = [
       { value: 'suspended', label: 'Suspended' },
       { value: 'archived', label: 'Archived' },
     ],
+    supportsShortcut: false,
     fields: [
       { key: 'name', label: 'Name', type: 'string' },
       { key: 'slug', label: 'Slug', type: 'string' },
@@ -58,6 +61,7 @@ const ENTITIES: WorkflowTriggerableEntity[] = [
     label: 'Connection',
     hasStatus: false,
     statuses: [],
+    supportsShortcut: false,
     fields: [
       { key: 'provider', label: 'Provider', type: 'string' },
       { key: 'type', label: 'Type', type: 'string' },
@@ -70,6 +74,7 @@ const ENTITIES: WorkflowTriggerableEntity[] = [
     label: 'Email template',
     hasStatus: false,
     statuses: [],
+    supportsShortcut: false,
     fields: [
       { key: 'name', label: 'Name', type: 'string' },
       { key: 'key', label: 'Key', type: 'string' },
@@ -82,6 +87,7 @@ const ENTITIES: WorkflowTriggerableEntity[] = [
     label: 'Workflow',
     hasStatus: false,
     statuses: [],
+    supportsShortcut: false,
     fields: [
       { key: 'name', label: 'Name', type: 'string' },
       { key: 'isActive', label: 'Is active', type: 'boolean' },

@@ -458,6 +458,21 @@ class CloseReasonUpdate(ApiModel):
     isActive: Optional[bool] = None
 
 
+class ShortcutItem(ApiModel):
+    """A published `entity.shortcut` workflow bound to `omnichannel_contact`
+    the drawer's Shortcuts control may fire (AC-IVE-36)."""
+
+    workflowId: str
+    name: str
+
+
+class ShortcutRunResponse(ApiModel):
+    """Response of firing a shortcut (AC-IVE-37)."""
+
+    runId: str
+    status: str
+
+
 class CloseThreadRequest(ApiModel):
     """`POST /contacts/{id}/close` (AC-IVE-28/29). `closeReasonId` is required
     (Close is disabled in the UI until one is picked); `note` is capped at

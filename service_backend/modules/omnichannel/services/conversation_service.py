@@ -37,6 +37,11 @@ class InvalidPatch(Exception):
 VALID_THREAD_STATUS = {"OPEN", "SNOOZED", "CLOSED"}
 VALID_PRIORITY = {"LOW", "MEDIUM", "HIGH", "URGENT"}
 
+# The workflow-engine `WorkflowEntity.entity_type` a contact registers as
+# (`modules/omnichannel/workflow_nodes.py`) - the shortcut routes below always
+# fire against THIS entity type, never a client-supplied one.
+SHORTCUT_ENTITY_TYPE = "omnichannel_contact"
+
 
 def contact_display_name(c: Contact) -> str:
     parts = [p for p in [c.first_name, c.last_name] if p]
@@ -601,4 +606,35 @@ class ConversationService:
             actor=actor,
             actor_id=actor_id,
             actor_external_agent_id=actor_external_agent_id,
+        )
+
+    # ── Shortcuts (plan 27 A3, S3 - D-A3-5/D-A3-10) ────────────────────────
+    def list_shortcuts(self, contact_id: str, tenant_id: str) -> List[Dict[str, str]]:
+        """Published `entity.shortcut` workflows bound to `omnichannel_contact`
+        (AC-IVE-36) - a thin tenant-scoped contact check + a delegate to the
+        GENERIC core `WorkflowService.list_shortcuts` (never re-implemented
+        here)."""
+        c = self.repo.get_by_id(contact_id, tenant_id)
+        if c is None:
+            raise ThreadNotFound()
+
+        from app.services.workflow_service import WorkflowService
+
+        return WorkflowService(self.db).list_shortcuts(tenant_id, SHORTCUT_ENTITY_TYPE)
+
+    def run_shortcut(self, contact_id: str, tenant_id: str, workflow_id: str, actor: Optional[User]):
+        """Fire a shortcut against this contact (AC-IVE-37/38) - resolves the
+        contact tenant-scoped, then delegates entirely to the core
+        `WorkflowService.run_shortcut` (the SAME `create_run_for_event` path
+        the CRUD event bus uses, D-A3-10). Raises `ThreadNotFound` /
+        `ShortcutNotFound` / `ShortcutCodeNotAuthorized` (core) - the router
+        maps all of them to the documented status codes."""
+        c = self.repo.get_by_id(contact_id, tenant_id)
+        if c is None:
+            raise ThreadNotFound()
+
+        from app.services.workflow_service import WorkflowService
+
+        return WorkflowService(self.db).run_shortcut(
+            tenant_id, workflow_id, SHORTCUT_ENTITY_TYPE, c, actor
         )

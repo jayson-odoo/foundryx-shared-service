@@ -122,6 +122,22 @@ class ConversationPrincipal:
                 detail=f"Missing permission: {native_perm}",
             )
 
+    def require_native(self, native_perm: str) -> None:
+        """Gate a route with NO embed equivalent AT ALL - any embed token is
+        refused regardless of its caps (plan sprint-4/27 AC-IVE-40: the
+        shortcut list/run routes are not part of the embed widget's surface -
+        no embed cap grants them, ever)."""
+        if self.is_embed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This action is not available to embedded/federated callers.",
+            )
+        if native_perm not in self.permission_keys:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing permission: {native_perm}",
+            )
+
     def require(self, *, native_perm: str, embed_cap: str) -> None:
         """Gate a mutation: embed → the cap must be present; native → the
         permission must be held. Backend is the boundary (AC-11H-11)."""

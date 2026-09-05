@@ -81,6 +81,21 @@ class WorkflowNotFound(WorkflowError):
     pass
 
 
+class ShortcutNotFound(WorkflowError):
+    """No matching PUBLISHED ``entity.shortcut`` workflow bound to this record's
+    entity type in this tenant (plan sprint-4/27 AC-IVE-38) - the caller maps
+    this to a uniform 404 whatever the underlying reason (unpublished /
+    inactive / archived / another tenant / not an `entity.shortcut` workflow /
+    not bound to the requested entity type)."""
+
+
+class ShortcutCodeNotAuthorized(WorkflowError):
+    """The workflow's published version carries a Code node without a
+    `code_authorized_by` stamp (plan sprint-4/27 AC-IVE-38) - 409, no run
+    created. The fail-closed check is inherited from `create_run_for_event`,
+    never re-implemented here."""
+
+
 class WorkflowService:
     def __init__(self, db: Session):
         self.db = db
@@ -446,6 +461,85 @@ class WorkflowService:
         self.db.expire_all()
         return self.repo.get_run(run_id, tenant_id)
 
+    # ---- shortcuts (plan sprint-4/27, D-A3-5/D-A3-10) ----
+    # A "shortcut" is a workflow an agent fires against ONE record straight
+    # from that record's own UI (the omnichannel conversation drawer is the
+    # first consumer). Generic over any `WorkflowEntity.supports_shortcut`
+    # entity - this file never branches on the entity type.
+
+    def list_shortcuts(self, tenant_id: str, entity_type: str) -> List[Dict[str, str]]:
+        """Published (`current_version_id` set), active, non-archived
+        `entity.shortcut` workflows bound to `entity_type` (AC-IVE-36). Returns
+        `{workflowId, name}` dicts - the caller shapes them into its own wire
+        item (e.g. the omnichannel module's `ShortcutItem`)."""
+        rows = (
+            self.db.query(Workflow)
+            .filter(
+                Workflow.tenant_id == tenant_id,
+                Workflow.is_active.is_(True),
+                Workflow.is_trashed.is_(False),
+                Workflow.current_version_id.isnot(None),
+                Workflow.trigger_type == "entity.shortcut",
+                Workflow.trigger_entity_type == entity_type,
+            )
+            .order_by(Workflow.name)
+            .all()
+        )
+        return [{"workflowId": r.id, "name": r.name} for r in rows]
+
+    def run_shortcut(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        entity_type: str,
+        record: Any,
+        actor: Optional[User],
+    ) -> WorkflowRun:
+        """Fire a shortcut against the workflow's PUBLISHED version - NEVER the
+        draft (`run()` above executes the draft by design; a shortcut must not,
+        D-A3-10). Every "not a valid shortcut for this record" case (foreign
+        tenant / unpublished / inactive / archived / wrong trigger / wrong
+        entity) raises the SAME `ShortcutNotFound` - a uniform 404, never
+        leaking which reason applied (AC-IVE-38, AC-IVE-42).
+
+        Goes through `create_run_for_event` - the SAME helper the CRUD event
+        bus uses - so the fail-closed Code-node authorization gate,
+        correlation-key assignment and serialized dispatch are inherited, not
+        re-implemented (D-A3-10; reviewer: reject a duplicated `WorkflowRun(...)`
+        construction here)."""
+        wf = (
+            self.db.query(Workflow)
+            .filter(
+                Workflow.id == workflow_id,
+                Workflow.tenant_id == tenant_id,
+                Workflow.is_active.is_(True),
+                Workflow.is_trashed.is_(False),
+                Workflow.current_version_id.isnot(None),
+                Workflow.trigger_type == "entity.shortcut",
+                Workflow.trigger_entity_type == entity_type,
+            )
+            .first()
+        )
+        if wf is None:
+            raise ShortcutNotFound()
+
+        from app.workflow_engine.entity_events import (
+            CodeNotAuthorized,
+            build_shortcut_event,
+            create_run_for_event,
+        )
+
+        ev = build_shortcut_event(self.db, entity_type, record, tenant_id=tenant_id, actor=actor)
+        try:
+            run = create_run_for_event(self.db, wf, ev, depth=0)
+        except CodeNotAuthorized as exc:
+            raise ShortcutCodeNotAuthorized() from exc
+        if run is None:
+            # Defensive - the version raced a concurrent unpublish between the
+            # lookup above and here; same uniform outcome as "not published".
+            raise ShortcutNotFound()
+        return run
+
     def list_runs(
         self, workflow_id: str, tenant_id: str, *, page: int = 0, page_size: int = 25, segment: Optional[str] = None
     ) -> Tuple[List[WorkflowRunItemOut], int]:
@@ -562,6 +656,9 @@ class WorkflowService:
                 "statuses": statuses,
                 "fields": fields,
                 "writableFields": writable_fields,
+                # AC-IVE-35 - the entity picker's `entityFilter: "shortcut"`
+                # restricts to entities that opted in (plan sprint-4/27).
+                "supportsShortcut": e.supports_shortcut,
             })
 
         # Whether a usable connection exists for each connection-requiring action

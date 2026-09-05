@@ -117,6 +117,39 @@ def set_origin(
     return prev
 
 
+def build_shortcut_event(
+    db: Session, entity_type: str, record: Any, *, tenant_id: str, actor: Optional[Any]
+) -> Dict[str, Any]:
+    """Build the event-bus envelope for a shortcut run (plan sprint-4/27,
+    D-A3-10) - the SAME shape ``emit_entity_event`` buffers below, so it flows
+    through ``create_run_for_event``/``build_event_trigger_payload`` unchanged
+    (the executor's `trigger.record.*`/`trigger.action`/`trigger.actor.*`
+    flattening needs no shortcut-specific branch). A shortcut has no prior run
+    chain (``source=None``) - it is always a fresh, top-level run, never a
+    cascade; ``actor`` is the REAL actor (real admin under impersonation, D5.6)
+    for attribution, matching every other ``actor_dict`` build in this module."""
+    from app.workflow_engine.entities import record_facts
+
+    actor_dict: Optional[Dict[str, Any]] = None
+    if actor is not None:
+        actor_dict = {
+            "id": getattr(actor, "id", None),
+            "name": getattr(actor, "name", None) or getattr(actor, "email", "") or "",
+            "email": getattr(actor, "email", "") or "",
+        }
+    return {
+        "entity_type": entity_type,
+        "action": "shortcut",
+        "tenant_id": tenant_id,
+        "record_id": getattr(record, "id", None),
+        "actor": actor_dict,
+        "changes": None,
+        "extra": {},
+        "record_facts": _json_safe(record_facts(db, entity_type, record)),
+        "source": None,
+    }
+
+
 def emit_entity_event(
     db: Session,
     entity_type: str,
@@ -397,7 +430,34 @@ def build_event_trigger_payload(ev: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
-def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: int) -> None:
+class CodeNotAuthorized(Exception):
+    """Raised by ``create_run_for_event`` when the published version carries
+    Code nodes without a ``code_authorized_by`` stamp (fail closed, AC-SAR-68 /
+    plan sprint-4/27 AC-IVE-38). No run is created."""
+
+
+def create_run_for_event(
+    session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: int
+) -> Optional[WorkflowRun]:
+    """Create + persist + dispatch a ``WorkflowRun`` against ``wf``'s PUBLISHED
+    version for a domain event ``ev`` (the event-bus envelope this module
+    already builds via ``build_event_trigger_payload``).
+
+    Extracted (plan sprint-4/27, D-A3-10) so the CRUD event bus
+    (``_match_and_enqueue`` below) and the omnichannel-shortcut run path
+    (``WorkflowService.run_shortcut``) share ONE code path - both inherit the
+    same fail-closed Code-node authorization gate, correlation-key assignment
+    (``assign_run_correlation``) and serialized dispatch
+    (``dispatch_persisted_run``) for free, instead of a second run-construction
+    site that could silently drift from the bus's guarantees.
+
+    Returns ``None`` if the workflow's published version can no longer be
+    resolved (defensive - the row raced a concurrent unpublish/delete).
+    Raises ``CodeNotAuthorized`` - never silently skips - so a caller that
+    needs to surface a 409 (the shortcut route) can distinguish it from the
+    other None case; the bus path (below) catches it and logs, preserving its
+    original fire-and-forget behavior.
+    """
     from app.config import settings
     from app.models.workflow import WorkflowVersion
 
@@ -407,14 +467,13 @@ def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: in
         .first()
     )
     if version is None:
-        return
+        return None
     from app.workflow_engine.schemas import has_code_nodes
 
     if has_code_nodes(version.definition_json) and not version.code_authorized_by:
-        # Automated triggers may execute a Code-bearing version ONLY when a
-        # permitted actor stamped it at publish (AC-SAR-68). Fail closed.
-        logger.warning("workflow %s: Code-bearing version lacks authorization; skipped", wf.id)
-        return
+        # Automated/shortcut triggers may execute a Code-bearing version ONLY
+        # when a permitted actor stamped it at publish (AC-SAR-68). Fail closed.
+        raise CodeNotAuthorized()
     payload = build_event_trigger_payload(ev)
     source = ev.get("source") or {}
     run = WorkflowRun(
@@ -442,6 +501,14 @@ def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: in
     if not settings.celery_task_always_eager:
         session.commit()
     dispatch_persisted_run(session, run)
+    return run
+
+
+def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: int) -> None:
+    try:
+        create_run_for_event(session, wf, ev, depth=depth)
+    except CodeNotAuthorized:
+        logger.warning("workflow %s: Code-bearing version lacks authorization; skipped", wf.id)
 
 
 # Register once on the Session class (all sessions share the hook).

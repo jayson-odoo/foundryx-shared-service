@@ -142,8 +142,9 @@ export interface NodeFieldDef {
   mergeable?: boolean;
   /** Conditional: only shown/required when config[field] === value. */
   showWhen?: { field: string; value: string };
-  /** For `entity` - restrict the picker (e.g. only status-engine entities). */
-  entityFilter?: 'status';
+  /** For `entity` - restrict the picker (e.g. only status-engine entities, or
+   * only entities that opt into the `entity.shortcut` trigger). */
+  entityFilter?: 'status' | 'shortcut';
   help?: string;
 }
 
@@ -232,6 +233,9 @@ export interface WorkflowTriggerableEntity {
   /** Adopts the status engine (status_changed / transition_status apply). */
   hasStatus: boolean;
   statuses: { value: string; label: string }[];
+  /** May be the target of the generic `entity.shortcut` trigger (plan
+   * sprint-4/27) - backs the entity picker's `entityFilter: "shortcut"`. */
+  supportsShortcut: boolean;
 }
 
 /** A published form selectable by the `form.submitted` trigger (slice 2). Its
