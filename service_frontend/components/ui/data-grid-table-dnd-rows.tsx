@@ -33,13 +33,26 @@ import { CSS } from '@dnd-kit/utilities';
 import { Cell, flexRender, HeaderGroup, Row } from '@tanstack/react-table';
 import { GripHorizontal } from 'lucide-react';
 
-function DataGridTableDndRowHandle({ rowId }: { rowId: string }) {
+function DataGridTableDndRowHandle({ rowId, ariaLabel = 'Drag to reorder' }: { rowId: string; ariaLabel?: string }) {
   const { attributes, listeners } = useSortable({
     id: rowId,
   });
 
   return (
-    <Button variant="dim" size="sm" className="size-7" {...attributes} {...listeners}>
+    <Button
+      type="button"
+      variant="dim"
+      size="sm"
+      className="size-7"
+      aria-label={ariaLabel}
+      // A clickable row (AC-DLA-58's onRowClick / rowHref darken) must not
+      // navigate/select when the user is only grabbing the handle - same
+      // stopPropagation convention as resource-list.tsx's own row-reorder
+      // grip.
+      onClick={(e) => e.stopPropagation()}
+      {...attributes}
+      {...listeners}
+    >
       <GripHorizontal />
     </Button>
   );
