@@ -104,7 +104,6 @@ export function AccountProfileTab({
                       mode="link"
                       className="text-foreground no-underline hover:text-primary"
                       onClick={() => copyToClipboard(email)}
-                      aria-label="Copy email address"
                     >
                       {email || '-'}
                     </Button>
