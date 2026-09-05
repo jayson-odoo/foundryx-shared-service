@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-09-05** | **Contact data model: typed custom fields, tags, and a lifecycle stage** (plan 25). Both contact shapes gain `language`, `countryCode`, `customFields` (default) / `custom_fields` (rio), `tags`, and `lifecycle` - previously `null`/`[]` rio placeholders now carry real values. `PATCH /api/v1/omnichannel/contacts/{identifier}` accepts all four for writes: `tags` REPLACES the set by NAME (auto-creating unknown names in your workspace); `lifecycle` moves the contact by stage KEY or LABEL through the workspace's lifecycle graph (409 `lifecycle_move_not_allowed` with no edge). Non-breaking - existing fields are unchanged. |
 > | **2026-08-09 (b)** | **The documented shape is the DEFAULT again.** `/api/v1` read endpoints return `MessageItem`/`ThreadItem` in the envelopes this guide always described; the respond.io shape moved behind **`?format=rio`** (§6b). If you built to this guide before 2026-07-11, **you need no change at all** - your original code is correct again. Same release: self-serve **webhook registration on `/api/v1`** (§7), and the Rio contact shape gained the fields it was missing (`priority`, `unreadCount`, `lastMessagePreview`, …). |
 > | **2026-08-09 (a)** | **§6 / §6a / §9 corrected to the deployed contract.** The read endpoints have returned respond.io-shaped objects since 2026-07-11; this guide still described the pre-2026-07-11 shape. §9 now documents both families and §9.3 is an old→new field map. Same release restored `timestamp` on every message and added `cswExpiresAt`, `message.payload`, `message.size`, `reactions[]` and `replyTo` to the read shapes. Webhooks (§7) are unchanged throughout. |
 > | 2026-07-11 | Read endpoints reshaped for respond.io parity (**breaking**; undocumented at the time - see the row above). |
@@ -372,10 +373,18 @@ Partial - only fields you send change. Send `assignedUserId`/`customFields` as `
 
 ```json
 { "firstName": "Jayson", "lastName": "Teh",
-  "priority": "HIGH", "assignedUserId": "…", "customFields": { "orderId": "ORD0001" } }
+  "priority": "HIGH", "assignedUserId": "…", "customFields": { "orderId": "ORD0001" },
+  "language": "en-US", "countryCode": "MY",
+  "tags": ["VIP", "Wholesale"], "lifecycle": "hot_lead" }
 ```
 
 Assign a conversation to an agent by setting `assignedUserId`; unassign by sending it as `null`. Unknown assignee → `422 invalid_request`.
+
+* **`language`** - a BCP-47 tag (≤ 16 characters). **`countryCode`** - an ISO-3166 alpha-2 code (case-insensitive on write, always upper-cased on read). Either 422s if malformed.
+* **`customFields`** - values are validated against your workspace's custom-field registry (configured in the Foundryx dashboard): unknown key or a value that fails its field's type → `422 invalid_request` with `details` keyed `customFields.<key>`, and **nothing is written**. `null` clears one key; keys you omit are left unchanged (partial merge, never a replace).
+* **`tags`** - a list of tag **names**, and **REPLACES the whole set** (not a merge). An unknown name is auto-created in your workspace (so you never need a separate "create tag" call first). `null` clears every tag.
+* **`lifecycle`** - your workspace's lifecycle is a small pipeline of stages (e.g. New Lead → Hot Lead → Payment → Customer/Cold Lead, configurable in the dashboard). Send either the stage's **key** (e.g. `"hot_lead"`) or its display **label** (e.g. `"🔥 Hot Lead"`, emoji included) to move the contact there. A value matching no stage in your workspace → `422 invalid_request` with `details: {"lifecycle": "Unknown lifecycle stage."}`. A value that IS a real stage but has no path from the contact's *current* stage (e.g. the contact already won or lost) → `409 lifecycle_move_not_allowed`. `lifecycle` cannot be sent as `null` (there is always a current stage) - omit it to leave the contact where it is.
+* **All of the above apply atomically.** If any part of the payload fails validation (a bad `customFields` value, an unknown `lifecycle`, a blocked move), the **entire PATCH is rejected and nothing is written** - not even a `tags` name that would otherwise have been auto-created.
 
 The **request** body uses the field names above; the **response** is the updated `ThreadItem` (§9.1), so a write echoes exactly what the matching `GET` returns.
 
@@ -426,6 +435,8 @@ Every read endpoint in §6 and §6a accepts **`?format=rio`**, which returns res
 
 Both shapes are built from the same internal objects, so they carry the same information and cannot drift apart. An unrecognised value is a **`422 invalid_request`**, never a silent fallback to the other shape - a typo must not hand you a payload you'll mis-parse.
 
+Contact custom fields, tags and lifecycle (§9.1/§9.2) are shaped differently per family too: default `customFields` is an object (`{key: value}`), rio `custom_fields` is a `[{name, value}]` array; default `tags` is `[{id, name, emoji, color}]`, rio `tags` is bare name strings; default `lifecycle` is `{statusId, key, label, color, isWon, isLost}`, rio `lifecycle` is just the stage's label text (emoji included).
+
 ```bash
 curl -s -H "Authorization: Bearer $FX_WORKSPACE_KEY" \
   "https://YOUR-FOUNDRYX-HOST/api/v1/omnichannel/contacts/phone:+60123456789/messages?format=rio"
@@ -448,7 +459,7 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
 | `message.inbound` | The user sends you a message (any type) |
 | `message.status` | A message you sent changes state (SENT/DELIVERED/READ/FAILED) |
 | `message.reaction` | A reaction is added/removed on a message |
-| `contact.updated` | A thread is assigned / status / priority changes |
+| `contact.updated` | A thread is assigned / status / priority changes, or its fields / tags / lifecycle stage change |
 
 ### The envelope
 
@@ -468,7 +479,7 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
 * `**message.inbound**` - `id` = Meta wamid.
 
   ```json
-  { "message": { /* MessageItem (§9.2) */ }, "contact": { /* ThreadItem (§9.2) */ } }
+  { "message": { /* MessageItem (§9.1) */ }, "contact": { /* ThreadItem (§9.1) */ } }
   ```
 
   For media messages the message object exposes an **absolute, API-key-authed** `mediaUrl` (`https://YOUR-FOUNDRYX-HOST/omnichannel/media/{id}`) and renames the media fields to `mimeType`, `filename`, `size`.
@@ -483,10 +494,10 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
   ```json
   { "targetMessageId":"8dbc5265-…", "reactorType":"CONTACT", "emoji":"❤️", "removed":false }
   ```
-* `**contact.updated**` - `id` = `{contactId}:{timestamp}`.
+* `**contact.updated**` - `id` = `{contactId}:{timestamp}`. Fires on assignment / status / priority changes AND on any `language`/`countryCode`/`customFields`/`tags`/`lifecycle` change - always the full current `ThreadItem`, never a diff.
 
   ```json
-  { "contact": { /* ThreadItem (§9.2) */ } }
+  { "contact": { /* ThreadItem (§9.1) */ } }
   ```
 
 ### Headers on every webhook POST
@@ -680,7 +691,11 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
 {
   "id": "b2ad5218-…",           // this is the contactId
   "workspaceId": "…", "tenantId": "…",
-  "name": "Jayson", "phone": "+60166753328", "avatarUrl": null,
+  "name": "Jayson",              // derived display name (first + last, else phone)
+  "firstName": "Jayson", "lastName": "Teh",
+  "phone": "+60166753328", "email": null, "avatarUrl": null,
+  "language": "en-US",           // BCP-47 tag, or null
+  "countryCode": "MY",           // ISO-3166 alpha-2, upper-cased, or null
   "assignedUserId": null, "assignedUserName": null,
   "status": "OPEN",             // OPEN | SNOOZED | CLOSED
   "priority": "MEDIUM",
@@ -688,11 +703,17 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "cswExpiresAt": "2026-07-10T11:02:43Z",   // when the 24h free-form window closes
   "lastIncomingMessageAt": "…", "lastMessageAt": "…", "lastMessagePreview": "yeah",
   "unreadCount": 2,
+  "customFields": { "orderId": "ORD0001", "source": "Ads" },  // keyed by your workspace's registered field keys
+  "tags": [ { "id": "…", "name": "VIP", "emoji": "⭐", "color": "amber" } ],
+  "lifecycle": { "statusId": "…", "key": "hot_lead", "label": "🔥 Hot Lead",
+                 "color": "orange", "isWon": false, "isLost": false },  // or null before any stage is set
   "createdAt": "…"
 }
 ```
 
 `cswExpiresAt` tells you whether free-form is currently allowed - if it's in the past, you must send a template to re-engage. It is on the `?format=rio` shape too (§9.2 `ContactObject`).
+
+`customFields`, `tags` and `lifecycle` reflect **your workspace's own configuration** (custom fields, tags and the lifecycle pipeline are all managed in the Foundryx dashboard, per workspace). `customFields` carries only currently-registered keys - a value for a field you later delete stops appearing. `lifecycle` is `null` only for a contact that predates your workspace's lifecycle graph; every contact created from here on always carries one.
 
 ---
 
@@ -764,16 +785,19 @@ The `?format=rio` rendering of a contact. "The contact IS the thread."
   "profilePic": null,
   "status": "open",                    // open | snoozed | closed  (LOWERCASE on read)
   "assignee": { "id": "…", "firstName": "…", "lastName": null, "email": "…" },
-  "custom_fields": [ { "name": "orderId", "value": "ORD0001" } ],   // snake_case, respond.io parity
+  "custom_fields": [ { "name": "orderId", "value": "ORD0001" }, { "name": "source", "value": "Ads" } ],   // snake_case, respond.io parity
   "created_at": 1783173900,            // epoch SECONDS, snake_case - respond.io parity
   "cswExpiresAt": "2026-07-10T11:02:43Z",  // Foundryx extension - ISO-8601 Z, or null
-  "language": null, "countryCode": null, "tags": [], "lifecycle": null, "isBlocked": false
+  "language": "en-US", "countryCode": "MY",
+  "tags": ["VIP"],                       // bare names, not the {id,name,emoji,color} objects the default shape uses
+  "lifecycle": "🔥 Hot Lead",            // the stage's LABEL text (emoji included), or null
+  "isBlocked": false
 }
 ```
 
 * **`cswExpiresAt` decides free-form vs template** - if it is in the past or `null`, a free-form send will be refused with `409 csw_window_closed` and only an approved template re-engages. This is a Foundryx field with no respond.io equivalent, so it follows the house ISO-8601 `Z` convention rather than the epoch ints beside it.
 * `custom_fields` and `created_at` are **snake_case on purpose** - respond.io spells them that way and this object mirrors respond.io exactly. Everything else is camelCase.
-* `language`, `countryCode`, `tags`, `lifecycle`, `isBlocked` are parity placeholders we do not model - always `null`/`[]`/`false`.
+* `language`, `countryCode` mirror the default shape exactly (same values, same rules). `tags` is a bare list of NAMES (not the `{id,name,emoji,color}` objects the default shape carries - respond.io has no id/emoji/color concept for tags). `lifecycle` collapses the default shape's `{statusId,key,label,...}` object down to just the stage's **label text** (the emoji lives in the label, e.g. `"🔥 Hot Lead"`) - if you need the stable `key` or the won/lost flags, use the default shape. `isBlocked` is a respond.io concept we do not model - always `false`.
 * `priority`, `channelId`, `channelType`, `unreadCount`, `lastMessageAt`, `lastIncomingMessageAt` and `lastMessagePreview` are **Foundryx extensions** on this shape (respond.io has no equivalent). They are carried so `?format=rio` loses nothing versus the default - an inbox list needs `unreadCount` and `lastMessagePreview`.
 
 ---
@@ -808,14 +832,18 @@ Only needed if you use `?format=rio`, or are porting a respond.io integration on
 
 | default `ThreadItem` | `?format=rio` `ContactObject` |
 |----|----|
-| `id`, `phone` | same |
-| `name` | `firstName` + `lastName` |
+| `id`, `phone`, `email` | same |
+| `firstName`, `lastName` | same (`name` is a derived convenience field with no rio equivalent) |
 | `avatarUrl` | `profilePic` |
 | `status` (UPPER) | `status` (lower) |
 | `assignedUserId` / `assignedUserName` | `assignee.id` / `assignee.firstName` |
+| `language`, `countryCode` | same |
+| `customFields` (`{key: value}`) | `custom_fields` (`[{name, value}]`, snake_case) |
+| `tags` (`[{id,name,emoji,color}]`) | `tags` (bare `[name]`) |
+| `lifecycle` (`{statusId,key,label,color,isWon,isLost}` \| `null`) | `lifecycle` (the stage's `label` text, or `null`) |
 | `cswExpiresAt` | `cswExpiresAt` (same, ISO `Z`) |
 | `createdAt` (ISO) | `created_at` (epoch seconds, snake_case) |
-| `channelId`, `channelType`, `priority`, `unreadCount`, `lastMessageAt`, `lastIncomingMessageAt`, `lastMessagePreview` | not carried - read them from `contact.updated` / `message.inbound` webhooks |
+| `channelId`, `channelType`, `priority`, `unreadCount`, `lastMessageAt`, `lastIncomingMessageAt`, `lastMessagePreview` | same - Foundryx extensions carried on both shapes (respond.io has no equivalent) |
 
 **Envelopes**
 
@@ -836,12 +864,13 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 |----|----|----|
 | `invalid_api_key` | 401 | Missing/bad/revoked key. |
 | `service_not_enabled` | 403 | Omnichannel not active for your tenant - contact the operator. |
-| `invalid_request` | 422 | Malformed body / failed validation (`details` has specifics). |
+| `invalid_request` | 422 | Malformed body / failed validation (`details` has specifics). On a contact PATCH, `details` is a `{field: message}` map keyed `language`, `countryCode`, `customFields.<key>`, `tags`, or `lifecycle` - identifies exactly which part of the payload failed. **Nothing is written on this error**, even the parts of the payload that were valid. |
 | `invalid_recipient` | 422 | `to` isn't a usable phone number. |
 | `no_active_channel` | 409 | The workspace has no connected number. |
 | `template_not_found` | 422 | No APPROVED template matches `name`/`id`. |
 | `csw_window_closed` | 409 | 24h window closed - send an approved template instead. |
 | `send_rejected` | 422 | WhatsApp/Meta rejected the send (message has the reason). |
+| `lifecycle_move_not_allowed` | 409 | The contact PATCH's `lifecycle` value is a real stage, but there is no path there from the contact's CURRENT stage (e.g. it already won or lost) - `message` carries the reason. |
 | `unsupported_type` | 400 | Unknown `type`. |
 | `not_found` | 404 | Reaction target message not found / not in your workspace. |
 | `contact_not_found` | 404 | Contact not found / not in your workspace. |
@@ -1120,7 +1149,7 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | GET | `/api/v1/omnichannel/templates` | List approved templates | `{data[]}` |
 | GET | `/api/v1/omnichannel/contacts` | List contacts (filters + paging) | `{data[], total, page, pageSize}` of `ThreadItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}` | Get a contact | `ThreadItem` |
-| PATCH | `/api/v1/omnichannel/contacts/{identifier}` | Update contact (name/priority/assignee/fields) | `ThreadItem` |
+| PATCH | `/api/v1/omnichannel/contacts/{identifier}` | Update contact (name/priority/assignee/language/countryCode/customFields/tags/lifecycle) | `ThreadItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}/messages` | Message history | `{contactId, data[], nextBefore}` of `MessageItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}/messages/{messageId}` | Get one message | `MessageItem` |
 | POST | `/api/v1/omnichannel/contacts/{identifier}/conversation/open` | Open conversation | `ThreadItem` |

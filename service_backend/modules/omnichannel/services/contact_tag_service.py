@@ -193,6 +193,47 @@ class ContactTagService:
             )
         return ids
 
+    def resolve_or_create_by_name(
+        self, workspace_id: str, tenant_id: str, names: List[str]
+    ) -> List[str]:
+        """Resolve gateway PATCH `tags: [<name>]` (AC-CDM-26, D8) to ids - an
+        existing name matches case-insensitively; an unknown name is
+        auto-created in the workspace (respond.io parity: internal callers
+        speak ids, external ones speak names). De-duplicates (case-
+        insensitive), preserving first-seen order.
+
+        Newly-created rows are only `flush()`-ed, never committed here - the
+        caller (`ContactProfileService.patch` via `ConversationService.
+        patch_thread`) persists everything in ONE unit of work, so a
+        downstream validation failure (e.g. bad `customFields`) rolls back the
+        whole request including any tag just auto-created for it."""
+        ids: List[str] = []
+        seen: set = set()
+        for raw in names or []:
+            name = (raw or "").strip()
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            existing = self._find_by_name(workspace_id, tenant_id, name)
+            if existing is not None:
+                ids.append(existing.id)
+                continue
+            count = (
+                self.db.query(ContactTag.id)
+                .filter(ContactTag.tenant_id == tenant_id, ContactTag.workspace_id == workspace_id)
+                .count()
+            )
+            if count >= MAX_TAGS_PER_WORKSPACE:
+                raise TagValidationError(
+                    f"This workspace already has {MAX_TAGS_PER_WORKSPACE} tags (the maximum).",
+                    "tags",
+                )
+            row = ContactTag(tenant_id=tenant_id, workspace_id=workspace_id, name=name)
+            self.db.add(row)
+            self.db.flush()
+            ids.append(row.id)
+        return ids
+
     def replace_links(self, contact: Contact, tag_ids: List[str]) -> None:
         """REPLACE the contact's whole tag set (AC-CDM-10) - never a merge.
         Caller (`ContactProfileService`) has already validated `tag_ids`."""

@@ -320,6 +320,8 @@ class ConversationService:
         country_code: Optional[str] = ...,
         custom_fields: Optional[dict] = ...,
         tag_ids: Optional[list] = ...,
+        lifecycle_status_id: Optional[str] = ...,
+        actor: Optional[User] = None,
         actor_id: Optional[str] = None,
         external_connection_id: Optional[str] = None,
     ) -> ThreadItem:
@@ -391,6 +393,16 @@ class ConversationService:
             from .contact_profile_service import ContactProfileService
 
             ContactProfileService(self.db).patch(c, actor_id=actor_id, **profile_kwargs)
+
+        # A lifecycle move (plan 25 S3, gateway PATCH `lifecycle:`) rides the
+        # SAME unit of work as the profile patch above - `_lifecycle_move`
+        # validates the edge graph and raises BEFORE writing anything
+        # (`status_machine.transition` never `setattr`s until every check
+        # passes), so a bad target/no-edge/forbidden move rolls back any
+        # profile/tag changes already applied in this same call, and nothing
+        # is committed until BOTH have succeeded.
+        if lifecycle_status_id is not ...:
+            _lifecycle_move(self.db, c, lifecycle_status_id, actor=actor)
 
         self.db.commit()
         self.db.refresh(c)

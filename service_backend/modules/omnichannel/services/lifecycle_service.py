@@ -232,6 +232,31 @@ def stages_for_workspace(db: Session, tenant_id: str, workspace_id: str) -> List
     )
 
 
+def find_stage_by_key_or_label(
+    db: Session, tenant_id: str, workspace_id: str, value: str
+) -> Optional[Status]:
+    """Resolve the gateway PATCH `lifecycle: <key or label>` value to a stage
+    of THIS workspace's own graph (AC-CDM-26). `key` match is exact (keys are
+    a locked lowercase system contract, D6-style); `label` match is
+    case-insensitive exact (labels carry free display text + the emoji, D3).
+    Returns None when nothing matches in this workspace - the caller renders a
+    422 `fieldErrors.lifecycle`, never a 404 (the value came from the request
+    body, not a path segment, and a foreign-workspace label must not leak
+    which stages exist elsewhere)."""
+    value = (value or "").strip()
+    if not value:
+        return None
+    rows = stages_for_workspace(db, tenant_id, workspace_id)
+    for s in rows:
+        if s.key == value:
+            return s
+    lowered = value.lower()
+    for s in rows:
+        if s.label.strip().lower() == lowered:
+            return s
+    return None
+
+
 def move(
     db: Session, contact: Contact, to_status_id: str, actor: Optional[User] = None
 ) -> StatusTransition:

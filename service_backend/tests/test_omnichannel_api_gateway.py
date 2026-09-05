@@ -1166,3 +1166,283 @@ def test_delivery_path_calls_the_ssrf_guard(client, session_factory, monkeypatch
     row = db.query(WebhookDelivery).filter(WebhookDelivery.id == did).first()
     assert row.status != "SUCCESS" and "refused" in (row.error or "").lower()
     db.close()
+
+
+# ── Contact data model on the gateway (plan 25 S3) - AC-CDM-25/26/27 ─────────
+def _stamp_initial_lifecycle(session_factory, contact_id, workspace_id):
+    """`_seed_open_contact`/`_seeded` predate plan 25 and build the row
+    directly, bypassing the paths that set `lifecycle_status_id` at creation
+    (AC-CDM-16). Stamp it here so these gateway tests exercise a contact that
+    already has a real current stage, like every contact created through a
+    real path (send / inbound / gateway create) does."""
+    from modules.omnichannel.models import Contact
+    from modules.omnichannel.services.lifecycle_service import initial_status_id
+
+    db = session_factory()
+    contact = db.query(Contact).filter(Contact.id == contact_id).first()
+    contact.lifecycle_status_id = initial_status_id(db, DEFAULT_TENANT_ID, workspace_id)
+    db.commit()
+    db.close()
+
+
+def _add_custom_field(client, ws_id, key="source", label=None, field_type="text", options=None):
+    payload = {"key": key, "label": label or key.title(), "type": field_type}
+    if options is not None:
+        payload["options"] = options
+    res = client.post(
+        f"/omnichannel/workspaces/{ws_id}/contact-fields", headers=_auth(client), json=payload
+    )
+    assert res.status_code == 201, res.text
+    return res.json()
+
+
+def test_gateway_default_shape_carries_contact_data_model_fields(client, session_factory):
+    """AC-CDM-25 (default `guide` shape) - language/countryCode/customFields
+    (registered keys only)/tags/lifecycle ride the read AND the write echo,
+    for a single GET and for the list envelope, resolved for the workspace -
+    all straight off `ThreadItem` (ONE data path)."""
+    ws = _default_workspace_id(session_factory)
+    _add_custom_field(client, ws, key="source", field_type="list", options=["Ads", "Referral"])
+    hdr, cid = _seeded(client, session_factory, phone="+60555222001")
+    _stamp_initial_lifecycle(session_factory, cid, ws)
+
+    r = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}",
+        json={"language": "en-US", "countryCode": "my", "customFields": {"source": "Ads"}},
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["language"] == "en-US"
+    assert body["countryCode"] == "MY"  # upper-cased on write (AC-CDM-07)
+    assert body["customFields"] == {"source": "Ads"}
+    assert body["tags"] == []
+    # A new contact carries its workspace's INITIAL stage from creation (AC-CDM-16).
+    assert body["lifecycle"]["key"] == "new_lead"
+
+    got = client.get(f"/api/v1/omnichannel/contacts/{cid}", headers=hdr).json()
+    assert got["language"] == "en-US" and got["countryCode"] == "MY"
+    assert got["customFields"] == {"source": "Ads"}
+    assert got["lifecycle"]["key"] == "new_lead"
+
+    lst = client.get("/api/v1/omnichannel/contacts?pageSize=10", headers=hdr).json()["data"]
+    row = next(c for c in lst if c["id"] == cid)
+    assert row["language"] == "en-US" and row["customFields"] == {"source": "Ads"}
+    assert row["lifecycle"]["key"] == "new_lead"
+
+
+def test_gateway_rio_shape_carries_contact_data_model_fields(client, session_factory):
+    """AC-CDM-25 (`?format=rio`) - language/countryCode/custom_fields
+    ({name,value})/tags (bare names)/lifecycle (stage LABEL text incl. emoji,
+    D3) - derived from the SAME `ThreadItem` as the default shape, never a
+    second query path."""
+    ws = _default_workspace_id(session_factory)
+    _add_custom_field(client, ws, key="source", field_type="text")
+    hdr, cid = _seeded(client, session_factory, phone="+60555222002")
+    _stamp_initial_lifecycle(session_factory, cid, ws)
+
+    patch = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}",
+        json={
+            "language": "en-US", "countryCode": "my",
+            "customFields": {"source": "Ads"}, "tags": ["VIP"],
+        },
+        headers=hdr,
+    )
+    assert patch.status_code == 200, patch.text
+
+    rio = client.get(f"/api/v1/omnichannel/contacts/{cid}?format=rio", headers=hdr).json()
+    assert rio["language"] == "en-US"
+    assert rio["countryCode"] == "MY"
+    assert rio["custom_fields"] == [{"name": "source", "value": "Ads"}]
+    assert rio["tags"] == ["VIP"]
+    assert rio["lifecycle"] == "\U0001F195 New Lead"  # \U0001F195 == 🆕
+
+    lst = client.get("/api/v1/omnichannel/contacts?pageSize=10&format=rio", headers=hdr).json()["items"]
+    row = next(c for c in lst if c["id"] == cid)
+    assert row["tags"] == ["VIP"] and row["lifecycle"] == "\U0001F195 New Lead"
+    assert row["custom_fields"] == [{"name": "source", "value": "Ads"}]
+
+
+def test_gateway_patch_tags_by_name_autocreate_and_reuse(client, session_factory):
+    """AC-CDM-26/D8 - `tags: [name]` REPLACES the set; an unknown name is
+    auto-created in the workspace's tag registry (respond.io parity); a
+    later reference to the same name (any case) reuses it, never duplicates."""
+    ws = _default_workspace_id(session_factory)
+    hdr, cid = _seeded(client, session_factory, phone="+60555222003")
+
+    before = client.get(f"/omnichannel/workspaces/{ws}/contact-tags", headers=_auth(client)).json()
+    assert not any(t["name"] == "VIP" for t in before)
+
+    r = client.patch(f"/api/v1/omnichannel/contacts/{cid}", json={"tags": ["VIP"]}, headers=hdr)
+    assert r.status_code == 200, r.text
+    assert [t["name"] for t in r.json()["tags"]] == ["VIP"]
+
+    after = client.get(f"/omnichannel/workspaces/{ws}/contact-tags", headers=_auth(client)).json()
+    assert any(t["name"] == "VIP" for t in after)
+
+    # Re-sending a differently-cased name reuses the existing tag, no dup.
+    r2 = client.patch(f"/api/v1/omnichannel/contacts/{cid}", json={"tags": ["vip"]}, headers=hdr)
+    assert r2.status_code == 200, r2.text
+    after2 = client.get(f"/omnichannel/workspaces/{ws}/contact-tags", headers=_auth(client)).json()
+    assert len([t for t in after2 if t["name"].lower() == "vip"]) == 1
+
+    # `tags: null` clears the whole set.
+    cleared = client.patch(f"/api/v1/omnichannel/contacts/{cid}", json={"tags": None}, headers=hdr)
+    assert cleared.status_code == 200 and cleared.json()["tags"] == []
+
+
+def test_gateway_patch_lifecycle_move_by_key_and_label(client, session_factory):
+    """AC-CDM-26 - `lifecycle` accepts either the stage KEY or its LABEL text,
+    resolved in the contact's own workspace, and moves via the machine."""
+    ws = _default_workspace_id(session_factory)
+    hdr, cid = _seeded(client, session_factory, phone="+60555222004")
+    _stamp_initial_lifecycle(session_factory, cid, ws)
+
+    by_key = client.patch(f"/api/v1/omnichannel/contacts/{cid}", json={"lifecycle": "hot_lead"}, headers=hdr)
+    assert by_key.status_code == 200, by_key.text
+    assert by_key.json()["lifecycle"]["key"] == "hot_lead"
+
+    by_label = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}", json={"lifecycle": "\U0001F4B5 Payment"}, headers=hdr
+    )
+    assert by_label.status_code == 200, by_label.text
+    assert by_label.json()["lifecycle"]["key"] == "payment"
+
+
+def test_gateway_patch_lifecycle_unknown_stage_422(client, session_factory):
+    """AC-CDM-26 - a value that matches no stage in this workspace is a 422
+    `fieldErrors.lifecycle`, never a 404 (it came from the request body)."""
+    hdr, cid = _seeded(client, session_factory, phone="+60555222005")
+    r = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}", json={"lifecycle": "not-a-real-stage"}, headers=hdr
+    )
+    assert r.status_code == 422, r.text
+    err = r.json()["error"]
+    assert err["code"] == "invalid_request"
+    assert err["details"] == {"lifecycle": "Unknown lifecycle stage."}
+
+
+def test_gateway_patch_lifecycle_no_edge_409(client, session_factory):
+    """AC-CDM-26 - a move with no edge in the graph is `409
+    lifecycle_move_not_allowed` (the machine's own error), and nothing is
+    written by the failed move."""
+    ws = _default_workspace_id(session_factory)
+    hdr, cid = _seeded(client, session_factory, phone="+60555222006")
+    _stamp_initial_lifecycle(session_factory, cid, ws)
+
+    won = client.patch(f"/api/v1/omnichannel/contacts/{cid}", json={"lifecycle": "customer"}, headers=hdr)
+    assert won.status_code == 200, won.text
+    assert won.json()["lifecycle"]["isWon"] is True
+
+    # `customer` is `is_terminal` (won) - no outgoing edges at all.
+    r = client.patch(f"/api/v1/omnichannel/contacts/{cid}", json={"lifecycle": "new_lead"}, headers=hdr)
+    assert r.status_code == 409, r.text
+    assert r.json()["error"]["code"] == "lifecycle_move_not_allowed"
+
+    got = client.get(f"/api/v1/omnichannel/contacts/{cid}", headers=hdr).json()
+    assert got["lifecycle"]["key"] == "customer"
+
+
+def test_gateway_patch_bad_customfields_422_field_errors(client, session_factory):
+    """AC-CDM-06/26 - an invalid `customFields` value 422s with the
+    documented `{fieldErrors}`-style `details` map, keyed `customFields.<key>`."""
+    ws = _default_workspace_id(session_factory)
+    _add_custom_field(client, ws, key="age", field_type="number")
+    hdr, cid = _seeded(client, session_factory, phone="+60555222007")
+
+    r = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}",
+        json={"customFields": {"age": "not-a-number"}},
+        headers=hdr,
+    )
+    assert r.status_code == 422, r.text
+    assert r.json()["error"]["details"] == {"customFields.age": "Must be a number."}
+
+
+def test_gateway_patch_atomic_bad_customfields_leaves_tags_unchanged(client, session_factory):
+    """Atomicity (S3 DoD): a PATCH combining a valid `tags` replace with an
+    invalid `customFields` value writes NOTHING - the contact's tag set is
+    unchanged even though tag resolution and field validation are two
+    different seams, because they share ONE unit of work
+    (`ConversationService.patch_thread`)."""
+    ws = _default_workspace_id(session_factory)
+    _add_custom_field(client, ws, key="age", field_type="number")
+    hdr, cid = _seeded(client, session_factory, phone="+60555222008")
+
+    seed = client.patch(f"/api/v1/omnichannel/contacts/{cid}", json={"tags": ["Existing"]}, headers=hdr)
+    assert seed.status_code == 200, seed.text
+
+    r = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}",
+        json={"tags": ["NewOne"], "customFields": {"age": "not-a-number"}},
+        headers=hdr,
+    )
+    assert r.status_code == 422, r.text
+
+    got = client.get(f"/api/v1/omnichannel/contacts/{cid}", headers=hdr).json()
+    assert [t["name"] for t in got["tags"]] == ["Existing"]
+    # The bad payload's new tag name must not have been auto-created either.
+    tags = client.get(f"/omnichannel/workspaces/{ws}/contact-tags", headers=_auth(client)).json()
+    assert not any(t["name"] == "NewOne" for t in tags)
+
+
+def test_gateway_customfields_never_leak_deleted_field_values(client, session_factory):
+    """`customFields` reads only registered keys - deleting the field strips
+    the value everywhere, including both gateway shapes."""
+    ws = _default_workspace_id(session_factory)
+    field = _add_custom_field(client, ws, key="temp", field_type="text")
+    hdr, cid = _seeded(client, session_factory, phone="+60555222009")
+
+    client.patch(f"/api/v1/omnichannel/contacts/{cid}", json={"customFields": {"temp": "value"}}, headers=hdr)
+    deleted = client.delete(
+        f"/omnichannel/workspaces/{ws}/contact-fields/{field['id']}", headers=_auth(client)
+    )
+    assert deleted.status_code == 204
+
+    got = client.get(f"/api/v1/omnichannel/contacts/{cid}", headers=hdr).json()
+    assert got["customFields"] == {}
+    rio = client.get(f"/api/v1/omnichannel/contacts/{cid}?format=rio", headers=hdr).json()
+    assert rio["custom_fields"] == []
+
+
+def test_gateway_webhook_contact_updated_payload_carries_new_fields(client, session_factory):
+    """AC-CDM-25/27 - the `contact.updated` webhook envelope's `data.contact`
+    is the SAME default `ThreadItem` shape the read endpoints return, so it is
+    already lossless with the new fields - one internal type covers reads
+    and webhooks alike (no separate payload builder to keep in sync)."""
+    ws = _default_workspace_id(session_factory)
+    _add_custom_field(client, ws, key="source", field_type="text")
+    hdr, cid = _seeded(client, session_factory, phone="+60555222010")
+    _stamp_initial_lifecycle(session_factory, cid, ws)
+    reg = client.post(
+        "/api/v1/omnichannel/webhooks",
+        json={"name": "w", "url": "https://hooks.example.com/w", "events": ["contact.updated"]},
+        headers=hdr,
+    )
+    assert reg.status_code == 201, reg.text
+
+    r = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}",
+        json={"customFields": {"source": "Ads"}, "tags": ["VIP"], "lifecycle": "hot_lead"},
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+
+    from modules.omnichannel.models import WebhookDelivery
+
+    db = session_factory()
+    delivery = (
+        db.query(WebhookDelivery)
+        .filter(WebhookDelivery.event_type == "contact.updated")
+        .order_by(WebhookDelivery.created_at.desc())
+        .first()
+    )
+    assert delivery is not None
+    contact = delivery.payload_json["data"]["contact"]
+    db.close()
+
+    assert contact["customFields"] == {"source": "Ads"}
+    assert [t["name"] for t in contact["tags"]] == ["VIP"]
+    assert contact["lifecycle"]["key"] == "hot_lead"
+    assert contact["language"] is None and contact["countryCode"] is None

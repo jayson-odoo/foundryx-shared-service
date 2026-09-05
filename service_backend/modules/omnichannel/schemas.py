@@ -622,13 +622,22 @@ class PublicContactListResponse(ApiModel):
 
 
 class PublicContactUpdateRequest(ApiModel):
-    """Partial update of a contact. Only the fields you SEND are changed;
-    ``assignedUserId``/``customFields`` sent as ``null`` clear the value."""
+    """Partial update of a contact (plan 25 S3). Only the fields you SEND are
+    changed; ``assignedUserId``/``customFields`` sent as ``null`` clear the
+    value. ``tags`` REPLACES the whole tag set (names, auto-created if
+    unknown - respond.io parity, D8); ``null`` clears every tag.
+    ``lifecycle`` moves the contact along the workspace's lifecycle graph by
+    stage KEY or LABEL - it cannot be cleared (send nothing to leave it
+    unchanged)."""
     firstName: Optional[str] = None
     lastName: Optional[str] = None
     priority: Optional[str] = None  # LOW|MEDIUM|HIGH|URGENT
     assignedUserId: Optional[str] = None
     customFields: Optional[dict] = None
+    language: Optional[str] = None
+    countryCode: Optional[str] = None
+    tags: Optional[List[str]] = None
+    lifecycle: Optional[str] = None
 
 
 class PublicCommentRequest(ApiModel):

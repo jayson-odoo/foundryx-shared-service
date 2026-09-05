@@ -152,37 +152,42 @@ class PublicGatewayService:
         )
         return {u.id: u for u in rows}
 
-    def _rio_contact(
-        self, contact: Contact, *, thread: "ThreadItem", users: dict
-    ) -> RioContactItem:
-        """Map the internal ThreadItem (+ the ORM row, which carries `email` and
-        custom fields the ThreadItem omits) to the respond.io shape.
+    def _rio_contact(self, *, thread: "ThreadItem", users: dict) -> RioContactItem:
+        """Map the internal `ThreadItem` to the respond.io shape - ONE data
+        path (plan 25 S3): `language`/`countryCode`/`customFields`/`tags`/
+        `lifecycle` are read straight off `thread` (already resolved
+        tenant+workspace-scoped by `ConversationService._thread_items`), never
+        re-queried here. `lifecycle` renders as the stage LABEL text (which
+        already carries the emoji, D3); `tags` as bare names (respond.io
+        parity, D8 - ids stay an internal-only concept).
 
         Anything ThreadItem carries that respond.io has no field for is kept as
         an explicit Foundryx extension rather than dropped - a gateway consumer
         has no other read source for `unreadCount`/`lastMessagePreview`, and an
         inbox list cannot be built without them (BL-SS-026)."""
-        cf = contact.custom_fields_json or {}
-        custom = [RioCustomField(name=str(k), value=None if v is None else str(v)) for k, v in cf.items()]
+        custom = [
+            RioCustomField(name=str(k), value=None if v is None else str(v))
+            for k, v in (thread.customFields or {}).items()
+        ]
         assignee = None
-        if contact.assigned_user_id and contact.assigned_user_id in users:
-            u = users[contact.assigned_user_id]
+        if thread.assignedUserId and thread.assignedUserId in users:
+            u = users[thread.assignedUserId]
             assignee = RioAssignee(id=u.id, firstName=u.name, lastName=None, email=u.email)
         return RioContactItem(
-            id=contact.id,
-            firstName=contact.first_name,
-            lastName=contact.last_name,
-            phone=contact.phone,
-            email=contact.email,
-            language=None,          # not modeled (respond.io parity field)
-            profilePic=contact.avatar_url,
-            countryCode=None,       # not modeled
+            id=thread.id,
+            firstName=thread.firstName,
+            lastName=thread.lastName,
+            phone=thread.phone,
+            email=thread.email,
+            language=thread.language,
+            profilePic=thread.avatarUrl,
+            countryCode=thread.countryCode,
             custom_fields=custom,
             status=(thread.status or "OPEN").lower(),
-            tags=[],                # not modeled
+            tags=[t.name for t in thread.tags],
             assignee=assignee,
-            lifecycle=None,         # not modeled
-            created_at=_epoch(contact.created_at),
+            lifecycle=thread.lifecycle.label if thread.lifecycle else None,
+            created_at=_epoch(thread.createdAt),
             isBlocked=False,        # not modeled
             cswExpiresAt=_iso_z(thread.cswExpiresAt),
             priority=thread.priority,
@@ -285,8 +290,8 @@ class PublicGatewayService:
         thread = ConversationService(self.db).thread_item(contact)
         if fmt != FORMAT_RIO:
             return thread
-        users = self._users_by_id(tenant_id, [contact.assigned_user_id])
-        return self._rio_contact(contact, thread=thread, users=users)
+        users = self._users_by_id(tenant_id, [thread.assignedUserId])
+        return self._rio_contact(thread=thread, users=users)
 
     def list_contacts(
         self,
@@ -318,22 +323,11 @@ class PublicGatewayService:
         )
         if fmt != FORMAT_RIO:
             return items, total
-        # Rio needs the ORM rows too - ThreadItem omits email + custom fields.
-        ids = [t.id for t in items]
-        contacts = (
-            self.db.query(Contact)
-            .filter(Contact.tenant_id == tenant_id, Contact.id.in_(ids))
-            .all()
-            if ids
-            else []
-        )
-        by_id = {c.id: c for c in contacts}
-        users = self._users_by_id(tenant_id, [c.assigned_user_id for c in contacts])
-        rio = [
-            self._rio_contact(by_id[t.id], thread=t, users=users)
-            for t in items
-            if t.id in by_id
-        ]
+        # ThreadItem already carries everything the Rio shape needs (plan 25 -
+        # language/countryCode/customFields/tags/lifecycle included) - no
+        # second query path, just the assignee-name batch.
+        users = self._users_by_id(tenant_id, [t.assignedUserId for t in items])
+        rio = [self._rio_contact(thread=t, users=users) for t in items]
         return rio, total
 
     def list_contact_messages(
@@ -393,12 +387,60 @@ class PublicGatewayService:
         priority: Optional[str] = None,
         assigned_user_id=...,
         custom_fields=...,
+        language=...,
+        country_code=...,
+        tags=...,
+        lifecycle=...,
         fmt: str = FORMAT_GUIDE,
     ):
+        """Gateway PATCH (AC-CDM-26). `tags` is a list of NAMES (respond.io
+        parity, D8) - unknown names are auto-created in this contact's
+        workspace; `null` replaces the set with empty (clears every tag).
+        `lifecycle` is a stage KEY or LABEL, resolved in this contact's own
+        workspace - a value that matches no stage is a 422
+        `fieldErrors.lifecycle`, a value that matches a stage with no fireable
+        edge from the current one is a `409 lifecycle_move_not_allowed`.
+        Everything (system fields, customFields, tags, the lifecycle move)
+        applies in ONE unit of work via `ConversationService.patch_thread` - a
+        4xx from either half leaves nothing written."""
         from .contact_profile_service import ProfilePatchError
+        from .contact_tag_service import ContactTagService, TagValidationError
         from .conversation_service import ConversationService, InvalidPatch
+        from .lifecycle_service import LifecycleStageNotFound, find_stage_by_key_or_label
+
+        from app.services.status_machine import (
+            TransitionConditionsNotMet,
+            TransitionForbidden,
+            TransitionNotAllowed,
+        )
 
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
+
+        tag_ids = ...
+        if tags is not ...:
+            if tags is None:
+                tag_ids = []  # explicit null - replace the set with empty (clears all tags)
+            else:
+                try:
+                    tag_ids = ContactTagService(self.db).resolve_or_create_by_name(
+                        workspace_id, tenant_id, tags
+                    )
+                except TagValidationError as exc:
+                    raise ApiError(
+                        422, "invalid_request", exc.message, {exc.field: exc.message}
+                    ) from exc
+
+        lifecycle_status_id = ...
+        if lifecycle is not ...:
+            if lifecycle is None:
+                msg = "lifecycle cannot be cleared."
+                raise ApiError(422, "invalid_request", msg, {"lifecycle": msg})
+            stage = find_stage_by_key_or_label(self.db, tenant_id, workspace_id, lifecycle)
+            if stage is None:
+                msg = "Unknown lifecycle stage."
+                raise ApiError(422, "invalid_request", msg, {"lifecycle": msg})
+            lifecycle_status_id = stage.id
+
         try:
             thread = ConversationService(self.db).patch_thread(
                 contact.id,
@@ -407,12 +449,25 @@ class PublicGatewayService:
                 priority=priority,
                 first_name=first_name,
                 last_name=last_name,
+                language=language,
+                country_code=country_code,
                 custom_fields=custom_fields,
+                tag_ids=tag_ids,
+                lifecycle_status_id=lifecycle_status_id,
+                # API-key context has no acting User - fails closed on any
+                # actor-conditioned lifecycle edge, by design (matches the
+                # embed principal's `_native_actor` convention).
+                actor=None,
             )
         except InvalidPatch as exc:
             raise ApiError(422, "invalid_request", str(exc)) from exc
         except ProfilePatchError as exc:
             raise ApiError(422, "invalid_request", "Validation failed.", exc.errors) from exc
+        except LifecycleStageNotFound as exc:
+            msg = "Unknown lifecycle stage."
+            raise ApiError(422, "invalid_request", msg, {"lifecycle": msg}) from exc
+        except (TransitionNotAllowed, TransitionForbidden, TransitionConditionsNotMet) as exc:
+            raise ApiError(409, "lifecycle_move_not_allowed", exc.message) from exc
         return self._after_patch(tenant_id, contact.id, thread, fmt=fmt)
 
     def set_conversation_state(
@@ -431,13 +486,14 @@ class PublicGatewayService:
         return self._after_patch(tenant_id, contact.id, thread, fmt=fmt)
 
     def _after_patch(self, tenant_id: str, contact_id: str, thread, *, fmt: str = FORMAT_GUIDE):
-        """Re-read the mutated contact and render it in the requested shape, so
-        a write echoes exactly what the matching GET would return."""
+        """Render the just-mutated `ThreadItem` (already the post-commit,
+        post-refresh state from `patch_thread`) in the requested shape, so a
+        write echoes exactly what the matching GET would return - no second
+        read of the contact."""
         if fmt != FORMAT_RIO:
             return thread
-        contact = self.contacts.get_by_id(contact_id, tenant_id)
-        users = self._users_by_id(tenant_id, [contact.assigned_user_id])
-        return self._rio_contact(contact, thread=thread, users=users)
+        users = self._users_by_id(tenant_id, [thread.assignedUserId])
+        return self._rio_contact(thread=thread, users=users)
 
     def add_comment(self, tenant_id: str, workspace_id: str, identifier: str, body: str):
         """Add an internal note (comment) to a contact's thread - SYSTEM bubble,
