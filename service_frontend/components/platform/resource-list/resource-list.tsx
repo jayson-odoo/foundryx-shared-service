@@ -453,6 +453,10 @@ export function ResourceList<T extends object>({
                   onChange={list.setSearch}
                   placeholder={config.searchPlaceholder ?? 'Search…'}
                   ariaLabel={config.searchPlaceholder ?? 'Search'}
+                  // T6 fix round 1 item 7 - also gate the settling spinner
+                  // on the list's OWN in-flight fetch (sort/filter/page
+                  // changes, not just search), same 250ms delay gate.
+                  busy={list.isLoading}
                 />
 
                 {config.searchHints && config.searchHints.length > 0 && (
