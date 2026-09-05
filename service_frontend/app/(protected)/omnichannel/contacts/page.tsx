@@ -9,16 +9,10 @@
  */
 import { Fragment, useEffect, useState } from 'react';
 import { LoaderCircleIcon } from 'lucide-react';
-import {
-  Toolbar,
-  ToolbarActions,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
 import { RequirePermission } from '@/components/common/require-permission';
+import { PageHeader } from '@/components/platform/page-header';
 import { ResourceList } from '@/components/platform/resource-list';
 import { SearchSelect } from '@/components/platform/search-select';
 import { useCan } from '@/hooks/use-can';
@@ -116,37 +110,36 @@ export default function ContactsPage() {
     <RequirePermission permission="contacts.read">
       <Fragment>
         <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>
-                Every contact in this workspace - lifecycle, tags, assignee and channel.
-              </ToolbarDescription>
-            </ToolbarHeading>
-            <ToolbarActions>
-              {workspaces.length > 1 && (
-                <SearchSelect
-                  ariaLabel="Workspace"
-                  className="w-56"
-                  value={workspaceId}
-                  onChange={setWorkspaceId}
-                  options={workspaces.map((w) => ({ label: w.name, value: w.id }))}
-                />
-              )}
-              {canManageSegments && currentFilter && (
-                <Button variant="outline" size="sm" onClick={() => setSaveSegmentOpen(true)}>
-                  Save as segment
-                </Button>
-              )}
-              {canManageSegments && segments.length > 0 && (
-                <Button variant="outline" size="sm" onClick={() => setManageSegmentsOpen(true)}>
-                  Manage segments
-                </Button>
-              )}
-            </ToolbarActions>
-          </Toolbar>
+          <PageHeader
+            description="Every contact in this workspace - lifecycle, tags, assignee and channel."
+            actions={
+              <Fragment>
+                {workspaces.length > 1 && (
+                  <SearchSelect
+                    ariaLabel="Workspace"
+                    className="w-56"
+                    value={workspaceId}
+                    onChange={setWorkspaceId}
+                    options={workspaces.map((w) => ({ label: w.name, value: w.id }))}
+                  />
+                )}
+                {canManageSegments && currentFilter && (
+                  <Button variant="outline" size="sm" onClick={() => setSaveSegmentOpen(true)}>
+                    Save as segment
+                  </Button>
+                )}
+                {canManageSegments && segments.length > 0 && (
+                  <Button variant="outline" size="sm" onClick={() => setManageSegmentsOpen(true)}>
+                    Manage segments
+                  </Button>
+                )}
+              </Fragment>
+            }
+          />
         </Container>
-        <Container width="fluid">{workspaceId ? <ResourceList config={config} /> : null}</Container>
+        <Container width="fluid">
+          {workspaceId ? <ResourceList config={config} hideHeader restoreFromCtx /> : null}
+        </Container>
 
         {currentFilter && (
           <SaveSegmentDialog

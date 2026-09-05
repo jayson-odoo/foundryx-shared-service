@@ -6,7 +6,7 @@
  * dialog. Mirrors `use-contact-tags.ts` / `use-contact-fields.ts` shape.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/api-client';
 import { contactSegmentService } from '@/services/contact-segment-service';
 import type { ContactSegment, CreateContactSegmentInput, UpdateContactSegmentInput } from '@/types/omnichannel';

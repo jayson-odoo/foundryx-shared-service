@@ -8,7 +8,7 @@
  * never a bare "something went wrong", AC-CTM-09).
  */
 import { useCallback, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { contactService } from '@/services/contact-service';
 import type { BulkResult } from '@/types/omnichannel';
 

@@ -14,7 +14,7 @@ import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { UserRound } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import { ConversationDrawer } from '@/components/platform/conversation-drawer';
 import { ApiError } from '@/lib/api-client';
@@ -54,6 +54,7 @@ export function useContactForm(contactId: string | undefined, workspaceId: strin
   const [notFound, setNotFound] = useState(false);
 
   const createForm = useForm<ContactCreateValues>({
+    mode: 'onTouched',
     resolver: zodResolver(contactCreateSchema),
     defaultValues: defaultContactCreateValues(),
   });

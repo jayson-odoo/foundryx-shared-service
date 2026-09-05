@@ -9,7 +9,7 @@
 import { useEffect, useState } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -37,6 +37,7 @@ export function SaveSegmentDialog({ open, onOpenChange, filter, onSave }: SaveSe
   void filter; // the tree itself is carried by the caller; this dialog only names it
   const [submitting, setSubmitting] = useState(false);
   const form = useForm<SegmentFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(segmentFormSchema),
     defaultValues: defaultSegmentFormValues(),
   });
