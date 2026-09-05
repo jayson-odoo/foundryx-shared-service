@@ -13,6 +13,9 @@ const { useSessionMock } = vi.hoisted(() => ({ useSessionMock: vi.fn() }));
 vi.mock('next-auth/react', () => ({ useSession: useSessionMock }));
 vi.mock('@/lib/impersonation-store', () => ({ useImpersonationSession: () => null }));
 
+const { pushMock } = vi.hoisted(() => ({ pushMock: vi.fn() }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: pushMock }) }));
+
 const { listShortcutsMock, runShortcutMock } = vi.hoisted(() => ({
   listShortcutsMock: vi.fn(),
   runShortcutMock: vi.fn(),
@@ -52,7 +55,7 @@ describe('ShortcutMenu', () => {
   });
 
   it('running a shortcut toasts success with a link to the run (AC-IVE-39)', async () => {
-    withPermissions(['conversations.shortcut']);
+    withPermissions(['conversations.shortcut', 'workflows.read']);
     listShortcutsMock.mockResolvedValue([{ workflowId: 'wf-1', name: 'Send NPS survey' }]);
     runShortcutMock.mockResolvedValue({ runId: 'run-1', status: 'PENDING' });
     const user = userEvent.setup();
@@ -62,10 +65,28 @@ describe('ShortcutMenu', () => {
     await user.click(await screen.findByText('Send NPS survey'));
 
     await waitFor(() => expect(runShortcutMock).toHaveBeenCalledWith('cnt-001', 'wf-1'));
-    await waitFor(() =>
-      expect(toast.success).toHaveBeenCalledWith('Shortcut started.', { description: 'Run run-1' }),
-    );
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
     expect(toast.error).not.toHaveBeenCalled();
+
+    const [, options] = (toast.success as ReturnType<typeof vi.fn>).mock.calls.at(-1)!;
+    expect(options.action?.label).toBe('View run');
+    options.action.onClick();
+    expect(pushMock).toHaveBeenCalledWith('/workflows/wf-1?edit=1&debug=run-1');
+  });
+
+  it('running a shortcut without workflows.read toasts success with NO link (foolproof-UI)', async () => {
+    withPermissions(['conversations.shortcut']);
+    listShortcutsMock.mockResolvedValue([{ workflowId: 'wf-1', name: 'Send NPS survey' }]);
+    runShortcutMock.mockResolvedValue({ runId: 'run-1', status: 'PENDING' });
+    const user = userEvent.setup();
+    render(<ShortcutMenu contactId="cnt-001" />);
+
+    await user.click(await screen.findByRole('combobox', { name: 'Run a shortcut' }));
+    await user.click(await screen.findByText('Send NPS survey'));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    const [, options] = (toast.success as ReturnType<typeof vi.fn>).mock.calls.at(-1)!;
+    expect(options.action).toBeUndefined();
   });
 
   it('a 409 (unauthorized Code node) toasts the SERVER message, not a generic one (AC-IVE-39/48)', async () => {

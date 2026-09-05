@@ -50,6 +50,7 @@ function renderRail(views: InboxView[], filters: ConversationFilters = DEFAULT_F
     create: vi.fn(),
     update: vi.fn(),
     remove: vi.fn(),
+    refresh: vi.fn(),
   });
   useStatusGraphMock.mockReturnValue({ graph: null });
   render(

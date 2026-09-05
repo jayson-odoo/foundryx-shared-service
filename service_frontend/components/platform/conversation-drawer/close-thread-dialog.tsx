@@ -14,6 +14,7 @@ import {
   Dialog,
   DialogBody,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -81,6 +82,7 @@ export function CloseThreadDialog({ open, onOpenChange, reasons, onClose }: Clos
       <DialogContent className="max-w-sm">
         <DialogHeader>
           <DialogTitle>Close conversation</DialogTitle>
+          <DialogDescription>A reason and an optional note for the record.</DialogDescription>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-4">
           {error && <p className="text-sm text-destructive">{error}</p>}

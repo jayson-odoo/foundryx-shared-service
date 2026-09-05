@@ -22,6 +22,8 @@ WA_TEMPLATES_MANAGE = "wa_templates.manage"
 WEBHOOKS_MANAGE = "webhooks.manage"
 WORKSPACES_MANAGE = "workspaces.manage"
 API_KEYS_MANAGE = "api_keys.manage"
+CONVERSATIONS_READ = "conversations.read"
+CLOSE_REASONS_MANAGE = "close_reasons.manage"
 
 
 # ---- channels --------------------------------------------------------------
@@ -283,6 +285,111 @@ WORKSPACES_TRASH = DeferredActionDef(
 )
 
 
+# ---- close reasons (plan 27 A3, review round 1 follow-up) -----------------
+#
+# `entity_id` is the bare reason id (globally unique PK). `park()` gates on
+# `conversations.read` only (every user with the row menu at all holds it);
+# the router's OWN endpoint additionally requires `close_reasons.manage` (a
+# reason offers Delete only while `usesCount == 0` per D-A3-13, so the
+# in-use 409 stays a defense-in-depth check, not the primary UX gate).
+
+
+def _close_reason_row(db: Session, tenant_id: str, entity_id: str):
+    from .models import CloseReason
+
+    return (
+        db.query(CloseReason)
+        .filter(CloseReason.id == entity_id, CloseReason.tenant_id == tenant_id)
+        .first()
+    )
+
+
+def _close_reasons_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    return _close_reason_row(db, tenant_id, entity_id) is not None
+
+
+def _close_reasons_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
+    from .services.close_reason_service import CloseReasonInUse, CloseReasonService
+
+    row = _close_reason_row(db, tenant_id, entity_id)
+    if row is None:
+        raise ValueError("Close reason no longer exists.")
+    try:
+        CloseReasonService(db).delete(entity_id, row.workspace_id, tenant_id)
+    except CloseReasonInUse as exc:
+        raise ValueError(
+            "This close reason is still referenced by closed conversations - deactivate it instead."
+        ) from exc
+
+
+CLOSE_REASONS_DELETE = DeferredActionDef(
+    key="close_reasons.delete",
+    module="omnichannel",
+    entity_type="close_reason",
+    permission=CLOSE_REASONS_MANAGE,
+    window="destructive",
+    label="Delete",
+    execute=_close_reasons_delete,
+    exists=_close_reasons_exists,
+)
+
+
+# ---- saved inbox views (plan 27 A3, review round 1 follow-up) --------------
+#
+# `entity_id` is the bare view id (globally unique PK). AC-IVE-19: an OWNER
+# may delete their own, non-shared view with only `conversations.read`;
+# deleting a SHARED view or someone else's additionally needs
+# `inbox_views.manage`. `park()` only checks ONE static permission key
+# (`DeferredActionDef.permission`), so this registers the WIDER
+# `conversations.read` floor and re-checks the narrower rule INSIDE the
+# handler (mirrors the router's own `_requires_manage`) - a countdown can
+# start for anyone who can see the row, but only an authorized actor's
+# commit actually deletes it; an unauthorized commit fails loudly (the
+# park-time `exists` check cannot see WHO parked it).
+
+
+def _inbox_view_row(db: Session, tenant_id: str, entity_id: str):
+    from .models import InboxView
+
+    return (
+        db.query(InboxView)
+        .filter(InboxView.id == entity_id, InboxView.tenant_id == tenant_id)
+        .first()
+    )
+
+
+def _inbox_views_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    return _inbox_view_row(db, tenant_id, entity_id) is not None
+
+
+def _inbox_views_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
+    from app.dependencies import effective_permission_keys
+    from app.models.user import User
+
+    from .services.inbox_view_service import InboxViewService
+
+    row = _inbox_view_row(db, tenant_id, entity_id)
+    if row is None:
+        raise ValueError("View no longer exists.")
+    actor = db.query(User).filter(User.id == actor_user_id, User.tenant_id == tenant_id).first()
+    requires_manage = row.is_shared or actor is None or row.owner_user_id != actor.id
+    if requires_manage and (actor is None or "inbox_views.manage" not in effective_permission_keys(actor)):
+        raise ValueError("Missing permission: inbox_views.manage")
+    InboxViewService(db).delete(entity_id, row.workspace_id, tenant_id)
+
+
+INBOX_VIEWS_DELETE = DeferredActionDef(
+    key="inbox_views.delete",
+    module="omnichannel",
+    entity_type="inbox_view",
+    permission=CONVERSATIONS_READ,
+    window="destructive",
+    label="Delete",
+    execute=_inbox_views_delete,
+    exists=_inbox_views_exists,
+)
+
+
 _ALL = (
     CHANNELS_DISCONNECT,
     CHANNELS_DELETE,
@@ -292,6 +399,8 @@ _ALL = (
     QUICK_REPLIES_DELETE,
     API_KEYS_REVOKE,
     WORKSPACES_TRASH,
+    CLOSE_REASONS_DELETE,
+    INBOX_VIEWS_DELETE,
 )
 
 

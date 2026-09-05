@@ -7,21 +7,17 @@
  * `variant` (never fork a parallel component, per the reuse mandate):
  * `sidebar` (>=1024px, a vertical nav column) and `select` (below 1024px, a
  * single `SearchSelect` collapsing the same options - AC-IVE-24).
+ *
+ * Delete is a deferred (grace-window) action (review round 1 frontend
+ * follow-up, finding 5) - no confirm dialog; `useDeferredAction` parks the
+ * registered `inbox_views.delete` handler and a `deferredToast` (the same
+ * countdown the Resource shell's row actions use) replaces it while it
+ * counts down.
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { MoreHorizontal, Plus } from 'lucide-react';
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import {
@@ -30,11 +26,15 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { deferredToast, dismissDeferredToast } from '@/components/platform/resource-actions/deferred-toast';
 import { SearchSelect, type SearchSelectGroup } from '@/components/platform/search-select';
 import { useCan } from '@/hooks/use-can';
+import { useDeferredAction } from '@/hooks/use-deferred-action';
 import type { ConversationFilters } from '@/hooks/use-conversations';
 import { useInboxViews } from '@/hooks/use-inbox-views';
 import { useStatusGraph } from '@/hooks/use-status-engine';
+import { deferredDoneMessage, presentContinuous } from '@/lib/deferred-verb';
+import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import type { InboxView } from '@/types/omnichannel';
 
@@ -63,7 +63,7 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
   // Scoped machine - never fire before the workspace id (its scope) resolves,
   // or the backend 422s "Workspace is required for this entity" on mount.
   const lifecycleGraph = useStatusGraph(workspaceId ? CONTACT_LIFECYCLE_ENTITY : null, workspaceId ?? undefined);
-  const { views, create, update, remove } = useInboxViews(workspaceId);
+  const { views, create, update, refresh } = useInboxViews(workspaceId);
 
   const stages = useMemo<RailStage[]>(
     () =>
@@ -77,7 +77,51 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingView, setEditingView] = useState<InboxView | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<InboxView | null>(null);
+
+  const activeDeleteToastRef = useRef<{ id: string | number; name: string } | null>(null);
+  const settleActiveDelete = () => {
+    const active = activeDeleteToastRef.current;
+    if (active) dismissDeferredToast(active.id);
+    activeDeleteToastRef.current = null;
+    return active;
+  };
+  const deferred = useDeferredAction({
+    onCommitted: () => {
+      const active = settleActiveDelete();
+      toast.success(active ? deferredDoneMessage('Delete', 'inbox_view', 1) : 'Done.');
+      void refresh();
+    },
+    onFailed: (error) => {
+      settleActiveDelete();
+      toast.error(error || 'The action failed.');
+    },
+    onCancelledElsewhere: () => settleActiveDelete(),
+  });
+
+  const deleteView = async (view: InboxView) => {
+    const toastId = `pending-action-inbox-view-${view.id}`;
+    try {
+      const { commitAt, windowSeconds, parkedEntityIds } = await deferred.start('inbox_views.delete', {
+        entityType: 'inbox_view',
+        entityId: view.id,
+      });
+      if (parkedEntityIds.length === 0) return;
+      activeDeleteToastRef.current = { id: toastId, name: view.name };
+      deferredToast({
+        id: toastId,
+        verb: presentContinuous('Delete'),
+        commitAt,
+        windowSeconds,
+        onCancel: () => {
+          void deferred.cancel();
+          activeDeleteToastRef.current = null;
+          dismissDeferredToast(toastId);
+        },
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not start that action.');
+    }
+  };
 
   // AC-IVE-22 - saving adds the view to the rail AND selects it. `views` in
   // this closure may still be one render behind the just-created row (create()
@@ -246,7 +290,7 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
                         <DropdownMenuItem onClick={() => view && openEdit(view)}>Rename</DropdownMenuItem>
                         <DropdownMenuItem
                           className="text-destructive"
-                          onClick={() => view && setPendingDelete(view)}
+                          onClick={() => view && void deleteView(view)}
                         >
                           Delete
                         </DropdownMenuItem>
@@ -267,27 +311,6 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
         onCreate={async (values) => selectCreatedView(await create({ ...values, filter: currentFilter }))}
         onUpdate={(id, values) => update(id, values)}
       />
-
-      <AlertDialog open={!!pendingDelete} onOpenChange={(open) => !open && setPendingDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete &ldquo;{pendingDelete?.name}&rdquo;?</AlertDialogTitle>
-            <AlertDialogDescription>This cannot be undone.</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => {
-                if (pendingDelete) void remove(pendingDelete.id);
-                setPendingDelete(null);
-              }}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

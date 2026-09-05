@@ -16,6 +16,7 @@ import {
   Dialog,
   DialogBody,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -91,6 +92,9 @@ export function InboxViewDialog({ open, onOpenChange, view, canShare, onCreate, 
       <DialogContent className="max-w-sm">
         <DialogHeader>
           <DialogTitle>{editing ? 'Rename view' : 'Save view'}</DialogTitle>
+          <DialogDescription>
+            {editing ? 'A saved view\'s name and sharing.' : 'A saved snapshot of the current filters.'}
+          </DialogDescription>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">

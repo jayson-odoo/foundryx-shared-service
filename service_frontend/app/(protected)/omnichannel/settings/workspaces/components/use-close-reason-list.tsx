@@ -6,6 +6,12 @@
  * `use-contact-tag-list.tsx`. Delete is offered only while `usesCount === 0`;
  * otherwise the row offers Deactivate/Activate instead (D-A3-13 - history
  * must keep resolving the reason's name).
+ *
+ * Delete is a deferred (grace-window) action (review round 1 frontend
+ * follow-up, finding 5) - no confirm dialog, a countdown in its place via
+ * the registered `close_reasons.delete` handler; `onDeferredCommitted`
+ * threads back to the tab's own `refresh()` so the in-memory `reasons` list
+ * (not just the shell's `reload()`) picks up the deletion.
  */
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
@@ -25,9 +31,11 @@ export interface UseCloseReasonListParams {
   reasons: CloseReason[];
   canManage: boolean;
   onEdit: (reason: CloseReason) => void;
-  onDelete: (reason: CloseReason) => void;
   onSetActive: (reason: CloseReason, isActive: boolean) => void;
   onAdd: () => void;
+  /** Called after a deferred delete commits (review round 1) - refreshes the
+   * tab's own `reasons` source. */
+  onChanged: () => void;
 }
 
 export interface UseCloseReasonListResult {
@@ -38,9 +46,9 @@ export function useCloseReasonList({
   reasons,
   canManage,
   onEdit,
-  onDelete,
   onSetActive,
   onAdd,
+  onChanged,
 }: UseCloseReasonListParams): UseCloseReasonListResult {
   const { formatDate } = useDatetime();
 
@@ -83,10 +91,10 @@ export function useCloseReasonList({
         // Foolproof-UI: a reason with history offers ONLY Deactivate (the
         // real DELETE 409s anyway - this keeps the option off the menu).
         isVisible: (rows) => rows.length === 1 && rows[0].usesCount === 0,
-        run: (rows) => rows[0] && onDelete(rows[0]),
+        deferred: { actionKey: 'close_reasons.delete', entityType: 'close_reason' },
       },
     ],
-    [onEdit, onDelete, onSetActive],
+    [onEdit, onSetActive],
   );
 
   const config = useMemo<ResourceListConfig<CloseReason>>(() => {
@@ -159,6 +167,7 @@ export function useCloseReasonList({
                 rows={[row.original]}
                 runtime={{ ctx: meta?.resourceCtx, index, reload: meta?.reload ?? (() => {}) }}
                 surface="row"
+                onDeferredCommitted={onChanged}
               />
             </div>
           );
@@ -220,7 +229,7 @@ export function useCloseReasonList({
       enableStatusViews: false,
       ...(canManage ? { createLabel: 'Create close reason', createPermission: 'close_reasons.manage', onCreate: onAdd } : {}),
     };
-  }, [reasons, actions, onAdd, canManage, formatDate]);
+  }, [reasons, actions, onAdd, canManage, formatDate, onChanged]);
 
   return { config };
 }

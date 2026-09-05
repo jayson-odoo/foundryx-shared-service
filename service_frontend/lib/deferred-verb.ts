@@ -76,6 +76,10 @@ export const ENTITY_NOUNS: Record<string, { singular: string; plural: string }> 
   ideation_br_idea_link: { singular: 'link', plural: 'links' },
   ideation_embed_connection: { singular: 'embed connection', plural: 'embed connections' },
   tenant_module: { singular: 'module', plural: 'modules' },
+  // Plan 27 review round 1 frontend follow-up: saved views + close reasons
+  // migrated onto the deferred-actions engine.
+  close_reason: { singular: 'close reason', plural: 'close reasons' },
+  inbox_view: { singular: 'view', plural: 'views' },
 };
 
 function capitalize(word: string): string {

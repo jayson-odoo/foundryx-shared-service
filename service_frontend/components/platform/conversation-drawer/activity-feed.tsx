@@ -55,8 +55,9 @@ function eventLine(event: ConversationEvent): string {
       return event.fromLabel && event.toLabel
         ? `${actor} moved the lifecycle from ${event.fromLabel} to ${event.toLabel}`
         : `${actor} moved the lifecycle`;
-    case 'comment_added':
-      return `${actor} added a note`;
+    // `comment_added` is filtered out below BEFORE this ever runs (the note
+    // bubble already IS that activity) - no case for it here, so a caller
+    // reading this switch cannot mistake it for a live rendering path.
     default:
       return `${actor} updated this conversation`;
   }

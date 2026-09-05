@@ -9,8 +9,10 @@
  * typical Agent should be able to fire a shortcut without a builder grant).
  */
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { toast } from '@/lib/toast';
 
+import { workflowPath } from '@/app/(protected)/workflows/components/paths';
 import { SearchSelect, type SearchSelectOption } from '@/components/platform/search-select';
 import { useCan } from '@/hooks/use-can';
 import { useShortcuts } from '@/hooks/use-shortcuts';
@@ -24,6 +26,7 @@ export function ShortcutMenu({ contactId }: ShortcutMenuProps) {
   const { can } = useCan();
   const { shortcuts, isRunning, run } = useShortcuts(contactId);
   const [value, setValue] = useState<string | null>(null);
+  const router = useRouter();
 
   if (!can('conversations.shortcut') || shortcuts.length === 0) return null;
 
@@ -37,8 +40,23 @@ export function ShortcutMenu({ contactId }: ShortcutMenuProps) {
         setValue(workflowId);
         try {
           const result = await run(workflowId);
+          // AC-IVE-39: the success toast links to the run - the editor's
+          // existing debug-overlay route (`?debug=<runId>`, the same one
+          // "Debug in editor" from the Logs tab uses) is the one place a
+          // run's data can be inspected today. Foolproof-UI: only offer the
+          // link to a caller who actually holds `workflows.read` (a typical
+          // Agent running a shortcut usually doesn't) - never a link that
+          // would land on the permission wall.
           toast.success('Shortcut started.', {
-            description: `Run ${result.runId}`,
+            ...(can('workflows.read')
+              ? {
+                  action: {
+                    label: 'View run',
+                    onClick: () =>
+                      router.push(`${workflowPath(workflowId)}?edit=1&debug=${result.runId}`),
+                  },
+                }
+              : {}),
           });
         } catch (error) {
           // A 409 (e.g. the workflow's published version has an unauthorized

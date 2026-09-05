@@ -22,7 +22,7 @@ function reason(over: Partial<CloseReason>): CloseReason {
 
 function actionsFor(reasons: CloseReason[]) {
   const { result } = renderHook(() =>
-    useCloseReasonList({ reasons, canManage: true, onEdit: vi.fn(), onDelete: vi.fn(), onSetActive: vi.fn(), onAdd: vi.fn() }),
+    useCloseReasonList({ reasons, canManage: true, onEdit: vi.fn(), onSetActive: vi.fn(), onAdd: vi.fn(), onChanged: vi.fn() }),
   );
   return result.current.config.actions ?? [];
 }
@@ -56,7 +56,7 @@ describe('useCloseReasonList row actions', () => {
   it('hides the create action entirely when canManage is false', () => {
     const { result } = renderHook(() =>
       useCloseReasonList({
-        reasons: [], canManage: false, onEdit: vi.fn(), onDelete: vi.fn(), onSetActive: vi.fn(), onAdd: vi.fn(),
+        reasons: [], canManage: false, onEdit: vi.fn(), onSetActive: vi.fn(), onAdd: vi.fn(), onChanged: vi.fn(),
       }),
     );
     expect(result.current.config.onCreate).toBeUndefined();
