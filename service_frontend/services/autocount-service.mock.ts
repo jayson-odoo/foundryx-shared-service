@@ -1526,7 +1526,9 @@ export const mockAutocountService: AutocountService = {
         canonicalField: row.sorentoField,
         scope,
         isRequired: fields.find((f) => f.field === row.sorentoField)?.required ?? false,
-        isEnabled: true,
+        // B1 (final review round) - echo the saved isEnabled instead of
+        // hardcoding true, so the mock round-trips a disabled row like real.
+        isEnabled: row.isEnabled ?? true,
       }));
 
     return Promise.resolve({

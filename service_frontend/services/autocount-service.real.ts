@@ -303,5 +303,8 @@ function writeRow(row: AutocountMappingWriteRow) {
     // Default 'header' server-side too (sprint-5/02, AC-02-01) - a
     // master/GRN save never sends anything else.
     scope: row.scope ?? 'header',
+    // B1 (final review round) - must round-trip or a backfill-disabled
+    // off-preview row is silently re-enabled server-side on save.
+    isEnabled: row.isEnabled,
   };
 }

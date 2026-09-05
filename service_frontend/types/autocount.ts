@@ -439,6 +439,13 @@ export interface AutocountMappingWriteRow {
    * on both). Master/GRN entities never send `'line'`.
    */
   scope?: 'header' | 'line';
+  /**
+   * B1 (final review round) - carries a backfill/preset-disabled row's
+   * enabled state through the save so it round-trips unchanged rather than
+   * silently defaulting to enabled server-side (which re-triggers the S1
+   * preview-column gate for an off-preview fixed-field row).
+   */
+  isEnabled?: boolean;
 }
 
 /** `PUT .../mapping` body - replaces the entity's deliverable rows transactionally. */

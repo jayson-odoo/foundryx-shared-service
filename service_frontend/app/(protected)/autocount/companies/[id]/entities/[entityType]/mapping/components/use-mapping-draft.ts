@@ -31,6 +31,9 @@ export function splitMappingRows(
         transform: row.transform,
         formula: row.formula ?? null,
         sorentoField: row.sorentoField,
+        // B1 (final review round) - must carry through unchanged or a
+        // backfill-disabled off-preview row gets silently re-enabled on save.
+        isEnabled: row.isEnabled,
       });
     } else {
       provenance.push(row);
@@ -141,7 +144,13 @@ function useScope(
       const nextTarget = sorentoFields.find((f) => !used.has(f.field));
       return [
         ...prev,
-        { sourcePath: '', transform: 'string', formula: null, sorentoField: nextTarget?.field ?? '' },
+        {
+          sourcePath: '',
+          transform: 'string',
+          formula: null,
+          sorentoField: nextTarget?.field ?? '',
+          isEnabled: true,
+        },
       ];
     });
   }, [sorentoFields]);
@@ -201,6 +210,10 @@ export function useMappingDraft(view: AutocountMappingView | null): UseMappingDr
         formula: r.formula,
         sorentoField: r.sorentoField,
         scope,
+        // B1 (final review round) - must round-trip or a backfill-disabled
+        // off-preview row gets silently re-enabled on save (re-triggers the
+        // S1 preview-column gate).
+        isEnabled: r.isEnabled,
       })),
     [],
   );

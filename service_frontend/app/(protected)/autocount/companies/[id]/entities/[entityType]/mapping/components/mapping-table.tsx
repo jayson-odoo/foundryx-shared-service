@@ -27,6 +27,14 @@ export interface MappingEditableRow {
    *  runs (exact); a non-empty formula is authoritative. */
   formula: string | null;
   sorentoField: string;
+  /**
+   * B1 (final review round) - a backfill/preset can seed a fixed-field row
+   * DISABLED (its source_path doesn't match a real preview column yet,
+   * visibly greyed); this must round-trip through an ordinary save
+   * unchanged, or the editor silently RE-ENABLES it and the S1
+   * preview-column gate 422s the whole draft again.
+   */
+  isEnabled: boolean;
 }
 
 /** The preset label a row currently reflects (read-mode display). */
