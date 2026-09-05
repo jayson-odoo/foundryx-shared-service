@@ -2,12 +2,22 @@ import { render as rtlRender, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsProvider } from '@/providers/settings-provider';
+import { TooltipsProvider } from '@/providers/tooltips-provider';
 import { __resetAccountNameOverride } from './components/use-account-form';
 import Page from './page';
 
-/** Container/Toolbar read layout settings - provide the real provider. */
+/**
+ * Container/Toolbar read layout settings - provide the real provider.
+ * `tooltip.tsx` is a bare Radix Root since AC-DLA-16 (the one app-wide
+ * provider lives in `TooltipsProvider`, mounted once in `app/layout.tsx`) -
+ * a rendered page with any `<Tooltip>` inside needs one in its tree too.
+ */
 function render(ui: React.ReactElement) {
-  return rtlRender(<SettingsProvider>{ui}</SettingsProvider>);
+  return rtlRender(
+    <SettingsProvider>
+      <TooltipsProvider>{ui}</TooltipsProvider>
+    </SettingsProvider>,
+  );
 }
 
 // Hoisted spies so vi.mock factories can reference them.

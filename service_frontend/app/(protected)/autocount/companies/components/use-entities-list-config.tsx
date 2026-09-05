@@ -142,12 +142,10 @@ export function useAutocountEntitiesListConfig({
         // the window is a distinct, confirmed act that RESETS the watermark, not
         // a Days box that silently does nothing (AC-15-30).
         isVisible: (rows) => Boolean(rows[0]?.watermarkAt),
-        confirm: {
-          title: 'Re-fetch history?',
-          description:
-            'The next sync re-reads from the first-run window instead of the current sync position. Records already pushed may be re-staged for review.',
-          confirmLabel: 'Re-fetch',
-        },
+        // Fix round 1 item 15: a re-sync (the exact class the review names -
+        // "a resend, a retry, a re-sync needs no confirm at all") - it widens
+        // a read window, it doesn't delete or detach anything. Dropped
+        // `confirm` rather than moving to the grace-window engine.
         run: (rows) => {
           const row = rows[0];
           if (row) return onRefetch(row);

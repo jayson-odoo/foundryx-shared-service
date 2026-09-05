@@ -17,6 +17,8 @@ import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ClampedText } from '@/components/platform/clamped-text';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import type { AutocountSqlSchema, AutocountSqlTable } from '@/types/autocount';
 
 export interface SqlSchemaTreeProps {
@@ -178,7 +180,7 @@ export function SqlSchemaTree({
               >
                 <button
                   type="button"
-                  className="flex w-full items-center gap-1 rounded px-1 py-1 text-left hover:bg-muted"
+                  className={cn(PRESSED_CLASS, 'flex w-full items-center gap-1 rounded px-1 py-1 text-left hover:bg-muted')}
                   onClick={() => toggle(node.name)}
                 >
                   {isOpen(node.name) ? (
@@ -199,11 +201,12 @@ export function SqlSchemaTree({
                         <li key={table.name} role="treeitem" aria-selected={isSelected}>
                           <button
                             type="button"
-                            className={
+                            className={cn(
+                              PRESSED_CLASS,
                               isSelected
                                 ? 'flex w-full items-center gap-1.5 rounded bg-primary/10 px-1.5 py-1 text-left font-medium text-primary'
-                                : 'flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left hover:bg-muted'
-                            }
+                                : 'flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left hover:bg-muted',
+                            )}
                             onClick={() => setSelected({ schemaName: node.name, table })}
                           >
                             <Table2 className="size-3.5 shrink-0 text-muted-foreground" />
@@ -226,16 +229,16 @@ export function SqlSchemaTree({
           data-testid="sql-columns-panel"
         >
           <div className="mb-2 flex items-center justify-between gap-2">
-            <span className="min-w-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <span className="min-w-0 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
               <ClampedText text={`Columns · ${selected.table.name}`} lines={1} />
             </span>
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-2xs text-muted-foreground">
               {selected.table.columns.length}
             </span>
           </div>
           <ul className="flex max-h-56 flex-col gap-0.5 overflow-y-auto">
             {selected.table.columns.map((col) => (
-              <li key={col.name} className="flex items-baseline justify-between gap-2 font-mono text-[11px]">
+              <li key={col.name} className="flex items-baseline justify-between gap-2 font-mono text-2xs">
                 <span className="min-w-0 text-foreground">
                   <ClampedText text={col.name} lines={1} />
                 </span>

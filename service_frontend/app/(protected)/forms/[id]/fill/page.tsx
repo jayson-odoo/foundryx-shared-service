@@ -89,7 +89,7 @@ export default function FormFillPage() {
               Revision
             </Badge>
           )}
-          <h1 className="font-heading text-xl font-semibold text-foreground">{fill.view.name}</h1>
+          <h2 className="font-heading text-xl font-semibold text-foreground">{fill.view.name}</h2>
           {fill.view.description && (
             <p className="mt-1 text-sm text-muted-foreground">{fill.view.description}</p>
           )}

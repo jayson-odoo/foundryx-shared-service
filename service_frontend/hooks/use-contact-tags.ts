@@ -5,7 +5,7 @@
  * (CRUD) AND the Contact panel's Tags "Add tag" picker (read-only options).
  */
 import { useCallback, useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/api-client';
 import { contactTagService } from '@/services/contact-tag-service';
 import type { ContactTag, CreateContactTagInput, UpdateContactTagInput } from '@/types/omnichannel';

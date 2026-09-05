@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Card, CardContent, CardHeader, CardHeading, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -165,7 +165,7 @@ export function MeetingsSettingsView() {
           {runsError ? (
             <p className="py-5 text-sm text-destructive">{runsError}</p>
           ) : (
-            <ResourceList config={botRunsConfig} />
+            <ResourceList config={botRunsConfig} hideHeader />
           )}
         </CardContent>
       </Card>
@@ -225,7 +225,7 @@ export function MeetingsSettingsView() {
           {canManage && (
             <div>
               <Button disabled={saving || loading} onClick={() => void onSave()}>
-                Save
+                Save meeting settings
               </Button>
             </div>
           )}

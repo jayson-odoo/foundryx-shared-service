@@ -13,7 +13,13 @@ from sqlalchemy.orm import Session
 
 from app.catalog.kinds import is_valid_kind, kind_label
 from app.models.catalog import Product, ProductCategory
-from app.models.tenant_settings import DEFAULT_CURRENCY, DEFAULT_PRICE_DECIMALS, TenantSettings
+from app.models.tenant_settings import (
+    DEFAULT_CURRENCY,
+    DEFAULT_DEFERRED_DESTRUCTIVE_SECONDS,
+    DEFAULT_DEFERRED_REVERSIBLE_SECONDS,
+    DEFAULT_PRICE_DECIMALS,
+    TenantSettings,
+)
 from app.module_platform import reference_counts
 
 PRODUCT_ENTITY = "product"
@@ -77,6 +83,16 @@ class TenantSettingsService:
             "priceDecimals": (
                 row.price_decimals if row and row.price_decimals is not None else DEFAULT_PRICE_DECIMALS
             ),
+            "deferredDestructiveSeconds": (
+                row.deferred_destructive_seconds
+                if row and row.deferred_destructive_seconds is not None
+                else DEFAULT_DEFERRED_DESTRUCTIVE_SECONDS
+            ),
+            "deferredReversibleSeconds": (
+                row.deferred_reversible_seconds
+                if row and row.deferred_reversible_seconds is not None
+                else DEFAULT_DEFERRED_REVERSIBLE_SECONDS
+            ),
         }
 
     def set(self, tenant_id: str, data: dict) -> dict:
@@ -94,6 +110,16 @@ class TenantSettingsService:
             if dp < 0 or dp > 6:
                 raise HTTPException(422, "Decimal places must be between 0 and 6.")
             row.price_decimals = dp
+        if "deferredDestructiveSeconds" in data and data["deferredDestructiveSeconds"] is not None:
+            secs = int(data["deferredDestructiveSeconds"])
+            if secs < 1 or secs > 60:
+                raise HTTPException(422, "Delete countdown must be between 1 and 60 seconds.")
+            row.deferred_destructive_seconds = secs
+        if "deferredReversibleSeconds" in data and data["deferredReversibleSeconds"] is not None:
+            secs = int(data["deferredReversibleSeconds"])
+            if secs < 1 or secs > 60:
+                raise HTTPException(422, "Reversible countdown must be between 1 and 60 seconds.")
+            row.deferred_reversible_seconds = secs
         self.db.commit()
         return self.get(tenant_id)
 

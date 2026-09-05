@@ -106,7 +106,7 @@ Translation files should follow this structure:
     },
     "messages": {
       "welcome": "Welcome",
-      "loading": "Loading..."
+      "loading": "Please wait…"
     }
   },
   "pages": {

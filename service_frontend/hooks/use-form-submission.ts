@@ -5,7 +5,7 @@
  * graph-driven transitions it can fire (D15). Plan sprint-4/04 adds the
  * revision chain, the form's `allowRevisions` flag and the Revise action. */
 import { useCallback, useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { formService, type FormSubmissionGraph } from '@/services/form-service';
 import type { FormDocument, FormSubmissionRow } from '@/types/forms';
 

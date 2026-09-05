@@ -27,6 +27,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { ConversationFilters } from '@/hooks/use-conversations';
 import { cn } from '@/lib/utils';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import type { ConversationThread, ThreadPriority, ThreadStatus } from '@/types/omnichannel';
 
 export interface ThreadListProps {
@@ -84,7 +85,9 @@ export function ThreadList({
           value={filters.assignee}
           onValueChange={(v) => setFilters({ assignee: v as ConversationFilters['assignee'] })}
         >
-          <TabsList className="w-full">
+          {/* Segmented filter switch, not content navigation (AC-DLA-12) -
+              pinned explicitly, the tab strip default is now `line`. */}
+          <TabsList className="w-full" variant="default">
             <TabsTrigger value="all" className="flex-1" data-testid="bucket-all">
               All
             </TabsTrigger>
@@ -150,6 +153,7 @@ export function ThreadList({
                   type="button"
                   onClick={() => onSelect(t.id)}
                   className={cn(
+                    PRESSED_CLASS,
                     'flex w-full items-start gap-3 border-b px-3 py-2.5 text-start transition-colors hover:bg-accent',
                     selectedId === t.id && 'bg-accent',
                   )}
@@ -163,14 +167,20 @@ export function ThreadList({
                       <span className={cn('truncate text-sm', t.unreadCount > 0 ? 'font-semibold' : 'font-medium')}>
                         {t.name}
                       </span>
-                      <span className="shrink-0 text-[11px] text-muted-foreground">
+                      <span className="shrink-0 text-2xs text-muted-foreground">
                         {relativeTime(t.lastMessageAt)}
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-2">
                       <span className="truncate text-xs text-muted-foreground">{t.lastMessagePreview}</span>
                       {t.unreadCount > 0 && (
-                        <Badge variant="primary" size="sm" shape="circle" data-testid="unread-badge">
+                        <Badge
+                          variant="primary"
+                          size="sm"
+                          shape="circle"
+                          appearance="default"
+                          data-testid="unread-badge"
+                        >
                           {t.unreadCount}
                         </Badge>
                       )}
@@ -178,7 +188,7 @@ export function ThreadList({
                     <div className="mt-1 flex items-center gap-1.5">
                       <StatusBadge status={t.status} registry={THREAD_STATUS_REGISTRY} size="sm" />
                       <StatusBadge status={t.priority} registry={THREAD_PRIORITY_REGISTRY} size="sm" />
-                      <span className="ms-auto truncate text-[11px] text-muted-foreground">
+                      <span className="ms-auto truncate text-2xs text-muted-foreground">
                         {t.assignedUserName ?? 'Unassigned'}
                       </span>
                     </div>

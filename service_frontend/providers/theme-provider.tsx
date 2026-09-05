@@ -1,10 +1,11 @@
 'use client';
-'use client';
 
 import * as React from 'react';
 import { ThemeProvider as NextThemesProvider } from 'next-themes';
-import { TooltipProvider } from '@/components/ui/tooltip';
 
+// The tooltip provider lives ONLY in `providers/tooltips-provider.tsx`
+// (AC-DLA-16) - this file wrapping its own would be a second provider racing
+// the app-wide 700ms delay.
 export function ThemeProvider({
   children,
 }: React.ComponentProps<typeof NextThemesProvider>) {
@@ -17,7 +18,7 @@ export function ThemeProvider({
       disableTransitionOnChange
       enableColorScheme
     >
-      <TooltipProvider delayDuration={0}>{children}</TooltipProvider>
+      {children}
     </NextThemesProvider>
   );
 }

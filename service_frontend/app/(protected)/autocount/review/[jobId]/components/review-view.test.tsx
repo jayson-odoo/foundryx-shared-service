@@ -33,11 +33,11 @@ vi.mock('@/hooks/use-datetime', () => ({
 vi.mock('@/components/common/container', () => ({
   Container: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
-vi.mock('@/partials/common/toolbar', () => ({
-  Toolbar: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  ToolbarActions: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  ToolbarHeading: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  ToolbarPageTitle: ({ text }: { text: string }) => <h1>{text}</h1>,
+vi.mock('next/navigation', () => ({
+  usePathname: () => '/autocount/review/job-1',
+}));
+vi.mock('@/services/terminology-service', () => ({
+  terminologyService: { getTerminology: () => Promise.resolve({}) },
 }));
 
 function baseReview(over: Partial<UseAutocountReviewResult> = {}): UseAutocountReviewResult {

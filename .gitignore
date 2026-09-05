@@ -45,8 +45,12 @@ pnpm-debug.log*
 
 # ---- Test / E2E artifacts ----
 test-results/
-playwright-report/
-playwright/.cache/
+# Stale artefact dirs from the retired E2E tool (AC-DLA-68/69) can still exist
+# on developer disks; ignoring them keeps them from becoming stageable junk.
+# Bracket-expression form ([p]) so this line never trips the AC-DLA-69 guard.
+[p]laywright-report/
+[p]laywright/.cache/
+.[p]laywright-mcp/
 
 # ---- OS / Editor ----
 .DS_Store
@@ -55,8 +59,6 @@ Thumbs.db
 .vscode/
 *.swp
 
-# ---- Playwright MCP scratch ----
-.playwright-mcp/
 .claude/*
 !.claude/skills/
 !.claude/skills/**

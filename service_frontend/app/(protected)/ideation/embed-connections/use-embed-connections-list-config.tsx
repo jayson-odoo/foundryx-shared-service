@@ -3,7 +3,6 @@
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { Link2, PowerOff, RefreshCw, Trash2 } from 'lucide-react';
-import { toast } from 'sonner';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { Badge } from '@/components/ui/badge';
 import { ClampedText } from '@/components/platform/clamped-text';
@@ -86,22 +85,16 @@ export function useEmbedConnectionsListConfig(
         icon: PowerOff,
         permission: MANAGE,
         surfaces: { row: true },
-        confirm: {
-          title: 'Change connection status?',
-          description:
-            'Deactivating stops the host from starting new embed sessions and kills live embed tokens on their next request. Reactivating restores it.',
-          confirmLabel: 'Confirm',
-        },
-        run: async (rows, rt) => {
-          const [c] = rows;
-          if (!c) return;
-          try {
-            await embedConnectionService.setActive(c.connectionId, !c.isActive);
-            toast.success(c.isActive ? 'Connection deactivated.' : 'Connection activated.');
-            rt.reload();
-          } catch (e) {
-            toast.error(e instanceof Error ? e.message : 'Could not update the connection.');
-          }
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered
+        // `ideation_embed_connections.set_active` handler commits it
+        // server-side); the payload carries the TARGET state (the toggle's
+        // direction is derived from the row's current state at click time,
+        // same as the label above).
+        deferred: {
+          actionKey: 'ideation_embed_connections.set_active',
+          entityType: 'ideation_embed_connection',
+          payload: (rows) => ({ isActive: !rows[0]?.isActive }),
         },
       },
       {
@@ -111,22 +104,12 @@ export function useEmbedConnectionsListConfig(
         tone: 'destructive',
         permission: MANAGE,
         surfaces: { row: true },
-        confirm: {
-          title: 'Delete embed connection?',
-          description:
-            'This permanently removes the connection and its stored secret. Any live embed token stops resolving on its next request. This action cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows, rt) => {
-          const [c] = rows;
-          if (!c) return;
-          try {
-            await embedConnectionService.remove(c.connectionId);
-            toast.success('Embed connection deleted.');
-            rt.reload();
-          } catch (e) {
-            toast.error(e instanceof Error ? e.message : 'Could not delete the connection.');
-          }
+        // Grace-window deferred action - no confirm, no `run` (the
+        // registered `ideation_embed_connections.delete` handler commits it
+        // server-side).
+        deferred: {
+          actionKey: 'ideation_embed_connections.delete',
+          entityType: 'ideation_embed_connection',
         },
       },
     ],
@@ -220,6 +203,7 @@ export function useEmbedConnectionsListConfig(
                 rows={[row.original]}
                 runtime={{ ctx: meta?.resourceCtx, index, reload: meta?.reload ?? (() => {}) }}
                 surface="row"
+                getEntityId={(c) => c.connectionId}
               />
             </div>
           );

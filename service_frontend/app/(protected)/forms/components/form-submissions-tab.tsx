@@ -7,7 +7,7 @@
  * transition actions. Row click → the read-only submission page. */
 import { useEffect, useMemo, useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import {
@@ -234,5 +234,5 @@ export function FormSubmissionsTab({ form }: FormSubmissionsTabProps) {
     };
   }, [form.id, form.slug, form.pinnedColumns, form.draftDefinition, graph, formatDateTime]);
 
-  return <ResourceList config={config} />;
+  return <ResourceList config={config} hideHeader />;
 }

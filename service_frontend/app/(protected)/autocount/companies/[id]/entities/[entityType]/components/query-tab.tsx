@@ -215,7 +215,7 @@ export function QueryTab({
                 options={connectionOptions}
                 value={config.connectionId}
                 onChange={onConnectionChange}
-                placeholder={connectionsLoading ? 'Loading…' : 'Select a connection'}
+                placeholder="Select a connection"
                 disabled={!editing || connectionsLoading || connections.length === 0}
                 ariaLabel="Connection"
               />

@@ -44,6 +44,23 @@ jobs:
             echo "::error::Found the banned brand misspelling (capital X after Foundry) - the brand is 'Foundryx'. See PRINCIPLES.md."
             exit 1
           fi
+      - name: No stray play[w]right mentions outside the allowed set (AC-DLA-69)
+        run: |
+          # 'play[w]right' so this script never matches itself, same trick as
+          # 'Foundry[X]' above. D15 (plan 23): that E2E tool is retired here -
+          # AGENTS.md and PRINCIPLES.md are the only files allowed to name it,
+          # each with one retirement sentence (checked by the frontend guard
+          # test, service_frontend/no-play[w]right.guard.test.ts).
+          all=$(git grep -Iil 'play[w]right' -- . ':!documentation/plans' ':!documentation/preliminary_planning' ':!service_backend/modules/meetings/bot' ':!service_frontend/package-lock.json' ':!service_frontend/no-play[w]right.guard.test.ts' || true)
+          hits=""
+          if [ -n "$all" ]; then
+            hits=$(printf '%s\n' "$all" | grep -v -x -e AGENTS.md -e PRINCIPLES.md || true)
+          fi
+          if [ -n "$hits" ]; then
+            echo "::error::Found tracked files mentioning the retired E2E tool outside AGENTS.md/PRINCIPLES.md:"
+            echo "$hits"
+            exit 1
+          fi
 
   validate-backend:
     name: Validate backend (import + pytest collect)

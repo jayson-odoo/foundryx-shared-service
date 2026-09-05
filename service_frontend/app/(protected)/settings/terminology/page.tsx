@@ -1,20 +1,14 @@
 'use client';
 
 import { Fragment, useState } from 'react';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
-import { Container } from '@/components/common/container';
-import { ResourceList } from '@/components/platform/resource-list';
-import { RequirePermission } from '@/components/common/require-permission';
+import type { TermCatalogItem, TermLabels } from '@/types/terminology';
 import { refreshTerminology } from '@/hooks/use-terminology';
 import { terminologyService } from '@/services/terminology-service';
-import type { TermCatalogItem, TermLabels } from '@/types/terminology';
-import { useTerminologyListConfig } from './use-terminology-list-config';
+import { Container } from '@/components/common/container';
+import { RequirePermission } from '@/components/common/require-permission';
+import { ResourceList } from '@/components/platform/resource-list';
 import { TermEditDialog } from './term-edit-dialog';
+import { useTerminologyListConfig } from './use-terminology-list-config';
 
 /**
  * Terminology settings (plan sprint-3/08, F10) - rename what entities are called
@@ -39,16 +33,6 @@ export default function TerminologyPage() {
   return (
     <RequirePermission permission="terminology.manage">
       <Fragment>
-        <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>
-                Rename what entities are called across this workspace.
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
         <Container width="fluid">
           <ResourceList key={nonce} config={config} />
         </Container>

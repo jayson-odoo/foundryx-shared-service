@@ -14,7 +14,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Container } from '@/components/common/container';
 import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -74,7 +74,7 @@ export interface TaskEditorViewProps {
  * would be dead-ends), Runs is always there (empty until the task runs).
  */
 export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: TaskEditorViewProps) {
-  const form = useForm();
+  const form = useForm({ mode: 'onTouched' });
   const { can } = useCan();
   const { detail } = useAutocountCompany(companyId);
   const { task, isLoading, notFound, saveError, fieldErrors, save, apply } = useAutocountEtlTask(
@@ -203,12 +203,11 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
         permission: AC_COMPANIES_MANAGE,
         isVisible: () => status === 'active',
         isDisabled: () => lifecycle.busy !== null,
-        confirm: {
-          title: 'Pause this task?',
-          description:
-            'Scheduled runs stop until it is resumed. A run already in progress finishes.',
-          confirmLabel: 'Pause',
-        },
+        // Fix round 1 item 15: Pause is reversible with a single click
+        // (Resume, right below, has never had a confirm) - a run already in
+        // progress finishes regardless, so there's nothing destructive to
+        // gate. Genuinely not a delete/detach action, so it drops `confirm`
+        // entirely rather than moving to the grace-window engine.
         run: async () => {
           if (await lifecycle.pause()) toast.success('Task paused.');
         },
@@ -235,6 +234,10 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
         { label },
       ],
       backHref: acCompanyHref(companyId),
+      // This route lives under the company detail page (not its own list),
+      // so the sidebar-derived noun would resolve to "company" (AC-DLA-35
+      // fix round 1) - override with the actual entity being saved.
+      entityNoun: 'task',
       title: label,
       subtitle: (
         <span className="flex flex-wrap items-center gap-2">
@@ -374,7 +377,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 icon: History,
                 render: () => (
                   <div className="py-2">
-                    <ResourceList key={runsKey} config={runsConfig} />
+                    <ResourceList key={runsKey} config={runsConfig} hideHeader />
                   </div>
                 ),
               },

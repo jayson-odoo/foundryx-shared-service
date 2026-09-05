@@ -198,7 +198,7 @@ export function AvatarCropDialog({ file, onCancel, onCropped }: AvatarCropDialog
           </Button>
           <Button onClick={() => void save()} disabled={!image || busy}>
             {busy && <LoaderCircleIcon className="size-3.5 animate-spin" />}
-            Save
+            Save photo
           </Button>
         </DialogFooter>
       </DialogContent>

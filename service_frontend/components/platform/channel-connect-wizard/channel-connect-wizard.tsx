@@ -22,7 +22,9 @@ import {
 } from '@/components/ui/select';
 import { useConnectChannel } from '@/hooks/use-connect-channel';
 import { workspaceService } from '@/services/workspace-service';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { isEmbeddedSignupConfigured, launchEmbeddedSignup } from '@/lib/embedded-signup';
+import { cn } from '@/lib/utils';
 import type { Channel, Workspace } from '@/types/omnichannel';
 import { MockEmbeddedSignupDialog } from './mock-embedded-signup-dialog';
 
@@ -302,7 +304,7 @@ export function ChannelConnectWizard({
               )}
               <button
                 type="button"
-                className="self-start text-xs font-medium text-primary hover:underline"
+                className={cn(PRESSED_CLASS, 'self-start text-xs font-medium text-primary hover:underline')}
                 onClick={() => setManualMode(true)}
               >
                 Set up manually (paste token)

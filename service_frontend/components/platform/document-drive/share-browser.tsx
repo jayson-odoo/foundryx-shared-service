@@ -24,6 +24,7 @@ import {
 import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { cn } from '@/lib/utils';
 import { formatBytes } from './lib';
 import type { UsePublicShare } from '@/hooks/use-public-share';
@@ -67,7 +68,7 @@ export function ShareBrowser({ share }: { share: UsePublicShare }) {
               {i > 0 && <ChevronRight className="size-3.5 text-muted-foreground" />}
               <button
                 type="button"
-                className="rounded px-1.5 py-1 hover:bg-muted disabled:font-medium disabled:hover:bg-transparent"
+                className={cn(PRESSED_CLASS, 'rounded px-1.5 py-1 hover:bg-muted disabled:font-medium disabled:hover:bg-transparent')}
                 disabled={i === crumbs.length - 1}
                 onClick={() => void share.navigate(c.id)}
               >
@@ -81,7 +82,7 @@ export function ShareBrowser({ share }: { share: UsePublicShare }) {
             type="button"
             aria-label="Card view"
             onClick={() => setView('card')}
-            className={cn('rounded p-1.5', view === 'card' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted')}
+            className={cn(PRESSED_CLASS, 'rounded p-1.5', view === 'card' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted')}
           >
             <LayoutGrid className="size-4" />
           </button>
@@ -89,7 +90,7 @@ export function ShareBrowser({ share }: { share: UsePublicShare }) {
             type="button"
             aria-label="List view"
             onClick={() => setView('list')}
-            className={cn('rounded p-1.5', view === 'list' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted')}
+            className={cn(PRESSED_CLASS, 'rounded p-1.5', view === 'list' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted')}
           >
             <List className="size-4" />
           </button>
@@ -132,7 +133,7 @@ export function ShareBrowser({ share }: { share: UsePublicShare }) {
             <button
               key={f.id}
               type="button"
-              className="flex items-center gap-2 rounded-lg border bg-card p-3 text-left hover:bg-muted/50"
+              className={cn(PRESSED_CLASS, 'flex items-center gap-2 rounded-lg border bg-card p-3 text-left hover:bg-muted/50')}
               onClick={() => void share.navigate(f.id)}
               data-testid="share-folder"
             >
@@ -146,7 +147,7 @@ export function ShareBrowser({ share }: { share: UsePublicShare }) {
               <button
                 key={file.id}
                 type="button"
-                className="flex flex-col gap-2 rounded-lg border bg-card p-3 text-left hover:bg-muted/50"
+                className={cn(PRESSED_CLASS, 'flex flex-col gap-2 rounded-lg border bg-card p-3 text-left hover:bg-muted/50')}
                 onClick={() => setPreview(file)}
                 data-testid="share-file"
               >
@@ -165,7 +166,7 @@ export function ShareBrowser({ share }: { share: UsePublicShare }) {
             <button
               key={f.id}
               type="button"
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted/50"
+              className={cn(PRESSED_CLASS, 'flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted/50')}
               onClick={() => void share.navigate(f.id)}
               data-testid="share-folder"
             >
@@ -179,7 +180,7 @@ export function ShareBrowser({ share }: { share: UsePublicShare }) {
               <button
                 key={file.id}
                 type="button"
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted/50"
+                className={cn(PRESSED_CLASS, 'flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted/50')}
                 onClick={() => setPreview(file)}
                 data-testid="share-file"
               >
@@ -211,7 +212,7 @@ function FilePanel({
     <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card p-3">
       <button
         type="button"
-        className="flex min-w-0 items-center gap-2 text-left"
+        className={cn(PRESSED_CLASS, 'flex min-w-0 items-center gap-2 text-left')}
         onClick={() => file.previewKind !== 'none' && onPreview(file)}
       >
         <Glyph className="size-6 shrink-0 text-muted-foreground" />

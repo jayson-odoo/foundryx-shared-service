@@ -96,7 +96,7 @@ export function SinkTargetSection({
                 options={options}
                 value={connectionId}
                 onChange={(value) => onConnectionChange(value)}
-                placeholder={isLoading ? 'Loading…' : 'Select a connection'}
+                placeholder="Select a connection"
                 disabled={isLoading || noConnections}
                 ariaLabel="Sorento consumer connection"
               />

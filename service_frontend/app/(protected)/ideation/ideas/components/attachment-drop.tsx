@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { Upload, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import {
   useFileUpload,
   formatBytes,
@@ -98,7 +99,7 @@ export function AttachmentDrop({
               e.stopPropagation();
               removeFile(f.id);
             }}
-            className="ms-2 rounded p-1 text-muted-foreground hover:bg-muted"
+            className={cn(PRESSED_CLASS, 'ms-2 rounded p-1 text-muted-foreground hover:bg-muted')}
           >
             <X className="size-4" />
           </button>

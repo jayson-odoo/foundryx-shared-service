@@ -12,7 +12,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertIcon, AlertTitle } from '@/components/ui/alert';
@@ -65,7 +65,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   const { can } = useCan();
   const { formatDateTime } = useDatetime();
   const router = useRouter();
-  const form = useForm();
+  const form = useForm({ mode: 'onTouched' });
   const runsConfig = useAutocountRunsListConfig(companyId);
   const [syncing, setSyncing] = useState<string | null>(null);
   const [runsKey, setRunsKey] = useState(0);
@@ -402,7 +402,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
               {canManage && (
                 <AddEntityControl entities={detail?.entities ?? []} onAdd={onAddEntity} />
               )}
-              <ResourceList config={entitiesConfig} />
+              <ResourceList config={entitiesConfig} hideHeader />
             </div>
           ),
         },
@@ -412,7 +412,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
           icon: History,
           render: () => (
             <div className="py-2">
-              <ResourceList key={runsKey} config={runsConfig} />
+              <ResourceList key={runsKey} config={runsConfig} hideHeader />
             </div>
           ),
         },

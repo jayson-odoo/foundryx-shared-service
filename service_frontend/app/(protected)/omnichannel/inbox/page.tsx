@@ -59,7 +59,7 @@ export default function InboxPage() {
       <Container width="fluid" className="flex min-h-0 flex-1 flex-col">
         <div
           className="my-4 grid min-h-0 grid-cols-[320px_1fr] grid-rows-[minmax(0,1fr)] overflow-hidden rounded-lg border bg-background"
-          style={{ height: 'calc(100vh - 180px)' }}
+          style={{ height: 'calc(100dvh - 180px)' }}
           data-testid="inbox-shell"
         >
           <div className="min-h-0 border-e">
