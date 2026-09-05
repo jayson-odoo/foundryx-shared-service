@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import {
+  CircleSlash,
   FormInput,
   GitBranch,
   KeyRound,
@@ -23,6 +24,7 @@ import { ApiKeysTab } from './workspace-api-keys-tab';
 import { WorkspaceLifecycleTab } from './workspace-lifecycle-tab';
 import { WorkspaceContactFieldsTab } from './workspace-contact-fields-tab';
 import { WorkspaceTagsTab } from './workspace-tags-tab';
+import { WorkspaceCloseReasonsTab } from './workspace-close-reasons-tab';
 import { useWorkspaceActions } from './use-workspace-actions';
 import { useCan } from '@/hooks/use-can';
 import { workspaceFormHref, workspaceFormPath, workspacesListPath } from './paths';
@@ -190,6 +192,12 @@ export function useWorkspaceForm(
               label: 'Tags',
               icon: Tag,
               render: () => <WorkspaceTagsTab workspaceId={workspace?.id ?? null} creating={creating} />,
+            },
+            {
+              id: 'close-reasons',
+              label: 'Close reasons',
+              icon: CircleSlash,
+              render: () => <WorkspaceCloseReasonsTab workspaceId={workspace?.id ?? null} creating={creating} />,
             },
           ]
         : []),

@@ -4,15 +4,24 @@
  * Inbox thread-list state (plan 05): filters + fetch + live updates.
  * Socket events patch rows in place (no refetch): `message.created` /
  * `contact.updated` upsert the thread and re-sort by lastMessageAt desc.
+ *
+ * Plan 27 (AC-IVE-15/16) adds the view-rail dimensions - `lifecycleStageIds`/
+ * `tagIds`/`channelIds`/`unreplied`/`sort`/`viewId`. The base fetch still
+ * calls the REAL `listThreads` (today's assignee/status/priority/search stay
+ * server-side, unchanged); the new dimensions are applied client-side via
+ * `applyInboxViewFilters` until the backend understands them (S1/S2) - see
+ * that module's header comment for the exact contract + the one S0 proxy.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { applyInboxViewFilters } from '@/lib/inbox-view-filter';
 import { conversationService } from '@/services/conversation-service';
 import type {
   ConversationSocketEvent,
   ConversationThread,
   ThreadListQuery,
   ThreadPriority,
+  ThreadSort,
   ThreadStatus,
 } from '@/types/omnichannel';
 
@@ -23,6 +32,16 @@ export interface ConversationFilters {
   status: ThreadStatus | 'ALL';
   priority: ThreadPriority | 'ALL';
   search: string;
+  /** View-rail dimensions (plan 27). */
+  lifecycleStageIds: string[];
+  tagIds: string[];
+  channelIds: string[];
+  unreplied: boolean;
+  sort: ThreadSort;
+  /** The selected saved view, if any - carried for the URL (`?view=`) and to
+   *  highlight the rail; the FILTER fields above are the source of truth for
+   *  what actually gets requested (a view is expanded into them on select). */
+  viewId: string | null;
 }
 
 export interface UseConversationsResult {
@@ -34,11 +53,17 @@ export interface UseConversationsResult {
   reload: () => void;
 }
 
-const DEFAULT_FILTERS: ConversationFilters = {
+export const DEFAULT_FILTERS: ConversationFilters = {
   assignee: 'all',
   status: 'ALL',
   priority: 'ALL',
   search: '',
+  lifecycleStageIds: [],
+  tagIds: [],
+  channelIds: [],
+  unreplied: false,
+  sort: 'newest',
+  viewId: null,
 };
 
 function sortThreads(list: ConversationThread[]): ConversationThread[] {
@@ -46,7 +71,7 @@ function sortThreads(list: ConversationThread[]): ConversationThread[] {
 }
 
 export function useConversations(workspaceId: string | null | undefined): UseConversationsResult {
-  const [threads, setThreads] = useState<ConversationThread[]>([]);
+  const [rawThreads, setRawThreads] = useState<ConversationThread[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFiltersState] = useState<ConversationFilters>(DEFAULT_FILTERS);
@@ -59,6 +84,12 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
       status: filters.status,
       priority: filters.priority,
       search: filters.search || undefined,
+      lifecycleStageIds: filters.lifecycleStageIds,
+      tagIds: filters.tagIds,
+      channelIds: filters.channelIds,
+      unreplied: filters.unreplied,
+      sort: filters.sort,
+      viewId: filters.viewId,
     }),
     [workspaceId, filters],
   );
@@ -71,7 +102,7 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
       .listThreads(query)
       .then((list) => {
         if (seq !== fetchSeq.current) return; // stale response - a newer fetch won
-        setThreads(list);
+        setRawThreads(list);
         setError(null);
       })
       .catch((e: unknown) => {
@@ -93,7 +124,11 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
     filters.assignee !== 'all' ||
     filters.status !== 'ALL' ||
     filters.priority !== 'ALL' ||
-    !!filters.search;
+    !!filters.search ||
+    filters.lifecycleStageIds.length > 0 ||
+    filters.tagIds.length > 0 ||
+    filters.channelIds.length > 0 ||
+    filters.unreplied;
   const onEvent = useCallback(
     (event: ConversationSocketEvent) => {
       if (event.type === 'message.status') return; // tick updates live in the drawer
@@ -108,7 +143,7 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
         return;
       }
       const thread = event.thread;
-      setThreads((prev) => {
+      setRawThreads((prev) => {
         const rest = prev.filter((t) => t.id !== thread.id);
         return sortThreads([...rest, thread]);
       });
@@ -120,6 +155,21 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
   const setFilters = useCallback((patch: Partial<ConversationFilters>) => {
     setFiltersState((prev) => ({ ...prev, ...patch }));
   }, []);
+
+  // Plan 27 (AC-IVE-15/16) - client-side layer for the dimensions the real
+  // list route doesn't understand yet (see module header). `sort` always
+  // re-orders; `newest` is a no-op re-sort of what the server already gave us.
+  const threads = useMemo(
+    () =>
+      applyInboxViewFilters(rawThreads, {
+        lifecycleStageIds: filters.lifecycleStageIds,
+        tagIds: filters.tagIds,
+        channelIds: filters.channelIds,
+        unreplied: filters.unreplied,
+        sort: filters.sort,
+      }),
+    [rawThreads, filters.lifecycleStageIds, filters.tagIds, filters.channelIds, filters.unreplied, filters.sort],
+  );
 
   return { threads, isLoading, error, filters, setFilters, reload: load };
 }

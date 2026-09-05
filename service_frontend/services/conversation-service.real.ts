@@ -11,6 +11,8 @@ import { getSession } from 'next-auth/react';
 import { apiFetch } from '@/lib/api-client';
 import { embedAuthStore } from '@/lib/embed-auth-store';
 import type {
+  CloseThreadInput,
+  ConversationEvent,
   ConversationMessage,
   ConversationSocketEvent,
   ConversationThread,
@@ -24,6 +26,8 @@ import type {
   SendMediaInput,
   SendMessageInput,
   SendTemplateInput,
+  ShortcutItem,
+  ShortcutRunResult,
   ThreadListQuery,
   ThreadPriority,
   ThreadStatus,
@@ -49,6 +53,14 @@ function threadQueryString(query: ThreadListQuery): string {
   if (query.status && query.status !== 'ALL') params.set('status', query.status);
   if (query.priority && query.priority !== 'ALL') params.set('priority', query.priority);
   if (query.search) params.set('search', query.search);
+  // Plan 27 (AC-IVE-15) - pass-through only; the backend doesn't read these
+  // yet (lands S1/S2). Sent now so S4 needs no further frontend change.
+  if (query.lifecycleStageIds?.length) params.set('lifecycleStageIds', query.lifecycleStageIds.join(','));
+  if (query.tagIds?.length) params.set('tagIds', query.tagIds.join(','));
+  if (query.channelIds?.length) params.set('channelIds', query.channelIds.join(','));
+  if (query.unreplied) params.set('unreplied', 'true');
+  if (query.sort) params.set('sort', query.sort);
+  if (query.viewId) params.set('viewId', query.viewId);
   params.set('pageSize', String(THREAD_PAGE_SIZE));
   const qs = params.toString();
   return qs ? `?${qs}` : '';
@@ -276,5 +288,31 @@ export const realConversationService: ConversationService = {
       if (retryTimer) clearTimeout(retryTimer);
       socket?.close();
     };
+  },
+
+  // -- Plan 27 additions (§5.1) - not yet bound (S0 uses the mock for these
+  // four; the routes land S1-S3). Written now so the S4 swap is one line. --
+  async closeThread(contactId, input: CloseThreadInput) {
+    return apiFetch<ConversationThread>(`/omnichannel/contacts/${contactId}/close`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  async listEvents(contactId) {
+    const res = await apiFetch<{ data: ConversationEvent[] }>(
+      `/omnichannel/contacts/${contactId}/events`,
+    );
+    return res.data;
+  },
+
+  async listShortcuts(contactId) {
+    return apiFetch<ShortcutItem[]>(`/omnichannel/contacts/${contactId}/shortcuts`);
+  },
+
+  async runShortcut(contactId, workflowId) {
+    return apiFetch<ShortcutRunResult>(`/omnichannel/contacts/${contactId}/shortcuts/${workflowId}`, {
+      method: 'POST',
+    });
   },
 };

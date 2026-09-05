@@ -7,6 +7,8 @@
  * (bottom), exactly like channel-service did.
  */
 import type {
+  CloseThreadInput,
+  ConversationEvent,
   ConversationMessage,
   ConversationSocketEvent,
   ConversationThread,
@@ -20,12 +22,15 @@ import type {
   SendMediaInput,
   SendMessageInput,
   SendTemplateInput,
+  ShortcutItem,
+  ShortcutRunResult,
   ThreadListQuery,
   ThreadPriority,
   ThreadStatus,
   WhatsAppTemplate,
 } from '@/types/omnichannel';
 import { realConversationService } from './conversation-service.real';
+import { mockConversationService } from './conversation-service.mock';
 
 export interface ConversationService {
   /** Thread list for the inbox left panel, sorted by lastMessageAt desc. */
@@ -79,9 +84,28 @@ export interface ConversationService {
    * Phase B: WebSocket + Redis pub/sub; Phase A: mock timer emitter.
    */
   subscribe(workspaceId: string, handler: (event: ConversationSocketEvent) => void): () => void;
+
+  // -- Plan 27 additions (§5.1) -----------------------------------------
+  /** Close with a required reason + optional note (AC-IVE-28/29/30). */
+  closeThread(contactId: string, input: CloseThreadInput): Promise<ConversationThread>;
+  /** This thread's event history, newest-first (AC-IVE-13). */
+  listEvents(contactId: string): Promise<ConversationEvent[]>;
+  /** Published `entity.shortcut` workflows bound to this contact's entity
+   *  type (AC-IVE-36). */
+  listShortcuts(contactId: string): Promise<ShortcutItem[]>;
+  /** Fire a shortcut against the PUBLISHED version (AC-IVE-37). */
+  runShortcut(contactId: string, workflowId: string): Promise<ShortcutRunResult>;
 }
 
 // Real backend (plan 25 S4) - the lifecycle/tags/customFields routes landed
 // in S1-S3; `conversation-service.mock.ts` remains the standing frontend-first
 // mock for future tuning, but the app talks to the live API.
-export const conversationService: ConversationService = realConversationService;
+export const conversationService: ConversationService = {
+  ...realConversationService,
+  // S0 MOCK - swap to real in S4 (plan 27). Close/events/shortcuts have no
+  // backend yet (S1-S3); everything else above keeps hitting :8006 unchanged.
+  closeThread: mockConversationService.closeThread,
+  listEvents: mockConversationService.listEvents,
+  listShortcuts: mockConversationService.listShortcuts,
+  runShortcut: mockConversationService.runShortcut,
+};

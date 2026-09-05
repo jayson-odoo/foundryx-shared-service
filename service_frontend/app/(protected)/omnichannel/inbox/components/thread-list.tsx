@@ -1,9 +1,11 @@
 'use client';
 
 /**
- * Inbox left panel (plan 05 §6): assignee buckets (All | Mine | Unassigned),
- * status/priority filters, search, and the thread rows - live-sorted by
- * recency via useConversations.
+ * Inbox left panel (plan 05 §6; plan 27 replaces the assignee buckets + the
+ * two bare status/priority `<Select>`s with the view rail (AC-IVE-20) and the
+ * Show/Sort/Unreplied filter bar (AC-IVE-21) - both live one level up in
+ * `page.tsx` now; this panel keeps the search box + the thread rows,
+ * live-sorted via useConversations.
  */
 import { Search } from 'lucide-react';
 
@@ -16,18 +18,10 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { ConversationFilters } from '@/hooks/use-conversations';
 import { cn } from '@/lib/utils';
-import type { ConversationThread, ThreadPriority, ThreadStatus } from '@/types/omnichannel';
+import type { ConversationThread } from '@/types/omnichannel';
 
 export interface ThreadListProps {
   threads: ConversationThread[];
@@ -79,53 +73,6 @@ export function ThreadList({
             onChange={(e) => setFilters({ search: e.target.value })}
             data-testid="thread-search"
           />
-        </div>
-        <Tabs
-          value={filters.assignee}
-          onValueChange={(v) => setFilters({ assignee: v as ConversationFilters['assignee'] })}
-        >
-          <TabsList className="w-full">
-            <TabsTrigger value="all" className="flex-1" data-testid="bucket-all">
-              All
-            </TabsTrigger>
-            <TabsTrigger value="me" className="flex-1" data-testid="bucket-me">
-              Mine
-            </TabsTrigger>
-            <TabsTrigger value="unassigned" className="flex-1" data-testid="bucket-unassigned">
-              Unassigned
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
-        <div className="flex gap-2">
-          <Select
-            value={filters.status}
-            onValueChange={(v) => setFilters({ status: v as ThreadStatus | 'ALL' })}
-          >
-            <SelectTrigger size="sm" className="flex-1" aria-label="Status filter" data-testid="filter-status">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All statuses</SelectItem>
-              <SelectItem value="OPEN">Open</SelectItem>
-              <SelectItem value="SNOOZED">Snoozed</SelectItem>
-              <SelectItem value="CLOSED">Closed</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select
-            value={filters.priority}
-            onValueChange={(v) => setFilters({ priority: v as ThreadPriority | 'ALL' })}
-          >
-            <SelectTrigger size="sm" className="flex-1" aria-label="Priority filter" data-testid="filter-priority">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All priorities</SelectItem>
-              <SelectItem value="URGENT">Urgent</SelectItem>
-              <SelectItem value="HIGH">High</SelectItem>
-              <SelectItem value="MEDIUM">Medium</SelectItem>
-              <SelectItem value="LOW">Low</SelectItem>
-            </SelectContent>
-          </Select>
         </div>
       </div>
 

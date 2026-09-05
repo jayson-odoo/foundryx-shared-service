@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { conversationService } from '@/services/conversation-service';
 import type {
+  CloseThreadInput,
   ConversationMessage,
   ConversationSocketEvent,
   ConversationThread,
@@ -49,6 +50,10 @@ export interface UseMessagesResult {
   assignToMe: () => Promise<void>;
   setStatus: (status: ThreadStatus) => Promise<void>;
   setPriority: (priority: ThreadPriority) => Promise<void>;
+  /** Plan 27 - close with a required reason + optional note (AC-IVE-28).
+   *  Throws (ApiError, 422) on a missing/inactive/foreign reason - the Close
+   *  dialog maps the error, the thread stays open. */
+  closeThread: (input: CloseThreadInput) => Promise<ConversationThread>;
   /** Plan 25 - system fields + typed custom fields + tag replace-set. Throws
    *  (ApiError, 422 fieldErrors) on failure - the Details form maps errors. */
   patchContact: (patch: PatchContactInput) => Promise<ConversationThread>;
@@ -398,6 +403,16 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     [contactId, commitThreadIfActive],
   );
 
+  const closeThread = useCallback(
+    async (input: CloseThreadInput) => {
+      if (!contactId) throw new Error('No conversation selected.');
+      const updated = await conversationService.closeThread(contactId, input);
+      commitThreadIfActive(contactId, updated);
+      return updated;
+    },
+    [contactId, commitThreadIfActive],
+  );
+
   const patchContact = useCallback(
     async (patch: PatchContactInput) => {
       if (!contactId) throw new Error('No conversation selected.');
@@ -418,5 +433,5 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     [contactId, commitThreadIfActive],
   );
 
-  return { thread, messages, isLoading, error, isSending, sendError, send, sendTemplate, sendMedia, sendInteractive, sendLocation, sendContacts, react, addNote, assign, assignToMe, setStatus, setPriority, patchContact, moveLifecycle };
+  return { thread, messages, isLoading, error, isSending, sendError, send, sendTemplate, sendMedia, sendInteractive, sendLocation, sendContacts, react, addNote, assign, assignToMe, setStatus, setPriority, closeThread, patchContact, moveLifecycle };
 }
