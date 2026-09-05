@@ -13,6 +13,8 @@ Order on conflict, strongest first:
 2. This file
 3. `docs/reference/frontend-design-language.md` (Resource-shell contract, canvas-editor
    interaction principles - this file owns tokens/motion/primitives, that file owns shell/canvas)
+   (arrives with the docs refactor; until it lands, the Resource-shell + canvas-editor rules
+   live in AGENTS.md's frontend section)
 4. Any installed external design skill (`.claude/skills/emil-design-eng`, `apple-design`,
    `animate`, `review-animations`, `find-animation-opportunities`, `prototype`,
    `pick-ui-library`, `animation-vocabulary`)
