@@ -1114,7 +1114,9 @@ class EtlService:
                     "nothing to dry-run. Point the company at Sorento first."
                 ),
             }
-            warnings = self._preview_warnings(tenant_id, company_id, entity_type, current_refs, sink)
+            warnings = self._preview_warnings(
+                tenant_id, company_id, entity_type, current_refs, sink, config
+            )
             if warnings:
                 payload["warnings"] = warnings
             return self._task_view(company_id, entity_type, config), payload
@@ -1140,7 +1142,9 @@ class EtlService:
         self.db.commit()
         self.db.refresh(config)
 
-        warnings = self._preview_warnings(tenant_id, company_id, entity_type, current_refs, sink)
+        warnings = self._preview_warnings(
+            tenant_id, company_id, entity_type, current_refs, sink, config
+        )
 
         payload = {
             "previewable": True,
@@ -1169,14 +1173,26 @@ class EtlService:
         entity_type: str,
         current_refs: List[str],
         sink: Any,
+        config: Any = None,
     ) -> Dict[str, Any]:
         """The activation preview's non-blocking warnings (sprint-5/02,
-        AC-02-12/14) - computed the same way whether or not the company has
-        a real consumer wired up yet (see the two call sites in
-        ``preview_task``)."""
+        AC-02-12/14; SF2 review round) - computed the same way whether or not
+        the company has a real consumer wired up yet (see the two call sites
+        in ``preview_task``)."""
         from ..sinks_sorento import SorentoSink
 
         warnings: Dict[str, Any] = {}
+        # SF2 (final reviewer pass) - `validate_source_config` blocks a NEW
+        # watermark-inside-keyColumns save going forward, but an EXISTING
+        # task saved before that guard existed can carry the bad shape in
+        # the DB right now (the live Sorento product-master task did). The
+        # activation preview surfaces it as a non-blocking warning naming
+        # the offending column, so the operator notices and fixes it.
+        raw_source_config = getattr(config, "source_config", None) or {}
+        watermark_column = raw_source_config.get("watermarkColumn")
+        key_columns = raw_source_config.get("keyColumns") or []
+        if watermark_column and watermark_column in key_columns:
+            warnings["watermarkInKey"] = watermark_column
         if is_document_entity(entity_type) and current_refs:
             overlaps = self._overlapping_documents(
                 tenant_id, company_id, entity_type, current_refs
