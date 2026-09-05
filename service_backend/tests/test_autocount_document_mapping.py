@@ -3224,3 +3224,60 @@ def test_sql_pack_documents_the_line_fingerprint_columns():
         "the pack must carry the 19%-of-fulfilled-SOs finding that motivates "
         "the line fingerprint (header LastModified alone is not enough)"
     )
+
+
+# ── pseudo-line exclusion (AutoCount marker/bundle items, NULL Qty) ────────
+#
+# A real live-data finding: AutoCount lets a header carry a "pseudo-line"
+# whose ItemCode IS present (so today's `ItemCode IS NOT NULL` cut alone
+# does not drop it) but whose Qty is NULL and price is zero - a marker/
+# bundle line like "PROMOTION PACKAGE" that exists to group real lines
+# underneath it, never a real quantity to deliver/receive. Both the
+# operator-facing `lineQuery` (which must never fetch it as a real line)
+# and the header's own `LineCount` fingerprint OUTER APPLY (which must
+# never COUNT it, or `LineCount` disagrees with what `lineQuery` actually
+# fetches and trips the LineCount-mismatch guard, S2 review round 4, on a
+# perfectly normal document) need the SAME `Qty IS NOT NULL` cut, alongside
+# the existing `ItemCode IS NOT NULL` one.
+
+
+def test_document_presets_exclude_pseudo_lines_with_a_null_qty():
+    from modules.autocount.presets import PO_PRESET, SO_PRESET, SPO_PRESET
+
+    for preset, label in ((SO_PRESET, "SO"), (PO_PRESET, "PO"), (SPO_PRESET, "SPO")):
+        assert "AND d.Qty IS NOT NULL" in preset.line_query, (
+            f"{label}_PRESET.line_query must exclude AutoCount pseudo-lines "
+            f"(item present, Qty NULL) - got:\n{preset.line_query}"
+        )
+        assert "AND d.Qty IS NOT NULL" in preset.header_query, (
+            f"{label}_PRESET.header_query's LineCount fingerprint OUTER "
+            f"APPLY must filter the SAME pseudo-lines, or LineCount counts "
+            f"a row lineQuery itself never fetches - got:\n"
+            f"{preset.header_query}"
+        )
+
+
+def test_sql_pack_documents_the_pseudo_line_exclusion_rule():
+    """The cross-repo contract doc must show the same `Qty IS NOT NULL` cut,
+    with the REASON (a marker/bundle item like PROMOTION PACKAGE, NULL Qty,
+    zero price) - a wire/contract change without the matching doc change is
+    a standing hard-fail rule (CLAUDE.md)."""
+    from pathlib import Path
+
+    pack_path = (
+        Path(__file__).resolve().parents[2]
+        / "documentation" / "plans" / "sprint-4" / "22-autocount-db-etl-autocount-sql.md"
+    )
+    text = pack_path.read_text(encoding="utf-8")
+    assert "Qty IS NOT NULL" in text, (
+        "the SQL pack must document the Qty IS NOT NULL pseudo-line exclusion"
+    )
+    lowered = text.lower()
+    assert "promotion package" in lowered, (
+        "the pack must name the marker-item example (PROMOTION PACKAGE) "
+        "that motivates the Qty IS NOT NULL cut, not just the predicate"
+    )
+    assert "zero" in lowered and "price" in lowered, (
+        "the pack must state the REASON (a marker item at zero price), not "
+        "just the predicate text"
+    )
