@@ -168,7 +168,7 @@ content, not a product list. `components/ui/ui-table.inventory.test.ts` pins exa
 | D12 | Toasts: `lib/toast.ts` wraps sonner; the 97+ direct `sonner` importers switch to the wrapper; `eslint.config.mjs`'s `no-restricted-imports` bans a new direct import (AC-DLA-63). |
 | D13 | Bulk destructive = ONE deferred action naming the count, every selected row dims. Typed-confirmation stays ONLY for the named carve-outs below - see the T5 rulings. |
 | D14 | The standard is written into this repo as this file (precedence in section 1), hard-fails added to `PRINCIPLES.md`, PR-checklist rows added to the `reviewer` agent brief, and `/feature` gains the design-skill slots table (section 8). |
-| D15 | Browser verification = the `agent-browser` CLI only. Playwright is purged from the repo (T0). |
+| D15 | Browser verification = the `agent-browser` CLI only (user ruling 2026-09-04); the prior browser-automation tooling was fully purged from the repo (T0), with a guard test keeping it that way. |
 | D16 | Spring constants set by MEASURED settle time, not Sorento's literal `visualDuration` - see section 3. |
 
 ### T5 rulings - the deferred-actions carve-outs (D2/D13)
