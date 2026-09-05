@@ -39,7 +39,10 @@ export function pastTense(label: string): string {
  * toast reads "User trashed." / "3 users trashed." rather than a bare
  * entity-type key. An unmapped type still gets a naive plural/bare
  * singular rather than nothing. */
-const ENTITY_NOUNS: Record<string, { singular: string; plural: string }> = {
+// Exported (not just used internally) so `deferred-verb.entity-nouns.
+// inventory.test.ts` can assert every registered `entityType` has a human
+// noun without re-deriving this map from source text (T5 fix round 2, S6).
+export const ENTITY_NOUNS: Record<string, { singular: string; plural: string }> = {
   user: { singular: 'user', plural: 'users' },
   role: { singular: 'role', plural: 'roles' },
   workflow: { singular: 'workflow', plural: 'workflows' },
@@ -52,6 +55,27 @@ const ENTITY_NOUNS: Record<string, { singular: string; plural: string }> = {
   document_share: { singular: 'link', plural: 'links' },
   product: { singular: 'product', plural: 'products' },
   tenant: { singular: 'tenant', plural: 'tenants' },
+  // T5 fix round 2, S6: the remaining registered `entityType`s (core +
+  // omnichannel + ideation + the app-store module type added by S2) - a
+  // missing entry used to leak the raw registry key into a toast
+  // ("Ideation_idea deleted.").
+  document_type: { singular: 'document type', plural: 'document types' },
+  background_job: { singular: 'job', plural: 'jobs' },
+  email_outbox: { singular: 'email', plural: 'emails' },
+  channel: { singular: 'channel', plural: 'channels' },
+  workspace: { singular: 'workspace', plural: 'workspaces' },
+  wa_template: { singular: 'WhatsApp template', plural: 'WhatsApp templates' },
+  webhook_endpoint: { singular: 'webhook', plural: 'webhooks' },
+  quick_reply: { singular: 'quick reply', plural: 'quick replies' },
+  api_key: { singular: 'API key', plural: 'API keys' },
+  ideation_idea: { singular: 'idea', plural: 'ideas' },
+  ideation_business_requirement: {
+    singular: 'business requirement',
+    plural: 'business requirements',
+  },
+  ideation_br_idea_link: { singular: 'link', plural: 'links' },
+  ideation_embed_connection: { singular: 'embed connection', plural: 'embed connections' },
+  tenant_module: { singular: 'module', plural: 'modules' },
 };
 
 function capitalize(word: string): string {
