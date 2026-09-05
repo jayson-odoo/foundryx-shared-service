@@ -123,6 +123,11 @@ export const mockWorkflowMetadataService = {
         codeCapabilities: CODE_CAPABILITIES_FALLBACK,
         omnichannelChannels: [{ id: 'chn-demo', name: 'Demo channel' }],
         aiAgents: [{ id: 'agent-demo', name: 'Demo classifier', model: 'stub' }],
+        // Plan 28 (roadmap A8) - backs the `team` NodeField's SearchSelect.
+        teams: [
+          { id: 'team-001', name: 'Sales' },
+          { id: 'team-002', name: 'Support' },
+        ],
       },
       120,
     );

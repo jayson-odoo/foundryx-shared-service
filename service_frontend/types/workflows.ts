@@ -128,6 +128,7 @@ export interface NodeFieldDef {
     | 'assignments'
     | 'omnichannelChannel'
     | 'aiAgent'
+    | 'team'
     | 'outputSchema'
     | 'clarificationOutput'
     | 'agentNode'
@@ -258,6 +259,11 @@ export interface WorkflowMetadata {
   /** Tenant's enabled AI agents - backs the AI Agent action's agent picker
    * (plan sprint-4/17). */
   aiAgents?: { id: string; name: string; model: string }[];
+  /** Tenant's core teams (plan 28, roadmap A8) - backs the `team` NodeField's
+   *  picker (e.g. `omnichannel.assign_conversation`'s `mode=team` target).
+   *  Empty for a caller without `teams.read` (AC-TEM-34), never another
+   *  tenant's teams. */
+  teams?: { id: string; name: string }[];
   /** Health of the external Code runner, when the capability is configured. */
   codeRunnerAvailable?: boolean;
   /** The runner's language policy summary, rendered in the Code drawer. */

@@ -215,6 +215,17 @@ export interface ConversationThread {
   avatarUrl: string | null;
   assignedUserId: string | null;
   assignedUserName: string | null;
+  /**
+   * Assigned CORE team (plan 28, roadmap A8) - a plain indexed id into
+   * `public.teams`, no cross-schema FK (mirrors `lifecycle_status_id`/
+   * BL-030). Optional: the real backend doesn't return these fields until
+   * S2/S5 land, so an unmerged thread simply omits them; the S0 mock overlay
+   * (`services/team-assignment-service.mock.ts`) fills them in for a
+   * team-assigned thread. `assignedTeamName` is a tenant-scoped resolution -
+   * a foreign/stale id renders `null`, never a name (never a guess).
+   */
+  assignedTeamId?: string | null;
+  assignedTeamName?: string | null;
   status: ThreadStatus;
   priority: ThreadPriority;
   /** Channel the latest message arrived on (drives the thread-list icon). */
@@ -438,6 +449,9 @@ export interface ThreadListQuery {
   status?: ThreadStatus | 'ALL';
   priority?: ThreadPriority | 'ALL';
   search?: string;
+  /** Team Inbox filter (plan 28) - the real backend gains this in S2; the S0
+   *  mock overlay filters the fetched page client-side in the meantime. */
+  teamId?: string | null;
 }
 
 /** Realtime events fanned out per workspace (WS in Phase B; mock emitter in A). */

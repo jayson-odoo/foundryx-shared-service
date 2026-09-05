@@ -4,10 +4,17 @@
  * Inbox thread-list state (plan 05): filters + fetch + live updates.
  * Socket events patch rows in place (no refetch): `message.created` /
  * `contact.updated` upsert the thread and re-sort by lastMessageAt desc.
+ *
+ * Plan 28 (roadmap A8, S0 mock): `teamId` scopes the list to a Team Inbox
+ * (the rail's Teams section). The real backend gains a `teamId` list filter
+ * in S2 - until then this hook applies it CLIENT-SIDE over the fetched page,
+ * merged with the S0 team-assignment overlay (`services/team-assignment-
+ * service.ts`) so the rail is fully tunable with no backend support.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { conversationService } from '@/services/conversation-service';
+import { teamAssignmentService } from '@/services/team-assignment-service';
 import type {
   ConversationSocketEvent,
   ConversationThread,
@@ -23,6 +30,8 @@ export interface ConversationFilters {
   status: ThreadStatus | 'ALL';
   priority: ThreadPriority | 'ALL';
   search: string;
+  /** Team Inbox scope (plan 28) - null = every team + no team. */
+  teamId: string | null;
 }
 
 export interface UseConversationsResult {
@@ -39,17 +48,37 @@ const DEFAULT_FILTERS: ConversationFilters = {
   status: 'ALL',
   priority: 'ALL',
   search: '',
+  teamId: null,
 };
+
+/** Initial `teamId`/`assignee` from the URL (AC-TEM-44 - "a reload restores
+ * it"). Read once on mount; SSR-safe (the route is client-rendered anyway). */
+function readInitialFilters(): Pick<ConversationFilters, 'teamId' | 'assignee'> {
+  if (typeof window === 'undefined') return { teamId: null, assignee: 'all' };
+  const params = new URLSearchParams(window.location.search);
+  const assignee = params.get('assignee');
+  return {
+    teamId: params.get('team'),
+    assignee: assignee === 'me' || assignee === 'unassigned' ? assignee : 'all',
+  };
+}
 
 function sortThreads(list: ConversationThread[]): ConversationThread[] {
   return [...list].sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''));
+}
+
+function withTeamOverlay(thread: ConversationThread): ConversationThread {
+  return { ...thread, ...teamAssignmentService.overlayFor(thread.id) };
 }
 
 export function useConversations(workspaceId: string | null | undefined): UseConversationsResult {
   const [threads, setThreads] = useState<ConversationThread[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filters, setFiltersState] = useState<ConversationFilters>(DEFAULT_FILTERS);
+  const [filters, setFiltersState] = useState<ConversationFilters>(() => ({
+    ...DEFAULT_FILTERS,
+    ...readInitialFilters(),
+  }));
   const fetchSeq = useRef(0);
 
   const query = useMemo<ThreadListQuery>(
@@ -71,7 +100,11 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
       .listThreads(query)
       .then((list) => {
         if (seq !== fetchSeq.current) return; // stale response - a newer fetch won
-        setThreads(list);
+        const merged = list.map(withTeamOverlay);
+        const scoped = filters.teamId
+          ? merged.filter((t) => t.assignedTeamId === filters.teamId)
+          : merged;
+        setThreads(scoped);
         setError(null);
       })
       .catch((e: unknown) => {
@@ -81,19 +114,36 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
       .finally(() => {
         if (seq === fetchSeq.current) setIsLoading(false);
       });
-  }, [workspaceId, query]);
+  }, [workspaceId, query, filters.teamId]);
 
   useEffect(load, [load]);
 
+  // Rail selection -> URL (AC-TEM-44 "a reload restores it"). `replaceState`
+  // (no history spam) - only the two rail-driven params are represented.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (filters.teamId) url.searchParams.set('team', filters.teamId);
+    else url.searchParams.delete('team');
+    if (filters.teamId && filters.assignee === 'unassigned') {
+      url.searchParams.set('assignee', 'unassigned');
+    } else {
+      url.searchParams.delete('assignee');
+    }
+    window.history.replaceState(null, '', url);
+  }, [filters.teamId, filters.assignee]);
+
   // Live updates. Unfiltered view: upsert the event's thread in place and
   // re-sort (cheap). Filtered view: the event may move a thread IN or OUT of
-  // the current bucket (e.g. self-claim leaves Unassigned) and 'me' can only
-  // be resolved server-side - reconcile with a refetch instead of guessing.
+  // the current bucket (e.g. self-claim leaves Unassigned) and 'me'/teamId can
+  // only be resolved server-side (or, for teamId, via the mock overlay) -
+  // reconcile with a refetch instead of guessing.
   const isFiltered =
     filters.assignee !== 'all' ||
     filters.status !== 'ALL' ||
     filters.priority !== 'ALL' ||
-    !!filters.search;
+    !!filters.search ||
+    !!filters.teamId;
   const onEvent = useCallback(
     (event: ConversationSocketEvent) => {
       if (event.type === 'message.status') return; // tick updates live in the drawer
@@ -107,7 +157,7 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
         load();
         return;
       }
-      const thread = event.thread;
+      const thread = withTeamOverlay(event.thread);
       setThreads((prev) => {
         const rest = prev.filter((t) => t.id !== thread.id);
         return sortThreads([...rest, thread]);

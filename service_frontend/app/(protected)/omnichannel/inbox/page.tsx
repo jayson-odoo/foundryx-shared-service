@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
 import { ConversationDrawer } from '@/components/platform/conversation-drawer';
+import { TeamRail } from '@/components/platform/team-rail';
 import { useConversations } from '@/hooks/use-conversations';
 import { workspaceService } from '@/services/workspace-service';
 
@@ -58,23 +59,32 @@ export default function InboxPage() {
     <RequirePermission permission="conversations.read">
       <Container width="fluid" className="flex min-h-0 flex-1 flex-col">
         <div
-          className="my-4 grid min-h-0 grid-cols-[320px_1fr] grid-rows-[minmax(0,1fr)] overflow-hidden rounded-lg border bg-background"
+          className="my-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border bg-background lg:flex-row"
           style={{ height: 'calc(100dvh - 180px)' }}
           data-testid="inbox-shell"
         >
-          <div className="min-h-0 border-e">
-            <ThreadList
-              threads={threads}
-              isLoading={isLoading}
-              error={error}
-              filters={filters}
-              setFilters={setFilters}
-              selectedId={selectedId}
-              onSelect={openThread}
-            />
-          </div>
-          <div className="min-h-0">
-            <ConversationDrawer contactId={selectedId} />
+          <TeamRail
+            selectedTeamId={filters.teamId}
+            selectedAssignee={filters.assignee}
+            onSelect={(teamId, unassignedOnly) =>
+              setFilters({ teamId, assignee: unassignedOnly ? 'unassigned' : 'all' })
+            }
+          />
+          <div className="grid min-h-0 flex-1 grid-cols-[320px_1fr] grid-rows-[minmax(0,1fr)] overflow-hidden">
+            <div className="min-h-0 border-e">
+              <ThreadList
+                threads={threads}
+                isLoading={isLoading}
+                error={error}
+                filters={filters}
+                setFilters={setFilters}
+                selectedId={selectedId}
+                onSelect={openThread}
+              />
+            </div>
+            <div className="min-h-0">
+              <ConversationDrawer contactId={selectedId} />
+            </div>
           </div>
         </div>
       </Container>

@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 
 import { StatusBadge } from '@/components/platform/status-badge';
+import { toast } from '@/lib/toast';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -38,6 +39,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useMediaQuery } from '@/hooks/use-media-query';
 import { useMessages } from '@/hooks/use-messages';
+import { useTeams } from '@/hooks/use-teams';
 import { conversationService } from '@/services/conversation-service';
 import { workspaceService } from '@/services/workspace-service';
 import type {
@@ -128,6 +130,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     addNote,
     assign,
     assignToMe,
+    assignTeam,
     setStatus,
     patchContact,
     moveLifecycle,
@@ -139,6 +142,16 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
   const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [replyTo, setReplyTo] = useState<ConversationMessage | null>(null);
+  // Team Inbox (plan 28, S0 mock) - the assignee dropdown's Teams group.
+  const { teams } = useTeams();
+  const handleAssignTeam = useCallback(
+    (teamId: string | null) => {
+      assignTeam(teamId).catch((e: unknown) => {
+        toast.error(e instanceof Error ? e.message : 'Could not update the team assignment.');
+      });
+    },
+    [assignTeam],
+  );
 
   // Contact panel (plan 25, AC-CDM-34) - open state persists per browser;
   // >=1280px renders a right pane, below it a Sheet (D14). Never shown in
@@ -340,7 +353,13 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" data-testid="assign-trigger">
                 <UserPlus className="size-4" />
-                {thread.assignedUserName ?? 'Unassigned'}
+                {thread.assignedTeamId ? (
+                  <span data-testid="assign-team-label">
+                    {thread.assignedTeamName ?? 'Team'} · {thread.assignedUserName ?? 'Unassigned'}
+                  </span>
+                ) : (
+                  (thread.assignedUserName ?? 'Unassigned')
+                )}
                 <ChevronDown className="size-3.5" />
               </Button>
             </DropdownMenuTrigger>
@@ -359,6 +378,26 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
               <DropdownMenuItem onClick={() => void assign(null)} data-testid="assign-clear">
                 Unassign
               </DropdownMenuItem>
+              {teams.length > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel>Teams</DropdownMenuLabel>
+                  {teams.map((t) => (
+                    <DropdownMenuItem
+                      key={t.id}
+                      onClick={() => handleAssignTeam(t.id)}
+                      data-testid={`assign-team-${t.id}`}
+                    >
+                      {t.name}
+                    </DropdownMenuItem>
+                  ))}
+                  {thread.assignedTeamId && (
+                    <DropdownMenuItem onClick={() => handleAssignTeam(null)} data-testid="assign-team-clear">
+                      Clear team
+                    </DropdownMenuItem>
+                  )}
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
 
