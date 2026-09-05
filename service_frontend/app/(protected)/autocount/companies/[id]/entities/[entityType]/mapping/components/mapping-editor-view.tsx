@@ -4,7 +4,7 @@ import { useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { Info, LoaderCircleIcon } from 'lucide-react';
 import { useForm } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
 import { Form } from '@/components/ui/form';
