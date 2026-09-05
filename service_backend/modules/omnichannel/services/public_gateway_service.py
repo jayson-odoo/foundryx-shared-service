@@ -395,6 +395,7 @@ class PublicGatewayService:
         custom_fields=...,
         fmt: str = FORMAT_GUIDE,
     ):
+        from .contact_profile_service import ProfilePatchError
         from .conversation_service import ConversationService, InvalidPatch
 
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
@@ -410,6 +411,8 @@ class PublicGatewayService:
             )
         except InvalidPatch as exc:
             raise ApiError(422, "invalid_request", str(exc)) from exc
+        except ProfilePatchError as exc:
+            raise ApiError(422, "invalid_request", "Validation failed.", exc.errors) from exc
         return self._after_patch(tenant_id, contact.id, thread, fmt=fmt)
 
     def set_conversation_state(

@@ -187,6 +187,91 @@ class ExportRequest(ApiModel):
     filter: Optional[FilterGroup] = None
 
 
+# ── Contact fields (plan 25 S1) ───────────────────────────────────────────────
+class ContactFieldItem(ApiModel):
+    id: str
+    workspaceId: str
+    key: str
+    label: str
+    description: Optional[str] = None
+    type: str  # text|list|checkbox|email|number|url|date|time
+    options: Optional[List[str]] = None  # `list` type only
+    visibility: str = "always"  # always|hidden
+    sortOrder: int
+    valuesCount: int = 0
+    createdAt: datetime
+
+
+class ContactFieldCreate(ApiModel):
+    key: str
+    label: str
+    description: Optional[str] = None
+    type: str
+    options: Optional[List[str]] = None
+    visibility: Optional[str] = "always"
+
+
+class ContactFieldUpdate(ApiModel):
+    """`key` + `type` are immutable after create (D6) - present-but-unchanged is
+    fine, present-and-different is a 422 (enforced in the service)."""
+
+    key: Optional[str] = None
+    type: Optional[str] = None
+    label: Optional[str] = None
+    description: Optional[str] = None
+    options: Optional[List[str]] = None
+    visibility: Optional[str] = None
+    sortOrder: Optional[int] = None
+
+
+# ── Contact tags (plan 25 S1) ─────────────────────────────────────────────────
+class ContactTagItem(ApiModel):
+    id: str
+    workspaceId: str
+    name: str
+    emoji: Optional[str] = None
+    color: Optional[str] = None
+    description: Optional[str] = None
+    contactsCount: int = 0
+    createdAt: datetime
+
+
+class ContactTagCreate(ApiModel):
+    name: str
+    emoji: Optional[str] = None
+    color: Optional[str] = None
+    description: Optional[str] = None
+
+
+class ContactTagUpdate(ApiModel):
+    name: Optional[str] = None
+    emoji: Optional[str] = None
+    color: Optional[str] = None
+    description: Optional[str] = None
+
+
+class ContactTagRefItem(ApiModel):
+    """Compact tag ref carried on a `ThreadItem` (AC-CDM-12)."""
+
+    id: str
+    name: str
+    emoji: Optional[str] = None
+    color: Optional[str] = None
+
+
+class ContactLifecycleSummary(ApiModel):
+    """A contact's current lifecycle stage (AC-CDM-19) - lands with S2; the
+    `ThreadItem.lifecycle` field stays `None` until the scoped status entity
+    is registered."""
+
+    statusId: str
+    key: str
+    label: str
+    color: Optional[str] = None
+    isWon: bool = False
+    isLost: bool = False
+
+
 # ── Conversations (plan 05) ──────────────────────────────────────────────────
 class ReplyRefItem(ApiModel):
     id: str
@@ -231,7 +316,14 @@ class ThreadItem(ApiModel):
     tenantId: str
     workspaceId: str
     name: str
+    # System fields (plan 25) - editable from the internal PATCH + the Contact
+    # panel Details tab. `name` (derived display name) stays for compatibility.
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
     phone: Optional[str] = None
+    email: Optional[str] = None
+    language: Optional[str] = None  # BCP-47 tag
+    countryCode: Optional[str] = None  # ISO-3166 alpha-2, upper-cased
     avatarUrl: Optional[str] = None
     assignedUserId: Optional[str] = None
     assignedUserName: Optional[str] = None
@@ -249,6 +341,12 @@ class ThreadItem(ApiModel):
     lastMessageAt: Optional[datetime] = None
     lastMessagePreview: Optional[str] = None
     unreadCount: int = 0
+    # Registered custom-field values, keyed by ContactField.key (plan 25).
+    customFields: dict = {}
+    # Tags attached to this contact (plan 25, AC-CDM-12).
+    tags: List[ContactTagRefItem] = []
+    # Current lifecycle stage; null until S2 registers the scoped status entity.
+    lifecycle: Optional[ContactLifecycleSummary] = None
     createdAt: datetime
 
 
@@ -259,11 +357,22 @@ class ThreadListResponse(ApiModel):
 
 class ThreadPatch(ApiModel):
     """PATCH /contacts/{id}. assignedUserId: explicit null = unassign (the
-    handler distinguishes omitted vs null via model_fields_set)."""
+    handler distinguishes omitted vs null via model_fields_set). System-field +
+    custom-field + tag writes (plan 25) are a PARTIAL merge - `customFields`
+    keys omitted are left unchanged, `null` clears a key; `tagIds` REPLACES the
+    whole tag set."""
 
     assignedUserId: Optional[str] = None
     status: Optional[str] = None  # OPEN | SNOOZED | CLOSED
     priority: Optional[str] = None  # LOW | MEDIUM | HIGH | URGENT
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    language: Optional[str] = None
+    countryCode: Optional[str] = None
+    customFields: Optional[dict] = None
+    tagIds: Optional[List[str]] = None
 
 
 class SendMessageRequest(ApiModel):

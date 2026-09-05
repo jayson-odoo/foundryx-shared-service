@@ -12,6 +12,45 @@ from .services.workflow_test_data import build_test_payload, test_metadata
 
 MODULE_NAME = "omnichannel"
 
+def _register_contact_entity() -> None:
+    """Workflow-engine entity registration (plan 25 S1, AC-CDM-22) - registers
+    ``record:omnichannel_contact`` facts (for IF conditions + entity triggers)
+    and the ``entity.update`` writable whitelist. ``has_status``/`status_attr`
+    point at the S2 scoped lifecycle column; the entity is usable for
+    field/tag-driven triggers today, and the ``entity.status_changed`` trigger
+    lights up once S2 registers the status entity and starts writing
+    ``lifecycle_status_id``."""
+    from app.workflow_engine.entities import WorkflowEntity, register_workflow_entity
+
+    from .models import Contact
+
+    register_workflow_entity(
+        WorkflowEntity(
+            entity_type="omnichannel_contact",
+            label="Contact",
+            model=Contact,
+            fact_attrs=(
+                "first_name",
+                "last_name",
+                "phone",
+                "email",
+                "language",
+                "country_code",
+                "priority",
+                "assigned_user_id",
+                "csw_expires_at",
+                "last_message_at",
+            ),
+            writable=frozenset(
+                {"first_name", "last_name", "email", "language", "country_code", "priority"}
+            ),
+            has_status=True,
+            status_attr="lifecycle_status_id",
+            module=MODULE_NAME,
+        )
+    )
+
+
 _TRIGGER_OUTPUTS = [
     NodeOutput("trigger.message.id", "Message · id"),
     NodeOutput("trigger.message.text", "Message · text"),
@@ -28,6 +67,7 @@ _TRIGGER_OUTPUTS = [
 
 def register_omnichannel_workflow_nodes() -> None:
     """Idempotent (``register_trigger``/``register_action`` are dict-set)."""
+    _register_contact_entity()
     register_trigger(
         TriggerDef(
             key="omnichannel.message_received",

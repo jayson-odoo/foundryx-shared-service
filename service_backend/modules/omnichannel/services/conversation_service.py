@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session
 from app.models.user import User
 from ..models import Channel, Contact, ConversationMessage, Status
 from ..repositories.contact_repository import ContactRepository
-from ..schemas import MessageItem, ReplyRefItem, ThreadItem
+from ..schemas import ContactTagRefItem, MessageItem, ReplyRefItem, ThreadItem
 from . import realtime, statuses
+from .contact_tag_service import ContactTagService
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,7 @@ class ConversationService:
         channel_types = self._channel_types(
             [previews[c.id].channel_id for c in contacts if c.id in previews], tenant_id
         )
+        tag_refs = ContactTagService(self.db).refs_for_contacts(ids, tenant_id)
 
         items: List[ThreadItem] = []
         for c in contacts:
@@ -128,7 +130,12 @@ class ConversationService:
                     tenantId=c.tenant_id,
                     workspaceId=c.workspace_id,
                     name=contact_display_name(c),
+                    firstName=c.first_name,
+                    lastName=c.last_name,
                     phone=c.phone,
+                    email=c.email,
+                    language=c.language,
+                    countryCode=c.country_code,
                     avatarUrl=c.avatar_url,
                     assignedUserId=c.assigned_user_id,
                     assignedUserName=assigned_name,
@@ -143,6 +150,11 @@ class ConversationService:
                     lastMessageAt=c.last_message_at,
                     lastMessagePreview=preview.body if preview else None,
                     unreadCount=unread.get(c.id, 0),
+                    customFields=c.custom_fields_json or {},
+                    tags=[ContactTagRefItem(**t) for t in tag_refs.get(c.id, [])],
+                    # Lifecycle lands in S2 (the scoped status entity + Status
+                    # registration) - stays null until then (pinned S1 scope).
+                    lifecycle=None,
                     createdAt=c.created_at,
                 )
             )
@@ -226,7 +238,7 @@ class ConversationService:
         self.db.commit()
         return self.message_items(msgs)
 
-    # ── Patch (assign / lifecycle / priority) ───────────────────────────────
+    # ── Patch (assign / lifecycle / priority / profile) ─────────────────────
     def patch_thread(
         self,
         contact_id: str,
@@ -237,7 +249,13 @@ class ConversationService:
         priority: Optional[str] = None,
         first_name: Optional[str] = ...,
         last_name: Optional[str] = ...,
+        phone: Optional[str] = ...,
+        email: Optional[str] = ...,
+        language: Optional[str] = ...,
+        country_code: Optional[str] = ...,
         custom_fields: Optional[dict] = ...,
+        tag_ids: Optional[list] = ...,
+        actor_id: Optional[str] = None,
         external_connection_id: Optional[str] = None,
     ) -> ThreadItem:
         c = self.repo.get_by_id(contact_id, tenant_id)
@@ -282,12 +300,32 @@ class ConversationService:
                 raise InvalidPatch(f"Invalid priority: {priority}")
             c.priority = priority
 
+        # System fields + typed custom fields + tags (plan 25) route through the
+        # ONE contact-profile seam so validation (AC-CDM-06/07/10) applies on
+        # every write path (this method is called by both the internal PATCH
+        # and the gateway PATCH) and the `omnichannel_contact` `updated` entity
+        # event carries a real `changes` diff (AC-CDM-23).
+        profile_kwargs: dict = {}
         if first_name is not ...:
-            c.first_name = first_name
+            profile_kwargs["first_name"] = first_name
         if last_name is not ...:
-            c.last_name = last_name
+            profile_kwargs["last_name"] = last_name
+        if phone is not ...:
+            profile_kwargs["phone"] = phone
+        if email is not ...:
+            profile_kwargs["email"] = email
+        if language is not ...:
+            profile_kwargs["language"] = language
+        if country_code is not ...:
+            profile_kwargs["country_code"] = country_code
         if custom_fields is not ...:
-            c.custom_fields_json = custom_fields
+            profile_kwargs["custom_fields"] = custom_fields
+        if tag_ids is not ...:
+            profile_kwargs["tag_ids"] = tag_ids
+        if profile_kwargs:
+            from .contact_profile_service import ContactProfileService
+
+            ContactProfileService(self.db).patch(c, actor_id=actor_id, **profile_kwargs)
 
         self.db.commit()
         self.db.refresh(c)

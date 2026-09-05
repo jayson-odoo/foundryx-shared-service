@@ -42,6 +42,7 @@ from ..schemas import (
     ThreadListResponse,
     ThreadPatch,
 )
+from ..services.contact_profile_service import ProfilePatchError
 from ..services.conversation_service import (
     ConversationService,
     InvalidPatch,
@@ -119,6 +120,18 @@ def list_messages(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
 
+_PROFILE_KEYS = {
+    "firstName",
+    "lastName",
+    "phone",
+    "email",
+    "language",
+    "countryCode",
+    "customFields",
+    "tagIds",
+}
+
+
 @router.patch("/{contact_id}", response_model=ThreadItem)
 def patch_thread(
     contact_id: str,
@@ -127,17 +140,33 @@ def patch_thread(
     db: Session = Depends(get_db),
 ) -> ThreadItem:
     enforce_thread_access(db, principal, contact_id)
-    # Field-level gates (plan 05 §7): assignment vs lifecycle. Distinguish omitted
-    # vs explicit-null for assignedUserId via model_fields_set (null = unassign).
-    wants_assign = "assignedUserId" in payload.model_fields_set
+    # Field-level gates (plan 05 §7 + plan 25 AC-CDM-28): assignment vs
+    # lifecycle vs profile (system fields / custom fields / tags). Distinguish
+    # omitted vs explicit-null for assignedUserId via model_fields_set (null =
+    # unassign).
+    sent = payload.model_fields_set
+    wants_assign = "assignedUserId" in sent
     wants_lifecycle = payload.status is not None or payload.priority is not None
-    if not wants_assign and not wants_lifecycle:
+    wants_profile = bool(sent & _PROFILE_KEYS)
+    if not (wants_assign or wants_lifecycle or wants_profile):
         raise HTTPException(status_code=400, detail="Nothing to update")
     if wants_assign:
         principal.require(native_perm="conversations.assign", embed_cap="assign")
     if wants_lifecycle:
         # Close/priority ride the reply-class gate natively; embed maps to "close".
         principal.require(native_perm="conversations.reply", embed_cap="close")
+    if wants_profile:
+        # Profile edits (fields/tags) are a native-only surface in this slice -
+        # embed access tokens have no matching capability.
+        if principal.is_embed:
+            raise HTTPException(
+                status_code=403,
+                detail="This token cannot edit contact profile fields.",
+            )
+        if "contacts.manage" not in principal.permission_keys:
+            raise HTTPException(
+                status_code=403, detail="Missing permission: contacts.manage"
+            )
 
     try:
         return ConversationService(db).patch_thread(
@@ -146,12 +175,23 @@ def patch_thread(
             assigned_user_id=payload.assignedUserId if wants_assign else ...,
             status=payload.status,
             priority=payload.priority,
+            first_name=payload.firstName if "firstName" in sent else ...,
+            last_name=payload.lastName if "lastName" in sent else ...,
+            phone=payload.phone if "phone" in sent else ...,
+            email=payload.email if "email" in sent else ...,
+            language=payload.language if "language" in sent else ...,
+            country_code=payload.countryCode if "countryCode" in sent else ...,
+            custom_fields=payload.customFields if "customFields" in sent else ...,
+            tag_ids=payload.tagIds if "tagIds" in sent else ...,
+            actor_id=principal.actor_user_id,
             external_connection_id=principal.connection_id if principal.is_embed else None,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
     except InvalidPatch as exc:
         raise HTTPException(status_code=422, detail=exc.message)
+    except ProfilePatchError as exc:
+        raise HTTPException(status_code=422, detail={"fieldErrors": exc.errors})
 
 
 @router.post("/{contact_id}/messages", response_model=MessageItem, status_code=201)

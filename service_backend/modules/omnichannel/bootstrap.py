@@ -167,6 +167,27 @@ def create_schema_and_tables(engine: Engine) -> None:
                         f"ADD COLUMN IF NOT EXISTS {col} {coltype}"
                     )
                 )
+            # Contact data model (plan 25 S1) - idempotent add for existing
+            # deployments (per-module Alembic migration 0008 is the real fix
+            # for a Postgres-tracked deploy; this covers the create_all path).
+            _contact_cols = [
+                ("language", "VARCHAR"),
+                ("country_code", "VARCHAR"),
+                ("lifecycle_status_id", "VARCHAR"),
+            ]
+            for col, coltype in _contact_cols:
+                conn.execute(
+                    text(
+                        f'ALTER TABLE "{OMNI_SCHEMA}".contacts '
+                        f"ADD COLUMN IF NOT EXISTS {col} {coltype}"
+                    )
+                )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_contacts_lifecycle_status_id "
+                    f'ON "{OMNI_SCHEMA}".contacts (lifecycle_status_id)'
+                )
+            )
             # phone_number_id → service-wide UNIQUE (plan Slice 3, AC-01-20) for
             # O(1) inbound routing. Reconcile any existing duplicates FIRST (keep
             # the earliest by created_at,id; NULL the losers) then add a partial
@@ -229,8 +250,17 @@ def install_tenant(db: Session, tenant_id: str) -> None:
 def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     """Per-tenant data migration between provisioned versions (plan 08 D3).
 
-    All of omnichannel is 0.1.0 today - nothing to backfill yet. New seeds /
-    backfills land here guarded by ``from_version`` comparisons.
+    0.1.0 -> 0.2.0 (plan 25 S1, contact fields registry + tags): the three new
+    ``contacts`` columns are nullable and the registries start empty, so there
+    is nothing to backfill for existing rows - reading them back as
+    ``None``/``{}``/``[]`` is the correct S1 state (``lifecycle`` stays null
+    until S2 registers the scoped status entity and seeds/materializes a graph
+    per workspace + sets every contact's initial stage - THAT backfill lands
+    in this same function on the 0.2.0 branch below).
+    ``AppStoreService.update()`` already re-grants this module's permission
+    catalog rows (incl. the four new ``contacts.*``/``contact_fields.manage``/
+    ``contact_tags.manage`` keys) to the tenant's Admin role after this hook
+    returns - no grant-sweep code needed here.
     """
 
 
