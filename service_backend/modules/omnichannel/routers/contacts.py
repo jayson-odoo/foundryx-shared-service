@@ -4,8 +4,9 @@
 (`/omnichannel/contacts`, unchanged). HTTP + Pydantic only, no DB/business
 logic here (Router -> Service -> Repository).
 
-S1 ships the list read (AC-CTM-14..23); S2 adds create + the three bulk routes
-on this SAME router file (plan §4)."""
+S1 shipped the list read (AC-CTM-14..23); S2 adds create + the three bulk
+routes on this SAME router file (plan §4, AC-CTM-24..33) - reads stay gated
+`contacts.read`, writes `contacts.manage`."""
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -13,12 +14,25 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import require_permission
+from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 from app.schemas.filters import FilterGroup
 from app.services.filter_translator import FilterError
 
-from ..schemas import ContactListResponse
+from ..schemas import (
+    BulkAssignRequest,
+    BulkLifecycleRequest,
+    BulkResult,
+    BulkTagsRequest,
+    ContactCreate,
+    ContactListItem,
+    ContactListResponse,
+)
+from ..services.contact_admin_service import (
+    BulkValidationError,
+    ContactAdminService,
+    ContactCreateError,
+)
 from ..services.contact_list_service import DEFAULT_PAGE_SIZE, ContactListService
 from ..services.contact_segment_service import SegmentNotFound
 from ..services.workspace_service import WorkspaceService
@@ -67,3 +81,83 @@ def list_contacts(
     except FilterError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
     return ContactListResponse(data=rows, total=total, page=page)
+
+
+@router.post(
+    "/{ws_id}/contacts", response_model=ContactListItem, status_code=status.HTTP_201_CREATED
+)
+def create_contact(
+    ws_id: str,
+    body: ContactCreate,
+    current_user: User = Depends(require_permission("contacts.manage")),
+    actor_user_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> ContactListItem:
+    WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
+    try:
+        return ContactAdminService(db).create(
+            current_user.tenant_id, ws_id, body, actor=current_user, actor_id=actor_user_id
+        )
+    except ContactCreateError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {"fieldErrors": exc.errors})
+
+
+@router.post("/{ws_id}/contacts/bulk/assign", response_model=BulkResult)
+def bulk_assign_contacts(
+    ws_id: str,
+    body: BulkAssignRequest,
+    current_user: User = Depends(require_permission("contacts.manage")),
+    actor_user_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> BulkResult:
+    WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
+    return ContactAdminService(db).bulk_assign(
+        current_user.tenant_id,
+        ws_id,
+        body.ids,
+        body.assigneeUserId,
+        actor=current_user,
+        actor_id=actor_user_id,
+    )
+
+
+@router.post("/{ws_id}/contacts/bulk/tags", response_model=BulkResult)
+def bulk_tag_contacts(
+    ws_id: str,
+    body: BulkTagsRequest,
+    current_user: User = Depends(require_permission("contacts.manage")),
+    actor_user_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> BulkResult:
+    WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
+    try:
+        return ContactAdminService(db).bulk_tags(
+            current_user.tenant_id,
+            ws_id,
+            body.ids,
+            body.mode,
+            body.tagIds,
+            actor=current_user,
+            actor_id=actor_user_id,
+        )
+    except BulkValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {"fieldErrors": exc.errors})
+
+
+@router.post("/{ws_id}/contacts/bulk/lifecycle", response_model=BulkResult)
+def bulk_lifecycle_contacts(
+    ws_id: str,
+    body: BulkLifecycleRequest,
+    current_user: User = Depends(require_permission("contacts.manage")),
+    actor_user_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> BulkResult:
+    WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
+    return ContactAdminService(db).bulk_lifecycle(
+        current_user.tenant_id,
+        ws_id,
+        body.ids,
+        body.toStatusId,
+        actor=current_user,
+        actor_id=actor_user_id,
+    )

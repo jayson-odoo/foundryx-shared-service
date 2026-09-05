@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.base import ApiModel
 from app.schemas.filters import FilterGroup
@@ -428,6 +428,54 @@ class ContactListResponse(ApiModel):
     data: List[ContactListItem]
     total: int
     page: int
+
+
+class ContactCreate(ApiModel):
+    """Manual create (plan 26 S2, D-A2-4, §5.1). `phone` is required + create-
+    only (never PATCH-able, AC-CTM-28); every other field mirrors the
+    optional `ThreadPatch` system/custom/tag fields plus the lifecycle stage
+    a brand new contact may start on. Omitted `lifecycleStatusId` defaults to
+    the workspace's `is_initial` stage server-side."""
+
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
+    phone: str
+    email: Optional[str] = None
+    language: Optional[str] = None
+    countryCode: Optional[str] = None
+    lifecycleStatusId: Optional[str] = None
+    tagIds: Optional[List[str]] = None
+    customFields: Optional[dict] = None
+
+
+class BulkFailure(ApiModel):
+    id: str
+    error: str
+
+
+class BulkResult(ApiModel):
+    """Per-record bulk-action outcome (D-A2-5) - `ok` is the list of ids that
+    succeeded; a failed id always carries its own reason, never a bare
+    "something went wrong"."""
+
+    ok: List[str]
+    failed: List[BulkFailure]
+
+
+class BulkAssignRequest(ApiModel):
+    ids: List[str] = Field(max_length=500)
+    assigneeUserId: Optional[str] = None
+
+
+class BulkTagsRequest(ApiModel):
+    ids: List[str] = Field(max_length=500)
+    mode: Literal["add", "remove"]
+    tagIds: List[str]
+
+
+class BulkLifecycleRequest(ApiModel):
+    ids: List[str] = Field(max_length=500)
+    toStatusId: str
 
 
 class ContactSegmentItem(ApiModel):
