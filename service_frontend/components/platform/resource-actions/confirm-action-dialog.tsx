@@ -4,20 +4,36 @@
  * ONE confirm dialog for the action registry (code-review consolidation -
  * was duplicated verbatim in action-menu and bulk-actions).
  *
- * **RESERVED for the disclosed typed-confirmation carve-outs (sprint-4/23, T5,
- * D2/D13/AC-DLA-43/47) - the ONLY allowed importers of `ResourceAction.confirm`
- * are `components/platform/app-store/use-module-list-config.tsx` (module
- * uninstall), `app/(protected)/platform/tenants/components/
- * use-tenant-actions.tsx` (tenant purge, irreversible hard delete), and
- * `app/(protected)/documents/shares/page.tsx` (BULK revoke ONLY - T5 fix
- * round 2, S1: a shipped sprint-3/05 UAT criterion, AC-OVERSIGHT-03/AC-UX-03 -
- * the row-surface revoke on that same page stays on `deferred`).** Every
- * other destructive/reversible action in the app uses `ResourceAction.deferred`
- * instead (the grace-window engine, `hooks/use-deferred-action.ts`) - no
- * confirm dialog, a countdown with Cancel in its place. `confirm-carve-outs.
- * inventory.test.ts` pins this to exactly those three files, PLUS one
- * disclosed fourth exception (Users' "Impersonate" - a session action with no
- * sensible grace-window commit semantics; see the T5 report).
+ * **RESERVED for the disclosed confirm carve-outs (sprint-4/23, T5,
+ * D2/D13/AC-DLA-43/47) - every other destructive/reversible action in the
+ * app uses `ResourceAction.deferred` instead (the grace-window engine,
+ * `hooks/use-deferred-action.ts`) - no confirm dialog, a countdown with
+ * Cancel in its place.** `confirm-carve-outs.inventory.test.ts` is the
+ * SINGLE SOURCE OF TRUTH for exactly which files/blocks may still define
+ * `ResourceAction.confirm` - read it before adding a new one.
+ *
+ * As of T5 fix round 2 there are FOUR typed (`confirm.input`) carve-out
+ * sites across three files:
+ * - `components/platform/app-store/use-module-list-config.tsx` - module
+ *   uninstall.
+ * - `app/(protected)/platform/tenants/components/use-tenant-actions.tsx` -
+ *   tenant purge (irreversible hard delete): a single row types the tenant's
+ *   slug, a bulk selection types `DELETE` - two separate typed sites in the
+ *   one file.
+ * - `app/(protected)/documents/shares/page.tsx` - Documents > Shares BULK
+ *   revoke only (T5 fix round 2, S1: a shipped sprint-3/05 UAT criterion,
+ *   AC-OVERSIGHT-03/AC-UX-03 - the ROW-surface revoke on that same page
+ *   stays on `deferred`).
+ *
+ * PLAIN (non-typed) `confirm` exceptions are listed ONLY in
+ * `DISCLOSED_PLAIN_CONFIRMS` inside `confirm-carve-outs.inventory.test.ts`
+ * (currently: Users' "Impersonate" - a session action with no sensible
+ * grace-window commit semantics; the tenant custom-status-edge fallback -
+ * an operator-added custom status sharing a well-known label but a
+ * different key, BL-SS-052; and the operator-console module Deactivate -
+ * a cross-tenant action outside the deferred-actions engine's own-tenant
+ * scope). Do not re-list them here - that inventory test is what actually
+ * fails loudly if this drifts; a comment can't enforce anything on its own.
  *
  * Supports the typed-confirmation contract (`confirm.input`): the confirm
  * button stays disabled until the user types `expected(rows)` exactly -
