@@ -1,10 +1,9 @@
 'use client';
 
-import { useState } from 'react';
 import { Check, Copy } from 'lucide-react';
-import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 
 export interface WebhookSecretPanelProps {
   secret: string;
@@ -17,18 +16,7 @@ export interface WebhookSecretPanelProps {
  * description, not a tutorial.
  */
 export function WebhookSecretPanel({ secret }: WebhookSecretPanelProps) {
-  const [copied, setCopied] = useState(false);
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(secret);
-      setCopied(true);
-      toast.success('Signing secret copied to clipboard.');
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      toast.error('Could not copy. Select and copy the secret manually.');
-    }
-  };
+  const { isCopied, copyToClipboard } = useCopyToClipboard();
 
   return (
     <div className="flex flex-col gap-3">
@@ -40,8 +28,13 @@ export function WebhookSecretPanel({ secret }: WebhookSecretPanelProps) {
           aria-label="Signing secret"
           onFocus={(e) => e.currentTarget.select()}
         />
-        <Button variant="outline" mode="icon" onClick={copy} aria-label="Copy signing secret">
-          {copied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
+        <Button
+          variant="outline"
+          mode="icon"
+          onClick={() => copyToClipboard(secret)}
+          aria-label="Copy signing secret"
+        >
+          {isCopied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
         </Button>
       </div>
       <p className="text-sm font-medium text-destructive">
