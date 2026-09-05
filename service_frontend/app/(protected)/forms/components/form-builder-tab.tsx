@@ -3,8 +3,7 @@
 /** Builder tab (plan sprint-3/01 D18): primary toolbar (Preview / Publish /
  * Unpublish + state badges) above the builder. Preview renders the DRAFT
  * (author-only, D9); Publish runs the validate gate and snapshots a version. */
-import { CloudOff, CloudUpload, Eye, Link2 } from 'lucide-react';
-import { toast } from '@/lib/toast';
+import { Check, CloudOff, CloudUpload, Eye, Link2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { FormBuilder } from '@/components/platform/form-builder';
@@ -39,7 +38,7 @@ export function FormBuilderTab({
   publishProblems,
 }: FormBuilderTabProps) {
   const isPublished = form.status === 'published' && form.currentVersionId !== null;
-  const { copyToClipboard } = useCopyToClipboard();
+  const { isCopied, copyToClipboard } = useCopyToClipboard();
 
   return (
     <div className="flex flex-col gap-3" data-testid="form-builder-tab">
@@ -73,11 +72,11 @@ export function FormBuilderTab({
                     ? publicFormFillPath(form.slug)
                     : formFillPath(form.id);
                 copyToClipboard(`${window.location.origin}${path}`);
-                toast.success(form.access === 'public' ? 'Public link copied.' : 'Fill link copied.');
               }}
               data-testid="copy-fill-link"
             >
-              <Link2 className="size-3.5" /> {form.access === 'public' ? 'Public link' : 'Fill link'}
+              {isCopied ? <Check className="size-3.5 text-green-600" /> : <Link2 className="size-3.5" />}{' '}
+              {form.access === 'public' ? 'Public link' : 'Fill link'}
             </Button>
           )}
           <Button variant="outline" size="sm" onClick={onPreview} data-testid="preview-form">
