@@ -287,6 +287,10 @@ integration branch `lib/toast.ts`, `lib/toast.inventory.test.ts`.
 - `components/platform/list-search-input.tsx` adopted by `ResourceList`, `SearchSelect`,
   `MultiSelect`, the palette search; `useDebounce` default stays 300 for non-search callers.
 - `dvh` on the four sheets/drawers; `input.tsx` `pointer-coarse:text-base`.
+- Sidebar item feel (AC-DLA-72): `PRESSED_CLASS` on `classNames.item` + `classNames.subTrigger`,
+  drop the `hover:bg-transparent` override, chevron `ease-(--ease-standard)`, port
+  `sorento: lib/menu-path-match.ts` + its test for "current" (segment-boundary, most-specific-wins).
+  Read `sorento: app/components/layouts/demo1/components/sidebar-menu.tsx` lines 150-170.
 
 ### 3.7 Sweep (T7)
 
